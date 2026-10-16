@@ -11,6 +11,7 @@
 -- PRODUCTION: do not run this file by hand. Run scripts/gpu_pool_stage5_snapshot_and_drop.sh, which
 -- pg_dumps these tables to /tmp/gpu-pool-stage5-drop/, verifies the dump row counts, refuses if any row
 -- was written after its cutoff, and only then applies this file.
+-- ORION-MIGRATION-APPLY-WITH: scripts/gpu_pool_stage5_snapshot_and_drop.sh
 -- Tests: orion/durable_runs/registry_store.py setup() applies it after the v1 migration, so a test
 -- schema matches production.
 --

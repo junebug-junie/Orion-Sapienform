@@ -79,42 +79,50 @@ def _base_surfaces() -> list[AutonomyPolicySurfaceV1]:
             production_write_allowed=False,
         ),
         AutonomyPolicySurfaceV1(
-            surface="graph_consolidation_param_patch",
-            category="graph_consolidation",
+            surface="prediction_expectation_patch",
+            category="prediction_error",
             propose="auto_scheduled",
-            trial="auto_replay",
-            apply="staged_no_activate",
-            rollback="discard_staged_profile",
-            human_required=True,
-            # Live since 2026-09-08 (prior-cycle wiring, PR #2162) / 2026-09-09
-            # (real trial evaluator, PR #2168). The scheduled loop generates
-            # real proposals and runs a real trial against real telemetry,
-            # but PatchApplier.apply() only ever stages a profile in
-            # SubstratePolicyProfileStore (activate_now=False) -- an operator
-            # still has to call activate() before it changes live graph
-            # review behavior. "staged_no_activate" is deliberate, not a
-            # placeholder: this store is documented as manual/
-            # operator-controlled, and the loop was built to respect that.
-            status="staged_review_only",
-            # Matches routing_threshold_patch's own gate list above --
-            # api_routes.py's scheduled cycle computes
-            # apply_enabled = SUBSTRATE_AUTONOMY_APPLY_ENABLED and
-            # SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED, and staging is
-            # refused (PatchApplier.apply() returns None) whenever that's
-            # False. APPLY_ENABLED, not PROPOSALS_ENABLED, is the one that
-            # actually gates whether this surface can stage anything.
+            trial="auto_replay_holdout",
+            apply="gated_auto",
+            rollback="auto_post_adoption_replay",
+            human_required=False,
+            # Rung 6 (2026-10-16): Orion revises the smoothing rate and
+            # variance floor of their execution/chat surprise from recorded
+            # raw readings. Live control-surface write, no operator step.
+            status="live_auto_apply",
             required_gates=[
                 "SUBSTRATE_AUTONOMY_ENABLED",
                 "SUBSTRATE_AUTONOMY_APPLY_ENABLED",
                 "SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED",
+                "SUBSTRATE_PREDICTION_EXPECTATION_TUNER_ENABLED",
             ],
-            forbidden=["autonomous_profile_activation"],
-            description="Graph consolidation cadence/query-limit tuning: real proposals, real trial evidence, staged-only apply.",
-            rationale="SubstratePolicyProfileStore is manual/operator-controlled by design; the mutation loop stages candidates for review rather than bypassing that gate.",
+            forbidden=["out_of_domain_bounds_values"],
+            description="Orion self-tunes how surprised they expect to be (alpha, min_variance) per prediction-error domain.",
+            rationale="Bounded numeric settings, exact counterfactual replay (raw readings do not depend on the setting), held-out trial, automatic rollback when later readings show the new setting is confidently worse. Kill switch: SUBSTRATE_PREDICTION_EXPECTATION_LIVE_ENABLED=false.",
+            risk_tier="low",
+            live_apply_allowed=True,
+            autonomous_apply_allowed=True,
+            production_write_allowed=True,
+        ),
+        AutonomyPolicySurfaceV1(
+            surface="graph_consolidation_param_patch",
+            category="graph_consolidation",
+            propose="none",
+            trial="none",
+            apply="forbidden",
+            rollback="none",
+            human_required=True,
+            # Retired 2026-10-16 (rung 6 rebuild): 0 adoptions in 6 weeks, its
+            # evidence was "a review ran". Kept for historical proposal rows.
+            status="retired",
+            required_gates=[],
+            forbidden=["any_apply"],
+            description="Graph consolidation param tuning -- retired 2026-10-16.",
+            rationale="Evidence was normal operation, patch was a constant, trial could never conclude. Replaced as rung 6 by prediction_expectation_patch.",
             risk_tier="medium",
             live_apply_allowed=False,
             autonomous_apply_allowed=False,
-            production_write_allowed=True,
+            production_write_allowed=False,
         ),
         AutonomyPolicySurfaceV1(
             surface="recall_strategy_profile",
@@ -303,8 +311,8 @@ def load_autonomy_constitution() -> AutonomyConstitutionV1:
         loaded_at=datetime.now(timezone.utc).isoformat(),
         surfaces=_base_surfaces(),
         safety_invariants=[
-            "routing_threshold_patch is retired (2026-09-05, parked 2026-09-03); no surface currently has live apply enabled",
-            "graph_consolidation_param_patch may stage a real policy profile from a real trial, but never activates it -- an operator must call SubstratePolicyProfileStore.activate() before it changes live graph review behavior",
+            "routing_threshold_patch (2026-09-05) and graph_consolidation_param_patch (2026-10-16) are retired",
+            "prediction_expectation_patch is the only surface Orion applies without approval: bounded alpha/min_variance per prediction-error domain, held-out trial first, automatic rollback on post-adoption regression",
             "recall production default remains v1 unless explicit external operator process changes it",
             "recall autonomous production promotion is forbidden",
             "recall_weighting_patch live apply is forbidden",

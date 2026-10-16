@@ -31,6 +31,33 @@ experiment dispatcher. Where the build departs from the design below, the build 
   max residual once (n+1)·q ≥ n, so at the default 40 windows the 95 % upper bound is the max
   observed error (conservative); at 14 the 80 % and 95 % ranges coincide.
 
+## Covariate models (2026-10-16, follow-up PR)
+
+`direct_ar` / `direct_arx` (`app/direct.py`): one ridge regression per lead time on origin-time
+features, interpolated between anchor leads. No future covariate is ever needed. Metric quality
+gate for the two inputs (CLAUDE.md 0A):
+
+1. Provenance: `chassis_watts` = athena iLO PSU reading via orion-biometrics (`services/orion-biometrics/app/pdu.py`
+   header: athena un-cabled from the PDU 2026-09-02, iLO only). `cooling_watts` = the Z-Wave Shelly plug on the
+   AC, `home_cooling_sample.role='cabinet_cooling'`, written by orion-sql-writer (`app/worker.py`).
+2. Independence: chassis watts -> heat into the cabinet (physical, one direction). AC watts is NOT independent of
+   the target: the AC works harder when the cabinet is hot (corr(AC, temp) = +0.29 hourly), so it is a leading
+   indicator of cooling, not an exogenous cause. Fine for forecasting; the conditional scenario labels it.
+3. Theory anchor: cabinet heat balance, dT/dt ∝ P_in - P_removed; electrical draw ≈ heat dissipated, AC draw ∝
+   heat removed (via its COP).
+4. Live sanity (7 days, 2026-10-16): chassis 318–762 W, idle floor ~340 W, 377 distinct values, 1.8 % null.
+   AC median 862 W, p5 824 W, hourly-mean SD 110 W, 2.9 % of hours below 700 W (off/failing episodes), min 0 --
+   not saturated, has a real rest/off state.
+5. Existing mechanism: only `app/causal.py`'s scenario used them; no other forecaster existed.
+6. Reversibility: a model in the zoo; the per-horizon gate decides; removal = delete one entry.
+
+Result, real history, 40 windows (MAE relative to persistence): no covariates 0.79 / 0.86 / 0.98 / 1.08
+at 5 min / 15 min / 1 h / 6 h; chassis only 0.79 / 0.86 / 0.97 / 1.07; AC only 0.79 / 0.85 / 0.94 / 1.09;
+both 0.79 / 0.85 / 0.93 / 1.09. The short-horizon gain is the history features, not the covariates;
+covariates add ~5 % at 1 h, mostly from the AC. Chassis power alone adds ~nothing at this resolution.
+Both twins ship so the gate keeps measuring it. A gradient-boosting variant lost at every horizon and cost
+~6 min of CPU per selection; dropped.
+
 ## Arsonist summary
 
 Do not build "a Prophet service". Build a **forecast contract plus a scoring

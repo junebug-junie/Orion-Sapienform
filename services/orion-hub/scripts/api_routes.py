@@ -7,6 +7,7 @@ import os
 import ipaddress
 import time
 import threading
+from collections import OrderedDict
 from contextlib import contextmanager
 import asyncio
 from datetime import datetime, timezone, timedelta
@@ -131,7 +132,6 @@ from orion.core.schemas.substrate_mutation import (
 from orion.substrate import build_substrate_policy_store_from_env, build_substrate_store_from_env
 from orion.substrate.consolidation import GraphConsolidationEvaluator
 from orion.substrate.policy_comparison import SubstratePolicyComparisonService
-from orion.substrate.policy_profiles import SubstratePolicyProfileStore
 from orion.substrate.review_queue import GraphReviewQueue
 from orion.substrate.review_bootstrap import GraphReviewBootstrapper
 from orion.substrate.review_runtime import GraphReviewRuntimeExecutor
@@ -154,7 +154,14 @@ from orion.substrate.mutation_worker import AdaptationCycleBudget, SubstrateAdap
 from orion.substrate.mutation_control_surface import (
     chat_reflective_lane_threshold_history,
     control_surface_store,
+    get_prediction_expectation,
     inspect_chat_reflective_lane_threshold,
+)
+from orion.substrate.prediction_expectation_tuner import (
+    BASELINE_METRIC_REF as PREDICTION_EXPECTATION_BASELINE_REF,
+    REPLAY_CORPUS_ID as PREDICTION_EXPECTATION_CORPUS_ID,
+    PredictionExpectationTuner,
+    postgres_reading_reader,
 )
 from orion.substrate.recall_strategy_readiness import (
     compute_recall_strategy_readiness,
@@ -417,6 +424,48 @@ SUBSTRATE_MUTATION_STORE = SubstrateMutationStore(
     postgres_url=_resolve_control_plane_postgres_url(),
 )
 SUBSTRATE_MUTATION_SURFACES: Dict[str, Dict[str, Any]] = {}
+# Rung 6 producer. Module-level because the scheduler builds a fresh worker
+# every tick, and the tuner's per-domain "last assessed" clock must survive
+# between ticks. Built lazily: it needs the control-plane Postgres URL.
+_PREDICTION_EXPECTATION_TUNER: PredictionExpectationTuner | None = None
+# Review telemetry ids already turned into signals. The scheduler re-reads the
+# newest N rows every tick with no cursor; before 2026-10-16 that turned ~30
+# real reviews a day into ~65k signals. Bounded, oldest evicted first.
+_MUTATION_SEEN_TELEMETRY_IDS: "OrderedDict[str, None]" = OrderedDict()
+_MUTATION_SEEN_TELEMETRY_MAX = 5000
+
+
+def _prediction_expectation_tuner() -> PredictionExpectationTuner | None:
+    global _PREDICTION_EXPECTATION_TUNER
+    if _PREDICTION_EXPECTATION_TUNER is None:
+        postgres_url = SUBSTRATE_MUTATION_STORE.postgres_url
+        if not postgres_url:
+            return None
+        _PREDICTION_EXPECTATION_TUNER = PredictionExpectationTuner(
+            read_readings=postgres_reading_reader(postgres_url),
+            read_live=lambda domain: get_prediction_expectation(domain, strict=True),
+            window=timedelta(hours=_env_float(
+                "SUBSTRATE_PREDICTION_EXPECTATION_WINDOW_HOURS", default=72.0, minimum=6.0, maximum=192.0
+            )),
+            min_interval=timedelta(minutes=_env_float(
+                "SUBSTRATE_PREDICTION_EXPECTATION_INTERVAL_MIN", default=60.0, minimum=5.0, maximum=1440.0
+            )),
+        )
+    return _PREDICTION_EXPECTATION_TUNER
+
+
+def _unseen_review_telemetry(records: list) -> list:
+    return [record for record in records if record.telemetry_id not in _MUTATION_SEEN_TELEMETRY_IDS]
+
+
+def _mark_review_telemetry_seen(records: list) -> None:
+    """Called only after a cycle actually consumed ``records`` -- marking
+    before run_cycle would drop them for good if the cycle raised or lost the
+    leader lock."""
+    for record in records:
+        _MUTATION_SEEN_TELEMETRY_IDS[record.telemetry_id] = None
+    while len(_MUTATION_SEEN_TELEMETRY_IDS) > _MUTATION_SEEN_TELEMETRY_MAX:
+        _MUTATION_SEEN_TELEMETRY_IDS.popitem(last=False)
 SUBSTRATE_AUTONOMY_LOCAL_CYCLE_LOCK = threading.Lock()
 SUBSTRATE_REVIEW_LOCAL_CYCLE_LOCK = threading.Lock()
 
@@ -4576,9 +4625,8 @@ class _ManualCyclePatchApplier(PatchApplier):
         surfaces: dict[str, dict[str, Any]],
         allow_apply: bool,
         blocked_reason: str | None = None,
-        policy_store: SubstratePolicyProfileStore | None = None,
     ) -> None:
-        super().__init__(surfaces=surfaces, policy_store=policy_store)
+        super().__init__(surfaces=surfaces)
         self.allow_apply = bool(allow_apply)
         self.blocked_reason = blocked_reason
         self.attempted = 0
@@ -4608,9 +4656,8 @@ class _ScheduledCyclePatchApplier(PatchApplier):
         surfaces: dict[str, dict[str, Any]],
         allow_apply: bool,
         allowed_classes: set[str] | None = None,
-        policy_store: SubstratePolicyProfileStore | None = None,
     ) -> None:
-        super().__init__(surfaces=surfaces, policy_store=policy_store)
+        super().__init__(surfaces=surfaces)
         self.allow_apply = bool(allow_apply)
         self.allowed_classes = set(allowed_classes or set())
         self.attempted = 0
@@ -4904,29 +4951,31 @@ def execute_substrate_mutation_scheduled_cycle(
         applier = _ScheduledCyclePatchApplier(
             surfaces=SUBSTRATE_MUTATION_SURFACES,
             allow_apply=apply_enabled,
-            # routing_threshold_patch is retired (RETIRED_MUTATION_CLASSES) and
-            # can never reach a real apply regardless of this allowlist --
-            # graph_consolidation_param_patch is the only class that currently
-            # can. Left pointed at the retired class, this scheduled/unattended
-            # cycle could never apply anything for real; the env flags below
-            # keep their historical "routing" names (a live Hub API response
-            # reads them by these keys -- renaming is a separate follow-up).
-            allowed_classes={"graph_consolidation_param_patch"},
-            policy_store=SUBSTRATE_POLICY_STORE,
+            # routing_threshold_patch and graph_consolidation_param_patch are
+            # retired (RETIRED_MUTATION_CLASSES). Rung 6's self-tuned prediction
+            # expectation is the only class this unattended cycle may apply.
+            # The env flags keep their historical "routing" names (a live Hub
+            # API response reads them by these keys).
+            allowed_classes={"prediction_expectation_patch"},
         )
         corpus = ReplayCorpusRegistry(
             corpus_by_class={
                 "routing_threshold_patch": "replay-routing-v1",
                 "recall_weighting_patch": "replay-recall-v1",
-                "graph_consolidation_param_patch": "replay-consolidation-v1",
                 "approved_prompt_profile_variant_promotion": "replay-prompt-profile-v1",
+                "prediction_expectation_patch": PREDICTION_EXPECTATION_CORPUS_ID,
             },
             baseline_metric_ref_by_class={
                 "routing_threshold_patch": "baseline-routing-v1",
                 "recall_weighting_patch": "baseline-recall-v1",
-                "graph_consolidation_param_patch": "baseline-consolidation-v1",
                 "approved_prompt_profile_variant_promotion": "baseline-prompt-profile-v1",
+                "prediction_expectation_patch": PREDICTION_EXPECTATION_BASELINE_REF,
             },
+        )
+        tuner = (
+            _prediction_expectation_tuner()
+            if _env_flag("SUBSTRATE_PREDICTION_EXPECTATION_TUNER_ENABLED", default=True)
+            else None
         )
         worker = SubstrateAdaptationWorker(
             store=SUBSTRATE_MUTATION_STORE,
@@ -4936,7 +4985,11 @@ def execute_substrate_mutation_scheduled_cycle(
                 routing_surface_reader=inspect_chat_reflective_lane_threshold,
                 surface_reliability_reader=SUBSTRATE_MUTATION_STORE.surface_reliability,
             ),
-            trial_runner=SubstrateTrialRunner(scorer=ClassSpecificScorer(), corpus_registry=corpus),
+            trial_runner=SubstrateTrialRunner(
+                scorer=ClassSpecificScorer(),
+                corpus_registry=corpus,
+                prediction_expectation_evaluator=tuner.trial_metrics if tuner is not None else None,
+            ),
             decision_engine=DecisionEngine(),
             applier=applier,
             monitor=PostAdoptionMonitor(regression_threshold=routing_rollback_threshold),
@@ -5036,17 +5089,47 @@ def execute_substrate_mutation_scheduled_cycle(
             }
         )
 
+        if telemetry_override is None:
+            telemetry = _unseen_review_telemetry(telemetry)
+
+        # Rung 6: enqueue evidence-derived proposals before the worker runs,
+        # so their trials happen in this same cycle. Never fatal to the cycle.
+        prediction_expectation_proposals = 0
+        post_adoption_delta_by_proposal: Dict[str, float] = {}
+        if tuner is not None and _env_flag("SUBSTRATE_AUTONOMY_ENABLED", default=False):
+            _t_tuner = time.monotonic()
+            # Separate guards: a failed proposal must not skip monitoring.
+            if proposals_enabled:
+                try:
+                    prediction_expectation_proposals = len(
+                        tuner.propose(store=SUBSTRATE_MUTATION_STORE, now=tick_now)
+                    )
+                except Exception:
+                    logger.warning("prediction_expectation_propose_failed", exc_info=True)
+            if monitor_enabled:
+                try:
+                    post_adoption_delta_by_proposal = tuner.post_adoption_deltas(store=SUBSTRATE_MUTATION_STORE)
+                except Exception:
+                    logger.warning("prediction_expectation_post_adoption_failed", exc_info=True)
+            _phase_sec["prediction_expectation_tuner"] = time.monotonic() - _t_tuner
+
         _t_run = time.monotonic()
         result = worker.run_cycle(
             telemetry=telemetry,
             measured_metrics_by_proposal={},
             measured_metrics_by_class=class_metrics_override or None,
+            post_adoption_delta_by_proposal=post_adoption_delta_by_proposal or None,
             post_adoption_delta_by_target_surface=(
                 post_adoption_delta_by_target_surface_override if monitor_enabled else None
             ),
             replay_telemetry=telemetry,
             now=tick_now,
         )
+        if telemetry_override is None and not set(result.get("notes") or []) & {
+            "leader_lock_not_acquired",
+            "autonomy_kill_switch_disabled",
+        }:
+            _mark_review_telemetry_seen(telemetry)
         _phase_sec["run_cycle"] = time.monotonic() - _t_run
         _phase_sec["total"] = time.monotonic() - _t_cycle_start
         scheduler_summary = {
@@ -5063,6 +5146,7 @@ def execute_substrate_mutation_scheduled_cycle(
             "signals_processed": int(result.get("signals", 0)),
             "signal_intake": signal_intake,
             "proposals_created": int(result.get("proposals", 0)),
+            "prediction_expectation_proposals": prediction_expectation_proposals,
             "trials_executed": int(result.get("trials", 0)),
             "adoptions_completed": int(result.get("adoptions", 0)),
             "decisions_made": len([event for event in traces if event.get("event") == "mutation_decision_recorded"]),
@@ -5166,22 +5250,31 @@ def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteReques
         surfaces=SUBSTRATE_MUTATION_SURFACES,
         allow_apply=apply_allowed,
         blocked_reason=";".join(apply_blockers) if apply_blockers else None,
-        policy_store=SUBSTRATE_POLICY_STORE,
     )
+    # Same store as the scheduled cycle, so rung-6 proposals and adoptions
+    # can be due here too: trial and monitor them the same way, never by
+    # default-rejecting a proposal or settling an adoption unmeasured.
+    manual_tuner = _prediction_expectation_tuner()
     corpus = ReplayCorpusRegistry(
         corpus_by_class={
             "routing_threshold_patch": "replay-routing-v1",
             "recall_weighting_patch": "replay-recall-v1",
-            "graph_consolidation_param_patch": "replay-consolidation-v1",
             "approved_prompt_profile_variant_promotion": "replay-prompt-profile-v1",
+            "prediction_expectation_patch": PREDICTION_EXPECTATION_CORPUS_ID,
         },
         baseline_metric_ref_by_class={
             "routing_threshold_patch": "baseline-routing-v1",
             "recall_weighting_patch": "baseline-recall-v1",
-            "graph_consolidation_param_patch": "baseline-consolidation-v1",
             "approved_prompt_profile_variant_promotion": "baseline-prompt-profile-v1",
+            "prediction_expectation_patch": PREDICTION_EXPECTATION_BASELINE_REF,
         },
     )
+    manual_post_adoption_deltas: Dict[str, float] = {}
+    if manual_tuner is not None:
+        try:
+            manual_post_adoption_deltas = manual_tuner.post_adoption_deltas(store=SUBSTRATE_MUTATION_STORE)
+        except Exception:
+            logger.warning("prediction_expectation_post_adoption_failed", exc_info=True)
     worker = SubstrateAdaptationWorker(
         store=SUBSTRATE_MUTATION_STORE,
         detectors=MutationDetectors(
@@ -5192,7 +5285,11 @@ def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteReques
             routing_surface_reader=inspect_chat_reflective_lane_threshold,
             surface_reliability_reader=SUBSTRATE_MUTATION_STORE.surface_reliability,
         ),
-        trial_runner=SubstrateTrialRunner(scorer=ClassSpecificScorer(), corpus_registry=corpus),
+        trial_runner=SubstrateTrialRunner(
+            scorer=ClassSpecificScorer(),
+            corpus_registry=corpus,
+            prediction_expectation_evaluator=manual_tuner.trial_metrics if manual_tuner is not None else None,
+        ),
         decision_engine=DecisionEngine(),
         applier=applier,
         monitor=PostAdoptionMonitor(),
@@ -5226,6 +5323,7 @@ def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteReques
         telemetry=telemetry,
         measured_metrics_by_proposal={},
         measured_metrics_by_class=request.class_metrics or None,
+        post_adoption_delta_by_proposal=manual_post_adoption_deltas or None,
         post_adoption_delta_by_target_surface=request.post_adoption_delta_by_target_surface or None,
         replay_telemetry=telemetry,
         now=now,
@@ -5712,7 +5810,9 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
             # at staging; see graph_consolidation.recent_activity below.
             # Plain English, not jargon: this string is the first line a
             # human reads on this page.
-            "summary": "Orion can suggest changes to itself and try some out quietly, but nothing changes how it actually behaves without you approving it first.",
+            # 2026-10-16: one surface now changes live behavior without
+            # approval -- rung 6's prediction_expectation_patch.
+            "summary": "Orion can suggest changes to itself and try some out quietly. One kind of change Orion makes alone: how surprised they expect to be (checked on held-out data first, undone automatically if it turns out worse). Everything else waits for you.",
             "safe_next_action": "build_recall_v2_manual_canary",
             "highest_risk": "misconfigured autonomy apply gate on any future live-apply surface",
             "warnings": [],

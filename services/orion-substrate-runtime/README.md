@@ -391,6 +391,31 @@ broadcast still runs with `magnitude=None`.
 3. Rebuild this service.
 4. Only then set the flag.
 
+## Self-tuned prediction expectation (rung 6, 2026-10-16, default on)
+
+The execution and chat ticks turn a raw per-tick reading (mean absolute change
+in pressure hints) into surprise by comparing it with a running expectation.
+Two settings shape that expectation: the smoothing rate `alpha` and the
+variance floor `min_variance`. They used to be hardcoded. Now Orion revises
+them:
+
+1. Each tick writes its raw reading to `substrate_prediction_raw_reading`
+   (`SUBSTRATE_PREDICTION_RAW_READINGS_ENABLED`, pruned at
+   `SUBSTRATE_PREDICTION_RAW_READING_RETENTION_HOURS`). Apply
+   `services/orion-sql-db/manual_migration_prediction_raw_reading_v1.sql` first.
+2. The Hub's mutation scheduler replays those readings under candidate
+   settings, trials the best one on readings it was not chosen on, applies it,
+   and rolls it back if later readings show it is clearly worse
+   (`orion/substrate/prediction_expectation_tuner.py`).
+3. This service reads the adopted setting from the shared control surface
+   (`prediction_expectation.<domain>`, via `SUBSTRATE_CONTROL_PLANE_POSTGRES_URL`),
+   cached for `SUBSTRATE_PREDICTION_EXPECTATION_REFRESH_SEC`. An unreadable or
+   out-of-bounds value falls back to the calibrated constants.
+
+Kill switch: `SUBSTRATE_PREDICTION_EXPECTATION_LIVE_ENABLED=false` scores with
+the constants (readings are still recorded). Live check:
+`python services/orion-substrate-runtime/evals/run_prediction_expectation_live_check.py`.
+
 ## AST/HOT self-model tick (rung 4)
 
 `orion/substrate/attention_self_model.py::reduce_attention_self_model()` unifies the field lane

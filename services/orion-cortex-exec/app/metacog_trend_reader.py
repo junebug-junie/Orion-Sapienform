@@ -76,9 +76,11 @@ def _timeout_sec() -> float:
 
 
 def _induction_nodes() -> tuple[str, ...]:
-    raw = os.getenv("METACOG_TREND_CUE_NODES", "athena,atlas,circe")
+    # atlas dropped 2026-10-16: retired host (config/biometrics/node_catalog.yaml
+    # `retired_nodes:`), it has written no induction row since 2026-08-20.
+    raw = os.getenv("METACOG_TREND_CUE_NODES", "athena,circe")
     nodes = tuple(n.strip() for n in raw.split(",") if n.strip())
-    return nodes or ("athena", "atlas", "circe")
+    return nodes or ("athena", "circe")
 
 
 def _induction_max_age_sec() -> float:

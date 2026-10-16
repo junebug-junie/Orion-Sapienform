@@ -163,6 +163,8 @@ def sweep_absent_nodes(
     clock = _utc_now(now)
     absent: list[str] = []
     for node_id, state in (node_bio.nodes or {}).items():
+        if catalog.is_retired(node_id):
+            continue
         if _expected_online(node_id, state, catalog) is not True:
             continue
         if not _is_stale(
@@ -204,6 +206,10 @@ def sweep_suppressible_nodes(
     clock = _utc_now(now)
     out: list[str] = []
     for node_id, state in (node_bio.nodes or {}).items():
+        # Retired hosts are pruned outright (pipeline.prune_retired_nodes), not
+        # suppressed: suppression is for a node that may come back.
+        if catalog.is_retired(node_id):
+            continue
         if _expected_online(node_id, state, catalog) is not False:
             continue
         if not _is_stale(
@@ -266,7 +272,8 @@ def invoke_biometrics_pressure(
 ) -> OrganEmissionV1:
     clock = _utc_now(now)
     node_id = _node_id_from_trigger(trigger_event, catalog)
-    if node_id is None:
+    # A retired host gets no candidates: there is no machine to have pressure.
+    if node_id is None or catalog.is_retired(node_id):
         return OrganEmissionV1(
             emission_id=f"oem_{uuid4().hex[:12]}",
             organ_id="biometrics_pressure",

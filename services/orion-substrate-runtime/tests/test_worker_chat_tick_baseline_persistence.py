@@ -59,7 +59,7 @@ def test_chat_tick_persists_baseline_even_when_error_is_zero(monkeypatch) -> Non
     worker, projection = _make_worker()
 
     monkeypatch.setattr(worker_module, "process_chat_grammar_events", lambda **kwargs: None)
-    monkeypatch.setattr(worker_module, "chat_prediction_error", lambda prev, curr: 0.0)
+    monkeypatch.setattr(worker_module, "chat_prediction_error", lambda prev, curr, **_kw: 0.0)
 
     worker._chat_tick()
 
@@ -74,7 +74,7 @@ def test_chat_tick_still_writes_receipt_when_error_is_nonzero(monkeypatch) -> No
     worker, projection = _make_worker()
 
     monkeypatch.setattr(worker_module, "process_chat_grammar_events", lambda **kwargs: None)
-    monkeypatch.setattr(worker_module, "chat_prediction_error", lambda prev, curr: 0.42)
+    monkeypatch.setattr(worker_module, "chat_prediction_error", lambda prev, curr, **_kw: 0.42)
 
     worker._chat_tick()
 

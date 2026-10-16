@@ -15,13 +15,20 @@ def catalog() -> NodeCatalog:
     return NodeCatalog.load(CATALOG_PATH)
 
 
-def test_resolves_atlas_alias(catalog: NodeCatalog) -> None:
-    p = catalog.resolve("atlas.tail348bbe.ts.net")
-    assert p.node_id == "atlas"
-    assert p.role == "inference_gpu"
+def test_resolves_circe_alias(catalog: NodeCatalog) -> None:
+    p = catalog.resolve("circe.tail348bbe.ts.net")
+    assert p.node_id == "circe"
     assert p.capabilities["local_llm_heavy"] is True
     assert p.known is True
-    assert p.raw_node == "atlas.tail348bbe.ts.net"
+    assert p.raw_node == "circe.tail348bbe.ts.net"
+
+
+def test_retired_atlas_still_resolves_but_is_not_live(catalog: NodeCatalog) -> None:
+    p = catalog.resolve("atlas.tail348bbe.ts.net")
+    assert p.node_id == "atlas"
+    assert p.retired is True
+    assert p.expected_online is False
+    assert "atlas" not in catalog.profiles
 
 
 def test_resolves_prometheus_typo(catalog: NodeCatalog) -> None:
@@ -38,7 +45,7 @@ def test_unknown_node_gets_fallback(catalog: NodeCatalog) -> None:
     assert p.role == "unknown"
 
 
-def test_circe_expected_offline(catalog: NodeCatalog) -> None:
-    p = catalog.resolve("circe")
+def test_hecate_expected_offline(catalog: NodeCatalog) -> None:
+    p = catalog.resolve("hecate")
     assert p.expected_online is False
-    assert p.node_id == "circe"
+    assert p.node_id == "hecate"

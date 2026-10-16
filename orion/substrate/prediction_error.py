@@ -14,6 +14,7 @@ from orion.structural_mass.git_delta import GitChurnDelta
 from orion.structural_mass.graph_delta import GraphStructuralDelta
 from orion.structural_mass.pr_lifecycle import PrLifecycleDelta
 from orion.substrate.chat_loop.grammar_extract import compute_chat_pressure_hints
+from orion.substrate.prediction_expectation import Expectation
 
 _THRESHOLD = 0.30
 
@@ -456,6 +457,8 @@ def _score_and_update_ewma_prediction_error(
 def execution_prediction_error(
     prev: ExecutionTrajectoryProjectionV1,
     curr: ExecutionTrajectoryProjectionV1,
+    *,
+    expectation: Expectation | None = None,
 ) -> float:
     """0-1 surprise score: how much did execution pressure hints change this batch?
 
@@ -516,7 +519,34 @@ def execution_prediction_error(
     "no baseline yet" as "measured, not anomalous" (this repo's "no empty-shell
     cognition" rule). The baseline absorbs that tick's value regardless, so the
     very next tick already has one observation to compare against.
+
+    ``expectation`` (rung 6, ``prediction_expectation.py``) overrides alpha and
+    the variance floor with Orion's self-tuned values; ``None`` keeps the
+    calibrated constants above.
     """
+    raw = execution_raw_reading(prev, curr)
+    if raw is None:
+        return 0.0
+    expectation = expectation or Expectation(
+        _EXECUTION_PREDICTION_ERROR_EWMA_ALPHA, _EXECUTION_PREDICTION_ERROR_MIN_VARIANCE
+    )
+    return _score_and_update_ewma_prediction_error(
+        prev,
+        curr,
+        raw_mean_delta=raw,
+        alpha=expectation.alpha,
+        min_variance=expectation.min_variance,
+        zscore_saturation=_EXECUTION_PREDICTION_ERROR_ZSCORE_SATURATION,
+    )
+
+
+def execution_raw_reading(
+    prev: ExecutionTrajectoryProjectionV1,
+    curr: ExecutionTrajectoryProjectionV1,
+) -> float | None:
+    """The raw per-tick value ``execution_prediction_error`` scores: the mean
+    absolute change in pressure hints. ``None`` when nothing comparable moved
+    (no reading this tick). Pure; recorded as rung 6's replay corpus."""
     deltas: list[float] = []
     prev_fallback = _latest_run(prev.runs)
     for trace_id, curr_run in curr.runs.items():
@@ -530,16 +560,8 @@ def execution_prediction_error(
             cv = curr_run.pressure_hints.get(key, 0.0)
             deltas.append(abs(cv - pv))
     if not deltas:
-        return 0.0
-
-    return _score_and_update_ewma_prediction_error(
-        prev,
-        curr,
-        raw_mean_delta=_mean(deltas),
-        alpha=_EXECUTION_PREDICTION_ERROR_EWMA_ALPHA,
-        min_variance=_EXECUTION_PREDICTION_ERROR_MIN_VARIANCE,
-        zscore_saturation=_EXECUTION_PREDICTION_ERROR_ZSCORE_SATURATION,
-    )
+        return None
+    return _mean(deltas)
 
 
 # transport_prediction_error() DELETED 2026-07-31.
@@ -607,6 +629,8 @@ def biometrics_prediction_error(
 def chat_prediction_error(
     prev: ChatSessionProjectionV1,
     curr: ChatSessionProjectionV1,
+    *,
+    expectation: Expectation | None = None,
 ) -> float:
     """0-1 surprise score: how much did a chat turn's pressure hints change this batch?
 
@@ -686,7 +710,28 @@ def chat_prediction_error(
     (``prediction_error_baseline_*``) hold v2-scale numbers and must be zeroed at
     deploy (see the 2026-09-29 PR report), or the first v3 turns all read 1.0.
     ``_CHAT_PREDICTION_ERROR_MIN_VARIANCE`` re-derived on the v3 scale.
+
+    ``expectation``: rung 6's self-tuned alpha/variance floor; ``None`` keeps
+    the calibrated constants (see ``execution_prediction_error``).
     """
+    raw = chat_raw_reading(prev, curr)
+    if raw is None:
+        return 0.0
+    expectation = expectation or Expectation(_CHAT_PREDICTION_ERROR_EWMA_ALPHA, _CHAT_PREDICTION_ERROR_MIN_VARIANCE)
+    return _score_and_update_ewma_prediction_error(
+        prev,
+        curr,
+        raw_mean_delta=raw,
+        alpha=expectation.alpha,
+        min_variance=expectation.min_variance,
+        zscore_saturation=_CHAT_PREDICTION_ERROR_ZSCORE_SATURATION,
+    )
+
+
+def chat_raw_reading(prev: ChatSessionProjectionV1, curr: ChatSessionProjectionV1) -> float | None:
+    """The raw per-tick value ``chat_prediction_error`` scores (mean absolute
+    pressure-hint change over touched turns), or ``None`` if no turn moved.
+    Pure; recorded as rung 6's replay corpus."""
     deltas: list[float] = []
     prev_fallback = _latest_run(prev.turns)
     for turn_id, curr_turn in _touched_runs(prev.turns, curr.turns):
@@ -702,16 +747,8 @@ def chat_prediction_error(
             cv = curr_hints.get(key, 0.0)
             deltas.append(abs(cv - pv))
     if not deltas:
-        return 0.0
-
-    return _score_and_update_ewma_prediction_error(
-        prev,
-        curr,
-        raw_mean_delta=_mean(deltas),
-        alpha=_CHAT_PREDICTION_ERROR_EWMA_ALPHA,
-        min_variance=_CHAT_PREDICTION_ERROR_MIN_VARIANCE,
-        zscore_saturation=_CHAT_PREDICTION_ERROR_ZSCORE_SATURATION,
-    )
+        return None
+    return _mean(deltas)
 
 
 def route_prediction_error(

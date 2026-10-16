@@ -124,16 +124,15 @@ def test_live_starvation_is_named_zone_filter_rejected_all(scheduler_env) -> Non
     assert intake["surface_histogram"] == {"operator_review": 6, "chat_reflective_lane": 2}
 
 
-def test_world_ontology_telemetry_clears_the_zone_filter(scheduler_env) -> None:
-    """2026-09-08 regression test: allowed_zones was {"autonomy_graph"} --
-    retired 2026-09-05 and producing no live signal any more -- meaning the
-    scheduled cycle rejected every real proposal-worthy row regardless of
-    allowed_classes. "world_ontology" is graph_consolidation_param_patch's
-    real zone (TARGET_SURFACE_BY_ZONE) and is live in production (141
-    operator_review/world_ontology rows in the 14 days before this fix,
-    confirmed via direct Postgres query). This is the positive case at the
-    exact layer the bug lived in -- zone filtering, before any signal/
-    proposal/trial machinery runs.
+def test_world_ontology_telemetry_is_reported_as_a_retired_zone_not_healthy(scheduler_env) -> None:
+    """Formerly `test_world_ontology_telemetry_clears_the_zone_filter`, which
+    asserted a world_ontology row made the cycle "healthy" (2026-09-08: it was
+    graph_consolidation_param_patch's live zone). Both retired 2026-10-16
+    (rung 6 rebuild; mutation_detectors._RETIRED_TELEMETRY_ZONES): "a review
+    executed" is normal operation, not evidence. The row still clears the zone
+    filter, but nothing processes it, so the cycle must say so -- not report
+    "healthy" on the strength of a row that can never produce a signal, and
+    not report starvation either (widening filters would change nothing).
     """
     base = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
     store = _live_shaped_store()
@@ -142,10 +141,9 @@ def test_world_ontology_telemetry_clears_the_zone_filter(scheduler_env) -> None:
 
     intake = api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]
 
-    assert intake["reason"] == "healthy"
-    assert intake["starved"] is False
+    assert intake["reason"] == "matched_rows_only_in_parked_zones"
     assert intake["after_zone_filter"] == 1
-    assert intake["after_zone_filter_live"] == 1
+    assert intake["after_zone_filter_live"] == 0
 
 
 def test_an_empty_store_is_reported_as_empty_not_starved(scheduler_env) -> None:

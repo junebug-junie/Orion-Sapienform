@@ -81,12 +81,12 @@ async def test_fetch_exception_fail_open(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_induction_nodes_defaults() -> None:
-    assert mtr._induction_nodes() == ("athena", "atlas", "circe")
+    assert mtr._induction_nodes() == ("athena", "circe")
 
 
 def test_induction_nodes_parses_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("METACOG_TREND_CUE_NODES", "athena, atlas")
-    assert mtr._induction_nodes() == ("athena", "atlas")
+    monkeypatch.setenv("METACOG_TREND_CUE_NODES", "athena, hecate")
+    assert mtr._induction_nodes() == ("athena", "hecate")
 
 
 def test_dsn_falls_back_to_endogenous_runtime_url(monkeypatch: pytest.MonkeyPatch) -> None:

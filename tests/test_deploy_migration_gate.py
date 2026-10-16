@@ -467,3 +467,21 @@ def test_ci_unresolvable_base_is_an_error_not_a_pass(ci_repo):
 
 def test_ci_real_corpus_declarations_are_valid():
     assert ci_check.check_files(REPO_ROOT, set()) == []
+
+
+def test_ci_check_flags_a_bad_or_dangling_apply_with_marker(tmp_path):
+    mig = tmp_path / ci_check.MIG_DIR
+    mig.mkdir(parents=True)
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "real.sh").write_text("#!/bin/sh\n")
+    (mig / "manual_migration_ok.sql").write_text("-- ORION-MIGRATION-APPLY-WITH: scripts/real.sh\nselect 1;")
+    (mig / "manual_migration_typo.sql").write_text("-- ORION-MIGRATION-APPLY-WITH: psql\nselect 1;")
+    (mig / "manual_migration_gone.sql").write_text("-- ORION-MIGRATION-APPLY-WITH: scripts/gone.sh\nselect 1;")
+    errors = "\n".join(ci_check.check_files(tmp_path, set()))
+    assert "manual_migration_ok.sql" not in errors
+    assert "manual_migration_typo.sql" in errors and "APPLY-WITH" in errors
+    assert "manual_migration_gone.sql" in errors and "does not exist" in errors
+
+
+def test_ci_check_real_corpus_apply_with_markers_are_valid():
+    assert not [e for e in ci_check.check_files(REPO_ROOT, set()) if "APPLY-WITH" in e or "apply route" in e]

@@ -175,6 +175,6 @@ The post-pull rebuild can auto-apply the migration, because it is allowlist-clea
 
 ## PR link
 
-(set after creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2738
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

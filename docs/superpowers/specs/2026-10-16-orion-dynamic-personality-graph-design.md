@@ -123,6 +123,20 @@ This is where Juniper calibrates: which nodes keep winning, which lanes dominate
 
 The Orion self card in #2646 P5 becomes a **view over this graph**: the top dispositions with their if-then signatures, the aspirations, and the evidence behind them. The card is not built from self-inquiry text alone. Revision to #2646: the self-card inputs add `PersonalityChoiceV1` evidence and the said-versus-done check. The purpose, Juniper and relationship cards are unchanged.
 
+## P0 findings (2026-10-16, live, read-only)
+
+**Only one lane is a real choice by Orion today.** A lane inventory over the last 14 days found:
+
+- **Curiosity prior selection** is the only lane where Orion (the LLM) picks from a saved set of options. `curiosity_offer_decisions.offered` holds about 8 ranked priors per run, and `curiosity_run_outcomes.per_prior` holds what Orion tested. Result: 40 real choices in 14 days. Orion took the top-ranked prior in 16 of 40 (40%). In 8 of 40, nothing Orion picked came from the ordered list. That deviation from the suggested order is the first real personality signal.
+- **Voluntary attention override** saves chosen and beaten loops (355 rows). But the chooser is a formula biased by Orion's goal. Its rank is above 1 by construction, and `effort_spent` equals `applied_bias` on every row, so it cannot yet tell one override from another. It is kept as `chooser=goal_biased_formula` and must not be weighted like an Orion choice.
+- **Every other lane is a formula, a gate, or an LLM output with no listed alternatives:** world-first attention, tension competition, dream replay, self-inquiry rotation, reading seeds, stance react, and outreach. Outreach's 114,780 "skips" are caps and quiet hours, not Orion declining.
+
+**What follows from this.** The evidence base is thin (about 3 choices a day). The graph cannot be fed only by reconstructing history. Growing the evidence means making Orion the chooser in more lanes, with the options shown and saved. The cheapest candidates are outreach topic (offer 3 to 5 grounded topics and let Orion pick) and stance (name the 2 or 3 strategies considered). Each is its own patch.
+
+**Tone baseline (247 chat replies, 60 days).** 77% of replies open with a separate preamble paragraph (median 21 words). 83% contain a dash, about 2 per 100 words. Sentences are short (median about 11 words). About 19% use bold and about 13% use lists. Headings almost never appear. Outreach is a different voice: about 3 long sentences, almost no questions or lists. `good_tone` has 2 rows and `bad_tone` has 0, so no dial can be tested for separation yet.
+
+Code: `orion/personality/tone_dials.py`, `orion/personality/choices.py`, `orion/schemas/personality.py`, `scripts/analysis/measure_tone_dial_baseline.py`, `scripts/analysis/measure_personality_choices.py`.
+
 ## Missing questions
 
 1. Which lanes keep the alternatives they turned down today? (P0 inventory.)

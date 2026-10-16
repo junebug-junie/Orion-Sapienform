@@ -195,6 +195,14 @@ class Settings(BaseSettings):
     VISION_FACE_FRAMES_DIR: str = "/mnt/telemetry/orion-vision-host/face_frames"
     VISION_FACE_FRAMES_RETENTION_DAYS: float = 14.0
     VISION_FACE_FRAMES_MIN_INTERVAL_SEC: float = 5.0
+    # OSNet shadow body vector (app/osnet_shadow.py, 2026-10-16): a person
+    # re-identification vector stored NEXT TO the SigLIP one on every embedded
+    # person crop, for an offline comparison. Never used for matching. false
+    # stops it. A load failure costs only the OSNet vector (/health
+    # models.osnet_shadow says why). The weights are baked into the image at
+    # build (Dockerfile, sha256-checked); the path only moves for a test.
+    VISION_OSNET_SHADOW_ENABLED: bool = True
+    VISION_OSNET_WEIGHTS_PATH: str = "/app/models/osnet/osnet_ain_x1_0.pt"
 
     @property
     def enabled_profiles(self) -> List[str]:

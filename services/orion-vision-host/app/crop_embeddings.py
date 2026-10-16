@@ -46,6 +46,17 @@ limiter, triggered tier only), which the ask card prefers. A stream with no
 zones on file (cam0, carbon) never reaches the embed list, so it can never
 get a face here. Juniper's enrolled gallery is not read or written by this
 path.
+
+**OSNet shadow vector (2026-10-16).** When ``osnet_fn`` is given (the
+``VISION_OSNET_SHADOW_ENABLED`` kill switch, app/osnet_shadow.py), every
+EMBEDDED crop whose label is in ``OSNET_LABELS`` (``person``: OSNet is a person
+re-identification model) also gets ``osnet_embedding`` (512-d, L2-normalized)
+and ``osnet_model_id``. Same crop pixels as the SigLIP vector. Shadow only:
+the individuals reducer does not read it. An OSNet failure costs the OSNet
+vector, never the SigLIP vector, the face or the detection. Every embedded
+crop also carries ``embedding_model_id``: the body model that ACTUALLY made
+its vector (SigLIP v1 today, because SigLIP2 does not load), not the one the
+profile asks for.
 """
 
 from __future__ import annotations
@@ -80,6 +91,8 @@ EmbedFn = Callable[[List[Image.Image]], np.ndarray]
 FaceHit = Tuple[Sequence[float], float, Image.Image]
 FaceFn = Callable[[List[Image.Image]], List[Optional[FaceHit]]]
 DEFAULT_CROP_FACE_LABELS = ("person",)
+OSNET_LABELS = frozenset({"person"})
+OSNET_DIM = 512  # app/osnet_shadow.FEATURE_DIM; a vector of any other length is not OSNet
 # A crop in, "thumb:<sha256>" (or None) out.
 ThumbFn = Callable[[Image.Image], Optional[str]]
 
@@ -281,6 +294,9 @@ def attach_crop_embeddings(
     thumb_limiter: Optional[ThumbRateLimiter] = None,
     face_fn: Optional[FaceFn] = None,
     face_thumb_limiter: Optional[ThumbRateLimiter] = None,
+    body_model_id: Optional[Any] = None,
+    osnet_fn: Optional[EmbedFn] = None,
+    osnet_model_id: Optional[str] = None,
 ) -> Dict[str, int]:
     """Mutates ``objects`` in place: sets ``zone`` on every tracked-label box and
     ``embedding``/``embedding_ref`` (and ``thumb_ref``, when ``thumb_fn`` is
@@ -290,7 +306,7 @@ def attach_crop_embeddings(
     live check can see how many boxes were tracked, embedded, and withheld.
     """
     stats = {"tracked": 0, "embedded": 0, "withheld_no_embed_zone": 0, "withheld_other": 0, "thumbs": 0,
-             "faces": 0, "face_thumbs": 0}
+             "faces": 0, "face_thumbs": 0, "osnet": 0}
     labels = resolve_labels(request, params)
     stream_id = str(request.get("stream_id") or "").strip()
     width, height = image.width, image.height
@@ -358,6 +374,9 @@ def attach_crop_embeddings(
         raise ValueError(f"crop embedder returned shape {vecs.shape} for {len(to_embed)} crops")
     norms = np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-12
     vecs = vecs / norms
+    # A str, or a callable read now that the embedder has run (runner.py).
+    if callable(body_model_id):
+        body_model_id = body_model_id()
 
     # Thumbnails only on the router's triggered tier when the request names
     # its tier (a request with no tier -- e.g. a direct RPC -- is not gated).
@@ -368,6 +387,7 @@ def attach_crop_embeddings(
         obj = objects[i]
         obj["embedding"] = [float(x) for x in vecs[row].tolist()]
         obj["embedding_ref"] = _crop_ref(frame_key, obj["box_xyxy"], model_id, embed_profile)
+        obj["embedding_model_id"] = body_model_id
         stats["embedded"] += 1
         # Same crop the embedder saw -- the only pixels a thumbnail is ever
         # made from. A thumbnail failure costs the picture, not the vector.
@@ -381,11 +401,49 @@ def attach_crop_embeddings(
             if obj["thumb_ref"]:
                 stats["thumbs"] += 1
 
+    if osnet_fn is not None:
+        _attach_osnet(objects, to_embed, crops, osnet_fn=osnet_fn, model_id=osnet_model_id, stats=stats)
+
     if face_fn is not None and request.get("want_crop_faces") is True:
         _attach_faces(objects, to_embed, crops, request=request, params=params, face_fn=face_fn,
                       thumb_fn=thumb_fn if thumb_allowed else None, thumb_limiter=face_thumb_limiter,
                       stream_id=stream_id, stats=stats)
     return stats
+
+
+def _attach_osnet(
+    objects: List[Dict[str, Any]],
+    embedded: List[int],
+    crops: List[Image.Image],
+    *,
+    osnet_fn: EmbedFn,
+    model_id: Optional[str],
+    stats: Dict[str, int],
+) -> None:
+    """Shadow OSNet vector on embedded person crops, one batched pass. A failure
+    (or a malformed result) drops every OSNet vector of this frame and nothing else."""
+    rows = [row for row, i in enumerate(embedded) if _norm_label(objects[i].get("label")) in OSNET_LABELS]
+    for i in embedded:
+        objects[i]["osnet_embedding"] = None
+        objects[i]["osnet_model_id"] = None
+    if not rows:
+        return
+    try:
+        vecs = np.asarray(osnet_fn([crops[row] for row in rows]), dtype=np.float32)
+        if vecs.ndim != 2 or vecs.shape[0] != len(rows) or vecs.shape[1] != OSNET_DIM:
+            raise ValueError(f"osnet returned shape {vecs.shape} for {len(rows)} crops (want {OSNET_DIM}-d)")
+    except Exception as exc:
+        logger.warning(f"[CROP] OSNet shadow vector failed, SigLIP vectors kept: {exc}")
+        stats["osnet_error"] = 1
+        return
+    norms = np.linalg.norm(vecs, axis=1)
+    for row, vec, n in zip(rows, vecs, norms):
+        if not np.isfinite(n) or n <= 0:
+            continue
+        obj = objects[embedded[row]]
+        obj["osnet_embedding"] = [float(x) for x in (vec / n).tolist()]
+        obj["osnet_model_id"] = model_id
+        stats["osnet"] += 1
 
 
 def resolve_face_labels(request: Dict[str, Any], params: Dict[str, Any]) -> set[str]:

@@ -44,6 +44,17 @@ RUN pip3 install --no-cache-dir \
 COPY services/orion-vision-host/requirements.txt ./requirements.txt
 RUN pip3 install --no-cache-dir -r requirements.txt
 
+# OSNet shadow body vector weights (app/osnet_shadow.py, 2026-10-16). OSNet-AIN
+# x1.0, Torchreid model zoo multi-source checkpoint, classifier head stripped,
+# as published at a pinned revision of huggingface.co/LibreYOLO/LibreReID-osnet
+# (MIT). Not in git. The build fails if the bytes do not match the pinned
+# sha256; app/osnet_shadow.py checks the same hash again before loading.
+ARG OSNET_WEIGHTS_URL=https://huggingface.co/LibreYOLO/LibreReID-osnet/resolve/5c7c20e54ccf80c9889a64020748f148ad5f7634/osnet_ain_x1_0.pt
+ARG OSNET_WEIGHTS_SHA256=34c24e98b6b70c8b62480f846fd0d581aa2fd1535bc0276aecf1f10430b731d1
+RUN mkdir -p /app/models/osnet \
+    && curl -fsSL --retry 3 "$OSNET_WEIGHTS_URL" -o /app/models/osnet/osnet_ain_x1_0.pt \
+    && echo "$OSNET_WEIGHTS_SHA256  /app/models/osnet/osnet_ain_x1_0.pt" | sha256sum -c -
+
 # Copy service code + Orion libs
 COPY services/orion-vision-host/app ./app
 COPY orion ./orion

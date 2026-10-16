@@ -28,6 +28,10 @@ class ModelManager:
         self._locks: Dict[ModelKey, threading.Lock] = {}
         self._models: Dict[ModelKey, Any] = {}
         self._processors: Dict[ModelKey, Any] = {}
+        # What actually loaded, per embedder slot (2026-10-16). The SigLIP
+        # loader silently falls back when the requested model fails, so the
+        # requested id is not evidence of what made a vector.
+        self.embedder_status: Dict[ModelKey, Dict[str, Any]] = {}
 
     def _key_lock(self, key: ModelKey) -> threading.Lock:
         with self._lock:
@@ -92,20 +96,37 @@ class ModelManager:
             torch_dtype = self._torch_dtype(dtype, device)
             logger.info(f"[MODEL] loading embedder profile={profile_name} device={device} dtype={torch_dtype} id={model_id}")
 
+            loaded_id, fallback_error = model_id, None
             try:
                 processor = AutoProcessor.from_pretrained(model_id)
                 model = AutoModel.from_pretrained(model_id, torch_dtype=torch_dtype)
             except Exception as e:
+                fallback_error = f"{type(e).__name__}: {e}"[:300]
                 logger.warning(f"[MODEL] embedder load failed id={model_id} err={e}; falling back id={fallback_model_id}")
                 processor = AutoProcessor.from_pretrained(fallback_model_id)
                 model = AutoModel.from_pretrained(fallback_model_id, torch_dtype=torch_dtype)
+                loaded_id = fallback_model_id
+                logger.error(
+                    f"[MODEL] BODY EMBEDDER IS THE FALLBACK profile={profile_name} requested={model_id} "
+                    f"loaded={fallback_model_id} -- every crop/frame vector from this process is "
+                    f"{fallback_model_id}; /health models.body_embedder says so too")
 
             model.eval()
             if device.startswith("cuda"):
                 model.to(device)
 
             self.set(key, model, processor)
+            self.embedder_status[key] = {
+                "requested": model_id,
+                "loaded": loaded_id,
+                "fallback": loaded_id != model_id,
+                "fallback_error": fallback_error,
+            }
             return model, processor
+
+    def loaded_embedder_id(self, profile_name: str, device: str) -> Optional[str]:
+        st = self.embedder_status.get(ModelKey(profile=profile_name, device=device))
+        return st.get("loaded") if st else None
 
     def load_grounding_dino(
         self,

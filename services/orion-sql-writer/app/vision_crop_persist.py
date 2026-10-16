@@ -9,7 +9,7 @@ observation fans out to N rows in ``vision_crop_observation`` (crop_id =
 window) is supposed to skip embeddings for boxes in a no-embed zone. This
 module does not trust that: it recomputes each box's zone from
 ``config/vision_zones.yaml`` and drops ``embedding``/``embedding_ref``,
-``thumb_ref`` and the face fields if EITHER the producer-declared zone or the
+``thumb_ref``, the face fields and the OSNet vector if EITHER the producer-declared zone or the
 recomputed zone is a no-embed zone, and it sets ``zone_no_embed`` from the
 config -- never from the zone's name. No configured zone is no-embed since
 2026-10-15 (Juniper lifted the patio rule; manual_migration_walkway_privacy_v2.sql
@@ -103,6 +103,7 @@ def build_crop_rows(
         face_embedding = crop.face_embedding
         face_thumb_ref = crop.face_thumb_ref
         face_score = crop.face_score
+        osnet_embedding = crop.osnet_embedding
         zone_no_embed = zone in forbidden
         # A box placed outside the patio by its bottom-center can still hold
         # patio pixels: any overlap with a no-embed zone strips the vector and
@@ -112,7 +113,8 @@ def build_crop_rows(
         touches = bool(forbidden) and intersects_no_embed(
             zones, crop.box_xyxy, obs.frame_width or 0, obs.frame_height or 0)
         if zone_no_embed or fail_closed or touches:
-            if any(v is not None for v in (embedding, embedding_ref, thumb_ref, face_embedding, face_thumb_ref)):
+            if any(v is not None for v in (embedding, embedding_ref, thumb_ref, face_embedding, face_thumb_ref,
+                                           osnet_embedding)):
                 logger.warning(
                     "vision_crop_embedding_dropped observation_id=%s index=%s zone=%s "
                     "(producer sent an embedding for a no-embed zone)",
@@ -124,6 +126,7 @@ def build_crop_rows(
             face_embedding = None
             face_thumb_ref = None
             face_score = None
+            osnet_embedding = None
         rows.append({
             "crop_id": f"{obs.observation_id}:{idx}",
             "observation_id": obs.observation_id,
@@ -142,6 +145,12 @@ def build_crop_rows(
             "face_embedding": [float(v) for v in face_embedding] if face_embedding is not None else None,
             "face_score": float(face_score) if face_score is not None else None,
             "face_thumb_ref": face_thumb_ref,
+            # The body model that made ``embedding`` (NULL with no embedding),
+            # and the shadow OSNet vector (manual_migration_vision_osnet_shadow_v1.sql).
+            # Nothing in the individuals reducer reads either.
+            "embedding_model_id": crop.embedding_model_id if embedding is not None else None,
+            "osnet_embedding": [float(v) for v in osnet_embedding] if osnet_embedding is not None else None,
+            "osnet_model_id": crop.osnet_model_id if osnet_embedding is not None else None,
         })
     return rows
 
@@ -150,11 +159,13 @@ _INSERT_SQL = """
     INSERT INTO vision_crop_observation
         (crop_id, observation_id, stream_id, camera_id, artifact_id, observed_at,
          label, score, box_xyxy, zone, embedding_ref, embedding, thumb_ref, zone_no_embed,
-         face_embedding, face_score, face_thumb_ref)
+         face_embedding, face_score, face_thumb_ref,
+         embedding_model_id, osnet_embedding, osnet_model_id)
     VALUES
         (:crop_id, :observation_id, :stream_id, :camera_id, :artifact_id, :observed_at,
          :label, :score, :box_xyxy, :zone, :embedding_ref, :embedding, :thumb_ref, :zone_no_embed,
-         :face_embedding, :face_score, :face_thumb_ref)
+         :face_embedding, :face_score, :face_thumb_ref,
+         :embedding_model_id, :osnet_embedding, :osnet_model_id)
     ON CONFLICT (crop_id) DO NOTHING
 """
 

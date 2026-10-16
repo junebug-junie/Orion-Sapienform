@@ -48,6 +48,9 @@ def build_crop_observation(art: VisionArtifactPayload) -> Optional[VisionCropObs
             face_embedding=o.face_embedding,
             face_score=o.face_score,
             face_thumb_ref=o.face_thumb_ref,
+            embedding_model_id=o.embedding_model_id,
+            osnet_embedding=o.osnet_embedding,
+            osnet_model_id=o.osnet_model_id,
         )
         for o in objects
         if _is_tracked(o)

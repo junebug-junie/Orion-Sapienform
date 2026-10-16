@@ -614,9 +614,10 @@ Producers publish `act_opened` / `act_closed` grammar events (`ActV1` on `Gramma
   (`dispatch_kind = act:<verb>`, `target_id = actor`) plus the posterior upsert, with the same
   two double-count guards as orion-feedback-runtime (`orion/grammar/act_ledger.py`);
 - runs a horizon resolver every `SQL_WRITER_ACT_RESOLVER_INTERVAL_SEC` (60 s): `juniper_replied`
-  acts close 1 on Juniper's next chat turn in `chat_history_log` (canonical
-  `orion.regulation.juniper_turns` predicate; the act's own turn excluded by correlation id) or 0
-  at the horizon; producer-reported `artifact_produced` acts unclosed 120 s past their horizon
+  acts close 1 when Juniper's next chat turn STARTS (its hub ingress hop in
+  `cockpit_turn_sighting`, so a slow or errored turn still counts; a logged `chat_history_log`
+  turn without one falls back to its `created_at`; canonical `orion.regulation.juniper_turns`
+  predicates; the act's own turn excluded by correlation id) or 0 at the horizon; producer-reported `artifact_produced` acts unclosed 120 s past their horizon
   close 0 as `expired`.
 
 Producers today: orion-thought paintings (`make`), hub chat reply (`say`), hub outreach

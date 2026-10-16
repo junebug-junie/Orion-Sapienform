@@ -14,6 +14,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
+from app.models.cockpit_turn_sighting import CockpitTurnSightingSQL
 from app.models.grammar_trace import (  # noqa: F401 -- registers the grammar tables on Base
     GrammarActSQL,
     GrammarEventSQL,
@@ -69,7 +70,8 @@ def session():
                 conn.execute(text(stmt))
     Base.metadata.create_all(
         bind=engine,
-        tables=[GrammarActSQL.__table__, GrammarEventSQL.__table__, GrammarTraceSQL.__table__],
+        tables=[GrammarActSQL.__table__, GrammarEventSQL.__table__, GrammarTraceSQL.__table__,
+                CockpitTurnSightingSQL.__table__],
     )
     sess = sessionmaker(bind=engine)()
     try:
@@ -277,3 +279,103 @@ def test_resolver_zeros_are_not_counted_as_in_horizon_coverage(session):
     resolve_due_acts(session, now=now)
     (row,) = ledger_summary(session, now=now)["by_act"]
     assert row["closed"] == 1 and row["closed_in_horizon"] == 0 and row["resolved_absent"] == 1
+
+
+# --- "did Juniper answer" reads when her turn STARTED (follow-up to #2710) -------------
+
+def _ingress(session, *, at, corr, juniper=True):
+    """The hub's seq-0 ingress hop for a unified turn, as orion-sql-writer persists it."""
+    import json
+
+    raw = {"session_id": "orion_journal", "user_message": "hello"}
+    if juniper:
+        raw["surface_context"] = {"surface": "hub_desktop", "input_modality": "typed"}
+    session.execute(text(
+        "INSERT INTO cockpit_turn_sighting (correlation_id, seq, ts, stage, visor_line, status, summary, raw, "
+        "producer, created_at) VALUES (:c, 0, :ts, 'ingress', 'ingress', 'ok', CAST('{}' AS jsonb), "
+        "CAST(:raw AS jsonb), 'orion-hub', :ts)"),
+        {"c": corr, "ts": at.astimezone(timezone.utc).replace(tzinfo=None), "raw": json.dumps(raw)})
+
+
+def _open_say(session, act, corr, at):
+    apply_grammar_trace_batch(session, [act_opened_event(
+        act, source_service="orion-hub", source_component="t", correlation_id=corr, at=at)])
+
+
+def test_slow_reply_crossing_the_horizon_counts_from_turn_start(session):
+    # Live 2026-10-15: a turn sent 23:45:52 was logged 00:22:11 (36 min later). A turn
+    # sent inside the horizon whose reply lands after it is Juniper answering in time.
+    now = datetime.now(timezone.utc)
+    t0 = now - timedelta(minutes=20)
+    act = _say_act("c-slow", horizon=300.0)
+    _open_say(session, act, "c-slow", t0)
+    _ingress(session, at=t0 + timedelta(seconds=240), corr="c-next")
+    _chat(session, at=t0 + timedelta(seconds=900), corr="c-next")  # logged long after the horizon
+    summary = resolve_due_acts(session, now=now)
+    assert summary.closed_replied == 1 and summary.closed_not_replied == 0
+    row = _row(session, act.act_id)
+    assert row["outcome_value"] == 1.0
+    assert abs((row["closed_at"] - (t0 + timedelta(seconds=240))).total_seconds()) < 0.01
+
+
+def test_slow_reply_is_seen_before_its_row_is_written(session):
+    # Same turn, resolver tick while Orion is still answering: only the ingress exists.
+    now = datetime.now(timezone.utc)
+    act = _say_act("c-pending", horizon=1800.0)
+    _open_say(session, act, "c-pending", now - timedelta(minutes=5))
+    _ingress(session, at=now - timedelta(minutes=1), corr="c-in-flight")
+    assert resolve_due_acts(session, now=now).closed_replied == 1
+    assert _row(session, act.act_id)["outcome_value"] == 1.0
+
+
+def test_errored_juniper_turn_still_counts_as_her_answering(session):
+    # An errored turn writes no chat_history_log row at all; its ingress hop is still there.
+    now = datetime.now(timezone.utc)
+    t0 = now - timedelta(minutes=20)
+    act = _say_act("c-err", horizon=300.0)
+    _open_say(session, act, "c-err", t0)
+    _ingress(session, at=t0 + timedelta(seconds=60), corr="c-errored")
+    summary = resolve_due_acts(session, now=now)
+    assert summary.closed_replied == 1
+    assert _row(session, act.act_id)["outcome_value"] == 1.0
+
+
+def test_no_juniper_turn_reads_zero(session):
+    now = datetime.now(timezone.utc)
+    t0 = now - timedelta(minutes=20)
+    act = _say_act("c-none", horizon=300.0)
+    _open_say(session, act, "c-none", t0)
+    # Not Juniper: Orion's own internal turn (no client surface), the act's own turn,
+    # and a turn she sent BEFORE the act opened that was only logged after it.
+    _ingress(session, at=t0 + timedelta(seconds=30), corr="outreach-turn", juniper=False)
+    _ingress(session, at=t0 + timedelta(seconds=40), corr="c-none")
+    _ingress(session, at=t0 - timedelta(seconds=30), corr="c-before")
+    _chat(session, at=t0 + timedelta(seconds=60), corr="c-before")
+    # And one she sent after the horizon.
+    _ingress(session, at=t0 + timedelta(seconds=400), corr="c-late")
+    summary = resolve_due_acts(session, now=now)
+    assert summary.closed_not_replied == 1 and summary.closed_replied == 0
+    row = _row(session, act.act_id)
+    assert row["outcome_value"] == 0.0 and row["outcome_note"].startswith("no juniper chat turn")
+
+
+def test_logged_turn_without_an_ingress_hop_still_counts(session):
+    # Non-unified hub paths log a Juniper turn with no ingress hop: its created_at is the start.
+    now = datetime.now(timezone.utc)
+    t0 = now - timedelta(minutes=20)
+    act = _say_act("c-legacy", horizon=300.0)
+    _open_say(session, act, "c-legacy", t0)
+    _chat(session, at=t0 + timedelta(seconds=120), corr="c-legacy-next")
+    assert resolve_due_acts(session, now=now).closed_replied == 1
+
+
+def test_outreach_ask_resolves_from_turn_start_too(session):
+    now = datetime.now(timezone.utc)
+    t0 = now - timedelta(hours=11)
+    act = build_act(actor="hub.outreach", verb="ask", key="msg-1", signal_id="juniper_replied",
+                    horizon_sec=36000.0, basis="median gap")
+    _open_say(session, act, "c-outreach", t0)
+    _ingress(session, at=t0 + timedelta(seconds=35990), corr="c-answer")
+    _chat(session, at=t0 + timedelta(seconds=36500), corr="c-answer")
+    assert resolve_due_acts(session, now=now).closed_replied == 1
+    assert _row(session, act.act_id)["outcome_value"] == 1.0

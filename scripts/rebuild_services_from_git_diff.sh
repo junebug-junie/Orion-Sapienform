@@ -15,6 +15,8 @@
 # Opt-in post-merge hook: set ORION_POST_MERGE_REBUILD=1 or create
 #   .orion/post-merge-rebuild-enabled
 # at repo root (see scripts/git_hooks/post-merge).
+# Every compose step is logged (start/end/exit code) to $ORION_REBUILD_LOG,
+# default ~/.orion/post_pull_rebuild.log.
 
 set -e
 
@@ -214,8 +216,29 @@ ANALYTICS="orion-analytics"
 FAILED=""
 REBUILT=0
 
+# Run log: one line per compose step (start, end, exit code), appended to
+# $ORION_REBUILD_LOG (default ~/.orion/post_pull_rebuild.log). The post-merge
+# hook's output only reaches the terminal that ran `git pull`, and docker keeps
+# about a minute of events here, so without this file nobody can tell later
+# whether a pull's rebuild recreated a container, failed, or was still running.
+# 2026-10-16: orion-vision-retina-walkway looked "not recreated" at 18:56; the
+# hook's step was in fact mid-recreate (old container inside its 30 s
+# stop_grace_period), and a manual --force-recreate raced it. Best effort:
+# a log write never fails the rebuild.
+REBUILD_LOG="${ORION_REBUILD_LOG:-${HOME:-/tmp}/.orion/post_pull_rebuild.log}"
+REBUILD_HEAD=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+rebuild_log() {
+    (
+        mkdir -p "$(dirname "$REBUILD_LOG")" &&
+            printf '%s head=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$REBUILD_HEAD" "$*" >>"$REBUILD_LOG"
+    ) 2>/dev/null || true
+}
+
 # run_safe_build <service-dir> <compose args...>; sets rc.
 run_safe_build() {
+    local started
+    started=$(date +%s)
+    rebuild_log "START $*"
     set +e
     if [ -n "$ALLOW_SHARED" ]; then
         ORION_ALLOW_SHARED_CHECKOUT_WRITE="$ALLOW_SHARED" "$SAFE_BUILD" "$@"
@@ -224,7 +247,12 @@ run_safe_build() {
     fi
     rc=$?
     set -e
+    rebuild_log "END rc=$rc seconds=$(($(date +%s) - started)) $*"
 }
+
+if [ "$DRY_RUN" != "1" ]; then
+    rebuild_log "RUN base=${BASE_REF:-default} services=$(printf '%s ' $SERVICES)recreate=$(printf '%s ' $RECREATE)"
+fi
 
 for svc in $SERVICES; do
     RECREATE_FLAG=""
@@ -309,6 +337,10 @@ done
 
 echo ""
 echo "rebuild_services_from_git_diff.sh: rebuilt $REBUILT service(s)"
+if [ "$DRY_RUN" != "1" ]; then
+    rebuild_log "DONE rebuilt=$REBUILT failed=${FAILED# }"
+    echo "rebuild_services_from_git_diff.sh: run log: $REBUILD_LOG"
+fi
 
 if [ -n "${FAILED//[$'\n\r\t ']}" ]; then
     echo "rebuild_services_from_git_diff.sh: failures:$FAILED" >&2

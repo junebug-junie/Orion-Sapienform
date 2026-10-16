@@ -901,3 +901,77 @@ def _changed_bytes(tmp_path: Path, before: str, after: str) -> list[str]:
     f.write_bytes(after.encode("utf-8", "surrogateescape"))
     subprocess.run(["git", "commit", "-aq", "-m", "two"], cwd=repo, check=True)
     return mod.changed_files(repo, first)
+
+
+_PR2728_PATHS = [
+    "services/orion-vision-retina/app/frame_corruption.py",
+    "services/orion-vision-retina/app/health.py",
+    "services/orion-vision-retina/app/main.py",
+    "services/orion-vision-retina/app/settings.py",
+    "services/orion-vision-retina/app/sources.py",
+    "services/orion-vision-retina/docker-compose.yml",
+    "services/orion-vision-retina/.env_example",
+]
+
+
+def test_pr2728_retina_app_change_plans_a_build_that_changes_the_image() -> None:
+    """PR #2728 (2026-10-16) changed retina app/*.py, bind-mounted at /app/app.
+
+    The plan says `build`, not `recreate`. That is enough only because the
+    Dockerfile also COPYs app/, so the image changes and compose recreates
+    every container of the stack, including the walkway profile one.
+    """
+    proc = subprocess.run(
+        [sys.executable, str(MODULE), "--plan", "--paths", *_PR2728_PATHS, "--repo-root", str(ROOT)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines() == ["orion-vision-retina\tbuild"]
+    dockerfile = (ROOT / "services/orion-vision-retina/Dockerfile").read_text(encoding="utf-8")
+    assert "COPY services/orion-vision-retina/app ./app" in dockerfile
+
+
+# Own-directory bind mounts that hold .py files a long-running process does
+# not import, so "live on disk" really is live. Anything else must be baked.
+_OWN_MOUNT_PY_NOT_IMPORTED = {
+    # dbt project dir; its one .py is an operator helper (scripts/init_local_env.py).
+    "services/orion-analytics",
+}
+
+
+def test_own_python_code_mounts_are_also_baked_into_the_image() -> None:
+    """A bind-mounted code dir changes on `git pull`, but the running process
+    keeps the modules it already imported. The planner treats an own-dir
+    directory mount as live and plans `build`, not `recreate`; that only
+    restarts the process if the same files are COPY'd into the image. A
+    mount-only Python app would keep running old code after every pull.
+    """
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        import rebuild_affected_services as planner
+    finally:
+        sys.path.pop(0)
+    deps = planner.build_dependency_sources(str(ROOT), include_own=True)
+    baked: dict[str, list[str]] = {}
+    for dep in deps:
+        if dep.mode == planner.MODE_BUILD:
+            baked.setdefault(dep.service, []).append(dep.prefix)
+    offenders = []
+    for dep in deps:
+        own = f"services/{dep.service}"
+        if dep.mode != planner.MODE_RECREATE or not (dep.prefix == own or dep.prefix.startswith(own + "/")):
+            continue
+        mount = ROOT / dep.prefix
+        if not mount.is_dir() or dep.prefix in _OWN_MOUNT_PY_NOT_IMPORTED:
+            continue
+        if not any(p.suffix == ".py" and "tests" not in p.parts for p in mount.rglob("*.py")):
+            continue
+        prefixes = baked.get(dep.service, [])
+        if not any(dep.prefix == b or dep.prefix.startswith(b + "/") for b in prefixes):
+            offenders.append(dep.prefix)
+    assert offenders == [], (
+        "bind-mounted Python code with no matching Dockerfile COPY; a pull would "
+        f"leave the old process running: {offenders}"
+    )

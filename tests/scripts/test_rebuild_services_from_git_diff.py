@@ -44,6 +44,7 @@ def _run(
     profiles: str = "",
     extra_args: list[str] | None = None,
     safe_build_reads_stdin: bool = False,
+    safe_build_rc: int = 0,
     migrations: str = "",
     checker: str | None = None,
     applier: str | None = None,
@@ -66,6 +67,7 @@ def _run(
         "#!/bin/sh\n"
         + ("cat >/dev/null\n" if safe_build_reads_stdin else "")
         + "printf '%s\\n' \"$*\" >> \"$REBUILD_TEST_CAPTURE\"\n"
+        + f"exit {safe_build_rc}\n"
     )
     safe_build.chmod(0o755)
 
@@ -74,6 +76,8 @@ def _run(
     env["FAKE_PLAN"] = plan
     env["FAKE_PROFILES"] = profiles
     env["FAKE_MIGRATIONS"] = migrations
+    # Never append to the operator's real ~/.orion/post_pull_rebuild.log.
+    env["ORION_REBUILD_LOG"] = str(tmp_path / "post_pull_rebuild.log")
     env.pop("ORION_POST_MERGE_REBUILD", None)
     completed = subprocess.run(
         [str(script), *(extra_args or [])],
@@ -256,3 +260,71 @@ def test_no_migrations_never_calls_the_applier(tmp_path: Path) -> None:
     completed, calls = _run(tmp_path, plan="orion-hub,build", applier=_APPLIER)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert calls == ["orion-hub up -d --build"]
+
+
+def _log_lines(tmp_path: Path) -> list[str]:
+    log = tmp_path / "post_pull_rebuild.log"
+    return log.read_text().splitlines() if log.exists() else []
+
+
+def test_pr2728_retina_app_change_rebuilds_walkway_and_logs_each_step(tmp_path: Path) -> None:
+    """2026-10-16, PR #2728: retina app/*.py changed, walkway profile running.
+
+    The pull's rebuild did run both passes; the walkway one was still inside
+    the old container's 30 s stop grace when someone looked, and nothing on
+    disk said so. Every step must now leave a start and an end line.
+    """
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-vision-retina,build",
+        profiles="orion-vision-retina,walkway,orion-vision-retina-walkway",
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == [
+        "orion-vision-retina up -d --build",
+        "orion-vision-retina --profile walkway up -d --build orion-vision-retina-walkway",
+    ]
+    lines = _log_lines(tmp_path)
+    events = [line.split(" ", 3)[2] for line in lines]
+    assert events == ["RUN", "START", "END", "START", "END", "DONE"], lines
+    assert "services=orion-vision-retina " in lines[0]
+    assert lines[4].split(" ", 4)[3] == "rc=0"
+    assert lines[4].endswith(
+        "orion-vision-retina --profile walkway up -d --build orion-vision-retina-walkway"
+    )
+    assert lines[-1].endswith("DONE rebuilt=1 failed=")
+    assert str(tmp_path / "post_pull_rebuild.log") in completed.stdout
+
+
+def test_failed_step_exit_code_is_logged(tmp_path: Path) -> None:
+    completed, _ = _run(
+        tmp_path,
+        plan="orion-vision-retina,build",
+        profiles="orion-vision-retina,walkway,orion-vision-retina-walkway",
+        safe_build_rc=3,
+    )
+    assert completed.returncode == 1
+    lines = _log_lines(tmp_path)
+    ends = [line for line in lines if " END " in line]
+    assert len(ends) == 2 and all(" rc=3 " in line for line in ends), lines
+    assert lines[-1].endswith("DONE rebuilt=0 failed=orion-vision-retina")
+
+
+def test_dry_run_writes_no_run_log(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-vision-retina,build",
+        profiles="orion-vision-retina,walkway,orion-vision-retina-walkway",
+        extra_args=["--dry-run"],
+    )
+    assert completed.returncode == 0
+    assert calls == []
+    assert _log_lines(tmp_path) == []
+
+
+def test_unwritable_run_log_never_fails_the_rebuild(tmp_path: Path) -> None:
+    blocker = tmp_path / "post_pull_rebuild.log"
+    blocker.mkdir()  # a directory where the log file should be
+    completed, calls = _run(tmp_path, plan="orion-vision-retina,build")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == ["orion-vision-retina up -d --build"]

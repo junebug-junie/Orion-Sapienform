@@ -8,6 +8,9 @@ services:
       context: ../..
       dockerfile: services/orion-vision-retina/Dockerfile
     container_name: orion-vision-retina
+    # Same reason as the walkway instance below: let an RTSP reader release
+    # (TEARDOWN) before SIGKILL. Harmless for webcam/folder sources.
+    stop_grace_period: 30s
     environment:
       - ORION_BUS_URL=${ORION_BUS_URL:-redis://100.92.216.81:6379/0}
       - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-false}
@@ -35,6 +38,14 @@ services:
       - RETINA_RTSP_TRANSPORT=${RETINA_RTSP_TRANSPORT:-tcp}
       - RETINA_RTSP_IO_TIMEOUT_SECONDS=${RETINA_RTSP_IO_TIMEOUT_SECONDS:-5.0}
       - RETINA_RTSP_STALL_SECONDS=${RETINA_RTSP_STALL_SECONDS:-30.0}
+      # Quiet period before every RTSP (re)connect + persisted last-session
+      # time + live corruption self-heal (sources.py RtspSessionGate).
+      - RETINA_RTSP_RECONNECT_QUIET_SECONDS=${RETINA_RTSP_RECONNECT_QUIET_SECONDS:-90.0}
+      - RETINA_RTSP_SESSION_STATE_DIR=${RETINA_RTSP_SESSION_STATE_DIR:-/var/lib/orion-vision-retina}
+      - RETINA_RTSP_HEAL_ENABLED=${RETINA_RTSP_HEAL_ENABLED:-true}
+      - RETINA_RTSP_HEAL_CHECK_EVERY=${RETINA_RTSP_HEAL_CHECK_EVERY:-10}
+      - RETINA_RTSP_HEAL_WINDOW_SECONDS=${RETINA_RTSP_HEAL_WINDOW_SECONDS:-120.0}
+      - RETINA_RTSP_HEAL_MIN_SHARE=${RETINA_RTSP_HEAL_MIN_SHARE:-0.8}
       # On-demand clip capture (AffectGPT) -- UNVERIFIED against real
       # hardware, see app/clip_capture.py. Off by default.
       - RETINA_CLIP_ENABLED=${RETINA_CLIP_ENABLED:-false}
@@ -65,6 +76,8 @@ services:
       # to keep so one compose file serves both deployments.
       - /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames
       - /mnt/telemetry/vision/intake:/mnt/telemetry/vision/intake
+      # RTSP last-session time, survives container recreate (deploys).
+      - /mnt/telemetry/vision/retina_state:/var/lib/orion-vision-retina
       # PulseAudio/PipeWire socket passthrough for clip_capture.py's audio
       # capture. UNVERIFIED path -- if this host directory doesn't exist,
       # Docker silently creates an empty one rather than failing startup, so
@@ -124,9 +137,11 @@ services:
       dockerfile: services/orion-vision-retina/Dockerfile
     container_name: orion-vision-retina-walkway
     restart: unless-stopped
-    # The RTSP reader's stop waits up to 5s for a blocked read; leave room
-    # to close the bus cleanly before SIGKILL.
-    stop_grace_period: 15s
+    # On SIGTERM the RTSP reader's stop waits up to 12s (FFmpeg open timeout
+    # + 2s) for a blocked open/read so the reader itself releases the capture
+    # -- that release sends RTSP TEARDOWN. SIGKILL before it leaves the
+    # camera holding a stale session. Room for that plus the bus close.
+    stop_grace_period: 30s
     environment:
       - ORION_BUS_URL=${ORION_BUS_URL:-redis://100.92.216.81:6379/0}
       - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-false}
@@ -156,12 +171,24 @@ services:
       - RETINA_RTSP_TRANSPORT=${RETINA_RTSP_TRANSPORT:-tcp}
       - RETINA_RTSP_IO_TIMEOUT_SECONDS=${RETINA_RTSP_IO_TIMEOUT_SECONDS:-5.0}
       - RETINA_RTSP_STALL_SECONDS=${RETINA_RTSP_STALL_SECONDS:-30.0}
+      # Quiet period before every RTSP (re)connect + persisted last-session
+      # time + live corruption self-heal (sources.py RtspSessionGate).
+      - RETINA_RTSP_RECONNECT_QUIET_SECONDS=${RETINA_RTSP_RECONNECT_QUIET_SECONDS:-90.0}
+      - RETINA_RTSP_SESSION_STATE_DIR=${RETINA_RTSP_SESSION_STATE_DIR:-/var/lib/orion-vision-retina}
+      - RETINA_RTSP_HEAL_ENABLED=${RETINA_RTSP_HEAL_ENABLED:-true}
+      - RETINA_RTSP_HEAL_CHECK_EVERY=${RETINA_RTSP_HEAL_CHECK_EVERY:-10}
+      - RETINA_RTSP_HEAL_WINDOW_SECONDS=${RETINA_RTSP_HEAL_WINDOW_SECONDS:-120.0}
+      - RETINA_RTSP_HEAL_MIN_SHARE=${RETINA_RTSP_HEAL_MIN_SHARE:-0.8}
       # No clip capture on this instance: clip requests target carbon.
       - RETINA_CLIP_ENABLED=false
     volumes:
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-vision-retina/app:/app/app
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/orion:/app/orion
       - /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames
+      # RTSP last-session time, survives container recreate (deploys), so a
+      # deploy restart waits the quiet period instead of corrupting the
+      # stream (2026-10-16). Per-stream file name; shared dir is fine.
+      - /mnt/telemetry/vision/retina_state:/var/lib/orion-vision-retina
     ports:
       - "127.0.0.1:${WALKWAY_RETINA_HTTP_PORT:-8028}:8000"
     networks:

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import re
+
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -64,6 +67,30 @@ class Settings(BaseSettings):
     RETINA_RTSP_TRANSPORT: str = "tcp"
     RETINA_RTSP_IO_TIMEOUT_SECONDS: float = 5.0
     RETINA_RTSP_STALL_SECONDS: float = 30.0
+    #   RECONNECT_QUIET_SECONDS  no RTSP (re)connect until this long after the
+    #                   last camera session (reader reconnect, watchdog
+    #                   replacement, pause/resume, heal, process start). A
+    #                   Reolink keeps a dropped session alive; reconnecting
+    #                   inside that window muxes the stale session in (bad
+    #                   cseq + every frame smeared, 2026-10-15 and 2026-10-16).
+    #                   Live 2026-10-16: 180 s stop/start was clean. 90 s is
+    #                   above RFC 2326's 60 s default session timeout (Reolink
+    #                   does not document its own). 0 disables.
+    #   SESSION_STATE_DIR  where the last-session time is persisted so a
+    #                   container restart/deploy also waits. Unset/unreadable
+    #                   at boot -> wait one full quiet period.
+    #   HEAL_*          live self-heal: every HEAL_CHECK_EVERY served frames,
+    #                   score smear/decoder-gray (evals/frame_smear.py math).
+    #                   When >= HEAL_MIN_SHARE of checks over
+    #                   HEAL_WINDOW_SECONDS are corrupt, drop the session, wait
+    #                   the quiet period (doubling per heal in a row, max 8x),
+    #                   reconnect. Never reboots the camera.
+    RETINA_RTSP_RECONNECT_QUIET_SECONDS: float = 90.0
+    RETINA_RTSP_SESSION_STATE_DIR: str = "/var/lib/orion-vision-retina"
+    RETINA_RTSP_HEAL_ENABLED: bool = True
+    RETINA_RTSP_HEAL_CHECK_EVERY: int = 10
+    RETINA_RTSP_HEAL_WINDOW_SECONDS: float = 120.0
+    RETINA_RTSP_HEAL_MIN_SHARE: float = 0.8
 
     # On-demand video+audio clip capture for AffectGPT (app/clip_capture.py).
     # Separate from RETINA_SOURCE/RETINA_CAMERA_ID above -- those drive the
@@ -138,6 +165,26 @@ class Settings(BaseSettings):
         if isinstance(v, str) and v.strip() == "":
             return None
         return v
+
+    @model_validator(mode="after")
+    def _check_rtsp_heal(self) -> "Settings":
+        if self.RETINA_RTSP_RECONNECT_QUIET_SECONDS < 0:
+            raise ValueError("RETINA_RTSP_RECONNECT_QUIET_SECONDS must be >= 0")
+        if self.RETINA_RTSP_HEAL_CHECK_EVERY < 1:
+            raise ValueError("RETINA_RTSP_HEAL_CHECK_EVERY must be >= 1")
+        if self.RETINA_RTSP_HEAL_WINDOW_SECONDS <= 0:
+            raise ValueError("RETINA_RTSP_HEAL_WINDOW_SECONDS must be > 0")
+        if not 0 < self.RETINA_RTSP_HEAL_MIN_SHARE <= 1:
+            raise ValueError("RETINA_RTSP_HEAL_MIN_SHARE must be in (0, 1]")
+        return self
+
+    def rtsp_session_state_path(self) -> str | None:
+        """Per-stream file under RETINA_RTSP_SESSION_STATE_DIR (None if unset)."""
+        d = (self.RETINA_RTSP_SESSION_STATE_DIR or "").strip()
+        if not d:
+            return None
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", self.RETINA_STREAM_ID or "stream")
+        return os.path.join(d, f"rtsp_session_{safe}.json")
 
     @model_validator(mode="after")
     def _check_rtsp_stall_window(self) -> "Settings":

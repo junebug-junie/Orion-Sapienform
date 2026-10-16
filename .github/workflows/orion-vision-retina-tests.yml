@@ -1,0 +1,23 @@
+# orion-vision-retina: RTSP reader (latest frame, stall watchdog, reconnect
+# quiet period, corruption self-heal), frame corruption eval, compose contract.
+# Had no CI before the 2026-10-16 walkway bad-cseq fix.
+name: orion-vision-retina tests
+on:
+  pull_request:
+    paths:
+      - 'services/orion-vision-retina/**'
+      - 'orion/schemas/vision.py'
+      - 'orion/schemas/telemetry/system_health.py'
+      - 'config/vision_frame_router.yaml'
+      - 'config/vision_zones.yaml'
+      - '.github/workflows/orion-vision-retina-tests.yml'
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: pip install -r services/orion-vision-retina/requirements.txt pytest pyyaml
+      - run: PYTHONPATH=. python -m pytest services/orion-vision-retina/tests -q -p no:cacheprovider

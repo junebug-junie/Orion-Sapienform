@@ -22,6 +22,14 @@ class RetinaMetrics:
     # Times an RTSP reader was abandoned and replaced for delivering no frame
     # (RtspFrameSource stall watchdog). Always 0 for other sources.
     source_stall_restarts: int = 0
+    # RTSP session hygiene (RtspFrameSource quiet period + self-heal).
+    # Always 0/None for other sources.
+    source_quiet_wait_remaining_sec: float = 0.0
+    source_last_session_end_ts: float | None = None
+    source_corrupt_frame_rate: float | None = None
+    source_corruption_checks: int = 0
+    source_corrupt_frames: int = 0
+    source_corruption_heals: int = 0
 
 
 def last_frame_age_sec(metrics: RetinaMetrics, now: float | None = None) -> float | None:
@@ -68,6 +76,12 @@ def make_system_health_envelope(
             "last_frame_ts": metrics.last_frame_ts,
             "last_frame_age_sec": last_frame_age_sec(metrics),
             "source_stall_restarts": metrics.source_stall_restarts,
+            "source_quiet_wait_remaining_sec": metrics.source_quiet_wait_remaining_sec,
+            "source_last_session_end_ts": metrics.source_last_session_end_ts,
+            "source_corrupt_frame_rate": metrics.source_corrupt_frame_rate,
+            "source_corruption_checks": metrics.source_corruption_checks,
+            "source_corrupt_frames": metrics.source_corrupt_frames,
+            "source_corruption_heals": metrics.source_corruption_heals,
             "last_error": metrics.last_error,
             "storage_dir": storage_dir,
         },

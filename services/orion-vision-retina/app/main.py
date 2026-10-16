@@ -52,6 +52,12 @@ class RetinaService:
             rtsp_transport=self.settings.RETINA_RTSP_TRANSPORT,
             rtsp_stall_seconds=self.settings.RETINA_RTSP_STALL_SECONDS,
             rtsp_io_timeout_seconds=self.settings.RETINA_RTSP_IO_TIMEOUT_SECONDS,
+            rtsp_reconnect_quiet_seconds=self.settings.RETINA_RTSP_RECONNECT_QUIET_SECONDS,
+            rtsp_session_state_path=self.settings.rtsp_session_state_path(),
+            rtsp_heal_enabled=self.settings.RETINA_RTSP_HEAL_ENABLED,
+            rtsp_heal_check_every=self.settings.RETINA_RTSP_HEAL_CHECK_EVERY,
+            rtsp_heal_window_seconds=self.settings.RETINA_RTSP_HEAL_WINDOW_SECONDS,
+            rtsp_heal_min_share=self.settings.RETINA_RTSP_HEAL_MIN_SHARE,
         )
         self.metrics = RetinaMetrics()
         self._capture_task: Optional[asyncio.Task] = None
@@ -381,8 +387,14 @@ class RetinaService:
             # restart policy brings the eye back, instead of a silent outage.
             logger.critical(f"[RETINA] {getattr(self.source, 'stall_error', '')}; exiting for restart")
             os._exit(1)
-        self.metrics.source_stall_restarts = int(getattr(self.source, "stall_restarts", 0) or 0)
+        self._copy_source_metrics()
         if result is None:
+            quiet = self.metrics.source_quiet_wait_remaining_sec
+            if quiet > 0:
+                # Deliberate: waiting out the camera's stale session before
+                # reconnecting. Not a failed read.
+                self.metrics.last_error = f"rtsp quiet period: {quiet:.0f}s before connecting to the camera"
+                return False
             if getattr(self.source, "ever_connected", True) is False:
                 # A live RTSP source still connecting after boot/reconnect:
                 # not a failure yet.
@@ -459,6 +471,19 @@ class RetinaService:
         self._last_publish_ts = now
         logger.info(f"[RETINA] Published frame pointer: {saved.image_path}")
         return True
+
+    def _copy_source_metrics(self) -> None:
+        src = self.source
+        m = self.metrics
+        m.source_stall_restarts = int(getattr(src, "stall_restarts", 0) or 0)
+        if not hasattr(src, "quiet_wait_remaining"):
+            return  # not RTSP
+        m.source_quiet_wait_remaining_sec = float(src.quiet_wait_remaining())
+        m.source_last_session_end_ts = src.last_session_end_ts
+        m.source_corrupt_frame_rate = src.corrupt_frame_rate()
+        m.source_corruption_checks = int(src.corruption_checks)
+        m.source_corrupt_frames = int(src.corrupt_frames)
+        m.source_corruption_heals = int(src.corruption_heals)
 
     def _source_ok(self) -> bool:
         if not self._sample_attempted:

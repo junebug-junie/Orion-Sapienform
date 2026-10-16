@@ -155,7 +155,10 @@ def reduce_node_pressure_candidates(
 
         node_id = _node_id_for_trace(trace)
         profile = catalog.resolve(node_id or "")
-        if not profile.known:
+        # A retired host (catalog `retired_nodes:`) gets no pressure state at all:
+        # the pipeline prunes it from this projection, and accepting a candidate
+        # here would put it straight back.
+        if not profile.known or profile.retired:
             rejected.append(atom_event_id)
             continue
         canonical_node_id = profile.node_id

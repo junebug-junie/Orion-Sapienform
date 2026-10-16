@@ -111,12 +111,14 @@ def test_sweep_finds_the_node_that_stopped_reporting(catalog: NodeCatalog) -> No
 
 
 def test_sweep_ignores_expected_offline_nodes(catalog: NodeCatalog) -> None:
-    """atlas is decommissioned (`expected_online: false`); its permanent silence
-    must never be surfaced as an outage."""
+    """hecate is catalogued `expected_online: false` (on-demand box); its silence
+    must never be surfaced as an outage. (Was atlas until atlas moved to the
+    catalog's `retired_nodes:` 2026-10-16 -- retired hosts are pruned, not swept;
+    see tests/test_retired_biometrics_node.py.)"""
     bio = _bio(
         {
-            "atlas": _state(
-                "atlas",
+            "hecate": _state(
+                "hecate",
                 expected_online=False,
                 last_seen_at=FIXED_TS - timedelta(days=9),
             )
@@ -537,6 +539,9 @@ def test_decommissioned_node_is_never_swept_despite_a_stale_cached_flag(
 ) -> None:
     """The exact live shape on 2026-08-29, and a permanent false alarm if wrong.
 
+    Exercised with hecate (catalog `expected_online: false`, cached flag `true`)
+    since atlas itself is now a retired host and never reaches this sweep.
+
     `atlas` was decommissioned 2026-08-21 -- its GPUs moved into circe, its disks
     into athena -- and node_catalog.yaml was set to `expected_online: false` with
     "It will never report again". But `NodeBiometricsStateV1.expected_online` is a
@@ -551,8 +556,8 @@ def test_decommissioned_node_is_never_swept_despite_a_stale_cached_flag(
     """
     bio = _bio(
         {
-            "atlas": _state(
-                "atlas",
+            "hecate": _state(
+                "hecate",
                 expected_online=True,  # the stale cached value, verbatim from live
                 last_seen_at=FIXED_TS - timedelta(days=9),
             ),
@@ -575,9 +580,9 @@ def test_a_catalog_change_takes_effect_without_the_node_reporting(
     the case it exists for.
     """
     stale_cache_says_online = _bio(
-        {"atlas": _state("atlas", expected_online=True, last_seen_at=None)}
+        {"hecate": _state("hecate", expected_online=True, last_seen_at=None)}
     )
-    assert catalog.resolve("atlas").expected_online is False
+    assert catalog.resolve("hecate").expected_online is False
     assert sweep_absent_nodes(node_bio=stale_cache_says_online, catalog=catalog, now=FIXED_TS) == []
 
 
@@ -613,7 +618,7 @@ def _pressure_with(node_id: str, *, pressures: list[str], impacts: list[str]):
     )
 
 
-ATLAS_RESIDUE = [
+OFFLINE_RESIDUE = [
     "capability:batch_inference",
     "capability:embedding",
     "capability:local_llm_heavy",
@@ -624,18 +629,19 @@ ATLAS_RESIDUE = [
 def test_retired_node_with_stale_state_is_offered_for_suppression(
     catalog: NodeCatalog,
 ) -> None:
-    """The exact live residue on 2026-08-29 after atlas was wrongly swept."""
+    """The exact live residue shape on 2026-08-29 after atlas was wrongly swept,
+    replayed on hecate (still `expected_online: false`, not retired)."""
     bio = _bio(
-        {"atlas": _state("atlas", expected_online=True, last_seen_at=FIXED_TS - timedelta(days=9))}
+        {"hecate": _state("hecate", expected_online=True, last_seen_at=FIXED_TS - timedelta(days=9))}
     )
     assert sweep_suppressible_nodes(
         node_bio=bio,
         active_pressure=_pressure_with(
-            "atlas", pressures=["strain", "availability"], impacts=ATLAS_RESIDUE
+            "hecate", pressures=["strain", "availability"], impacts=OFFLINE_RESIDUE
         ),
         catalog=catalog,
         now=FIXED_TS,
-    ) == ["atlas"]
+    ) == ["hecate"]
 
 
 def test_suppression_sweep_terminates_once_there_is_nothing_to_clear(
@@ -644,12 +650,12 @@ def test_suppression_sweep_terminates_once_there_is_nothing_to_clear(
     """Self-limiting by construction -- otherwise this becomes the permanent alarm
     it exists to remove."""
     bio = _bio(
-        {"atlas": _state("atlas", expected_online=True, last_seen_at=FIXED_TS - timedelta(days=9))}
+        {"hecate": _state("hecate", expected_online=True, last_seen_at=FIXED_TS - timedelta(days=9))}
     )
     assert (
         sweep_suppressible_nodes(
             node_bio=bio,
-            active_pressure=_pressure_with("atlas", pressures=[], impacts=[]),
+            active_pressure=_pressure_with("hecate", pressures=[], impacts=[]),
             catalog=catalog,
             now=FIXED_TS,
         )
@@ -673,13 +679,13 @@ def test_a_live_node_is_never_offered_for_suppression(catalog: NodeCatalog) -> N
 def test_suppression_actually_clears_the_residue(catalog: NodeCatalog) -> None:
     """End to end: sweep -> trigger -> Rule A -> reducer -> cleared projection."""
     bio = _bio(
-        {"atlas": _state("atlas", expected_online=True, last_seen_at=FIXED_TS - timedelta(days=9))}
+        {"hecate": _state("hecate", expected_online=True, last_seen_at=FIXED_TS - timedelta(days=9))}
     )
     prior = _pressure_with(
-        "atlas", pressures=["strain", "availability"], impacts=ATLAS_RESIDUE
+        "hecate", pressures=["strain", "availability"], impacts=OFFLINE_RESIDUE
     )
     emission = invoke_biometrics_pressure(
-        trigger_event=_trigger("atlas"),
+        trigger_event=_trigger("hecate"),
         node_bio=bio,
         active_pressure=prior,
         catalog=catalog,
@@ -687,6 +693,6 @@ def test_suppression_actually_clears_the_residue(catalog: NodeCatalog) -> None:
     )
     assert "node_pressure_suppressed" in _roles(emission)
     projection, _ = _reduce(emission, catalog, prior=prior)
-    state = projection.nodes["atlas"]
+    state = projection.nodes["hecate"]
     assert state.capability_impacts == [], "residue must be cleared"
     assert state.availability_status == "suppressed"

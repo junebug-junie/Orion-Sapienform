@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 from contextlib import suppress
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from uuid import UUID, uuid4
@@ -43,6 +44,7 @@ from .bus_listener import extract_stance_react_payload
 from .cortex_client import CortexExecClient
 from .settings import settings
 from .store import (
+    LOOP_VERDICT_MAX_AGE_SEC,
     load_pending_expectations,
     load_recent_loop_outcomes,
     persist_expectation_verdict,
@@ -207,6 +209,106 @@ def build_salience_trace(
     )
 
 
+@dataclass(frozen=True)
+class ChainContinuity:
+    """What one chain step knows about the steps before it (chain mode only).
+
+    Spec 2026-07-14 reverie narration continuity, items #2/#3: each step sees
+    the previous thought(s) and the forward pointer the last step wrote, so a
+    chain is a train of thought instead of the same prompt sampled N times.
+    In-memory only, scoped to one ``run_reverie_chain`` call. A standalone
+    tick passes None and its prompt carries none of this.
+    """
+
+    index: int
+    is_final: bool
+    prior_thoughts: list[str] = field(default_factory=list)
+    next_focus_hint: str | None = None
+
+
+# How many earlier interpretations a chain step sees verbatim (spec item #2: last 2).
+CHAIN_PRIOR_THOUGHTS_SHOWN = 2
+# Free-text fields the model writes for chain continuity; clipped, never trusted as grounding.
+_CHAIN_FIELD_MAX_CHARS = 300
+
+
+def describe_verdict_actor(actor: str) -> tuple[str, bool]:
+    """(who, is_human) for an attention_loop_outcome actor.
+
+    Only a named person counts as human. ``system:*`` actors are automatic
+    processes (``system:implicit_decay`` = scripts/attention_loop_decay_digest.py
+    noticing nobody engaged), and ``orion`` is Orion itself.
+    """
+    a = (actor or "").strip()
+    if not a:
+        return "an unknown recorder", False
+    if a.startswith("system:"):
+        if a == "system:implicit_decay":
+            return "the system's automatic decay (nobody engaged with it)", False
+        return f"an automatic process ({a})", False
+    if a.lower() == "orion":
+        return "you (Orion)", False
+    return a[:1].upper() + a[1:], True
+
+
+def _format_age(age_sec: float) -> str:
+    sec = max(0.0, float(age_sec))
+    if sec < 3600:
+        return f"{max(1, int(sec // 60))} min ago"
+    if sec < 48 * 3600:
+        return f"{int(sec // 3600)}h ago"
+    return f"{int(sec // 86400)} days ago"
+
+
+def describe_loop_verdict(outcome: dict[str, Any]) -> dict[str, Any] | None:
+    """Render one verdict as a plain, attributed sentence, or None if it must not be shown.
+
+    The store already drops verdicts older than ``LOOP_VERDICT_MAX_AGE_SEC``;
+    this re-checks (defense in depth) so a stale verdict can never reach the
+    prompt as current ground truth, whatever the caller passed in.
+    """
+    verdict = str(outcome.get("verdict") or "").strip()
+    age_sec = outcome.get("age_sec")
+    if not verdict or not isinstance(age_sec, (int, float)) or isinstance(age_sec, bool):
+        return None
+    if age_sec > LOOP_VERDICT_MAX_AGE_SEC:
+        return None
+    who, human = describe_verdict_actor(str(outcome.get("actor") or ""))
+    label = verdict.replace("_", " ")
+    when = _format_age(age_sec)
+    line = f"{who} marked this {label} {when}" if not human else f"{who} {label} this {when}"
+    note = str(outcome.get("note") or "").strip()
+    if note:
+        line += f' (note: "{note[:200]}")'
+    return {"line": line, "verdict": verdict, "by_human": human}
+
+
+def _loop_signal(loop: Any) -> str | None:
+    """The real numbers behind a world-first loop, as one sentence; None when it has none.
+
+    Replaces the boilerplate ``why_it_matters`` text, which is the same string
+    for every substrate loop and tells the model nothing.
+    """
+    mag = getattr(loop, "magnitude", None)
+    prov = getattr(loop, "provenance", None) or {}
+    reason = str(prov.get("world_first_reason") or "").strip()
+    parts: list[str] = []
+    if mag is not None:
+        band = str(getattr(mag, "band", "") or "")
+        pct = getattr(mag, "percentile_now", None)
+        if band and band != "insufficient_history":
+            parts.append(f"band {band}")
+        if isinstance(pct, (int, float)):
+            parts.append(f"higher than {round(float(pct) * 100)}% of its last 7 days")
+        trend = str(getattr(mag, "trend", "") or "")
+        if trend and trend != "insufficient_history":
+            parts.append(f"trend {trend}")
+        parts.append(f"value {float(mag.value):.3g}")
+    if reason:
+        parts.append(f"why selected: {reason}")
+    return "; ".join(parts) if parts else None
+
+
 def _open_loops_for_prompt(
     broadcast: AttentionBroadcastProjectionV1,
     *,
@@ -218,12 +320,18 @@ def _open_loops_for_prompt(
         entry: dict[str, Any] = {
             "id": loop.id,
             "description": loop.description,
-            "why_it_matters": loop.why_it_matters,
             "target_type": loop.target_type,
         }
+        signal = _loop_signal(loop)
+        if signal:
+            entry["signal"] = signal
+        elif loop.why_it_matters:
+            entry["why_it_matters"] = loop.why_it_matters
         outcome = outcomes.get(loop.id)
         if outcome:
-            entry["outcome"] = outcome
+            rendered = describe_loop_verdict(outcome)
+            if rendered:
+                entry["outcome"] = rendered
         entries.append(entry)
     return entries
 
@@ -295,6 +403,7 @@ def build_reverie_context(
     recent_arcs: str | None = None,
     street_percepts: list[dict[str, Any]] | None = None,
     street_predictions: list[str] | None = None,
+    continuity: ChainContinuity | None = None,
 ) -> dict[str, Any]:
     percepts = recent_percepts or []
     # The street (walkway camera) rides under its OWN keys, never inside
@@ -327,22 +436,29 @@ def build_reverie_context(
             ctx["recent_arcs"] = recent_arcs
         return ctx
     open_loops = _open_loops_for_prompt(broadcast, loop_outcomes=loop_outcomes)
+    # "attended_signal", not "coalition": the broadcast's winner is 0-1 node
+    # (orion/substrate/attention/attention_broadcast.py), and calling one node
+    # a coalition taught the model to open 95% of thoughts with "The coalition".
     ctx = {
         "user_message": None,  # the defining difference from stance_react
-        "coalition_projection": {
-            "projection_id": broadcast.projection_id,
+        "attended_signal": {
             "generated_at": broadcast.generated_at.isoformat(),
             "attended_node_ids": list(broadcast.attended_node_ids),
             "selected_open_loop_id": broadcast.selected_open_loop_id,
             "selected_description": broadcast.selected_description,
-            "open_loop_ids": [loop.id for loop in broadcast.frame.open_loops],
-            "coalition_stability_score": broadcast.coalition_stability_score,
             "dwell_ticks": broadcast.dwell_ticks,
         },
         "open_loops": open_loops,
         "has_settled_loops": any("outcome" in loop for loop in open_loops),
         "metadata": {"mode": "reverie", "llm_profile": "brain"},
     }
+    if continuity is not None:
+        ctx["chain_step"] = {
+            "index": continuity.index,
+            "is_final": continuity.is_final,
+            "prior_thoughts": list(continuity.prior_thoughts[-CHAIN_PRIOR_THOUGHTS_SHOWN:]),
+            "next_focus_hint": continuity.next_focus_hint or None,
+        }
     if percepts:
         ctx["recent_percepts"] = percepts
     ctx.update(street)
@@ -368,6 +484,7 @@ def build_reverie_plan_request(
     recent_arcs: str | None = None,
     street_percepts: list[dict[str, Any]] | None = None,
     street_predictions: list[str] | None = None,
+    continuity: ChainContinuity | None = None,
 ) -> PlanExecutionRequest:
     use_lift = settings.reverie_semantic_lift_enabled and bool(concern_cards)
     mode = "metacog" if use_lift else "brain"
@@ -395,6 +512,7 @@ def build_reverie_plan_request(
             recent_arcs=recent_arcs,
             street_percepts=street_percepts,
             street_predictions=street_predictions,
+            continuity=continuity,
         ),
     )
 
@@ -455,6 +573,11 @@ def parse_reverie_payload(
         if candidate:
             expectation = candidate[:200]
 
+    # Chain continuity fields (spec 2026-07-14 #3). Free text, clipped; they
+    # steer only the next step's prompt, never grounding or selection.
+    next_focus = _clean_chain_field(data.get("next_focus"))
+    drift = _clean_chain_field(data.get("drift"))
+
     salience = derive_salience(broadcast)
 
     thought = SpontaneousThoughtV1(
@@ -466,8 +589,19 @@ def parse_reverie_payload(
         evidence_refs=evidence_refs,
         model_id=str(data.get("model_id")) if data.get("model_id") else None,
         expectation=expectation,
+        next_focus=next_focus,
+        drift=drift,
     )
     return thought.marked_hollow()
+
+
+def _clean_chain_field(raw: Any) -> str | None:
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text or text.lower() in {"null", "none", "nothing", "n/a"}:
+        return None
+    return text[:_CHAIN_FIELD_MAX_CHARS]
 
 
 def _envelope_correlation_id(raw: str | None) -> UUID:
@@ -640,6 +774,7 @@ async def run_reverie_once(
     broadcast_reader: BroadcastReader | None = None,
     cortex_client: CortexExecClient | None = None,
     chain_context: tuple[str, int] | None = None,
+    continuity: ChainContinuity | None = None,
 ) -> SpontaneousThoughtV1 | None:
     """One spontaneous-thought tick. Returns the published thought, or None.
 
@@ -793,6 +928,7 @@ async def run_reverie_once(
             recent_arcs=recent_arcs,
             street_percepts=street_percepts,
             street_predictions=street_predictions,
+            continuity=continuity,
         )
         # Same formula build_reverie_plan_request uses internally to decide `use_lift` --
         # duplicated here (not returned by that function) because only a call that actually set

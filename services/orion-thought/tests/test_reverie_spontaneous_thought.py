@@ -130,11 +130,55 @@ def test_open_loops_for_prompt_includes_outcome_when_present():
 
     entries = reverie._open_loops_for_prompt(
         _broadcast(loops=(("ol-1", {}), ("ol-2", {}))),
-        loop_outcomes={"ol-1": {"verdict": "resolved", "note": "n", "age_days": 3}},
+        loop_outcomes={"ol-1": {"verdict": "resolved", "note": "n", "actor": "juniper", "age_sec": 3 * 3600}},
     )
     by_id = {e["id"]: e for e in entries}
-    assert by_id["ol-1"]["outcome"] == {"verdict": "resolved", "note": "n", "age_days": 3}
+    assert by_id["ol-1"]["outcome"] == {
+        "line": 'Juniper resolved this 3h ago (note: "n")', "verdict": "resolved", "by_human": True,
+    }
     assert "outcome" not in by_id["ol-2"]
+
+
+def test_system_decay_verdict_is_never_labelled_human():
+    """Regression (2026-10-14 audit): a system:implicit_decay verdict was shown
+    as "recorded by a human ... ground truth"."""
+    from app import reverie
+
+    entries = reverie._open_loops_for_prompt(
+        _broadcast(),
+        loop_outcomes={"ol-1": {"verdict": "decayed_unattended", "note": "", "actor": "system:implicit_decay",
+                                "age_sec": 5 * 3600}},
+    )
+    out = entries[0]["outcome"]
+    assert out["by_human"] is False
+    assert out["line"] == "the system's automatic decay (nobody engaged with it) marked this decayed unattended 5h ago"
+
+
+def test_stale_verdict_is_dropped_even_if_passed_in():
+    """Regression: a 22-day-old verdict on a reused loop id read as current."""
+    from app import reverie
+
+    entries = reverie._open_loops_for_prompt(
+        _broadcast(),
+        loop_outcomes={"ol-1": {"verdict": "decayed_unattended", "note": "", "actor": "system:implicit_decay",
+                                "age_sec": 22 * 86400}},
+    )
+    assert "outcome" not in entries[0]
+
+
+def test_verdict_without_age_is_not_shown():
+    from app import reverie
+
+    assert reverie.describe_loop_verdict({"verdict": "resolved", "actor": "juniper"}) is None
+
+
+def test_describe_verdict_actor():
+    from app import reverie
+
+    assert reverie.describe_verdict_actor("juniper") == ("Juniper", True)
+    assert reverie.describe_verdict_actor("system:other")[1] is False
+    assert reverie.describe_verdict_actor("orion") == ("you (Orion)", False)
+    assert reverie.describe_verdict_actor("")[1] is False
 
 
 def test_open_loops_for_prompt_omits_outcome_when_none_given():
@@ -149,7 +193,7 @@ def test_build_reverie_context_threads_loop_outcomes_into_open_loops():
 
     ctx = reverie.build_reverie_context(
         _broadcast(),
-        loop_outcomes={"ol-1": {"verdict": "dismissed", "note": "", "age_days": 1}},
+        loop_outcomes={"ol-1": {"verdict": "dismissed", "note": "", "actor": "juniper", "age_sec": 600}},
     )
     assert ctx["open_loops"][0]["outcome"]["verdict"] == "dismissed"
 
@@ -177,7 +221,7 @@ async def test_tick_fetches_and_threads_loop_outcomes(monkeypatch):
 
     monkeypatch.setattr(
         reverie, "load_recent_loop_outcomes",
-        lambda ids: {"ol-1": {"verdict": "resolved", "note": "closed", "age_days": 2}},
+        lambda ids: {"ol-1": {"verdict": "resolved", "note": "closed", "actor": "juniper", "age_sec": 7200}},
     )
     bus = AsyncMock()
     cortex = AsyncMock()
@@ -345,8 +389,7 @@ def test_load_recent_loop_outcomes_never_raises_on_bad_db(monkeypatch):
 def test_load_recent_loop_outcomes_shapes_rows(monkeypatch):
     from app import store
 
-    # A bit over 6 days old, to stay clear of the floor-division boundary.
-    created = datetime.now(timezone.utc) - timedelta(days=6, hours=1)
+    created = datetime.now(timezone.utc) - timedelta(hours=2)
 
     class _Result:
         def mappings(self):
@@ -355,7 +398,7 @@ def test_load_recent_loop_outcomes_shapes_rows(monkeypatch):
         def all(self):
             return [
                 {"loop_id": "ol-1", "verdict": "resolved", "note": "fixed it",
-                 "created_at": created},
+                 "actor": "juniper", "created_at": created},
             ]
 
     class _Conn:
@@ -374,13 +417,31 @@ def test_load_recent_loop_outcomes_shapes_rows(monkeypatch):
 
     monkeypatch.setattr(store, "_get_engine", lambda: _Engine())
     out = store.load_recent_loop_outcomes(["ol-1", "ol-2"])
-    assert out == {"ol-1": {"verdict": "resolved", "note": "fixed it", "age_days": 6}}
+    assert set(out) == {"ol-1"}
+    assert out["ol-1"]["actor"] == "juniper"
+    assert out["ol-1"]["verdict"] == "resolved"
+    assert 7100 < out["ol-1"]["age_sec"] < 7300
 
 
-def test_load_recent_loop_outcomes_omits_age_days_when_unreadable(monkeypatch):
-    """A row with no usable created_at must never surface age_days: None into the
-    prompt — the key is omitted rather than emitting a null the LLM could echo
-    literally (e.g. "closed None days ago")."""
+def test_loop_outcomes_from_rows_drops_stale_verdicts():
+    """Regression: verdicts older than LOOP_VERDICT_MAX_AGE_SEC are about an
+    earlier episode of a reused (label-hashed) loop id and must not be shown."""
+    from app import store
+
+    now = datetime(2026, 10, 16, tzinfo=timezone.utc)
+    rows = [
+        {"loop_id": "fresh", "verdict": "resolved", "note": "", "actor": "juniper",
+         "created_at": now - timedelta(hours=23)},
+        {"loop_id": "stale", "verdict": "decayed_unattended", "note": "", "actor": "system:implicit_decay",
+         "created_at": now - timedelta(days=22)},
+    ]
+    out = store.loop_outcomes_from_rows(rows, now=now)
+    assert set(out) == {"fresh"}
+    assert store.LOOP_VERDICT_MAX_AGE_SEC == 24 * 3600
+
+
+def test_load_recent_loop_outcomes_drops_undated_rows(monkeypatch):
+    """A row with no usable created_at cannot be shown as current: dropped."""
     from app import store
 
     class _Result:
@@ -406,9 +467,7 @@ def test_load_recent_loop_outcomes_omits_age_days_when_unreadable(monkeypatch):
             return _Conn()
 
     monkeypatch.setattr(store, "_get_engine", lambda: _Engine())
-    out = store.load_recent_loop_outcomes(["ol-1"])
-    assert "age_days" not in out["ol-1"]
-    assert out["ol-1"]["verdict"] == "dismissed"
+    assert store.load_recent_loop_outcomes(["ol-1"]) == {}
 
 
 def test_load_recent_loop_outcomes_never_raises_on_bad_row_shape(monkeypatch):
@@ -554,3 +613,48 @@ def test_broadcast_reader_none_when_no_row(monkeypatch):
 
     monkeypatch.setattr(broadcast_reader, "_get_engine", lambda: _Engine())
     assert broadcast_reader.read_latest_broadcast() is None
+
+
+# --- chain continuity (spec 2026-07-14 #2/#3) -----------------------------------
+
+def test_parse_reverie_payload_reads_next_focus_and_drift():
+    from app import reverie
+
+    raw = json.dumps({"interpretation": GROUNDED_TEXT, "evidence_refs": ["ol-1"],
+                      "next_focus": "  why it recurs at night ", "drift": "null"})
+    t = reverie.parse_reverie_payload(raw, coalition=_coalition(), correlation_id="c", broadcast=_broadcast())
+    assert t.next_focus == "why it recurs at night"
+    assert t.drift is None  # the string "null" is not a drift
+
+
+def test_continuity_text_is_not_a_grounding_backdoor():
+    """Spec acceptance #6: citing the prior thought / hint instead of a real id is still hollow."""
+    from app import reverie
+
+    raw = json.dumps({"interpretation": GROUNDED_TEXT, "evidence_refs": ["why it recurs at night"],
+                      "next_focus": "x"})
+    t = reverie.parse_reverie_payload(raw, coalition=_coalition(), correlation_id="c", broadcast=_broadcast())
+    assert t.hollow and t.hollow_reason == "unanchored_evidence_outside_coalition"
+
+
+@pytest.mark.asyncio
+async def test_tick_threads_continuity_into_plan_context(monkeypatch):
+    from app import reverie
+
+    monkeypatch.setattr(reverie, "load_recent_loop_outcomes", lambda ids: {})
+    bus = AsyncMock()
+    cortex = AsyncMock()
+    cortex.execute_plan = AsyncMock(return_value={
+        "final_text": json.dumps({"interpretation": GROUNDED_TEXT, "evidence_refs": ["ol-1"],
+                                  "next_focus": "the night pattern"}),
+    })
+    cont = reverie.ChainContinuity(index=1, is_final=False, prior_thoughts=["earlier thought"],
+                                   next_focus_hint="the backup")
+    result = await reverie.run_reverie_once(
+        bus, broadcast_reader=lambda: _broadcast(), cortex_client=cortex,
+        chain_context=("chain-1", 1), continuity=cont,
+    )
+    assert result is not None and result.next_focus == "the night pattern"
+    step = cortex.execute_plan.call_args.kwargs["req"].context["chain_step"]
+    assert step == {"index": 1, "is_final": False, "prior_thoughts": ["earlier thought"],
+                    "next_focus_hint": "the backup"}

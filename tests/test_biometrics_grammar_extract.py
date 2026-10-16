@@ -61,14 +61,14 @@ def _atom_event(
 
 
 def test_parse_biometrics_trace_id() -> None:
-    assert parse_biometrics_trace_id("biometrics.node:atlas:2026-05-24T12:00:00Z") == "atlas"
-    assert parse_biometrics_trace_id("substrate.pressure:atlas:2026-05-24T12:00:00Z") is None
-    assert parse_biometrics_trace_id("biometrics.node:atlas") is None
+    assert parse_biometrics_trace_id("biometrics.node:circe:2026-05-24T12:00:00Z") == "circe"
+    assert parse_biometrics_trace_id("substrate.pressure:circe:2026-05-24T12:00:00Z") is None
+    assert parse_biometrics_trace_id("biometrics.node:circe") is None
 
 
 def test_parse_pressure_trace_id() -> None:
-    assert parse_pressure_trace_id("substrate.pressure:atlas:2026-05-24T12:00:00Z") == "atlas"
-    assert parse_pressure_trace_id("biometrics.node:atlas:2026-05-24T12:00:00Z") is None
+    assert parse_pressure_trace_id("substrate.pressure:circe:2026-05-24T12:00:00Z") == "circe"
+    assert parse_pressure_trace_id("biometrics.node:circe:2026-05-24T12:00:00Z") is None
 
 
 def test_prometheous_resolves_via_catalog(catalog: NodeCatalog) -> None:
@@ -76,21 +76,21 @@ def test_prometheous_resolves_via_catalog(catalog: NodeCatalog) -> None:
 
 
 def test_extract_sets_last_seen_and_event_ids(catalog: NodeCatalog) -> None:
-    trace_id = "biometrics.node:atlas:2026-05-24T12:00:00Z"
+    trace_id = "biometrics.node:circe:2026-05-24T12:00:00Z"
     events = [
         _atom_event(
             trace_id=trace_id,
             event_id="gev_sample",
             role="telemetry_sample",
             observed_at=FIXED_TS,
-            payload_ref="biometrics.sample:atlas:2026-05-24T12:00:00Z",
+            payload_ref="biometrics.sample:circe:2026-05-24T12:00:00Z",
         ),
         _atom_event(
             trace_id=trace_id,
             event_id="gev_body",
             role="body_state",
             observed_at=FIXED_TS,
-            payload_ref="biometrics.summary:atlas:2026-05-24T12:00:00Z",
+            payload_ref="biometrics.summary:circe:2026-05-24T12:00:00Z",
             salience=0.55,
         ),
         _atom_event(
@@ -98,22 +98,22 @@ def test_extract_sets_last_seen_and_event_ids(catalog: NodeCatalog) -> None:
             event_id="gev_induction",
             role="body_state",
             observed_at=FIXED_TS,
-            payload_ref="biometrics.induction:atlas:2026-05-24T12:00:00Z",
+            payload_ref="biometrics.induction:circe:2026-05-24T12:00:00Z",
             salience=0.4,
         ),
     ]
     state = extract_node_state_from_events(events, catalog, stale_after_sec=180, now=FIXED_TS)
-    assert state.node_id == "atlas"
+    assert state.node_id == "circe"
     assert state.last_seen_at == FIXED_TS
     assert state.latest_sample_event_id == "gev_sample"
     assert state.latest_summary_event_id == "gev_body"
     assert state.latest_induction_event_id == "gev_induction"
-    assert state.latest_payload_ref == "biometrics.induction:atlas:2026-05-24T12:00:00Z"
+    assert state.latest_payload_ref == "biometrics.induction:circe:2026-05-24T12:00:00Z"
     assert state.pressure_hints.get("strain") == 0.4
 
 
 def test_extract_sets_memory_thermal_disk_pressure_hints(catalog: NodeCatalog) -> None:
-    trace_id = "biometrics.node:atlas:2026-05-24T12:00:00Z"
+    trace_id = "biometrics.node:circe:2026-05-24T12:00:00Z"
     events = [
         _atom_event(
             trace_id=trace_id,
@@ -144,7 +144,7 @@ def test_extract_sets_memory_thermal_disk_pressure_hints(catalog: NodeCatalog) -
 
 
 def test_extract_sets_stability_hint(catalog: NodeCatalog) -> None:
-    trace_id = "biometrics.node:atlas:2026-05-24T12:00:00Z"
+    trace_id = "biometrics.node:circe:2026-05-24T12:00:00Z"
     events = [
         _atom_event(
             trace_id=trace_id,
@@ -161,7 +161,7 @@ def test_extract_sets_stability_hint(catalog: NodeCatalog) -> None:
 def test_extract_ignores_memory_thermal_disk_signals_with_no_salience(
     catalog: NodeCatalog,
 ) -> None:
-    trace_id = "biometrics.node:atlas:2026-05-24T12:00:00Z"
+    trace_id = "biometrics.node:circe:2026-05-24T12:00:00Z"
     events = [
         _atom_event(
             trace_id=trace_id,
@@ -181,7 +181,7 @@ def test_extract_sets_gpu_pressure_hint_from_dedicated_signal_atom(
     # Regression: pressure_hints["gpu"] must come from the dedicated
     # gpu_pressure_signal atom's real computed salience, not from
     # capability_surface's hardcoded 0.8 constant.
-    trace_id = "biometrics.node:atlas:2026-05-24T12:00:00Z"
+    trace_id = "biometrics.node:circe:2026-05-24T12:00:00Z"
     events = [
         _atom_event(
             trace_id=trace_id,
@@ -200,7 +200,7 @@ def test_extract_capability_surface_no_longer_sources_gpu_pressure_hint(
 ) -> None:
     # capability_surface's salience is a hardcoded constant (0.8), not telemetry --
     # it must never populate pressure_hints["gpu"] even for a local_llm_heavy node.
-    trace_id = "biometrics.node:atlas:2026-05-24T12:00:00Z"
+    trace_id = "biometrics.node:circe:2026-05-24T12:00:00Z"
     events = [
         _atom_event(
             trace_id=trace_id,
@@ -215,21 +215,6 @@ def test_extract_capability_surface_no_longer_sources_gpu_pressure_hint(
 
 
 def test_extract_availability_online_when_fresh(catalog: NodeCatalog) -> None:
-    trace_id = "biometrics.node:atlas:2026-05-24T12:00:00Z"
-    events = [
-        _atom_event(
-            trace_id=trace_id,
-            event_id="gev_avail",
-            role="node_availability",
-            observed_at=FIXED_TS,
-            summary="atlas telemetry status OK (expected online, known node)",
-        ),
-    ]
-    state = extract_node_state_from_events(events, catalog, stale_after_sec=180, now=FIXED_TS)
-    assert state.availability_status == "online"
-
-
-def test_extract_circe_offline_expected(catalog: NodeCatalog) -> None:
     trace_id = "biometrics.node:circe:2026-05-24T12:00:00Z"
     events = [
         _atom_event(
@@ -237,7 +222,22 @@ def test_extract_circe_offline_expected(catalog: NodeCatalog) -> None:
             event_id="gev_avail",
             role="node_availability",
             observed_at=FIXED_TS,
-            summary="circe telemetry status OK (expected offline, known node)",
+            summary="circe telemetry status OK (expected online, known node)",
+        ),
+    ]
+    state = extract_node_state_from_events(events, catalog, stale_after_sec=180, now=FIXED_TS)
+    assert state.availability_status == "online"
+
+
+def test_extract_hecate_offline_expected(catalog: NodeCatalog) -> None:
+    trace_id = "biometrics.node:hecate:2026-05-24T12:00:00Z"
+    events = [
+        _atom_event(
+            trace_id=trace_id,
+            event_id="gev_avail",
+            role="node_availability",
+            observed_at=FIXED_TS,
+            summary="hecate telemetry status OK (expected offline, known node)",
         ),
     ]
     state = extract_node_state_from_events(events, catalog, stale_after_sec=180, now=FIXED_TS)
@@ -245,14 +245,14 @@ def test_extract_circe_offline_expected(catalog: NodeCatalog) -> None:
 
 
 def test_extract_stale_when_observed_too_old(catalog: NodeCatalog) -> None:
-    trace_id = "biometrics.node:atlas:2026-05-24T12:00:00Z"
+    trace_id = "biometrics.node:circe:2026-05-24T12:00:00Z"
     events = [
         _atom_event(
             trace_id=trace_id,
             event_id="gev_sample",
             role="telemetry_sample",
             observed_at=FIXED_TS,
-            payload_ref="biometrics.sample:atlas:2026-05-24T12:00:00Z",
+            payload_ref="biometrics.sample:circe:2026-05-24T12:00:00Z",
         ),
     ]
     now = FIXED_TS + timedelta(seconds=200)
@@ -261,14 +261,14 @@ def test_extract_stale_when_observed_too_old(catalog: NodeCatalog) -> None:
 
 
 def test_extract_no_debug_trace_usage(catalog: NodeCatalog) -> None:
-    trace_id = "biometrics.node:atlas:2026-05-24T12:00:00Z"
+    trace_id = "biometrics.node:circe:2026-05-24T12:00:00Z"
     events = [
         _atom_event(
             trace_id=trace_id,
             event_id="gev_sample",
             role="telemetry_sample",
             observed_at=FIXED_TS,
-            payload_ref="biometrics.sample:atlas:2026-05-24T12:00:00Z",
+            payload_ref="biometrics.sample:circe:2026-05-24T12:00:00Z",
         ),
     ]
     state = extract_node_state_from_events(events, catalog)

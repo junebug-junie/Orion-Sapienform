@@ -91,16 +91,16 @@ def test_induction_by_node_returns_metrics_within_max_age() -> None:
         [
             {"node": "athena", "metrics": {"cpu": {"trend": 0.55}}, "ts": now},
             {
-                "node": "atlas",
+                "node": "circe",
                 "metrics": {"gpu_util": {"trend": 0.51}},
                 "ts": now - timedelta(seconds=30),
             },
         ]
     )
-    result = latest_biometrics_induction_by_node(engine, ("athena", "atlas", "circe"))
+    result = latest_biometrics_induction_by_node(engine, ("athena", "circe", "hecate"))
     assert result["athena"] == {"cpu": {"trend": 0.55}}
-    assert result["atlas"] == {"gpu_util": {"trend": 0.51}}
-    assert "circe" not in result
+    assert result["circe"] == {"gpu_util": {"trend": 0.51}}
+    assert "hecate" not in result
 
 
 def test_induction_by_node_drops_stale_rows() -> None:
@@ -272,7 +272,7 @@ _ENGINE = _local_postgres_engine()
     "nodes",
     [
         pytest.param(["athena"], id="hub-single-element-list"),
-        pytest.param(("athena", "atlas", "circe"), id="cortex-exec-tuple"),
+        pytest.param(("athena", "circe"), id="cortex-exec-tuple"),
         pytest.param(["athena", "athena"], id="duplicate-node-names"),
         pytest.param(["definitely-not-a-node"], id="absent-node"),
     ],

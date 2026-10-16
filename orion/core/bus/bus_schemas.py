@@ -21,7 +21,7 @@ class ServiceRef(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
     name: str = Field(..., validation_alias=AliasChoices("name", "service"), description="Logical service name (e.g. 'orion-hub').")
-    node: Optional[str] = Field(None, description="Node/host identifier (e.g. 'athena', 'atlas').")
+    node: Optional[str] = Field(None, description="Node/host identifier (e.g. 'athena', 'circe').")
     version: Optional[str] = Field(None, description="Service version (semantic version recommended).")
     instance: Optional[str] = Field(None, description="Ephemeral instance id (container id / pod id).")
 

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from orion.schemas.state_delta import StateDeltaV1
 
-from app.tensor.channels import RETIRED_PSEUDO_NODES
+from app.tensor.channels import PRUNED_NODE_IDS
 
 # atlas removed 2026-08-21 (decommissioned; its GPUs moved to circe, along
 # with athena's old P100 -- see config/biometrics/node_catalog.yaml). athena
@@ -28,11 +28,15 @@ def _node_key(raw: str) -> str:
 
 
 def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
-    # Never write to a retired/phantom pseudo-node (channels.RETIRED_PSEUDO_NODES):
+    # Never write to a retired node -- a phantom pseudo-node (RETIRED_PSEUDO_NODES)
+    # or a host that no longer exists (RETIRED_LATTICE_NODES, e.g. node:atlas):
     # reconcile runs BEFORE perturbations each tick, so a late or replayed
     # delta (e.g. a pre-fix transport_bus delta for node:rpc_timeout) would
-    # otherwise resurrect the entry and persist it for one more tick.
-    return [p for p in _delta_to_perturbations(delta) if p.node_id not in RETIRED_PSEUDO_NODES]
+    # otherwise resurrect the entry and persist it for one more tick. Confirmed
+    # for node:atlas 2026-10-16: the substrate's stale atlas pressure kept
+    # emitting active_node_pressure deltas (~58k organ emissions/day), and the
+    # retired-host prune receipt itself carries an atlas `suppress` delta.
+    return [p for p in _delta_to_perturbations(delta) if p.node_id not in PRUNED_NODE_IDS]
 
 
 def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:

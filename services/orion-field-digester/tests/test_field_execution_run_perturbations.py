@@ -57,8 +57,8 @@ def test_execution_run_without_llm_serving_node_targets_run_node() -> None:
 
 
 def test_execution_run_with_llm_serving_node_routes_reasoning_load_only() -> None:
-    """A run whose LLM call was served by atlas attributes reasoning_load to
-    node:atlas specifically, while cortex_exec_step_load/execution_friction/
+    """A run whose LLM call was served by hecate attributes reasoning_load to
+    node:hecate specifically (was atlas, retired 2026-10-16), while cortex_exec_step_load/execution_friction/
     failure_pressure stay on the orchestrating node (athena) -- see
     services/orion-field-digester/README.md's reasoning_pressure glossary
     entry for why node:atlas.reasoning_load was permanently 0.0 before this.
@@ -73,11 +73,11 @@ def test_execution_run_with_llm_serving_node_routes_reasoning_load_only() -> Non
             "reasoning_load": 0.35,
             "failure_pressure": 0.0,
         },
-        llm_serving_node="atlas",
+        llm_serving_node="hecate",
     )
     perturbations = delta_to_perturbations(delta)
     by_channel = {p.channel: p for p in perturbations}
-    assert by_channel["reasoning_load"].node_id == "node:atlas"
+    assert by_channel["reasoning_load"].node_id == "node:hecate"
     assert by_channel["reasoning_load"].intensity == 0.35
     assert by_channel["cortex_exec_step_load"].node_id == "node:athena"
     assert by_channel["execution_friction"].node_id == "node:athena"
@@ -99,7 +99,7 @@ def test_execution_run_new_fcc_channels_attributed_to_orchestrating_node() -> No
             "compliance_deficit": 0.333,
             "context_gathering_ratio": 0.8,
         },
-        llm_serving_node="atlas",
+        llm_serving_node="hecate",
     )
     perturbations = delta_to_perturbations(delta)
     by_channel = {p.channel: p for p in perturbations}
@@ -258,7 +258,7 @@ def test_execution_run_off_lane_delta_does_not_reset_prior_harness_value() -> No
 def test_execution_run_noop_delta_skipped() -> None:
     delta = _make_execution_run_delta(
         pressure_hints={"reasoning_load": 0.35},
-        llm_serving_node="atlas",
+        llm_serving_node="hecate",
     )
     delta = delta.model_copy(update={"operation": "noop"})
     assert delta_to_perturbations(delta) == []

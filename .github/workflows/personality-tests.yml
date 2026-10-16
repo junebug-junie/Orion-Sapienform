@@ -5,6 +5,11 @@ on:
       - 'orion/personality/**'
       - 'scripts/analysis/measure_tone_dial_baseline.py'
       - 'scripts/analysis/tests/test_measure_tone_dial_baseline.py'
+      - 'scripts/analysis/measure_personality_choices.py'
+      - 'scripts/analysis/tests/test_measure_personality_choices.py'
+      - 'orion/schemas/personality.py'
+      - 'orion/schemas/registry.py'
+      - 'tests/test_personality_schemas_registered.py'
       - '.github/workflows/personality-tests.yml'
 permissions:
   contents: read
@@ -16,5 +21,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install pytest
-      - run: python -m pytest orion/personality/tests scripts/analysis/tests/test_measure_tone_dial_baseline.py -q
+      - run: pip install pytest pydantic==2.11.5
+      - run: python -m pytest orion/personality/tests scripts/analysis/tests/test_measure_tone_dial_baseline.py scripts/analysis/tests/test_measure_personality_choices.py tests/test_personality_schemas_registered.py -q

@@ -107,6 +107,11 @@ from orion.schemas.memory_episode import MEMORY_EPISODE_CLOSED_KIND, MemoryEpiso
 from orion.schemas.situation_state import SITUATION_STATE_KIND, SituationStateV1
 from orion.schemas.drive_reading import DriveReadingV1
 from orion.schemas.regulation import REGULATION_STATE_KIND, RegulationStateV1
+from orion.schemas.personality import (
+    PERSONALITY_CHOICE_KIND,
+    ChoiceOptionV1,
+    PersonalityChoiceV1,
+)
 from orion.schemas.vision_sighting import IDENTITY_SIGHTING_KIND, IdentitySightingV1
 from orion.schemas.context_exec import ContextExecPermissionV1
 from orion.schemas.self_experiments import (
@@ -1573,6 +1578,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     # Regulation state (Temporal Self rev 4 R3, 2026-10-10). Redis orion:regulation:latest and
     # GET /regulation/state only; no bus channel until a bus consumer exists. Also in SCHEMA_REGISTRY.
     "RegulationStateV1": RegulationStateV1,
+    # Personality choice evidence (PR #2726 P0, 2026-10-16). Read-only reconstruction, no bus
+    # channel yet. PersonalityChoiceV1 is also in SCHEMA_REGISTRY; ChoiceOptionV1 is nested.
+    "PersonalityChoiceV1": PersonalityChoiceV1,
+    "ChoiceOptionV1": ChoiceOptionV1,
     "IdentitySightingV1": IdentitySightingV1,
     "ContextExecPermissionV1": ContextExecPermissionV1,
     "SelfExperimentSpecV1": SelfExperimentSpecV1,
@@ -2075,6 +2084,12 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "RegulationStateV1": SchemaRegistration(
         model=RegulationStateV1,
         kind=REGULATION_STATE_KIND,
+    ),
+    # Personality choice evidence (PR #2726 P0). Also in `_REGISTRY`; the nested
+    # ChoiceOptionV1 lives in `_REGISTRY` alone.
+    "PersonalityChoiceV1": SchemaRegistration(
+        model=PersonalityChoiceV1,
+        kind=PERSONALITY_CHOICE_KIND,
     ),
 }
 

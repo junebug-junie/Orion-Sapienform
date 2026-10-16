@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS personality_disposition (
     lane_counts        jsonb NOT NULL DEFAULT '{}'::jsonb,
     -- Per-lane recent hits (habituation; faded with weight, as of updated_at).
     lane_recent        jsonb NOT NULL DEFAULT '{}'::jsonb,
+    -- When the reducer last folded evidence into it (candidate TTL runs from here).
+    last_folded_at     timestamptz,
+    -- Weight at the last weight-history row (history compares against it, so fade is recorded).
+    history_weight     double precision NOT NULL DEFAULT 0,
     chosen_count       integer NOT NULL DEFAULT 0,
     first_seen_at      timestamptz NOT NULL,
     last_reinforced_at timestamptz NOT NULL,

@@ -34,7 +34,7 @@ from psycopg_pool import AsyncConnectionPool  # noqa: E402
 from app import personality_sources as ps  # noqa: E402
 from app.personality_driver import PersonalityDriver  # noqa: E402
 from app.personality_sources import PersonalitySourceReader  # noqa: E402
-from app.personality_store import PersonalityStore  # noqa: E402
+from app.personality_store import TICK_HEARTBEAT, PersonalityStore  # noqa: E402
 from test_personality_loop import Clock, Embedder, vec_for  # noqa: E402
 
 MIGRATION = REPO_ROOT / "services/orion-sql-db/manual_migration_personality_graph_v1.sql"
@@ -146,7 +146,10 @@ def test_full_loop_on_postgres():
         clock = Clock(T0)
         assert (await driver(pool, clock).tick())["rows"] == {}
         curs = {r["source"]: r for r in await q(pool, "SELECT * FROM personality_cursor")}
-        assert set(curs) == set(ps.SOURCE_NAMES) | {ps.SEED_CURSOR} and all(r["cursor_at"] == T0 for r in curs.values())
+        assert set(curs) == set(ps.SOURCE_NAMES) | {ps.SEED_CURSOR, TICK_HEARTBEAT}
+        assert all(r["cursor_at"] == T0 for r in curs.values())
+        # The heartbeat is never handed to the driver as a source cursor.
+        assert TICK_HEARTBEAT not in await PersonalityStore(pool).load_cursors()
         (seed,) = await q(pool, "SELECT * FROM personality_disposition")
         assert seed["origin"] == "seed_self_inquiry" and len(seed["centroid"]) == 64
         assert (await q(pool, "SELECT evidence_id FROM personality_evidence"))[0]["evidence_id"] == "self_inquiry_seed:sc1"
@@ -183,7 +186,11 @@ def test_full_loop_on_postgres():
         assert all(faded["lane_recent"][k] < active[0]["lane_recent"][k] for k in faded["lane_recent"])
 
         store = PersonalityStore(pool)
-        frame = await store.frame(clock.at)
+        # Dated by the last COMMITTED tick, not the request: a later request still reads the
+        # tick's time, so a reducer that stops committing goes stale for every reader.
+        frame = await store.frame(clock.at + timedelta(hours=5))
+        (beat,) = await q(pool, "SELECT cursor_at FROM personality_cursor WHERE source = %(s)s", {"s": TICK_HEARTBEAT})
+        assert frame.generated_at == beat["cursor_at"] < clock.at + timedelta(hours=5)
         assert frame.active_count == 1 and frame.dispositions[0].label.startswith("Continuity")
         assert frame.choice_style is not None and frame.choice_style.choices == 1 and frame.choice_style.took_top == 1
         assert frame.evidence_rows == len(ids)

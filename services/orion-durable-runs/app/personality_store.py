@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from orion.personality.graph import CHOICE_LANE, EvidenceRow, HistoryRow, Node, choice_style_from_rows, project_frame
@@ -26,13 +26,14 @@ logger = logging.getLogger("orion-durable-runs.personality_store")
 
 STATEMENT_TIMEOUT = "30s"
 CHOICE_STYLE_WINDOW_DAYS = 14
+TICK_HEARTBEAT = "__tick__"  # personality_cursor row written by every committed tick
 HISTORY_POINTS = 60
 
 FRAME_NODE_COLUMNS = ("disposition_id, origin, status, label, label_similarity, centroid_n, weight, evidence_count, "
                       "lane_counts, chosen_count, first_seen_at, last_reinforced_at, retired_at, updated_at, lane_recent")
 NODE_COLUMNS = ("disposition_id, origin, status, label, label_similarity, centroid, centroid_n, weight, "
                 "evidence_count, lane_counts, chosen_count, first_seen_at, last_reinforced_at, retired_at, updated_at, "
-                "lane_recent")
+                "lane_recent, last_folded_at, history_weight")
 
 INSERT_EVIDENCE_SQL = """
 INSERT INTO personality_evidence (evidence_id, lane, source_ref, occurred_at, excerpt, disposition_id,
@@ -44,23 +45,25 @@ ON CONFLICT (evidence_id) DO NOTHING
 UPSERT_NODE_SQL = """
 INSERT INTO personality_disposition (disposition_id, origin, status, label, label_similarity, centroid,
   centroid_n, weight, evidence_count, lane_counts, chosen_count, first_seen_at, last_reinforced_at,
-  retired_at, updated_at, lane_recent)
+  retired_at, updated_at, lane_recent, last_folded_at, history_weight)
 VALUES (%(disposition_id)s, %(origin)s, %(status)s, %(label)s, %(label_similarity)s, %(centroid)s::real[],
   %(centroid_n)s, %(weight)s, %(evidence_count)s, %(lane_counts)s::jsonb, %(chosen_count)s, %(first_seen_at)s,
-  %(last_reinforced_at)s, %(retired_at)s, %(updated_at)s, %(lane_recent)s::jsonb)
+  %(last_reinforced_at)s, %(retired_at)s, %(updated_at)s, %(lane_recent)s::jsonb, %(last_folded_at)s,
+  %(history_weight)s)
 ON CONFLICT (disposition_id) DO UPDATE SET origin = EXCLUDED.origin, status = EXCLUDED.status,
   label = EXCLUDED.label, label_similarity = EXCLUDED.label_similarity, centroid = EXCLUDED.centroid,
   centroid_n = EXCLUDED.centroid_n, weight = EXCLUDED.weight, evidence_count = EXCLUDED.evidence_count,
   lane_counts = EXCLUDED.lane_counts, chosen_count = EXCLUDED.chosen_count,
   first_seen_at = EXCLUDED.first_seen_at, last_reinforced_at = EXCLUDED.last_reinforced_at,
-  retired_at = EXCLUDED.retired_at, updated_at = EXCLUDED.updated_at, lane_recent = EXCLUDED.lane_recent
+  retired_at = EXCLUDED.retired_at, updated_at = EXCLUDED.updated_at, lane_recent = EXCLUDED.lane_recent,
+  last_folded_at = EXCLUDED.last_folded_at, history_weight = EXCLUDED.history_weight
 """
 # Fade-only change (no evidence folded into the node this tick): skip rewriting the 1024-float
 # centroid. Every non-retired node fades every tick, so this is the common case. lane_recent fades
 # with the weight, so it is written here too (a few keys of jsonb).
 UPDATE_NODE_WEIGHT_SQL = """
 UPDATE personality_disposition SET status = %(status)s, weight = %(weight)s, retired_at = %(retired_at)s,
-  updated_at = %(updated_at)s, lane_recent = %(lane_recent)s::jsonb
+  updated_at = %(updated_at)s, lane_recent = %(lane_recent)s::jsonb, history_weight = %(history_weight)s
 WHERE disposition_id = %(disposition_id)s
 """
 INSERT_HISTORY_SQL = """
@@ -110,6 +113,7 @@ def node_from_row(r: Mapping[str, Any]) -> Node:
         chosen_count=int(r["chosen_count"] or 0), first_seen_at=r["first_seen_at"],
         last_reinforced_at=r["last_reinforced_at"], retired_at=r["retired_at"], updated_at=r["updated_at"],
         lane_recent=_lane_recent(r.get("lane_recent")),
+        last_folded_at=r.get("last_folded_at"), history_weight=float(r.get("history_weight") or 0.0),
     )
 
 
@@ -121,6 +125,7 @@ def node_row(n: Node) -> dict:
         "lane_counts": json.dumps(n.lane_counts, sort_keys=True), "chosen_count": int(n.chosen_count),
         "first_seen_at": n.first_seen_at, "last_reinforced_at": n.last_reinforced_at, "retired_at": n.retired_at,
         "updated_at": n.updated_at, "lane_recent": _json_lane_recent(n),
+        "last_folded_at": n.last_folded_at, "history_weight": float(n.history_weight),
     }
 
 
@@ -143,9 +148,11 @@ def cursor_rows(cursors: Mapping[str, Cursor], now: datetime) -> list[dict]:
 
 def node_key(n: Node) -> tuple:
     """Every column the weight/status-only UPDATE does NOT write (it writes status, weight,
-    retired_at, updated_at, lane_recent). If any of these moved, the node gets a full upsert."""
+    retired_at, updated_at, lane_recent, history_weight). If any of these moved, the node gets a
+    full upsert."""
     return (n.origin, n.label, n.label_similarity, n.centroid_n, n.evidence_count, n.chosen_count,
-            json.dumps(n.lane_counts, sort_keys=True), n.first_seen_at, n.last_reinforced_at)
+            json.dumps(n.lane_counts, sort_keys=True), n.first_seen_at, n.last_reinforced_at,
+            n.last_folded_at)
 
 
 def split_nodes(nodes: Sequence[Node], loaded: Mapping[str, tuple]) -> tuple[list[dict], list[dict]]:
@@ -156,7 +163,7 @@ def split_nodes(nodes: Sequence[Node], loaded: Mapping[str, tuple]) -> tuple[lis
         if prev is not None and prev == node_key(n):
             light.append({"disposition_id": n.disposition_id, "status": n.status, "weight": float(n.weight),
                           "retired_at": n.retired_at, "updated_at": n.updated_at,
-                          "lane_recent": _json_lane_recent(n)})
+                          "lane_recent": _json_lane_recent(n), "history_weight": float(n.history_weight)})
         else:
             full.append(node_row(n))
     return full, light
@@ -179,7 +186,9 @@ class PersonalityStore:
 
     async def load_cursors(self) -> dict[str, Cursor]:
         async with self._pool.connection() as conn:
-            rows = await (await conn.execute("SELECT source, cursor_at, cursor_ref FROM personality_cursor")).fetchall()
+            rows = await (await conn.execute(
+                "SELECT source, cursor_at, cursor_ref FROM personality_cursor WHERE source <> %(beat)s",
+                {"beat": TICK_HEARTBEAT})).fetchall()
         return {r["source"]: Cursor(r["cursor_at"], r["cursor_ref"] or "") for r in rows}
 
     async def existing_evidence_ids(self, ids: Iterable[str]) -> set[str]:
@@ -207,6 +216,10 @@ class PersonalityStore:
                         await cur.executemany(INSERT_HISTORY_SQL, [history_row(h) for h in w.history])
                     if w.cursors:
                         await cur.executemany(UPSERT_CURSOR_SQL, cursor_rows(w.cursors, w.now))
+                    # Heartbeat: the frame's generated_at is the last COMMITTED tick, so a reducer
+                    # that stops committing reads as stale to every lane (cue max_age).
+                    await cur.execute(UPSERT_CURSOR_SQL, {"source": TICK_HEARTBEAT, "at": w.now,
+                                                          "ref": None, "now": w.now})
 
     # --- reads for the routes ------------------------------------------------------------------
 
@@ -233,9 +246,14 @@ class PersonalityStore:
                     "AND occurred_at > %(since)s",
                     {"lane": CHOICE_LANE, "since": now - timedelta(days=CHOICE_STYLE_WINDOW_DAYS)})).fetchall()
                 n_ev = (await (await conn.execute("SELECT count(*) AS n FROM personality_evidence")).fetchone())["n"]
+                beat = await (await conn.execute(
+                    "SELECT cursor_at FROM personality_cursor WHERE source = %(s)s", {"s": TICK_HEARTBEAT})).fetchone()
         style = choice_style_from_rows(choice_rows, now=now, window_days=CHOICE_STYLE_WINDOW_DAYS)
         nodes = [node_from_row({**r, "centroid": []}) for r in active]
-        frame = project_frame(nodes, now=now, choice_style=style, evidence_rows=int(n_ev), warnings=warnings)
+        # "As of" the last committed tick, never the request time: before the first commit the
+        # frame is dated at the epoch, so every reader sees it as stale rather than fresh.
+        as_of = beat["cursor_at"] if beat else datetime(1970, 1, 1, tzinfo=timezone.utc)
+        frame = project_frame(nodes, now=as_of, choice_style=style, evidence_rows=int(n_ev), warnings=warnings)
         return frame.model_copy(update={"active_count": counts.get("active", 0),
                                         "candidate_count": counts.get("candidate", 0),
                                         "retired_count": counts.get("retired", 0)})

@@ -309,9 +309,10 @@ class PersonalityDriver:
                 "tick_sec": self._tick_sec}
 
     def frame_warnings(self, now: datetime) -> list[str]:
-        """Warnings carried into the frame: the last tick's, plus staleness/failure."""
+        """Warnings carried into the frame: staleness/failure FIRST (they must survive the 20 cap),
+        then the last tick's own warnings."""
         s = self.stats
-        out = list(s.warnings)
+        out: list[str] = []
         if s.last_error:
             out.append(f"last_tick_failed:{s.last_error.split(':', 1)[0]}")
         if s.last_tick_at is None:
@@ -320,4 +321,5 @@ class PersonalityDriver:
             age = (now - datetime.fromisoformat(s.last_tick_at)).total_seconds()
             if age > 3 * self._tick_sec:
                 out.append(f"stale:{int(age)}s_since_last_tick")
+        out.extend(s.warnings)
         return out[:20]

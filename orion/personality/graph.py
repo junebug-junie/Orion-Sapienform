@@ -109,6 +109,11 @@ class Node:  # mirrors personality_disposition
     updated_at: datetime  # weight is "as of updated_at"; fade uses now - updated_at
     # Per-lane recent hits (habituation), faded with the weight, "as of updated_at".
     lane_recent: dict[str, float] = field(default_factory=dict)
+    # When this graph last folded evidence into the node (wall clock, not the evidence's own time):
+    # the candidate TTL runs from here, so an old seed or a backlog row is not retired at birth.
+    last_folded_at: datetime | None = None
+    # Weight at the last history row: history compares against it, so slow fade shows up.
+    history_weight: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -223,7 +228,8 @@ def _snap(node: Node) -> _Snap:
 class _Tick:
     """Working copies of the input nodes plus nodes born this tick, with before-snapshots."""
 
-    def __init__(self, nodes: Sequence[Node]):
+    def __init__(self, nodes: Sequence[Node], now: datetime):
+        self.now = now
         self.nodes: list[Node] = [_copy(n) for n in nodes]
         self.before: dict[int, Optional[_Snap]] = {id(n): _snap(n) for n in self.nodes}
         self.dim: Optional[int] = next((len(n.centroid) for n in self.nodes if n.centroid), None)
@@ -273,6 +279,7 @@ class _Tick:
         gain = node.weight - before
         node.evidence_count += 1
         node.lane_counts[lane] = node.lane_counts.get(lane, 0) + 1
+        node.last_folded_at = self.now
         if lane == CHOICE_LANE:
             node.chosen_count += 1
         last = _aware(node.last_reinforced_at)
@@ -296,11 +303,13 @@ class _Tick:
         origin = ORIGIN_SEED if lane == SEED_LANE else origin
         node = Node(
             disposition_id=_node_id(ev.evidence_id), origin=origin, status="candidate",
-            label=_clip_label(ev.excerpt), label_similarity=1.0, centroid=list(emb), centroid_n=1,
+            # The founding excerpt starts as close as a typical member (the match threshold), so
+            # later evidence nearer the drifting centroid can take the label (at 1.0 it never could).
+            label=_clip_label(ev.excerpt), label_similarity=params.match_threshold, centroid=list(emb), centroid_n=1,
             weight=gain, evidence_count=1, lane_counts={lane: 1},
             chosen_count=1 if lane == CHOICE_LANE else 0, first_seen_at=ev.occurred_at,
             last_reinforced_at=ev.occurred_at, retired_at=None, updated_at=now,
-            lane_recent={lane: 1.0},
+            lane_recent={lane: 1.0}, last_folded_at=now,
         )
         # Id collision with an existing (e.g. retired) node: derive a distinct id deterministically.
         taken = {n.disposition_id for n in self.nodes}
@@ -334,7 +343,8 @@ class _Tick:
                     and node.evidence_count >= params.promote_min_evidence):
                 node.status = "active"
             if node.status == "candidate":
-                last = _aware(node.last_reinforced_at)
+                last = max((t for t in (_aware(node.last_reinforced_at), _aware(node.last_folded_at))
+                            if t is not None), default=None)
                 if last is not None and _days(now - last) > params.candidate_ttl_days:
                     node.status, node.retired_at, node.updated_at = "retired", now, now
             elif node.status == "active" and node.weight < params.retire_below_weight:
@@ -348,7 +358,7 @@ class _Tick:
             if before is not None and _snap(node) == before:
                 continue
             changed.append(node)
-            w0 = before.weight if before is not None else 0.0
+            w0 = node.history_weight if before is not None else 0.0
             status_changed = before is None or before.status != node.status
             if w0 == 0.0:
                 weight_moved = node.weight != 0.0
@@ -357,6 +367,7 @@ class _Tick:
             if weight_moved or status_changed:
                 history.append(HistoryRow(node.disposition_id, now, node.weight, node.status,
                                           node.evidence_count))
+                node.history_weight = node.weight
         return FoldResult(nodes=changed, evidence_rows=list(self.evidence_rows), history=history)
 
 
@@ -412,7 +423,7 @@ def _ingest(tick: _Tick, evidence: Sequence[Evidence], *, now: datetime, params:
 
 def apply_fade(nodes: list[Node], *, now: datetime, params: GraphParams = DEFAULT_PARAMS) -> FoldResult:
     """Fade every non-retired node to ``now`` and apply status rules. Inputs are not mutated."""
-    tick = _Tick(nodes)
+    tick = _Tick(nodes, now)
     tick.fade(now, params)
     tick.statuses(now, params)
     return tick.result(now, params)
@@ -421,7 +432,7 @@ def apply_fade(nodes: list[Node], *, now: datetime, params: GraphParams = DEFAUL
 def fold(nodes: list[Node], evidence: Sequence[Evidence], *, now: datetime,
          params: GraphParams = DEFAULT_PARAMS) -> FoldResult:
     """Fade to ``now``, fold evidence in occurred_at order, then apply status rules."""
-    tick = _Tick(nodes)
+    tick = _Tick(nodes, now)
     tick.fade(now, params)
     _ingest(tick, evidence, now=now, params=params, lane_override=None,
             origin=ORIGIN_RECURRENCE, eligible=lambda n: True)
@@ -433,7 +444,7 @@ def seed_nodes(seeds: Sequence[Evidence], *, now: datetime,
                params: GraphParams = DEFAULT_PARAMS) -> FoldResult:
     """Each seed becomes a ``seed_self_inquiry`` candidate (lane ``self_inquiry_seed``), unless it
     matches a seed node created earlier in this same call. Seeds never count toward promotion."""
-    tick = _Tick([])
+    tick = _Tick([], now)
     _ingest(tick, seeds, now=now, params=params, lane_override=SEED_LANE,
             origin=ORIGIN_SEED, eligible=lambda n: n.origin == ORIGIN_SEED)
     tick.statuses(now, params)

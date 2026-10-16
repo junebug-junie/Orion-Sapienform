@@ -55,6 +55,7 @@ def _node(**kw) -> Node:
     # Weight is derived from lane_recent; keep fixtures consistent with that.
     base.setdefault("lane_recent", {k: float(v) for k, v in base["lane_counts"].items()})
     base.setdefault("weight", _derived_weight(base["lane_recent"], DEFAULT_PARAMS))
+    base.setdefault("history_weight", base["weight"])
     return Node(**base)
 
 
@@ -260,7 +261,7 @@ def test_match_reinforces_and_far_evidence_creates_candidate():
     assert new[0].disposition_id.startswith("disp-") and len(new[0].disposition_id) == 21
     assert new[0].weight == pytest.approx(math.log(2)) and new[0].evidence_count == 1
     assert new[0].lane_recent == {"dream": 1.0}
-    assert new[0].label_similarity == 1.0 and new[0].centroid_n == 1
+    assert new[0].label_similarity == DEFAULT_PARAMS.match_threshold and new[0].centroid_n == 1
     rows = {r.disposition_id: r for r in res.evidence_rows}
     assert set(rows) == {"d1", new[0].disposition_id}
     # (g) weight_delta is the actual weight change, including the capped lane.
@@ -484,3 +485,42 @@ def test_flooded_lane_counter_is_clamped_so_a_quiet_theme_fades_in_weeks():
     later = apply_fade([n], now=NOW + timedelta(days=70)).nodes[0]
     assert later.status == "retired"
     assert apply_fade([n], now=NOW + timedelta(days=21)).nodes[0].status == "active"
+
+
+# --- Full-stack review fixes (2026-10-16) --------------------------------------------------------
+
+def test_founding_label_can_be_replaced_by_closer_evidence():
+    # Founding label started at similarity 1.0, which no later evidence could beat: frozen forever.
+    res = fold([], [_ev(_axis(0, 0.5), excerpt="founding words", at=NOW - timedelta(minutes=2))], now=NOW)
+    node = res.nodes[0]
+    closer = fold([node], [_ev(_axis(0, 0.45), excerpt="closer words", at=NOW - timedelta(minutes=1))],
+                  now=NOW).nodes[0]
+    assert closer.label == "closer words"
+
+
+def test_old_seed_is_not_retired_at_birth():
+    old = NOW - timedelta(days=9)
+    res = seed_nodes([_ev(_axis(2), "self_inquiry_seed", at=old)], now=NOW)
+    assert res.nodes[0].status == "candidate" and res.nodes[0].last_folded_at == NOW
+    # The TTL runs from when the graph folded it: retired 8 days after that, not before.
+    assert apply_fade(res.nodes, now=NOW + timedelta(days=6)).nodes[0].status == "candidate"
+    assert apply_fade(res.nodes, now=NOW + timedelta(days=8)).nodes[0].status == "retired"
+
+
+def test_backlog_evidence_hours_old_is_not_retired_in_the_same_tick():
+    res = fold([], [_ev(_axis(3), "dream", at=NOW - timedelta(days=10))], now=NOW)
+    assert res.nodes[0].status == "candidate"
+
+
+def test_history_records_slow_fade_once_it_adds_up():
+    # Each 10-minute tick fades ~0.02%; comparing tick-to-tick never crossed 1%, so the sparkline
+    # stayed flat while a node decayed. History compares against the last recorded weight.
+    node = _node(updated_at=NOW)
+    recorded = []
+    for k in range(1, 6 * 24 * 3):  # three days of 10-minute ticks
+        res = apply_fade([node], now=NOW + timedelta(minutes=10 * k))
+        if res.nodes:
+            node = res.nodes[0]
+        recorded += res.history
+    assert recorded, "accumulated fade must reach the history"
+    assert recorded[-1].weight < recorded[0].weight

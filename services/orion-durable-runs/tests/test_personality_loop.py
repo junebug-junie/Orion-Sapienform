@@ -214,7 +214,8 @@ def test_commit_tick_is_one_transaction_in_migration_order():
     assert kinds[0] == "begin" and kinds[-1] == "commit" and kinds.count("begin") == 1
     sqls = [e[1] for e in pool.log if e[0] in ("execute", "executemany")]
     assert "statement_timeout" in sqls[0]
-    assert sqls[1:] == [INSERT_EVIDENCE_SQL, UPSERT_NODE_SQL, UPDATE_NODE_WEIGHT_SQL, INSERT_HISTORY_SQL, UPSERT_CURSOR_SQL]
+    assert sqls[1:] == [INSERT_EVIDENCE_SQL, UPSERT_NODE_SQL, UPDATE_NODE_WEIGHT_SQL, INSERT_HISTORY_SQL, UPSERT_CURSOR_SQL,
+                       UPSERT_CURSOR_SQL]  # last: the tick heartbeat the frame is dated by
     assert "ON CONFLICT (evidence_id) DO NOTHING" in INSERT_EVIDENCE_SQL
     assert "ON CONFLICT (disposition_id, at) DO NOTHING" in INSERT_HISTORY_SQL
     by_sql = {e[1]: e[2] for e in pool.log if e[0] == "executemany"}

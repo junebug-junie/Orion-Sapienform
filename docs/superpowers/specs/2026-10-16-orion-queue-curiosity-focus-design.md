@@ -92,6 +92,9 @@ Paths that exist but are wrong for this:
    `focus_disposition` on its own `:TurnOutcome`. Missing reads as unknown, never as explored.
    `curiosity` shows queued -> taken by run X -> disposition / expired / failed.
 
+As built, `origin` is supplied by Orion (Juniper's rule applies to the label); the code cannot
+verify that Juniper named the topic. Accepted for this patch; the chat correlation id is stored.
+
 ### Expiry measured (2026-10-16)
 
 `durable_admission_runs`, regular (non-urgent) `curiosity.investigate` runs on the investigate

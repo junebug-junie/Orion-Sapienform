@@ -119,12 +119,12 @@ window and covers one whole missed day. Kept at 48 h.
 ```text
 # Postgres lifecycle on a throwaway postgres:16 (and the in-memory fake, same scenarios)
 ORION_MEMORY_EPISODE_TEST_DATABASE_URL=... pytest orion/curiosity/tests/test_focus_lifecycle.py
-  -> 43 passed (15 scenarios x {fake, postgres} + helpers)
-pytest services/orion-hub/tests/test_curiosity_focus.py            -> 31 passed
+  -> 54 passed (20 scenarios x {fake, postgres} + helpers)
+pytest services/orion-hub/tests/test_curiosity_focus.py            -> 37 passed
 pytest orion/introspect/tests orion/harness/tests/test_claim_gate.py -> all passed
 pytest tests/test_curiosity_atlas_template.py tests/test_curiosity_atlas.py -> all passed (node render)
-pytest services/orion-hub/tests/test_curiosity_*.py tests/test_orion_day_*.py + evals -> 594 passed, 3 skipped
-pytest orion/harness orion/curiosity orion/introspect tests/test_curiosity_*.py -> 1513 passed, 18 skipped
+pytest services/orion-hub/tests/test_curiosity_*.py tests/test_orion_day_*.py + evals -> 600 passed, 3 skipped
+pytest orion/harness orion/curiosity orion/introspect tests/test_curiosity_*.py (with Postgres) -> 1542 passed, 3 skipped
 pytest services/orion-harness-governor/tests -> 85 passed
 CI-shaped combined process (orion-reading-tests list incl. new files) -> 786 passed, 20 skipped
 python scripts/check_definition_drift.py --gate      -> PASS (re-locked: +1 channel)
@@ -136,12 +136,17 @@ auto_apply_refusals(migration, fresh DB)             -> []
 git diff --check                                      -> clean
 ```
 
-Mutation check (16 mutations, each must fail the focus tests): Juniper protection off; take
+Mutation check (27 mutations, each must fail the focus tests; 16 before review, 11 for the review
+fixes): Juniper protection off; take
 ignores expiry (SQL); stamp may downgrade `ran` (SQL); release after stamp (SQL); replace leaves
 the old row pending (SQL); missing disposition reads explored; cancel-before-seen not released;
 take on an unreadable graph; loop ignores kill switch; recall ignores the focus; responder accepts
 curiosity turns; responder ignores kill switch; governor skips the focus gate; claim gate passes
-everything; failed durable run settles nothing; kickoff hides the focus. Result: ALL KILLED.
+everything; failed durable run settles nothing; kickoff hides the focus; graph-unread retry erases
+the disposition; no stale sweep; completed run not settled; raised turn not stamped; mid-turn
+cancel leaves taken; curiosity reads do not verify; template pre-fills explored; dead retry
+reported queued; clear hides expiry; run focus extra bloated; focus why unclipped.
+Result: ALL KILLED.
 
 ## Evals run
 
@@ -165,7 +170,45 @@ Live path: UNVERIFIED.
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+Code review ran in a subagent (orion-repo-agent, read-only). All MUST and SHOULD findings fixed
+in `ea23f87a5`; each fix is covered by a test that a mutation proved can fail.
+
+- Finding (MUST): `curiosity` results with a focus went over the 12000-char MCP budget (run list
+  18,878 chars; focus list up to 29,964 with escape-heavy text).
+  - Fix: run items carry only `{focus_id, status, disposition kind}`; focus items clip question /
+    why / story on serialized length and say nothing twice.
+  - Evidence: worst-case tests at the MCP server's own serialization (`ensure_ascii=False`,
+    pinned to `orion/introspect/mcp_server.py`): focus list 10,633, run list with focus 11,878.
+- Finding (MUST): the claim gate would mark a real `focus_id` that Orion read back with
+  `curiosity(kind=focus)` as unverified and append "Nothing was queued" (false negative).
+  - Fix: `curiosity` results also verify a focus id; tools are matched by name only (not by a
+    string in some other tool's arguments); the notice now says "unknown", never "nothing queued".
+  - Evidence: `test_a_focus_id_read_back_with_the_curiosity_tool_is_verified`,
+    `test_a_tool_whose_arguments_merely_mention_the_name_does_not_count`.
+- Finding (SHOULD): the `:TurnOutcome` template pre-filled `focus_disposition: "explored"`, so a
+  run that copied it would read explored without deciding.
+  - Fix: a placeholder (`"<explored | set_aside: why not>"`) that parses as unknown if copied.
+  - Evidence: `test_the_kickoff_template_value_is_a_placeholder_that_reads_unknown`.
+- Finding (SHOULD): a focus could read "taken" forever (Hub cancelled mid-turn, `_generate`
+  raised, admission unconfirmed, an error before dispatch).
+  - Fix: mid-turn cancel and a raised turn stamp `failed`; `take_focus` sweeps taken rows with no
+    end after 48 h to `failed` with `turn_ok` NULL ("end never recorded"); a late stamp still wins.
+  - Evidence: lifecycle tests on Postgres + fake; `test_a_raised_turn_fails_the_focus...`.
+- Finding (SHOULD): a completed durable run whose stamp write failed was never settled.
+  - Fix: on `completed`, a still-taken focus is stamped (disposition re-read).
+  - Evidence: `test_a_completed_durable_run_stamps_a_focus_its_turn_end_missed`.
+- Finding (SHOULD): a retry with an unreadable graph erased a known disposition.
+  - Fix: `STAMP_SQL` keeps the stored disposition when `graph_read` is false.
+  - Evidence: `test_an_unreadable_graph_on_a_retry_keeps_the_known_disposition` (Postgres + fake).
+- Finding (SHOULD): turn-end stamping was only pinned by counting source lines.
+  - Fix: behavioral tests through `_turn_result_for`: empty attempt -> failed, retry -> ran, cache
+    hit does not re-stamp, another line's tag never stamps, a raised turn -> failed.
+- Finding (SHOULD): the run chip said "unknown" for failed / unfinished runs.
+  - Fix: chip wording follows the focus status. Evidence: node render test.
+- NITs fixed: repeating a replaced/expired/cleared focus in the same chat turn is refused (was
+  ok=true with nothing queued); Clear never hides an expiry.
+- NITs left (see Risks): model-supplied `origin`; `<RUN_ID>` token inside a focus question gets
+  substituted; `ORDER BY written_at` mixes types if a run writes two dispositions.
 
 ## Restart required
 
@@ -196,7 +239,21 @@ orion-hub.
 
 ## Risks / concerns
 
-RISKS_PLACEHOLDER
+- Severity: medium. Concern: `origin` is supplied by Orion. Orion could tag its own choice
+  `juniper` and make it unreplaceable by itself. Mitigation: the design asks Orion to use
+  `juniper` only when Juniper named the topic; the chat correlation id is stored, so a mislabel is
+  traceable; Juniper can always Clear in Hub or queue her own. Not enforced in code.
+- Severity: medium. Concern: live path UNVERIFIED -- no deploy from this branch. Mitigation:
+  acceptance check 8 after deploy (log lines above with one chat correlation id).
+- Severity: low. Concern: the run decides its own disposition; nothing grades whether "explored"
+  is true (by design: no semantic judge). Mitigation: the disposition is Orion's own statement,
+  shown as such, next to the run's write-up.
+- Severity: low. Concern: a `<RUN_ID>` token typed inside a focus question is replaced with the
+  run id by the kickoff's placeholder substitution. Mitigation: cosmetic; left as is.
+- Severity: low. Concern: run-list budget headroom is ~120 chars in the synthetic worst case
+  (11,878 / 12,000). Mitigation: the worst-case test fails before a future field can overflow it.
+- Severity: low. Concern: if a run writes two `:TurnOutcome` nodes with different dispositions,
+  `ORDER BY written_at` may pick either when the types differ (known hazard, worldview.py).
 
 ## PR link
 

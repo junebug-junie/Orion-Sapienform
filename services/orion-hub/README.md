@@ -3696,6 +3696,12 @@ Design:
   `NULL` = unknown, never explored. An empty or failed turn is `failed` and is
   never re-queued. Only a run cancelled before its turn began gives the focus
   back (`pending`, or `replaced` if Orion queued a newer one meanwhile).
+  A focus still `taken` 48 h after it was taken with no recorded end (Hub died
+  mid-turn, admission never confirmed) is marked `failed` with `turn_ok` NULL
+  ("end never recorded"); a late turn end can still stamp it `ran`.
+- **Trust note.** `origin` is Orion's own label; the code does not check that
+  Juniper really named the topic. The chat correlation id is stored, and
+  Juniper can always Clear it or queue her own.
 - **Reading it back.** `curiosity` with `kind=focus` lists recent focuses with
   a one-line story: queued -> taken by run X -> disposition, or expired /
   replaced / cleared / failed. Run items that took a focus carry `extra.focus`.

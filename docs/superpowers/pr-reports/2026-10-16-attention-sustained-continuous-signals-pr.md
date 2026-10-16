@@ -44,6 +44,39 @@ Frames whose history covers at least 3 days (7,960 frames; the history table kee
 so early frames re-judge their past readings against a shorter week): no winner 72.7%,
 bus_synaptic 1.0%, biometrics 0.21%.
 
+### Sensitivity: the atlas removal (PR #2714) as a step change in biometrics
+
+PR #2714 drops atlas's 8 frozen keys from the biometrics mean, so biometrics readings grow by
+about 44/36. Each reading is judged against its own trailing week, and that week still holds the
+smaller atlas-era readings. Until the week refills (up to 7 days), new readings rank higher than
+they should. The replay models this. Every biometrics reading from 2026-10-13 00:00 UTC onwards is
+multiplied by 44/36, and the earlier readings stay as recorded. Biometrics is re-scored from
+scratch at every frame. The control run uses the same path with a factor of 1.0.
+(`replay_attention_sustained_body.py --scale-node node:substrate.biometrics --scale-factor
+1.2222222 --scale-from 2026-10-13T00:00:00+00:00`)
+
+| biometrics win share | control (x1.0) | scaled (x44/36) |
+|---|---|---|
+| rule off, 3.2 days after the change (6,177 frames) | 8.2% | 12.8% |
+| rule on, 3.2 days after the change | 0.31% | 0.70% |
+| rule on, first 24 h (1,977 frames) | 0.0% | 0.56% |
+| rule on, first 72 h (5,900 frames) | 0.32% | 0.73% |
+
+No win in any of these runs has a dwell of 300 s or less.
+
+Verdict: the sustained check absorbs most of the transient. Without the rule, biometrics would
+gain about 4.6 points of extra wins; with it, the gain is about 0.4 points. The remainder is real
+runs of more than 5 minutes, in which the larger mean stays in the top decile of a week that is
+still mostly on the old scale. No handling is added and there is no new knob: the transient ends
+when the week refills. One consequence for live checking: if #2714 and this PR deploy in the
+same week, biometrics can read 0.5-0.7% of frames. That is above this PR's live acceptance line
+of 0.5%. Read the 24 h live check with this in mind, or run it after the window refills.
+
+Open question, not handled here: hecate is on-demand. Its 9 biometrics keys have been frozen
+since 2026-10-15 while it is off, and they dilute the same mean in the same way atlas's did.
+Whether an offline on-demand host should count in the biometrics mean is a separate question
+for the biometrics owner.
+
 ## Current architecture
 
 - `orion/attention/world_first.py` `judge_candidate`: a body candidate was eligible at band

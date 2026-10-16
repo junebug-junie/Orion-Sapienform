@@ -48,6 +48,11 @@ Escape hatches live INSIDE migration files (an exception in someone's head is dr
     -- ORION-MIGRATION-SUPERSEDED-BY: <file.sql>         (absence of this file's objects is expected)
     -- ORION-MIGRATION-ABSENT-OK: <object> <reason>      (object intentionally absent; reason required;
                                                           <object> is a table/index/sequence name or table.column)
+    -- ORION-MIGRATION-APPLY-WITH: scripts/<name>.sh|.py (apply through this script, never raw psql;
+                                                          printed as the apply command, refused by the
+                                                          post-pull auto-apply). Legacy prose still counts,
+                                                          but only with an apply verb right before the
+                                                          path ("Run scripts/x.sh"); a bare mention does not.
 
 This module is pure (no DB, no git); callers pass file text, commit times and live state.
 """
@@ -373,7 +378,58 @@ def parse_migration(sql: str) -> ParsedMigration:
 _SUPERSEDED = re.compile(r"--\s*ORION-MIGRATION-SUPERSEDED-BY:\s*(?P<file>\S+)", re.I)
 _NOT_A_MIGRATION = re.compile(r"--\s*ORION-MIGRATION-NOT-A-MIGRATION:\s*(?P<why>.+)", re.I)
 _ABSENT_OK = re.compile(r"--\s*ORION-MIGRATION-ABSENT-OK:[ \t]*(?P<obj>[^\s]*)[ \t]*(?P<why>[^\n]*)", re.I)
-_HEADER_SCRIPT = re.compile(r"\bscripts/[\w./-]+\.(?:sh|py)\b")
+# A migration that must NOT be applied with plain psql names the script that applies it.
+# Use the explicit marker line. Legacy prose is still honoured best-effort, and ONLY when the
+# sentence is an apply instruction: "apply it through/via/with/using scripts/x", "Apply with:
+# scripts/x", or a sentence that STARTS with "Run [it/this file] [via...] scripts/x". A script
+# merely mentioned in a header -- a writer, a reader, a checker, an undo tool ("Undo: run
+# scripts/undo.py"), "do not run scripts/x" -- is prose, not the apply route. Treating every
+# mention as the route refused manual_migration_vision_split_v1.sql at post-pull (2026-10-16),
+# because its header names scripts/undo_vision_split.py as the undo tool. Prose wordings
+# outside this rule are not recognised: use the marker.
+_SCRIPT_PATH = r"scripts/[\w./-]+\.(?:sh|py)\b"
+_APPLY_WITH = re.compile(r"^[ \t]*--[ \t]*ORION-MIGRATION-APPLY-WITH:[ \t]*(?P<val>[^\n]*)$", re.I | re.M)
+# lenient value: `./scripts/x.sh`, backticks and trailing punctuation are fine; a path under
+# another directory (services/foo/scripts/x.sh) is not a repo-root script and is an error.
+_APPLY_WITH_VAL = re.compile(rf"^[`'\"]?(?:\./)?(?P<script>{_SCRIPT_PATH})")
+_WITH_OBJ = r"(?:\s+(?:it|this|this\s+file|the\s+file|this\s+migration))?"
+_SCRIPT_TAIL = rf"\s+[`'\"]?(?:(?:python3?|bash|sh)\s+)?(?:\./)?(?P<script>{_SCRIPT_PATH})"
+_APPLY_PROSE = re.compile(
+    rf"(?<![\w-])apply{_WITH_OBJ}\s+(?:via|through|with|using):?{_SCRIPT_TAIL}", re.I)
+_RUN_PROSE = re.compile(
+    rf"(?<![\w-])run{_WITH_OBJ}(?:\s+(?:via|through|with|using))?:?{_SCRIPT_TAIL}", re.I)
+
+
+def _starts_sentence(text: str, pos: int) -> bool:
+    before = text[:pos].rstrip()
+    return not before or before[-1] in ".!?"
+
+
+def header_apply_script(text: str) -> tuple[Optional[str], Optional[str]]:
+    """(script, marker_error) for the script a migration says to apply it through.
+
+    The ``ORION-MIGRATION-APPLY-WITH`` marker counts anywhere in the file and wins. Otherwise
+    legacy prose in the comment lines of the first 60 lines counts, under the rule above."""
+    lines = text.splitlines()
+    markers = list(_APPLY_WITH.finditer(text))
+    if markers:
+        scripts = []
+        for m in markers:
+            v = _APPLY_WITH_VAL.match(m["val"].strip())
+            if not v:
+                return None, ("APPLY-WITH marker needs a repo-root scripts/<name>.sh|.py path, got "
+                              f"{m['val'].strip()!r}; fix the marker -- do not apply this file with plain psql")
+            scripts.append(v["script"])
+        if len(set(scripts)) > 1:
+            return None, (f"APPLY-WITH markers disagree: {sorted(set(scripts))}; fix the marker -- "
+                          "do not apply this file with plain psql")
+        return scripts[0], None
+    prose = " ".join(ln.lstrip()[2:].strip() for ln in lines[:60] if ln.lstrip().startswith("--"))
+    hits = [m for m in _APPLY_PROSE.finditer(prose)]
+    hits += [m for m in _RUN_PROSE.finditer(prose) if _starts_sentence(prose, m.start())]
+    if not hits:
+        return None, None
+    return min(hits, key=lambda m: m.start())["script"], None
 _REQUIRED_BY = re.compile(r"^[ \t]*--[ \t]*ORION-MIGRATION-REQUIRED-BY:[ \t]*(?P<val>[^\n]*)$", re.I | re.M)
 _REQUIRED_NONE = re.compile(r"^none(?![A-Za-z0-9_-])[\s:;,()\-\u2013\u2014]*(?P<why>.*)$", re.I)
 _DESTRUCTIVE = re.compile(r"^[ \t]*--[ \t]*DESTRUCTIVE\b", re.M)
@@ -489,7 +545,8 @@ def deploy_gate(report: DriftReport, required: Iterable[MigrationFile], service:
         stray = sorted((findings[k] for k in own if k in findings), key=lambda p: (p.kind, p.name))
         if stray:
             blocking.append(FileResult(name=n, in_window=True, changed_at=r.changed_at, status="MISSING",
-                                       problems=stray, header_script=r.header_script))
+                                       problems=stray, header_script=r.header_script,
+                                       apply_with_error=r.apply_with_error))
         elif r.status in ("DATA", "UNKNOWN", "CONDITIONAL"):
             unverifiable.append(r)
     return DeployGate(service=service, required=names, blocking=blocking, unverifiable=unverifiable)
@@ -720,6 +777,7 @@ class FileResult:
     data_statements: int = 0
     marker_error: Optional[str] = None
     header_script: Optional[str] = None
+    apply_with_error: Optional[str] = None   # broken APPLY-WITH marker: no apply command is safe to print
     sticky: bool = False   # already carded: stays red past the window until actually applied
 
     @property
@@ -737,6 +795,8 @@ class FileResult:
     def apply_command(self, repo_rel_dir: str = str(MIGRATION_SUBDIR)) -> str:
         cmd = (f"docker exec -i {SQL_DB_CONTAINER} psql -U postgres -d conjourney -v ON_ERROR_STOP=1 "
                f"< {repo_rel_dir}/{self.name}")
+        if self.apply_with_error:
+            return f"none until the marker is fixed: {self.apply_with_error}"
         if self.header_script:
             return f"{self.header_script} (the file's header says to apply it through this; raw form: {cmd})"
         return cmd
@@ -800,6 +860,7 @@ def evaluate(
     marker_errors: dict[str, str] = {}
     absent_ok: dict[tuple[str, str], str] = {}
     header_scripts: dict[str, str] = {}
+    apply_with_errors: dict[str, str] = {}
     for f in files:
         nam = _NOT_A_MIGRATION.search(f.text)
         if nam:
@@ -819,10 +880,13 @@ def evaluate(
                 continue
             for kind in KINDS:
                 absent_ok[(kind, obj)] = f"{f.name}: {why}"
-        header = "\n".join(line for line in f.text.splitlines()[:60] if line.lstrip().startswith("--"))
-        hs = _HEADER_SCRIPT.search(header)
-        if hs:
-            header_scripts[f.name] = hs.group(0)
+        hs, hs_err = header_apply_script(f.text)
+        if hs_err:
+            apply_with_errors[f.name] = hs_err
+            prev = marker_errors.get(f.name)
+            marker_errors[f.name] = f"{prev}; {hs_err}" if prev else hs_err
+        elif hs:
+            header_scripts[f.name] = hs
         parsed[f.name] = parse_migration(f.text)
 
     # Replay. final[(kind,name)] = (op, seq, file, conditional, table)
@@ -890,6 +954,7 @@ def evaluate(
             continue
         pm = parsed[f.name]
         r.header_script = header_scripts.get(f.name)
+        r.apply_with_error = apply_with_errors.get(f.name)
         r.objects_checked = len({(e.kind, e.name) for e in pm.effects})
         r.data_statements = pm.data_statements
         r.problems = sorted(problems.get(f.name, []), key=lambda p: (p.kind, p.name))

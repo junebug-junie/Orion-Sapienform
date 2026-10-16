@@ -29,7 +29,9 @@ the deploy gate runs) reads as NOT APPLIED (MISSING), and only when ALL of these
     inert: no function call that could run per existing row, no GENERATED, CASCADE, EXECUTE,
     SELECT, SET, quoted identifier, DO/function body or psql meta-command; and on a table that
     already exists live, indexes are CONCURRENTLY and constraints NOT VALID (no long write lock);
-  * its header does not name a script to apply it through, and no marker error.
+  * its header does not name a script to apply it through (``-- ORION-MIGRATION-APPLY-WITH:``, or
+    an apply verb right before the path; a script merely mentioned in prose does not count),
+    and no marker error.
 Every other file is left alone with the reason. APPLIED files are skipped. DATA/CONDITIONAL files
 (the schema cannot show whether they ran) are never auto-applied.
 

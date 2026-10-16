@@ -521,3 +521,27 @@ def test_default_command_refuses_when_the_checker_reads_another_host(world):
     assert world.run([a]) == 2
     assert world.called() == []
     assert any("refusing to write one database and verify another" in x for x in world.lines)
+
+
+def test_vision_split_migration_is_applied_not_refused_for_a_prose_script_mention():
+    """2026-10-16 live refusal: "its header says to apply it through scripts/undo_vision_split.py".
+    The header names that script as the undo tool, not the apply route."""
+    from datetime import datetime, timezone
+    name = "manual_migration_vision_split_v1.sql"
+    files = d.load_files(REPO_ROOT, {}, now=datetime.now(timezone.utc))
+    live = d.LiveState(tables=set(), columns=set(), indexes={}, sequences=set())
+    result = next(f for f in d.evaluate(files, live).files if f.name == name)
+    assert result.header_script is None
+    text = (REPO_ROOT / d.MIGRATION_SUBDIR / name).read_text()
+    it = ap.classify(f"services/orion-sql-db/{name}", text, result, live_tables=set())
+    assert it.action == "apply", it.reason
+
+
+def test_real_apply_script_migration_is_still_refused_with_its_script():
+    from datetime import datetime, timezone
+    name = "manual_migration_gpu_pool_stage5_drop_legacy_tables.sql"
+    files = d.load_files(REPO_ROOT, {}, now=datetime.now(timezone.utc))
+    result = next(f for f in d.evaluate(files, d.LiveState(tables=set(), columns=set(), indexes={},
+                                                               sequences=set())).files if f.name == name)
+    assert result.header_script == "scripts/gpu_pool_stage5_snapshot_and_drop.sh"
+    assert result.apply_command().startswith("scripts/gpu_pool_stage5_snapshot_and_drop.sh")

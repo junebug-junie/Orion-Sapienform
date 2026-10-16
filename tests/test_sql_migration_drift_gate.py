@@ -344,7 +344,10 @@ class TestStatusRules:
         assert d.evaluate(files, live(), now=NOW).red
 
     def test_header_named_script_is_offered_as_the_apply_path(self):
-        sql = "-- PRODUCTION: run scripts/gpu_pool_stage5_snapshot_and_drop.sh, not this file.\ncreate table t (id int);"
+        # The marker is the supported form. "PRODUCTION: run scripts/x" (a "run" after a label colon)
+        # is not recognised as prose: it has the same shape as "Undo: run scripts/undo.py".
+        sql = ("-- PRODUCTION: do not run this file by hand.\n"
+               "-- ORION-MIGRATION-APPLY-WITH: scripts/gpu_pool_stage5_snapshot_and_drop.sh\ncreate table t (id int);")
         r = d.evaluate([mf("m.sql", sql, changed=NOW)], live(), now=NOW)
         assert "scripts/gpu_pool_stage5_snapshot_and_drop.sh" in r.files[0].apply_command()
 
@@ -612,3 +615,110 @@ def test_rollback_files_are_never_replayed(tmp_path):
     assert names == ["manual_migration_x_v1.sql"]
     assert is_rollback_file("manual_migration_x_v1_rollback.sql")
     assert not is_rollback_file("manual_migration_x_v1.sql")
+
+
+class TestHeaderApplyScriptIsOnlyAnApplyRoute:
+    """2026-10-16: post-pull refused manual_migration_vision_split_v1.sql because its header
+    mentions scripts/undo_vision_split.py (the undo tool) in prose. A script path counts as the
+    apply route only via the APPLY-WITH marker or an apply verb directly before the path."""
+
+    # The only migrations whose header really names a non-psql apply route. Classified by eye
+    # over every manual_migration_*.sql header that mentions scripts/ (18 files, 2026-10-16).
+    REAL = {"manual_migration_gpu_pool_stage5_drop_legacy_tables.sql": "scripts/gpu_pool_stage5_snapshot_and_drop.sh"}
+    # Headers that mention a script in prose only (writer / reader / checker / undo tool /
+    # test fixture). Each of these was wrongly read as the apply route before the fix.
+    PROSE_ONLY = {
+        "manual_migration_attention_broadcast_log_v1.sql", "manual_migration_causal_geometry_snapshots_v1.sql",
+        "manual_migration_curiosity_spend_v1.sql", "manual_migration_drive_audits_v2.sql",
+        "manual_migration_endogenous_outreach_decisions_v1.sql", "manual_migration_execution_dispatch_frame_v1.sql",
+        "manual_migration_gateway_capacity_v1.sql", "manual_migration_gpu2_elastic_v1.sql",
+        "manual_migration_orion_day_correction_v1.sql", "manual_migration_policy_decision_frame_v1.sql",
+        "manual_migration_proposal_frame_v1.sql", "manual_migration_reverie_visual_chain.sql",
+        "manual_migration_temporal_self_event_v1.sql", "manual_migration_temporal_self_v1.sql",
+        "manual_migration_thought_decision_day_citations_v1.sql",
+        "manual_migration_vision_presence_transition_v1.sql", "manual_migration_vision_split_v1.sql",
+    }
+
+    def _corpus(self):
+        return {f.name: f for f in d.load_files(REPO_ROOT, {}, now=NOW)}
+
+    def test_corpus_only_the_real_apply_route_is_detected(self):
+        files = self._corpus()
+        r = d.evaluate(list(files.values()), live(), now=NOW)
+        got = {f.name: f.header_script for f in r.files if f.header_script}
+        assert got == self.REAL
+        for name in self.PROSE_ONLY:
+            assert name in files, name
+            header = "\n".join(ln for ln in files[name].text.splitlines()[:60] if ln.lstrip().startswith("--"))
+            assert re.search(r"scripts/[\w./-]+\.(?:sh|py)", header), name  # it still mentions a script
+            assert d.header_apply_script(files[name].text) == (None, None), name
+
+    def test_real_apply_route_uses_the_marker_and_the_old_prose_still_works(self):
+        text = self._corpus()["manual_migration_gpu_pool_stage5_drop_legacy_tables.sql"].text
+        assert "ORION-MIGRATION-APPLY-WITH: scripts/gpu_pool_stage5_snapshot_and_drop.sh" in text
+        no_marker = "\n".join(ln for ln in text.splitlines() if "APPLY-WITH" not in ln)
+        assert d.header_apply_script(no_marker) == ("scripts/gpu_pool_stage5_snapshot_and_drop.sh", None)
+
+    def test_vision_split_header_names_no_apply_route(self):
+        files = self._corpus()
+        r = d.evaluate(list(files.values()), live(), now=NOW)
+        split = next(f for f in r.files if f.name == "manual_migration_vision_split_v1.sql")
+        assert split.header_script is None
+        assert split.apply_command().startswith("docker exec -i ")
+
+    @pytest.mark.parametrize("header, script", [
+        ("-- Run scripts/a.sh, which snapshots first", "scripts/a.sh"),
+        ("-- apply it through scripts/b.py", "scripts/b.py"),
+        ("-- Apply this file via scripts/b2.py", "scripts/b2.py"),
+        ("-- Apply with: scripts/c.sh", "scripts/c.sh"),
+        ("-- run python3 scripts/d.py", "scripts/d.py"),
+        ("-- do not run this by hand. Run\n-- scripts/e.sh instead", "scripts/e.sh"),
+        ("-- ORION-MIGRATION-APPLY-WITH: scripts/g.sh (snapshots first)", "scripts/g.sh"),
+        ("-- ORION-MIGRATION-APPLY-WITH: `./scripts/g2.sh`.", "scripts/g2.sh"),
+        ("-- Run: scripts/h.sh", "scripts/h.sh"),
+        ("-- Run ./scripts/h2.sh", "scripts/h2.sh"),
+        ("-- apply it with: scripts/h3.sh", "scripts/h3.sh"),
+        ("-- Apply with `scripts/h4.sh`", "scripts/h4.sh"),
+        # review 2026-10-16: a "run" that is not an apply instruction must not count
+        ("-- To verify, run scripts/check_sql_migrations_applied.py", None),
+        ("-- Undo: run scripts/undo_vision_split.py", None),
+        ("-- Do not run scripts/x.sh before this", None),
+        ("-- Rollback: run with scripts/undo.py", None),
+        ("-- the writer will run scripts/x.py nightly", None),
+        ("-- so scripts/undo.py can put it back", None),
+        ("-- Single writer: services/orion-hub/scripts/w.py", None),
+        ("-- Check: python3 scripts/check_sql_migrations_applied.py --file x.sql", None),
+        ("-- Marker read by scripts/check_sql_migrations_applied.py.", None),
+        ("-- (and as the fixture scripts/x.sh is tested against)", None),
+        ("-- Reader: orion-hub turn trace (scripts/chat_turn_trace_routes.py)", None),
+        ("create table t (id int); -- Run scripts/not_a_header_line.sh", None),
+    ])
+    def test_phrasings(self, header, script):
+        assert d.header_apply_script(header + "\ncreate table t (id int);") == (script, None)
+
+    def test_bad_or_conflicting_marker_is_a_marker_error_not_a_silent_psql_route(self):
+        bad = mf("m.sql", "-- ORION-MIGRATION-APPLY-WITH: psql by hand\ncreate table t (id int);", changed=NOW)
+        r = d.evaluate([bad], live(), now=NOW).files[0]
+        assert r.header_script is None and "APPLY-WITH" in (r.marker_error or "")
+        two = ("-- ORION-MIGRATION-APPLY-WITH: scripts/a.sh\n-- ORION-MIGRATION-APPLY-WITH: scripts/b.sh\n"
+               "create table t (id int);")
+        assert d.header_apply_script(two)[1] and "disagree" in d.header_apply_script(two)[1]
+
+    def test_marker_counts_past_line_60(self):
+        late = "\n" * 70 + "-- ORION-MIGRATION-APPLY-WITH: scripts/late.sh\ncreate table t (id int);"
+        assert d.header_apply_script(late) == ("scripts/late.sh", None)
+        prose_late = "\n" * 70 + "-- Run scripts/late.sh\ncreate table t (id int);"
+        assert d.header_apply_script(prose_late) == (None, None)   # legacy prose stays header-only
+
+    def test_broken_marker_never_prints_a_psql_apply_command(self):
+        bad = mf("m.sql", "-- ORION-MIGRATION-APPLY-WITH: services/x/scripts/a.sh\ncreate table t (id int);",
+                 changed=NOW)
+        r = d.evaluate([bad], live(), now=NOW).files[0]
+        assert r.apply_with_error and "psql" not in r.apply_command().split("fix the marker")[0]
+        assert r.apply_command().startswith("none until the marker is fixed")
+
+    def test_apply_with_error_keeps_an_earlier_marker_error(self):
+        f = mf("m.sql", "-- ORION-MIGRATION-SUPERSEDED-BY: nope.sql\n-- ORION-MIGRATION-APPLY-WITH: psql\n"
+                        "create table t (id int);", changed=NOW)
+        r = d.evaluate([f], live(), now=NOW).files[0]
+        assert "SUPERSEDED-BY" in r.marker_error and "APPLY-WITH" in r.marker_error

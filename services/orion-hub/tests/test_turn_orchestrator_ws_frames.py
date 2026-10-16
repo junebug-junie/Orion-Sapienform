@@ -1576,3 +1576,65 @@ def test_success_frames_final_omits_source_fetches_from_an_older_governor() -> N
     )
     final_frame = next(f for f in _success_frames(run, correlation_id="c") if f["type"] == "final")
     assert "harness_source_fetches" not in final_frame
+
+
+@pytest.mark.asyncio
+async def test_turn_orchestrator_recent_turns_carry_message_times() -> None:
+    """Live 2026-10-16: the history block had no times, so Orion fused a
+    cut-off turn, "night night", and a message ~9 h later into one moment.
+    A continuity message's "ts" must reach recent_turns[].at and render."""
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="hello",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    harness_client_run = AsyncMock(return_value=harness_run)
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    continuity_messages = [
+        {"role": "user", "content": "night night", "ts": "2026-10-16T07:47:38+00:00"},
+        {"role": "assistant", "content": "Night night, Juniper."},
+        {"role": "user", "content": "what's the latest?", "ts": "2026-10-16T16:56:40+00:00"},
+    ]
+    with patches[0], patches[1], patches[2]:
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="what's the latest?",
+            payload={},
+            continuity_messages=continuity_messages,
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    req = harness_client_run.await_args.args[0]
+    from datetime import datetime, timezone
+
+    assert [m.at for m in req.recent_turns] == [
+        datetime(2026, 10, 16, 7, 47, 38, tzinfo=timezone.utc),
+        None,
+    ]
+    # The real Hub -> governor shape: json over the bus, then model_validate.
+    from orion.schemas.harness_finalize import HarnessRunRequestV1
+
+    wire = req.model_dump(mode="json")
+    assert "at" not in wire["recent_turns"][1]
+    on_governor = HarnessRunRequestV1.model_validate(wire)
+    assert on_governor.recent_turns[0].at == datetime(2026, 10, 16, 7, 47, 38, tzinfo=timezone.utc)
+    assert on_governor.recent_turns[1].at is None
+    from orion.harness.prefix import compile_harness_prefix
+    from orion.schemas.harness_finalize import HarnessRepairOverlayV1
+
+    prompt = compile_harness_prefix(
+        req.thought_event,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message=req.user_message,
+        recent_turns=req.recent_turns,
+        now=datetime(2026, 10, 16, 16, 56, 40, tzinfo=timezone.utc),
+    )
+    assert "- User (Fri Oct 16, 1:47 am): night night" in prompt
+    assert "- Orion (you, prior turn): Night night, Juniper." in prompt
+    assert "Current time: Fri Oct 16, 10:56 am (Juniper's local time)" in prompt

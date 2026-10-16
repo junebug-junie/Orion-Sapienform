@@ -186,6 +186,6 @@ curl -fsS "http://localhost:8220/act/ledger?days=1"
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2710
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

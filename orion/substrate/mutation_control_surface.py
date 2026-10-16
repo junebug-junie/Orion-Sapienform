@@ -69,6 +69,10 @@ class ControlSurfaceWriteError(RuntimeError):
     """
 
 
+class ControlSurfaceReadError(RuntimeError):
+    """A configured durable backend failed a read (distinct from "no row")."""
+
+
 def _decode_json(raw: Any) -> Any:
     if raw is None:
         return None
@@ -163,6 +167,16 @@ class RuntimeControlSurfaceStore:
         return self._last_error is not None
 
     def get(self, key: str) -> dict[str, Any] | None:
+        """Fail-open read: a backend error reads as "no row". Callers that
+        must tell the two apart (rung 6 apply/tuner/runtime) use read()."""
+        try:
+            return self.read(key)
+        except ControlSurfaceReadError:
+            return None
+
+    def read(self, key: str) -> dict[str, Any] | None:
+        """Strict read: None means "no row"; a backend failure raises
+        ControlSurfaceReadError instead of masquerading as "never set"."""
         if self._source_kind == "postgres" and self.postgres_url:
             try:
                 from sqlalchemy import text
@@ -177,7 +191,7 @@ class RuntimeControlSurfaceStore:
                 return json.loads(row[0])
             except Exception as exc:
                 self._last_error = str(exc)
-                return None
+                raise ControlSurfaceReadError(f"control surface read failed for {key!r}: {exc}") from exc
         if self._source_kind == "sqlite" and self.sql_db_path:
             try:
                 with sqlite3.connect(self.sql_db_path) as conn:
@@ -190,7 +204,7 @@ class RuntimeControlSurfaceStore:
                 return json.loads(row[0])
             except Exception as exc:
                 self._last_error = str(exc)
-                return None
+                raise ControlSurfaceReadError(f"control surface read failed for {key!r}: {exc}") from exc
         return self._memory.get(key)
 
     def upsert(self, *, key: str, value: dict[str, Any]) -> None:
@@ -538,3 +552,55 @@ def inspect_chat_reflective_lane_threshold(default: float = 0.75) -> dict[str, A
         "degraded": control_surface_store().degraded(),
         "error": control_surface_store().last_error(),
     }
+
+
+# --- Rung 6: self-tuned prediction expectation (prediction_expectation.py) ---
+
+
+def get_prediction_expectation(
+    domain: str, *, store: RuntimeControlSurfaceStore | None = None, strict: bool = False
+):
+    """Orion's live expectation settings for one prediction-error domain.
+
+    Falls back to the domain's calibrated constants when nothing was ever
+    adopted or the stored value is out of the domain's bounds -- a corrupt
+    setting must never reach the live scorer. ``strict=True`` raises
+    ControlSurfaceReadError on a backend failure (apply, tuner, runtime: a
+    failed read must not be recorded as "the live value is the default").
+    """
+    from orion.substrate.prediction_expectation import domain_specs, expectation_from_payload
+
+    spec = domain_specs()[domain]
+    surface = store or control_surface_store()
+    payload = surface.read(spec.control_surface_key) if strict else surface.get(spec.control_surface_key)
+    expectation = expectation_from_payload(payload, default=spec.default)
+    return expectation if spec.in_bounds(expectation) else spec.default
+
+
+def set_prediction_expectation(
+    domain: str,
+    *,
+    alpha: float,
+    min_variance: float,
+    actor: str,
+    proposal_id: str | None = None,
+    decision_id: str | None = None,
+    store: RuntimeControlSurfaceStore | None = None,
+) -> None:
+    from orion.substrate.prediction_expectation import Expectation, domain_specs
+
+    spec = domain_specs()[domain]
+    expectation = Expectation(alpha=float(alpha), min_variance=float(min_variance))
+    if not spec.in_bounds(expectation):
+        raise ControlSurfaceWriteError(f"prediction_expectation_out_of_bounds:{domain}")
+    (store or control_surface_store()).upsert(
+        key=spec.control_surface_key,
+        value={
+            "surface": spec.control_surface_key,
+            **expectation.as_patch(),
+            "actor": actor,
+            "proposal_id": proposal_id,
+            "decision_id": decision_id,
+            "updated_at": _utc_now().isoformat(),
+        },
+    )

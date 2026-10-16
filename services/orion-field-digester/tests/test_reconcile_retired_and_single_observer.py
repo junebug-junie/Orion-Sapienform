@@ -242,3 +242,32 @@ def test_d3_rename_first_tick_after_deploy_writes_the_same_value_under_the_new_n
     assert "contract_pressure" not in cap
     assert cap["catalog_drift_pressure"] == pytest.approx(0.85 * drift)
     assert out.capability_provenance["capability:transport"]["catalog_drift_pressure"] == "node:athena"
+
+
+def test_retired_lattice_node_deltas_produce_no_perturbations() -> None:
+    """A delta naming a retired host must not resurrect it between reconcile passes.
+
+    Live 2026-10-16: atlas's stale pressure kept emitting active_node_pressure
+    deltas, and the substrate's retired-host prune receipt carries an atlas
+    `suppress` delta whose `before` still lists `availability`."""
+    from app.ingest.state_deltas import delta_to_perturbations
+    from app.tensor.channels import RETIRED_LATTICE_NODES
+    from orion.schemas.state_delta import StateDeltaV1
+
+    assert "node:atlas" in RETIRED_LATTICE_NODES
+    for operation, after, before in (
+        ("reinforce", {"node_id": "atlas", "pressure_score": 0.9, "active_pressures": ["strain", "availability"]}, None),
+        ("suppress", None, {"node_id": "atlas", "pressure_score": 0.9, "active_pressures": ["availability"]}),
+    ):
+        delta = StateDeltaV1(
+            delta_id=f"d_{operation}",
+            target_projection="proj_active_pressure",
+            target_kind="active_node_pressure",
+            target_id="atlas",
+            operation=operation,
+            before=before,
+            after=after,
+            caused_by_event_ids=[],
+            reducer_id="test",
+        )
+        assert delta_to_perturbations(delta) == []

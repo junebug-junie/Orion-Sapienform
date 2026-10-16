@@ -329,7 +329,12 @@ class SubstrateMutationStore:
         if not self._persist_pressure(pressure):
             self._persist()
 
-    def add_proposal(self, proposal: MutationProposalV1, *, priority: int = 50) -> MutationQueueItemV1:
+    def add_proposal(
+        self, proposal: MutationProposalV1, *, priority: int = 50, due_at: datetime | None = None
+    ) -> MutationQueueItemV1:
+        """``due_at`` lets a caller that enqueues *before* running a cycle at
+        tick time ``t`` make the item due at ``t``; the default (wall clock at
+        enqueue) is later than ``t``, which defers its trial to the next tick."""
         existing_queue_item = next((item for item in self._queue.values() if item.proposal_id == proposal.proposal_id), None)
         if existing_queue_item is not None:
             with self._lock:
@@ -344,6 +349,7 @@ class SubstrateMutationStore:
             mutation_class=proposal.mutation_class,
             target_surface=proposal.target_surface,
             priority=priority,
+            **({"due_at": due_at} if due_at is not None else {}),
         )
         self._queue[queue_item.queue_item_id] = queue_item
         if not self._persist_proposal_and_queue_item(proposal, queue_item):
@@ -594,6 +600,15 @@ class SubstrateMutationStore:
 
     def active_surface(self, target_surface: str) -> str | None:
         return self._active_surface_by_target.get(target_surface)
+
+    def has_queued_proposal_for_surface(self, target_surface: str) -> bool:
+        """A proposal for this surface is still waiting for its trial/decision.
+
+        Lets an evidence-derived producer (rung 6's PredictionExpectationTuner)
+        hold off instead of stacking a second proposal on the same surface."""
+        return any(
+            item.target_surface == target_surface and item.status == "queued" for item in list(self._queue.values())
+        )
 
     def queue_status_for_proposal(self, proposal_id: str) -> str | None:
         for item in self._queue.values():

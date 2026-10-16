@@ -9,6 +9,3 @@ nodes:
   athena:
     allow: []
     deny: []
-  atlas:
-    allow: []
-    deny: []

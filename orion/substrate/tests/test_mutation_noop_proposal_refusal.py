@@ -156,7 +156,7 @@ def test_non_routing_surfaces_are_unaffected_by_the_retirement() -> None:
     pressure = MutationPressureV1(
         anchor_scope="orion",
         subject_ref="entity:orion",
-        target_surface="graph_consolidation",
+        target_surface="prompt_profile",
         pressure_kind="runtime_failure",
         pressure_score=8.0,
         evidence_refs=["telemetry:1"],
@@ -165,7 +165,23 @@ def test_non_routing_surfaces_are_unaffected_by_the_retirement() -> None:
     plan = ProposalFactory(routing_surface_reader=_routing_surface()).plan_for_pressure(pressure)
     assert plan.refusal_reason is None
     assert plan.proposal is not None
-    assert plan.proposal.mutation_class == "graph_consolidation_param_patch"
+    assert plan.proposal.mutation_class == "approved_prompt_profile_variant_promotion"
+
+
+def test_graph_consolidation_surface_is_refused_after_its_retirement() -> None:
+    """Retired 2026-10-16 (rung 6 rebuild): the factory no longer builds it."""
+    pressure = MutationPressureV1(
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        target_surface="graph_consolidation",
+        pressure_kind="runtime_executed",
+        pressure_score=12.5,
+        evidence_refs=["telemetry:1"],
+        source_signal_ids=["signal-1"],
+    )
+    plan = ProposalFactory(routing_surface_reader=_routing_surface()).plan_for_pressure(pressure)
+    assert plan.proposal is None
+    assert plan.refusal_reason == _UNKNOWN_SURFACE_REASON
 
 
 # --- _routing_threshold_payloads(): the no-op guard is still correct -------

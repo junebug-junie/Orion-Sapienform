@@ -6,6 +6,7 @@ import itertools
 from datetime import timedelta
 
 import numpy as np
+import pandas as pd
 import pytest
 
 import app.engine as engine_mod
@@ -32,8 +33,11 @@ class FakeStore:
         self.forecasts: list[dict] = []
         self._ids = itertools.count(1)
 
+    cov_raw: dict = {}
+
     def points(self, spec, since, until=None):
-        return [(t, v) for t, v in self.raw if t >= since and (until is None or t < until)]
+        raw = self.cov_raw.get(spec.series_id, self.raw)
+        return [(t, v) for t, v in raw if t >= since and (until is None or t < until)]
 
     def insert_runs(self, rows):
         self.runs.extend(copy.deepcopy(rows))
@@ -253,3 +257,52 @@ def test_one_series_failing_does_not_stop_the_others():
     assert "test.temp" not in {f["series_id"] for f in store.forecasts}
     assert {f["series_id"] for f in store.forecasts} == {"test.other"}
     assert "selection_failed" in eng.state["test.temp"].alerts or "tick_failed" in eng.state["test.temp"].alerts
+
+
+def _cov_setup():
+    doc = spec_doc(train_window="10d", covariates=["test.watts"])
+    doc["series"].append({"series_id": "test.watts", "role": "covariate", "unit": "W",
+                          "source": {"kind": "biometrics", "node": "n", "key": "w"}, "grain": "5min",
+                          "consumers": ["tests"]})
+    reg = parse_registry(doc)
+    spec = reg.get("test.temp")
+    s = daily_series(12, amp=1.0, noise=0.05, seed=3)
+    store = FakeStore(points_of(s))
+    watts = pd.Series(400.0 + 50 * np.sin(np.arange(len(s)) / 20.0), index=s.index)
+    store.cov_raw = {"test.watts": points_of(watts)}
+    return reg, spec, s, store, s.index[-1].to_pydatetime() + timedelta(minutes=5)
+
+
+def test_a_dead_covariate_falls_back_to_the_baseline_for_its_steps_only(monkeypatch):
+    import dataclasses
+    monkeypatch.setattr(engine_mod, "build_models", lambda spec, usable: {
+        k: v for k, v in real_build_models(spec, usable).items() if k in FAST + ("direct_arx",)})
+    reg, spec, s, store, end = _cov_setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.temp"]
+    assert st.served is not None
+    # Serve direct_arx at the 5-min horizon, then kill its covariate for the last hour.
+    sel = dataclasses.replace(st.served.selection, assignment={**st.served.selection.assignment, 5: "direct_arx"})
+    st.served = dataclasses.replace(st.served, selection=sel)
+    origin = eng.latest_complete_bucket(spec, clock.t)
+    series = eng.load_series(spec, clock.t, timedelta(days=10))
+    ok = eng.build_forecast(spec, series, origin, clock.t)
+    assert ok["failed_models"] == {} and ok["payload"].model.startswith("direct_arx@5")
+    cut = end - timedelta(hours=1)
+    store.cov_raw["test.watts"] = [(t, v) for t, v in store.cov_raw["test.watts"] if t < cut]
+    out = eng.build_forecast(spec, series, origin, clock.t)
+    assert "direct_arx" in out["failed_models"] and "no reading" in out["failed_models"]["direct_arx"]
+    assert out["fallback_steps"] >= 1 and not out["payload"].model.startswith("direct_arx")
+    roles = {r["role"] for r in out["rows"]}
+    assert roles == {"champion", "baseline"}          # the baseline blend is still issued
+
+
+def test_restore_refuses_a_selection_made_with_different_covariates():
+    reg, spec, s, store, end = _cov_setup()
+    clock = Clock(end + timedelta(seconds=90))
+    asyncio.run(_engine(reg, store, clock, []).tick(_sync))
+    plain = parse_registry(spec_doc(train_window="10d"))
+    assert _engine(plain, store, clock, []).restore(plain.get("test.temp")) is False
+    assert _engine(reg, store, clock, []).restore(spec) is True

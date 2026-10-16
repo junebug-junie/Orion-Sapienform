@@ -133,6 +133,20 @@ def apply_cabinet_ambient_spike_bump(
     if atom_event is None:
         raise ValueError("grammar_events must include an atom_emitted event")
 
+    # A retired host (catalog `retired_nodes:`) never re-enters the live projection.
+    if catalog.is_retired(spike.node):
+        return projection, ReductionReceiptV1(
+            receipt_id=stable_receipt_id(
+                reducer_id=REDUCER_ID,
+                accepted_event_ids=[],
+                rejected_event_ids=[],
+                merged_event_ids=[],
+                noop_event_ids=[atom_event.event_id],
+            ),
+            noop_event_ids=[atom_event.event_id],
+            created_at=clock,
+        )
+
     updated = deepcopy(projection)
     updated.generated_at = clock
     existing = updated.nodes.get(node_id)

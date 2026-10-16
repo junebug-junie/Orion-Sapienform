@@ -16,6 +16,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from app.direct import direct_ar, direct_arx
 from app.series import Seasonality, SeriesSpec
 
 MIN_CYCLES = 2
@@ -40,17 +41,25 @@ def split_seasonalities(spec: SeriesSpec, n_obs: int) -> tuple[list[Seasonality]
 @dataclass(frozen=True)
 class Forecaster:
     name: str
-    fn: Callable[[np.ndarray, int, pd.DatetimeIndex], np.ndarray]
+    fn: Callable[..., np.ndarray]
     transform: str = "none"
+    # True: fn(y, h, index, X) with X the (n, k) covariate history aligned to y (spec.covariates order).
+    uses_covariates: bool = False
 
-    def forecast(self, y: np.ndarray, h: int, index: pd.DatetimeIndex) -> np.ndarray:
+    def forecast(self, y: np.ndarray, h: int, index: pd.DatetimeIndex,
+                 covariates: np.ndarray | None = None) -> np.ndarray:
         y = np.asarray(y, dtype=float)
+        args = (index,)
+        if self.uses_covariates:
+            if covariates is None:
+                raise ValueError(f"{self.name} needs covariates and got none")
+            args = (index, covariates)
         if self.transform == "log":
             if np.any(y <= 0):
                 raise ValueError("log transform needs strictly positive values")
-            out = np.exp(self.fn(np.log(y), h, index))
+            out = np.exp(self.fn(np.log(y), h, *args))
         else:
-            out = self.fn(y, h, index)
+            out = self.fn(y, h, *args)
         out = np.asarray(out, dtype=float).reshape(-1)
         if out.shape[0] != h or not np.all(np.isfinite(out)):
             raise ValueError(f"{self.name} returned a non-finite or wrong-length path")
@@ -114,5 +123,8 @@ def build_models(spec: SeriesSpec, usable: list[Seasonality]) -> dict[str, Forec
         Forecaster("mstl_ets", _mstl(periods, "ets"), t),
         Forecaster("mstl_arima", _mstl(periods, "arima"), t),
         Forecaster("prophet", _prophet(usable, spec.grain_min), t),
+        Forecaster("direct_ar", direct_ar(spec.grain_min), t),
     ]
+    if spec.covariates:
+        zoo.append(Forecaster("direct_arx", direct_arx(spec.grain_min), t, uses_covariates=True))
     return {f.name: f for f in zoo}

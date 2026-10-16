@@ -29,7 +29,7 @@ def empty_pressure() -> ActiveNodePressureProjectionV1:
     )
 
 
-def _candidate(role: str, *, node_id: str = "atlas", confidence: float = 0.75) -> list:
+def _candidate(role: str, *, node_id: str = "circe", confidence: float = 0.75) -> list:
     return build_pressure_candidate_events(
         node_id=node_id,
         semantic_role=role,
@@ -49,14 +49,14 @@ def test_valid_pressure_candidate_accepted(
         now=FIXED_TS,
     )
     assert receipt.accepted_event_ids
-    assert projection.nodes["atlas"].active_pressures == ["strain"]
+    assert projection.nodes["circe"].active_pressures == ["strain"]
 
 
 def test_missing_evidence_rejected(
     catalog: NodeCatalog, empty_pressure: ActiveNodePressureProjectionV1
 ) -> None:
     trace = build_pressure_candidate_events(
-        node_id="atlas",
+        node_id="circe",
         semantic_role="node_pressure_detected",
         evidence_event_ids=[],
         confidence=0.75,
@@ -85,7 +85,7 @@ def test_duplicate_pressure_merged(
         now=FIXED_TS + timedelta(seconds=30),
     )
     assert receipt.merged_event_ids
-    assert projection.nodes["atlas"].active_pressures == ["strain"]
+    assert projection.nodes["circe"].active_pressures == ["strain"]
 
 
 def test_suppression_updates_suppressed_pressures(
@@ -161,8 +161,8 @@ def test_availability_recovered_clears_the_flag(
         projection_id="proj_active_pressure",
         generated_at=FIXED_TS,
         nodes={
-            "atlas": ActiveNodePressureStateV1(
-                node_id="atlas",
+            "circe": ActiveNodePressureStateV1(
+                node_id="circe",
                 availability_status="stale",
                 active_pressures=["strain", "availability"],
                 pressure_score=0.8,
@@ -177,7 +177,7 @@ def test_availability_recovered_clears_the_flag(
         now=FIXED_TS,
     )
     assert receipt.accepted_event_ids
-    state = projection.nodes["atlas"]
+    state = projection.nodes["circe"]
     assert "availability" not in state.active_pressures
     # "strain" is a separate pressure kind -- recovery must not touch it.
     assert "strain" in state.active_pressures
@@ -256,8 +256,8 @@ def test_merge_window_dedup_is_independent_per_pressure_kind(
         projection_id="proj_active_pressure",
         generated_at=FIXED_TS,
         nodes={
-            "atlas": ActiveNodePressureStateV1(
-                node_id="atlas",
+            "circe": ActiveNodePressureStateV1(
+                node_id="circe",
                 availability_status="stale",
                 active_pressures=["strain", "availability"],
                 last_updated_at=FIXED_TS,

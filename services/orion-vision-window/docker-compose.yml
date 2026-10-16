@@ -35,6 +35,8 @@ services:
       - WINDOW_CAPTION_GATE_LABELS=${WINDOW_CAPTION_GATE_LABELS:-person,dog,bicycle,stroller,vehicle,package,mail truck}
       - WINDOW_CAPTION_GATE_MIN_SCORE=${WINDOW_CAPTION_GATE_MIN_SCORE:-0.25}
       - WINDOW_CAPTION_MAX_AGE_SEC=${WINDOW_CAPTION_MAX_AGE_SEC:-20}
+      - WINDOW_CAPTION_EVENTS_ENABLED=${WINDOW_CAPTION_EVENTS_ENABLED:-true}
+      - CHANNEL_CAPTION_EVENTS_PUB=${CHANNEL_CAPTION_EVENTS_PUB:-orion:vision:events}
       - CHANNEL_CROP_OBSERVATIONS_PUB=${CHANNEL_CROP_OBSERVATIONS_PUB:-orion:vision:crops:sql-write}
 
       # Presence writes go straight to Postgres (not via the bus + sql-writer,

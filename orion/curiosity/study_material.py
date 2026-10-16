@@ -571,7 +571,7 @@ def _street_captions_recent_sql() -> str:
     from orion.situational.street_material import REDUCER_EVENT_TYPES_SQL
 
     return f"""
-SELECT event_id, stream_id, event_type, narrative, created_at
+SELECT event_id, stream_id, event_type, narrative, tags, created_at
 FROM vision_events
 WHERE stream_id = ANY($1::text[])
   AND narrative IS NOT NULL AND narrative <> ''
@@ -612,6 +612,10 @@ def build_street_caption_cards(
             plain.append({k: r[k] for k in ("event_id", "stream_id", "event_type", "narrative", "created_at")})
         except (KeyError, IndexError, TypeError):
             continue
+        try:
+            plain[-1]["tags"] = r["tags"]  # camera_caption detector labels; older rows/fixtures lack it
+        except (KeyError, IndexError, TypeError):
+            pass
     kept = dedupe_street_captions(plain, now=now, max_age_sec=float(lookback_hours) * 3600, limit=limit)
     return [
         StreetCaptionCard(

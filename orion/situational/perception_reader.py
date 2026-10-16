@@ -25,6 +25,7 @@ from typing import Any, NamedTuple, Sequence
 from sqlalchemy import create_engine, text
 
 from orion.situational.street_material import (
+    CAMERA_CAPTION_EVENT_TYPE,
     REDUCER_EVENT_TYPES_SQL,
     dedupe_street_captions,
     street_caption_line,
@@ -514,7 +515,7 @@ _STREET_UNRESOLVED_SQL = text(
 # individual (`label`, `distinct_days`), so names given after `now` and
 # today's day counts show up, and a sighting's `last_at` can run past `now`.
 _STREET_CAPTIONS_SQL = text(
-    "SELECT event_type, narrative, created_at FROM vision_events "
+    "SELECT event_type, narrative, tags, created_at FROM vision_events "
     "WHERE stream_id = :stream_id "
     "  AND narrative IS NOT NULL AND narrative <> '' "
     f"  AND {REDUCER_EVENT_TYPES_SQL} "
@@ -708,13 +709,23 @@ def summarize_street(
     # 0. What the street camera's captions said (last 15 minutes). First, so
     # the chat-stance clip keeps it: it is the only line about the scene
     # itself rather than about who was recognised.
-    caption = street_caption_line(
-        dedupe_street_captions(
-            captions or [], now=now, max_age_sec=STREET_RECENT_MINUTES * 60, limit=STREET_CAPTION_MAX,
-            max_chars=STREET_BRIEF_CAPTION_CHARS,
-        ),
-        camera=camera,
-    )
+    # At most ONE camera caption (a labelled VLM caption, street_material
+    # CAMERA_CAPTION_EVENT_TYPE): its label is ~85 chars, and two of them
+    # would push the rhythm line past the chat-stance street clip.
+    picked: list[dict[str, Any]] = []
+    have_camera_caption = False
+    for c in dedupe_street_captions(
+        captions or [], now=now, max_age_sec=STREET_RECENT_MINUTES * 60, limit=STREET_CAPTION_MAX * 4,
+        max_chars=STREET_BRIEF_CAPTION_CHARS,
+    ):
+        if c.get("event_type") == CAMERA_CAPTION_EVENT_TYPE:
+            if have_camera_caption:
+                continue
+            have_camera_caption = True
+        picked.append(c)
+        if len(picked) >= STREET_CAPTION_MAX:
+            break
+    caption = street_caption_line(picked, camera=camera, tz=tz)
     if caption:
         lines.append(caption)
 

@@ -35,6 +35,49 @@ WALKWAY_REDUCER_EVENT_TYPES: frozenset[str] = frozenset(
 )
 
 CAPTION_MAX_CHARS = 160
+
+# Rows orion-vision-window writes for a detector-agreed VLM caption
+# (services/orion-vision-window/app/caption_events.py, 2026-10-16). The text
+# is the captioning model's description of ONE frame -- Qwen2-VL invents
+# motion ("is pushing", "walks", PR #2737) -- so every rendering labels it as
+# a camera caption with the detector boxes that let it through, never as a
+# checked fact. Council narratives (any other event_type) render unlabelled,
+# as before.
+CAMERA_CAPTION_EVENT_TYPE = "camera_caption"
+_DETECTOR_TAG_PREFIX = "detector:"
+
+
+def _tags(raw: Any) -> list[str]:
+    """`vision_events.tags` as read by any driver: list, JSON text, or None."""
+    if isinstance(raw, str):
+        try:
+            import json
+
+            raw = json.loads(raw)
+        except ValueError:
+            return []
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [str(t) for t in raw if str(t).strip()]
+
+
+def detector_labels_from_tags(raw: Any) -> list[str]:
+    """`detector:<label>` tags of a camera_caption row -> ["person", ...]."""
+    out: list[str] = []
+    for tag in _tags(raw):
+        if tag.startswith(_DETECTOR_TAG_PREFIX):
+            label = tag[len(_DETECTOR_TAG_PREFIX):].strip()
+            if label and label not in out:
+                out.append(label)
+    return out
+
+
+def label_camera_caption(text: str, detector_labels: Sequence[str], *, at: str | None = None) -> str:
+    """'camera caption[ at HH:MM] (one frame; detector saw person, stroller;
+    motion not verified): "A person is pushing a stroller…"'."""
+    when = f" at {at}" if at else ""
+    saw = f"detector saw {', '.join(detector_labels)}; " if detector_labels else ""
+    return f'camera caption{when} (one frame; {saw}motion not verified): "{text}"'
 GRADED_STATUSES: tuple[str, ...] = ("met", "missed")
 CALIBRATION_LOOKBACK_DAYS = 14
 
@@ -85,7 +128,13 @@ def dedupe_street_captions(
     caption already kept (case/punctuation-insensitive). Freshness and
     dedupe apply before `limit`, so a repeat never crowds out a distinct one.
 
-    Returns `{narrative, observed_at, age_sec, stream_id, event_id}`, newest first.
+    A `camera_caption` row (orion-vision-window, a detector-agreed VLM
+    caption) comes back with its narrative already labelled as a caption of
+    one frame (`label_camera_caption`), so no consumer can show it as a fact.
+
+    Returns `{narrative, observed_at, age_sec, stream_id, event_id,
+    event_type, caption_text, detector_labels}`, newest first; `caption_text`
+    and `detector_labels` are the unlabelled parts (camera captions only).
     """
     if limit <= 0:
         return []
@@ -108,13 +157,19 @@ def dedupe_street_captions(
         if not key or key in seen:
             continue
         seen.add(key)
+        event_type = str(row.get("event_type") or "")
+        is_caption = event_type == CAMERA_CAPTION_EVENT_TYPE
+        labels = detector_labels_from_tags(row.get("tags")) if is_caption else []
         out.append(
             {
-                "narrative": text,
+                "narrative": label_camera_caption(text, labels) if is_caption else text,
                 "observed_at": ts,
                 "age_sec": max(0.0, (now - ts).total_seconds()),
                 "stream_id": str(row.get("stream_id") or ""),
                 "event_id": str(row.get("event_id") or ""),
+                "event_type": event_type,
+                "caption_text": text if is_caption else None,
+                "detector_labels": labels,
             }
         )
         if len(out) >= limit:
@@ -122,10 +177,22 @@ def dedupe_street_captions(
     return out
 
 
-def street_caption_line(captions: Sequence[Mapping[str, Any]], *, camera: str = "walkway") -> str | None:
+def street_caption_line(
+    captions: Sequence[Mapping[str, Any]], *, camera: str = "walkway", tz: Any = None
+) -> str | None:
     """One labelled sentence for the brief: "On the walkway just now: X; Y."
-    None when there is nothing -- never an empty sentence."""
-    texts = [str(c.get("narrative") or "").strip().rstrip(".") for c in captions or ()]
+    None when there is nothing -- never an empty sentence. A camera caption
+    renders with its frame's local time when `tz` is given."""
+    texts: list[str] = []
+    for c in captions or ():
+        if c.get("event_type") == CAMERA_CAPTION_EVENT_TYPE and c.get("caption_text"):
+            at = None
+            observed = _utc(c.get("observed_at"))
+            if observed is not None and tz is not None:
+                at = f"{observed.astimezone(tz):%H:%M}"
+            texts.append(label_camera_caption(str(c["caption_text"]), c.get("detector_labels") or [], at=at))
+        else:
+            texts.append(str(c.get("narrative") or "").strip().rstrip("."))
     texts = [t for t in texts if t]
     if not texts:
         return None
@@ -276,7 +343,7 @@ REDUCER_EVENT_TYPES_SQL = (
 )
 
 STREET_CAPTIONS_SQL = (
-    "SELECT stream_id, event_type, narrative, created_at FROM vision_events "
+    "SELECT stream_id, event_type, narrative, tags, created_at FROM vision_events "
     "WHERE stream_id IN :stream_ids "
     "AND narrative IS NOT NULL AND narrative <> '' "
     f"AND {REDUCER_EVENT_TYPES_SQL} "

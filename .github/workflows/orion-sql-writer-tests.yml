@@ -13,6 +13,8 @@ on:
       - "orion/grammar/**"
       - "orion/schemas/**"
       - "orion/substrate/**"
+      - "orion/autonomy/prediction.py"
+      - "tests/test_act_ledger_contract.py"
       - "orion/vision/**"
       - "config/vision_zones.yaml"
       - "services/orion-sql-db/**"
@@ -31,6 +33,8 @@ on:
       - "orion/grammar/**"
       - "orion/schemas/**"
       - "orion/substrate/**"
+      - "orion/autonomy/prediction.py"
+      - "tests/test_act_ledger_contract.py"
       - "orion/vision/**"
       - "config/vision_zones.yaml"
       - "services/orion-sql-db/**"
@@ -88,7 +92,10 @@ jobs:
             services/orion-sql-writer/tests/test_energy_sql_shape.py \
             services/orion-sql-writer/evals/test_walkway_reducers_eval.py \
             services/orion-sql-writer/tests/test_write_health.py \
-            services/orion-sql-writer/evals/test_storage_write_replay_eval.py
+            services/orion-sql-writer/evals/test_storage_write_replay_eval.py \
+            services/orion-sql-writer/tests/test_act_ledger_wiring.py \
+            services/orion-sql-writer/evals/test_act_ledger_calibration_eval.py \
+            tests/test_act_ledger_contract.py
 
   sql-writer-integration:
     name: SQL writer — Postgres grammar integration
@@ -134,6 +141,16 @@ jobs:
             services/orion-sql-writer/tests/test_grammar_ledger_integration.py
           PYTHONPATH=.:services/orion-substrate-runtime:services/orion-sql-writer/tests python -m pytest -q -m integration \
             services/orion-substrate-runtime/tests/test_grammar_consumer_integration.py
+      # Act ledger (rung 2): persist, close by act_id, grade into L10, horizon resolver.
+      # Creates its own throwaway schema; must not skip.
+      - name: Run act ledger Postgres integration tests (must not skip)
+        env:
+          ORION_SQL_WRITER_TEST_DATABASE_URI: postgresql://postgres:postgres@localhost:5432/conjourney
+        run: |
+          set -o pipefail
+          PYTHONPATH=.:services/orion-sql-writer:services/orion-sql-writer/tests python -m pytest -q -rs -m integration \
+            services/orion-sql-writer/tests/test_act_ledger_integration.py | tee /tmp/act_ledger.log
+          if grep -q "SKIPPED" /tmp/act_ledger.log; then echo "act ledger integration tests skipped"; exit 1; fi
       # Visual confirmation asks against real Postgres: opener, answers, typed names, picture
       # verdicts, migration backfill. The tests TRUNCATE the walkway tables; this database is throwaway.
       - name: Run visual confirmation asks Postgres tests (must not skip)

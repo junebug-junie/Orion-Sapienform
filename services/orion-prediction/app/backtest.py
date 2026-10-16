@@ -5,15 +5,14 @@ one ``h`` buckets before the end) fit on the training view up to ``o`` and forec
 The residual path is ``actual - forecast`` per step; NaN where the actual bucket is a gap.
 
 Conformal: the interval at step j is ``point_j + empirical quantile of residuals at step j``, with
-the finite-sample level correction. Coverage is reported leave-one-window-out, so a window is
-never scored with quantiles it helped estimate.
+the finite-sample level correction. Coverage is reported on a time-ordered holdout (see horizon_metrics).
 
 Gate, per horizon: the reference is the *better* of the two baselines at that horizon (persistence
 wins short horizons, same-time-yesterday can win long ones; live 2026-10-15 cabinet backtest:
 naive MAE 0.08 C vs seasonal-naive 1.87 C at 5 min). A model serves a horizon only when its MAE
 beats that reference on the windows both produced a residual for (``rel_mae < 1``, and on
->= 90% of the reference's windows) and its leave-one-out 80% coverage sits
-inside ``COVERAGE_BAND``. Different horizons may be served by different models; the served path is
+>= 90% of the reference's windows) AND the win is significant: one-sided paired test over
+windows with a Newey-West variance (windows overlap), p < ``GATE_ALPHA``. Lowest-average-wins on a near tie is how noise gets served. Different horizons may be served by different models; the served path is
 stitched step by step, and so are its residual paths, so the conformal intervals stay matched.
 """
 from __future__ import annotations
@@ -31,7 +30,15 @@ from app.models import BASELINES, Forecaster, split_seasonalities
 from app.series import Seasonality, SeriesSpec
 
 QUANTILES = (0.025, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.975)
+# Live-coverage alert band (engine). Not part of the gate: see horizon_metrics.
 COVERAGE_BAND = (0.72, 0.88)
+# A candidate serves a horizon only if it beats the better baseline with p < GATE_ALPHA (one-sided
+# paired test over windows, Newey-West variance for overlapping windows -- paired_win_p). Live 2026-10-16: the two served picks that lost to the baseline live
+# (window_average_1h @1 h, 1.57x; mstl_arima @15 min, 2.0x) had backtest p = 0.21 and 0.31 -- lower
+# averages by noise. No family correction across candidates; documented trade-off.
+GATE_ALPHA = 0.05
+# Bumped when the gate rule changes; a stored selection from another gate version is not restored.
+GATE_VERSION = 2
 MAX_FILLED_SHARE = 0.10
 MIN_TRAIN_STEPS_DAYS = 2
 MIN_PATHS = 10
@@ -150,37 +157,77 @@ def exceedance_probability(point: np.ndarray, residuals: np.ndarray, threshold: 
 
 
 def horizon_metrics(residuals: np.ndarray, step_idx: int) -> dict[str, float | int | None]:
+    """Error metrics at one step, plus a TIME-ORDERED holdout coverage check.
+
+    Coverage: interval quantiles from the older windows (all but the newest third), scored on the
+    newest third. Leave-one-out coverage over the same pool is not used: for exchangeable residuals
+    it depends only on ranks, so it is the same number for every model (0.85 at 40 windows, live
+    2026-10-16) and can never tell a calibrated model from a broken one. The holdout can (drift,
+    regime change), but it is noisy (~13 windows), so it is reported, not gated; live scoring is
+    the calibration check that alerts. ``width80`` is the calibration set's 80% width (None when
+    there is no holdout).
+    """
     col = residuals[:, step_idx]
     ok = np.isfinite(col)
     n = int(ok.sum())
+    empty = {"n": n, "mae": None, "rmse": None, "bias": None, "coverage80_holdout": None,
+             "coverage95_holdout": None, "width80": None, "n_holdout": 0}
     if n == 0:
-        return {"n": 0, "mae": None, "rmse": None, "bias": None, "coverage80": None, "coverage95": None,
-                "width80": None}
+        return empty
     vals = col[ok]
-    cov80 = cov95 = 0
-    widths = []
-    rows = np.where(ok)[0]
-    for i in rows:
-        others = np.delete(residuals[:, step_idx], i)
-        others = others[np.isfinite(others)]
-        if len(others) < MIN_PATHS:
-            continue
-        n_o = len(others)
-        lo80 = np.quantile(others, _level(n_o, 0.1), method="lower")
-        hi80 = np.quantile(others, _level(n_o, 0.9), method="higher")
-        lo95 = np.quantile(others, _level(n_o, 0.025), method="lower")
-        hi95 = np.quantile(others, _level(n_o, 0.975), method="higher")
-        r = residuals[i, step_idx]
-        cov80 += lo80 <= r <= hi80
-        cov95 += lo95 <= r <= hi95
-        widths.append(hi80 - lo80)
-    m = len(widths)
-    return {
-        "n": n, "mae": float(np.mean(np.abs(vals))), "rmse": float(np.sqrt(np.mean(vals ** 2))),
-        "bias": float(np.mean(vals)),
-        "coverage80": (cov80 / m) if m else None, "coverage95": (cov95 / m) if m else None,
-        "width80": float(np.mean(widths)) if m else None,
-    }
+    out = {**empty, "mae": float(np.mean(np.abs(vals))), "rmse": float(np.sqrt(np.mean(vals ** 2))),
+           "bias": float(np.mean(vals))}
+    n_test = n // 3
+    calib, test = vals[:n - n_test], vals[n - n_test:]   # rows are in origin order: oldest first
+    if n_test and len(calib) >= MIN_PATHS:
+        m = len(calib)
+        lo80 = np.quantile(calib, _level(m, 0.1), method="lower")
+        hi80 = np.quantile(calib, _level(m, 0.9), method="higher")
+        lo95 = np.quantile(calib, _level(m, 0.025), method="lower")
+        hi95 = np.quantile(calib, _level(m, 0.975), method="higher")
+        out.update(coverage80_holdout=float(np.mean((test >= lo80) & (test <= hi80))),
+                   coverage95_holdout=float(np.mean((test >= lo95) & (test <= hi95))),
+                   width80=float(hi80 - lo80), n_holdout=int(n_test))
+    return out
+
+
+def paired_win_p(candidate: np.ndarray, reference: np.ndarray, lag: int = 1) -> tuple[float | None, int]:
+    """One-sided p-value that the candidate's absolute error is LOWER than the reference's, over the
+    windows where both have a residual (Diebold-Mariano style).
+
+    Neighbouring backtest windows are not independent: a 6 h forecast from origins 3 h apart overlaps,
+    and cabinet errors drift slowly. A plain t-test then reports p too small. The long-run variance of
+    the loss difference is the LARGER of a Newey-West (Bartlett, ``lag`` autocovariances) estimate and
+    an AR(1) inflation v(1+r)/(1-r) with the small-sample-corrected lag-1 autocorrelation r. At n=40,
+    Newey-West alone still lets 16-18% of null "wins" through at phi=0.8; the max keeps it at 5-7%
+    for phi <= 0.5 (live cabinet d: lag-1 autocorrelation 0.1-0.45, 2026-10-16) and ~10% at 0.8.
+    """
+    from scipy import stats
+
+    both = np.isfinite(candidate) & np.isfinite(reference)
+    d = np.abs(candidate[both]) - np.abs(reference[both])
+    n = len(d)
+    if n < 2:
+        return None, n
+    if np.all(d == d[0]):
+        return (0.0 if d[0] < 0 else 1.0), n
+    e = d - d.mean()
+    lrv = float(e @ e) / n
+    for k in range(1, min(lag, n - 1) + 1):
+        lrv += 2 * (1 - k / (lag + 1)) * float(e[k:] @ e[:-k]) / n
+    v = float(e @ e) / n
+    r1 = float(e[1:] @ e[:-1]) / float(e @ e)
+    r1 = min(0.95, max(0.0, r1) + (1 + 3 * max(0.0, r1)) / n)   # Kendall bias correction, then cap
+    lrv = max(lrv, v * (1 + r1) / (1 - r1))
+    t = d.mean() / np.sqrt(lrv / n)
+    return float(stats.t.cdf(t, df=n - 1)), n
+
+
+def overlap_lag(horizon_min: int, step_min: int | None) -> int:
+    """Autocovariance lags for the paired test: windows overlapping by the horizon, at least 1."""
+    if not step_min:
+        return 1
+    return max(1, math.ceil(horizon_min / step_min) - 1)
 
 
 @dataclass
@@ -212,7 +259,7 @@ def stitch(paths: dict[str, np.ndarray], owners: list[str], axis: int = -1) -> n
     return np.concatenate(cols, axis=axis)
 
 
-def select_champion(results: dict[str, BacktestResult], spec: SeriesSpec) -> Selection:
+def select_champion(results: dict[str, BacktestResult], spec: SeriesSpec, step_min: int | None = None) -> Selection:
     missing = [b for b in BASELINES if b not in results]
     if missing:
         raise ValueError(f"baselines must be backtested: {missing}")
@@ -243,9 +290,9 @@ def select_champion(results: dict[str, BacktestResult], spec: SeriesSpec) -> Sel
             if name in BASELINES:
                 m["passed"] = name == best_base
                 continue
-            c = m["coverage80"]
+            m["p_win"], _ = paired_win_p(col, ref_col, overlap_lag(hm, step_min))
             m["passed"] = bool(m["rel_mae"] is not None and m["rel_mae"] < 1.0
-                               and c is not None and COVERAGE_BAND[0] <= c <= COVERAGE_BAND[1]
+                               and m["p_win"] is not None and m["p_win"] < GATE_ALPHA
                                and m["n_paired"] >= max(MIN_PATHS + 1, math.ceil(MIN_WINDOW_SHARE * ref_n)))
             if m["passed"]:
                 winners[name] = m["rel_mae"]

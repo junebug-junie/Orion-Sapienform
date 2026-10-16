@@ -8,7 +8,10 @@ Checks (exit 1 on failure):
 - monthly seasonality is refused on this history; daily is used.
 - every model produces residuals on >= 80% of windows (a model that silently fails is caught).
 - the served champion blend never loses to the better baseline at any horizon (rel_mae <= 1).
-- the blend's leave-one-out 80% coverage sits in [0.65, 0.95] at every horizon.
+- the blend's time-ordered holdout 80% coverage (newest third of windows) is not rejected by a binomial
+  test against 0.8 at p < 0.01, counting only independent windows (holdout / ceil(h / step)). A fixed
+  band on ~13 overlapping windows fails by chance (13/13 covered happens 5.5% of the time).
+- every served non-baseline horizon won its paired test (p < GATE_ALPHA).
 - at least one horizon is served by a non-baseline model, or the report says the baseline is served.
 Also reports (not gated): a conditional scenario for +200 W chassis power and the AC covariate.
 
@@ -17,6 +20,7 @@ Also reports (not gated): a conditional scenario for +200 W chassis power and th
 from __future__ import annotations
 
 import argparse
+import math
 import gzip
 import json
 import sys
@@ -24,12 +28,13 @@ import time
 from pathlib import Path
 
 import pandas as pd
+from scipy.stats import binomtest
 
 SERVICE = Path(__file__).resolve().parents[1]
 REPO = SERVICE.parents[1]
 sys.path[:0] = [str(SERVICE), str(REPO)]
 
-from app.backtest import horizon_metrics, run_backtest, select_champion, step_owner, stitch  # noqa: E402
+from app.backtest import GATE_ALPHA, horizon_metrics, run_backtest, select_champion, step_owner, stitch  # noqa: E402
 from app.causal import CausalError, scenario  # noqa: E402
 from app.frame import to_grain, training_slice  # noqa: E402
 from app.models import BASELINES, build_models, split_seasonalities  # noqa: E402
@@ -68,7 +73,7 @@ def main() -> int:
         results[name] = run_backtest(y, spec, name, lambda u, n=name: build_models(spec, u)[n], args.windows, step,
                                      actuals=actuals, covariates=covariates)
         timing[name] = time.monotonic() - t0
-    sel = select_champion(results, spec)
+    sel = select_champion(results, spec, args.step_min)
     h = spec.max_horizon_steps
     res = {n: r.residuals for n, r in results.items()}
     blend = stitch(res, step_owner(sel.assignment, spec.grain_min, h))
@@ -86,8 +91,15 @@ def main() -> int:
         bm = blend_m[key]
         if bm["mae"] is None or bm["mae"] > ref + 1e-9:
             failures.append(f"{hm}min: blend MAE {bm['mae']} worse than best baseline {ref}")
-        if bm["coverage80"] is None or not (0.65 <= bm["coverage80"] <= 0.95):
-            failures.append(f"{hm}min: blend LOO coverage80 {bm['coverage80']}")
+        c, n_h = bm["coverage80_holdout"], bm["n_holdout"]
+        n_eff = max(1, n_h // max(1, math.ceil(hm / args.step_min)))
+        if c is None:
+            failures.append(f"{hm}min: no holdout coverage")
+        elif binomtest(round(c * n_eff), n_eff, 0.8).pvalue < 0.01:
+            failures.append(f"{hm}min: blend holdout coverage80 {c:.2f} rejects 0.8 ({n_eff} independent windows)")
+        served = sel.assignment[hm]
+        if served not in BASELINES and not (sel.metrics[served][key]["p_win"] < GATE_ALPHA):
+            failures.append(f"{hm}min: {served} served without a significant win")
 
     print(f"history buckets={len(y)} train={len(train)} usable={[s.name for s in usable]} refused={refused}")
     print(f"windows={args.windows} step={args.step_min}min\n")
@@ -98,10 +110,12 @@ def main() -> int:
         for hm in spec.horizons_min:
             m = sel.metrics[name][str(hm)]
             mark = "*" if sel.assignment[hm] == name else " "
-            cells.append(f"{m['mae'] or float('nan'):6.3f}/{m['rel_mae'] or float('nan'):4.2f}{mark}".rjust(19))
+            pw = m.get("p_win")
+            cells.append((f"{m['mae'] or float('nan'):.3f}/{m['rel_mae'] or float('nan'):.2f}"
+                          f"/{'-' if pw is None else f'{pw:.2f}'}{mark}").rjust(19))
         print(name.ljust(20) + "".join(cells) + f"{timing[name]:10.1f}")
-    print("\ncells: MAE C / MAE relative to the better baseline; * = serves that horizon")
-    print("blend:", {hm: f"MAE {blend_m[str(hm)]['mae']:.3f} cov80 {blend_m[str(hm)]['coverage80']:.2f}"
+    print("\ncells: MAE C / MAE relative to the better baseline / paired-win p; * = serves that horizon")
+    print("blend:", {hm: f"MAE {blend_m[str(hm)]['mae']:.3f} cov80 {'-' if blend_m[str(hm)]['coverage80_holdout'] is None else format(blend_m[str(hm)]['coverage80_holdout'], '.2f')}"
                      for hm in spec.horizons_min})
     print("assignment:", sel.assignment, "served_baseline:", sel.served_baseline)
 

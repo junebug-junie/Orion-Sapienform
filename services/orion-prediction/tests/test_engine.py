@@ -306,3 +306,13 @@ def test_restore_refuses_a_selection_made_with_different_covariates():
     plain = parse_registry(spec_doc(train_window="10d"))
     assert _engine(plain, store, clock, []).restore(plain.get("test.temp")) is False
     assert _engine(reg, store, clock, []).restore(spec) is True
+
+
+def test_restore_refuses_a_selection_from_another_gate_version():
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    asyncio.run(_engine(reg, store, clock, []).tick(_sync))
+    for r in store.runs:
+        if r["kind"] in ("champion_blend", "baseline_blend"):
+            r["metrics"] = {k: v for k, v in r["metrics"].items() if k != "gate_version"}
+    assert _engine(reg, store, clock, []).restore(spec) is False

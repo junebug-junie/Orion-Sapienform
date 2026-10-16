@@ -48,6 +48,11 @@ Escape hatches live INSIDE migration files (an exception in someone's head is dr
     -- ORION-MIGRATION-SUPERSEDED-BY: <file.sql>         (absence of this file's objects is expected)
     -- ORION-MIGRATION-ABSENT-OK: <object> <reason>      (object intentionally absent; reason required;
                                                           <object> is a table/index/sequence name or table.column)
+    -- ORION-MIGRATION-APPLY-WITH: scripts/<name>.sh|.py (apply through this script, never raw psql;
+                                                          printed as the apply command, refused by the
+                                                          post-pull auto-apply). Legacy prose still counts,
+                                                          but only with an apply verb right before the
+                                                          path ("Run scripts/x.sh"); a bare mention does not.
 
 This module is pure (no DB, no git); callers pass file text, commit times and live state.
 """
@@ -373,7 +378,43 @@ def parse_migration(sql: str) -> ParsedMigration:
 _SUPERSEDED = re.compile(r"--\s*ORION-MIGRATION-SUPERSEDED-BY:\s*(?P<file>\S+)", re.I)
 _NOT_A_MIGRATION = re.compile(r"--\s*ORION-MIGRATION-NOT-A-MIGRATION:\s*(?P<why>.+)", re.I)
 _ABSENT_OK = re.compile(r"--\s*ORION-MIGRATION-ABSENT-OK:[ \t]*(?P<obj>[^\s]*)[ \t]*(?P<why>[^\n]*)", re.I)
-_HEADER_SCRIPT = re.compile(r"\bscripts/[\w./-]+\.(?:sh|py)\b")
+# A migration that must NOT be applied with plain psql names the script that applies it.
+# Preferred: an explicit marker line. Legacy prose is still honoured, but ONLY when an apply verb
+# sits directly in front of the path ("Run scripts/x.sh", "apply it through scripts/x.py",
+# "Apply with: scripts/x.sh"). A bare script path in a header is usually prose -- a writer, a
+# reader, a checker, an undo tool -- and treating it as the apply route refused
+# manual_migration_vision_split_v1.sql at post-pull (2026-10-16), because its header mentions
+# scripts/undo_vision_split.py as the undo tool.
+_SCRIPT_PATH = r"scripts/[\w./-]+\.(?:sh|py)\b"
+_APPLY_WITH = re.compile(r"^[ \t]*--[ \t]*ORION-MIGRATION-APPLY-WITH:[ \t]*(?P<val>[^\n]*)$", re.I | re.M)
+_APPLY_WITH_VAL = re.compile(rf"^(?P<script>{_SCRIPT_PATH})(?:\s.*)?$")
+_HEADER_SCRIPT = re.compile(
+    r"(?<![\w-])(?:run|(?:apply|run)(?:\s+(?:it|this|this\s+file|the\s+file|this\s+migration))?\s+"
+    r"(?:via|through|with|using)|apply\s+with:)"
+    rf"\s+(?:(?:python3?|bash|sh)\s+)?(?<![\w/.-])(?P<script>{_SCRIPT_PATH})",
+    re.I)
+
+
+def header_apply_script(text: str) -> tuple[Optional[str], Optional[str]]:
+    """(script, marker_error) for the script a migration's header says to apply it through.
+
+    Only comment lines in the first 60 lines count. The ``ORION-MIGRATION-APPLY-WITH`` marker
+    wins; otherwise legacy prose counts only with an apply verb right before the path."""
+    head = text.splitlines()[:60]
+    comments = [ln.lstrip()[2:] for ln in head if ln.lstrip().startswith("--")]
+    markers = list(_APPLY_WITH.finditer("\n".join(ln for ln in head if ln.lstrip().startswith("--"))))
+    if markers:
+        scripts = []
+        for m in markers:
+            v = _APPLY_WITH_VAL.match(m["val"].strip())
+            if not v:
+                return None, f"APPLY-WITH marker needs a scripts/<name>.sh|.py path, got {m['val'].strip()!r}"
+            scripts.append(v["script"])
+        if len(set(scripts)) > 1:
+            return None, f"APPLY-WITH markers disagree: {sorted(set(scripts))}"
+        return scripts[0], None
+    hs = _HEADER_SCRIPT.search(" ".join(comments))
+    return (hs["script"] if hs else None), None
 _REQUIRED_BY = re.compile(r"^[ \t]*--[ \t]*ORION-MIGRATION-REQUIRED-BY:[ \t]*(?P<val>[^\n]*)$", re.I | re.M)
 _REQUIRED_NONE = re.compile(r"^none(?![A-Za-z0-9_-])[\s:;,()\-\u2013\u2014]*(?P<why>.*)$", re.I)
 _DESTRUCTIVE = re.compile(r"^[ \t]*--[ \t]*DESTRUCTIVE\b", re.M)
@@ -819,10 +860,11 @@ def evaluate(
                 continue
             for kind in KINDS:
                 absent_ok[(kind, obj)] = f"{f.name}: {why}"
-        header = "\n".join(line for line in f.text.splitlines()[:60] if line.lstrip().startswith("--"))
-        hs = _HEADER_SCRIPT.search(header)
-        if hs:
-            header_scripts[f.name] = hs.group(0)
+        hs, hs_err = header_apply_script(f.text)
+        if hs_err:
+            marker_errors[f.name] = hs_err
+        elif hs:
+            header_scripts[f.name] = hs
         parsed[f.name] = parse_migration(f.text)
 
     # Replay. final[(kind,name)] = (op, seq, file, conditional, table)

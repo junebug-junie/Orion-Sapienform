@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
 import json
 import os
@@ -120,11 +121,49 @@ def resolve_base_ref(repo_root: Path, explicit: str | None) -> str:
     raise ValueError("Could not resolve a base ref (try --base ORIG_HEAD)")
 
 
+def _same_python_ast(repo_root: Path, base_ref: str, path: str) -> bool:
+    """True when a .py file differs between base and HEAD only in comments/whitespace.
+
+    Any doubt (unreadable blob, syntax error) answers False so the file still
+    counts as changed.
+    """
+    blobs = []
+    for rev in (base_ref, "HEAD"):
+        # Bytes, not text: ast.parse honours the encoding cookie, and a
+        # non-UTF8 blob must not raise out of the planner.
+        proc = subprocess.run(
+            ["git", "show", f"{rev}:{path}"], cwd=repo_root, capture_output=True, check=False
+        )
+        if proc.returncode != 0:
+            return False
+        blobs.append(proc.stdout)
+    try:
+        return ast.dump(ast.parse(blobs[0])) == ast.dump(ast.parse(blobs[1]))
+    except (SyntaxError, ValueError):
+        return False
+
+
 def changed_files(repo_root: Path, base_ref: str) -> list[str]:
-    proc = _run_git(["diff", "--name-only", f"{base_ref}..HEAD"], cwd=repo_root)
+    proc = _run_git(["diff", "--name-status", f"{base_ref}..HEAD"], cwd=repo_root)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or f"git diff failed for base {base_ref!r}")
-    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    files: list[str] = []
+    for line in proc.stdout.splitlines():
+        fields = line.split("\t")
+        path = fields[-1].strip()
+        if not path:
+            continue
+        # A comment-only edit to a widely imported module must not rebuild its
+        # importers (2026-10-16: a 4-line comment in orion/schemas/grammar.py
+        # planned 68 services).
+        if fields[0] == "M" and path.endswith(".py") and _same_python_ast(repo_root, base_ref, path):
+            print(
+                f"rebuild_affected_services: skip {path}: comment/whitespace-only change",
+                file=sys.stderr,
+            )
+            continue
+        files.append(path)
+    return files
 
 
 def discover_services(repo_root: Path) -> set[str]:

@@ -169,3 +169,57 @@ def score_observation(
         prior, observation, observation_variance=observation_variance
     )
     return posterior, bayesian_surprise_nats(prior, posterior), observation - prior.mean
+
+
+# ---------------------------------------------------------------------------
+# Act outcomes (rung 2, "doing on one track").
+#
+# An act (orion.schemas.grammar.ActV1) is graded through this SAME
+# Normal-Normal EffectPosterior -- no new learner -- keyed on
+# ("act:<verb>", actor, signal_id). Act signals differ from the field pressure
+# deltas above in one way that matters for the constants: every act signal is
+# a binary "did it happen by the horizon" event, valued 0 or 1. The pressure-
+# delta constants above were measured on a different quantity and do not
+# transfer (CLAUDE.md: borrowed calibrated constants don't transfer), so the
+# act constants are derived from the binary scale itself, not tuned:
+#
+# - Observation variance 0.25: the variance of a {0,1} variable is p(1 - p),
+#   whose maximum is 1/4 at p = 0.5. Using the maximum is the conservative
+#   choice: it can only make the posterior move more slowly than the truth
+#   would justify, never faster.
+# - Prior N(0.5, 0.25): centred on the maximum-entropy rate for a binary
+#   event, sd 0.5 so one prior sd covers the whole [0, 1] range. A cold act
+#   predicts "as likely as not" instead of "never", which a 0.0 prior mean
+#   would wrongly claim.
+# ---------------------------------------------------------------------------
+
+ACT_BINARY_PRIOR_MEAN = 0.5
+ACT_BINARY_PRIOR_VARIANCE = 0.25
+ACT_BINARY_OBSERVATION_VARIANCE = 0.25
+
+ACT_DISPATCH_KIND_PREFIX = "act:"
+
+
+def act_dispatch_kind(verb: str) -> str:
+    """The posterior key's dispatch_kind for an act verb ("act:say").
+
+    The prefix keeps act posteriors disjoint from proposal-template dispatch
+    kinds in the shared substrate_action_effect_posterior table, so the motor
+    allocator's template lookups can never read an act's belief by accident.
+    """
+    return f"{ACT_DISPATCH_KIND_PREFIX}{verb}"
+
+
+def cold_act_posterior() -> EffectPosterior:
+    return EffectPosterior(mean=ACT_BINARY_PRIOR_MEAN, variance=ACT_BINARY_PRIOR_VARIANCE, n=0)
+
+
+def score_act_outcome(prior: EffectPosterior, value: float) -> tuple[EffectPosterior, float, float]:
+    """Grade one closed act on the binary scale. Returns (posterior, nats, error).
+
+    ``value`` must be 0.0 or 1.0: an act signal is a binary event. Anything
+    else is a producer bug and is refused rather than folded into the belief.
+    """
+    if value not in (0.0, 1.0):
+        raise ValueError(f"act outcome value must be 0.0 or 1.0, got {value!r}")
+    return score_observation(prior, value, observation_variance=ACT_BINARY_OBSERVATION_VARIANCE)

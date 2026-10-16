@@ -122,3 +122,12 @@ def test_cli_offline_snapshot_is_owner_only_and_never_overwrites(tmp_path):
     assert second.returncode == 2
     assert "FileExistsError" in second.stderr
     assert target.read_bytes() == saved
+
+
+def test_act_ledger_rows_are_not_read_as_motor_episodes():
+    import inspect
+
+    from orion.autonomy import agency_episode_reader
+
+    src = inspect.getsource(agency_episode_reader)
+    assert src.count("dispatch_kind NOT LIKE 'act:%%'") == 2

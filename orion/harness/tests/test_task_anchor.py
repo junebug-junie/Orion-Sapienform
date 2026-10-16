@@ -173,3 +173,35 @@ def test_warm_pool_argv_keeps_slash_commands_so_clear_still_resets(monkeypatch):
 def test_skill_listing_flag_can_be_turned_off(monkeypatch, value):
     assert "--disable-slash-commands" in _argv_for(monkeypatch)
     assert "--disable-slash-commands" not in _argv_for(monkeypatch, value)
+
+
+def _env_for(monkeypatch, value=None):
+    from orion.harness.fcc_motor import _build_subprocess_env
+
+    if value is None:
+        monkeypatch.delenv("HARNESS_FCC_DISABLE_SKILLS", raising=False)
+    else:
+        monkeypatch.setenv("HARNESS_FCC_DISABLE_SKILLS", value)
+    monkeypatch.delenv("CLAUDE_CODE_DISABLE_BUNDLED_SKILLS", raising=False)
+    return _build_subprocess_env(fcc_server_url="http://fcc:8082", auth_token="t", chat_reply=True)
+
+
+def test_warm_pool_chat_env_drops_bundled_skills_by_default(monkeypatch):
+    # Chat replies run on the warm pool, which keeps slash commands for /clear; this env is how
+    # they lose the built-in coding skill listing.
+    assert _env_for(monkeypatch).get("CLAUDE_CODE_DISABLE_BUNDLED_SKILLS") == "1"
+
+
+@pytest.mark.parametrize("value", ["false", "0", "no", "off"])
+def test_bundled_skill_drop_follows_the_off_switch(monkeypatch, value):
+    assert _env_for(monkeypatch).get("CLAUDE_CODE_DISABLE_BUNDLED_SKILLS") == "1"
+    assert "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS" not in _env_for(monkeypatch, value)
+
+
+def test_off_switch_wins_over_an_inherited_bundled_skill_drop(monkeypatch):
+    from orion.harness.fcc_motor import _build_subprocess_env
+
+    monkeypatch.setenv("HARNESS_FCC_DISABLE_SKILLS", "false")
+    monkeypatch.setenv("CLAUDE_CODE_DISABLE_BUNDLED_SKILLS", "1")
+    env = _build_subprocess_env(fcc_server_url="http://fcc:8082", auth_token="t", chat_reply=True)
+    assert "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS" not in env

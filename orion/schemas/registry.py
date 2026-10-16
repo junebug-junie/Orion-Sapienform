@@ -87,7 +87,7 @@ from orion.schemas.execution_projection import (
     ExecutionRunStateV1,
     ExecutionTrajectoryProjectionV1,
 )
-from orion.schemas.grammar import GrammarEventV1
+from orion.schemas.grammar import ActV1, GrammarEventV1
 from orion.schemas.system_one_appraisal import SystemOneAppraisalFrameV1
 from orion.schemas.stance_context_prepare import (
     STANCE_CONTEXT_PREPARE_REQUEST_KIND,
@@ -882,6 +882,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MindRunArtifactV1": MindRunArtifactV1,
     "SubstrateTierOutcomesPayloadV1": SubstrateTierOutcomesPayloadV1,
     "GrammarEventV1": GrammarEventV1,
+    "ActV1": ActV1,
     "SystemOneAppraisalFrameV1": SystemOneAppraisalFrameV1,
     "StanceContextPrepareRequestV1": StanceContextPrepareRequestV1,
     "StanceContextPrepareResultV1": StanceContextPrepareResultV1,

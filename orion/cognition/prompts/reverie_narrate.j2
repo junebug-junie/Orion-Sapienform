@@ -72,14 +72,25 @@ REQUIRED JSON FIELDS
 {% endif %}
 
 {% else %}
-You are noticing your own current state: the coalition of concerns that just won
-the substrate workspace. This is an internal reflection pass — not user-facing
-speech, not a response to a turn.
+You are noticing your own current state: the one signal your attention just
+settled on. This is an internal reflection pass — not user-facing speech, not a
+response to a turn.
 
-SOURCE (bounded internal input — the current winning coalition)
-- coalition_projection: {{ coalition_projection }}
+SOURCE (bounded internal input — what your attention settled on right now)
+{% if attended_signal %}
+- attended: {{ attended_signal.selected_description or "(no description)" }}{% if attended_signal.attended_node_ids %} — node ids {{ attended_signal.attended_node_ids | join(", ") }}{% endif %}{% if attended_signal.selected_open_loop_id %} — loop id {{ attended_signal.selected_open_loop_id }}{% endif %}
+{% if attended_signal.dwell_ticks %}
+- it has held your attention for {{ attended_signal.dwell_ticks }} consecutive attention ticks
+{% endif %}
+{% if attended_signal.steadiness %}
+- how steady your attention is on it: {{ attended_signal.steadiness }}
+{% endif %}
+{% endif %}
 {% if open_loops %}
-- open_loops: {{ open_loops }}
+- open loops (one line each: id | what it is | the measured signal or why it is open{% if has_settled_loops %} | verdict{% endif %}):
+{% for ol in open_loops %}
+  - {{ ol.id }} | {{ ol.description or ol.target_type }}{% if ol.signal %} | {{ ol.signal }}{% elif ol.why_it_matters %} | {{ ol.why_it_matters }}{% endif %}{% if ol.outcome %} | verdict: {{ ol.outcome.line }}{% endif %}
+{% endfor %}
 {% endif %}
 {% if recent_percepts %}
 - what you can currently see (real camera input, not memory or imagination):
@@ -89,7 +100,7 @@ SOURCE (bounded internal input — the current winning coalition)
 {% endif %}{% if self_readings %}
 HOW MY BODY IS DOING (measured, each signal scored 0-10 against its own last 7 days; only the unusual ones are listed)
 {{ self_readings }}
-- Real state, not a coalition id: it may color the interpretation when it bears on the coalition,
+- Real state, not an id to cite: it may color the interpretation when it bears on what you attend to,
   never replaces a grounded evidence_ref. Use the numbers exactly as shown or not at all.
 {% endif %}
 {% if recent_arcs %}
@@ -101,16 +112,15 @@ recount it. The [arc:...] ids are NOT evidence_refs — never put them there.
 {% endif %}
 
 {% if has_settled_loops %}
-ALREADY-SETTLED LOOPS (read this before you narrate urgency)
-- Some entries above carry an "outcome" field: {"verdict": "resolved" |
-  "dismissed" | "decayed_unattended", "note": "...", "age_days": N (may be
-  absent)}. That verdict was recorded by a human closing this loop — it is
-  ground truth, not a guess.
-- If the loop you are about to narrate has an "outcome", you MUST describe it
-  as settled, past-tense — closed N days ago if age_days is present, otherwise
-  just "already closed" — never as an open struggle, an active strain, or
-  something "requiring sustained attention". It is still showing up in the
-  coalition because of scoring, not because it is actually still live.
+RECENT VERDICTS ON THESE LOOPS (read this before you narrate urgency)
+- A "verdict:" line says who recorded it and how long ago. Only verdicts from
+  the last day are shown; older ones are about an earlier episode and are left out.
+- A verdict recorded by a person (e.g. Juniper) is their judgement: if they
+  resolved or dismissed the loop you are narrating, describe it as settled,
+  never as an open struggle.
+- A verdict recorded by the system's automatic decay only means nobody engaged
+  with the loop for a day. It is not a human judgement and not ground truth
+  about the loop; never say a person closed it.
 {% endif %}
 
 {% if street_percepts or street_predictions %}
@@ -126,24 +136,45 @@ genuinely connects; it is not evidence_refs{% if recent_percepts %}, and any
 expectation you state is about the room, never the street{% endif %}.
 {% endif %}
 
+{% if chain_step %}
+TRAIN OF THOUGHT (step {{ chain_step.index + 1 }} of this chain)
+{% if chain_step.prior_thoughts %}
+What you already thought, in order (do not repeat it; extend it, narrow it, or reconsider it):
+{% for t in chain_step.prior_thoughts %}
+- "{{ t }}"
+{% endfor %}
+{% endif %}
+{% if chain_step.next_focus_hint %}
+Last step you said you wanted to turn next to: {{ chain_step.next_focus_hint }}
+(A hint, not an order: the source above is still the only thing you may narrate.)
+{% endif %}
+{% if chain_step.prior_thoughts %}
+If you have nothing new to add beyond what you already thought, say the one
+thing that is still unclear, and set next_focus to null.
+{% endif %}
+{% endif %}
+
 GROUNDING DISCIPLINE (the anti-hollow rule — this is the whole point)
 - There is no user question anchoring you, so you must anchor yourself.
-- interpretation MUST be about THESE coalition ids — what recurs, what strains,
-  what is unresolved about the specific attended nodes / open loops present.
+- interpretation MUST be about THESE ids — what recurs, what strains, what is
+  unresolved about the specific attended nodes / open loops present.
+- Speak about the thing itself by its meaning (e.g. "the bus is noisier than
+  usual"), never about the attention machinery. Do not open with "The
+  coalition" or "The attended signal".
 - Do NOT produce generic musing ("I am thinking about many things", "life is
-  complex"). If the coalition is thin, say specifically what is thin about it.
-- evidence_refs MUST be a non-empty subset of the coalition's attended_node_ids
-  or open_loop_ids. A thought that cites no coalition id will be discarded as
+  complex"). If the input is thin, say specifically what is thin about it.
+- evidence_refs MUST be a non-empty subset of the attended node ids or open
+  loop ids above. A thought that cites no such id will be discarded as
   un-anchored (hollow).
 {% if street_percepts or street_predictions %}
-- The walkway (street) lines are outside the house: context only, never a
-  coalition id, and "I notice the street" is not a coalition-anchored thought.
+- The walkway (street) lines are outside the house: context only, never an
+  id to cite, and "I notice the street" is not an anchored thought.
 {% endif %}
 {% if recent_percepts %}
-- What you can currently see is real sensory context, not a coalition id — it
+- What you can currently see is real sensory context, not an id to cite — it
   may color the interpretation but never substitutes for a grounded
   evidence_ref, and noticing it is not itself a reason to narrate ("I notice X"
-  is not a coalition-anchored thought).
+  is not an anchored thought).
 - You MAY optionally state one concrete, falsifiable expectation about what
   will still be true about the room shortly — a specific object still present
   or absent, a door open or closed, and so on. Genuinely optional: leave it
@@ -152,20 +183,26 @@ GROUNDING DISCIPLINE (the anti-hollow rule — this is the whole point)
 {% endif %}
 
 REQUIRED JSON FIELDS
-- interpretation: 1-3 sentences — what you notice about the current coalition
-  and, where it lands, *why* it matters or what it leaves open. Situated, not
-  abstract. Reference the concerns by their meaning.
-- evidence_refs: JSON array — coalition ids (attended_node_ids / open_loop_ids)
-  that this interpretation is actually about. Minimum 1.
+- interpretation: 1-3 sentences — what you notice about what your attention
+  settled on and, where it lands, *why* it matters or what it leaves open.
+  Situated, not abstract. Reference the concerns by their meaning.
+- evidence_refs: JSON array — ids (attended node ids / open loop ids) that this
+  interpretation is actually about. Minimum 1.
+{% if chain_step and not chain_step.is_final %}
+- next_focus: one sentence — what you want to turn to next in this train of
+  thought, or null if there is nothing further worth thinking about it now.
+- drift: one short phrase — how this step's focus differs from the last one
+  (null on the first step).
+{% endif %}
 {% if recent_percepts %}
 - expectation: OPTIONAL — one concrete, falsifiable claim about the room
   (string, or null if nothing natural to predict). Never a list.
 {% endif %}
 {% endif %}
 
-(Salience is computed deterministically from coalition scores — do not output it.)
+(Salience is computed deterministically from attention scores — do not output it.)
 
 FAIL-CLOSED REMINDER
-- Empty evidence_refs, ids outside the coalition, generic un-anchored text, or
+- Empty evidence_refs, ids not given above, generic un-anchored text, or
   mechanism narration will be marked hollow and dropped. Narrate the concern or
-  coalition meaning — or say nothing true.
+  what the attended signal means — or say nothing true.

@@ -758,9 +758,100 @@ async def abandon_step(bus, req: ReverieVisualStepRequestV1, *, now_fn: Any = _n
                        reason=(row.get("result_json") or {}).get("reason") or "run_abandoned")
 
 
+# Act ledger (rung 2, "doing on one track"): a durable painting run is one ``make`` act.
+# Horizon 5400 s: reverie.visual's only terminal failure is its admission deadline, and
+# the requester sets deadline_at - requested_at = 5400 s (median over 30 days of
+# durable_admission_runs, measured 2026-10-16; failed runs end at 2402-5423 s, n=35).
+PAINTING_HORIZON_SEC = 5400.0
+PAINTING_BASIS = (
+    "artifact_produced by 5400s: the run's own admission deadline (deadline_at - requested_at "
+    "= 5400s, 30d median of durable reverie.visual runs, measured 2026-10-16)"
+)
+
+
+def _painting_act(req: ReverieVisualStepRequestV1):
+    from orion.grammar.acts import build_act
+
+    hop = req.dream_hop
+    key = req.run_id if hop is None else f"{req.run_id}:hop:{hop.hop_index}"
+    return build_act(
+        actor="thought.painting" if hop is None else "thought.dream_hop",
+        verb="make",
+        key=key,
+        signal_id="artifact_produced",
+        horizon_sec=PAINTING_HORIZON_SEC,
+        basis=PAINTING_BASIS,
+        object_ref=f"durable_run:{req.run_id}",
+        test_before=f"visual_dispatch:{req.visual_request.dispatch_id}",
+    )
+
+
+def painting_act_transition(req: ReverieVisualStepRequestV1,
+                            result: ReverieVisualStepResultV1) -> tuple[str, bool | None, str]:
+    """What this step result means for the run's ``make`` act.
+
+    Returns (action, produced, note): action is "open", "close" or "none".
+
+    - Any result naming outcome "produced" closes at 1, whatever its status: a
+      replayed step on an attempt that already produced reports terminal/produced
+      (_closed_attempt), and that replay may be the only close that gets published.
+    - A prepare that refuses outright (terminal before any work: ineligible,
+      already_satisfied, mismatch) is not an act: nothing is opened or closed.
+    - Otherwise prepare opens; a later terminal, or an abandon that did not
+      produce, closes at 0.
+    """
+    outcome = getattr(result, "outcome", None)
+    if outcome == "produced":
+        return "close", True, str(result.reason or "produced")
+    if req.step == "prepare":
+        if result.status == "terminal":
+            return "none", None, ""
+        return "open", None, ""
+    if result.status == "terminal":
+        if outcome == "already_satisfied":
+            return "none", None, ""
+        return "close", False, f"terminal:{result.reason or outcome or 'failed'}"
+    if req.step == "abandon" and result.status == "done":
+        return "close", False, f"abandoned:{result.reason or 'run_abandoned'}"
+    return "none", None, ""
+
+
+async def _mirror_painting_act(bus, req: ReverieVisualStepRequestV1,
+                               result: ReverieVisualStepResultV1) -> None:
+    if bus is None or not bool(getattr(settings, "thought_act_ledger_enabled", True)):
+        return
+    try:
+        from orion.grammar.acts import act_closed_event, act_opened_event
+        from orion.grammar.publish import publish_grammar_event
+
+        action, produced, note = painting_act_transition(req, result)
+        if action == "none":
+            return
+        act = _painting_act(req)
+        common = dict(source_service="orion-thought", source_component="visual_steps.act",
+                      correlation_id=req.correlation_id)
+        if action == "open":
+            await publish_grammar_event(bus, act_opened_event(act, **common), source_name="orion-thought")
+        if action == "close":
+            await publish_grammar_event(
+                bus, act_closed_event(act, produced=bool(produced), note=note, **common),
+                source_name="orion-thought")
+    except Exception as exc:  # noqa: BLE001 -- the act is a trace; never fail the step
+        logger.warning("painting_act_publish_failed run=%s step=%s error=%s", req.run_id, req.step, exc)
+
+
 async def run_visual_step(bus, req: ReverieVisualStepRequestV1, *,
                           cortex_client: CortexExecClient | None = None,
                           now_fn: Any = _now) -> ReverieVisualStepResultV1:
+    """Execute one stage, then mirror it into the act ledger. Never raises."""
+    result = await _run_visual_step_inner(bus, req, cortex_client=cortex_client, now_fn=now_fn)
+    await _mirror_painting_act(bus, req, result)
+    return result
+
+
+async def _run_visual_step_inner(bus, req: ReverieVisualStepRequestV1, *,
+                                 cortex_client: CortexExecClient | None = None,
+                                 now_fn: Any = _now) -> ReverieVisualStepResultV1:
     """Execute one stage. Never raises: a failure is a retry, never a failed run."""
     step = _Step(req)
     try:

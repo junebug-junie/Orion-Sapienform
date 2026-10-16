@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 GrammarEventKind = Literal[
     "trace_started",
@@ -16,7 +16,47 @@ GrammarEventKind = Literal[
     "compaction_emitted",
     "projection_emitted",
     "annotation_emitted",
+    # Doing on one track (rung 2, docs/superpowers/specs/2026-10-14-orion-
+    # thinking-architecture-design.md section 3.2): an efference copy of an act.
+    # Opened before the act runs (with what it expects), closed by act_id when
+    # its outcome is known. Persisted to grammar_acts by orion-sql-writer.
+    "act_opened",
+    "act_closed",
 ]
+
+# Closed, versioned verb vocabulary (design section 3.2). The same at every
+# level. Producers as of rung 2: make (orion-thought paintings), say (hub chat
+# reply, outreach), ask (outreach), look (reading). The others are reserved by
+# the design and have no producer yet; a new producer must ship with a test.
+ActVerb = Literal[
+    "sense",
+    "look",
+    "recall",
+    "infer",
+    "predict",
+    "say",
+    "ask",
+    "wait",
+    "make",
+    "maintain",
+    "regulate",
+]
+
+ActLevel = Literal["metabolic", "organ", "faculty", "deliberate"]
+
+# What an act can be checked against. Each is a BINARY "did this happen by the
+# horizon" event, so a horizon that passes with no evidence is a real 0, not a
+# guess (that is what lets the writer close expired acts honestly).
+#   juniper_replied   -- Juniper sent Orion a chat turn after the act, before
+#                        the horizon. Resolved by orion-sql-writer from
+#                        chat_history_log; producers never self-report it.
+#   artifact_produced -- the act produced its artifact (an image stored, a
+#                        reading with real content) before the horizon.
+#                        Reported by the producer on close.
+ActSignal = Literal["juniper_replied", "artifact_produced"]
+
+# Who supplied an act's outcome.
+ActOutcomeSource = Literal["producer", "resolver", "expired"]
 
 AtomType = Literal[
     "raw_span",
@@ -173,6 +213,91 @@ class GrammarProjectionV1(BaseModel):
     projected_atom_id: str | None = None
 
 
+class ActExpectV1(BaseModel):
+    """What an act expects, written BEFORE it runs (the efference copy).
+
+    A producer declares only what it genuinely knows: which signal the act is
+    about, which way it should move, and by when. The magnitude
+    (``predicted``) is NOT hand-written: orion-sql-writer stamps the current
+    EffectPosterior mean for (verb, actor, signal) when it persists the open,
+    exactly as ExpectedEffectV1 does for dispatches. ``basis`` says, in words,
+    where the horizon and direction came from, and must not be empty.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    signal_id: ActSignal
+    direction: Literal["increase", "decrease", "no_change"] = "increase"
+    horizon_sec: float = Field(gt=0.0)
+    basis: str = Field(min_length=1)
+    # Writer-stamped. A producer leaves these unset.
+    predicted: float | None = None
+    predicted_n: int | None = Field(default=None, ge=0)
+    cold_start: bool | None = None
+
+
+class ActCostV1(BaseModel):
+    """Currency the act spent. None means not measured, never zero."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    seconds: float | None = Field(default=None, ge=0.0)
+    gpu_seconds: float | None = Field(default=None, ge=0.0)
+    tokens: int | None = Field(default=None, ge=0)
+    watts: float | None = Field(default=None, ge=0.0)
+
+
+class ActOutcomeV1(BaseModel):
+    """What actually happened, on the expectation's own scale."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: float
+    observed_at: datetime
+    source: ActOutcomeSource = "producer"
+    note: str = ""
+
+    @model_validator(mode="after")
+    def _binary_value(self) -> "ActOutcomeV1":
+        # Every ActSignal is a binary event (see ActSignal above).
+        if self.value not in (0.0, 1.0):
+            raise ValueError(f"act outcome value must be 0 or 1, got {self.value!r}")
+        return self
+
+
+class ActV1(BaseModel):
+    """One act, as a TOTE unit (Test -> Operate -> Test -> Exit).
+
+    act_opened carries identity, verb, test_before and expect.
+    act_closed carries the same act_id plus outcome (and cost if measured).
+    ``error`` (outcome - predicted) is computed by the writer at close; a
+    producer never fills it, because it never sees ``predicted``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["grammar_act.v1"] = "grammar_act.v1"
+    act_id: str = Field(min_length=1)
+    parent_act_id: str | None = None
+    level: ActLevel
+    actor: str = Field(min_length=1)
+    verb: ActVerb
+    object_ref: str | None = None
+    test_before: str | None = None
+    expect: ActExpectV1 | None = None
+    cost: ActCostV1 | None = None
+    outcome: ActOutcomeV1 | None = None
+    error: float | None = None
+    goal_ref: str | None = None
+    workspace_ref: str | None = None
+
+    @model_validator(mode="after")
+    def _expect_required_above_metabolic(self) -> "ActV1":
+        if self.level != "metabolic" and self.expect is None:
+            raise ValueError(f"{self.level} act {self.act_id!r} must carry an expect")
+        return self
+
+
 class GrammarEventV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -194,7 +319,17 @@ class GrammarEventV1(BaseModel):
     temporal_hop: TemporalHopV1 | None = None
     compaction: GrammarCompactionV1 | None = None
     projection: GrammarProjectionV1 | None = None
+    act: ActV1 | None = None
     provenance: GrammarProvenanceV1
+
+    @model_validator(mode="after")
+    def _act_events_carry_an_act(self) -> "GrammarEventV1":
+        if self.event_kind in ("act_opened", "act_closed"):
+            if self.act is None:
+                raise ValueError(f"{self.event_kind} requires act")
+            if self.event_kind == "act_closed" and self.act.outcome is None:
+                raise ValueError("act_closed requires act.outcome")
+        return self
 
 
 class GrammarTraceV1(BaseModel):

@@ -5,7 +5,7 @@ select
     sort_order
 from (
     values
-        ('pressure_discharged', 'Pressure discharged', 'At least one thought was recorded and the observed pressure reached the code-defined discharge threshold.', 1),
+        ('pressure_discharged', 'Later step yielded nothing', 'At least one thought was recorded, then a later chain step produced no publishable thought (text chain: hollow, below the salience floor, or failed). The key name is historical.', 1),
         ('max_steps', 'Step limit reached', 'The chain recorded the configured maximum number of thought steps.', 2),
         ('no_coalition', 'No coalition', 'The first chain step produced no thought from the current attention coalition.', 3),
         ('low_salience', 'Below configured salience floor', 'The chain stopped because its existing EMA salience fell below the configured minimum.', 4),
@@ -13,5 +13,6 @@ from (
         ('generation_failed', 'Generation failed', 'The visual chain stopped because image generation or local artifact storage raised an error.', 6),
         ('run_deadline_exceeded', 'Run deadline exceeded', 'The visual chain exceeded its whole-run deadline and released its single-flight lock.', 7),
         ('thermal_refused', 'Thermal refusal', 'The visual chain recorded a deliberate refusal to spend GPU capacity while the configured thermal gate was active.', 8),
+        ('settled', 'Train of thought settled', 'A text chain step had nothing further: the model returned no next_focus, or the thought restated the previous step.', 10),
         ('resource_deferred', 'GPU deferred', 'The visual chain did not generate because it could not get the GPU (a GPU pool diffusion lease or hold was refused or late) or diffusion-host was busy/draining. Not an image failure.', 9)
 ) as outcomes(outcome_key, outcome_label, outcome_description, sort_order)

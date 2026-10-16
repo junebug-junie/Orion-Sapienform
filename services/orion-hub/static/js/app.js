@@ -7289,7 +7289,7 @@ let chatTurnTimer = null;
       { value: 'incomplete_truncated', label: 'Incomplete / truncated' },
       { value: 'did_not_answer_directly', label: "Didn't answer directly" },
       { value: 'missed_edge_cases', label: 'Missed edge cases' },
-      { value: 'incorrect_tone', label: 'Incorrect tone' },
+      { value: 'bad_tone', label: 'Bad tone' },
       { value: 'too_boilerplate_generic', label: 'Too boilerplate / generic' },
       { value: 'too_guarded_sanitized', label: 'Too guarded / sanitized' },
       { value: 'poor_attunement', label: 'Poor attunement' },

@@ -206,7 +206,13 @@ def test_cue_invalid_frame_is_named(wire):
 
 
 def test_page_renders_template_with_cache_busted_script(monkeypatch):
-    from scripts import main as hub_main
+    # The page route imports the full Hub app (scripts.main) for the template dir and asset
+    # version, like the Temporal Self page. The slim reading-tests install lacks the app's deps
+    # (aiohttp, ...), so this one test needs the full Hub environment; the rest run anywhere.
+    try:
+        from scripts import main as hub_main
+    except ImportError as exc:
+        pytest.skip(f"full Hub app not importable here: {exc}")
 
     monkeypatch.setattr(hub_main, "build_hub_ui_asset_version", lambda: "testver")
     app = FastAPI()

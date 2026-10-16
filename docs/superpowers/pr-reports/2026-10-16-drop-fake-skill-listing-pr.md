@@ -1,8 +1,8 @@
 ## Summary
 
-- Spawned and warm-pool `claude` turns now pass `--disable-slash-commands`. The CLI stops listing its own coding skills in every turn.
+- Spawned `claude` turns now pass `--disable-slash-commands`. The CLI stops listing its own coding skills in every turn.
 - Flag `HARNESS_FCC_DISABLE_SKILLS` (default true) turns it off.
-- 3 tests in `orion/harness/tests/test_task_anchor.py`.
+- Tests in `orion/harness/tests/test_task_anchor.py`: default on, warm pool excluded, off switch (4 values).
 
 ## Outcome moved
 
@@ -14,13 +14,13 @@ Orion's turn context carried a 6,645-character skill listing: 8 context-mode ski
 
 ## Architecture touched
 
-`orion/harness/fcc_motor.py` (one flag in the shared argv builder, so warm-pool chat processes get it too). Governor `.env_example` and compose.
+`orion/harness/fcc_motor.py` (one flag in the shared argv builder, spawn path only). Governor `.env_example` and compose.
 
 ## Files changed
 
 - `orion/harness/fcc_motor.py`: add `--disable-slash-commands` unless `HARNESS_FCC_DISABLE_SKILLS` is false.
 - `services/orion-harness-governor/.env_example`, `docker-compose.yml`: new key.
-- `orion/harness/tests/test_task_anchor.py`: default on, warm-pool argv, off switch.
+- `orion/harness/tests/test_task_anchor.py`: default on, warm pool keeps slash commands, off switch.
 
 ## Schema / bus / API changes
 
@@ -35,7 +35,7 @@ None.
 ## Tests run
 
 ```text
-orion/harness/tests: 559 passed (main baseline 556, +3 new)
+orion/harness/tests: 562 passed (main baseline 556)
 services/orion-harness-governor: 85 passed
 ```
 
@@ -54,7 +54,10 @@ Not rebuilt in the worktree. Deploy from clean primary main after merge. Post-de
 
 ## Review findings fixed
 
-See review section below (filled after review).
+- Finding (blocker): `--disable-slash-commands` on the warm pool breaks its `/clear` handshake. With the flag the CLI treats `/clear` as plain text and sends no `conversation_reset`; `_clear` would time out on every reset and slots could bleed context between turns.
+  - Fix: the flag is added only when `prompt is not None` (spawn path). Warm pool (`prompt=None`) keeps slash commands and the listing.
+  - Evidence: reproduced live, same stream-json `/clear` input. No flag: `conversation_reset`, `init`, `result`. With flag: `init`, synthetic `assistant`, `result`, no reset. Regression test `test_warm_pool_argv_keeps_slash_commands_so_clear_still_resets`.
+- Finding (minor): off-switch test passed even with the flag removed. Fix: it now asserts the flag is present by default, then absent for `false/0/no/off`.
 
 ## Restart required
 
@@ -65,6 +68,7 @@ scripts/safe_docker_build.sh orion-harness-governor up -d --build
 ## Risks / concerns
 
 - Severity: low. Any future skill (user or plugin) is also hidden while the flag is on. Mitigation: flag off, or ship Orion skills another way. Orion's real instructions already live in tool descriptions and the kickoff write section.
+- Not covered: warm-pool chat processes still carry the listing (needs `/clear`).
 - Not done: the kickoff (about 52 KB) and the 15.6 KB auto-memory file are the larger weights. Auto-memory is Orion's own notes and needs Juniper's decision.
 
 ## PR link

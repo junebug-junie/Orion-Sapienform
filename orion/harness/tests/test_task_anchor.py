@@ -159,13 +159,17 @@ def test_skill_listing_is_dropped_by_default(monkeypatch):
     assert "--disable-slash-commands" in _argv_for(monkeypatch)
 
 
-def test_skill_listing_is_dropped_on_the_warm_pool_argv_too(monkeypatch):
+def test_warm_pool_argv_keeps_slash_commands_so_clear_still_resets(monkeypatch):
+    # With the flag the CLI treats `/clear` as plain text and never sends `conversation_reset`.
     from orion.harness.fcc_motor import build_claude_argv
 
     monkeypatch.delenv("HARNESS_FCC_DISABLE_SKILLS", raising=False)
     argv = build_claude_argv(claude_bin="claude", model_id="m", prompt=None, correlation_id="c")
-    assert "--disable-slash-commands" in argv
+    assert "--disable-slash-commands" not in argv
+    assert "--input-format" in argv
 
 
-def test_skill_listing_flag_can_be_turned_off(monkeypatch):
-    assert "--disable-slash-commands" not in _argv_for(monkeypatch, "false")
+@pytest.mark.parametrize("value", ["false", "0", "no", "off"])
+def test_skill_listing_flag_can_be_turned_off(monkeypatch, value):
+    assert "--disable-slash-commands" in _argv_for(monkeypatch)
+    assert "--disable-slash-commands" not in _argv_for(monkeypatch, value)

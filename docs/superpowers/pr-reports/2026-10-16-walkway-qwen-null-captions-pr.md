@@ -120,6 +120,6 @@ The second command also picks up #2697's corrected `CUDA_VISIBLE_DEVICES` for th
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2737
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

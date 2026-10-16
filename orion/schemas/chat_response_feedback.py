@@ -88,7 +88,10 @@ THUMBS_DOWN_CATEGORY_LABELS: Dict[str, str] = {
     "incomplete_truncated": "Incomplete / truncated",
     "did_not_answer_directly": "Didn't answer directly",
     "missed_edge_cases": "Missed edge cases",
-    "incorrect_tone": "Incorrect tone",
+    # 2026-10-16: replaced "incorrect_tone" (0 rows ever) so it pairs with
+    # good_tone. Juniper tags generic LLM voice with these two; they are the
+    # vibe-check labels for the personality graph's tone dials (#2726).
+    "bad_tone": "Bad tone",
     "too_boilerplate_generic": "Too boilerplate / generic",
     "too_guarded_sanitized": "Too guarded / sanitized",
     "poor_attunement": "Poor attunement",

@@ -2,10 +2,16 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 747,
   "_last_change": {
-    "change_count": 1,
-    "high_severity_count": 0,
+    "change_count": 7,
+    "high_severity_count": 7,
     "changes": [
-      "medium added metric://bus_channel/orion-prediction/orion:prediction:forecast"
+      "high   routing_changed metric://field_channel/orion-field-digester/node:substrate.bus_synaptic.prediction_error (prompt_sites: \u2026digest_line'] -> \u2026digest_line', 'services.orion-thought.app.reverie:loop_meas\u2026)",
+      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.biometrics.prediction_error (prompt_sites: \u2026end_signals'] -> \u2026end_signals', 'services.orion-thought.app.reverie:loop_meas\u2026)",
+      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.prediction_error (prompt_sites: \u2026lf_readings'] -> \u2026lf_readings', 'services.orion-thought.app.reverie:loop_meas\u2026)",
+      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.chat.prediction_error (prompt_sites: \u2026lf_readings'] -> \u2026lf_readings', 'services.orion-thought.app.reverie:loop_meas\u2026)",
+      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.codebase.prediction_error (prompt_sites: \u2026lf_readings'] -> \u2026lf_readings', 'services.orion-thought.app.reverie:loop_meas\u2026)",
+      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.execution.prediction_error (prompt_sites: \u2026end_signals'] -> \u2026end_signals', 'services.orion-thought.app.reverie:loop_meas\u2026)",
+      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.route.prediction_error (prompt_sites: \u2026lf_readings'] -> \u2026lf_readings', 'services.orion-thought.app.reverie:loop_meas\u2026)"
     ]
   },
   "definitions": {
@@ -4324,7 +4330,8 @@
       "polarity": "higher_is_worse",
       "prompt_sites": [
         "orion.attention.self_readings:render_self_readings",
-        "services.orion-mind.app.recall_signal_resolver:render_bus_synaptic_digest_line"
+        "services.orion-mind.app.recall_signal_resolver:render_bus_synaptic_digest_line",
+        "services.orion-thought.app.reverie:loop_measurement_text"
       ],
       "notes": "category=infra_transport level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
@@ -4481,7 +4488,8 @@
       ],
       "prompt_sites": [
         "orion.attention.self_readings:render_self_readings",
-        "services.orion-cortex-exec.app.metacog_trend_reader:fetch_recent_trend_signals"
+        "services.orion-cortex-exec.app.metacog_trend_reader:fetch_recent_trend_signals",
+        "services.orion-thought.app.reverie:loop_measurement_text"
       ],
       "notes": "category=physical_substrate level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
@@ -4500,7 +4508,8 @@
         "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
       ],
       "prompt_sites": [
-        "orion.attention.self_readings:render_self_readings"
+        "orion.attention.self_readings:render_self_readings",
+        "services.orion-thought.app.reverie:loop_measurement_text"
       ],
       "notes": "category=physical_substrate level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
@@ -4521,7 +4530,8 @@
         "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
       ],
       "prompt_sites": [
-        "orion.attention.self_readings:render_self_readings"
+        "orion.attention.self_readings:render_self_readings",
+        "services.orion-thought.app.reverie:loop_measurement_text"
       ],
       "notes": "category=social_conversational level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
@@ -4541,7 +4551,8 @@
         "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
       ],
       "prompt_sites": [
-        "orion.attention.self_readings:render_self_readings"
+        "orion.attention.self_readings:render_self_readings",
+        "services.orion-thought.app.reverie:loop_measurement_text"
       ],
       "notes": "category=self_monitoring level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
@@ -4564,7 +4575,8 @@
       ],
       "prompt_sites": [
         "orion.attention.self_readings:render_self_readings",
-        "services.orion-cortex-exec.app.metacog_trend_reader:fetch_recent_trend_signals"
+        "services.orion-cortex-exec.app.metacog_trend_reader:fetch_recent_trend_signals",
+        "services.orion-thought.app.reverie:loop_measurement_text"
       ],
       "notes": "category=self_monitoring level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
@@ -4633,7 +4645,8 @@
         "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
       ],
       "prompt_sites": [
-        "orion.attention.self_readings:render_self_readings"
+        "orion.attention.self_readings:render_self_readings",
+        "services.orion-thought.app.reverie:loop_measurement_text"
       ],
       "notes": "category=task_execution level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"

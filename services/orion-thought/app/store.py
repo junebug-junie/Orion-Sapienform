@@ -1399,19 +1399,74 @@ def reverie_refractory_is_suppressed(theme_key: str, now) -> bool:
         return False
 
 
-def load_recent_loop_outcomes(loop_ids: list[str]) -> dict[str, dict[str, Any]]:
-    """Most recent `attention_loop_outcome` verdict per loop_id (orion-hub table,
-    written by a human's Resolve/Dismiss action; read directly, no orion-hub import).
+# How long a loop verdict stays attached to a reverie prompt. Mirrors
+# orion.substrate.attention.verdicts.VERDICT_EXCLUSION_TTL_HOURS (48h, the
+# window in which a human resolve/dismiss keeps a loop out of the competition);
+# copied, not imported, because orion-thought must not load orion.substrate
+# (test_reverie_thin_import_boundary). Pinned equal by
+# test_reverie_loop_outcome_freshness.py. Why a window and not "newer than the
+# loop's current activation": OpenLoopV1 carries no activation timestamp, and
+# loop ids hash the label, so the same id is reused by every spike of a signal
+# (open-loop-7376a3da4050 = every execution spike). Live 2026-10-14: a
+# 2026-09-21 system decay verdict was attached to every new execution spike
+# for 22+ days.
+LOOP_OUTCOME_FRESH_HOURS = 48.0
 
-    Read-only, best-effort — returns {} on any miss or empty input, so a lookup
+# Actors that are the system itself, not a person. Anything else is a human.
+_SYSTEM_ACTOR_PREFIXES = ("system", "orion")
+
+
+def loop_outcome_actor_is_human(actor: str) -> bool:
+    a = (actor or "").strip().lower()
+    return bool(a) and not a.startswith(_SYSTEM_ACTOR_PREFIXES)
+
+
+def fresh_loop_outcomes(
+    rows: list[dict[str, Any]],
+    *,
+    now: datetime,
+    max_age_hours: float = LOOP_OUTCOME_FRESH_HOURS,
+) -> dict[str, dict[str, Any]]:
+    """Pure part of `load_recent_loop_outcomes`: rows are the latest verdict per
+    loop. A verdict older than `max_age_hours` (or with no readable timestamp)
+    is not attached -- it describes an earlier spike of a reused loop id, not
+    this one."""
+    out: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        created = r.get("created_at")
+        if not isinstance(created, datetime):
+            continue
+        c = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+        age_sec = max(0.0, (now - c).total_seconds())
+        if age_sec > max_age_hours * 3600.0:
+            continue
+        actor = str(r.get("actor") or "").strip()
+        out[str(r["loop_id"])] = {
+            "verdict": str(r.get("verdict") or ""),
+            "note": str(r.get("note") or ""),
+            "age_days": int(age_sec // 86400),
+            "age_hours": int(age_sec // 3600),
+            "actor": actor,
+            "human": loop_outcome_actor_is_human(actor),
+        }
+    return out
+
+
+def load_recent_loop_outcomes(
+    loop_ids: list[str], *, now: datetime | None = None
+) -> dict[str, dict[str, Any]]:
+    """Most recent `attention_loop_outcome` verdict per loop_id, only when it is
+    fresh (see `LOOP_OUTCOME_FRESH_HOURS`). Written by a human's Resolve/Dismiss
+    in the Hub, or by the system (`system:implicit_decay` marks a loop that went
+    silent for 24h) -- the actor is carried so the prompt can say which.
+
+    Read-only, best-effort -- returns {} on any miss or empty input, so a lookup
     failure never breaks a reverie tick. Keyed by the *bare* loop id, matching
-    `attention_loops_store.suppress_loop`'s write format (see `chain.theme_key_for`
-    for the sibling refractory-key fix this mirrors).
+    `attention_loops_store.suppress_loop`'s write format.
 
-    Returns {loop_id: {"verdict": str, "note": str, "age_days": int}} — age is
-    computed here (deterministic code), not left for the prompt/LLM to infer from
-    a raw timestamp. `age_days` is omitted (never `None`) when `created_at` can't
-    be read, so the prompt never has to render a null age.
+    Returns {loop_id: {"verdict", "note", "age_days", "age_hours", "actor",
+    "human"}}. Ages are computed here (deterministic code), not left for the
+    LLM to infer from a raw timestamp.
     """
     ids = [str(i) for i in (loop_ids or []) if i]
     if not ids:
@@ -1422,7 +1477,7 @@ def load_recent_loop_outcomes(loop_ids: list[str]) -> dict[str, dict[str, Any]]:
         engine = _get_engine()
         stmt = text(
             """
-            SELECT DISTINCT ON (loop_id) loop_id, verdict, note, created_at
+            SELECT DISTINCT ON (loop_id) loop_id, verdict, note, actor, created_at
             FROM attention_loop_outcome
             WHERE loop_id IN :ids
               AND verdict <> 'acted'   -- Orion's non-final verdict never hides a human one
@@ -1431,20 +1486,9 @@ def load_recent_loop_outcomes(loop_ids: list[str]) -> dict[str, dict[str, Any]]:
         ).bindparams(bindparam("ids", expanding=True))
         with engine.connect() as conn:
             rows = conn.execute(stmt, {"ids": ids}).mappings().all()
-
-        now = datetime.now(timezone.utc)
-        out: dict[str, dict[str, Any]] = {}
-        for r in rows:
-            entry: dict[str, Any] = {
-                "verdict": str(r.get("verdict") or ""),
-                "note": str(r.get("note") or ""),
-            }
-            created = r.get("created_at")
-            if isinstance(created, datetime):
-                c = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
-                entry["age_days"] = max(0, int((now - c).total_seconds() // 86400))
-            out[str(r["loop_id"])] = entry
-        return out
+        return fresh_loop_outcomes(
+            [dict(r) for r in rows], now=now or datetime.now(timezone.utc)
+        )
     except Exception as exc:
         logger.debug("loop outcome load failed ids=%s err=%s", ids, exc)
         return {}

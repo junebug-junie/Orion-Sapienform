@@ -385,6 +385,7 @@ channels:
       prompt_sites:
         - "services.orion-mind.app.recall_signal_resolver:render_bus_synaptic_digest_line"
         - "orion.attention.self_readings:render_self_readings"
+        - "services.orion-thought.app.reverie:loop_measurement_text"
 
   # ---------------------------------------------------------------------
   # Node-qualified prediction_error entries, added 2026-10-10 (spec
@@ -454,6 +455,7 @@ channels:
       absent_means: "when the thermal reading is 'unknown' (older than the 300 s grace) the tick writes nothing and the node keeps its last value (worker.py:1434)."
       prompt_sites:
         - "orion.attention.self_readings:render_self_readings"
+        - "services.orion-thought.app.reverie:loop_measurement_text"
 
   # orion/substrate/prediction_error.py:1354 -- stage 1: 1 - cos(embedding,
   # stream EWMA) (:1451); stage 2: z of that vs its own EWMA, negatives
@@ -528,6 +530,7 @@ channels:
       prompt_sites:
         - "services.orion-cortex-exec.app.metacog_trend_reader:fetch_recent_trend_signals"
         - "orion.attention.self_readings:render_self_readings"
+        - "services.orion-thought.app.reverie:loop_measurement_text"
 
   # Same helper as execution (prediction_error.py:452-453); chat input
   # (:607, v3) = mean |delta| of conversation_load and repair_pressure over
@@ -552,6 +555,7 @@ channels:
       absent_means: "only written when chat turns were touched; carried forward in node_vectors between turns, dropped from the self-model after 1800 s."
       prompt_sites:
         - "orion.attention.self_readings:render_self_readings"
+        - "services.orion-thought.app.reverie:loop_measurement_text"
 
   # orion/substrate/prediction_error.py:293 codebase: per sub-domain (git,
   # pr, graph) _domain_zscore with negatives clipped (:290), score =
@@ -576,6 +580,7 @@ channels:
       absent_means: "only written on a codebase delta event; carried forward in node_vectors between events."
       prompt_sites:
         - "orion.attention.self_readings:render_self_readings"
+        - "services.orion-thought.app.reverie:loop_measurement_text"
 
   # orion/substrate/prediction_error.py:717 route_prediction_error(): per
   # touched decided run, the share of 4 decision fields (lane, lane_reason,
@@ -602,6 +607,7 @@ channels:
       absent_means: "only written when routing runs were touched; carried forward in node_vectors, dropped from the self-model after 1800 s."
       prompt_sites:
         - "orion.attention.self_readings:render_self_readings"
+        - "services.orion-thought.app.reverie:loop_measurement_text"
 
   # orion/substrate/prediction_error.py:567-604 biometrics: min(1, mean
   # |delta pressure_hints| / 0.30) over the union of keys -- a FIXED
@@ -628,6 +634,7 @@ channels:
       prompt_sites:
         - "services.orion-cortex-exec.app.metacog_trend_reader:fetch_recent_trend_signals"
         - "orion.attention.self_readings:render_self_readings"
+        - "services.orion-thought.app.reverie:loop_measurement_text"
 
   - channel: pressure
     level: [capability]

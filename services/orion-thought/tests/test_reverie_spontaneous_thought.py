@@ -133,7 +133,14 @@ def test_open_loops_for_prompt_includes_outcome_when_present():
         loop_outcomes={"ol-1": {"verdict": "resolved", "note": "n", "age_days": 3}},
     )
     by_id = {e["id"]: e for e in entries}
-    assert by_id["ol-1"]["outcome"] == {"verdict": "resolved", "note": "n", "age_days": 3}
+    outcome = by_id["ol-1"]["outcome"]
+    assert {k: outcome[k] for k in ("verdict", "note", "age_days")} == {
+        "verdict": "resolved", "note": "n", "age_days": 3,
+    }
+    # No actor given -> never presented as a person's ground truth.
+    assert outcome["human"] is False
+    assert outcome["recorded_by"].startswith("recorded automatically by the system")
+    assert outcome["age_text"] == "3 days ago"
     assert "outcome" not in by_id["ol-2"]
 
 
@@ -345,8 +352,9 @@ def test_load_recent_loop_outcomes_never_raises_on_bad_db(monkeypatch):
 def test_load_recent_loop_outcomes_shapes_rows(monkeypatch):
     from app import store
 
-    # A bit over 6 days old, to stay clear of the floor-division boundary.
-    created = datetime.now(timezone.utc) - timedelta(days=6, hours=1)
+    # Fresh (inside LOOP_OUTCOME_FRESH_HOURS) and a bit over 5h old, clear of
+    # the floor-division boundary.
+    created = datetime.now(timezone.utc) - timedelta(hours=5, minutes=10)
 
     class _Result:
         def mappings(self):
@@ -355,7 +363,7 @@ def test_load_recent_loop_outcomes_shapes_rows(monkeypatch):
         def all(self):
             return [
                 {"loop_id": "ol-1", "verdict": "resolved", "note": "fixed it",
-                 "created_at": created},
+                 "actor": "juniper", "created_at": created},
             ]
 
     class _Conn:
@@ -374,13 +382,16 @@ def test_load_recent_loop_outcomes_shapes_rows(monkeypatch):
 
     monkeypatch.setattr(store, "_get_engine", lambda: _Engine())
     out = store.load_recent_loop_outcomes(["ol-1", "ol-2"])
-    assert out == {"ol-1": {"verdict": "resolved", "note": "fixed it", "age_days": 6}}
+    assert out == {"ol-1": {
+        "verdict": "resolved", "note": "fixed it", "age_days": 0, "age_hours": 5,
+        "actor": "juniper", "human": True,
+    }}
 
 
-def test_load_recent_loop_outcomes_omits_age_days_when_unreadable(monkeypatch):
-    """A row with no usable created_at must never surface age_days: None into the
-    prompt — the key is omitted rather than emitting a null the LLM could echo
-    literally (e.g. "closed None days ago")."""
+def test_load_recent_loop_outcomes_drops_a_verdict_with_no_readable_age(monkeypatch):
+    """A row with no usable created_at cannot be shown to be fresh, so it is not
+    attached at all (2026-10-16 freshness rule) -- never surfaced with a null
+    age the LLM could echo literally (e.g. "closed None days ago")."""
     from app import store
 
     class _Result:
@@ -407,8 +418,7 @@ def test_load_recent_loop_outcomes_omits_age_days_when_unreadable(monkeypatch):
 
     monkeypatch.setattr(store, "_get_engine", lambda: _Engine())
     out = store.load_recent_loop_outcomes(["ol-1"])
-    assert "age_days" not in out["ol-1"]
-    assert out["ol-1"]["verdict"] == "dismissed"
+    assert out == {}
 
 
 def test_load_recent_loop_outcomes_never_raises_on_bad_row_shape(monkeypatch):

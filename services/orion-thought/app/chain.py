@@ -274,6 +274,15 @@ async def run_reverie_chain(
     if coalition is None:
         logger.info("reverie chain skipped: no coalition")
         return None
+    if not list(getattr(coalition, "attended_node_ids", None) or []) and not getattr(
+        coalition, "selected_open_loop_id", None
+    ):
+        # Calm tick: nothing won attention. Same predicate run_reverie_once uses
+        # to skip, checked here so a calm tick writes no chain row and no
+        # "unknown" refractory cooldown (live 2026-10-14: ~200/day
+        # no_coalition/theme=unknown rows were exactly these ticks).
+        logger.info("reverie chain skipped: no winner this tick (calm)")
+        return None
 
     theme_key = theme_key_for(coalition)
     now = now_fn()

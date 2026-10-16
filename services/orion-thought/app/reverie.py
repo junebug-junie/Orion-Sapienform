@@ -45,6 +45,7 @@ from .settings import settings
 from .store import (
     load_pending_expectations,
     load_recent_loop_outcomes,
+    loop_outcome_actor_is_human,
     persist_expectation_verdict,
     persist_reverie_thought,
     persist_salience_trace,
@@ -207,6 +208,86 @@ def build_salience_trace(
     )
 
 
+# --- honest prompt input (2026-10-16) ----------------------------------------
+
+def _fmt_reading(value: float) -> str:
+    v = float(value)
+    if v == 0.0:
+        return "0.00"
+    return f"{v:.3f}" if abs(v) < 0.1 else f"{v:.2f}"
+
+
+def loop_measurement_text(loop: Any) -> str:
+    """The loop's real measurement in plain words, or "" when there is none.
+
+    Reads `OpenLoopV1.magnitude` (prediction-error size against its own
+    history, orion.substrate.prediction_error_magnitude). Each missing field is
+    left out -- never a placeholder.
+    """
+    m = getattr(loop, "magnitude", None)
+    if m is None:
+        return ""
+    head = f"reading {_fmt_reading(m.value)}"
+    detail: list[str] = []
+    if m.p50_7d is not None:
+        detail.append(f"usual {_fmt_reading(m.p50_7d)}")
+    if m.p90_7d is not None:
+        detail.append(f"90th pct {_fmt_reading(m.p90_7d)}")
+    rank: list[str] = []
+    if m.percentile_now is not None:
+        p = float(m.percentile_now)
+        if p >= 0.5:
+            rank.append(f"top {max(0.1, (1.0 - p) * 100.0):.1f}% of its own week")
+        else:
+            rank.append(f"{p * 100.0:.0f}th percentile of its own week")
+    if m.band == "insufficient_history":
+        rank.append("not enough history to say what is usual")
+    else:
+        rank.append(f"band {m.band}")
+    if m.trend in ("rising", "settling"):
+        rank.append(f"trend {m.trend}")
+    inner = ", ".join(detail)
+    if rank:
+        inner = (inner + "; " if inner else "") + ", ".join(rank)
+    return f"{head} ({inner})" if inner else head
+
+
+def _loop_reason(loop: Any) -> str:
+    reason = (getattr(loop, "provenance", None) or {}).get("world_first_reason")
+    return str(reason).strip() if isinstance(reason, str) else ""
+
+
+def _is_substrate_broadcast_loop(loop: Any) -> bool:
+    return (getattr(loop, "provenance", None) or {}).get("signal_source") == "substrate_broadcast"
+
+
+def _outcome_for_prompt(outcome: dict[str, Any]) -> dict[str, Any]:
+    """Copy of a loop verdict with who recorded it, in words.
+
+    Only a person's verdict is ground truth; a system mark (for example
+    `system:implicit_decay`, written when a loop went quiet for 24h) is
+    bookkeeping and the prompt says so.
+    """
+    out = dict(outcome)
+    actor = str(out.get("actor") or "").strip()
+    human = out.get("human")
+    if human is None:
+        human = loop_outcome_actor_is_human(actor)
+    out["human"] = bool(human)
+    if human:
+        out["recorded_by"] = "recorded by Juniper" if actor.lower() == "juniper" else f"recorded by {actor}"
+    else:
+        out["recorded_by"] = f"recorded automatically by the system ({actor or 'unknown actor'})"
+    days, hours = out.get("age_days"), out.get("age_hours")
+    if isinstance(days, int) and days >= 1:
+        out["age_text"] = f"{days} day{'s' if days != 1 else ''} ago"
+    elif isinstance(hours, int) and hours >= 1:
+        out["age_text"] = f"{hours} hour{'s' if hours != 1 else ''} ago"
+    elif isinstance(hours, int) or isinstance(days, int):
+        out["age_text"] = "less than an hour ago"
+    return out
+
+
 def _open_loops_for_prompt(
     broadcast: AttentionBroadcastProjectionV1,
     *,
@@ -215,17 +296,47 @@ def _open_loops_for_prompt(
     outcomes = loop_outcomes or {}
     entries = []
     for loop in broadcast.frame.open_loops:
+        why = loop.why_it_matters
+        reason = _loop_reason(loop)
+        if _is_substrate_broadcast_loop(loop):
+            # scoring.py stamps every loop with a chat-turn boilerplate
+            # ("novel or unresolved current-turn target ...") that is false
+            # when no turn exists. For a substrate-broadcast loop the real
+            # reason is the world-first selector's own sentence.
+            why = reason
         entry: dict[str, Any] = {
             "id": loop.id,
             "description": loop.description,
-            "why_it_matters": loop.why_it_matters,
+            "why_it_matters": why,
             "target_type": loop.target_type,
         }
+        reading = loop_measurement_text(loop)
+        if reading:
+            entry["reading"] = reading
+        if loop.magnitude is not None and not reason:
+            # No selector sentence to say how old the reading is; say it here.
+            entry["reading_age"] = f"last reading {int(loop.magnitude.age_sec)}s ago"
         outcome = outcomes.get(loop.id)
         if outcome:
-            entry["outcome"] = outcome
+            entry["outcome"] = _outcome_for_prompt(outcome)
         entries.append(entry)
     return entries
+
+
+def attention_summary_text(broadcast: AttentionBroadcastProjectionV1) -> str:
+    """What actually won attention this tick, in one plain sentence."""
+    selected = broadcast.selected_open_loop_id
+    desc = (broadcast.selected_description or "").strip()
+    nodes = list(broadcast.attended_node_ids)
+    if selected:
+        label = desc or selected
+        node_part = f" (from {', '.join(nodes)})" if nodes else ""
+        return f"One thing won your attention this tick: {label} [{selected}]{node_part}."
+    if len(nodes) == 1:
+        return f"One thing won your attention this tick: {nodes[0]}."
+    if nodes:
+        return f"{len(nodes)} things won your attention together this tick: {', '.join(nodes)}."
+    return "Nothing won your attention this tick."
 
 
 def _metacog_route() -> str:
@@ -339,8 +450,13 @@ def build_reverie_context(
             "coalition_stability_score": broadcast.coalition_stability_score,
             "dwell_ticks": broadcast.dwell_ticks,
         },
+        "attention_summary": attention_summary_text(broadcast),
         "open_loops": open_loops,
         "has_settled_loops": any("outcome" in loop for loop in open_loops),
+        "has_human_verdicts": any(loop.get("outcome", {}).get("human") for loop in open_loops),
+        "has_system_verdicts": any(
+            "outcome" in loop and not loop["outcome"].get("human") for loop in open_loops
+        ),
         "metadata": {"mode": "reverie", "llm_profile": "brain"},
     }
     if percepts:

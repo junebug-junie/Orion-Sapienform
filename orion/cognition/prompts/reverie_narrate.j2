@@ -54,6 +54,7 @@ genuinely connects; it is not evidence_refs{% if recent_percepts %}, and any
 expectation you state is about the room, never the street{% endif %}.
 {% endif %}
 
+
 JOB
 - Write 1-3 sentences of inner speech about the concern(s) above.
 - Paraphrase the user's worry and what you felt you should do — in plain language.
@@ -72,14 +73,27 @@ REQUIRED JSON FIELDS
 {% endif %}
 
 {% else %}
-You are noticing your own current state: the coalition of concerns that just won
-the substrate workspace. This is an internal reflection pass — not user-facing
+You are noticing your own current state. {{ attention_summary }}
+That is what happened: usually one signal wins, not a group of concerns — say
+what it is, plainly. This is an internal reflection pass — not user-facing
 speech, not a response to a turn.
 
-SOURCE (bounded internal input — the current winning coalition)
-- coalition_projection: {{ coalition_projection }}
+SOURCE (bounded internal input — what won your attention this tick)
+- coalition_projection (ids for evidence_refs): {{ coalition_projection }}
 {% if open_loops %}
-- open_loops: {{ open_loops }}
+- open_loops (what competed this tick, with its real measurement where one exists):
+{% for ol in open_loops %}
+  - {{ ol.id }}{% if ol.id == coalition_projection.selected_open_loop_id %} (won){% endif %}: {{ ol.description }}
+{%- if ol.why_it_matters %}
+    why it surfaced: {{ ol.why_it_matters }}
+{%- endif %}
+{%- if ol.reading %}
+    measured: {{ ol.reading }}{% if ol.reading_age %}, {{ ol.reading_age }}{% endif %}
+{%- endif %}
+{%- if ol.outcome %}
+    earlier verdict: {{ ol.outcome.verdict }}{% if ol.outcome.age_text %}, {{ ol.outcome.age_text }}{% endif %}, {{ ol.outcome.recorded_by }}{% if ol.outcome.note %} — note: "{{ ol.outcome.note }}"{% endif %}
+{%- endif %}
+{%- endfor %}
 {% endif %}
 {% if recent_percepts %}
 - what you can currently see (real camera input, not memory or imagination):
@@ -101,16 +115,23 @@ recount it. The [arc:...] ids are NOT evidence_refs — never put them there.
 {% endif %}
 
 {% if has_settled_loops %}
-ALREADY-SETTLED LOOPS (read this before you narrate urgency)
-- Some entries above carry an "outcome" field: {"verdict": "resolved" |
-  "dismissed" | "decayed_unattended", "note": "...", "age_days": N (may be
-  absent)}. That verdict was recorded by a human closing this loop — it is
-  ground truth, not a guess.
-- If the loop you are about to narrate has an "outcome", you MUST describe it
-  as settled, past-tense — closed N days ago if age_days is present, otherwise
-  just "already closed" — never as an open struggle, an active strain, or
-  something "requiring sustained attention". It is still showing up in the
-  coalition because of scoring, not because it is actually still live.
+EARLIER VERDICTS (read this before you narrate urgency)
+- Some loops above carry an "earlier verdict" line (resolved | dismissed |
+  decayed_unattended) from the last two days. Who recorded it matters.
+{% if has_human_verdicts %}
+- A verdict "recorded by Juniper" (a person closing this loop) is ground truth,
+  not a guess. If the loop you narrate has one, describe it as settled, past
+  tense — closed at the age shown — never as an open struggle, an active
+  strain, or something "requiring sustained attention". It is still showing up
+  because of scoring, not because it is actually still live.
+{% endif %}
+{% if has_system_verdicts %}
+- A verdict "recorded automatically by the system" is bookkeeping, not a
+  person's judgment and not ground truth: for example decayed_unattended only
+  means the loop went quiet for a day. The loop is showing up again now, so it
+  is live again. Do not describe it as long-unattended, ignored, or settled on
+  the strength of that mark.
+{% endif %}
 {% endif %}
 
 {% if street_percepts or street_predictions %}
@@ -126,12 +147,14 @@ genuinely connects; it is not evidence_refs{% if recent_percepts %}, and any
 expectation you state is about the room, never the street{% endif %}.
 {% endif %}
 
+
 GROUNDING DISCIPLINE (the anti-hollow rule — this is the whole point)
 - There is no user question anchoring you, so you must anchor yourself.
-- interpretation MUST be about THESE coalition ids — what recurs, what strains,
-  what is unresolved about the specific attended nodes / open loops present.
+- interpretation MUST be about what won your attention (the ids above) — what
+  it measured, what recurs, what strains, what is unresolved about it. Use the
+  measured numbers exactly as shown or not at all.
 - Do NOT produce generic musing ("I am thinking about many things", "life is
-  complex"). If the coalition is thin, say specifically what is thin about it.
+  complex"). If the input is thin, say specifically what is thin about it.
 - evidence_refs MUST be a non-empty subset of the coalition's attended_node_ids
   or open_loop_ids. A thought that cites no coalition id will be discarded as
   un-anchored (hollow).
@@ -152,9 +175,9 @@ GROUNDING DISCIPLINE (the anti-hollow rule — this is the whole point)
 {% endif %}
 
 REQUIRED JSON FIELDS
-- interpretation: 1-3 sentences — what you notice about the current coalition
-  and, where it lands, *why* it matters or what it leaves open. Situated, not
-  abstract. Reference the concerns by their meaning.
+- interpretation: 1-3 sentences — what you notice about what won your
+  attention and, where it lands, *why* it matters or what it leaves open.
+  Situated, not abstract. Reference it by its meaning.
 - evidence_refs: JSON array — coalition ids (attended_node_ids / open_loop_ids)
   that this interpretation is actually about. Minimum 1.
 {% if recent_percepts %}
@@ -163,9 +186,9 @@ REQUIRED JSON FIELDS
 {% endif %}
 {% endif %}
 
-(Salience is computed deterministically from coalition scores — do not output it.)
+(Salience is computed deterministically from attention scores — do not output it.)
 
 FAIL-CLOSED REMINDER
 - Empty evidence_refs, ids outside the coalition, generic un-anchored text, or
   mechanism narration will be marked hollow and dropped. Narrate the concern or
-  coalition meaning — or say nothing true.
+  what won your attention — or say nothing true.

@@ -35,7 +35,7 @@ def test_no_outcome_block_when_no_loop_has_a_verdict():
 
     ctx = reverie.build_reverie_context(_broadcast())
     out = _render(**ctx)
-    assert "ALREADY-SETTLED LOOPS" not in out
+    assert "EARLIER VERDICTS" not in out
 
 
 def test_outcome_block_present_and_instructs_settled_framing():
@@ -43,10 +43,13 @@ def test_outcome_block_present_and_instructs_settled_framing():
 
     ctx = reverie.build_reverie_context(
         _broadcast(),
-        loop_outcomes={"ol-1": {"verdict": "resolved", "note": "fixed the flakiness", "age_days": 4}},
+        loop_outcomes={"ol-1": {"verdict": "resolved", "note": "fixed the flakiness", "age_days": 1,
+                                "age_hours": 30, "actor": "juniper", "human": True}},
     )
     out = _render(**ctx)
-    assert "ALREADY-SETTLED LOOPS" in out
+    assert "EARLIER VERDICTS" in out
+    assert "recorded by Juniper" in out
+    assert "ground truth" in out
     assert "settled" in out
     assert "never as an open struggle" in out
     # the actual verdict data must reach the model, not just the instruction text
@@ -61,5 +64,5 @@ def test_outcome_block_absent_when_open_loops_is_empty():
 
     ctx = reverie.build_reverie_context(_broadcast(loops=()))
     out = _render(**ctx)
-    assert "ALREADY-SETTLED LOOPS" not in out
+    assert "EARLIER VERDICTS" not in out
     assert "open_loops:" not in out

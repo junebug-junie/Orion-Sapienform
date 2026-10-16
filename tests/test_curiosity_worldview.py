@@ -437,6 +437,7 @@ def test_a_redis_error_becomes_a_typed_failure_not_a_bare_exception() -> None:
 def test_a_view_with_only_stale_priors_does_not_print_an_empty_heading() -> None:
     from orion.curiosity.kickoff_prompt import _priors_section
     from orion.curiosity.worldview import WorldviewSnapshot
+    from orion.curiosity.worldview import WorldviewSnapshot
 
     view = WorldviewSnapshot(
         live_priors=[],
@@ -505,6 +506,7 @@ def test_unreadable_priors_are_never_reported_as_none_outstanding() -> None:
     """The counts query saw rows that `build_prior` could not read. Saying
     "none outstanding" would tell Orion the opposite of the truth."""
     from orion.curiosity.kickoff_prompt import _priors_section
+    from orion.curiosity.worldview import WorldviewSnapshot
     from orion.curiosity.worldview import WorldviewSnapshot
 
     text = "\n".join(
@@ -715,6 +717,7 @@ def test_the_2026_08_27_graph_state_is_not_read_back_as_an_empty_worldview() -> 
     assert len(view.live_priors) == 3, "the whole loop stops if this is empty"
 
     from orion.curiosity.kickoff_prompt import _priors_section
+    from orion.curiosity.worldview import WorldviewSnapshot
 
     text = "\n".join(_priors_section(view, stale_after=3))
     assert "NO PRIORS STILL IN PLAY" not in text
@@ -1703,3 +1706,77 @@ def test_priors_worth_nothing_keep_the_uncertainty_order() -> None:
     for seed in ("", "run-a", "run-b", "run-c"):
         default, valued = _orders(rows, stuck, seed=seed)
         assert valued == default == ["half", "mid", "lean", "sure"]
+
+
+# --- coverage slots: the order alone never reaches confident priors ---------
+
+
+def _pool(n: int) -> list[dict]:
+    """n fresh priors; p00 is the most uncertain, confidence drifts away from 0.5 as the index grows."""
+    return [_prior_row(f"p{i:02d}", confidence=str(round(0.5 + i * 0.01, 2))) for i in range(n)]
+
+
+def test_coverage_slots_default_off_changes_nothing() -> None:
+    off, _, _ = select_priors(_pool(20), sample=8, stale_after=3)
+    zero, _, _ = select_priors(_pool(20), sample=8, stale_after=3, coverage_slots=0)
+    assert [p.prior_id for p in off] == [p.prior_id for p in zero] == [f"p{i:02d}" for i in range(8)]
+    assert not any(p.coverage for p in off)
+
+
+def test_coverage_slots_keep_the_sample_size_and_fill_from_past_the_order() -> None:
+    offered, _, _ = select_priors(_pool(20), sample=8, stale_after=3, coverage_slots=2, rotate_seed="r1")
+    assert len(offered) == 8
+    assert [p.prior_id for p in offered[:6]] == [f"p{i:02d}" for i in range(6)]
+    drawn = offered[6:]
+    assert all(p.coverage for p in drawn) and not any(p.coverage for p in offered[:6])
+    # Drawn from past the ordered six, never a duplicate of one already shown.
+    assert all(p.prior_id >= "p06" for p in drawn)
+    assert len({p.prior_id for p in offered}) == 8
+
+
+def test_coverage_draw_is_reproducible_per_run_and_moves_between_runs() -> None:
+    def ids(seed):
+        o, _, _ = select_priors(_pool(40), sample=8, stale_after=3, coverage_slots=2, rotate_seed=seed)
+        return [p.prior_id for p in o if p.coverage]
+
+    assert ids("run-a") == ids("run-a")
+    assert any(ids(f"run-{i}") != ids("run-a") for i in range(10))
+
+
+def test_coverage_reaches_nearly_every_prior_the_order_cannot() -> None:
+    """The point of the patch: over a few weeks of runs the unreachable tail gets looked at."""
+    seen: set[str] = set()
+    for i in range(140):
+        o, _, _ = select_priors(_pool(60), sample=8, stale_after=3, coverage_slots=2, rotate_seed=f"run-{i}")
+        seen |= {p.prior_id for p in o}
+    unreachable_by_order = 60 - 8
+    assert len(seen) - 8 >= 0.85 * unreachable_by_order
+
+
+def test_coverage_with_a_short_pool_does_not_duplicate_or_invent() -> None:
+    offered, _, _ = select_priors(_pool(7), sample=8, stale_after=3, coverage_slots=2, rotate_seed="r")
+    assert sorted(p.prior_id for p in offered) == [f"p{i:02d}" for i in range(7)]
+    one, _, _ = select_priors(_pool(1), sample=8, stale_after=3, coverage_slots=2)
+    assert [p.prior_id for p in one] == ["p00"]
+
+
+def test_coverage_slots_larger_than_sample_are_capped() -> None:
+    offered, _, _ = select_priors(_pool(20), sample=3, stale_after=3, coverage_slots=9, rotate_seed="r")
+    assert len(offered) == 3
+
+
+def test_the_prompt_labels_coverage_priors_as_random_not_ranked() -> None:
+    from orion.curiosity.kickoff_prompt import _priors_section
+    from orion.curiosity.worldview import WorldviewSnapshot
+
+    offered, stale, _ = select_priors(_pool(20), sample=8, stale_after=3, coverage_slots=2, rotate_seed="r")
+    view = WorldviewSnapshot(live_priors=offered, stale_priors=stale, live_total=20, closed_total=0)
+    text = "\n".join(_priors_section(view, stale_after=3))
+    head, _, tail = text.partition("DRAWN AT RANDOM")
+    assert tail, "coverage priors need their own labelled block"
+    for p in offered:
+        assert p.prior_id in (tail if p.coverage else head)
+    # With no coverage priors the block is absent.
+    plain, _, _ = select_priors(_pool(20), sample=8, stale_after=3)
+    view2 = WorldviewSnapshot(live_priors=plain, live_total=20, closed_total=0)
+    assert "DRAWN AT RANDOM" not in "\n".join(_priors_section(view2, stale_after=3))

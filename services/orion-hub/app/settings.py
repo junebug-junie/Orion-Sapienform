@@ -911,6 +911,12 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_PRIOR_SAMPLE: int = Field(
         default=8, alias="HUB_CURIOSITY_PRIOR_SAMPLE"
     )
+    # How many of those slots skip the uncertainty order and draw from the priors ranked past it
+    # (per-run rotation). Without them a confident prior is never shown and never re-checked:
+    # 72 of 119 live self-priors went unoffered across 140 runs (2026-10-16). 0 = off.
+    HUB_CURIOSITY_PRIOR_COVERAGE_SLOTS: int = Field(
+        default=2, alias="HUB_CURIOSITY_PRIOR_COVERAGE_SLOTS"
+    )
     # A prior tested this many times with no status change stops competing for
     # the main list and is offered separately, with retiring it named as a real
     # outcome. 3 is a guess from the design doc and should be revisited against

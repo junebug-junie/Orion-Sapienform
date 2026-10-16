@@ -246,6 +246,7 @@ def offered_rows(priors: Sequence[Prior], model: YieldModel) -> list[dict[str, A
         rows.append(
             {
                 "rank": rank,
+                "slot": "coverage" if prior.coverage else "order",
                 "prior_id": prior.prior_id,
                 "confidence": confidence,
                 "times_tested": prior.times_tested,

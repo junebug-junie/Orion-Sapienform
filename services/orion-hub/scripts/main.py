@@ -662,6 +662,7 @@ async def startup_event():
                 graph_password=settings.HUB_CURIOSITY_GRAPH_ORION_PASSWORD,
                 hub_url=settings.HUB_CURIOSITY_SANDBOX_HUB_URL,
                 prior_sample=settings.HUB_CURIOSITY_PRIOR_SAMPLE,
+                prior_coverage_slots=settings.HUB_CURIOSITY_PRIOR_COVERAGE_SLOTS,
                 stale_prior_tests=settings.HUB_CURIOSITY_STALE_PRIOR_TESTS,
                 spend_log_enabled=settings.HUB_CURIOSITY_SPEND_LOG_ENABLED,
                 value_order_enabled=settings.HUB_CURIOSITY_VALUE_ORDER_ENABLED,

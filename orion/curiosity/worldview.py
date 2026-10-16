@@ -53,7 +53,7 @@ import hashlib
 import logging
 import re
 from datetime import datetime, timezone
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional, Sequence
 
 from orion.curiosity.value import valid_confidence
@@ -179,6 +179,9 @@ class Prior:
     times_tested: int
     formed_from: str = ""
     last_tested_at: str = ""
+    # True when the pick came from a coverage slot, not from the uncertainty order. Recorded in
+    # the offer log so the order experiment can tell the two apart.
+    coverage: bool = False
 
     @property
     def uncertainty(self) -> float:
@@ -1006,6 +1009,7 @@ def select_priors(
     stale_after: int,
     rotate_seed: str = "",
     expected_nats_for: Optional[Callable[[Prior], float]] = None,
+    coverage_slots: int = 0,
 ) -> tuple[list[Prior], list[Prior], int]:
     """Split LIVE priors into (offered, stale, dropped_count).
 
@@ -1074,7 +1078,16 @@ def select_priors(
     stale.sort(
         key=lambda p: (-p.times_tested, _rotation_key(p.prior_id, rotate_seed))
     )
-    return fresh[: max(0, sample)], stale[: max(0, sample)], dropped
+    sample = max(0, sample)
+    k = min(max(0, coverage_slots), sample)
+    head, tail = fresh[: sample - k], fresh[sample - k :]
+    # Coverage slots: the order above only ever reaches priors near 0.5, so a confident prior with
+    # a few tests ranked past the sample is never shown and never re-checked (live 2026-10-16: 72
+    # of 119 live self-priors never offered in 140 runs). These slots draw from the rest by the
+    # per-run rotation, so one run is reproducible and the draw moves between runs.
+    tail.sort(key=lambda p: _rotation_key(p.prior_id, rotate_seed))
+    picked = [replace(p, coverage=True) for p in tail[:k]]
+    return head + picked, stale[:sample], dropped
 
 
 def build_recent_runs(
@@ -1131,6 +1144,7 @@ def read_snapshot(
     priors_cypher: str = LIVE_PRIORS_CYPHER,
     counts_cypher: str = COUNTS_CYPHER,
     expected_nats_for: Optional[Callable[[Prior], float]] = None,
+    coverage_slots: int = 0,
 ) -> WorldviewSnapshot:
     """One read of everything the next prompt needs. Never raises.
 
@@ -1182,6 +1196,7 @@ def read_snapshot(
         stale_after=stale_after,
         rotate_seed=rotate_seed,
         expected_nats_for=expected_nats_for,
+        coverage_slots=coverage_slots,
     )
     if dropped:
         logger.warning(

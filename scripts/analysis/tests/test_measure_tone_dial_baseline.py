@@ -92,3 +92,16 @@ def test_sufficient_n_separates_and_incorrect_tone_counts_as_bad():
     # Good (plain) replies have fewer headings than bad (listy) ones -> delta -1.
     assert sep["dials"]["heading_count"]["cliffs_delta"] == -1.0
     assert r["separation"]["thumbs_up_vs_down"]["dials"]["bold_span_count"]["cliffs_delta"] == -1.0
+
+
+def test_turn_rated_both_ways_is_contested_and_left_out():
+    feedback = [
+        {"target_correlation_id": "p0", "feedback_value": "up", "categories": ["good_tone"]},
+        {"target_correlation_id": "p0", "feedback_value": "down", "categories": ["bad_tone"]},
+    ]
+    r = build_report(_history(1, 1), feedback, window_days=7)
+    assert r["counts"]["feedback_joined_in_window"] == 1
+    sep = r["separation"]["good_tone_vs_bad_tone"]
+    assert sep["n_good"] == 0 and sep["n_bad"] == 0
+    thumbs = r["separation"]["thumbs_up_vs_down"]
+    assert thumbs["n_good"] == 0 and thumbs["n_bad"] == 0

@@ -20,9 +20,14 @@ from __future__ import annotations
 import re
 from dataclasses import asdict, dataclass
 
-# Fenced code blocks (``` or ~~~), including an unterminated fence that runs
-# to end of text. Code is not voice, so it is removed before measuring.
-_FENCE_RE = re.compile(r"^[ \t]*(```|~~~).*?(?:^[ \t]*\1[^\n]*$|\Z)", re.MULTILINE | re.DOTALL)
+# Code is not voice, so it is removed before measuring. Fences are tracked
+# line by line (see _strip_code): a regex over the whole text mistook the
+# closing line of a fence opened mid-line ("Here: ```python") for a new
+# opener and deleted every sentence after it (review, 2026-10-16).
+_FENCE_LINE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
+_MIDLINE_OPEN_RE = re.compile(r"(`{3,}|~{3,})[\w+.-]*[ \t]*$")
+_INLINE_FENCE_RE = re.compile(r"(`{3,})[^\n]*?\1")
+_URL_RE = re.compile(r"https?://\S+")
 _WORD_RE = re.compile(r"\w+(?:['\-]\w+)*")
 _LIST_RE = re.compile(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)")
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s")
@@ -30,7 +35,10 @@ _BOLD_RE = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*")
 # Sentence end: terminal punctuation (optionally followed by closing quotes /
 # brackets) then whitespace. Each non-empty line also ends a sentence, so a
 # bullet without a period still counts as one unit.
-_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])[\"')\]”’]*\s+")
+_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])[\"')\]”’*_]*\s+")
+# Closers that can trail a question mark: quotes, brackets, and markdown
+# emphasis ("**Want me to continue?**").
+_QUESTION_TRAIL = "\"')]”’*_"
 # Dash used as punctuation: an em dash anywhere, or a hyphen / double hyphen /
 # en dash with whitespace on both sides. A hyphen inside a word
 # ("well-known") has no surrounding space and is not counted.
@@ -60,8 +68,30 @@ class ToneDials:
 DIAL_NAMES: tuple[str, ...] = tuple(ToneDials.__dataclass_fields__)
 
 
-def _strip_code_fences(text: str) -> str:
-    return _FENCE_RE.sub("", text)
+def _strip_code(text: str) -> str:
+    """Drop fenced code (a bare fence line, or a fence opened at the end of a
+    prose line) and inline ```span``` code. An unterminated fence runs to the
+    end of the text. A fence closes only on a bare line of at least as many
+    of the same character."""
+    out: list[str] = []
+    fence: str | None = None
+    for line in text.split("\n"):
+        if fence is not None:
+            stripped = line.strip()
+            if stripped and set(stripped) == {fence[0]} and len(stripped) >= len(fence):
+                fence = None
+            continue
+        line = _INLINE_FENCE_RE.sub("", line)
+        m = _FENCE_LINE_RE.match(line)
+        if m:
+            fence = m.group(1)
+            continue
+        m = _MIDLINE_OPEN_RE.search(line)
+        if m:
+            fence = m.group(1)
+            line = line[: m.start()]
+        out.append(line)
+    return "\n".join(out)
 
 
 def _words(text: str) -> list[str]:
@@ -84,7 +114,9 @@ def measure_tone_dials(text: str) -> ToneDials | None:
 
 
 def _measure(text: str) -> ToneDials | None:
-    body = _strip_code_fences(text.replace("\r\n", "\n").replace("\r", "\n")).replace("’", "'")
+    body = _strip_code(text.replace("\r\n", "\n").replace("\r", "\n")).replace("’", "'")
+    # A URL is one word, not ten.
+    body = _URL_RE.sub("link", body)
     if not body.strip():
         return None
 
@@ -93,17 +125,19 @@ def _measure(text: str) -> ToneDials | None:
     heading_count = sum(1 for ln in lines if _HEADING_RE.match(ln))
 
     sentences: list[str] = []
+    words: list[str] = []
     dash_count = 0
     for ln in lines:
         # Drop list / heading markers so they are neither words nor dashes.
+        # Every word-based dial counts from this same stripped text.
         content = _HEADING_RE.sub("", _LIST_RE.sub("", ln)).strip()
+        words.extend(_words(content))
         dash_count += len(_DASH_RE.findall(content))
         for piece in _SENT_SPLIT_RE.split(content):
             piece = piece.strip()
             if _words(piece):
                 sentences.append(piece)
 
-    words = _words(body)
     word_count = len(words)
     if word_count == 0:
         return None
@@ -114,7 +148,9 @@ def _measure(text: str) -> ToneDials | None:
         1 for w in words if w in _FIRST_PERSON_CASED or w.lower() in _FIRST_PERSON_FOLDED
     )
 
-    paragraphs = [p for p in re.split(r"\n\s*\n", body) if _words(p)]
+    # A leading "# Title" is not a preamble: headings are left out of paragraphs.
+    no_headings = "\n".join(ln for ln in body.split("\n") if not _HEADING_RE.match(ln))
+    paragraphs = [p for p in re.split(r"\n\s*\n", no_headings) if _words(p)]
     opener_words = len(_words(paragraphs[0])) if len(paragraphs) > 1 else 0
 
     return ToneDials(
@@ -123,7 +159,7 @@ def _measure(text: str) -> ToneDials | None:
         list_line_ratio=round(list_lines / len(lines), 4) if lines else 0.0,
         heading_count=heading_count,
         bold_span_count=len(_BOLD_RE.findall(body)),
-        question_count=sum(1 for s in sentences if s.rstrip("\"')]”").endswith("?")),
+        question_count=sum(1 for s in sentences if s.rstrip(_QUESTION_TRAIL).endswith("?")),
         em_dash_per_100_words=_per_100(dash_count, word_count),
         first_person_singular_per_100_words=_per_100(first_person, word_count),
         opener_words=opener_words,

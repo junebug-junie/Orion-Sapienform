@@ -108,3 +108,40 @@ def test_odd_input_never_raises(text):
 
 def test_dial_names_match_dict():
     assert tuple(measure_tone_dials(PLAIN).as_dict()) == DIAL_NAMES
+
+
+# Regressions from the 2026-10-16 review.
+
+def test_fence_opened_mid_line_keeps_the_prose_after_it() -> None:
+    d = measure_tone_dials("Here is code: ```python\nx=1\n```\nAfter one. After two. After three.")
+    assert d is not None
+    assert d.sentence_count == 4  # "Here is code:" + three trailing sentences
+    assert d.word_count == 9  # x=1 is code, not words
+
+
+def test_inline_triple_backtick_span_does_not_swallow_the_reply() -> None:
+    d = measure_tone_dials("```ls``` is the command. Then more prose. And more.\nAnother line here.")
+    assert d is not None
+    assert d.sentence_count == 4
+
+
+def test_longer_fence_is_not_closed_by_a_shorter_inner_fence() -> None:
+    d = measure_tone_dials("````\n```\ninner\n```\n````\nOut.")
+    assert d is not None
+    assert d.word_count == 1
+
+
+def test_list_markers_and_urls_do_not_inflate_word_count() -> None:
+    assert measure_tone_dials("1. one\n2. two\n3. three").word_count == 3
+    assert measure_tone_dials("see https://a.b.c/d-e/f_g?x=1&y=2 ok").word_count == 3
+
+
+def test_question_wrapped_in_emphasis_counts() -> None:
+    assert measure_tone_dials("**Want me to continue?**").question_count == 1
+    d = measure_tone_dials("Is it *fine?* Yes.")
+    assert d.question_count == 1
+    assert d.sentence_count == 2
+
+
+def test_leading_heading_is_not_a_preamble() -> None:
+    assert measure_tone_dials("# Title\n\nBody text here.").opener_words == 0

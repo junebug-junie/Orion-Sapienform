@@ -186,22 +186,29 @@ def build_report(
     bad_tone: List[Dict[str, float]] = []
     thumbs_up: List[Dict[str, float]] = []
     thumbs_down: List[Dict[str, float]] = []
-    feedback_rows = joined = 0
+    # Fold feedback per turn first: a turn rated both ways (two rows) is
+    # contested and goes into neither side of a split.
+    feedback_rows = 0
+    per_turn: Dict[str, Dict[str, set]] = {}
     for fb in feedback:
         feedback_rows += 1
-        d = by_corr.get(fb.get("target_correlation_id") or "")
-        if d is None:
+        corr = fb.get("target_correlation_id") or ""
+        if corr not in by_corr:
             continue
-        joined += 1
-        cats = set(fb.get("categories") or [])
-        if cats & GOOD_CATEGORIES:
+        turn = per_turn.setdefault(corr, {"cats": set(), "values": set()})
+        turn["cats"] |= set(fb.get("categories") or [])
+        turn["values"].add((fb.get("feedback_value") or "").lower())
+    joined = len(per_turn)
+    for corr, turn in per_turn.items():
+        d = by_corr[corr]
+        good, bad = bool(turn["cats"] & GOOD_CATEGORIES), bool(turn["cats"] & BAD_CATEGORIES)
+        if good and not bad:
             good_tone.append(d)
-        if cats & BAD_CATEGORIES:
+        elif bad and not good:
             bad_tone.append(d)
-        value = (fb.get("feedback_value") or "").lower()
-        if value == "up":
+        if turn["values"] == {"up"}:
             thumbs_up.append(d)
-        elif value == "down":
+        elif turn["values"] == {"down"}:
             thumbs_down.append(d)
 
     return {

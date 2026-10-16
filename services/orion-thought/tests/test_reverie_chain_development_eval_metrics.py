@@ -35,5 +35,7 @@ def test_summarize_counts_and_baseline():
     assert r["cross_chain_pairs"] == 1
     assert r["same_subject_cross_chain_baseline"] == 0.0
     assert r["pct_opening_the_coalition"] == round(200 / 3, 1)
-    assert r["next_focus_fill_rate_pct"] == round(100 / 3, 1)
+    assert r["next_focus_asked_steps"] == 1
+    assert r["next_focus_fill_rate_pct"] == 100.0
+    assert r["chains_last_step_without_next_focus"] == 2
     assert r["thoughts_saying_unattended_for"] == 1

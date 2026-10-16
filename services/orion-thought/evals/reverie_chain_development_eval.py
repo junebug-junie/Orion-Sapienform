@@ -93,7 +93,13 @@ def summarize(rows: list[tuple[Any, ...]]) -> dict[str, Any]:
 
     n = len(rows)
     opens_coalition = sum(1 for r in rows if (r[3] or "").lstrip().lower().startswith("the coalition"))
-    next_focus_filled = sum(1 for r in rows if (r[4] or "").strip())
+    # Fill rate over steps that were asked for next_focus: every chain step but
+    # the chain's last stored one (the last is either the final step, never
+    # asked, or the step that ended the chain by leaving it empty -- counted
+    # separately as chains_ended_without_next_focus).
+    asked = [s for steps in chains.values() for s in steps[:-1]]
+    next_focus_filled = sum(1 for s in asked if s[3].strip())
+    ended_empty = sum(1 for steps in chains.values() if steps and not steps[-1][3].strip())
     unattended = sum(1 for r in rows if "unattended for" in (r[3] or "").lower())
     return {
         "thoughts": n,
@@ -104,7 +110,9 @@ def summarize(rows: list[tuple[Any, ...]]) -> dict[str, Any]:
         "same_subject_cross_chain_baseline": _median(cross),
         "cross_chain_pairs": sum(1 for v in cross if v is not None),
         "pct_opening_the_coalition": round(100.0 * opens_coalition / n, 1) if n else None,
-        "next_focus_fill_rate_pct": round(100.0 * next_focus_filled / n, 1) if n else None,
+        "next_focus_fill_rate_pct": round(100.0 * next_focus_filled / len(asked), 1) if asked else None,
+        "next_focus_asked_steps": len(asked),
+        "chains_last_step_without_next_focus": ended_empty,
         "thoughts_saying_unattended_for": unattended,
     }
 

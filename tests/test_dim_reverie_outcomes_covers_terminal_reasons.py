@@ -28,3 +28,44 @@ def test_every_text_terminal_reason_has_an_outcome_row():
     keys = set(re.findall(r"^\s*\('([a-z_]+)',", MART.read_text(), flags=re.M))
     missing = sorted(set(get_args(TerminalReason)) - keys)
     assert not missing, f"dim_reverie_outcomes.sql lacks rows for {missing}"
+
+
+def _accepted_values(node, out):
+    if isinstance(node, dict):
+        av = node.get("accepted_values")
+        if isinstance(av, dict) and isinstance(av.get("values"), list):
+            out.append(av["values"])
+        for v in node.values():
+            _accepted_values(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            _accepted_values(v, out)
+    return out
+
+
+def test_every_text_chain_accepted_values_list_covers_terminal_reason():
+    """dbt accepted_values on the text-chain source, staging and fact columns must
+    list every TerminalReason, or the first new reason fails `dbt test`."""
+    import yaml
+    from orion.schemas.reverie import TerminalReason
+
+    models = MART.parents[1]
+    targets = {
+        models / "sources.yml": ("substrate_reverie_chain", "terminal_reason"),
+        models / "staging" / "staging.yml": ("stg_reverie_chains", "outcome_key"),
+        models / "marts" / "marts.yml": ("fct_reverie_chains", "outcome_key"),
+    }
+    want = set(get_args(TerminalReason))
+    for path, (owner, column) in targets.items():
+        doc = yaml.safe_load(path.read_text())
+        owners = []
+        for src in doc.get("sources", []) or []:
+            owners += src.get("tables", []) or []
+        owners += doc.get("models", []) or []
+        node = next(o for o in owners if o.get("name") == owner)
+        col = next(c for c in node["columns"] if c["name"] == column)
+        lists = _accepted_values(col, [])
+        assert lists, f"{path.name}:{owner}.{column} has no accepted_values"
+        for values in lists:
+            missing = sorted(want - set(values))
+            assert not missing, f"{path.name}:{owner}.{column} lacks {missing}"

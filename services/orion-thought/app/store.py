@@ -1403,8 +1403,10 @@ def reverie_refractory_is_suppressed(theme_key: str, now) -> bool:
 # orion.substrate.attention.verdicts.VERDICT_EXCLUSION_TTL_HOURS (48h, the
 # window in which a human resolve/dismiss keeps a loop out of the competition);
 # copied, not imported, because orion-thought must not load orion.substrate
-# (test_reverie_thin_import_boundary). Pinned equal by
-# test_reverie_loop_outcome_freshness.py. Why a window and not "newer than the
+# (test_reverie_thin_import_boundary). Pinned equal to the constant by
+# tests/test_reverie_honest_input.py. The substrate side can be overridden by
+# ORION_ATTENTION_VERDICT_EXCLUSION_TTL_HOURS; this window cannot, so an
+# operator override there does not move this one. Why a window and not "newer than the
 # loop's current activation": OpenLoopV1 carries no activation timestamp, and
 # loop ids hash the label, so the same id is reused by every spike of a signal
 # (open-loop-7376a3da4050 = every execution spike). Live 2026-10-14: a

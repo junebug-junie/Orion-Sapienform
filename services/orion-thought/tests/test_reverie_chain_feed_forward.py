@@ -207,3 +207,38 @@ def test_legacy_tuple_chain_context_still_reads():
 
     step = reverie._as_chain_step(("ch", 2))
     assert step == reverie.ChainStep("ch", 2) and step[0] == "ch" and step[1] == 2
+
+
+@pytest.mark.asyncio
+async def test_calm_tick_still_runs_expectation_scoring(monkeypatch):
+    """A calm tick skips the chain but must not starve expectation scoring,
+    which otherwise only runs inside run_reverie_once."""
+    from app import chain
+
+    scorer = AsyncMock()
+    monkeypatch.setattr(chain, "_maybe_score_pending_expectation", scorer)
+    calm = AttentionBroadcastProjectionV1(frame=AttentionFrameV1(open_loops=[]),
+                                          attended_node_ids=[], selected_open_loop_id=None)
+    step = AsyncMock()
+    c = await chain.run_reverie_chain(
+        AsyncMock(), step_fn=step, refractory_store=chain.InMemoryRefractoryStore(),
+        broadcast_reader=lambda: calm, publish=False, now_fn=lambda: NOW,
+    )
+    assert c is None
+    step.assert_not_awaited()
+    scorer.assert_awaited_once()
+
+
+def test_concern_card_branch_renders_chain_block_and_asks_next_focus():
+    """Semantic-lift chains must also be asked for next_focus, or every lift
+    chain would stop after step 1 as thought_complete."""
+    from app import reverie
+    from orion.schemas.reverie import ConcernCardV1
+
+    card = ConcernCardV1(card_id="c1", coalition_ref="harness_closure:x", human_text="t" * 40)
+    step = reverie.ChainStep("ch", 1, ("an earlier concern thought",), "the deploy")
+    out = _render(**reverie.build_reverie_context(_broadcast(), concern_cards=[card], chain_step=step))
+    assert "concern_cards" in out or "PRIMARY INPUT" in out
+    assert "TRAIN OF THOUGHT (this is step 2" in out
+    assert '"an earlier concern thought"' in out
+    assert "- next_focus:" in out

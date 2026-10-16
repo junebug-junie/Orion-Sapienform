@@ -31,7 +31,7 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: [pressure_discharged, max_steps, no_coalition, refractory, low_salience]
+              values: [pressure_discharged, max_steps, no_coalition, refractory, low_salience, thought_complete]
       - name: stored_at
         description: PostgreSQL insertion timestamp.
         tests:

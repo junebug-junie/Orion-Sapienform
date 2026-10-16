@@ -42,6 +42,7 @@ sources:
                     - no_coalition
                     - refractory
                     - low_salience
+                    - thought_complete
           - name: ema_salience
             description: Existing chain signal; excluded pending a separate metric-quality review.
           - name: committed_proposal_id

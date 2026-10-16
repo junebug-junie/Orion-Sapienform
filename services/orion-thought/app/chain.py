@@ -40,7 +40,13 @@ from orion.schemas.reverie import (
 )
 
 from .resonance_monitor import check_resonance_worsening
-from .reverie import ChainStep, _default_broadcast_reader, _source, run_reverie_once
+from .reverie import (
+    ChainStep,
+    _default_broadcast_reader,
+    _maybe_score_pending_expectation,
+    _source,
+    run_reverie_once,
+)
 from .rpc_health import fold_bus
 from .settings import settings
 from .store import (
@@ -287,6 +293,13 @@ async def run_reverie_chain(
         # "unknown" refractory cooldown (live 2026-10-14: ~200/day
         # no_coalition/theme=unknown rows were exactly these ticks).
         logger.info("reverie chain skipped: no winner this tick (calm)")
+        # Expectation scoring lives at the top of run_reverie_once, which a
+        # calm tick no longer reaches; keep it ticking so overdue expectations
+        # are judged on time, not at the next winning tick. Never raises.
+        try:
+            await _maybe_score_pending_expectation(bus)
+        except Exception as exc:  # defense-in-depth; the helper catches internally
+            logger.warning("expectation scoring on calm tick failed: %s", exc)
         return None
 
     theme_key = theme_key_for(coalition)

@@ -18,8 +18,11 @@ What is real in the live data, checked 2026-09-06 against
   paragraph. It is Orion's *self-report* of what the coalition is about, so
   it is emitted as `narrative_kind="self_report"` (Missing Question 2). The
   chain's `ema_summary` is the computed fallback when no thought has one.
-- `next_focus` / `drift` are empty on the sampled live rows; `predicted_next`
-  is populated when they are not, and honestly None otherwise.
+- `next_focus` is asked of every chain step but the last since 2026-10-16;
+  an empty one ends the chain (thought_complete), so the LAST thought's
+  next_focus is usually None (max_steps / thought_complete) and is set only
+  when a chain stopped for another reason with a pointer left unfollowed.
+  `predicted_next` falls back to the expectation, and honestly None otherwise.
 """
 
 from __future__ import annotations

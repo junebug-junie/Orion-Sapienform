@@ -68,14 +68,17 @@ def collect(conn, graph, *, limit: int = 10) -> dict:
     # rows would hide a scoring outage while dispatch continues.
     sql("result_sample", "SELECT result_id,dispatch_id,frame_id,status,created_at FROM substrate_dispatch_results "
         "ORDER BY created_at DESC,result_id LIMIT %s", (limit,))
-    sql("outcome_sample", "SELECT dispatch_id FROM substrate_action_outcomes ORDER BY observed_at DESC,id DESC LIMIT %s", (limit,))
+    # Act-ledger rows (dispatch_kind 'act:<verb>', orion/grammar/act_ledger.py) have no
+    # dispatch or feedback frame by design; they are not motor episodes.
+    sql("outcome_sample", "SELECT dispatch_id FROM substrate_action_outcomes WHERE dispatch_kind NOT LIKE 'act:%%' "
+        "ORDER BY observed_at DESC,id DESC LIMIT %s", (limit,))
     dispatch_ids = sorted({r["dispatch_id"] for key in ("result_sample", "outcome_sample") for r in bundle[key]["rows"] if r.get("dispatch_id")})
     sql("results", "SELECT result_id,dispatch_id,frame_id,status,created_at, "
         "result_json->>'visual_outcome' AS visual_outcome FROM substrate_dispatch_results "
         "WHERE dispatch_id = ANY(%s) ORDER BY result_id LIMIT %s", (dispatch_ids, limit * 10 + 1))
     sql("outcomes", "SELECT id,dispatch_id,dispatch_frame_id,feedback_frame_id,signal_id,predicted_delta,"
         "observed_at,arm,frame_dispatch_count FROM substrate_action_outcomes "
-        "WHERE dispatch_id = ANY(%s) ORDER BY id LIMIT %s", (dispatch_ids, limit * 10 + 1))
+        "WHERE dispatch_id = ANY(%s) AND dispatch_kind NOT LIKE 'act:%%' ORDER BY id LIMIT %s", (dispatch_ids, limit * 10 + 1))
     frame_ids = sorted({r["frame_id"] for r in bundle["results"]["rows"]} |
                        {r["dispatch_frame_id"] for r in bundle["outcomes"]["rows"]})
     sql("dispatch_frames", "SELECT frame_id,source_proposal_frame_id,created_at, "

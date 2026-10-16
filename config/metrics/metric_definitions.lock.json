@@ -3,9 +3,9 @@
   "metric_count": 747,
   "_last_change": {
     "change_count": 1,
-    "high_severity_count": 0,
+    "high_severity_count": 1,
     "changes": [
-      "medium added metric://bus_channel/orion-prediction/orion:prediction:forecast"
+      "high   routing_changed metric://bus_channel/orion-biometrics/orion:grammar:event (all_producers: \u2026me', 'orion-vision-frame\u2026 -> \u2026me', 'orion-thought', 'orion-vision-frame\u2026)"
     ]
   },
   "definitions": {
@@ -514,6 +514,7 @@
         "orion-llm-gateway",
         "orion-sql-writer",
         "orion-substrate-runtime",
+        "orion-thought",
         "orion-vision-frame-router"
       ],
       "declared_consumers": [

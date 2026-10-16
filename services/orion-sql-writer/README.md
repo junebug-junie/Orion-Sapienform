@@ -571,6 +571,29 @@ and never touches the write path. substrate-runtime's storage_write reducer turn
 Flag: `SQL_WRITER_WRITE_HEALTH_ENABLED` (off in code, on in `.env_example`). Replay real history
 through the emitter and reducer: `python services/orion-sql-writer/evals/storage_write_replay.py --live`.
 
+## Act ledger (rung 2, 2026-10-16)
+
+"Doing on one track" from `docs/superpowers/specs/2026-10-14-orion-thinking-architecture-design.md`.
+Producers publish `act_opened` / `act_closed` grammar events (`ActV1` on `GrammarEventV1.act`,
+`orion/schemas/grammar.py`) on `orion:grammar:event`. This writer:
+
+- materialises them into `grammar_acts` (one row per act, closed by `act_id`, first close wins);
+- stamps `predicted` at open from the current `substrate_action_effect_posterior` mean for
+  (`act:<verb>`, actor, signal) -- producers never type a magnitude;
+- grades every close through the existing L10 path: one `substrate_action_outcomes` row
+  (`dispatch_kind = act:<verb>`, `target_id = actor`) plus the posterior upsert, with the same
+  two double-count guards as orion-feedback-runtime (`orion/grammar/act_ledger.py`);
+- runs a horizon resolver every `SQL_WRITER_ACT_RESOLVER_INTERVAL_SEC` (60 s): `juniper_replied`
+  acts close 1 on Juniper's next chat turn in `chat_history_log` (canonical
+  `orion.regulation.juniper_turns` predicate; the act's own turn excluded by correlation id) or 0
+  at the horizon; producer-reported `artifact_produced` acts unclosed 120 s past their horizon
+  close 0 as `expired`.
+
+Producers today: orion-thought paintings (`make`), hub chat reply (`say`), hub outreach
+(`say`/`ask`), hub world-pulse reading Stage 1 (`look`). Debug surface: `GET /act/ledger?days=7`.
+Kill switch: `SQL_WRITER_ACT_LEDGER_ENABLED=false` (events still land in `grammar_events`).
+Eval: `python evals/act_ledger_calibration.py [--live]`.
+
 ## Running & Testing
 
 ### Run via Docker

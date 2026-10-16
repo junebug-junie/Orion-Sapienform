@@ -298,6 +298,10 @@ class ThoughtSettings(BaseSettings):
     # from reverie_chain above; sequential single-flight by construction (see
     # visual_chain.py module docstring), not a check-and-set marker.
     visual_chain_enabled: bool = Field(False, alias="ORION_VISUAL_CHAIN_ENABLED")
+    # Act ledger (rung 2, "doing on one track"): each durable painting run publishes a
+    # ``make`` act (act_opened on prepare, act_closed on produced/terminal/abandon) to
+    # orion:grammar:event; orion-sql-writer persists and grades it into L10.
+    thought_act_ledger_enabled: bool = Field(True, alias="THOUGHT_ACT_LEDGER_ENABLED")
     # Slower than the text chain's ~90s cadence (design doc §4: "slower cadence
     # than the text chain"). Real cadence is max(this, actual run duration) --
     # intentional, not a bug (design doc §4).

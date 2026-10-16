@@ -1933,6 +1933,71 @@ async def _publish_unified_turn_chat_history(
         session,
         source_label,
     )
+    await _publish_reply_say_act(
+        bus,
+        correlation_id=correlation_id,
+        session_id=session,
+        source_label=source_label,
+        client_meta=client_meta,
+    )
+
+
+async def _publish_reply_say_act(
+    bus: Any,
+    *,
+    correlation_id: str,
+    session_id: str | None,
+    source_label: str,
+    client_meta: Mapping[str, Any] | None,
+) -> bool:
+    """Act ledger (rung 2): Orion's chat reply to Juniper is a ``say`` act.
+
+    Opened once the reply is persisted. It expects Juniper to send another
+    chat turn within JUNIPER_REPLY_HORIZON_SEC; orion-sql-writer's resolver
+    closes it from chat_history_log (this turn's own row excluded by
+    correlation id). Only Juniper's own hub turns: other chat_history sources
+    and unsolicited rows are not replies to her. Best-effort, never raises.
+    Gated by HUB_ACT_LEDGER_ENABLED.
+    """
+    from scripts.settings import settings as hub_settings
+
+    if not bool(getattr(hub_settings, "HUB_ACT_LEDGER_ENABLED", True)):
+        return False
+    if bus is None or source_label != "hub_orion":
+        return False
+    if str((client_meta or {}).get("unsolicited") or "").lower() == "true" or (client_meta or {}).get("unsolicited") is True:
+        return False
+    try:
+        from orion.grammar.acts import (
+            JUNIPER_REPLY_BASIS,
+            JUNIPER_REPLY_HORIZON_SEC,
+            act_opened_event,
+            build_act,
+        )
+        from orion.grammar.publish import publish_grammar_event
+
+        act = build_act(
+            actor="hub.chat_reply",
+            verb="say",
+            key=str(correlation_id),
+            signal_id="juniper_replied",
+            horizon_sec=JUNIPER_REPLY_HORIZON_SEC,
+            basis=JUNIPER_REPLY_BASIS,
+            object_ref="juniper",
+            test_before=f"juniper_turn:{correlation_id}",
+        )
+        event = act_opened_event(
+            act,
+            source_service="orion-hub",
+            source_component="unified_turn.reply_act",
+            correlation_id=str(correlation_id),
+            session_id=session_id,
+        )
+        await publish_grammar_event(bus, event, source_name="orion-hub")
+        return True
+    except Exception as exc:  # noqa: BLE001 -- the reply is already delivered; the act is a trace
+        logger.warning("reply_say_act_publish_failed corr=%s error=%s", correlation_id, exc)
+        return False
 
 
 # Draft-first display (spec L8). The relay queue item the governor's draft

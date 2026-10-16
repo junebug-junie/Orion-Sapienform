@@ -11,6 +11,7 @@ on:
       - "orion/core/bus/**"
       - "orion/harness/**"
       - "orion/hub/**"
+      - "orion/grammar/acts.py"
       - "orion/curiosity/**"
       - "orion/cognition/prompts/stance_react.j2"
       - "orion/thought/**"
@@ -64,6 +65,7 @@ jobs:
             services/orion-hub/tests/test_reading_finding_outreach.py \
             services/orion-hub/tests/test_endogenous_outreach.py \
             services/orion-hub/tests/test_turn_orchestrator_ws_frames.py \
+            services/orion-hub/tests/test_act_ledger_producers.py \
             orion/world_pulse_read/tests \
             orion/thought/tests \
             orion/fcc/tests/test_reading_mcp.py \

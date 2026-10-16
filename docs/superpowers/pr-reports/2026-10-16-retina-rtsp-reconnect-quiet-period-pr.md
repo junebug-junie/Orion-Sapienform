@@ -195,6 +195,6 @@ ls -l /mnt/telemetry/vision/retina_state/rtsp_session_walkway.json              
 
 ## PR link
 
-(filled in after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2728
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

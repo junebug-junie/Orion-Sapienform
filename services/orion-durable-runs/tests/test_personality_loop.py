@@ -10,6 +10,8 @@ when the loop is disabled or its tables are missing; PERSONALITY_ENABLED=false s
 from __future__ import annotations
 
 import asyncio
+
+from orion.personality.situation import SituationInputs
 import hashlib
 import json
 import math
@@ -299,6 +301,8 @@ class FakeStore:
         self.cursors: dict[str, Cursor] = {}
         self.fail_commit = False
         self.commits = 0
+        self.situation = SituationInputs()
+        self.fail_situation = False
 
     async def load_nodes(self):
         return [_copy(n) for n in self.nodes.values() if n.status != "retired"]
@@ -320,6 +324,11 @@ class FakeStore:
             self.history.setdefault((h.disposition_id, h.at), h)
         self.cursors.update(w.cursors)
         self.commits += 1
+
+    async def load_situation_inputs(self, since, until):
+        if self.fail_situation:
+            raise ConnectionError("temporal self tables gone")
+        return self.situation
 
     async def status_counts(self):
         out: dict[str, int] = {}
@@ -641,3 +650,31 @@ def test_settings_defaults_ship_on(main_mod):
     s = Settings()
     assert s.personality_enabled is True and s.personality_tick_sec == 600.0
     assert s.personality_embed_url.endswith("-vector-host:8320/embedding")
+
+
+
+def test_new_evidence_is_stamped_with_the_situation_at_its_own_time():
+    drv, store, reader, emb, clock = world()
+    asyncio.run(drv.tick())
+    store.situation = SituationInputs(arousal=[(utc(minutes=-30), "idle"), (utc(minutes=3), "engaged")],
+                                      company=[(utc(minutes=4), None)])
+    reader.add("chat", item("chat", "a", utc(minutes=1), "A reply while idle and alone."))
+    reader.add("chat", item("chat", "b", utc(minutes=5), "A reply while engaged with company."))
+    clock.at = utc(minutes=10)
+    asyncio.run(drv.tick())
+    a, b = store.evidence["chat:a"].meta["situation"], store.evidence["chat:b"].meta["situation"]
+    assert (a["arousal"], a["company"]) == ("idle", False)
+    assert (b["arousal"], b["company"]) == ("engaged", True)
+    assert set(a) == {"arousal", "day_phase", "company"}
+
+
+def test_situation_lookup_failure_still_folds_the_evidence():
+    drv, store, reader, emb, clock = world()
+    asyncio.run(drv.tick())
+    store.fail_situation = True
+    reader.add("chat", item("chat", "a", utc(minutes=1), "A reply with no situation available."))
+    clock.at = utc(minutes=10)
+    asyncio.run(drv.tick())
+    assert store.evidence["chat:a"].disposition_id is not None
+    assert "situation" not in store.evidence["chat:a"].meta
+    assert "situation_unavailable:ConnectionError" in drv.stats.warnings

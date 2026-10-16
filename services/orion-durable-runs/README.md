@@ -711,6 +711,20 @@ keeps running. Kill switch: `PERSONALITY_ENABLED=false` (tables stay).
 Tests: `tests/test_personality_loop.py` (fakes), `tests/test_personality_postgres.py` (real
 Postgres, needs `ORION_ADMISSION_TEST_DSN`).
 
+### Situation on every piece of evidence (2026-10-16)
+
+Each new evidence row's `meta.situation` records the situation the row happened in, at the row's own time. It has three fields:
+
+- `arousal`: the level from the latest Temporal Self `arousal_transition` at or before that time. It reads `unknown` when there is none, never a guessed `idle`.
+- `day_phase`: the phase of Orion's local day.
+- `company`: whether a Temporal Self `company` arc (someone at the room camera) was open.
+
+This is the "when" half of the CAPS if-then signature, recorded so that situation subnodes can later be built from data. Nothing reads it back yet. Attention is left out because it nearly always crowns a prediction-error node.
+
+The lookup fails open. If the Temporal Self tables cannot be read, the evidence still folds without a situation, and the tick warns `situation_unavailable:<type>`.
+
+Code: `orion/personality/situation.py` (pure) and `PersonalityStore.load_situation_inputs`.
+
 ## Deploy order
 
 Stage 4.5 is a cutover: follow `docs/runbooks/2026-09-25-gpu-pool-stage4-cutover.md` exactly

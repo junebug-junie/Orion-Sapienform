@@ -440,34 +440,14 @@ def test_loop_outcomes_from_rows_drops_stale_verdicts():
     assert store.LOOP_VERDICT_MAX_AGE_SEC == 24 * 3600
 
 
-def test_load_recent_loop_outcomes_drops_undated_rows(monkeypatch):
-    """A row with no usable created_at cannot be shown as current: dropped."""
+def test_loop_outcomes_from_rows_drops_undated_rows():
+    """A row with no usable created_at cannot be shown as current: dropped (pure,
+    so it cannot pass because the DB path raised)."""
     from app import store
 
-    class _Result:
-        def mappings(self):
-            return self
-
-        def all(self):
-            return [{"loop_id": "ol-1", "verdict": "dismissed", "note": "",
-                      "created_at": None}]
-
-    class _Conn:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def execute(self, *a, **k):
-            return _Result()
-
-    class _Engine:
-        def connect(self):
-            return _Conn()
-
-    monkeypatch.setattr(store, "_get_engine", lambda: _Engine())
-    assert store.load_recent_loop_outcomes(["ol-1"]) == {}
+    now = datetime(2026, 10, 16, tzinfo=timezone.utc)
+    rows = [{"loop_id": "ol-1", "verdict": "dismissed", "note": "", "actor": "juniper", "created_at": None}]
+    assert store.loop_outcomes_from_rows(rows, now=now) == {}
 
 
 def test_load_recent_loop_outcomes_never_raises_on_bad_row_shape(monkeypatch):

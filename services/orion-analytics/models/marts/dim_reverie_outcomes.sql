@@ -5,7 +5,7 @@ select
     sort_order
 from (
     values
-        ('pressure_discharged', 'Later step yielded nothing', 'At least one thought was recorded, then a later chain step produced no publishable thought (hollow, below the salience floor, or failed). Text chains never read a pressure signal; the key name is historical.', 1),
+        ('pressure_discharged', 'Later step yielded nothing', 'At least one thought was recorded, then a later chain step produced no publishable thought (text chain: hollow, below the salience floor, or failed). The key name is historical.', 1),
         ('max_steps', 'Step limit reached', 'The chain recorded the configured maximum number of thought steps.', 2),
         ('no_coalition', 'No coalition', 'The first chain step produced no thought from the current attention coalition.', 3),
         ('low_salience', 'Below configured salience floor', 'The chain stopped because its existing EMA salience fell below the configured minimum.', 4),

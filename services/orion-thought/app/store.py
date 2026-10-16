@@ -1402,16 +1402,20 @@ def reverie_refractory_is_suppressed(theme_key: str, now) -> bool:
 # A loop verdict older than this is not shown to reverie at all.
 #
 # Loop ids hash the loop's label (orion/substrate/attention/scoring.py), so the
-# same id comes back on every later spike of the same signal: a verdict is
-# about the episode it was recorded in, not about today's spike. 24h is the
-# episode boundary the producers already use: the decay digest calls a loop
-# finished after 24h of silence (orion/substrate/attention/implicit_outcome.py
-# DEFAULT_MIN_SILENCE) and both a human Dismiss and a decay arm a 24h
-# refractory. Live 2026-10-16: of the 753 thoughts in the prior 7 days whose
-# loop carried a verdict, every one carried a system:implicit_decay verdict
-# 17-37 days old (p50 20.7d), which the old prompt called human ground truth
-# ("unattended 22 days"). Over 60 days no human verdict was ever narrated
-# within 24h of being recorded (p10 6.3 days).
+# same id comes back on every later spike of the same signal: an old verdict is
+# about an earlier episode, not about today's spike. 24h matches the decay
+# digest's own episode boundary (it calls a loop finished after 24h of silence,
+# orion/substrate/attention/implicit_outcome.py DEFAULT_MIN_SILENCE).
+#
+# In practice this bound acts on system:implicit_decay verdicts. A human
+# resolve/dismiss already keeps that loop out of the live coalition for 48h
+# (orion/substrate/attention/verdicts.py VERDICT_EXCLUSION_TTL_HOURS), so a
+# human verdict under 24h can only appear here on a non-selected open loop.
+#
+# Live 2026-10-16: of the 753 thoughts in the prior 7 days whose loop carried a
+# verdict, every one carried a system:implicit_decay verdict 17-37 days old
+# (p50 20.7d), which the old prompt called human ground truth ("unattended 22
+# days"). Over 60 days no human verdict was narrated within 24h (p10 6.3 days).
 LOOP_VERDICT_MAX_AGE_SEC = 24 * 3600.0
 
 

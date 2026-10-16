@@ -361,16 +361,23 @@ async def run_reverie_chain(
             terminal = "no_coalition" if index == 0 else "pressure_discharged"
             break
 
-        previous = thoughts[-1].interpretation if thoughts else None
+        earlier = [t.interpretation for t in thoughts]
+        # The step already published and persisted this thought (run_reverie_once);
+        # a restatement is kept in thought_ids so the chain readout matches the
+        # thought table, and the chain stops here.
         thought_ids.append(thought.thought_id)
         thoughts.append(thought)
         ema = update_ema(ema, thought.salience, alpha=alpha)
 
-        if previous is not None and is_repeat_thought(thought.interpretation, previous):
+        if any(is_repeat_thought(thought.interpretation, e) for e in earlier):
             logger.info("reverie_chain_settled chain=%s idx=%d reason=repeat", chain_id, index)
             terminal = "settled"
             break
-        if not continuity.is_final and not thought.next_focus:
+        # Only the plain reverie prompt asks for next_focus; the semantic-lift
+        # (concern-card, llm_profile="metacog") prompt never does, so a missing
+        # next_focus there is not "nothing further".
+        asked_next_focus = thought.llm_profile != "metacog"
+        if asked_next_focus and not continuity.is_final and not thought.next_focus:
             logger.info("reverie_chain_settled chain=%s idx=%d reason=no_next_focus", chain_id, index)
             terminal = "settled"
             break

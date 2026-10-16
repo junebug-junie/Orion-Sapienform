@@ -144,6 +144,40 @@ async def test_each_step_sees_the_previous_thought_and_hint():
     assert [c.is_final for c in seen] == [False, False, True]
 
 
+@pytest.mark.asyncio
+async def test_chain_settles_on_a_b_a_restatement():
+    from app import chain
+
+    texts = [_DISTINCT[0], _DISTINCT[1], _DISTINCT[0] + " still"]
+
+    async def step(chain_id, index, continuity=None):
+        return _thought(index, interpretation=texts[index])
+
+    c = await chain.run_reverie_chain(
+        AsyncMock(), step_fn=step, refractory_store=chain.InMemoryRefractoryStore(),
+        broadcast_reader=_broadcast, max_steps=4, publish=False, now_fn=lambda: NOW,
+    )
+    assert c.terminal_reason == "settled"
+    assert len(c.thought_ids) == 3
+
+
+@pytest.mark.asyncio
+async def test_lift_mode_chain_is_not_cut_by_missing_next_focus():
+    """The concern-card (metacog) prompt never asks for next_focus, so its
+    absence must not settle the chain after step 0."""
+    from app import chain
+
+    async def step(chain_id, index, continuity=None):
+        return _thought(index, next_focus=None).model_copy(update={"llm_profile": "metacog"})
+
+    c = await chain.run_reverie_chain(
+        AsyncMock(), step_fn=step, refractory_store=chain.InMemoryRefractoryStore(),
+        broadcast_reader=_broadcast, max_steps=3, publish=False, now_fn=lambda: NOW,
+    )
+    assert c.terminal_reason == "max_steps"
+    assert len(c.thought_ids) == 3
+
+
 def test_is_repeat_thought():
     from app import chain
 

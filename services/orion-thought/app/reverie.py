@@ -283,8 +283,22 @@ def describe_loop_verdict(outcome: dict[str, Any]) -> dict[str, Any] | None:
     return {"line": line, "verdict": verdict, "by_human": human}
 
 
+def attention_steadiness(score: float) -> str:
+    """Word for `coalition_stability_score`'s three tiers (0.3 / 0.6 / 0.9;
+    see its registry entry: tiers, not a measured stability)."""
+    s = float(score)
+    if s >= 0.85:
+        return f"held ({s:.1f})"
+    if s >= 0.5:
+        return f"transitioning ({s:.1f})"
+    return f"flickering ({s:.1f})"
+
+
 def _loop_signal(loop: Any) -> str | None:
-    """The real numbers behind a world-first loop, as one sentence; None when it has none.
+    """The world-first judgement behind a loop, as one sentence; None when it has none.
+
+    Band, 7-day percentile and trend only: the raw value has no unit the model
+    could read, and the percentile already says how unusual it is.
 
     Replaces the boilerplate ``why_it_matters`` text, which is the same string
     for every substrate loop and tells the model nothing.
@@ -303,7 +317,6 @@ def _loop_signal(loop: Any) -> str | None:
         trend = str(getattr(mag, "trend", "") or "")
         if trend and trend != "insufficient_history":
             parts.append(f"trend {trend}")
-        parts.append(f"value {float(mag.value):.3g}")
     if reason:
         parts.append(f"why selected: {reason}")
     return "; ".join(parts) if parts else None
@@ -447,6 +460,9 @@ def build_reverie_context(
             "selected_open_loop_id": broadcast.selected_open_loop_id,
             "selected_description": broadcast.selected_description,
             "dwell_ticks": broadcast.dwell_ticks,
+            # Registered prompt site (orion/inner_state_registry.py
+            # coalition_stability_score): three tiers, rendered as words.
+            "steadiness": attention_steadiness(broadcast.coalition_stability_score),
         },
         "open_loops": open_loops,
         "has_settled_loops": any("outcome" in loop for loop in open_loops),

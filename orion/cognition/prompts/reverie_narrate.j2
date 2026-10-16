@@ -82,12 +82,14 @@ SOURCE (bounded internal input — what your attention settled on right now)
 {% if attended_signal.dwell_ticks %}
 - it has held your attention for {{ attended_signal.dwell_ticks }} consecutive attention ticks
 {% endif %}
+{% if attended_signal.steadiness %}
+- how steady your attention is on it: {{ attended_signal.steadiness }}
+{% endif %}
 {% endif %}
 {% if open_loops %}
 - open loops (one line each: id | what it is | the measured signal or why it is open{% if has_settled_loops %} | verdict{% endif %}):
 {% for ol in open_loops %}
   - {{ ol.id }} | {{ ol.description or ol.target_type }}{% if ol.signal %} | {{ ol.signal }}{% elif ol.why_it_matters %} | {{ ol.why_it_matters }}{% endif %}{% if ol.outcome %} | verdict: {{ ol.outcome.line }}{% endif %}
-
 {% endfor %}
 {% endif %}
 {% if recent_percepts %}

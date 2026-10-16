@@ -102,8 +102,21 @@ def test_world_first_signal_replaces_boilerplate_why_it_matters():
     )
     out = _render(**reverie.build_reverie_context(b))
     assert ("ol-1 | Bus synaptic prediction error | band high; higher than 90% of its last 7 days; "
-            "trend flat; value 0.0621; why selected: body unusual for itself (high)") in out
+            "trend flat; why selected: body unusual for itself (high)") in out
     assert "novel or unresolved current-turn target" not in out
+    assert "0.0621" not in out  # no unitless raw value
+
+
+def test_steadiness_tier_reaches_prompt_as_words():
+    """coalition_stability_score keeps its registered reverie prompt site."""
+    from app import reverie
+
+    b = _broadcast()
+    b = b.model_copy(update={"coalition_stability_score": 0.9})
+    out = _render(**reverie.build_reverie_context(b))
+    assert "how steady your attention is on it: held (0.9)" in out
+    assert reverie.attention_steadiness(0.6) == "transitioning (0.6)"
+    assert reverie.attention_steadiness(0.3) == "flickering (0.3)"
 
 
 def test_reverie_branch_does_not_call_one_node_a_coalition():

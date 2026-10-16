@@ -39,12 +39,34 @@ def test_quantiles_are_monotone_and_unknown_below_min_paths():
     assert np.all(np.isnan(q[:, 3]))
 
 
-def test_leave_one_out_coverage_is_reported_and_in_band_for_iid_noise():
+def test_holdout_coverage_is_near_nominal_for_iid_noise_and_catches_drift():
     rng = np.random.default_rng(3)
-    res = rng.normal(0, 1, (60, 2))
-    m = horizon_metrics(res, 0)
-    assert m["n"] == 60 and 0.7 <= m["coverage80"] <= 0.9
-    assert abs(m["mae"] - np.sqrt(2 / np.pi)) < 0.2
+    iid = rng.normal(0, 1, (600, 1))
+    m = horizon_metrics(iid, 0)
+    assert m["n"] == 600 and m["n_holdout"] == 200 and 0.74 <= m["coverage80_holdout"] <= 0.86
+    assert abs(m["mae"] - np.sqrt(2 / np.pi)) < 0.1
+    drift = iid.copy()
+    drift[400:] *= 3          # errors triple in the newest third (regime change)
+    assert horizon_metrics(drift, 0)["coverage80_holdout"] < 0.5
+
+
+def test_leave_one_out_coverage_could_not_have_caught_that():
+    # Why the gate dropped it: rank-only, so the drifted set reads the same as the calm one.
+    from app.backtest import _level
+
+    def loo(col):
+        hits = 0
+        for i in range(len(col)):
+            o = np.delete(col, i)
+            lo = np.quantile(o, _level(len(o), 0.1), method="lower")
+            hi = np.quantile(o, _level(len(o), 0.9), method="higher")
+            hits += lo <= col[i] <= hi
+        return hits / len(col)
+    rng = np.random.default_rng(4)
+    calm = rng.normal(0, 1, 40)
+    drifted = calm.copy()
+    drifted[27:] *= 3
+    assert loo(calm) == loo(drifted)
 
 
 def test_exceedance_from_residual_paths():
@@ -86,20 +108,20 @@ def test_gate_uses_the_better_baseline_per_horizon_and_falls_back():
     assert sel2.served_baseline and sel2.assignment == {5: "naive", 60: "naive"}
 
 
-def test_a_model_with_miscalibrated_intervals_is_not_served():
+def test_a_lower_average_that_is_noise_is_not_served_but_a_real_win_is():
     sp = spec(horizons=["5min"])
     h = sp.max_horizon_steps
-    naive = np.random.default_rng(5).normal(0, 1.0, (30, h))
-    # Tiny errors except one huge outlier column pattern: MAE wins but residuals are mostly identical,
-    # so LOO coverage is degenerate (all residuals equal -> every held-out point sits on the boundary).
-    sharp = np.zeros((30, h))
-    sharp[::3] = 0.5
-    sel = select_champion({"naive": _result("naive", naive), "seasonal_naive": _result("seasonal_naive", naive * 3),
-                           "sharp": _result("sharp", sharp)}, sp)
-    m = sel.metrics["sharp"]["5"]
-    assert m["rel_mae"] < 1
-    if not (0.72 <= m["coverage80"] <= 0.88):
-        assert sel.assignment[5] == "naive"
+    rng = np.random.default_rng(6)
+    naive = rng.normal(0, 1.0, (40, h))
+    # 3% lower average, but window-to-window it is a coin flip: p ~ 0.3 -- the live 2026-10-16 case.
+    noisy = rng.normal(0, 0.97, (40, h))
+    real = naive * 0.7 + rng.normal(0, 0.02, (40, h))
+    res = {"naive": _result("naive", naive), "seasonal_naive": _result("seasonal_naive", naive * 3)}
+    sel = select_champion({**res, "noisy": _result("noisy", noisy)}, sp)
+    m = sel.metrics["noisy"]["5"]
+    assert m["p_win"] > 0.05 and m["passed"] is False and sel.assignment[5] == "naive"
+    sel = select_champion({**res, "noisy": _result("noisy", noisy), "real": _result("real", real)}, sp)
+    assert sel.metrics["real"]["5"]["p_win"] < 0.001 and sel.assignment[5] == "real"
 
 
 def test_real_backtest_loop_on_synthetic_daily_series_prefers_seasonal_structure_at_6h():

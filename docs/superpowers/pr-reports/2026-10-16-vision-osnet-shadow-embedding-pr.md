@@ -168,6 +168,6 @@ Expected: `models.osnet_shadow.state = loaded`, `models.body_embedder.*.loaded =
 
 ## PR link
 
-(filled in after creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2720
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

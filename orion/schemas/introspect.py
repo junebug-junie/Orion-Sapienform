@@ -41,9 +41,12 @@ CURIOSITY_FULL_JSON_BUDGET = 9000
 CURIOSITY_WINDOW_DAYS = 90
 CURIOSITY_RUN_ID_PATTERN = r"^[A-Za-z0-9_.:-]{1,64}$"
 
-IntrospectBusOperation = Literal["dreams", "curiosity", "orion_day", "record_correction", "node_history"]
+IntrospectBusOperation = Literal[
+    "dreams", "curiosity", "orion_day", "record_correction", "node_history", "queue_curiosity_focus",
+]
 IntrospectOperation = Literal[
     "reading_result", "dreams", "curiosity", "orion_day", "record_correction", "node_history",
+    "queue_curiosity_focus",
 ]
 
 # node_history: a substrate node's prediction-error readings from
@@ -84,6 +87,9 @@ CORRECTION_EVIDENCE_MAX = 10
 CORRECTION_EVIDENCE_CAP = 500
 CORRECTION_PRIORS_MAX = 10
 CORRECTION_PRIOR_ID_PATTERN = r"^[^\s\"'\\`]{1,200}$"
+
+# queue_curiosity_focus: one question for Orion's next regular investigate run, and why.
+FOCUS_TEXT_CAP = 500
 
 
 def clip_text(text: str | None, cap: int = DEFAULT_TEXT_CAP) -> tuple[str, bool]:
@@ -250,7 +256,7 @@ class CuriosityArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query: str | None = Field(default=None, min_length=1, max_length=QUERY_CAP)
     run_id: str | None = Field(default=None, pattern=CURIOSITY_RUN_ID_PATTERN)
-    kind: Literal["run", "self_question"] = "run"
+    kind: Literal["run", "self_question", "focus"] = "run"
     line: Literal["investigate", "self_inquiry", "self_sense_eval"] | None = None
     limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_ITEMS)
     since: datetime | None = None
@@ -280,6 +286,10 @@ class CuriosityArguments(BaseModel):
             self.query is not None or self.run_id is not None or self.line is not None
         ):
             raise ValueError("kind=self_question lists open self-questions; it takes only limit and since")
+        if self.kind == "focus" and (
+            self.query is not None or self.run_id is not None or self.line is not None
+        ):
+            raise ValueError("kind=focus lists the focuses you queued, newest first; it takes only limit and since")
         return self
 
 
@@ -382,6 +392,25 @@ class RecordCorrectionArguments(BaseModel):
         if len(set(self.prior_ids)) != len(self.prior_ids):
             raise ValueError("prior_ids must not repeat")
         return self
+
+
+class QueueCuriosityFocusArguments(BaseModel):
+    """Model-supplied arguments for the ``queue_curiosity_focus`` tool.
+
+    One question Orion chose for its next regular investigate run, and why. One pending slot: a
+    new focus replaces the pending one, except that Orion's own choice (origin "self") never
+    replaces a focus Juniper asked for (origin "juniper").
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    question: str = Field(min_length=1, max_length=FOCUS_TEXT_CAP)
+    why: str = Field(min_length=1, max_length=FOCUS_TEXT_CAP)
+    origin: Literal["self", "juniper"] = "self"
+
+    @field_validator("question", "why", mode="before")
+    @classmethod
+    def _strip_text(cls, value: Any, info) -> Any:
+        return _strip_required(value, info.field_name)
 
 
 class NodeHistoryArguments(BaseModel):

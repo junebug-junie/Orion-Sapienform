@@ -10,6 +10,7 @@ CURIOSITY = mcp_tool(ORION_INTROSPECT, "curiosity")
 ORION_DAY = mcp_tool(ORION_INTROSPECT, "orion_day")
 RECORD_CORRECTION = mcp_tool(ORION_INTROSPECT, "record_correction")
 NODE_HISTORY = mcp_tool(ORION_INTROSPECT, "node_history")
+QUEUE_CURIOSITY_FOCUS = mcp_tool(ORION_INTROSPECT, "queue_curiosity_focus")
 _READING_STATUS = mcp_tool(ORION_READING, "reading_status")
 
 
@@ -18,7 +19,7 @@ def introspect_brief_lines(binding: IntrospectToolBindingV1) -> list[str]:
         (
             f"Introspect MCP (orion-introspect) is available. Its tools, by exact name (load "
             f"with ToolSearch select:<name>): {READING_RESULTS}, {DREAMS}, {CURIOSITY}, {ORION_DAY}, "
-            f"{RECORD_CORRECTION}, {NODE_HISTORY}. "
+            f"{RECORD_CORRECTION}, {QUEUE_CURIOSITY_FOCUS}, {NODE_HISTORY}. "
             f"{READING_RESULTS} searches what you "
             "actually learned from sources read through your reading pipeline. Use query=<topic "
             "in plain words> to recall readings by meaning (items carry similarity; weak matches "
@@ -66,6 +67,16 @@ def introspect_brief_lines(binding: IntrospectToolBindingV1) -> list[str]:
             "and whether it did is recorded. Do not record a correction "
             "you do not actually accept, and do not say it was recorded unless the tool returned "
             "a correction_id."
+        ),
+        (
+            "When you have decided what you want your curiosity to look at next (Juniper may ask "
+            f"you to choose), or Juniper asks you to look into something next, call "
+            f"{QUEUE_CURIOSITY_FOCUS} with the question and why (origin='juniper' when she named "
+            "it). That is the only way to put a topic in front of your next curiosity run; do not "
+            "search for another. It starts nothing now: the next regular run sees it first and "
+            "decides whether to explore it or set it aside. Say it was queued only if the tool "
+            "returned a focus_id, and say when the run can start from what it returned. To tell "
+            f"Juniper whether a queued focus ran, call {CURIOSITY} with kind=focus."
         ),
         (
             "Substrate node history exists: a node in your graph shows only its current "

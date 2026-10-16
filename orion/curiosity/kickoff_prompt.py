@@ -994,19 +994,28 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
     ]
 
 
-def _outcome_section(*, run_id: str) -> list[str]:
+def _outcome_section(*, run_id: str, focus: bool = False) -> list[str]:
     """How a decision made inside the turn crosses back out of it.
 
     Absence is the safe default and is stated as such: a turn that ran out of
     time, or simply had nothing to continue, leaves nothing behind and the loop
     reads that as no continuation and no outreach.
+
+    ``focus``: this run was shown a focus Orion queued (orion.curiosity.focus), so the node also
+    carries ``focus_disposition``, and writing none is recorded as unknown, not explored.
     """
-    return [
+    lines = [
         "LAST, IF YOU WANT EITHER OF THESE. Two decisions are yours and only "
         "reach anything outside this turn if you write them down:",
         "",
         "    CREATE (:TurnOutcome {",
         f'      run_id: "{run_id}",',
+    ]
+    if focus:
+        # A placeholder, not a value: a run that copies it unchanged is recorded as unknown,
+        # never as explored (orion.curiosity.focus.parse_disposition keeps it as raw text).
+        lines.append('      focus_disposition: "<explored | set_aside: why not>",')
+    lines += [
         "      continue_line: true,   // open the next run on this instead of a cold menu",
         '      continue_note: "what I still do not know and want to keep pulling on",',
         "      reach_out: false,      // is this worth telling Juniper about, unprompted",
@@ -1014,10 +1023,23 @@ def _outcome_section(*, run_id: str) -> list[str]:
         "      written_at: timestamp()",
         "    })",
         "",
-        "Writing nothing is fine and is the normal case. No node means no "
-        "continuation and no message -- nothing is inferred from your prose, so "
-        "silence here is silence, not a default guess.",
-        "",
+    ]
+    if focus:
+        lines += [
+            "This run was shown a focus you queued, so write this node even if you want neither "
+            "of the two decisions above (then continue_line: false): focus_disposition is how "
+            "Hub learns what you did with it. No node, or no focus_disposition, is recorded as "
+            "unknown, not as explored. Nothing is inferred from your prose.",
+            "",
+        ]
+    else:
+        lines += [
+            "Writing nothing is fine and is the normal case. No node means no "
+            "continuation and no message -- nothing is inferred from your prose, so "
+            "silence here is silence, not a default guess.",
+            "",
+        ]
+    return lines + [
         "If you set reach_out, you are not writing the message. A separate turn "
         "composes it later and can still decide the moment is wrong -- Juniper "
         "may be in the middle of something. So say WHY it is worth an "
@@ -1042,6 +1064,12 @@ def _carry_forward_section(carry_forward=None) -> list[str]:
     from orion.orion_day.carry_forward import format_carry_forward_section
 
     return format_carry_forward_section(carry_forward)
+
+
+def _focus_section(focus=None) -> list[str]:
+    from orion.curiosity.focus import format_focus_section
+
+    return format_focus_section(focus)
 
 
 def _corrections_section(corrections: Sequence = ()) -> list[str]:
@@ -1211,8 +1239,13 @@ def build_kickoff_prompt(
     open_lived_questions: Sequence[OpenLivedQuestion] = (),
     corrections: Sequence = (),
     today_fact: Optional[str] = None,
+    focus=None,
 ) -> str:
     """Assemble the whole invitation.
+
+    ``focus`` (orion.curiosity.focus.FocusRow): the one question Orion queued from a chat with
+    Juniper for this run. Shown first, on a writable graph only (the caller takes it only then),
+    because the run records what it did with it on its :TurnOutcome.
 
     ``today_fact``: one fact line about today's curiosity time from the Temporal Self
     chronicle (`orion.curiosity.temporal_fact`), or None to render nothing. Placed right
@@ -1254,6 +1287,8 @@ def build_kickoff_prompt(
     lines = [_HEADER, ""]
 
     if graph_enabled:
+        if writable:
+            lines += _focus_section(focus)
         lines += _continuation_section(view.continuation)
         # Thread BEFORE priors: the priors list is ordered by uncertainty and
         # reads as a menu, and a menu answers "what could I pick" while this
@@ -1295,7 +1330,7 @@ def build_kickoff_prompt(
         if contractor_peer_enabled:
             lines += _role_and_help_section(own_graph=own_graph, run_id=run_id)
             lines += _review_role_section(run_id=run_id)
-        lines += _outcome_section(run_id=run_id)
+        lines += _outcome_section(run_id=run_id, focus=writable and focus is not None)
 
     lines.append(_INSTRUCTION)
     text = "\n".join(lines)

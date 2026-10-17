@@ -155,7 +155,7 @@ async def _story(pool, i: int, *, published=True, clean=True, name=None, version
     if strip == "frame":
         rec = {"version": 1, "frame": {"file": "frame.jpg", "t": "2026-10-17T00:47:09+00:00", "crop_id": "c1"},
                "crops": [{"crop_id": "c1", "t": "2026-10-17T00:47:09+00:00", "file": "crop_0.jpg"}],
-               "dark": dark, "region_luminance": 0.01 if dark else 0.3}
+               "dark": dark, "scene_contrast": 0.02 if dark else 0.25}
     elif strip == "none_saved":
         rec = {"version": 1, "frame": None, "crops": [{"crop_id": "c1", "missing": "frame_gone"}], "dark": None}
     await pool.execute(

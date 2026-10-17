@@ -638,27 +638,30 @@ read-only.
   over the passage plus one 640 px frame with all boxes drawn (1 = green
   first, last = red), in `<VISION_STORY_STRIP_DIR>/<story_id>/`. The row gets
   `evidence_strip` (each crop's file or `missing: frame_gone|not_captured`),
-  `frame_luminance` (whole-frame mean), `scene_luminance` (median of the
-  padded passage region) and `dark`.
-- `dark = scene_luminance < VISION_STORY_STRIP_DARK_LUMINANCE` (0.06).
-  Measured live 2026-10-17: at 20:12 MDT the camera was still in colour
-  (no IR), the porch light kept the whole-frame mean at 0.255, while the
-  passage regions of the 10 clean non-prop stories read median 0.004-0.03 on
-  the street and 0.08-0.12 where a lit pillar fills the region; daytime and
-  dusk (13:09-18:47 MDT) crop thumbnails read median 0.11-0.52 (n=31, box
-  only, so the dark-clothed low end is the subject, not the scene). Dark
-  stories are still published (`dark=true`); the Hub's "only checkable"
-  filter hides them by default.
+  `frame_luminance` (whole-frame mean luma), `scene_luminance` and
+  `scene_contrast` (median over the crops of each crop's median luma / RMS
+  contrast = std of luma, 0..1) and `dark`.
+- `dark = scene_contrast < VISION_STORY_STRIP_DARK_CONTRAST` (0.10). Why
+  contrast, not brightness (measured live 2026-10-17, 20:12-20:37 MDT): the
+  camera was still in colour (no IR) and the porch light held the whole-frame
+  mean at 0.255, so the frame mean never reads dark. Worse, the 00:47 story's
+  place (porch-lit lawn, nothing visible) has crop median luma 0.11-0.125 --
+  the same as a dark-clothed person in daylight (0.114 at 13:33). RMS
+  contrast separates them: all 10 clean non-prop story places on the night
+  frame read 0.012-0.066 through this code; the 31 clean daytime/dusk crop
+  thumbnails (13:09-18:47 MDT) read 0.133-0.3 (p10 0.187). Dark stories are
+  still published (`dark=true`); the Hub's "only checkable" filter hides
+  them by default.
 - Retention: a strip is deleted `VISION_STORY_STRIP_RETENTION_DAYS` (30)
   after its story ended, and only once the story has a verdict
   (`evidence_strip.pruned_at` is then set). Strip directories whose story row
   is gone are swept hourly.
-- Trace: `[STORY_STRIP] story_id=... crops_saved= crops_missing= frame= frame_lum= region_lum= dark=`.
+- Trace: `[STORY_STRIP] story_id=... crops_saved= crops_missing= frame= frame_lum= scene_lum= scene_contrast= dark=`.
 - Migration `services/orion-sql-db/manual_migration_vision_motion_story_strip_v2.sql`
   (additive). Without it the loop logs `[STORY_STRIP] missing columns` and
   stories keep running without pictures.
 - Eval (read only): `evals/run_story_strip_darkness_eval.py` -- coverage
-  (saved vs frame_gone) and scene luminance by verdict, to re-check 0.06
+  (saved vs frame_gone) and scene contrast by verdict, to re-check 0.10
   once Juniper has used "Can't tell".
 
 ## Storage-write organ (2026-10-02)

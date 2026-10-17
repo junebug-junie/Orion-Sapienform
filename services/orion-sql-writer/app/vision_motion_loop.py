@@ -20,7 +20,7 @@ Pictures of the moment (app/vision_story_strip.py, 2026-10-17), when
 and a small full frame for each new walker crop while its frame still exists
 (the shared frames directory keeps a walkway frame ~60 s); after step 3 every
 published story without a strip gets one (``evidence_strip``, ``frame_luminance``,
-``scene_luminance``, ``dark``). A strip is deleted 30 days after its story
+``scene_luminance``, ``scene_contrast``, ``dark``). A strip is deleted 30 days after its story
 ended, and only when Juniper has given that story a verdict.
 
 Trace: one ``[MOTION_STORY]`` line per stream per tick with the counts and
@@ -97,7 +97,7 @@ def loop_config(settings: Settings) -> LoopConfig:
         strip=StripConfig(
             frames_dir=str(settings.vision_story_frames_dir),
             strip_dir=str(settings.vision_story_strip_dir),
-            dark_luminance=float(settings.vision_story_strip_dark_luminance),
+            dark_contrast=float(settings.vision_story_strip_dark_contrast),
             pending_sec=float(settings.vision_story_strip_pending_sec),
             retention_days=float(settings.vision_story_strip_retention_days),
             frame_w=float(settings.vision_motion_frame_width),
@@ -281,7 +281,7 @@ def _one_stream(engine, stream_id: str, ts: datetime, cfg: LoopConfig, zones, su
 # Pictures of the moment (app/vision_story_strip.py)
 # ---------------------------------------------------------------------------
 
-STRIP_COLUMNS = ("evidence_strip", "frame_luminance", "scene_luminance", "dark")
+STRIP_COLUMNS = ("evidence_strip", "frame_luminance", "scene_luminance", "scene_contrast", "dark")
 # How far back the first capture tick looks. Frames older than ~60 s are gone
 # anyway; a longer look only writes "frame_gone" markers.
 CAPTURE_FIRST_LOOKBACK_SEC = 120.0
@@ -356,14 +356,16 @@ def assemble_step(engine, stream_id: str, ts: datetime, cfg: LoopConfig) -> int:
         with engine.begin() as conn:
             conn.execute(text(
                 "UPDATE vision_motion_story SET evidence_strip = CAST(:j AS jsonb), frame_luminance = :fl, "
-                "scene_luminance = :rl, dark = :d WHERE story_id = :id AND evidence_strip IS NULL"),
-                {"j": json.dumps(rec), "fl": rec["frame_luminance"], "rl": rec["region_luminance"],
-                 "d": rec["dark"], "id": story_id})
+                "scene_luminance = :sl, scene_contrast = :sc, dark = :d "
+                "WHERE story_id = :id AND evidence_strip IS NULL"),
+                {"j": json.dumps(rec), "fl": rec["frame_luminance"], "sl": rec["scene_luminance"],
+                 "sc": rec["scene_contrast"], "d": rec["dark"], "id": story_id})
         done += 1
         logger.info(
-            "[STORY_STRIP] story_id=%s crops_saved=%d crops_missing=%d frame=%s frame_lum=%s region_lum=%s dark=%s",
+            "[STORY_STRIP] story_id=%s crops_saved=%d crops_missing=%d frame=%s frame_lum=%s scene_lum=%s "
+            "scene_contrast=%s dark=%s",
             story_id, sum(1 for c in rec["crops"] if "file" in c), sum(1 for c in rec["crops"] if "missing" in c),
-            bool(rec["frame"]), rec["frame_luminance"], rec["region_luminance"], rec["dark"])
+            bool(rec["frame"]), rec["frame_luminance"], rec["scene_luminance"], rec["scene_contrast"], rec["dark"])
     return done
 
 

@@ -45,9 +45,15 @@ def frame_name(t: datetime, stream: str = "walkway", cam: str = "walkway") -> st
 
 
 def write_frame(d: Path, t: datetime, *, level: int = 160, size=(640, 480), **kw) -> Path:
-    """A small synthetic frame (the loop scales boxes from 2560x1920 to the real size)."""
+    """A small synthetic daylight frame (the loop scales boxes from 2560x1920 to the real size):
+    vertical stripes level +- 70, i.e. detail a person can see (RMS contrast ~0.27)."""
     im = Image.new("RGB", size, (level, level, level))
-    ImageDraw.Draw(im).rectangle((0, 0, 40, 40), fill=(255, 255, 255))   # a bright "porch light"
+    draw = ImageDraw.Draw(im)
+    step = max(4, size[0] // 80)
+    for x in range(0, size[0], 2 * step):
+        draw.rectangle((x, 0, x + step - 1, size[1]), fill=(level - 70,) * 3)
+        draw.rectangle((x + step, 0, x + 2 * step - 1, size[1]), fill=(level + 70,) * 3)
+    draw.rectangle((0, 0, 40, 40), fill=(255, 255, 255))   # a bright "porch light"
     p = d / frame_name(t, **kw)
     im.save(p, "JPEG", quality=90)
     return p
@@ -120,16 +126,16 @@ def test_assemble_writes_up_to_four_crops_one_boxed_frame_and_marks_what_is_miss
     assert (out / "crop_0.jpg").is_file() and not (out / "crop_3.jpg").exists()
     assert rec["frame"]["file"] == "frame.jpg" and rec["frame"]["crop_id"] in {"w2", "w3"}  # nearest the middle
     assert Image.open(out / "frame.jpg").size == (640, 480)
-    # Luminance from the undrawn frame: the region is the grey (160) street, the porch light lifts the mean.
-    assert abs(rec["region_luminance"] - 160 / 255) < 0.02 and rec["dark"] is False
-    assert rec["frame_luminance"] > rec["region_luminance"]
+    # Measured on the saved crops: striped daylight detail is high-contrast, so not dark.
+    assert rec["scene_measured_on"] == "crops" and rec["scene_contrast"] > 0.2 and rec["dark"] is False
+    assert 0.3 < rec["scene_luminance"] < 0.9 and 0.3 < rec["frame_luminance"] < 0.9
     # With a w4 marker present but w5 absent, the reasons differ.
     rec2 = ss.assemble_strip("b" * 32, "walkway", _evidence(crops[3:5]), cfg=cfg)
     assert [c.get("file") or c["missing"] for c in rec2["crops"]] == ["crop_0.jpg", "frame_gone"]
 
 
 def test_a_night_street_is_dark_even_with_a_bright_porch_light(tmp_path) -> None:
-    cfg = cfg_for(tmp_path, dark_luminance=0.06)
+    cfg = cfg_for(tmp_path, dark_contrast=0.10)
     c = pc("n0", 0)
     im = Image.new("RGB", (640, 480), (3, 3, 3))
     # Lit porch and pillars in the foreground; the passage (x 140-160, y 287-337 at 640 px) is the dark street.
@@ -139,13 +145,35 @@ def test_a_night_street_is_dark_even_with_a_bright_porch_light(tmp_path) -> None
     ss.capture_pending([c], stream_id="walkway", cfg=cfg)
     rec = ss.assemble_strip("c" * 32, "walkway", _evidence([c]), cfg=cfg)
     assert rec["frame_luminance"] > 0.3          # the whole-frame mean would call this "not dark"
-    assert rec["region_luminance"] < 0.06 and rec["dark"] is True
+    assert rec["scene_contrast"] < 0.10 and rec["dark"] is True
+
+
+def test_a_lit_lawn_at_night_is_dark_although_it_is_as_bright_as_a_dark_coat_by_day(tmp_path) -> None:
+    """Live 2026-10-17: a porch-lit lawn crop with nothing visible had median luma 0.11-0.125, the
+    same as a dark-clothed person at 13:33 (0.114). Brightness cannot tell them apart; contrast can."""
+    cfg = cfg_for(tmp_path, dark_contrast=0.10)
+    c = pc("lawn", 0)
+    Image.new("RGB", (640, 480), (24, 34, 24)).save(Path(cfg.frames_dir) / frame_name(c.t), "JPEG", quality=90)
+    ss.capture_pending([c], stream_id="walkway", cfg=cfg)
+    rec = ss.assemble_strip("9" * 32, "walkway", _evidence([c]), cfg=cfg)
+    assert rec["scene_luminance"] > 0.1 and rec["dark"] is True
+
+
+def test_with_no_saved_crop_the_box_areas_of_the_frame_are_measured(tmp_path) -> None:
+    cfg = cfg_for(tmp_path)
+    c = pc("f0", 0)
+    write_frame(Path(cfg.frames_dir), c.t)
+    ss.capture_pending([c], stream_id="walkway", cfg=cfg)
+    (Path(cfg.strip_dir) / ss.PENDING / f"{ss.crop_key('f0')}.jpg").unlink()
+    rec = ss.assemble_strip("8" * 32, "walkway", _evidence([c]), cfg=cfg)
+    assert rec["frame"] is not None and rec["crops"][0]["missing"] == "not_captured"
+    assert rec["scene_measured_on"] == "frame" and rec["dark"] is False
 
 
 def test_no_frame_means_no_luminance_and_dark_unknown(tmp_path) -> None:
     cfg = cfg_for(tmp_path)
     rec = ss.assemble_strip("d" * 32, "walkway", _evidence([pc("x", 0)]), cfg=cfg)
-    assert rec["frame"] is None and rec["dark"] is None and rec["region_luminance"] is None
+    assert rec["frame"] is None and rec["dark"] is None and rec["scene_contrast"] is None
     assert rec["crops"] == [{"crop_id": "x", "t": pc("x", 0).t.isoformat(), "missing": "not_captured"}]
 
 
@@ -187,7 +215,7 @@ def test_config_parity_strip_keys_on_by_default() -> None:
                        ("VISION_STORY_STRIP_DIR", "vision_story_strip_dir"),
                        ("VISION_STORY_STRIP_RETENTION_DAYS", "vision_story_strip_retention_days"),
                        ("VISION_STORY_STRIP_PENDING_SEC", "vision_story_strip_pending_sec"),
-                       ("VISION_STORY_STRIP_DARK_LUMINANCE", "vision_story_strip_dark_luminance")]:
+                       ("VISION_STORY_STRIP_DARK_CONTRAST", "vision_story_strip_dark_contrast")]:
         assert f"\n{key}=" in env, key
         assert Settings.model_fields[field].alias == key
     assert "VISION_STORY_STRIPS_ENABLED=true" in env
@@ -265,12 +293,14 @@ def test_loop_captures_while_frames_exist_then_writes_the_strip_on_the_story(pg,
     assert second["published"] == 1 and second["strips_written"] == 1
     with pg.connect() as conn:
         row = conn.execute(text(
-            "SELECT story_id, evidence_strip, frame_luminance, scene_luminance, dark FROM vision_motion_story "
+            "SELECT story_id, evidence_strip, frame_luminance, scene_luminance, scene_contrast, dark "
+            "FROM vision_motion_story "
             "WHERE published")).mappings().one()
     strip = row["evidence_strip"]
     assert [c.get("file") for c in strip["crops"]] == ["crop_0.jpg", "crop_1.jpg", "crop_2.jpg", "crop_3.jpg"]
     assert strip["frame"]["file"] == "frame.jpg" and row["dark"] is False
-    assert row["scene_luminance"] == pytest.approx(strip["region_luminance"], abs=1e-4)
+    assert row["scene_luminance"] == pytest.approx(strip["scene_luminance"], abs=1e-4)
+    assert row["scene_contrast"] == pytest.approx(strip["scene_contrast"], abs=1e-4)
     assert (Path(cfg.strip.strip_dir) / row["story_id"] / "frame.jpg").is_file()
     # Nothing is redone on the next tick.
     assert _cycle(cfg, T0 + timedelta(seconds=215)).get("strips_written", 0) == 0

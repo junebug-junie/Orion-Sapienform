@@ -76,7 +76,7 @@ SELECT s.story_id, s.stream_id, s.kind, s.started_at, s.ended_at, s.detection_co
        s.speed_class, s.zone_path, s.dir_lateral, s.dir_depth, s.individual_id, s.name_label,
        s.companion_kinds, s.clean, s.sentence, s.evidence, s.rules_version,
        CASE WHEN v.cant_tell THEN 'cant_tell' ELSE v.verdict END AS verdict,
-       s.evidence_strip, s.frame_luminance, s.scene_luminance, s.dark
+       s.evidence_strip, s.frame_luminance, s.scene_luminance, s.scene_contrast, s.dark
 FROM vision_motion_story s
 LEFT JOIN vision_motion_story_verdict v ON v.story_id = s.story_id
 WHERE s.published AND ($1::boolean IS FALSE OR s.clean)

@@ -6,9 +6,9 @@ Two questions, both from live data, nothing written:
    a full frame, and how many crops were saved vs ``frame_gone`` / ``not_captured``.
    A high ``frame_gone`` share means the capture step is losing the race with
    the ~60 s frame pruning.
-2. Threshold: the passage-region median luminance (``scene_luminance``) split
-   by Juniper's verdict. ``VISION_STORY_STRIP_DARK_LUMINANCE`` (0.06) was set
-   from tonight's frames and daytime crop thumbnails before any verdict
+2. Threshold: the strip's median crop contrast (``scene_contrast``, std of
+   luma) split by Juniper's verdict. ``VISION_STORY_STRIP_DARK_CONTRAST`` (0.10)
+   was set from tonight's frames and daytime crop thumbnails before any verdict
    existed. Once she has checked stories, "Can't tell" stories should sit
    below it and judged stories above it. The eval prints where each group
    falls and how many judged stories the threshold would have hidden.
@@ -51,7 +51,7 @@ def main(argv=None) -> int:
     ap.add_argument("--pg", default=os.getenv("ORION_EVAL_PG_URI", DEFAULT_PG))
     ap.add_argument("--since", default="2026-10-17T00:00:00Z")
     ap.add_argument("--strip-dir", default=os.getenv("VISION_STORY_STRIP_DIR", "/mnt/telemetry/vision/story_strips"))
-    ap.add_argument("--threshold", type=float, default=float(os.getenv("VISION_STORY_STRIP_DARK_LUMINANCE", "0.06")))
+    ap.add_argument("--threshold", type=float, default=float(os.getenv("VISION_STORY_STRIP_DARK_CONTRAST", "0.10")))
     args = ap.parse_args(argv)
 
     from sqlalchemy import create_engine, text
@@ -60,7 +60,7 @@ def main(argv=None) -> int:
     with engine.connect() as conn:
         conn.execute(text("SET TRANSACTION READ ONLY"))
         rows = conn.execute(text(
-            "SELECT s.story_id, s.evidence_strip, s.scene_luminance, s.frame_luminance, s.dark, v.verdict, "
+            "SELECT s.story_id, s.evidence_strip, s.scene_contrast, s.frame_luminance, s.dark, v.verdict, "
             "v.cant_tell FROM vision_motion_story s LEFT JOIN vision_motion_story_verdict v USING (story_id) "
             "WHERE s.published AND s.started_at >= CAST(:since AS timestamptz) ORDER BY s.started_at"),
             {"since": args.since}).mappings().all()
@@ -81,18 +81,18 @@ def main(argv=None) -> int:
             cov["frame"] += 1
             if not strip.get("pruned_at") and not (Path(args.strip_dir) / r["story_id"] / frame["file"]).is_file():
                 problems.append(f"{r['story_id']}: frame file missing on disk")
-        elif r["dark"] is not None:
-            problems.append(f"{r['story_id']}: dark={r['dark']} without a frame")
+        elif r["dark"] is not None and not any("file" in c for c in strip.get("crops", [])):
+            problems.append(f"{r['story_id']}: dark={r['dark']} without any picture")
         for c in strip.get("crops", []):
             crops["saved" if "file" in c else c.get("missing", "?")] += 1
-        if r["scene_luminance"] is not None:
+        if r["scene_contrast"] is not None:
             g = "cant_tell" if r["cant_tell"] else "judged" if r["verdict"] else "unchecked"
-            by_group[g].append(float(r["scene_luminance"]))
+            by_group[g].append(float(r["scene_contrast"]))
 
     print(f"published stories since {args.since}: {len(rows)}")
     print(f"  strips: {dict(cov)}")
     print(f"  crops:  {dict(crops)}")
-    print(f"scene_luminance (median of the padded passage region), threshold {args.threshold}:")
+    print(f"scene_contrast (median crop RMS contrast), threshold {args.threshold}:")
     for g, vals in by_group.items():
         below = sum(1 for v in vals if v < args.threshold)
         print(f"  {g:10s} {_q(vals)}  below threshold: {below}")

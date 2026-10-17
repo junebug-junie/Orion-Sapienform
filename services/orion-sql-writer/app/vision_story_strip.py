@@ -19,11 +19,17 @@ So the pictures are saved in two steps, both in this service's motion loop:
    ``.miss`` marker instead: the strip then says "frame gone", it never fakes it.
 2. ``assemble_strip`` (for every published story without a strip): up to
    ``MAX_CROPS`` crops spread over the passage, plus one full frame with all of
-   the passage's boxes drawn, into ``<strip_dir>/<story_id>/``. Two luminance
-   numbers come from the undrawn frame: the whole-frame mean and the median of
-   the padded passage region. ``dark`` uses the region median, because at
-   night the porch light keeps the whole-frame mean near 0.25 while the street
-   where people walk reads 0.004-0.03 (measured live 2026-10-17, see README).
+   the passage's boxes drawn, into ``<strip_dir>/<story_id>/``.
+
+Darkness. ``frame_luminance`` is the mean luma of the undrawn full frame;
+``scene_luminance`` / ``scene_contrast`` are the median, over the strip's
+crops, of each crop's median luma / RMS contrast (std of luma, 0..1 scale;
+Peli 1990: visibility of detail follows contrast, not mean level). ``dark``
+uses the contrast, because brightness alone cannot separate the cases
+(measured live 2026-10-17, README): at night the porch light holds the
+whole-frame mean at 0.25, and a lit-lawn crop with nothing visible in it has
+median 0.11-0.125 -- the same as a dark-clothed person in daylight (0.11).
+Contrast does separate them: night crops 0.012-0.075, day/dusk crops >= 0.134.
 
 Pure apart from file I/O; the loop owns the database.
 """
@@ -62,7 +68,7 @@ FIRST, LAST, MID = (34, 197, 94), (239, 68, 68), (96, 165, 250)
 class StripConfig:
     frames_dir: str = "/mnt/telemetry/vision/frames"
     strip_dir: str = "/mnt/telemetry/vision/story_strips"
-    dark_luminance: float = 0.06
+    dark_contrast: float = 0.10
     pending_sec: float = 3600.0
     retention_days: float = 30.0
     frame_w: float = 2560.0
@@ -208,18 +214,27 @@ def spread(n: int, k: int = MAX_CROPS) -> List[int]:
     return sorted({round(i * (n - 1) / (k - 1)) for i in range(k)})
 
 
-def luminance(img) -> Tuple[float, ...]:
-    """(mean, median) of 8-bit luma, on a 0..1 scale."""
+def luma_stats(img) -> Tuple[float, float, float]:
+    """(mean, median, RMS contrast = std) of 8-bit luma, on a 0..1 scale."""
     hist = img.convert("L").histogram()
     total = sum(hist) or 1
-    mean = sum(i * n for i, n in enumerate(hist)) / total / 255.0
+    mean = sum(i * n for i, n in enumerate(hist)) / total
+    var = sum(n * (i - mean) ** 2 for i, n in enumerate(hist)) / total
     acc, median = 0, 0
     for i, n in enumerate(hist):
         acc += n
         if acc * 2 >= total:
             median = i
             break
-    return mean, median / 255.0
+    return mean / 255.0, median / 255.0, (var ** 0.5) / 255.0
+
+
+def _median(values: Sequence[float]) -> Optional[float]:
+    v = sorted(values)
+    if not v:
+        return None
+    m = len(v) // 2
+    return v[m] if len(v) % 2 else (v[m - 1] + v[m]) / 2.0
 
 
 def _parse_t(v: Any) -> Optional[datetime]:
@@ -236,8 +251,9 @@ def assemble_strip(story_id: str, stream_id: str, evidence: Sequence[Dict[str, A
     """Write ``<strip_dir>/<story_id>/`` and return the ``evidence_strip`` record.
 
     Record: ``{"version": 1, "crops": [{crop_id, t, file} | {crop_id, t, missing}],
-    "frame": {file, t, crop_id} | null, "frame_luminance", "region_luminance",
-    "dark", "dark_threshold", "saved_at"}``. ``missing`` is ``frame_gone``
+    "frame": {file, t, crop_id} | null, "frame_luminance", "scene_luminance", "scene_contrast",
+    "scene_measured_on": "crops"|"frame"|null, "dark", "dark_threshold", "saved_at"}``.
+    ``missing`` is ``frame_gone``
     (looked for while capturing; already pruned) or ``not_captured`` (the
     capture never ran for it, e.g. the writer was down)."""
     from PIL import Image, ImageDraw
@@ -250,6 +266,7 @@ def assemble_strip(story_id: str, stream_id: str, evidence: Sequence[Dict[str, A
     out.mkdir(parents=True, exist_ok=True)
     ev = [e for e in evidence if isinstance(e, dict) and e.get("crop_id")]
     crops_out: List[Dict[str, Any]] = []
+    crop_stats: List[Tuple[float, float, float]] = []
     for k, i in enumerate(spread(len(ev))):
         e = ev[i]
         key = crop_key(str(e["crop_id"]))
@@ -259,6 +276,8 @@ def assemble_strip(story_id: str, stream_id: str, evidence: Sequence[Dict[str, A
             name = f"crop_{k}.jpg"
             shutil.copyfile(src, out / name)
             entry["file"] = name
+            with Image.open(out / name) as cim:
+                crop_stats.append(luma_stats(cim))
         else:
             miss = pending / f"{key}.miss"
             entry["missing"] = "frame_gone" if miss.exists() else "not_captured"
@@ -266,7 +285,8 @@ def assemble_strip(story_id: str, stream_id: str, evidence: Sequence[Dict[str, A
 
     # The full frame: the captured one nearest the middle of the passage.
     frame_rec: Optional[Dict[str, Any]] = None
-    frame_lum = region_lum = None
+    frame_lum = None
+    region_stats: List[Tuple[float, float, float]] = []
     mid = (len(ev) - 1) / 2.0
     for i in sorted(range(len(ev)), key=lambda j: abs(j - mid)):
         t = _parse_t(ev[i].get("t"))
@@ -279,14 +299,13 @@ def assemble_strip(story_id: str, stream_id: str, evidence: Sequence[Dict[str, A
             im = im.convert("RGB")
         W, H = im.size
         sx, sy = W / cfg.frame_w, H / cfg.frame_h
-        frame_lum, _ = luminance(im)
+        frame_lum = luma_stats(im)[0]
         boxes = [[float(v) for v in e["box"]] for e in ev if isinstance(e.get("box"), list) and len(e["box"]) == 4]
-        if boxes:
-            x0 = min(b[0] for b in boxes); y0 = min(b[1] for b in boxes)
-            x1 = max(b[2] for b in boxes); y1 = max(b[3] for b in boxes)
-            region = padded_box((x0 * sx, y0 * sy, x1 * sx, y1 * sy), W, H)
-            if region[2] - region[0] >= 1 and region[3] - region[1] >= 1:
-                _, region_lum = luminance(im.crop(region))
+        # No saved crop: measure each box's padded area on the (undrawn) small frame instead.
+        for b in boxes:
+            region = padded_box((b[0] * sx, b[1] * sy, b[2] * sx, b[3] * sy), W, H)
+            if region[2] - region[0] >= 2 and region[3] - region[1] >= 2:
+                region_stats.append(luma_stats(im.crop(region)))
         draw = ImageDraw.Draw(im)
         n = len(boxes)
         for j, b in enumerate(boxes):
@@ -296,15 +315,22 @@ def assemble_strip(story_id: str, stream_id: str, evidence: Sequence[Dict[str, A
         _atomic_save(im, out / "frame.jpg")
         frame_rec = {"file": "frame.jpg", "t": ev[i].get("t"), "crop_id": ev[i]["crop_id"]}
         break
-    dark = None if region_lum is None else bool(region_lum < cfg.dark_luminance)
+    stats, measured_on = (crop_stats, "crops") if crop_stats else (region_stats, "frame") if region_stats \
+        else ([], None)
+    scene_lum = _median([s[1] for s in stats])
+    contrast = _median([s[2] for s in stats])
+    dark = None if contrast is None else bool(contrast < cfg.dark_contrast)
+    r4 = lambda v: None if v is None else round(v, 4)  # noqa: E731
     return {
         "version": 1,
         "crops": crops_out,
         "frame": frame_rec,
-        "frame_luminance": None if frame_lum is None else round(frame_lum, 4),
-        "region_luminance": None if region_lum is None else round(region_lum, 4),
+        "frame_luminance": r4(frame_lum),
+        "scene_luminance": r4(scene_lum),
+        "scene_contrast": r4(contrast),
+        "scene_measured_on": measured_on,
         "dark": dark,
-        "dark_threshold": cfg.dark_luminance,
+        "dark_threshold": cfg.dark_contrast,
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }
 

@@ -638,9 +638,9 @@ class Settings(BaseSettings):
     vision_story_strip_retention_days: float = Field(30.0, alias="VISION_STORY_STRIP_RETENTION_DAYS")
     # Pending crops/frames waiting for their story; older ones are deleted.
     vision_story_strip_pending_sec: float = Field(3600.0, gt=0.0, alias="VISION_STORY_STRIP_PENDING_SEC")
-    # dark = median luma (0..1) of the padded passage region below this.
-    # Measured live 2026-10-17: night street 0.004-0.03, day/dusk crops >= 0.11.
-    vision_story_strip_dark_luminance: float = Field(0.06, ge=0.0, le=1.0, alias="VISION_STORY_STRIP_DARK_LUMINANCE")
+    # dark = median RMS contrast (std of luma, 0..1) of the strip's crops below
+    # this. Measured live 2026-10-17: night crops 0.012-0.075, day/dusk >= 0.134.
+    vision_story_strip_dark_contrast: float = Field(0.10, ge=0.0, le=1.0, alias="VISION_STORY_STRIP_DARK_CONTRAST")
 
     # Rhythm learner: fits when things usually happen, emits expectations,
     # grades them met / missed / unscorable.

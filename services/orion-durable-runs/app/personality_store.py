@@ -281,10 +281,19 @@ class PersonalityStore:
                     "SELECT began_at, ended_at FROM temporal_self_arc WHERE kind = 'company' "
                     "AND began_at <= %(until)s AND (ended_at IS NULL OR ended_at > %(since)s) "
                     "ORDER BY began_at", {"since": since, "until": until})).fetchall()
+                beat = await (await conn.execute("SELECT max(watermark) AS w FROM temporal_self_state")).fetchone()
         return SituationInputs(
             arousal=[(r["occurred_at"], str(r["label"] or "")) for r in arousal],
             company=[(r["began_at"], r["ended_at"]) for r in company],
+            # The chronicle closes company arcs ~5 min late: spans are only trusted up to here.
+            company_known_until=(beat or {}).get("w") or datetime(1970, 1, 1, tzinfo=timezone.utc),
         )
+
+    async def chronicle_watermark(self) -> Optional[datetime]:
+        """The Temporal Self chronicle's watermark (everything before it is folded), or None."""
+        async with self._pool.connection() as conn:
+            row = await (await conn.execute("SELECT max(watermark) AS w FROM temporal_self_state")).fetchone()
+        return row["w"] if row else None
 
     # --- reads for the routes ------------------------------------------------------------------
 

@@ -150,6 +150,9 @@ class TickStats:
     seeded: bool = False
 
 
+CHRONICLE_MAX_LAG = timedelta(minutes=30)
+
+
 class PersonalityDriver:
     def __init__(self, *, store: Any, reader: Any, embed: EmbedFn, now: Callable[[], datetime],
                  tick_sec: float = 600.0, read_lag_sec: float = READ_LAG_SEC,
@@ -219,7 +222,19 @@ class PersonalityDriver:
     async def _tick(self) -> dict:
         now = self._now()
         hi = now - self._lag
+        # Read no newer than the Temporal Self chronicle has folded, so each row's situation
+        # (company arcs close ~5 min late) is final when stamped. A chronicle stalled past
+        # CHRONICLE_MAX_LAG does not stall personality: rows past its watermark get company=None.
+        try:
+            watermark = await self._store.chronicle_watermark()
+        except Exception:  # noqa: BLE001 - the situation is an annotation, never a gate
+            watermark = None
+        chronicle_fresh = watermark is not None and now - watermark <= CHRONICLE_MAX_LAG
+        if chronicle_fresh:
+            hi = min(hi, watermark)
         warnings: list[str] = []
+        if not chronicle_fresh:
+            warnings.append("situation_chronicle_lagging:company_unknown_past_watermark")
         nodes = await self._store.load_nodes()
         cursors = await self._store.load_cursors()
         write_cursors: dict[str, Cursor] = {}

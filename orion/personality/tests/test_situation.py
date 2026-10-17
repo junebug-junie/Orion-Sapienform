@@ -29,3 +29,12 @@ def test_company_from_open_or_spanning_arcs_only():
 
 def test_day_phase_is_orions_local_day():
     assert situation_at(T, SituationInputs())["day_phase"] == day_phase_for(T)
+
+
+def test_company_is_unknown_past_the_chronicle_watermark():
+    # Live 2026-10-17: an arc that ended at 00:20:40 still had ended_at NULL when 00:24 rows were
+    # stamped (the chronicle closes arcs ~5 min late), so they read "with company".
+    arc_open_as_stored = SituationInputs(company=[(T - timedelta(hours=2), None)],
+                                         company_known_until=T - timedelta(minutes=6))
+    assert situation_at(T - timedelta(minutes=10), arc_open_as_stored)["company"] is True
+    assert situation_at(T, arc_open_as_stored)["company"] is None

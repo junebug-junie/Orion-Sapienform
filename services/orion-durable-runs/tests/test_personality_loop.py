@@ -301,6 +301,7 @@ class FakeStore:
         self.fail_commit = False
         self.commits = 0
         self.situation = SituationInputs()
+        self.watermark = None  # set per test; None = "no chronicle" (company unknown, warned)
         self.fail_situation = False
 
     async def load_nodes(self):
@@ -323,6 +324,10 @@ class FakeStore:
             self.history.setdefault((h.disposition_id, h.at), h)
         self.cursors.update(w.cursors)
         self.commits += 1
+
+    async def chronicle_watermark(self):
+        # Default: the chronicle is caught up far past any test clock (no read bound, no warning).
+        return self.watermark
 
     async def load_situation_inputs(self, since, until):
         if self.fail_situation:
@@ -751,3 +756,31 @@ def test_dispositions_carry_situation_mix_from_one_query_bounded_to_returned_ids
     empty = ScriptedPool([[]])
     assert asyncio.run(PersonalityStore(empty).dispositions("active")) == [] and len(empty.log) == 1
     assert "jsonb_typeof(e.meta->'situation') = 'object'" in SITUATION_MIX_SQL
+
+
+def test_reads_wait_for_the_chronicle_so_company_is_final_when_stamped():
+    drv, store, reader, emb, clock = world()
+    store.watermark = utc(minutes=0)
+    asyncio.run(drv.tick())
+    reader.add("chat", item("chat", "early", utc(minutes=2), "A reply the chronicle has folded."))
+    reader.add("chat", item("chat", "late", utc(minutes=7), "A reply newer than the chronicle."))
+    store.watermark = utc(minutes=5)
+    clock.at = utc(minutes=10)
+    asyncio.run(drv.tick())
+    assert "chat:early" in store.evidence and "chat:late" not in store.evidence
+    store.watermark = utc(minutes=12)
+    clock.at = utc(minutes=20)
+    asyncio.run(drv.tick())
+    assert "chat:late" in store.evidence
+    assert not any(w.startswith("situation_chronicle_lagging") for w in drv.stats.warnings)
+
+
+def test_a_stalled_chronicle_does_not_stall_personality():
+    drv, store, reader, emb, clock = world()
+    asyncio.run(drv.tick())
+    store.watermark = utc(minutes=-60)  # chronicle an hour behind
+    reader.add("chat", item("chat", "a", utc(minutes=1), "A reply while the chronicle is stalled."))
+    clock.at = utc(minutes=10)
+    asyncio.run(drv.tick())
+    assert "chat:a" in store.evidence
+    assert "situation_chronicle_lagging:company_unknown_past_watermark" in drv.stats.warnings

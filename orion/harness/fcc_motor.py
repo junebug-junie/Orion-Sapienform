@@ -30,6 +30,7 @@ from orion.fcc.context_budget import (
     context_pressure_threshold_chars,
     is_compact_boundary_event,
     is_context_overflow_text,
+    is_compact_summary_draft,
     is_degenerate_compact_summary,
     is_provider_error_envelope,
     max_context_chars,
@@ -1737,7 +1738,12 @@ async def _drive_fcc_turn(
                 budget_chars += measure_step_payload_chars(step)
             yield {"type": "step", "step": step}
             summary_text = compact_summary_text(parsed) if compactions else None
-            if summary_text is not None and is_degenerate_compact_summary(summary_text):
+            # Once per compaction: the model echoing the summary is not a second loss.
+            if (
+                summary_text is not None
+                and degenerate_compactions < compactions
+                and is_degenerate_compact_summary(summary_text)
+            ):
                 degenerate_compactions += 1
                 logger.warning(
                     "fcc_compaction_degenerate corr=%s compactions=%s task_anchor_chars=%s",
@@ -1797,7 +1803,7 @@ async def _drive_fcc_turn(
             # The CLI's compaction summary is context, never Orion's answer: stored
             # drafts began "This session is being continued..." (harness_turn_trace,
             # 2026-09-15..10-11) when a turn died after compacting.
-            if text and summary_text is None:
+            if text and summary_text is None and not is_compact_summary_draft(text):
                 accumulated = text
             if sid:
                 claude_session_id = sid

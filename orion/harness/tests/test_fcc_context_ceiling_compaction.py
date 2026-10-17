@@ -368,6 +368,7 @@ async def test_replay_2026_10_17_gauge_is_honest_and_lost_task_is_flagged(
         _compact(),
         json.dumps({"type": "user", "message": {"content": refusal}}),
         json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": refusal}]}}),
+        json.dumps({"type": "result", "result": refusal, "session_id": "s"}),
     ]
     events, proc = await _run(monkeypatch, lines, ceiling_tokens=1000)
     steps = [ev["step"] for ev in events if ev.get("type") == "step"]
@@ -375,9 +376,9 @@ async def test_replay_2026_10_17_gauge_is_honest_and_lost_task_is_flagged(
     # Before: len(prompt)+text chars = ~4%. After: the provider's own count.
     assert first_fill >= 60
     flagged = [s for s in steps if s.get("type") == "context_compaction_degenerate"]
-    assert len(flagged) == 2  # the CLI's summary message and the model echoing it
+    assert len(flagged) == 1  # the model echoing the summary is the same loss
     final = events[-1]
-    assert final["metadata"]["fcc_degenerate_compactions"] == 2
+    assert final["metadata"]["fcc_degenerate_compactions"] == 1
     assert final["metadata"]["fcc_compactions"] == 1
     # The summary must never become Orion's answer.
     assert not str(final.get("llm_response") or "").startswith("This session is being continued")

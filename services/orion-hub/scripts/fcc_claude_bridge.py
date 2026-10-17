@@ -32,6 +32,7 @@ from orion.fcc.context_budget import (
     context_overflow_operator_hint,
     context_pressure_threshold_chars,
     is_context_overflow_text,
+    is_compact_summary_draft,
     is_degenerate_compact_summary,
     max_context_chars,
     max_context_tokens,
@@ -372,6 +373,7 @@ async def run_turn(
     ceiling_chars = max_context_chars()
     compact_at_chars = autocompact_trigger_chars()
     compacted = False
+    degenerate_flagged = False
     context_nudge_sent = False
 
     # Shared sandbox lock for the turn's duration -- the same lock the governor's
@@ -435,6 +437,7 @@ async def run_turn(
                 # the running total no longer describes what is in context.
                 budget_chars = post_compaction_context_chars(parsed, prompt_chars=len(prompt))
                 compacted = True
+                degenerate_flagged = False
                 context_nudge_sent = False
             # Same provider-usage re-anchor as orion/harness/fcc_motor.py.
             observed = observed_context_chars(parsed)
@@ -447,7 +450,8 @@ async def run_turn(
                 budget_chars += measure_step_payload_chars(step)
             yield {"type": "step", "step": step}
             summary_text = compact_summary_text(parsed) if compacted else None
-            if summary_text is not None and is_degenerate_compact_summary(summary_text):
+            if summary_text is not None and not degenerate_flagged and is_degenerate_compact_summary(summary_text):
+                degenerate_flagged = True
                 logger.warning("fcc_compaction_degenerate corr=%s", correlation_id)
                 yield {"type": "step", "step": build_degenerate_compaction_step()}
             if (
@@ -467,7 +471,7 @@ async def run_turn(
                 context_nudge_sent = True
 
             text, sid, _dur = extract_final_from_stream_event(parsed, accumulated=accumulated)
-            if text and summary_text is None:
+            if text and summary_text is None and not is_compact_summary_draft(text):
                 accumulated = text
             if sid:
                 claude_session_id = sid

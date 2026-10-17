@@ -223,6 +223,8 @@ def test_shipped_defaults_give_the_64k_lane_more_room(monkeypatch) -> None:
     monkeypatch.setenv("HARNESS_FCC_MAX_OUTPUT_TOKENS", "16384")
     assert autocompact_trigger_tokens(65536) == 65536 - 16384 - 13_000
     assert autocompact_trigger_tokens(400) is None
+    # agent lane: modelled line (3384) is under the CLI's own overhead -> untrusted.
+    assert autocompact_trigger_tokens(32768) is None
 
 
 def test_pressure_line_sits_below_the_compaction_line(monkeypatch) -> None:
@@ -240,7 +242,12 @@ def test_observed_context_reads_provider_usage(monkeypatch) -> None:
     _clear_lane_env(monkeypatch)
     event = {"type": "assistant", "message": {"content": [], "usage": {
         "input_tokens": 30_000, "cache_read_input_tokens": 1_000, "output_tokens": 500}}}
-    assert observed_context_chars(event) == 31_500 * 4
+    assert observed_context_chars(event) == 30_500 * 4
+    # Proxy shape: whole prompt in input AND cached part in cache_read -> not doubled.
+    proxy = {"type": "assistant", "message": {"usage": {"input_tokens": 30_000, "cache_read_input_tokens": 28_000}}}
+    assert observed_context_chars(proxy) == 30_000 * 4
+    anthropic = {"type": "assistant", "message": {"usage": {"input_tokens": 50, "cache_read_input_tokens": 28_000}}}
+    assert observed_context_chars(anthropic) == 28_000 * 4
     assert observed_context_chars({"type": "assistant", "message": {"usage": {"input_tokens": 0}}}) is None
     assert observed_context_chars({"type": "user", "message": {"usage": {"input_tokens": 9}}}) is None
     assert observed_context_chars({"type": "assistant", "message": {"content": []}}) is None

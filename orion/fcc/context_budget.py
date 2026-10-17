@@ -119,13 +119,15 @@ def autocompact_trigger_tokens(n_ctx: int | None = None) -> int | None:
     min(usable * pct, usable - 13k). It fits both live clusters of 154 measured
     auto-compactions at pct=70 and the default 32k output cap: ~32k on the 64k
     lane (min(31.9k, 32.5k)) and ~76k on the 128k lane (min(77.7k, 98k)).
-    UNVERIFIED by a direct probe at other pct/cap values. None when the
-    window is too small for the formula to mean anything.
+    UNVERIFIED by a direct probe at other pct/cap values, so it is only
+    trusted where it lands at 40%+ of the window (live: 49% on 64k, 59% on
+    128k). Below that (the 32768 lane: 3384 tokens, under the ~24k fixed
+    overhead) it would mark every step critical; None falls back to the % line.
     """
     window = max_context_tokens(n_ctx)
     usable = window - min(fcc_max_output_tokens(), CLI_AUTOCOMPACT_OUTPUT_RESERVE_CAP)
     trigger = min(int(usable * autocompact_pct_override() / 100.0), usable - CLI_AUTOCOMPACT_MARGIN_TOKENS)
-    return trigger if trigger > 0 else None
+    return trigger if trigger >= window * 2 // 5 else None
 
 
 def context_pressure_threshold_pct() -> float:
@@ -234,8 +236,14 @@ def observed_context_chars(event: Any) -> int | None:
     The motor's running total only counts what streams past it (prompt, tool
     results, model text) -- never the CLI's system prompt, tool schemas or
     skills (~24k tokens on FCC turns). The CLI compacts on the provider's
-    reported usage, so this is the same number it acts on: input + cache
-    reads/writes + output. None when the event carries no positive usage.
+    reported usage, so this is the same number it acts on. None when the
+    event carries no positive usage.
+
+    Prompt side is max(input, cache_read + cache_creation), not their sum:
+    Anthropic reports cache as separate from input, but a proxy translating
+    llama.cpp may report the whole prompt as input AND the cached part as
+    cache_read. A sum would double that, and since the motor only raises its
+    estimate on usage, an inflated value could trip the ceiling kill.
     """
     raw = event.get("raw") if isinstance(event, dict) and isinstance(event.get("raw"), dict) else event
     if not isinstance(raw, dict) or raw.get("type") != "assistant":
@@ -244,12 +252,18 @@ def observed_context_chars(event: Any) -> int | None:
     usage = message.get("usage") if isinstance(message, dict) else None
     if not isinstance(usage, dict):
         return None
-    total = 0
-    for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"):
+    def _n(key: str) -> int:
         val = usage.get(key)
-        if isinstance(val, int) and not isinstance(val, bool) and val > 0:
-            total += val
+        return val if isinstance(val, int) and not isinstance(val, bool) and val > 0 else 0
+
+    prompt = max(_n("input_tokens"), _n("cache_read_input_tokens") + _n("cache_creation_input_tokens"))
+    total = prompt + _n("output_tokens")
     return total * chars_per_token_estimate() if total > 0 else None
+
+
+def is_compact_summary_draft(text: str) -> bool:
+    """True when extracted draft text is the CLI's compaction message (any event type)."""
+    return str(text or "").lstrip().startswith(COMPACT_SUMMARY_PREAMBLE)
 
 
 def compact_summary_text(event: Any) -> str | None:

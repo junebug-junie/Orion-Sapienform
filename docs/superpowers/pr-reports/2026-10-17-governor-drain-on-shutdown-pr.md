@@ -24,7 +24,7 @@ A governor redeploy killed a 229-step run at once (2026-10-16 22:37Z; trace `116
 - `app/settings.py`: `HARNESS_SHUTDOWN_DRAIN_SEC_CHAT` (90), `HARNESS_SHUTDOWN_DRAIN_SEC_AGENT` (900).
 - `docker-compose.yml`: `stop_grace_period: ${HARNESS_STOP_GRACE_SEC:-1000}s`, drain env passthrough.
 - `.env_example`: three keys with the coupling rule (grace must exceed drain + ~60).
-- `tests/test_shutdown_drain.py`: 6 tests.
+- `tests/test_shutdown_drain.py`: 8 tests.
 
 ## Schema / bus / API changes
 
@@ -39,10 +39,10 @@ None. No channel or schema change.
 ## Tests run
 
 ```text
-services/orion-harness-governor: 91 passed (was 85; +6 new)
+services/orion-harness-governor: 93 passed (was 85; +8 new)
 ```
 
-New tests: running turn finishes during drain; turn still running after the budget is cancelled; zero budget cancels at once; no new request taken while draining; lifespan keeps the cancel listener until both lanes finish; compose grace period defaults exceed the drain defaults and every key matches across settings, `.env_example` and compose.
+New tests (8): running turn finishes during drain; turn still running after the budget is cancelled; zero budget cancels at once; no new request taken while draining; lifespan keeps the cancel listener until both lanes finish; compose grace period defaults exceed the drain defaults and every key matches across settings, `.env_example` and compose.
 
 ## Evals run
 
@@ -54,7 +54,15 @@ UNVERIFIED live. The deploy that installs this still stops the OLD container wit
 
 ## Review findings fixed
 
-(filled after review)
+Subagent review: drain works on the normal path. PID 1 is uvicorn (`entrypoint.sh` ends in `exec "$@"`), so SIGTERM reaches it; uvicorn has no graceful-shutdown timeout and a second SIGTERM does nothing; `docker compose up` recreate honors `stop_grace_period`; teardown order keeps the shared bus open during the drain.
+
+- Finding (medium): grace period and drain budgets were not tied together. An operator raising `HARNESS_SHUTDOWN_DRAIN_SEC_AGENT` past the grace period would be SIGKILLed mid-drain, silently.
+  - Fix: `HARNESS_STOP_GRACE_SEC` is now passed into the container; startup logs `governor_drain_exceeds_stop_grace` (ERROR) when drain + 60 > grace (`main.drain_grace_problem`).
+  - Evidence: `test_a_drain_longer_than_the_docker_grace_period_is_reported`.
+- Finding (low): if the lifespan cancelled a lane worker during its drain, the `CancelledError` skipped the cancel loop and orphaned the turns.
+  - Fix: the drain wait catches `CancelledError`, logs `governor_drain_interrupted`, and still cancels the turns.
+  - Evidence: `test_cancelling_a_worker_mid_drain_does_not_orphan_its_turns`.
+- Noted, not changed: a request already consumed but queued behind the legacy lock can use drain budget; on expiry it is cancelled and not re-queued. Same as the documented lost-request case.
 
 ## Restart required
 

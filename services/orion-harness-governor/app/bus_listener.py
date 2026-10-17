@@ -952,10 +952,17 @@ async def run_bus_worker(
     finally:
         if tasks and drain_sec > 0:
             logger.info("governor_drain_begin lane=%s in_flight=%s budget_sec=%s", lane, len(tasks), drain_sec)
-            _, pending = await asyncio.wait(set(tasks), timeout=drain_sec)
-            logger.info(
-                "governor_drain_end lane=%s finished=%s cancelled=%s", lane, len(tasks) - len(pending), len(pending)
-            )
+            try:
+                _, pending = await asyncio.wait(set(tasks), timeout=drain_sec)
+            except asyncio.CancelledError:
+                # Lifespan gave up on this lane: do not orphan the turns, cancel them below.
+                pending = {task for task in tasks if not task.done()}
+                logger.warning("governor_drain_interrupted lane=%s cancelled=%s", lane, len(pending))
+            else:
+                logger.info(
+                    "governor_drain_end lane=%s finished=%s cancelled=%s",
+                    lane, len(tasks) - len(pending), len(pending),
+                )
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

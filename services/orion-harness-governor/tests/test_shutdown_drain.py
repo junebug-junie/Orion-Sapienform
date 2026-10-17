@@ -211,3 +211,41 @@ async def test_lifespan_keeps_the_cancel_listener_until_the_lanes_have_drained(m
     assert "chat:draining:7.0" in order and "agent:draining:9.0" in order
     assert order.index("cancel:stopped") > order.index("chat:done")
     assert order.index("cancel:stopped") > order.index("agent:done")
+
+
+def test_a_drain_longer_than_the_docker_grace_period_is_reported(monkeypatch):
+    from app import main
+
+    monkeypatch.setattr(main.settings, "harness_shutdown_drain_sec_chat", 90.0)
+    monkeypatch.setattr(main.settings, "harness_shutdown_drain_sec_agent", 1200.0)
+    monkeypatch.setattr(main.settings, "harness_stop_grace_sec", 1000.0)
+    assert "SIGKILL" in main.drain_grace_problem()
+    monkeypatch.setattr(main.settings, "harness_stop_grace_sec", 1300.0)
+    assert main.drain_grace_problem() is None
+    monkeypatch.setattr(main.settings, "harness_shutdown_drain_sec_agent", 0.0)
+    monkeypatch.setattr(main.settings, "harness_shutdown_drain_sec_chat", 0.0)
+    monkeypatch.setattr(main.settings, "harness_stop_grace_sec", 10.0)
+    assert main.drain_grace_problem() is None  # no drain, nothing to outlast
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_worker_mid_drain_does_not_orphan_its_turns(monkeypatch):
+    events: list[str] = []
+
+    async def handle(_bus, msg):
+        events.append("start")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            events.append("cancelled")
+            raise
+
+    monkeypatch.setattr(bus_listener, "_handle_bus_message", handle)
+    queue, stop, task = _worker(monkeypatch, drain_sec=30)
+    await queue.put({"type": "message", "data": {}})
+    await _until(lambda: "start" in events)
+    stop.set()
+    await asyncio.sleep(1.6)  # the worker is now draining
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert "cancelled" in events, "the in-flight turn must be cancelled, not left running"

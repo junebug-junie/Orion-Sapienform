@@ -74,8 +74,22 @@ async def start_fcc_warm_pool() -> None:
         logger.exception("fcc_warm_pool_start_failed -- chat turns will spawn per turn")
 
 
+def drain_grace_problem() -> str | None:
+    """Docker SIGKILLs at the stop grace period; a drain that cannot fit inside it is silently void."""
+    drain = max(settings.harness_shutdown_drain_sec_chat, settings.harness_shutdown_drain_sec_agent)
+    if drain > 0 and settings.harness_stop_grace_sec < drain + 60:
+        return (
+            f"HARNESS_STOP_GRACE_SEC={settings.harness_stop_grace_sec:g} is shorter than the longest drain "
+            f"({drain:g}s) + 60s: Docker will SIGKILL mid-drain. Raise it or lower HARNESS_SHUTDOWN_DRAIN_SEC_*."
+        )
+    return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    problem = drain_grace_problem()
+    if problem:
+        logger.error("governor_drain_exceeds_stop_grace %s", problem)
     logger.info(
         "Starting orion-harness-governor service=%s v=%s port=%s",
         settings.service_name,

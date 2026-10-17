@@ -247,7 +247,7 @@ def pg():
         conn.execute(text("TRUNCATE vision_motion_story, vision_motion_story_verdict, vision_motion_story_cursor, "
                           "vision_crop_observation, vision_individual_sighting, vision_individual CASCADE"))
     vl._capture_cursor.clear()
-    vl._last_orphan_sweep[0] = 0.0
+    vl._last_orphan_sweep[0] = None
     yield engine
     engine.dispose()
 
@@ -359,6 +359,23 @@ def test_orphan_strip_dirs_are_swept_but_young_ones_are_not(pg, tmp_path) -> Non
     os.utime(old, (time.time() - 7200, time.time() - 7200))
     s = _cycle(cfg, T0 + timedelta(seconds=15))
     assert s["strips_pruned"] == 1 and not old.exists() and young.exists()
+
+
+@needs_pg
+def test_the_first_orphan_sweep_runs_even_on_a_freshly_booted_host(pg, tmp_path, monkeypatch) -> None:
+    """CI 2026-10-17: a runner up < 1 h has time.monotonic() < 3600, and a 0.0 'never swept'
+    sentinel skipped the first sweep. Pin the clock low to reproduce that host."""
+    cfg = _loop_cfg(tmp_path)
+    old = Path(cfg.strip.strip_dir) / ("3" * 32)
+    old.mkdir(parents=True)
+    os.utime(old, (time.time() - 7200, time.time() - 7200))
+    monkeypatch.setattr(vl.time, "monotonic", lambda: 120.0)
+    assert _cycle(cfg, T0 + timedelta(seconds=15))["strips_pruned"] == 1 and not old.exists()
+    # ...and the next one waits the full interval.
+    again = Path(cfg.strip.strip_dir) / ("4" * 32)
+    again.mkdir()
+    os.utime(again, (time.time() - 7200, time.time() - 7200))
+    assert _cycle(cfg, T0 + timedelta(seconds=30))["strips_pruned"] == 0 and again.exists()
 
 
 @needs_pg

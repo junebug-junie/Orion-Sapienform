@@ -39,7 +39,7 @@ After: every story published after deploy carries the pictures of its own moment
 - `services/orion-sql-writer/app/settings.py`, `.env_example`, `docker-compose.yml`: 6 keys, ON by default; frames mounted `:ro`, strip directory mounted read-write.
 - `services/orion-sql-writer/requirements.txt`: `Pillow==11.3.0`.
 - `services/orion-sql-writer/README.md`: the new section, with the darkness measurements.
-- `services/orion-sql-writer/tests/test_vision_story_strip.py` (new): 12 pure tests + 8 real-Postgres tests.
+- `services/orion-sql-writer/tests/test_vision_story_strip.py` (new): 12 pure tests + 9 real-Postgres tests.
 - `services/orion-sql-writer/evals/run_story_strip_darkness_eval.py` (new): a read-only coverage and darkness-by-verdict eval.
 - `services/orion-sql-db/manual_migration_vision_motion_story_strip_v2.sql` (new).
 - `services/orion-hub/scripts/motion_story_routes.py`: the strip route, `checkable_only`, `cant_tell`, tally `cant_tell`.
@@ -108,7 +108,7 @@ The threshold is a contrast, not a brightness. Here is why, from live data:
 
 ```text
 services/orion-sql-writer/tests/test_vision_story_strip.py + test_vision_motion.py
-  (real Postgres, ORION_TEST_PG_URI, throwaway postgres:16)          53 passed
+  (real Postgres, ORION_TEST_PG_URI, throwaway postgres:16)          54 passed
 services/orion-hub/tests/test_motion_story_routes.py (real Postgres)  12 passed
 node --test static/js/walkway-stories.test.js                          7 passed
 test_walkway_stories_browser_smoke.py (Chromium, 360 px)             passed 3/3 reruns
@@ -173,6 +173,10 @@ The code review ran in a read-only subagent on the first commit. It found no blo
   - `retention_days` is carried in the record, and the card reads it instead of hard-coding 30.
   - `frame_luminance` is labelled a diagnostic.
   - The smoke also checks that the page itself has no sideways scroll at 360 px.
+- **CI finding (first push): the orphan-sweep test failed in the Postgres lane (`strips_pruned` 0, expected 1).**
+  - Root cause: "never swept" was stored as `0.0` on `time.monotonic()`, which counts from host boot. A fresh CI runner had been up for less than 1 h, so the first sweep was put off by up to an hour. A rebooted athena would have done the same.
+  - Fix: a `None` sentinel, so the first sweep always runs.
+  - Evidence: `test_the_first_orphan_sweep_runs_even_on_a_freshly_booted_host` pins the clock to 120 s.
 - **Not changed:** the Hub route checks for a symlinked folder, then opens the file with `O_NOFOLLOW`. A fully race-free `dir_fd` open is not needed, because only sql-writer writes there. Noted as low.
 
 ## Restart required

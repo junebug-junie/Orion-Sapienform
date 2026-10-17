@@ -293,7 +293,10 @@ STRIPS_PER_TICK = 20
 # Per process: crops are captured once per crop id (the pending file is the
 # real dedupe), so losing this on restart costs nothing but a re-scan.
 _capture_cursor: Dict[str, datetime] = {}
-_last_orphan_sweep: List[float] = [0.0]
+# None = never swept this process. Not 0.0: time.monotonic() counts from host
+# boot, so on a host up < ORPHAN_SWEEP_EVERY_SEC (a fresh CI runner, a rebooted
+# box) a 0.0 sentinel would postpone the first sweep by up to an hour.
+_last_orphan_sweep: List[Optional[float]] = [None]
 
 # created_at is the inserting transaction's start time: a row can commit after
 # a newer one was already read. Each read re-covers this overlap behind the
@@ -426,7 +429,8 @@ def prune_strips(engine, ts: datetime, cfg: LoopConfig) -> int:
                     {"at": ts.isoformat(), "id": sid})
             removed += 1
     now_mono = time.monotonic()
-    if now_mono - _last_orphan_sweep[0] >= ORPHAN_SWEEP_EVERY_SEC:
+    last = _last_orphan_sweep[0]
+    if last is None or now_mono - last >= ORPHAN_SWEEP_EVERY_SEC:
         _last_orphan_sweep[0] = now_mono
         dirs = strip_dirs(strip)
         if dirs:

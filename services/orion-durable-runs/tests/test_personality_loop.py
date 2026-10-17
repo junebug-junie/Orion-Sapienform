@@ -301,6 +301,7 @@ class FakeStore:
         self.fail_commit = False
         self.commits = 0
         self.situation = SituationInputs()
+        self.watermark = None  # set per test; None = "no chronicle" (company unknown, warned)
         self.fail_situation = False
 
     async def load_nodes(self):
@@ -323,6 +324,10 @@ class FakeStore:
             self.history.setdefault((h.disposition_id, h.at), h)
         self.cursors.update(w.cursors)
         self.commits += 1
+
+    async def chronicle_watermark(self):
+        # Default: the chronicle is caught up far past any test clock (no read bound, no warning).
+        return self.watermark
 
     async def load_situation_inputs(self, since, until):
         if self.fail_situation:
@@ -676,3 +681,130 @@ def test_situation_lookup_failure_still_folds_the_evidence():
     assert store.evidence["chat:a"].disposition_id is not None
     assert "situation" not in store.evidence["chat:a"].meta
     assert "situation_unavailable:ConnectionError" in drv.stats.warnings
+
+
+# --- situation mix (observability only) ---------------------------------------------------------
+
+
+def test_situation_mix_folds_counts_and_skips_missing_keys():
+    from app.personality_store import situation_mix_by_id
+
+    rows = [
+        {"disposition_id": "d1", "dim": "n", "val": "", "c": 3},
+        {"disposition_id": "d1", "dim": "arousal", "val": "idle", "c": 2},
+        {"disposition_id": "d1", "dim": "arousal", "val": None, "c": 1},  # a situation without arousal
+        {"disposition_id": "d1", "dim": "day_phase", "val": "night", "c": 3},
+        {"disposition_id": "d1", "dim": "company", "val": "true", "c": 1},
+        {"disposition_id": "d1", "dim": "company", "val": "false", "c": 2},
+        {"disposition_id": "d2", "dim": "n", "val": "", "c": 1},
+        {"disposition_id": "d2", "dim": "company", "val": "maybe", "c": 1},  # not a bool: not counted
+    ]
+    out = situation_mix_by_id(rows)
+    assert out["d1"] == {"n": 3, "arousal": {"idle": 2}, "day_phase": {"night": 3},
+                         "company": {"true": 1, "false": 2}}
+    assert out["d2"] == {"n": 1, "arousal": {}, "day_phase": {}, "company": {"true": 0, "false": 0}}
+
+
+class ScriptedConn:
+    """Answers each execute with the next scripted rows; logs (sql, params)."""
+
+    def __init__(self, answers, log):
+        self.answers, self.log = list(answers), log
+
+    async def execute(self, sql, params=None):
+        self.log.append((sql, params))
+        rows = self.answers.pop(0)
+
+        class R:
+            async def fetchall(self_inner):
+                return rows
+
+        return R()
+
+
+class ScriptedPool:
+    def __init__(self, answers):
+        self.answers, self.log = answers, []
+
+    def connection(self):
+        pool = self
+
+        class _CM:
+            async def __aenter__(self):
+                return ScriptedConn(pool.answers, pool.log)
+
+            async def __aexit__(self, *a):
+                return False
+
+        return _CM()
+
+
+def test_dispositions_carry_situation_mix_from_one_query_bounded_to_returned_ids():
+    from app.personality_store import SITUATION_MIX_SQL
+
+    nodes = [{"disposition_id": "d1", "weight": 2.0}, {"disposition_id": "d2", "weight": 1.0}]
+    mix = [{"disposition_id": "d1", "dim": "n", "val": "", "c": 2},
+           {"disposition_id": "d1", "dim": "arousal", "val": "engaged", "c": 2}]
+    pool = ScriptedPool([nodes, mix, []])
+    rows = asyncio.run(PersonalityStore(pool).dispositions("all"))
+    assert [sql for sql, _ in pool.log].count(SITUATION_MIX_SQL) == 1
+    assert pool.log[1] == (SITUATION_MIX_SQL, {"ids": ["d1", "d2"]})
+    assert rows[0]["situation_mix"]["n"] == 2 and rows[0]["situation_mix"]["arousal"] == {"engaged": 2}
+    # A node with no stamped evidence still gets the full shape, n=0.
+    assert rows[1]["situation_mix"] == {"n": 0, "arousal": {}, "day_phase": {}, "company": {"true": 0, "false": 0}}
+    # No nodes -> no extra query.
+    empty = ScriptedPool([[]])
+    assert asyncio.run(PersonalityStore(empty).dispositions("active")) == [] and len(empty.log) == 1
+    assert "jsonb_typeof(e.meta->'situation') = 'object'" in SITUATION_MIX_SQL
+
+
+def test_reads_wait_for_the_chronicle_so_company_is_final_when_stamped():
+    drv, store, reader, emb, clock = world()
+    store.watermark = utc(minutes=0)
+    asyncio.run(drv.tick())
+    reader.add("chat", item("chat", "early", utc(minutes=2), "A reply the chronicle has folded."))
+    reader.add("chat", item("chat", "late", utc(minutes=7), "A reply newer than the chronicle."))
+    store.watermark = utc(minutes=6)  # read bound = watermark - COMPANY_CLOSE_GRACE (3 min) = 3
+    clock.at = utc(minutes=10)
+    asyncio.run(drv.tick())
+    assert "chat:early" in store.evidence and "chat:late" not in store.evidence
+    store.watermark = utc(minutes=12)
+    clock.at = utc(minutes=20)
+    asyncio.run(drv.tick())
+    assert "chat:late" in store.evidence
+    assert not any(w.startswith("situation_chronicle_lagging") for w in drv.stats.warnings)
+
+
+def test_a_stalled_chronicle_does_not_stall_personality():
+    drv, store, reader, emb, clock = world()
+    asyncio.run(drv.tick())
+    store.watermark = utc(minutes=-60)  # chronicle an hour behind
+    reader.add("chat", item("chat", "a", utc(minutes=1), "A reply while the chronicle is stalled."))
+    clock.at = utc(minutes=10)
+    asyncio.run(drv.tick())
+    assert "chat:a" in store.evidence
+    assert "situation_chronicle_lagging:company_unknown_past_watermark" in drv.stats.warnings
+
+
+
+def test_a_backdated_company_close_is_folded_before_rows_near_it_are_stamped():
+    # Review 2026-10-17: the chronicle ends a company arc at the last sighting (recent row) and
+    # learns of it only when the presence grace runs out (absent row, ~2 min later). A row read
+    # inside that window used to be stamped "with company" for an arc that then closed earlier.
+    drv, store, reader, emb, clock = world()
+    store.watermark = utc(minutes=0)
+    asyncio.run(drv.tick())
+    seen_last = utc(minutes=20)  # recent row: the person left here
+    reader.add("chat", item("chat", "after_leaving", utc(minutes=21), "A reply after Juniper left."))
+    # Chronicle has folded up to 22:00 but not the absent row (due ~22:00+): arc still open.
+    store.situation = SituationInputs(company=[(utc(minutes=-30), None)], company_known_until=utc(minutes=19))
+    store.watermark = utc(minutes=22)
+    clock.at = utc(minutes=24)
+    asyncio.run(drv.tick())
+    assert "chat:after_leaving" not in store.evidence  # held: bound is 22 - 3 = 19
+    # The absent row is folded: the arc closes, backdated to the last sighting.
+    store.situation = SituationInputs(company=[(utc(minutes=-30), seen_last)], company_known_until=utc(minutes=27))
+    store.watermark = utc(minutes=30)
+    clock.at = utc(minutes=32)
+    asyncio.run(drv.tick())
+    assert store.evidence["chat:after_leaving"].meta["situation"]["company"] is False

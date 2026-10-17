@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
-from orion.personality.situation import SituationInputs
+from orion.personality.situation import COMPANY_CLOSE_GRACE, SituationInputs
 from orion.personality.graph import CHOICE_LANE, EvidenceRow, HistoryRow, Node, choice_style_from_rows, project_frame
 from orion.schemas.personality import FRAME_MAX_DISPOSITIONS, PersonalityFrameV1
 
@@ -43,6 +43,45 @@ VALUES (%(evidence_id)s, %(lane)s, %(source_ref)s, %(occurred_at)s, %(excerpt)s,
   %(similarity)s, %(weight_delta)s, %(meta)s::jsonb)
 ON CONFLICT (evidence_id) DO NOTHING
 """
+# Per disposition, how its evidence's situations (meta.situation, stamped since 2026-10-16) split by
+# arousal, day phase and company. Rows without a situation are left out. Observability only:
+# nothing Orion reads uses this. The 'n' dimension counts the rows that do carry a situation.
+SITUATION_MIX_SQL = """
+SELECT e.disposition_id, v.dim, v.val, count(*) AS c
+FROM personality_evidence e
+CROSS JOIN LATERAL (VALUES ('n'::text, ''::text),
+  ('arousal', e.meta->'situation'->>'arousal'),
+  ('day_phase', e.meta->'situation'->>'day_phase'),
+  ('company', e.meta->'situation'->>'company')) AS v(dim, val)
+WHERE e.disposition_id = ANY(%(ids)s) AND jsonb_typeof(e.meta->'situation') = 'object'
+GROUP BY e.disposition_id, v.dim, v.val
+"""
+SITUATION_DIMS = ("arousal", "day_phase")
+
+
+def empty_situation_mix() -> dict:
+    return {"n": 0, "arousal": {}, "day_phase": {}, "company": {"true": 0, "false": 0}}
+
+
+def situation_mix_by_id(rows: Iterable[Mapping[str, Any]]) -> dict[str, dict]:
+    """Fold ``SITUATION_MIX_SQL`` rows into ``{disposition_id: situation_mix}``. A missing key in one
+    row's situation (NULL ``val``) is not counted in that dimension; it still counts in ``n``."""
+    out: dict[str, dict] = {}
+    for r in rows:
+        mix = out.setdefault(r["disposition_id"], empty_situation_mix())
+        dim, val, c = r["dim"], r["val"], int(r["c"])
+        if dim == "n":
+            mix["n"] += c
+        elif val is None:
+            continue
+        elif dim == "company":
+            if val in ("true", "false"):
+                mix["company"][val] += c
+        elif dim in SITUATION_DIMS:
+            mix[dim][val] = mix[dim].get(val, 0) + c
+    return out
+
+
 UPSERT_NODE_SQL = """
 INSERT INTO personality_disposition (disposition_id, origin, status, label, label_similarity, centroid,
   centroid_n, weight, evidence_count, lane_counts, chosen_count, first_seen_at, last_reinforced_at,
@@ -242,10 +281,20 @@ class PersonalityStore:
                     "SELECT began_at, ended_at FROM temporal_self_arc WHERE kind = 'company' "
                     "AND began_at <= %(until)s AND (ended_at IS NULL OR ended_at > %(since)s) "
                     "ORDER BY began_at", {"since": since, "until": until})).fetchall()
+                beat = await (await conn.execute("SELECT max(watermark) AS w FROM temporal_self_state")).fetchone()
         return SituationInputs(
             arousal=[(r["occurred_at"], str(r["label"] or "")) for r in arousal],
             company=[(r["began_at"], r["ended_at"]) for r in company],
+            # The chronicle closes company arcs ~5 min late: spans are only trusted up to here.
+            company_known_until=(((beat or {}).get("w") or datetime(1970, 1, 1, tzinfo=timezone.utc))
+                                 - COMPANY_CLOSE_GRACE),
         )
+
+    async def chronicle_watermark(self) -> Optional[datetime]:
+        """The Temporal Self chronicle's watermark (everything before it is folded), or None."""
+        async with self._pool.connection() as conn:
+            row = await (await conn.execute("SELECT max(watermark) AS w FROM temporal_self_state")).fetchone()
+        return row["w"] if row else None
 
     # --- reads for the routes ------------------------------------------------------------------
 
@@ -296,8 +345,9 @@ class PersonalityStore:
         async with self._pool.connection() as conn:
             rows = [dict(r) for r in await (await conn.execute(sql, params)).fetchall()]
             ids = [r["disposition_id"] for r in rows]
-            hist = []
+            hist, mix_rows = [], []
             if ids:
+                mix_rows = await (await conn.execute(SITUATION_MIX_SQL, {"ids": ids})).fetchall()
                 hist = await (await conn.execute(
                     "SELECT disposition_id, at, weight, status, evidence_count FROM ("
                     " SELECT h.*, row_number() OVER (PARTITION BY disposition_id ORDER BY at DESC) AS rn"
@@ -307,7 +357,9 @@ class PersonalityStore:
         for h in hist:
             by_id.setdefault(h["disposition_id"], []).append(
                 {"at": _iso(h["at"]), "weight": h["weight"], "status": h["status"], "evidence_count": h["evidence_count"]})
-        return [{**{k: _iso(v) for k, v in r.items()}, "history": by_id.get(r["disposition_id"], [])} for r in rows]
+        mixes = situation_mix_by_id(mix_rows)
+        return [{**{k: _iso(v) for k, v in r.items()}, "history": by_id.get(r["disposition_id"], []),
+                 "situation_mix": mixes.get(r["disposition_id"]) or empty_situation_mix()} for r in rows]
 
     async def evidence(self, disposition_id: Optional[str] = None, limit: int = 50) -> list[dict]:
         sql = ("SELECT evidence_id, lane, source_ref, occurred_at, excerpt, disposition_id, similarity, weight_delta, "

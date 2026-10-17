@@ -217,3 +217,30 @@ def test_keyset_tie_break_drains_rows_sharing_one_timestamp():
         assert (await reader.read({"chat": ps.Cursor(at, "c")}, hi))["chat"] == []
 
     with_db(scenario)
+
+
+def test_situation_mix_groups_stamped_evidence_per_disposition():
+    async def scenario(pool):
+        await ex(pool, "INSERT INTO personality_disposition (disposition_id, origin, status, label, centroid, "
+                       "centroid_n, weight, evidence_count, first_seen_at, last_reinforced_at, updated_at) VALUES "
+                       "('d1', 'recurrence', 'active', 'one', ARRAY[1,0]::real[], 1, 2.0, 4, %(at)s, %(at)s, %(at)s), "
+                       "('d2', 'recurrence', 'active', 'two', ARRAY[0,1]::real[], 1, 1.0, 1, %(at)s, %(at)s, %(at)s)",
+                 {"at": T0})
+
+        def sit(arousal, phase, company):
+            return json.dumps({"situation": {"arousal": arousal, "day_phase": phase, "company": company}})
+
+        rows = [("e1", "d1", sit("idle", "night", False)), ("e2", "d1", sit("idle", "night", True)),
+                ("e3", "d1", sit("engaged", "morning", False)),
+                ("e4", "d1", json.dumps({"other": 1})),  # pre-2026-10-16 row: no situation, not counted
+                ("e5", "d2", "{}")]
+        for eid, did, meta in rows:
+            await ex(pool, "INSERT INTO personality_evidence (evidence_id, lane, source_ref, occurred_at, excerpt, "
+                           "disposition_id, meta) VALUES (%(e)s, 'chat', %(e)s, %(at)s, 'x', %(d)s, %(m)s::jsonb)",
+                     {"e": eid, "d": did, "m": meta, "at": T0})
+        out = {r["disposition_id"]: r["situation_mix"] for r in await PersonalityStore(pool).dispositions("all")}
+        assert out["d1"] == {"n": 3, "arousal": {"idle": 2, "engaged": 1}, "day_phase": {"night": 2, "morning": 1},
+                             "company": {"true": 1, "false": 2}}
+        assert out["d2"] == {"n": 0, "arousal": {}, "day_phase": {}, "company": {"true": 0, "false": 0}}
+
+    with_db(scenario)

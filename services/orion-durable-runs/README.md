@@ -719,11 +719,13 @@ Each new evidence row's `meta.situation` records the situation the row happened 
 - `day_phase`: the phase of Orion's local day.
 - `company`: whether a Temporal Self `company` arc (someone at the room camera) was open.
 
-This is the "when" half of the CAPS if-then signature, recorded so that situation subnodes can later be built from data. Nothing reads it back yet. Attention is left out because it nearly always crowns a prediction-error node.
+This is the "when" half of the CAPS if-then signature, recorded so that situation subnodes can later be built from data. Nothing Orion reads uses it yet; only the Hub panel shows it (below). Attention is left out because it nearly always crowns a prediction-error node.
 
 The lookup fails open. If the Temporal Self tables cannot be read, the evidence still folds without a situation, and the tick warns `situation_unavailable:<type>`.
 
 Code: `orion/personality/situation.py` (pure) and `PersonalityStore.load_situation_inputs`.
+
+`GET /personality/dispositions` gives each node a `situation_mix`: `{"n", "arousal": {level: count}, "day_phase": {phase: count}, "company": {"true": n, "false": n}}`. It counts that node's evidence rows by situation, in one grouped query (`SITUATION_MIX_SQL`) bounded to the returned node ids. Rows without a situation (all rows before 2026-10-16 23:36 UTC) are left out, and `n` counts only the rows that have one. A node with no stamped rows gets `n=0` and empty counts. It is observability only: weights, matching and the frame do not read it.
 
 ## Deploy order
 

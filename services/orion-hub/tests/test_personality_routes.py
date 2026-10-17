@@ -77,7 +77,10 @@ def test_frame_proxies_verbatim_with_no_cache(wire):
 
 def test_dispositions_forwards_status_and_limit_with_defaults(wire):
     body = {"dispositions": [{**NODE, "history": [{"at": NODE["first_seen_at"], "weight": 1.0,
-                                                   "status": "candidate", "evidence_count": 2}]}]}
+                                                   "status": "candidate", "evidence_count": 2}],
+                              # Passed through untouched (observability only; the panel's "When" cell).
+                              "situation_mix": {"n": 2, "arousal": {"idle": 2}, "day_phase": {"night": 1, "dusk": 1},
+                                                "company": {"true": 0, "false": 2}}}]}
     up = Upstream({"/personality/dispositions": (200, body)})
     client = wire(up)
     assert client.get("/api/personality/dispositions").json() == body

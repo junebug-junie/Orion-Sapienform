@@ -62,6 +62,54 @@
     return parts.length ? parts.join(", ") : "—";
   }
 
+  // The situations a node's evidence happened in (durable-runs ``situation_mix``, stamped on
+  // evidence since 2026-10-16; older rows carry none). Per dimension, the most common value and its
+  // share of the n stamped rows: "idle 70% · night 55% · alone 80% (n=20)". A tie shows every tied
+  // value, by name ("engaged/idle 50%"). Plain text: the DOM layer writes it with textContent.
+  const NO_SITUATION_TEXT = "no situation data yet";
+
+  function topShare(counts, n) {
+    const entries = Object.entries(counts && typeof counts === "object" ? counts : {})
+      .map(([k, c]) => [k, Number(c)])
+      .filter(([, c]) => Number.isFinite(c) && c > 0);
+    if (!entries.length) return null;
+    const best = Math.max(...entries.map(([, c]) => c));
+    const names = entries.filter(([, c]) => c === best).map(([k]) => k).sort((a, b) => a.localeCompare(b));
+    return `${names.join("/")} ${Math.round((100 * best) / n)}%`;
+  }
+
+  function situationParts(mix) {
+    const m = mix && typeof mix === "object" ? mix : {};
+    const n = Number(m.n);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    const company = m.company && typeof m.company === "object" ? m.company : {};
+    const companyNamed = { alone: company.false, "with company": company.true };
+    // Company share is over rows where company is KNOWN: rows past a stalled chronicle are
+    // stamped company=null and must not read as "alone".
+    const known = [company.true, company.false].map(Number).filter((c) => Number.isFinite(c) && c > 0)
+      .reduce((a, b) => a + b, 0);
+    return { n, parts: [topShare(m.arousal, n), topShare(m.day_phase, n), known ? topShare(companyNamed, known) : null]
+      .filter(Boolean) };
+  }
+
+  function situationText(mix) {
+    const s = situationParts(mix);
+    if (!s) return NO_SITUATION_TEXT;
+    return `${s.parts.length ? s.parts.join(" · ") + " " : ""}(n=${s.n})`;
+  }
+
+  // Full breakdown for the cell's tooltip: "arousal: idle 14, engaged 6 | day phase: ...".
+  function situationDetail(mix) {
+    const s = situationParts(mix);
+    if (!s) return NO_SITUATION_TEXT;
+    const list = (counts) => Object.entries(counts && typeof counts === "object" ? counts : {})
+      .map(([k, c]) => [k, Number(c)]).filter(([, c]) => Number.isFinite(c) && c > 0)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([k, c]) => `${k} ${c}`).join(", ") || "—";
+    const c = mix.company || {};
+    return `arousal: ${list(mix.arousal)} | day phase: ${list(mix.day_phase)} | ` +
+      `company: ${list({ alone: c.false, "with company": c.true })} | n=${s.n} rows with a situation`;
+  }
+
   // Weight history -> polyline points in a width x height box, oldest left. Null when no point
   // has a finite weight. One point draws a flat line; a flat history sits mid-box.
   function sparklineModel(history, width, height) {
@@ -119,6 +167,8 @@
       first_seen: fmtAt(node.first_seen_at),
       last_reinforced: fmtAt(node.last_reinforced_at),
       history: Array.isArray(node.history) ? node.history : [],
+      when: situationText(node.situation_mix),
+      when_detail: situationDetail(node.situation_mix),
     };
   }
 
@@ -187,7 +237,7 @@
 
   const api = {
     escapeHtml, fmtAt, fmtNum, fmtSigned, lanesText, sparklineModel, sparklineSvg, nodesFrom, evidenceFrom,
-    dispositionRow, evidenceRow, pageState, countsText, shownCountText, renderParamsText, choiceStyleText, skipText, EMPTY_TEXT, NODE_LIMIT,
+    situationText, situationDetail, NO_SITUATION_TEXT, dispositionRow, evidenceRow, pageState, countsText, shownCountText, renderParamsText, choiceStyleText, skipText, EMPTY_TEXT, NODE_LIMIT,
     EVIDENCE_LIMIT,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
@@ -196,7 +246,7 @@
   // --- DOM layer ------------------------------------------------------------------------------
   const $ = (id) => document.getElementById(id);
   const view = { seq: 0, frame: null };
-  const COLUMNS = ["Label", "Weight", "Evidence", "Lanes", "Chosen", "First seen", "Last reinforced"];
+  const COLUMNS = ["Label", "Weight", "Evidence", "Lanes", "When", "Chosen", "First seen", "Last reinforced"];
   const NUM_COLUMNS = new Set(["Weight", "Evidence", "Chosen"]);
 
   function el(tag, attrs, text) {
@@ -313,6 +363,7 @@
       tr.append(w);
       tr.append(el("td", { class: "num" }, r.evidence));
       tr.append(el("td", { class: "lanes" }, r.lanes));
+      tr.append(el("td", { class: "when", title: r.when_detail }, r.when));   // textContent: escaped
       tr.append(el("td", { class: "num" }, r.chosen));
       tr.append(el("td", { class: "time" }, r.first_seen));
       tr.append(el("td", { class: "time" }, r.last_reinforced));

@@ -12,7 +12,10 @@ Inputs are signals that already passed the metric gate and are stored by Tempora
   transition is on record before it -- never guessed as idle.
 - day_phase: ``orion.temporal_self.day.day_phase_for`` in Orion's local day.
 - company: someone at the room camera (an open Temporal Self ``company`` arc). No identity:
-  company arcs carry no confirmed label today.
+  company arcs carry no confirmed label today. ``None`` (unknown) for a row newer than
+  ``company_known_until`` (the Temporal Self chronicle's watermark): the chronicle writes an
+  arc's end ~5 min late, so before it catches up a closed arc still reads as open (live
+  2026-10-17: rows at 00:24 stamped "with company" for an arc that ended at 00:20:40).
 
 Attention is left out on purpose: it nearly always crowns a prediction-error node
 (2026-10-02), so it would not tell situations apart.
@@ -22,12 +25,19 @@ from __future__ import annotations
 
 import bisect
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Sequence
 
 from orion.temporal_self.day import day_phase_for
 
 UNKNOWN = "unknown"
+# The chronicle BACKDATES a company arc's end to the last sighting (orion/temporal_self/arcs.py,
+# recent -> absent), and the absent row arrives only when vision-window's presence grace runs out
+# (WINDOW_PRESENCE_GRACE_SEC=120; live 2026-10-17: recent 00:20:40 -> absent 00:22:33). Company is
+# trusted, and personality reads, only this far behind the chronicle watermark, so a departure is
+# folded before rows near it are stamped. Not covered: a camera producer dying silently (the
+# chronicle's stale close, up to company_stale_sec=1500 s, also backdated).
+COMPANY_CLOSE_GRACE = timedelta(seconds=180)
 
 
 @dataclass(frozen=True)
@@ -36,6 +46,8 @@ class SituationInputs:
 
     arousal: Sequence[tuple[datetime, str]] = field(default_factory=tuple)
     company: Sequence[tuple[datetime, Optional[datetime]]] = field(default_factory=tuple)
+    # Company spans are trustworthy only up to here; None = no limit.
+    company_known_until: Optional[datetime] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "arousal", tuple(sorted(self.arousal, key=lambda t: t[0])))
@@ -46,5 +58,8 @@ def situation_at(at: datetime, inputs: SituationInputs) -> dict:
     """``{"arousal", "day_phase", "company"}`` at ``at`` (aware). Never raises on good inputs."""
     i = bisect.bisect_right(inputs._times, at)  # type: ignore[attr-defined]
     arousal = inputs.arousal[i - 1][1] if i > 0 else UNKNOWN
-    company = any(began <= at and (ended is None or at < ended) for began, ended in inputs.company)
+    if inputs.company_known_until is not None and at > inputs.company_known_until:
+        company: Optional[bool] = None
+    else:
+        company = any(began <= at and (ended is None or at < ended) for began, ended in inputs.company)
     return {"arousal": arousal or UNKNOWN, "day_phase": day_phase_for(at), "company": company}

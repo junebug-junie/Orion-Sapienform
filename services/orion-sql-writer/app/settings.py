@@ -633,8 +633,9 @@ class Settings(BaseSettings):
     vision_story_strips_enabled: bool = Field(True, alias="VISION_STORY_STRIPS_ENABLED")
     vision_story_frames_dir: str = Field("/mnt/telemetry/vision/frames", alias="VISION_STORY_FRAMES_DIR")
     vision_story_strip_dir: str = Field("/mnt/telemetry/vision/story_strips", alias="VISION_STORY_STRIP_DIR")
-    # A strip is deleted this long after its story ended, and only once Juniper
-    # has given the story a verdict (an unchecked story keeps its picture).
+    # A strip is kept until this long after its story ended AND Juniper has
+    # given it a verdict ("Can't tell" counts). An unchecked story keeps its
+    # picture until story retention deletes the story row itself.
     vision_story_strip_retention_days: float = Field(30.0, alias="VISION_STORY_STRIP_RETENTION_DAYS")
     # Pending crops/frames waiting for their story; older ones are deleted.
     vision_story_strip_pending_sec: float = Field(3600.0, gt=0.0, alias="VISION_STORY_STRIP_PENDING_SEC")

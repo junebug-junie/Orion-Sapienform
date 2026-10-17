@@ -20,8 +20,9 @@ Pictures of the moment (app/vision_story_strip.py, 2026-10-17), when
 and a small full frame for each new walker crop while its frame still exists
 (the shared frames directory keeps a walkway frame ~60 s); after step 3 every
 published story without a strip gets one (``evidence_strip``, ``frame_luminance``,
-``scene_luminance``, ``scene_contrast``, ``dark``). A strip is deleted 30 days after its story
-ended, and only when Juniper has given that story a verdict.
+``scene_luminance``, ``scene_contrast``, ``dark``). A strip is kept until 30
+days after its story ended AND the story has a verdict ("Can't tell" counts),
+or until the story row itself is deleted by story retention.
 
 Trace: one ``[MOTION_STORY]`` line per stream per tick with the counts and
 the cursor.
@@ -294,11 +295,19 @@ STRIPS_PER_TICK = 20
 _capture_cursor: Dict[str, datetime] = {}
 _last_orphan_sweep: List[float] = [0.0]
 
+# created_at is the inserting transaction's start time: a row can commit after
+# a newer one was already read. Each read re-covers this overlap behind the
+# cursor (the pending files dedupe), and never reads the last second.
+CAPTURE_OVERLAP_SEC = 10.0
 CAPTURE_SQL = (
     "SELECT crop_id, observed_at, label, box_xyxy, camera_id, created_at, individual_id "
-    "FROM vision_crop_observation WHERE stream_id = :s AND created_at > :a AND label = ANY(:kinds) "
+    "FROM vision_crop_observation WHERE stream_id = :s AND created_at > :a "
+    "AND created_at <= now() - interval '1 second' AND label = ANY(:kinds) "
     "ORDER BY created_at, crop_id LIMIT 2000"
 )
+# A failed strip is retried each tick; after this share of the pending window
+# the story gets a final error record instead of staying NULL forever.
+ASSEMBLE_GIVE_UP_SHARE = 0.5
 
 
 def strip_columns_missing(conn) -> List[str]:
@@ -314,21 +323,38 @@ def capture_step(engine, stream_id: str, ts: datetime, cfg: LoopConfig) -> Dict[
     """Save crops + small frames for walker crops that landed since the last tick."""
     from sqlalchemy import text
 
-    from app.vision_story_strip import PendingCrop, capture_pending
+    from app.vision_story_strip import PendingCrop, capture_pending, mark_skipped
+
+    from app.vision_motion import box_iou
 
     strip = cfg.strip
     assert strip is not None
-    after = _capture_cursor.get(stream_id) or ts - timedelta(seconds=CAPTURE_FIRST_LOOKBACK_SEC)
+    cursor = _capture_cursor.get(stream_id)
+    after = (cursor - timedelta(seconds=CAPTURE_OVERLAP_SEC)) if cursor else \
+        ts - timedelta(seconds=CAPTURE_FIRST_LOOKBACK_SEC)
     with engine.connect() as conn:
         rows = conn.execute(text(CAPTURE_SQL), {"s": stream_id, "a": after,
                                                 "kinds": sorted(PUBLISH_KINDS)}).fetchall()
+        # Props (the patio skeleton, stationary things) are detected every frame and
+        # never become stories. A fresh crop has no individual_id yet, so match by box.
+        prop_boxes = read_context(conn, stream_id, [], cfg.prop_individual_ids)[2] if rows else []
+    empty = {"saved": 0, "frame_gone": 0, "already": 0, "failed": 0, "prop": 0}
     if not rows:
-        return {"saved": 0, "frame_gone": 0, "already": 0, "failed": 0}
+        return empty
     props = set(cfg.prop_individual_ids)
-    crops = [PendingCrop(crop_id=r[0], t=r[1], label=r[2], box=tuple(float(v) for v in r[3]), camera_id=r[4])
-             for r in rows if r[3] and len(r[3]) == 4 and r[6] not in props]
-    counts = capture_pending(crops, stream_id=stream_id, cfg=strip)
-    _capture_cursor[stream_id] = rows[-1][5]
+    crops, skipped = [], 0
+    for r in rows:
+        if not r[3] or len(r[3]) != 4:
+            continue
+        box = tuple(float(v) for v in r[3])
+        c = PendingCrop(crop_id=r[0], t=r[1], label=r[2], box=box, camera_id=r[4])
+        if r[6] in props or any(kind == r[2] and box_iou(box, b) >= cfg.motion.prop_iou for kind, b in prop_boxes):
+            skipped += 1
+            mark_skipped(c, "prop_overlap", strip)
+            continue
+        crops.append(c)
+    counts = {**empty, **capture_pending(crops, stream_id=stream_id, cfg=strip), "prop": skipped}
+    _capture_cursor[stream_id] = max(cursor or rows[-1][5], rows[-1][5])
     return counts
 
 
@@ -336,23 +362,27 @@ def assemble_step(engine, stream_id: str, ts: datetime, cfg: LoopConfig) -> int:
     """A strip for every published story that has none, while its pending pictures can exist."""
     from sqlalchemy import text
 
-    from app.vision_story_strip import assemble_strip
+    from app.vision_story_strip import assemble_strip, failed_record, remove_strip_dir
 
     strip = cfg.strip
     assert strip is not None
     with engine.connect() as conn:
         rows = conn.execute(text(
-            "SELECT story_id, evidence FROM vision_motion_story WHERE stream_id = :s AND published "
+            "SELECT story_id, evidence, created_at FROM vision_motion_story WHERE stream_id = :s AND published "
             "AND evidence_strip IS NULL AND created_at > :since ORDER BY created_at LIMIT :n"),
             {"s": stream_id, "since": ts - timedelta(seconds=strip.pending_sec), "n": STRIPS_PER_TICK}).fetchall()
     done = 0
-    for story_id, evidence in rows:
+    for story_id, evidence, created_at in rows:
         ev = evidence if isinstance(evidence, list) else json.loads(evidence or "[]")
         try:
             rec = assemble_strip(story_id, stream_id, ev, cfg=strip)
         except Exception as exc:
             logger.warning("story_strip_assemble_failed story_id=%s error=%s", story_id, exc)
-            continue
+            if created_at is None or created_at > ts - timedelta(seconds=strip.pending_sec * ASSEMBLE_GIVE_UP_SHARE):
+                continue
+            # Final: the row says why there is no picture, and the half-written folder goes.
+            remove_strip_dir(strip, story_id)
+            rec = failed_record(str(exc), strip)
         with engine.begin() as conn:
             conn.execute(text(
                 "UPDATE vision_motion_story SET evidence_strip = CAST(:j AS jsonb), frame_luminance = :fl, "
@@ -461,6 +491,9 @@ def run_one_motion_cycle(*, postgres_uri: str, cfg: LoopConfig, zones_by_stream:
                 logger.warning("motion_story_stream_failed stream=%s error=%s", stream_id, exc)
             if strips_on:
                 try:
+                    # A crop that landed after the first capture read can belong to a
+                    # story closed just now: catch it before the strip is built.
+                    capture_step(engine, stream_id, ts, cfg)
                     summary["strips_written"] = summary.get("strips_written", 0) + assemble_step(
                         engine, stream_id, ts, cfg)
                 except Exception as exc:

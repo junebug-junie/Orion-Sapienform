@@ -34,11 +34,12 @@ test('strip model: the moment\'s frame and crops, only whitelisted names, missin
   const m = ws.stripModel({ story_id: id, dark: false, evidence_strip: {
     frame: { file: 'frame.jpg', t: '2026-10-17T00:47:09Z' },
     crops: [{ file: 'crop_0.jpg', t: 't0' }, { missing: 'frame_gone', t: 't1' }, { missing: 'weird', t: 't2' },
-            { file: '../../etc/passwd', t: 't3' }],
+            { file: '../../etc/passwd', t: 't3' }, { missing: 'prop_overlap', t: 't4' }],
   } });
   assert.equal(m.frame.url, `/api/vision/motion-stories/${id}/strip/frame.jpg`);
   assert.deepEqual(m.crops.map((c) => c.url || c.missing),
-    [`/api/vision/motion-stories/${id}/strip/crop_0.jpg`, 'frame_gone', 'not_captured', 'not_captured']);
+    [`/api/vision/motion-stories/${id}/strip/crop_0.jpg`, 'frame_gone', 'not_captured', 'not_captured',
+     'prop_overlap']);
   assert.equal(ws.hasPicture(m), true);
 });
 
@@ -47,6 +48,9 @@ test('strip model: no strip, a pruned strip, or a bad story id is "no picture"',
   const pruned = ws.stripModel({ story_id: 'b'.repeat(32),
     evidence_strip: { pruned_at: 'x', frame: { file: 'frame.jpg' }, crops: [] } });
   assert.equal(pruned.pruned, true);
+  assert.equal(pruned.retentionDays, null);
+  assert.equal(ws.stripModel({ story_id: 'b'.repeat(32), evidence_strip: { pruned_at: 'x', retention_days: 30 } })
+    .retentionDays, 30);
   assert.equal(ws.hasPicture(pruned), false);
   assert.equal(ws.stripModel({ story_id: '../x', evidence_strip: { frame: { file: 'frame.jpg' } } }).frame, null);
 });
@@ -55,4 +59,12 @@ test('verdict buttons are the four Juniper asked for, plus Can\'t tell', () => {
   assert.deepEqual(ws.VERDICTS.map((v) => v.value), ['right', 'wrong_name', 'wrong_motion', 'wrong_other']);
   assert.deepEqual(ws.CANT_TELL, { value: 'cant_tell', label: "Can't tell" });
   assert.equal(ws.VIEW_VALUE, 'walkway-live');
+});
+
+test('gate line says how many dark or picture-less stories the gate does not cover', () => {
+  const gate = { min_checked: 50, min_right: 0.8, max_wrong_names: 0, passed: false };
+  assert.equal(ws.gateLine({ checked: 10, not_checkable: 3, gate }),
+    'Hub only for now: 40 more to check. The gate covers daylight stories with a picture; ' +
+    '3 dark or picture-less stories are not in it.');
+  assert.equal(ws.gateLine({ checked: 10, not_checkable: 0, gate }), 'Hub only for now: 40 more to check.');
 });

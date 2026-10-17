@@ -134,7 +134,7 @@ def test_walkway_stories_card_browser_smoke():
         assert "Picture from" in first.text_content()
         assert first.locator("img[data-story-crop]").count() == 2
         assert "frame already gone" in first.text_content()
-        assert first.locator("[data-story-verdict='cant_tell']").count() == 0   # it has a picture
+        assert first.locator("[data-story-verdict='cant_tell']").count() == 1   # an unclear picture is not "wrong"
         page.wait_for_function("() => document.querySelectorAll('img[data-story-frame]').length === 2 && "
                                "[...document.querySelectorAll('img[data-story-frame]')].every(i => i.complete)")
         assert any(p.endswith("/strip/frame.jpg") for p in strips)
@@ -155,6 +155,8 @@ def test_walkway_stories_card_browser_smoke():
             "document.getElementById('walkwayStoriesList')) & Node.DOCUMENT_POSITION_FOLLOWING)")
         # Fits a 360 px phone: no horizontal overflow from the card.
         assert page.evaluate("() => document.getElementById('walkwayStoriesCard').scrollWidth") <= 360
+        # The card's pictures must not push the page itself sideways.
+        assert page.evaluate("() => document.documentElement.scrollWidth") <= 360
 
         btn = items.nth(1).locator("[data-story-verdict='wrong_name']")
         btn.click()

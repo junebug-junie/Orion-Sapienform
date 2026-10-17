@@ -652,10 +652,18 @@ read-only.
   thumbnails (13:09-18:47 MDT) read 0.133-0.3 (p10 0.187). Dark stories are
   still published (`dark=true`); the Hub's "only checkable" filter hides
   them by default.
-- Retention: a strip is deleted `VISION_STORY_STRIP_RETENTION_DAYS` (30)
-  after its story ended, and only once the story has a verdict
-  (`evidence_strip.pruned_at` is then set). Strip directories whose story row
-  is gone are swept hourly.
+- Retention: a strip is kept until `VISION_STORY_STRIP_RETENTION_DAYS` (30)
+  after its story ended AND the story has a verdict ("Can't tell" counts);
+  `evidence_strip.pruned_at` is then set. An unchecked story keeps its strip
+  until story retention (`VISION_MOTION_STORY_RETENTION_DAYS`, 90) deletes the
+  story row itself; the hourly sweep then removes the orphan directory.
+- Robustness: the capture read re-covers 10 s behind its cursor (a crop row's
+  `created_at` is its transaction start, so it can commit late) and skips the
+  newest second; prop boxes (stationary individuals, the patio skeleton) are
+  matched by box overlap and recorded as `prop_overlap`, not decoded; capture
+  runs again just before strips are built; a strip that keeps failing gets a
+  final `{"error": ...}` record after half the pending window.
+- `frame_luminance` is a diagnostic only (stored as asked, nothing reads it).
 - Trace: `[STORY_STRIP] story_id=... crops_saved= crops_missing= frame= frame_lum= scene_lum= scene_contrast= dark=`.
 - Migration `services/orion-sql-db/manual_migration_vision_motion_story_strip_v2.sql`
   (additive). Without it the loop logs `[STORY_STRIP] missing columns` and

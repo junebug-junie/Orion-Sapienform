@@ -82,8 +82,8 @@ LEFT JOIN vision_motion_story_verdict v ON v.story_id = s.story_id
 WHERE s.published AND ($1::boolean IS FALSE OR s.clean)
   AND ($2::boolean IS FALSE OR v.story_id IS NULL)
   AND ($4::integer IS NULL OR s.rules_version = $4)
-  AND ($5::boolean IS FALSE OR (s.dark IS FALSE AND s.evidence_strip->'frame'->>'file' IS NOT NULL
-                                AND NOT (s.evidence_strip ? 'pruned_at')))
+  AND ($5::boolean IS FALSE OR coalesce(s.dark IS FALSE AND s.evidence_strip->'frame'->>'file' IS NOT NULL
+                                         AND NOT (s.evidence_strip ? 'pruned_at'), false))
 ORDER BY s.started_at DESC
 LIMIT $3
 """
@@ -96,6 +96,14 @@ JOIN vision_motion_story s ON s.story_id = v.story_id
 WHERE s.published AND s.clean AND s.rules_version = $1
 GROUP BY 1
 """
+
+
+_CHECKABLE = ("s.dark IS FALSE AND s.evidence_strip->'frame'->>'file' IS NOT NULL "
+              "AND NOT (s.evidence_strip ? 'pruned_at')")
+_NOT_CHECKABLE_SQL = (
+    "SELECT count(*) FROM vision_motion_story s WHERE s.published AND s.clean AND s.rules_version = $1 "
+    f"AND NOT coalesce({_CHECKABLE}, false)"
+)
 
 
 class VerdictBody(BaseModel):
@@ -133,7 +141,11 @@ async def _tally(conn: Any) -> dict[str, Any]:
     rows = await conn.fetch(_TALLY_SQL, version)
     counts = {r["verdict"]: int(r["n"]) for r in rows if r["verdict"]}
     named = sum(int(r["named"]) for r in rows if r["verdict"] in VERDICTS)
-    return tally_from_counts(counts, named, int(version))
+    out = tally_from_counts(counts, named, int(version))
+    # The default queue is checkable stories only, so the gate speaks for those.
+    # Say how many published stories it does not cover (dark, or no picture).
+    out["not_checkable"] = int(await conn.fetchval(_NOT_CHECKABLE_SQL, version) or 0)
+    return out
 
 
 def _story_dict(row: Any) -> dict[str, Any]:

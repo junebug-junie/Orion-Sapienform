@@ -376,3 +376,73 @@ def test_without_the_strip_migration_stories_still_run(pg, tmp_path) -> None:
     finally:
         with pg.begin() as conn:
             conn.execute(text("ALTER TABLE vision_motion_story RENAME COLUMN evidence_strip_x TO evidence_strip"))
+
+
+@needs_pg
+def test_prop_boxes_are_not_captured_and_say_why(pg, tmp_path) -> None:
+    """A fresh crop has no individual_id yet: the patio skeleton must be matched by its box."""
+    from sqlalchemy import text
+
+    cfg = _loop_cfg(tmp_path)
+    with pg.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO vision_individual (individual_id, stream_id, kind, centroid, first_seen_at, last_seen_at, "
+            "stationary, still_box) VALUES ('skel', 'walkway', 'person', ARRAY[1.0]::real[], :t, :t, true, "
+            "ARRAY[2136, 878, 2216, 1149]::real[])"), {"t": T0})
+    skel = ss.PendingCrop("k0", T0, "person", (2136.0, 878.0, 2216.0, 1149.0), "walkway")
+    walker = pc("w0", 0)
+    for c in (skel, walker):
+        write_frame(Path(cfg.strip.frames_dir), c.t)
+    _insert(pg, [skel, walker])
+    s = _cycle(cfg, T0 + timedelta(seconds=15))
+    assert s["capture_prop"] == 1 and s["capture_saved"] == 1
+    pending = Path(cfg.strip.strip_dir) / ss.PENDING
+    assert json.loads((pending / f"{ss.crop_key('k0')}.miss").read_text())["reason"] == "prop_overlap"
+    rec = ss.assemble_strip("7" * 32, "walkway", _evidence([skel]), cfg=cfg.strip)
+    assert rec["crops"][0]["missing"] == "prop_overlap"
+
+
+@needs_pg
+def test_a_crop_committed_late_behind_the_cursor_is_still_captured(pg, tmp_path) -> None:
+    cfg = _loop_cfg(tmp_path)
+    a, late = pc("a0", 0), pc("late", 1, x=900)
+    for c in (a, late):
+        write_frame(Path(cfg.strip.frames_dir), c.t)
+    _insert(pg, [a])
+    assert _cycle(cfg, T0 + timedelta(seconds=15))["capture_saved"] == 1
+    # created_at is the transaction START: this row sorts before the cursor but commits after the read.
+    _insert(pg, [ss.PendingCrop("late", a.t - timedelta(seconds=1), "person", late.box, "walkway")])
+    write_frame(Path(cfg.strip.frames_dir), a.t - timedelta(seconds=1))
+    s = _cycle(cfg, T0 + timedelta(seconds=30))
+    assert s["capture_saved"] == 1 and s["capture_already"] >= 1
+
+
+@needs_pg
+def test_a_strip_that_keeps_failing_gets_a_final_error_record(pg, tmp_path, monkeypatch) -> None:
+    from sqlalchemy import text
+
+    cfg = _loop_cfg(tmp_path)
+    _insert(pg, [pc(f"x{i}", i * 2.5, x=600 + 160 * i) for i in range(4)])
+
+    def boom(*a, **k):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(ss, "assemble_strip", boom)
+    real_now = datetime.now(timezone.utc)
+    _cycle(cfg, T0 + timedelta(seconds=200))
+    with pg.connect() as conn:
+        assert conn.execute(text("SELECT evidence_strip FROM vision_motion_story WHERE published")).scalar() is None
+        # Pretend the story was written long ago (created_at is the DB clock).
+        conn.execute(text("UPDATE vision_motion_story SET created_at = :t"),
+                     {"t": real_now - timedelta(seconds=cfg.strip.pending_sec * 0.75)})
+        conn.commit()
+    vl.assemble_step(create_engine_for_test(), "walkway", real_now, cfg)
+    with pg.connect() as conn:
+        rec = conn.execute(text("SELECT evidence_strip FROM vision_motion_story WHERE published")).scalar()
+    assert rec["error"] == "disk went away" and rec["frame"] is None and rec["dark"] is None
+
+
+def create_engine_for_test():
+    from sqlalchemy import create_engine
+
+    return create_engine(PG)

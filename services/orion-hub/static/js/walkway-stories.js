@@ -34,6 +34,12 @@
   const THUMB_RE = /^[0-9a-f]{64}$/;
   const STORY_RE = /^[0-9a-f]{32}$/;
   const STRIP_FILE_RE = /^(crop_[0-3]|frame)\.jpg$/;
+  const MISSING_TEXT = {
+    frame_gone: "frame already gone",
+    prop_overlap: "on the patio prop, not saved",
+    empty_box: "box too small",
+    not_captured: "not saved",
+  };
 
   function tallyLine(tally) {
     const t = tally || {};
@@ -50,13 +56,17 @@
   function gateLine(tally) {
     const t = tally || {};
     const gate = t.gate || { min_checked: 50, min_right: 0.8, max_wrong_names: 0 };
-    if (gate.passed) return "Gate passed: stories may be switched on for Orion (Juniper decides).";
+    const skipped = Number(t.not_checkable || 0);
+    const scope = skipped
+      ? ` The gate covers daylight stories with a picture; ${skipped} dark or picture-less ${skipped === 1 ? "story is" : "stories are"} not in it.`
+      : "";
+    if (gate.passed) return `Gate passed: stories may be switched on for Orion (Juniper decides).${scope}`;
     const reasons = [];
     const checked = Number(t.checked || 0);
     if (checked < gate.min_checked) reasons.push(`${gate.min_checked - checked} more to check`);
     if (checked && typeof t.pct_right === "number" && t.pct_right < gate.min_right) reasons.push("too many wrong");
     if ((t.wrong_name || 0) > gate.max_wrong_names) reasons.push("a wrong name was found");
-    return `Hub only for now: ${reasons.join(", ") || "not yet"}.`;
+    return `Hub only for now: ${reasons.join(", ") || "not yet"}.${scope}`;
   }
 
   // First, middle and last thumbnails that exist, in time order.
@@ -81,6 +91,8 @@
     if (!st || typeof st !== "object" || !id) return out;
     out.saved = true;
     out.pruned = !!st.pruned_at;
+    out.retentionDays = typeof st.retention_days === "number" && Number.isFinite(st.retention_days)
+      ? st.retention_days : null;
     if (out.pruned) return out;
     const f = st.frame;
     if (f && typeof f.file === "string" && STRIP_FILE_RE.test(f.file)) {
@@ -89,7 +101,7 @@
     (Array.isArray(st.crops) ? st.crops : []).forEach((c) => {
       if (!c || typeof c !== "object") return;
       if (typeof c.file === "string" && STRIP_FILE_RE.test(c.file)) out.crops.push({ url: stripUrl(id, c.file), t: c.t });
-      else out.crops.push({ missing: c.missing === "frame_gone" ? "frame_gone" : "not_captured", t: c.t });
+      else out.crops.push({ missing: MISSING_TEXT[c.missing] ? c.missing : "not_captured", t: c.t });
     });
     return out;
   }
@@ -155,7 +167,7 @@
           cell.appendChild(img);
           cell.appendChild(el(doc, "span", "text-[10px] text-gray-500", shortTime(c.t)));
         } else {
-          const why = c.missing === "frame_gone" ? "frame already gone" : "not saved";
+          const why = MISSING_TEXT[c.missing] || MISSING_TEXT.not_captured;
           cell.appendChild(el(doc, "span", "text-[10px] text-gray-500", `${shortTime(c.t)}: ${why}`));
           cell.setAttribute("data-story-crop-missing", c.missing);
         }
@@ -178,15 +190,16 @@
       });
       if (thumbs.length) pics.appendChild(row);
       pics.appendChild(el(doc, "div", "text-[11px] text-gray-400",
-        model.pruned ? "Picture deleted 30 days after the story (it already has a verdict)."
+        model.pruned
+          ? `Picture deleted ${model.retentionDays != null ? `${model.retentionDays} days` : "some time"} after the story (it already has a verdict).`
           : thumbs.length ? "No full picture saved for this story; only these small crops."
             : "No picture saved for this story."));
     }
     item.appendChild(pics);
 
     const row = el(doc, "div", "flex flex-wrap gap-2");
-    const buttons = VERDICTS.slice();
-    if (!hasPicture(model) || model.dark || story.verdict === CANT_TELL.value) buttons.push(CANT_TELL);
+    // "Can't tell" on every story: an unclear daylight picture must not be forced into "wrong".
+    const buttons = VERDICTS.concat([CANT_TELL]);
     buttons.forEach((v) => {
       const btn = el(doc, "button", "", v.label);
       btn.setAttribute("type", "button");

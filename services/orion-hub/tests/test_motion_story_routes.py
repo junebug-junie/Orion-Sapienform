@@ -276,6 +276,7 @@ def test_checkable_filter_is_on_by_default_and_hides_dark_and_pictureless_storie
         assert r.status_code == 200, r.text
         assert [s["story_id"] for s in r.json()["stories"]] == [ok]
         assert r.json()["stories"][0]["evidence_strip"]["frame"]["file"] == "frame.jpg"
+        assert r.json()["tally"]["not_checkable"] == 4
         r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
         got = {s["story_id"]: s for s in r.json()["stories"]}
         assert set(got) == {ok, dark, nopic, gone, pruned}

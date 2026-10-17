@@ -200,11 +200,30 @@ def capture_pending(crops: Iterable[PendingCrop], *, stream_id: str, cfg: StripC
     return counts
 
 
+def mark_skipped(c: PendingCrop, reason: str, cfg: StripConfig) -> None:
+    """Record why a crop was not captured (once), so its strip entry can say so."""
+    pending = Path(cfg.strip_dir) / PENDING
+    key = crop_key(c.crop_id)
+    if (pending / f"{key}.jpg").exists() or (pending / f"{key}.miss").exists():
+        return
+    pending.mkdir(parents=True, exist_ok=True)
+    _write_miss(pending, c, reason)
+
+
 def _write_miss(pending: Path, c: PendingCrop, reason: str) -> None:
     try:
         (pending / f"{crop_key(c.crop_id)}.miss").write_text(json.dumps({"reason": reason, "t": c.t.isoformat()}))
     except OSError:
         pass
+
+
+def _miss_reason(path: Path) -> str:
+    """frame_gone | empty_box | prop_overlap (anything unreadable: frame_gone)."""
+    try:
+        reason = json.loads(path.read_text()).get("reason")
+    except (OSError, ValueError, AttributeError):
+        return "frame_gone"
+    return reason if reason in ("frame_gone", "empty_box", "prop_overlap") else "frame_gone"
 
 
 def spread(n: int, k: int = MAX_CROPS) -> List[int]:
@@ -252,8 +271,8 @@ def assemble_strip(story_id: str, stream_id: str, evidence: Sequence[Dict[str, A
 
     Record: ``{"version": 1, "crops": [{crop_id, t, file} | {crop_id, t, missing}],
     "frame": {file, t, crop_id} | null, "frame_luminance", "scene_luminance", "scene_contrast",
-    "scene_measured_on": "crops"|"frame"|null, "dark", "dark_threshold", "saved_at"}``.
-    ``missing`` is ``frame_gone``
+    "scene_measured_on": "crops"|"frame"|null, "dark", "dark_threshold", "retention_days", "saved_at"}``.
+    ``missing`` is ``prop_overlap`` / ``empty_box`` (skipped on purpose), ``frame_gone``
     (looked for while capturing; already pruned) or ``not_captured`` (the
     capture never ran for it, e.g. the writer was down)."""
     from PIL import Image, ImageDraw
@@ -274,13 +293,15 @@ def assemble_strip(story_id: str, stream_id: str, evidence: Sequence[Dict[str, A
         src = pending / f"{key}.jpg"
         if src.exists():
             name = f"crop_{k}.jpg"
-            shutil.copyfile(src, out / name)
+            tmp = out / (name + ".tmp")
+            shutil.copyfile(src, tmp)
+            os.replace(tmp, out / name)
             entry["file"] = name
             with Image.open(out / name) as cim:
                 crop_stats.append(luma_stats(cim))
         else:
             miss = pending / f"{key}.miss"
-            entry["missing"] = "frame_gone" if miss.exists() else "not_captured"
+            entry["missing"] = _miss_reason(miss) if miss.exists() else "not_captured"
         crops_out.append(entry)
 
     # The full frame: the captured one nearest the middle of the passage.
@@ -331,8 +352,17 @@ def assemble_strip(story_id: str, stream_id: str, evidence: Sequence[Dict[str, A
         "scene_measured_on": measured_on,
         "dark": dark,
         "dark_threshold": cfg.dark_contrast,
+        "retention_days": cfg.retention_days,
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def failed_record(error: str, cfg: StripConfig) -> Dict[str, Any]:
+    """Final record for a story whose strip could not be built inside the pending window."""
+    return {"version": 1, "error": error[:300], "crops": [], "frame": None, "frame_luminance": None,
+            "scene_luminance": None, "scene_contrast": None, "scene_measured_on": None, "dark": None,
+            "dark_threshold": cfg.dark_contrast, "retention_days": cfg.retention_days,
+            "saved_at": datetime.now(timezone.utc).isoformat()}
 
 
 def prune_pending(cfg: StripConfig, now: Optional[float] = None) -> int:

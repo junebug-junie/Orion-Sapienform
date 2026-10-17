@@ -9,26 +9,31 @@
   // stories with the pictures they rest on and records Right / Wrong name /
   // Wrong motion / Wrong other (scripts/motion_story_routes.py).
   //
-  // Pictures: crop thumbnails exist for only a few boxes (~6%), so every
-  // story also gets a box map -- its boxes drawn over today's walkway view,
-  // numbered in time order. The view is the latest frame, not the moment.
+  // Pictures (2026-10-17): the picture of the MOMENT. orion-sql-writer saves,
+  // while the frames still exist, up to 4 crops and one full frame with the
+  // passage's boxes drawn (1 = first, green; last = red). Each picture is
+  // labelled with its own time. A story without one says "No picture saved
+  // for this story" and offers "Can't tell", which never counts as right or
+  // wrong. "Only checkable" (on by default) lists stories with a saved frame
+  // that is not dark, so the queue is all judgeable. The old box map drew the
+  // boxes over today's view, which at night "just looks dark" -- removed.
   //
   // Everything from the database is rendered with textContent / attributes,
   // never innerHTML.
 
   const VIEW_VALUE = "walkway-live";
   const POLL_MS = 60000;
-  const FRAME_W = 2560;
-  const FRAME_H = 1920;
-  const SCENE_URL = "/api/vision/frames/latest/image?stream_id=walkway";
   const VERDICTS = [
     { value: "right", label: "Right" },
     { value: "wrong_name", label: "Wrong name" },
     { value: "wrong_motion", label: "Wrong motion" },
     { value: "wrong_other", label: "Wrong other" },
   ];
+  // Fifth button: Juniper could not judge it. Never right, never wrong.
+  const CANT_TELL = { value: "cant_tell", label: "Can't tell" };
   const THUMB_RE = /^[0-9a-f]{64}$/;
-  const SVG_NS = "http://www.w3.org/2000/svg";
+  const STORY_RE = /^[0-9a-f]{32}$/;
+  const STRIP_FILE_RE = /^(crop_[0-3]|frame)\.jpg$/;
 
   function tallyLine(tally) {
     const t = tally || {};
@@ -38,7 +43,7 @@
     return (
       `Checked ${checked} of ${gate.min_checked} · right ${t.right || 0} (${pct}, need ` +
       `${Math.round(gate.min_right * 100)}%) · wrong names ${t.wrong_name || 0} (must be ${gate.max_wrong_names}) · ` +
-      `named stories checked ${t.named_checked || 0}`
+      `named stories checked ${t.named_checked || 0} · can't tell ${t.cant_tell || 0} (not counted)`
     );
   }
 
@@ -63,17 +68,40 @@
     return idx.slice(0, n).map((i) => have[i].thumb);
   }
 
-  function boxMapModel(evidence) {
-    const boxes = [];
-    const feet = [];
-    (evidence || []).forEach((e, i) => {
-      const b = e && Array.isArray(e.box) ? e.box.map(Number) : null;
-      if (!b || b.length !== 4 || b.some((v) => !Number.isFinite(v))) return;
-      boxes.push({ i: i + 1, x: b[0], y: b[1], w: Math.max(1, b[2] - b[0]), h: Math.max(1, b[3] - b[1]),
-                   clipped: !!e.clipped });
-      if (!e.clipped) feet.push(`${Math.round((b[0] + b[2]) / 2)},${Math.round(b[3])}`);
+  function stripUrl(storyId, file) {
+    return `/api/vision/motion-stories/${storyId}/strip/${file}`;
+  }
+
+  // What the card can show for the moment itself. Only names the server
+  // could have written are turned into URLs.
+  function stripModel(story) {
+    const st = story && story.evidence_strip;
+    const id = story && STORY_RE.test(String(story.story_id || "")) ? story.story_id : null;
+    const out = { frame: null, crops: [], dark: !!(story && story.dark), pruned: false, saved: false };
+    if (!st || typeof st !== "object" || !id) return out;
+    out.saved = true;
+    out.pruned = !!st.pruned_at;
+    if (out.pruned) return out;
+    const f = st.frame;
+    if (f && typeof f.file === "string" && STRIP_FILE_RE.test(f.file)) {
+      out.frame = { url: stripUrl(id, f.file), t: f.t };
+    }
+    (Array.isArray(st.crops) ? st.crops : []).forEach((c) => {
+      if (!c || typeof c !== "object") return;
+      if (typeof c.file === "string" && STRIP_FILE_RE.test(c.file)) out.crops.push({ url: stripUrl(id, c.file), t: c.t });
+      else out.crops.push({ missing: c.missing === "frame_gone" ? "frame_gone" : "not_captured", t: c.t });
     });
-    return { boxes, path: feet.join(" ") };
+    return out;
+  }
+
+  function hasPicture(model) {
+    return !!(model.frame || model.crops.some((c) => c.url));
+  }
+
+  function shortTime(iso) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "?";
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   }
 
   function localTime(iso) {
@@ -89,38 +117,6 @@
     return n;
   }
 
-  function svgEl(doc, tag, attrs) {
-    const n = doc.createElementNS(SVG_NS, tag);
-    Object.keys(attrs || {}).forEach((k) => n.setAttribute(k, String(attrs[k])));
-    return n;
-  }
-
-  function renderBoxMap(doc, evidence) {
-    const model = boxMapModel(evidence);
-    const svg = svgEl(doc, "svg", { viewBox: `0 0 ${FRAME_W} ${FRAME_H}`, role: "img",
-      "aria-label": `${model.boxes.length} boxes in time order over today's walkway view`,
-      class: "w-full h-auto rounded bg-gray-800", "data-box-map": "1" });
-    svg.appendChild(svgEl(doc, "image", { href: SCENE_URL, x: 0, y: 0, width: FRAME_W, height: FRAME_H,
-      opacity: 0.55, preserveAspectRatio: "none" }));
-    if (model.path) {
-      svg.appendChild(svgEl(doc, "polyline", { points: model.path, fill: "none", stroke: "#facc15",
-        "stroke-width": 10, "stroke-linejoin": "round" }));
-    }
-    const last = model.boxes.length;
-    model.boxes.forEach((b) => {
-      const colour = b.i === 1 ? "#22c55e" : b.i === last ? "#ef4444" : "#60a5fa";
-      const r = svgEl(doc, "rect", { x: b.x, y: b.y, width: b.w, height: b.h, fill: "none", stroke: colour,
-        "stroke-width": 8 });
-      if (b.clipped) r.setAttribute("stroke-dasharray", "30 20");
-      svg.appendChild(r);
-      const label = svgEl(doc, "text", { x: b.x + 6, y: Math.max(60, b.y - 10), fill: colour, "font-size": 64,
-        "font-weight": 700 });
-      label.textContent = String(b.i);
-      svg.appendChild(label);
-    });
-    return svg;
-  }
-
   function renderStory(doc, story, onVerdict) {
     const item = el(doc, "div", "rounded-lg border border-gray-700 bg-gray-800/60 p-3 space-y-2");
     item.setAttribute("data-story-id", story.story_id);
@@ -130,28 +126,68 @@
     if (story.name_label) meta.push("named");
     item.appendChild(el(doc, "div", "text-[11px] text-gray-400", meta.join(" · ")));
 
-    const pics = el(doc, "div", "flex flex-wrap items-start gap-2");
-    const mapWrap = el(doc, "div", "w-full max-w-[20rem]");
-    mapWrap.appendChild(renderBoxMap(doc, story.evidence));
-    mapWrap.appendChild(el(doc, "div", "text-[10px] text-gray-500",
-      "Boxes over today's view (not the moment): 1 = first (green), last = red, dashed = cut by the frame edge."));
-    pics.appendChild(mapWrap);
-    pickThumbs(story.evidence).forEach((h) => {
-      const img = el(doc, "img", "h-20 w-auto rounded border border-gray-700");
-      img.setAttribute("src", `/api/vision/crop-thumbs/${h}`);
-      img.setAttribute("alt", "crop from this story");
+    const model = stripModel(story);
+    const pics = el(doc, "div", "space-y-1");
+    pics.setAttribute("data-story-strip", model.frame ? "frame" : hasPicture(model) ? "crops" : "none");
+    if (model.dark) pics.appendChild(el(doc, "div", "text-[11px] font-semibold text-amber-300", "Dark scene"));
+    if (model.frame) {
+      const img = el(doc, "img", "w-full max-w-[20rem] h-auto rounded border border-gray-700");
+      img.setAttribute("src", model.frame.url);
+      img.setAttribute("alt", "the walkway at the moment of this story, boxes drawn");
       img.setAttribute("loading", "lazy");
-      img.setAttribute("data-story-thumb", h);
-      // vision-host prunes thumbnails after 10 days: say so instead of a broken image.
-      img.addEventListener("error", () => {
-        img.replaceWith(el(doc, "span", "text-[10px] text-gray-500", "(picture gone)"));
-      });
+      img.setAttribute("data-story-frame", "1");
+      img.addEventListener("error", () => img.replaceWith(el(doc, "span", "text-[10px] text-gray-500", "(picture gone)")));
       pics.appendChild(img);
-    });
+      pics.appendChild(el(doc, "div", "text-[10px] text-gray-500",
+        `Picture from ${localTime(model.frame.t)}. Boxes: 1 = first (green), last = red.`));
+    }
+    if (model.crops.length) {
+      const row = el(doc, "div", "flex flex-wrap items-start gap-2");
+      model.crops.forEach((c) => {
+        const cell = el(doc, "div", "flex flex-col items-center");
+        if (c.url) {
+          const img = el(doc, "img", "h-24 w-auto max-w-[5rem] object-contain rounded border border-gray-700");
+          img.setAttribute("src", c.url);
+          img.setAttribute("alt", `crop from ${shortTime(c.t)}`);
+          img.setAttribute("loading", "lazy");
+          img.setAttribute("data-story-crop", "1");
+          img.addEventListener("error", () => img.replaceWith(el(doc, "span", "text-[10px] text-gray-500", "(picture gone)")));
+          cell.appendChild(img);
+          cell.appendChild(el(doc, "span", "text-[10px] text-gray-500", shortTime(c.t)));
+        } else {
+          const why = c.missing === "frame_gone" ? "frame already gone" : "not saved";
+          cell.appendChild(el(doc, "span", "text-[10px] text-gray-500", `${shortTime(c.t)}: ${why}`));
+          cell.setAttribute("data-story-crop-missing", c.missing);
+        }
+        row.appendChild(cell);
+      });
+      pics.appendChild(row);
+    }
+    if (!hasPicture(model)) {
+      // vision-host's own thumbnails (a few boxes) are still pictures of the moment.
+      const thumbs = pickThumbs(story.evidence);
+      const row = el(doc, "div", "flex flex-wrap items-start gap-2");
+      thumbs.forEach((h) => {
+        const img = el(doc, "img", "h-20 w-auto rounded border border-gray-700");
+        img.setAttribute("src", `/api/vision/crop-thumbs/${h}`);
+        img.setAttribute("alt", "crop from this story");
+        img.setAttribute("loading", "lazy");
+        img.setAttribute("data-story-thumb", h);
+        img.addEventListener("error", () => img.replaceWith(el(doc, "span", "text-[10px] text-gray-500", "(picture gone)")));
+        row.appendChild(img);
+      });
+      if (thumbs.length) pics.appendChild(row);
+      pics.appendChild(el(doc, "div", "text-[11px] text-gray-400",
+        model.pruned ? "Picture deleted 30 days after the story (it already has a verdict)."
+          : thumbs.length ? "No full picture saved for this story; only these small crops."
+            : "No picture saved for this story."));
+    }
     item.appendChild(pics);
 
     const row = el(doc, "div", "flex flex-wrap gap-2");
-    VERDICTS.forEach((v) => {
+    const buttons = VERDICTS.slice();
+    if (!hasPicture(model) || model.dark || story.verdict === CANT_TELL.value) buttons.push(CANT_TELL);
+    buttons.forEach((v) => {
       const btn = el(doc, "button", "", v.label);
       btn.setAttribute("type", "button");
       btn.setAttribute("data-story-verdict", v.value);
@@ -179,6 +215,7 @@
     const tallyEl = doc.getElementById("walkwayStoriesTally");
     const gateEl = doc.getElementById("walkwayStoriesGate");
     const uncheckedBox = doc.getElementById("walkwayStoriesUnchecked");
+    const checkableBox = doc.getElementById("walkwayStoriesCheckable");
     let timer = null;
 
     function showTally(t) {
@@ -208,8 +245,10 @@
 
     async function load() {
       const unchecked = uncheckedBox && uncheckedBox.checked ? "true" : "false";
+      const checkable = !checkableBox || checkableBox.checked ? "true" : "false";
       try {
-        const res = await fetchFn(`/api/vision/motion-stories?limit=20&unchecked_only=${unchecked}`);
+        const res = await fetchFn(
+          `/api/vision/motion-stories?limit=20&unchecked_only=${unchecked}&checkable_only=${checkable}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const body = await res.json();
         showTally(body.tally);
@@ -217,9 +256,12 @@
         const stories = body.stories || [];
         stories.forEach((s) => list.appendChild(renderStory(doc, s, onVerdict)));
         if (status) {
+          const which = checkable === "true" ? "checkable: daylight, with a picture" : "all, including dark or no picture";
           status.textContent = stories.length
-            ? `${stories.length} recent ${stories.length === 1 ? "story" : "stories"} (clean frames only).`
-            : "No stories yet. Someone has to walk past first (walkers only: runners, bikes and cars are too fast for the camera today).";
+            ? `${stories.length} recent ${stories.length === 1 ? "story" : "stories"} (${which}).`
+            : checkable === "true"
+              ? "No checkable stories yet. Untick \"only checkable\" to see dark ones and ones without a picture."
+              : "No stories yet. Someone has to walk past first (walkers only: runners, bikes and cars are too fast for the camera today).";
         }
       } catch (err) {
         if (status) status.textContent = `Can't load walkway stories (${err.message}).`;
@@ -240,11 +282,13 @@
 
     if (select) select.addEventListener("change", sync);
     if (uncheckedBox) uncheckedBox.addEventListener("change", load);
+    if (checkableBox) checkableBox.addEventListener("change", load);
     sync();
     return { load, sync };
   }
 
-  const api = { VIEW_VALUE, VERDICTS, tallyLine, gateLine, pickThumbs, boxMapModel, renderStory, mount };
+  const api = { VIEW_VALUE, VERDICTS, CANT_TELL, tallyLine, gateLine, pickThumbs, stripModel, hasPicture,
+                renderStory, mount };
 
   global.OrionWalkwayStories = api;
   if (typeof module !== "undefined" && module.exports) {

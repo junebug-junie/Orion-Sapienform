@@ -625,6 +625,22 @@ class Settings(BaseSettings):
     # the patio skeleton, never flagged stationary because its box drifts.
     vision_motion_prop_individual_ids: str = Field(
         "fefb24d7e4074e9f827ad711874f6edf", alias="VISION_MOTION_PROP_INDIVIDUAL_IDS")
+    # Pictures of the moment for published stories (app/vision_story_strip.py,
+    # 2026-10-17). The motion loop saves a padded crop + small frame per walker
+    # crop while its frame still exists (the shared frames dir keeps ~60 s),
+    # then up to 4 crops + one boxed full frame per published story under
+    # VISION_STORY_STRIP_DIR/<story_id>/. false = no pictures (cards say so).
+    vision_story_strips_enabled: bool = Field(True, alias="VISION_STORY_STRIPS_ENABLED")
+    vision_story_frames_dir: str = Field("/mnt/telemetry/vision/frames", alias="VISION_STORY_FRAMES_DIR")
+    vision_story_strip_dir: str = Field("/mnt/telemetry/vision/story_strips", alias="VISION_STORY_STRIP_DIR")
+    # A strip is deleted this long after its story ended, and only once Juniper
+    # has given the story a verdict (an unchecked story keeps its picture).
+    vision_story_strip_retention_days: float = Field(30.0, alias="VISION_STORY_STRIP_RETENTION_DAYS")
+    # Pending crops/frames waiting for their story; older ones are deleted.
+    vision_story_strip_pending_sec: float = Field(3600.0, gt=0.0, alias="VISION_STORY_STRIP_PENDING_SEC")
+    # dark = median luma (0..1) of the padded passage region below this.
+    # Measured live 2026-10-17: night street 0.004-0.03, day/dusk crops >= 0.11.
+    vision_story_strip_dark_luminance: float = Field(0.06, ge=0.0, le=1.0, alias="VISION_STORY_STRIP_DARK_LUMINANCE")
 
     # Rhythm learner: fits when things usually happen, emits expectations,
     # grades them met / missed / unscorable.

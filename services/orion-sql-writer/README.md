@@ -618,6 +618,49 @@ new identity. Design: `docs/superpowers/specs/2026-10-16-walkway-motion-stories-
 - Replay (read only): `PYTHONPATH=. python services/orion-sql-writer/evals/run_vision_motion_story_replay_eval.py`
   (clean frames from `VISION_MOTION_CLEAN_SINCE` by default; `--include-corrupt` for earlier).
 
+### Walkway story pictures of the moment (2026-10-17)
+
+`app/vision_story_strip.py`, run inside the motion loop when
+`VISION_STORY_STRIPS_ENABLED=true` (default). Why here: the walkway's frames
+live in `/mnt/telemetry/vision/frames` for only ~60 s (the edge prunes the
+shared dir), and a story is written >= 41 s after its last box. sql-writer is
+the one service that knows which crops become stories, and it ticks every
+15 s, so it can grab the pictures before they go; the frames dir is mounted
+read-only.
+
+- Capture (every tick, first): each new walker-kind crop (by `created_at`)
+  gets a padded crop (256 px tall) and its frame a 640 px copy in
+  `<VISION_STORY_STRIP_DIR>/_pending/`. The frame is found by name
+  (`<camera>_<stream>_<epoch_ms>_*.jpg`, +-2 ms of `observed_at`). A crop
+  whose frame is already gone gets a `.miss` marker. Pending files older than
+  `VISION_STORY_STRIP_PENDING_SEC` are deleted.
+- Assemble (every published story without a strip): up to 4 crops spread
+  over the passage plus one 640 px frame with all boxes drawn (1 = green
+  first, last = red), in `<VISION_STORY_STRIP_DIR>/<story_id>/`. The row gets
+  `evidence_strip` (each crop's file or `missing: frame_gone|not_captured`),
+  `frame_luminance` (whole-frame mean), `scene_luminance` (median of the
+  padded passage region) and `dark`.
+- `dark = scene_luminance < VISION_STORY_STRIP_DARK_LUMINANCE` (0.06).
+  Measured live 2026-10-17: at 20:12 MDT the camera was still in colour
+  (no IR), the porch light kept the whole-frame mean at 0.255, while the
+  passage regions of the 10 clean non-prop stories read median 0.004-0.03 on
+  the street and 0.08-0.12 where a lit pillar fills the region; daytime and
+  dusk (13:09-18:47 MDT) crop thumbnails read median 0.11-0.52 (n=31, box
+  only, so the dark-clothed low end is the subject, not the scene). Dark
+  stories are still published (`dark=true`); the Hub's "only checkable"
+  filter hides them by default.
+- Retention: a strip is deleted `VISION_STORY_STRIP_RETENTION_DAYS` (30)
+  after its story ended, and only once the story has a verdict
+  (`evidence_strip.pruned_at` is then set). Strip directories whose story row
+  is gone are swept hourly.
+- Trace: `[STORY_STRIP] story_id=... crops_saved= crops_missing= frame= frame_lum= region_lum= dark=`.
+- Migration `services/orion-sql-db/manual_migration_vision_motion_story_strip_v2.sql`
+  (additive). Without it the loop logs `[STORY_STRIP] missing columns` and
+  stories keep running without pictures.
+- Eval (read only): `evals/run_story_strip_darkness_eval.py` -- coverage
+  (saved vs frame_gone) and scene luminance by verdict, to re-check 0.06
+  once Juniper has used "Can't tell".
+
 ## Storage-write organ (2026-10-02)
 
 The writer reports on its own writes (`app/write_health.py`). Every incoming write ends in one
@@ -667,6 +710,7 @@ Kill switch: `SQL_WRITER_ACT_LEDGER_ENABLED=false` (events still land in `gramma
 Eval: `python evals/act_ledger_calibration.py [--live]`.
 
 ## Running & Testing
+
 
 ### Run via Docker
 ```bash

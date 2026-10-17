@@ -703,13 +703,19 @@
              sentence per passer-by from box maths (orion-sql-writer), Hub only until
              Juniper's tally passes (>= 50 checked, >= 80% right, zero wrong names).
              GET/POST /api/vision/motion-stories (scripts/motion_story_routes.py);
+             each story shows its own picture of the moment (sql-writer strip, 2026-10-17);
              wired by static/js/walkway-stories.js. -->
         <div id="walkwayStoriesCard" class="hidden rounded-lg border border-gray-700 bg-gray-900 p-3 space-y-2">
           <div class="flex flex-wrap items-center justify-between gap-2">
             <h3 class="text-sm font-semibold text-white">Walkway stories</h3>
-            <label class="flex items-center gap-1 text-[11px] text-gray-400">
-              <input id="walkwayStoriesUnchecked" type="checkbox" class="accent-emerald-500"> only unchecked
-            </label>
+            <div class="flex flex-wrap items-center gap-3">
+              <label class="flex items-center gap-1 text-[11px] text-gray-400">
+                <input id="walkwayStoriesCheckable" type="checkbox" class="accent-emerald-500" checked> only checkable (daylight, with picture)
+              </label>
+              <label class="flex items-center gap-1 text-[11px] text-gray-400">
+                <input id="walkwayStoriesUnchecked" type="checkbox" class="accent-emerald-500"> only unchecked
+              </label>
+            </div>
           </div>
           <div id="walkwayStoriesTally" class="text-[11px] text-gray-300">Checked 0 of 50</div>
           <div id="walkwayStoriesGate" class="text-[11px] text-amber-300"></div>

@@ -2,10 +2,13 @@
 
 The REAL templates/index.html and static/js (app.js + walkway-stories.js) in Chromium at
 360 px wide, every Hub API intercepted. Covers the changed interaction, not just page load:
-the card is hidden until "Walkway (live)" is chosen; then it lists stories with a box map
-and the thumbnails that exist, the tally line sits at the top, and clicking "Wrong name"
+the card is hidden until "Walkway (live)" is chosen; then it lists stories with their own
+picture of the moment (2026-10-17: a boxed full frame labelled "Picture from <time>" plus
+crops, a crop whose frame was gone says so), "only checkable" is on by default and is sent
+to the API, a story with no picture says "No picture saved for this story" and offers
+"Can't tell", the tally line sits at the top, and clicking "Wrong name" / "Can't tell"
 POSTs the verdict, marks the button pressed and updates the tally. Story text is rendered
-as text (a "<b>" in a sentence must not become markup).
+as text (a "<b>" in a sentence must not become markup). No picture of today's view is used.
 """
 from __future__ import annotations
 
@@ -28,6 +31,14 @@ def _story(i: int, **kw) -> dict:
         "speed_class": "walking", "zone_path": ["walkway"], "individual_id": None, "name_label": None,
         "companion_kinds": [], "clean": True, "rules_version": 1, "verdict": None,
         "sentence": f"A person walked left to right on the walkway, over 5 s (3 detections). <b>{i}</b>",
+        "evidence_strip": {
+            "version": 1, "dark": False,
+            "frame": {"file": "frame.jpg", "t": "2026-10-16T22:09:46+00:00", "crop_id": "c2"},
+            "crops": [{"crop_id": "c1", "t": "2026-10-16T22:09:44+00:00", "file": "crop_0.jpg"},
+                      {"crop_id": "c2", "t": "2026-10-16T22:09:46+00:00", "file": "crop_1.jpg"},
+                      {"crop_id": "c3", "t": "2026-10-16T22:09:49+00:00", "missing": "frame_gone"}],
+        },
+        "dark": False,
         "evidence": [
             {"crop_id": "c1", "box": [600, 1150, 680, 1350], "clipped": False, "thumb": H},
             {"crop_id": "c2", "box": [760, 1150, 840, 1350], "clipped": False, "thumb": GONE},
@@ -38,9 +49,10 @@ def _story(i: int, **kw) -> dict:
     return base
 
 
-def _tally(checked: int, right: int, wrong_name: int = 0) -> dict:
+def _tally(checked: int, right: int, wrong_name: int = 0, cant_tell: int = 0) -> dict:
     return {"rules_version": 1, "checked": checked, "right": right, "wrong_name": wrong_name, "wrong_motion": 0,
             "wrong_other": 0, "named_checked": 0, "pct_right": (right / checked) if checked else None,
+            "cant_tell": cant_tell,
             "gate": {"min_checked": 50, "min_right": 0.8, "max_wrong_names": 0, "passed": False}}
 
 
@@ -53,6 +65,7 @@ def test_walkway_stories_card_browser_smoke():
     html = re.sub(r"\{\{[A-Z0-9_]+\}\}", "", html)
     posts: list[tuple[str, dict]] = []
     lists: list[str] = []
+    strips: list[str] = []
 
     def handle(route):
         url = route.request.url
@@ -67,15 +80,21 @@ def test_walkway_stories_card_browser_smoke():
             return route.fulfill(status=404, body="")
         if path == "/api/vision/motion-stories":
             lists.append(url)
-            body = {"ok": True, "stories": [_story(1), _story(2, name_label="Alex", individual_id="ind-a")],
+            body = {"ok": True, "stories": [_story(1), _story(2, name_label="Alex", individual_id="ind-a"),
+                                            _story(3, evidence_strip=None)],
                     "tally": _tally(3, 3)}
             return route.fulfill(body=json.dumps(body), content_type="application/json")
         m = re.fullmatch(r"/api/vision/motion-stories/([0-9a-f]{32})/verdict", path)
         if m:
-            posts.append((m.group(1), json.loads(route.request.post_data or "{}")))
-            return route.fulfill(body=json.dumps({"ok": True, "story_id": m.group(1), "verdict": "wrong_name",
-                                                  "tally": _tally(4, 3, wrong_name=1)}),
+            sent = json.loads(route.request.post_data or "{}")
+            posts.append((m.group(1), sent))
+            tally = _tally(4, 3, wrong_name=1, cant_tell=1 if sent.get("verdict") == "cant_tell" else 0)
+            return route.fulfill(body=json.dumps({"ok": True, "story_id": m.group(1), "verdict": sent.get("verdict"),
+                                                  "tally": tally}),
                                  content_type="application/json")
+        if re.fullmatch(r"/api/vision/motion-stories/[0-9a-f]{32}/strip/(crop_[0-3]|frame)\.jpg", path):
+            strips.append(path)
+            return route.fulfill(body=PIXEL, content_type="image/gif")
         if path == f"/api/vision/crop-thumbs/{H}":
             return route.fulfill(body=PIXEL, content_type="image/gif")
         if path.startswith("/api/vision/crop-thumbs/") or path == "/api/vision/frames/latest/image":
@@ -100,18 +119,34 @@ def test_walkway_stories_card_browser_smoke():
         page.select_option("#visionSource", "walkway-live")
         page.wait_for_selector("#walkwayStoriesList [data-story-id]")
         assert "hidden" not in (card.get_attribute("class") or "").split() and card.is_visible()
+        assert "checkable_only=true" in lists[0]       # "only checkable" is on by default
+        assert page.locator("#walkwayStoriesCheckable").is_checked()
         items = page.locator("#walkwayStoriesList [data-story-id]")
-        assert items.count() == 2
+        assert items.count() == 3
         first = items.nth(0)
         assert first.locator("div").first.text_content().endswith("<b>1</b>")   # text, not markup
         assert first.locator("b").count() == 0
-        assert first.locator("svg[data-box-map] rect").count() == 3
-        assert first.locator("svg[data-box-map] rect[stroke-dasharray]").count() == 1
-        page.wait_for_function("() => document.querySelector('#walkwayStoriesList [data-story-id]')"
-                               ".textContent.includes('(picture gone)')")
-        assert first.locator(f"img[data-story-thumb='{H}']").count() == 1     # the one that exists
-        assert first.locator(f"img[data-story-thumb='{GONE}']").count() == 0  # pruned: says so instead
+        # The picture of the moment, never today's view.
+        assert first.locator("svg").count() == 0
+        assert page.locator("img[src*='/api/vision/frames/latest']").count() == 0
+        assert first.locator("img[data-story-frame]").get_attribute("src") == \
+            f"/api/vision/motion-stories/{1:032x}/strip/frame.jpg"
+        assert "Picture from" in first.text_content()
+        assert first.locator("img[data-story-crop]").count() == 2
+        assert "frame already gone" in first.text_content()
+        assert first.locator("[data-story-verdict='cant_tell']").count() == 0   # it has a picture
+        page.wait_for_function("() => document.querySelectorAll('img[data-story-frame]').length === 2 && "
+                               "[...document.querySelectorAll('img[data-story-frame]')].every(i => i.complete)")
+        assert any(p.endswith("/strip/frame.jpg") for p in strips)
         assert "named" in items.nth(1).text_content()
+        # No strip: says so, shows the vision-host thumb that exists, and offers "Can't tell".
+        third = items.nth(2)
+        page.wait_for_function("() => document.querySelectorAll('#walkwayStoriesList [data-story-id]')[2]"
+                               ".textContent.includes('(picture gone)')")
+        assert "No full picture saved for this story" in third.text_content()
+        assert third.locator(f"img[data-story-thumb='{H}']").count() == 1
+        assert third.locator(f"img[data-story-thumb='{GONE}']").count() == 0
+        assert third.locator("[data-story-verdict]").count() == 5
         assert page.locator("#walkwayStoriesTally").text_content().startswith("Checked 3 of 50")
         # The tally sits above the list, at the top of the card.
         # (Document order, not pixels: other panels keep reflowing while the page loads.)
@@ -129,6 +164,23 @@ def test_walkway_stories_card_browser_smoke():
         assert posts == [(f"{2:032x}", {"verdict": "wrong_name"})]
         assert "wrong names 1" in page.locator("#walkwayStoriesTally").text_content()
         assert "a wrong name was found" in page.locator("#walkwayStoriesGate").text_content()
+
+        third.locator("[data-story-verdict='cant_tell']").click()
+        page.wait_for_function(
+            "() => document.querySelectorAll('#walkwayStoriesList [data-story-id]')[2]"
+            ".querySelector(\"[data-story-verdict='cant_tell']\").getAttribute('aria-pressed') === 'true'")
+        assert posts[-1] == (f"{3:032x}", {"verdict": "cant_tell"})
+        assert "can't tell 1 (not counted)" in page.locator("#walkwayStoriesTally").text_content()
+        assert "Checked 4 of 50" in page.locator("#walkwayStoriesTally").text_content()
+
+        # Unticking "only checkable" asks for everything.
+        before = len(lists)
+        page.uncheck("#walkwayStoriesCheckable")
+        for _ in range(50):
+            if len(lists) > before:
+                break
+            page.wait_for_timeout(50)
+        assert "checkable_only=false" in lists[-1]
 
         page.select_option("#visionSource", "none")
         assert "hidden" in (card.get_attribute("class") or "").split()

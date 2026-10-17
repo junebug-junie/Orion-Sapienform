@@ -406,6 +406,13 @@ class Settings(BaseSettings):
     HUB_VISION_CROP_THUMB_DIR: str = Field(
         default="/mnt/telemetry/orion-vision-host/crop_thumbs", alias="HUB_VISION_CROP_THUMB_DIR"
     )
+    # Walkway story pictures of the moment (scripts/motion_story_routes.py GET
+    # /api/vision/motion-stories/{story_id}/strip/{name}). orion-sql-writer
+    # writes up to 4 crops + one boxed full frame per published story here;
+    # docker-compose mounts it read-only at the same path.
+    HUB_VISION_STORY_STRIP_DIR: str = Field(
+        default="/mnt/telemetry/vision/story_strips", alias="HUB_VISION_STORY_STRIP_DIR"
+    )
     # Memory confirmation loop (2026-10-06): Confirm / Revise / Reject on "Orion is asking" memory
     # cards (POST /api/asks/{id}/resolve -> attention_loop_outcome + orion:attention:loop_outcome).
     # Kill switch: false returns 404 from the resolve route; the cards stay open, unanswered.

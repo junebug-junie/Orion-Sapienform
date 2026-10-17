@@ -43,6 +43,7 @@ from orion.curiosity.self_inquiry import (
     lived_answer_merge_lines,
 )
 from orion.curiosity.worldview import WorldviewSnapshot, _clip
+from orion.harness.task_anchor import render_task_header
 
 _HEADER = (
     "This is your own time, and it has a standing question. Nobody is asking "
@@ -77,6 +78,25 @@ def _question_section(question: Optional[SelfQuestion]) -> list[str]:
         "allowed to be partial, and it is allowed to change.",
         "",
     ]
+
+
+def self_inquiry_task_header(question: Optional[SelfQuestion]) -> str:
+    """Code-written task line the governor anchors through compaction.
+
+    Question text is quoted only when it is code-owned or Juniper's: an Orion-minted
+    question was written by a model that may have been reading outside pages, so it
+    is named by id only (orion/harness/task_anchor.py).
+    """
+    if question is None:
+        ask = f"the standing question {STANDING_QUESTION!r}"
+    elif question.minted_by == "juniper":
+        ask = f"the question {question.text!r} (question_id {question.question_id})"
+    else:
+        ask = f"the question with question_id {question.question_id} stated in your first message"
+    return render_task_header(
+        f"Self-inquiry: answer {ask} about yourself, from evidence you can find, "
+        "and record your answer before the run ends."
+    )
 
 
 def _early_merge_cypher(
@@ -447,4 +467,5 @@ def build_self_inquiry_prompt(
 
     lines.append(_INSTRUCTION)
     text = "\n".join(lines)
-    return text.replace("<RUN_ID>", run_id) if run_id else text
+    text = text.replace("<RUN_ID>", run_id) if run_id else text
+    return self_inquiry_task_header(question) + text

@@ -38,6 +38,15 @@ def covered_days(now: datetime, graph_born_at: Optional[datetime]) -> int:
         return 1
     age_days = (now - graph_born_at).total_seconds() / 86400.0
     return max(1, min(CHOICE_STYLE_WINDOW_DAYS, math.ceil(age_days)))
+
+
+def choice_window_days(now: datetime, graph_born_at: Optional[datetime],
+                       choice_times: Sequence[datetime]) -> int:
+    """The window starts at the earlier of graph birth and the oldest choice held. A choice is
+    dated by its turn's start, which can precede the seed; measuring from the seed alone made such
+    a choice drop out of the count and come back at each day boundary (review 2026-10-17)."""
+    starts = [t for t in [graph_born_at, *choice_times] if t is not None]
+    return covered_days(now, min(starts) if starts else None)
 TICK_HEARTBEAT = "__tick__"  # personality_cursor row written by every committed tick
 HISTORY_POINTS = 60
 
@@ -338,8 +347,8 @@ class PersonalityStore:
                 # (source cursors' updated_at/cursor_at advance as they read, so they drift).
                 born = await (await conn.execute(
                     "SELECT cursor_at AS t FROM personality_cursor WHERE source = %(s)s", {"s": SEED_CURSOR})).fetchone()
-        style = choice_style_from_rows(choice_rows, now=now,
-                                       window_days=covered_days(now, (born or {}).get("t")))
+        style = choice_style_from_rows(choice_rows, now=now, window_days=choice_window_days(
+            now, (born or {}).get("t"), [r["occurred_at"] for r in choice_rows]))
         nodes = [node_from_row({**r, "centroid": []}) for r in active]
         # "As of" the last committed tick, never the request time: before the first commit the
         # frame is dated at the epoch, so every reader sees it as stale rather than fresh.

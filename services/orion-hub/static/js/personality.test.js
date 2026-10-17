@@ -168,3 +168,10 @@ test("company share is over known rows only (null company is not 'alone')", () =
   const none = p.situationText({ n: 3, arousal: { idle: 3 }, day_phase: { night: 3 }, company: { true: 0, false: 0 } });
   assert.ok(!/alone|with company/.test(none), none);
 });
+
+
+test("choice style names a one-day window in the singular", () => {
+  const text = p.choiceStyleText({ choice_style: { window_days: 1, choices: 1, took_top: 0, went_own_way: 1 } });
+  assert.ok(text.includes("over the last day:"), text);
+  assert.ok(!text.includes("1 days"), text);
+});

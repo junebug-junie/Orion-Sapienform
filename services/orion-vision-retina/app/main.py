@@ -95,14 +95,21 @@ class RetinaService:
         # restarts whenever "no frame" is the expected state (RTSP quiet
         # wait, Ring between events), so those never count as a stall.
         self._stall_clock_ts: float = self._started_at
-        # Wall time capture_loop last began an iteration: frozen = the loop
-        # is hung or gone, whatever the source is doing.
-        self._loop_tick_ts: float = self._started_at
+        # Monotonic time capture_loop last began an iteration: frozen = the
+        # loop is hung or gone, whatever the source is doing. Monotonic so an
+        # NTP step or a laptop resume (carbon) does not read as a hang.
+        self._loop_tick_mono: float = time.monotonic()
+        # Monotonic time a frame was read but could not be published (save,
+        # upload or bus error). A restart does not fix those, so the
+        # "streaming but not publishing" exit stands down while they recur.
+        self._last_capture_error_mono: float | None = None
         # Injectable for tests. os._exit, not sys.exit: this runs inside the
         # event loop, and the point is that the process really ends so the
         # container restart policy brings the eye back.
         self._exit = os._exit
         self._exiting = False
+        self._exit_started = False
+        self._exit_task: Optional[asyncio.Task] = None
         self._stall_logged: str | None = None
 
     async def start(self) -> None:
@@ -112,6 +119,9 @@ class RetinaService:
         await self.bus.connect()
         await self.source.start()
         self._shutdown.clear()
+        # The boot grace starts now, not at module import.
+        self._started_at = self._stall_clock_ts = time.time()
+        self._loop_tick_mono = time.monotonic()
         self._capture_task = self._spawn_forever(self.capture_loop(), "capture_loop")
         self._health_task = self._spawn_forever(self._health_loop(), "health_loop")
         if self.settings.RETINA_CLIP_ENABLED:
@@ -145,15 +155,33 @@ class RetinaService:
             reason = f"died: {type(exc).__name__}: {exc}" if exc else "returned"
             if exc is not None:
                 logger.opt(exception=exc).critical(f"[RETINA] {name} traceback")
-        self._die(f"{name} {reason}; it must run forever")
+        self._die_soon(f"{name} {reason}; it must run forever")
 
-    def _die(self, reason: str) -> None:
-        """Log CRITICAL and exit once; the container restart policy (and the
-        RTSP quiet period on the way back up) does the rest."""
+    def _die_soon(self, reason: str) -> None:
+        """Sync entry point (done callbacks): start the exit as a task."""
         if self._exiting:
             return
+        self._exiting = True  # set now: a second callback must not schedule another
+        self._exit_task = asyncio.get_running_loop().create_task(self._die(reason))
+
+    async def _die(self, reason: str) -> None:
+        """Log CRITICAL, release the camera, exit once. The container restart
+        policy (and the RTSP quiet period on the way back up) does the rest.
+
+        source.stop() first, bounded: an RTSP reader that releases its
+        capture sends TEARDOWN, so the camera does not keep an orphaned
+        session (the 2026-10-16 smear hazard). A wedged reader cannot, and
+        the bound keeps it from blocking the exit."""
+        if self._exit_started:
+            return
         self._exiting = True
+        self._exit_started = True
         logger.critical(f"[RETINA] {reason}. Exiting for restart.")
+        timeout = min(30.0, float(getattr(self.source, "_join_timeout", 10.0) or 10.0) + 2.0)
+        try:
+            await asyncio.wait_for(self.source.stop(), timeout=timeout)
+        except BaseException as exc:  # noqa: BLE001 -- nothing may stop the exit
+            logger.error(f"[RETINA] source stop before exit failed: {type(exc).__name__}: {exc}")
         self._exit(1)
 
     async def stop(self) -> None:
@@ -414,11 +442,12 @@ class RetinaService:
         interval = 1.0 / max(self.settings.RETINA_FPS, 0.01)
         while not self._shutdown.is_set():
             t0 = time.time()
-            self._loop_tick_ts = t0
+            self._loop_tick_mono = time.monotonic()
             try:
                 async with self._device_lock:
                     await self.capture_once()
             except Exception as exc:
+                self._last_capture_error_mono = time.monotonic()
                 self.metrics.last_error = str(exc)
                 logger.error(f"[RETINA] capture_once failed: {type(exc).__name__}: {exc}")
             # Housekeeping must never stop capture: the 2026-10-17 outage was
@@ -445,8 +474,8 @@ class RetinaService:
             # RTSP readers wedged in FFmpeg and the session cap stops us opening
             # more: only a fresh process clears them. Exit so the container's
             # restart policy brings the eye back, instead of a silent outage.
-            logger.critical(f"[RETINA] {getattr(self.source, 'stall_error', '')}; exiting for restart")
-            os._exit(1)
+            await self._die(str(getattr(self.source, "stall_error", "") or "rtsp readers wedged"))
+            return False
         self._copy_source_metrics()
         if result is None:
             if getattr(self.source, "waiting_for_event", False) is True:
@@ -487,6 +516,7 @@ class RetinaService:
                     timeout_sec=self.settings.RETINA_PERCEPT_TIMEOUT_SEC,
                 )
             except PerceptUploadError as exc:
+                self._last_capture_error_mono = time.monotonic()
                 # Drop the frame and try the next one. Deliberately no spooling:
                 # this mode runs on laptops that sleep and roam, and a backlog
                 # of webcam images on a personal machine is a worse failure than
@@ -599,27 +629,34 @@ class RetinaService:
             return None
         return f"no frame published for {age:.0f}s (limit {limit:.0f}s)"
 
-    def publisher_dead(self, now: float | None = None) -> str | None:
+    def publisher_dead(self, now: float | None = None, mono: float | None = None) -> str | None:
         """A reason to exit for restart, or None.
 
         Only cases a restart can fix and that are certain:
           - capture_loop has not started an iteration for the limit (hung or
             gone), whatever the source is doing;
           - the source is delivering frames (RTSP reader clock, independent of
-            capture_loop) but nothing was published for the limit.
-        A camera that is down is not this: it reads degraded, no exit.
+            capture_loop) but nothing was published for the limit, and no
+            capture error (save/upload/bus) happened in that window.
+        A camera that is down, or a disk/bus/upload failure, is not this: it
+        reads degraded with last_error, no exit (a restart would not fix it
+        and every exit costs the camera a session).
         """
         limit = float(self.settings.RETINA_PUBLISH_STALL_SECONDS)
         if limit <= 0:
             return None
         now = time.time() if now is None else now
-        loop_age = now - self._loop_tick_ts
+        mono = time.monotonic() if mono is None else mono
+        loop_age = mono - self._loop_tick_mono
         # A paused device (clip capture) holds the lock for at most the clip
         # timeout; the limit is validated to exceed one capture interval.
         if loop_age > limit:
             return f"capture_loop has not ticked for {loop_age:.0f}s"
         stall = self.publish_stall(now)
         if stall is None:
+            return None
+        err = self._last_capture_error_mono
+        if err is not None and mono - err <= limit:
             return None
         src_age_fn = getattr(self.source, "last_frame_age", None)
         if not callable(src_age_fn):
@@ -660,7 +697,7 @@ class RetinaService:
             self._stall_logged = stall
             dead = self.publisher_dead()
             if dead is not None:
-                self._die(f"publisher watchdog: {dead}")
+                await self._die(f"publisher watchdog: {dead}")
                 return
             await asyncio.sleep(self.settings.HEALTH_INTERVAL_SECONDS)
 

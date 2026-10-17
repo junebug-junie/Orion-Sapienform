@@ -254,7 +254,8 @@ class Settings(BaseSettings):
             self.RETINA_RTSP_STALL_SECONDS,
             self.HEALTH_INTERVAL_SECONDS,
             2.0 / max(self.RETINA_FPS, 0.01),
-            self.RETINA_CLIP_TIMEOUT_SEC if self.RETINA_CLIP_ENABLED else 0.0,
+            # pause_device holds the capture loop for stop + clip + start.
+            self.RETINA_CLIP_TIMEOUT_SEC + self.SOURCE_RECONNECT_SECONDS + 10.0 if self.RETINA_CLIP_ENABLED else 0.0,
         )
         if limit <= floor:
             raise ValueError(

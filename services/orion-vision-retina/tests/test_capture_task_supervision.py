@@ -72,15 +72,6 @@ def test_cleanup_survives_files_vanishing_between_listing_and_stat(tmp_path, mon
     assert cleanup_old_frames(str(tmp_path), 300, camera_id="walkway", stream_id="walkway") == 0
 
 
-def test_the_old_isfile_then_getmtime_pattern_raised_on_this_race(tmp_path):
-    """Documents the bug the test above guards: the pre-fix code shape."""
-    fp = _touch(tmp_path, "walkway_walkway_1792261575200_0123abcd.jpg", 600)
-    assert os.path.isfile(fp)
-    os.remove(fp)  # the other pruner, between the two calls
-    with pytest.raises(FileNotFoundError):
-        os.path.getmtime(fp)
-
-
 def test_cleanup_prunes_only_this_camera_and_stream(tmp_path):
     mine_old = _touch(tmp_path, "walkway_walkway_1792261575200_0123abcd.jpg", 600)
     mine_new = _touch(tmp_path, "walkway_walkway_1792261575999_0123abce.jpg", 10)
@@ -128,6 +119,8 @@ class _Bus:
 class _Src:
     """Minimal source; attributes are set per test."""
 
+    stopped = 0
+
     async def read(self):
         return None
 
@@ -135,7 +128,7 @@ class _Src:
         pass
 
     async def stop(self):
-        pass
+        self.stopped += 1
 
 
 def _svc(**overrides):
@@ -196,10 +189,37 @@ def test_a_forever_task_ending_exits_the_process(how):
             await task
         except (FileNotFoundError, asyncio.CancelledError):
             pass
-        await asyncio.sleep(0)  # done callbacks run on the next loop step
+        for _ in range(3):
+            await asyncio.sleep(0)  # done callback, then the exit task
 
     asyncio.run(run())
     assert svc.exit_codes == [1]
+    assert svc.source.stopped == 1  # camera released (RTSP TEARDOWN) before exit
+
+
+def test_two_tasks_dying_exit_once():
+    svc = _svc()
+
+    async def boom():
+        raise RuntimeError("x")
+
+    async def run():
+        a = svc._spawn_forever(boom(), "capture_loop")
+        b = svc._spawn_forever(boom(), "health_loop")
+        await asyncio.gather(a, b, return_exceptions=True)
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+    asyncio.run(run())
+    assert svc.exit_codes == [1]
+
+
+def test_wedged_rtsp_readers_exit_through_the_same_path():
+    svc = _svc()
+    svc.source.needs_process_restart = True
+    svc.source.stall_error = "rtsp stalled 200s; 2 abandoned readers"
+    assert asyncio.run(svc.capture_once()) is False
+    assert svc.exit_codes == [1] and svc.source.stopped == 1
 
 
 def test_stop_does_not_exit_the_process():
@@ -255,38 +275,94 @@ def test_publish_stall_disabled_by_zero():
     assert svc.publisher_dead(svc._started_at + 10_000) is None
 
 
-def test_watchdog_exits_when_rtsp_streams_but_nothing_is_published():
-    """The exact 2026-10-17 state: reader healthy, publisher dead."""
+def test_watchdog_exits_when_rtsp_streams_and_the_loop_publishes_nothing():
+    """Loop ticking, no capture error, reader streaming, nothing published
+    (a lost hand-off between reader and loop). The 2026-10-17 dead loop
+    itself is caught earlier, by the done callback."""
     svc = _svc()
     now = svc._started_at + 10_255
-    svc._loop_tick_ts = now  # loop "alive" (rules out the other branch)
+    mono = 1_000_000.0
+    svc._loop_tick_mono = mono
     svc._last_publish_ts = svc._started_at + 1
     svc.source.last_frame_age = lambda: 0.4
-    dead = svc.publisher_dead(now)
+    dead = svc.publisher_dead(now, mono)
     assert dead and "source is streaming" in dead
+
+
+def test_watchdog_does_not_exit_for_failures_a_restart_cannot_fix():
+    """Disk full / bus down / upload refused while the camera streams:
+    degraded, not a restart loop that churns camera sessions."""
+    svc = _svc()
+    now = svc._started_at + 500
+    mono = 1_000_000.0
+    svc._loop_tick_mono = mono
+    svc._last_capture_error_mono = mono - 3
+    svc.source.last_frame_age = lambda: 0.4
+    assert svc.publish_stall(now) is not None
+    assert svc.publisher_dead(now, mono) is None
+
+
+def test_capture_loop_records_a_capture_error():
+    svc = _svc(RETINA_FPS=50.0)
+
+    async def capture_once():
+        raise OSError("No space left on device")
+
+    svc.capture_once = capture_once
+
+    async def run():
+        task = asyncio.ensure_future(svc.capture_loop())
+        await asyncio.sleep(0.05)
+        svc._shutdown.set()
+        await asyncio.wait_for(task, 2)
+
+    asyncio.run(run())
+    assert svc._last_capture_error_mono is not None
+    assert "No space left" in svc.metrics.last_error
+
+
+def test_watchdog_quiet_during_a_long_heal_backoff():
+    """Heal backoff can wait up to 8 x 90 s: quiet wait, not a stall."""
+    svc = _svc()
+    mono = 1_000_000.0
+    svc._loop_tick_mono = mono
+    svc.source.quiet_wait_remaining = lambda: 600.0
+    svc.source.last_frame_age = lambda: 700.0
+    now = svc._started_at + 720
+    assert svc.publish_stall(now) is None
+    assert svc.publisher_dead(now, mono) is None
 
 
 def test_watchdog_does_not_exit_when_the_camera_is_down():
     svc = _svc()
     now = svc._started_at + 1_000
-    svc._loop_tick_ts = now
+    svc._loop_tick_mono = mono = 1_000_000.0
     svc.source.last_frame_age = lambda: 900.0  # reader gets nothing either
     assert svc.publish_stall(now) is not None  # degraded, honestly
-    assert svc.publisher_dead(now) is None  # but a restart would not help
+    assert svc.publisher_dead(now, mono) is None  # but a restart would not help
 
 
 def test_watchdog_exits_when_capture_loop_stopped_ticking():
     svc = _svc()
-    svc._loop_tick_ts = svc._started_at
-    dead = svc.publisher_dead(svc._started_at + 121)
+    svc._loop_tick_mono = 1_000_000.0
+    assert svc.publisher_dead(svc._started_at + 1, 1_000_000.0 + 100) is None
+    dead = svc.publisher_dead(svc._started_at + 1, 1_000_000.0 + 121)
     assert dead and "capture_loop has not ticked" in dead
+
+
+def test_wall_clock_jump_alone_is_not_a_hang():
+    """NTP step / laptop resume: wall time jumps, monotonic does not."""
+    svc = _svc()
+    svc._loop_tick_mono = time.monotonic()
+    svc._last_publish_ts = time.time()
+    assert svc.publisher_dead(time.time() + 7_200, time.monotonic()) is None
 
 
 def test_health_loop_reports_degraded_then_exits_once():
     svc = _svc(HEALTH_INTERVAL_SECONDS=10.0)
     old = time.time() - 10_000
     svc._started_at = svc._stall_clock_ts = svc._last_publish_ts = old
-    svc._loop_tick_ts = time.time()
+    svc._loop_tick_mono = time.monotonic()
     svc.source.last_frame_age = lambda: 0.5
     svc.metrics.frames_published = 89625
     svc.metrics.last_frame_ts = old
@@ -298,6 +374,7 @@ def test_health_loop_reports_degraded_then_exits_once():
 
     asyncio.run(run())
     assert svc.exit_codes == [1]  # watchdog exit; the task ending does not exit twice
+    assert svc.source.stopped == 1
     (_, env), = svc.bus.published
     payload = env.payload
     assert payload["status"] == "degraded"
@@ -327,5 +404,8 @@ def test_settings_reject_a_stall_limit_inside_normal_pauses():
         Settings(_env_file=None, RETINA_PUBLISH_STALL_SECONDS=20)
     with pytest.raises(ValueError, match="RETINA_PUBLISH_STALL_SECONDS"):
         Settings(_env_file=None, RETINA_PUBLISH_STALL_SECONDS=-1)
+    with pytest.raises(ValueError, match="RETINA_PUBLISH_STALL_SECONDS"):
+        # stop + 30 s clip + start can hold the loop past 31 s
+        Settings(_env_file=None, RETINA_CLIP_ENABLED=True, RETINA_PUBLISH_STALL_SECONDS=31)
     assert Settings(_env_file=None).RETINA_PUBLISH_STALL_SECONDS == 120.0
     assert Settings(_env_file=None, RETINA_PUBLISH_STALL_SECONDS=0).RETINA_PUBLISH_STALL_SECONDS == 0

@@ -170,8 +170,16 @@ ended, and nothing logged it. Now:
   wait and a Ring camera between events): health `status` is `degraded`,
   `details.capture_stalled` is true with `capture_stalled_reason`. If
   `capture_loop` has not ticked for that long, or the RTSP reader still delivers
-  frames while nothing is published, the process exits for restart. A camera
-  that is simply down reads degraded and does not exit.
+  frames while nothing is published with no save/upload/bus error in that window,
+  the process exits for restart. Before exiting it stops the source (bounded),
+  so an RTSP reader sends TEARDOWN. A camera that is down, or a failure a
+  restart cannot fix (disk full, bus down, upload refused), reads degraded
+  with `last_error` and does not exit. The loop clock is monotonic: an NTP
+  step or a laptop resume is not a hang.
+- Known gaps: a Ring camera whose every publish fails never reads
+  `capture_stalled` (it is "between events" once the frame is taken); its
+  `last_error` and `source_ok` report it. Files in the shared dir that no live
+  writer owns (a retired camera_id/stream_id) are pruned by nobody.
 
 ### RTSP reconnect quiet period + corruption self-heal (2026-10-16)
 

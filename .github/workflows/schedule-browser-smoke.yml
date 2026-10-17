@@ -29,3 +29,8 @@ jobs:
         run: pytest -q services/orion-hub/tests/test_orion_is_asking_browser_smoke.py
       - name: Run Vision panel "Walkway (live)" browser smoke
         run: pytest -q services/orion-hub/tests/test_vision_live_frame_browser_smoke.py
+      - name: Run "Walkway stories" spot-check card browser smoke (360 px)
+        run: |
+          set -o pipefail
+          pytest -q -rs services/orion-hub/tests/test_walkway_stories_browser_smoke.py | tee walkway_stories_smoke.out
+          if grep -q "SKIPPED" walkway_stories_smoke.out; then echo "walkway stories smoke skipped -- playwright missing" >&2; exit 1; fi

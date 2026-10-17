@@ -599,6 +599,33 @@ class Settings(BaseSettings):
     # Local clock for "07:40", distinct days, weekday/weekend, and the ask cap day.
     vision_local_tz: str = Field("America/Denver", alias="VISION_LOCAL_TZ")
 
+    # Walkway motion stories (app/vision_motion.py, app/vision_motion_loop.py;
+    # docs/superpowers/specs/2026-10-16-walkway-motion-stories-proposal.md).
+    # One plain sentence per passing thing, from box maths. HUB ONLY until
+    # Juniper's spot-check passes: nothing in Orion's cognition reads them.
+    # false = the reducer does not run.
+    vision_motion_stories_enabled: bool = Field(True, alias="VISION_MOTION_STORIES_ENABLED")
+    vision_motion_story_interval_sec: float = Field(15.0, alias="VISION_MOTION_STORY_INTERVAL_SEC")
+    # A passage ends after this long with no linked box (detector looks every ~5 s).
+    vision_motion_story_close_gap_sec: float = Field(11.0, gt=0.0, alias="VISION_MOTION_STORY_CLOSE_GAP_SEC")
+    # Fewer detections than this = a glimpse: stored, never published.
+    vision_motion_story_min_detections: int = Field(3, ge=2, alias="VISION_MOTION_STORY_MIN_DETECTIONS")
+    vision_motion_story_streams: str = Field("walkway", alias="VISION_MOTION_STORY_STREAMS")
+    vision_motion_story_settle_sec: float = Field(30.0, ge=0.0, alias="VISION_MOTION_STORY_SETTLE_SEC")
+    vision_motion_story_initial_lookback_sec: float = Field(3600.0, ge=0.0, alias="VISION_MOTION_STORY_INITIAL_LOOKBACK_SEC")
+    vision_motion_story_retention_days: float = Field(90.0, alias="VISION_MOTION_STORY_RETENTION_DAYS")
+    # Box pixel space of the stream (walkway retina: 2560x1920). Edge clipping
+    # and zones depend on it.
+    vision_motion_frame_width: float = Field(2560.0, gt=0.0, alias="VISION_MOTION_FRAME_WIDTH")
+    vision_motion_frame_height: float = Field(1920.0, gt=0.0, alias="VISION_MOTION_FRAME_HEIGHT")
+    # Stories starting before this are marked clean=false (RTSP smear before the
+    # stream fix); the Hub tally and the replay eval count clean stories only.
+    vision_motion_clean_since: str = Field("2026-10-16T18:59:00Z", alias="VISION_MOTION_CLEAN_SINCE")
+    # Comma-separated individual ids that are props (never a story). Default:
+    # the patio skeleton, never flagged stationary because its box drifts.
+    vision_motion_prop_individual_ids: str = Field(
+        "fefb24d7e4074e9f827ad711874f6edf", alias="VISION_MOTION_PROP_INDIVIDUAL_IDS")
+
     # Rhythm learner: fits when things usually happen, emits expectations,
     # grades them met / missed / unscorable.
     vision_rhythm_interval_sec: float = Field(900.0, alias="VISION_RHYTHM_INTERVAL_SEC")

@@ -132,6 +132,6 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && scripts/safe_docker_bu
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2750
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

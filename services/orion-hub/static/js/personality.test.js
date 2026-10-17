@@ -158,3 +158,13 @@ test("situationText keeps upstream values verbatim as text; escapeHtml neutralis
   const row = p.dispositionRow({ disposition_id: "d", situation_mix: mix });
   assert.strictEqual(row.when, text);
 });
+
+
+test("company share is over known rows only (null company is not 'alone')", () => {
+  const mix = { n: 10, arousal: { idle: 10 }, day_phase: { night: 10 }, company: { true: 2, false: 2 } };
+  const text = p.situationText(mix);
+  assert.ok(text.includes("50%"), text);
+  assert.ok(!text.includes("20%"), text);
+  const none = p.situationText({ n: 3, arousal: { idle: 3 }, day_phase: { night: 3 }, company: { true: 0, false: 0 } });
+  assert.ok(!/alone|with company/.test(none), none);
+});

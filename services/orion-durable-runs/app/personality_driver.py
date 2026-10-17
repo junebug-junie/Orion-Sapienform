@@ -28,7 +28,7 @@ from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Optional, Sequence
 
 from orion.personality.graph import Evidence, FoldResult, Node, apply_fade, fold, seed_nodes
-from orion.personality.situation import situation_at
+from orion.personality.situation import COMPANY_CLOSE_GRACE, situation_at
 
 from app.personality_sources import (
     READ_LAG_SEC,
@@ -231,7 +231,7 @@ class PersonalityDriver:
             watermark = None
         chronicle_fresh = watermark is not None and now - watermark <= CHRONICLE_MAX_LAG
         if chronicle_fresh:
-            hi = min(hi, watermark)
+            hi = min(hi, watermark - COMPANY_CLOSE_GRACE)
         warnings: list[str] = []
         if not chronicle_fresh:
             warnings.append("situation_chronicle_lagging:company_unknown_past_watermark")

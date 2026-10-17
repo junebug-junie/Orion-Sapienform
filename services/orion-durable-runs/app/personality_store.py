@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
-from orion.personality.situation import SituationInputs
+from orion.personality.situation import COMPANY_CLOSE_GRACE, SituationInputs
 from orion.personality.graph import CHOICE_LANE, EvidenceRow, HistoryRow, Node, choice_style_from_rows, project_frame
 from orion.schemas.personality import FRAME_MAX_DISPOSITIONS, PersonalityFrameV1
 
@@ -286,7 +286,8 @@ class PersonalityStore:
             arousal=[(r["occurred_at"], str(r["label"] or "")) for r in arousal],
             company=[(r["began_at"], r["ended_at"]) for r in company],
             # The chronicle closes company arcs ~5 min late: spans are only trusted up to here.
-            company_known_until=(beat or {}).get("w") or datetime(1970, 1, 1, tzinfo=timezone.utc),
+            company_known_until=(((beat or {}).get("w") or datetime(1970, 1, 1, tzinfo=timezone.utc))
+                                 - COMPANY_CLOSE_GRACE),
         )
 
     async def chronicle_watermark(self) -> Optional[datetime]:

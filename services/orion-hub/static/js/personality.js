@@ -84,7 +84,12 @@
     if (!Number.isFinite(n) || n <= 0) return null;
     const company = m.company && typeof m.company === "object" ? m.company : {};
     const companyNamed = { alone: company.false, "with company": company.true };
-    return { n, parts: [topShare(m.arousal, n), topShare(m.day_phase, n), topShare(companyNamed, n)].filter(Boolean) };
+    // Company share is over rows where company is KNOWN: rows past a stalled chronicle are
+    // stamped company=null and must not read as "alone".
+    const known = [company.true, company.false].map(Number).filter((c) => Number.isFinite(c) && c > 0)
+      .reduce((a, b) => a + b, 0);
+    return { n, parts: [topShare(m.arousal, n), topShare(m.day_phase, n), known ? topShare(companyNamed, known) : null]
+      .filter(Boolean) };
   }
 
   function situationText(mix) {

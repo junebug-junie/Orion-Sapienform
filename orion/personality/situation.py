@@ -25,12 +25,19 @@ from __future__ import annotations
 
 import bisect
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Sequence
 
 from orion.temporal_self.day import day_phase_for
 
 UNKNOWN = "unknown"
+# The chronicle BACKDATES a company arc's end to the last sighting (orion/temporal_self/arcs.py,
+# recent -> absent), and the absent row arrives only when vision-window's presence grace runs out
+# (WINDOW_PRESENCE_GRACE_SEC=120; live 2026-10-17: recent 00:20:40 -> absent 00:22:33). Company is
+# trusted, and personality reads, only this far behind the chronicle watermark, so a departure is
+# folded before rows near it are stamped. Not covered: a camera producer dying silently (the
+# chronicle's stale close, up to company_stale_sec=1500 s, also backdated).
+COMPANY_CLOSE_GRACE = timedelta(seconds=180)
 
 
 @dataclass(frozen=True)

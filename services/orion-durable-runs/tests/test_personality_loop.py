@@ -764,7 +764,7 @@ def test_reads_wait_for_the_chronicle_so_company_is_final_when_stamped():
     asyncio.run(drv.tick())
     reader.add("chat", item("chat", "early", utc(minutes=2), "A reply the chronicle has folded."))
     reader.add("chat", item("chat", "late", utc(minutes=7), "A reply newer than the chronicle."))
-    store.watermark = utc(minutes=5)
+    store.watermark = utc(minutes=6)  # read bound = watermark - COMPANY_CLOSE_GRACE (3 min) = 3
     clock.at = utc(minutes=10)
     asyncio.run(drv.tick())
     assert "chat:early" in store.evidence and "chat:late" not in store.evidence
@@ -784,3 +784,27 @@ def test_a_stalled_chronicle_does_not_stall_personality():
     asyncio.run(drv.tick())
     assert "chat:a" in store.evidence
     assert "situation_chronicle_lagging:company_unknown_past_watermark" in drv.stats.warnings
+
+
+
+def test_a_backdated_company_close_is_folded_before_rows_near_it_are_stamped():
+    # Review 2026-10-17: the chronicle ends a company arc at the last sighting (recent row) and
+    # learns of it only when the presence grace runs out (absent row, ~2 min later). A row read
+    # inside that window used to be stamped "with company" for an arc that then closed earlier.
+    drv, store, reader, emb, clock = world()
+    store.watermark = utc(minutes=0)
+    asyncio.run(drv.tick())
+    seen_last = utc(minutes=20)  # recent row: the person left here
+    reader.add("chat", item("chat", "after_leaving", utc(minutes=21), "A reply after Juniper left."))
+    # Chronicle has folded up to 22:00 but not the absent row (due ~22:00+): arc still open.
+    store.situation = SituationInputs(company=[(utc(minutes=-30), None)], company_known_until=utc(minutes=19))
+    store.watermark = utc(minutes=22)
+    clock.at = utc(minutes=24)
+    asyncio.run(drv.tick())
+    assert "chat:after_leaving" not in store.evidence  # held: bound is 22 - 3 = 19
+    # The absent row is folded: the arc closes, backdated to the last sighting.
+    store.situation = SituationInputs(company=[(utc(minutes=-30), seen_last)], company_known_until=utc(minutes=27))
+    store.watermark = utc(minutes=30)
+    clock.at = utc(minutes=32)
+    asyncio.run(drv.tick())
+    assert store.evidence["chat:after_leaving"].meta["situation"]["company"] is False

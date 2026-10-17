@@ -676,3 +676,78 @@ def test_situation_lookup_failure_still_folds_the_evidence():
     assert store.evidence["chat:a"].disposition_id is not None
     assert "situation" not in store.evidence["chat:a"].meta
     assert "situation_unavailable:ConnectionError" in drv.stats.warnings
+
+
+# --- situation mix (observability only) ---------------------------------------------------------
+
+
+def test_situation_mix_folds_counts_and_skips_missing_keys():
+    from app.personality_store import situation_mix_by_id
+
+    rows = [
+        {"disposition_id": "d1", "dim": "n", "val": "", "c": 3},
+        {"disposition_id": "d1", "dim": "arousal", "val": "idle", "c": 2},
+        {"disposition_id": "d1", "dim": "arousal", "val": None, "c": 1},  # a situation without arousal
+        {"disposition_id": "d1", "dim": "day_phase", "val": "night", "c": 3},
+        {"disposition_id": "d1", "dim": "company", "val": "true", "c": 1},
+        {"disposition_id": "d1", "dim": "company", "val": "false", "c": 2},
+        {"disposition_id": "d2", "dim": "n", "val": "", "c": 1},
+        {"disposition_id": "d2", "dim": "company", "val": "maybe", "c": 1},  # not a bool: not counted
+    ]
+    out = situation_mix_by_id(rows)
+    assert out["d1"] == {"n": 3, "arousal": {"idle": 2}, "day_phase": {"night": 3},
+                         "company": {"true": 1, "false": 2}}
+    assert out["d2"] == {"n": 1, "arousal": {}, "day_phase": {}, "company": {"true": 0, "false": 0}}
+
+
+class ScriptedConn:
+    """Answers each execute with the next scripted rows; logs (sql, params)."""
+
+    def __init__(self, answers, log):
+        self.answers, self.log = list(answers), log
+
+    async def execute(self, sql, params=None):
+        self.log.append((sql, params))
+        rows = self.answers.pop(0)
+
+        class R:
+            async def fetchall(self_inner):
+                return rows
+
+        return R()
+
+
+class ScriptedPool:
+    def __init__(self, answers):
+        self.answers, self.log = answers, []
+
+    def connection(self):
+        pool = self
+
+        class _CM:
+            async def __aenter__(self):
+                return ScriptedConn(pool.answers, pool.log)
+
+            async def __aexit__(self, *a):
+                return False
+
+        return _CM()
+
+
+def test_dispositions_carry_situation_mix_from_one_query_bounded_to_returned_ids():
+    from app.personality_store import SITUATION_MIX_SQL
+
+    nodes = [{"disposition_id": "d1", "weight": 2.0}, {"disposition_id": "d2", "weight": 1.0}]
+    mix = [{"disposition_id": "d1", "dim": "n", "val": "", "c": 2},
+           {"disposition_id": "d1", "dim": "arousal", "val": "engaged", "c": 2}]
+    pool = ScriptedPool([nodes, mix, []])
+    rows = asyncio.run(PersonalityStore(pool).dispositions("all"))
+    assert [sql for sql, _ in pool.log].count(SITUATION_MIX_SQL) == 1
+    assert pool.log[1] == (SITUATION_MIX_SQL, {"ids": ["d1", "d2"]})
+    assert rows[0]["situation_mix"]["n"] == 2 and rows[0]["situation_mix"]["arousal"] == {"engaged": 2}
+    # A node with no stamped evidence still gets the full shape, n=0.
+    assert rows[1]["situation_mix"] == {"n": 0, "arousal": {}, "day_phase": {}, "company": {"true": 0, "false": 0}}
+    # No nodes -> no extra query.
+    empty = ScriptedPool([[]])
+    assert asyncio.run(PersonalityStore(empty).dispositions("active")) == [] and len(empty.log) == 1
+    assert "jsonb_typeof(e.meta->'situation') = 'object'" in SITUATION_MIX_SQL

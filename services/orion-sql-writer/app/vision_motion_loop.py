@@ -15,6 +15,15 @@ Each tick, per stream in ``VISION_MOTION_STORY_STREAMS``:
    ``ON CONFLICT DO NOTHING``, so a re-run never duplicates.
 4. Prune stories older than ``VISION_MOTION_STORY_RETENTION_DAYS``.
 
+Pictures of the moment (app/vision_story_strip.py, 2026-10-17), when
+``VISION_STORY_STRIPS_ENABLED``: before step 1 every tick saves a padded crop
+and a small full frame for each new walker crop while its frame still exists
+(the shared frames directory keeps a walkway frame ~60 s); after step 3 every
+published story without a strip gets one (``evidence_strip``, ``frame_luminance``,
+``scene_luminance``, ``scene_contrast``, ``dark``). A strip is kept until 30
+days after its story ended AND the story has a verdict ("Can't tell" counts),
+or until the story row itself is deleted by story retention.
+
 Trace: one ``[MOTION_STORY]`` line per stream per tick with the counts and
 the cursor.
 
@@ -29,12 +38,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app.settings import Settings
-from app.vision_motion import MotionConfig, MotionCrop, Story, build_stories, link_passages
+from app.vision_motion import PUBLISH_KINDS, MotionConfig, MotionCrop, Story, build_stories, link_passages
+from app.vision_story_strip import StripConfig
 
 logger = logging.getLogger("sql-writer.vision_motion_loop")
 
@@ -57,6 +69,7 @@ class LoopConfig:
     retention_days: float = 90.0
     clean_since: Optional[datetime] = None
     prop_individual_ids: Tuple[str, ...] = ()
+    strip: Optional[StripConfig] = None
 
 
 def parse_utc(value: str) -> Optional[datetime]:
@@ -82,6 +95,15 @@ def loop_config(settings: Settings) -> LoopConfig:
         clean_since=parse_utc(str(settings.vision_motion_clean_since)),
         prop_individual_ids=tuple(
             s.strip() for s in str(settings.vision_motion_prop_individual_ids).split(",") if s.strip()),
+        strip=StripConfig(
+            frames_dir=str(settings.vision_story_frames_dir),
+            strip_dir=str(settings.vision_story_strip_dir),
+            dark_contrast=float(settings.vision_story_strip_dark_contrast),
+            pending_sec=float(settings.vision_story_strip_pending_sec),
+            retention_days=float(settings.vision_story_strip_retention_days),
+            frame_w=float(settings.vision_motion_frame_width),
+            frame_h=float(settings.vision_motion_frame_height),
+        ) if bool(settings.vision_story_strips_enabled) else None,
     )
 
 
@@ -256,6 +278,177 @@ def _one_stream(engine, stream_id: str, ts: datetime, cfg: LoopConfig, zones, su
         summary[k] = summary.get(k, 0) + v
 
 
+# ---------------------------------------------------------------------------
+# Pictures of the moment (app/vision_story_strip.py)
+# ---------------------------------------------------------------------------
+
+STRIP_COLUMNS = ("evidence_strip", "frame_luminance", "scene_luminance", "scene_contrast", "dark")
+# How far back the first capture tick looks. Frames older than ~60 s are gone
+# anyway; a longer look only writes "frame_gone" markers.
+CAPTURE_FIRST_LOOKBACK_SEC = 120.0
+ORPHAN_SWEEP_EVERY_SEC = 3600.0
+ORPHAN_MIN_AGE_SEC = 3600.0
+STRIPS_PER_TICK = 20
+
+# Per process: crops are captured once per crop id (the pending file is the
+# real dedupe), so losing this on restart costs nothing but a re-scan.
+_capture_cursor: Dict[str, datetime] = {}
+# None = never swept this process. Not 0.0: time.monotonic() counts from host
+# boot, so on a host up < ORPHAN_SWEEP_EVERY_SEC (a fresh CI runner, a rebooted
+# box) a 0.0 sentinel would postpone the first sweep by up to an hour.
+_last_orphan_sweep: List[Optional[float]] = [None]
+
+# created_at is the inserting transaction's start time: a row can commit after
+# a newer one was already read. Each read re-covers this overlap behind the
+# cursor (the pending files dedupe), and never reads the last second.
+CAPTURE_OVERLAP_SEC = 10.0
+CAPTURE_SQL = (
+    "SELECT crop_id, observed_at, label, box_xyxy, camera_id, created_at, individual_id "
+    "FROM vision_crop_observation WHERE stream_id = :s AND created_at > :a "
+    "AND created_at <= now() - interval '1 second' AND label = ANY(:kinds) "
+    "ORDER BY created_at, crop_id LIMIT 2000"
+)
+# A failed strip is retried each tick; after this share of the pending window
+# the story gets a final error record instead of staying NULL forever.
+ASSEMBLE_GIVE_UP_SHARE = 0.5
+
+
+def strip_columns_missing(conn) -> List[str]:
+    from sqlalchemy import text
+
+    have = {r[0] for r in conn.execute(text(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'vision_motion_story' "
+        "AND column_name = ANY(:c)"), {"c": list(STRIP_COLUMNS)}).fetchall()}
+    return [c for c in STRIP_COLUMNS if c not in have]
+
+
+def capture_step(engine, stream_id: str, ts: datetime, cfg: LoopConfig) -> Dict[str, int]:
+    """Save crops + small frames for walker crops that landed since the last tick."""
+    from sqlalchemy import text
+
+    from app.vision_story_strip import PendingCrop, capture_pending, mark_skipped
+
+    from app.vision_motion import box_iou
+
+    strip = cfg.strip
+    assert strip is not None
+    cursor = _capture_cursor.get(stream_id)
+    after = (cursor - timedelta(seconds=CAPTURE_OVERLAP_SEC)) if cursor else \
+        ts - timedelta(seconds=CAPTURE_FIRST_LOOKBACK_SEC)
+    with engine.connect() as conn:
+        rows = conn.execute(text(CAPTURE_SQL), {"s": stream_id, "a": after,
+                                                "kinds": sorted(PUBLISH_KINDS)}).fetchall()
+        # Props (the patio skeleton, stationary things) are detected every frame and
+        # never become stories. A fresh crop has no individual_id yet, so match by box.
+        prop_boxes = read_context(conn, stream_id, [], cfg.prop_individual_ids)[2] if rows else []
+    empty = {"saved": 0, "frame_gone": 0, "already": 0, "failed": 0, "prop": 0}
+    if not rows:
+        return empty
+    props = set(cfg.prop_individual_ids)
+    crops, skipped = [], 0
+    for r in rows:
+        if not r[3] or len(r[3]) != 4:
+            continue
+        box = tuple(float(v) for v in r[3])
+        c = PendingCrop(crop_id=r[0], t=r[1], label=r[2], box=box, camera_id=r[4])
+        if r[6] in props or any(kind == r[2] and box_iou(box, b) >= cfg.motion.prop_iou for kind, b in prop_boxes):
+            skipped += 1
+            mark_skipped(c, "prop_overlap", strip)
+            continue
+        crops.append(c)
+    counts = {**empty, **capture_pending(crops, stream_id=stream_id, cfg=strip), "prop": skipped}
+    _capture_cursor[stream_id] = max(cursor or rows[-1][5], rows[-1][5])
+    return counts
+
+
+def assemble_step(engine, stream_id: str, ts: datetime, cfg: LoopConfig) -> int:
+    """A strip for every published story that has none, while its pending pictures can exist."""
+    from sqlalchemy import text
+
+    from app.vision_story_strip import assemble_strip, failed_record, remove_strip_dir
+
+    strip = cfg.strip
+    assert strip is not None
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT story_id, evidence, created_at FROM vision_motion_story WHERE stream_id = :s AND published "
+            "AND evidence_strip IS NULL AND created_at > :since ORDER BY created_at LIMIT :n"),
+            {"s": stream_id, "since": ts - timedelta(seconds=strip.pending_sec), "n": STRIPS_PER_TICK}).fetchall()
+    done = 0
+    for story_id, evidence, created_at in rows:
+        ev = evidence if isinstance(evidence, list) else json.loads(evidence or "[]")
+        try:
+            rec = assemble_strip(story_id, stream_id, ev, cfg=strip)
+        except Exception as exc:
+            logger.warning("story_strip_assemble_failed story_id=%s error=%s", story_id, exc)
+            if created_at is None or created_at > ts - timedelta(seconds=strip.pending_sec * ASSEMBLE_GIVE_UP_SHARE):
+                continue
+            # Final: the row says why there is no picture, and the half-written folder goes.
+            remove_strip_dir(strip, story_id)
+            rec = failed_record(str(exc), strip)
+        with engine.begin() as conn:
+            conn.execute(text(
+                "UPDATE vision_motion_story SET evidence_strip = CAST(:j AS jsonb), frame_luminance = :fl, "
+                "scene_luminance = :sl, scene_contrast = :sc, dark = :d "
+                "WHERE story_id = :id AND evidence_strip IS NULL"),
+                {"j": json.dumps(rec), "fl": rec["frame_luminance"], "sl": rec["scene_luminance"],
+                 "sc": rec["scene_contrast"], "d": rec["dark"], "id": story_id})
+        done += 1
+        logger.info(
+            "[STORY_STRIP] story_id=%s crops_saved=%d crops_missing=%d frame=%s frame_lum=%s scene_lum=%s "
+            "scene_contrast=%s dark=%s",
+            story_id, sum(1 for c in rec["crops"] if "file" in c), sum(1 for c in rec["crops"] if "missing" in c),
+            bool(rec["frame"]), rec["frame_luminance"], rec["scene_luminance"], rec["scene_contrast"], rec["dark"])
+    return done
+
+
+def prune_strips(engine, ts: datetime, cfg: LoopConfig) -> int:
+    """Delete strips of stories that ended > retention ago AND have a verdict; never an unchecked story's.
+    Once an hour, also delete strip directories whose story row is gone (story retention)."""
+    from sqlalchemy import text
+
+    from app.vision_story_strip import prune_pending, remove_strip_dir, strip_dirs
+
+    strip = cfg.strip
+    assert strip is not None
+    prune_pending(strip)
+    removed = 0
+    if strip.retention_days > 0:
+        with engine.connect() as conn:
+            ids = [r[0] for r in conn.execute(text(
+                "SELECT s.story_id FROM vision_motion_story s WHERE s.ended_at < :cut "
+                "AND s.evidence_strip IS NOT NULL AND NOT (s.evidence_strip ? 'pruned_at') "
+                "AND EXISTS (SELECT 1 FROM vision_motion_story_verdict v WHERE v.story_id = s.story_id) "
+                "LIMIT 200"), {"cut": ts - timedelta(days=strip.retention_days)}).fetchall()]
+        for sid in ids:
+            remove_strip_dir(strip, sid)
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "UPDATE vision_motion_story SET evidence_strip = evidence_strip || "
+                    "jsonb_build_object('pruned_at', CAST(:at AS text)) WHERE story_id = :id"),
+                    {"at": ts.isoformat(), "id": sid})
+            removed += 1
+    now_mono = time.monotonic()
+    last = _last_orphan_sweep[0]
+    if last is None or now_mono - last >= ORPHAN_SWEEP_EVERY_SEC:
+        _last_orphan_sweep[0] = now_mono
+        dirs = strip_dirs(strip)
+        if dirs:
+            with engine.connect() as conn:
+                alive = {r[0] for r in conn.execute(text(
+                    "SELECT story_id FROM vision_motion_story WHERE story_id = ANY(:ids)"), {"ids": dirs}).fetchall()}
+            for sid in dirs:
+                if sid in alive:
+                    continue
+                try:
+                    age = time.time() - os.stat(os.path.join(strip.strip_dir, sid)).st_mtime
+                except OSError:
+                    continue
+                if age >= ORPHAN_MIN_AGE_SEC and remove_strip_dir(strip, sid):
+                    removed += 1
+    return removed
+
+
 def run_one_motion_cycle(*, postgres_uri: str, cfg: LoopConfig, zones_by_stream: Dict[str, list],
                          now: Optional[datetime] = None) -> Dict[str, Any]:
     """One tick over every configured stream. Blocking: run in a worker thread."""
@@ -274,6 +467,25 @@ def run_one_motion_cycle(*, postgres_uri: str, cfg: LoopConfig, zones_by_stream:
         lock_conn.commit()
         with engine.begin() as conn:
             _check_tables(conn)
+            strips_on = cfg.strip is not None
+            if strips_on:
+                missing = strip_columns_missing(conn)
+                if missing:
+                    strips_on = False
+                    summary["strips"] = "migration missing: " + ",".join(missing)
+                    logger.error("[STORY_STRIP] missing columns %s -- apply services/orion-sql-db/"
+                                 "manual_migration_vision_motion_story_strip_v2.sql; stories still run",
+                                 ",".join(missing))
+        # Capture first: the frames of crops that landed since the last tick are
+        # the ones closest to being pruned.
+        if strips_on:
+            for stream_id in cfg.streams:
+                try:
+                    c = capture_step(engine, stream_id, ts, cfg)
+                    for k, v in c.items():
+                        summary["capture_" + k] = summary.get("capture_" + k, 0) + v
+                except Exception as exc:
+                    logger.warning("story_strip_capture_failed stream=%s error=%s", stream_id, exc)
         for stream_id in cfg.streams:
             try:
                 _one_stream(engine, stream_id, ts, cfg, zones_by_stream.get(stream_id, []), summary)
@@ -281,6 +493,20 @@ def run_one_motion_cycle(*, postgres_uri: str, cfg: LoopConfig, zones_by_stream:
                 if is_missing_relation(exc):
                     raise MigrationMissing(str(exc)) from exc
                 logger.warning("motion_story_stream_failed stream=%s error=%s", stream_id, exc)
+            if strips_on:
+                try:
+                    # A crop that landed after the first capture read can belong to a
+                    # story closed just now: catch it before the strip is built.
+                    capture_step(engine, stream_id, ts, cfg)
+                    summary["strips_written"] = summary.get("strips_written", 0) + assemble_step(
+                        engine, stream_id, ts, cfg)
+                except Exception as exc:
+                    logger.warning("story_strip_assemble_step_failed stream=%s error=%s", stream_id, exc)
+        if strips_on:
+            try:
+                summary["strips_pruned"] = prune_strips(engine, ts, cfg)
+            except Exception as exc:
+                logger.warning("story_strip_prune_failed error=%s", exc)
         if cfg.retention_days > 0:
             with engine.begin() as conn:
                 summary["pruned"] = conn.execute(text(

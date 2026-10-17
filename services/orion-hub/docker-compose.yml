@@ -62,6 +62,9 @@ services:
       # small JPEG per embedded crop here (never a patio box) and prunes it
       # after 10 days. Served only by content hash (scripts/ask_routes.py).
       - ${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}:${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}:ro
+      # Walkway story pictures of the moment (read-only): orion-sql-writer
+      # writes one strip directory per published story (scripts/motion_story_routes.py).
+      - ${HUB_VISION_STORY_STRIP_DIR:-/mnt/telemetry/vision/story_strips}:${HUB_VISION_STORY_STRIP_DIR:-/mnt/telemetry/vision/story_strips}:ro
       # "Walkway (live)" in the Vision panel (read-only): the walkway retina
       # writes its frames here with a local path only. Served only from
       # directly inside this dir, downscaled (scripts/vision_live_frame.py).
@@ -233,6 +236,7 @@ services:
       - PERCEPT_STORE_TIMEOUT_SEC=${PERCEPT_STORE_TIMEOUT_SEC:-10}
       - PERCEPT_STORE_TOKEN=${PERCEPT_STORE_TOKEN:-}
       - HUB_VISION_CROP_THUMB_DIR=${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}
+      - HUB_VISION_STORY_STRIP_DIR=${HUB_VISION_STORY_STRIP_DIR:-/mnt/telemetry/vision/story_strips}
       - HUB_VISION_FRAMES_DIR=${HUB_VISION_FRAMES_DIR:-/mnt/telemetry/vision/frames}
       - HUB_VISION_LIVE_MAX_WIDTH=${HUB_VISION_LIVE_MAX_WIDTH:-1280}
       - HUB_VISION_LIVE_STALE_SEC=${HUB_VISION_LIVE_STALE_SEC:-10}

@@ -162,6 +162,8 @@ def test_tally_counts_only_the_newest_rules_version() -> None:
         new = await _story(pool, 2, version=2)
         r = await client.get("/api/vision/motion-stories")
         assert r.json()["tally"]["rules_version"] == 2 and r.json()["tally"]["checked"] == 0
+        r = await client.get("/api/vision/motion-stories")
+        assert [x["story_id"] for x in r.json()["stories"]] == [new]   # old-rules stories are not offered
         r = await client.post(f"/api/vision/motion-stories/{new}/verdict", json={"verdict": "wrong_motion"})
         assert r.json()["tally"]["checked"] == 1 and r.json()["tally"]["wrong_motion"] == 1
 

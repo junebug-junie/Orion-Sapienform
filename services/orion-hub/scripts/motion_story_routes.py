@@ -64,6 +64,7 @@ FROM vision_motion_story s
 LEFT JOIN vision_motion_story_verdict v ON v.story_id = s.story_id
 WHERE s.published AND ($1::boolean IS FALSE OR s.clean)
   AND ($2::boolean IS FALSE OR v.verdict IS NULL)
+  AND ($4::integer IS NULL OR s.rules_version = $4)
 ORDER BY s.started_at DESC
 LIMIT $3
 """
@@ -139,8 +140,10 @@ async def list_motion_stories(
     pool = _pool(request)
     try:
         async with pool.acquire() as conn:
-            rows = await conn.fetch(_LIST_SQL, clean_only, unchecked_only, limit)
+            # Only stories under the rules the tally counts: a verdict on an
+            # older rules version would never count toward the gate.
             tally = await _tally(conn)
+            rows = await conn.fetch(_LIST_SQL, clean_only, unchecked_only, limit, tally["rules_version"])
     except Exception as exc:
         _raise_motion_http(exc)
     return {"ok": True, "stories": [_story_dict(r) for r in rows], "tally": tally}

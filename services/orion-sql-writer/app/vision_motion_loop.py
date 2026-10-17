@@ -243,10 +243,11 @@ def _one_stream(engine, stream_id: str, ts: datetime, cfg: LoopConfig, zones, su
         counts[key] = counts.get(key, 0) + 1
     logger.info(
         "[MOTION_STORY] stream=%s crops=%d closed=%d written=%d published=%d glimpses=%d standing=%d "
-        "parked=%d dropped_props=%d edge_clipped=%d too_long=%d cursor=%s",
+        "parked=%d dropped_props=%d edge_clipped=%d too_long=%d out_of_scope=%d companion=%d cursor=%s",
         stream_id, len(crops), len(stories), written, counts.get("published", 0), counts.get("glimpse", 0),
         counts.get("standing", 0), counts.get("parked", 0), counts.get("prop", 0),
-        counts.get("edge_clipped", 0), counts.get("too_long", 0), new_cursor.isoformat())
+        counts.get("edge_clipped", 0), counts.get("too_long", 0), counts.get("out_of_scope", 0),
+        counts.get("companion", 0), new_cursor.isoformat())
     summary["streams"] += 1
     summary["crops"] += len(crops)
     summary["closed"] += len(stories)
@@ -263,7 +264,7 @@ def run_one_motion_cycle(*, postgres_uri: str, cfg: LoopConfig, zones_by_stream:
     ts = now or datetime.now(timezone.utc)
     summary: Dict[str, Any] = {"streams": 0, "streams_idle": 0, "crops": 0, "closed": 0, "written": 0,
                                "pruned": 0}
-    engine = create_engine(postgres_uri, pool_pre_ping=True)
+    engine = create_engine(postgres_uri, pool_pre_ping=True, pool_size=1, max_overflow=1)
     lock_conn = None
     try:
         lock_conn = engine.connect()
@@ -283,7 +284,8 @@ def run_one_motion_cycle(*, postgres_uri: str, cfg: LoopConfig, zones_by_stream:
         if cfg.retention_days > 0:
             with engine.begin() as conn:
                 summary["pruned"] = conn.execute(text(
-                    "DELETE FROM vision_motion_story WHERE ended_at < :cut"),
+                    "DELETE FROM vision_motion_story s WHERE s.ended_at < :cut AND NOT EXISTS "
+                    "(SELECT 1 FROM vision_motion_story_verdict v WHERE v.story_id = s.story_id)"),
                     {"cut": ts - timedelta(days=cfg.retention_days)}).rowcount or 0
     finally:
         if lock_conn is not None:

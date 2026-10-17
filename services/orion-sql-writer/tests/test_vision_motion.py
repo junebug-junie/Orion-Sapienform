@@ -119,7 +119,15 @@ def test_two_box_jitter_is_a_glimpse_never_running() -> None:
 def test_three_fast_detections_run() -> None:
     cs = [crop(f"r{i}", i * 1.0, 600 + i * 320, 900) for i in range(3)]   # 1.6 BH/s
     [s] = stories(cs)
-    assert s.speed_class == "running" and s.published and " ran left to right" in s.sentence
+    assert s.speed_class == "running" and " ran left to right" in s.sentence
+    # Slice 1 is walker stories only: computed, stored, never published.
+    assert not s.published and s.drop_reason == "out_of_scope"
+
+
+def test_vehicles_are_out_of_scope_in_slice_one() -> None:
+    cs = [crop(f"v{i}", i * 2.5, 600 + i * 40, 520, h=80, w=120, label="vehicle") for i in range(4)]
+    [s] = stories(cs)
+    assert s.speed_class == "creeping" and not s.published and s.drop_reason == "out_of_scope"
 
 
 def test_fast_needs_three_unclipped_detections() -> None:
@@ -178,10 +186,16 @@ def test_name_needs_two_thirds_one_named_id_no_other_and_no_edge() -> None:
 
     [s] = stories(with_ids(["ind-a"] * 4 + [None, None]), labels=labels)
     assert s.individual_id == "ind-a" and s.name_label == "Alex" and s.sentence.startswith("Alex walked")
-    [s] = stories(with_ids(["ind-a"] * 3 + ["x", "y", "z"]), labels=labels)
+    [s] = stories(with_ids(["ind-a"] * 3 + [None, None, None]), labels=labels)
     assert s.name_label is None and s.name_withheld == "low_share" and s.sentence.startswith("A person")
     [s] = stories(with_ids(["ind-a"] * 5 + ["ind-b"]), labels=labels)
     assert s.name_label is None and s.name_withheld == "two_named"
+    # An UNNAMED id next to a named one may be a second person the linker joined.
+    [s] = stories(with_ids(["ind-a"] * 4 + ["x", "x"]), labels=labels)
+    assert s.name_label is None and s.name_withheld == "other_id"
+    # Two ids that carry the same name are one person.
+    [s] = stories(with_ids(["ind-a"] * 3 + ["ind-a2"] * 3), labels={**labels, "ind-a2": " alex "})
+    assert s.name_label == "Alex" and s.name_withheld is None
     clipped = with_ids(["ind-a"] * 6)
     clipped[-1] = vm.MotionCrop("w5", clipped[-1].t, "person", (2480, 1150, 2560, 1350), individual_id="ind-a")
     p = vm.Passage("person", clipped)
@@ -234,6 +248,8 @@ def test_person_with_a_dog_and_two_people_together() -> None:
     assert out["person"].sentence.startswith("A person with a dog walked left to right")
     assert out["person"].together_story_ids == [out["dog"].story_id]
     assert out["dog"].companion_kinds == ["person"]
+    # One walk-by, one story: the dog's own passage is not published again.
+    assert out["person"].published and not out["dog"].published and out["dog"].drop_reason == "companion"
 
     a, b = walker("a", y2=900), walker("b", x0=640, y2=930)
     sa, sb = stories(a + b)
@@ -457,3 +473,20 @@ def test_cycle_on_a_missing_table_raises_migration_missing(pg) -> None:
     finally:
         with pg.begin() as conn:
             conn.execute(text("ALTER TABLE vision_motion_story_cursor_x RENAME TO vision_motion_story_cursor"))
+
+
+@needs_pg
+def test_retention_keeps_stories_juniper_has_checked(pg) -> None:
+    from sqlalchemy import text
+
+    old = T0 - timedelta(days=100)
+    with pg.begin() as conn:
+        for sid in ("a" * 32, "b" * 32):
+            conn.execute(text("INSERT INTO vision_motion_story (story_id, stream_id, started_at, ended_at, published) "
+                              "VALUES (:s, 'walkway', :t, :t, true)"), {"s": sid, "t": old})
+        conn.execute(text("INSERT INTO vision_motion_story_verdict (story_id, verdict) VALUES (:s, 'right')"),
+                     {"s": "a" * 32})
+    summary = vl.run_one_motion_cycle(postgres_uri=PG, cfg=vl.LoopConfig(streams=()), zones_by_stream={}, now=T0)
+    assert summary["pruned"] == 1
+    with pg.connect() as conn:
+        assert [r[0] for r in conn.execute(text("SELECT story_id FROM vision_motion_story"))] == ["a" * 32]

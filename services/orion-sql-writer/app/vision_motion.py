@@ -66,6 +66,9 @@ SPEED_CLASSES: Dict[str, Tuple[str, List[Tuple[float, str]], Optional[str]]] = {
     "vehicle": ("parked", [(0.6, "creeping")], "driving"),
 }
 STILL_CLASSES = {"standing", "parked"}
+# Slice 1 publishes walking-pace stories of these kinds only.
+PUBLISH_KINDS = {"person", "dog", "stroller", "bicycle"}
+WALKING_CLASSES = {"walking", "walked", "pushed"}
 # Below this net speed (BH/s) a passage did not really travel, even when its
 # net travel passes still_bh over a long dwell.
 STILL_SPEED_BH = 0.08
@@ -408,20 +411,31 @@ def is_prop(p: Passage, *, stationary_ids: Set[str], prop_ids: Set[str],
 
 def name_for(p: Passage, labels: Dict[str, str], cfg: MotionConfig
              ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """(individual_id, label, withheld_reason). The strict rule: one named
-    individual on >= name_share of the crops, no other named individual, and
-    no crop touching the frame edge. Unnamed crops do not block a name."""
-    named = [c.individual_id for c in p.crops if c.individual_id and labels.get(c.individual_id)]
+    """(individual_id, label, withheld_reason). The strict rule:
+
+    - every crop that carries an individual id carries a NAMED one, and all
+      of them carry the same name (an unnamed id X next to a named one means
+      the linker may have joined two people: ``other_id``; two names:
+      ``two_named``; several ids of one name are fine -- one person can hold
+      several ids);
+    - that name covers >= name_share of the passage's crops (``low_share``);
+    - no crop touches the frame edge (``edge_clipped``).
+    Crops with no id at all do not block a name. The returned id is the one
+    on most crops."""
+    ids = [c.individual_id for c in p.crops if c.individual_id]
+    named = [i for i in ids if labels.get(i)]
     if not named:
         return None, None, None
-    distinct = sorted(set(named))
-    if len(distinct) > 1:
+    names = {labels[i].strip().casefold() for i in named}
+    if len(names) > 1:
         return None, None, "two_named"
+    if len(named) != len(ids):
+        return None, None, "other_id"
     if any(is_edge_clipped(c.box, cfg) for c in p.crops):
         return None, None, "edge_clipped"
-    iid = distinct[0]
     if len(named) / len(p.crops) < cfg.name_share:
         return None, None, "low_share"
+    iid = max(sorted(set(named)), key=named.count)
     return iid, labels[iid], None
 
 
@@ -549,6 +563,15 @@ def build_stories(
             reason = "parked"
         elif sc == "standing":
             reason = "standing"
+        elif p.kind not in PUBLISH_KINDS or sc not in WALKING_CLASSES:
+            # Slice 1 is walker stories only (Juniper, 2026-10-16): at a 5 s
+            # detector cadence a vehicle "story" is mostly a parked car's
+            # jitter, and fast classes are out of reach anyway.
+            reason = "out_of_scope"
+        elif p.kind != "person" and "person" in comp:
+            # "A person with a dog walked ..." already tells it; one walk-by is
+            # one story, so Juniper never checks the same event twice.
+            reason = "companion"
         else:
             reason = None
         sentence = sentence_for(kind=p.kind, sc=sc, lat=lat, dep=dep, zp=zp,

@@ -586,8 +586,8 @@ new identity. Design: `docs/superpowers/specs/2026-10-16-walkway-motion-stories-
 
 - Links `vision_crop_observation` boxes into passages by geometry (velocity
   prediction), not by `individual_id`; ids only supply a name, and only under
-  the strict rule (one named individual on >= 2/3 of the crops, no other named
-  individual, no crop touching the frame edge).
+  the strict rule (every id on the passage carries the same name, that name is on
+  >= 2/3 of the crops, no crop touching the frame edge).
 - Boxes touching the left, right or bottom edge give no zone and no travel.
 - Published = a moving story with >= `VISION_MOTION_STORY_MIN_DETECTIONS` (3)
   detections, enough of them unclipped. Everything else is stored with
@@ -605,6 +605,15 @@ new identity. Design: `docs/superpowers/specs/2026-10-16-walkway-motion-stories-
   "Walkway stories" card (Vision panel, "Walkway (live)") shows them and
   records Juniper's verdicts; the gate to switch them on for Orion is >= 50
   checked, >= 80% fully right, zero wrong names.
+- Slice 1 publishes walking-pace stories of people, dogs, strollers and walked
+  bicycles only; vehicles and fast classes are stored as `out_of_scope`, and a
+  dog/bicycle/stroller walking with a person is stored as `companion` (the
+  person's story tells it), so one walk-by is one story to check.
+- Known limits: a crop that lands more than `VISION_MOTION_STORY_SETTLE_SEC`
+  after it was seen (a writer restart, a bus backlog) is behind the cursor and
+  never joins a story. `name_label` is copied at write time; a later rename or
+  split of that individual does not rewrite old stories. Retention never
+  deletes a story Juniper has given a verdict.
 - Kill switch: `VISION_MOTION_STORIES_ENABLED=false`.
 - Replay (read only): `PYTHONPATH=. python services/orion-sql-writer/evals/run_vision_motion_story_replay_eval.py`
   (clean frames from `VISION_MOTION_CLEAN_SINCE` by default; `--include-corrupt` for earlier).

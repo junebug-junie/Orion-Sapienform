@@ -114,9 +114,10 @@ def test_walkway_stories_card_browser_smoke():
         assert "named" in items.nth(1).text_content()
         assert page.locator("#walkwayStoriesTally").text_content().startswith("Checked 3 of 50")
         # The tally sits above the list, at the top of the card.
-        tally_box = page.locator("#walkwayStoriesTally").bounding_box()
-        list_box = page.locator("#walkwayStoriesList").bounding_box()
-        assert tally_box["y"] < list_box["y"]
+        # (Document order, not pixels: other panels keep reflowing while the page loads.)
+        assert page.evaluate(
+            "() => !!(document.getElementById('walkwayStoriesTally').compareDocumentPosition("
+            "document.getElementById('walkwayStoriesList')) & Node.DOCUMENT_POSITION_FOLLOWING)")
         # Fits a 360 px phone: no horizontal overflow from the card.
         assert page.evaluate("() => document.getElementById('walkwayStoriesCard').scrollWidth") <= 360
 

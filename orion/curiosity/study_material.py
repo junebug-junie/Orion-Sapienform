@@ -568,18 +568,17 @@ DEFAULT_STREET_CAPTION_LOOKBACK_HOURS = 6
 STREET_CAPTION_FETCH_ROWS = 40
 
 def _street_captions_recent_sql() -> str:
-    from orion.situational.street_material import REDUCER_EVENT_TYPES_SQL
+    from orion.situational.street_material import REDUCER_EVENT_TYPES_SQL, split_caption_sql
 
-    return f"""
-SELECT event_id, stream_id, event_type, narrative, created_at
-FROM vision_events
-WHERE stream_id = ANY($1::text[])
-  AND narrative IS NOT NULL AND narrative <> ''
-  AND {REDUCER_EVENT_TYPES_SQL}
-  AND created_at > now() - make_interval(hours => $2)
-ORDER BY created_at DESC
-LIMIT $3
-"""
+    return split_caption_sql(
+        "SELECT event_id, stream_id, event_type, narrative, tags, created_at FROM vision_events "
+        "WHERE stream_id = ANY($1::text[]) "
+        "AND narrative IS NOT NULL AND narrative <> '' "
+        f"AND {REDUCER_EVENT_TYPES_SQL} "
+        "AND created_at > now() - make_interval(hours => $2)",
+        order="ORDER BY created_at DESC",
+        other_limit="$3",
+    )
 
 
 # asyncpg ($-numbered) copy of street_material.STREET_CAPTIONS_SQL; reducer
@@ -612,6 +611,10 @@ def build_street_caption_cards(
             plain.append({k: r[k] for k in ("event_id", "stream_id", "event_type", "narrative", "created_at")})
         except (KeyError, IndexError, TypeError):
             continue
+        try:
+            plain[-1]["tags"] = r["tags"]  # camera_caption detector labels; older rows/fixtures lack it
+        except (KeyError, IndexError, TypeError):
+            pass
     kept = dedupe_street_captions(plain, now=now, max_age_sec=float(lookback_hours) * 3600, limit=limit)
     return [
         StreetCaptionCard(

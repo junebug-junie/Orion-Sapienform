@@ -246,3 +246,129 @@ def test_head_count_row_found_by_head_count_zone_flag_and_kept_a_count() -> None
 
     sql = str(_PATIO_PRESENCE_SQL)
     assert "head_count_zone" in sql and "no_embed_zone" in sql
+
+
+# --- camera captions (orion-vision-window caption events, 2026-10-16) ----------
+# Live 2026-10-16 the gate accepted "A person is pushing a stroller on a
+# sidewalk ..." at 22:53 UTC and Orion's street line still read only the
+# council's "A vehicle is observed in the walkway area." These rows now exist;
+# they must read as a caption of one frame, never as a checked fact.
+
+STROLLER = ("A person is pushing a stroller on a sidewalk in a suburban neighborhood, "
+            "with a car parked on the street and a mountain in the background.")
+
+
+def _camcap(text, minutes_ago, labels=("person", "stroller")):
+    row = _cap(text, minutes_ago, event_type="camera_caption")
+    row["tags"] = ["camera_caption", "motion_unverified", *(f"detector:{l}" for l in labels)]
+    return row
+
+
+def test_camera_caption_is_labelled_with_detector_boxes_for_every_consumer() -> None:
+    (got,) = dedupe_street_captions([_camcap(STROLLER, 1)], now=NOW, max_age_sec=900, limit=2)
+    assert got["event_type"] == "camera_caption"
+    assert got["detector_labels"] == ["person", "stroller"]
+    assert got["narrative"].startswith("camera caption (one frame; detector saw person, stroller; motion not verified): ")
+    assert '"A person is pushing a stroller' in got["narrative"]
+    assert got["caption_text"].startswith("A person is pushing")
+
+
+def test_camera_caption_tags_as_json_text_still_parse() -> None:
+    row = _camcap("A dog walks by.", 1)
+    row["tags"] = '["camera_caption", "detector:dog"]'
+    (got,) = dedupe_street_captions([row], now=NOW, max_age_sec=900, limit=2)
+    assert got["detector_labels"] == ["dog"]
+
+
+def test_council_rows_stay_unlabelled() -> None:
+    (got,) = dedupe_street_captions([_cap("A vehicle is observed in the walkway area.", 1)],
+                                    now=NOW, max_age_sec=900, limit=2)
+    assert got["narrative"] == "A vehicle is observed in the walkway area."
+    assert got["caption_text"] is None
+
+
+def test_brief_line_shows_the_camera_caption_with_its_local_time_alongside_the_council() -> None:
+    lines = summarize_street(
+        sightings=[], expectations=[], unresolved=[], patio=None, now=NOW, tz=TZ, camera="walkway",
+        captions=[_camcap(STROLLER, 1), _cap("A vehicle is observed in the walkway area.", 2)],
+    )
+    assert lines[0].startswith(
+        'On the walkway just now: camera caption logged 07:59 (one frame; detector saw person, stroller; '
+        'motion not verified): "A person is pushing a stroller'
+    )
+    assert lines[0].endswith("; A vehicle is observed in the walkway area.")
+
+
+def test_brief_shows_at_most_one_camera_caption_and_keeps_the_rhythm_line() -> None:
+    long = "A " + "very " * 60 + "long caption."
+    lines = summarize_street(
+        sightings=[], expectations=[{"subject_label": "the black dog", "status": "missed", "peak_minute": 460}],
+        unresolved=[], patio=None, now=NOW, tz=TZ, camera="walkway",
+        captions=[_camcap("First " + long, 1), _camcap("Second " + long, 2), _cap("Third " + long, 3)],
+    )
+    assert lines[0].count("camera caption") == 1
+    assert '"First' in lines[0] and "Second" not in lines[0] and "; Third" in lines[0]
+    assert len(" ".join(lines)) <= 420
+    assert "did not come" in " ".join(lines)
+
+
+def test_fetch_street_summary_selects_tags_and_labels_a_camera_caption() -> None:
+    now = datetime.now(timezone.utc)
+    row = _camcap(STROLLER, 0)
+    row["created_at"] = now
+    conn = _Conn({"FROM vision_events": [row]})
+    got = fetch_street_summary("walkway", engine=_Engine(conn), now=now)
+    assert "camera caption logged " in got.lines[0] and "detector saw person, stroller" in got.lines[0]
+
+
+def test_every_caption_sql_selects_tags() -> None:
+    from orion.curiosity.study_material import STREET_CAPTIONS_RECENT_SQL
+    from orion.situational.perception_reader import _STREET_CAPTIONS_SQL
+    from orion.situational.street_material import STREET_CAPTIONS_SQL
+
+    for sql in (STREET_CAPTIONS_SQL, str(_STREET_CAPTIONS_SQL), STREET_CAPTIONS_RECENT_SQL):
+        assert " tags," in sql
+
+
+def test_seven_detector_labels_still_fit_the_street_budget() -> None:
+    every = ("person", "dog", "bicycle", "stroller", "vehicle", "package", "mail truck")
+    long = "A " + "very " * 60 + "long caption."
+    lines = summarize_street(
+        sightings=[], expectations=[{"subject_label": "the black dog", "status": "missed", "peak_minute": 460}],
+        unresolved=[], patio=None, now=NOW, tz=TZ, camera="walkway",
+        captions=[_camcap("Cam " + long, 1, labels=every), _cap("Council " + long, 2)],
+    )
+    assert "detector saw person, dog, bicycle +4;" in lines[0]
+    assert len(" ".join(lines)) <= 420
+    assert "did not come" in " ".join(lines)
+
+
+def test_many_captions_never_crowd_out_the_council_row_in_any_consumer() -> None:
+    rows = [_camcap(f"Caption number {i} of a busy street.", i * 0.1) for i in range(25)]
+    rows.append(_cap("A vehicle is observed in the walkway area.", 5))
+    got = dedupe_street_captions(rows, now=NOW, max_age_sec=900, limit=3)
+    assert [g["event_type"] for g in got] == ["camera_caption", "visual_observation"]
+
+
+def test_caption_sql_fetches_captions_and_council_rows_as_separate_limits() -> None:
+    """Runs the real shared SQL on SQLite: 25 newer captions, 1 older council
+    row; the council row is still fetched."""
+    from sqlalchemy import bindparam, create_engine, text
+
+    from orion.situational.street_material import STREET_CAPTIONS_SQL
+
+    engine = create_engine("sqlite://")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE vision_events (event_id TEXT, stream_id TEXT, event_type TEXT, "
+                          "narrative TEXT, tags TEXT, created_at TIMESTAMP)"))
+        for i in range(25):
+            conn.execute(text("INSERT INTO vision_events VALUES (:i, 'walkway', 'camera_caption', :n, '[]', :c)"),
+                         {"i": f"c{i}", "n": f"cap {i}", "c": NOW - timedelta(seconds=i)})
+        conn.execute(text("INSERT INTO vision_events VALUES ('v', 'walkway', 'visual_observation', "
+                          "'A vehicle is observed.', '[]', :c)"), {"c": NOW - timedelta(minutes=5)})
+        stmt = text(STREET_CAPTIONS_SQL).bindparams(bindparam("stream_ids", expanding=True))
+        rows = conn.execute(stmt, {"stream_ids": ["walkway"], "since": NOW - timedelta(hours=1),
+                                   "limit": 20}).mappings().all()
+    types = [r["event_type"] for r in rows]
+    assert types.count("camera_caption") == 2
+    assert "visual_observation" in types

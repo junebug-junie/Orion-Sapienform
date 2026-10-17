@@ -102,8 +102,17 @@ class CaptionGate:
             return "no_frame_ts"  # cannot prove it is fresh
         if age > self.max_age_sec:
             return "stale"
-        candidates = []
-        for o in source:
+        candidates = self._candidates(source)
+        if not candidates:
+            return "no_gate_detection"
+        if all(self._fixtures[label].is_fixture_box(stream_id, box) for label, box in candidates):
+            return "stationary_only"
+        return None
+
+    def _candidates(self, source: Any) -> List[Tuple[str, List[Any]]]:
+        """Gate-label boxes at >= min_score from a caption's source detections."""
+        out: List[Tuple[str, List[Any]]] = []
+        for o in source if isinstance(source, list) else ():
             if not isinstance(o, dict):
                 continue
             label = str(o.get("label") or "").strip().lower()
@@ -113,22 +122,48 @@ class CaptionGate:
             except (TypeError, ValueError):
                 continue
             if label in self._fixtures and score >= self.min_score and len(box) == 4:
-                candidates.append((label, box))
-        if not candidates:
-            return "no_gate_detection"
-        if all(self._fixtures[label].is_fixture_box(stream_id, box) for label, box in candidates):
-            return "stationary_only"
-        return None
+                try:
+                    box = [float(v) for v in box]
+                except (TypeError, ValueError):
+                    continue  # a malformed box is no evidence; never fail the flush
+                out.append((label, box))
+        return out
+
+    def _accepted_record(self, stream_id: str, art: VisionArtifactPayload, ts: float, text: str) -> Dict[str, Any]:
+        """Provenance of one accepted caption: which moving detector boxes
+        let it through, the frame it describes, and when. Read by the
+        window's caption-event publisher (main.py) and its log line."""
+        inputs = art.inputs or {}
+        moving = [
+            (label, box)
+            for label, box in self._candidates(inputs.get("source_objects"))
+            if not self._fixtures[label].is_fixture_box(stream_id, box)
+        ]
+        crop = inputs.get("caption_crop_boxes")
+        return {
+            "artifact_id": art.artifact_id,
+            "correlation_id": art.correlation_id,
+            "text": text,
+            "ts": float(ts),
+            "frame_ts": inputs.get("frame_ts"),
+            "image_path": inputs.get("image_path"),
+            "labels": list(dict.fromkeys(label for label, _ in moving)),
+            "boxes": [(label, list(box)) for label, box in moving],
+            "crop_boxes": crop if isinstance(crop, list) else None,
+            "model": next(iter((art.model_fingerprints or {}).values()), None),
+        }
 
     def apply(
-        self, stream_id: str, items: List[Item]
+        self, stream_id: str, items: List[Item], *, accepted_out: Optional[List[Dict[str, Any]]] = None
     ) -> Tuple[List[Item], Optional[Dict[str, Any]], List[Dict[str, Any]]]:
         """Returns (items with failing captions marked rejected, this window's
         gate counts or None when the stream is not gated / had no caption,
         the individual rejections for the log).
 
         The counts go into the window summary; the rejected TEXT never does
-        -- the summary is what the council narrates from."""
+        -- the summary is what the council narrates from. When
+        ``accepted_out`` is given, one provenance record per accepted caption
+        is appended to it (``_accepted_record``)."""
         if not self.enabled_for(stream_id):
             return items, None, []
         stream_id = str(stream_id).strip().lower()  # trackers are keyed lowercase
@@ -151,6 +186,8 @@ class CaptionGate:
             reason = self._verdict(stream_id, art, ts)
             if reason is None:
                 accepted += 1
+                if accepted_out is not None:
+                    accepted_out.append(self._accepted_record(stream_id, art, ts, text))
                 out.append((art, ts))
                 continue
             rejected[reason] += 1

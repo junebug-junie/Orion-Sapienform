@@ -226,7 +226,9 @@
   function choiceStyleText(frame) {
     const s = frame && frame.choice_style;
     if (!s || !(Number(s.choices) > 0)) return "No curiosity choices recorded yet.";
-    return `In curiosity over the last ${s.window_days} days: took the top suggestion ${s.took_top} of ` +
+    // window_days is the span the frame really covers (1..14), not a fixed 14.
+    const span = Number(s.window_days) === 1 ? "day" : `${s.window_days} days`;
+    return `In curiosity over the last ${span}: took the top suggestion ${s.took_top} of ` +
       `${s.choices} times, went their own way ${s.went_own_way} of ${s.choices}.`;
   }
 

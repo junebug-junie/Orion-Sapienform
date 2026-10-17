@@ -26,6 +26,9 @@ from orion.schemas.personality import (
 
 DEFAULT_MAX_AGE_SEC = 3600.0  # reducer ticks every 600 s; an hour without a frame is stale
 DEFAULT_TOP_K = 5
+# The choice line is a pattern claim; below this many choices it is an anecdote, not shown
+# (live 2026-10-17: "went your own way in 1 of 1 choices" read to Orion as a tendency).
+MIN_CHOICES_SHOWN = 5
 LABEL_SHOWN_CHARS = 120
 
 HEADER = (
@@ -70,11 +73,12 @@ def _line(d: Any) -> str:
 
 def _choice_line(frame: PersonalityFrameV1) -> str | None:
     style = frame.choice_style
-    if style is None or style.choices <= 0:
+    if style is None or style.choices < MIN_CHOICES_SHOWN:
         return None
+    days = "day" if style.window_days == 1 else f"{style.window_days} days"
     return (
         f"In curiosity you went your own way in {style.went_own_way} of {style.choices} choices "
-        f"over the last {style.window_days} days, and took the top suggestion in {style.took_top}."
+        f"over the last {days}, and took the top suggestion in {style.took_top}."
     )
 
 

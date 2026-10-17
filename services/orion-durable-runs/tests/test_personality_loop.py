@@ -808,3 +808,28 @@ def test_a_backdated_company_close_is_folded_before_rows_near_it_are_stamped():
     clock.at = utc(minutes=32)
     asyncio.run(drv.tick())
     assert store.evidence["chat:after_leaving"].meta["situation"]["company"] is False
+
+
+def test_covered_days_is_the_graph_age_clamped_to_the_window():
+    from app.personality_store import covered_days
+
+    born = utc(minutes=0)
+    assert covered_days(born + timedelta(hours=3), born) == 1
+    assert covered_days(born + timedelta(days=2, hours=1), born) == 3
+    assert covered_days(born + timedelta(days=40), born) == 14
+    assert covered_days(born, None) == 1
+
+
+def test_a_choice_older_than_the_seed_never_drops_out_of_the_window():
+    from app.personality_store import choice_window_days
+    from orion.personality.graph import choice_style_from_rows
+
+    born = utc(minutes=0)
+    pre_birth = born - timedelta(hours=1, minutes=51)  # live: turn started 1h51m before the seed
+    rows = [{"lane": "curiosity_choice", "occurred_at": pre_birth,
+             "meta": {"choice_id": "c1", "chosen_best_rank": 2}}]
+    for hours in (1, 21, 22.5, 23.9, 24.5, 47):  # incl. 0.92-1.0 days, where it used to vanish
+        now = born + timedelta(hours=hours)
+        window = choice_window_days(now, born, [r["occurred_at"] for r in rows])
+        style = choice_style_from_rows(rows, now=now, window_days=window)
+        assert style is not None and style.choices == 1, hours

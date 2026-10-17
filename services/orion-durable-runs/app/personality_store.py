@@ -12,6 +12,7 @@ recent weight history, and evidence rows, newest first.
 from __future__ import annotations
 
 import json
+import math
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -21,12 +22,31 @@ from orion.personality.situation import COMPANY_CLOSE_GRACE, SituationInputs
 from orion.personality.graph import CHOICE_LANE, EvidenceRow, HistoryRow, Node, choice_style_from_rows, project_frame
 from orion.schemas.personality import FRAME_MAX_DISPOSITIONS, PersonalityFrameV1
 
-from app.personality_sources import Cursor
+from app.personality_sources import SEED_CURSOR, Cursor
 
 logger = logging.getLogger("orion-durable-runs.personality_store")
 
 STATEMENT_TIMEOUT = "30s"
 CHOICE_STYLE_WINDOW_DAYS = 14
+
+
+def covered_days(now: datetime, graph_born_at: Optional[datetime]) -> int:
+    """Days the choice window really covers: the graph's age, at least 1, at most 14. The cue
+    says "over the last N days"; with a 14 claimed on a one-day-old graph it read as a two-week
+    pattern from one choice (live 2026-10-17)."""
+    if graph_born_at is None:
+        return 1
+    age_days = (now - graph_born_at).total_seconds() / 86400.0
+    return max(1, min(CHOICE_STYLE_WINDOW_DAYS, math.ceil(age_days)))
+
+
+def choice_window_days(now: datetime, graph_born_at: Optional[datetime],
+                       choice_times: Sequence[datetime]) -> int:
+    """The window starts at the earlier of graph birth and the oldest choice held. A choice is
+    dated by its turn's start, which can precede the seed; measuring from the seed alone made such
+    a choice drop out of the count and come back at each day boundary (review 2026-10-17)."""
+    starts = [t for t in [graph_born_at, *choice_times] if t is not None]
+    return covered_days(now, min(starts) if starts else None)
 TICK_HEARTBEAT = "__tick__"  # personality_cursor row written by every committed tick
 HISTORY_POINTS = 60
 
@@ -323,7 +343,12 @@ class PersonalityStore:
                 n_ev = (await (await conn.execute("SELECT count(*) AS n FROM personality_evidence")).fetchone())["n"]
                 beat = await (await conn.execute(
                     "SELECT cursor_at FROM personality_cursor WHERE source = %(s)s", {"s": TICK_HEARTBEAT})).fetchone()
-        style = choice_style_from_rows(choice_rows, now=now, window_days=CHOICE_STYLE_WINDOW_DAYS)
+                # Graph start: the one-shot seed cursor, written once at first boot and never moved
+                # (source cursors' updated_at/cursor_at advance as they read, so they drift).
+                born = await (await conn.execute(
+                    "SELECT cursor_at AS t FROM personality_cursor WHERE source = %(s)s", {"s": SEED_CURSOR})).fetchone()
+        style = choice_style_from_rows(choice_rows, now=now, window_days=choice_window_days(
+            now, (born or {}).get("t"), [r["occurred_at"] for r in choice_rows]))
         nodes = [node_from_row({**r, "centroid": []}) for r in active]
         # "As of" the last committed tick, never the request time: before the first commit the
         # frame is dated at the epoch, so every reader sees it as stale rather than fresh.

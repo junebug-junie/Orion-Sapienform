@@ -8,6 +8,9 @@ services:
       context: ../..
       dockerfile: services/orion-vision-retina/Dockerfile
     container_name: orion-vision-retina
+    # The service exits on purpose when it cannot see (a dead capture task,
+    # publisher watchdog, wedged RTSP readers); this brings it back.
+    restart: unless-stopped
     # Same reason as the walkway instance below: let an RTSP reader release
     # (TEARDOWN) before SIGKILL. Harmless for webcam/folder sources.
     stop_grace_period: 30s
@@ -33,6 +36,8 @@ services:
       - FRAME_RETENTION_SECONDS=${FRAME_RETENTION_SECONDS:-300}
       - JPEG_QUALITY=${JPEG_QUALITY:-90}
       - HEALTH_INTERVAL_SECONDS=${HEALTH_INTERVAL_SECONDS:-10.0}
+      # Publisher watchdog: degraded health, then exit-for-restart (main.py).
+      - RETINA_PUBLISH_STALL_SECONDS=${RETINA_PUBLISH_STALL_SECONDS:-120.0}
       - SOURCE_RECONNECT_SECONDS=${SOURCE_RECONNECT_SECONDS:-5.0}
       # RTSP only: TCP transport, read timeout, stall watchdog (sources.py).
       - RETINA_RTSP_TRANSPORT=${RETINA_RTSP_TRANSPORT:-tcp}
@@ -160,12 +165,14 @@ services:
       - RETINA_HEIGHT=
       - FRAME_STORAGE_DIR=${FRAME_STORAGE_DIR:-/mnt/telemetry/vision/frames}
       - RETINA_FRAME_MODE=local
-      # Effective lifetime is ~60s, not this: the edge's capture worker prunes
-      # the same shared frames directory at its own FRAME_RETENTION_SECONDS.
-      # Ample for router -> host (seconds).
+      # Each writer prunes only its own files (frame_store.owned_frame_pattern;
+      # the edge prunes only frame_/still_), so walkway frames live this long.
+      # Ample for router -> host (seconds) and story-strip capture.
       - FRAME_RETENTION_SECONDS=${FRAME_RETENTION_SECONDS:-300}
       - JPEG_QUALITY=${WALKWAY_RETINA_JPEG_QUALITY:-88}
       - HEALTH_INTERVAL_SECONDS=${HEALTH_INTERVAL_SECONDS:-10.0}
+      # Publisher watchdog: degraded health, then exit-for-restart (main.py).
+      - RETINA_PUBLISH_STALL_SECONDS=${RETINA_PUBLISH_STALL_SECONDS:-120.0}
       - SOURCE_RECONNECT_SECONDS=${SOURCE_RECONNECT_SECONDS:-5.0}
       # RTSP only: TCP transport, read timeout, stall watchdog (sources.py).
       - RETINA_RTSP_TRANSPORT=${RETINA_RTSP_TRANSPORT:-tcp}
@@ -242,6 +249,8 @@ services:
       - FRAME_RETENTION_SECONDS=${FRAME_RETENTION_SECONDS:-300}
       - JPEG_QUALITY=${DOORBELL_RETINA_JPEG_QUALITY:-88}
       - HEALTH_INTERVAL_SECONDS=${HEALTH_INTERVAL_SECONDS:-10.0}
+      # Publisher watchdog: degraded health, then exit-for-restart (main.py).
+      - RETINA_PUBLISH_STALL_SECONDS=${RETINA_PUBLISH_STALL_SECONDS:-120.0}
       - RETINA_RING_STATE_DIR=/var/lib/orion-vision-ring
       - RETINA_RING_EVENT_KINDS=${DOORBELL_RING_EVENT_KINDS:-motion,ding}
       - RETINA_RING_BURST_SECONDS=${DOORBELL_RING_BURST_SECONDS:-15.0}

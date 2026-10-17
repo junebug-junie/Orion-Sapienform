@@ -62,6 +62,7 @@ def make_system_health_envelope(
     fps_target: float,
     storage_dir: str,
     heartbeat_interval_sec: float,
+    capture_stalled: str | None = None,
 ) -> BaseEnvelope:
     # Threaded from the caller's real loop period rather than left at the schema
     # default: orion-equilibrium-service computes grace = interval * 3.0 and marks
@@ -73,7 +74,10 @@ def make_system_health_envelope(
         version=service_version,
         boot_id=BOOT_ID,
         last_seen_ts=datetime.now(timezone.utc),
-        status="ok" if source_ok else "degraded",
+        # capture_stalled: nothing published for RETINA_PUBLISH_STALL_SECONDS
+        # outside an expected quiet state. 2026-10-17 the walkway reported
+        # "ok" with a 10255 s old frame; that is not ok.
+        status="ok" if source_ok and not capture_stalled else "degraded",
         details={
             "camera_id": camera_id,
             "stream_id": stream_id,
@@ -85,6 +89,8 @@ def make_system_health_envelope(
             "fps_observed": metrics.fps_observed,
             "last_frame_ts": metrics.last_frame_ts,
             "last_frame_age_sec": last_frame_age_sec(metrics),
+            "capture_stalled": bool(capture_stalled),
+            "capture_stalled_reason": capture_stalled,
             "source_stall_restarts": metrics.source_stall_restarts,
             "source_quiet_wait_remaining_sec": metrics.source_quiet_wait_remaining_sec,
             "source_last_session_end_ts": metrics.source_last_session_end_ts,

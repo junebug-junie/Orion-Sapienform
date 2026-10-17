@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     #   BURST_SECONDS how long each live view runs; RETINA_FPS samples it.
     #   COOLDOWN_SECONDS  from the end of one live view to the next start.
     #                 Each live view wakes a battery camera.
-    RETINA_RING_STATE_DIR: str = "/var/lib/orion-vision-retina/ring"
+    RETINA_RING_STATE_DIR: str = "/var/lib/orion-vision-ring"
     RETINA_RING_EVENT_KINDS: str = "motion,ding"
     RETINA_RING_BURST_SECONDS: float = 15.0
     RETINA_RING_COOLDOWN_SECONDS: float = 30.0

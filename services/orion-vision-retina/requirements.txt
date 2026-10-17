@@ -10,3 +10,6 @@ numpy==1.26.4
 ring_doorbell==0.9.14
 aiortc==1.15.0
 av==17.1.0
+# ring_doorbell's push client; its stop-after-3-errors behaviour is what
+# RingEventFrameSource._supervise recovers from. Pinned so that stays true.
+firebase-messaging==0.4.5

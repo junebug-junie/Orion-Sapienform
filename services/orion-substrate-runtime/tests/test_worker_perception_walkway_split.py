@@ -247,4 +247,28 @@ def test_settings_default_routes_walkway_stream() -> None:
     from app.settings import Settings
 
     settings = Settings(POSTGRES_URI="postgresql://unused/unused")
-    assert settings.perception_walkway_stream_ids == "walkway,doorbell"
+    assert settings.perception_walkway_stream_ids == "walkway"
+
+
+def test_doorbell_is_scored_and_baselined_but_feeds_no_node() -> None:
+    """2026-10-17: Ring doorbell bursts must not overwrite the walkway node
+    (score, warm-up count, staleness clock) nor the room node."""
+    worker = _worker()
+    worker._last_perception_prediction_error = 0.11
+    worker._last_perception_stream_id = "cam0"
+    walkway = worker._perception_walkway_state()
+    walkway.score, walkway.surprise_n, walkway.stream_id = 0.2, 7, "walkway"
+
+    worker._handle_perception_prediction_error_message(_message("doorbell", [0.0, 1.0]))
+
+    assert (walkway.score, walkway.surprise_n, walkway.stream_id, walkway.embedding_at) == (0.2, 7, "walkway", None)
+    assert worker._last_perception_prediction_error == 0.11 and worker._last_perception_stream_id == "cam0"
+    # Its own per-stream baseline still learns.
+    saved = [c.args[0] for c in worker._store.save_perception_embedding_baseline.call_args_list]
+    assert saved == ["doorbell"]
+
+
+def test_settings_default_log_only_stream_is_doorbell() -> None:
+    from app.settings import Settings
+
+    assert Settings(POSTGRES_URI="postgresql://unused/unused").perception_log_only_stream_ids == "doorbell"

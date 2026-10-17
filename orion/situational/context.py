@@ -310,7 +310,7 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         street_stream_ids=_split_stream_ids(
             getattr(settings, "orion_situation_street_stream_ids", None)
             if getattr(settings, "orion_situation_street_stream_ids", None) is not None
-            else os.getenv("ORION_SITUATION_STREET_STREAM_IDS", "walkway,doorbell")
+            else os.getenv("ORION_SITUATION_STREET_STREAM_IDS", "doorbell,walkway")
         ),
         # 1200s (20min): see identity_ask_cooldown.py's module docstring for
         # the reasoning -- long enough that "ask once per sit-down" is the
@@ -596,7 +596,7 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         # Plain getattr, no `or` fallback: an explicit "" disables the
         # Street line (settings_from_runtime's own contract).
         orion_situation_street_stream_ids=getattr(
-            cfg, "ORION_SITUATION_STREET_STREAM_IDS", "walkway,doorbell"
+            cfg, "ORION_SITUATION_STREET_STREAM_IDS", "doorbell,walkway"
         ),
         orion_situation_identity_ask_cooldown_seconds=1200,
         orion_situation_affect_enabled=bool(getattr(cfg, "ORION_SITUATION_AFFECT_ENABLED", True)),
@@ -1794,9 +1794,12 @@ async def _build_street_fields(
     Walkway spec ideas 5 and 9. Every configured stream that has anything to
     say gets its own framed part, in config order (2026-10-17: the doorbell
     joined the walkway; first-stream-wins hid a visitor at the door behind a
-    busy street). `street_stream_id` is the first stream that spoke.
-    Fail-open: any failure is a missing line, recorded in diagnostics, never
-    an error.
+    busy street). The default order is `doorbell,walkway`: the doorbell
+    speaks only right after a visit, and consumers cut the joined text at a
+    fixed length (chat_stance `_compact`, 520), so the rarer line goes first.
+    `street_stream_id` is the first stream that spoke. Fail-open: a failed
+    read is a missing part, recorded in diagnostics, never an error, and
+    never stops the other cameras' reads.
 
     Each part opens with what the camera IS (2026-10-15, live turn
     caa3eb4d): "Your outdoor camera (walkway, since 2026-10-14), looking over
@@ -1806,6 +1809,7 @@ async def _build_street_fields(
     """
     parts: list[str] = []
     first_stream: str | None = None
+    errored = False
     for stream_id in cfg.street_stream_ids:
         try:
             street = await asyncio.to_thread(
@@ -1814,12 +1818,15 @@ async def _build_street_fields(
         except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
             diagnostics.provider_status["perception_street"] = "error"
             diagnostics.provider_errors["perception_street"] = str(exc)
-            break
+            errored = True
+            continue
         if not street.read_ok:
-            diagnostics.provider_status["perception_street"] = "unread"
+            if not errored:
+                diagnostics.provider_status["perception_street"] = "unread"
             continue
         if not street.lines:
-            diagnostics.provider_status["perception_street"] = "quiet"
+            if not errored:
+                diagnostics.provider_status["perception_street"] = "quiet"
             continue
         framing = street_framing(
             describe_camera(stream_id),
@@ -1830,7 +1837,8 @@ async def _build_street_fields(
         first_stream = first_stream or stream_id
     if not parts:
         return {}
-    diagnostics.provider_status["perception_street"] = "ok"
+    if not errored:
+        diagnostics.provider_status["perception_street"] = "ok"
     return {"street_summary": " ".join(parts), "street_stream_id": first_stream}
 
 

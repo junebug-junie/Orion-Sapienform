@@ -156,6 +156,22 @@ def test_stale_walkway_is_not_seeing_and_drops_its_count() -> None:
     assert senses_line([sense]).endswith("no frames arriving, last frame 3 h ago.")
 
 
+def test_quiet_doorbell_reads_waiting_not_broken(monkeypatch) -> None:
+    """2026-10-17: the Ring doorbell only sends frames after a visit. Hours
+    without one is a quiet door, not a failing eye."""
+    monkeypatch.delenv("ORION_CAMERA_DESCRIPTIONS", raising=False)
+    eng = _engine()
+    _frames(eng, "doorbell", timedelta(hours=3))
+    eyes = fetch_camera_eyes(["doorbell", "carbon"], count_individuals_for=["doorbell"], engine=eng, now=NOW)
+    senses = build_senses(eyes, now=NOW, tz=TZ, live_max_age_seconds=900)
+    assert [s.status for s in senses] == ["not_seeing", "no_frames"]
+    line = senses_line(senses)
+    assert "your doorbell camera (doorbell" in line
+    assert "sends frames only when something happens there; last time 3 h ago" in line
+    assert "the laptop webcam (carbon" in line and "no frames yet" in line  # room cameras unchanged
+    assert describe_camera("walkway").event_driven is False
+
+
 def test_pre_stationary_schema_still_counts() -> None:
     eng = _engine(stationary=False)
     _frames(eng, "walkway", timedelta(seconds=5))
@@ -234,9 +250,9 @@ def test_brief_lists_room_and_walkway_and_the_street_line_says_what_it_is(monkey
     ]
     seen = _stub(monkeypatch, eyes)
     diag = SituationDiagnosticsV1()
-    cfg = _cfg(perception_enabled=True, perception_stream_ids=["carbon", "cam0"])
+    cfg = _cfg(perception_enabled=True, perception_stream_ids=["carbon", "cam0"], street_stream_ids=["walkway"])
     ctx = asyncio.run(situation_mod._build_perception_context(cfg, diag))
-    assert seen == {"streams": ["carbon", "cam0", "walkway", "doorbell"], "counted": ["walkway", "doorbell"]}
+    assert seen == {"streams": ["carbon", "cam0", "walkway"], "counted": ["walkway"]}
     assert diag.provider_status["perception_cameras"] == "ok"
     assert [c.status for c in ctx.cameras] == ["not_seeing", "live", "live"]
     text = _brief_text(ctx)
@@ -252,7 +268,7 @@ def test_brief_lists_room_and_walkway_and_the_street_line_says_what_it_is(monkey
 def test_unread_cameras_leave_no_line_and_street_still_framed(monkeypatch) -> None:
     _stub(monkeypatch, None)
     diag = SituationDiagnosticsV1()
-    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True), diag))
+    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True, street_stream_ids=["walkway"]), diag))
     assert ctx.cameras == []
     assert diag.provider_status["perception_cameras"] == "unread"
     text = _brief_text(ctx)
@@ -268,7 +284,7 @@ def test_camera_read_error_is_fail_open(monkeypatch) -> None:
 
     monkeypatch.setattr(situation_mod, "fetch_camera_eyes", _boom)
     diag = SituationDiagnosticsV1()
-    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True), diag))
+    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True, street_stream_ids=["walkway"]), diag))
     assert ctx.cameras == [] and diag.provider_status["perception_cameras"] == "error"
     assert ctx.street_summary.startswith("Your outdoor camera (walkway)")
 
@@ -323,7 +339,7 @@ def test_slow_camera_read_hits_the_deadline_not_the_turn(monkeypatch) -> None:
     monkeypatch.setattr(situation_mod, "fetch_camera_eyes", lambda *a, **k: _time.sleep(0.5))
     diag = SituationDiagnosticsV1()
     t0 = _time.monotonic()
-    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True), diag))
+    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True, street_stream_ids=["walkway"]), diag))
     assert diag.provider_status["perception_cameras"] == "timeout" and ctx.cameras == []
     assert ctx.street_summary.startswith("Your outdoor camera (walkway)")
     assert _time.monotonic() - t0 < 2.0

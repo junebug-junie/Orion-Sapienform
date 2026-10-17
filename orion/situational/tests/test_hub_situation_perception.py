@@ -104,7 +104,7 @@ def test_hub_perception_defaults_on_with_cortex_exec_stream_defaults() -> None:
     assert cfg.perception_max_age_seconds == 900
     # Same room cameras and street camera cortex-exec reads by default.
     assert cfg.perception_stream_ids == ["carbon", "cam0"]
-    assert cfg.street_stream_ids == ["walkway", "doorbell"]
+    assert cfg.street_stream_ids == ["doorbell", "walkway"]
 
 
 def test_hub_flag_false_is_the_kill_switch() -> None:

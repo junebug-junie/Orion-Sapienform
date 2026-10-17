@@ -611,7 +611,16 @@ class Settings(BaseSettings):
     # e.g. "none" -- compose's ${...:-walkway} turns an empty value back into
     # "walkway".
     perception_walkway_stream_ids: str = Field(
-        "walkway,doorbell", alias="SUBSTRATE_PERCEPTION_WALKWAY_STREAM_IDS"
+        "walkway", alias="SUBSTRATE_PERCEPTION_WALKWAY_STREAM_IDS"
+    )
+    # Streams scored and logged (substrate_perception_* log line, per-stream
+    # baseline row) but feeding no node: neither the room node nor the
+    # walkway node (2026-10-17, the Ring doorbell -- event bursts would
+    # overwrite the walkway node's score and warm-up count). Checked before
+    # the walkway list. compose's ${...:-doorbell} turns an empty value back
+    # into "doorbell"; set a name no camera uses (e.g. "none") to disable.
+    perception_log_only_stream_ids: str = Field(
+        "doorbell", alias="SUBSTRATE_PERCEPTION_LOG_ONLY_STREAM_IDS"
     )
 
     # Health monitor -> orion-notify attention alerts. Edge-triggered (fires only

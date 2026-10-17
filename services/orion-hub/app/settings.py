@@ -1798,7 +1798,7 @@ class Settings(BaseSettings):
     )
     # Walkway cameras for the Street line. Empty string disables that line.
     ORION_SITUATION_STREET_STREAM_IDS: str = Field(
-        default="walkway,doorbell", alias="ORION_SITUATION_STREET_STREAM_IDS"
+        default="doorbell,walkway", alias="ORION_SITUATION_STREET_STREAM_IDS"
     )
 
     @field_validator("ORION_SITUATION_WEATHER_LAT", "ORION_SITUATION_WEATHER_LON", mode="before")

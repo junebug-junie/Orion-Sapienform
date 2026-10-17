@@ -116,10 +116,18 @@ docker exec -it orion-vision-retina-doorbell python -m app.ring_login
 ```
 
 It asks for the Ring email, password and 2FA code, and stores only the
-refresh token, owner-only, in `/mnt/telemetry/vision/retina_state/ring/`,
+refresh token, owner-only, in `/mnt/telemetry/vision/ring_state/` (mounted
+into the doorbell container only),
 next to the FCM push credentials and a stable hardware id (a changing one
 would add a new "authorized device" in the Ring app on every recreate). The
 source checks for the token every 60 s, so no restart is needed after login.
+
+The push link is supervised every 60 s: firebase-messaging stops for good
+after 3 connection errors, and ring_doorbell refreshes its session only once.
+A stopped listener shows as `last_error = "ring push listener stopped"` and is
+rebuilt, and the whole connection is rebuilt every 12 h. Each live view is
+registered with Ring before it starts, so every exit path (no answer, error,
+shutdown) closes it -- an orphaned session keeps a battery camera streaming.
 
 ### RTSP stall watchdog (2026-10-15)
 

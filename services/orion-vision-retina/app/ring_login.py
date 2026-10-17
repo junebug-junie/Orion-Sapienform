@@ -4,14 +4,14 @@
 
 Prompts for the Ring account email, password and 2FA code, then writes the
 refresh token (owner-only) under RETINA_RING_STATE_DIR. The password is never
-stored. Restart the container afterwards so the source picks the token up.
+stored. No restart needed: the running source checks for the token every
+minute.
 """
 
 from __future__ import annotations
 
 import asyncio
 import getpass
-import json
 from pathlib import Path
 
 from .ring_source import TOKEN_FILE, USER_AGENT, hardware_id, token_updater
@@ -32,7 +32,7 @@ async def _login(state_dir: str) -> None:
     finally:
         await auth.async_close()
     token_updater(state_dir)(token)
-    print(f"Saved Ring token to {Path(state_dir) / TOKEN_FILE}. Restart the container.")
+    print(f"Saved Ring token to {Path(state_dir) / TOKEN_FILE}. The doorbell connects within a minute.")
 
 
 def main() -> None:

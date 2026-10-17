@@ -29,3 +29,5 @@ jobs:
         run: pytest -q services/orion-hub/tests/test_orion_is_asking_browser_smoke.py
       - name: Run Vision panel "Walkway (live)" browser smoke
         run: pytest -q services/orion-hub/tests/test_vision_live_frame_browser_smoke.py
+      - name: Run "Walkway stories" spot-check card browser smoke (360 px)
+        run: pytest -q services/orion-hub/tests/test_walkway_stories_browser_smoke.py

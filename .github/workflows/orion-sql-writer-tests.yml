@@ -172,7 +172,7 @@ jobs:
           # multi-statement string: one statement at a time, as psql does.
           import re
           conn.cursor().execute(pathlib.Path("services/orion-sql-db/manual_migration_vision_osnet_shadow_v1.sql").read_text())
-          for f in ("vision_split_v1", "vision_reanchor_v1"):
+          for f in ("vision_split_v1", "vision_reanchor_v1", "vision_motion_story_v1"):
               body = re.sub(r"--[^\n]*", "", pathlib.Path(f"services/orion-sql-db/manual_migration_{f}.sql").read_text())
               for stmt in body.split(";"):
                   if stmt.strip():
@@ -183,7 +183,8 @@ jobs:
             services/orion-sql-writer/tests/test_vision_split.py \
             services/orion-sql-writer/tests/test_vision_osnet_shadow.py \
             services/orion-sql-writer/tests/test_vision_body_match.py \
-            services/orion-sql-writer/tests/test_vision_reanchor.py | tee vision_pg.out
+            services/orion-sql-writer/tests/test_vision_reanchor.py \
+            services/orion-sql-writer/tests/test_vision_motion.py | tee vision_pg.out
           if grep -q "SKIPPED" vision_pg.out; then
             echo "visual confirmation Postgres tests skipped -- ORION_TEST_PG_URI wiring is broken" >&2
             exit 1

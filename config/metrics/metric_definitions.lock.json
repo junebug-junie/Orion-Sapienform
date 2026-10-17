@@ -3,9 +3,9 @@
   "metric_count": 748,
   "_last_change": {
     "change_count": 1,
-    "high_severity_count": 0,
+    "high_severity_count": 1,
     "changes": [
-      "medium added metric://bus_channel/orion-harness-governor/orion:introspect:queue_curiosity_focus:request"
+      "high   routing_changed metric://bus_channel/orion-vision-council/orion:vision:events (all_producers: ['orion-vision-council'] -> ['orion-vision-council', 'orion-vision-window'])"
     ]
   },
   "definitions": {
@@ -3485,7 +3485,8 @@
     "metric://bus_channel/orion-vision-council/orion:vision:events": {
       "schema_id": "VisionEventPayload",
       "all_producers": [
-        "orion-vision-council"
+        "orion-vision-council",
+        "orion-vision-window"
       ],
       "declared_consumers": [
         "orion-vision-scribe"

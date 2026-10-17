@@ -337,3 +337,67 @@ def test_marker_check_tolerates_re_rendering() -> None:
     rerendered = "[Cut short — not a finished answer.]\nbody"
     assert ensure_cut_short_marked(rerendered) == rerendered
     assert ensure_cut_short_marked("[cut short] body") == "[cut short] body"
+
+
+def _assistant_with_usage(text: str, input_tokens: int) -> str:
+    return json.dumps({"type": "assistant", "message": {
+        "content": [{"type": "text", "text": text}],
+        "usage": {"input_tokens": input_tokens, "output_tokens": 20}}})
+
+
+@pytest.mark.asyncio
+async def test_replay_2026_10_17_gauge_is_honest_and_lost_task_is_flagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live turn: one 12k-char PR list, the trace said 18% fill, the CLI compacted,
+    and the "summary" was the summarizer declining to summarize.
+
+    Scaled to 1 char/token on a 1000-token lane: ~600 tokens of CLI overhead the
+    stream never shows, a 120-char tool result, then compaction.
+    """
+    monkeypatch.setenv("HARNESS_FCC_MAX_OUTPUT_TOKENS", "100")
+    monkeypatch.setenv("HARNESS_FCC_AUTOCOMPACT_PCT_OVERRIDE", "90")
+    refusal = (
+        "This session is being continued from a previous conversation that ran out of context. "
+        "The summary below covers the earlier portion of the conversation.\n\n"
+        "I cannot provide a traditional summary since this is not a multi-turn development conversation."
+    )
+    lines = [
+        _assistant_with_usage("Let me pull up the recent PRs.", input_tokens=600),
+        *_tool_round("a", "p" * 120),
+        _compact(),
+        json.dumps({"type": "user", "message": {"content": refusal}}),
+        json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": refusal}]}}),
+    ]
+    events, proc = await _run(monkeypatch, lines, ceiling_tokens=1000)
+    steps = [ev["step"] for ev in events if ev.get("type") == "step"]
+    first_fill = steps[0]["context_obs"]["fill_pct"]
+    # Before: len(prompt)+text chars = ~4%. After: the provider's own count.
+    assert first_fill >= 60
+    flagged = [s for s in steps if s.get("type") == "context_compaction_degenerate"]
+    assert len(flagged) == 2  # the CLI's summary message and the model echoing it
+    final = events[-1]
+    assert final["metadata"]["fcc_degenerate_compactions"] == 2
+    assert final["metadata"]["fcc_compactions"] == 1
+    # The summary must never become Orion's answer.
+    assert not str(final.get("llm_response") or "").startswith("This session is being continued")
+
+
+@pytest.mark.asyncio
+async def test_real_summary_is_not_flagged(monkeypatch: pytest.MonkeyPatch) -> None:
+    summary = (
+        "This session is being continued from a previous conversation that ran out of context. "
+        "The summary below covers the earlier portion of the conversation.\n\n"
+        "Summary:\n1. Primary Request and Intent:\n   List recent PRs."
+    )
+    lines = [
+        *_tool_round("a", "r" * 50),
+        _compact(),
+        json.dumps({"type": "user", "message": {"content": summary}}),
+        _text("Found it."),
+        json.dumps({"type": "result", "result": "Found it.", "session_id": "s"}),
+    ]
+    events, _ = await _run(monkeypatch, lines, ceiling_tokens=1000)
+    assert not any(ev.get("step", {}).get("type") == "context_compaction_degenerate" for ev in events)
+    assert events[-1]["metadata"]["fcc_degenerate_compactions"] == 0
+    assert events[-1]["llm_response"] == "Found it."

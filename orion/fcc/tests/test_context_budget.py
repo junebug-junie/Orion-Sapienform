@@ -177,3 +177,86 @@ def test_thinking_budget_counts_content_not_progress_metadata() -> None:
         {"type": "thinking", "thinking": "x" * 400},
         {"type": "text", "text": "done"},
     ]}}) == 404
+
+
+# --- Honest gauge: provider usage, CLI compaction line, degenerate summaries ---
+
+from orion.fcc.context_budget import (  # noqa: E402
+    autocompact_trigger_tokens,
+    compact_summary_text,
+    context_pressure_threshold_chars,
+    context_risk_level,
+    is_degenerate_compact_summary,
+    observed_context_chars,
+)
+
+_PREAMBLE = (
+    "This session is being continued from a previous conversation that ran out of context. "
+    "The summary below covers the earlier portion of the conversation.\n\n"
+)
+
+
+def _clear_lane_env(monkeypatch) -> None:
+    for key in (
+        "HARNESS_FCC_MAX_CONTEXT_TOKENS", "HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS",
+        "HARNESS_FCC_MAX_OUTPUT_TOKENS", "HUB_AGENT_CLAUDE_MAX_OUTPUT_TOKENS",
+        "HARNESS_FCC_AUTOCOMPACT_PCT_OVERRIDE", "HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
+        "HARNESS_FCC_CONTEXT_PRESSURE_PCT", "HUB_AGENT_CLAUDE_CONTEXT_PRESSURE_PCT",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("ORION_FCC_CHARS_PER_TOKEN", "4")
+
+
+def test_trigger_model_reproduces_both_live_compaction_clusters(monkeypatch) -> None:
+    """154 live auto-compactions at pct=70 and the CLI's 32k default output cap
+    clustered at 30-34k (64k lane) and ~76k (128k lane)."""
+    _clear_lane_env(monkeypatch)
+    monkeypatch.setenv("HARNESS_FCC_AUTOCOMPACT_PCT_OVERRIDE", "70")
+    monkeypatch.setenv("HARNESS_FCC_MAX_OUTPUT_TOKENS", "32000")
+    assert 30_000 <= autocompact_trigger_tokens(65536) <= 34_000
+    assert 74_000 <= autocompact_trigger_tokens(131072) <= 79_000
+
+
+def test_shipped_defaults_give_the_64k_lane_more_room(monkeypatch) -> None:
+    _clear_lane_env(monkeypatch)
+    monkeypatch.setenv("HARNESS_FCC_AUTOCOMPACT_PCT_OVERRIDE", "90")
+    monkeypatch.setenv("HARNESS_FCC_MAX_OUTPUT_TOKENS", "16384")
+    assert autocompact_trigger_tokens(65536) == 65536 - 16384 - 13_000
+    assert autocompact_trigger_tokens(400) is None
+
+
+def test_pressure_line_sits_below_the_compaction_line(monkeypatch) -> None:
+    """70% of a 64k window (~46k) is past where the CLI compacts (~36k)."""
+    _clear_lane_env(monkeypatch)
+    monkeypatch.setenv("HARNESS_FCC_AUTOCOMPACT_PCT_OVERRIDE", "90")
+    trigger_chars = autocompact_trigger_tokens(65536) * 4
+    assert context_pressure_threshold_chars(65536) < trigger_chars
+    assert context_risk_level(accumulated_chars=trigger_chars, max_chars=65536 * 4,
+                              compact_at_chars=trigger_chars) == "critical"
+    assert context_risk_level(accumulated_chars=trigger_chars, max_chars=65536 * 4) != "critical"
+
+
+def test_observed_context_reads_provider_usage(monkeypatch) -> None:
+    _clear_lane_env(monkeypatch)
+    event = {"type": "assistant", "message": {"content": [], "usage": {
+        "input_tokens": 30_000, "cache_read_input_tokens": 1_000, "output_tokens": 500}}}
+    assert observed_context_chars(event) == 31_500 * 4
+    assert observed_context_chars({"type": "assistant", "message": {"usage": {"input_tokens": 0}}}) is None
+    assert observed_context_chars({"type": "user", "message": {"usage": {"input_tokens": 9}}}) is None
+    assert observed_context_chars({"type": "assistant", "message": {"content": []}}) is None
+
+
+def test_degenerate_summary_shapes_from_harness_turn_trace() -> None:
+    """Openings copied from stored compactions (harness_turn_trace, 2026-10-05..10-17)."""
+    lost = [
+        "Now let me read the remaining key files to complete the picture.",
+        "Good. I found the key files. Now let me read the core source files in parallel.",
+        "I cannot provide a traditional summary since this is not a multi-turn development conversation.",
+    ]
+    kept = "Summary:\n1. Primary Request and Intent:\n   Juniper asked about recent PRs."
+    for body in lost:
+        text = compact_summary_text({"type": "user", "message": {"content": _PREAMBLE + body}})
+        assert text is not None and is_degenerate_compact_summary(text)
+    text = compact_summary_text({"type": "user", "message": {"content": [{"type": "text", "text": _PREAMBLE + kept}]}})
+    assert text is not None and not is_degenerate_compact_summary(text)
+    assert compact_summary_text({"type": "assistant", "message": {"content": "Summary: done"}}) is None

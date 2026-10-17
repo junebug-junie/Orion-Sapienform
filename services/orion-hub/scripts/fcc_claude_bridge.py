@@ -24,14 +24,19 @@ from orion.fcc.turn_lock import turn_in_progress
 from orion.fcc.context_budget import (
     annotate_harness_step,
     apply_context_overflow_hint,
+    autocompact_trigger_chars,
     build_context_pressure_step,
+    build_degenerate_compaction_step,
+    compact_summary_text,
     context_fill_pct,
     context_overflow_operator_hint,
     context_pressure_threshold_chars,
     is_context_overflow_text,
+    is_degenerate_compact_summary,
     max_context_chars,
     max_context_tokens,
     measure_step_payload_chars,
+    observed_context_chars,
     post_compaction_context_chars,
     is_compact_boundary_event,
     extend_fcc_subprocess_env,
@@ -271,7 +276,7 @@ def _build_subprocess_env(*, fcc_server_url: str, auth_token: str) -> Dict[str, 
     max_ctx = int(getattr(settings, "HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS", 65536))
     read_max = int(getattr(settings, "HUB_AGENT_CLAUDE_FILE_READ_MAX_TOKENS", 8192))
     autocompact_pct = float(
-        getattr(settings, "HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", 70.0)
+        getattr(settings, "HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", 90.0)
     )
     if max_ctx > 0:
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(max_ctx)
@@ -279,6 +284,9 @@ def _build_subprocess_env(*, fcc_server_url: str, auth_token: str) -> Dict[str, 
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(max_ctx)
     if read_max > 0:
         env["CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS"] = str(read_max)
+    max_out = int(getattr(settings, "HUB_AGENT_CLAUDE_MAX_OUTPUT_TOKENS", 16384))
+    if max_out > 0:
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(max_out)
     if 0 < autocompact_pct <= 100:
         pct = int(autocompact_pct) if autocompact_pct == int(autocompact_pct) else autocompact_pct
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = str(pct)
@@ -362,6 +370,8 @@ async def run_turn(
         read_limit = 65536
     budget_chars = len(prompt)
     ceiling_chars = max_context_chars()
+    compact_at_chars = autocompact_trigger_chars()
+    compacted = False
     context_nudge_sent = False
 
     # Shared sandbox lock for the turn's duration -- the same lock the governor's
@@ -424,10 +434,22 @@ async def run_turn(
                 # Same rebase as orion/harness/fcc_motor.py: after the CLI compacts,
                 # the running total no longer describes what is in context.
                 budget_chars = post_compaction_context_chars(parsed, prompt_chars=len(prompt))
+                compacted = True
                 context_nudge_sent = False
-            step = annotate_harness_step(step, accumulated_chars=budget_chars, max_chars=ceiling_chars)
-            budget_chars += measure_step_payload_chars(step)
+            # Same provider-usage re-anchor as orion/harness/fcc_motor.py.
+            observed = observed_context_chars(parsed)
+            if observed is not None:
+                budget_chars = max(budget_chars, observed)
+            step = annotate_harness_step(
+                step, accumulated_chars=budget_chars, max_chars=ceiling_chars, compact_at_chars=compact_at_chars
+            )
+            if observed is None:
+                budget_chars += measure_step_payload_chars(step)
             yield {"type": "step", "step": step}
+            summary_text = compact_summary_text(parsed) if compacted else None
+            if summary_text is not None and is_degenerate_compact_summary(summary_text):
+                logger.warning("fcc_compaction_degenerate corr=%s", correlation_id)
+                yield {"type": "step", "step": build_degenerate_compaction_step()}
             if (
                 not context_nudge_sent
                 and budget_chars >= context_pressure_threshold_chars()
@@ -439,12 +461,13 @@ async def run_turn(
                         build_context_pressure_step(fill_pct=fill),
                         accumulated_chars=budget_chars,
                         max_chars=ceiling_chars,
+                        compact_at_chars=compact_at_chars,
                     ),
                 }
                 context_nudge_sent = True
 
             text, sid, _dur = extract_final_from_stream_event(parsed, accumulated=accumulated)
-            if text:
+            if text and summary_text is None:
                 accumulated = text
             if sid:
                 claude_session_id = sid

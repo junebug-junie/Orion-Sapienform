@@ -13,6 +13,15 @@ DEFAULT_MAX_CONTEXT_TOKENS = 65536
 DEFAULT_CHARS_PER_TOKEN = 4
 DEFAULT_PRESSURE_THRESHOLD_PCT = 70.0
 DEFAULT_MCP_TOOL_RESULT_MAX_CHARS = 12_000
+# Passed to claude as CLAUDE_CODE_MAX_OUTPUT_TOKENS. The CLI holds back
+# min(max_output, 20k) of the window before it auto-compacts (see
+# autocompact_trigger_tokens), and FCC turns carry ~24k tokens of fixed
+# overhead, so on a 64k lane this cap directly sets the working room.
+DEFAULT_FCC_MAX_OUTPUT_TOKENS = 16_384
+CLI_AUTOCOMPACT_OUTPUT_RESERVE_CAP = 20_000
+CLI_AUTOCOMPACT_MARGIN_TOKENS = 13_000
+#: Fixed opening of the CLI's post-compaction message (Claude Code 2.1.x).
+COMPACT_SUMMARY_PREAMBLE = "This session is being continued from a previous conversation"
 
 CONTEXT_PRESSURE_NUDGE = (
     "Context nearly full — answer from what you have; no more tools."
@@ -80,6 +89,43 @@ def chars_per_token_estimate() -> int:
 
 def max_context_chars(n_ctx: int | None = None) -> int:
     return max_context_tokens(n_ctx) * chars_per_token_estimate()
+
+
+def fcc_max_output_tokens() -> int:
+    for key in ("HARNESS_FCC_MAX_OUTPUT_TOKENS", "HUB_AGENT_CLAUDE_MAX_OUTPUT_TOKENS"):
+        val = _env_int(key, 0)
+        if val > 0:
+            return val
+    return DEFAULT_FCC_MAX_OUTPUT_TOKENS
+
+
+def autocompact_trigger_chars(n_ctx: int | None = None) -> int | None:
+    trigger = autocompact_trigger_tokens(n_ctx)
+    return trigger * chars_per_token_estimate() if trigger is not None else None
+
+
+def autocompact_pct_override() -> float:
+    for key in ("HARNESS_FCC_AUTOCOMPACT_PCT_OVERRIDE", "HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"):
+        val = _env_float(key, 0.0)
+        if 0 < val <= 100:
+            return val
+    return 100.0
+
+
+def autocompact_trigger_tokens(n_ctx: int | None = None) -> int | None:
+    """Token count at which the claude CLI auto-compacts on this lane.
+
+    Model: usable = window - min(max_output, 20k); compact at
+    min(usable * pct, usable - 13k). It fits both live clusters of 154 measured
+    auto-compactions at pct=70 and the default 32k output cap: ~32k on the 64k
+    lane (min(31.9k, 32.5k)) and ~76k on the 128k lane (min(77.7k, 98k)).
+    UNVERIFIED by a direct probe at other pct/cap values. None when the
+    window is too small for the formula to mean anything.
+    """
+    window = max_context_tokens(n_ctx)
+    usable = window - min(fcc_max_output_tokens(), CLI_AUTOCOMPACT_OUTPUT_RESERVE_CAP)
+    trigger = min(int(usable * autocompact_pct_override() / 100.0), usable - CLI_AUTOCOMPACT_MARGIN_TOKENS)
+    return trigger if trigger > 0 else None
 
 
 def context_pressure_threshold_pct() -> float:
@@ -160,6 +206,7 @@ def extend_fcc_subprocess_env(
     # The claude subprocess autocompacts against this (HARNESS_FCC_AUTOCOMPACT_PCT_OVERRIDE),
     # so it has to be the ceiling of the lane THIS turn runs on, not the container's default.
     env.setdefault("HARNESS_FCC_MAX_CONTEXT_TOKENS", str(max_context_tokens(n_ctx)))
+    env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", str(fcc_max_output_tokens()))
     # Claude Code: custom ANTHROPIC_BASE_URL disables ToolSearch unless set explicitly.
     # Keep MCP attached; defer schema load until the model ToolSearches.
     env.setdefault("ENABLE_TOOL_SEARCH", "true")
@@ -171,7 +218,80 @@ def extend_fcc_subprocess_env(
 
 
 def context_pressure_threshold_chars(n_ctx: int | None = None) -> int:
-    return int(max_context_chars(n_ctx) * (context_pressure_threshold_pct() / 100.0))
+    """Warn line: the configured % of the window, but never past 90% of the
+    CLI's own compaction line -- a warning that lands after compaction is not
+    a warning."""
+    pct_line = int(max_context_chars(n_ctx) * (context_pressure_threshold_pct() / 100.0))
+    trigger = autocompact_trigger_tokens(n_ctx)
+    if trigger is None:
+        return pct_line
+    return min(pct_line, int(trigger * 0.9) * chars_per_token_estimate())
+
+
+def observed_context_chars(event: Any) -> int | None:
+    """Live context size from an assistant event's own `usage`, in chars.
+
+    The motor's running total only counts what streams past it (prompt, tool
+    results, model text) -- never the CLI's system prompt, tool schemas or
+    skills (~24k tokens on FCC turns). The CLI compacts on the provider's
+    reported usage, so this is the same number it acts on: input + cache
+    reads/writes + output. None when the event carries no positive usage.
+    """
+    raw = event.get("raw") if isinstance(event, dict) and isinstance(event.get("raw"), dict) else event
+    if not isinstance(raw, dict) or raw.get("type") != "assistant":
+        return None
+    message = raw.get("message")
+    usage = message.get("usage") if isinstance(message, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    total = 0
+    for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"):
+        val = usage.get(key)
+        if isinstance(val, int) and not isinstance(val, bool) and val > 0:
+            total += val
+    return total * chars_per_token_estimate() if total > 0 else None
+
+
+def compact_summary_text(event: Any) -> str | None:
+    """The CLI's post-compaction message text, or None for any other event."""
+    raw = event.get("raw") if isinstance(event, dict) and isinstance(event.get("raw"), dict) else event
+    if not isinstance(raw, dict) or raw.get("type") not in ("user", "assistant"):
+        return None
+    message = raw.get("message") if isinstance(raw.get("message"), dict) else raw
+    content = message.get("content")
+    if isinstance(content, list):
+        content = "\n".join(
+            str(b.get("text")) for b in content
+            if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
+        )
+    if not isinstance(content, str) or not content.lstrip().startswith(COMPACT_SUMMARY_PREAMBLE):
+        return None
+    return content
+
+
+def is_degenerate_compact_summary(text: str) -> bool:
+    """True when a compaction kept no summary of the task.
+
+    The CLI renders the summarizer's <summary> block as a `Summary:` section.
+    When the summarizer instead carries on with the task ("Now let me read the
+    remaining files..."), there is no such section and the original request is
+    gone from context. Live 2026-09-15..10-11: 9 of 22 stored compactions in
+    harness_turn_trace had no `Summary:` section, none of the 13 that had one
+    lacked "Primary Request and Intent".
+    """
+    return not any(line.lstrip().startswith("Summary:") for line in str(text or "").splitlines())
+
+
+def build_degenerate_compaction_step() -> dict[str, Any]:
+    """Synthetic trace step: the CLI compacted and the summary lost the task."""
+    return {
+        "type": "context_compaction_degenerate",
+        "raw": {
+            "type": "system",
+            "subtype": "context_compaction_degenerate",
+            "message": "Compaction kept no summary of the task; the reply after this point has lost the original request.",
+        },
+    }
 
 
 def tool_result_body_text(body: Any) -> str:
@@ -282,6 +402,7 @@ def context_risk_level(
     accumulated_chars: int,
     step_chars: int = 0,
     max_chars: int | None = None,
+    compact_at_chars: int | None = None,
 ) -> ContextRisk:
     ceiling = max_chars or max_context_chars()
     # Derive the warn line from the SAME ceiling the caller passed, not from the process
@@ -294,6 +415,11 @@ def context_risk_level(
         if max_chars
         else context_pressure_threshold_chars()
     )
+    if compact_at_chars and compact_at_chars > 0:
+        # Past the CLI's compaction line the turn is about to lose its transcript,
+        # so both lines sit below it -- same rule as context_pressure_threshold_chars.
+        ceiling = min(ceiling, compact_at_chars)
+        warn_at = min(warn_at, int(compact_at_chars * 0.9))
     total = accumulated_chars + step_chars
     tool_max = mcp_tool_result_max_chars()
     if step_chars >= tool_max or total >= ceiling:
@@ -371,6 +497,7 @@ def annotate_harness_step(
     *,
     accumulated_chars: int,
     max_chars: int | None = None,
+    compact_at_chars: int | None = None,
 ) -> dict[str, Any]:
     """Attach observability fields without mutating stream-json raw payload."""
     if not isinstance(step, dict):
@@ -381,6 +508,7 @@ def annotate_harness_step(
         accumulated_chars=accumulated_chars,
         step_chars=step_chars,
         max_chars=max_chars,
+        compact_at_chars=compact_at_chars,
     )
     out = dict(step)
     out["context_obs"] = {

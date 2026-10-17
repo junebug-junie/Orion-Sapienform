@@ -232,3 +232,43 @@ async def test_run_turn_rebases_context_on_cli_compaction(monkeypatch: pytest.Mo
     boundary = next(s for s in steps if (s.get("raw") or {}).get("subtype") == "compact_boundary")
     assert boundary["context_obs"]["accumulated_chars"] == len("hello")
     assert events[-1]["type"] == "final"
+
+
+@pytest.mark.asyncio
+async def test_run_turn_flags_lost_task_compaction_and_keeps_summary_out_of_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same contract as the governor motor (orion/harness/fcc_motor.py)."""
+    import json
+
+    refusal = (
+        "This session is being continued from a previous conversation that ran out of context. "
+        "The summary below covers the earlier portion of the conversation.\n\n"
+        "I cannot provide a traditional summary."
+    )
+    lines = [
+        json.dumps({"type": "assistant", "message": {
+            "content": [{"type": "text", "text": "Pulling PRs."}],
+            "usage": {"input_tokens": 600, "output_tokens": 5}}}),
+        json.dumps({"type": "system", "subtype": "compact_boundary",
+                    "compact_metadata": {"trigger": "auto", "pre_tokens": 700}}),
+        json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": refusal}]}}),
+    ]
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        return _FakeProc(lines)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(bridge, "_preflight_fcc_server", lambda *a, **k: None)
+    monkeypatch.setenv("HARNESS_FCC_MAX_CONTEXT_TOKENS", "1000")
+    monkeypatch.setenv("ORION_FCC_CHARS_PER_TOKEN", "1")
+
+    events = [ev async for ev in bridge.run_turn(
+        prompt="hello", fcc_model_label="MODEL_HAIKU", correlation_id="corr-lost",
+        workspace="/tmp", fcc_server_url="http://127.0.0.1:8082", auth_token="tok",
+        claude_bin="claude", timeout_sec=30.0,
+    )]
+    steps = [e["step"] for e in events if e["type"] == "step"]
+    assert steps[0]["context_obs"]["fill_pct"] >= 60
+    assert any(s.get("type") == "context_compaction_degenerate" for s in steps)
+    assert not str(events[-1].get("llm_response") or "").startswith("This session is being continued")

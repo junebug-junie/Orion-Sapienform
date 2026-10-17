@@ -22,15 +22,20 @@ from orion.fcc import mcp_names
 from orion.fcc.context_budget import (
     annotate_harness_step,
     apply_context_overflow_hint,
+    autocompact_trigger_chars,
     build_context_pressure_step,
+    build_degenerate_compaction_step,
+    compact_summary_text,
     context_fill_pct,
     context_pressure_threshold_chars,
     is_compact_boundary_event,
     is_context_overflow_text,
+    is_degenerate_compact_summary,
     is_provider_error_envelope,
     max_context_chars,
     max_context_tokens,
     measure_step_payload_chars,
+    observed_context_chars,
     post_compaction_context_chars,
     summarize_context_risk_suffix,
 )
@@ -768,7 +773,7 @@ def _fcc_context_env(env: dict[str, str], *, n_ctx: Optional[int] = None) -> Non
     """
     max_ctx = max_context_tokens(n_ctx)
     read_max = int(os.environ.get("HARNESS_FCC_FILE_READ_MAX_TOKENS", "8192") or "8192")
-    autocompact_pct = float(os.environ.get("HARNESS_FCC_AUTOCOMPACT_PCT_OVERRIDE", "70") or "70")
+    autocompact_pct = float(os.environ.get("HARNESS_FCC_AUTOCOMPACT_PCT_OVERRIDE", "90") or "90")
     if max_ctx > 0:
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(max_ctx)
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(max_ctx)
@@ -1597,12 +1602,15 @@ async def _drive_fcc_turn(
     # rebased to the post-compaction size on every CLI `compact_boundary`.
     budget_chars = len(prompt) + max(0, int(context_seed_chars))
     compactions = 0
+    # Compactions whose summary kept no record of the task (no `Summary:` section).
+    degenerate_compactions = 0
     # The CLI's own "turn complete" event arrived. A timeout/stall AFTER it is the
     # process hanging on exit (e.g. MCP teardown), not a turn cut short: the
     # runner must keep `accumulated` as the finished answer.
     saw_result = False
     ceiling_chars = max_context_chars(lane_n_ctx)
     pressure_chars = context_pressure_threshold_chars(lane_n_ctx)
+    compact_at_chars = autocompact_trigger_chars(lane_n_ctx)
     # Start-up telemetry (spec L5): turn start -> the turn's first system/init
     # (the point the L5 probe measured), and -> its first assistant/user event.
     init_ms: Optional[int] = None
@@ -1716,9 +1724,26 @@ async def _drive_fcc_turn(
                     "fcc_context_compacted corr=%s compactions=%s budget_chars=%s->%s ceiling=%s",
                     correlation_id, compactions, before, budget_chars, ceiling_chars,
                 )
-            step = annotate_harness_step(step, accumulated_chars=budget_chars, max_chars=ceiling_chars)
-            budget_chars += measure_step_payload_chars(step)
+            # Re-anchor on the provider's own usage when the event carries it: the
+            # char estimate never sees the CLI's ~24k-token system prompt and tool
+            # schemas, and read 18% on a turn the CLI compacted (live 2026-10-17).
+            observed = observed_context_chars(parsed)
+            if observed is not None:
+                budget_chars = max(budget_chars, observed)
+            step = annotate_harness_step(
+                step, accumulated_chars=budget_chars, max_chars=ceiling_chars, compact_at_chars=compact_at_chars
+            )
+            if observed is None:
+                budget_chars += measure_step_payload_chars(step)
             yield {"type": "step", "step": step}
+            summary_text = compact_summary_text(parsed) if compactions else None
+            if summary_text is not None and is_degenerate_compact_summary(summary_text):
+                degenerate_compactions += 1
+                logger.warning(
+                    "fcc_compaction_degenerate corr=%s compactions=%s task_anchor_chars=%s",
+                    correlation_id, compactions, task_anchor_chars,
+                )
+                yield {"type": "step", "step": build_degenerate_compaction_step()}
             if (
                 not context_nudge_sent
                 and budget_chars >= pressure_chars
@@ -1730,6 +1755,7 @@ async def _drive_fcc_turn(
                         build_context_pressure_step(fill_pct=fill),
                         accumulated_chars=budget_chars,
                         max_chars=ceiling_chars,
+                        compact_at_chars=compact_at_chars,
                     ),
                 }
                 context_nudge_sent = True
@@ -1759,12 +1785,19 @@ async def _drive_fcc_turn(
                     "error_code": FCC_CONTEXT_CEILING_ERROR_CODE,
                     "steps_seen": steps_seen,
                     "llm_response": accumulated or None,
-                    "metadata": {"fcc_served_model": served_model, "fcc_compactions": compactions},
+                    "metadata": {
+                        "fcc_served_model": served_model,
+                        "fcc_compactions": compactions,
+                        "fcc_degenerate_compactions": degenerate_compactions,
+                    },
                 }
                 return
 
             text, sid, _dur = extract_final_from_stream_event(parsed, accumulated=accumulated)
-            if text:
+            # The CLI's compaction summary is context, never Orion's answer: stored
+            # drafts began "This session is being continued..." (harness_turn_trace,
+            # 2026-09-15..10-11) when a turn died after compacting.
+            if text and summary_text is None:
                 accumulated = text
             if sid:
                 claude_session_id = sid
@@ -1833,6 +1866,8 @@ async def _drive_fcc_turn(
         "exit_code": exit_code,
         # How many times the CLI compacted this turn's context (compact_boundary).
         "fcc_compactions": compactions,
+        # Of those, how many kept no summary of the task (the reply after it is ungrounded).
+        "fcc_degenerate_compactions": degenerate_compactions,
         # Whether the turn carried a task anchor (0 = none). Read next to fcc_compactions.
         "task_anchor_chars": task_anchor_chars,
         # Spec L5 start-up telemetry: "warm" (pooled process) or "spawn".

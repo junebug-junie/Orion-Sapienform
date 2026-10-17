@@ -202,6 +202,12 @@ class HarnessGovernorSettings(BaseSettings):
     # Chat-reply turns borrow a long-lived claude process instead of spawning one,
     # skipping ~3.4 s of MCP server start-up. Any pool failure falls back to the
     # per-turn spawn. false = every turn spawns, as before.
+    # Restart drain. On SIGTERM the worker stops taking new requests, then waits this long for
+    # turns already running to finish before cancelling the rest (the resume registry
+    # handles those). Live 2026-10-16: a redeploy killed a 229-step run at once. 0 = cancel
+    # at once, as before. Chat turns are short; the agent lane runs curiosity for ~40 min.
+    harness_shutdown_drain_sec_chat: float = Field(90.0, ge=0, le=3600, alias="HARNESS_SHUTDOWN_DRAIN_SEC_CHAT")
+    harness_shutdown_drain_sec_agent: float = Field(900.0, ge=0, le=3600, alias="HARNESS_SHUTDOWN_DRAIN_SEC_AGENT")
     harness_fcc_chat_warm_pool_enabled: bool = Field(True, alias="HARNESS_FCC_CHAT_WARM_POOL_ENABLED")
     # Processes kept warm. 1 = observed chat concurrency (220 chat turns over 30
     # days, never two at once). Each one keeps its own MCP servers running.

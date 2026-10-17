@@ -838,8 +838,12 @@ async def run_bus_worker(
     *,
     lane: str = "chat",
     bus: OrionBusAsync | None = None,
+    drain_sec: float = 0.0,
 ) -> None:
     """Consume one harness-run-request channel to completion, one turn at a time.
+
+    `drain_sec`: when `stop_event` is set the loop stops taking new requests, then waits up to
+    this long for turns already running to finish before cancelling the rest. 0 cancels at once.
 
     `main.py`'s lifespan runs TWO of these concurrently -- one per lane -- so a
     long agent-lane turn (curiosity, Mode=Agent+Compute=Agent) can never make a
@@ -946,6 +950,12 @@ async def run_bus_worker(
     except asyncio.CancelledError:
         raise
     finally:
+        if tasks and drain_sec > 0:
+            logger.info("governor_drain_begin lane=%s in_flight=%s budget_sec=%s", lane, len(tasks), drain_sec)
+            _, pending = await asyncio.wait(set(tasks), timeout=drain_sec)
+            logger.info(
+                "governor_drain_end lane=%s finished=%s cancelled=%s", lane, len(tasks) - len(pending), len(pending)
+            )
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

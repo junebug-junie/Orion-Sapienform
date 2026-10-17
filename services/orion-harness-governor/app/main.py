@@ -116,12 +116,21 @@ async def lifespan(app: FastAPI):
     # workspace changed here -- true per-turn workspace isolation is a
     # separate, larger change. See this PR's report for the tradeoff.
     app.state.bus_task_chat = asyncio.create_task(
-        run_bus_worker(stop_event=app.state.bus_stop_event, lane="chat", bus=app.state.dispatch_bus)
+        run_bus_worker(
+            stop_event=app.state.bus_stop_event, lane="chat", bus=app.state.dispatch_bus,
+            drain_sec=settings.harness_shutdown_drain_sec_chat,
+        )
     )
     app.state.bus_task_agent = asyncio.create_task(
-        run_bus_worker(stop_event=app.state.bus_stop_event, lane="agent", bus=app.state.dispatch_bus)
+        run_bus_worker(
+            stop_event=app.state.bus_stop_event, lane="agent", bus=app.state.dispatch_bus,
+            drain_sec=settings.harness_shutdown_drain_sec_agent,
+        )
     )
-    app.state.cancel_task = asyncio.create_task(run_cancel_worker(app.state.bus_stop_event))
+    # Own stop flag: a cancel (durable-runs stopping an attempt) must still reach a turn that is
+    # draining, so this listener stops only after both lanes have finished draining.
+    app.state.cancel_stop_event = asyncio.Event()
+    app.state.cancel_task = asyncio.create_task(run_cancel_worker(app.state.cancel_stop_event))
     # Warm Claude Code pool for chat replies (spec L5). Started in the background so
     # a slow MCP start-up never delays the governor's readiness; until a slot is
     # warm, chat turns simply spawn as before.
@@ -141,16 +150,22 @@ async def lifespan(app: FastAPI):
         app.state.heartbeat_chassis = None
     yield
     app.state.bus_stop_event.set()
-    for task in (
-        app.state.bus_task_chat,
-        app.state.bus_task_agent,
-        getattr(app.state, "cancel_task", None),
-    ):
-        if task is None:
-            continue
+    # Let the lanes drain (each worker cancels its own leftovers after its budget). The slack
+    # covers the loop noticing the stop flag and the final cancel.
+    lanes = {app.state.bus_task_chat, app.state.bus_task_agent}
+    _, pending = await asyncio.wait(
+        lanes, timeout=max(settings.harness_shutdown_drain_sec_chat, settings.harness_shutdown_drain_sec_agent) + 15
+    )
+    for task in pending:
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+    app.state.cancel_stop_event.set()
+    cancel_task = getattr(app.state, "cancel_task", None)
+    if cancel_task is not None:
+        cancel_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cancel_task
     warm_task = getattr(app.state, "fcc_warm_pool_task", None)
     if warm_task is not None and not warm_task.done():
         warm_task.cancel()

@@ -133,7 +133,7 @@ services:
       # orion-vision-window reads those captions off the broadcast. Dream
       # captions carry no stream_id and still never broadcast
       # (main.py artifact_broadcast_allowed).
-      - VISION_ARTIFACT_BROADCAST_STREAMS=${CIRCE_QWEN_VISION_ARTIFACT_BROADCAST_STREAMS:-walkway}
+      - VISION_ARTIFACT_BROADCAST_STREAMS=${CIRCE_QWEN_VISION_ARTIFACT_BROADCAST_STREAMS:-walkway,doorbell}
 
       - MODEL_CACHE_DIR=/mnt/storage-warm/models/vision-circe-qwen
       - HF_HOME=/mnt/storage-warm/models/vision-circe-qwen/hf

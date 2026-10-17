@@ -611,7 +611,7 @@ class Settings(BaseSettings):
     # e.g. "none" -- compose's ${...:-walkway} turns an empty value back into
     # "walkway".
     perception_walkway_stream_ids: str = Field(
-        "walkway", alias="SUBSTRATE_PERCEPTION_WALKWAY_STREAM_IDS"
+        "walkway,doorbell", alias="SUBSTRATE_PERCEPTION_WALKWAY_STREAM_IDS"
     )
 
     # Health monitor -> orion-notify attention alerts. Edge-triggered (fires only

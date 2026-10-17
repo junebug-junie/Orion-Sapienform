@@ -214,7 +214,7 @@ class Settings(BaseSettings):
     # joins the situation brief. Empty string disables the street line.
     # Only read when ORION_SITUATION_PERCEPTION_ENABLED is true.
     orion_situation_street_stream_ids: str = Field(
-        "walkway", alias="ORION_SITUATION_STREET_STREAM_IDS"
+        "walkway,doorbell", alias="ORION_SITUATION_STREET_STREAM_IDS"
     )
     # 2026-08-29: the cooldown for the OTHER ask reason -- "I have no fresh
     # confirmed read of who this is at all" (lid closed, camera off, empty

@@ -371,7 +371,7 @@ class Settings(BaseSettings):
     # more traffic than this panel has any use for.
     VISION_FRAME_CACHE_ENABLED: bool = Field(default=True, alias="VISION_FRAME_CACHE_ENABLED")
     VISION_FRAME_CACHE_STREAM_IDS: str = Field(
-        default="carbon,walkway",
+        default="carbon,walkway,doorbell",
         alias="VISION_FRAME_CACHE_STREAM_IDS",
         description="Comma-separated stream_ids to cache the latest frame pointer for.",
     )
@@ -706,7 +706,7 @@ class Settings(BaseSettings):
     # study material, labelled as the street (2026-10-15). Newest 3 distinct
     # captions from the last 6 h. Empty string = off. Never a room camera.
     HUB_CURIOSITY_STREET_STREAM_IDS: str = Field(
-        default="walkway", alias="HUB_CURIOSITY_STREET_STREAM_IDS"
+        default="walkway,doorbell", alias="HUB_CURIOSITY_STREET_STREAM_IDS"
     )
 
     # --- World-pulse Stage 1 concept-read loop ----------------------------
@@ -1798,7 +1798,7 @@ class Settings(BaseSettings):
     )
     # Walkway cameras for the Street line. Empty string disables that line.
     ORION_SITUATION_STREET_STREAM_IDS: str = Field(
-        default="walkway", alias="ORION_SITUATION_STREET_STREAM_IDS"
+        default="walkway,doorbell", alias="ORION_SITUATION_STREET_STREAM_IDS"
     )
 
     @field_validator("ORION_SITUATION_WEATHER_LAT", "ORION_SITUATION_WEATHER_LON", mode="before")

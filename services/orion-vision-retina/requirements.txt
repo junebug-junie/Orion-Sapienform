@@ -6,3 +6,7 @@ pydantic-settings==2.5.2
 loguru==0.7.2
 opencv-python-headless==4.10.0.84
 numpy==1.26.4
+# RETINA_SOURCE_TYPE=ring (app/ring_source.py): Ring push events + WebRTC live view.
+ring_doorbell==0.9.14
+aiortc==1.15.0
+av==17.1.0

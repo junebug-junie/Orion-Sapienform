@@ -610,7 +610,7 @@ class Settings(BaseSettings):
     vision_motion_story_close_gap_sec: float = Field(11.0, gt=0.0, alias="VISION_MOTION_STORY_CLOSE_GAP_SEC")
     # Fewer detections than this = a glimpse: stored, never published.
     vision_motion_story_min_detections: int = Field(3, ge=2, alias="VISION_MOTION_STORY_MIN_DETECTIONS")
-    vision_motion_story_streams: str = Field("walkway", alias="VISION_MOTION_STORY_STREAMS")
+    vision_motion_story_streams: str = Field("walkway,doorbell", alias="VISION_MOTION_STORY_STREAMS")
     vision_motion_story_settle_sec: float = Field(30.0, ge=0.0, alias="VISION_MOTION_STORY_SETTLE_SEC")
     vision_motion_story_initial_lookback_sec: float = Field(3600.0, ge=0.0, alias="VISION_MOTION_STORY_INITIAL_LOOKBACK_SEC")
     vision_motion_story_retention_days: float = Field(90.0, alias="VISION_MOTION_STORY_RETENTION_DAYS")

@@ -310,7 +310,7 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         street_stream_ids=_split_stream_ids(
             getattr(settings, "orion_situation_street_stream_ids", None)
             if getattr(settings, "orion_situation_street_stream_ids", None) is not None
-            else os.getenv("ORION_SITUATION_STREET_STREAM_IDS", "walkway")
+            else os.getenv("ORION_SITUATION_STREET_STREAM_IDS", "walkway,doorbell")
         ),
         # 1200s (20min): see identity_ask_cooldown.py's module docstring for
         # the reasoning -- long enough that "ask once per sit-down" is the
@@ -596,7 +596,7 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         # Plain getattr, no `or` fallback: an explicit "" disables the
         # Street line (settings_from_runtime's own contract).
         orion_situation_street_stream_ids=getattr(
-            cfg, "ORION_SITUATION_STREET_STREAM_IDS", "walkway"
+            cfg, "ORION_SITUATION_STREET_STREAM_IDS", "walkway,doorbell"
         ),
         orion_situation_identity_ask_cooldown_seconds=1200,
         orion_situation_affect_enabled=bool(getattr(cfg, "ORION_SITUATION_AFFECT_ENABLED", True)),
@@ -1791,16 +1791,21 @@ async def _build_street_fields(
 ) -> dict[str, Any]:
     """`street_summary`/`street_stream_id` for PerceptionContextV1, or {}.
 
-    Walkway spec ideas 5 and 9. First configured stream that has anything to
-    say wins; streams are cheap reads and there is normally one. Fail-open:
-    any failure is a missing line, recorded in diagnostics, never an error.
+    Walkway spec ideas 5 and 9. Every configured stream that has anything to
+    say gets its own framed part, in config order (2026-10-17: the doorbell
+    joined the walkway; first-stream-wins hid a visitor at the door behind a
+    busy street). `street_stream_id` is the first stream that spoke.
+    Fail-open: any failure is a missing line, recorded in diagnostics, never
+    an error.
 
-    The summary opens with what the camera IS (2026-10-15, live turn
+    Each part opens with what the camera IS (2026-10-15, live turn
     caa3eb4d): "Your outdoor camera (walkway, since 2026-10-14), looking over
     the community walkway, the street and our patio: ...". Without it Orion
     read the street line as one more sensor readout, not as their own eye
     outside. `first_frames` maps stream -> first frame time (camera_eyes).
     """
+    parts: list[str] = []
+    first_stream: str | None = None
     for stream_id in cfg.street_stream_ids:
         try:
             street = await asyncio.to_thread(
@@ -1809,23 +1814,24 @@ async def _build_street_fields(
         except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
             diagnostics.provider_status["perception_street"] = "error"
             diagnostics.provider_errors["perception_street"] = str(exc)
-            return {}
+            break
         if not street.read_ok:
             diagnostics.provider_status["perception_street"] = "unread"
             continue
-        if street.lines:
-            diagnostics.provider_status["perception_street"] = "ok"
-            framing = street_framing(
-                describe_camera(stream_id),
-                (first_frames or {}).get(stream_id),
-                _tz_or_utc(cfg.timezone),
-            )
-            return {
-                "street_summary": f"{framing}: " + " ".join(street.lines),
-                "street_stream_id": stream_id,
-            }
-        diagnostics.provider_status["perception_street"] = "quiet"
-    return {}
+        if not street.lines:
+            diagnostics.provider_status["perception_street"] = "quiet"
+            continue
+        framing = street_framing(
+            describe_camera(stream_id),
+            (first_frames or {}).get(stream_id),
+            _tz_or_utc(cfg.timezone),
+        )
+        parts.append(f"{framing}: " + " ".join(street.lines))
+        first_stream = first_stream or stream_id
+    if not parts:
+        return {}
+    diagnostics.provider_status["perception_street"] = "ok"
+    return {"street_summary": " ".join(parts), "street_stream_id": first_stream}
 
 
 async def _build_perception_context(

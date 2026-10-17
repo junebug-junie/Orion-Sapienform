@@ -59,6 +59,11 @@ DEFAULT_CAMERA_DESCRIPTIONS: dict[str, dict[str, Any]] = {
         "view": "the community walkway, the street and our patio",
         "outside": True,
     },
+    "doorbell": {
+        "name": "your doorbell camera",
+        "view": "our front door, up close, only when someone comes to it",
+        "outside": True,
+    },
 }
 
 

@@ -313,7 +313,7 @@ def test_compose_mounts_the_frames_dir_read_only_and_caches_walkway():
         "${HUB_VISION_FRAMES_DIR:-/mnt/telemetry/vision/frames}:"
         "${HUB_VISION_FRAMES_DIR:-/mnt/telemetry/vision/frames}:ro"
     ) in compose
-    assert "VISION_FRAME_CACHE_STREAM_IDS=${VISION_FRAME_CACHE_STREAM_IDS:-carbon,walkway}" in compose
+    assert "VISION_FRAME_CACHE_STREAM_IDS=${VISION_FRAME_CACHE_STREAM_IDS:-carbon,walkway,doorbell}" in compose
 
 
 # --- review fixes (2026-10-15) ------------------------------------------------

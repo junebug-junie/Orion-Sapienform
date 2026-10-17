@@ -226,7 +226,7 @@ services:
       # would come up recording. For a camera kill switch that is the wrong
       # direction to fail, so the key is left to env_file alone.
       - VISION_FRAME_CACHE_ENABLED=${VISION_FRAME_CACHE_ENABLED:-true}
-      - VISION_FRAME_CACHE_STREAM_IDS=${VISION_FRAME_CACHE_STREAM_IDS:-carbon,walkway}
+      - VISION_FRAME_CACHE_STREAM_IDS=${VISION_FRAME_CACHE_STREAM_IDS:-carbon,walkway,doorbell}
       - VISION_FRAME_CHANNEL=${VISION_FRAME_CHANNEL:-orion:vision:frames}
       - PERCEPT_STORE_BASE_URL=${PERCEPT_STORE_BASE_URL:-}
       - PERCEPT_STORE_TIMEOUT_SEC=${PERCEPT_STORE_TIMEOUT_SEC:-10}

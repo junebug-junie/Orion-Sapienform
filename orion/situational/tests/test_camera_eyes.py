@@ -236,7 +236,7 @@ def test_brief_lists_room_and_walkway_and_the_street_line_says_what_it_is(monkey
     diag = SituationDiagnosticsV1()
     cfg = _cfg(perception_enabled=True, perception_stream_ids=["carbon", "cam0"])
     ctx = asyncio.run(situation_mod._build_perception_context(cfg, diag))
-    assert seen == {"streams": ["carbon", "cam0", "walkway"], "counted": ["walkway"]}
+    assert seen == {"streams": ["carbon", "cam0", "walkway", "doorbell"], "counted": ["walkway", "doorbell"]}
     assert diag.provider_status["perception_cameras"] == "ok"
     assert [c.status for c in ctx.cameras] == ["not_seeing", "live", "live"]
     text = _brief_text(ctx)

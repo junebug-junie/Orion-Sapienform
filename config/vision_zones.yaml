@@ -43,3 +43,13 @@ streams:
         embed: true
         dwell_rare_sec: 120
         polygon: [[0.0, 0.14], [1.0, 0.14], [1.0, 1.0], [0.0, 1.0]]
+  # Ring battery doorbell at the front door (2026-10-17, orion-vision-retina-
+  # doorbell). One whole-frame zone until a real frame is traced: the geometry
+  # of the live view is not known yet. presence: false because the stream is
+  # only bursts after Ring events; between them no frames arrive, and a head
+  # count would read "nobody" when it means "not looking".
+  doorbell:
+    zones:
+      - name: porch
+        embed: true
+        polygon: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]

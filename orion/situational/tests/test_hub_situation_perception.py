@@ -104,7 +104,7 @@ def test_hub_perception_defaults_on_with_cortex_exec_stream_defaults() -> None:
     assert cfg.perception_max_age_seconds == 900
     # Same room cameras and street camera cortex-exec reads by default.
     assert cfg.perception_stream_ids == ["carbon", "cam0"]
-    assert cfg.street_stream_ids == ["walkway"]
+    assert cfg.street_stream_ids == ["walkway", "doorbell"]
 
 
 def test_hub_flag_false_is_the_kill_switch() -> None:
@@ -282,8 +282,10 @@ def test_worst_case_perception_fits_the_live_7200_cap_with_every_caution(monkeyp
         assert caution in on_text
     # Synthetic worst case measured at 1063 added chars (~15% of the live
     # budget); the real 2026-10-07 case added 77 (Street quiet, no ask).
+    # 2026-10-17: 1708 with both street cameras (walkway + doorbell) speaking
+    # at once, each with its own framing; the 7200 cap below still holds.
     added = len(on_text) - len(off_text)
-    assert 0 < added < 1500, added
+    assert 0 < added < 2000, added
     assert len(on_text) <= 7200
 
 

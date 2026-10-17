@@ -247,4 +247,4 @@ def test_settings_default_routes_walkway_stream() -> None:
     from app.settings import Settings
 
     settings = Settings(POSTGRES_URI="postgresql://unused/unused")
-    assert settings.perception_walkway_stream_ids == "walkway"
+    assert settings.perception_walkway_stream_ids == "walkway,doorbell"

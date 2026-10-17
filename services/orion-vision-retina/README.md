@@ -63,8 +63,8 @@ cp .env_example .env
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `ORION_BUS_URL` | `redis://100.92.216.81:6379/0` | Redis pub/sub — shared mesh bus (same as sibling vision services) |
-| `RETINA_SOURCE_TYPE` | `folder` | `folder`, `mock`, `rtsp`, `webcam` |
-| `RETINA_SOURCE` | `/mnt/telemetry/vision/intake` | Folder path, RTSP URL, or webcam index |
+| `RETINA_SOURCE_TYPE` | `folder` | `folder`, `mock`, `rtsp`, `webcam`, `ring` |
+| `RETINA_SOURCE` | `/mnt/telemetry/vision/intake` | Folder path, RTSP URL, webcam index, or Ring device name/id |
 | `RETINA_SOURCE_PATH` | — | Legacy alias for `RETINA_SOURCE` |
 | `RETINA_CAMERA_ID` | `retina-cam-01` | Pointer metadata |
 | `RETINA_STREAM_ID` | `retina-stream-01` | Pointer metadata |
@@ -363,6 +363,8 @@ PYTHONPATH=. ./venv/bin/python -m pytest tests/test_vision_retina_*.py -v
 |------|------|
 | `app/settings.py` | Env contract |
 | `app/sources.py` | Frame source adapters |
+| `app/ring_source.py` | Ring doorbell: push events -> short WebRTC live view |
+| `app/ring_login.py` | One-time Ring login (token to `RETINA_RING_STATE_DIR`) |
 | `app/frame_store.py` | Save + retention |
 | `app/clip_capture.py` | On-demand video+audio clip capture (AffectGPT, live-verified 2026-08-22) |
 | `app/envelopes.py` | `BaseEnvelope` builder |

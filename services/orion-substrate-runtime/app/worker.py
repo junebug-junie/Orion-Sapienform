@@ -363,7 +363,7 @@ def _prediction_error_receipt(
 
 # Streams whose frame-embedding surprise feeds PERCEPTION_WALKWAY_NODE_ID
 # instead of PERCEPTION_NODE_ID (settings.perception_walkway_stream_ids).
-_DEFAULT_PERCEPTION_WALKWAY_STREAM_IDS = "walkway"
+_DEFAULT_PERCEPTION_WALKWAY_STREAM_IDS = "walkway,doorbell"
 
 
 def _parse_stream_ids(raw: Any, default: str) -> frozenset[str]:

@@ -31,6 +31,15 @@ class RetinaMetrics:
     source_corrupt_frames: int = 0
     source_corruption_heals: int = 0
     source_corruption_heal_suppressed: bool = False
+    # Ring event source (ring_source.py). Always 0/None for other sources.
+    # A doorbell is silent between events, so last_frame_age_sec growing is
+    # normal there; ring_bursts_failed growing is not.
+    ring_events_seen: int = 0
+    ring_events_ignored: int = 0
+    ring_bursts_started: int = 0
+    ring_bursts_failed: int = 0
+    ring_last_event_kind: str | None = None
+    ring_last_event_ts: float | None = None
 
 
 def last_frame_age_sec(metrics: RetinaMetrics, now: float | None = None) -> float | None:
@@ -84,6 +93,12 @@ def make_system_health_envelope(
             "source_corrupt_frames": metrics.source_corrupt_frames,
             "source_corruption_heals": metrics.source_corruption_heals,
             "source_corruption_heal_suppressed": metrics.source_corruption_heal_suppressed,
+            "ring_events_seen": metrics.ring_events_seen,
+            "ring_events_ignored": metrics.ring_events_ignored,
+            "ring_bursts_started": metrics.ring_bursts_started,
+            "ring_bursts_failed": metrics.ring_bursts_failed,
+            "ring_last_event_kind": metrics.ring_last_event_kind,
+            "ring_last_event_ts": metrics.ring_last_event_ts,
             "last_error": metrics.last_error,
             "storage_dir": storage_dir,
         },

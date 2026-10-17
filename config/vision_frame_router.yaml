@@ -248,6 +248,64 @@ streams:
       prompt: >-
         In one short sentence, describe what is happening in this image.
 
+  doorbell:
+    enabled: true
+    # Ring battery doorbell at the front door (2026-10-17). Captured by its own
+    # orion-vision-retina instance (orion-vision-retina-doorbell,
+    # stream_id=doorbell, RETINA_SOURCE_TYPE=ring): no continuous stream, only
+    # a ~15 s live-view burst at 2 frames/s after each Ring motion/ding event.
+    # Same treatment as the walkway (detection, frame + crop embeddings, crop
+    # faces, Qwen captions on the triggered tier), with changes for a sparse
+    # stream:
+    # - every_n_frames: 1 and shorter spacing, so a 30-frame burst still gets
+    #   several tasks; the walkway's 5 could skip most of a short burst.
+    # - No tiled_detect: its tile band is walkway geometry (far sidewalk), and
+    #   a doorbell sees people up close.
+    # - No identity_dispatch: same as the walkway, Juniper's whole-frame
+    #   identity check stays on cam0/carbon.
+    baseline:
+      task_type: retina_fast
+      every_n_frames: 1
+      min_seconds_between_tasks_per_camera: 2
+      max_inflight_per_camera: 1
+      request:
+        want_caption: false
+        want_embeddings: true
+        want_crop_embeddings: true
+        want_crop_faces: true
+        crop_embedding_labels: [person, dog, bicycle, stroller, vehicle]
+        prompts: [person, dog, bicycle, stroller, vehicle, package, mail truck]
+    triggered:
+      task_type: retina_fast
+      trigger_labels: [person, dog]
+      trigger_ttl_seconds: 8
+      min_seconds_between_tasks_per_camera: 1
+      max_inflight_per_camera: 1
+      request:
+        want_caption: false
+        want_embeddings: true
+        want_crop_embeddings: true
+        want_crop_faces: true
+        crop_embedding_labels: [person, dog, bicycle, stroller, vehicle]
+        prompts: [person, dog, bicycle, stroller, vehicle, package, mail truck]
+    tiled_detect:
+      enabled: false
+    caption_dispatch:
+      enabled: true
+      tiers: [triggered]
+      labels: [person, dog, bicycle, stroller, vehicle, package, mail truck]
+      min_score: 0.25
+      # A burst lasts ~15 s: one caption per 5 s gives about three per event.
+      min_seconds_between_dispatch: 5
+      same_scene_iou: 0.5
+      same_scene_ttl_sec: 300
+      max_inflight: 1
+      timeout_sec: 20
+      crop_to_detections: true
+      crop_pad: 0.5
+      prompt: >-
+        In one short sentence, describe what is happening in this image.
+
 cameras:
   mock-cam-01:
     enabled: true

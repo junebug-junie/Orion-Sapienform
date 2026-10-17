@@ -122,7 +122,7 @@ class Settings(BaseSettings):
     # stationary prop (VISION_STATIONARY_* above), and it arrived within
     # MAX_AGE_SEC of its frame. Anything else is recorded as rejected, never
     # narrated. Empty streams = gate off.
-    WINDOW_CAPTION_GATE_STREAMS: str = "walkway"
+    WINDOW_CAPTION_GATE_STREAMS: str = "walkway,doorbell"
     WINDOW_CAPTION_GATE_LABELS: str = "person,dog,bicycle,stroller,vehicle,package,mail truck"
     WINDOW_CAPTION_GATE_MIN_SCORE: float = 0.25
     WINDOW_CAPTION_MAX_AGE_SEC: float = 20.0

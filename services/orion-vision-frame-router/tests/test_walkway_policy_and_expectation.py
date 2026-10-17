@@ -158,8 +158,11 @@ def test_room_cameras_never_ask_for_crop_faces() -> None:
 
     raw = yaml.safe_load(CFG.read_text(encoding="utf-8"))
     sections = {**(raw.get("streams") or {}), **(raw.get("cameras") or {}), "defaults": raw.get("defaults")}
-    assert "walkway" in sections
+    # Outdoor cameras only: the walkway, and (2026-10-17) the Ring doorbell,
+    # which gets the walkway's treatment by Juniper's request.
+    outdoor = {"walkway", "doorbell"}
+    assert outdoor <= set(sections)
     for name, cfg in sections.items():
-        if name == "walkway":
+        if name in outdoor:
             continue
         assert "want_crop_faces" not in str(cfg), name

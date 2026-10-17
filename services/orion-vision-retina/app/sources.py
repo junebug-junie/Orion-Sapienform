@@ -833,6 +833,10 @@ def create_frame_source(
     rtsp_heal_check_every: int = 10,
     rtsp_heal_window_seconds: float = 120.0,
     rtsp_heal_min_share: float = 0.8,
+    ring_state_dir: str = "",
+    ring_burst_seconds: float = 15.0,
+    ring_cooldown_seconds: float = 30.0,
+    ring_event_kinds: tuple[str, ...] = ("motion", "ding"),
 ) -> FrameSource:
     st = source_type.lower().strip()
     common = dict(width=width, height=height, reconnect_seconds=reconnect_seconds)
@@ -856,4 +860,14 @@ def create_frame_source(
         )
     if st == "webcam":
         return WebcamFrameSource(source or "0", **common)
+    if st == "ring":
+        from .ring_source import RingEventFrameSource
+
+        return RingEventFrameSource(
+            source,
+            state_dir=ring_state_dir,
+            burst_seconds=ring_burst_seconds,
+            cooldown_seconds=ring_cooldown_seconds,
+            event_kinds=ring_event_kinds,
+        )
     raise ValueError(f"unsupported RETINA_SOURCE_TYPE: {source_type!r}")

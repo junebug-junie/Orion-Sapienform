@@ -248,7 +248,7 @@ def _stub_room(monkeypatch, percept=None):
 
 
 def test_street_defaults_to_walkway_and_empty_disables() -> None:
-    assert _cfg().street_stream_ids == ["walkway"]
+    assert _cfg().street_stream_ids == ["doorbell", "walkway"]
     cfg = situation_mod.settings_from_runtime(SimpleNamespace(orion_situation_street_stream_ids=""))
     assert cfg.street_stream_ids == []
 
@@ -260,7 +260,7 @@ def test_street_rides_on_the_stale_room_path_too(monkeypatch) -> None:
         lambda sid, *, tz_name: StreetSummary(sid, ["Someone is on the patio."], True),
     )
     diag = SituationDiagnosticsV1()
-    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True), diag))
+    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True, street_stream_ids=["walkway"]), diag))
     assert ctx.available is False
     # Opens with what the camera is (2026-10-15): Orion's own outdoor eye.
     assert ctx.street_summary == (
@@ -269,6 +269,59 @@ def test_street_rides_on_the_stale_room_path_too(monkeypatch) -> None:
     )
     assert ctx.street_stream_id == "walkway"
     assert diag.provider_status["perception_street"] == "ok"
+
+
+def test_every_speaking_street_camera_gets_its_own_part(monkeypatch) -> None:
+    """2026-10-17: a visitor at the doorbell must not hide behind a busy
+    walkway (first-stream-wins did exactly that)."""
+    _stub_room(monkeypatch)
+    lines = {"walkway": ["Two people walked by."], "doorbell": ["Someone is at the front door."]}
+    monkeypatch.setattr(
+        situation_mod, "fetch_street_summary",
+        lambda sid, *, tz_name: StreetSummary(sid, lines.get(sid, []), True),
+    )
+    diag = SituationDiagnosticsV1()
+    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True), diag))
+    assert ctx.street_summary.startswith("Your doorbell camera (doorbell), looking over our front door")
+    assert "Someone is at the front door." in ctx.street_summary
+    assert ctx.street_summary.endswith("Two people walked by.")
+    assert ctx.street_stream_id == "doorbell"
+    assert diag.provider_status["perception_street"] == "ok"
+
+    lines["doorbell"] = []  # nobody at the door: the walkway alone speaks
+    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True), SituationDiagnosticsV1()))
+    assert ctx.street_stream_id == "walkway"
+    assert "doorbell" not in ctx.street_summary
+
+
+def test_doorbell_line_survives_a_long_walkway_line_cut_at_520(monkeypatch) -> None:
+    """chat_stance cuts the joined street text at 520 chars; the doorbell
+    goes first so a busy street cannot push it off the end."""
+    _stub_room(monkeypatch)
+    lines = {"walkway": ["A long walkway caption about the street. " * 20], "doorbell": ["Someone is at the front door."]}
+    monkeypatch.setattr(
+        situation_mod, "fetch_street_summary",
+        lambda sid, *, tz_name: StreetSummary(sid, lines.get(sid, []), True),
+    )
+    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True), SituationDiagnosticsV1()))
+    assert "Someone is at the front door." in ctx.street_summary[:520]
+
+
+def test_one_failed_street_read_does_not_hide_the_other(monkeypatch) -> None:
+    _stub_room(monkeypatch)
+
+    def _fetch(sid, *, tz_name):
+        if sid == "doorbell":
+            raise RuntimeError("db hiccup")
+        return StreetSummary(sid, ["Two people walked by."], True)
+
+    monkeypatch.setattr(situation_mod, "fetch_street_summary", _fetch)
+    diag = SituationDiagnosticsV1()
+    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True), diag))
+    assert ctx.street_stream_id == "walkway"
+    # The error stays visible; it is not overwritten with "ok".
+    assert diag.provider_status["perception_street"] == "error"
+    assert diag.provider_errors["perception_street"] == "db hiccup"
 
 
 def test_quiet_or_unread_street_leaves_no_field(monkeypatch) -> None:

@@ -317,7 +317,7 @@ def test_settings_ship_stories_on_and_reach_the_loop_config() -> None:
     s = Settings()
     assert s.vision_motion_stories_enabled is True
     cfg = vl.loop_config(s)
-    assert cfg.streams == ("walkway",) and cfg.motion.min_detections == 3 and cfg.motion.link_gap_sec == 11.0
+    assert cfg.streams == ("walkway", "doorbell") and cfg.motion.min_detections == 3 and cfg.motion.link_gap_sec == 11.0
     assert cfg.clean_since == datetime(2026, 10, 16, 18, 59, tzinfo=timezone.utc)
     assert cfg.prop_individual_ids == ("fefb24d7e4074e9f827ad711874f6edf",)
     assert (cfg.motion.frame_w, cfg.motion.frame_h) == (2560.0, 1920.0)

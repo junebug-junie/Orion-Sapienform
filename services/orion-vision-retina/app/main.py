@@ -58,6 +58,10 @@ class RetinaService:
             rtsp_heal_check_every=self.settings.RETINA_RTSP_HEAL_CHECK_EVERY,
             rtsp_heal_window_seconds=self.settings.RETINA_RTSP_HEAL_WINDOW_SECONDS,
             rtsp_heal_min_share=self.settings.RETINA_RTSP_HEAL_MIN_SHARE,
+            ring_state_dir=self.settings.RETINA_RING_STATE_DIR,
+            ring_burst_seconds=self.settings.RETINA_RING_BURST_SECONDS,
+            ring_cooldown_seconds=self.settings.RETINA_RING_COOLDOWN_SECONDS,
+            ring_event_kinds=self.settings.ring_event_kinds(),
         )
         self.metrics = RetinaMetrics()
         self._capture_task: Optional[asyncio.Task] = None
@@ -389,6 +393,11 @@ class RetinaService:
             os._exit(1)
         self._copy_source_metrics()
         if result is None:
+            if getattr(self.source, "waiting_for_event", False) is True:
+                # Event camera (Ring) between events: no frame is the normal
+                # state. A failed live view sets the source's last_error.
+                self.metrics.last_error = getattr(self.source, "last_error", None)
+                return False
             quiet = self.metrics.source_quiet_wait_remaining_sec
             if quiet > 0:
                 # Deliberate: waiting out the camera's stale session before
@@ -476,6 +485,13 @@ class RetinaService:
         src = self.source
         m = self.metrics
         m.source_stall_restarts = int(getattr(src, "stall_restarts", 0) or 0)
+        if hasattr(src, "events_seen"):  # Ring
+            m.ring_events_seen = int(src.events_seen)
+            m.ring_events_ignored = int(src.events_ignored)
+            m.ring_bursts_started = int(src.bursts_started)
+            m.ring_bursts_failed = int(src.bursts_failed)
+            m.ring_last_event_kind = src.last_event_kind
+            m.ring_last_event_ts = src.last_event_ts
         if not hasattr(src, "quiet_wait_remaining"):
             return  # not RTSP
         m.source_quiet_wait_remaining_sec = float(src.quiet_wait_remaining())

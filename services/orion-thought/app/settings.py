@@ -157,7 +157,7 @@ class ThoughtSettings(BaseSettings):
     # the rhythm reducer's met/missed expectations within the lookback, each
     # with the subject's 14-day hit rate. Empty stream ids switch both off.
     reverie_street_enabled: bool = Field(True, alias="ORION_REVERIE_STREET_ENABLED")
-    reverie_street_stream_ids: str = Field("walkway", alias="ORION_REVERIE_STREET_STREAM_IDS")
+    reverie_street_stream_ids: str = Field("walkway,doorbell", alias="ORION_REVERIE_STREET_STREAM_IDS")
     reverie_street_max_age_sec: float = Field(900.0, alias="ORION_REVERIE_STREET_MAX_AGE_SEC")
     reverie_street_max_events: int = Field(2, alias="ORION_REVERIE_STREET_MAX_EVENTS")
     reverie_street_graded_lookback_hours: float = Field(

@@ -194,6 +194,69 @@ services:
     networks:
       - app-net
 
+  # The Ring doorbell (battery, no Ring Protect plan): no RTSP and no saved
+  # recordings, and it cannot take a snapshot while it records. On each Ring
+  # motion/ding push event this instance opens a short live view
+  # (DOORBELL_RING_BURST_SECONDS) and samples it at DOORBELL_RETINA_FPS --
+  # never continuous video. stream_id/camera_id `doorbell` match
+  # config/vision_frame_router.yaml `streams.doorbell` and
+  # config/vision_zones.yaml. Ring login, once, after the first `up`:
+  #   docker exec -it orion-vision-retina-doorbell python -m app.ring_login
+  # The token lands in /mnt/telemetry/vision/ring_state (owner-only, mounted
+  # into this container only -- the other retinas share retina_state and must
+  # not read Ring credentials); the source picks it up within a minute, no
+  # restart. Behind the
+  # `doorbell` profile, like the walkway:
+  #   scripts/safe_docker_build.sh orion-vision-retina --profile doorbell up -d --build orion-vision-retina-doorbell
+  orion-vision-retina-doorbell:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+    profiles: ["doorbell"]
+    build:
+      context: ../..
+      dockerfile: services/orion-vision-retina/Dockerfile
+    container_name: orion-vision-retina-doorbell
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      - ORION_BUS_URL=${ORION_BUS_URL:-redis://100.92.216.81:6379/0}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-false}
+      - ORION_BUS_VELOCITY_TRACKING_ENABLED=${ORION_BUS_VELOCITY_TRACKING_ENABLED:-false}
+      - CHANNEL_RETINA_PUB=${CHANNEL_RETINA_PUB:-orion:vision:frames}
+      - CHANNEL_RETINA_ERROR=${CHANNEL_RETINA_ERROR:-orion:vision:retina:error}
+      - CHANNEL_SYSTEM_HEALTH=${CHANNEL_SYSTEM_HEALTH:-orion:system:health}
+      - SERVICE_NAME=vision-retina-doorbell
+      - RETINA_SOURCE_TYPE=ring
+      # The doorbell's name in the Ring app, or its device id. Empty = the
+      # first camera on the account.
+      - RETINA_SOURCE=${DOORBELL_RING_DEVICE:-}
+      - RETINA_CAMERA_ID=doorbell
+      - RETINA_STREAM_ID=doorbell
+      - RETINA_FPS=${DOORBELL_RETINA_FPS:-2.0}
+      - RETINA_WIDTH=
+      - RETINA_HEIGHT=
+      - FRAME_STORAGE_DIR=${FRAME_STORAGE_DIR:-/mnt/telemetry/vision/frames}
+      - RETINA_FRAME_MODE=local
+      - FRAME_RETENTION_SECONDS=${FRAME_RETENTION_SECONDS:-300}
+      - JPEG_QUALITY=${DOORBELL_RETINA_JPEG_QUALITY:-88}
+      - HEALTH_INTERVAL_SECONDS=${HEALTH_INTERVAL_SECONDS:-10.0}
+      - RETINA_RING_STATE_DIR=/var/lib/orion-vision-ring
+      - RETINA_RING_EVENT_KINDS=${DOORBELL_RING_EVENT_KINDS:-motion,ding}
+      - RETINA_RING_BURST_SECONDS=${DOORBELL_RING_BURST_SECONDS:-15.0}
+      - RETINA_RING_COOLDOWN_SECONDS=${DOORBELL_RING_COOLDOWN_SECONDS:-30.0}
+      - RETINA_CLIP_ENABLED=false
+    volumes:
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-vision-retina/app:/app/app
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/orion:/app/orion
+      - /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames
+      - /mnt/telemetry/vision/ring_state:/var/lib/orion-vision-ring
+    ports:
+      - "127.0.0.1:${DOORBELL_RETINA_HTTP_PORT:-8029}:8000"
+    networks:
+      - app-net
+
 networks:
   app-net:
     external: true

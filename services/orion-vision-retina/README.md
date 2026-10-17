@@ -63,8 +63,8 @@ cp .env_example .env
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `ORION_BUS_URL` | `redis://100.92.216.81:6379/0` | Redis pub/sub — shared mesh bus (same as sibling vision services) |
-| `RETINA_SOURCE_TYPE` | `folder` | `folder`, `mock`, `rtsp`, `webcam` |
-| `RETINA_SOURCE` | `/mnt/telemetry/vision/intake` | Folder path, RTSP URL, or webcam index |
+| `RETINA_SOURCE_TYPE` | `folder` | `folder`, `mock`, `rtsp`, `webcam`, `ring` |
+| `RETINA_SOURCE` | `/mnt/telemetry/vision/intake` | Folder path, RTSP URL, webcam index, or Ring device name/id |
 | `RETINA_SOURCE_PATH` | — | Legacy alias for `RETINA_SOURCE` |
 | `RETINA_CAMERA_ID` | `retina-cam-01` | Pointer metadata |
 | `RETINA_STREAM_ID` | `retina-stream-01` | Pointer metadata |
@@ -81,6 +81,53 @@ cp .env_example .env
 | `RETINA_RTSP_HEAL_CHECK_EVERY` | `10` | Score every Nth served frame (smear + decoder gray, `app/frame_corruption.py`) |
 | `RETINA_RTSP_HEAL_WINDOW_SECONDS` | `120.0` | Corruption must persist this long before a heal |
 | `RETINA_RTSP_HEAL_MIN_SHARE` | `0.8` | Share of checks in the window that must be corrupt |
+
+### Ring doorbell source (2026-10-17)
+
+`RETINA_SOURCE_TYPE=ring` (`app/ring_source.py`), deployed as
+`orion-vision-retina-doorbell` (profile `doorbell`, stream/camera id
+`doorbell`). The doorbell is battery-powered with no Ring Protect plan, so it
+has no RTSP, no saved recordings, and cannot take a snapshot while it records
+([Ring snapshot limitations](https://github.com/dgreif/ring/wiki/Snapshot-Limitations)).
+The only picture source is a live view. So:
+
+- The source listens for Ring push events (`RETINA_RING_EVENT_KINDS`, default
+  `motion,ding`) for the device named by `RETINA_SOURCE` (Ring app name or
+  device id; empty = first camera on the account).
+- Each event opens one WebRTC live view (`aiortc`) for
+  `RETINA_RING_BURST_SECONDS` (15). `capture_loop` samples the newest frame
+  at `RETINA_FPS`, exactly as for RTSP. Downstream sees the same
+  `vision.frame.pointer` stream as the walkway, only in bursts.
+- **Never continuous.** One live view at a time, none without an event, and
+  `RETINA_RING_COOLDOWN_SECONDS` (30) from the end of one to the next start.
+  Each live view wakes the camera and costs battery.
+- Between events an empty read is not a failure (`waiting_for_event`). A live
+  view that delivers no frame sets `last_error` (health `degraded`) and counts
+  in `ring_bursts_failed`. Health `details` also carry `ring_events_seen`,
+  `ring_events_ignored`, `ring_bursts_started`, `ring_last_event_kind`,
+  `ring_last_event_ts`. `last_frame_age_sec` growing between visits is normal
+  for this camera.
+
+Login, once, after the first `up`:
+
+```bash
+scripts/safe_docker_build.sh orion-vision-retina --profile doorbell up -d --build orion-vision-retina-doorbell
+docker exec -it orion-vision-retina-doorbell python -m app.ring_login
+```
+
+It asks for the Ring email, password and 2FA code, and stores only the
+refresh token, owner-only, in `/mnt/telemetry/vision/ring_state/` (mounted
+into the doorbell container only),
+next to the FCM push credentials and a stable hardware id (a changing one
+would add a new "authorized device" in the Ring app on every recreate). The
+source checks for the token every 60 s, so no restart is needed after login.
+
+The push link is supervised every 60 s: firebase-messaging stops for good
+after 3 connection errors, and ring_doorbell refreshes its session only once.
+A stopped listener shows as `last_error = "ring push listener stopped"` and is
+rebuilt, and the whole connection is rebuilt every 12 h. Each live view is
+registered with Ring before it starts, so every exit path (no answer, error,
+shutdown) closes it -- an orphaned session keeps a battery camera streaming.
 
 ### RTSP stall watchdog (2026-10-15)
 
@@ -363,6 +410,8 @@ PYTHONPATH=. ./venv/bin/python -m pytest tests/test_vision_retina_*.py -v
 |------|------|
 | `app/settings.py` | Env contract |
 | `app/sources.py` | Frame source adapters |
+| `app/ring_source.py` | Ring doorbell: push events -> short WebRTC live view |
+| `app/ring_login.py` | One-time Ring login (token to `RETINA_RING_STATE_DIR`) |
 | `app/frame_store.py` | Save + retention |
 | `app/clip_capture.py` | On-demand video+audio clip capture (AffectGPT, live-verified 2026-08-22) |
 | `app/envelopes.py` | `BaseEnvelope` builder |

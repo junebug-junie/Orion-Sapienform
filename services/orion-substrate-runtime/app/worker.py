@@ -364,6 +364,12 @@ def _prediction_error_receipt(
 # Streams whose frame-embedding surprise feeds PERCEPTION_WALKWAY_NODE_ID
 # instead of PERCEPTION_NODE_ID (settings.perception_walkway_stream_ids).
 _DEFAULT_PERCEPTION_WALKWAY_STREAM_IDS = "walkway"
+# Streams whose surprise is scored, logged and kept in their own per-stream
+# baseline, but feeds NO node (settings.perception_log_only_stream_ids). The
+# Ring doorbell (2026-10-17): sharing the walkway node let a doorbell burst
+# overwrite the walkway's score/warm-up count and keep a dead walkway from
+# reading stale; the room node is worse. Its own node needs the metric gate.
+_DEFAULT_PERCEPTION_LOG_ONLY_STREAM_IDS = "doorbell"
 
 
 def _parse_stream_ids(raw: Any, default: str) -> frozenset[str]:
@@ -1624,6 +1630,12 @@ class BiometricsSubstrateWorker:
             retention_days=self._settings.perception_baseline_retention_days,
         )
         now = datetime.now(timezone.utc)
+        if stream_id in _parse_stream_ids(
+            getattr(self._settings, "perception_log_only_stream_ids", None),
+            _DEFAULT_PERCEPTION_LOG_ONLY_STREAM_IDS,
+        ):
+            self._log_perception_score(stream_id, result, node_id="none")
+            return
         if stream_id in self._perception_walkway_stream_ids():
             # Walkway group: its own node, its own cache. Nothing below this
             # branch (room score, room vector cache) moves.

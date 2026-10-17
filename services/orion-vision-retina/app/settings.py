@@ -92,6 +92,21 @@ class Settings(BaseSettings):
     RETINA_RTSP_HEAL_WINDOW_SECONDS: float = 120.0
     RETINA_RTSP_HEAL_MIN_SHARE: float = 0.8
 
+    # RETINA_SOURCE_TYPE=ring only (app/ring_source.py): a Ring doorbell with
+    # no RTSP and no recordings. RETINA_SOURCE = the doorbell's name in the
+    # Ring app or its device id (empty = first camera on the account).
+    #   STATE_DIR     Ring refresh token, push credentials, stable hardware
+    #                 id. Owner-only files; written by `python -m
+    #                 app.ring_login` and kept fresh by the source.
+    #   EVENT_KINDS   Ring push kinds that open a live view.
+    #   BURST_SECONDS how long each live view runs; RETINA_FPS samples it.
+    #   COOLDOWN_SECONDS  from the end of one live view to the next start.
+    #                 Each live view wakes a battery camera.
+    RETINA_RING_STATE_DIR: str = "/var/lib/orion-vision-ring"
+    RETINA_RING_EVENT_KINDS: str = "motion,ding"
+    RETINA_RING_BURST_SECONDS: float = 15.0
+    RETINA_RING_COOLDOWN_SECONDS: float = 30.0
+
     # On-demand video+audio clip capture for AffectGPT (app/clip_capture.py).
     # Separate from RETINA_SOURCE/RETINA_CAMERA_ID above -- those drive the
     # existing single-frame capture_loop, this is a distinct on-demand path
@@ -186,6 +201,19 @@ class Settings(BaseSettings):
                     "checks per window; the self-heal needs >= 5 (raise the window or lower CHECK_EVERY)"
                 )
         return self
+
+    @model_validator(mode="after")
+    def _check_ring(self) -> "Settings":
+        if self.RETINA_RING_BURST_SECONDS <= 0:
+            raise ValueError("RETINA_RING_BURST_SECONDS must be > 0")
+        if self.RETINA_RING_COOLDOWN_SECONDS < 0:
+            raise ValueError("RETINA_RING_COOLDOWN_SECONDS must be >= 0")
+        if self.RETINA_SOURCE_TYPE.strip().lower() == "ring" and not self.ring_event_kinds():
+            raise ValueError("RETINA_RING_EVENT_KINDS is empty: the doorbell would never open a live view")
+        return self
+
+    def ring_event_kinds(self) -> tuple[str, ...]:
+        return tuple(k.strip().lower() for k in self.RETINA_RING_EVENT_KINDS.split(",") if k.strip())
 
     def rtsp_session_state_path(self) -> str | None:
         """Per-stream file under RETINA_RTSP_SESSION_STATE_DIR (None if unset)."""

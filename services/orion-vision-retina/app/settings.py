@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     JPEG_QUALITY: int = 90
 
     HEALTH_INTERVAL_SECONDS: float = 10.0
+    # Publisher watchdog. Nothing published for this long, outside an
+    # expected quiet state (RTSP quiet wait, Ring between events) ->
+    # health status degraded + capture_stalled. If capture_loop itself has
+    # not ticked that long, or the RTSP reader is still delivering frames
+    # while nothing is published, the process exits so the container
+    # restart policy brings the eye back (2026-10-17: walkway dark 3 h,
+    # health "ok"). 0 disables both.
+    RETINA_PUBLISH_STALL_SECONDS: float = 120.0
     SOURCE_RECONNECT_SECONDS: float = 5.0
 
     # RTSP cameras only (webcam/folder/mock ignore these). See
@@ -232,6 +240,28 @@ class Settings(BaseSettings):
                 f"RETINA_RTSP_STALL_SECONDS={stall} must be 0 or > {floor} "
                 "(3 x RETINA_RTSP_IO_TIMEOUT_SECONDS + SOURCE_RECONNECT_SECONDS), "
                 "or the watchdog races the reader's own reconnect"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_publish_stall(self) -> "Settings":
+        limit = self.RETINA_PUBLISH_STALL_SECONDS
+        if limit < 0:
+            raise ValueError("RETINA_PUBLISH_STALL_SECONDS must be >= 0")
+        if limit == 0:
+            return self
+        floor = max(
+            self.RETINA_RTSP_STALL_SECONDS,
+            self.HEALTH_INTERVAL_SECONDS,
+            2.0 / max(self.RETINA_FPS, 0.01),
+            # pause_device holds the capture loop for stop + clip + start.
+            self.RETINA_CLIP_TIMEOUT_SEC + self.SOURCE_RECONNECT_SECONDS + 10.0 if self.RETINA_CLIP_ENABLED else 0.0,
+        )
+        if limit <= floor:
+            raise ValueError(
+                f"RETINA_PUBLISH_STALL_SECONDS={limit} must be 0 or > {floor} (the RTSP stall "
+                "watchdog, health interval, two capture intervals and the clip timeout), or a "
+                "normal pause reads as a dead publisher"
             )
         return self
 

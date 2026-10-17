@@ -91,6 +91,26 @@ class RetinaService:
         # 0.0 means "no prior capture" -- the very first request is never
         # subject to the cooldown. See RETINA_CLIP_MIN_INTERVAL_SEC.
         self._last_clip_capture_ts: float = 0.0
+        # Publisher watchdog (RETINA_PUBLISH_STALL_SECONDS). The stall clock
+        # restarts whenever "no frame" is the expected state (RTSP quiet
+        # wait, Ring between events), so those never count as a stall.
+        self._stall_clock_ts: float = self._started_at
+        # Monotonic time capture_loop last began an iteration: frozen = the
+        # loop is hung or gone, whatever the source is doing. Monotonic so an
+        # NTP step or a laptop resume (carbon) does not read as a hang.
+        self._loop_tick_mono: float = time.monotonic()
+        # Monotonic time a frame was read but could not be published (save,
+        # upload or bus error). A restart does not fix those, so the
+        # "streaming but not publishing" exit stands down while they recur.
+        self._last_capture_error_mono: float | None = None
+        # Injectable for tests. os._exit, not sys.exit: this runs inside the
+        # event loop, and the point is that the process really ends so the
+        # container restart policy brings the eye back.
+        self._exit = os._exit
+        self._exiting = False
+        self._exit_started = False
+        self._exit_task: Optional[asyncio.Task] = None
+        self._stall_logged: str | None = None
 
     async def start(self) -> None:
         logger.remove()
@@ -99,14 +119,70 @@ class RetinaService:
         await self.bus.connect()
         await self.source.start()
         self._shutdown.clear()
-        self._capture_task = asyncio.create_task(self.capture_loop())
-        self._health_task = asyncio.create_task(self._health_loop())
+        # The boot grace starts now, not at module import.
+        self._started_at = self._stall_clock_ts = time.time()
+        self._loop_tick_mono = time.monotonic()
+        self._capture_task = self._spawn_forever(self.capture_loop(), "capture_loop")
+        self._health_task = self._spawn_forever(self._health_loop(), "health_loop")
         if self.settings.RETINA_CLIP_ENABLED:
-            self._clip_consumer_task = asyncio.create_task(self._clip_consume_loop())
+            self._clip_consumer_task = self._spawn_forever(self._clip_consume_loop(), "clip_consume_loop")
             logger.info(
                 f"[RETINA] clip RPC intake → {self.settings.CHANNEL_RETINA_CLIP_INTAKE}"
             )
         logger.info(f"[RETINA] Started → {self.settings.CHANNEL_RETINA_PUB}")
+
+    def _spawn_forever(self, coro, name: str) -> asyncio.Task:
+        """Start a task that must run until stop(). If it ends any other way,
+        exit the process.
+
+        2026-10-17: capture_loop died on an exception and nothing logged it
+        (the service held a reference to the task, so asyncio's "exception
+        was never retrieved" never fired). Health kept saying ok for 3 h.
+        A dead eye must be loud and must come back: CRITICAL log, then exit
+        so the container restart policy restarts it.
+        """
+        task = asyncio.create_task(coro, name=f"retina-{name}")
+        task.add_done_callback(lambda t: self._on_forever_task_done(t, name))
+        return task
+
+    def _on_forever_task_done(self, task: asyncio.Task, name: str) -> None:
+        if self._shutdown.is_set() or self._exiting:
+            return  # normal stop(), or already exiting
+        if task.cancelled():
+            reason = "was cancelled"
+        else:
+            exc = task.exception()
+            reason = f"died: {type(exc).__name__}: {exc}" if exc else "returned"
+            if exc is not None:
+                logger.opt(exception=exc).critical(f"[RETINA] {name} traceback")
+        self._die_soon(f"{name} {reason}; it must run forever")
+
+    def _die_soon(self, reason: str) -> None:
+        """Sync entry point (done callbacks): start the exit as a task."""
+        if self._exiting:
+            return
+        self._exiting = True  # set now: a second callback must not schedule another
+        self._exit_task = asyncio.get_running_loop().create_task(self._die(reason))
+
+    async def _die(self, reason: str) -> None:
+        """Log CRITICAL, release the camera, exit once. The container restart
+        policy (and the RTSP quiet period on the way back up) does the rest.
+
+        source.stop() first, bounded: an RTSP reader that releases its
+        capture sends TEARDOWN, so the camera does not keep an orphaned
+        session (the 2026-10-16 smear hazard). A wedged reader cannot, and
+        the bound keeps it from blocking the exit."""
+        if self._exit_started:
+            return
+        self._exiting = True
+        self._exit_started = True
+        logger.critical(f"[RETINA] {reason}. Exiting for restart.")
+        timeout = min(30.0, float(getattr(self.source, "_join_timeout", 10.0) or 10.0) + 2.0)
+        try:
+            await asyncio.wait_for(self.source.stop(), timeout=timeout)
+        except BaseException as exc:  # noqa: BLE001 -- nothing may stop the exit
+            logger.error(f"[RETINA] source stop before exit failed: {type(exc).__name__}: {exc}")
+        self._exit(1)
 
     async def stop(self) -> None:
         self._shutdown.set()
@@ -366,19 +442,28 @@ class RetinaService:
         interval = 1.0 / max(self.settings.RETINA_FPS, 0.01)
         while not self._shutdown.is_set():
             t0 = time.time()
+            self._loop_tick_mono = time.monotonic()
             try:
                 async with self._device_lock:
                     await self.capture_once()
             except Exception as exc:
+                self._last_capture_error_mono = time.monotonic()
                 self.metrics.last_error = str(exc)
-                logger.error(f"[RETINA] capture_once failed: {exc}")
-            if time.time() - self._last_cleanup > 10:
-                await asyncio.to_thread(
-                    cleanup_old_frames,
-                    self.settings.FRAME_STORAGE_DIR,
-                    self.settings.FRAME_RETENTION_SECONDS,
-                )
-                self._last_cleanup = time.time()
+                logger.error(f"[RETINA] capture_once failed: {type(exc).__name__}: {exc}")
+            # Housekeeping must never stop capture: the 2026-10-17 outage was
+            # this call raising outside any try and killing the loop.
+            try:
+                if time.time() - self._last_cleanup > 10:
+                    self._last_cleanup = time.time()
+                    await asyncio.to_thread(
+                        cleanup_old_frames,
+                        self.settings.FRAME_STORAGE_DIR,
+                        self.settings.FRAME_RETENTION_SECONDS,
+                        camera_id=self.settings.RETINA_CAMERA_ID,
+                        stream_id=self.settings.RETINA_STREAM_ID,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.error(f"[RETINA] frame cleanup failed (capture continues): {type(exc).__name__}: {exc}")
             elapsed = time.time() - t0
             await asyncio.sleep(max(0.0, interval - elapsed))
 
@@ -389,8 +474,8 @@ class RetinaService:
             # RTSP readers wedged in FFmpeg and the session cap stops us opening
             # more: only a fresh process clears them. Exit so the container's
             # restart policy brings the eye back, instead of a silent outage.
-            logger.critical(f"[RETINA] {getattr(self.source, 'stall_error', '')}; exiting for restart")
-            os._exit(1)
+            await self._die(str(getattr(self.source, "stall_error", "") or "rtsp readers wedged"))
+            return False
         self._copy_source_metrics()
         if result is None:
             if getattr(self.source, "waiting_for_event", False) is True:
@@ -431,6 +516,7 @@ class RetinaService:
                     timeout_sec=self.settings.RETINA_PERCEPT_TIMEOUT_SEC,
                 )
             except PerceptUploadError as exc:
+                self._last_capture_error_mono = time.monotonic()
                 # Drop the frame and try the next one. Deliberately no spooling:
                 # this mode runs on laptops that sleep and roam, and a backlog
                 # of webcam images on a personal machine is a worse failure than
@@ -511,9 +597,83 @@ class RetinaService:
             return True
         return self.metrics.frames_failed == 0
 
+    def _expected_quiet(self) -> bool:
+        """No frame is the normal state right now: RTSP waiting out the
+        camera's stale session, or an event camera (Ring) between events.
+        Read live from the source, not from metrics (capture_loop copies
+        those, and capture_loop may be the thing that is stuck)."""
+        src = self.source
+        if getattr(src, "waiting_for_event", False) is True:
+            return True
+        qwr = getattr(src, "quiet_wait_remaining", None)
+        if callable(qwr):
+            try:
+                return float(qwr()) > 0
+            except Exception:  # noqa: BLE001
+                return False
+        return False
+
+    def publish_stall(self, now: float | None = None) -> str | None:
+        """Why nothing has been published for RETINA_PUBLISH_STALL_SECONDS,
+        or None. Health reports it as `capture_stalled`, status degraded."""
+        limit = float(self.settings.RETINA_PUBLISH_STALL_SECONDS)
+        if limit <= 0:
+            return None
+        now = time.time() if now is None else now
+        if self._expected_quiet():
+            self._stall_clock_ts = now
+            return None
+        since = max(self._last_publish_ts or 0.0, self._stall_clock_ts, self._started_at)
+        age = now - since
+        if age <= limit:
+            return None
+        return f"no frame published for {age:.0f}s (limit {limit:.0f}s)"
+
+    def publisher_dead(self, now: float | None = None, mono: float | None = None) -> str | None:
+        """A reason to exit for restart, or None.
+
+        Only cases a restart can fix and that are certain:
+          - capture_loop has not started an iteration for the limit (hung or
+            gone), whatever the source is doing;
+          - the source is delivering frames (RTSP reader clock, independent of
+            capture_loop) but nothing was published for the limit, and no
+            capture error (save/upload/bus) happened in that window.
+        A camera that is down, or a disk/bus/upload failure, is not this: it
+        reads degraded with last_error, no exit (a restart would not fix it
+        and every exit costs the camera a session).
+        """
+        limit = float(self.settings.RETINA_PUBLISH_STALL_SECONDS)
+        if limit <= 0:
+            return None
+        now = time.time() if now is None else now
+        mono = time.monotonic() if mono is None else mono
+        loop_age = mono - self._loop_tick_mono
+        # A paused device (clip capture) holds the lock for at most the clip
+        # timeout; the limit is validated to exceed one capture interval.
+        if loop_age > limit:
+            return f"capture_loop has not ticked for {loop_age:.0f}s"
+        stall = self.publish_stall(now)
+        if stall is None:
+            return None
+        err = self._last_capture_error_mono
+        if err is not None and mono - err <= limit:
+            return None
+        src_age_fn = getattr(self.source, "last_frame_age", None)
+        if not callable(src_age_fn):
+            return None
+        try:
+            src_age = src_age_fn()
+        except Exception:  # noqa: BLE001
+            return None
+        if src_age is not None and src_age < limit:
+            return f"source is streaming (newest frame {src_age:.0f}s old) but {stall}"
+        return None
+
     async def _health_loop(self) -> None:
         while not self._shutdown.is_set():
+            stall: str | None = None
             try:
+                stall = self.publish_stall()
                 env = make_system_health_envelope(
                     service_name=self.settings.SERVICE_NAME,
                     service_version=self.settings.SERVICE_VERSION,
@@ -522,6 +682,7 @@ class RetinaService:
                     source_type=self.settings.RETINA_SOURCE_TYPE,
                     source_ok=self._source_ok(),
                     metrics=self.metrics,
+                    capture_stalled=stall,
                     heartbeat_interval_sec=self.settings.HEALTH_INTERVAL_SECONDS,
                     fps_target=self.settings.RETINA_FPS,
                     storage_dir=self.settings.FRAME_STORAGE_DIR,
@@ -529,6 +690,15 @@ class RetinaService:
                 await self.bus.publish(self.settings.CHANNEL_SYSTEM_HEALTH, env)
             except Exception as exc:
                 logger.warning(f"[RETINA] health publish failed: {exc}")
+            if stall is not None and self._stall_logged is None:
+                logger.warning(f"[RETINA] capture stalled: {stall}")
+            elif stall is None and self._stall_logged is not None:
+                logger.info("[RETINA] capture publishing again")
+            self._stall_logged = stall
+            dead = self.publisher_dead()
+            if dead is not None:
+                await self._die(f"publisher watchdog: {dead}")
+                return
             await asyncio.sleep(self.settings.HEALTH_INTERVAL_SECONDS)
 
 

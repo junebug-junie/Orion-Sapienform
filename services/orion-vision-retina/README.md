@@ -70,7 +70,8 @@ cp .env_example .env
 | `RETINA_STREAM_ID` | `retina-stream-01` | Pointer metadata |
 | `RETINA_FPS` | `1.0` | Capture rate |
 | `FRAME_STORAGE_DIR` | `/mnt/telemetry/vision/frames` | JPEG output |
-| `FRAME_RETENTION_SECONDS` | `300` | Cleanup age |
+| `FRAME_RETENTION_SECONDS` | `300` | Cleanup age for this camera/stream's own frames only |
+| `RETINA_PUBLISH_STALL_SECONDS` | `120.0` | Publisher watchdog: degraded health, then exit for restart. `0` disables |
 | `CHANNEL_RETINA_PUB` | `orion:vision:frames` | Publish channel |
 | `RETINA_RTSP_TRANSPORT` | `tcp` | RTSP only: `tcp`, `udp`, `http`. TCP stops UDP packet loss (smeared frames, `RTP: bad cseq`) |
 | `RETINA_RTSP_IO_TIMEOUT_SECONDS` | `5.0` | RTSP only: FFmpeg socket `timeout` + OpenCV read timeout, so a quiet stream cannot block `cap.read()` forever |
@@ -148,6 +149,37 @@ stayed up and logged nothing; only a restart fixed it. Now:
   the post-deploy check below).
 - System health `details` carry `last_frame_age_sec` and `source_stall_restarts`; a stall logs
   `[RETINA] rtsp stalled: ...` at WARNING and `rtsp frames resumed ...` on recovery.
+
+### Capture task supervision + publisher watchdog (2026-10-17)
+
+The walkway published nothing for ~3 h while health said `ok`. The frame
+pruner raced another pruner on the shared frames dir (a file deleted between
+`isfile` and `getmtime`), the exception escaped `capture_loop`, the task
+ended, and nothing logged it. Now:
+
+- Each writer prunes only its own files: this service only
+  `<camera_id>_<stream_id>_<ms>_<hex8>.jpg` (`frame_store.owned_frame_pattern`),
+  the edge only `frame_*`/`still_*`. Walkway frames now live
+  `FRAME_RETENTION_SECONDS`, not the edge's 60 s. A file vanishing mid-sweep is skipped.
+- Cleanup runs inside `capture_loop`'s protective try: housekeeping never stops capture.
+- `capture_loop`, the health loop and the clip consumer must run forever. If one
+  ends any other way than `stop()`, it logs CRITICAL (with the traceback) and the
+  process exits; the container restart policy brings it back (the RTSP quiet
+  period keeps the camera clean on the way up).
+- Nothing published for `RETINA_PUBLISH_STALL_SECONDS` (outside the RTSP quiet
+  wait and a Ring camera between events): health `status` is `degraded`,
+  `details.capture_stalled` is true with `capture_stalled_reason`. If
+  `capture_loop` has not ticked for that long, or the RTSP reader still delivers
+  frames while nothing is published with no save/upload/bus error in that window,
+  the process exits for restart. Before exiting it stops the source (bounded),
+  so an RTSP reader sends TEARDOWN. A camera that is down, or a failure a
+  restart cannot fix (disk full, bus down, upload refused), reads degraded
+  with `last_error` and does not exit. The loop clock is monotonic: an NTP
+  step or a laptop resume is not a hang.
+- Known gaps: a Ring camera whose every publish fails never reads
+  `capture_stalled` (it is "between events" once the frame is taken); its
+  `last_error` and `source_ok` report it. Files in the shared dir that no live
+  writer owns (a retired camera_id/stream_id) are pruned by nobody.
 
 ### RTSP reconnect quiet period + corruption self-heal (2026-10-16)
 

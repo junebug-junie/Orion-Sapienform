@@ -701,7 +701,7 @@ def test_frozen_prompt_is_resent_on_retry():
     src = (HUB / "scripts" / "curiosity_investigation.py").read_text()
     body = src[src.index("async def _prompt_for_attempt"):]
     body = body[:body.index("\n    async def ", 10)]
-    assert "return request.prompt" in body and "preamble + request.prompt" in body
+    assert "return request.prompt" in body and "_with_header_first(drift + preamble, request.prompt)" in body
     assert "build_kickoff_prompt" not in body and "take_carry_forward" not in body
 
 

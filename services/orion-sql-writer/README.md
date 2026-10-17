@@ -577,6 +577,38 @@ Every knob (all `VISION_*`, `ORION_ASK_*` keys) is listed with a comment in
 
 Report: `python3 scripts/report_vision_individuals.py [--stream walkway] [--json]`.
 
+### Walkway motion stories (2026-10-16, Hub only)
+
+`app/vision_motion.py` (pure) + `app/vision_motion_loop.py` (clocked, every
+`VISION_MOTION_STORY_INTERVAL_SEC`, default 15 s). Turns each passing thing on
+the walkway into one sentence from box maths -- no model, no embeddings, no
+new identity. Design: `docs/superpowers/specs/2026-10-16-walkway-motion-stories-proposal.md`.
+
+- Links `vision_crop_observation` boxes into passages by geometry (velocity
+  prediction), not by `individual_id`; ids only supply a name, and only under
+  the strict rule (one named individual on >= 2/3 of the crops, no other named
+  individual, no crop touching the frame edge).
+- Boxes touching the left, right or bottom edge give no zone and no travel.
+- Published = a moving story with >= `VISION_MOTION_STORY_MIN_DETECTIONS` (3)
+  detections, enough of them unclipped. Everything else is stored with
+  `published=false` and a `drop_reason` (glimpse, standing, parked, prop,
+  edge_clipped, too_long). Fast classes (ran / ridden / drove) need >= 3
+  unclipped detections.
+- Props: stationary individuals, `VISION_MOTION_PROP_INDIVIDUAL_IDS` (default:
+  the patio skeleton), and boxes overlapping their still/last boxes.
+- Table `vision_motion_story` (+ `_cursor`, `_verdict`), migration
+  `services/orion-sql-db/manual_migration_vision_motion_story_v1.sql`
+  (auto-applies on pull). Stories are kept `VISION_MOTION_STORY_RETENTION_DAYS` (90).
+- Trace: `[MOTION_STORY] stream=walkway crops=.. closed=.. published=.. glimpses=..
+  dropped_props=.. cursor=..` once per tick.
+- **Hub only.** Nothing in Orion's cognition reads the table. The Hub's
+  "Walkway stories" card (Vision panel, "Walkway (live)") shows them and
+  records Juniper's verdicts; the gate to switch them on for Orion is >= 50
+  checked, >= 80% fully right, zero wrong names.
+- Kill switch: `VISION_MOTION_STORIES_ENABLED=false`.
+- Replay (read only): `PYTHONPATH=. python services/orion-sql-writer/evals/run_vision_motion_story_replay_eval.py`
+  (clean frames from `VISION_MOTION_CLEAN_SINCE` by default; `--include-corrupt` for earlier).
+
 ## Storage-write organ (2026-10-02)
 
 The writer reports on its own writes (`app/write_health.py`). Every incoming write ends in one

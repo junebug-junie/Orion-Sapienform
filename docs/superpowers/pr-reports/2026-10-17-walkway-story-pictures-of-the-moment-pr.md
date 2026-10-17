@@ -4,8 +4,8 @@
 
 - Each published walkway story now gets its own pictures, taken from the real frames of the walk-by: up to 4 crops around the person (256 px tall) and one full frame (640 px wide) with all the story's boxes drawn. The Hub card shows these, labelled "Picture from <time>". It no longer draws boxes over today's view.
 - orion-sql-writer saves the pictures. Its motion loop already ticks every 15 s, and the walkway frames live only about 60 s, so each tick first copies a crop and a small frame for every new walker box, then builds the story's strip when the story closes. A box whose frame was already gone says "frame already gone". Nothing is faked.
-- Each strip carries two brightness numbers. The story is marked `dark` when the area where the person walked is darker than 0.06 (median brightness, 0 = black, 1 = white). Dark stories are still published. The card's new "only checkable (daylight, with picture)" filter is on by default, so Juniper's queue holds only stories she can judge.
-- A fifth button, "Can't tell", appears on stories with no picture or a dark scene. It records that she could not judge the story. It removes the story from the "unchecked" queue and never counts as right or wrong. The tally line shows "can't tell N (not counted)".
+- Each strip records how much visible detail the person's crops hold (contrast). The story is marked `dark` when that contrast is below 0.10. Brightness alone could not tell a lit-but-empty night lawn from a dark coat in daylight, so contrast is what decides. Dark stories are still published. The card's new "only checkable (daylight, with picture)" filter is on by default, so Juniper's queue holds only stories she can judge.
+- A fifth button, "Can't tell", appears on every story (the review asked for it on all of them: an unclear daylight picture should not be forced into "wrong"). It records that she could not judge the story. It removes the story from the "unchecked" queue and never counts as right or wrong. The tally line shows "can't tell N (not counted)".
 - The Hub serves the pictures through a new route that accepts only a 32-hex story id and the five file names the writer creates, and never follows a link.
 
 ## Outcome moved
@@ -39,7 +39,7 @@ After: every story published after deploy carries the pictures of its own moment
 - `services/orion-sql-writer/app/settings.py`, `.env_example`, `docker-compose.yml`: 6 keys, ON by default; frames mounted `:ro`, strip directory mounted read-write.
 - `services/orion-sql-writer/requirements.txt`: `Pillow==11.3.0`.
 - `services/orion-sql-writer/README.md`: the new section, with the darkness measurements.
-- `services/orion-sql-writer/tests/test_vision_story_strip.py` (new): 10 pure tests + 5 real-Postgres tests.
+- `services/orion-sql-writer/tests/test_vision_story_strip.py` (new): 12 pure tests + 8 real-Postgres tests.
 - `services/orion-sql-writer/evals/run_story_strip_darkness_eval.py` (new): a read-only coverage and darkness-by-verdict eval.
 - `services/orion-sql-db/manual_migration_vision_motion_story_strip_v2.sql` (new).
 - `services/orion-hub/scripts/motion_story_routes.py`: the strip route, `checkable_only`, `cant_tell`, tally `cant_tell`.
@@ -51,7 +51,7 @@ After: every story published after deploy carries the pictures of its own moment
 ## Schema / bus / API changes
 
 - Added columns:
-  - `vision_motion_story.evidence_strip` jsonb, `frame_luminance` real, `scene_luminance` real, `dark` boolean.
+  - `vision_motion_story.evidence_strip` jsonb, `frame_luminance` real, `scene_luminance` real, `scene_contrast` real, `dark` boolean.
   - `vision_motion_story_verdict.cant_tell` boolean.
 - Added HTTP:
   - `GET /api/vision/motion-stories/{story_id}/strip/{crop_0..3|frame}.jpg`.
@@ -72,42 +72,108 @@ After: every story published after deploy carries the pictures of its own moment
   - `VISION_STORY_STRIP_DIR=/mnt/telemetry/vision/story_strips`
   - `VISION_STORY_STRIP_RETENTION_DAYS=30`
   - `VISION_STORY_STRIP_PENDING_SEC=3600`
-  - `VISION_STORY_STRIP_DARK_LUMINANCE=0.06`
+  - `VISION_STORY_STRIP_DARK_CONTRAST=0.10`
 - Added keys (orion-hub): `HUB_VISION_STORY_STRIP_DIR=/mnt/telemetry/vision/story_strips`.
 - Removed / renamed: none.
 - `.env_example` updated: yes.
-- Local `.env` synced with `python scripts/sync_local_env_from_example.py --all-keys orion-sql-writer orion-hub`: yes. All 7 keys were added to the primary checkout's `.env` files. No `--force`.
+- Local `.env` synced with `python scripts/sync_local_env_from_example.py --all-keys orion-sql-writer orion-hub`: yes. All 7 keys were added to the primary checkout's `.env` files. No `--force`. An earlier draft key, `VISION_STORY_STRIP_DARK_LUMINANCE`, was added by the first sync and then removed by hand when the measurement changed to contrast. It was never in any merged code.
 - Skipped keys: none.
 
 ## Darkness threshold (measured)
 
-- Live walkway frame at 20:12 MDT (02:12 UTC): the camera was still in colour (colour spread 14.5, not IR). The porch light kept the whole-frame mean at 0.255. So the whole-frame mean cannot say "dark": it is stored, but it is not used for `dark`.
-- The same night frame, inside the padded areas where the 10 clean non-prop stories happened: the median was 0.004-0.03 on the street, and 0.08-0.12 where a lit porch pillar fills the area.
-- Daytime and dusk crop thumbnails from the clean period (13:09-18:47 MDT, n=31, box only): the median was 0.11-0.52. The low end is a dark-clothed person, not a dark scene.
-- Threshold: 0.06. It sits between the night street (≤ 0.03) and the darkest daytime box (0.11).
-- **UNVERIFIED:** no daytime full frame existed to measure, because frames live 60 s. The 18:47-20:12 MDT twilight, and whether the camera ever switches to IR, are not measured. `evals/run_story_strip_darkness_eval.py` re-checks 0.06 against Juniper's "Can't tell" verdicts once she has some.
+The threshold is a contrast, not a brightness. Here is why, from live data:
+
+- **Whole frame (night, 20:12 MDT):** the camera was still in colour (colour spread 14.5, so not IR). The porch light held the whole-frame mean at 0.255. The whole-frame mean never reads dark, so it is stored as a diagnostic only.
+- **Brightness of the person's area (night):** the first design used the median brightness of the walk area, with a threshold of 0.06. I ran the real code on tonight's live frames at the 00:47 story's place, and it read 0.116, so it was not marked dark. But the crop showed nothing a person could judge: a porch-lit lawn. A dark-clothed person in daylight reads 0.114 (13:33 MDT thumbnail). Brightness cannot tell these two apart.
+- **Contrast (RMS contrast, the standard deviation of brightness; theory: visibility of detail follows contrast, not mean level, Peli 1990):**
+  - Night: all 10 clean non-prop story places on the live night frame read 0.012-0.066, run through this code (`assemble_strip` on real walkway frames found by name).
+  - Day and dusk: the 31 clean crop thumbnails from 13:09-18:47 MDT, resized the same way, read 0.133-0.30 (p10 0.187).
+- **Threshold: 0.10.** It sits in the gap between the night maximum (0.066) and the day minimum (0.133).
+
+**UNVERIFIED:**
+- No daytime full frame existed to measure, because frames live 60 s. The day side comes from box-only thumbnails, not padded crops.
+- The 18:47-20:12 MDT twilight was not measured, and neither was whether the camera ever switches to IR.
+- `evals/run_story_strip_darkness_eval.py` re-checks 0.10 against Juniper's "Can't tell" verdicts once she has some.
+
+## Metric quality gate (scene_contrast, frame_luminance)
+
+1. **Where the number comes from:** `vision_story_strip.luma_stats` reads the luma histogram of each saved crop JPEG. `assemble_strip` takes the median of those values over the crops. If no crop was saved, it measures each box's padded area on the 640 px frame instead.
+2. **Independence:** this is the only pixel-derived number on a story. Every other story field is box geometry. `frame_luminance` (whole-frame mean) comes from a different area of the same frame, so it is not redundant. It is a diagnostic only: nothing reads it.
+3. **Theory:** RMS contrast measures how visible detail is (Peli 1990). The yes/no question is "can a human see the person", and contrast answers it.
+4. **Live data:** the night and day ranges are above, and they do not overlap. A calm or rest state is not the issue here. A "flat" crop (no contrast) is exactly the dark case, and it is reachable.
+5. **Existing mechanism:** nothing in the repo measured scene darkness for the walkway. vision-host thumbnails store no brightness or contrast.
+6. **Reversibility:** one nullable column plus one env key. The Hub filter reads only `dark`, so the threshold can change without touching the schema.
 
 ## Tests run
 
 ```text
-<filled below>
+services/orion-sql-writer/tests/test_vision_story_strip.py + test_vision_motion.py
+  (real Postgres, ORION_TEST_PG_URI, throwaway postgres:16)          53 passed
+services/orion-hub/tests/test_motion_story_routes.py (real Postgres)  12 passed
+node --test static/js/walkway-stories.test.js                          7 passed
+test_walkway_stories_browser_smoke.py (Chromium, 360 px)             passed 3/3 reruns
+orion-static-gates.yml, every run step executed locally (34 steps)    all green
+check_async_routes_not_blocking / check_migration_required_by / check_env_template_parity /
+  check_env_key_single_source / check_settings_defaults orion-hub     PASS
+auto_apply_refusals(v2 migration), with and without live catalog       []
+Full sql-writer suite: 14 failures, identical set on clean main
+  (biometrics_*, chat_history_response_identity, gpu_pool_state_history, journal_entry,
+   notify_attention_*, subscription_matches_declared_consumers -- local-env sensitive)
 ```
 
 ## Evals run
 
 ```text
-<filled below>
+Live darkness measurement (READ ONLY, scratch copies only, no DB writes):
+  real walkway frames found by name for 10 clean non-prop story places, run through
+  capture_pending + assemble_strip:  contrast 0.012-0.066, all dark=True
+  31 clean daytime/dusk crop thumbnails through luma_stats: contrast 0.133-0.30
+run_story_strip_darkness_eval.py against the throwaway DB: runs; reports coverage and the
+  verdict split; correctly flags a strip whose frame file is missing (exit 1).
+Not run against live: the live DB does not have the v2 columns until the migration applies.
 ```
 
 ## Docker/build/smoke checks
 
 ```text
-<filled below>
+docker build -f services/orion-sql-writer/Dockerfile (worktree)   OK; in the image:
+  import PIL (11.3.0), app.vision_story_strip, app.vision_motion_loop  OK  (test image removed)
+docker compose config (sql-writer, hub) with the primary .env files: frames mounted read_only,
+  story_strips mounted (rw for sql-writer, ro for hub), all 7 keys present
+No deploy, no restart, no live DB writes (task rule).
+Live frame-name matching of a NEW crop: UNVERIFIED. A read-only probe watched for
+  walkway crops for 90 min after 02:20 UTC; nobody walked past at night.
 ```
 
 ## Review findings fixed
 
-<filled below>
+The code review ran in a read-only subagent on the first commit. It found no blockers. Path handling, SQL, async and XSS were all clean.
+
+- **Finding: the darkness number measured the scene, not the walker; lit night areas passed.**
+  - Fix: `dark` now comes from crop contrast (see "Darkness threshold"). I had found the same failure live just before the review returned.
+  - Evidence: `test_a_lit_lawn_at_night_is_dark_although_it_is_as_bright_as_a_dark_coat_by_day`, plus the live night run (10/10 dark).
+- **Finding: the gate could pass on daylight stories only, and an unclear lit picture was forced into "wrong".**
+  - Fix: "Can't tell" is now on every story. The tally returns `not_checkable`, and the gate line says how many dark or picture-less stories it does not cover.
+  - Evidence: JS test `gate line says how many...`; PG test (`not_checkable == 4`); smoke.
+- **Finding: the capture cursor could skip a crop for good.** `created_at` is the start time of the inserting transaction, so a row can commit after the cursor has already passed it.
+  - Fix: each read re-covers 10 s behind the cursor, and it skips the newest second.
+  - Evidence: `test_a_crop_committed_late_behind_the_cursor_is_still_captured` (real Postgres).
+- **Finding: the prop filter never fired, because fresh crops have no `individual_id` yet.** The patio skeleton would be decoded on every frame.
+  - Fix: capture matches crops to stationary or prop boxes by overlap, and records `prop_overlap`.
+  - Evidence: `test_prop_boxes_are_not_captured_and_say_why`.
+- **Finding: a crop that landed after the first capture read could be marked `not_captured` for good.**
+  - Fix: capture runs again just before strips are built.
+- **Finding: a strip that kept failing stayed NULL forever, with a half-written folder.**
+  - Fix: after half the pending window, the story gets a final `{"error": ...}` record, and the folder is removed.
+  - Evidence: `test_a_strip_that_keeps_failing_gets_a_final_error_record`.
+- **Finding: "never deleted while unchecked" was overstated.**
+  - Fix: README, settings and `.env_example` now say the true rule. A strip is kept until 30 days after its story AND a verdict exists ("Can't tell" counts), or until story retention deletes the story row itself.
+- **Nits fixed:**
+  - Crops are now copied atomically.
+  - `retention_days` is carried in the record, and the card reads it instead of hard-coding 30.
+  - `frame_luminance` is labelled a diagnostic.
+  - The smoke also checks that the page itself has no sideways scroll at 360 px.
+- **Not changed:** the Hub route checks for a symlinked folder, then opens the file with `O_NOFOLLOW`. A fully race-free `dir_fd` open is not needed, because only sql-writer writes there. Noted as low.
 
 ## Restart required
 
@@ -126,7 +192,14 @@ Live check after deploy:
 
 ## Risks / concerns
 
-<filled below>
+- Severity: medium. **The capture race is UNVERIFIED live.**
+  - Concern: frames live about 60 s. Capture reaches a crop within about 17 s (a 15 s tick plus about 2 s for the crop row to land).
+  - Mitigation: if sql-writer is down or behind, the strip says "frame already gone" or "not saved"; it never shows a wrong picture. After deploy, `run_story_strip_darkness_eval.py` shows the saved vs `frame_gone` split.
+- Severity: medium. **The day side of the threshold comes from box-only thumbnails (n=31), not full frames.**
+  - Mitigation: a re-check against "Can't tell" verdicts through the eval. The threshold is one env key.
+- Severity: low. **sql-writer now decodes one full-size walkway JPEG per detected walker frame.** That is about 0.2 per second at most, and props are skipped. Disk use is about 5 small JPEGs (about 100 KB) per published story, plus an hour of pending files.
+- Severity: low. **Stories published before deploy have no strip.** That includes the 00:47 UTC one. The card says "No picture saved for this story" for them, and "Can't tell" is available.
+- Severity: low. **The local `.env` has `VISION_MOTION_STORY_STREAMS=walkway,doorbell`, which differs from the example.** That predates this patch. The capture code handles any stream by its frame prefix. Doorbell frame naming is **UNVERIFIED**.
 
 ## PR link
 

@@ -15,6 +15,7 @@ to revise.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -80,6 +81,9 @@ def _question_section(question: Optional[SelfQuestion]) -> list[str]:
     ]
 
 
+_SAFE_QUESTION_ID = re.compile(r"[a-z0-9_.:-]{1,64}")
+
+
 def self_inquiry_task_header(question: Optional[SelfQuestion]) -> str:
     """Code-written task line the governor anchors through compaction.
 
@@ -91,8 +95,11 @@ def self_inquiry_task_header(question: Optional[SelfQuestion]) -> str:
         ask = f"the standing question {STANDING_QUESTION!r}"
     elif question.minted_by == "juniper":
         ask = f"the question {question.text!r} (question_id {question.question_id})"
-    else:
+    elif _SAFE_QUESTION_ID.fullmatch(question.question_id or ""):
         ask = f"the question with question_id {question.question_id} stated in your first message"
+    else:
+        # A minted id is Orion-written text too (no charset check at mint time).
+        ask = "the question stated in your first message"
     return render_task_header(
         f"Self-inquiry: answer {ask} about yourself, from evidence you can find, "
         "and record your answer before the run ends."

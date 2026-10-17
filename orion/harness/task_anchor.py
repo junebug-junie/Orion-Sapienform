@@ -54,6 +54,19 @@ def render_task_header(task: str) -> str:
     return f"{TASK_HEADER_OPEN}\n{body}\n{TASK_HEADER_CLOSE}\n\n" if body else ""
 
 
+def split_task_header(text: str) -> tuple[str, str]:
+    """(header block, rest) when `text` opens with a header, else ("", text).
+
+    For callers that prepend their own preamble: put it after the header, so the
+    header stays the request's first byte (`extract_task_header`)."""
+    if extract_task_header(text) is None:
+        return "", text
+    end = text.index("\n" + TASK_HEADER_CLOSE) + len(TASK_HEADER_CLOSE) + 1
+    while end < len(text) and text[end] == "\n":
+        end += 1
+    return text[:end], text[end:]
+
+
 def extract_task_header(user_message: Optional[str]) -> Optional[str]:
     """The header's task text, only when the request starts exactly with the header."""
     text = str(user_message or "")

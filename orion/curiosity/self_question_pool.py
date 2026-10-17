@@ -41,7 +41,10 @@ UPSERT_MINT_SQL = (
     "ON CONFLICT (question_id) DO UPDATE SET "
     "text = EXCLUDED.text, family = EXCLUDED.family, "
     "status = CASE WHEN curiosity_self_questions.status = 'parked' "
-    "THEN 'parked' ELSE 'open' END"
+    "THEN 'parked' ELSE 'open' END "
+    # Never rewrite a Juniper question: its row would keep minted_by='juniper' while
+    # holding Orion's text, and that text is quoted into the task anchor as hers.
+    "WHERE curiosity_self_questions.minted_by = 'orion'"
 )
 
 UPSERT_SEED_SQL = (

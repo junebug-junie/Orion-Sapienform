@@ -114,6 +114,7 @@ from .curiosity_offer_decisions import (
     record_run_outcome,
     record_turn_snapshot,
 )
+from orion.harness.task_anchor import split_task_header
 from orion.curiosity.acl import assert_orion_acl, ensure_graph_exists
 from orion.curiosity.investigation_subject import build_investigation_subject
 from orion.curiosity.temporal_fact import curiosity_today_fact, thread_run_ids_from_view
@@ -788,6 +789,12 @@ def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
     if fcc_model_label:
         payload["fcc_model_label"] = fcc_model_label
     return payload
+
+
+def _with_header_first(preamble: str, prompt: str) -> str:
+    """Preamble after the prompt's task header, which the governor only anchors at byte 0."""
+    header, rest = split_task_header(prompt)
+    return header + preamble + rest
 
 
 class CuriosityInvestigation:
@@ -4786,7 +4793,7 @@ class CuriosityInvestigation:
         if reader is None:
             return request.prompt
         if request.attempt <= 1:
-            return drift + request.prompt
+            return _with_header_first(drift, request.prompt)
         hops = await asyncio.to_thread(read_hop_notes, reader, request.run_id)
         preamble = build_resume_preamble(hops, run_id=request.run_id)
         if not preamble:
@@ -4794,12 +4801,12 @@ class CuriosityInvestigation:
                 "curiosity_resume_no_prior_hops run=%s attempt=%s",
                 request.run_id, request.attempt,
             )
-            return drift + request.prompt
+            return _with_header_first(drift, request.prompt)
         logger.info(
             "curiosity_resume_preamble run=%s attempt=%s prior_hops=%s next_n=%s",
             request.run_id, request.attempt, len(hops), next_hop_n(hops),
         )
-        return drift + preamble + request.prompt
+        return _with_header_first(drift + preamble, request.prompt)
 
     async def _turn_result_for(
         self, request: CuriosityTurnRequestV1, *, hold_lock: bool

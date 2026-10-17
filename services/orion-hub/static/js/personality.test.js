@@ -125,3 +125,36 @@ test("shownCountText marks a capped list and renderParamsText names the defaults
   assert.strictEqual(p.renderParamsText(null), "");
   assert.match(p.skipText({ skip_reason: "render_failed" }), /^render_failed: The cue renderer failed/);
 });
+
+test("situationText shows each dimension's top value and share of n", () => {
+  const mix = { n: 20, arousal: { idle: 14, engaged: 6 }, day_phase: { night: 11, morning: 9 },
+                company: { true: 4, false: 16 } };
+  assert.strictEqual(p.situationText(mix), "idle 70% · night 55% · alone 80% (n=20)");
+  assert.strictEqual(p.situationText({ ...mix, company: { true: 16, false: 4 } }),
+    "idle 70% · night 55% · with company 80% (n=20)");
+  assert.match(p.situationDetail(mix), /^arousal: idle 14, engaged 6 \| day phase: night 11, morning 9 \| company: alone 16, with company 4 \| n=20/);
+});
+
+test("situationText says so when no evidence carries a situation", () => {
+  for (const m of [undefined, null, {}, { n: 0, arousal: {}, day_phase: {}, company: { true: 0, false: 0 } }, { n: "x" }]) {
+    assert.strictEqual(p.situationText(m), p.NO_SITUATION_TEXT);
+    assert.strictEqual(p.situationDetail(m), p.NO_SITUATION_TEXT);
+  }
+  assert.strictEqual(p.dispositionRow({ disposition_id: "d" }).when, "no situation data yet");
+  // Stamped rows but every dimension empty: the count still shows.
+  assert.strictEqual(p.situationText({ n: 2, arousal: {}, day_phase: {}, company: {} }), "(n=2)");
+});
+
+test("situationText shows every tied value, by name", () => {
+  const mix = { n: 4, arousal: { idle: 2, engaged: 2 }, day_phase: { night: 2, dawn: 2 }, company: { true: 2, false: 2 } };
+  assert.strictEqual(p.situationText(mix), "engaged/idle 50% · dawn/night 50% · alone/with company 50% (n=4)");
+});
+
+test("situationText keeps upstream values verbatim as text; escapeHtml neutralises them", () => {
+  const mix = { n: 1, arousal: { "<img src=x onerror=alert(1)>": 1 }, day_phase: {}, company: {} };
+  const text = p.situationText(mix);
+  assert.strictEqual(text, "<img src=x onerror=alert(1)> 100% (n=1)");  // written with textContent
+  assert.ok(!p.escapeHtml(text).includes("<"));
+  const row = p.dispositionRow({ disposition_id: "d", situation_mix: mix });
+  assert.strictEqual(row.when, text);
+});

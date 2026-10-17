@@ -3898,6 +3898,11 @@ section 7). It shows, top to bottom:
 - **Active** nodes: label (Orion's own words), weight with an inline sparkline of its history,
   evidence count, lanes (`lane: count`), chosen count, first seen, last reinforced. Click a row for
   its evidence (lane, time, excerpt, similarity, weight delta).
+- A **When** column: the situations the node's evidence happened in, from durable-runs `situation_mix`.
+  Per dimension it shows the most common value and its share of the stamped rows, for example
+  "idle 70% · night 55% · alone 80% (n=20)". Tied values all show, by name ("engaged/idle 50%"). The
+  tooltip has the full counts. A node whose evidence all predates situation stamping (2026-10-16) reads
+  "no situation data yet". This is for watching CAPS if-then signatures form; nothing Orion reads uses it.
 - **Candidates** and **Retired**, collapsed, same columns.
 - An empty graph reads "The graph is empty — it starts from today and grows as Orion writes."; a
   missing frame reads "durable-runs unavailable: <reason>".

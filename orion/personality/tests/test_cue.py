@@ -45,7 +45,7 @@ def test_choice_style_line():
 
 
 def test_only_choice_style_renders_without_header():
-    style = {"window_days": 14, "choices": 3, "took_top": 1, "went_own_way": 2}
+    style = {"window_days": 14, "choices": 6, "took_top": 2, "went_own_way": 4}
     cue = project_personality_cue(_frame(nodes=[], style=style), now=NOW)
     assert cue.text.startswith("In curiosity")
     assert HEADER not in cue.text
@@ -74,3 +74,15 @@ def test_fits_the_cap_by_dropping_weakest_nodes():
     assert cue.disposition_ids == [f"d{i}" for i in range(len(cue.disposition_ids))]
     assert "went your own way" in cue.text
     assert "…" in cue.text  # labels are shortened for display
+
+
+def test_choice_line_needs_five_choices_and_names_the_real_window():
+    # Live 2026-10-17: "went your own way in 1 of 1 choices over the last 14 days" on a graph
+    # one day old -- one data point read to Orion as a two-week tendency.
+    one = {"window_days": 1, "choices": 1, "took_top": 0, "went_own_way": 1}
+    assert project_personality_cue(_frame(nodes=[], style=one), now=NOW).skip_reason == "empty"
+    five = {"window_days": 1, "choices": 5, "took_top": 2, "went_own_way": 3}
+    cue = project_personality_cue(_frame(nodes=[], style=five), now=NOW)
+    assert "3 of 5 choices over the last day," in cue.text
+    three_days = {"window_days": 3, "choices": 9, "took_top": 4, "went_own_way": 5}
+    assert "over the last 3 days" in project_personality_cue(_frame(nodes=[], style=three_days), now=NOW).text

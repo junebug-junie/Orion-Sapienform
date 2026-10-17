@@ -808,3 +808,13 @@ def test_a_backdated_company_close_is_folded_before_rows_near_it_are_stamped():
     clock.at = utc(minutes=32)
     asyncio.run(drv.tick())
     assert store.evidence["chat:after_leaving"].meta["situation"]["company"] is False
+
+
+def test_covered_days_is_the_graph_age_clamped_to_the_window():
+    from app.personality_store import covered_days
+
+    born = utc(minutes=0)
+    assert covered_days(born + timedelta(hours=3), born) == 1
+    assert covered_days(born + timedelta(days=2, hours=1), born) == 3
+    assert covered_days(born + timedelta(days=40), born) == 14
+    assert covered_days(born, None) == 1

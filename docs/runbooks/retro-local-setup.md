@@ -33,7 +33,7 @@ python3 ~/.local/share/orion/retro/run.py baseline
 ```
 
 The generated launcher uses an immutable, versioned copy of the Python runtime
-under the kit root. Removing a development worktree does not break the kit.
+under the kit root, selected through the atomically published manifest. Removing a development worktree does not break the kit.
 
 Artifacts:
 

@@ -96,11 +96,19 @@ def test_installed_runtime_is_independent_of_checkout(tmp_path):
     from orion.retro.setup_local import install_runtime
     revision = install_runtime(tmp_path)
     assert revision == install_runtime(tmp_path)
+    (tmp_path / "manifest.json").write_text(json.dumps({"runtime": revision}))
     result = subprocess.run([sys.executable, str(tmp_path / "run.py"), "--help"],
                             cwd="/tmp", capture_output=True, text=True)
     assert result.returncode == 0
     assert "baseline" in result.stdout
     assert (tmp_path / revision / "orion/retro/local_runner.py").is_file()
+    # Runtime selection follows the atomic manifest, not an embedded launcher path.
+    relocated = tmp_path / "runtime/relocated"
+    (tmp_path / revision).rename(relocated)
+    (tmp_path / "manifest.json").write_text(json.dumps({"runtime": "runtime/relocated"}))
+    result = subprocess.run([sys.executable, str(tmp_path / "run.py"), "--help"],
+                            cwd="/tmp", capture_output=True, text=True)
+    assert result.returncode == 0
 
 
 @pytest.mark.parametrize("failure", [KeyboardInterrupt(), TimeoutError("deadline")])

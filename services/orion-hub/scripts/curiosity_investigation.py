@@ -221,6 +221,8 @@ from orion.curiosity.study_material import (
     UNRESOLVED_RECENT_SQL,
     assemble_study_material,
     build_street_caption_cards,
+    build_street_day_card,
+    STREET_DAY_ROLLUP_SQL,
     build_unresolved_cards,
 )
 from orion.curiosity.attention_schema import (
@@ -2051,7 +2053,22 @@ class CuriosityInvestigation:
         material.local_timezone = self.timezone_name
         material.unresolved = await self._read_unresolved_percepts(pool)
         material.street_captions = await self._read_street_captions(pool, now=now)
+        material.street_day = await self._read_street_day(pool)
         return material
+
+    async def _read_street_day(self, pool: Any) -> Any:
+        """The walkway's newest day rollup (2026-10-18, vision_rollup): own read, own
+        failure -- a missing table costs this card only. Empty stream list = off."""
+        ids = [s for s in self.street_stream_ids if s]
+        if not ids:
+            return None
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(STREET_DAY_ROLLUP_SQL, ids)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("curiosity_street_day_unreadable err=%s", type(exc).__name__)
+            return None
+        return build_street_day_card(row)
 
     async def _read_street_captions(self, pool: Any, *, now: datetime) -> list:
         """What the walkway (street) camera said lately (2026-10-15): the newest

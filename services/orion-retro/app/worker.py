@@ -61,7 +61,7 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
                         if op == 'disconnect':
                             released = authority.disconnect(cmd['connection'])
                             reject_pending('control_revoked', released)
-                            if not authority.leases: state = 'paused'
+                            if released and not authority.leases: state = 'paused'
                         elif (op == 'pause' and state != 'paused') or (op == 'resume' and state != 'running'):
                             authority.clear()
                             reject_pending('control_revoked')

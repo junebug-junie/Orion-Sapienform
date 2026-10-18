@@ -123,3 +123,8 @@ credential remains separate. `/sessions/{id}/media` carries bounded transient
 video/PCM packets, authenticated and owner-checked like input. Direct browser Origin
 requests to this service remain forbidden; Hub proxies over the private socket.
 All session reads/mutations require the credential that created the session.
+
+Validated-input rejection/unknown responses now also include `port`, `epoch` and
+`seq`. This is additive: existing CLI clients can still inspect `rejected` or
+`unknown`. Hub ignores replies from an earlier lease. A connection that no longer
+owns any port cannot pause a fresh resume merely by closing.

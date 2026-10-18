@@ -9,14 +9,25 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
 let page;
 try{
   page=await browser.newPage();const errors=[];page.on('pageerror',e=>errors.push(String(e)));
-  await page.evaluateOnNewDocument(()=>{
+  await page.evaluateOnNewDocument(delay=>{
+    if(delay){
+      const NativeSocket=window.WebSocket;
+      window.WebSocket=class extends NativeSocket {
+        set onmessage(callback){super.onmessage=event=>{
+          const slow=this.url.endsWith('/input') && JSON.parse(event.data).applied;
+          if(slow && window.__dropRetroAck)return;
+          if(slow)setTimeout(()=>callback(event),delay);else callback(event);
+        };}
+      };
+    }
+
     window.__audioPeak=0;
     const original=AudioBufferSourceNode.prototype.start;
     AudioBufferSourceNode.prototype.start=function(...args){
       if(this.buffer){const x=this.buffer.getChannelData(0);for(const v of x)window.__audioPeak=Math.max(window.__audioPeak,Math.abs(v));}
       return original.apply(this,args);
     };
-  });
+  },Number(process.env.RETRO_ACK_DELAY_MS || 0));
   await page.goto(url+'/retro');
   assert.equal(await page.evaluate(async()=> (await fetch('/api/retro/games')).status),401);
   await page.type('#code',fs.readFileSync(out+'/auth/browser.code','utf8'));
@@ -34,6 +45,7 @@ try{
   });
   assert(observed.frame>60 && observed.applied>60 && observed.audioFrames>48000 && observed.audioPeak>0 && observed.colors>=2,JSON.stringify(observed));
   await page.screenshot({path:out+'/browser.png',fullPage:true});
+  await page.click('#join');await pause(500);
   // Verify gamepad mapping through the actual authority's applied-action journal.
   await page.evaluate(()=>{
     const buttons=Array.from({length:16},()=>({pressed:false}));buttons[0].pressed=true;buttons[15].pressed=true;
@@ -47,6 +59,11 @@ try{
   await page.click('#takeover');await pause(250);
   const p2actions=await page.evaluate(async sid=>(await (await fetch(`/api/retro/sessions/${sid}/evidence`)).json()).applied,state.session_id);
   assert(p2actions.some(a=>a.port===1 && a.mask===384),'P2 gamepad input never applied');
+  if(Number(process.env.RETRO_ACK_DELAY_MS || 0)){
+    await page.evaluate(()=>{window.__dropRetroAck=true;});await pause(1700);
+    assert.equal(await page.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'paused');
+    await page.evaluate(()=>{window.__dropRetroAck=false;});await page.click('#join');await pause(600);
+  }
   await page.evaluate(()=>window.dispatchEvent(new Event('blur')));await pause(400);
   const afterBlur=await page.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state);
   assert.equal(afterBlur,'paused');
@@ -88,5 +105,5 @@ try{
   await pause(150);assert.equal(await tab.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'stopped');
   await tab.close();
   assert.deepEqual(errors,[]);
-  fs.writeFileSync(out+'/browser.json',JSON.stringify({status:'PASS',game:process.env.RETRO_EVAL_GAME,observed,hubTab:true,tabExitPaused:true,keyboard:true,syntheticStandardGamepad:true,blurPaused:true,reconnect:true,unverified:['physical gamepad','user-device audio output','input-to-photon latency','30-minute actual-client A/V drift']},null,2));
+  fs.writeFileSync(out+'/browser.json',JSON.stringify({status:'PASS',ackDelayMs:Number(process.env.RETRO_ACK_DELAY_MS || 0),game:process.env.RETRO_EVAL_GAME,observed,hubTab:true,tabExitPaused:true,keyboard:true,syntheticStandardGamepad:true,blurPaused:true,reconnect:true,unverified:['physical gamepad','user-device audio output','input-to-photon latency','30-minute actual-client A/V drift']},null,2));
 } catch(error) { if(page){console.error(await page.$eval('#status',e=>e.textContent));await page.screenshot({path:out+'/failure.png'});}throw error; } finally {await browser.close();}

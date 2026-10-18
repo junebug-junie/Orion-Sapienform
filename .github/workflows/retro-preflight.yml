@@ -101,6 +101,8 @@ jobs:
       - run: npm ci --prefix services/orion-hub
       - name: Browser controls, real native media, blur and reconnect
         run: PYTHONPATH=. python services/orion-hub/evals/retro_browser.py --output /tmp/retro-browser-ci
+      - name: Browser input remains live with delayed acknowledgments
+        run: PYTHONPATH=. python services/orion-hub/evals/retro_browser.py --ack-delay-ms 350 --output /tmp/retro-browser-lag-ci
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -110,3 +112,4 @@ jobs:
             /tmp/retro-service-ci/container.json
             /tmp/retro-browser-ci/browser.json
             /tmp/retro-browser-ci/browser.png
+            /tmp/retro-browser-lag-ci/browser.json

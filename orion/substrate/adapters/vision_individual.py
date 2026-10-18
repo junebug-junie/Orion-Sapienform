@@ -26,7 +26,7 @@ from typing import Iterable, Optional
 
 from orion.core.schemas.cognitive_substrate import (
     EntityNodeV1,
-    EventNodeV1,
+    EvidenceNodeV1,
     NodeRefV1,
     SubstrateEdgeV1,
     SubstrateGraphRecordV1,
@@ -123,12 +123,20 @@ def map_vision_individual_label_to_substrate(
 #
 # The named-people entity nodes above had 0 edges: a name, and nothing it connects to.
 # From each COMPLETE walkway day rollup (vision_rollup grain=day, orion-sql-writer),
-# orion-substrate-runtime (app/walkway_seen_loop.py) writes one EventNodeV1 for the day
-# (the rollup's template line as its summary) and one ``observed_in`` edge from every
-# named individual's existing entity node to it. Idempotent: the day node's id is derived
-# from (stream, date) and an edge's identity is (source, predicate, target), so a re-run
-# lands on the same node and edges. Entity nodes are never created here -- only Juniper's
-# answer (above) makes one.
+# orion-substrate-runtime (app/walkway_seen_loop.py) writes one EvidenceNodeV1 for the day
+# and one ``observed_in`` edge from every named individual's existing entity node to it.
+# Idempotent: the day node's id is derived from (stream, date) and an edge's identity is
+# (source, predicate, target), so a re-run lands on the same node and edges. Entity nodes
+# are never created here -- only Juniper's answer (above) makes one.
+#
+# Why evidence, not event (fixed 2026-10-18): FalkorSubstrateStore durably writes only
+# DURABLE_NODE_KINDS (concept, evidence, entity, assertion); an EventNodeV1 day raised
+# ValueError on every live pass. A day's rollup is a sensed observation record that points
+# back at its source row (content_ref), which is what evidence is for; it is the same shape
+# as orion-memory-consolidation's referent projector (entity -observed_in-> evidence
+# "episode_memory:<id>"). A concept is an abstract label with seeded activation decay -- the
+# wrong thing for one dated record. The day's line rides in metadata (in-process only; the
+# durable codec keeps evidence_type/content_ref) -- the rollup row content_ref names holds it.
 
 SEEN_SOURCE_KIND = "walkway_rollup"
 SEEN_SOURCE_CHANNEL = "vision_rollup"
@@ -136,8 +144,15 @@ SEEN_PRODUCER = "orion-substrate-runtime.walkway_seen"
 MAX_SUMMARY_LENGTH = 600
 
 
+WALKWAY_DAY_EVIDENCE_TYPE = "walkway_day"
+
+
+def walkway_day_content_ref(stream_id: str, day: date) -> str:
+    return f"vision_rollup:{stream_id}:day:{day.isoformat()}"
+
+
 def walkway_day_node_id(stream_id: str, day: date) -> str:
-    return f"event:walkway_day:{stream_id}:{day.isoformat()}"
+    return f"evidence:walkway_day:{stream_id}:{day.isoformat()}"
 
 
 def map_walkway_day_seen_to_substrate(
@@ -161,9 +176,9 @@ def map_walkway_day_seen_to_substrate(
         source_channel=SEEN_SOURCE_CHANNEL,
         producer=SEEN_PRODUCER,
         correlation_id=subject_ref,
-        evidence_refs=[f"vision_rollup:{stream_id}:day:{day.isoformat()}"],
+        evidence_refs=[walkway_day_content_ref(stream_id, day)],
     )
-    node = EventNodeV1(
+    node = EvidenceNodeV1(
         node_id=day_id,
         anchor_scope="world",
         subject_ref=subject_ref,
@@ -171,9 +186,10 @@ def map_walkway_day_seen_to_substrate(
         temporal=make_temporal(observed_at=observed_at),
         signals=SubstrateSignalBundleV1(confidence=0.8, salience=0.3),
         provenance=provenance,
-        metadata={"source_kind": SEEN_SOURCE_KIND, "stream_id": stream_id, "day": day.isoformat()},
-        event_type="walkway_day",
-        summary=" ".join(line.split())[:MAX_SUMMARY_LENGTH],
+        metadata={"source_kind": SEEN_SOURCE_KIND, "stream_id": stream_id, "day": day.isoformat(),
+                  "summary": " ".join(line.split())[:MAX_SUMMARY_LENGTH]},
+        evidence_type=WALKWAY_DAY_EVIDENCE_TYPE,
+        content_ref=walkway_day_content_ref(stream_id, day),
     )
     edges = []
     for nid, label, at in pairs:
@@ -181,7 +197,7 @@ def map_walkway_day_seen_to_substrate(
         edges.append(SubstrateEdgeV1(
             edge_id=f"sub-edge-walkway-seen-{digest}",
             source=NodeRefV1(node_id=nid, node_kind="entity"),
-            target=NodeRefV1(node_id=day_id, node_kind="event"),
+            target=NodeRefV1(node_id=day_id, node_kind="evidence"),
             predicate="observed_in",
             temporal=make_temporal(observed_at=observed_at),
             confidence=0.8,

@@ -625,6 +625,20 @@ class Settings(BaseSettings):
     # the patio skeleton, never flagged stationary because its box drifts.
     vision_motion_prop_individual_ids: str = Field(
         "fefb24d7e4074e9f827ad711874f6edf", alias="VISION_MOTION_PROP_INDIVIDUAL_IDS")
+
+    # Walkway rollups by hour, day, week and month (app/vision_rollup.py,
+    # app/vision_rollup_loop.py; orion/vision/walkway_rollup.py). Deterministic
+    # counts into vision_rollup; day rows from hour rows, week/month from days.
+    # false = the reducer does not run (readers then see no new rows).
+    vision_rollup_enabled: bool = Field(True, alias="VISION_ROLLUP_ENABLED")
+    vision_rollup_interval_sec: float = Field(300.0, alias="VISION_ROLLUP_INTERVAL_SEC")
+    vision_rollup_streams: str = Field("walkway", alias="VISION_ROLLUP_STREAMS")
+    # A vehicle individual seen in this many different clock hours of the
+    # trailing 24 h is a parked car the stationary rule missed: not a passing.
+    vision_rollup_parked_min_hours: int = Field(4, ge=1, alias="VISION_ROLLUP_PARKED_MIN_HOURS")
+    # Missing hour rows are built back this far each tick (older ones: the
+    # backfill script, scripts/backfill_vision_rollups.py).
+    vision_rollup_catchup_hours: int = Field(48, ge=3, alias="VISION_ROLLUP_CATCHUP_HOURS")
     # Pictures of the moment for published stories (app/vision_story_strip.py,
     # 2026-10-17). The motion loop saves a padded crop + small frame per walker
     # crop while its frame still exists (the shared frames dir keeps ~60 s),

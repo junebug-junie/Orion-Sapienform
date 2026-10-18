@@ -1,0 +1,804 @@
+"""Walkway rollups: what the outdoor camera saw, by hour, day, week and month.
+
+Juniper (2026-10-18): "build the whole daily walkway summary, but actually roll
+that into hour intervals, and also have a day version, a week version, and a
+month version." Before this, walkway content reached Orion only as "right now"
+(street line, last few captions); nothing remembered the street over time, and
+the nightly walkway journal invented "the walkway has been empty on at least
+five occasions" with no rows behind it.
+
+Deterministic, no LLM. ``orion-sql-writer`` (app/vision_rollup_loop.py) reads
+the raw tables and writes one ``vision_rollup`` row per (stream, grain, period).
+This module is the pure part: periods, the hour build from raw rows, the parent
+build (day from hours, week and month from days, so every grain agrees), and the
+one-line plain-English template.
+
+What is counted (and what is not):
+
+* A **passing** is one individual seen in one clock hour. A person who walks by
+  at 08:10 and back at 17:30 is 2 passings and 1 distinct individual. Several
+  sightings of one individual in the same hour are 1 passing, so a detector
+  that flickers on one box cannot inflate the count. Day passings are the sum
+  of its hours; week and month passings the sum of their days.
+* Not counted, and tallied under ``excluded`` so the gap is visible:
+  - ``stationary``: a sighting or individual the individuals reducer marked
+    stationary (a parked car, a prop);
+  - ``prop``: individuals listed in ``VISION_MOTION_PROP_INDIVIDUAL_IDS``
+    (the patio skeleton);
+  - ``patio``: sightings in a no-embed zone (``config/vision_zones.yaml``
+    ``embed: false``; the street line leaves them out too). None today: the
+    patio was the only one, until Juniper lifted it on 2026-10-15;
+  - ``parked_repeat``: a vehicle individual seen in ``parked_min_hours`` or more
+    different clock hours of the trailing 24 h. Its first appearances count; a
+    car that keeps reappearing all day is a parked car the stationary rule
+    missed (live 2026-10-16: one vehicle individual, 54 sightings in a day).
+* **Camera minutes** come from ``vision_scene_inventory``: one row per vision
+  window, written whether or not anything was seen, so a minute with no row is a
+  minute the camera did not deliver frames. An hour the camera saw for fewer
+  than ``DOWN_MAX_MINUTES`` reads "camera was down", never "nobody came".
+  Decode corruption is not stored anywhere (only the retina's live /health has
+  it); corrupt frames the retina drops show up here as missing minutes.
+
+Times are local (``America/Denver`` by default). Hours are UTC hours (Denver's
+offsets are whole hours, so they are also local hours, and the repeated
+01:00 on the fall-back night is two separate hours). Days run local midnight to
+local midnight (23 or 25 hours across a DST change), weeks Monday to Monday
+(ISO), months first to first.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from datetime import date, datetime, time, timedelta, timezone
+from typing import Any, Iterable, Mapping, Optional, Sequence
+from zoneinfo import ZoneInfo
+
+SCHEMA = "vision_rollup.v1"
+RULES_VERSION = 1
+GRAINS = ("hour", "day", "week", "month")
+KINDS = ("person", "dog", "bicycle", "stroller", "vehicle")
+KIND_PLURAL = {"person": "people", "dog": "dogs", "bicycle": "bicycles", "stroller": "strollers",
+               "vehicle": "vehicles", "other": "other"}
+KIND_SINGULAR = {"person": "person", "dog": "dog", "bicycle": "bicycle", "stroller": "stroller",
+                 "vehicle": "vehicle", "other": "other"}
+
+# Camera coverage of one hour, from vision_scene_inventory minutes.
+DOWN_MAX_MINUTES = 15       # fewer seen minutes than this: the camera was down
+PARTIAL_MAX_MINUTES = 50    # fewer than this (but not down): partial hour
+# Baselines need at least this many earlier periods, else "no baseline yet".
+MIN_BASELINE_PERIODS = 3
+HOUR_BASELINE_DAYS = 7
+DAY_BASELINE_DAYS = 7
+WEEK_BASELINE_WEEKS = 4
+MONTH_BASELINE_MONTHS = 3
+# A day counts an unnamed individual as a regular when it was also seen on an
+# earlier day of the trailing week (so: seen on 2+ days of the last 7).
+REGULAR_LOOKBACK_DAYS = 6
+MAX_HOUR_CAPTIONS = 3
+MAX_PARENT_CAPTIONS = 5
+MAX_HOUR_STORIES = 3
+MAX_DAY_STORIES = 5
+MAX_NAMED_TIMES = 12
+MAX_NAMED_DAYS = 31
+DEFAULT_PARKED_MIN_HOURS = 4
+
+
+# --- periods --------------------------------------------------------------------------------------
+
+
+def _utc(ts: datetime) -> datetime:
+    return ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts.astimezone(timezone.utc)
+
+
+def local_midnight(d: date, tz: ZoneInfo) -> datetime:
+    return datetime.combine(d, time.min, tzinfo=tz).astimezone(timezone.utc)
+
+
+@dataclass(frozen=True)
+class Period:
+    grain: str
+    start: datetime  # UTC
+    end: datetime    # UTC, exclusive
+
+    @property
+    def key(self) -> tuple[str, datetime]:
+        return self.grain, self.start
+
+
+def hour_period(ts: datetime) -> Period:
+    t = _utc(ts).replace(minute=0, second=0, microsecond=0)
+    return Period("hour", t, t + timedelta(hours=1))
+
+
+def day_period(d: date, tz: ZoneInfo) -> Period:
+    return Period("day", local_midnight(d, tz), local_midnight(d + timedelta(days=1), tz))
+
+
+def week_start_date(d: date) -> date:
+    return d - timedelta(days=d.weekday())
+
+
+def week_period(d: date, tz: ZoneInfo) -> Period:
+    mon = week_start_date(d)
+    return Period("week", local_midnight(mon, tz), local_midnight(mon + timedelta(days=7), tz))
+
+
+def month_first(d: date) -> date:
+    return d.replace(day=1)
+
+
+def next_month_first(d: date) -> date:
+    return (d.replace(day=28) + timedelta(days=4)).replace(day=1)
+
+
+def month_period(d: date, tz: ZoneInfo) -> Period:
+    first = month_first(d)
+    return Period("month", local_midnight(first, tz), local_midnight(next_month_first(first), tz))
+
+
+def local_date(ts: datetime, tz: ZoneInfo) -> date:
+    return _utc(ts).astimezone(tz).date()
+
+
+def period_for(grain: str, ts: datetime, tz: ZoneInfo) -> Period:
+    if grain == "hour":
+        return hour_period(ts)
+    d = local_date(ts, tz)
+    return {"day": day_period, "week": week_period, "month": month_period}[grain](d, tz)
+
+
+def child_periods(p: Period, tz: ZoneInfo) -> list[Period]:
+    """Hours of a day; days of a week or month."""
+    out: list[Period] = []
+    if p.grain == "day":
+        t = p.start
+        while t < p.end:
+            out.append(Period("hour", t, t + timedelta(hours=1)))
+            t += timedelta(hours=1)
+    elif p.grain in ("week", "month"):
+        d = local_date(p.start, tz)
+        while local_midnight(d, tz) < p.end:
+            out.append(day_period(d, tz))
+            d += timedelta(days=1)
+    return out
+
+
+def child_grain(grain: str) -> Optional[str]:
+    return {"day": "hour", "week": "day", "month": "day"}.get(grain)
+
+
+def _ambiguous(local: datetime) -> bool:
+    """True for a wall time that happens twice (the fall-back night)."""
+    other = local.replace(fold=1 - local.fold)
+    return other.utcoffset() != local.utcoffset()
+
+
+def hhmm(ts: datetime, tz: ZoneInfo) -> str:
+    local = _utc(ts).astimezone(tz)
+    s = local.strftime("%H:%M")
+    return f"{s} {local.tzname()}" if _ambiguous(local) else s
+
+
+def period_label(p: Period, tz: ZoneInfo) -> str:
+    start = p.start.astimezone(tz)
+    if p.grain == "hour":
+        return f"{start:%Y-%m-%d} {hhmm(p.start, tz)}"
+    if p.grain == "day":
+        return f"{start:%Y-%m-%d}"
+    if p.grain == "week":
+        iso = start.date().isocalendar()
+        return f"{iso[0]}-W{iso[1]:02d}"
+    return f"{start:%Y-%m}"
+
+
+def local_fields(p: Period, tz: ZoneInfo) -> dict[str, Any]:
+    """The clock and calendar words a line uses, so every number in a line is a field."""
+    start = p.start.astimezone(tz)
+    last = (p.end - timedelta(seconds=1)).astimezone(tz)
+    return {"date": start.date().isoformat(), "last_date": last.date().isoformat(), "year": start.year,
+            "start": hhmm(p.start, tz), "end": hhmm(p.end, tz)}
+
+
+def _day_words(d: date) -> str:
+    return f"{d:%a} {d.day} {d:%b}"
+
+
+def _when_words(p: Period, tz: ZoneInfo) -> str:
+    start = p.start.astimezone(tz)
+    if p.grain == "hour":
+        return f"{hhmm(p.start, tz)}–{hhmm(p.end, tz)} ({_day_words(start.date())})"
+    if p.grain == "day":
+        return f"{_day_words(start.date())} {start.year}"
+    if p.grain == "week":
+        return f"week of {_day_words(start.date())} {start.year}"
+    return f"{start:%B %Y}"
+
+
+# --- raw rows -------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SightingRow:
+    sighting_id: str
+    individual_id: str
+    started_at: datetime
+    kind: str
+    label: Optional[str] = None
+    zone_no_embed: bool = False
+    stationary: bool = False             # the sighting
+    individual_stationary: bool = False  # the individual
+
+
+@dataclass(frozen=True)
+class CaptionRow:
+    event_id: str
+    created_at: datetime
+    text: str
+    detector: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class StoryRow:
+    story_id: str
+    started_at: datetime
+    kind: str
+    sentence: str
+    name_label: Optional[str] = None
+
+
+@dataclass
+class HourInputs:
+    stream_id: str
+    period: Period
+    sightings: Sequence[SightingRow] = ()
+    camera_minutes: int = 0
+    captions: Sequence[CaptionRow] = ()
+    stories: Sequence[StoryRow] = ()
+    story_gate: Mapping[str, Any] = field(default_factory=dict)
+    parked_ids: frozenset = frozenset()
+    prop_ids: frozenset = frozenset()
+    baseline: Optional[Mapping[str, Any]] = None
+
+
+def _kind(raw: Any) -> str:
+    k = str(raw or "").strip().lower()
+    return k if k in KINDS else "other"
+
+
+def parked_vehicle_ids(trailing: Iterable[SightingRow], min_hours: int = DEFAULT_PARKED_MIN_HOURS) -> frozenset:
+    """Vehicle individuals seen in ``min_hours`` or more different clock hours of the trailing rows."""
+    hours: dict[str, set] = {}
+    for s in trailing:
+        if _kind(s.kind) != "vehicle":
+            continue
+        hours.setdefault(s.individual_id, set()).add(hour_period(s.started_at).start)
+    return frozenset(i for i, h in hours.items() if len(h) >= max(1, int(min_hours)))
+
+
+def camera_status(up: int, expected: int) -> str:
+    if expected <= 0:
+        return "unknown"
+    scale = expected / 60.0
+    if up < DOWN_MAX_MINUTES * scale:
+        return "down"
+    if up < PARTIAL_MAX_MINUTES * scale:
+        return "partial"
+    return "ok"
+
+
+def _norm_text(text: str) -> str:
+    return "".join(ch for ch in text.lower() if ch.isalnum() or ch == " ").strip()
+
+
+def _add_kind(kinds: dict, kind: str, *, passings: int = 0, distinct: int = 0, sightings: int = 0) -> None:
+    k = kinds.setdefault(kind, {"passings": 0, "distinct": 0, "sightings": 0})
+    k["passings"] += passings
+    k["distinct"] += distinct
+    k["sightings"] += sightings
+
+
+def _totals(kinds: Mapping[str, Mapping[str, int]]) -> dict[str, int]:
+    return {f: sum(int(v.get(f, 0)) for v in kinds.values()) for f in ("passings", "distinct", "sightings")}
+
+
+def _story_block(gate: Mapping[str, Any], stories: Sequence[StoryRow], max_sentences: int, tz: ZoneInfo,
+                 ) -> dict[str, Any]:
+    g = dict(gate.get("gate") or {}) if gate else {}
+    block: dict[str, Any] = {"gate_passed": bool(g.get("passed")), "checked": int(gate.get("checked", 0) or 0)
+                             if gate else 0}
+    if not block["gate_passed"]:
+        return block  # Hub only until Juniper's spot-check passes: no story content here
+    by_kind: dict[str, int] = {}
+    for s in stories:
+        by_kind[_kind(s.kind)] = by_kind.get(_kind(s.kind), 0) + 1
+    block["count"] = len(stories)
+    block["by_kind"] = by_kind
+    block["sentences"] = [{"at": hhmm(s.started_at, tz), "text": s.sentence} for s in
+                          sorted(stories, key=lambda s: s.started_at)[:max_sentences] if s.sentence]
+    return block
+
+
+def build_hour(inp: HourInputs, tz: ZoneInfo) -> dict[str, Any]:
+    p = inp.period
+    excluded = {"stationary": 0, "prop": 0, "patio": 0, "parked_repeat": 0}
+    per_ind: dict[str, dict[str, Any]] = {}
+    for s in sorted(inp.sightings, key=lambda r: r.started_at):
+        if not (p.start <= _utc(s.started_at) < p.end):
+            continue
+        if s.individual_id in inp.prop_ids:
+            excluded["prop"] += 1
+            continue
+        if s.stationary or s.individual_stationary:
+            excluded["stationary"] += 1
+            continue
+        if s.zone_no_embed:
+            excluded["patio"] += 1
+            continue
+        if s.individual_id in inp.parked_ids:
+            excluded["parked_repeat"] += 1
+            continue
+        at = hhmm(s.started_at, tz)
+        ind = per_ind.setdefault(s.individual_id, {
+            "kind": _kind(s.kind), "label": (s.label or None), "sightings": 0, "first": at, "times": []})
+        ind["sightings"] += 1
+        ind["times"].append(at)
+    kinds: dict[str, dict[str, int]] = {}
+    named: dict[str, dict[str, Any]] = {}
+    for iid, ind in per_ind.items():
+        _add_kind(kinds, ind["kind"], passings=1, distinct=1, sightings=ind["sightings"])
+        if ind["label"]:
+            n = named.setdefault(ind["label"], {"times": [], "sightings": 0, "individual_ids": []})
+            n["times"].extend(ind["times"])
+            n["sightings"] += ind["sightings"]
+            n["individual_ids"].append(iid)
+    for n in named.values():
+        n["times"] = sorted(dict.fromkeys(n["times"]))[:MAX_NAMED_TIMES]
+        n["individual_ids"] = sorted(n["individual_ids"])
+    individuals = {iid: {"kind": v["kind"], "label": v["label"], "sightings": v["sightings"], "first": v["first"]}
+                   for iid, v in sorted(per_ind.items())}
+
+    captions: list[dict[str, Any]] = []
+    seen_text: set[str] = set()
+    for c in sorted(inp.captions, key=lambda r: r.created_at):
+        key = _norm_text(c.text or "")
+        if not key or key in seen_text or not (p.start <= _utc(c.created_at) < p.end):
+            continue
+        seen_text.add(key)
+        captions.append({"at": hhmm(c.created_at, tz), "text": " ".join(c.text.split()), "detector": list(c.detector)})
+        if len(captions) >= MAX_HOUR_CAPTIONS:
+            break
+
+    up = max(0, min(60, int(inp.camera_minutes)))
+    status = camera_status(up, 60)
+    rollup = {
+        "schema": SCHEMA, "rules_version": RULES_VERSION, "stream_id": inp.stream_id, "grain": "hour",
+        "period_start": p.start.isoformat(), "period_end": p.end.isoformat(), "label": period_label(p, tz),
+        "tz": tz.key, "local": local_fields(p, tz), "complete": True,
+        "kinds": kinds, "total": _totals(kinds), "excluded": excluded,
+        "named": named, "individuals": individuals,
+        "camera": {"up_minutes": up, "expected_minutes": 60, "status": status,
+                   "down_spans": [f"{hhmm(p.start, tz)}–{hhmm(p.end, tz)}"] if status == "down" else []},
+        "captions": captions,
+        "stories": _story_block(inp.story_gate, [s for s in inp.stories if p.start <= _utc(s.started_at) < p.end],
+                                MAX_HOUR_STORIES, tz),
+        "baseline": dict(inp.baseline) if inp.baseline else None,
+    }
+    return rollup
+
+
+# --- parents (day from hours; week and month from days) -------------------------------------------
+
+
+def _spread(items: Sequence[Any], n: int) -> list[Any]:
+    """Up to ``n`` items spread evenly over the sequence (first and last included)."""
+    if len(items) <= n:
+        return list(items)
+    if n <= 1:
+        return [items[0]]
+    step = (len(items) - 1) / (n - 1)
+    return [items[round(i * step)] for i in range(n)]
+
+
+def _merge_spans(children: Sequence[tuple[Period, Optional[Mapping[str, Any]]]], tz: ZoneInfo,
+                 reason: str) -> list[str]:
+    """Consecutive children with ``reason`` -- "down" (the camera did not deliver frames) or
+    "missing" (no row: not built yet, or the reducer was behind) -- as "HH:MM–HH:MM" or day spans."""
+    spans: list[list[Period]] = []
+    for per, row in children:
+        if row is None:
+            hit = reason == "missing"
+        else:
+            hit = reason == "down" and (row.get("camera") or {}).get("status") == "down"
+        if hit:
+            if spans and spans[-1][-1].end == per.start:
+                spans[-1].append(per)
+            else:
+                spans.append([per])
+    out = []
+    for run in spans:
+        a, b = run[0], run[-1]
+        if a.grain == "hour":
+            out.append(f"{hhmm(a.start, tz)}–{hhmm(b.end, tz)}")
+        else:
+            da, db = local_date(a.start, tz), local_date(b.start, tz)
+            out.append(_day_words(da) if da == db else f"{_day_words(da)}–{_day_words(db)}")
+    return out
+
+
+def _mean(values: Sequence[float]) -> Optional[float]:
+    return round(sum(values) / len(values), 2) if values else None
+
+
+def build_parent(
+    stream_id: str,
+    period: Period,
+    children: Sequence[tuple[Period, Optional[Mapping[str, Any]]]],
+    tz: ZoneInfo,
+    *,
+    covered_until: Optional[datetime] = None,
+    history: Sequence[Mapping[str, Any]] = (),
+    story_gate: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    """Combine child rollups. ``children`` lists every child period of ``period`` up to
+    ``covered_until`` (a partial parent stops there), each with its row or None when the
+    child has no row (not computed, or the reducer was behind).
+
+    ``history`` holds earlier rollups of the same grain, newest first: earlier days for a
+    day (hourly baselines, regulars), earlier weeks/months for those (total baseline).
+    """
+    grain = period.grain
+    # A partial parent covers its children that started before ``covered_until``; the last
+    # one may itself be partial (today's day row inside this week), and says so in its row.
+    covered = [(p, r) for p, r in children if covered_until is None or p.start < covered_until]
+    rows = [r for _, r in covered if r is not None]
+    complete = covered_until is None or covered_until >= period.end
+    complete = complete and len(rows) == len(child_periods(period, tz)) and all(r.get("complete") for r in rows)
+
+    kinds: dict[str, dict[str, int]] = {}
+    excluded = {"stationary": 0, "prop": 0, "patio": 0, "parked_repeat": 0}
+    for r in rows:
+        for k, v in (r.get("kinds") or {}).items():
+            _add_kind(kinds, k, passings=int(v.get("passings", 0)), sightings=int(v.get("sightings", 0)))
+        for k, v in (r.get("excluded") or {}).items():
+            excluded[k] = excluded.get(k, 0) + int(v or 0)
+
+    # Distinct individuals across the period, and (week/month) on how many days each was seen.
+    ind_info: dict[str, dict[str, Any]] = {}
+    for per, r in covered:
+        if r is None:
+            continue
+        day_key = local_date(per.start, tz).isoformat()
+        for iid, v in (r.get("individuals") or r.get("individual_days") or {}).items():
+            info = ind_info.setdefault(iid, {"kind": v.get("kind") or "other", "label": v.get("label"),
+                                             "sightings": 0, "days": set(), "first": v.get("first")})
+            info["sightings"] += int(v.get("sightings", 0) or 0)
+            if "days" in v and isinstance(v["days"], list):
+                info["days"].update(v["days"])
+            else:
+                info["days"].add(day_key)
+            if v.get("label") and not info["label"]:
+                info["label"] = v["label"]
+    for info in ind_info.values():
+        _add_kind(kinds, info["kind"], distinct=1)
+
+    named: dict[str, dict[str, Any]] = {}
+    for per, r in covered:
+        if r is None:
+            continue
+        day_key = local_date(per.start, tz).isoformat()
+        for label, v in (r.get("named") or {}).items():
+            n = named.setdefault(label, {"sightings": 0, "individual_ids": set(), "times": [], "days": []})
+            n["sightings"] += int(v.get("sightings", 0) or 0)
+            n["individual_ids"].update(v.get("individual_ids") or [])
+            if grain == "day":
+                n["times"].extend(v.get("times") or [])
+            else:
+                for d in (v.get("days") or [day_key]):
+                    if d not in n["days"]:
+                        n["days"].append(d)
+    named_out: dict[str, dict[str, Any]] = {}
+    for label, n in sorted(named.items()):
+        entry: dict[str, Any] = {"sightings": n["sightings"], "individual_ids": sorted(n["individual_ids"])}
+        if grain == "day":
+            entry["times"] = n["times"][:MAX_NAMED_TIMES]
+        else:
+            entry["days"] = sorted(n["days"])[:MAX_NAMED_DAYS]
+        named_out[label] = entry
+
+    # Regulars: unnamed individuals seen on 2+ days (day: this day plus an earlier day of
+    # the trailing week, from earlier day rows; week/month: 2+ days inside the period).
+    regular_ids: list[str] = []
+    if grain == "day":
+        earlier: set[str] = set()
+        for h in list(history)[:REGULAR_LOOKBACK_DAYS]:
+            earlier.update((h.get("individuals") or {}).keys())
+        regular_ids = sorted(i for i, v in ind_info.items() if not v["label"] and i in earlier)
+    else:
+        regular_ids = sorted(i for i, v in ind_info.items() if not v["label"] and len(v["days"]) >= 2)
+    reg_by_kind: dict[str, int] = {}
+    for i in regular_ids:
+        k = ind_info[i]["kind"]
+        reg_by_kind[k] = reg_by_kind.get(k, 0) + 1
+
+    up = sum(int((r.get("camera") or {}).get("up_minutes", 0)) for r in rows)
+    def _expected(per: Period, row: Optional[Mapping[str, Any]]) -> int:
+        cam = (row or {}).get("camera") or {}
+        if "expected_minutes" in cam:
+            return int(cam["expected_minutes"])
+        end = min(per.end, covered_until) if covered_until else per.end
+        return max(0, int((end - per.start).total_seconds() // 60))
+
+    expected = sum(_expected(per, r) for per, r in covered)
+    status = camera_status(round(up * 60 / expected) if expected else 0, 60) if expected else "unknown"
+
+    # Per-child series: the busiest / quietest child the camera actually watched.
+    series = []
+    for per, r in covered:
+        cam = (r or {}).get("camera") or {}
+        entry = {
+            "start": per.start.isoformat(),
+            "at": hhmm(per.start, tz) if per.grain == "hour" else local_date(per.start, tz).isoformat(),
+            "passings": int(((r or {}).get("total") or {}).get("passings", 0)),
+            "up_minutes": int(cam.get("up_minutes", 0)),
+            "expected_minutes": _expected(per, r),
+            "status": cam.get("status") if r is not None else "missing",
+        }
+        if per.grain == "hour":
+            entry["hour"] = per.start.astimezone(tz).hour
+        series.append(entry)
+    # Only children the camera watched in full: a partial day (today, inside its week) is
+    # never "the quietest day".
+    watched = [e for (per, r), e in zip(covered, series) if e["status"] == "ok" and (r or {}).get("complete")]
+
+    hour_baselines: dict[int, Optional[float]] = {}
+    if grain == "day":
+        by_hour: dict[int, list[float]] = {}
+        for h in list(history)[:HOUR_BASELINE_DAYS]:
+            for e in h.get("series") or []:
+                if e.get("status") == "ok" and "hour" in e:
+                    by_hour.setdefault(int(e["hour"]), []).append(float(e.get("passings", 0)))
+        hour_baselines = {hr: (_mean(v) if len(v) >= MIN_BASELINE_PERIODS else None) for hr, v in by_hour.items()}
+
+    def _point(e: Optional[Mapping[str, Any]]) -> Optional[dict[str, Any]]:
+        if e is None:
+            return None
+        out = {"at": e["at"], "passings": e["passings"]}
+        if grain == "day":
+            out["usual"] = hour_baselines.get(int(e["hour"]))
+        return out
+
+    busiest = _point(max(watched, key=lambda e: (e["passings"], e["start"]))) if watched else None
+    quietest = _point(min(watched, key=lambda e: (e["passings"], e["start"]))) if len(watched) >= 2 else None
+
+    lookback = {"day": DAY_BASELINE_DAYS, "week": WEEK_BASELINE_WEEKS, "month": MONTH_BASELINE_MONTHS}[grain]
+    prior = [float((h.get("total") or {}).get("passings", 0)) for h in list(history)[:lookback]
+             if h.get("complete") and (h.get("camera") or {}).get("status") == "ok"]
+    baseline = {"mean_passings": _mean(prior) if len(prior) >= MIN_BASELINE_PERIODS else None,
+                "periods": len(prior)}
+
+    cap_pool = [c for _, r in covered if r is not None for c in (r.get("captions") or [])]
+    seen: set[str] = set()
+    distinct_caps = []
+    for c in cap_pool:
+        key = _norm_text(str(c.get("text") or ""))
+        if key and key not in seen:
+            seen.add(key)
+            distinct_caps.append(c)
+    captions = _spread(distinct_caps, MAX_PARENT_CAPTIONS)
+
+    gate = story_gate if story_gate is not None else {}
+    stories: dict[str, Any] = {"gate_passed": bool((gate.get("gate") or {}).get("passed")),
+                               "checked": int(gate.get("checked", 0) or 0)}
+    if stories["gate_passed"]:
+        by_kind: dict[str, int] = {}
+        sentences: list[dict[str, Any]] = []
+        for r in rows:
+            sb = r.get("stories") or {}
+            for k, v in (sb.get("by_kind") or {}).items():
+                by_kind[k] = by_kind.get(k, 0) + int(v)
+            sentences.extend(sb.get("sentences") or [])
+        stories["count"] = sum(by_kind.values())
+        stories["by_kind"] = by_kind
+        if grain == "day":
+            stories["sentences"] = _spread(sentences, MAX_DAY_STORIES)
+
+    individuals_key = "individuals" if grain == "day" else "individual_days"
+    if grain == "day":
+        ind_out = {i: {"kind": v["kind"], "label": v["label"], "sightings": v["sightings"], "first": v["first"]}
+                   for i, v in sorted(ind_info.items())}
+    else:
+        ind_out = {i: {"kind": v["kind"], "label": v["label"], "sightings": v["sightings"],
+                       "days": sorted(v["days"])} for i, v in sorted(ind_info.items())}
+
+    return {
+        "schema": SCHEMA, "rules_version": RULES_VERSION, "stream_id": stream_id, "grain": grain,
+        "period_start": period.start.isoformat(), "period_end": period.end.isoformat(),
+        "label": period_label(period, tz), "tz": tz.key, "local": local_fields(period, tz),
+        "complete": bool(complete),
+        "covered_until": (min(covered_until, period.end) if covered_until else period.end).isoformat(),
+        "kinds": kinds, "total": _totals(kinds), "excluded": excluded,
+        "named": named_out, individuals_key: ind_out,
+        "regulars": {"count": len(regular_ids), "by_kind": reg_by_kind, "ids": regular_ids},
+        "camera": {"up_minutes": up, "expected_minutes": expected, "status": status,
+                   "up_hours": round(up / 60.0, 1), "expected_hours": round(expected / 60.0, 1),
+                   "down_spans": _merge_spans(covered, tz, "down"),
+                   "missing_spans": _merge_spans(covered, tz, "missing")},
+        "children": {"expected": len(child_periods(period, tz)), "covered": len(covered), "present": len(rows),
+                     "complete": sum(1 for r in rows if r.get("complete"))},
+        "series": series,
+        "busiest": busiest, "quietest": quietest, "baseline": baseline,
+        "captions": captions, "stories": stories,
+    }
+
+
+# --- template line --------------------------------------------------------------------------------
+
+
+def _count_phrase(kinds: Mapping[str, Mapping[str, int]], field_name: str = "passings") -> str:
+    parts = []
+    for k in (*KINDS, "other"):
+        n = int((kinds.get(k) or {}).get(field_name, 0))
+        if n:
+            parts.append(f"{n} {KIND_SINGULAR[k] if n == 1 else KIND_PLURAL[k]}")
+    return ", ".join(parts)
+
+
+def _fmt_num(x: Optional[float]) -> str:
+    if x is None:
+        return "?"
+    return str(int(x)) if float(x).is_integer() else f"{x:.1f}"
+
+
+def _parse(ts: str) -> datetime:
+    return _utc(datetime.fromisoformat(ts))
+
+
+def render_line(rollup: Mapping[str, Any]) -> str:
+    """One short plain-English line. Every number in it is a field of ``rollup``."""
+    tz = ZoneInfo(str(rollup.get("tz") or "America/Denver"))
+    grain = str(rollup.get("grain"))
+    p = Period(grain, _parse(rollup["period_start"]), _parse(rollup["period_end"]))
+    stream = str(rollup.get("stream_id") or "walkway")
+    head = f"{stream[:1].upper()}{stream[1:]} {_when_words(p, tz)}"
+    if not rollup.get("complete") and grain != "hour":
+        cu = rollup.get("covered_until")
+        if cu and _parse(cu) < p.end:
+            cut = _parse(cu)
+            head += (f" (so far, through {hhmm(cut, tz)})" if grain == "day"
+                     else f" (so far, through {_day_words(local_date(cut - timedelta(seconds=1), tz))})")
+    cam = rollup.get("camera") or {}
+    total = rollup.get("total") or {}
+    passings = int(total.get("passings", 0))
+    up, expected = int(cam.get("up_minutes", 0)), int(cam.get("expected_minutes", 0))
+
+    if grain == "hour":
+        if cam.get("status") == "down":
+            return f"{head}: camera was down ({up} of {expected} minutes seen), so no count."
+        if passings == 0:
+            body = ("nobody passed" if cam.get("status") == "ok"
+                    else f"nobody seen in the {up} minutes the camera was up")
+        else:
+            body = f"{passings} passing ({_count_phrase(rollup.get('kinds') or {})})"
+        named = rollup.get("named") or {}
+        if named:
+            body += "; " + ", ".join(f"{name} at {', '.join(v.get('times') or [])}" for name, v in named.items())
+        base = (rollup.get("baseline") or {}).get("mean_passings")
+        if base is not None and cam.get("status") == "ok":
+            body += f" (usual for this hour {_fmt_num(base)})"
+        if cam.get("status") == "partial":
+            body += f". Camera up {up} of {expected} minutes"
+        return f"{head}: {body}."
+
+    if expected and cam.get("status") == "down" and passings == 0:
+        return f"{head}: camera was down ({_fmt_hours(up)} of {_fmt_hours(expected)} seen), so no count."
+    distinct = int(total.get("distinct", 0))
+    if passings == 0:
+        parts = ["nobody passed while the camera was watching"]
+    else:
+        parts = [f"{passings} passings ({_count_phrase(rollup.get('kinds') or {})}) by {distinct} distinct"]
+    named = rollup.get("named") or {}
+    if named:
+        if grain == "day":
+            parts.append("named: " + ", ".join(f"{n} ({', '.join((v.get('times') or [])[:4])})"
+                                               for n, v in named.items()))
+        else:
+            parts.append("named: " + ", ".join(f"{n} on {len(v.get('days') or [])} "
+                                               f"day{'s' if len(v.get('days') or []) != 1 else ''}"
+                                               for n, v in named.items()))
+    reg = rollup.get("regulars") or {}
+    if int(reg.get("count", 0)):
+        where = "seen on another day this week too" if grain == "day" else f"seen on 2+ days this {grain}"
+        n = int(reg["count"])
+        parts.append(f"{n} unnamed regular{'s' if n != 1 else ''} ({where})")
+    b, q = rollup.get("busiest"), rollup.get("quietest")
+    if b:
+        s = f"busiest {_at_words(b['at'], grain)} ({b['passings']}"
+        if grain == "day" and b.get("usual") is not None:
+            s += f", usual {_fmt_num(b['usual'])}"
+        s += ")"
+        if q and q["at"] != b["at"]:
+            s += f", quietest {_at_words(q['at'], grain)} ({q['passings']}"
+            if grain == "day" and q.get("usual") is not None:
+                s += f", usual {_fmt_num(q['usual'])}"
+            s += ")"
+        parts.append(s)
+    base = (rollup.get("baseline") or {}).get("mean_passings")
+    if base is not None:
+        parts.append(f"usual {grain} {_fmt_num(base)}")
+    line = f"{head}: " + "; ".join(parts) + "."
+    gaps = []
+    for word, key in (("Camera down", "down_spans"), ("No record", "missing_spans")):
+        spans = cam.get(key) or []
+        if spans:
+            gaps.append(f"{word} {', '.join(spans[:4])}{' …' if len(spans) > 4 else ''}")
+    if gaps:
+        line += " " + "; ".join(gaps) + f"; counts cover {_fmt_hours(up)} of {_fmt_hours(expected)}."
+    return line
+
+
+def _at_words(at: str, grain: str) -> str:
+    if grain == "day":
+        return at
+    try:
+        return _day_words(date.fromisoformat(at))
+    except ValueError:
+        return at
+
+
+def _fmt_hours(minutes: int) -> str:
+    h = minutes / 60.0
+    return f"{_fmt_num(round(h, 1))} h"
+
+
+# --- the journal guard: phrase, never invent ------------------------------------------------------
+
+_NUMBER_WORDS = {
+    "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+    "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+    "hundred": 100, "dozen": 12, "dozens": 24, "twice": 2,
+}
+_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
+_WORD_RE = re.compile(r"[a-z]+")
+
+
+def allowed_numbers(facts: Any) -> set[float]:
+    """Every number that appears anywhere in ``facts`` (values, and digits inside strings)."""
+    out: set[float] = set()
+
+    def walk(v: Any) -> None:
+        if isinstance(v, bool) or v is None:
+            return
+        if isinstance(v, (int, float)):
+            out.add(round(float(v), 1))
+        elif isinstance(v, str):
+            for m in _NUM_RE.findall(v):
+                out.add(round(float(m), 1))
+        elif isinstance(v, Mapping):
+            for k, x in v.items():
+                walk(k)
+                walk(x)
+        elif isinstance(v, (list, tuple, set)):
+            for x in v:
+                walk(x)
+
+    walk(facts)
+    return out
+
+
+def unsupported_numbers(prose: str, facts: Any) -> list[str]:
+    """Numbers in ``prose`` (digits and number words two..hundred) that ``facts`` does not hold.
+
+    "one" is not checked ("no one", "one of them" are not counts). An empty result means
+    every number the prose claims is backed by the rollup."""
+    allowed = allowed_numbers(facts)
+    bad: list[str] = []
+    for m in _NUM_RE.findall(prose or ""):
+        if round(float(m), 1) not in allowed:
+            bad.append(m)
+    for w in _WORD_RE.findall((prose or "").lower()):
+        n = _NUMBER_WORDS.get(w)
+        if n is not None and float(n) not in allowed:
+            bad.append(w)
+    return bad

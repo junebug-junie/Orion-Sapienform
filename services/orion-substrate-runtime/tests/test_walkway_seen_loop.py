@@ -168,8 +168,10 @@ def test_every_emitted_node_kind_is_one_the_falkor_store_writes_durably():
 
 
 def test_regression_an_event_day_node_fails_the_whole_pass_on_the_falkor_store(monkeypatch):
-    """The exact live failure: PR #2755 built the day as an EventNodeV1 and every pass raised
-    in the production store. Re-run the pass with the day node swapped back to an event."""
+    """Harness guard, not coverage for the fix: the exact live failure (PR #2755 built the day as
+    an EventNodeV1 and every pass raised) must still fail in this harness, so these tests can never
+    again pass on a store that accepts any node kind. The fix itself is guarded by
+    test_every_emitted_node_kind_is_one_the_falkor_store_writes_durably and the main pass test."""
     import orion.substrate.adapters.vision_individual as adapter
 
     real = adapter.map_walkway_day_seen_to_substrate
@@ -201,7 +203,7 @@ def test_real_falkor_writes_observed_in_edges_and_a_fresh_store_hydrates_them():
     import redis
 
     graph = f"orion_test_walkway_seen_{uuid.uuid4().hex[:10]}"
-    cfg = FalkorSubstrateStoreConfig(uri=FALKOR, graph_name=graph, ensure_indexes=False)
+    cfg = FalkorSubstrateStoreConfig(uri=FALKOR, graph_name=graph)
     try:
         store = _store_with(("ind-robin", "Robin"), store=_falkor_store(cfg))
         engine = _Engine([_day_row({"Robin": {"times": ["13:33"], "individual_ids": ["ind-robin"]}})])
@@ -219,7 +221,10 @@ def test_real_falkor_writes_observed_in_edges_and_a_fresh_store_hydrates_them():
         again = wsl.link_recent_days(engine=engine, store=fresh, streams=("walkway",), lookback_days=3, done={})
         assert again[0]["edges_created"] == 0
     finally:
-        redis.Redis.from_url(FALKOR).execute_command("GRAPH.DELETE", graph)
+        try:
+            redis.Redis.from_url(FALKOR).execute_command("GRAPH.DELETE", graph)
+        except redis.ResponseError:  # graph never created: keep the real failure visible
+            pass
 
 
 PG = os.getenv("ORION_TEST_PG_URI", "")

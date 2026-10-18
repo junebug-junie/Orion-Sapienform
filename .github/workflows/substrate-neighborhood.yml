@@ -141,8 +141,12 @@ jobs:
           set -o pipefail
           # The in-memory store accepts any node kind; only the real store proves the day node's
           # kind is durable (2026-10-18: every live pass raised on node_kind='event').
-          python -m pytest -q -rs services/orion-substrate-runtime/tests/test_walkway_seen_loop.py -k "real_falkor or regression or durably" | tee walkway_seen.out
-          if grep -q "SKIPPED" walkway_seen.out; then
+          # Selected by node id, not -k: a renamed real-Falkor test must fail collection, not drop out silently.
+          T=services/orion-substrate-runtime/tests/test_walkway_seen_loop.py
+          python -m pytest -q -rs "$T::test_real_falkor_writes_observed_in_edges_and_a_fresh_store_hydrates_them" \
+            "$T::test_every_emitted_node_kind_is_one_the_falkor_store_writes_durably" \
+            "$T::test_regression_an_event_day_node_fails_the_whole_pass_on_the_falkor_store" | tee walkway_seen.out
+          if grep -q "SKIPPED" walkway_seen.out || ! grep -q "3 passed" walkway_seen.out; then
             echo "walkway_seen real-Falkor test skipped -- FalkorDB service wiring is broken" >&2
             exit 1
           fi

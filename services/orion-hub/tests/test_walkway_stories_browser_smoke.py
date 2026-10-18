@@ -187,3 +187,118 @@ def test_walkway_stories_card_browser_smoke():
         page.select_option("#visionSource", "none")
         assert "hidden" in (card.get_attribute("class") or "").split()
         browser.close()
+
+
+def _person(iid: str, **kw) -> dict:
+    base = {"individual_id": iid, "short_id": iid[:8], "role": "walker", "kind": "person", "crop_ids": ["c1"],
+            "thumb": H, "label": None, "label_copied": False, "known": True, "story_action": None}
+    base.update(kw)
+    return base
+
+
+def test_walkway_story_people_can_be_named_or_corrected_browser_smoke():
+    """Who the story is about (2026-10-18): one box per person, a typed name / "Someone else" /
+    "Not sure" POSTs to the person route, and the story re-renders from the server's answer."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    html = (HUB / "templates" / "index.html").read_text(encoding="utf-8")
+    html = html.replace("{{HUB_CFG}}", "{}")
+    html = re.sub(r"\{\{[A-Z0-9_]+\}\}", "", html)
+    anon = _story(1, sentence="A person walked right to left, over 5 s (3 detections).",
+                  display_sentence="A person walked right to left, over 5 s (3 detections).", display_name=None,
+                  name_source="rule", people=[_person("ind-anon1234567"),
+                                              _person("ind-dog", role="companion", kind="dog", thumb=None)])
+    alex = _story(2, name_label="Alex", individual_id="ind-alex", sentence="Alex walked left to right, over 5 s (3 detections).",
+                  display_sentence="Alex walked left to right, over 5 s (3 detections).", display_name="Alex",
+                  name_source="rule", people=[_person("ind-alex", label="Alex", label_copied=True)])
+    posts: list[tuple[str, str, dict]] = []
+
+    def handle(route):
+        url = route.request.url
+        path = url.split("http://hub.test", 1)[1].split("?", 1)[0]
+        if path == "/":
+            return route.fulfill(body=html, content_type="text/html")
+        if path.startswith("/static/"):
+            f = HUB / path.lstrip("/")
+            if f.is_file():
+                ctype = "application/javascript" if f.suffix == ".js" else "text/css" if f.suffix == ".css" else "application/octet-stream"
+                return route.fulfill(body=f.read_bytes(), content_type=ctype)
+            return route.fulfill(status=404, body="")
+        if path == "/api/vision/motion-stories":
+            return route.fulfill(body=json.dumps({"ok": True, "stories": [anon, alex], "tally": _tally(1, 1)}),
+                                 content_type="application/json")
+        m = re.fullmatch(r"/api/vision/motion-stories/([0-9a-f]{32})/people/([^/]+)", path)
+        if m:
+            sent = json.loads(route.request.post_data or "{}")
+            posts.append((m.group(1), m.group(2), sent))
+            if m.group(2) == "ind-anon1234567":
+                story = dict(anon, display_sentence="Theo walked right to left, over 5 s (3 detections).",
+                             display_name="Theo", name_source="juniper",
+                             people=[_person("ind-anon1234567", story_action={"action": "name", "name": "Theo"}),
+                                     anon["people"][1]])
+                body = {"ok": True, "story": story, "wrong_name_recorded": False, "tally": _tally(1, 1)}
+            else:
+                story = dict(alex, verdict="wrong_name", display_sentence="A person walked left to right, over 5 s (3 detections).",
+                             display_name=None, name_source="juniper",
+                             people=[_person("ind-alex", label="Alex", story_action={"action": "someone_else", "name": None})])
+                body = {"ok": True, "story": story, "wrong_name_recorded": True, "tally": _tally(2, 1, wrong_name=1)}
+            return route.fulfill(body=json.dumps(body), content_type="application/json")
+        if path == f"/api/vision/crop-thumbs/{H}" or re.fullmatch(r"/api/vision/motion-stories/[0-9a-f]{32}/strip/.*", path):
+            return route.fulfill(body=PIXEL, content_type="image/gif")
+        if path.startswith("/api/vision/crop-thumbs/") or path == "/api/vision/frames/latest/image":
+            return route.fulfill(status=404, body="")
+        return route.fulfill(body="{}", content_type="application/json")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": 360, "height": 800})
+        page.route("http://hub.test/**", handle)
+        page.route(re.compile(r"^(?!http://hub\.test).*"), lambda r: r.fulfill(status=204, body=""))
+        page.goto("http://hub.test/")
+        page.wait_for_function("() => !!window.OrionWalkwayStories")
+        page.add_style_tag(content=".hidden{display:none!important}")
+        page.select_option("#visionSource", "walkway-live")
+        page.wait_for_selector("#walkwayStoriesList [data-story-person]")
+        items = page.locator("#walkwayStoriesList [data-story-id]")
+        first = items.nth(0)
+        boxes = first.locator("[data-story-person]")
+        assert boxes.count() == 2
+        assert boxes.nth(0).locator("[data-person-title]").text_content() == "unnamed person (individual ind-anon)"
+        assert boxes.nth(1).locator("[data-person-title]").text_content() == "With them: unnamed dog (individual ind-dog)"
+        assert "Who is this story about?" in first.text_content()
+        second = items.nth(1)
+        assert second.locator("[data-person-title]").text_content() == "Alex"
+        assert "carried over from a same-person answer" in second.text_content()
+        assert second.locator("[data-person-name-input]").get_attribute("placeholder") == "Correct the name"
+        # Fits a 360 px phone with the name boxes.
+        assert page.evaluate("() => document.getElementById('walkwayStoriesCard').scrollWidth") <= 360
+        assert page.evaluate("() => document.documentElement.scrollWidth") <= 360
+
+        # "Name them" with nothing typed: nothing is sent.
+        boxes.nth(0).locator("[data-person-action='name']").click()
+        assert "Type a name first" in page.locator("#walkwayStoriesStatus").text_content()
+        assert posts == []
+        boxes.nth(0).locator("[data-person-name-input]").fill("  Theo  ")
+        boxes.nth(0).locator("[data-person-action='name']").click()
+        page.wait_for_function("() => document.querySelector('#walkwayStoriesList [data-story-id] [data-story-sentence]')"
+                               ".textContent.startsWith('Theo walked')")
+        assert posts[-1] == (f"{1:032x}", "ind-anon1234567", {"action": "name", "name": "Theo"})
+        first = page.locator("#walkwayStoriesList [data-story-id]").nth(0)
+        assert "Orion first wrote: A person walked" in first.locator("[data-story-first-written]").text_content()
+        assert first.locator("[data-person-said='name']").text_content() == "You named them Theo on this story."
+        assert "named by you" in first.text_content()
+        assert 'Saved: Theo' in page.locator("#walkwayStoriesStatus").text_content()
+
+        # "Someone else" on the story's named walker: the story loses the name and gets "Wrong name".
+        second = page.locator("#walkwayStoriesList [data-story-id]").nth(1)
+        second.locator("[data-person-action='someone_else']").click()
+        page.wait_for_function(
+            "() => document.querySelectorAll('#walkwayStoriesList [data-story-id]')[1]"
+            ".querySelector(\"[data-story-verdict='wrong_name']\").getAttribute('aria-pressed') === 'true'")
+        assert posts[-1] == (f"{2:032x}", "ind-alex", {"action": "someone_else", "name": ""})
+        second = page.locator("#walkwayStoriesList [data-story-id]").nth(1)
+        assert second.locator("[data-story-sentence]").text_content().startswith("A person walked")
+        assert "Recorded as a wrong name" in page.locator("#walkwayStoriesStatus").text_content()
+        assert "wrong names 1" in page.locator("#walkwayStoriesTally").text_content()
+        browser.close()

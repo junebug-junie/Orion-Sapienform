@@ -890,6 +890,13 @@ def ask_image_ref(
 
 SOURCE_KIND_INDIVIDUAL = "vision_individual"
 SOURCE_KIND_SAME = "vision_same_individual"
+# Juniper's "someone else" / "not sure" about one person on a Hub walkway story
+# card (2026-10-18). Carries only picture verdicts (answer_detail.pictures, each
+# with its crop_id): never a name for the individual, so it is not a
+# "who is this?" answer and never stops the opener from asking one. A NAME typed
+# on a story card is a plain SOURCE_KIND_INDIVIDUAL answer with
+# answer_detail.story_id. Both are written by the Hub (scripts/motion_story_routes.py).
+SOURCE_KIND_STORY_PERSON = "vision_story_person"
 # evidence_refs marker on a "who is this?" ask opened by the face rule, so the
 # daily caps can tell the two openers apart without another column.
 FACE_RULE_REF = "rule:face"
@@ -1770,8 +1777,11 @@ def picture_rows(ask_id: str, individual_id: str, detail: Dict[str, Any], answer
             continue
         seen.add(ref)
         name = _clean_name(p.get("name")) or None
+        # A story card names the crop itself (its pictures are crops, not thumbnails).
+        crop_id = str(p.get("crop_id") or "") or None
         out.append({"ask": ask_id, "ref": ref, "idx": int(p.get("index") or 0), "ind": individual_id,
-                    "v": verdict, "name": name if verdict != "unsure" else None, "at": answered_at})
+                    "v": verdict, "name": name if verdict != "unsure" else None, "at": answered_at,
+                    "crop_id": crop_id})
     return out
 
 
@@ -1795,7 +1805,8 @@ def _record_pictures(conn, rows: List[dict]) -> int:
         conn.execute(text(
             "INSERT INTO vision_ask_picture_verdict (ask_id, image_ref, picture_index, individual_id, verdict, name, "
             "crop_id, answered_at) VALUES (:ask, :ref, :idx, :ind, :v, :name, :crop, :at) "
-            "ON CONFLICT (ask_id, image_ref) DO NOTHING"), {**r, "crop": crop.get(r["ref"])})
+            "ON CONFLICT (ask_id, image_ref) DO NOTHING"),
+            {k: v for k, v in {**r, "crop": r.get("crop_id") or crop.get(r["ref"])}.items() if k != "crop_id"})
     others = [r for r in rows if r["v"] != "same"]
     if others:
         logger.info("[VISION_PICTURE_VERDICT] ask_id=%s individual_id=%s pictures=%d not_same=%s",
@@ -1804,23 +1815,76 @@ def _record_pictures(conn, rows: List[dict]) -> int:
     return len(rows)
 
 
+def same_name_target(conn, individual_id: str, name: str, *, exclude: Sequence[str] = ()) -> Optional[str]:
+    """An existing individual (same stream and kind as ``individual_id``) Juniper
+    already TYPED ``name`` for, that is not already confirmed the same person
+    (a 'same' path between them). First by labeled_at. None when there is none."""
+    from sqlalchemy import text
+
+    me = conn.execute(text("SELECT stream_id, kind FROM vision_individual WHERE individual_id=:i"),
+                      {"i": individual_id}).fetchone()
+    if me is None:
+        return None
+    skip = [individual_id, *exclude]
+    cands = [r[0] for r in conn.execute(text(
+        "SELECT individual_id FROM vision_individual WHERE stream_id=:s AND kind=:k AND label IS NOT NULL "
+        "AND NOT label_copied AND lower(label) = lower(:n) AND NOT (individual_id = ANY(:skip)) "
+        "ORDER BY labeled_at NULLS LAST, individual_id"),
+        {"s": me[0], "k": me[1], "n": name, "skip": skip}).fetchall()]
+    if not cands:
+        return None
+    groups = same_groups((a, b) for a, b in conn.execute(text(
+        "SELECT individual_a, individual_b FROM vision_individual_pair_verdict WHERE verdict='same'")).fetchall())
+    mine = groups.get(individual_id, individual_id)
+    return next((c for c in cands if groups.get(c, c) != mine), None)
+
+
+def _link_same_name(conn, individual_id: str, name: str, ask_id: str, at: datetime) -> Optional[str]:
+    """A name typed on a walkway story card: a 'same' link to an existing
+    individual Juniper already typed that name for (the split's same-name link,
+    app/vision_split.py). Never over an existing pair verdict (a 'different'
+    she gave stays). Returns the linked id, or None."""
+    from sqlalchemy import text
+
+    other = same_name_target(conn, individual_id, name)
+    if other is None:
+        return None
+    a, b = sorted((individual_id, other))
+    linked = conn.execute(text(
+        "INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, face_cosine, ask_id, "
+        "decided_at) VALUES (:a, :b, 'same', NULL, :ask, :at) ON CONFLICT (individual_a, individual_b) DO NOTHING "
+        "RETURNING individual_a"), {"a": a, "b": b, "ask": ask_id, "at": at}).fetchone()
+    if linked is None:
+        return None
+    logger.info("[VISION_SAME_NAME_LINK] individual_id=%s other=%s name=%r ask_id=%s",
+                individual_id, other, name, ask_id)
+    return other
+
+
 def _apply_answers(conn, now: datetime) -> int:
     """Every unapplied "who is this?" and "same person?" answer, oldest first, so
-    when two answers name one individual the later one wins."""
+    when two answers name one individual the later one wins. A name typed on a
+    walkway story card (answer_detail.story_id) is a "who is this?" answer that
+    also links the individual to an existing one Juniper gave the same name; a
+    story card's "someone else" / "not sure" records its picture verdicts only."""
     from sqlalchemy import text
 
     rows = conn.execute(text(
         "SELECT ask_id, source_kind, source_ref, answer, answered_at, answer_detail FROM orion_ask "
         "WHERE source_kind = ANY(:k) AND status='answered' AND applied_at IS NULL "
         "ORDER BY answered_at NULLS FIRST, ask_id"),
-        {"k": [SOURCE_KIND_INDIVIDUAL, SOURCE_KIND_SAME]}).fetchall()
+        {"k": [SOURCE_KIND_INDIVIDUAL, SOURCE_KIND_SAME, SOURCE_KIND_STORY_PERSON]}).fetchall()
     for ask_id, kind, ref, answer, answered_at, detail in rows:
         at = answered_at or now
         if kind == SOURCE_KIND_INDIVIDUAL:
             label = _clean_name(answer)
             if label:
+                if _detail(detail).get("story_id"):
+                    _link_same_name(conn, ref, label, ask_id, at)
                 _apply_typed_name(conn, ref, label, ask_id, at, now)
                 _record_pictures(conn, picture_rows(ask_id, ref, _detail(detail), at))
+        elif kind == SOURCE_KIND_STORY_PERSON:
+            _record_pictures(conn, picture_rows(ask_id, ref, _detail(detail), at))
         else:
             _apply_pair_answer(conn, ask_id, ref, answer, at, _detail(detail), now)
         conn.execute(text("UPDATE orion_ask SET applied_at=:now WHERE ask_id=:a"), {"now": now, "a": ask_id})

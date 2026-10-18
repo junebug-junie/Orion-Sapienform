@@ -486,6 +486,19 @@ built before these names marked a named pair answer applied (Hub deployed
 first), the next tick finds names whose individual's label is older than the
 answer and applies them (`[VISION_PAIR_NAMES_HEALED]`).
 
+**Answers from a walkway story card** (2026-10-18). The Hub's "Walkway stories"
+card lets Juniper name, or correct, each person in a story. It writes the
+`orion_ask` row already answered (`applied_at` NULL), and this loop applies it:
+a typed name is a `vision_individual` ask with `answer_detail.story_id`, applied
+exactly as above (typed label, `label_ask_id` = that ask, last typed name wins),
+plus a `'same'` pair verdict to an existing individual (same stream and kind)
+Juniper already typed that name for, unless they are already linked or have a
+pair verdict (`[VISION_SAME_NAME_LINK]`). "Someone else" / "not sure" is a
+`vision_story_person` ask: only its `answer_detail.pictures` (one per story
+crop, with `crop_id`) land in `vision_ask_picture_verdict`; 'different' ones are
+split by the pass below. It never names the individual and never stops the
+opener from asking "who is this?" about them.
+
 **Splits on "someone else" pictures** (`app/vision_split.py`, 2026-10-16;
 design `docs/superpowers/specs/2026-10-16-vision-individual-split-proposal.md`).
 Every crop the clusterer assigns now stores its individual
@@ -611,8 +624,10 @@ new identity. Design: `docs/superpowers/specs/2026-10-16-walkway-motion-stories-
   person's story tells it), so one walk-by is one story to check.
 - Known limits: a crop that lands more than `VISION_MOTION_STORY_SETTLE_SEC`
   after it was seen (a writer restart, a bus backlog) is behind the cursor and
-  never joins a story. `name_label` is copied at write time; a later rename or
-  split of that individual does not rewrite old stories. Retention never
+  never joins a story. `name_label` and `sentence` are kept as written; the Hub
+  re-derives the name when it shows a story (same rule,
+  `orion/vision/story_naming.py`, on today's names), and Juniper's own answer
+  on a story wins for that story. Retention never
   deletes a story Juniper has given a verdict.
 - Kill switch: `VISION_MOTION_STORIES_ENABLED=false`.
 - Replay (read only): `PYTHONPATH=. python services/orion-sql-writer/evals/run_vision_motion_story_replay_eval.py`

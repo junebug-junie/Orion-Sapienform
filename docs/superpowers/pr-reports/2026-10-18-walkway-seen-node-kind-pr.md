@@ -116,6 +116,6 @@ Expect `evidence:walkway_day:walkway:<date>` rows with `node_kind=evidence` for 
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2756
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

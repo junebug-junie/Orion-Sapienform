@@ -28,6 +28,9 @@ from scripts import motion_story_routes as msr  # noqa: E402
 ADMIN_DSN = os.environ.get("ORION_MEMORY_EPISODE_TEST_DATABASE_URL")
 MIGRATION = REPO_ROOT / "services" / "orion-sql-db" / "manual_migration_vision_motion_story_v1.sql"
 MIGRATION_V2 = REPO_ROOT / "services" / "orion-sql-db" / "manual_migration_vision_motion_story_strip_v2.sql"
+# The person route writes orion_ask rows and reads vision_individual (2026-10-18).
+WALKWAY_MIGRATIONS = [REPO_ROOT / "services" / "orion-sql-db" / f"manual_migration_{f}.sql" for f in (
+    "walkway_camera_v1", "walkway_privacy_v2", "vision_confirm_asks_v1", "vision_ask_names_v1")]
 needs_pg = pytest.mark.skipif(not ADMIN_DSN, reason="ORION_MEMORY_EPISODE_TEST_DATABASE_URL not set")
 
 
@@ -50,7 +53,8 @@ def test_routes_are_mounted_on_the_hub_app() -> None:
     assert "app.include_router(motion_story_router)" in main
     paths = {r.path for r in msr.router.routes}
     assert paths == {"/api/vision/motion-stories", "/api/vision/motion-stories/{story_id}/verdict",
-                     "/api/vision/motion-stories/{story_id}/strip/{name}"}
+                     "/api/vision/motion-stories/{story_id}/strip/{name}",
+                     "/api/vision/motion-stories/{story_id}/people/{individual_id}"}
 
 
 def test_cant_tell_never_counts_toward_the_gate() -> None:
@@ -120,7 +124,7 @@ def _statements(sql: str) -> list[str]:
     return [s.strip() for s in body.split(";") if s.strip()]
 
 
-def _run(body):
+def _run(body, published=None):
     async def _go():
         import asyncpg
         import httpx
@@ -132,6 +136,8 @@ def _run(body):
         await admin.close()
         pool = await asyncpg.create_pool(dsn=ADMIN_DSN.rsplit("/", 1)[0] + f"/{name}", min_size=1, max_size=3)
         try:
+            for f in WALKWAY_MIGRATIONS:
+                await pool.execute(f.read_text())
             for st in _statements(MIGRATION.read_text()) + _statements(MIGRATION_V2.read_text()):
                 await pool.execute(st)   # CONCURRENTLY: one statement at a time
             app = FastAPI()
@@ -145,7 +151,22 @@ def _run(body):
             await admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
             await admin.close()
 
-    asyncio.run(_go())
+    if published is not None:
+        # The module msr itself calls (conftest re-imports `scripts` per test, so never re-import here).
+        ask_routes = msr.ask_routes
+
+        async def _pub(event):
+            published.append(event)
+            return True
+
+        orig = ask_routes._publish_answered
+        ask_routes._publish_answered = _pub
+        try:
+            asyncio.run(_go())
+        finally:
+            ask_routes._publish_answered = orig
+    else:
+        asyncio.run(_go())
 
 
 async def _story(pool, i: int, *, published=True, clean=True, name=None, version=1, minute=0,
@@ -310,3 +331,273 @@ def test_cant_tell_is_recorded_leaves_the_queue_and_never_counts() -> None:
         assert await pool.fetchval("SELECT cant_tell FROM vision_motion_story_verdict WHERE story_id = $1", a) is False
 
     _run(body)
+
+
+# --- who the story is about (2026-10-18) ---------------------------------------------------------------
+
+THUMB = "e" * 64
+
+
+def test_people_in_lists_each_individual_once_with_its_crops_and_first_thumb() -> None:
+    ev = [{"crop_id": "c1", "individual_id": "ind-a", "thumb": None},
+          {"crop_id": "c2", "individual_id": "ind-a", "thumb": THUMB},
+          {"crop_id": "c3", "individual_id": None, "thumb": THUMB},
+          {"crop_id": "c4", "individual_id": "ind-b", "thumb": "not-a-hash"}]
+    got = msr.people_in(ev, "walker", "person")
+    assert [(p["individual_id"], p["crop_ids"], p["thumb"], p["short_id"]) for p in got] == [
+        ("ind-a", ["c1", "c2"], THUMB, "ind-a"), ("ind-b", ["c4"], None, "ind-b")]
+
+
+def _ev(*ids, clipped=False):
+    return [{"crop_id": f"c{i}", "individual_id": iid, "clipped": clipped, "thumb": None} for i, iid in enumerate(ids)]
+
+
+def test_story_display_rule_uses_todays_names_and_juniper_wins_on_her_story() -> None:
+    story = {"kind": "person", "name_label": None, "sentence": "A person walked left to right, over 5 s (3 detections).",
+             "evidence": _ev("a", "a", "a")}
+    story["people"] = msr.people_in(story["evidence"], "walker", "person")
+    assert msr.story_display(story, {}, [])[1] == story["sentence"]
+    name, sentence, why = msr.story_display(story, {"a": "Maya"}, [])
+    assert (name, why) == ("Maya", "rule") and sentence.startswith("Maya walked left to right")
+    # The rule still holds: an unnamed second id withholds the automatic name.
+    other = dict(story, evidence=_ev("a", "a", "b"))
+    other["people"] = msr.people_in(other["evidence"], "walker", "person")
+    assert msr.story_display(other, {"a": "Maya"}, [])[0] is None
+    # ...but Juniper's own answer on this story overrides it, for this story.
+    theo = {"individual_id": "a", "action": "name", "name": "Theo", "ask_id": "x"}
+    name, sentence, why = msr.story_display(other, {"a": "Maya"}, [theo])
+    assert (name, why) == ("Theo", "juniper") and sentence.startswith("Theo walked")
+    # "Someone else" with no name: the story says "A person" again, and a later "not sure" keeps that.
+    named = dict(story, name_label="Maya", sentence="Maya walked left to right, over 5 s (3 detections).")
+    se = {"individual_id": "a", "action": "someone_else", "name": None, "ask_id": "y"}
+    unsure = {"individual_id": "a", "action": "unsure", "name": None, "ask_id": "z"}
+    assert msr.story_display(named, {"a": "Maya"}, [se])[1].startswith("A person walked")
+    assert msr.story_display(named, {"a": "Maya"}, [se, unsure])[1].startswith("A person walked")
+    # "Not sure" alone changes nothing; an answer about a companion never names the walker.
+    assert msr.story_display(named, {"a": "Maya"}, [unsure]) == ("Maya", named["sentence"], "rule")
+    assert msr.story_display(named, {"a": "Maya"}, [dict(theo, individual_id="dog")])[2] == "rule"
+
+
+def test_wrong_name_only_for_a_correction_of_the_walkers_written_name() -> None:
+    assert msr.wrong_name_correction("Maya", "walker", "name", "Theo") is True
+    assert msr.wrong_name_correction("Maya", "walker", "name", "maya") is False      # a confirmation
+    assert msr.wrong_name_correction("Maya", "walker", "someone_else", "") is True
+    assert msr.wrong_name_correction("Maya", "walker", "unsure", "") is False
+    assert msr.wrong_name_correction("Maya", "companion", "name", "Theo") is False
+    assert msr.wrong_name_correction(None, "walker", "name", "Theo") is False
+    # Re-saving the name the individual already carries (renamed elsewhere) is not a verdict on the rule.
+    assert msr.wrong_name_correction("Maya", "walker", "name", "mia", "Mia") is False
+
+
+async def _individual(pool, iid: str, label=None, kind="person") -> None:
+    await pool.execute(
+        "INSERT INTO vision_individual (individual_id, stream_id, kind, centroid, centroid_n, first_seen_at, "
+        "last_seen_at, sighting_count, distinct_days, label, label_copied) "
+        "VALUES ($1, 'walkway', $2, ARRAY[1.0, 0.0]::real[], 3, now(), now(), 1, 1, $3, false)", iid, kind, label)
+
+
+async def _walk(pool, i: int, ids, *, name=None, together=None, kind="person", published=True) -> str:
+    sid = f"{i:032x}"
+    ev = [{"crop_id": f"s{i}c{k}", "box": [1, 2, 3, 4], "clipped": False, "individual_id": iid,
+           "thumb": THUMB if k == 0 else None} for k, iid in enumerate(ids)]
+    subj = name or ("A dog" if kind == "dog" else "A person")
+    await pool.execute(
+        "INSERT INTO vision_motion_story (story_id, stream_id, kind, started_at, ended_at, detection_count, "
+        "speed_class, zone_path, published, drop_reason, clean, sentence, crop_ids, evidence, name_label, "
+        "individual_id, together_story_ids, rules_version) VALUES ($1, 'walkway', $2, now() - interval '1 minute', "
+        "now(), $3, 'walking', ARRAY['walkway'], $4, $5, true, $6, $7, $8::jsonb, $9, $10, $11, 1)",
+        sid, kind, len(ids), published, None if published else "companion",
+        f"{subj} walked right to left on the walkway, over 5 s ({len(ids)} detections).",
+        [e["crop_id"] for e in ev], json.dumps(ev), name, ids[0] if name else None, together)
+    return sid
+
+
+@needs_pg
+def test_list_shows_who_each_story_is_about_with_todays_names() -> None:
+    async def body(pool, client):
+        await _individual(pool, "ind-maya", "Maya")
+        await _individual(pool, "ind-anon")
+        await _individual(pool, "ind-dog", kind="dog")
+        dog = await _walk(pool, 9, ["ind-dog"] * 3, kind="dog", published=False)
+        a = await _walk(pool, 1, ["ind-maya"] * 3, together=[dog])
+        b = await _walk(pool, 2, ["ind-anon", "ind-anon", None])
+        r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
+        assert r.status_code == 200, r.text
+        got = {s["story_id"]: s for s in r.json()["stories"]}
+        assert set(got) == {a, b}                       # the unpublished companion story is not listed
+        # Named after the story was written: the rule names it now; what was written is kept.
+        assert got[a]["display_sentence"].startswith("Maya walked right to left")
+        assert got[a]["sentence"].startswith("A person walked") and got[a]["name_source"] == "rule"
+        assert [(p["individual_id"], p["role"], p["label"], p["kind"]) for p in got[a]["people"]] == [
+            ("ind-maya", "walker", "Maya", "person"), ("ind-dog", "companion", None, "dog")]
+        assert got[a]["people"][1]["story_id"] == dog and got[a]["people"][0]["thumb"] == THUMB
+        anon = got[b]["people"][0]
+        assert (anon["label"], anon["short_id"], anon["known"], anon["story_action"]) == (None, "ind-anon", True, None)
+        assert got[b]["display_sentence"] == got[b]["sentence"]
+
+    _run(body)
+
+
+@needs_pg
+def test_naming_a_person_is_a_who_is_this_answer_and_renames_the_story() -> None:
+    published: list = []
+
+    async def body(pool, client):
+        await _individual(pool, "ind-anon")
+        await _individual(pool, "ind-other")
+        sid = await _walk(pool, 1, ["ind-anon", "ind-anon", "ind-other"])
+        # A who-is-this card the opener already had open for this person stays for sql-writer to close.
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-anon",
+                              json={"action": "name", "name": "  Theo  "})
+        assert r.status_code == 200, r.text
+        out = r.json()
+        row = await pool.fetchrow("SELECT * FROM orion_ask WHERE ask_id = $1", out["ask_id"])
+        assert (row["source_kind"], row["source_ref"], row["status"], row["answer"]) == (
+            "vision_individual", "ind-anon", "answered", "Theo")
+        assert row["applied_at"] is None and row["answered_at"] is not None   # sql-writer applies it
+        assert json.loads(row["answer_detail"]) == {"story_id": sid, "action": "name", "via": "motion_story",
+                                                    "name": "Theo"}
+        assert json.loads(row["evidence_refs"]) == [f"motion_story:{sid}", "individual:ind-anon"]
+        assert row["image_ref"] == f"thumb:{THUMB}"
+        # The substrate entity event, the same one a Hub "who is this?" answer publishes.
+        assert [(e.ask_id, e.source_kind, e.source_ref, e.answer, e.status) for e in published] == [
+            (out["ask_id"], "vision_individual", "ind-anon", "Theo", "answered")]
+        # Her answer on this story wins even though another unnamed id is in it.
+        assert out["story"]["display_sentence"].startswith("Theo walked right to left")
+        assert out["story"]["name_source"] == "juniper"
+        person = next(p for p in out["story"]["people"] if p["individual_id"] == "ind-anon")
+        assert person["story_action"]["action"] == "name" and person["story_action"]["name"] == "Theo"
+        assert out["wrong_name_recorded"] is False     # nothing was named before: not a correction
+        assert await pool.fetchval("SELECT count(*) FROM vision_motion_story_verdict") == 0
+        # A second name on the same story: the last one shows.
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-anon", json={"action": "name", "name": "Theodore"})
+        assert r.json()["story"]["display_sentence"].startswith("Theodore walked")
+        assert await pool.fetchval("SELECT count(*) FROM orion_ask") == 2
+
+    _run(body, published)
+
+
+@needs_pg
+def test_correcting_the_written_name_records_wrong_name_and_someone_else_records_pictures() -> None:
+    published: list = []
+
+    async def body(pool, client):
+        await _individual(pool, "ind-maya", "Maya")
+        sid = await _walk(pool, 1, ["ind-maya"] * 3, name="Maya")
+        await client.post(f"/api/vision/motion-stories/{sid}/verdict", json={"verdict": "right"})
+        # Same name (any case): a confirmation, the "right" verdict stays.
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya", json={"action": "name", "name": "maya"})
+        assert r.status_code == 200 and r.json()["wrong_name_recorded"] is False
+        assert await pool.fetchval("SELECT verdict FROM vision_motion_story_verdict WHERE story_id=$1", sid) == "right"
+        # "Someone else, called Cora": picture verdicts for every crop of that individual in the story.
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya",
+                              json={"action": "someone_else", "name": "Cora"})
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert out["wrong_name_recorded"] is True and out["published"] is False
+        assert out["tally"]["wrong_name"] == 1 and out["story"]["verdict"] == "wrong_name"
+        row = await pool.fetchrow("SELECT * FROM orion_ask WHERE ask_id = $1", out["ask_id"])
+        assert (row["source_kind"], row["source_ref"], row["status"], row["answer"]) == (
+            "vision_story_person", "ind-maya", "answered", None)
+        detail = json.loads(row["answer_detail"])
+        assert [(p["crop_id"], p["verdict"], p["name"], p["index"]) for p in detail["pictures"]] == [
+            ("s1c0", "different", "Cora", 0), ("s1c1", "different", "Cora", 1), ("s1c2", "different", "Cora", 2)]
+        assert out["story"]["display_sentence"].startswith("Cora walked")
+        assert len(published) == 1                     # only the name was an entity event
+        # "Someone else" with no name: the story says "A person".
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya", json={"action": "someone_else"})
+        assert r.json()["story"]["display_sentence"].startswith("A person walked")
+        # "Not sure": recorded, the latest direct answer still holds for the story.
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya",
+                              json={"action": "unsure", "name": "ignored"})
+        assert r.status_code == 200
+        d = json.loads(await pool.fetchval("SELECT answer_detail FROM orion_ask WHERE ask_id=$1", r.json()["ask_id"]))
+        assert {p["verdict"] for p in d["pictures"]} == {"unsure"} and "name" not in d
+        assert r.json()["story"]["people"][0]["story_action"]["action"] == "unsure"
+        assert r.json()["story"]["display_sentence"].startswith("A person walked")   # "someone else" still holds
+        r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
+        assert r.json()["stories"][0]["display_sentence"].startswith("A person walked")
+
+    _run(body, published)
+
+
+@needs_pg
+def test_a_name_correction_never_overwrites_a_motion_verdict_and_a_failed_readback_still_publishes() -> None:
+    published: list = []
+
+    async def body(pool, client):
+        await _individual(pool, "ind-maya", "Maya")
+        sid = await _walk(pool, 1, ["ind-maya"] * 3, name="Maya")
+        await client.post(f"/api/vision/motion-stories/{sid}/verdict", json={"verdict": "wrong_motion"})
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya", json={"action": "name", "name": "Theo"})
+        assert r.status_code == 200 and r.json()["wrong_name_recorded"] is False
+        assert await pool.fetchval("SELECT verdict FROM vision_motion_story_verdict WHERE story_id=$1", sid) == "wrong_motion"
+        # The name is committed and published even if reading the story back fails.
+        orig = msr._enrich
+
+        async def boom(conn, stories):
+            raise OSError("read-back down")
+
+        msr._enrich = boom
+        try:
+            r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya", json={"action": "name", "name": "Ash"})
+        finally:
+            msr._enrich = orig
+        assert r.status_code == 200 and r.json()["story"] is None
+        assert [e.answer for e in published] == ["Theo", "Ash"]
+
+    _run(body, published)
+
+
+@needs_pg
+def test_story_person_refusals_change_nothing() -> None:
+    published: list = []
+
+    async def body(pool, client):
+        await _individual(pool, "ind-maya", "Maya")
+        await _individual(pool, "ind-elsewhere")
+        sid = await _walk(pool, 1, ["ind-maya", "ind-maya", "ind-ghost"])
+        hidden = await _walk(pool, 2, ["ind-maya"] * 3, published=False)
+        url = f"/api/vision/motion-stories/{sid}/people"
+        cases = [
+            (f"/api/vision/motion-stories/nothex/people/ind-maya", {"action": "name", "name": "X"}, 400, "bad_story_id"),
+            (f"{url}/bad%20id", {"action": "name", "name": "X"}, 400, "bad_individual_id"),
+            (f"/api/vision/motion-stories/{hidden}/people/ind-maya", {"action": "name", "name": "X"}, 404, "story_not_found"),
+            (f"{url}/ind-elsewhere", {"action": "name", "name": "X"}, 422, "individual_not_in_story"),
+            (f"{url}/ind-ghost", {"action": "name", "name": "X"}, 404, "individual_not_found"),
+            (f"{url}/ind-maya", {"action": "name", "name": "   "}, 422, "name_empty"),
+            (f"{url}/ind-maya", {"action": "name", "name": "x" * 121}, 422, "name_too_long"),
+            (f"{url}/ind-maya", {"action": "someone_else", "name": "MAYA"}, 422, "someone_else_takes_another_name"),
+            (f"{url}/ind-maya", {"action": "rename", "name": "X"}, 422, None),
+        ]
+        for path, payload, code, detail in cases:
+            r = await client.post(path, json=payload)
+            assert r.status_code == code, (path, payload, r.text)
+            if detail:
+                assert r.json()["detail"] == detail, (path, payload)
+        assert await pool.fetchval("SELECT count(*) FROM orion_ask") == 0
+        assert await pool.fetchval("SELECT count(*) FROM vision_motion_story_verdict") == 0
+        assert published == []
+
+    _run(body, published)
+
+
+@needs_pg
+def test_a_companion_from_a_story_walked_together_can_be_named_there() -> None:
+    published: list = []
+
+    async def body(pool, client):
+        await _individual(pool, "ind-walker")
+        await _individual(pool, "ind-friend")
+        friend = await _walk(pool, 2, ["ind-friend"] * 3)
+        sid = await _walk(pool, 1, ["ind-walker"] * 3, together=[friend])
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-friend", json={"action": "name", "name": "Ash"})
+        assert r.status_code == 200, r.text
+        story = r.json()["story"]
+        assert [(p["individual_id"], p["role"]) for p in story["people"]] == [
+            ("ind-walker", "walker"), ("ind-friend", "companion")]
+        # A companion's name is not the walker's: the sentence keeps "A person".
+        assert story["display_sentence"].startswith("A person walked") and story["name_source"] == "rule"
+        assert published[0].source_ref == "ind-friend"
+
+    _run(body, published)

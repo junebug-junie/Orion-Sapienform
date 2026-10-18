@@ -45,6 +45,8 @@ from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from orion.vision.stationary import box_iou
+from orion.vision.story_naming import NOUNS as _SHARED_NOUNS
+from orion.vision.story_naming import name_from_crops
 from orion.vision.zones import Zone, zone_for_box
 
 # Bump when a rule below changes meaning: Juniper's spot-check tally counts one
@@ -78,8 +80,8 @@ VERBS = {
     "walked": "was walked", "riding": "was ridden", "pushed": "was pushed",
     "creeping": "crept", "driving": "drove",
 }
-NOUNS = {"person": "a person", "dog": "a dog", "bicycle": "a bicycle", "stroller": "a stroller",
-         "vehicle": "a vehicle"}
+# Shared with the Hub, which re-derives a story's name when it shows it.
+NOUNS = _SHARED_NOUNS
 
 
 @dataclass(frozen=True)
@@ -421,22 +423,10 @@ def name_for(p: Passage, labels: Dict[str, str], cfg: MotionConfig
     - that name covers >= name_share of the passage's crops (``low_share``);
     - no crop touches the frame edge (``edge_clipped``).
     Crops with no id at all do not block a name. The returned id is the one
-    on most crops."""
-    ids = [c.individual_id for c in p.crops if c.individual_id]
-    named = [i for i in ids if labels.get(i)]
-    if not named:
-        return None, None, None
-    names = {labels[i].strip().casefold() for i in named}
-    if len(names) > 1:
-        return None, None, "two_named"
-    if len(named) != len(ids):
-        return None, None, "other_id"
-    if any(is_edge_clipped(c.box, cfg) for c in p.crops):
-        return None, None, "edge_clipped"
-    if len(named) / len(p.crops) < cfg.name_share:
-        return None, None, "low_share"
-    iid = max(sorted(set(named)), key=named.count)
-    return iid, labels[iid], None
+    on most crops. The rule itself is orion.vision.story_naming.name_from_crops,
+    shared with the Hub's read-time re-derivation."""
+    return name_from_crops([(c.individual_id, is_edge_clipped(c.box, cfg)) for c in p.crops], labels,
+                           cfg.name_share)
 
 
 # ---------------------------------------------------------------------------

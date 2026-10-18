@@ -65,7 +65,11 @@ def run(commands, urgent, replies, stop, settings, game, session, generation):
                             authority.clear()
                             reject_pending('control_revoked')
                             state = 'paused' if op == 'pause' else 'running'
-                            if op == 'resume': acquire_deadline = time.monotonic()+5
+                            if op == 'resume':
+                                # Paused ports are already neutral; don't mistake their old
+                                # release barrier for a fresh lease loss after resume.
+                                authority.neutral.clear()
+                                acquire_deadline = time.monotonic()+5
                         if state == 'paused': core.buttons = (0, 0)
                         record('transition', state=state, reason=op)
                         result = {'state': state}

@@ -50,6 +50,13 @@ async def faults(socket, token, name, evidence):
             await ws.send(json.dumps(dict(data,lease='é'*32)))
             assert 'rejected' in json.loads(await ws.recv())
             await ws.send(json.dumps(data));assert 'applied' in json.loads(await ws.recv())
+            call(current+'/pause',{})
+            call(current+'/resume',{})
+            await asyncio.sleep(.1)  # let the first resumed neutral frame actually run
+            assert call(current)['state']=='running','resume immediately re-paused'
+            g=call(current+'/control',dict(connection_id=hello['connection_id'],port=0))
+            data.update(lease=g['lease'],epoch=g['epoch'],seq=2)
+            await ws.send(json.dumps(data));assert 'applied' in json.loads(await ws.recv())
             await asyncio.sleep(.4)
             assert call(current)['state']=='paused','expired lease kept running'
         call(current+'/stop',{})
@@ -90,7 +97,7 @@ os.kill(pids[0],signal.SIGKILL)
             quota.unlink()
         assert client.get('/health/live',headers={'Authorization':'invalid'}).status_code==401
         assert client.get('/health/live',headers=dict(h,Origin='https://example.invalid')).status_code==403
-    return {'cross_session_disconnect':'PASS','duplicate_resume':'PASS','malformed_token':'PASS',
+    return {'pause_resume_reacquire':'PASS','cross_session_disconnect':'PASS','duplicate_resume':'PASS','malformed_token':'PASS',
             'lease_expiry':'PASS','worker_kill':'PASS','initial_grace':'PASS','authorization':'PASS','live_storage_quota':'PASS'}
 
 

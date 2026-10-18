@@ -5,7 +5,7 @@ from app import worker
 from settings import Settings
 
 
-def exercise(monkeypatch,tmp_path,scenario, *, crash=False, quota=268435456, initial=True, loops=20):
+def exercise(monkeypatch,tmp_path,scenario, *, crash=False, quota=268435456, initial=True, loops=20, tick=None):
     commands=queue.Queue(); urgent=queue.Queue(); result=[]; steps=[]
     clock=SimpleNamespace(now=0., loops=0)
     class Stop:
@@ -19,6 +19,7 @@ def exercise(monkeypatch,tmp_path,scenario, *, crash=False, quota=268435456, ini
         def step(self,*masks):
             if crash:raise RuntimeError('fixture_crash')
             steps.append(masks);self.video_frames+=1;self.audio_samples+=800
+            if tick:tick(enqueue)
         def close(self):pass
     monkeypatch.setattr(worker,'CoreProbe',Core)
     def enqueue(op,rid,connection='',data=None):
@@ -75,3 +76,22 @@ def test_no_controller_pauses_after_bounded_start_grace(monkeypatch,tmp_path):
     rows,steps=exercise(monkeypatch,tmp_path,lambda *args:None,initial=False,loops=600)
     assert 290<=len(steps)<=302
     assert any(r['kind']=='status' and r['state']=='paused' for r in rows)
+
+
+def test_pause_resume_allows_reacquisition_after_neutral_frame(monkeypatch,tmp_path):
+    phase={'resumed':False}
+    def scenario(row,send):
+        rid=row.get('id')
+        if rid=='grant2':
+            g=row['result'];send('input','before','two',dict(port=1,lease=g['lease'],epoch=g['epoch'],seq=1,mask=128))
+        elif rid=='before':send('pause','pause')
+        elif rid=='pause':send('resume','resume')
+        elif rid=='resume':phase['resumed']=True
+        elif rid=='again':
+            g=row['result'];send('input','after','two',dict(port=1,lease=g['lease'],epoch=g['epoch'],seq=1,mask=128))
+    def tick(send):
+        if phase['resumed']:
+            phase['resumed']=False
+            send('control','again','two',dict(port=1,action='acquire'))
+    rows,_=exercise(monkeypatch,tmp_path,scenario,tick=tick)
+    assert 'result' in next(r for r in rows if r.get('id')=='after')

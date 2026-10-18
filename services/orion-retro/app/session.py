@@ -17,6 +17,7 @@ class Sessions:
         self.generation = str(uuid.uuid4())
         self.catalog = {}; self.session = None; self.process = None
         self.pending = {}; self.connections = set(); self.history = deque(maxlen=256)
+        self.media = None; self.media_task = None; self.latest_media = None; self.media_version = 0
         self.requests = {}; self.task = None; self.stopping = False
         self.settings.artifacts.mkdir(parents=True, exist_ok=True)
         self.status_path = self.settings.artifacts/'status.json'
@@ -57,7 +58,8 @@ class Sessions:
         tmp.write_text(json.dumps(self.session)+'\n')
         tmp.replace(self.status_path)
 
-    async def start(self, game_id, key):
+    async def start(self, game_id, key, owner="operator"):
+        key = owner+":"+key
         if key in self.requests:
             old_game, old_id = self.requests[key]
             if old_game != game_id: raise ValueError('idempotency_conflict')
@@ -67,15 +69,32 @@ class Sessions:
         if len(self.requests) >= 256: raise ValueError('idempotency_capacity_restart_required')
         ctx = mp.get_context('spawn')
         self.commands = ctx.Queue(32); self.urgent = ctx.Queue(8); self.replies = ctx.Queue(128); self.stop_event = ctx.Event()
+        self.media = ctx.Queue(2); self.latest_media = None; self.media_version = 0
         sid = str(uuid.uuid4())
         self.session = dict(session_id=sid, generation=self.generation, state='starting',
-                            game_id=game_id, frame=0, owner='operator', save_enabled=False)
+                            game_id=game_id, frame=0, owner=owner, save_enabled=False)
         self.persist(); self.history.clear()
         self.process = ctx.Process(target=run, args=(self.commands,self.urgent,self.replies,self.stop_event,
-                            self.settings,self.catalog[game_id],sid,self.generation), daemon=True)
+                            self.settings,self.catalog[game_id],sid,self.generation,self.media), daemon=True)
         self.process.start(); self.requests[key] = (game_id, sid)
         self.task = asyncio.create_task(self.monitor())
+        self.media_task = asyncio.create_task(self.monitor_media())
         return dict(self.session)
+
+    async def monitor_media(self):
+        from .media import compress
+        try:
+            while self.process:
+                packet = None
+                for _ in range(2):
+                    try: packet = self.media.get_nowait()
+                    except queue.Empty: break
+                if packet is not None:
+                    self.latest_media = await asyncio.to_thread(compress, packet)
+                    self.media_version += 1
+                await asyncio.sleep(.005)
+        except asyncio.CancelledError:
+            pass
 
     async def monitor(self):
         last = time.monotonic(); started = last; ready = False
@@ -129,6 +148,8 @@ class Sessions:
         if not process: return
         self.stopping = True
         if self.task and not from_monitor: self.task.cancel()
+        if self.media_task: self.media_task.cancel()
+        self.latest_media = None
         self.stop_event.set()
         await asyncio.to_thread(process.join, .3)
         if process.is_alive():
@@ -141,6 +162,7 @@ class Sessions:
         self.commands.cancel_join_thread(); self.commands.close()
         self.urgent.cancel_join_thread(); self.urgent.close()
         self.replies.cancel_join_thread(); self.replies.close()
+        if self.media: self.media.cancel_join_thread(); self.media.close()
         self.session.update(state=state, reason=reason)
         try:
             self.persist()

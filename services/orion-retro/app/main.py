@@ -1,4 +1,4 @@
-"""Operator-only P1 API. No public/browser identity or Hub integration yet."""
+"""Owner-scoped CLI/Hub authority. Browser authentication remains in Hub."""
 import asyncio
 from contextlib import asynccontextmanager
 import hmac
@@ -18,6 +18,9 @@ def create_app(settings=None):
     async def lifespan(app):
         app.state.manager = None
         app.state.token = settings.token()
+        app.state.hub_token = settings.hub_token_file.read_text().strip() if settings.hub_token_file.is_file() else ""
+        if app.state.hub_token and (len(app.state.hub_token)<32 or app.state.hub_token == app.state.token):
+            raise ValueError("Hub requires a distinct credential")
         if settings.enabled: app.state.manager = Sessions(settings)
         yield
         if app.state.manager: await app.state.manager.stop(reason='service_shutdown')
@@ -25,7 +28,9 @@ def create_app(settings=None):
 
     def auth(headers):
         supplied = headers.get('authorization', '')
-        return hmac.compare_digest(supplied.encode(), ('Bearer '+app.state.token).encode())
+        if hmac.compare_digest(supplied.encode(), ('Bearer '+app.state.token).encode()): return 'operator'
+        if app.state.hub_token and hmac.compare_digest(supplied.encode(), ('Bearer '+app.state.hub_token).encode()): return 'hub_operator'
+        return None
 
     @app.middleware('http')
     async def boundary(request, call_next):
@@ -45,6 +50,11 @@ def create_app(settings=None):
         if m is None: raise HTTPException(503, 'retro_disabled')
         return m
 
+    def owned(sid, headers):
+        m = manager(); m.require(sid)
+        if m.session['owner'] != auth(headers): raise HTTPException(403, 'wrong_owner')
+        return m
+
     @app.exception_handler(ValueError)
     async def invalid(request, exc):
         from starlette.responses import JSONResponse
@@ -54,24 +64,24 @@ def create_app(settings=None):
     async def live(): return {'status':'alive', 'enabled':settings.enabled}
 
     @app.get('/health/ready')
-    async def ready():
+    async def ready(request: Request):
         m = manager()
-        return {'status':'ready', 'session':m.session}
+        return {'status':'ready', 'session':m.session if not m.session or m.session['owner']==auth(request.headers) else None}
 
     @app.get('/games')
     async def games(): return manager().games()
 
     @app.post('/sessions')
-    async def start(body: Start):
-        return await manager().start(body.game_id, body.idempotency_key)
+    async def start(body: Start, request: Request):
+        return await manager().start(body.game_id, body.idempotency_key, auth(request.headers))
 
     @app.get('/sessions/{sid}')
-    async def status(sid: str):
-        m = manager(); m.require(sid); return m.session
+    async def status(sid: str, request: Request):
+        return owned(sid, request.headers).session
 
     @app.post('/sessions/{sid}/{operation}')
     async def lifecycle(sid: str, operation: str, request: Request):
-        m = manager(); m.require(sid)
+        m = owned(sid, request.headers)
         if operation == 'control':
             try: body = Control.model_validate_json(await request.body())
             except ValidationError: raise HTTPException(422, 'invalid_control')
@@ -84,8 +94,8 @@ def create_app(settings=None):
         raise HTTPException(404)
 
     @app.get('/sessions/{sid}/evidence')
-    async def evidence(sid: str):
-        m = manager(); m.require(sid)
+    async def evidence(sid: str, request: Request):
+        m = owned(sid, request.headers)
         return {'applied':list(m.history), 'complete_history':False,
                 'artifact_id':sid+'.jsonl'}
 
@@ -94,7 +104,7 @@ def create_app(settings=None):
         if not auth(ws.headers) or ws.headers.get('origin'):
             await ws.close(code=1008); return
         m = app.state.manager
-        if not m or not m.session or sid != m.session['session_id'] or not m.process or len(m.connections)>=2:
+        if not m or not m.session or sid != m.session['session_id'] or m.session['owner'] != auth(ws.headers) or not m.process or len(m.connections)>=2:
             await ws.close(code=1008); return
         connection = str(uuid.uuid4()); m.connections.add(connection)
         await ws.accept()
@@ -128,6 +138,33 @@ def create_app(settings=None):
             pass
         finally:
             await m.disconnect(connection, sid, m.generation)
+            try: await ws.close()
+            except RuntimeError: pass
+    @app.websocket('/sessions/{sid}/media')
+    async def media(ws: WebSocket, sid: str):
+        if not auth(ws.headers) or ws.headers.get('origin'):
+            await ws.close(code=1008); return
+        try: m = owned(sid, ws.headers)
+        except (ValueError, HTTPException):
+            await ws.close(code=1008); return
+        if getattr(m, 'viewers', 0) >= 2:
+            await ws.close(code=1008); return
+        m.viewers = getattr(m, 'viewers', 0)+1
+        disconnected = None; version = -1
+        try:
+            await ws.accept()
+            disconnected = asyncio.create_task(ws.receive())
+            while m.process and m.session['session_id'] == sid and not disconnected.done():
+                if m.latest_media is not None and m.media_version != version:
+                    version = m.media_version
+                    await asyncio.wait_for(ws.send_bytes(m.latest_media), .25)
+                await asyncio.sleep(.005)
+        except (WebSocketDisconnect, asyncio.TimeoutError, RuntimeError): pass
+        finally:
+            m.viewers -= 1  # Reclaim before any cancellable cleanup await.
+            if disconnected:
+                disconnected.cancel()
+                await asyncio.gather(disconnected, return_exceptions=True)
             try: await ws.close()
             except RuntimeError: pass
     return app

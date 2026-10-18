@@ -28,6 +28,8 @@ services:
       - path: .env
         required: false
     volumes:
+      - ${HUB_RETRO_SOCKET_HOST:-/dev/null}:/run/orion-retro:ro
+      - ${HUB_RETRO_AUTH_HOST:-/dev/null}:/run/orion-retro-auth:ro
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-hub/templates:/app/templates
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-hub/static:/app/static
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:/repo:ro

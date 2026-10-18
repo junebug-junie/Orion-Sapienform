@@ -31,7 +31,13 @@ def install(kit, root, env):
     if not token.exists():
         fd=os.open(token,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
         with os.fdopen(fd,'w') as f:f.write(secrets.token_urlsafe(48)+'\n')
-    keys=dict(RETRO_ENABLED='true',RETRO_SOCKET_DIR=str(root/'ipc'),RETRO_UID=str(os.getuid()),RETRO_GID=str(os.getgid()),
+    auth=root/'hub-auth';auth.mkdir(exist_ok=True,mode=0o700)
+    for name in ('hub.token','browser.code'):
+        path=auth/name
+        if not path.exists():
+            fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+            with os.fdopen(fd,'w') as f:f.write(secrets.token_urlsafe(32)+'\n')
+    keys=dict(RETRO_HUB_TOKEN_FILE=str(auth/'hub.token'),RETRO_ENABLED='true',RETRO_SOCKET_DIR=str(root/'ipc'),RETRO_UID=str(os.getuid()),RETRO_GID=str(os.getgid()),
               RETRO_CATALOG_DIR=str(catalog),RETRO_EVIDENCE_DIR=str(root/'evidence'),RETRO_TOKEN_FILE=str(token))
     # Preserve operator overrides; only populate missing/blank configuration.
     existing=env.read_text().splitlines() if env.exists() else []

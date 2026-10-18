@@ -1,8 +1,8 @@
 # Retro headless authority (P1)
 
 A persistent, operator-only NES service. One spawned child owns the libretro core;
-HTTP/WebSocket handling never calls the native core. This is not a browser player,
-Orion policy, or cognition integration. No bus connection or global event schemas.
+HTTP/WebSocket handling never calls the native core. Browser access is provided by the separate Hub adapter below. This service has
+no Orion policy or cognition integration. No bus connection or global event schemas.
 
 The fixed catalog is imported from operator-owned local kits, including Pad Lab,
 Nova and Spacegulls when installed. ROMs, credentials, saves and evidence are never
@@ -114,3 +114,12 @@ acceptance gates rather than pretending P2 is complete.
 Rollback: operator stop, set local `RETRO_ENABLED=false`, recreate from main
 through the safe wrapper; keep catalog and evidence. No automatic resume or
 schema migrations. A stopped service does not delete game data.
+
+## Browser adapter (P2)
+
+Hub now supplies a separate scoped operator login and browser control/media proxy;
+see [Retro browser runbook](../../docs/runbooks/retro-browser.md). The original CLI
+credential remains separate. `/sessions/{id}/media` carries bounded transient
+video/PCM packets, authenticated and owner-checked like input. Direct browser Origin
+requests to this service remain forbidden; Hub proxies over the private socket.
+All session reads/mutations require the credential that created the session.

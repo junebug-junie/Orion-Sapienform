@@ -4084,3 +4084,9 @@ else. The sentence shown is re-derived on read: Juniper's latest name or
 "someone else" on that story wins; otherwise the strict naming rule
 (`orion/vision/story_naming.py`) on today's names. The stored sentence is shown
 as "Orion first wrote: ..." when it differs.
+
+## Retro browser play
+
+`/retro` offers scoped operator login and native NES viewing/control through a
+private Unix socket. Disabled by default. See [setup and acceptance](../../docs/runbooks/retro-browser.md)
+for exact-origin configuration, credentials, browser checks and known limits.

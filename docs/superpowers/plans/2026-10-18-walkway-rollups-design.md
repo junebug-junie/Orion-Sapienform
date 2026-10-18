@@ -20,7 +20,7 @@ Five readers use the rows in this patch:
 | Day letter (`orion/orion_day/gather.py`) | The day's line, cited as `[walkway_day:<date>]`. |
 | Curiosity study material | The newest day's line, next to the 6 h captions. |
 | Hub "Walkway (live)" view | "Walkway history" panel, tabs Hours / Days / Weeks / Months. |
-| Substrate (orion-substrate-runtime) | One day event node per complete day, with an `observed_in` edge from each named person's existing entity node. |
+| Substrate (orion-substrate-runtime) | One day evidence node per complete day (evidence, not event: the Falkor store refuses event nodes -- fixed 2026-10-18), with an `observed_in` edge from each named person's existing entity node. |
 
 Not touched: attention (stays fenced), episodes. Dreams: follow-up (a replay source needs a
 dream-side candidate shape; not trivial).

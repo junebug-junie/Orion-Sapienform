@@ -431,7 +431,7 @@ class Settings(BaseSettings):
     )
     # Walkway rollups -> "seen on <day>" links for named people (app/walkway_seen_loop.py):
     # reads complete vision_rollup day rows, links existing entity:vision_individual:* nodes
-    # to one day event node. false = no links written.
+    # to one day evidence node. false = no links written.
     walkway_seen_enabled: bool = Field(True, alias="WALKWAY_SEEN_ENABLED")
     walkway_seen_interval_sec: float = Field(1800.0, gt=0.0, alias="WALKWAY_SEEN_INTERVAL_SEC")
     walkway_seen_streams: str = Field("walkway", alias="WALKWAY_SEEN_STREAMS")

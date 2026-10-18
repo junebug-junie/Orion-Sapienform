@@ -4,7 +4,7 @@ The named-people entity nodes (``entity:vision_individual:*``, written only when
 Juniper answers "who is this?", app/ask_answered_listener.py) had 0 edges. This
 clocked pass reads the COMPLETE walkway day rollups of the last few days
 (``vision_rollup`` grain=day, written by orion-sql-writer) and, for each named
-person seen that day whose entity node exists, materializes one day EventNodeV1
+person seen that day whose entity node exists, materializes one day EvidenceNodeV1
 plus one ``observed_in`` edge (orion/substrate/adapters/vision_individual.py
 ``map_walkway_day_seen_to_substrate``) through the same SubstrateGraphMaterializer
 path the ask listener uses.

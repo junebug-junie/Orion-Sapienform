@@ -6,6 +6,8 @@ on:
       - 'services/orion-sql-db/manual_migration_substrate_graph_journal_v1*.sql'
       - 'services/orion-substrate-runtime/app/worker.py'
       - 'services/orion-substrate-runtime/tests/test_prediction_error_node_lost_update.py'
+      - 'services/orion-substrate-runtime/app/walkway_seen_loop.py'
+      - 'services/orion-substrate-runtime/tests/test_walkway_seen_loop.py'
       - 'orion/substrate/**'
       - 'services/*/.env_example'
       - 'services/*/docker-compose.yml'
@@ -26,6 +28,8 @@ on:
       - 'services/orion-sql-db/manual_migration_substrate_graph_journal_v1*.sql'
       - 'services/orion-substrate-runtime/app/worker.py'
       - 'services/orion-substrate-runtime/tests/test_prediction_error_node_lost_update.py'
+      - 'services/orion-substrate-runtime/app/walkway_seen_loop.py'
+      - 'services/orion-substrate-runtime/tests/test_walkway_seen_loop.py'
       - 'orion/substrate/**'
       - 'services/*/.env_example'
       - 'services/*/docker-compose.yml'
@@ -128,6 +132,18 @@ jobs:
           python -m pytest -q -rs services/orion-substrate-runtime/tests/test_prediction_error_node_lost_update.py | tee -a lost_update.out
           if grep -q "SKIPPED" lost_update.out; then
             echo "real-Falkor lost-update test skipped -- service wiring is broken" >&2
+            exit 1
+          fi
+      - name: Walkway "seen on this day" links land in real FalkorDB (must not skip)
+        env:
+          ORION_TEST_FALKOR_URI: redis://localhost:6379
+        run: |
+          set -o pipefail
+          # The in-memory store accepts any node kind; only the real store proves the day node's
+          # kind is durable (2026-10-18: every live pass raised on node_kind='event').
+          python -m pytest -q -rs services/orion-substrate-runtime/tests/test_walkway_seen_loop.py -k "real_falkor or regression or durably" | tee walkway_seen.out
+          if grep -q "SKIPPED" walkway_seen.out; then
+            echo "walkway_seen real-Falkor test skipped -- FalkorDB service wiring is broken" >&2
             exit 1
           fi
       - name: Neighborhood reads equal the reference, with index seeks (real FalkorDB)

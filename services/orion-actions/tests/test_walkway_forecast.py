@@ -317,3 +317,10 @@ def test_guard_replaces_prose_with_an_invented_number_and_keeps_honest_prose() -
     # Other journal kinds are never touched.
     other = trigger.model_copy(update={"trigger_kind": "daily_summary"})
     assert wf.guard_walkway_draft(invented, other) == (invented, [])
+
+
+def test_days_watched_counts_frame_minutes_not_sightings_or_rollup_rows() -> None:
+    sql = " ".join(wf.WATCH_DAYS_SQL.split())
+    assert "FROM vision_scene_inventory" in sql and "vision_individual_sighting" not in sql
+    assert "vision_rollup" not in sql  # independent of how far the rollups were backfilled
+    assert "up_minutes >= %(min_up)s" in sql and wf.WATCHED_MIN_UP_MINUTES == 60

@@ -77,7 +77,7 @@ def test_newest_day_rollup_joins_the_material_next_to_the_captions() -> None:
     assert [c.event_id for c in material.street_captions] == ["e1"]  # the 6 h captions stay
     text = "\n".join(_material_section(material))
     assert "THE STREET OVER A WHOLE DAY (walkway camera, 2026-10-17; counted by code" in text
-    assert f"  - {LINE} (today, still running)" in text
+    assert f"  - {LINE}\n" in text + "\n"  # the line itself says "(so far, through 21:00)"
     assert text.index("WHAT THE STREET CAMERA SAID LATELY") < text.index("THE STREET OVER A WHOLE DAY")
 
 

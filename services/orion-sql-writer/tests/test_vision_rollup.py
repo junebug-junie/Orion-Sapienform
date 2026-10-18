@@ -173,7 +173,8 @@ def test_regulars_need_an_earlier_day_and_never_include_named():
     children[9] = (children[9][0], hour(children[9][0].start, [
         sight("r1", children[9][0].start), sight("n1", children[9][0].start, label="Robin"),
         sight("new", children[9][0].start)]))
-    yesterday = {"individuals": {"r1": {"kind": "person"}, "n1": {"kind": "person", "label": "Robin"}}}
+    yesterday = {"period_start": wr.day_period(date(2026, 10, 15), TZ).start.isoformat(),
+                 "individuals": {"r1": {"kind": "person"}, "n1": {"kind": "person", "label": "Robin"}}}
     day = wr.build_parent("walkway", wr.day_period(d, TZ), children, TZ, history=[yesterday])
     assert day["regulars"] == {"count": 1, "by_kind": {"person": 1}, "ids": ["r1"]}
 
@@ -421,3 +422,80 @@ def test_postgres_path_writes_rows_reads_them_back_and_is_idempotent(pg):
     assert mem.rows
     with pg.connect() as conn:
         assert conn.execute(text("SELECT count(*) FROM vision_rollup")).scalar() == 0
+
+
+# --- review findings (2026-10-18) -------------------------------------------------------------
+
+
+def test_a_day_with_no_rows_is_no_record_never_camera_down():
+    d = date(2026, 10, 10)
+    dp = wr.day_period(d, TZ)
+    day = wr.build_parent("walkway", dp, [(h, None) for h in wr.child_periods(dp, TZ)], TZ)
+    line = wr.render_line(day)
+    assert day["camera"]["status"] == "missing"
+    assert "no record" in line and "camera was down" not in line
+
+
+def test_status_is_computed_only_over_children_with_rows():
+    d = date(2026, 10, 15)
+    children = [(p, r if i < 12 else None) for i, (p, r) in enumerate(_day_rows(d, lambda i: []))]
+    day = wr.build_parent("walkway", wr.day_period(d, TZ), children, TZ)
+    assert day["camera"]["status"] == "ok"  # 12 watched hours, 12 hours with no row
+    assert day["camera"]["missing_spans"] == ["12:00–00:00"]
+
+
+def test_sightings_without_frame_record_are_unknown_not_down():
+    t = utc(2026, 10, 14, 20, 0)
+    r = hour(t, [sight("a", t + timedelta(minutes=5))], minutes=0)
+    assert r["camera"]["status"] == "unknown" and r["total"]["passings"] == 1
+    line = wr.render_line(r)
+    assert "camera was down" not in line and "1 passing" in line and "record incomplete" in line
+
+
+def test_no_busiest_or_quietest_when_nothing_passed():
+    d = date(2026, 10, 15)
+    day = wr.build_parent("walkway", wr.day_period(d, TZ), _day_rows(d, lambda i: []), TZ)
+    assert day["busiest"] is None and day["quietest"] is None
+    assert "busiest" not in wr.render_line(day)
+
+
+def test_compound_detector_labels_map_to_kinds_and_other_never_names_a_peak():
+    assert wr._kind("mail truck") == "vehicle" and wr._kind("vehicle truck") == "vehicle"
+    assert wr._kind("bicycle vehicle") == "bicycle" and wr._kind("Person") == "person"
+    assert wr._kind("mailbox") == "other"
+    assert wr._peaks({"mail truck": 2, "vehicle": 1, "person": 1}) == {"vehicle": 2, "person": 1}
+    assert wr._peak_phrase({"other": 4, "vehicle": 3}) == ""
+    assert wr._peak_phrase({"other": 4, "person": 2}) == "most at once 2 people"
+
+
+def test_guard_dates_and_minutes_cannot_vouch_for_counts_and_times_must_match():
+    facts = {"facts": {"total": {"passings": 185}, "covered_until": "2026-10-17T04:00:00-06:00",
+                       "busiest": {"at": "16:00", "passings": 36}},
+             "lines": ["Walkway Sat 17 Oct 2026: 185 passings; busiest 16:00 (36); counts cover 20.2 h of 24 h."]}
+    assert wr.unsupported_numbers("17 dogs today", facts) == ["17"]
+    assert wr.unsupported_numbers("it came 4 times", facts) == ["4"]
+    assert wr.unsupported_numbers("185 passings on Sat 17 Oct 2026; busiest at 16:00 with 36.", facts) == []
+    assert wr.unsupported_numbers("a dog at 09:15", facts) == ["09:15"]
+
+
+def test_regulars_ignore_day_rows_older_than_the_trailing_week():
+    d = date(2026, 10, 16)
+    children = _day_rows(d, lambda i: ["r1"] if i == 9 else [])
+    old = {"period_start": wr.day_period(date(2026, 10, 1), TZ).start.isoformat(),
+           "individuals": {"r1": {"kind": "person"}}}
+    recent = {"period_start": wr.day_period(date(2026, 10, 12), TZ).start.isoformat(),
+              "individuals": {"r1": {"kind": "person"}}}
+    assert wr.build_parent("walkway", wr.day_period(d, TZ), children, TZ, history=[old])["regulars"]["count"] == 0
+    assert wr.build_parent("walkway", wr.day_period(d, TZ), children, TZ, history=[recent])["regulars"]["count"] == 1
+
+
+def test_backfill_never_starts_before_the_first_frame_record():
+    now = utc(2026, 10, 18, 3, 30)
+    reader = _fake(date(2026, 10, 16), 2, now)
+    first = wr.local_midnight(date(2026, 10, 17), TZ) + timedelta(hours=5)
+    reader.first_frame = lambda _s: first
+    store = MemoryStore()
+    out = refresh_stream(reader, store, "walkway", now, RollupConfig(settle_sec=60),
+                         since=wr.local_midnight(date(2026, 10, 16), TZ))
+    assert out["clamped_to_first_frame"] == first.isoformat()
+    assert min(k[2] for k in store.rows if k[1] == "hour") == first

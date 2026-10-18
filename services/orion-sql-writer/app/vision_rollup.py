@@ -203,6 +203,12 @@ def refresh_stream(reader: Reader, store: Store, stream_id: str, now: datetime, 
         return summary
     summary["ready_until"] = ready.isoformat()
     if since is not None:
+        # Never before the camera's first frame record: earlier hours would read "camera
+        # down" (no inventory) while sightings exist, which is the record missing, not the camera.
+        first_frame = getattr(reader, "first_frame", lambda _s: None)(stream_id)
+        if first_frame is not None and first_frame > since:
+            since = first_frame
+            summary["clamped_to_first_frame"] = first_frame.isoformat()
         first = hour_period(since).start
         todo = []
         t = first
@@ -293,6 +299,11 @@ class DbReader:
                             started_at=_aware(r["started_at"]), kind=r["kind"], label=r["label"],
                             zone_no_embed=bool(r["zone_no_embed"]), stationary=bool(r["s_stat"]),
                             individual_stationary=bool(r["i_stat"])) for r in rows]
+
+    def first_frame(self, stream_id: str) -> Optional[datetime]:
+        rows = self._rows("SELECT observed_at FROM vision_scene_inventory WHERE stream_id = :s "
+                          "ORDER BY observed_at ASC LIMIT 1", {"s": stream_id})
+        return _aware(rows[0]["observed_at"]) if rows else None
 
     def camera_minutes(self, stream_id: str, lo: datetime, hi: datetime) -> Dict[datetime, int]:
         rows = self._rows(

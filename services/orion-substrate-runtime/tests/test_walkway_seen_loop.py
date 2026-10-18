@@ -89,7 +89,7 @@ def test_links_existing_named_entities_to_one_day_node_and_is_idempotent():
              "Sam": {"times": ["11:56"], "individual_ids": ["ind-sam-copy"]},
              "Nobody Named Yet": {"times": ["09:00"], "individual_ids": ["ind-unanswered"]}}
     engine = _Engine([_day_row(named)], typed={"Sam": ["ind-sam"]})
-    done: set = set()
+    done: dict = {}
     out = wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done=done)
     assert out == [{"day": "2026-10-16", "stream": "walkway", "people": ["Robin", "Sam"], "edges": 2,
                     "edges_created": 2}]
@@ -100,14 +100,21 @@ def test_links_existing_named_entities_to_one_day_node_and_is_idempotent():
     assert store.get_node_by_id(entity_node_id_for_individual("ind-sam-copy")) is None
     # same process: the day is skipped; a fresh process (restart) re-applies harmlessly
     assert wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done=done) == []
-    again = wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done=set())
+    again = wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done={})
     assert again[0]["edges_created"] == 0
+    # Juniper names the third person later: the same process links them on the next pass.
+    SubstrateGraphMaterializer(store=store, identity_resolver=SubstrateIdentityResolver(store=store)).apply_record(
+        map_vision_individual_label_to_substrate(individual_id="ind-unanswered", label="Nobody Named Yet",
+                                                 kind="person", ask_id="ask-late", answered_at=START,
+                                                 stream_id="walkway"))
+    later = wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done=done)
+    assert later and later[0]["people"] == ["Nobody Named Yet", "Robin", "Sam"] and later[0]["edges_created"] == 1
 
 
 def test_no_named_person_with_an_entity_means_no_record():
     store = _store_with()
     engine = _Engine([_day_row({"Robin": {"individual_ids": ["ind-robin"]}})])
-    assert wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done=set()) == []
+    assert wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done={}) == []
     assert store.get_node_by_id(walkway_day_node_id("walkway", DAY)) is None
     assert map_walkway_day_seen_to_substrate(stream_id="walkway", day=DAY, line=LINE, seen=[],
                                              observed_at=START) is None
@@ -156,7 +163,7 @@ def test_sql_runs_against_postgres():
             {"s": START, "e": START.replace(day=17), "s2": START.replace(day=17), "e2": START.replace(day=18),
              "j": json.dumps({"named": {"Sam": {"times": ["11:56"], "individual_ids": ["ind-sam-copy"]}}}), "l": LINE})
     store = _store_with(("ind-sam", "Sam"))
-    out = wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done=set(),
+    out = wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done={},
                                now=datetime(2026, 10, 18, 3, 0, tzinfo=timezone.utc))
     # only the complete day; the copied-label sighting links to the typed individual's node
     assert out == [{"day": "2026-10-16", "stream": "walkway", "people": ["Sam"], "edges": 1, "edges_created": 1}]

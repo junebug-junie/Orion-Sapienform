@@ -7,8 +7,8 @@ prints the template lines. Nothing is written.
 Checks (exit 1 on failure):
 - every day's passings equal the sum of its hours' passings, and every
   week/month's passings the sum of its days';
-- every hour the camera saw for fewer than 15 minutes reads "camera was down",
-  never "nobody passed";
+- every hour the camera saw for fewer than 15 minutes reads "camera was down"
+  (or, when sightings exist anyway, "camera record incomplete"), never "nobody passed";
 - no stationary / prop / patio / parked-repeat sighting is counted: the
   excluded tallies plus counted sightings equal the raw sightings in the window;
 - story sentences appear only when the spot-check gate passed;
@@ -50,8 +50,12 @@ def check(store: MemoryStore, stream: str) -> list[str]:
         if grain == "hour":
             cam = r["camera"]
             line = store.lines[(s, grain, start)]
-            if cam["up_minutes"] < 15 and "camera was down" not in line:
+            if cam["status"] == "down" and "camera was down" not in line:
                 fails.append(f"hour {r['label']}: camera saw {cam['up_minutes']} min but line is {line!r}")
+            if cam["up_minutes"] < 15 and cam["status"] not in ("down", "unknown"):
+                fails.append(f"hour {r['label']}: {cam['up_minutes']} camera minutes read as {cam['status']}")
+            if cam["status"] == "unknown" and "record incomplete" not in line:
+                fails.append(f"hour {r['label']}: sightings without frame record not flagged: {line!r}")
             if "nobody passed" in line and cam["status"] != "ok":
                 fails.append(f"hour {r['label']}: 'nobody passed' with camera {cam['status']}")
         else:

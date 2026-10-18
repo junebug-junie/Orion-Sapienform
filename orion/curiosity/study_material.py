@@ -650,7 +650,9 @@ class StreetDayCard:
     complete: bool
 
     def preview(self) -> str:
-        return self.line if self.complete else f"{self.line} (today, still running)"
+        # The line already says "(so far, through HH:MM)" for a running day and names
+        # missing hours ("No record ...") for an incomplete past one.
+        return self.line
 
 
 def build_street_day_card(row: Any) -> Optional[StreetDayCard]:

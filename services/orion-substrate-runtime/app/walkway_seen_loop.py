@@ -13,7 +13,8 @@ Least invasive seam: no new bus channel or schema. It reads a table the reducer
 already writes, with the store and engine this service already has. Idempotent:
 day node id from (stream, date), edge identity (source, predicate, target); a day
 already linked in this process is skipped, and a restart re-applies the same
-record harmlessly.
+record harmlessly. A day is re-linked when its set of linkable people grows (someone
+named after the first pass).
 
 Which entity nodes: every individual in the day's ``named`` entry (the rollup lists
 the individual ids carrying that name that day), plus individuals Juniper typed the
@@ -56,7 +57,7 @@ def _named(raw: Any) -> dict[str, Any]:
 
 
 def link_recent_days(*, engine: Any, store: Any, streams: tuple[str, ...], lookback_days: int,
-                     done: set, now: Optional[datetime] = None) -> list[dict[str, Any]]:
+                     done: dict, now: Optional[datetime] = None) -> list[dict[str, Any]]:
     """One pass. Returns one summary per day linked. Blocking (DB + graph)."""
     from sqlalchemy import text
 
@@ -76,8 +77,6 @@ def link_recent_days(*, engine: Any, store: Any, streams: tuple[str, ...], lookb
         for row in rows:
             day = date.fromisoformat(str(row["label"]))
             key = (row["stream_id"], day)
-            if key in done:
-                continue
             seen: list[tuple[str, str, Optional[str]]] = []
             for label, entry in _named(row["named"]).items():
                 ids = set((entry or {}).get("individual_ids") or [])
@@ -87,15 +86,20 @@ def link_recent_days(*, engine: Any, store: Any, streams: tuple[str, ...], lookb
                     nid = entity_node_id_for_individual(iid)
                     if isinstance(store.get_node_by_id(nid), EntityNodeV1):
                         seen.append((nid, label, first))
+            # Skip only when this exact set of people was already linked for the day: a person
+            # Juniper names later (a new entity node) still gets the day's link.
+            linked = frozenset(nid for nid, _, _ in seen)
+            if done.get(key) == linked:
+                continue
             record = map_walkway_day_seen_to_substrate(
                 stream_id=row["stream_id"], day=day, line=str(row["line"] or ""), seen=seen,
                 observed_at=row["period_start"] if row["period_start"].tzinfo else
                 row["period_start"].replace(tzinfo=timezone.utc))
-            done.add(key)
             if record is None:
                 continue
             result = SubstrateGraphMaterializer(
                 store=store, identity_resolver=SubstrateIdentityResolver(store=store)).apply_record(record)
+            done[key] = linked
             summary = {"day": day.isoformat(), "stream": row["stream_id"],
                        "people": sorted({label for _, label, _ in seen}), "edges": len(record.edges),
                        "edges_created": result.edges_created}
@@ -120,7 +124,7 @@ async def run_walkway_seen_loop(
     streams = tuple(s.strip() for s in str(getattr(settings, "walkway_seen_streams", "walkway")).split(",")
                     if s.strip())
     lookback = int(getattr(settings, "walkway_seen_lookback_days", 3) or 3)
-    done: set = set()
+    done: dict = {}
     logger.info("walkway_seen loop starting interval_sec=%.0f streams=%s lookback_days=%d", interval, streams, lookback)
     while stop_event is None or not stop_event.is_set():
         try:

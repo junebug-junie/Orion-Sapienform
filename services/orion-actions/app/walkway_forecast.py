@@ -22,8 +22,8 @@ behind it: the LLM turned "nothing has come back on at least 5 different days"
 into a claim about the street. Now every number a walkway entry may use is in
 its seed (the rollup's own counts for day/week/month), and ``guard_walkway_draft``
 replaces any composed entry that states a number the seed does not hold with the
-seed's plain template ``lines``. "Days watched" for the forecast comes from day
-rollups where the camera actually delivered frames, not from sightings.
+seed's plain template ``lines``. "Days watched" for the forecast counts days the
+camera actually delivered frames (scene-inventory minutes), not days with sightings.
 
 WHEN NOTHING IS WRITTEN, AND WHY. The journal has no "empty entry" shape, and a
 composed entry about nothing is exactly the empty-shell cognition AGENTS.md
@@ -113,16 +113,21 @@ ORDER BY subject_key
 """
 
 # Local days in the window on which the camera actually delivered frames for at
-# least WATCHED_MIN_UP_MINUTES (from the day rollups' camera minutes). A day with
-# the camera down is not a day "watched", whatever was or was not seen.
+# least WATCHED_MIN_UP_MINUTES: minutes with a vision_scene_inventory row (the same
+# frame heartbeat the rollups' camera minutes use, read directly so the count does
+# not depend on how far the rollups have been backfilled). A day with the camera
+# down is not a day "watched", whatever was or was not seen.
 WATCHED_MIN_UP_MINUTES = 60
 WATCH_DAYS_SQL = """
-SELECT count(*) AS days
-FROM vision_rollup
-WHERE stream_id = %(stream_id)s
-  AND grain = 'day'
-  AND period_start > now() - make_interval(days => %(days)s)
-  AND COALESCE((rollup->'camera'->>'up_minutes')::int, 0) >= %(min_up)s
+SELECT count(*) AS days FROM (
+  SELECT (observed_at AT TIME ZONE %(tz)s)::date AS d,
+         count(DISTINCT date_trunc('minute', observed_at)) AS up_minutes
+  FROM vision_scene_inventory
+  WHERE stream_id = %(stream_id)s
+    AND observed_at > now() - make_interval(days => %(days)s)
+  GROUP BY 1
+) per_day
+WHERE up_minutes >= %(min_up)s
 """
 
 # One rollup row (vision_rollup, written by orion-sql-writer).
@@ -565,7 +570,7 @@ async def collect_walkway_jobs(
     )
     watch = await fetch_rows(
         dsn, WATCH_DAYS_SQL,
-        {"stream_id": stream_id, "days": WATCH_LOOKBACK_DAYS, "min_up": WATCHED_MIN_UP_MINUTES},
+        {"stream_id": stream_id, "tz": tz_name, "days": WATCH_LOOKBACK_DAYS, "min_up": WATCHED_MIN_UP_MINUTES},
         label="walkway_watch_days",
     )
     if forecast_rows is None:

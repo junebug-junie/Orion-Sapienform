@@ -269,9 +269,23 @@ class HourInputs:
     baseline: Optional[Mapping[str, Any]] = None
 
 
+_VEHICLE_WORDS = ("vehicle", "car", "truck", "bus", "van", "motorcycle", "suv", "pickup")
+
+
 def _kind(raw: Any) -> str:
+    """Detector/individual label -> one of KINDS or "other". Compound labels from the live
+    scene counts ("mail truck", "vehicle truck", "bicycle vehicle") map by their words:
+    bicycle first (a bicycle box often also fires "vehicle"), then the vehicle words."""
     k = str(raw or "").strip().lower()
-    return k if k in KINDS else "other"
+    if k in KINDS:
+        return k
+    words = set(k.replace("_", " ").replace("-", " ").split())
+    for kind in ("bicycle", "stroller", "dog", "person"):
+        if kind in words:
+            return kind
+    if words & set(_VEHICLE_WORDS):
+        return "vehicle"
+    return "other"
 
 
 def parked_vehicle_ids(trailing: Iterable[SightingRow], min_hours: int = DEFAULT_PARKED_MIN_HOURS) -> frozenset:
@@ -308,19 +322,23 @@ def _max_peaks(rows: Iterable[Mapping[str, Any] | None]) -> dict[str, int]:
 def _peak_phrase(peaks: Mapping[str, int]) -> str:
     """"most at once 5 people" -- the kind with the highest single-window count. Vehicles are
     left out: the scene counts include parked cars, so their peak says nothing about passing."""
-    best = max(((int(v), k) for k, v in (peaks or {}).items() if int(v) > 0 and k != "vehicle"), default=None)
+    best = max(((int(v), k) for k, v in (peaks or {}).items() if int(v) > 0 and k not in ("vehicle", "other")),
+               default=None)
     if best is None:
         return ""
     n, k = best
     return f"most at once {n} {KIND_SINGULAR[k] if n == 1 else KIND_PLURAL[k]}"
 
 
-def camera_status(up: int, expected: int) -> str:
+def camera_status(up: int, expected: int, *, saw_something: bool = False) -> str:
+    """ok / partial / down from seen minutes. Too few minutes but sightings anyway is
+    "unknown": the frame record is incomplete (inventory writer behind or not yet
+    running), not a camera that was down -- something WAS seen."""
     if expected <= 0:
         return "unknown"
     scale = expected / 60.0
     if up < DOWN_MAX_MINUTES * scale:
-        return "down"
+        return "unknown" if saw_something else "down"
     if up < PARTIAL_MAX_MINUTES * scale:
         return "partial"
     return "ok"
@@ -409,7 +427,7 @@ def build_hour(inp: HourInputs, tz: ZoneInfo) -> dict[str, Any]:
             break
 
     up = max(0, min(60, int(inp.camera_minutes)))
-    status = camera_status(up, 60)
+    status = camera_status(up, 60, saw_something=bool(per_ind) or any(excluded.values()))
     rollup = {
         "schema": SCHEMA, "rules_version": RULES_VERSION, "stream_id": inp.stream_id, "grain": "hour",
         "period_start": p.start.isoformat(), "period_end": p.end.isoformat(), "label": period_label(p, tz),
@@ -551,7 +569,13 @@ def build_parent(
     regular_ids: list[str] = []
     if grain == "day":
         earlier: set[str] = set()
+        floor = period.start - timedelta(days=REGULAR_LOOKBACK_DAYS + 1)
         for h in list(history)[:REGULAR_LOOKBACK_DAYS]:
+            try:
+                if _parse(str(h.get("period_start"))) < floor:
+                    continue
+            except (TypeError, ValueError):
+                continue
             earlier.update((h.get("individuals") or {}).keys())
         regular_ids = sorted(i for i, v in ind_info.items() if not v["label"] and i in earlier)
     else:
@@ -570,7 +594,14 @@ def build_parent(
         return max(0, int((end - per.start).total_seconds() // 60))
 
     expected = sum(_expected(per, r) for per, r in covered)
-    status = camera_status(round(up * 60 / expected) if expected else 0, 60) if expected else "unknown"
+    # Status over the children that HAVE a row: a child with no row is "no record" (reducer
+    # off or behind), never "camera down". No row at all -> "missing".
+    row_expected = sum(_expected(per, r) for per, r in covered if r is not None)
+    if not rows or not row_expected:
+        status = "missing"
+    else:
+        status = camera_status(round(up * 60 / row_expected), 60,
+                               saw_something=any((r.get("total") or {}).get("sightings") for r in rows))
 
     # Per-child series: the busiest / quietest child the camera actually watched.
     series = []
@@ -609,8 +640,11 @@ def build_parent(
             out["usual"] = hour_baselines.get(int(e["hour"]))
         return out
 
-    busiest = _point(max(watched, key=lambda e: (e["passings"], e["start"]))) if watched else None
-    quietest = _point(min(watched, key=lambda e: (e["passings"], e["start"]))) if len(watched) >= 2 else None
+    # "busiest ... (0)" says nothing: only when something passed in a watched child.
+    top = max(watched, key=lambda e: (e["passings"], e["start"])) if watched else None
+    busiest = _point(top) if top and top["passings"] > 0 else None
+    quietest = (_point(min(watched, key=lambda e: (e["passings"], e["start"])))
+                if busiest and len(watched) >= 2 else None)
 
     lookback = {"day": DAY_BASELINE_DAYS, "week": WEEK_BASELINE_WEEKS, "month": MONTH_BASELINE_MONTHS}[grain]
     prior = [float((h.get("total") or {}).get("passings", 0)) for h in list(history)[:lookback]
@@ -717,6 +751,8 @@ def render_line(rollup: Mapping[str, Any]) -> str:
     if grain == "hour":
         if cam.get("status") == "down":
             return f"{head}: camera was down ({up} of {expected} minutes seen), so no count."
+        unknown_note = (f". Camera record incomplete ({up} of {expected} minutes logged), so this may be low"
+                        if cam.get("status") == "unknown" else "")
         if passings == 0:
             body = ("nobody passed" if cam.get("status") == "ok"
                     else f"nobody seen in the {up} minutes the camera was up")
@@ -731,8 +767,10 @@ def render_line(rollup: Mapping[str, Any]) -> str:
             body += f" (usual for this hour {_fmt_num(base)})"
         if cam.get("status") == "partial":
             body += f". Camera up {up} of {expected} minutes"
-        return f"{head}: {body}."
+        return f"{head}: {body}{unknown_note}."
 
+    if cam.get("status") == "missing":
+        return f"{head}: no record (nothing was counted for this period yet)."
     if expected and cam.get("status") == "down" and passings == 0:
         return f"{head}: camera was down ({_fmt_hours(up)} of {_fmt_hours(expected)} seen), so no count."
     distinct = int(total.get("distinct", 0))
@@ -805,25 +843,69 @@ _NUMBER_WORDS = {
     "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
     "hundred": 100, "dozen": 12, "dozens": 24, "twice": 2,
 }
+_MONTHS = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?"
+# Clock times, ISO dates/timestamps, "17 Oct" / "Oct 17", and years are not counts: they are
+# taken out of the prose AND the facts before numbers are compared, so a date part (17) or a
+# minute (04) can never vouch for an invented count. Times are checked separately, whole.
+_TIME_RE = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\b")
+_ISO_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}(?:[T ][\d:.]+)?(?:Z|[+-]\d{2}:?\d{2})?")
+_DAY_MONTH_RE = re.compile(rf"\b\d{{1,2}}(?:st|nd|rd|th)?\s+{_MONTHS}|\b{_MONTHS}\s+\d{{1,2}}(?:st|nd|rd|th)?\b",
+                           re.IGNORECASE)
+_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+_ISO_WEEK_RE = re.compile(r"\b\d{4}-W\d{2}\b")
 _NUM_RE = re.compile(r"\d+(?:\.\d+)?")
 _WORD_RE = re.compile(r"[a-z]+")
 
 
+def _strip_calendar(text: str) -> str:
+    for rx in (_ISO_WEEK_RE, _ISO_RE, _TIME_RE, _DAY_MONTH_RE, _YEAR_RE):
+        text = rx.sub(" ", text)
+    return text
+
+
+def _times(text: str) -> set[str]:
+    out = set()
+    for m in _TIME_RE.findall(text or ""):
+        h, mm = m.split(":")[:2]
+        out.add(f"{int(h):02d}:{mm}")
+    return out
+
+
 def allowed_numbers(facts: Any) -> set[float]:
-    """Every number that appears anywhere in ``facts`` (values, and digits inside strings)."""
+    """Counts ``facts`` vouches for: every numeric VALUE (never a key, never digits inside a
+    free string such as a timestamp or a caption), plus the numbers in its template ``lines``
+    after clock times and dates are taken out."""
     out: set[float] = set()
 
-    def walk(v: Any) -> None:
+    def walk(v: Any, key: str = "") -> None:
         if isinstance(v, bool) or v is None:
             return
         if isinstance(v, (int, float)):
             out.add(round(float(v), 1))
         elif isinstance(v, str):
-            for m in _NUM_RE.findall(v):
-                out.add(round(float(m), 1))
+            if key == "lines":
+                for m in _NUM_RE.findall(_strip_calendar(v)):
+                    out.add(round(float(m), 1))
         elif isinstance(v, Mapping):
             for k, x in v.items():
-                walk(k)
+                walk(x, str(k))
+        elif isinstance(v, (list, tuple, set)):
+            for x in v:
+                walk(x, key)
+
+    walk(facts)
+    return out
+
+
+def allowed_times(facts: Any) -> set[str]:
+    """Every clock time (HH:MM) that appears anywhere in ``facts``."""
+    out: set[str] = set()
+
+    def walk(v: Any) -> None:
+        if isinstance(v, str):
+            out.update(_times(v))
+        elif isinstance(v, Mapping):
+            for x in v.values():
                 walk(x)
         elif isinstance(v, (list, tuple, set)):
             for x in v:
@@ -834,16 +916,20 @@ def allowed_numbers(facts: Any) -> set[float]:
 
 
 def unsupported_numbers(prose: str, facts: Any) -> list[str]:
-    """Numbers in ``prose`` (digits and number words two..hundred) that ``facts`` does not hold.
+    """Counts and clock times in ``prose`` that ``facts`` does not hold.
 
-    "one" is not checked ("no one", "one of them" are not counts). An empty result means
-    every number the prose claims is backed by the rollup."""
+    Counts: digits and number words two..hundred ("one" is not checked: "no one", "one of
+    them" are not counts), after dates and times are taken out. Times: each HH:MM must be a
+    time the facts name. Empty result = every number the prose claims is backed."""
+    text = prose or ""
     allowed = allowed_numbers(facts)
-    bad: list[str] = []
-    for m in _NUM_RE.findall(prose or ""):
+    times = allowed_times(facts)
+    bad: list[str] = [t for t in sorted(_times(text)) if t not in times]
+    stripped = _strip_calendar(text)
+    for m in _NUM_RE.findall(stripped):
         if round(float(m), 1) not in allowed:
             bad.append(m)
-    for w in _WORD_RE.findall((prose or "").lower()):
+    for w in _WORD_RE.findall(stripped.lower()):
         n = _NUMBER_WORDS.get(w)
         if n is not None and float(n) not in allowed:
             bad.append(w)

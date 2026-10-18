@@ -34,6 +34,7 @@ PANELS_WITHOUT_NAV = {
 # self_observability.js) owns show/hide + hash handling instead of app.js's
 # setActiveTab. Still checked by test_every_panel_has_a_nav_entry.
 SELF_ROUTING_PANELS = {
+    "retro",               # retro-tab.js (unloads on exit to revoke controls)
     "self-observability",  # self_observability.js
     "hub-surface",         # hub_surface_tab.js
     "gpu-pool",            # gpu_pool_tab.js

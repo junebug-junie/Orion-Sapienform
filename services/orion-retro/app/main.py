@@ -150,9 +150,10 @@ def create_app(settings=None):
         if getattr(m, 'viewers', 0) >= 2:
             await ws.close(code=1008); return
         m.viewers = getattr(m, 'viewers', 0)+1
-        await ws.accept(); version = -1
-        disconnected = asyncio.create_task(ws.receive())
+        disconnected = None; version = -1
         try:
+            await ws.accept()
+            disconnected = asyncio.create_task(ws.receive())
             while m.process and m.session['session_id'] == sid and not disconnected.done():
                 if m.latest_media is not None and m.media_version != version:
                     version = m.media_version
@@ -160,9 +161,10 @@ def create_app(settings=None):
                 await asyncio.sleep(.005)
         except (WebSocketDisconnect, asyncio.TimeoutError, RuntimeError): pass
         finally:
-            disconnected.cancel()
-            await asyncio.gather(disconnected, return_exceptions=True)
-            m.viewers -= 1
+            m.viewers -= 1  # Reclaim before any cancellable cleanup await.
+            if disconnected:
+                disconnected.cancel()
+                await asyncio.gather(disconnected, return_exceptions=True)
             try: await ws.close()
             except RuntimeError: pass
     return app

@@ -40,7 +40,8 @@ before a browser can start a game. No browser-supplied principal is trusted.
 
 ## Use
 
-Open `/retro` from Hub's Retro games link. Unlock, choose Spacegulls, and start a
+Open the Retro tab from Hub's section launcher (`/#retro`). Leaving the tab
+unloads its game frame and releases control. The standalone `/retro` page also works. Unlock, choose Spacegulls, and start a
 new game. Click the screen. Arrow keys move; Z jumps/flies; X is B; Enter is Start;
 Shift is Select. The Start button also sends Start. Sound begins after a click.
 

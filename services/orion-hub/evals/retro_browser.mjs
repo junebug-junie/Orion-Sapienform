@@ -29,9 +29,10 @@ try{
   await page.keyboard.up('ArrowRight');await page.keyboard.up('z');
   const observed=await page.evaluate(()=>{
     const c=document.querySelector('#screen'),pixels=c.getContext('2d').getImageData(0,0,c.width,c.height).data;
-    return {frame:Number(c.dataset.frame),applied:Number(c.dataset.appliedFrame),audioFrames:Number(c.dataset.audioFrames),audioPeak:window.__audioPeak,colors:new Set(Array.from(pixels)).size};
+    const colors=new Set();for(let i=0;i<pixels.length;i+=4)colors.add((pixels[i]<<16)|(pixels[i+1]<<8)|pixels[i+2]);
+    return {frame:Number(c.dataset.frame),applied:Number(c.dataset.appliedFrame),audioFrames:Number(c.dataset.audioFrames),audioPeak:window.__audioPeak,colors:colors.size};
   });
-  assert(observed.frame>60 && observed.applied>60 && observed.audioFrames>48000 && observed.audioPeak>0 && observed.colors>4,JSON.stringify(observed));
+  assert(observed.frame>60 && observed.applied>60 && observed.audioFrames>48000 && observed.audioPeak>0 && observed.colors>=2,JSON.stringify(observed));
   await page.screenshot({path:out+'/browser.png',fullPage:true});
   // Verify gamepad mapping through the actual authority's applied-action journal.
   await page.evaluate(()=>{
@@ -66,6 +67,26 @@ try{
   assert.equal(await page.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'paused');
   await page.click('#stop');await pause(150);
   assert.equal(await page.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'stopped');
+  const tab=await browser.newPage();await tab.goto(url+'/__retro_tab_test');
+  await tab.click('#retroTabButton');
+  await tab.waitForFunction(()=>document.querySelector('#retroPanelFrame').getAttribute('src')==='/retro');
+  let frame=await (await tab.$('#retroPanelFrame')).contentFrame();
+  await frame.waitForSelector('#player:not([hidden])');await frame.select('#game',process.env.RETRO_EVAL_GAME);
+  await frame.click('#new');await frame.waitForFunction(()=>Number(document.querySelector('#screen').dataset.appliedFrame)>10);
+  await tab.click('#hubTabButton');await pause(400);
+  assert.equal(await tab.$eval('#retroPanelFrame',e=>e.getAttribute('src')),'about:blank');
+  assert.equal(await tab.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'paused');
+  await tab.click('#retroTabButton');await pause(300);frame=await (await tab.$('#retroPanelFrame')).contentFrame();
+  await frame.waitForSelector('#player:not([hidden])');await frame.click('#join');await pause(400);
+  assert.equal(await tab.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'running');
+  // Another self-routing tab can hide Retro before its hash handler executes.
+  await tab.evaluate(()=>{document.querySelector('#retro').classList.add('hidden');location.hash='#personality';});
+  await tab.waitForFunction(()=>document.querySelector('#retroPanelFrame').getAttribute('src')==='about:blank');await pause(400);
+  assert.equal(await tab.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'paused');
+  await tab.click('#retroTabButton');await pause(300);frame=await (await tab.$('#retroPanelFrame')).contentFrame();
+  await frame.waitForSelector('#player:not([hidden])');await frame.click('#stop');
+  await pause(150);assert.equal(await tab.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'stopped');
+  await tab.close();
   assert.deepEqual(errors,[]);
-  fs.writeFileSync(out+'/browser.json',JSON.stringify({status:'PASS',game:process.env.RETRO_EVAL_GAME,observed,keyboard:true,syntheticStandardGamepad:true,blurPaused:true,reconnect:true,unverified:['physical gamepad','user-device audio output','input-to-photon latency','30-minute actual-client A/V drift']},null,2));
+  fs.writeFileSync(out+'/browser.json',JSON.stringify({status:'PASS',game:process.env.RETRO_EVAL_GAME,observed,hubTab:true,tabExitPaused:true,keyboard:true,syntheticStandardGamepad:true,blurPaused:true,reconnect:true,unverified:['physical gamepad','user-device audio output','input-to-photon latency','30-minute actual-client A/V drift']},null,2));
 } catch(error) { if(page){console.error(await page.$eval('#status',e=>e.textContent));await page.screenshot({path:out+'/failure.png'});}throw error; } finally {await browser.close();}

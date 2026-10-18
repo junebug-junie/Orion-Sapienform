@@ -28,6 +28,17 @@ def proxy(output, port):
     config=SimpleNamespace(HUB_RETRO_ENABLED=True,HUB_RETRO_ORIGIN=f'http://127.0.0.1:{port}',
         HUB_RETRO_AUTH_DIR=str(output/'auth'),HUB_RETRO_SOCKET=str(output/'ipc/retro.sock'))
     app=FastAPI();app.include_router(mod.create_router(config));app.mount('/static',StaticFiles(directory=hub/'static'))
+    @app.get('/__retro_tab_test')
+    async def tab_fixture():
+        # Use the actual template fragments and tab asset; omit unrelated telemetry.
+        import re
+        from fastapi.responses import HTMLResponse
+        html=(hub/'templates/index.html').read_text()
+        retro=re.search(r'<a id="retroTabButton".*?</a>',html,re.S).group()
+        home=re.search(r'<a\s+id="hubTabButton".*?</a>',html,re.S).group()
+        panel=re.search(r'<section id="retro".*?</section>',html,re.S).group()
+        return HTMLResponse('<!doctype html><style>.hidden{display:none}iframe{width:100%;height:1200px}</style>'+retro+home+
+            '<div id="appPanels">'+panel+'</div><script src="/static/js/retro-tab.js" defer></script>')
     uvicorn.run(app,host='127.0.0.1',port=port,log_level='warning')
 
 

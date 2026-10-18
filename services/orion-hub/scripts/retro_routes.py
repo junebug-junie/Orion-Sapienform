@@ -138,9 +138,9 @@ def create_router(config):
                     await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
         except (aiohttp.ClientError, OSError, asyncio.TimeoutError, RuntimeError): pass
         finally:
+            sockets.discard(ws)
             for task in tasks: task.cancel()
             if tasks: await asyncio.gather(*tasks,return_exceptions=True)
-            sockets.discard(ws)
             try: await ws.close()
             except RuntimeError: pass
     return router

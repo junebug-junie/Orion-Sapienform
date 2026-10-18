@@ -132,3 +132,16 @@ def test_template_mounts_the_panel_under_the_live_picture_and_loads_the_script()
     assert html.index('id="walkwayHistoryTabs"') < html.index('id="walkwayHistoryList"')
     assert '<script src="/static/js/walkway-history.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>' in html
     assert (HUB_ROOT / "static" / "js" / "walkway-history.js").is_file()
+
+
+def test_hub_card_gate_and_the_rollup_gate_are_the_same_gate() -> None:
+    """The Hub card keeps its own copy of the spot-check gate; the rollups read
+    orion/vision/motion_story_gate.py. They must never disagree on when stories reach Orion."""
+    from orion.vision import motion_story_gate as shared
+    from scripts import motion_story_routes as card
+
+    assert (card.GATE_MIN_CHECKED, card.GATE_MIN_RIGHT, card.GATE_MAX_WRONG_NAMES, card.VERDICTS, card.CANT_TELL) == (
+        shared.GATE_MIN_CHECKED, shared.GATE_MIN_RIGHT, shared.GATE_MAX_WRONG_NAMES, shared.VERDICTS, shared.CANT_TELL)
+    for counts in ({}, {"right": 49}, {"right": 40, "wrong_motion": 10}, {"right": 49, "wrong_name": 1},
+                   {"right": 2, "cant_tell": 5}, {"right": 39, "wrong_other": 11}):
+        assert card.tally_from_counts(counts, 1, 3) == shared.tally_from_counts(counts, 1, 3), counts

@@ -13,7 +13,9 @@ The tally counts one rules version at a time (the newest one with published
 clean stories): a verdict on old rules never vouches for new ones. "Can't tell"
 verdicts are never right and never wrong.
 
-Pure: callers run their own SQL and pass the counts in.
+Pure: callers run their own SQL and pass the counts in. The Hub card still holds its own
+copy (left in place so concurrent Hub work does not conflict);
+``services/orion-hub/tests/test_walkway_rollup_routes.py`` fails if the two ever disagree.
 """
 
 from __future__ import annotations

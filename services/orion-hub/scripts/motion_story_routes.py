@@ -60,17 +60,11 @@ logger = logging.getLogger("orion-hub.motion_stories")
 
 router = APIRouter(tags=["motion-stories"])
 
-# The gate itself lives in orion/vision/motion_story_gate.py: the walkway rollups
-# (orion-sql-writer) read the same answer to decide whether stories may reach Orion.
-from orion.vision.motion_story_gate import (  # noqa: E402 -- re-exported for callers/tests
-    CANT_TELL,
-    GATE_MAX_WRONG_NAMES,
-    GATE_MIN_CHECKED,
-    GATE_MIN_RIGHT,
-    VERDICTS,
-    tally_from_counts,
-)
-
+GATE_MIN_CHECKED = 50
+GATE_MIN_RIGHT = 0.80
+GATE_MAX_WRONG_NAMES = 0
+VERDICTS = ("right", "wrong_name", "wrong_motion", "wrong_other")
+CANT_TELL = "cant_tell"
 MAX_LIST = 50
 _STORY_ID_RE = re.compile(r"[0-9a-f]{32}")
 # The only file names sql-writer writes into a strip directory.
@@ -114,6 +108,29 @@ _NOT_CHECKABLE_SQL = (
 
 class VerdictBody(BaseModel):
     verdict: Literal["right", "wrong_name", "wrong_motion", "wrong_other", "cant_tell"]
+
+
+def tally_from_counts(counts: dict[str, int], named_checked: int, rules_version: int | None) -> dict[str, Any]:
+    checked = sum(counts.get(v, 0) for v in VERDICTS)
+    right = counts.get("right", 0)
+    wrong_names = counts.get("wrong_name", 0)
+    pct = right / checked if checked else None
+    passed = (checked >= GATE_MIN_CHECKED and pct is not None and pct >= GATE_MIN_RIGHT
+              and wrong_names <= GATE_MAX_WRONG_NAMES)
+    return {
+        "rules_version": rules_version,
+        "checked": checked,
+        "right": right,
+        "wrong_name": wrong_names,
+        "wrong_motion": counts.get("wrong_motion", 0),
+        "wrong_other": counts.get("wrong_other", 0),
+        "named_checked": named_checked,
+        # Juniper could not judge these (no picture, too dark): never right, never wrong.
+        "cant_tell": counts.get(CANT_TELL, 0),
+        "pct_right": round(pct, 4) if pct is not None else None,
+        "gate": {"min_checked": GATE_MIN_CHECKED, "min_right": GATE_MIN_RIGHT,
+                 "max_wrong_names": GATE_MAX_WRONG_NAMES, "passed": passed},
+    }
 
 
 async def _tally(conn: Any) -> dict[str, Any]:

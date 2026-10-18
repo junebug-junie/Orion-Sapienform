@@ -72,4 +72,12 @@ live and verified.
 ## In progress
 
 - Walkway rollups by hour, day, week and month (Juniper, 2026-10-18) — the first fix for
-  "Memory and the day letter" and the named-people links. Link its PR here when merged.
+  "Memory and the day letter" and the named-people links:
+  [PR #2755](https://github.com/junebug-junie/Orion-Sapienform/pull/2755). Wires the day letter,
+  curiosity study material, nightly/weekly/monthly journal (with an anti-invention guard), a Hub
+  "Walkway history" panel, and `observed_in` day links for named people. Attention, episodes and
+  dreams untouched. Known limit: people are over-counted (the individuals reducer splits one
+  person into several clusters), so passings are an upper bound and rows also store "most at once".
+- Story-card naming joined to recognition:
+  [PR #2753](https://github.com/junebug-junie/Orion-Sapienform/pull/2753) (motion stories still
+  Hub-only until the spot-check gate passes).

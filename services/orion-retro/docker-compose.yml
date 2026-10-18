@@ -1,0 +1,38 @@
+services:
+  retro:
+    container_name: orion-athena-retro
+    build:
+      context: ../..
+      dockerfile: services/orion-retro/Dockerfile
+    restart: unless-stopped
+    init: true
+    user: "${RETRO_UID:-1000}:${RETRO_GID:-1000}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 2
+    ulimits:
+      core: 0
+      fsize: 268435456
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+    environment:
+      RETRO_ENABLED: ${RETRO_ENABLED:-false}
+    network_mode: none
+    volumes:
+      - ${RETRO_SOCKET_DIR:?private socket directory required}:/ipc
+      - ${RETRO_CATALOG_DIR:?local catalog required}:/catalog:ro
+      - ${RETRO_EVIDENCE_DIR:?local evidence required}:/evidence
+      - ${RETRO_TOKEN_FILE:?operator credential required}:/run/secrets/retro_operator:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    healthcheck:
+      test: [CMD, python, -m, app.health]
+      interval: 15s
+      timeout: 3s
+      retries: 3

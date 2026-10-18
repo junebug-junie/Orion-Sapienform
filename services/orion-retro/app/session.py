@@ -1,0 +1,160 @@
+"""Async API-side lifecycle. All native calls stay in the spawned child."""
+import asyncio
+from collections import deque
+import hashlib
+import json
+import multiprocessing as mp
+from pathlib import Path
+import queue
+import time
+import uuid
+from .worker import run
+
+
+class Sessions:
+    def __init__(self, settings):
+        self.settings = settings
+        self.generation = str(uuid.uuid4())
+        self.catalog = {}; self.session = None; self.process = None
+        self.pending = {}; self.connections = set(); self.history = deque(maxlen=256)
+        self.requests = {}; self.task = None; self.stopping = False
+        self.settings.artifacts.mkdir(parents=True, exist_ok=True)
+        self.status_path = self.settings.artifacts/'status.json'
+        if self.status_path.exists():
+            self.session = json.loads(self.status_path.read_text())
+            if self.session['state'] in ('starting', 'running', 'paused'):
+                self.session.update(state='failed', reason='service_restart')
+                self.persist()
+        catalog = json.loads(settings.catalog.read_text())
+        if not isinstance(catalog, list) or not 1 <= len(catalog) <= 16:
+            raise ValueError('catalog must contain 1..16 games')
+        for item in catalog:
+            if set(item) != {'game_id','title','file','rom_sha256','ports','provenance'}:
+                raise ValueError('invalid catalog fields')
+            from .contracts import Start
+            Start(game_id=item['game_id'], idempotency_key='catalog')
+            path = (settings.catalog.parent/item['file']).resolve(strict=True)
+            if not path.is_relative_to(settings.catalog.parent.resolve()) or path.suffix != '.nes':
+                raise ValueError('ROM must be inside mounted catalog')
+            if not 0 < path.stat().st_size <= 32*1024*1024:
+                raise ValueError('invalid ROM size')
+            if hashlib.sha256(path.read_bytes()).hexdigest() != item['rom_sha256']:
+                raise ValueError('ROM digest mismatch')
+            if item['ports'] not in ([0], [0,1]) or item['game_id'] in self.catalog:
+                raise ValueError('invalid ports or duplicate game')
+            if not isinstance(item['title'], str) or len(item['title']) > 128:
+                raise ValueError('invalid title')
+            self.catalog[item['game_id']] = dict(item, path=path)
+        if not settings.core.is_file(): raise ValueError('core missing')
+
+    def games(self):
+        return [dict(game_id=v['game_id'], title=v['title'], ports=v['ports'],
+                     rom_sha256=v['rom_sha256'], save_enabled=False)
+                for v in self.catalog.values()]
+
+    def persist(self):
+        tmp = self.status_path.with_suffix('.tmp')
+        tmp.write_text(json.dumps(self.session)+'\n')
+        tmp.replace(self.status_path)
+
+    async def start(self, game_id, key):
+        if key in self.requests:
+            old_game, old_id = self.requests[key]
+            if old_game != game_id: raise ValueError('idempotency_conflict')
+            return {'session_id': old_id}
+        if game_id not in self.catalog: raise ValueError('unknown_game')
+        if self.process is not None or self.stopping: raise ValueError('session_active')
+        if len(self.requests) >= 256: raise ValueError('idempotency_capacity_restart_required')
+        ctx = mp.get_context('spawn')
+        self.commands = ctx.Queue(32); self.urgent = ctx.Queue(8); self.replies = ctx.Queue(128); self.stop_event = ctx.Event()
+        sid = str(uuid.uuid4())
+        self.session = dict(session_id=sid, generation=self.generation, state='starting',
+                            game_id=game_id, frame=0, owner='operator', save_enabled=False)
+        self.persist(); self.history.clear()
+        self.process = ctx.Process(target=run, args=(self.commands,self.urgent,self.replies,self.stop_event,
+                            self.settings,self.catalog[game_id],sid,self.generation), daemon=True)
+        self.process.start(); self.requests[key] = (game_id, sid)
+        self.task = asyncio.create_task(self.monitor())
+        return dict(self.session)
+
+    async def monitor(self):
+        last = time.monotonic(); started = last; ready = False
+        try:
+            while self.process:
+                for _ in range(128):
+                    try: row = self.replies.get_nowait()
+                    except queue.Empty: break
+                    last = time.monotonic(); kind = row['kind']
+                    if kind == 'reply':
+                        future = self.pending.pop(row['id'], None)
+                        if future and not future.done(): future.set_result(row)
+                        if 'frame' in row.get('result', {}): self.history.append(row['result'])
+                    elif kind == 'ready':
+                        ready = True; self.session.update(state='running', identity=row['identity'], runtime_sha256=row['runtime_sha256'], fps=row['fps'])
+                        self.persist()
+                    elif kind == 'status':
+                        self.session.update({k:v for k,v in row.items() if k!='kind'})
+                    elif kind == 'fatal':
+                        await self.stop('failed', row['error'], from_monitor=True); return
+                if not self.process.is_alive():
+                    await self.stop('failed', 'worker_exited', from_monitor=True); return
+                if time.monotonic()-(last if ready else started) > (1 if ready else 10):
+                    await self.stop('failed', 'worker_timeout', from_monitor=True); return
+                await asyncio.sleep(.005)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            await self.stop('failed', 'monitor_failure', from_monitor=True)
+
+    async def command(self, op, connection='', data=None):
+        if not self.process or self.stopping or len(self.pending) >= 24: raise ValueError('unavailable_or_busy')
+        rid = str(uuid.uuid4()); future = asyncio.get_running_loop().create_future()
+        self.pending[rid] = future
+        try:
+            pipe = self.commands if op == 'input' else self.urgent
+            pipe.put_nowait(dict(id=rid, op=op, connection=connection, data=data or {}, received_at=time.monotonic()))
+            row = await asyncio.wait_for(future, .75)
+            if 'error' in row: raise ValueError(row['error'])
+            if 'state' in row['result']:
+                self.session['state'] = row['result']['state']; self.persist()
+            return row['result']
+        except (asyncio.TimeoutError, queue.Full):
+            await self.stop('failed', 'command_timeout_or_overload')
+            raise ValueError('worker_unavailable')
+        finally:
+            self.pending.pop(rid, None)
+
+    async def stop(self, state='stopped', reason='operator_stop', from_monitor=False):
+        process, self.process = self.process, None
+        if not process: return
+        self.stopping = True
+        if self.task and not from_monitor: self.task.cancel()
+        self.stop_event.set()
+        await asyncio.to_thread(process.join, .3)
+        if process.is_alive():
+            process.terminate(); await asyncio.to_thread(process.join, .3)
+        if process.is_alive():
+            process.kill(); await asyncio.to_thread(process.join, .3)
+        for future in self.pending.values():
+            if not future.done(): future.set_result({'error':'session_stopped'})
+        self.pending.clear(); self.connections.clear()
+        self.commands.cancel_join_thread(); self.commands.close()
+        self.urgent.cancel_join_thread(); self.urgent.close()
+        self.replies.cancel_join_thread(); self.replies.close()
+        self.session.update(state=state, reason=reason)
+        try:
+            self.persist()
+        finally:
+            self.stopping = False
+
+    async def disconnect(self, connection, sid, generation):
+        owned = connection in self.connections
+        self.connections.discard(connection)
+        if (owned and self.process and self.session and self.session['session_id'] == sid
+                and self.generation == generation):
+            try: await self.command('disconnect', connection)
+            except ValueError: pass
+
+    def require(self, sid):
+        if not self.session or self.session['session_id'] != sid:
+            raise ValueError('unknown_session')

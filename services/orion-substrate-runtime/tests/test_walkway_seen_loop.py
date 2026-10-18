@@ -28,7 +28,7 @@ import app.walkway_seen_loop as wsl
 
 DAY = date(2026, 10, 16)
 START = datetime(2026, 10, 16, 6, 0, tzinfo=timezone.utc)
-LINE = "Walkway Fri 16 Oct 2026: 309 passings; named: Teddy (13:33, 18:26), Esme (11:56)."
+LINE = "Walkway Fri 16 Oct 2026: 309 passings; named: Robin (13:33, 18:26), Sam (11:56)."
 
 
 def _store_with(*named: tuple[str, str]) -> InMemorySubstrateGraphStore:
@@ -83,21 +83,21 @@ def _day_row(named):
 
 
 def test_links_existing_named_entities_to_one_day_node_and_is_idempotent():
-    store = _store_with(("ind-teddy", "Teddy"), ("ind-esme", "Esme"))
-    named = {"Teddy": {"times": ["13:33", "18:26"], "individual_ids": ["ind-teddy"]},
+    store = _store_with(("ind-robin", "Robin"), ("ind-sam", "Sam"))
+    named = {"Robin": {"times": ["13:33", "18:26"], "individual_ids": ["ind-robin"]},
              # a copied-label individual has no entity node; its typed twin does
-             "Esme": {"times": ["11:56"], "individual_ids": ["ind-esme-copy"]},
+             "Sam": {"times": ["11:56"], "individual_ids": ["ind-sam-copy"]},
              "Nobody Named Yet": {"times": ["09:00"], "individual_ids": ["ind-unanswered"]}}
-    engine = _Engine([_day_row(named)], typed={"Esme": ["ind-esme"]})
+    engine = _Engine([_day_row(named)], typed={"Sam": ["ind-sam"]})
     done: set = set()
     out = wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done=done)
-    assert out == [{"day": "2026-10-16", "stream": "walkway", "people": ["Esme", "Teddy"], "edges": 2,
+    assert out == [{"day": "2026-10-16", "stream": "walkway", "people": ["Robin", "Sam"], "edges": 2,
                     "edges_created": 2}]
     day_node = store.get_node_by_id(walkway_day_node_id("walkway", DAY))
     assert isinstance(day_node, EventNodeV1) and day_node.summary == LINE
     # no entity node is created for an individual Juniper never named through an ask
     assert store.get_node_by_id(entity_node_id_for_individual("ind-unanswered")) is None
-    assert store.get_node_by_id(entity_node_id_for_individual("ind-esme-copy")) is None
+    assert store.get_node_by_id(entity_node_id_for_individual("ind-sam-copy")) is None
     # same process: the day is skipped; a fresh process (restart) re-applies harmlessly
     assert wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done=done) == []
     again = wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done=set())
@@ -106,7 +106,7 @@ def test_links_existing_named_entities_to_one_day_node_and_is_idempotent():
 
 def test_no_named_person_with_an_entity_means_no_record():
     store = _store_with()
-    engine = _Engine([_day_row({"Teddy": {"individual_ids": ["ind-teddy"]}})])
+    engine = _Engine([_day_row({"Robin": {"individual_ids": ["ind-robin"]}})])
     assert wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done=set()) == []
     assert store.get_node_by_id(walkway_day_node_id("walkway", DAY)) is None
     assert map_walkway_day_seen_to_substrate(stream_id="walkway", day=DAY, line=LINE, seen=[],
@@ -115,10 +115,10 @@ def test_no_named_person_with_an_entity_means_no_record():
 
 def test_edges_are_observed_in_from_entity_to_the_day_with_deterministic_ids():
     rec = map_walkway_day_seen_to_substrate(
-        stream_id="walkway", day=DAY, line=LINE, seen=[("entity:vision_individual:abc", "Teddy", "13:33")],
+        stream_id="walkway", day=DAY, line=LINE, seen=[("entity:vision_individual:abc", "Robin", "13:33")],
         observed_at=START)
     rec2 = map_walkway_day_seen_to_substrate(
-        stream_id="walkway", day=DAY, line=LINE, seen=[("entity:vision_individual:abc", "Teddy", "13:33")],
+        stream_id="walkway", day=DAY, line=LINE, seen=[("entity:vision_individual:abc", "Robin", "13:33")],
         observed_at=START)
     (edge,) = rec.edges
     assert edge.predicate == "observed_in" and edge.source.node_kind == "entity"
@@ -138,8 +138,8 @@ def test_sql_runs_against_postgres():
         conn.execute(text("DROP TABLE IF EXISTS vision_rollup, vision_individual CASCADE"))
         conn.execute(text("CREATE TABLE vision_individual (individual_id TEXT PRIMARY KEY, stream_id TEXT, "
                           "label TEXT, label_copied BOOLEAN NOT NULL DEFAULT false)"))
-        conn.execute(text("INSERT INTO vision_individual VALUES ('ind-esme','walkway','Esme',false), "
-                          "('ind-esme-copy','walkway','Esme',true)"))
+        conn.execute(text("INSERT INTO vision_individual VALUES ('ind-sam','walkway','Sam',false), "
+                          "('ind-sam-copy','walkway','Sam',true)"))
     from pathlib import Path
 
     sql = (Path(__file__).resolve().parents[3] / "services/orion-sql-db/manual_migration_vision_rollup_v1.sql").read_text()
@@ -150,10 +150,10 @@ def test_sql_runs_against_postgres():
             "VALUES ('walkway','day',:s,:e,'2026-10-16',true,CAST(:j AS jsonb),:l), "
             "('walkway','day',:s2,:e2,'2026-10-17',false,'{}','partial')"),
             {"s": START, "e": START.replace(day=17), "s2": START.replace(day=17), "e2": START.replace(day=18),
-             "j": json.dumps({"named": {"Esme": {"times": ["11:56"], "individual_ids": ["ind-esme-copy"]}}}), "l": LINE})
-    store = _store_with(("ind-esme", "Esme"))
+             "j": json.dumps({"named": {"Sam": {"times": ["11:56"], "individual_ids": ["ind-sam-copy"]}}}), "l": LINE})
+    store = _store_with(("ind-sam", "Sam"))
     out = wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done=set(),
                                now=datetime(2026, 10, 18, 3, 0, tzinfo=timezone.utc))
     # only the complete day; the copied-label sighting links to the typed individual's node
-    assert out == [{"day": "2026-10-16", "stream": "walkway", "people": ["Esme"], "edges": 1, "edges_created": 1}]
+    assert out == [{"day": "2026-10-16", "stream": "walkway", "people": ["Sam"], "edges": 1, "edges_created": 1}]
     engine.dispose()

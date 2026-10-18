@@ -111,9 +111,9 @@ def test_camera_down_hour_never_reads_nobody_came():
 
 def test_named_people_get_their_times_and_unnamed_do_not():
     t = utc(2026, 10, 17, 21, 0)  # 15:00 MDT
-    r = hour(t, [sight("m", t + timedelta(minutes=12), label="Maeve"), sight("x", t + timedelta(minutes=13))])
-    assert r["named"] == {"Maeve": {"times": ["15:12"], "sightings": 1, "individual_ids": ["m"]}}
-    assert "Maeve at 15:12" in wr.render_line(r)
+    r = hour(t, [sight("m", t + timedelta(minutes=12), label="Alex"), sight("x", t + timedelta(minutes=13))])
+    assert r["named"] == {"Alex": {"times": ["15:12"], "sightings": 1, "individual_ids": ["m"]}}
+    assert "Alex at 15:12" in wr.render_line(r)
 
 
 def test_captions_are_distinct_capped_and_stories_hidden_until_the_gate_passes():
@@ -171,9 +171,9 @@ def test_regulars_need_an_earlier_day_and_never_include_named():
     d = date(2026, 10, 16)
     children = _day_rows(d, lambda i: ["r1", "n1", "new"] if i == 9 else [])
     children[9] = (children[9][0], hour(children[9][0].start, [
-        sight("r1", children[9][0].start), sight("n1", children[9][0].start, label="Teddy"),
+        sight("r1", children[9][0].start), sight("n1", children[9][0].start, label="Robin"),
         sight("new", children[9][0].start)]))
-    yesterday = {"individuals": {"r1": {"kind": "person"}, "n1": {"kind": "person", "label": "Teddy"}}}
+    yesterday = {"individuals": {"r1": {"kind": "person"}, "n1": {"kind": "person", "label": "Robin"}}}
     day = wr.build_parent("walkway", wr.day_period(d, TZ), children, TZ, history=[yesterday])
     assert day["regulars"] == {"count": 1, "by_kind": {"person": 1}, "ids": ["r1"]}
 
@@ -228,6 +228,7 @@ class FakeReader:
     def __init__(self, sightings, minutes, cursor, gate=None):
         self._s, self._m, self._c = sightings, minutes, cursor
         self._gate = gate or {"checked": 0, "gate": {"passed": False}}
+        self._peak_hours = {k for k, v in minutes.items() if v and k.astimezone(TZ).hour in (8, 17)}
 
     def cursor(self, stream_id):
         return self._c
@@ -237,6 +238,9 @@ class FakeReader:
 
     def camera_minutes(self, stream_id, lo, hi):
         return {k: v for k, v in self._m.items() if lo <= k < hi}
+
+    def peaks(self, stream_id, lo, hi):
+        return {k: {"person": 2} for k in self._m if lo <= k < hi and k in self._peak_hours}
 
     def captions(self, stream_id, lo, hi):
         return []
@@ -286,6 +290,8 @@ def test_engine_builds_in_order_and_every_grain_agrees():
     # By Saturday the 08:00 hour has an hourly "usual" from earlier days.
     sat8 = store.rows[("walkway", "hour", wr.local_midnight(date(2026, 10, 17), TZ) + timedelta(hours=8))]
     assert sat8["baseline"]["mean_passings"] == 2.0
+    assert sat8["peak_at_once"] == {"person": 2}
+    assert "most at once 2 people" in store.lines[("walkway", "hour", sat8 and wr._parse(sat8["period_start"]))]
     assert sat["regulars"]["ids"] == ["regular"]
 
 
@@ -323,7 +329,8 @@ CREATE TABLE vision_individual (individual_id TEXT PRIMARY KEY, stream_id TEXT, 
 CREATE TABLE vision_individual_sighting (sighting_id TEXT PRIMARY KEY, individual_id TEXT, stream_id TEXT,
     started_at TIMESTAMPTZ, zone_no_embed BOOLEAN NOT NULL DEFAULT false, stationary BOOLEAN NOT NULL DEFAULT false);
 CREATE TABLE vision_individuals_cursor (stream_id TEXT PRIMARY KEY, last_created_at TIMESTAMPTZ);
-CREATE TABLE vision_scene_inventory (window_id TEXT PRIMARY KEY, stream_id TEXT, observed_at TIMESTAMPTZ);
+CREATE TABLE vision_scene_inventory (window_id TEXT PRIMARY KEY, stream_id TEXT, observed_at TIMESTAMPTZ,
+    counts JSONB NOT NULL DEFAULT '{}'::jsonb);
 CREATE TABLE vision_events (event_id TEXT PRIMARY KEY, event_type TEXT, narrative TEXT, tags JSONB,
     created_at TIMESTAMPTZ, stream_id TEXT);
 """
@@ -351,7 +358,7 @@ def test_postgres_path_writes_rows_reads_them_back_and_is_idempotent(pg):
     now = utc(2026, 10, 18, 3, 30)
     day0 = wr.local_midnight(date(2026, 10, 17), TZ)
     with pg.begin() as conn:
-        conn.execute(text("INSERT INTO vision_individual VALUES ('m','walkway','person','Maeve',false), "
+        conn.execute(text("INSERT INTO vision_individual VALUES ('m','walkway','person','Alex',false), "
                           "('x','walkway','dog',NULL,false), ('car','walkway','vehicle',NULL,true)"))
         for i, (iid, h) in enumerate([("m", 8), ("x", 8), ("m", 17), ("car", 9)]):
             conn.execute(text("INSERT INTO vision_individual_sighting VALUES (:s, :i, 'walkway', :t, false, false)"),
@@ -360,8 +367,10 @@ def test_postgres_path_writes_rows_reads_them_back_and_is_idempotent(pg):
         while t < now:
             if t.astimezone(TZ).hour != 3:
                 for m in range(0, 60, 1):
-                    conn.execute(text("INSERT INTO vision_scene_inventory VALUES (:w, 'walkway', :t)"),
-                                 {"w": f"w{t.isoformat()}{m}", "t": t + timedelta(minutes=m, seconds=7)})
+                    conn.execute(text("INSERT INTO vision_scene_inventory VALUES (:w, 'walkway', :t, CAST(:c AS jsonb))"),
+                                 {"w": f"w{t.isoformat()}{m}", "t": t + timedelta(minutes=m, seconds=7),
+                                  "c": '{"person": 2, "dog": 1}' if (t.astimezone(TZ).hour == 8 and m == 5)
+                                  else ('{"vehicle": 1}' if m == 30 else '{}')})
             t += timedelta(hours=1)
         conn.execute(text("INSERT INTO vision_individuals_cursor VALUES ('walkway', :t)"), {"t": now})
         conn.execute(text("INSERT INTO vision_events VALUES ('c1','camera_caption','A dog on a leash.', "
@@ -378,9 +387,12 @@ def test_postgres_path_writes_rows_reads_them_back_and_is_idempotent(pg):
         n1 = conn.execute(text("SELECT count(*) FROM vision_rollup")).scalar()
         day = conn.execute(text("SELECT rollup, line, complete FROM vision_rollup WHERE grain='day'")).one()
     assert day.complete is False
-    assert day.rollup["total"]["passings"] == 3 and day.rollup["named"]["Maeve"]["times"] == ["08:05", "17:05"]
+    assert day.rollup["total"]["passings"] == 3 and day.rollup["named"]["Alex"]["times"] == ["08:05", "17:05"]
     assert day.rollup["excluded"]["stationary"] == 1
     assert day.rollup["captions"][0]["text"] == "A dog on a leash."
+    assert day.rollup["peak_at_once"] == {"person": 2, "dog": 1, "vehicle": 1}
+    assert day.rollup["busiest"]["at"] == "08:00" and day.rollup["busiest"]["peak_at_once"]["person"] == 2
+    assert "busiest 08:00 (2, most at once 2 people)" in day.line
     assert "so far, through 21:00" in day.line and "No record" not in day.line
     assert "Camera down" in day.line and "03:00–04:00" in day.line
     run_one_rollup_cycle(postgres_uri=PG, cfg=cfg, now=now, since=day0)

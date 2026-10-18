@@ -33,7 +33,7 @@ def _row(grain="day", gate=False):
     rollup = {
         "total": {"passings": 185, "distinct": 93, "sightings": 400},
         "kinds": {"person": {"passings": 105, "distinct": 50, "sightings": 200}},
-        "named": {"Maeve": {"times": ["15:31"], "sightings": 2, "individual_ids": ["secret-ind"]}},
+        "named": {"Alex": {"times": ["15:31"], "sightings": 2, "individual_ids": ["secret-ind"]}},
         "individuals": {"secret-ind": {"kind": "person"}},
         "regulars": {"count": 3, "by_kind": {"person": 3}, "ids": ["secret-reg"]},
         "camera": {"up_minutes": 1212, "expected_minutes": 1440, "status": "ok", "down_spans": ["13:00–14:00"]},

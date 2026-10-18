@@ -32,6 +32,13 @@ What is counted (and what is not):
     different clock hours of the trailing 24 h. Its first appearances count; a
     car that keeps reappearing all day is a parked car the stationary rule
     missed (live 2026-10-16: one vehicle individual, 54 sightings in a day).
+* **Passings are an upper bound.** The individuals reducer can split one person
+  into several appearance clusters (live 2026-10-16 12:00 MDT: 79 person
+  clusters in one hour while no frame held more than 5 people). So every hour
+  also records ``peak_at_once``: the most of each kind detected in a single
+  vision window (``vision_scene_inventory.counts``) -- a lower bound from a
+  different producer than the sightings. The two together bracket the truth;
+  lines show both for the busiest hour.
 * **Camera minutes** come from ``vision_scene_inventory``: one row per vision
   window, written whether or not anything was seen, so a minute with no row is a
   minute the camera did not deliver frames. An hour the camera saw for fewer
@@ -253,6 +260,7 @@ class HourInputs:
     period: Period
     sightings: Sequence[SightingRow] = ()
     camera_minutes: int = 0
+    peak_at_once: Mapping[str, int] = field(default_factory=dict)
     captions: Sequence[CaptionRow] = ()
     stories: Sequence[StoryRow] = ()
     story_gate: Mapping[str, Any] = field(default_factory=dict)
@@ -274,6 +282,37 @@ def parked_vehicle_ids(trailing: Iterable[SightingRow], min_hours: int = DEFAULT
             continue
         hours.setdefault(s.individual_id, set()).add(hour_period(s.started_at).start)
     return frozenset(i for i, h in hours.items() if len(h) >= max(1, int(min_hours)))
+
+
+def _peaks(raw: Mapping[str, Any] | None) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for k, v in (raw or {}).items():
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            continue
+        kind = _kind(k)
+        if n > out.get(kind, 0):
+            out[kind] = n
+    return out
+
+
+def _max_peaks(rows: Iterable[Mapping[str, Any] | None]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for r in rows:
+        for k, v in ((r or {}).get("peak_at_once") or {}).items():
+            out[k] = max(out.get(k, 0), int(v))
+    return out
+
+
+def _peak_phrase(peaks: Mapping[str, int]) -> str:
+    """"most at once 5 people" -- the kind with the highest single-window count. Vehicles are
+    left out: the scene counts include parked cars, so their peak says nothing about passing."""
+    best = max(((int(v), k) for k, v in (peaks or {}).items() if int(v) > 0 and k != "vehicle"), default=None)
+    if best is None:
+        return ""
+    n, k = best
+    return f"most at once {n} {KIND_SINGULAR[k] if n == 1 else KIND_PLURAL[k]}"
 
 
 def camera_status(up: int, expected: int) -> str:
@@ -376,6 +415,7 @@ def build_hour(inp: HourInputs, tz: ZoneInfo) -> dict[str, Any]:
         "period_start": p.start.isoformat(), "period_end": p.end.isoformat(), "label": period_label(p, tz),
         "tz": tz.key, "local": local_fields(p, tz), "complete": True,
         "kinds": kinds, "total": _totals(kinds), "excluded": excluded,
+        "peak_at_once": _peaks(inp.peak_at_once),
         "named": named, "individuals": individuals,
         "camera": {"up_minutes": up, "expected_minutes": 60, "status": status,
                    "down_spans": [f"{hhmm(p.start, tz)}–{hhmm(p.end, tz)}"] if status == "down" else []},
@@ -543,6 +583,7 @@ def build_parent(
             "up_minutes": int(cam.get("up_minutes", 0)),
             "expected_minutes": _expected(per, r),
             "status": cam.get("status") if r is not None else "missing",
+            "peak_at_once": dict((r or {}).get("peak_at_once") or {}),
         }
         if per.grain == "hour":
             entry["hour"] = per.start.astimezone(tz).hour
@@ -563,7 +604,7 @@ def build_parent(
     def _point(e: Optional[Mapping[str, Any]]) -> Optional[dict[str, Any]]:
         if e is None:
             return None
-        out = {"at": e["at"], "passings": e["passings"]}
+        out = {"at": e["at"], "passings": e["passings"], "peak_at_once": e.get("peak_at_once") or {}}
         if grain == "day":
             out["usual"] = hour_baselines.get(int(e["hour"]))
         return out
@@ -618,6 +659,7 @@ def build_parent(
         "complete": bool(complete),
         "covered_until": (min(covered_until, period.end) if covered_until else period.end).isoformat(),
         "kinds": kinds, "total": _totals(kinds), "excluded": excluded,
+        "peak_at_once": _max_peaks(rows),
         "named": named_out, individuals_key: ind_out,
         "regulars": {"count": len(regular_ids), "by_kind": reg_by_kind, "ids": regular_ids},
         "camera": {"up_minutes": up, "expected_minutes": expected, "status": status,
@@ -679,7 +721,8 @@ def render_line(rollup: Mapping[str, Any]) -> str:
             body = ("nobody passed" if cam.get("status") == "ok"
                     else f"nobody seen in the {up} minutes the camera was up")
         else:
-            body = f"{passings} passing ({_count_phrase(rollup.get('kinds') or {})})"
+            peak = _peak_phrase(rollup.get("peak_at_once") or {})
+            body = f"{passings} passing ({_count_phrase(rollup.get('kinds') or {})}{'; ' + peak if peak else ''})"
         named = rollup.get("named") or {}
         if named:
             body += "; " + ", ".join(f"{name} at {', '.join(v.get('times') or [])}" for name, v in named.items())
@@ -716,6 +759,9 @@ def render_line(rollup: Mapping[str, Any]) -> str:
         s = f"busiest {_at_words(b['at'], grain)} ({b['passings']}"
         if grain == "day" and b.get("usual") is not None:
             s += f", usual {_fmt_num(b['usual'])}"
+        peak = _peak_phrase(b.get("peak_at_once") or {})
+        if peak:
+            s += f", {peak}"
         s += ")"
         if q and q["at"] != b["at"]:
             s += f", quietest {_at_words(q['at'], grain)} ({q['passings']}"

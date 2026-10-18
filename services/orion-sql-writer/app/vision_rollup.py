@@ -85,6 +85,7 @@ class Reader(Protocol):
     def cursor(self, stream_id: str) -> Optional[datetime]: ...
     def sightings(self, stream_id: str, lo: datetime, hi: datetime) -> List[SightingRow]: ...
     def camera_minutes(self, stream_id: str, lo: datetime, hi: datetime) -> Dict[datetime, int]: ...
+    def peaks(self, stream_id: str, lo: datetime, hi: datetime) -> Dict[datetime, Dict[str, int]]: ...
     def captions(self, stream_id: str, lo: datetime, hi: datetime) -> List[CaptionRow]: ...
     def story_gate(self) -> Dict[str, Any]: ...
     def stories(self, stream_id: str, lo: datetime, hi: datetime, rules_version: Optional[int]) -> List[StoryRow]: ...
@@ -137,6 +138,7 @@ def _hour_baseline(store: Store, stream_id: str, hour: Period, tz: ZoneInfo) -> 
 class _Raw:
     sightings: List[SightingRow]
     minutes: Dict[datetime, int]
+    peaks: Dict[datetime, Dict[str, int]]
     captions: List[CaptionRow]
     stories: List[StoryRow]
 
@@ -151,6 +153,7 @@ def build_hours(reader: Reader, store: Store, stream_id: str, hours: Sequence[Pe
             stream_id=stream_id, period=h,
             sightings=[s for s in trailing if h.start <= s.started_at < h.end],
             camera_minutes=raw.minutes.get(h.start, 0),
+            peak_at_once=raw.peaks.get(h.start, {}),
             captions=[c for c in raw.captions if h.start <= c.created_at < h.end],
             stories=[s for s in raw.stories if h.start <= s.started_at < h.end],
             story_gate=gate,
@@ -222,11 +225,12 @@ def refresh_stream(reader: Reader, store: Store, stream_id: str, now: datetime, 
         raw = _Raw(
             sightings=reader.sightings(stream_id, lo - timedelta(hours=24), hi),
             minutes=reader.camera_minutes(stream_id, lo, hi),
+            peaks=reader.peaks(stream_id, lo, hi),
             captions=reader.captions(stream_id, lo, hi),
             stories=(reader.stories(stream_id, lo, hi, gate.get("rules_version")) if gate_passed(gate) else []),
         )
     else:
-        raw = _Raw([], {}, [], [])
+        raw = _Raw([], {}, {}, [], [])
     by_date: Dict[date, List[Period]] = {}
     for h in todo:
         by_date.setdefault(local_date(h.start, tz), []).append(h)
@@ -297,6 +301,20 @@ class DbReader:
             "FROM vision_scene_inventory WHERE stream_id = :s AND observed_at >= :lo AND observed_at < :hi "
             "GROUP BY 1", {"s": stream_id, "lo": lo, "hi": hi})
         return {r["h"].replace(tzinfo=timezone.utc): int(r["n"]) for r in rows}
+
+    def peaks(self, stream_id: str, lo: datetime, hi: datetime) -> Dict[datetime, Dict[str, int]]:
+        """Most of each detector label in one vision window, per hour (a lower bound on how
+        many were there; the sightings' passings are the upper bound)."""
+        rows = self._rows(
+            "SELECT date_trunc('hour', v.observed_at AT TIME ZONE 'UTC') AS h, c.key AS kind, "
+            "max((c.value #>> '{}')::numeric) AS n "
+            "FROM vision_scene_inventory v, jsonb_each(v.counts) c "
+            "WHERE v.stream_id = :s AND v.observed_at >= :lo AND v.observed_at < :hi "
+            "AND jsonb_typeof(c.value) = 'number' GROUP BY 1, 2", {"s": stream_id, "lo": lo, "hi": hi})
+        out: Dict[datetime, Dict[str, int]] = {}
+        for r in rows:
+            out.setdefault(r["h"].replace(tzinfo=timezone.utc), {})[str(r["kind"])] = int(r["n"])
+        return out
 
     def captions(self, stream_id: str, lo: datetime, hi: datetime) -> List[CaptionRow]:
         from orion.situational.street_material import CAMERA_CAPTION_EVENT_TYPE, detector_labels_from_tags

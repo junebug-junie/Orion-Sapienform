@@ -254,7 +254,7 @@ def _rollup_row(grain: str = "day", passings: int = 185) -> dict:
         "complete": False, "covered_until": "2026-09-25T04:00:00+00:00",
         "total": {"passings": passings, "distinct": 93, "sightings": 400},
         "kinds": {"person": {"passings": 105, "distinct": 50, "sightings": 200}},
-        "named": {"Maeve": {"times": ["15:31"], "sightings": 2, "individual_ids": ["secret-id"]}},
+        "named": {"Alex": {"times": ["15:31"], "sightings": 2, "individual_ids": ["secret-id"]}},
         "individuals": {"secret-id": {"kind": "person"}},
         "regulars": {"count": 3, "by_kind": {"person": 3}, "ids": ["x"]},
         "camera": {"up_minutes": 1212, "expected_minutes": 1320, "status": "ok", "down_spans": ["13:00–14:00"]},
@@ -305,7 +305,7 @@ def test_guard_replaces_prose_with_an_invented_number_and_keeps_honest_prose() -
     seed = wf.build_rollup_seed("walkway_day", _rollup_row())
     trigger = wf.build_walkway_trigger("walkway_day", seed, stream_id="walkway")
     honest = JournalEntryDraftV1(mode="digest", title="The street today",
-                                 body="185 passings today, Maeve at 15:31; the camera was down 13:00–14:00.")
+                                 body="185 passings today, Alex at 15:31; the camera was down 13:00–14:00.")
     kept, bad = wf.guard_walkway_draft(honest, trigger)
     assert bad == [] and kept.body == honest.body
     invented = JournalEntryDraftV1(mode="digest", title="Five quiet stretches",

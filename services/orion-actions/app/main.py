@@ -51,7 +51,7 @@ from orion.metacog.self_signal_episode import trigger_wants_prose
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from .capability_gap_journal import build_daily_seed_payload, collect_capability_gaps
 from .perception_gap_journal import collect_perception_gaps
-from .walkway_forecast import collect_walkway_jobs, run_walkway_tick
+from .walkway_forecast import collect_walkway_jobs, guard_walkway_draft, run_walkway_tick
 from .world_pulse_journal import handle_world_pulse_run_result_journal, submit_durable_run_via_cortex
 from .logic import (
     ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
@@ -1458,6 +1458,8 @@ async def lifespan(app: FastAPI):
         if not orch_payload.get("ok", False):
             raise RuntimeError(f"journal_compose_failed:{orch_payload.get('error') or orch_payload.get('status')}")
         draft = draft_from_cortex_result(orch_payload)
+        # Walkway entries may phrase the rollup, never invent numbers (walkway_forecast.py).
+        draft, _walkway_unsupported = guard_walkway_draft(draft, trigger)
         write = build_write_payload(
             draft,
             trigger=trigger,
@@ -2491,9 +2493,10 @@ async def lifespan(app: FastAPI):
                     and settings.actions_journaling_enabled
                     and walkway_should_run
                 ):
-                    # Nightly: grade today's walkway expectations, then forecast
-                    # tomorrow's (app/walkway_forecast.py). Zero, one, or two
-                    # entries -- never one about nothing. Own try so a read
+                    # Nightly: today's walkway day rollup (plus week on Sunday,
+                    # month on its last day), grade today's expectations, then
+                    # forecast tomorrow's (app/walkway_forecast.py). Never an
+                    # entry about nothing. Own try so a read
                     # failure cannot cost the daily journal below it.
                     walkway_corr = str(uuid4())
 

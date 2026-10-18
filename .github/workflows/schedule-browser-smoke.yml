@@ -34,3 +34,8 @@ jobs:
           set -o pipefail
           pytest -q -rs services/orion-hub/tests/test_walkway_stories_browser_smoke.py | tee walkway_stories_smoke.out
           if grep -q "SKIPPED" walkway_stories_smoke.out; then echo "walkway stories smoke skipped -- playwright missing" >&2; exit 1; fi
+      - name: Run "Walkway history" panel browser smoke (360 px)
+        run: |
+          set -o pipefail
+          pytest -q -rs services/orion-hub/tests/test_walkway_history_browser_smoke.py | tee walkway_history_smoke.out
+          if grep -q "SKIPPED" walkway_history_smoke.out; then echo "walkway history smoke skipped -- playwright missing" >&2; exit 1; fi

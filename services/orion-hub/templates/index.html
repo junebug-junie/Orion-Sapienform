@@ -725,6 +725,19 @@
           <div id="walkwayStoriesStatus" class="text-[11px] text-gray-500">Loading walkway stories…</div>
           <div id="walkwayStoriesList" class="space-y-2 max-h-[40rem] overflow-y-auto pr-1"></div>
         </div>
+        <!-- Walkway history (walkway rollups, 2026-10-18): shown under the live picture
+             only while "Walkway (live)" is selected. Deterministic counts by hour, day,
+             week and month from orion-sql-writer (vision_rollup); hours the camera was
+             down say so. GET /api/vision/rollups (scripts/walkway_rollup_routes.py);
+             wired by static/js/walkway-history.js. -->
+        <div id="walkwayHistoryCard" class="hidden rounded-lg border border-gray-700 bg-gray-900 p-3 space-y-2">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h3 class="text-sm font-semibold text-white">Walkway history</h3>
+            <div id="walkwayHistoryTabs" role="tablist" class="flex flex-wrap gap-2"></div>
+          </div>
+          <div id="walkwayHistoryStatus" class="text-[11px] text-gray-500">Loading walkway history…</div>
+          <div id="walkwayHistoryList" class="space-y-2 max-h-[32rem] overflow-y-auto pr-1"></div>
+        </div>
       </div>
 
       <!-- ✅ ADDED: Vision pop-out container (hidden; does not change layout) -->
@@ -4408,6 +4421,7 @@
   <script src="/static/js/carbon-affect-snapshot.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/vision-live-frame.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/walkway-stories.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/walkway-history.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/vision-asks.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/thought-process.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>

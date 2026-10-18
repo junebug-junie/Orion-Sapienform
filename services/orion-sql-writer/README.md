@@ -690,6 +690,38 @@ read-only.
   (saved vs frame_gone) and scene contrast by verdict, to re-check 0.10
   once Juniper has used "Can't tell".
 
+### Walkway rollups by hour, day, week and month (2026-10-18)
+
+`orion/vision/walkway_rollup.py` (pure) + `app/vision_rollup.py` (reads, build
+order, writes) + `app/vision_rollup_loop.py` (clocked, every
+`VISION_ROLLUP_INTERVAL_SEC`, default 300 s; work first, then sleep). Deterministic,
+no model. Design: `docs/superpowers/plans/2026-10-18-walkway-rollups-design.md`.
+
+- One `vision_rollup` row per (stream, grain, period): `rollup` (JSON,
+  `vision_rollup.v1`) + `line` (one plain sentence). Hours close as they end;
+  days are built from their hour rows, weeks (Mon-Sun) and months from day rows,
+  so totals always agree. Local time `VISION_LOCAL_TZ`; DST days have 23/25 hours.
+- A **passing** is one individual seen in one clock hour (sightings, not crops).
+  Not counted, tallied under `excluded`: stationary sightings/individuals,
+  `VISION_MOTION_PROP_INDIVIDUAL_IDS`, no-embed zones, and vehicles seen in
+  `VISION_ROLLUP_PARKED_MIN_HOURS` (4) or more hours of the trailing 24 h.
+- **Camera minutes** = minutes with a `vision_scene_inventory` row. An hour with
+  fewer than 15 seen minutes reads "camera was down", never "nobody passed"; a
+  child period with no row reads "No record".
+- An hour is built only once the individuals reducer's cursor is past its end
+  (+60 s) and it has been closed for 120 s. The newest 3 closed hours are rebuilt
+  every tick (sightings keep growing); missing hours are filled back
+  `VISION_ROLLUP_CATCHUP_HOURS` (48).
+- Story sentences appear only when Juniper's motion-story spot-check gate passed
+  (`orion/vision/motion_story_gate.py`, shared with the Hub card).
+- Migration `services/orion-sql-db/manual_migration_vision_rollup_v1.sql`
+  (auto-applies on pull). Kill switch: `VISION_ROLLUP_ENABLED=false`.
+- Trace: `[VISION_ROLLUP] tick_complete {... hours, days, weeks, months, ready_until, story_gate_passed}`.
+- Readers: orion-actions walkway journal, day letter, curiosity study material,
+  Hub "Walkway history" panel, orion-substrate-runtime "seen on <day>" links.
+- Backfill (dry run by default): `PYTHONPATH=. python scripts/backfill_vision_rollups.py --days 7 [--apply]`.
+- Replay (read only): `PYTHONPATH=. python services/orion-sql-writer/evals/run_vision_rollup_replay_eval.py --days 3`.
+
 ## Storage-write organ (2026-10-02)
 
 The writer reports on its own writes (`app/write_health.py`). Every incoming write ends in one

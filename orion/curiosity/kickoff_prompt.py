@@ -316,7 +316,23 @@ def _material_section(material: StudyMaterial) -> list[str]:
 
     lines += _unresolved_section(material)
     lines += _street_captions_section(material)
+    lines += _street_day_section(material)
     return lines
+
+
+def _street_day_section(material: StudyMaterial) -> list[str]:
+    """The walkway over its newest day, as code counted it (2026-10-18). Nothing when absent."""
+    card = material.street_day
+    if card is None:
+        return []
+    return [
+        f"THE STREET OVER A WHOLE DAY ({card.stream_id or 'walkway'} camera, {card.day}; counted by code from "
+        "sightings, not written by a model, not a caption). Hours the camera was down are named as down, "
+        "not as empty. Here as the world outside, not as a task.",
+        "",
+        f"  - {card.preview()}",
+        "",
+    ]
 
 
 def _unresolved_section(material: StudyMaterial) -> list[str]:

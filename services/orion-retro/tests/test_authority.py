@@ -208,7 +208,7 @@ def test_lost_worker_ack_is_unknown_not_a_definite_rejection(tmp_path):
         with c.websocket_connect('/sessions/'+sid+'/input',headers={'Authorization':'Bearer '+'a'*48}) as ws:
             ws.receive_json()
             ws.send_json(dict(version=1,session_id=sid,generation=generation,lease='a'*48,epoch=1,seq=1,port=0,mask=256))
-            assert ws.receive_json()=={'unknown':'worker_unavailable'}
+            assert ws.receive_json()=={'unknown':'worker_unavailable','seq':1,'epoch':1,'port':0}
 
 
 def test_hub_credential_cannot_access_operator_session(tmp_path):

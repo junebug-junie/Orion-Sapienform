@@ -95,3 +95,13 @@ def test_pause_resume_allows_reacquisition_after_neutral_frame(monkeypatch,tmp_p
             send('control','again','two',dict(port=1,action='acquire'))
     rows,_=exercise(monkeypatch,tmp_path,scenario,tick=tick)
     assert 'result' in next(r for r in rows if r.get('id')=='after')
+
+
+def test_old_unleased_disconnect_cannot_cancel_resume_grace(monkeypatch,tmp_path):
+    def scenario(row,send):
+        if row['kind']=='ready':send('resume','resume')
+        elif row.get('id')=='resume':send('disconnect','old-close','expired-connection')
+        elif row.get('id')=='old-close':send('control','new-grant','new-connection',dict(port=0,action='acquire'))
+    rows,_=exercise(monkeypatch,tmp_path,scenario,initial=False)
+    assert next(r for r in rows if r.get('id')=='old-close')['result']['state']=='running'
+    assert 'result' in next(r for r in rows if r.get('id')=='new-grant')

@@ -133,7 +133,7 @@ def create_app(settings=None):
                     reason = str(exc)[:200]
                     # A lost reply cannot prove that the native frame never ran.
                     verdict = 'unknown' if reason in ('worker_unavailable', 'session_stopped') else 'rejected'
-                    await send({verdict:reason})
+                    await send({verdict:reason, 'seq':data['seq'], 'epoch':data['epoch'], 'port':data['port']})
         except (WebSocketDisconnect, asyncio.TimeoutError, RuntimeError):
             pass
         finally:

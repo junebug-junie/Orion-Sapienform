@@ -72,7 +72,7 @@ def run(args):
                 if httpx.get(f'http://127.0.0.1:{port}/retro').status_code==200:break
             except httpx.TransportError:pass
             time.sleep(.1)
-        env=dict(os.environ,RETRO_EVAL_URL=f'http://127.0.0.1:{port}',RETRO_EVAL_OUTPUT=str(output),RETRO_EVAL_GAME=args.game,RETRO_EVAL_SECONDS=str(args.seconds))
+        env=dict(os.environ,RETRO_EVAL_URL=f'http://127.0.0.1:{port}',RETRO_EVAL_OUTPUT=str(output),RETRO_EVAL_GAME=args.game,RETRO_EVAL_SECONDS=str(args.seconds),RETRO_ACK_DELAY_MS=str(args.ack_delay_ms))
         subprocess.run(['node',str(Path(__file__).with_suffix('.mjs'))],env=env,check=True)
         print('PASS',output/'browser.json')
     finally:
@@ -84,6 +84,7 @@ def run(args):
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True)
     p.add_argument('--image',default='orion-retro-retro');p.add_argument('--catalog',type=Path)
+    p.add_argument('--ack-delay-ms',type=int,default=0)
     p.add_argument('--game',default='pad-lab');p.add_argument('--seconds',type=int,default=8)
     p.add_argument('--proxy',action='store_true');p.add_argument('--port',type=int)
     a=p.parse_args()

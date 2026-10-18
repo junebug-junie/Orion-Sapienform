@@ -2,7 +2,8 @@
 (() => {
   'use strict';
   const el = id => document.getElementById(id), screen = el('screen'), ctx = screen.getContext('2d');
-  let sid, generation, connection, lease, input, media, seq = 0, timer, busy = false;
+  let sid, generation, connection, lease, input, media, seq = 0, timer;
+  const outstanding = new Map();
   let audio, gain, audioEnd = 0, lastSample = null, decoding = false, pendingPacket = null, transportEpoch = 0;
   const keys = new Set(), sources = new Set();
   const bits = {ArrowUp:16, ArrowDown:32, ArrowLeft:64, ArrowRight:128, KeyZ:256, KeyX:1, Enter:8, ShiftLeft:4, ShiftRight:4};
@@ -17,7 +18,7 @@
     gain.gain.value=el('mute').checked?0:1; await audio.resume();
   }
   function closeConnections() {
-    transportEpoch++; clearInterval(timer); keys.clear(); lease=null; busy=false;
+    transportEpoch++; clearInterval(timer); keys.clear(); lease=null; outstanding.clear();
     if (input) { input.onclose=null; input.close(); } if (media) { media.onclose=null; media.close(); }
     input=null;media=null; pendingPacket=null; flushAudio();
   }
@@ -35,18 +36,35 @@
     if((m&48)===48)m&=~48;if((m&192)===192)m&=~192;return m;
   }
   function send() {
-    if(!lease || busy || input?.readyState!==WebSocket.OPEN)return;
-    busy=true;input.send(JSON.stringify({version:1,session_id:sid,generation,...lease,seq:++seq,mask:mask()}));
+    if(!lease || input?.readyState!==WebSocket.OPEN)return;
+    if(outstanding.size>=24 || input.bufferedAmount>4096 ||
+        (outstanding.size && performance.now()-outstanding.values().next().value>1000)){
+      neutral();report('Connection stalled. Use Connect / resume.');return;
+    }
+    outstanding.set(seq+1,performance.now());input.send(JSON.stringify({version:1,session_id:sid,generation,...lease,seq:++seq,mask:mask()}));
   }
   async function grant(action='acquire') {
     const epoch=transportEpoch;
     const result=await api(`sessions/${sid}/control`,{connection_id:connection,port:Number(el('port').value),action});
     if(epoch!==transportEpoch || document.hidden)return;
     lease=result;
-    seq=0; busy=false;clearInterval(timer);timer=setInterval(send,50);send();screen.focus();
+    seq=0; outstanding.clear();clearInterval(timer);timer=setInterval(send,50);send();screen.focus();
   }
   const wsURL = path => `${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/retro/${path}`;
   async function connect() {
+    // An open input socket can be resumed directly. Replacing it races its old
+    // disconnect against the resume and can interrupt another controller.
+    if(input?.readyState===WebSocket.OPEN && connection){
+      const epoch=transportEpoch;await sound();
+      if(epoch!==transportEpoch || document.hidden)return;
+      const status=await api(`sessions/${sid}`);
+      if(epoch!==transportEpoch || document.hidden)return;
+      if(status.state!=='running'){lease=null;outstanding.clear();clearInterval(timer);}
+      await api(`sessions/${sid}/resume`,{});
+      if(epoch!==transportEpoch || document.hidden)return;
+      if(!lease)await grant();else screen.focus();
+      report('Connected.');return;
+    }
     closeConnections(); const epoch=transportEpoch; await sound();
     if(epoch!==transportEpoch || document.hidden)return;
     if(!sid) { const state=await api('health/ready');sid=state.session?.session_id; }
@@ -61,7 +79,12 @@
       const msg=JSON.parse(e.data);
       if(msg.connection_id) { connection=msg.connection_id;generation=msg.generation;
         try { await grant(); } catch(err) {report(err.message+' — choose another player or take this controller.');}
-      } else {busy=false;if(msg.applied){screen.dataset.appliedFrame=msg.applied.frame;}else {lease=null;clearInterval(timer);report(msg.rejected||msg.unknown||'Controller unavailable');}}
+      } else if(msg.applied){
+        if(!lease || msg.applied.epoch!==lease.epoch || msg.applied.port!==lease.port)return;
+        outstanding.delete(msg.applied.seq);screen.dataset.appliedFrame=msg.applied.frame;
+      } else {if(msg.epoch!==undefined && (!lease || msg.epoch!==lease.epoch || msg.port!==lease.port))return;
+        lease=null;outstanding.clear();clearInterval(timer);report('Control interrupted: '+(msg.rejected||msg.unknown||'connection unavailable')+'. Use Connect / resume.');}
+
     };
     media=new WebSocket(wsURL(`sessions/${sid}/media`)); media.binaryType='arraybuffer';
     media.onclose=()=>{if(epoch===transportEpoch){neutral();report('Video connection closed. Use Connect / resume.');}};
@@ -117,7 +140,7 @@
   action('logout',async()=>{neutral();await api('logout',{});el('player').hidden=true;el('login').hidden=false;});
   el('mute').onchange=()=>{if(gain)gain.gain.value=el('mute').checked?0:1;};
   el('port').onchange=neutral;
-  screen.addEventListener('keydown',e=>{if(bits[e.code]){e.preventDefault();keys.add(e.code);send();}});
+  screen.addEventListener('keydown',e=>{if(bits[e.code]){e.preventDefault();if(!keys.has(e.code)){keys.add(e.code);send();}}});
   window.addEventListener('keyup',e=>{keys.delete(e.code);send();});
   window.addEventListener('blur',neutral);window.addEventListener('pagehide',neutral);window.addEventListener('gamepaddisconnected',neutral);
   document.addEventListener('visibilitychange',()=>{if(document.hidden)neutral();});

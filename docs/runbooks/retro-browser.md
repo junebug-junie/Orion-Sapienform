@@ -109,3 +109,18 @@ full P2 performance qualification.
 Disable: set `HUB_RETRO_ENABLED=false` and recreate Hub through the wrapper. This
 closes browser sockets; lease expiry pauses play. Preserve catalog and evidence.
 Do not remove operator artifacts or downgrade to a save-capable core implicitly.
+
+### Input latency and reconnect regression
+
+Inputs are sent every 50 ms independently of acknowledgment arrival. A browser
+allows at most 24 outstanding inputs, 4 KiB of WebSocket send buffering, and one
+second without acknowledgment of its oldest input; crossing a bound releases
+control. The server's 250 ms input expiry remains unchanged. Negative replies for
+validated input include port/epoch/sequence so old replies cannot clear a newer
+lease. Repeated Connect / resume reuses an open input connection. An expired,
+unleased connection closing does not cancel another connection's resume grace.
+
+The browser eval's `--ack-delay-ms 350` variant reproduces the original stall with
+the old client. The corrected client continues applying input; deliberately
+suppressing every acknowledgment still stops play within the bounded window.
+This checks delayed replies, not arbitrary network loss or user-device latency.

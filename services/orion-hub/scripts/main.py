@@ -1782,6 +1782,8 @@ async def shutdown_event() -> None:
 # 🔗 API Routes + WebSockets + Static Files
 # ───────────────────────────────────────────────────────────────
 
+from scripts.retro_routes import configured_router as retro_router
+app.include_router(retro_router())
 app.include_router(api_router)
 app.include_router(memory_router)
 app.include_router(crystallization_router)

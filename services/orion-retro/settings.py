@@ -11,6 +11,7 @@ class Settings:
     artifacts: Path = Path('/evidence')
     core: Path = Path('/opt/retro/core.so')
     token_file: Path = Path('/run/secrets/retro_operator')
+    hub_token_file: Path = Path('/run/secrets/retro_hub')
     session_bytes: int = 268435456
     total_bytes: int = 2147483648
 

@@ -195,7 +195,7 @@ def test_lost_worker_ack_is_unknown_not_a_definite_rejection(tmp_path):
     cfg=settings(tmp_path)
     sid=str(uuid.uuid4());generation=str(uuid.uuid4())
     class Manager:
-        session={'session_id':sid};process=True;connections=set()
+        session={'session_id':sid,'owner':'operator'};process=True;connections=set()
         async def command(self,*args):
             # The native frame may have run; its acknowledgment was lost.
             raise ValueError('worker_unavailable')
@@ -209,3 +209,38 @@ def test_lost_worker_ack_is_unknown_not_a_definite_rejection(tmp_path):
             ws.receive_json()
             ws.send_json(dict(version=1,session_id=sid,generation=generation,lease='a'*48,epoch=1,seq=1,port=0,mask=256))
             assert ws.receive_json()=={'unknown':'worker_unavailable'}
+
+
+def test_hub_credential_cannot_access_operator_session(tmp_path):
+    from dataclasses import replace
+    cfg=settings(tmp_path);hub=tmp_path/'hub.token';hub.write_text('b'*48)
+    app=create_app(replace(cfg,hub_token_file=hub))
+    class Manager:
+        session={'session_id':'a'*36,'owner':'operator'}
+        def require(self,sid):pass
+        async def stop(self,**kwargs):pass
+    with TestClient(app) as c:
+        app.state.manager=Manager()
+        assert c.get('/sessions/'+'a'*36,headers={'Authorization':'Bearer '+'b'*48}).status_code==403
+        assert c.get('/sessions/'+'a'*36,headers={'Authorization':'Bearer '+'a'*48}).status_code==200
+        assert c.get('/health/ready',headers={'Authorization':'Bearer '+'b'*48}).json()['session'] is None
+
+
+def test_paused_viewer_disconnect_releases_capacity(tmp_path):
+    import time
+    cfg=settings(tmp_path)
+    class Manager:
+        session={'session_id':'a'*36,'owner':'operator'};process=True
+        latest_media=None;media_version=0;viewers=0
+        def require(self,sid):pass
+        async def stop(self,**kwargs):pass
+    m=Manager();app=create_app(cfg)
+    with TestClient(app) as c:
+        app.state.manager=m
+        for _ in range(3):
+            with c.websocket_connect('/sessions/'+'a'*36+'/media',headers={'Authorization':'Bearer '+'a'*48}):
+                assert m.viewers==1
+            for _ in range(20):
+                if m.viewers==0:break
+                time.sleep(.01)
+            assert m.viewers==0

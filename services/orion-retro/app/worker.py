@@ -4,17 +4,18 @@ from pathlib import Path
 import queue
 import time
 from orion.retro.probe import CoreProbe
+from .media import MediaProbe
 from .control import Arbiter
 from .evidence import Evidence
 
 
-def run(commands, urgent, replies, stop, settings, game, session, generation):
+def run(commands, urgent, replies, stop, settings, game, session, generation, media=None):
     core = evidence = None
     state = 'starting'; frame = 0
     def send(row):
         replies.put_nowait(row)  # backpressure is fatal, never unbounded
     try:
-        core = CoreProbe(settings.core, game['path'])
+        core = (MediaProbe if media is not None else CoreProbe)(settings.core, game['path'])
         evidence = Evidence(settings.artifacts, session, settings.session_bytes, settings.total_bytes)
         authority = Arbiter(game['ports'])
         def record(kind, **fields):
@@ -81,6 +82,7 @@ def run(commands, urgent, replies, stop, settings, game, session, generation):
             if state == 'running':
                 masks, applied, neutral = authority.frame(time.monotonic())
                 core.step(*masks); frame += 1
+                if media is not None: core.publish(media, frame)
                 if neutral: record('neutral', ports=neutral)
                 if not authority.leases and (neutral or time.monotonic() >= acquire_deadline):
                     state = 'paused'

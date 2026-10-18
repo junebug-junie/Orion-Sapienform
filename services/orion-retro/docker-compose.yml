@@ -29,6 +29,7 @@ services:
       - ${RETRO_CATALOG_DIR:?local catalog required}:/catalog:ro
       - ${RETRO_EVIDENCE_DIR:?local evidence required}:/evidence
       - ${RETRO_TOKEN_FILE:?operator credential required}:/run/secrets/retro_operator:ro
+      - ${RETRO_HUB_TOKEN_FILE:-/dev/null}:/run/secrets/retro_hub:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m
     healthcheck:

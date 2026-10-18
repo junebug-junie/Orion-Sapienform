@@ -5,6 +5,11 @@ on:
       - 'orion/retro/**'
       - 'tests/retro/**'
       - 'services/orion-retro/**'
+      - 'services/orion-hub/scripts/retro_routes.py'
+      - 'services/orion-hub/static/js/retro-panel.js'
+      - 'services/orion-hub/templates/retro.html'
+      - 'services/orion-hub/tests/retro/**'
+      - 'services/orion-hub/evals/retro_browser*'
       - '.github/workflows/retro-preflight.yml'
   push:
     branches: [main]
@@ -12,6 +17,11 @@ on:
       - 'orion/retro/**'
       - 'tests/retro/**'
       - 'services/orion-retro/**'
+      - 'services/orion-hub/scripts/retro_routes.py'
+      - 'services/orion-hub/static/js/retro-panel.js'
+      - 'services/orion-hub/templates/retro.html'
+      - 'services/orion-hub/tests/retro/**'
+      - 'services/orion-hub/evals/retro_browser*'
       - '.github/workflows/retro-preflight.yml'
 permissions:
   contents: read
@@ -24,8 +34,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python -m pip install pytest==9.1.1 PyYAML==6.0.2 httpx==0.28.1 -r services/orion-retro/requirements.txt
+      - run: python -m pip install pytest==9.1.1 PyYAML==6.0.2 httpx==0.28.1 aiohttp==3.12.15 -r services/orion-retro/requirements.txt
       - run: python -m pytest tests/retro services/orion-retro/tests -q
+      - run: python -m pytest services/orion-hub/tests/retro -q
       - run: python -m orion.retro.preflight --help
   real-nes-core:
     runs-on: ubuntu-latest
@@ -66,7 +77,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install PyYAML==6.0.2 -r services/orion-retro/requirements.txt
+      - run: python -m pip install PyYAML==6.0.2 aiohttp==3.12.15 -r services/orion-retro/requirements.txt
       - name: Build service through repository wrapper
         run: |
           touch .env
@@ -82,6 +93,12 @@ jobs:
           scripts/safe_docker_build.sh orion-retro build
       - name: Real service API, lifecycle failures and offline boundary
         run: PYTHONPATH=. python services/orion-retro/evals/container_smoke.py --output /tmp/retro-service-ci
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci --prefix services/orion-hub
+      - name: Browser controls, real native media, blur and reconnect
+        run: PYTHONPATH=. python services/orion-hub/evals/retro_browser.py --output /tmp/retro-browser-ci
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -89,3 +106,5 @@ jobs:
           path: |
             /tmp/retro-service-ci/result.json
             /tmp/retro-service-ci/container.json
+            /tmp/retro-browser-ci/browser.json
+            /tmp/retro-browser-ci/browser.png

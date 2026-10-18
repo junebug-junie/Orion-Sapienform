@@ -30,6 +30,11 @@ _VALID_HDBSCAN_METRICS = frozenset(
 
 
 class Settings(BaseSettings):
+    HUB_RETRO_ENABLED: bool = False
+    HUB_RETRO_ORIGIN: str = ""
+    HUB_RETRO_SOCKET: str = "/run/orion-retro/retro.sock"
+    HUB_RETRO_AUTH_DIR: str = "/run/orion-retro-auth"
+
     """Configuration for the Orion Hub service, loaded from environment variables."""
 
     model_config = SettingsConfigDict(

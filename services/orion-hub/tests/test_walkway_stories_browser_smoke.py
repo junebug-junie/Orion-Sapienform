@@ -213,6 +213,7 @@ def test_walkway_story_people_can_be_named_or_corrected_browser_smoke():
                   display_sentence="Alex walked left to right, over 5 s (3 detections).", display_name="Alex",
                   name_source="rule", people=[_person("ind-alex", label="Alex", label_copied=True)])
     posts: list[tuple[str, str, dict]] = []
+    lists: list[str] = []
 
     def handle(route):
         url = route.request.url
@@ -226,6 +227,7 @@ def test_walkway_story_people_can_be_named_or_corrected_browser_smoke():
                 return route.fulfill(body=f.read_bytes(), content_type=ctype)
             return route.fulfill(status=404, body="")
         if path == "/api/vision/motion-stories":
+            lists.append(url)
             return route.fulfill(body=json.dumps({"ok": True, "stories": [anon, alex], "tally": _tally(1, 1)}),
                                  content_type="application/json")
         m = re.fullmatch(r"/api/vision/motion-stories/([0-9a-f]{32})/people/([^/]+)", path)
@@ -301,4 +303,14 @@ def test_walkway_story_people_can_be_named_or_corrected_browser_smoke():
         assert second.locator("[data-story-sentence]").text_content().startswith("A person walked")
         assert "Recorded as a wrong name" in page.locator("#walkwayStoriesStatus").text_content()
         assert "wrong names 1" in page.locator("#walkwayStoriesTally").text_content()
+
+        # A half-typed name does not block a filter change she makes herself.
+        page.locator("#walkwayStoriesList [data-person-name-input]").first.fill("Half")
+        before = len(lists)
+        page.uncheck("#walkwayStoriesCheckable")
+        for _ in range(50):
+            if len(lists) > before:
+                break
+            page.wait_for_timeout(50)
+        assert "checkable_only=false" in lists[-1]
         browser.close()

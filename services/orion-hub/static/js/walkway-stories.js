@@ -382,7 +382,7 @@
       }
     }
 
-    async function load() {
+    async function load(fromTimer) {
       const unchecked = uncheckedBox && uncheckedBox.checked ? "true" : "false";
       const checkable = !checkableBox || checkableBox.checked ? "true" : "false";
       try {
@@ -391,8 +391,8 @@
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const body = await res.json();
         showTally(body.tally);
-        // Never wipe a name Juniper is typing: skip this refresh while any name box holds text or focus.
-        const typing = Array.from(list.querySelectorAll("[data-person-name-input]"))
+        // The 60 s refresh never wipes a name Juniper is typing (a filter change she makes does reload).
+        const typing = fromTimer === true && Array.from(list.querySelectorAll("[data-person-name-input]"))
           .some((i) => i.value.trim() || doc.activeElement === i);
         if (typing) return;
         list.textContent = "";
@@ -416,7 +416,7 @@
       card.classList.toggle("hidden", !on);
       if (on && !timer) {
         load();
-        timer = setInterval(load, POLL_MS);
+        timer = setInterval(() => load(true), POLL_MS);
       } else if (!on && timer) {
         clearInterval(timer);
         timer = null;
@@ -424,8 +424,8 @@
     }
 
     if (select) select.addEventListener("change", sync);
-    if (uncheckedBox) uncheckedBox.addEventListener("change", load);
-    if (checkableBox) checkableBox.addEventListener("change", load);
+    if (uncheckedBox) uncheckedBox.addEventListener("change", () => load(false));
+    if (checkableBox) checkableBox.addEventListener("change", () => load(false));
     sync();
     return { load, sync };
   }

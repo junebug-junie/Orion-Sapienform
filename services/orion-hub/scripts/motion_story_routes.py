@@ -148,6 +148,17 @@ ON CONFLICT (story_id) DO UPDATE
       cant_tell = EXCLUDED.cant_tell, updated_at = now()
 """
 
+# The automatic "Wrong name" from a name correction: only on a story with no
+# verdict yet, "Right", or "Can't tell" (verdict NULL). Returns the story id when written.
+_WRONG_NAME_VERDICT = """
+INSERT INTO vision_motion_story_verdict AS v (story_id, verdict, rules_version, cant_tell)
+VALUES ($1, 'wrong_name', $2, false)
+ON CONFLICT (story_id) DO UPDATE
+  SET verdict = 'wrong_name', rules_version = EXCLUDED.rules_version, cant_tell = false, updated_at = now()
+  WHERE v.verdict IS NULL OR v.verdict IN ('right', 'wrong_name')
+RETURNING story_id
+"""
+
 # One story, the list's columns (the person route returns it re-derived).
 _ONE_STORY_SQL = _LIST_SQL.split("FROM vision_motion_story s")[0] + (
     "FROM vision_motion_story s LEFT JOIN vision_motion_story_verdict v ON v.story_id = s.story_id "
@@ -286,15 +297,15 @@ async def record_motion_story_verdict(story_id: str, body: VerdictBody, request:
 _LABELS_SQL = ("SELECT individual_id, kind, label, label_copied FROM vision_individual "
                "WHERE individual_id = ANY($1::text[])")
 
-# Juniper's latest answer per (story, individual), from the ask rows this card writes.
+# Every answer Juniper gave on these stories, from the ask rows this card writes
+# (a handful per story; the latest one per person is picked in Python).
 _STORY_ACTIONS_SQL = """
-SELECT DISTINCT ON (answer_detail->>'story_id', source_ref)
-       answer_detail->>'story_id' AS story_id, source_ref AS individual_id,
+SELECT answer_detail->>'story_id' AS story_id, source_ref AS individual_id,
        answer_detail->>'action' AS action, answer_detail->>'name' AS name, ask_id, answered_at
 FROM orion_ask
 WHERE source_kind = ANY($2::text[]) AND status = 'answered'
   AND answer_detail->>'story_id' = ANY($1::text[])
-ORDER BY answer_detail->>'story_id', source_ref, answered_at DESC, created_at DESC, ask_id DESC
+ORDER BY answered_at, created_at, ask_id
 """
 
 
@@ -324,18 +335,18 @@ def people_in(evidence: list[dict[str, Any]], role: str, kind: str) -> list[dict
 
 
 def story_display(story: dict[str, Any], labels: dict[str, str],
-                  actions: dict[str, dict[str, Any]]) -> tuple[Optional[str], str, str]:
-    """(display name, sentence to show, why) for one story.
+                  answers: list[dict[str, Any]]) -> tuple[Optional[str], str, str]:
+    """(display name, sentence to show, why) for one story. ``answers``: every
+    answer Juniper gave on this story, oldest first, each with its individual_id.
 
-    A direct answer by Juniper on this story about its walker wins for this
-    story (the latest one): a name -> that name; "someone else" -> who she said
-    it really is, or no name. Otherwise the strict naming rule on the names the
-    individuals carry now (``why='rule'``). "Not sure" changes nothing."""
+    Her latest name / "someone else" about any of the story's walker ids wins for
+    this story: a name -> that name; "someone else" -> who she said it really is,
+    or no name. A later "not sure" does not undo it. With none, the strict naming
+    rule on the names the individuals carry now (``why='rule'``)."""
     walkers = {p["individual_id"] for p in story.get("people") or [] if p.get("role") == "walker"}
-    direct = [a for iid, a in actions.items() if iid in walkers and a.get("action") in ("name", "someone_else")]
+    direct = [a for a in answers if a.get("individual_id") in walkers and a.get("action") in ("name", "someone_else")]
     if direct:
-        latest = max(direct, key=lambda a: (str(a.get("answered_at") or ""), str(a.get("ask_id") or "")))
-        name = (latest.get("name") or "").strip() or None
+        name = (direct[-1].get("name") or "").strip() or None
         why = "juniper"
     else:
         _, name, _ = name_from_crops(evidence_crops(story.get("evidence") or []), labels)
@@ -376,35 +387,42 @@ async def _enrich(conn: Any, stories: list[dict[str, Any]]) -> None:
                      | {e.get("individual_id") for s in stories for e in s.get("evidence") or []
                         if isinstance(e.get("individual_id"), str)})
         rows = {r["individual_id"]: r for r in await conn.fetch(_LABELS_SQL, ids)} if ids else {}
-        acts: dict[str, dict[str, dict[str, Any]]] = {}
+        acts: dict[str, list[dict[str, Any]]] = {}
         for r in await conn.fetch(_STORY_ACTIONS_SQL, [s["story_id"] for s in stories],
                                   [WHO_IS_THIS_KIND, STORY_PERSON_KIND]):
-            acts.setdefault(r["story_id"], {})[r["individual_id"]] = {
-                "action": r["action"], "name": r["name"], "ask_id": r["ask_id"], "answered_at": _iso(r["answered_at"])}
+            acts.setdefault(r["story_id"], []).append({
+                "individual_id": r["individual_id"], "action": r["action"], "name": r["name"],
+                "ask_id": r["ask_id"], "answered_at": _iso(r["answered_at"])})
     except Exception as exc:  # noqa: BLE001 - the card still shows the stored story
         logger.warning("motion_story_people_lookup_failed error=%s", exc)
         return
     labels = {iid: (r["label"] or "").strip() for iid, r in rows.items() if (r["label"] or "").strip()}
     for s in stories:
-        mine = acts.get(s["story_id"], {})
+        mine = acts.get(s["story_id"], [])
+        latest = {a["individual_id"]: a for a in mine}   # oldest first: the last one wins
         for p in s["people"]:
             r = rows.get(p["individual_id"])
             label = (r["label"] or "").strip() if r is not None else ""
             p["label"] = label or None
             p["label_copied"] = bool(label and r["label_copied"])
             p["known"] = r is not None
-            p["story_action"] = mine.get(p["individual_id"])
+            p["story_action"] = latest.get(p["individual_id"])
         s["display_name"], s["display_sentence"], s["name_source"] = story_display(s, labels, mine)
 
 
-def wrong_name_correction(story_name: Optional[str], role: str, action: str, name: str) -> bool:
+def wrong_name_correction(story_name: Optional[str], role: str, action: str, name: str,
+                          current_label: Optional[str] = None) -> bool:
     """Is this answer a correction of the name the story was written with?
-    Only about the walker: a different name, or "someone else"."""
+    Only about the walker: "someone else", or a name that is neither the written
+    one nor the name the individual already carries (re-saving a rename made
+    elsewhere is not a verdict on the rule)."""
     if not story_name or role != "walker":
         return False
     if action == "someone_else":
         return True
-    return action == "name" and name.casefold() != story_name.strip().casefold()
+    typed = name.casefold()
+    return (action == "name" and typed != story_name.strip().casefold()
+            and typed != (current_label or "").strip().casefold())
 
 
 _INSERT_STORY_ASK = """
@@ -479,21 +497,31 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                     _INSERT_STORY_ASK, f"ask-{uuid.uuid4().hex}", question,
                     json.dumps([f"motion_story:{story_id}", f"individual:{individual_id}"]),
                     thumb, json.dumps([thumb] if thumb else []), answer, kind, individual_id, json.dumps(detail))
-                wrong_name = wrong_name_correction(story["name_label"], person["role"], body.action, name)
+                wrong_name = wrong_name_correction(story["name_label"], person["role"], body.action, name,
+                                                   current["label"])
                 if wrong_name:
-                    await conn.execute(_UPSERT_VERDICT, story_id, "wrong_name", story["rules_version"], False)
-            listed = await conn.fetch(_ONE_STORY_SQL, story_id)
-            stories = [_story_dict(r) for r in listed]
-            await _enrich(conn, stories)
-            tally = await _tally(conn)
+                    # Never over a verdict about something else (wrong motion / wrong other).
+                    wrong_name = (await conn.fetchval(
+                        _WRONG_NAME_VERDICT, story_id, story["rules_version"])) is not None
     except HTTPException:
         raise
     except Exception as exc:
         _raise_motion_http(exc)
     published = False
     if body.action == "name":
-        # The substrate entity, exactly as a Hub "who is this?" answer writes it.
+        # The substrate entity, exactly as a Hub "who is this?" answer writes it. Right after
+        # the commit: a failed read-back below must never lose it.
         published = await ask_routes._publish_answered(ask_routes._event_from_row(row))
+    stories: list[dict[str, Any]] = []
+    tally: Optional[dict[str, Any]] = None
+    try:
+        async with pool.acquire() as conn:
+            fresh = [_story_dict(r) for r in await conn.fetch(_ONE_STORY_SQL, story_id)]
+            await _enrich(conn, fresh)
+            tally = await _tally(conn)
+            stories = fresh
+    except Exception as exc:  # noqa: BLE001 - saved already; the card reloads on its next poll
+        logger.warning("motion_story_person_readback_failed story_id=%s error=%s", story_id, exc)
     logger.info("motion_story_person story_id=%s individual_id=%s action=%s ask_id=%s wrong_name=%s published=%s",
                 story_id, individual_id, body.action, row["ask_id"], wrong_name, published)
     return {"ok": True, "story_id": story_id, "individual_id": individual_id, "action": body.action,

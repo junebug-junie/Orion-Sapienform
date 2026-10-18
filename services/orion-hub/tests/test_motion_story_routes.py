@@ -356,23 +356,26 @@ def test_story_display_rule_uses_todays_names_and_juniper_wins_on_her_story() ->
     story = {"kind": "person", "name_label": None, "sentence": "A person walked left to right, over 5 s (3 detections).",
              "evidence": _ev("a", "a", "a")}
     story["people"] = msr.people_in(story["evidence"], "walker", "person")
-    assert msr.story_display(story, {}, {})[1] == story["sentence"]
-    name, sentence, why = msr.story_display(story, {"a": "Maya"}, {})
+    assert msr.story_display(story, {}, [])[1] == story["sentence"]
+    name, sentence, why = msr.story_display(story, {"a": "Maya"}, [])
     assert (name, why) == ("Maya", "rule") and sentence.startswith("Maya walked left to right")
     # The rule still holds: an unnamed second id withholds the automatic name.
     other = dict(story, evidence=_ev("a", "a", "b"))
     other["people"] = msr.people_in(other["evidence"], "walker", "person")
-    assert msr.story_display(other, {"a": "Maya"}, {})[0] is None
+    assert msr.story_display(other, {"a": "Maya"}, [])[0] is None
     # ...but Juniper's own answer on this story overrides it, for this story.
-    acts = {"a": {"action": "name", "name": "Theo", "answered_at": "2026-10-18T01:00:00+00:00", "ask_id": "x"}}
-    name, sentence, why = msr.story_display(other, {"a": "Maya"}, acts)
+    theo = {"individual_id": "a", "action": "name", "name": "Theo", "ask_id": "x"}
+    name, sentence, why = msr.story_display(other, {"a": "Maya"}, [theo])
     assert (name, why) == ("Theo", "juniper") and sentence.startswith("Theo walked")
-    # "Someone else" with no name: the story says "A person" again; "not sure" changes nothing.
+    # "Someone else" with no name: the story says "A person" again, and a later "not sure" keeps that.
     named = dict(story, name_label="Maya", sentence="Maya walked left to right, over 5 s (3 detections).")
-    acts = {"a": {"action": "someone_else", "name": None, "answered_at": "t", "ask_id": "y"}}
-    assert msr.story_display(named, {"a": "Maya"}, acts)[1].startswith("A person walked")
-    acts = {"a": {"action": "unsure", "name": None, "answered_at": "t", "ask_id": "z"}}
-    assert msr.story_display(named, {"a": "Maya"}, acts) == ("Maya", named["sentence"], "rule")
+    se = {"individual_id": "a", "action": "someone_else", "name": None, "ask_id": "y"}
+    unsure = {"individual_id": "a", "action": "unsure", "name": None, "ask_id": "z"}
+    assert msr.story_display(named, {"a": "Maya"}, [se])[1].startswith("A person walked")
+    assert msr.story_display(named, {"a": "Maya"}, [se, unsure])[1].startswith("A person walked")
+    # "Not sure" alone changes nothing; an answer about a companion never names the walker.
+    assert msr.story_display(named, {"a": "Maya"}, [unsure]) == ("Maya", named["sentence"], "rule")
+    assert msr.story_display(named, {"a": "Maya"}, [dict(theo, individual_id="dog")])[2] == "rule"
 
 
 def test_wrong_name_only_for_a_correction_of_the_walkers_written_name() -> None:
@@ -382,6 +385,8 @@ def test_wrong_name_only_for_a_correction_of_the_walkers_written_name() -> None:
     assert msr.wrong_name_correction("Maya", "walker", "unsure", "") is False
     assert msr.wrong_name_correction("Maya", "companion", "name", "Theo") is False
     assert msr.wrong_name_correction(None, "walker", "name", "Theo") is False
+    # Re-saving the name the individual already carries (renamed elsewhere) is not a verdict on the rule.
+    assert msr.wrong_name_correction("Maya", "walker", "name", "mia", "Mia") is False
 
 
 async def _individual(pool, iid: str, label=None, kind="person") -> None:
@@ -509,6 +514,37 @@ def test_correcting_the_written_name_records_wrong_name_and_someone_else_records
         d = json.loads(await pool.fetchval("SELECT answer_detail FROM orion_ask WHERE ask_id=$1", r.json()["ask_id"]))
         assert {p["verdict"] for p in d["pictures"]} == {"unsure"} and "name" not in d
         assert r.json()["story"]["people"][0]["story_action"]["action"] == "unsure"
+        assert r.json()["story"]["display_sentence"].startswith("A person walked")   # "someone else" still holds
+        r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
+        assert r.json()["stories"][0]["display_sentence"].startswith("A person walked")
+
+    _run(body, published)
+
+
+@needs_pg
+def test_a_name_correction_never_overwrites_a_motion_verdict_and_a_failed_readback_still_publishes() -> None:
+    published: list = []
+
+    async def body(pool, client):
+        await _individual(pool, "ind-maya", "Maya")
+        sid = await _walk(pool, 1, ["ind-maya"] * 3, name="Maya")
+        await client.post(f"/api/vision/motion-stories/{sid}/verdict", json={"verdict": "wrong_motion"})
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya", json={"action": "name", "name": "Theo"})
+        assert r.status_code == 200 and r.json()["wrong_name_recorded"] is False
+        assert await pool.fetchval("SELECT verdict FROM vision_motion_story_verdict WHERE story_id=$1", sid) == "wrong_motion"
+        # The name is committed and published even if reading the story back fails.
+        orig = msr._enrich
+
+        async def boom(conn, stories):
+            raise OSError("read-back down")
+
+        msr._enrich = boom
+        try:
+            r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya", json={"action": "name", "name": "Ash"})
+        finally:
+            msr._enrich = orig
+        assert r.status_code == 200 and r.json()["story"] is None
+        assert [e.answer for e in published] == ["Theo", "Ash"]
 
     _run(body, published)
 

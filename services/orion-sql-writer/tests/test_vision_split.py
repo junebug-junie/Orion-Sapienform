@@ -758,7 +758,7 @@ def test_a_name_typed_on_a_story_is_a_typed_label_linked_to_the_same_name(pg, ca
             "SELECT individual_a, individual_b, verdict, ask_id FROM vision_individual_pair_verdict")).fetchall()}
         # Each story name links to the person she already typed that name for (case-insensitive).
         assert ("anon", "maya-1", "same", "ask-story-1") in pairs
-        assert ("maya-1", "theo", "same", "ask-story-2") in pairs or ("anon", "theo", "same", "ask-story-2") in pairs
+        assert ("maya-1", "theo", "same", "ask-story-2") in pairs   # the earliest typed "Maya" (labeled_at)
         assert conn.execute(text("SELECT status, answer FROM orion_ask WHERE ask_id='who-anon'")).one() == (
             "answered", "maya")
         assert conn.execute(text("SELECT count(*) FROM orion_ask WHERE applied_at IS NULL")).scalar() == 0
@@ -766,7 +766,7 @@ def test_a_name_typed_on_a_story_is_a_typed_label_linked_to_the_same_name(pg, ca
 
 
 @needs_pg
-def test_story_name_never_links_over_a_different_verdict_and_plain_answers_do_not_link(pg) -> None:
+def test_story_name_skips_a_different_verdict_and_plain_answers_do_not_link(pg) -> None:
     from sqlalchemy import text
 
     with pg.begin() as conn:
@@ -775,6 +775,7 @@ def test_story_name_never_links_over_a_different_verdict_and_plain_answers_do_no
         _add_individual(conn, "maya-1", n=3, face_n=0, face=None, label="Maya", labeled_at=NOW - timedelta(days=2))
         conn.execute(text("INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, ask_id, "
                           "decided_at) VALUES ('anon', 'maya-1', 'different', 'ask-pair', :t)"), {"t": NOW})
+        _add_individual(conn, "maya-2", n=3, face_n=0, face=None, label="Maya", labeled_at=NOW - timedelta(days=1))
         _story_ask(conn, "ask-story-1", "vision_individual", "anon", answer="Maya", name="Maya")
         # A plain "who is this?" answer (no story_id) keeps today's behaviour: no same-name link.
         conn.execute(text("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, answer, "
@@ -784,9 +785,10 @@ def test_story_name_never_links_over_a_different_verdict_and_plain_answers_do_no
         vi._apply_answers(conn, NOW)
     with pg.begin() as conn:
         assert _label(conn, "anon")[0] == "Maya" and _label(conn, "plain")[0] == "Maya"
+        # maya-1 has a 'different' with anon: skipped, the next "Maya" is linked instead.
         assert [tuple(r) for r in conn.execute(text(
-            "SELECT individual_a, individual_b, verdict FROM vision_individual_pair_verdict")).fetchall()] == [
-            ("anon", "maya-1", "different")]
+            "SELECT individual_a, individual_b, verdict FROM vision_individual_pair_verdict "
+            "ORDER BY 1, 2")).fetchall()] == [("anon", "maya-1", "different"), ("anon", "maya-2", "same")]
 
 
 @needs_pg
@@ -831,3 +833,22 @@ def test_someone_else_on_a_story_records_crop_verdicts_and_the_split_moves_them(
         crops = dict(conn.execute(text("SELECT crop_id, individual_id FROM vision_crop_observation")).fetchall())
         assert crops["m0"] == new and crops["m1"] == new and crops["k0"] == "src"
         assert _label(conn, new) == ("Cora", False, "ask-story-se")
+
+
+@needs_pg
+def test_story_names_do_not_use_up_the_who_is_this_daily_cap(pg) -> None:
+    import json
+
+    from sqlalchemy import text
+
+    day = vi.local_day_start(NOW, ZoneInfo("America/Denver"))
+    face = json.dumps([vi.FACE_RULE_REF])
+    with pg.begin() as conn:
+        for i in range(3):
+            _add_individual(conn, f"p{i}", n=3, face_n=0, face=None)
+            _story_ask(conn, f"ask-story-{i}", "vision_individual", f"p{i}", answer=f"N{i}", name=f"N{i}")
+        conn.execute(text("UPDATE orion_ask SET created_at = :t"), {"t": NOW})
+        assert conn.execute(text(vi.ASKED_TODAY_SQL), {"d": day, "face": face}).scalar() == 0
+        conn.execute(text("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, created_at) "
+                          "VALUES ('who-real', 'q', 'vision_individual', 'p0', :t)"), {"t": NOW})
+        assert conn.execute(text(vi.ASKED_TODAY_SQL), {"d": day, "face": face}).scalar() == 1

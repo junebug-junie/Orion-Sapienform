@@ -496,8 +496,11 @@ Juniper already typed that name for, unless they are already linked or have a
 pair verdict (`[VISION_SAME_NAME_LINK]`). "Someone else" / "not sure" is a
 `vision_story_person` ask: only its `answer_detail.pictures` (one per story
 crop, with `crop_id`) land in `vision_ask_picture_verdict`; 'different' ones are
-split by the pass below. It never names the individual and never stops the
-opener from asking "who is this?" about them.
+split by the pass below (a split that would move most of the individual's
+crops is refused, `majority`, as for any card). It never names the individual
+and never stops the opener from asking "who is this?" about them. Story names
+are not counted against the opener's daily cap (`ASKED_TODAY_SQL` skips rows
+with `answer_detail.story_id`).
 
 **Splits on "someone else" pictures** (`app/vision_split.py`, 2026-10-16;
 design `docs/superpowers/specs/2026-10-16-vision-individual-split-proposal.md`).

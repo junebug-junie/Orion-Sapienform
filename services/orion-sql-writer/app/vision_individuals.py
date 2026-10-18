@@ -1818,7 +1818,8 @@ def _record_pictures(conn, rows: List[dict]) -> int:
 def same_name_target(conn, individual_id: str, name: str, *, exclude: Sequence[str] = ()) -> Optional[str]:
     """An existing individual (same stream and kind as ``individual_id``) Juniper
     already TYPED ``name`` for, that is not already confirmed the same person
-    (a 'same' path between them). First by labeled_at. None when there is none."""
+    (a 'same' path between them) and has no pair verdict with it. First by
+    labeled_at. None when there is none."""
     from sqlalchemy import text
 
     me = conn.execute(text("SELECT stream_id, kind FROM vision_individual WHERE individual_id=:i"),
@@ -1826,11 +1827,16 @@ def same_name_target(conn, individual_id: str, name: str, *, exclude: Sequence[s
     if me is None:
         return None
     skip = [individual_id, *exclude]
+    # A candidate with any pair verdict with this individual is skipped (a 'different' she gave stays).
     cands = [r[0] for r in conn.execute(text(
-        "SELECT individual_id FROM vision_individual WHERE stream_id=:s AND kind=:k AND label IS NOT NULL "
-        "AND NOT label_copied AND lower(label) = lower(:n) AND NOT (individual_id = ANY(:skip)) "
-        "ORDER BY labeled_at NULLS LAST, individual_id"),
-        {"s": me[0], "k": me[1], "n": name, "skip": skip}).fetchall()]
+        "SELECT v.individual_id FROM vision_individual v WHERE v.stream_id=:s AND v.kind=:k "
+        "AND v.label IS NOT NULL AND NOT v.label_copied AND lower(v.label) = lower(:n) "
+        "AND NOT (v.individual_id = ANY(:skip)) "
+        "AND NOT EXISTS (SELECT 1 FROM vision_individual_pair_verdict p WHERE "
+        "  (p.individual_a = v.individual_id AND p.individual_b = :me) OR "
+        "  (p.individual_b = v.individual_id AND p.individual_a = :me)) "
+        "ORDER BY v.labeled_at NULLS LAST, v.individual_id"),
+        {"s": me[0], "k": me[1], "n": name, "skip": skip, "me": individual_id}).fetchall()]
     if not cands:
         return None
     groups = same_groups((a, b) for a, b in conn.execute(text(
@@ -1989,7 +1995,9 @@ def _apply_pair_answer(conn, ask_id: str, ref: str, answer: Optional[str], at: d
 # face asks (FACE_RULE_REF, vision_same_individual) have confirm_ask_daily_cap.
 ASKED_TODAY_SQL = (
     "SELECT count(*) FROM orion_ask WHERE source_kind = 'vision_individual' AND created_at >= :d "
-    "AND NOT (evidence_refs @> CAST(:face AS jsonb))"
+    "AND NOT (evidence_refs @> CAST(:face AS jsonb)) "
+    # A name Juniper typed on a walkway story card is not a question Orion asked (2026-10-18).
+    "AND NOT coalesce(answer_detail ? 'story_id', false)"
 )
 CONFIRM_ASKED_TODAY_SQL = (
     "SELECT count(*) FROM orion_ask WHERE created_at >= :d AND (source_kind = :same "

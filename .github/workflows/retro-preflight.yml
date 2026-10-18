@@ -1,0 +1,27 @@
+name: Retro preflight
+on:
+  pull_request:
+    paths:
+      - 'orion/retro/**'
+      - 'tests/retro/**'
+      - '.github/workflows/retro-preflight.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'orion/retro/**'
+      - 'tests/retro/**'
+      - '.github/workflows/retro-preflight.yml'
+permissions:
+  contents: read
+jobs:
+  native-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pytest==9.1.1
+      - run: python -m pytest tests/retro -q
+      - run: python -m orion.retro.preflight --help

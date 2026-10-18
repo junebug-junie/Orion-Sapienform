@@ -60,6 +60,8 @@ request fields cannot select identities. No Hub authentication is claimed.
   acquire/release/takeover. Returns connection-bound token and epoch.
 - WS input: version 1, session_id, generation, lease, epoch, seq, port, mask.
   Ack contains actual applied frame. Invalid/replaced inputs receive rejection.
+  If a reply is lost during timeout/shutdown, the result is `unknown`; inspect
+  the retained evidence rather than assuming the action never happened.
 - POST pause/resume/stop endpoints: explicit lifecycle; resume requires new leases.
 - GET `/sessions/{id}/evidence`: last 256 applied inputs and local artifact ID;
   full journal remains operator-local. Tokens are never journaled.

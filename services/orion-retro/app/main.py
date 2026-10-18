@@ -120,7 +120,10 @@ def create_app(settings=None):
                 except ValidationError:
                     await send({'rejected':'invalid_input'})
                 except ValueError as exc:
-                    await send({'rejected':str(exc)[:200]})
+                    reason = str(exc)[:200]
+                    # A lost reply cannot prove that the native frame never ran.
+                    verdict = 'unknown' if reason in ('worker_unavailable', 'session_stopped') else 'rejected'
+                    await send({verdict:reason})
         except (WebSocketDisconnect, asyncio.TimeoutError, RuntimeError):
             pass
         finally:

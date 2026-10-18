@@ -188,3 +188,24 @@ def test_packaging_preserves_offline_boundary_and_disabled_default():
     assert 'RETRO_ENABLED=false' in (root/'.env_example').read_text()
     assert Settings().enabled is False
     assert 'COPY services/orion-retro /app' not in (root/'Dockerfile').read_text()
+
+
+def test_lost_worker_ack_is_unknown_not_a_definite_rejection(tmp_path):
+    import uuid
+    cfg=settings(tmp_path)
+    sid=str(uuid.uuid4());generation=str(uuid.uuid4())
+    class Manager:
+        session={'session_id':sid};process=True;connections=set()
+        async def command(self,*args):
+            # The native frame may have run; its acknowledgment was lost.
+            raise ValueError('worker_unavailable')
+        async def disconnect(self,*args):pass
+        async def stop(self,**kwargs):pass
+    m=Manager();m.generation=generation
+    app=create_app(cfg)
+    with TestClient(app) as c:
+        app.state.manager=m
+        with c.websocket_connect('/sessions/'+sid+'/input',headers={'Authorization':'Bearer '+'a'*48}) as ws:
+            ws.receive_json()
+            ws.send_json(dict(version=1,session_id=sid,generation=generation,lease='a'*48,epoch=1,seq=1,port=0,mask=256))
+            assert ws.receive_json()=={'unknown':'worker_unavailable'}

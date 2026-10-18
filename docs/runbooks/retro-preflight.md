@@ -6,6 +6,13 @@ proposal. P0 remains **UNVERIFIED** until actual core/game runs pass. P1–P6
 (service authority, Hub A/V/control, motor, cognition, training and transfer) are
 not implemented. Do not deploy this module as a service.
 
+## Ready-made local diagnostic setup
+
+No existing ROMs or cores are required for the authored NES diagnostic. Follow
+[Local NES diagnostic kit](retro-local-setup.md) to build a pinned core, generate
+the original ROM and run it in a restricted container. The instructions below
+also support separately supplied content.
+
 ## Operator inputs and execution
 
 Supply an operator-owned NES/SNES ROM and a trusted libretro ABI-v1 shared library

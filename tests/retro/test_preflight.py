@@ -134,3 +134,13 @@ def test_first_replay_frame_can_duplicate_checkpoint_video():
     result = benchmark(DuplicateCore(clock), 120, 1000,
                        clock=clock, sleep=clock.sleep)
     assert result["gates"]["same_core_replay"]
+
+
+def test_progress_reports_bounded_monotonic_frame_counts():
+    clock = Clock()
+    progress = []
+    benchmark(FakeCore(clock), 1250, 1, clock=clock, sleep=clock.sleep,
+              progress=progress.append)
+    assert [row["frames"] for row in progress] == [600, 1200, 1250]
+    assert progress[-1]["percent"] == 100
+    assert progress[-1]["eta_seconds"] == 0

@@ -25,3 +25,34 @@ jobs:
       - run: python -m pip install pytest==9.1.1
       - run: python -m pytest tests/retro -q
       - run: python -m orion.retro.preflight --help
+  real-nes-core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/checkout@v4
+        with:
+          repository: libretro/libretro-fceumm
+          ref: ac0d00a7fc01166f84c7bac01d1084ebfd2b865e
+          path: .retro-core-source
+          persist-credentials: false
+      - name: Build pinned core and authored diagnostic
+        run: |
+          make -C .retro-core-source -f Makefile.libretro -j2 > /tmp/retro-build.log 2>&1
+          python -m orion.retro.pad_lab /tmp/orion-pad-lab.nes
+      - name: Verify independent controller effects and nonzero audio
+        run: |
+          CORE_SHA=$(sha256sum .retro-core-source/fceumm_libretro.so | cut -d ' ' -f 1)
+          python -m orion.retro.pad_eval \
+            --core .retro-core-source/fceumm_libretro.so --core-sha256 "$CORE_SHA" \
+            --rom /tmp/orion-pad-lab.nes --output /tmp/retro-pad-eval.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: retro-native-evidence
+          path: |
+            /tmp/retro-pad-eval.json
+            /tmp/retro-build.log

@@ -13,7 +13,7 @@ import time
 from .probe import CoreProbe
 
 
-def benchmark(core, frames, replay_frames, *, clock=time.perf_counter, sleep=time.sleep):
+def benchmark(core, frames, replay_frames, *, clock=time.perf_counter, sleep=time.sleep, progress=None):
     if frames < 1 or replay_frames < 1:
         raise ValueError("frame counts must be positive")
     fps = core.av.timing.fps
@@ -31,6 +31,11 @@ def benchmark(core, frames, replay_frames, *, clock=time.perf_counter, sleep=tim
         deadline = start + (frame + 1) * period
         misses += end > deadline
         sleep(max(0, deadline - end))
+        if progress is not None and ((frame + 1) % 600 == 0 or frame + 1 == frames):
+            progress({"event": "preflight_progress", "frames": frame + 1,
+                      "total_frames": frames, "percent": 100 * (frame + 1) / frames,
+                      "eta_seconds": (frames - frame - 1) / fps,
+                      "deadline_misses": misses})
     elapsed = clock() - start
     video = core.video_frames - video_before
     audio = core.audio_samples - audio_before
@@ -99,7 +104,8 @@ def main():
         core = None
         try:
             core = CoreProbe(args.core, args.rom)
-            result = benchmark(core, args.frames, args.replay_frames)
+            result = benchmark(core, args.frames, args.replay_frames,
+                               progress=lambda row: print(json.dumps(row), flush=True))
         except Exception as exc:
             result = {"schema_version": "retro.preflight.v1", "status": "ERROR",
                       "error_type": type(exc).__name__, "error": str(exc)}

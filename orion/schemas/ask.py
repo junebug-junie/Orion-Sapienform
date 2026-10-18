@@ -45,7 +45,11 @@ class OrionAskV1(BaseModel):
     # orion.memory.episode.confirmation: answered only through the Hub's /resolve route, which also
     # writes the attention_loop_outcome row);
     # source_kind="vision_same_individual", source_ref="<individual_a>|<individual_b>" (sorted
-    # ids, 2026-10-15): "are these the same person?", answer "yes" or "no".
+    # ids, 2026-10-15): "are these the same person?", answer "yes" or "no";
+    # source_kind="vision_story_person", source_ref="<individual_id>" (2026-10-18): written by
+    # the Hub already answered, "someone else" / "not sure" about one person on a walkway story
+    # card (answer None, answer_detail.pictures). A name typed on that card is a plain
+    # "vision_individual" answer with answer_detail.story_id.
     source_kind: str
     source_ref: str
 

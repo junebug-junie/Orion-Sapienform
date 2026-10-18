@@ -18,6 +18,16 @@
   // that is not dark, so the queue is all judgeable. The old box map drew the
   // boxes over today's view, which at night "just looks dark" -- removed.
   //
+  // Who the story is about (2026-10-18): one box per person in the story (its
+  // walker, and anyone it walked with) shows the name Orion has for them, or
+  // "unnamed person (individual <short id>)". Juniper can type a name (it is a
+  // "who is this?" answer: the same recognition every other card feeds), say
+  // "Someone else" (optionally naming who it really is: those pictures are
+  // split off that individual), or "Not sure". The sentence shown is the
+  // server's display_sentence (her answer on this story wins; otherwise the
+  // strict naming rule on today's names); if it differs from what Orion first
+  // wrote, that is shown too.
+  //
   // Everything from the database is rendered with textContent / attributes,
   // never innerHTML.
 
@@ -129,13 +139,85 @@
     return n;
   }
 
-  function renderStory(doc, story, onVerdict) {
+  // How one person in a story is called on the card.
+  function personTitle(p) {
+    const kind = p && p.kind ? String(p.kind) : "person";
+    const who = p && p.label ? String(p.label) : `unnamed ${kind} (individual ${String((p && p.short_id) || "").slice(0, 8)})`;
+    return p && p.role === "companion" ? `With them: ${who}` : who;
+  }
+
+  function actionLine(a) {
+    if (!a || !a.action) return "";
+    if (a.action === "name") return `You named them ${a.name || ""} on this story.`;
+    if (a.action === "someone_else") return a.name
+      ? `You said this is someone else: ${a.name}.` : "You said this is someone else.";
+    if (a.action === "unsure") return "You said you are not sure.";
+    return "";
+  }
+
+  function renderPerson(doc, story, p, onPerson) {
+    const box = el(doc, "div", "flex flex-wrap items-center gap-2 rounded border border-gray-700 bg-gray-900/60 p-2");
+    box.setAttribute("data-story-person", p.individual_id);
+    if (p.thumb && THUMB_RE.test(p.thumb)) {
+      const img = el(doc, "img", "h-12 w-auto rounded border border-gray-700");
+      img.setAttribute("src", `/api/vision/crop-thumbs/${p.thumb}`);
+      img.setAttribute("alt", "this person in the story");
+      img.setAttribute("loading", "lazy");
+      img.addEventListener("error", () => img.remove());
+      box.appendChild(img);
+    }
+    const text = el(doc, "div", "min-w-0 flex-1 space-y-0.5");
+    const title = el(doc, "div", "text-xs text-gray-100", personTitle(p));
+    title.setAttribute("data-person-title", "1");
+    text.appendChild(title);
+    if (p.label && p.label_copied) {
+      text.appendChild(el(doc, "div", "text-[10px] text-gray-500", "Name carried over from a same-person answer."));
+    }
+    const said = actionLine(p.story_action);
+    if (said) {
+      const line = el(doc, "div", "text-[10px] text-emerald-300", said);
+      line.setAttribute("data-person-said", p.story_action.action);
+      text.appendChild(line);
+    }
+    box.appendChild(text);
+    const input = el(doc, "input", "min-h-[2.25rem] w-full sm:w-40 rounded border border-gray-600 bg-gray-950 px-2 text-xs text-gray-100");
+    input.setAttribute("type", "text");
+    input.setAttribute("maxlength", "120");
+    input.setAttribute("placeholder", p.label ? "Correct the name" : "Who is this?");
+    input.setAttribute("aria-label", `Name for ${personTitle(p)}`);
+    input.setAttribute("data-person-name-input", "1");
+    box.appendChild(input);
+    const buttons = el(doc, "div", "flex flex-wrap gap-2");
+    [{ value: "name", label: p.label ? "Save name" : "Name them" },
+      { value: "someone_else", label: "Someone else" },
+      { value: "unsure", label: "Not sure" }].forEach((a) => {
+      const btn = el(doc, "button", "min-h-[2.25rem] rounded-lg border border-gray-600 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-700", a.label);
+      btn.setAttribute("type", "button");
+      btn.setAttribute("data-person-action", a.value);
+      if (a.value === "someone_else") btn.setAttribute("title", "Not this individual. Type who it really is first, if you know.");
+      btn.addEventListener("click", () => onPerson(story, p, a.value, input.value, box));
+      buttons.appendChild(btn);
+    });
+    box.appendChild(buttons);
+    return box;
+  }
+
+  function renderStory(doc, story, onVerdict, onPerson) {
     const item = el(doc, "div", "rounded-lg border border-gray-700 bg-gray-800/60 p-3 space-y-2");
     item.setAttribute("data-story-id", story.story_id);
-    item.appendChild(el(doc, "div", "text-sm text-gray-100", story.sentence));
+    const shown = story.display_sentence || story.sentence;
+    const sentence = el(doc, "div", "text-sm text-gray-100", shown);
+    sentence.setAttribute("data-story-sentence", "1");
+    item.appendChild(sentence);
+    if (story.display_sentence && story.display_sentence !== story.sentence) {
+      const was = el(doc, "div", "text-[10px] text-gray-500", `Orion first wrote: ${story.sentence}`);
+      was.setAttribute("data-story-first-written", "1");
+      item.appendChild(was);
+    }
     const meta = [localTime(story.started_at), `${story.kind}/${story.speed_class || "?"}`,
       `${story.detection_count} detections`];
-    if (story.name_label) meta.push("named");
+    if (story.name_source === "juniper") meta.push("named by you");
+    else if (story.display_name !== undefined ? story.display_name : story.name_label) meta.push("named");
     item.appendChild(el(doc, "div", "text-[11px] text-gray-400", meta.join(" · ")));
 
     const model = stripModel(story);
@@ -197,6 +279,14 @@
     }
     item.appendChild(pics);
 
+    const people = Array.isArray(story.people) ? story.people.filter((p) => p && p.individual_id) : [];
+    const who = el(doc, "div", "space-y-1");
+    who.setAttribute("data-story-people", String(people.length));
+    who.appendChild(el(doc, "div", "text-[11px] font-semibold text-gray-300",
+      people.length ? "Who is this story about?" : "No individual linked to these boxes yet."));
+    if (typeof onPerson === "function") people.forEach((p) => who.appendChild(renderPerson(doc, story, p, onPerson)));
+    item.appendChild(who);
+
     const row = el(doc, "div", "flex flex-wrap gap-2");
     // "Can't tell" on every story: an unclear daylight picture must not be forced into "wrong".
     const buttons = VERDICTS.concat([CANT_TELL]);
@@ -256,7 +346,43 @@
       }
     }
 
-    async function load() {
+    async function onPerson(story, person, action, typed, box) {
+      const name = String(typed || "").trim().replace(/\s+/g, " ");
+      if (action === "name" && !name) {
+        if (status) status.textContent = "Type a name first.";
+        return;
+      }
+      const buttons = box.querySelectorAll("[data-person-action]");
+      buttons.forEach((b) => { b.disabled = true; });
+      try {
+        const res = await fetchFn(
+          `/api/vision/motion-stories/${encodeURIComponent(story.story_id)}/people/${encodeURIComponent(person.individual_id)}`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action, name: action === "unsure" ? "" : name }),
+          });
+        if (!res.ok) {
+          let detail = "";
+          try { detail = (await res.json()).detail || ""; } catch (_) { /* not JSON */ }
+          throw new Error(detail ? `${res.status} ${detail}` : `HTTP ${res.status}`);
+        }
+        const body = await res.json();
+        if (body.tally) showTally(body.tally);
+        const item = box.closest("[data-story-id]");
+        if (body.story && item) item.replaceWith(renderStory(doc, body.story, onVerdict, onPerson));
+        if (status) {
+          status.textContent = action === "name"
+            ? `Saved: ${name}. Orion applies it like any "who is this?" answer.`
+            : action === "someone_else" ? "Saved: someone else. Orion will try to split those pictures off that individual."
+              : "Saved: not sure.";
+          if (body.wrong_name_recorded) status.textContent += " Recorded as a wrong name for this story.";
+        }
+      } catch (err) {
+        if (status) status.textContent = `Could not save that (${err.message}). Try again.`;
+        buttons.forEach((b) => { b.disabled = false; });
+      }
+    }
+
+    async function load(fromTimer) {
       const unchecked = uncheckedBox && uncheckedBox.checked ? "true" : "false";
       const checkable = !checkableBox || checkableBox.checked ? "true" : "false";
       try {
@@ -265,9 +391,13 @@
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const body = await res.json();
         showTally(body.tally);
+        // The 60 s refresh never wipes a name Juniper is typing (a filter change she makes does reload).
+        const typing = fromTimer === true && Array.from(list.querySelectorAll("[data-person-name-input]"))
+          .some((i) => i.value.trim() || doc.activeElement === i);
+        if (typing) return;
         list.textContent = "";
         const stories = body.stories || [];
-        stories.forEach((s) => list.appendChild(renderStory(doc, s, onVerdict)));
+        stories.forEach((s) => list.appendChild(renderStory(doc, s, onVerdict, onPerson)));
         if (status) {
           const which = checkable === "true" ? "checkable: daylight, with a picture" : "all, including dark or no picture";
           status.textContent = stories.length
@@ -286,7 +416,7 @@
       card.classList.toggle("hidden", !on);
       if (on && !timer) {
         load();
-        timer = setInterval(load, POLL_MS);
+        timer = setInterval(() => load(true), POLL_MS);
       } else if (!on && timer) {
         clearInterval(timer);
         timer = null;
@@ -294,14 +424,14 @@
     }
 
     if (select) select.addEventListener("change", sync);
-    if (uncheckedBox) uncheckedBox.addEventListener("change", load);
-    if (checkableBox) checkableBox.addEventListener("change", load);
+    if (uncheckedBox) uncheckedBox.addEventListener("change", () => load(false));
+    if (checkableBox) checkableBox.addEventListener("change", () => load(false));
     sync();
     return { load, sync };
   }
 
   const api = { VIEW_VALUE, VERDICTS, CANT_TELL, tallyLine, gateLine, pickThumbs, stripModel, hasPicture,
-                renderStory, mount };
+                personTitle, actionLine, renderStory, mount };
 
   global.OrionWalkwayStories = api;
   if (typeof module !== "undefined" && module.exports) {

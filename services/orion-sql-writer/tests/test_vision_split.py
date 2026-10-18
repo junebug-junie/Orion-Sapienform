@@ -694,3 +694,161 @@ def test_the_cycle_writes_membership_honours_cannot_link_and_splits(pg) -> None:
     with pg.begin() as conn:
         assigned = conn.execute(text("SELECT individual_id FROM vision_crop_observation WHERE crop_id='c1'")).scalar()
         assert assigned not in (None, "x", "y")
+
+
+# --- answers given on a Hub walkway story card (2026-10-18) ------------------------------------------
+#
+# The Hub (services/orion-hub/scripts/motion_story_routes.py) writes these rows already answered;
+# its own real-Postgres test pins the exact row it writes. Here: what sql-writer does with them.
+
+STORY = "f" * 32
+
+
+def _story_ask(conn, ask_id: str, kind: str, iid: str, *, answer=None, action="name", name=None,
+               pictures=None, minute=0) -> None:
+    """The row POST /api/vision/motion-stories/{story}/people/{iid} inserts."""
+    import json
+
+    from sqlalchemy import text
+
+    detail = {"story_id": STORY, "action": action, "via": "motion_story"}
+    if name:
+        detail["name"] = name
+    if pictures is not None:
+        detail["pictures"] = pictures
+    conn.execute(text(
+        "INSERT INTO orion_ask (ask_id, asked_of, question, evidence_refs, image_ref, image_refs, status, answer, "
+        "answered_at, created_at, source_kind, source_ref, answer_detail) VALUES (:a, 'juniper', 'q', "
+        "CAST(:ev AS jsonb), NULL, '[]'::jsonb, 'answered', :ans, :t, :t, :k, :i, CAST(:d AS jsonb))"),
+        {"a": ask_id, "ev": json.dumps([f"motion_story:{STORY}", f"individual:{iid}"]), "ans": answer,
+         "t": NOW - timedelta(minutes=30) + timedelta(minutes=minute), "k": kind, "i": iid, "d": json.dumps(detail)})
+
+
+def _label(conn, iid: str):
+    from sqlalchemy import text
+
+    return tuple(conn.execute(text(
+        "SELECT label, label_copied, label_ask_id FROM vision_individual WHERE individual_id=:i"), {"i": iid}).one())
+
+
+@needs_pg
+def test_a_name_typed_on_a_story_is_a_typed_label_linked_to_the_same_name(pg, caplog) -> None:
+    import logging
+
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _add_individual(conn, "anon", n=3, face_n=0, face=None)
+        _add_individual(conn, "maya-1", n=3, face_n=0, face=None, label="Maya", labeled_at=NOW - timedelta(days=2))
+        _add_individual(conn, "theo", n=3, face_n=0, face=None, label="Theo", labeled_at=NOW - timedelta(days=1))
+        # An open "who is this?" card for anon, from the opener.
+        conn.execute(text("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref) "
+                          "VALUES ('who-anon', 'q', 'vision_individual', 'anon')"))
+        _story_ask(conn, "ask-story-1", "vision_individual", "anon", answer="maya", name="maya")
+        # Last typed name wins: theo was typed "Theo", a story names them "Maya".
+        _story_ask(conn, "ask-story-2", "vision_individual", "theo", answer="Maya", name="Maya", minute=1)
+    caplog.set_level(logging.INFO, logger="sql-writer.vision_individuals")
+    with pg.begin() as conn:
+        assert vi._apply_answers(conn, NOW) >= 2
+    with pg.begin() as conn:
+        assert _label(conn, "anon") == ("maya", False, "ask-story-1")
+        assert _label(conn, "theo") == ("Maya", False, "ask-story-2")
+        assert any("[VISION_LABEL_REPLACED] individual_id=theo old='Theo'" in r.message for r in caplog.records)
+        pairs = {(r[0], r[1], r[2], r[3]) for r in conn.execute(text(
+            "SELECT individual_a, individual_b, verdict, ask_id FROM vision_individual_pair_verdict")).fetchall()}
+        # Each story name links to the person she already typed that name for (case-insensitive).
+        assert ("anon", "maya-1", "same", "ask-story-1") in pairs
+        assert ("maya-1", "theo", "same", "ask-story-2") in pairs   # the earliest typed "Maya" (labeled_at)
+        assert conn.execute(text("SELECT status, answer FROM orion_ask WHERE ask_id='who-anon'")).one() == (
+            "answered", "maya")
+        assert conn.execute(text("SELECT count(*) FROM orion_ask WHERE applied_at IS NULL")).scalar() == 0
+        assert any("[VISION_SAME_NAME_LINK] individual_id=anon other=maya-1" in r.message for r in caplog.records)
+
+
+@needs_pg
+def test_story_name_skips_a_different_verdict_and_plain_answers_do_not_link(pg) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _add_individual(conn, "anon", n=3, face_n=0, face=None)
+        _add_individual(conn, "plain", n=3, face_n=0, face=None)
+        _add_individual(conn, "maya-1", n=3, face_n=0, face=None, label="Maya", labeled_at=NOW - timedelta(days=2))
+        conn.execute(text("INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, ask_id, "
+                          "decided_at) VALUES ('anon', 'maya-1', 'different', 'ask-pair', :t)"), {"t": NOW})
+        _add_individual(conn, "maya-2", n=3, face_n=0, face=None, label="Maya", labeled_at=NOW - timedelta(days=1))
+        _story_ask(conn, "ask-story-1", "vision_individual", "anon", answer="Maya", name="Maya")
+        # A plain "who is this?" answer (no story_id) keeps today's behaviour: no same-name link.
+        conn.execute(text("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, answer, "
+                          "answered_at) VALUES ('who-plain', 'q', 'vision_individual', 'plain', 'answered', 'Maya', :t)"),
+                     {"t": NOW - timedelta(minutes=5)})
+    with pg.begin() as conn:
+        vi._apply_answers(conn, NOW)
+    with pg.begin() as conn:
+        assert _label(conn, "anon")[0] == "Maya" and _label(conn, "plain")[0] == "Maya"
+        # maya-1 has a 'different' with anon: skipped, the next "Maya" is linked instead.
+        assert [tuple(r) for r in conn.execute(text(
+            "SELECT individual_a, individual_b, verdict FROM vision_individual_pair_verdict "
+            "ORDER BY 1, 2")).fetchall()] == [("anon", "maya-1", "different"), ("anon", "maya-2", "same")]
+
+
+@needs_pg
+def test_someone_else_on_a_story_records_crop_verdicts_and_the_split_moves_them(pg) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _add_individual(conn, "src", n=6, face_n=3, label="Alder", labeled_at=NOW - timedelta(hours=3),
+                        face=_vec(1, 0.4, 0))
+        _add_crop(conn, "k0", 0, member="src", face=FK, face_thumb="thumb:fk0")
+        _add_crop(conn, "b1", 1, member="src", emb=_vec(1, 0.1))
+        _add_crop(conn, "m0", 10, member="src", emb=_vec(1, 0.2))
+        _add_crop(conn, "m1", 11, member="src", emb=_vec(1, 0.3))
+        _add_crop(conn, "b2", 12, member="src", emb=_vec(1, 0.4))
+        _add_crop(conn, "f2", 30, member="src", face=_vec(1, 0.1, 0), face_thumb="thumb:ff2")
+        _add_sighting(conn, "s-a", "src", 0, 1, 2, thumb="thumb:b1", face_thumb="thumb:fk0", evidence="crop:b1")
+        _add_sighting(conn, "s-b", "src", 10, 12, 3, thumb="thumb:b2", evidence="crop:b2")
+        _add_sighting(conn, "s-c", "src", 30, 30, 1, thumb="thumb:f2", face_thumb="thumb:ff2", evidence="crop:f2")
+        pics = [{"image_ref": f"crop:{c}", "index": i, "verdict": "different", "crop_id": c, "name": "Cora"}
+                for i, c in enumerate(("m0", "m1"))]
+        _story_ask(conn, "ask-story-se", "vision_story_person", "src", action="someone_else", name="Cora",
+                   pictures=pics)
+        _story_ask(conn, "ask-story-un", "vision_story_person", "src", action="unsure", minute=1,
+                   pictures=[{"image_ref": "crop:b1", "index": 0, "verdict": "unsure", "crop_id": "b1", "name": None}])
+    with pg.begin() as conn:
+        vi._apply_answers(conn, NOW)
+    with pg.begin() as conn:
+        rows = [tuple(r) for r in conn.execute(text(
+            "SELECT ask_id, image_ref, individual_id, verdict, name, crop_id FROM vision_ask_picture_verdict "
+            "ORDER BY ask_id, picture_index")).fetchall()]
+        assert rows == [("ask-story-se", "crop:m0", "src", "different", "Cora", "m0"),
+                        ("ask-story-se", "crop:m1", "src", "different", "Cora", "m1"),
+                        ("ask-story-un", "crop:b1", "src", "unsure", None, "b1")]
+        # "Someone else" is not a name for src: its typed label is untouched.
+        assert _label(conn, "src") == ("Alder", False, "ask-name")
+    with pg.begin() as conn:
+        assert vs.apply_splits(conn, NOW, CFG) == {"splits": 1, "splits_refused": 0, "splits_skipped": 0}
+    with pg.begin() as conn:
+        row = _split_row(conn)
+        assert (row["status"], row["name"], row["ask_id"]) == ("split", "Cora", "ask-story-se")
+        new = row["new_individual_id"]
+        crops = dict(conn.execute(text("SELECT crop_id, individual_id FROM vision_crop_observation")).fetchall())
+        assert crops["m0"] == new and crops["m1"] == new and crops["k0"] == "src"
+        assert _label(conn, new) == ("Cora", False, "ask-story-se")
+
+
+@needs_pg
+def test_story_names_do_not_use_up_the_who_is_this_daily_cap(pg) -> None:
+    import json
+
+    from sqlalchemy import text
+
+    day = vi.local_day_start(NOW, ZoneInfo("America/Denver"))
+    face = json.dumps([vi.FACE_RULE_REF])
+    with pg.begin() as conn:
+        for i in range(3):
+            _add_individual(conn, f"p{i}", n=3, face_n=0, face=None)
+            _story_ask(conn, f"ask-story-{i}", "vision_individual", f"p{i}", answer=f"N{i}", name=f"N{i}")
+        conn.execute(text("UPDATE orion_ask SET created_at = :t"), {"t": NOW})
+        assert conn.execute(text(vi.ASKED_TODAY_SQL), {"d": day, "face": face}).scalar() == 0
+        conn.execute(text("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, created_at) "
+                          "VALUES ('who-real', 'q', 'vision_individual', 'p0', :t)"), {"t": NOW})
+        assert conn.execute(text(vi.ASKED_TODAY_SQL), {"d": day, "face": face}).scalar() == 1

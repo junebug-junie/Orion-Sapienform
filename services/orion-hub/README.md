@@ -4056,3 +4056,31 @@ Peer brief offers now carry the investigation run ID; completed investigations
 emit a separate completion receipt. Prompt-authored decisions cite existing Hop
 records. Deploy the updated peer consumer before this Hub producer. See
 [peer ask episodes](../../docs/peer-ask-episodes.md) for contracts and rollout.
+
+### Walkway stories: who is this story about? (2026-10-18)
+
+The "Walkway stories" card (Vision panel, "Walkway (live)") shows one box per
+person in each story: the walker, and anyone it walked with. Each box shows the
+name Orion has for that individual, or "unnamed person (individual <short id>)".
+Juniper can type a name, say "Someone else" (optionally typing who it really
+is), or say "Not sure". Route: `POST /api/vision/motion-stories/{story_id}/people/{individual_id}`
+(`scripts/motion_story_routes.py`).
+
+Nothing new stores identity. Each answer is an `orion_ask` row, written already
+answered, that orion-sql-writer applies on its own clock:
+
+- A name is a `vision_individual` ("who is this?") answer with
+  `answer_detail.story_id`: a typed label, last typed name wins, a same-name
+  link to an individual already given that name, and the usual
+  `orion:ask:answered` event for the substrate entity. It does not count
+  against the "who is this?" opener's daily cap.
+- "Someone else" / "Not sure" is a `vision_story_person` row with one picture
+  verdict per story crop; "someone else" crops go to the split pass (which
+  refuses when they would be most of that individual's pictures).
+
+A correction of the name the story was written with also records the story's
+"Wrong name" verdict, unless the story already has a verdict about something
+else. The sentence shown is re-derived on read: Juniper's latest name or
+"someone else" on that story wins; otherwise the strict naming rule
+(`orion/vision/story_naming.py`) on today's names. The stored sentence is shown
+as "Orion first wrote: ..." when it differs.

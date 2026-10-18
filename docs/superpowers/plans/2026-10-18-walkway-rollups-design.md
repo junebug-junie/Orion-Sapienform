@@ -33,7 +33,10 @@ dream-side candidate shape; not trivial).
   (`VISION_MOTION_PROP_INDIVIDUAL_IDS`), no-embed zones, and vehicles seen in 4+ different
   hours of the trailing 24 h (`parked_repeat`).
 - **Camera minutes** = minutes with a `vision_scene_inventory` row. < 15 of 60 = down;
-  < 50 = partial. A child period with no row = "No record".
+  < 50 = partial. Too few minutes but sightings anyway = "unknown" ("camera record
+  incomplete": the frame record is missing, the camera was not down). A child period with no
+  row = "No record"; a parent's camera status is computed only over children that have a row,
+  and a parent with no child rows is "no record", never "camera was down".
 - **Peak at once** = most of each kind in one vision window (`vision_scene_inventory.counts`).
 - **Regulars** = unnamed individuals seen on 2+ days (day: also in one of the 6 earlier day
   rows; week/month: 2+ days inside the period).
@@ -41,6 +44,10 @@ dream-side candidate shape; not trivial).
   to 7 earlier days; day: 7 days; week: 4; month: 3), only with 3+ periods.
 - **Captions**: distinct `camera_caption` rows, 3 per hour, 5 per day/week/month, always
   labelled as one-frame captions.
+- **Journal guard**: a walkway entry's counts must be numeric values of its seed (or numbers
+  in its template lines); dates, years and clock times are taken out first so a date part or
+  a minute cannot vouch for a count; each HH:MM in the prose must be a time the seed names.
+  Otherwise the body becomes the template line.
 - **Stories**: included only when the motion-story spot-check gate passed
   (`orion/vision/motion_story_gate.py`, shared with the Hub card). Today: closed (8 checked).
 
@@ -97,5 +104,8 @@ dream-side candidate shape; not trivial).
 - Retina decode corruption is only in the retina's live /health; it shows here only as
   missing minutes when frames are dropped.
 - Dreams replay source: not built.
+- The nightly journal runs at 22:30, so day/week/month entries cover up to 22:00 (the line
+  says "so far, through 22:00"); the last ~2 h reach the Hub, the letter and curiosity, not
+  that night's entry.
 - Labels are read at build time: a rename shows up in rows rebuilt after it (recent hours,
   today), not in closed older rows.

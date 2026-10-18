@@ -321,9 +321,10 @@ def test_engine_waits_for_the_individuals_reducer():
 PG = os.getenv("ORION_TEST_PG_URI", "")
 needs_pg = pytest.mark.skipif(not PG, reason="ORION_TEST_PG_URI not set (throwaway Postgres only)")
 
+# Own schema: the CI database is shared with the other walkway Postgres tests, which need
+# the real tables in `public`. Every statement here lands in SCHEMA only.
+SCHEMA = "walkway_rollup_test"
 _RAW_DDL = """
-DROP TABLE IF EXISTS vision_rollup, vision_individual_sighting, vision_individual, vision_individuals_cursor,
-    vision_scene_inventory, vision_events CASCADE;
 CREATE TABLE vision_individual (individual_id TEXT PRIMARY KEY, stream_id TEXT, kind TEXT, label TEXT,
     stationary BOOLEAN NOT NULL DEFAULT false);
 CREATE TABLE vision_individual_sighting (sighting_id TEXT PRIMARY KEY, individual_id TEXT, stream_id TEXT,
@@ -336,17 +337,29 @@ CREATE TABLE vision_events (event_id TEXT PRIMARY KEY, event_type TEXT, narrativ
 """
 
 
+def _schema_uri() -> str:
+    sep = "&" if "?" in PG else "?"
+    return f"{PG}{sep}options=-csearch_path%3D{SCHEMA}"
+
+
 @pytest.fixture()
 def pg():
     from sqlalchemy import create_engine, text
 
-    engine = create_engine(PG)
+    admin = create_engine(PG)
+    with admin.begin() as conn:
+        conn.execute(text(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE"))
+        conn.execute(text(f"CREATE SCHEMA {SCHEMA}"))
+    engine = create_engine(_schema_uri())
     with engine.begin() as conn:
         for stmt in _RAW_DDL.split(";"):
             if stmt.strip():
                 conn.execute(text(stmt))
     yield engine
     engine.dispose()
+    with admin.begin() as conn:
+        conn.execute(text(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE"))
+    admin.dispose()
 
 
 @needs_pg
@@ -377,11 +390,11 @@ def test_postgres_path_writes_rows_reads_them_back_and_is_idempotent(pg):
                           "'[\"camera_caption\",\"detector:dog\"]', :t, 'walkway')"), {"t": day0 + timedelta(hours=8, minutes=6)})
     cfg = RollupConfig(settle_sec=60, prop_individual_ids=())
     with pytest.raises(MigrationMissing):
-        run_one_rollup_cycle(postgres_uri=PG, cfg=cfg, now=now, since=day0)
+        run_one_rollup_cycle(postgres_uri=_schema_uri(), cfg=cfg, now=now, since=day0)
     sql = (REPO / "services/orion-sql-db/manual_migration_vision_rollup_v1.sql").read_text()
     with pg.begin() as conn:
         conn.execute(text(sql))
-    out = run_one_rollup_cycle(postgres_uri=PG, cfg=cfg, now=now, since=day0)
+    out = run_one_rollup_cycle(postgres_uri=_schema_uri(), cfg=cfg, now=now, since=day0)
     assert out["streams"][0]["hours"] == 21 and out["streams"][0]["story_gate_passed"] is False
     with pg.connect() as conn:
         n1 = conn.execute(text("SELECT count(*) FROM vision_rollup")).scalar()
@@ -395,7 +408,7 @@ def test_postgres_path_writes_rows_reads_them_back_and_is_idempotent(pg):
     assert "busiest 08:00 (2, most at once 2 people)" in day.line
     assert "so far, through 21:00" in day.line and "No record" not in day.line
     assert "Camera down" in day.line and "03:00–04:00" in day.line
-    run_one_rollup_cycle(postgres_uri=PG, cfg=cfg, now=now, since=day0)
+    run_one_rollup_cycle(postgres_uri=_schema_uri(), cfg=cfg, now=now, since=day0)
     with pg.connect() as conn:
         assert conn.execute(text("SELECT count(*) FROM vision_rollup")).scalar() == n1
         assert conn.execute(text("SELECT rollup->'total'->>'passings' FROM vision_rollup WHERE grain='day'")
@@ -404,7 +417,7 @@ def test_postgres_path_writes_rows_reads_them_back_and_is_idempotent(pg):
     with pg.begin() as conn:
         conn.execute(text("DELETE FROM vision_rollup"))
     mem = MemoryStore()
-    run_one_rollup_cycle(postgres_uri=PG, cfg=cfg, now=now, since=day0, write=False, memory=mem)
+    run_one_rollup_cycle(postgres_uri=_schema_uri(), cfg=cfg, now=now, since=day0, write=False, memory=mem)
     assert mem.rows
     with pg.connect() as conn:
         assert conn.execute(text("SELECT count(*) FROM vision_rollup")).scalar() == 0

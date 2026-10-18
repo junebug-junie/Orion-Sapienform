@@ -133,9 +133,13 @@ PG = os.getenv("ORION_TEST_PG_URI", "")
 def test_sql_runs_against_postgres():
     from sqlalchemy import create_engine, text
 
-    engine = create_engine(PG)
+    schema = "walkway_seen_test"  # own schema: never touch the shared CI database's public tables
+    admin = create_engine(PG)
+    with admin.begin() as conn:
+        conn.execute(text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
+        conn.execute(text(f"CREATE SCHEMA {schema}"))
+    engine = create_engine(f"{PG}{'&' if '?' in PG else '?'}options=-csearch_path%3D{schema}")
     with engine.begin() as conn:
-        conn.execute(text("DROP TABLE IF EXISTS vision_rollup, vision_individual CASCADE"))
         conn.execute(text("CREATE TABLE vision_individual (individual_id TEXT PRIMARY KEY, stream_id TEXT, "
                           "label TEXT, label_copied BOOLEAN NOT NULL DEFAULT false)"))
         conn.execute(text("INSERT INTO vision_individual VALUES ('ind-sam','walkway','Sam',false), "
@@ -157,3 +161,6 @@ def test_sql_runs_against_postgres():
     # only the complete day; the copied-label sighting links to the typed individual's node
     assert out == [{"day": "2026-10-16", "stream": "walkway", "people": ["Sam"], "edges": 1, "edges_created": 1}]
     engine.dispose()
+    with admin.begin() as conn:
+        conn.execute(text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
+    admin.dispose()

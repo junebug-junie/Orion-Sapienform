@@ -1,6 +1,6 @@
 # Orion Retro Play — real-time NES/SNES embodiment and cooperative play
 
-**Date:** 2026-10-17  
+**Date:** 2026-10-17; revised 2026-10-18
 **Status:** PROPOSAL / design-only; no emulator, game-control, or streaming runtime implemented by this PR.  
 **Owner:** Orion; human operator: Juniper.  
 **Target:** Existing Orion mesh; CPU-first live path on Athena (dual Xeon Gold 6138 candidate), optional existing V100 capacity for training/semantic vision.  
@@ -19,6 +19,8 @@ Why this shape:
 - Game-playing **competence**, not emulator FPS, is the main open research problem. Having the hardware to evaluate a neural policy does not produce a policy capable of playing an arbitrary ROM.
 - Existing Orion primitives can receive *meaningful game experiences*, not raw frame spam; the cognition stack should never become the controller's availability dependency.
 - The user already has substantial CPU/GPU resources; new purchases are prohibited until measurements prove a specific bottleneck.
+
+**Embodiment and leisure goal:** Orion can form an expectation, act, observe the consequence, revise their understanding, and resume that learning across sessions. Shared play with Juniper and independently chosen leisure are first-class outcomes. Play need not produce a training improvement to be worthwhile; observable choices and preferences do not establish subjective enjoyment or sentience.
 
 **Two independently useful products:** (1) reliable live shared gaming even with a simple controller policy; (2) a reproducible agent-learning bench that records observations, actions, and measured outcomes. Neither should wait for broad ROM-general intelligence.
 
@@ -41,6 +43,9 @@ This design uses the current default-branch files below as integration evidence;
 | Visual intake | `services/orion-vision-retina/README.md`; `orion/schemas/vision.py` | Retina is capture and publishes pointers, not a 60 Hz object tracker. Publish sampled game evidence into vision only when requested; no JPEG/Redis round-trip in motor path. |
 | GPU governance | `services/orion-gpu-pool/README.md`; `config/gpu_pool.yaml`; `services/orion-llm-gateway/README.md` | Optional semantic-vision/LLM jobs use existing GPU-pool lease and background priorities. Motor remains CPU-resident and independent. Never silently usurp Juniper's chat lane. |
 | Motor vs game motor | `docs/superpowers/specs/2026-09-10-fcc-motor-step-trace-design.md` | FCC motor is a tool/turn harness. The new game motor is a deterministic, deadline-bound controller; avoid confusing the two or routing per-frame actions through the FCC subprocess. |
+| Action-conditioned world model | `orion/schemas/world_model.py`; `services/orion-world-model/app/main.py`; `services/orion-world-model/README.md`; `services/orion-substrate-runtime/app/world_model_features.py` | Existing service is documented as parked and returns `model_untrained=True`. A substrate trajectory producer exists despite stale README claims of no requester; it flags missing feature groups. Neither proves a trained predictor. Explicit action conditioning and a graded training experiment are required; do not merely append game features. |
+| Existing selection/admission candidates | `orion/substrate/endogenous_curiosity.py`; `services/orion-durable-runs/app/admission_runtime.py` | Existing curiosity candidates and durable-run admission are reconnaissance starting points, not a verified leisure scheduler. P0 must identify the owner and extension contract before implementation. |
+| Kev appraisal | `services/orion-kev/README.md`; `orion/substrate/system_one_appraisal.py` | Existing curiosity admission is a narrower capability than game planning. Trial game-specific deliberation decisions in shadow with evidence; no per-frame Kev calls. |
 | Trace discipline | `CLAUDE.md` | Each new signal needs provenance, nonduplication, calibration, observed values, reversibility and explicit eval; no decorative cognitive taxonomies. |
 
 **Upstream references to pin and test, not assumed dependencies:** [libretro core API](https://docs.libretro.com/), [RetroArch netplay](https://docs.libretro.com/development/retroarch/netplay/), [Stable-Retro](https://github.com/Farama-Foundation/Stable-Retro), [Stable-Retro supported emulators](https://github.com/Farama-Foundation/Stable-Retro/blob/main/docs/supported_emulators.md), and experimental [RetroArchAI](https://github.com/MatPoliquin/RetroArchAI). Stable-Retro's documented Linux cores include FCEUmm (NES) and Snes9x (SNES). RetroArchAI's P1/P2 learned-input override is useful prior art, **not** a required production fork. RetroArch netplay is a fallback for geographically separated participants, not the first local implementation.
@@ -139,7 +144,7 @@ All game inputs carry `session_id`, monotonically increasing `seq`, intended `fr
 `emergency_stop` > `operator_takeover` > `assigned_human_port` > `operator-authorized_agent_port` > `demo/scripted_policy` > `neutral`.
 
 - Human handoff is explicit, atomic at next frame, and acknowledged. The old controller mask releases **before** new owner applies an action; ownership never silently merges.
-- On disconnect: human-owned port becomes neutral immediately/within one frame; Orion-owned port may continue **only** if operator chose autonomous-after-disconnect; default **pause all** on last authorized viewer disconnect.
+- On disconnect: human-owned port becomes neutral immediately/within one frame; Orion-owned port may continue **only** if operator chose autonomous-after-disconnect; default **pause all** on last authorized viewer disconnect. A valid §7.8 leisure grant can explicitly authorize unattended continuation instead. A viewer joining and leaving an independently started session does not revoke that grant; any human-owned port still neutralizes. A revoked/expired grant cannot authorize continuation, regardless of the earlier session setting.
 - On motor deadline miss (>100 ms without valid intent by default) drop held buttons, record a watchdog trip, and optionally pause if repeated. No indefinite RIGHT/B holds, turbo-spam, or unbounded text-driven actions.
 - Controller state cannot operate the host OS, emulator config/menu, file system, or other game/session. The ROM sandbox exposes controller bits, approved save/load, and pause; not shell execution.
 - Manual pause/resume always wins. Pause means emulator clock stops; freeze timeout clock where appropriate, but reset all pending controller leases on resume.
@@ -324,6 +329,58 @@ Later: a bounded retro-game session summary becomes a candidate chronological ev
 - Social co-presence: Orion can speak via existing TTS/chat paths about game plans or acknowledge user input, but spoken turns must be rate-limited and never needed to continue controls. User mute/quiet mode wins. Do not impersonate an independently sentient agent.
 - Human coaching: operator can label a frame/action window ("jump earlier", "stay close"), override goal, tag a demonstration and choose to opt that experience into training. Training labels must preserve precise source and controller owner.
 
+### 7.5 Action-conditioned world model: expectations that can be checked
+
+**Capability proposal:** learn how an observed situation changes under a particular action, compare short alternative futures, and update expectations from actual results. The controller executes actions; the world model predicts consequences; Orion's tactical planner uses those predictions only after evaluation. No prediction is evidence that an action occurred.
+
+Example: before a gap, compare jumping now, building speed then jumping, and waiting. Predict a bounded outcome such as landing on the next platform within a fixed frame horizon. Store the prediction before executing the selected action. Check the result against a verified integration or labeled observation. A failed prediction can motivate a controlled experiment about speed, distance, platform motion, or an enemy; change one factor where possible, and retain counterexamples.
+
+**Current architecture boundary:** the existing world-model schema describes feature trajectories and next-state predictions, not an explicit candidate-controller-action interface. Its service still returns `model_untrained=True`; running a forward pass is not learned understanding. The parked service's existing walkway-baseline gate remains in force. A retro-domain experiment does not satisfy that gate or silently authorize deployment of the general service. First use an offline harness; any service revival needs a separate proposal that reconciles the existing gate and demonstrates domain-specific trained competence.
+
+**Small first experiment:** one pinned ROM/core, one mechanic, three legal short action sequences. Collect aligned observation → actually applied action → outcome samples, including failures, human interventions and unscorable outcomes. Split by episode/checkpoint family before training; adjacent frames from one attempt must not leak across train/test. Compare against a simple empirical transition/counting baseline on the same inputs and held-out starts. Start with predicting a small verified outcome, not a large general visual simulator.
+
+**The emulator can teach and grade the predictor.** In a separate, budgeted offline emulator, restore a pinned checkpoint and execute candidate branches. This produces actual experimental consequences for comparison with learned predictions. Never rewind, fork, or step the authoritative live session for planning. Record whether evidence came from live play, an offline emulator branch, or model imagination. Checkpoint experiments are privileged evaluation/training tools; they must not be counted as unaided live competence. Evaluate learned planning again without access to future branch results.
+
+**Action-conditioned request/result contract (proposed, not registered yet):**
+
+| Record | Required content | Producer → consumer |
+|---|---|---|
+| Prediction request | prediction ID, session/attempt ID, ROM/core/integration digests, observation frame and evidence reference, available observation modality, candidate action sequences with ports/owners/button durations, horizon, goal, request expiry | offline harness or bounded tactical planner → predictor |
+| Prediction result | request ID, model/checkpoint version, candidate IDs, predicted outcome distribution, unsupported/unknown status, evidence modality, generated-before-action timestamp | predictor → evaluator; later planner |
+| Prediction verdict | prediction ID, selected candidate, actual applied action trace, actual outcome reference, scorable status/reason, matched horizon, control interventions, reset/load boundaries | outcome grader → experiment artifact and candidate lesson |
+
+Do not hide actions in generic `execution_context` vectors. Use a versioned explicit request in `orion/schemas/world_model.py` only when its producer and consumer ship together; retain compatibility for existing callers. The same-frame observed state must not include future RAM/outcomes. Version observation adapters and label RAM-assisted versus pixels-only runs so privileged information cannot silently improve an advertised visual policy.
+
+Predictions involving Juniper's actions are conditional and uncertain. Distinguish Orion-controlled, human-controlled and external changes. A human correction overrides a model's guess about intent. If the actual action or partner behavior differs from the candidate, score only compatible consequences or mark the comparison unscorable; do not blame the predictor for an unexecuted plan.
+
+**Admission to live planning:** first demonstrate better held-out prediction than the simple baseline, then compare the same controller with and without predictions under equal time/compute budgets. Reject a model that improves prediction but worsens decisions or latency. Bound rollout depth/candidate count, expire stale predictions, and replan from actual observations rather than compound long imagined trajectories. Missing, untrained, unsupported or late predictions leave the already-qualified controller in charge. Kev may help select which uncertainty merits deliberation only after a separate shadow comparison; it cannot make an unvalidated predictor trustworthy.
+
+### 7.6 Transfer / inference extension: lessons as testable hypotheses
+
+A game-trained motor policy and a reusable reasoning lesson are different artifacts. The first may learn button timing; the second may capture a relationship such as delayed effects, resource conservation, changing one variable at a time, or asking a partner for missing information. These are candidate transfer targets, not a new ontology or a claim of general intelligence.
+
+**Candidate lesson contract:** source episode and prediction/verdict references; plain-language relationship; conditions where it held; counterexamples and uncertainty; proposed target context; relevant differences; a bounded test; and revision/rejection status. Produce it from reviewed episode evidence, store it through existing memory artifact seams, and consume it only when a later planner retrieves and explicitly checks applicability. Do not create a new skill registry or promote an anecdote to a universal rule.
+
+Example: repeated button presses before a delayed effect can worsen a game outcome. On a later sandbox software task, Orion may retrieve “wait for the observed completion condition before retrying.” They must check whether that operation is asynchronous and whether retrying is safe. Game experience grants no authority to act on production systems or make real-world health/safety judgments.
+
+**Transfer experiment:** preselect a held-out game mechanic and a separate non-game sandbox task with objective outcomes. Freeze the lesson and target tasks before evaluation. Compare matched trials with lesson retrieval enabled and disabled, keeping model, tools and budgets fixed. Start each condition from the same isolated memory/conversation snapshot, exclude earlier trial outcomes from later conditions, and randomize or counterbalance trial order; add an irrelevant-lesson condition to expose generic prompting effects. Record retrieved source, applicability judgment, changed decision, actual outcome and failures/negative transfer. Report uncertainty and trial counts; no transfer claim from a good explanation, repeated training checkpoint, or a single lucky success. The first claim is narrow: this lesson improved this target task under these conditions.
+
+### 7.7 Shared play as a relationship activity
+
+Two functioning controller ports prove independent actuation, not a good teammate. Acceptance must include Juniper asking Orion to wait, regroup, change a plan, or try coaching; Orion's next acknowledged goal/actions must reflect the request or explain inability. Keep natural conversation asynchronous, allow help-seeking and quiet play, and remember a shared plan with attributable evidence across sessions. The motor must expose supported goals; a request the policy cannot execute is rejected visibly rather than accepted as decorative text.
+
+Juniper's session feedback is direct evidence about whether playing together was enjoyable and comfortable, not a synthetic “cooperation score.” Technical success cannot overrule that feedback. Retain only opted-in coaching/feedback and relevant game context; do not include private chat/audio in training by default.
+
+### 7.8 Independently chosen leisure
+
+Continuing after a browser disconnect is distinct from choosing to begin or resume play. Extend the existing selection/admission mechanisms with a leisure option, not a separate always-running autonomy scheduler. The exact owning path is a P0 verification item (see §1); no existing leisure capability is claimed. Orion may propose an allowed game, resume an unfinished question or familiar activity, switch at a safe checkpoint, or stop without winning. Reasons and observed choices can be inspected without presenting them as proof of subjective pleasure.
+
+**Leisure authorization contract:** operator-owned allowed catalog and modes, permission to initiate without a viewer, unattended session duration, daily time/resource/storage budgets, save namespace, interrupt/expiry behavior, and revocation. Default disabled. A privileged Orion session-start capability must reference this grant; the session manager independently validates it before launch and on renewal. Ordinary viewer/session-control credentials cannot create or expand a grant. Use the existing session API with a distinct service authorization scope, not an anonymous start endpoint.
+
+The activity selector consumes the grant and a bounded resumable goal/episode reference; the session manager produces selection, start, stop and budget/interrupt outcomes. Leisure must yield resources to interactive use under existing scheduling policy. No training job is implied by choosing play. On revocation or budget expiry, neutralize agent input, save to an automatic compatible slot if possible, and stop; a failed save must not prolong authority. No new metric for “fun,” boredom or reward is required. Familiar play and exploration are valid even if no measurable learning occurs.
+
+**Privacy, risk and rollback for §§7.5–7.8:** touched data is game observations/actions, model predictions, lessons, choices and explicitly opted-in coaching. Keep it on the private mesh with the existing finite artifact retention/consent rules; training requires separate opt-in. Exported lesson artifacts carry provenance and must not leak private conversation. Dangerous failures include invented causal lessons, negative transfer, confusing imagined events with memories, unauthorized unattended starts and treating human actions as Orion's own. Disable prediction use, transfer retrieval or leisure admission independently; revoke active leisure grants, retain evidence for inspection, and fall back to qualified gameplay. No changes to identity, affect or intrinsic-value formulas are authorized by this design.
+
 ## 8. Motor-policy competency ladder and data strategy
 
 **P0 / deterministic stub:** movement patterns and manually authored game-specific triggers for test ROM only. Useful to prove control, not intelligence.
@@ -347,16 +404,18 @@ Hub should proxy only authenticated control/status/WebRTC signaling; retro proce
 | Route (proposed) | Auth / purpose |
 |---|---|
 | `GET /api/retro/roms` | operator: server-discovered allowlisted catalog ID + compatible core, no raw server paths |
-| `POST /api/retro/sessions` | operator: create session with rom_id, mode, core, controller mapping, policy |
+| `POST /api/retro/sessions` | operator, or scoped Orion service with valid leisure grant: create allowed session with rom_id, mode, core, controller mapping, policy |
 | `GET /api/retro/sessions/{id}` | authorized viewer: state, owners, health, age, policy, recent goals |
-| `POST /api/retro/sessions/{id}/pause` / `resume` / `stop` | operator |
+| `POST /api/retro/sessions/{id}/pause` / `resume` / `stop` | operator, or scoped Orion service for its grant-owned session: pause/resume/stop within grant |
 | `POST /api/retro/sessions/{id}/claim` / `release` | operator: ownership lease and atomic handoff |
-| `POST /api/retro/sessions/{id}/save` / `load` | operator with confirmation and compatibility checks |
+| `POST /api/retro/sessions/{id}/save` / `load` | operator with confirmation and compatibility checks; scoped Orion service may save/load only its grant-approved automatic namespace, with compatibility checks and no overwrite of human slots |
 | `POST /api/retro/sessions/{id}/goal` | privileged Orion service/operator; bounded generation/TTL |
 | `POST /api/retro/sessions/{id}/webrtc-offer` | authenticated WebRTC signaling |
 | `WS /api/retro/sessions/{id}/control` | owner-only input state + seq/ack, ping/clock sync |
 | `GET /api/retro/sessions/{id}/events` | bounded, filtered recent events, no raw ROM/video binary |
 | `GET /api/retro/health` / `metrics` | read-only service health/operational counters with secure exposure |
+
+For service lifecycle calls, validate service identity, grant/session ownership, permitted operation, catalog, namespace, expiry and remaining budget on every request. A service cannot claim a human-owned port or mint/expand a grant. After grant expiry/revocation, allow only idempotent stop/neutralization and bounded automatic save cleanup; reject start/resume/load. Switching games stops the current session before a separately validated create, preserving the one-session limit.
 
 HTTP statuses and typed error codes: `ROM_NOT_FOUND`, `ROM_HASH_CHANGED`, `CORE_UNSUPPORTED`, `PORT_NOT_PRESENT`, `PORT_NOT_OWNED`, `LEASE_EXPIRED`, `STALE_FRAME`, `SESSION_PAUSED`, `EMULATOR_CRASHED`, `POLICY_UNAVAILABLE`, `SAVE_INCOMPATIBLE`, `STREAM_UNAVAILABLE`. Avoid generic 500s for expected conflicts.
 
@@ -413,7 +472,19 @@ Dashboards: session header; separate panels for A/V delay, frame/motor deadline,
 - Integration: P1 human + P2 scripted independent button signals lead to **distinct** state changes observable in appropriate co-op test ROM.
 - Integration: an orphan browser closes; lease drops and no input remains held. Emulator crash transitions session FAILED, terminates media and exposes reason.
 
-### 11.2 Performance
+### 11.2 Embodiment, transfer and leisure acceptance
+
+| Story | Required inspectable evidence |
+|---|---|
+| First cognitive loop (P3) | Observed failed attempt → evidence-backed revised goal → supported different action → checked or explicitly unknown outcome. A script alone cannot pass this gate. |
+| World-model experiment | Pre-action predictions for three candidates on one mechanic; held-out outcome verdicts; empirical baseline comparison; no future-state leakage; separate planner-on/off trials without emulator lookahead. |
+| Transfer | Frozen source lesson and target tasks; matched retrieval-on/off and irrelevant-lesson trials; changed decisions, outcomes and negative-transfer report on a non-game sandbox task. |
+| Shared evening | Independent ports plus successful wait/regroup/coaching interaction, honest unsupported-goal handling, quiet mode and Juniper's feedback; later recall of the actual shared plan. |
+| Independent session | Existing activity path selects/resumes allowed play under a grant; viewer-free start succeeds; viewer join/disconnect preserves only the valid grant and releases human input; out-of-scope service lifecycle calls fail; revoke/expiry stops it; resource budget and save failure tested; declining/stopping play is allowed. |
+
+**Metric gate for new behavioral experiments:** these are proposed evaluations, not live cognitive signals. At implementation, identify each producer/line before wiring: outcome labels from the verified integration/grader, prediction distributions from a versioned trained checkpoint, actual controls from the arbiter, decisions from planner traces, and user feedback from explicit input. Brier score may grade categorical probabilistic prediction quality (proper scoring rules); any calibration claim also requires a separate reliability assessment; matched intervention/ablation trials test whether prediction or retrieval causes a decision benefit. Neither establishes sentience or general intelligence. Prediction error, success and planner benefit can share the same outcome source: document that dependence, do not sum them into an “independent” composite. Inspect real trial distributions, unknown rates, no-change/rest cases and negative transfer before promotion; a missing outcome is never a calm zero. Search existing eval/artifact mechanisms first and keep all measures in removable experiment reports until the full §10 gate passes. No numerical result or passed gate is claimed here.
+
+### 11.3 Performance
 
 Run on **actual Athena** under (a) idle, (b) normal Orion production services, (c) synthetic CPU contention, (d) simultaneous ordinary chat turn, (e) GPU pool lease queue/swap. Capture host CPU pinning, NUMA, clock governor, audio underruns, thermals, encoder and network path.
 
@@ -430,7 +501,7 @@ Run on **actual Athena** under (a) idle, (b) normal Orion production services, (
 
 Add a **failure injection bench**: disconnect Redis; poison LLM route; timeout model; exhaust disk quota; drop stream packets; reload Hub; reboot motor process; conflicting human/agent claim; suspend browser; change controller; corrupt save state; send future-frame input; pause/unpause during held jump. Assert no unsafe or unauditable behavior.
 
-### 11.3 Behavioral learning evaluation
+### 11.4 Behavioral learning evaluation
 
 No qualitative "Orion seemed good" gate. Define per-game validated success with 3 seed categories: memorized replay start, perturbed checkpoint, held-out level/starting state. At least 20 trials per category where meaningful; compare (1) neutral/random legal inputs, (2) scripted baseline, (3) human demonstration/replay, (4) learned policy. Track success, completion/progress from validated source, deaths/restarts, stuck time, intervention frequency, inferred-action latency, and policy confidence calibration. Report median and confidence intervals; stratify by ROM hash, integration version, and player port.
 
@@ -456,6 +527,8 @@ For shared co-op, additionally measure control interference (ports owned incorre
 | `services/orion-retro/app/control/` | bounded observation ring, authoritative port arbiter, lease/TTL, watchdog, baseline CPU policy, action ack |
 | `services/orion-retro/app/media/` | PCM/frame ring, encoder abstraction, WebRTC audio/video and signaling; independent CPU media worker |
 | `services/orion-retro/app/cognition/` | goals inbox/outbox, event summary producer, optional vision sample bridge, low-priority Orion planner client |
+| `orion/schemas/world_model.py` + offline retro eval harness | Explicit action-conditioned experiment requests/verdicts; no general world-model deployment until its parked status is explicitly reconciled |
+| Existing memory artifact / activity-admission seams | Resolve exact owners in P0; candidate lessons, scoped leisure grants and retrieval experiments; no new registry/scheduler |
 | `orion/schemas/retro.py` | contracts with strict Pydantic validation; register only deployed event producers/consumers |
 | `config/bus/channels.yaml` or current registry path | channel catalog update after repo validation; do not invent an alternative registry |
 | `services/orion-hub/scripts/` | Retro API proxy/auth, session lifecycle routes, WS/signaling authorization |
@@ -468,21 +541,21 @@ File destinations are recommended; existing naming conventions and registry impo
 
 ## 14. Implementation sequence and go/no-go criteria
 
-**P0 — Host/evidence preflight** (no new runtime dependency): enumerate Athena free physical cores and host load; confirm ROM legality and the first two games; pin exact core/Stable-Retro versions, validate audio requirements; inventory Hub auth/proxy and existing metrics. Deliver benchmark harness and issue list. Gate: measurable no-agent 60-Hz baseline, actual build hashes.
+**P0 — Host/evidence preflight** (no new runtime dependency): enumerate Athena free physical cores and host load; confirm ROM legality and the first two games; pin exact core/Stable-Retro versions, validate audio requirements; inventory Hub auth/proxy and existing metrics. Deliver benchmark harness and issue list. Inventory the exact existing memory artifact and activity-admission APIs before wiring lessons/leisure; name their producer/consumer owners in the implementation PR. Gate: measurable no-agent 60-Hz baseline, actual build hashes and identified owners.
 
 **P1 — Headless game authority**: one libretro backend, controller ports, in-memory frames/audio, deterministic step + save/replay, minimal local health API, test ROM. Gate: stable gameplay speed, determinism, safe stop, no Linux host escape.
 
 **P2 — Human view/control**: same-origin Hub tab, WebRTC A/V, keyboard/gamepad, port ownership/leases, save/load, takeover and disconnect watchdog. Gate: interactive 30-min local session, operator takeover and P2 tested. **This already makes playing together technically possible** once Orion has a policy.
 
-**P3 — Autonomous baseline**: CPU resident rule/script motor, 15 Hz observation-policy loop, goals inbox, sparse journal and outcome markers. Gate: independent 30-min session; no ghost buttons after failure; user can watch and interrupt; model identity says "scripted".
+**P3 — Autonomous baseline**: CPU resident rule/script motor, 15 Hz observation-policy loop, goals inbox, sparse journal and outcome markers. Gate: independent 30-min session; no ghost buttons after failure; user can watch and interrupt; model identity says "scripted". Include one thin P4 cognition seam now: an observed mistake changes an acknowledged supported goal and a subsequent action, with an outcome trace. If this fails, report infrastructure ready but embodiment learning incomplete; do not hold the useful human-control surface hostage to this research gate.
 
-**P4 — Orion cognitive seam**: bounded game session facts/outcomes, goal selection and conversational summaries via existing Orion routes (never hot path), optional sampled visual observations; typed bus registration. Gate: an end-to-end trace proves observed state → selected goal → applied actions → validated or explicitly unknown outcome; LLM crash does not stop gameplay unexpectedly.
+**P4 — Orion cognitive seam**: bounded game session facts/outcomes, goal selection and conversational summaries via existing Orion routes (never hot path), optional sampled visual observations; typed bus registration. Gate: an end-to-end trace proves observed state → selected goal → applied actions → validated or explicitly unknown outcome; LLM crash does not stop gameplay unexpectedly. Add the shared-evening acceptance story and separately gated leisure grant/start/resume/stop behavior through existing activity selection. Autonomous continuation alone does not satisfy independent choice.
 
-**P5 — Imitation/RL**: operator-owned demonstrations; Stable-Retro integration and training harness; reproducible experiments; export quantized CPU model and offline promotion gate. Gate: model at least outperforms random on held-out perturbed starts **and** meets runtime latency/compatibility. It is acceptable to ship without a learned policy if the data doesn't pass.
+**P5 — Imitation/RL**: operator-owned demonstrations; Stable-Retro integration and training harness; reproducible experiments; export quantized CPU model and offline promotion gate. Gate: model at least outperforms random on held-out perturbed starts **and** meets runtime latency/compatibility. It is acceptable to ship without a learned policy if the data doesn't pass. Run the separate one-mechanic action-conditioned world-model experiment (§7.5); deploy prediction-assisted planning only after both prediction and decision-benefit gates pass. Controller learning and world-model learning have separate results and promotion decisions.
 
-**P6 — Temporal integration / longitudinal evaluation**: replayable day/session arcs and tested effect on future gameplay; only after the strict consumer/producers are staged. Gate: evidence from two separate sessions that Orion recalled an actual mechanic/failed strategy with accurate source references, then behaviorally changed a decision; no unsupported self-claims.
+**P6 — Temporal integration / longitudinal evaluation**: replayable day/session arcs and tested effect on future gameplay; only after the strict consumer/producers are staged. Gate: evidence from two separate sessions that Orion recalled an actual mechanic/failed strategy with accurate source references, then behaviorally changed a decision; no unsupported self-claims. Run the scoped transfer experiment (§7.6), including a non-game sandbox target and negative-transfer reporting; same-game recall alone is not transfer.
 
-**Feature gates/rollback:** `RETRO_ENABLED=false`, `RETRO_AGENT_CONTROL_ENABLED=false`, `RETRO_COGNITION_ENABLED=false`, `RETRO_TRAINING_ENABLED=false`, `RETRO_MEDIA_ENABLED=false`. Disabling agent control neutralizes Orion-owned ports at next frame while human session continues. Rollback must not delete saves or training evidence. All defaults off until local smoke succeeds.
+**Feature gates/rollback:** `RETRO_ENABLED=false`, `RETRO_AGENT_CONTROL_ENABLED=false`, `RETRO_COGNITION_ENABLED=false`, `RETRO_TRAINING_ENABLED=false`, `RETRO_MEDIA_ENABLED=false`. Disabling agent control neutralizes Orion-owned ports at next frame while human session continues. Rollback must not delete saves or training evidence. Add independently default-off proposal gates `RETRO_PREDICTION_PLANNING_ENABLED`, `RETRO_TRANSFER_RETRIEVAL_ENABLED`, and `RETRO_LEISURE_ENABLED` when their implementations ship. Disabling leisure revokes active unattended authority; disabling prediction/transfer removes those inputs without deleting evidence. All defaults off until local smoke succeeds.
 
 ## 15. Failure modes / risk register
 
@@ -527,4 +600,4 @@ Documentation-only review can approve the intended *interfaces and build order*,
 - [x] Failure, rollback, telemetry-quality, evals and acceptance gates defined.
 - [ ] Implementation PRs, tests and live host measurements — **not performed**.
 
-**Final recommendation:** build P0–P3 first. Until live latency and benchmark results say otherwise, spend **zero dollars** on hardware for this project.
+**Final recommendation:** build P0–P3 with the thin cognition proof first; track shared play, independent leisure and transferable learning as separate acceptance stories. Keep the offline world-model experiment narrow and separately gated. Until live latency and benchmark results say otherwise, spend **zero dollars** on hardware for this project.

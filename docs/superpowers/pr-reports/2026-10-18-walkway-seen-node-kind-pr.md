@@ -9,7 +9,7 @@
 
 ## Outcome moved
 
-The five named walkway people (Maeve, Adeline, Esme, Teddy, Amanda Feld) get one `observed_in` link per complete day they were seen. Before this fix they had zero links. Live read-only baseline on `orion_substrate` (2026-10-18): 5 `entity:vision_individual:*` nodes, 0 `observed_in` edges, 0 `walkway_day` nodes.
+The five named walkway people get one `observed_in` link per complete day they were seen. Before this fix they had zero links. Live read-only baseline on `orion_substrate` (2026-10-18): 5 `entity:vision_individual:*` nodes, 0 `observed_in` edges, 0 `walkway_day` nodes.
 
 ## Current architecture
 

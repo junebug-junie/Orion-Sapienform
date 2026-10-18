@@ -58,7 +58,7 @@ REVERIE_FRAME_CHARS = 400
 MIN_CLIP_CHARS = 400
 
 _REF_RE = re.compile(r"\[((?:curiosity|curiosity_failed|self_sense|reading|reading_journal|dream|dream_offered|"
-                     r"chat_compactor|github_compactor|world_pulse_digest|visual_reverie|reverie|reverie_theme|correction|"
+                     r"chat_compactor|github_compactor|world_pulse_digest|walkway_day|visual_reverie|reverie|reverie_theme|correction|"
                      r"arc|day)"
                      r":[^\]\s]+)\]")
 
@@ -226,6 +226,10 @@ def _full_text_blocks(material: OrionDayMaterialV1) -> list[tuple[str, list]]:
         lines += [f"- ({i.category or 'general'}) {i.title}" + (f": {i.summary}" if i.summary and i.summary != i.title else "")
                   for i in w.items]
         sections.append(("## World pulse digest", [lines]))
+    if material.walkway_day is not None:
+        w = material.walkway_day
+        sections.append(("## The street outside (my walkway camera; counts by code, not by me)",
+                         [[f"[walkway_day:{w.day.isoformat()}] {w.line}"]]))
     if material.visual_reveries:
         sections.append((f"## Visual reveries ({len(material.visual_reveries)} images)", [[
             f"- [visual_reverie:{v.sha256[:16]}] {_fmt_time(v.created_at)}"
@@ -406,6 +410,8 @@ def material_ref_records(material: OrionDayMaterialV1) -> dict[str, dict[str, An
         records[f"github_compactor:{material.github_compactor.entry_id}"] = dump(material.github_compactor)
     if material.world_pulse_digest is not None:
         records[f"world_pulse_digest:{material.world_pulse_digest.run_id}"] = dump(material.world_pulse_digest)
+    if material.walkway_day is not None:
+        records[f"walkway_day:{material.walkway_day.day.isoformat()}"] = dump(material.walkway_day)
     records |= {f"visual_reverie:{v.sha256[:16]}": dump(v) for v in material.visual_reveries}
     records |= {f"reverie:{t.thought_id[:8]}": dump(t) for t in material.reverie_thoughts}
     records |= {f"correction:{c.correction_id}": dump(c) for c in material.corrections}

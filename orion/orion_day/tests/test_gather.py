@@ -74,6 +74,7 @@ def test_every_window_query_gets_the_half_open_denver_day():
     windowed = [args for sql, args in conn.calls if sql not in (
         gather.CURIOSITY_OUTCOMES_SQL, gather.WORLD_PULSE_DIGEST_SQL, gather.JOURNAL_BY_ID_OR_REF_SQL,
         gather.TEMPORAL_DAY_SQL,  # keyed by the local date, like the world-pulse digest
+        gather.WALKWAY_DAY_SQL,  # keyed by (stream, the day's local-midnight start): its own test below
         # keyed by the day's readings: their seed ids, and moves from the first read to window end
         wp_findings.READ_LINKS_SQL, wp_findings.RUN_PRIOR_MOVES_SQL)]
     assert windowed and all(args[0] == window.window_start and args[1] == window.window_end for args in windowed)
@@ -184,3 +185,26 @@ def test_letter_date_matches_the_compactor_day():
     window = orion_day_window(yesterday_letter_date(now))
     assert window.window_start == compactor.window_start
     assert compactor.window_end < window.window_end  # inclusive 23:59:59.999999 vs exclusive next midnight
+
+
+def test_walkway_day_rollup_line_is_read_for_the_letter_day_and_cited():
+    from orion.orion_day.budget import build_llm_view, material_ref_records
+
+    line = "Walkway Tue 29 Sep 2026: 185 passings (105 people, 38 vehicles) by 93 distinct."
+    conn = fx.FakeConn(walkway={"stream_id": "walkway", "line": line, "complete": True})
+    material = _gather(conn)
+    assert material.walkway_day is not None and material.walkway_day.line == line
+    call = next(args for sql, args in conn.calls if sql == gather.WALKWAY_DAY_SQL)
+    assert call == ("walkway", orion_day_window(fx.LETTER_DATE).window_start)
+    ref = f"walkway_day:{fx.LETTER_DATE.isoformat()}"
+    assert ref in material_ref_records(material)
+    view = build_llm_view(material)
+    assert f"[{ref}] {line}" in view.digest_md and ref in view.included_refs
+    assert material.sources["walkway_day"].status == "ok"
+
+
+def test_walkway_day_absent_or_failing_costs_only_its_own_section():
+    assert _gather(fx.FakeConn()).walkway_day is None
+    material = _gather(fx.FakeConn(fail={"walkway_day"}))
+    assert material.walkway_day is None and material.sources["walkway_day"].status == "error"
+    assert material.curiosity_runs

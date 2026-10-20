@@ -1656,7 +1656,7 @@ class BiometricsSubstrateWorker:
     async def _handle_street_event_message(self, raw_msg: dict[str, Any]) -> None:
         decoded = self._bus.codec.decode(raw_msg.get("data"))
         if not decoded.ok:
-            self._street_state().invalid_total += 1
+            self._street_state().bump("invalid_total")
             logger.warning("substrate_street_event_decode_failed: %s", decoded.error)
             return
         await asyncio.to_thread(self._process_street_event, decoded.envelope.payload or {})
@@ -1679,7 +1679,7 @@ class BiometricsSubstrateWorker:
         try:
             event = StreetEventV1.model_validate(payload)
         except ValueError as exc:
-            state.invalid_total += 1
+            state.bump("invalid_total")
             logger.error("substrate_street_event_invalid err=%s", exc)
             return
         now = now or datetime.now(timezone.utc)
@@ -1736,7 +1736,7 @@ class BiometricsSubstrateWorker:
             contributing_id=last_corr,
             evidence_event_ids=[f"street_event:{h.event_id}" for h in held],
         )
-        state.node_writes_total += 1
+        state.bump("node_writes_total")
 
     def _street_attention_tick(self, *, now: datetime | None = None) -> None:
         """Write node:substrate.street every tick: held salience, else a real 0.0.
@@ -1774,7 +1774,7 @@ class BiometricsSubstrateWorker:
             ):
                 reason = "no street camera frame in the last %.0fs" % float(s.street_camera_up_max_age_sec)
             if reason is not None and not held:
-                state.ticks_unmeasured_total += 1
+                state.bump("ticks_unmeasured_total")
                 logger.info("substrate_street_attention_tick_unmeasured reason=%r", reason)
                 return
             self._write_street_node(now=now, node_id=STREET_NODE_ID)
@@ -3198,7 +3198,7 @@ class BiometricsSubstrateWorker:
 
                 attended = list(getattr(projection, "attended_node_ids", None) or [])
                 if STREET_NODE_ID in attended:
-                    self._street_state().attention_wins_total += 1
+                    self._street_state().bump("attention_wins_total")
                     logger.info(
                         "substrate_street_attention_won loop=%s",
                         projection.selected_open_loop_id,

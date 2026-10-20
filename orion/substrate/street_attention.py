@@ -52,6 +52,7 @@ write infinity.
 from __future__ import annotations
 
 import math
+import threading
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
@@ -188,12 +189,27 @@ class StreetAttentionState:
     handoff_ewma: float = 0.0
     handoff_variance: float = 0.0
     handoff_count: int = 0
+    # The bus handler, the tick and the perception listener touch this from
+    # different threads (asyncio.to_thread); every read and write holds it.
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
+
+    def bump(self, counter: str) -> None:
+        """Increment one ``*_total`` counter under the lock."""
+        with self._lock:
+            setattr(self, counter, int(getattr(self, counter)) + 1)
 
     def frame_seen(self, stream_id: str | None, now_epoch: float) -> None:
         if stream_id:
-            self.last_frame_at[str(stream_id)] = float(now_epoch)
+            with self._lock:
+                self.last_frame_at[str(stream_id)] = float(now_epoch)
 
     def judge(self, event: Any, *, now_epoch: float, max_per_hour: int, camera_up_max_age_sec: float) -> GateVerdict:
+        with self._lock:
+            return self._judge(
+                event, now_epoch=now_epoch, max_per_hour=max_per_hour, camera_up_max_age_sec=camera_up_max_age_sec
+            )
+
+    def _judge(self, event: Any, *, now_epoch: float, max_per_hour: int, camera_up_max_age_sec: float) -> GateVerdict:
         verdict = street_gate(
             event,
             now_epoch=now_epoch,
@@ -227,21 +243,27 @@ class StreetAttentionState:
 
     def held_reading(self, now_epoch: float, hold_sec: float) -> tuple[float, list[_Held]]:
         """(value, events held): the strongest passed salience inside the hold."""
-        live = [h for h in self.held if now_epoch - h.epoch < hold_sec]
+        with self._lock:
+            live = [h for h in self.held if now_epoch - h.epoch < hold_sec]
         if not live:
             return 0.0, []
         return max(h.salience for h in live), live
 
     def street_visible(self, stream_ids: Sequence[str], now_epoch: float, max_age_sec: float) -> bool:
         """True when any street camera delivered a frame recently."""
-        return any(
-            now_epoch - self.last_frame_at[s] <= max_age_sec for s in stream_ids if s in self.last_frame_at
-        )
+        with self._lock:
+            return any(
+                now_epoch - self.last_frame_at[s] <= max_age_sec for s in stream_ids if s in self.last_frame_at
+            )
 
     def handoff_surprise_z(self, raw: float, *, alpha: float, min_variance: float) -> float | None:
         """Fold one street_handoff raw reading into the running expectation
         (Orion's adopted Rung 6 setting when live) and return its z against
         the expectation held BEFORE it. None on the first reading."""
+        with self._lock:
+            return self._handoff_surprise_z(raw, alpha=alpha, min_variance=min_variance)
+
+    def _handoff_surprise_z(self, raw: float, *, alpha: float, min_variance: float) -> float | None:
         update = compute_ewma_update(
             prev_ewma=self.handoff_ewma,
             prev_variance=self.handoff_variance,
@@ -255,6 +277,10 @@ class StreetAttentionState:
         return update.zscore
 
     def status(self, now_epoch: float, hold_sec: float) -> dict[str, Any]:
+        with self._lock:
+            return self._status(now_epoch, hold_sec)
+
+    def _status(self, now_epoch: float, hold_sec: float) -> dict[str, Any]:
         value, live = self.held_reading(now_epoch, hold_sec)
         return {
             "node_id": STREET_NODE_ID,

@@ -39,9 +39,10 @@ def test_walkway_rules_render_only_for_walkway_triggers():
             raw_user_text="s", memory_digest="",
         )
 
-    for kind in ("walkway_forecast", "walkway_grade"):
+    for kind in ("walkway_forecast", "walkway_grade", "walkway_day", "walkway_week", "walkway_month"):
         text = render(kind)
         assert "Walkway journal:" in text
         assert "confirmed, disconfirmed, unscored" in text
         assert "enough_days: false" in text
+        assert "Counts come only from the seed's `facts`" in text
     assert "Walkway journal:" not in render("metacog_digest")

@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.resilience import run_subscription
 from orion.harness.cortex_client import HarnessCortexClient
 from orion.harness.cut_short import (
     FCC_CONTEXT_CEILING_ERROR_CODE,
@@ -17,7 +18,7 @@ from orion.harness.cut_short import (
     ensure_cut_short_marked,
     is_cut_short_code,
 )
-from orion.harness.claim_gate import gate_correction_claims
+from orion.harness.claim_gate import gate_correction_claims, gate_focus_claims
 from orion.harness.finalize import (
     DEFAULT_FINALIZE_INTERLOCUTOR,
     HarnessFinalizeFailedError,
@@ -111,7 +112,8 @@ INTERRUPTED_RESUMABLE = "interrupted_resumable"
 
 def _gate_claims(text: str | None, motor: Any, corr: str) -> str | None:
     """Every text that can reach a reader passes this: a correction_id the turn's
-    `record_correction` calls did not return is replaced and the reply says so
+    `record_correction` calls did not return (or a focus_id its `queue_curiosity_focus`
+    calls did not return) is replaced and the reply says so
     (orion/harness/claim_gate.py). Returns None for None so it is safe on optional fields."""
     if text is None:
         return None
@@ -122,7 +124,14 @@ def _gate_claims(text: str | None, motor: Any, corr: str) -> str | None:
             "harness_unverified_correction_claim corr=%s ids=%s correction_results=%s",
             corr, ",".join(gate.unverified_ids), len(results),
         )
-    return gate.text
+    focus_results = tuple(getattr(motor, "focus_results", ()) or ())
+    focus_gate = gate_focus_claims(gate.text, focus_results)
+    if focus_gate.changed:
+        logger.warning(
+            "harness_unverified_focus_claim corr=%s ids=%s focus_results=%s",
+            corr, ",".join(focus_gate.unverified_ids), len(focus_results),
+        )
+    return focus_gate.text
 
 
 def interrupted_for_resume(request: HarnessRunRequestV1, motor: Any) -> bool:
@@ -830,8 +839,12 @@ async def run_bus_worker(
     *,
     lane: str = "chat",
     bus: OrionBusAsync | None = None,
+    drain_sec: float = 0.0,
 ) -> None:
     """Consume one harness-run-request channel to completion, one turn at a time.
+
+    `drain_sec`: when `stop_event` is set the loop stops taking new requests, then waits up to
+    this long for turns already running to finish before cancelling the rest. 0 cancels at once.
 
     `main.py`'s lifespan runs TWO of these concurrently -- one per lane -- so a
     long agent-lane turn (curiosity, Mode=Agent+Compute=Agent) can never make a
@@ -875,7 +888,7 @@ async def run_bus_worker(
     if bus is None:
         bus = OrionBusAsync(url=settings.orion_bus_url)
     await bus.connect()
-    logger.info("subscribed lane=%s channel=%s", lane, channel)
+    logger.info("starting lane=%s channel=%s", lane, channel)
 
     legacy_lock = asyncio.Lock()
     tasks: set[asyncio.Task] = set()
@@ -898,46 +911,55 @@ async def run_bus_worker(
         for key in [key for key, running in admitted_inflight.items() if running is task]:
             admitted_inflight.pop(key, None)
 
+    def start_turn(msg: dict[str, Any]) -> None:
+        # Starts the turn as its own task and returns None: run_subscription awaits
+        # whatever this returns, and awaiting the turn would serialize the lane.
+        try:
+            decoded = bus.codec.decode(msg.get("data"))
+            payload = decoded.envelope.payload if decoded.ok else {}
+            body = payload if isinstance(payload, dict) else {}
+            # A turn under a GPU pool hold is admitted: it runs outside the legacy lock,
+            # or it would queue behind unrelated turns while its own card sits reserved for it.
+            admitted = isinstance(body.get("gpu_lease"), dict)
+            key = None
+            if admitted:
+                # One outstanding motor per fenced turn. Duplicate
+                # pub/sub delivery shares the original reply channel.
+                request = HarnessRunRequestV1.model_validate(payload)
+                fence = request.gpu_lease
+                key = f"{request.correlation_id}:{fence.lease_id}:{fence.generation}"
+                if key in admitted_inflight:
+                    return
+            task = asyncio.create_task(dispatch(msg, admitted))
+            tasks.add(task)
+            task.add_done_callback(finished)
+            if key is not None:
+                admitted_inflight[key] = task
+        except Exception:
+            logger.exception("unhandled bus worker error lane=%s", lane)
+
     try:
-        async with bus.subscribe(channel) as pubsub:
-            while True:
-                if stop_event is not None and stop_event.is_set():
-                    break
-                try:
-                    msg = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                        timeout=1.2,
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                if not msg or msg.get("type") not in ("message", "pmessage"):
-                    continue
-                try:
-                    decoded = bus.codec.decode(msg.get("data"))
-                    payload = decoded.envelope.payload if decoded.ok else {}
-                    body = payload if isinstance(payload, dict) else {}
-                    # A turn under a GPU pool hold is admitted: it runs outside the legacy lock,
-                    # or it would queue behind unrelated turns while its own card sits reserved for it.
-                    admitted = isinstance(body.get("gpu_lease"), dict)
-                    key = None
-                    if admitted:
-                        # One outstanding motor per fenced turn. Duplicate
-                        # pub/sub delivery shares the original reply channel.
-                        request = HarnessRunRequestV1.model_validate(payload)
-                        fence = request.gpu_lease
-                        key = f"{request.correlation_id}:{fence.lease_id}:{fence.generation}"
-                        if key in admitted_inflight:
-                            continue
-                    task = asyncio.create_task(dispatch(msg, admitted))
-                    tasks.add(task)
-                    task.add_done_callback(finished)
-                    if key is not None:
-                        admitted_inflight[key] = task
-                except Exception:
-                    logger.exception("unhandled bus worker error lane=%s", lane)
+        # Resubscribes with backoff after a Redis drop; in-flight turns, the legacy
+        # lock and the dedup map live out here, so they carry across a resubscribe.
+        await run_subscription(
+            bus, channel, start_turn, stop_event=stop_event, name=f"harness-governor-{lane}-lane"
+        )
     except asyncio.CancelledError:
         raise
     finally:
+        if tasks and drain_sec > 0:
+            logger.info("governor_drain_begin lane=%s in_flight=%s budget_sec=%s", lane, len(tasks), drain_sec)
+            try:
+                _, pending = await asyncio.wait(set(tasks), timeout=drain_sec)
+            except asyncio.CancelledError:
+                # Lifespan gave up on this lane: do not orphan the turns, cancel them below.
+                pending = {task for task in tasks if not task.done()}
+                logger.warning("governor_drain_interrupted lane=%s cancelled=%s", lane, len(pending))
+            else:
+                logger.info(
+                    "governor_drain_end lane=%s finished=%s cancelled=%s",
+                    lane, len(tasks) - len(pending), len(pending),
+                )
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

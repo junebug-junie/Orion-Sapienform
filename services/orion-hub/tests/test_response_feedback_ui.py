@@ -13,8 +13,8 @@ def test_app_js_adds_feedback_controls_only_for_orion_messages() -> None:
     assert "if (sender === 'Orion')" in app_js
     assert "const thumbsUp = document.createElement('button');" in app_js
     assert "const thumbsDown = document.createElement('button');" in app_js
-    assert "openResponseFeedbackModal('up', meta, text)" in app_js
-    assert "openResponseFeedbackModal('down', meta, text)" in app_js
+    assert "openResponseFeedbackModal('up', meta, displayText)" in app_js
+    assert "openResponseFeedbackModal('down', meta, displayText)" in app_js
     assert "if (sender === 'Orion') {" in app_js
 
 
@@ -36,3 +36,23 @@ def test_template_includes_response_feedback_modal() -> None:
     assert 'id="responseFeedbackCategoryList"' in template
     assert 'id="responseFeedbackNotes"' in template
     assert 'id="responseFeedbackSubmit"' in template
+
+
+def test_app_js_fallback_options_match_schema_categories() -> None:
+    # The Hub shows its fallback list when /options fails. If it drifts from
+    # the schema, a tag the modal offers is rejected on submit.
+    import re
+
+    from orion.schemas.chat_response_feedback import build_feedback_category_options
+
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+    block = app_js.split("const RESPONSE_FEEDBACK_CATEGORY_OPTIONS_FALLBACK = {", 1)[1].split("\n  };", 1)[0]
+    up_block, down_block = block.split("\n    down: [", 1)
+    pattern = re.compile(r"""\{ value: '([^']+)', label: (?:'([^']*)'|"([^"]*)") \}""")
+
+    def parse(text: str) -> list[dict[str, str]]:
+        return [{"value": v, "label": a or b} for v, a, b in pattern.findall(text)]
+
+    expected = build_feedback_category_options()
+    assert parse(up_block) == expected["up"]
+    assert parse(down_block) == expected["down"]

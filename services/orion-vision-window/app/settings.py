@@ -122,10 +122,16 @@ class Settings(BaseSettings):
     # stationary prop (VISION_STATIONARY_* above), and it arrived within
     # MAX_AGE_SEC of its frame. Anything else is recorded as rejected, never
     # narrated. Empty streams = gate off.
-    WINDOW_CAPTION_GATE_STREAMS: str = "walkway"
+    WINDOW_CAPTION_GATE_STREAMS: str = "walkway,doorbell"
     WINDOW_CAPTION_GATE_LABELS: str = "person,dog,bicycle,stroller,vehicle,package,mail truck"
     WINDOW_CAPTION_GATE_MIN_SCORE: float = 0.25
     WINDOW_CAPTION_MAX_AGE_SEC: float = 20.0
+    # Accepted captions -> one `camera_caption` vision_events row each, via
+    # orion-vision-scribe (app/caption_events.py, 2026-10-16). The council
+    # skips stable-label windows, so without this an accepted caption never
+    # reaches vision_events, the street line, reverie, dreams or curiosity.
+    WINDOW_CAPTION_EVENTS_ENABLED: bool = True
+    CHANNEL_CAPTION_EVENTS_PUB: str = "orion:vision:events"
 
     # HTTP
     HTTP_HOST: str = "0.0.0.0"

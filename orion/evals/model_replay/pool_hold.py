@@ -37,6 +37,7 @@ import asyncio
 import json
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Protocol
@@ -329,6 +330,10 @@ async def release_leftovers(transport: ControlTransport, ledger: HoldLedger, act
     return left
 
 
+# run_subscription name of the grant listener; one BusControlTransport open per process at a time.
+_POOL_EVENTS_LISTENER = "model-replay-pool-events"
+
+
 class BusControlTransport:
     """The real transport: pool control verbs over the Orion bus (same envelope as gpu_pool_pause.py)."""
 
@@ -338,20 +343,26 @@ class BusControlTransport:
         self._bus: Any = None
         self._grants: dict[str, asyncio.Future] = {}
         self._listener: Optional[asyncio.Task] = None
-        self._ready = asyncio.Event()
 
     async def __aenter__(self) -> "BusControlTransport":
         from orion.core.bus.async_service import OrionBusAsync
 
         self._bus = OrionBusAsync(url=self.bus_url)
         await self._bus.connect()
+        opened_at = time.time()
         self._listener = asyncio.create_task(self._listen())
-        await asyncio.wait_for(self._ready.wait(), timeout=self.timeout_sec)
+        try:
+            await asyncio.wait_for(self._subscribed(opened_at), timeout=self.timeout_sec)
+        except BaseException:
+            await self.__aexit__()  # the listener retries forever; do not leave it behind
+            raise
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
         if self._listener:
             self._listener.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._listener
         await self._bus.close()
 
     @property
@@ -359,27 +370,42 @@ class BusControlTransport:
         return self._bus
 
     async def _listen(self) -> None:
+        from orion.core.bus.resilience import run_subscription
         from orion.schemas.gpu_pool import GPU_POOL_EVENT_CHANNEL
 
-        async with self._bus.subscribe(GPU_POOL_EVENT_CHANNEL) as pubsub:
-            self._ready.set()
-            async for msg in self._bus.iter_messages(pubsub):
-                try:
-                    payload = self._bus.codec.decode(msg["data"]).envelope.payload or {}
-                except Exception:  # noqa: BLE001
-                    continue
-                lid = payload.get("lease_id") or ""
-                if payload.get("event") == "granted" and (payload.get("detail") or {}).get("grant"):
-                    result: Optional[dict[str, Any]] = payload["detail"]["grant"]
-                elif payload.get("event") in ("unavailable", "backlogged", "cancelled", "dead_lettered",
-                                              "expired", "aborted"):
-                    result = None
-                else:
-                    continue
-                # A grant can be published before our hold RPC's reply is read: keep it either way.
-                fut = self._grants.setdefault(lid, asyncio.get_running_loop().create_future())
-                if not fut.done():
-                    fut.set_result(result)
+        # Reopens a dropped subscription; a grant published while it is down is missed and
+        # that hold's wait_granted times out, as for any lost grant.
+        await run_subscription(self._bus, GPU_POOL_EVENT_CHANNEL, self._on_pool_event,
+                               stop_event=None, name=_POOL_EVENTS_LISTENER)
+
+    @staticmethod
+    async def _subscribed(since: float) -> None:
+        """Holds go out only once the grant listener is subscribed, so no grant is missed.
+        ``since`` skips a row left by an earlier transport in this process."""
+        from orion.core.bus.resilience import subscription_health
+
+        while not any(r["name"] == _POOL_EVENTS_LISTENER and r["subscribed"]
+                      and (r["last_subscribed_at"] or 0) >= since
+                      for r in subscription_health()["listeners"]):
+            await asyncio.sleep(0.02)
+
+    def _on_pool_event(self, msg: dict[str, Any]) -> None:
+        try:
+            payload = self._bus.codec.decode(msg["data"]).envelope.payload or {}
+        except Exception:  # noqa: BLE001
+            return
+        lid = payload.get("lease_id") or ""
+        if payload.get("event") == "granted" and (payload.get("detail") or {}).get("grant"):
+            result: Optional[dict[str, Any]] = payload["detail"]["grant"]
+        elif payload.get("event") in ("unavailable", "backlogged", "cancelled", "dead_lettered",
+                                      "expired", "aborted"):
+            result = None
+        else:
+            return
+        # A grant can be published before our hold RPC's reply is read: keep it either way.
+        fut = self._grants.setdefault(lid, asyncio.get_running_loop().create_future())
+        if not fut.done():
+            fut.set_result(result)
 
     async def _control(self, **fields: Any) -> dict[str, Any]:
         from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef

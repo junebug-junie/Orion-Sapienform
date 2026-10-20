@@ -532,6 +532,12 @@ class FrameDispatchPolicy:
         null_answers = [str(a) for a in (cfg.get("null_answers") or []) if str(a).strip()]
         if null_answers:
             request["caption_null_answers"] = null_answers
+        if cfg.get("crop_to_detections") and source_objects:
+            # The VLM reads a ~1 MP downscale of the frame; a person down the
+            # street is a few pixels there. The host crops to these boxes
+            # (orion-vision-host app/caption_crop.py).
+            request["caption_crop_boxes"] = [list(o["box_xyxy"]) for o in source_objects]
+            request["caption_crop_pad"] = float(cfg.get("crop_pad", 0.5))
         meta = {
             "camera_id": task.camera_id,
             "stream_id": stream_id,

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 logger = logging.getLogger("orion-hub.history_rehydrate")
@@ -66,15 +67,98 @@ def rows_to_history_messages(
     for row in rows:
         prompt = str(row.get("prompt") or "").strip()
         response = str(row.get("response") or "").strip()
+        # chat_history_log.created_at: server_default now() on the row's
+        # first insert (orion-sql-writer models/chat_history_log.py), a naive
+        # timestamp in the DB's Etc/UTC zone. One time per row, so both
+        # halves of a turn share it. Absent -> no "ts" key, never invented.
+        ts = _row_ts(row.get("created_at"))
+        extra = {"ts": ts} if ts else {}
         if prompt:
-            messages.append({"role": "user", "content": prompt})
+            messages.append({"role": "user", "content": prompt, **extra})
         if response and not _is_error_shaped(response):
-            messages.append({"role": "assistant", "content": response})
+            messages.append({"role": "assistant", "content": response, **extra})
 
     limit = max(0, int(max_turns)) * 2
     if limit and len(messages) > limit:
         messages = messages[-limit:]
     return messages
+
+
+def append_live_assistant_reply(
+    history: List[Dict[str, Any]],
+    text: Optional[str],
+    *,
+    ts: Optional[str] = None,
+) -> bool:
+    """Append Orion's delivered reply to a live connection ``history``.
+
+    Same shape and same filter as a rehydrated assistant message, so a reply
+    reads identically whether it came from this socket or from
+    ``chat_history_log`` after a reconnect: blank and error-shaped text is
+    dropped, and ``ts`` (when Hub delivered it, UTC ISO-8601) rides along for
+    the harness RECENT CONVERSATION block. Returns whether it appended.
+
+    Why it exists (2026-10-16): the unified orion/agent lane in
+    ``websocket_handler.websocket_endpoint`` appended Juniper's message, ran
+    the turn and ``continue``d -- it never appended Orion's reply and never
+    trimmed. Within one open tab Orion saw Juniper's messages back to back
+    with none of their own replies, and the list grew for the tab's lifetime.
+
+    Which text: the unified lane passes the ``final`` frame's
+    ``llm_response`` -- what the browser rendered, and the same
+    ``run.final_text`` the orchestrator persists to ``chat_history_log``, so a
+    reconnect restores the same words. A cut-short turn already carries
+    ``[Cut short - not a finished answer.]`` in that text (finalize chain plus
+    the governor's ``ensure_cut_short_marked`` backstop). A ``turn_error``
+    ``partial_draft`` is never passed here: it is never persisted either.
+
+    Deliberate asymmetry: when a turn yields no final reply, Juniper's message
+    stays in the live list (she did say it, and a "try again?" follow-up only
+    makes sense with it), although rehydrate would not restore it -- the
+    orchestrator persists the user row only alongside a final reply.
+    """
+    content = str(text or "").strip()
+    if not content or _is_error_shaped(content):
+        return False
+    history.append(
+        {
+            "role": "assistant",
+            "content": content,
+            "ts": ts or datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    return True
+
+
+def trim_history_window(history: List[Dict[str, Any]], max_turns: Any) -> None:
+    """Bound a live ``history`` in place to the newest ``max_turns`` pairs.
+
+    Keeps the system priming message at index 0 (when present) plus the last
+    ``2 * max_turns`` messages -- the same window ``rows_to_history_messages``
+    restores and ``build_continuity_messages`` sends. ``max_turns`` below 1 (or
+    unparsable) is floored to 1 pair: the old inline trim sliced
+    ``history[-0:]`` for 0, re-adding the whole list instead of bounding it.
+    In place, because the websocket loop holds this exact list object.
+    """
+    try:
+        pairs = int(max_turns)
+    except (TypeError, ValueError):
+        pairs = 1
+    keep = 2 * max(1, pairs)
+    head = 1 if history and str(history[0].get("role") or "") == "system" else 0
+    if len(history) - head > keep:
+        history[head:] = history[-keep:]
+
+
+def _row_ts(value: Any) -> Optional[str]:
+    """ISO-8601 UTC string for a chat_history_log.created_at value."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def fetch_recent_rows(
@@ -110,7 +194,7 @@ def fetch_recent_rows(
                 conn.execute(
                     text(
                         """
-                        SELECT prompt, response FROM chat_history_log
+                        SELECT prompt, response, created_at FROM chat_history_log
                         WHERE session_id = :sid
                           -- secs, not hours: make_interval's hours arg is int,
                           -- so a float max_age_hours raises UndefinedFunction.

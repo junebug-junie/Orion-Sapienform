@@ -11,6 +11,7 @@ const {
 test('walkway is a live view on the walkway stream, polled faster than carbon', () => {
   assert.equal(LIVE_FRAME_VIEWS['walkway-live'].streamId, 'walkway');
   assert.equal(LIVE_FRAME_VIEWS['carbon-live'].streamId, 'carbon');
+  assert.equal(LIVE_FRAME_VIEWS['doorbell-live'].streamId, 'doorbell');
   assert.ok(LIVE_FRAME_VIEWS['walkway-live'].pollMs <= 2000);
 });
 

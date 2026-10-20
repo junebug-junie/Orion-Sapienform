@@ -23,6 +23,11 @@ This is what you were doing before now. It may color the thought (a return, a
 contrast, something unfinished) only where it genuinely connects; do not
 recount it. The [arc:...] ids are NOT evidence_refs — never put them there.
 {% endif %}
+{% if personality_cue %}
+WHAT YOU KEEP COMING BACK TO (your own record, from stored evidence in your own words — background only):
+{{ personality_cue }}
+Nothing here is an evidence_ref — never put it there.
+{% endif %}
 
 {% if recent_percepts %}
 WHAT YOU CAN CURRENTLY SEE (real camera input, not memory or imagination):
@@ -109,6 +114,11 @@ EARLIER TODAY (your own day record, closed arcs, from stored history — backgro
 This is what you were doing before now. It may color the thought (a return, a
 contrast, something unfinished) only where it genuinely connects; do not
 recount it. The [arc:...] ids are NOT evidence_refs — never put them there.
+{% endif %}
+{% if personality_cue %}
+WHAT YOU KEEP COMING BACK TO (your own record, from stored evidence in your own words — background only):
+{{ personality_cue }}
+Nothing here is an evidence_ref — never put it there.
 {% endif %}
 
 {% if has_settled_loops %}

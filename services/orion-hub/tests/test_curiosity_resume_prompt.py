@@ -75,3 +75,17 @@ def test_no_reader_configured_sends_the_frozen_prompt():
     stub = SimpleNamespace(_reader=None)
     text = asyncio.run(CuriosityInvestigation._prompt_for_attempt(stub, _request(2)))
     assert text == "FROZEN KICKOFF PROMPT"
+
+
+def test_retry_keeps_the_task_header_first_so_the_governor_still_anchors_it():
+    """Resumed runs are the long ones compaction hits; a preamble before the header
+    used to hide it from the governor (orion/harness/task_anchor.py: byte 0 only)."""
+    from orion.harness.task_anchor import build_task_anchor, render_task_header
+
+    header = render_task_header("Self-inquiry: answer the standing question.")
+    request = _request(3).model_copy(update={"prompt": header + "FROZEN KICKOFF PROMPT"})
+    reader = _Reader(rows=[{"n": 1, "note": "first stop", "written_at": 1_789_000_000_001}])
+    text = asyncio.run(CuriosityInvestigation._prompt_for_attempt(SimpleNamespace(_reader=reader), request))
+    assert text.startswith(header)
+    assert "RESUMED SITTING." in text and text.endswith("FROZEN KICKOFF PROMPT")
+    assert build_task_anchor(text, utterance_origin="orion") is not None

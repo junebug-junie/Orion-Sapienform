@@ -127,6 +127,26 @@ JOURNAL_DISPATCH_REGISTRY: dict[str, JournalDispatchPolicy] = {
         in_app_enabled=False,
         recall_profile_setting="",
     ),
+    # Walkway day / week / month summaries (2026-10-18): written from the
+    # deterministic vision_rollup row; same no-email reasoning as above.
+    "walkway_day": JournalDispatchPolicy(
+        "walkway_day",
+        email_enabled=False,
+        in_app_enabled=False,
+        recall_profile_setting="",
+    ),
+    "walkway_week": JournalDispatchPolicy(
+        "walkway_week",
+        email_enabled=False,
+        in_app_enabled=False,
+        recall_profile_setting="",
+    ),
+    "walkway_month": JournalDispatchPolicy(
+        "walkway_month",
+        email_enabled=False,
+        in_app_enabled=False,
+        recall_profile_setting="",
+    ),
     # Orion's Day: the Hub sends the letter itself as a styled email with the
     # full material; a Journal Pass email of the same note would be a plain
     # duplicate competing for the shared daily cap.

@@ -6,6 +6,8 @@ on:
       - 'services/orion-sql-db/manual_migration_substrate_graph_journal_v1*.sql'
       - 'services/orion-substrate-runtime/app/worker.py'
       - 'services/orion-substrate-runtime/tests/test_prediction_error_node_lost_update.py'
+      - 'services/orion-substrate-runtime/app/walkway_seen_loop.py'
+      - 'services/orion-substrate-runtime/tests/test_walkway_seen_loop.py'
       - 'orion/substrate/**'
       - 'services/*/.env_example'
       - 'services/*/docker-compose.yml'
@@ -26,6 +28,8 @@ on:
       - 'services/orion-sql-db/manual_migration_substrate_graph_journal_v1*.sql'
       - 'services/orion-substrate-runtime/app/worker.py'
       - 'services/orion-substrate-runtime/tests/test_prediction_error_node_lost_update.py'
+      - 'services/orion-substrate-runtime/app/walkway_seen_loop.py'
+      - 'services/orion-substrate-runtime/tests/test_walkway_seen_loop.py'
       - 'orion/substrate/**'
       - 'services/*/.env_example'
       - 'services/*/docker-compose.yml'
@@ -128,6 +132,22 @@ jobs:
           python -m pytest -q -rs services/orion-substrate-runtime/tests/test_prediction_error_node_lost_update.py | tee -a lost_update.out
           if grep -q "SKIPPED" lost_update.out; then
             echo "real-Falkor lost-update test skipped -- service wiring is broken" >&2
+            exit 1
+          fi
+      - name: Walkway "seen on this day" links land in real FalkorDB (must not skip)
+        env:
+          ORION_TEST_FALKOR_URI: redis://localhost:6379
+        run: |
+          set -o pipefail
+          # The in-memory store accepts any node kind; only the real store proves the day node's
+          # kind is durable (2026-10-18: every live pass raised on node_kind='event').
+          # Selected by node id, not -k: a renamed real-Falkor test must fail collection, not drop out silently.
+          T=services/orion-substrate-runtime/tests/test_walkway_seen_loop.py
+          python -m pytest -q -rs "$T::test_real_falkor_writes_observed_in_edges_and_a_fresh_store_hydrates_them" \
+            "$T::test_every_emitted_node_kind_is_one_the_falkor_store_writes_durably" \
+            "$T::test_regression_an_event_day_node_fails_the_whole_pass_on_the_falkor_store" | tee walkway_seen.out
+          if grep -q "SKIPPED" walkway_seen.out || ! grep -q "3 passed" walkway_seen.out; then
+            echo "walkway_seen real-Falkor test skipped -- FalkorDB service wiring is broken" >&2
             exit 1
           fi
       - name: Neighborhood reads equal the reference, with index seeks (real FalkorDB)

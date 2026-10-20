@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef, ChatRequestPayload, LLMMessage
 from orion.schemas.vision import (
@@ -53,6 +54,11 @@ from .interpretation import (
     parse_llm_content,
     project_interpretation_to_events,
 )
+from .caption_policy import (
+    is_caption_only_after_strip,
+    parse_caption_streams,
+    window_for_council,
+)
 from .llm_reply import extract_chat_result_text as _extract_chat_result_text
 from .unresolved import UnresolvedRateLimiter, build_unresolved
 
@@ -60,6 +66,7 @@ _MAX_DEBUG_INTERPRETATIONS = 20
 from .settings import Settings
 
 settings = Settings()
+CAPTION_STREAMS = parse_caption_streams(settings.COUNCIL_CAPTION_STREAMS)
 
 
 class CouncilService:
@@ -99,6 +106,7 @@ class CouncilService:
         self._consumer_task = asyncio.create_task(self._consume())
         self._rpc_task = asyncio.create_task(self._consume_rpc())
         logger.info(f"[COUNCIL] Started. Listening on {settings.CHANNEL_COUNCIL_INTAKE} and {settings.CHANNEL_COUNCIL_REQUEST}")
+        logger.info(f"[COUNCIL] caption_streams={','.join(sorted(CAPTION_STREAMS)) or '(none)'}")
 
     async def stop(self):
         self._shutdown_event.set()
@@ -115,32 +123,35 @@ class CouncilService:
         await self.bus.close()
 
     async def _consume(self):
-        async with self.bus.subscribe(settings.CHANNEL_COUNCIL_INTAKE) as pubsub:
-            async for msg in self.bus.iter_messages(pubsub):
-                if self._shutdown_event.is_set():
-                    break
+        await run_subscription(
+            self.bus,
+            settings.CHANNEL_COUNCIL_INTAKE,
+            self._on_intake,
+            stop_event=self._shutdown_event,
+            name="vision-council.consume",
+        )
 
-                data = msg.get("data")
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok:
-                    continue
-
-                env = decoded.envelope
-                asyncio.create_task(self._process_window(env, is_rpc=False))
+    def _on_intake(self, msg):
+        # Starts its own task and returns None so the stream is not held up.
+        decoded = self.bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            return
+        asyncio.create_task(self._process_window(decoded.envelope, is_rpc=False))
 
     async def _consume_rpc(self):
-        async with self.bus.subscribe(settings.CHANNEL_COUNCIL_REQUEST) as pubsub:
-             async for msg in self.bus.iter_messages(pubsub):
-                if self._shutdown_event.is_set():
-                    break
+        await run_subscription(
+            self.bus,
+            settings.CHANNEL_COUNCIL_REQUEST,
+            self._on_rpc,
+            stop_event=self._shutdown_event,
+            name="vision-council.consume_rpc",
+        )
 
-                data = msg.get("data")
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok:
-                    continue
-
-                env = decoded.envelope
-                asyncio.create_task(self._handle_rpc(env))
+    def _on_rpc(self, msg):
+        decoded = self.bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            return
+        asyncio.create_task(self._handle_rpc(decoded.envelope))
 
     async def _handle_rpc(self, env: BaseEnvelope):
         try:
@@ -152,17 +163,18 @@ class CouncilService:
             logger.error(f"[COUNCIL] RPC invalid payload: {e}")
             return
 
+        window = window_for_council(req.window, CAPTION_STREAMS)
         interpretation, parse_outcome = await self._generate_interpretation(
-            req.window, env, allow_transition_gate=False
+            window, env, allow_transition_gate=False
         )
         interpretation, parse_outcome = self._finalize_interpretation(
-            interpretation, parse_outcome, req.window
+            interpretation, parse_outcome, window
         )
         if interpretation is not None:
             self._record_interpretation(interpretation, parse_outcome)
 
         event_payload = (
-            self._project_interpretation_to_events(interpretation, req.window)
+            self._project_interpretation_to_events(interpretation, window)
             if interpretation is not None
             else None
         )
@@ -200,7 +212,21 @@ class CouncilService:
             logger.error(f"[COUNCIL] Invalid payload: {e}")
             return
 
-        interpretation, parse_outcome = await self._generate_interpretation(payload, env)
+        # Captions leave the council's input for streams not in
+        # COUNCIL_CAPTION_STREAMS (app/caption_policy.py). The unresolved
+        # percept keeps the full window: it names the caption as "caption
+        # model said: ...", attributed, never as the council's own fact.
+        council_window = window_for_council(payload, CAPTION_STREAMS)
+        if is_caption_only_after_strip(council_window):
+            # Only a caption artifact, no detector pass: nothing left to
+            # interpret once the caption is withheld.
+            logger.info(
+                f"[COUNCIL] caption_only_window skip stream={stream_key_from_window(payload)} "
+                f"window_id={payload.window_id}"
+            )
+            await self._maybe_publish_unresolved(payload, None, env)
+            return
+        interpretation, parse_outcome = await self._generate_interpretation(council_window, env)
         if parse_outcome.parse_mode == "stable_scene":
             logger.info(
                 f"[COUNCIL] evidence_transition noop stream={stream_key_from_window(payload)} "
@@ -213,7 +239,7 @@ class CouncilService:
             return
 
         interpretation, parse_outcome = self._finalize_interpretation(
-            interpretation, parse_outcome, payload
+            interpretation, parse_outcome, council_window
         )
         await self._maybe_publish_unresolved(payload, interpretation, env)
 
@@ -221,7 +247,7 @@ class CouncilService:
             self._record_interpretation(interpretation, parse_outcome)
 
         event_payload = (
-            self._project_interpretation_to_events(interpretation, payload)
+            self._project_interpretation_to_events(interpretation, council_window)
             if interpretation is not None
             else None
         )

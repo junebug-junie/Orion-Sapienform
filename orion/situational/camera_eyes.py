@@ -59,6 +59,14 @@ DEFAULT_CAMERA_DESCRIPTIONS: dict[str, dict[str, Any]] = {
         "view": "the community walkway, the street and our patio",
         "outside": True,
     },
+    # event_driven: frames only after something happens (Ring motion/ding
+    # bursts), so no recent frame means "waiting", not "broken".
+    "doorbell": {
+        "name": "your doorbell camera",
+        "view": "our front door, up close, only when someone comes to it",
+        "outside": True,
+        "event_driven": True,
+    },
 }
 
 
@@ -68,6 +76,7 @@ class CameraDescription:
     name: str
     view: str
     outside: bool
+    event_driven: bool = False
 
 
 def _parse(raw: str | None) -> dict[str, dict[str, Any]] | None:
@@ -98,7 +107,13 @@ def describe_camera(stream_id: str, descriptions: Mapping[str, Mapping[str, Any]
     entry = table.get(stream_id) or {}
     name = str(entry.get("name") or "").strip() or f"camera {stream_id}"
     view = str(entry.get("view") or "").strip()
-    return CameraDescription(stream_id=stream_id, name=name, view=view, outside=entry.get("outside") is True)  # "false" string is not outside
+    return CameraDescription(
+        stream_id=stream_id,
+        name=name,
+        view=view,
+        outside=entry.get("outside") is True,  # "false" string is not outside
+        event_driven=entry.get("event_driven") is True,
+    )
 
 
 # --- live state ---------------------------------------------------------------
@@ -329,6 +344,14 @@ def eye_phrase(sense: CameraSenseV1) -> str:
     if sense.outside:
         paren += " -- outside and public, not your room"
     head = f"{sense.name} ({paren})"
+    if sense.status != "live" and describe_camera(sense.stream_id).event_driven:
+        # An event camera with no recent frame is waiting, not broken.
+        if sense.status == "no_frames" or sense.last_frame_age_seconds is None:
+            return f"{head}: sends frames only when something happens there; nothing yet"
+        return (
+            f"{head}: sends frames only when something happens there; "
+            f"last time {age_phrase(sense.last_frame_age_seconds)}"
+        )
     if sense.status == "no_frames" or sense.last_frame_age_seconds is None:
         return f"{head}: no frames yet"
     if sense.status == "not_seeing":

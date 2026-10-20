@@ -121,6 +121,8 @@ button.ghost.run-now { border-color: var(--axis); color: var(--ink); }
 button.ghost.run-now[disabled] { opacity: 0.55; cursor: default; }
 .run-msg { font-size: 12px; color: var(--ink-2); }
 .run-msg.bad { color: var(--critical); }
+.focus-card { margin-top: 10px; padding: 10px 12px; }
+.focus-card .focus-q { font-weight: 600; }
 input.filter {
   font: inherit; font-size: 12px; color: var(--ink); background: var(--surface);
   border: 1px solid var(--hairline); border-radius: 7px; padding: 4px 9px; min-width: 200px;
@@ -403,6 +405,8 @@ tr:last-child td { border-bottom: none; }
       Counts come from the same Redis keys the loop reads.
     </p>
     <div class="tiles" id="tiles"></div>
+    <div class="card focus-card" id="focus-pending"></div>
+    <span id="focus-msg" class="run-msg"></span>
   </section>
 
   <section>
@@ -625,6 +629,42 @@ function renderTiles(d) {
     <div class="foot">${rf}</div>
   </div>`);
   $("tiles").innerHTML = tiles.join("");
+  renderFocus(sched.pending_focus);
+}
+
+/* ---- the focus Orion queued for its next world-question run ------------- */
+function renderFocus(pf) {
+  const el = $("focus-pending");
+  if (!el) return;
+  if (!pf || !pf.available) {
+    el.innerHTML = `<div class="label">Queued focus</div><p class="dim">The focus queue could not be read.</p>`;
+    return;
+  }
+  const off = pf.enabled === false ? " (the focus queue is switched off)" : "";
+  const f = pf.focus;
+  if (!f) {
+    el.innerHTML = `<div class="label">Queued focus</div><p class="dim">Nothing queued${esc(off)}. ` +
+      `Orion can queue one question for its next world-question run from a chat.</p>`;
+    return;
+  }
+  const who = f.origin === "juniper" ? "you asked for this" : "Orion chose this";
+  el.innerHTML = `<div class="label">Queued focus for the next world-question run</div>
+    <div class="focus-q">${esc(f.question)}</div>
+    <div class="foot">Why: ${esc(f.why)}</div>
+    <div class="foot">${esc(who)} · queued ${esc(relative(f.queued_at))} · expires ${esc(relative(f.expires_at))}${esc(off)}</div>
+    <button class="ghost" type="button" data-focus-clear="${esc(f.focus_id)}">Clear</button>`;
+}
+async function clearFocus(focusId) {
+  const msg = $("focus-msg");
+  if (!window.confirm("Clear the queued focus? The next run will not be shown it.")) return;
+  msg.className = "run-msg";
+  msg.textContent = "Clearing…";
+  try {
+    const res = await fetch(`/curiosity/api/focus/${encodeURIComponent(focusId)}`, { method: "DELETE" });
+    const d = await res.json();
+    if (d.ok) { msg.textContent = "Cleared."; load(); }
+    else { msg.className = "run-msg bad"; msg.textContent = `Not cleared: ${d.reason || res.status}`; load(); }
+  } catch (err) { msg.className = "run-msg bad"; msg.textContent = `Failed: ${String(err)}`; }
 }
 
 /* ---- sittings strip ----------------------------------------------------- */
@@ -637,6 +677,13 @@ function stripDays(n, now) {
   }
   return out;
 }
+/* What a run did with the focus it took. Only a run that finished has a disposition;
+   a failed or unfinished one says so instead of "unknown". */
+function focusWords(f) {
+  if (f.status === "ran") return `took a queued focus: ${f.disposition_words || "disposition unknown"}`;
+  if (f.status === "failed") return "took a queued focus; the run failed";
+  return "took a queued focus; the run's end is not recorded yet";
+}
 function runOneLiner(r) {
   const bits = [LINE_LABEL[r.line] || r.line, r.status];
   const aboutText = (r.about && r.about.text) || "";
@@ -646,6 +693,7 @@ function runOneLiner(r) {
   if (r.prior_touched) bits.push(`${conf(r.prior_touched.from)} → ${conf(r.prior_touched.to)}`);
   if (r.lane_wait_sec != null && r.lane_wait_sec > 60) bits.push(`waited ${fmtDuration(r.lane_wait_sec)} for a lane`);
   if (r.reach_out && r.reach_out.wanted) bits.push(`reach-out: ${r.reach_out.decision || "?"}`);
+  if (r.focus) bits.push(focusWords(r.focus));
   if (r.error) bits.push(r.error);
   return bits.join(" · ");
 }
@@ -1423,6 +1471,8 @@ function wire() {
     if (claim) { togglePriorClaim(claim.getAttribute("data-prior-claim")); return; }
     const t = e.target.closest && e.target.closest("[data-run]");
     if (t) { e.preventDefault(); openRun(t.getAttribute("data-run")); }
+    const clearBtn = e.target.closest && e.target.closest("[data-focus-clear]");
+    if (clearBtn) { e.preventDefault(); clearFocus(clearBtn.getAttribute("data-focus-clear")); return; }
     const replyBtn = e.target.closest && e.target.closest("[data-reply-send]");
     if (replyBtn) { e.preventDefault(); sendReply(replyBtn.getAttribute("data-reply-send")); }
   });

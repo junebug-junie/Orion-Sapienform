@@ -116,6 +116,11 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
         "orion-introspect MCP (spawned by the governor's FCC turns) validates the model's record_correction "
         "tool arguments into the bus request; orion-hub's correction listener validates them back",
     ),
+    "orion.schemas.introspect:QueueCuriosityFocusArguments": (
+        "orion-harness-governor",
+        "orion-introspect MCP (spawned by the governor's FCC turns) validates the model's queue_curiosity_focus "
+        "tool arguments into the bus request; orion-hub's curiosity focus listener validates them back",
+    ),
     "orion.schemas.introspect:NodeHistoryArguments": (
         "orion-harness-governor",
         "orion-introspect MCP (spawned by the governor's FCC turns) validates the model's node_history "

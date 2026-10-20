@@ -40,6 +40,7 @@ from .osnet_shadow import OsnetShadow
 from .models import VisionResult, VisionTask
 from .profiles import PipelineDef, ProfileDef, VisionProfiles
 from .settings import Settings
+from .caption_crop import crop_for_caption
 from .vlm_family import caption_prompt_for, is_chat_template_vlm, matches_null_answer, resolve_caption_prompt
 from .when_guard import safe_when
 
@@ -68,7 +69,7 @@ def _face_frame_store():
                 _FACE_FRAMES.stop_pruner()
             _FACE_FRAMES = FaceFrameStore(
                 root,
-                retention_days=float(getattr(settings, "VISION_FACE_FRAMES_RETENTION_DAYS", 14.0)),
+                retention_days=float(getattr(settings, "VISION_FACE_FRAMES_RETENTION_DAYS", 0.0)),
                 min_interval_sec=float(getattr(settings, "VISION_FACE_FRAMES_MIN_INTERVAL_SEC", 5.0)),
             )
             _FACE_FRAMES.start_pruner()
@@ -88,7 +89,7 @@ def _thumb_store() -> ThumbStore | None:
         return None
     if _THUMB_STORE is None or str(_THUMB_STORE.root) != root:
         _THUMB_STORE = ThumbStore(
-            root, retention_days=float(getattr(settings, "VISION_CROP_THUMB_RETENTION_DAYS", 10.0)))
+            root, retention_days=float(getattr(settings, "VISION_CROP_THUMB_RETENTION_DAYS", 0.0)))
         # Retention runs on its own daemon thread, never on the detect path.
         _THUMB_STORE.start_pruner()
     return _THUMB_STORE
@@ -1143,6 +1144,9 @@ class VisionRunner:
             }
 
         img = _load_image_from_request(request)
+        # Walkway: caption the detector's boxes, not the whole 2560x1920 frame
+        # shrunk to ~1 MP (app/caption_crop.py has the 2026-10-16 incident).
+        img, crop_box = crop_for_caption(img, request)
         dtype = self._resolve_dtype(p)
 
         model, processor = self.models.load_vlm_captioner(
@@ -1184,6 +1188,15 @@ class VisionRunner:
             caption_text, ok, reason = sanitize_caption(cleaned, prompt=text_prompt or CAPTION_PROMPT)
         if not ok:
             warnings.append(f"caption_rejected:{reason}")
+            # The model's own words, so a rejection streak can be read back
+            # (2026-10-16: 24/24 walkway "null_answer"s left no trace of what
+            # the model actually said or what it was shown).
+            # Caller-prompted tasks only (walkway); cam0 BLIP rejections stay quiet.
+            if request.get("caption_prompt"):
+                logger.info(
+                    "caption_frame rejected reason={} crop_box={} raw={!r}",
+                    reason, crop_box, (generated_text or "")[:200],
+                )
             # A rejected caption is published as rejected, never as an empty
             # string at full confidence (what every cam0 artifact carried
             # before 2026-10-08, indistinguishable from a real result).
@@ -1198,6 +1211,7 @@ class VisionRunner:
             "model_id": model_id,
             "device": device,
             "caption": caption,
+            "crop_box": list(crop_box) if crop_box else None,
         }
 
     # ------------------------

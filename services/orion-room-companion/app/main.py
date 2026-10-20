@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.resilience import run_subscription
 from orion.schemas.room_claude import (
     ExternalRoomResponderV1,
     RoomClaudeRequestV1,
@@ -315,22 +316,26 @@ async def handle_message(settings: Settings, bus: OrionBusAsync, raw: Any) -> No
 
 
 async def run_consumer(settings: Settings, bus: OrionBusAsync, stop: asyncio.Event) -> None:
-    channel = settings.CHANNEL_ROOM_CLAUDE_REQUEST
-    async with bus.subscribe(channel) as pubsub:
-        async for msg in bus.iter_messages(pubsub):
-            if stop.is_set():
-                break
-            try:
-                data = msg.get("data")
-                raw = json.loads(data if isinstance(data, str) else data.decode("utf-8"))
-            except Exception:
-                logger.exception("room_companion_bad_envelope")
-                continue
-            try:
-                await handle_message(settings, bus, raw)
-            except Exception:
-                # One bad turn must not kill the consumer loop.
-                logger.exception("room_companion_handle_failed")
+    async def _handle(msg: dict) -> None:
+        try:
+            data = msg.get("data")
+            raw = json.loads(data if isinstance(data, str) else data.decode("utf-8"))
+        except Exception:
+            logger.exception("room_companion_bad_envelope")
+            return
+        try:
+            await handle_message(settings, bus, raw)
+        except Exception:
+            # One bad turn must not kill the consumer loop.
+            logger.exception("room_companion_handle_failed")
+
+    await run_subscription(
+        bus,
+        settings.CHANNEL_ROOM_CLAUDE_REQUEST,
+        _handle,
+        stop_event=stop,
+        name="room-companion-claude-request",
+    )
 
 
 async def main_async() -> None:

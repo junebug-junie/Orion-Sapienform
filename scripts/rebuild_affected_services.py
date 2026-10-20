@@ -11,10 +11,12 @@ Usage:
     python scripts/rebuild_affected_services.py --list-only --base HEAD~1
     python scripts/rebuild_affected_services.py --plan --base ORIG_HEAD
     python scripts/rebuild_affected_services.py --running-profile-services orion-vision-retina
+    python scripts/rebuild_affected_services.py --pool-held-services orion-diffusion-host
 """
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
 import json
 import os
@@ -120,11 +122,49 @@ def resolve_base_ref(repo_root: Path, explicit: str | None) -> str:
     raise ValueError("Could not resolve a base ref (try --base ORIG_HEAD)")
 
 
+def _same_python_ast(repo_root: Path, base_ref: str, path: str) -> bool:
+    """True when a .py file differs between base and HEAD only in comments/whitespace.
+
+    Any doubt (unreadable blob, syntax error) answers False so the file still
+    counts as changed.
+    """
+    blobs = []
+    for rev in (base_ref, "HEAD"):
+        # Bytes, not text: ast.parse honours the encoding cookie, and a
+        # non-UTF8 blob must not raise out of the planner.
+        proc = subprocess.run(
+            ["git", "show", f"{rev}:{path}"], cwd=repo_root, capture_output=True, check=False
+        )
+        if proc.returncode != 0:
+            return False
+        blobs.append(proc.stdout)
+    try:
+        return ast.dump(ast.parse(blobs[0])) == ast.dump(ast.parse(blobs[1]))
+    except (SyntaxError, ValueError):
+        return False
+
+
 def changed_files(repo_root: Path, base_ref: str) -> list[str]:
-    proc = _run_git(["diff", "--name-only", f"{base_ref}..HEAD"], cwd=repo_root)
+    proc = _run_git(["diff", "--name-status", f"{base_ref}..HEAD"], cwd=repo_root)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or f"git diff failed for base {base_ref!r}")
-    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    files: list[str] = []
+    for line in proc.stdout.splitlines():
+        fields = line.split("\t")
+        path = fields[-1].strip()
+        if not path:
+            continue
+        # A comment-only edit to a widely imported module must not rebuild its
+        # importers (2026-10-16: a 4-line comment in orion/schemas/grammar.py
+        # planned 68 services).
+        if fields[0] == "M" and path.endswith(".py") and _same_python_ast(repo_root, base_ref, path):
+            print(
+                f"rebuild_affected_services: skip {path}: comment/whitespace-only change",
+                file=sys.stderr,
+            )
+            continue
+        files.append(path)
+    return files
 
 
 def discover_services(repo_root: Path) -> set[str]:
@@ -1044,6 +1084,92 @@ def running_profile_services(
     return sorted(out)
 
 
+_GPU_POOL_CONFIG = Path("config") / "gpu_pool.yaml"
+
+
+class PoolConfigError(RuntimeError):
+    """config/gpu_pool.yaml could not be read: the caller must not start anything it might own."""
+
+
+def pool_launch_targets(repo_root: Path, service: str) -> list[str]:
+    """Plain (no compose profile) services of services/<service>/docker-compose.yml that the GPU
+    pool starts and stops itself (a ``launch:`` block in config/gpu_pool.yaml).
+
+    Raises PoolConfigError when the pool config exists but cannot be read (malformed YAML, no
+    PyYAML): an unreadable config must not read as "the pool owns nothing here"."""
+    path = repo_root / _GPU_POOL_CONFIG
+    if not path.exists():
+        return []
+    try:
+        import yaml  # type: ignore
+
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 -- ImportError and YAML errors alike
+        raise PoolConfigError(f"{path}: {type(exc).__name__}: {exc}") from exc
+    roles = cfg.get("roles") if isinstance(cfg, dict) else None
+    if not isinstance(roles, dict):
+        raise PoolConfigError(f"{path}: no roles mapping")
+    compose_rel = f"{_SERVICES_DIR}/{service}/{_COMPOSE_FILE}"
+    out: set[str] = set()
+    for spec in roles.values():
+        launch = spec.get("launch") if isinstance(spec, dict) else None
+        if not isinstance(launch, dict):
+            continue
+        if str(launch.get("compose") or "").strip() != compose_rel:
+            continue
+        # A profile service is never started by a plain `up`; running_profile_services covers it.
+        if launch.get("compose_profile"):
+            continue
+        name = str(launch.get("service") or "").strip()
+        if name:
+            out.add(name)
+    return sorted(out)
+
+
+def pool_held_services(
+    repo_root: Path,
+    service: str,
+    running: list[tuple[str, str, str]] | None,
+    targets: list[str] | None = None,
+) -> tuple[list[str], list[str], list[str]]:
+    """(hold, start, running_targets) for a pull-time rebuild of services/<service>/.
+
+    ``hold``: GPU-pool launch targets that are NOT running now. The pool stopped them on purpose
+    (an eviction: diffusion-host while agent-gpu2 holds gpu2), so a rebuild builds their image and
+    leaves them stopped. A plain ``up -d`` restarted them on a card the pool had given to another
+    role; the lane controller then refuses every load and unload (seat_and_evicted_both_running)
+    and the card stays in fault. Confirmed live 2026-10-16 04:02 UTC: one circe pull restarted
+    diffusion-host under agent-gpu2 and no picture rendered for 15 h. ``running`` None (docker
+    unreadable) holds every target: unknown state never starts something on a pool card.
+
+    ``running_targets``: launch targets running now (the rebuild recreates them, as before).
+    ``start``: the stack's other plain services. All three are empty when the pool launches
+    nothing from this stack, and the caller keeps its normal ``up -d --build``.
+    """
+    if targets is None:
+        targets = pool_launch_targets(repo_root, service)
+    if not targets:
+        return [], [], []
+    suffix = f"{_SERVICES_DIR}/{service}/{_COMPOSE_FILE}"
+    running_here: set[str] = set()
+    for _project, compose_service, config_files in running or []:
+        files = [f.strip().replace("\\", "/") for f in config_files.split(",") if f.strip()]
+        if any(f == suffix or f.endswith("/" + suffix) for f in files):
+            running_here.add(compose_service)
+    hold = [t for t in targets if running is None or t not in running_here]
+    up = [t for t in targets if t not in hold]
+    compose = _load_compose(repo_root / _SERVICES_DIR / service / _COMPOSE_FILE)
+    compose_services = compose.get("services") or {}
+    if not isinstance(compose_services, dict):
+        compose_services = {}
+    start = sorted(
+        name
+        for name, spec in compose_services.items()
+        if name not in targets and not (isinstance(spec, dict) and spec.get("profiles"))
+    )
+    return hold, start, up
+
+
 def migration_report(migrations: list[str], repo_root: Path) -> list[str]:
     """Changed migrations that still exist (a deleted one has nothing to apply)."""
     return [rel for rel in migrations if (repo_root / rel).is_file()]
@@ -1092,6 +1218,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Print '<profile>\\t<compose service>' for running profile-gated services of SERVICE and exit",
     )
     parser.add_argument(
+        "--pool-held-services",
+        metavar="SERVICE",
+        help="For a stack the GPU pool launches from, print 'hold\\t<name>' (stopped launch target: "
+        "build, never start), 'running\\t<name>' (running launch target) and 'start\\t<name>' (other "
+        "plain services), then exit; exit 3 when config/gpu_pool.yaml is unreadable",
+    )
+    parser.add_argument(
         "--skip-profile",
         action="append",
         default=[],
@@ -1111,6 +1244,37 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     repo_root = args.repo_root.resolve()
+
+    if args.pool_held_services:
+        # Exit 3 = "cannot tell what the pool owns here": the shell must not plain-`up` the stack.
+        try:
+            targets = pool_launch_targets(repo_root, args.pool_held_services)
+        except PoolConfigError as exc:
+            print(f"rebuild_affected_services: ERROR: GPU pool config unreadable: {exc}", file=sys.stderr)
+            return 3
+        if not targets:
+            return 0
+        ps_file = args.docker_ps_file
+        if ps_file is None and os.environ.get("ORION_REBUILD_DOCKER_PS_FILE", "").strip():
+            ps_file = Path(os.environ["ORION_REBUILD_DOCKER_PS_FILE"].strip())
+        try:
+            running = read_running_compose_containers(ps_file)
+        except OSError:
+            running = None
+        if running is None:
+            print(
+                "rebuild_affected_services: WARNING: docker ps unavailable -- "
+                "holding every GPU-pool launch target stopped",
+                file=sys.stderr,
+            )
+        hold, start, up = pool_held_services(repo_root, args.pool_held_services, running, targets)
+        for name in hold:
+            print(f"hold\t{name}")
+        for name in up:
+            print(f"running\t{name}")
+        for name in start:
+            print(f"start\t{name}")
+        return 0
 
     if args.running_profile_services:
         ps_file = args.docker_ps_file

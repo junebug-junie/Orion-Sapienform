@@ -353,6 +353,64 @@ async def test_missing_stage_column_is_a_retry_never_a_recompute(env, monkeypatc
     assert env.store.claims == []
 
 
+class _GrammarBus:
+    def __init__(self):
+        self.sent = []
+
+    async def publish(self, channel, envelope):
+        self.sent.append((channel, envelope))
+
+    def act_kinds(self):
+        return [env.payload["event_kind"] for ch, env in self.sent if ch == "orion:grammar:event"]
+
+
+async def _run_on(env, bus, req):
+    return await env.steps.run_visual_step(bus, req, now_fn=lambda: NOW)
+
+
+@pytest.mark.asyncio
+async def test_replayed_prepare_opens_the_painting_act_once(env, monkeypatch):
+    # Live 2026-10-16: 13 act_opened for 3 painting acts -- every prepare re-opened.
+    monkeypatch.setattr(env.steps.settings, "thought_act_ledger_enabled", True, raising=False)
+    bus = _GrammarBus()
+    first = await _run_on(env, bus, _req("prepare"))
+    assert first.status == "done"
+    assert env.store.rows[first.attempt_id]["stage_json"]["act_opened_at"] == NOW.isoformat()
+    for corr in ("corr-2", "corr-3"):
+        replay = await _run_on(env, bus, _req("prepare", correlation_id=corr))
+        assert (replay.status, replay.attempt_id) == ("done", first.attempt_id)
+    assert bus.act_kinds() == ["act_opened"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_retried_behind_another_painting_opens_only_on_its_own_claim(env, monkeypatch):
+    # The live duplicates: a run queued behind an in-flight attempt retried prepare
+    # (attempt_unresolved) on backoff for ~40 minutes, opening on every retry.
+    monkeypatch.setattr(env.steps.settings, "thought_act_ledger_enabled", True, raising=False)
+    bus = _GrammarBus()
+    env.store.claim_replay = {"outcome": "deferred_busy", "reason": "attempt_unresolved", "attempt_id": "other"}
+    for _ in range(3):
+        assert (await _run_on(env, bus, _req("prepare"))).status == "retry"
+    assert bus.act_kinds() == []
+    env.store.claim_replay = None
+    assert (await _run_on(env, bus, _req("prepare"))).status == "done"
+    assert (await _run_on(env, bus, _req("prepare"))).status == "done"
+    assert bus.act_kinds() == ["act_opened"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_that_failed_before_its_plan_write_opens_on_the_replay_that_writes_it(env, monkeypatch):
+    monkeypatch.setattr(env.steps.settings, "thought_act_ledger_enabled", True, raising=False)
+    bus = _GrammarBus()
+    real = env.vc.compute_visual_plan
+    monkeypatch.setattr(env.vc, "compute_visual_plan", AsyncMock(side_effect=RuntimeError("cortex down")))
+    assert (await _run_on(env, bus, _req("prepare"))).status == "retry"
+    assert bus.act_kinds() == []
+    monkeypatch.setattr(env.vc, "compute_visual_plan", real)
+    assert (await _run_on(env, bus, _req("prepare"))).status == "done"
+    assert bus.act_kinds() == ["act_opened"]
+
+
 # ── generate ────────────────────────────────────────────────────────────────
 
 

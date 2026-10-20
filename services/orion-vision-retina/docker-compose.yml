@@ -8,6 +8,12 @@ services:
       context: ../..
       dockerfile: services/orion-vision-retina/Dockerfile
     container_name: orion-vision-retina
+    # The service exits on purpose when it cannot see (a dead capture task,
+    # publisher watchdog, wedged RTSP readers); this brings it back.
+    restart: unless-stopped
+    # Same reason as the walkway instance below: let an RTSP reader release
+    # (TEARDOWN) before SIGKILL. Harmless for webcam/folder sources.
+    stop_grace_period: 30s
     environment:
       - ORION_BUS_URL=${ORION_BUS_URL:-redis://100.92.216.81:6379/0}
       - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-false}
@@ -30,11 +36,21 @@ services:
       - FRAME_RETENTION_SECONDS=${FRAME_RETENTION_SECONDS:-300}
       - JPEG_QUALITY=${JPEG_QUALITY:-90}
       - HEALTH_INTERVAL_SECONDS=${HEALTH_INTERVAL_SECONDS:-10.0}
+      # Publisher watchdog: degraded health, then exit-for-restart (main.py).
+      - RETINA_PUBLISH_STALL_SECONDS=${RETINA_PUBLISH_STALL_SECONDS:-120.0}
       - SOURCE_RECONNECT_SECONDS=${SOURCE_RECONNECT_SECONDS:-5.0}
       # RTSP only: TCP transport, read timeout, stall watchdog (sources.py).
       - RETINA_RTSP_TRANSPORT=${RETINA_RTSP_TRANSPORT:-tcp}
       - RETINA_RTSP_IO_TIMEOUT_SECONDS=${RETINA_RTSP_IO_TIMEOUT_SECONDS:-5.0}
       - RETINA_RTSP_STALL_SECONDS=${RETINA_RTSP_STALL_SECONDS:-30.0}
+      # Quiet period before every RTSP (re)connect + persisted last-session
+      # time + live corruption self-heal (sources.py RtspSessionGate).
+      - RETINA_RTSP_RECONNECT_QUIET_SECONDS=${RETINA_RTSP_RECONNECT_QUIET_SECONDS:-90.0}
+      - RETINA_RTSP_SESSION_STATE_DIR=${RETINA_RTSP_SESSION_STATE_DIR:-/var/lib/orion-vision-retina}
+      - RETINA_RTSP_HEAL_ENABLED=${RETINA_RTSP_HEAL_ENABLED:-true}
+      - RETINA_RTSP_HEAL_CHECK_EVERY=${RETINA_RTSP_HEAL_CHECK_EVERY:-10}
+      - RETINA_RTSP_HEAL_WINDOW_SECONDS=${RETINA_RTSP_HEAL_WINDOW_SECONDS:-120.0}
+      - RETINA_RTSP_HEAL_MIN_SHARE=${RETINA_RTSP_HEAL_MIN_SHARE:-0.8}
       # On-demand clip capture (AffectGPT) -- UNVERIFIED against real
       # hardware, see app/clip_capture.py. Off by default.
       - RETINA_CLIP_ENABLED=${RETINA_CLIP_ENABLED:-false}
@@ -65,6 +81,8 @@ services:
       # to keep so one compose file serves both deployments.
       - /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames
       - /mnt/telemetry/vision/intake:/mnt/telemetry/vision/intake
+      # RTSP last-session time, survives container recreate (deploys).
+      - /mnt/telemetry/vision/retina_state:/var/lib/orion-vision-retina
       # PulseAudio/PipeWire socket passthrough for clip_capture.py's audio
       # capture. UNVERIFIED path -- if this host directory doesn't exist,
       # Docker silently creates an empty one rather than failing startup, so
@@ -124,9 +142,11 @@ services:
       dockerfile: services/orion-vision-retina/Dockerfile
     container_name: orion-vision-retina-walkway
     restart: unless-stopped
-    # The RTSP reader's stop waits up to 5s for a blocked read; leave room
-    # to close the bus cleanly before SIGKILL.
-    stop_grace_period: 15s
+    # On SIGTERM the RTSP reader's stop waits up to 12s (FFmpeg open timeout
+    # + 2s) for a blocked open/read so the reader itself releases the capture
+    # -- that release sends RTSP TEARDOWN. SIGKILL before it leaves the
+    # camera holding a stale session. Room for that plus the bus close.
+    stop_grace_period: 30s
     environment:
       - ORION_BUS_URL=${ORION_BUS_URL:-redis://100.92.216.81:6379/0}
       - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-false}
@@ -145,25 +165,105 @@ services:
       - RETINA_HEIGHT=
       - FRAME_STORAGE_DIR=${FRAME_STORAGE_DIR:-/mnt/telemetry/vision/frames}
       - RETINA_FRAME_MODE=local
-      # Effective lifetime is ~60s, not this: the edge's capture worker prunes
-      # the same shared frames directory at its own FRAME_RETENTION_SECONDS.
-      # Ample for router -> host (seconds).
+      # Each writer prunes only its own files (frame_store.owned_frame_pattern;
+      # the edge prunes only frame_/still_), so walkway frames live this long.
+      # Ample for router -> host (seconds) and story-strip capture.
       - FRAME_RETENTION_SECONDS=${FRAME_RETENTION_SECONDS:-300}
       - JPEG_QUALITY=${WALKWAY_RETINA_JPEG_QUALITY:-88}
       - HEALTH_INTERVAL_SECONDS=${HEALTH_INTERVAL_SECONDS:-10.0}
+      # Publisher watchdog: degraded health, then exit-for-restart (main.py).
+      - RETINA_PUBLISH_STALL_SECONDS=${RETINA_PUBLISH_STALL_SECONDS:-120.0}
       - SOURCE_RECONNECT_SECONDS=${SOURCE_RECONNECT_SECONDS:-5.0}
       # RTSP only: TCP transport, read timeout, stall watchdog (sources.py).
       - RETINA_RTSP_TRANSPORT=${RETINA_RTSP_TRANSPORT:-tcp}
       - RETINA_RTSP_IO_TIMEOUT_SECONDS=${RETINA_RTSP_IO_TIMEOUT_SECONDS:-5.0}
       - RETINA_RTSP_STALL_SECONDS=${RETINA_RTSP_STALL_SECONDS:-30.0}
+      # Quiet period before every RTSP (re)connect + persisted last-session
+      # time + live corruption self-heal (sources.py RtspSessionGate).
+      - RETINA_RTSP_RECONNECT_QUIET_SECONDS=${RETINA_RTSP_RECONNECT_QUIET_SECONDS:-90.0}
+      - RETINA_RTSP_SESSION_STATE_DIR=${RETINA_RTSP_SESSION_STATE_DIR:-/var/lib/orion-vision-retina}
+      - RETINA_RTSP_HEAL_ENABLED=${RETINA_RTSP_HEAL_ENABLED:-true}
+      - RETINA_RTSP_HEAL_CHECK_EVERY=${RETINA_RTSP_HEAL_CHECK_EVERY:-10}
+      - RETINA_RTSP_HEAL_WINDOW_SECONDS=${RETINA_RTSP_HEAL_WINDOW_SECONDS:-120.0}
+      - RETINA_RTSP_HEAL_MIN_SHARE=${RETINA_RTSP_HEAL_MIN_SHARE:-0.8}
       # No clip capture on this instance: clip requests target carbon.
       - RETINA_CLIP_ENABLED=false
     volumes:
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-vision-retina/app:/app/app
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/orion:/app/orion
       - /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames
+      # RTSP last-session time, survives container recreate (deploys), so a
+      # deploy restart waits the quiet period instead of corrupting the
+      # stream (2026-10-16). Per-stream file name; shared dir is fine.
+      - /mnt/telemetry/vision/retina_state:/var/lib/orion-vision-retina
     ports:
       - "127.0.0.1:${WALKWAY_RETINA_HTTP_PORT:-8028}:8000"
+    networks:
+      - app-net
+
+  # The Ring doorbell (battery, no Ring Protect plan): no RTSP and no saved
+  # recordings, and it cannot take a snapshot while it records. On each Ring
+  # motion/ding push event this instance opens a short live view
+  # (DOORBELL_RING_BURST_SECONDS) and samples it at DOORBELL_RETINA_FPS --
+  # never continuous video. stream_id/camera_id `doorbell` match
+  # config/vision_frame_router.yaml `streams.doorbell` and
+  # config/vision_zones.yaml. Ring login, once, after the first `up`:
+  #   docker exec -it orion-vision-retina-doorbell python -m app.ring_login
+  # The token lands in /mnt/telemetry/vision/ring_state (owner-only, mounted
+  # into this container only -- the other retinas share retina_state and must
+  # not read Ring credentials); the source picks it up within a minute, no
+  # restart. No compose profile (2026-10-20): unlike the walkway, whose empty
+  # RTSP URL is refused at boot, an unauthenticated doorbell just waits and
+  # retries ("ring not authenticated"), so a plain `up` -- and the post-pull
+  # rebuild, which never starts a profile service that is not running --
+  # builds and starts it. Behind a profile it never deployed itself.
+  orion-vision-retina-doorbell:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+    build:
+      context: ../..
+      dockerfile: services/orion-vision-retina/Dockerfile
+    container_name: orion-vision-retina-doorbell
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      - ORION_BUS_URL=${ORION_BUS_URL:-redis://100.92.216.81:6379/0}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-false}
+      - ORION_BUS_VELOCITY_TRACKING_ENABLED=${ORION_BUS_VELOCITY_TRACKING_ENABLED:-false}
+      - CHANNEL_RETINA_PUB=${CHANNEL_RETINA_PUB:-orion:vision:frames}
+      - CHANNEL_RETINA_ERROR=${CHANNEL_RETINA_ERROR:-orion:vision:retina:error}
+      - CHANNEL_SYSTEM_HEALTH=${CHANNEL_SYSTEM_HEALTH:-orion:system:health}
+      - SERVICE_NAME=vision-retina-doorbell
+      - RETINA_SOURCE_TYPE=ring
+      # The doorbell's name in the Ring app, or its device id. Empty = the
+      # first camera on the account.
+      - RETINA_SOURCE=${DOORBELL_RING_DEVICE:-}
+      - RETINA_CAMERA_ID=doorbell
+      - RETINA_STREAM_ID=doorbell
+      - RETINA_FPS=${DOORBELL_RETINA_FPS:-2.0}
+      - RETINA_WIDTH=
+      - RETINA_HEIGHT=
+      - FRAME_STORAGE_DIR=${FRAME_STORAGE_DIR:-/mnt/telemetry/vision/frames}
+      - RETINA_FRAME_MODE=local
+      - FRAME_RETENTION_SECONDS=${FRAME_RETENTION_SECONDS:-300}
+      - JPEG_QUALITY=${DOORBELL_RETINA_JPEG_QUALITY:-88}
+      - HEALTH_INTERVAL_SECONDS=${HEALTH_INTERVAL_SECONDS:-10.0}
+      # Publisher watchdog: degraded health, then exit-for-restart (main.py).
+      - RETINA_PUBLISH_STALL_SECONDS=${RETINA_PUBLISH_STALL_SECONDS:-120.0}
+      - RETINA_RING_STATE_DIR=/var/lib/orion-vision-ring
+      - RETINA_RING_EVENT_KINDS=${DOORBELL_RING_EVENT_KINDS:-motion,ding}
+      - RETINA_RING_BURST_SECONDS=${DOORBELL_RING_BURST_SECONDS:-15.0}
+      - RETINA_RING_COOLDOWN_SECONDS=${DOORBELL_RING_COOLDOWN_SECONDS:-30.0}
+      - RETINA_CLIP_ENABLED=false
+    volumes:
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-vision-retina/app:/app/app
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/orion:/app/orion
+      - /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames
+      - /mnt/telemetry/vision/ring_state:/var/lib/orion-vision-ring
+    ports:
+      - "127.0.0.1:${DOORBELL_RETINA_HTTP_PORT:-8029}:8000"
     networks:
       - app-net
 

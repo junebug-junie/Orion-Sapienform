@@ -183,17 +183,18 @@ class Settings(BaseSettings):
     # Walkway crop thumbnails (app/crop_embeddings.py ThumbStore): a small
     # JPEG per EMBEDDED crop (never a no-embed-zone box), named by content
     # hash, for the Hub's ask card. The Hub mounts this directory read-only.
-    # Pruned here after VISION_CROP_THUMB_RETENTION_DAYS without a rewrite --
-    # longer than an ask stays open (7 days); orion-sql-writer reads the same
-    # key to pick an ask picture that outlives the ask. Empty disables.
+    # Kept forever at VISION_CROP_THUMB_RETENTION_DAYS=0 (the default, Juniper
+    # 2026-10-20); a positive value prunes after that many days without a
+    # rewrite. orion-sql-writer reads the same key to pick an ask picture that
+    # outlives the ask. Empty dir disables.
     VISION_CROP_THUMB_DIR: str = "/mnt/telemetry/orion-vision-host/crop_thumbs"
-    VISION_CROP_THUMB_RETENTION_DAYS: float = 10.0
-    # At most one thumbnail per stream per this many seconds.
+    VISION_CROP_THUMB_RETENTION_DAYS: float = 0.0
+    # At most one thumbnail per stream AND label per this many seconds.
     VISION_CROP_THUMB_MIN_INTERVAL_SEC: float = 10.0
     # Frames where a face check found a face (app/face_frames.py, 2026-10-10): the frame buffer
     # rolls over in ~65 s, so frames behind matches and misses were lost. Empty dir disables.
     VISION_FACE_FRAMES_DIR: str = "/mnt/telemetry/orion-vision-host/face_frames"
-    VISION_FACE_FRAMES_RETENTION_DAYS: float = 14.0
+    VISION_FACE_FRAMES_RETENTION_DAYS: float = 0.0  # 0 = keep forever
     VISION_FACE_FRAMES_MIN_INTERVAL_SEC: float = 5.0
     # OSNet shadow body vector (app/osnet_shadow.py, 2026-10-16): a person
     # re-identification vector stored NEXT TO the SigLIP one on every embedded

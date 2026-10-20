@@ -55,7 +55,7 @@ from orion.harness.reading_receipts import (
 )
 from orion.harness.repair import map_repair_pressure_contract
 from orion.harness.step_stream import publish_harness_run_step
-from orion.harness.task_anchor import build_task_anchor
+from orion.harness.task_anchor import build_focus_anchor, build_task_anchor, compose_task_anchor
 from orion.harness.tool_provenance_audit import detect_tool_provenance_mismatch, fetch_shaped_tool_names
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import (
@@ -139,6 +139,8 @@ class HarnessMotorResult:
     # What this turn's `record_correction` calls actually returned. The governor checks claims in
     # the reply against it (orion/harness/claim_gate.py).
     correction_results: tuple[str, ...] = ()
+    # Same, for `queue_curiosity_focus` (a claimed focus_id).
+    focus_results: tuple[str, ...] = ()
     # Real backend model the CLI's stream-json "assistant" events echoed back
     # (see fcc_motor.py's _served_model_from_assistant), distinct from the
     # ~/.fcc/.env route alias in HarnessRunRequestV1.fcc_model_label -- that
@@ -525,9 +527,13 @@ class HarnessRunner:
                if getattr(request, "gpu_lease", None) is not None else {}),
             **({"pool_state": turn_pool_state} if isinstance(turn_pool_state, dict) else {}),
             **({"resume_key": request.resume_key} if getattr(request, "resume_key", None) else {}),
-            **({"task_anchor": anchor} if (anchor := build_task_anchor(
-                request.user_message, reading_only=bool(getattr(request, "reading_only", False)),
-                utterance_origin=getattr(request, "utterance_origin", None))) else {}),
+            **({"task_anchor": anchor} if (anchor := compose_task_anchor(
+                build_task_anchor(
+                    request.user_message, reading_only=bool(getattr(request, "reading_only", False)),
+                    utterance_origin=getattr(request, "utterance_origin", None)),
+                # A curiosity run that took a focus: the focus and its disposition instruction.
+                build_focus_anchor(getattr(request, "curiosity_focus", None)),
+            )) else {}),
             **({"reading_binding": request.reading_binding} if getattr(request, "reading_binding", None) else {}),
             **({"reading_only": True} if getattr(request, "reading_only", False) else {}),
             # Only a Juniper-originated Hub chat reply. Passed only when true so
@@ -851,6 +857,7 @@ class HarnessRunner:
             grammar_collector=collector,
             tool_provenance_audit=tool_provenance_audit,
             correction_results=tuple(turn_findings.correction_results),
+            focus_results=tuple(turn_findings.focus_results),
             step_char_sum=step_char_sum,
             step_char_max=step_char_max,
             tool_failure_streak_max=tool_failure_streak_max,

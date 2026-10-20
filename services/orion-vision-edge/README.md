@@ -73,6 +73,7 @@ Activity is published on every frame where YOLO/motion yields trigger labels, in
 | Env var | Default | Notes |
 |---|---|---|
 | `FRAME_STORAGE_DIR` | `/mnt/frames` | Shared volume path for frames |
+| `FRAME_RETENTION_SECONDS` | `60` | Prune age for this service's own `frame_*`/`still_*` files only; retina files in the shared dir are left to their own writer (`app/frame_prune.py`) |
 | `EDGE_DEBUG_SAVE_FRAMES` | `False` | Save annotated debug frames |
 | `EDGE_DEBUG_DIR` | `/mnt/debug` | Path for debug frames |
 

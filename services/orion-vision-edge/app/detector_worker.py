@@ -8,6 +8,7 @@ import numpy as np
 from typing import Any, List, Tuple
 
 from orion.core.bus.bus_schemas import ServiceRef
+from orion.core.bus.resilience import run_subscription
 from orion.schemas.vision import (
     VisionEdgeArtifact, VisionObject, VisionEdgeHealth,
     VisionFramePointerPayload, VisionEdgeError
@@ -154,155 +155,163 @@ async def run_detector_loop():
 
     processed_count = 0
 
-    # Subscribe
-    async with bus.subscribe(settings.CHANNEL_VISION_FRAMES) as pubsub:
-        async for msg in bus.iter_messages(pubsub):
-            processed_count += 1
-            if processed_count % 100 == 0:
-                logger.info(f"[DETECTOR] Processed {processed_count} frames.")
-                
-            # Decode
-            decoded = bus.codec.decode(msg.get("data"))
-            if not decoded.ok or not decoded.envelope:
-                continue
-            
-            env = decoded.envelope
-            
-            # Validate payload
-            try:
-                pointer = VisionFramePointerPayload.model_validate(env.payload)
-            except Exception:
-                logger.debug("Ignored non-pointer message")
-                continue
+    # Work is awaited inline, one frame at a time, as before.
+    async def _handle(msg: dict) -> None:
+        nonlocal processed_count
+        processed_count += 1
+        if processed_count % 100 == 0:
+            logger.info(f"[DETECTOR] Processed {processed_count} frames.")
 
-            # The edge detects only its own camera. The frames channel also
-            # carries other cameras (e.g. the walkway retina instance), so
-            # without this it would re-detect their frames, doubling activity
-            # events and GPU work.
-            if not is_own_frame(pointer.stream_id, settings.STREAM_ID):
-                continue
+        # Decode
+        decoded = bus.codec.decode(msg.get("data"))
+        if not decoded.ok or not decoded.envelope:
+            return
 
-            # Load Frame
-            if not pointer.image_path:
-                continue
-            
-            frame = await asyncio.get_event_loop().run_in_executor(
-                None, _load_image, pointer.image_path
+        env = decoded.envelope
+
+        # Validate payload
+        try:
+            pointer = VisionFramePointerPayload.model_validate(env.payload)
+        except Exception:
+            logger.debug("Ignored non-pointer message")
+            return
+
+        # The edge detects only its own camera. The frames channel also
+        # carries other cameras (e.g. the walkway retina instance), so
+        # without this it would re-detect their frames, doubling activity
+        # events and GPU work.
+        if not is_own_frame(pointer.stream_id, settings.STREAM_ID):
+            return
+
+        # Load Frame
+        if not pointer.image_path:
+            return
+
+        frame = await asyncio.get_event_loop().run_in_executor(
+            None, _load_image, pointer.image_path
+        )
+
+        if frame is None:
+            logger.warning(f"Could not load image: {pointer.image_path}")
+            return
+
+        # Health Check
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            mean_brightness = np.mean(gray)
+
+            health_payload = VisionEdgeHealth(
+                camera_id=settings.camera_id,
+                ts=time.time(),
+                ok=True,
+                fps=settings.FPS,
+                mean_brightness=float(mean_brightness),
+                resolution=f"{frame.shape[1]}x{frame.shape[0]}"
             )
-            
-            if frame is None:
-                logger.warning(f"Could not load image: {pointer.image_path}")
-                continue
 
-            # Health Check
-            try:
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                mean_brightness = np.mean(gray)
-                
-                health_payload = VisionEdgeHealth(
-                    camera_id=settings.camera_id,
-                    ts=time.time(),
-                    ok=True,
-                    fps=settings.FPS,
-                    mean_brightness=float(mean_brightness),
-                    resolution=f"{frame.shape[1]}x{frame.shape[0]}"
-                )
-                
-                # Publish Health
-                health_env = env.derive_child(
-                    kind=VISION_EDGE_HEALTH_KIND,
-                    source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
-                    payload=health_payload
-                )
-                await bus.publish(settings.CHANNEL_VISION_EDGE_HEALTH, health_env)
+            # Publish Health
+            health_env = env.derive_child(
+                kind=VISION_EDGE_HEALTH_KIND,
+                source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
+                payload=health_payload
+            )
+            await bus.publish(settings.CHANNEL_VISION_EDGE_HEALTH, health_env)
 
-            except Exception as e:
-                logger.warning(f"Health check failed: {e}")
-            
-            # Run Detectors
-            try:
-                vision_objects, det_dicts = await asyncio.get_event_loop().run_in_executor(
-                    None, _run_detectors, frame
-                )
+        except Exception as e:
+            logger.warning(f"Health check failed: {e}")
 
-                labels = labels_from_detections(det_dicts)
-                max_score = max((float(d.get("score", 0)) for d in det_dicts), default=0.0)
-                stream_id = pointer.stream_id or settings.STREAM_ID
-                artifact_id = str(uuid.uuid4())
+        # Run Detectors
+        try:
+            vision_objects, det_dicts = await asyncio.get_event_loop().run_in_executor(
+                None, _run_detectors, frame
+            )
 
-                await publish_activity_if_allowed(
-                    bus,
-                    settings,
-                    stream_id=stream_id,
-                    camera_id=pointer.camera_id,
-                    labels=labels,
-                    max_score=max_score,
-                    frame_ts=pointer.frame_ts,
-                    image_path=pointer.image_path,
-                    artifact_id=artifact_id,
-                    limiter=activity_limiter,
-                    parent_env=env,
+            labels = labels_from_detections(det_dicts)
+            max_score = max((float(d.get("score", 0)) for d in det_dicts), default=0.0)
+            stream_id = pointer.stream_id or settings.STREAM_ID
+            artifact_id = str(uuid.uuid4())
+
+            await publish_activity_if_allowed(
+                bus,
+                settings,
+                stream_id=stream_id,
+                camera_id=pointer.camera_id,
+                labels=labels,
+                max_score=max_score,
+                frame_ts=pointer.frame_ts,
+                image_path=pointer.image_path,
+                artifact_id=artifact_id,
+                limiter=activity_limiter,
+                parent_env=env,
+            )
+
+            if vision_objects:
+                 # Log detections
+                 found_labels = [o.label for o in vision_objects]
+                 logger.info(f"[DETECTOR] Found: {found_labels}")
+
+            # Debug Save
+            if settings.EDGE_DEBUG_SAVE_FRAMES and vision_objects:
+                asyncio.get_event_loop().run_in_executor(
+                    None, _save_debug_frame, frame, vision_objects, "all"
                 )
 
-                if vision_objects:
-                     # Log detections
-                     found_labels = [o.label for o in vision_objects]
-                     logger.info(f"[DETECTOR] Found: {found_labels}")
+            # Publish Artifact (optional; Host chain owns orion:vision:artifacts when disabled)
+            if not settings.EDGE_PUBLISH_ARTIFACTS:
+                return
 
-                # Debug Save
-                if settings.EDGE_DEBUG_SAVE_FRAMES and vision_objects:
-                    asyncio.get_event_loop().run_in_executor(
-                        None, _save_debug_frame, frame, vision_objects, "all"
-                    )
+            artifact = VisionEdgeArtifact(
+                artifact_id=artifact_id,
+                correlation_id=str(env.correlation_id),
+                task_type="edge_detection",
+                device=settings.YOLO_DEVICE,
+                inputs={
+                    "stream_id": stream_id,
+                    "camera_id": pointer.camera_id,
+                    "image_path": pointer.image_path,
+                },
+                outputs={"objects": vision_objects},
+                timing={"ts": time.time(), "latency": time.time() - pointer.frame_ts} if pointer.frame_ts else {},
+                model_fingerprints={"yolo": settings.YOLO_MODEL},
+                debug_refs=None
+            )
 
-                # Publish Artifact (optional; Host chain owns orion:vision:artifacts when disabled)
-                if not settings.EDGE_PUBLISH_ARTIFACTS:
-                    continue
+            out_env = env.derive_child(
+                kind=VISION_EDGE_ARTIFACT_KIND,
+                source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
+                payload=artifact
+            )
 
-                artifact = VisionEdgeArtifact(
-                    artifact_id=artifact_id,
-                    correlation_id=str(env.correlation_id),
-                    task_type="edge_detection",
-                    device=settings.YOLO_DEVICE,
-                    inputs={
-                        "stream_id": stream_id,
-                        "camera_id": pointer.camera_id,
-                        "image_path": pointer.image_path,
-                    },
-                    outputs={"objects": vision_objects},
-                    timing={"ts": time.time(), "latency": time.time() - pointer.frame_ts} if pointer.frame_ts else {},
-                    model_fingerprints={"yolo": settings.YOLO_MODEL},
-                    debug_refs=None 
-                )
-                
-                out_env = env.derive_child(
-                    kind=VISION_EDGE_ARTIFACT_KIND,
+            await bus.publish(settings.CHANNEL_VISION_ARTIFACTS, out_env)
+
+            # Also publish to raw events channel for UI
+            if settings.VISION_EVENTS_PUBLISH_RAW and settings.VISION_EVENTS_PUBLISH_RAW != settings.CHANNEL_VISION_ARTIFACTS:
+                 raw_env = env.derive_child(
+                    kind=VISION_EDGE_RAW_KIND,
                     source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
                     payload=artifact
                 )
-                
-                await bus.publish(settings.CHANNEL_VISION_ARTIFACTS, out_env)
-                
-                # Also publish to raw events channel for UI
-                if settings.VISION_EVENTS_PUBLISH_RAW and settings.VISION_EVENTS_PUBLISH_RAW != settings.CHANNEL_VISION_ARTIFACTS:
-                     raw_env = env.derive_child(
-                        kind=VISION_EDGE_RAW_KIND,
-                        source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
-                        payload=artifact
-                    )
-                     await bus.publish(settings.VISION_EVENTS_PUBLISH_RAW, raw_env)
-            
-            except Exception as e:
-                logger.error(f"Detection loop error: {e}")
-                err_payload = VisionEdgeError(
-                    camera_id=settings.camera_id,
-                    ts=time.time(),
-                    error_type="loop_error",
-                    message=str(e)
-                )
-                err_env = env.derive_child(
-                    kind=VISION_EDGE_ERROR_KIND,
-                    source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
-                    payload=err_payload
-                )
-                await bus.publish(settings.CHANNEL_VISION_EDGE_ERROR, err_env)
+                 await bus.publish(settings.VISION_EVENTS_PUBLISH_RAW, raw_env)
+
+        except Exception as e:
+            logger.error(f"Detection loop error: {e}")
+            err_payload = VisionEdgeError(
+                camera_id=settings.camera_id,
+                ts=time.time(),
+                error_type="loop_error",
+                message=str(e)
+            )
+            err_env = env.derive_child(
+                kind=VISION_EDGE_ERROR_KIND,
+                source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
+                payload=err_payload
+            )
+            await bus.publish(settings.CHANNEL_VISION_EDGE_ERROR, err_env)
+
+    await run_subscription(
+        bus,
+        settings.CHANNEL_VISION_FRAMES,
+        _handle,
+        stop_event=None,
+        name="vision-edge.detector",
+    )

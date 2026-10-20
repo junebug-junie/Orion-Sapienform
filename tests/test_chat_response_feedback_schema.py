@@ -72,3 +72,27 @@ def test_feedback_schema_rejects_duplicate_categories() -> None:
             feedback_value="down",
             categories=["missed_relevant_context", "missed_relevant_context"],
         )
+
+
+def test_feedback_schema_bad_tone_is_a_thumbs_down_category() -> None:
+    payload = ChatResponseFeedbackV1(
+        feedback_id="fb-6",
+        target_turn_id="turn-6",
+        feedback_value="down",
+        categories=["bad_tone"],
+    )
+    assert payload.categories == ["bad_tone"]
+    with pytest.raises(ValueError):
+        ChatResponseFeedbackV1(
+            feedback_id="fb-7",
+            target_turn_id="turn-7",
+            feedback_value="up",
+            categories=["bad_tone"],
+        )
+    with pytest.raises(ValueError):
+        ChatResponseFeedbackV1(
+            feedback_id="fb-8",
+            target_turn_id="turn-8",
+            feedback_value="down",
+            categories=["incorrect_tone"],
+        )

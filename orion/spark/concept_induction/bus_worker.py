@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -12,6 +13,7 @@ from uuid import uuid4
 from orion.substrate.bus_synaptic_surprise import latest_bus_synaptic_prediction_error
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.resilience import run_subscription, subscription_health
 from orion.core.bus.work_queue import RedisStreamWorkQueue
 from orion.core.schemas.concept_induction import ConceptProfile, ConceptProfileDelta
 from orion.core.schemas.drives import GraphReadyArtifact, TurnDossierV1
@@ -74,7 +76,13 @@ class WorkerLivenessState:
     total_events_seen: int = 0
     total_events_accepted: int = 0
     total_events_rejected: int = 0
+    total_events_failed: int = 0
+    last_handler_exception: str | None = None
     stop_reason: str | None = None
+
+
+# run_subscription listener name for the intake subscription; one ConceptWorker per process.
+_INTAKE_LISTENER_NAME = "concept-induction-intake"
 
 
 def _service_ref(cfg: ConceptSettings) -> ServiceRef:
@@ -139,6 +147,9 @@ class ConceptWorker:
         self.recent_event_seen: Dict[str, datetime] = {}
         self.trigger_decisions: List[dict] = []
         self._stopped = False
+        self._stop_event = asyncio.Event()
+        self._stop_requested_at: float | None = None
+        self._intake_listening = False
         self._liveness = WorkerLivenessState(
             worker_initialized=True,
             subscribed_channels=list(cfg.intake_channels),
@@ -1062,7 +1073,27 @@ class ConceptWorker:
         }
 
     def worker_liveness_status(self) -> dict:
-        return asdict(self._liveness)
+        status = asdict(self._liveness)
+        if not self._intake_listening:
+            return status
+        # The intake subscription retries on its own; read its live state from run_subscription.
+        row = next(
+            (r for r in subscription_health()["listeners"] if r["name"] == _INTAKE_LISTENER_NAME),
+            None,
+        )
+        if row is not None:
+            status["bus_consumer_started"] = row["last_subscribed_at"] is not None
+            status["bus_subscribed"] = row["subscribed"]
+            status["bus_subscription_failures_total"] = row["failures_total"]
+            # A failure after stop() began closing the bus is shutdown noise, not a fault.
+            stopped_at = self._stop_requested_at
+            if (
+                status["worker_last_exception"] is None
+                and row["last_failure"]
+                and (stopped_at is None or row["last_failure_at"] < stopped_at)
+            ):
+                status["worker_last_exception"] = row["last_failure"]
+        return status
 
     def mark_task_created(self) -> None:
         self._liveness.worker_task_created = True
@@ -1138,34 +1169,17 @@ class ConceptWorker:
             self.cfg.concept_trigger_recent_decisions,
         )
         try:
-            async with self.bus.subscribe(*patterns, patterns=uses_glob) as pubsub:
-                self._liveness.bus_consumer_started = True
-                logger.info("concept_induction_worker_subscribed channels=%s", patterns)
-                async for msg in self.bus.iter_messages(pubsub):
-                    self._liveness.total_events_seen += 1
-                    self._liveness.last_event_received_at = datetime.now(timezone.utc).isoformat()
-                    if not isinstance(msg, dict):
-                        self._liveness.total_events_rejected += 1
-                        continue
-                    data = msg.get("data")
-                    if data is None:
-                        self._liveness.total_events_rejected += 1
-                        continue
-                    channel = msg.get("channel")
-                    if hasattr(channel, "decode"):
-                        channel = channel.decode("utf-8")
-                    decoded = self.bus.codec.decode(data)
-                    if not decoded.ok or decoded.envelope is None:
-                        self._liveness.total_events_rejected += 1
-                        logger.warning("Concept intake decode failed channel=%s error=%s", channel, decoded.error)
-                        continue
-                    logger.info(
-                        "concept_induction_worker_event_received channel=%s kind=%s",
-                        str(channel or "unknown"),
-                        decoded.envelope.kind,
-                    )
-                    self._liveness.total_events_accepted += 1
-                    await self.handle_envelope(decoded.envelope, str(channel or "unknown"))
+            if not getattr(self.bus, "enabled", True):
+                raise RuntimeError("Bus disabled")
+            self._intake_listening = True
+            await run_subscription(
+                self.bus,
+                patterns,
+                self._handle_intake_message,
+                stop_event=self._stop_event,
+                name=_INTAKE_LISTENER_NAME,
+                patterns=uses_glob,
+            )
         except asyncio.CancelledError:
             self._liveness.stop_reason = "cancelled"
             logger.info("concept_induction_worker_task_stopped reason=cancelled")
@@ -1181,7 +1195,41 @@ class ConceptWorker:
                 logger.info("concept_induction_worker_task_stopped reason=stopped")
             await self.stop()
 
+    async def _handle_intake_message(self, msg: dict) -> None:
+        self._liveness.total_events_seen += 1
+        self._liveness.last_event_received_at = datetime.now(timezone.utc).isoformat()
+        if not isinstance(msg, dict):
+            self._liveness.total_events_rejected += 1
+            return
+        data = msg.get("data")
+        if data is None:
+            self._liveness.total_events_rejected += 1
+            return
+        channel = msg.get("channel")
+        if hasattr(channel, "decode"):
+            channel = channel.decode("utf-8")
+        decoded = self.bus.codec.decode(data)
+        if not decoded.ok or decoded.envelope is None:
+            self._liveness.total_events_rejected += 1
+            logger.warning("Concept intake decode failed channel=%s error=%s", channel, decoded.error)
+            return
+        logger.info(
+            "concept_induction_worker_event_received channel=%s kind=%s",
+            str(channel or "unknown"),
+            decoded.envelope.kind,
+        )
+        self._liveness.total_events_accepted += 1
+        try:
+            await self.handle_envelope(decoded.envelope, str(channel or "unknown"))
+        except Exception as exc:  # noqa: BLE001 - one bad envelope must not end intake
+            self._liveness.total_events_failed += 1
+            self._liveness.last_handler_exception = repr(exc)
+            logger.exception("concept_induction_worker_handle_failed channel=%s error=%s", channel, exc)
+
     async def stop(self) -> None:
+        if self._stop_requested_at is None:
+            self._stop_requested_at = time.time()
+        self._stop_event.set()
         if self._stopped:
             return
         self._stopped = True

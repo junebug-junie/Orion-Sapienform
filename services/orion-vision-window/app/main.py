@@ -13,10 +13,12 @@ from loguru import logger
 from pydantic import ValidationError
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.vision_sighting import IDENTITY_SIGHTING_KIND, IdentitySightingV1
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.schemas.vision import (
+    VisionEventPayload,
     VisionSceneInventoryV1,
     VisionArtifactPayload,
     VisionWindowPayload,
@@ -34,6 +36,7 @@ from .projection import (
     stream_key_from_artifact,
 )
 from .crops import build_crop_observation
+from .caption_events import build_caption_event
 from .caption_gate import CaptionGate
 from .fixtures import FixtureTracker
 from .recovery_store import RecoveryStore
@@ -200,6 +203,8 @@ class WindowService:
         self._m_catchup_expired = 0
         self._m_caption_gate_accepted = 0
         self._m_caption_gate_rejected: Dict[str, int] = {}
+        self._m_caption_events_published = 0
+        self._m_caption_events_failed = 0
 
     def _recovery_url(self) -> str:
         return (settings.VISION_WINDOW_RECOVERY_REDIS_URL or settings.ORION_BUS_URL).strip()
@@ -299,29 +304,34 @@ class WindowService:
         return False
 
     async def _consume(self) -> None:
-        async with self.bus.subscribe(settings.CHANNEL_WINDOW_INTAKE) as pubsub:
-            async for msg in self.bus.iter_messages(pubsub):
-                if self._shutdown_event.is_set():
-                    break
-                data = msg.get("data")
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok:
-                    continue
-                env = decoded.envelope
-                try:
-                    if isinstance(env.payload, dict):
-                        payload = VisionArtifactPayload(**env.payload)
-                    else:
-                        payload = env.payload
-                except Exception as e:
-                    logger.warning(f"[WINDOW] Invalid artifact payload: {e}")
-                    continue
-                sk = stream_key_from_artifact(payload)
-                logger.debug(f"[WINDOW] ingest accepted stream={sk} artifact={payload.artifact_id}")
-                self._m_ingest += 1
-                async with self._buffer_lock:
-                    self._buffers[sk].append({"artifact": payload, "ts": time.time(), "env": env})
-                await self._publish_crop_observation(payload, env)
+        await run_subscription(
+            self.bus,
+            settings.CHANNEL_WINDOW_INTAKE,
+            self._on_intake,
+            stop_event=self._shutdown_event,
+            name="vision-window.consume",
+        )
+
+    async def _on_intake(self, msg: dict) -> None:
+        data = msg.get("data")
+        decoded = self.bus.codec.decode(data)
+        if not decoded.ok:
+            return
+        env = decoded.envelope
+        try:
+            if isinstance(env.payload, dict):
+                payload = VisionArtifactPayload(**env.payload)
+            else:
+                payload = env.payload
+        except Exception as e:
+            logger.warning(f"[WINDOW] Invalid artifact payload: {e}")
+            return
+        sk = stream_key_from_artifact(payload)
+        logger.debug(f"[WINDOW] ingest accepted stream={sk} artifact={payload.artifact_id}")
+        self._m_ingest += 1
+        async with self._buffer_lock:
+            self._buffers[sk].append({"artifact": payload, "ts": time.time(), "env": env})
+        await self._publish_crop_observation(payload, env)
 
     async def _consume_identity(self) -> None:
         """Separate loop, separate channel from _consume() above --
@@ -341,76 +351,85 @@ class WindowService:
         sticky-confirmed-vs-flicker reasoning. A fresh "confirmed" reading
         is never subject to that hold-off and always overwrites.
         """
-        async with self.bus.subscribe(settings.CHANNEL_WINDOW_IDENTITY_INTAKE) as pubsub:
-            async for msg in self.bus.iter_messages(pubsub):
-                if self._shutdown_event.is_set():
-                    break
-                data = msg.get("data")
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok:
-                    continue
-                env = decoded.envelope
-                try:
-                    if isinstance(env.payload, dict):
-                        payload = VisionArtifactPayload(**env.payload)
-                    else:
-                        payload = env.payload
-                except Exception as e:
-                    logger.warning(f"[WINDOW] Invalid identity artifact payload: {e}")
-                    continue
-                try:
-                    verdict = identity_verdict_summary(payload)
-                    self._identity_checks[verdict["outcome"]] += 1
-                    logger.info(
-                        f"[WINDOW] identity_check stream={stream_key_from_artifact(payload)} "
-                        f"outcome={verdict['outcome']} faces={verdict['faces']} "
-                        f"similarity={verdict['similarity']} detect_conf={verdict['detect_confidence']} "
-                        f"corr={payload.correlation_id} totals={dict(self._identity_checks)}"
-                    )
-                except Exception as e:  # the trace must never kill the identity loop
-                    logger.warning(f"[WINDOW] identity_check trace failed: {e}")
-                hint = identity_hint_from_artifact(payload)
-                confidence = identity_confidence_from_artifact(payload)
-                try:
-                    await self._maybe_publish_sighting(payload, hint)
-                except Exception as e:  # a sighting must never kill the identity loop
-                    logger.warning(f"[WINDOW] identity sighting publish failed: {e}")
-                if hint is None and confidence is None:
-                    # No usable signal at all (no face detected, or a
-                    # gallery-misconfig candidate) -- nothing to store.
-                    # Never clears a still-fresh prior reading either way;
-                    # the freshness gate in _flush_and_publish is what
-                    # decides whether an older reading is still usable, not
-                    # this arrival.
-                    continue
-                sk = stream_key_from_artifact(payload)
-                async with self._identity_lock:
-                    existing = self._identity_by_stream.get(sk)
-                    if _should_ignore_uncertain_reading(
-                        existing, confidence, now=time.time(), max_age_sec=settings.WINDOW_IDENTITY_MAX_AGE_SEC
-                    ):
-                        logger.debug(
-                            f"[WINDOW] identity_hint stream={sk} unsure_reading_ignored "
-                            f"still_fresh_confirmed=true"
-                        )
-                        continue
-                    self._identity_by_stream[sk] = {"hint": hint, "confidence": confidence, "ts": time.time()}
+        await run_subscription(
+            self.bus,
+            settings.CHANNEL_WINDOW_IDENTITY_INTAKE,
+            self._on_identity,
+            stop_event=self._shutdown_event,
+            name="vision-window.consume_identity",
+        )
+
+    async def _on_identity(self, msg: dict) -> None:
+        data = msg.get("data")
+        decoded = self.bus.codec.decode(data)
+        if not decoded.ok:
+            return
+        env = decoded.envelope
+        try:
+            if isinstance(env.payload, dict):
+                payload = VisionArtifactPayload(**env.payload)
+            else:
+                payload = env.payload
+        except Exception as e:
+            logger.warning(f"[WINDOW] Invalid identity artifact payload: {e}")
+            return
+        try:
+            verdict = identity_verdict_summary(payload)
+            self._identity_checks[verdict["outcome"]] += 1
+            logger.info(
+                f"[WINDOW] identity_check stream={stream_key_from_artifact(payload)} "
+                f"outcome={verdict['outcome']} faces={verdict['faces']} "
+                f"similarity={verdict['similarity']} detect_conf={verdict['detect_confidence']} "
+                f"corr={payload.correlation_id} totals={dict(self._identity_checks)}"
+            )
+        except Exception as e:  # the trace must never kill the identity loop
+            logger.warning(f"[WINDOW] identity_check trace failed: {e}")
+        hint = identity_hint_from_artifact(payload)
+        confidence = identity_confidence_from_artifact(payload)
+        try:
+            await self._maybe_publish_sighting(payload, hint)
+        except Exception as e:  # a sighting must never kill the identity loop
+            logger.warning(f"[WINDOW] identity sighting publish failed: {e}")
+        if hint is None and confidence is None:
+            # No usable signal at all (no face detected, or a
+            # gallery-misconfig candidate) -- nothing to store.
+            # Never clears a still-fresh prior reading either way;
+            # the freshness gate in _flush_and_publish is what
+            # decides whether an older reading is still usable, not
+            # this arrival.
+            return
+        sk = stream_key_from_artifact(payload)
+        async with self._identity_lock:
+            existing = self._identity_by_stream.get(sk)
+            if _should_ignore_uncertain_reading(
+                existing, confidence, now=time.time(), max_age_sec=settings.WINDOW_IDENTITY_MAX_AGE_SEC
+            ):
                 logger.debug(
-                    f"[WINDOW] identity_hint stream={sk} "
-                    f"subject={hint['subject'] if hint else None} confidence={confidence}"
+                    f"[WINDOW] identity_hint stream={sk} unsure_reading_ignored "
+                    f"still_fresh_confirmed=true"
                 )
+                return
+            self._identity_by_stream[sk] = {"hint": hint, "confidence": confidence, "ts": time.time()}
+        logger.debug(
+            f"[WINDOW] identity_hint stream={sk} "
+            f"subject={hint['subject'] if hint else None} confidence={confidence}"
+        )
 
     async def _consume_rpc(self) -> None:
-        async with self.bus.subscribe(settings.CHANNEL_WINDOW_REQUEST) as pubsub:
-            async for msg in self.bus.iter_messages(pubsub):
-                if self._shutdown_event.is_set():
-                    break
-                data = msg.get("data")
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok:
-                    continue
-                env = decoded.envelope
-                asyncio.create_task(self._handle_rpc(env))
+        await run_subscription(
+            self.bus,
+            settings.CHANNEL_WINDOW_REQUEST,
+            self._on_rpc,
+            stop_event=self._shutdown_event,
+            name="vision-window.consume_rpc",
+        )
+
+    def _on_rpc(self, msg: dict) -> None:
+        # Starts its own task and returns None so the stream is not held up.
+        decoded = self.bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            return
+        asyncio.create_task(self._handle_rpc(decoded.envelope))
 
     async def _handle_rpc(self, env: BaseEnvelope) -> None:
         try:
@@ -464,6 +483,45 @@ class WindowService:
                 self._flush_presence_transitions()
             await asyncio.sleep(0.25)
 
+    async def _publish_caption_events(
+        self,
+        accepted: List[Dict[str, Any]],
+        stream_id: str,
+        correlation_id: UUID,
+        causality_chain: List[Any],
+    ) -> None:
+        """Each accepted caption -> one `camera_caption` vision_events row via
+        the scribe (app/caption_events.py). The council cannot carry it: its
+        transition gate skips windows whose labels did not change, and that
+        skipped the first accepted caption live (2026-10-16). Never raises:
+        a failed publish is counted, never a failed flush."""
+        if not settings.WINDOW_CAPTION_EVENTS_ENABLED:
+            return
+        for record in accepted:
+            try:
+                item = build_caption_event(record, stream_id=stream_id)
+                if item is None:
+                    continue
+                env = BaseEnvelope(
+                    kind="vision.event.bundle",
+                    source=_source_ref(),
+                    correlation_id=correlation_id,
+                    causality_chain=[*causality_chain],
+                    payload=VisionEventPayload(events=[item]).model_dump(mode="json"),
+                )
+                await self.bus.publish(settings.CHANNEL_CAPTION_EVENTS_PUB, env)
+                self._m_caption_events_published += 1
+                logger.info(
+                    f"[WINDOW] caption_event_published stream={stream_id} event_id={item.event_id} "
+                    f"artifact={record.get('artifact_id')} channel={settings.CHANNEL_CAPTION_EVENTS_PUB}"
+                )
+            except Exception as exc:  # noqa: BLE001 -- never fail the window flush
+                self._m_caption_events_failed += 1
+                logger.warning(
+                    f"[WINDOW] caption_event_publish_failed stream={stream_id} "
+                    f"artifact={record.get('artifact_id')} err={exc}"
+                )
+
     async def _drain_stream(self, stream_id: str) -> None:
         async with self._buffer_lock:
             buf = self._buffers.get(stream_id)
@@ -491,7 +549,10 @@ class WindowService:
         items: List[Tuple[VisionArtifactPayload, float]] = [(b["artifact"], b["ts"]) for b in buffered]
         # Detector-agreement gate (app/caption_gate.py): before the summary is
         # built, so a rejected caption never reaches summary.captions.
-        items, caption_gate_stats, caption_rejections = self._caption_gate.apply(stream_id, items)
+        accepted_captions: List[Dict[str, Any]] = []
+        items, caption_gate_stats, caption_rejections = self._caption_gate.apply(
+            stream_id, items, accepted_out=accepted_captions
+        )
         if caption_gate_stats:
             self._m_caption_gate_accepted += caption_gate_stats["accepted"]
             for reason, n in caption_gate_stats["rejected"].items():
@@ -500,6 +561,12 @@ class WindowService:
             logger.info(
                 f"[WINDOW] caption_rejected stream={stream_id} reason={rej['reason']} "
                 f"artifact={rej['artifact_id']} text={rej['text']!r}"
+            )
+        for acc in accepted_captions:
+            logger.info(
+                f"[WINDOW] caption_accepted stream={stream_id} artifact={acc['artifact_id']} "
+                f"labels={','.join(acc['labels']) or '-'} frame_ts={acc.get('frame_ts')} "
+                f"text={str(acc['text'])[:160]!r}"
             )
         # Skip missing envelopes (direct test calls); production ingest always attaches env.
         envs: List[BaseEnvelope] = [b["env"] for b in buffered if b["env"] is not None]
@@ -617,6 +684,8 @@ class WindowService:
         )
         await self.bus.publish(settings.CHANNEL_WINDOW_PUB, envelope)
         self._m_snapshots += 1
+        if accepted_captions:
+            await self._publish_caption_events(accepted_captions, stream_id, cid, causality_chain)
         await self._publish_scene_inventory(payload, stream_id, cid, causality_chain)
         logger.info(
             f"[WINDOW] flush snapshot_id={payload.window_id} stream={stream_id} "
@@ -1083,4 +1152,6 @@ async def api_metrics() -> Dict[str, Any]:
         "vision_window_crop_observations_failed_total": service._m_crop_obs_failed,
         "vision_window_caption_gate_accepted_total": service._m_caption_gate_accepted,
         "vision_window_caption_gate_rejected_total": dict(service._m_caption_gate_rejected),
+        "vision_window_caption_events_published_total": service._m_caption_events_published,
+        "vision_window_caption_events_failed_total": service._m_caption_events_failed,
     }

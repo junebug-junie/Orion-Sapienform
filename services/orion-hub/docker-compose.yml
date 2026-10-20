@@ -1,5 +1,32 @@
 services:
 
+  # Retro's realtime relay in its own process (scripts/retro_gateway.py). Hub's main
+  # event loop also serves every Hub page; game input queued behind it (live
+  # 2026-10-20: 720 ms acks vs 17 ms here). Loopback only; tailscale serve routes
+  # /api/retro to it.
+  hub-retro-gateway:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+    build:
+      context: ../..
+      dockerfile: services/orion-hub/Dockerfile
+      args:
+        INSTALL_DEV_DEPS: ${INSTALL_DEV_DEPS:-true}
+    container_name: ${PROJECT}-hub-retro-gateway
+    # Skip Hub's entrypoint: it waits for the Redis bus, which this relay never uses.
+    entrypoint: []
+    network_mode: "host"
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ${HUB_RETRO_SOCKET_HOST:-/dev/null}:/run/orion-retro:ro
+      - ${HUB_RETRO_AUTH_HOST:-/dev/null}:/run/orion-retro-auth:ro
+    command: ["uvicorn", "scripts.retro_gateway:app", "--host", "127.0.0.1", "--port", "${HUB_RETRO_GATEWAY_PORT:-8092}"]
+
   hub-app:
     logging:
       driver: journald
@@ -28,6 +55,8 @@ services:
       - path: .env
         required: false
     volumes:
+      - ${HUB_RETRO_SOCKET_HOST:-/dev/null}:/run/orion-retro:ro
+      - ${HUB_RETRO_AUTH_HOST:-/dev/null}:/run/orion-retro-auth:ro
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-hub/templates:/app/templates
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-hub/static:/app/static
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:/repo:ro
@@ -62,6 +91,9 @@ services:
       # small JPEG per embedded crop here (never a patio box) and prunes it
       # after 10 days. Served only by content hash (scripts/ask_routes.py).
       - ${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}:${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}:ro
+      # Walkway story pictures of the moment (read-only): orion-sql-writer
+      # writes one strip directory per published story (scripts/motion_story_routes.py).
+      - ${HUB_VISION_STORY_STRIP_DIR:-/mnt/telemetry/vision/story_strips}:${HUB_VISION_STORY_STRIP_DIR:-/mnt/telemetry/vision/story_strips}:ro
       # "Walkway (live)" in the Vision panel (read-only): the walkway retina
       # writes its frames here with a local path only. Served only from
       # directly inside this dir, downscaled (scripts/vision_live_frame.py).
@@ -116,6 +148,7 @@ services:
       - HUB_CURIOSITY_DREAM_HYPOTHESES_ENABLED=${HUB_CURIOSITY_DREAM_HYPOTHESES_ENABLED:-true}
       - HUB_CURIOSITY_DREAM_HYPOTHESES_PER_RUN=${HUB_CURIOSITY_DREAM_HYPOTHESES_PER_RUN:-3}
       - HUB_CURIOSITY_ORION_DAY_CORRECTIONS_ENABLED=${HUB_CURIOSITY_ORION_DAY_CORRECTIONS_ENABLED:-true}
+      - HUB_CURIOSITY_FOCUS_ENABLED=${HUB_CURIOSITY_FOCUS_ENABLED:-true}
       - HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE=${HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE:-true}
       # Core service identity
       - PROJECT=${PROJECT}
@@ -196,7 +229,8 @@ services:
       - HUB_AGENT_CLAUDE_STREAM_READ_LIMIT=${HUB_AGENT_CLAUDE_STREAM_READ_LIMIT:-8388608}
       - HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS=${HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS:-65536}
       - HUB_AGENT_CLAUDE_FILE_READ_MAX_TOKENS=${HUB_AGENT_CLAUDE_FILE_READ_MAX_TOKENS:-8192}
-      - HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}
+      - HUB_AGENT_CLAUDE_MAX_OUTPUT_TOKENS=${HUB_AGENT_CLAUDE_MAX_OUTPUT_TOKENS:-16384}
+      - HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-90}
       - HUB_AGENT_CLAUDE_CONTEXT_PRESSURE_PCT=${HUB_AGENT_CLAUDE_CONTEXT_PRESSURE_PCT:-70}
       - ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS=${ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS:-12000}
       - SUBSTRATE_TELEMETRY_BASE_URL=${SUBSTRATE_TELEMETRY_BASE_URL:-}
@@ -225,12 +259,13 @@ services:
       # would come up recording. For a camera kill switch that is the wrong
       # direction to fail, so the key is left to env_file alone.
       - VISION_FRAME_CACHE_ENABLED=${VISION_FRAME_CACHE_ENABLED:-true}
-      - VISION_FRAME_CACHE_STREAM_IDS=${VISION_FRAME_CACHE_STREAM_IDS:-carbon,walkway}
+      - VISION_FRAME_CACHE_STREAM_IDS=${VISION_FRAME_CACHE_STREAM_IDS:-carbon,walkway,doorbell}
       - VISION_FRAME_CHANNEL=${VISION_FRAME_CHANNEL:-orion:vision:frames}
       - PERCEPT_STORE_BASE_URL=${PERCEPT_STORE_BASE_URL:-}
       - PERCEPT_STORE_TIMEOUT_SEC=${PERCEPT_STORE_TIMEOUT_SEC:-10}
       - PERCEPT_STORE_TOKEN=${PERCEPT_STORE_TOKEN:-}
       - HUB_VISION_CROP_THUMB_DIR=${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}
+      - HUB_VISION_STORY_STRIP_DIR=${HUB_VISION_STORY_STRIP_DIR:-/mnt/telemetry/vision/story_strips}
       - HUB_VISION_FRAMES_DIR=${HUB_VISION_FRAMES_DIR:-/mnt/telemetry/vision/frames}
       - HUB_VISION_LIVE_MAX_WIDTH=${HUB_VISION_LIVE_MAX_WIDTH:-1280}
       - HUB_VISION_LIVE_STALE_SEC=${HUB_VISION_LIVE_STALE_SEC:-10}

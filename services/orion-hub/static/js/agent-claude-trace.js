@@ -137,6 +137,10 @@
       return clip(String(raw.result || 'result'), PREVIEW_MAX) || 'result';
     }
 
+    if (type === 'context_compaction_degenerate') {
+      return `⚠ compaction lost the task: ${clip(raw.message || 'summary kept no record of the request', 160)}`;
+    }
+
     if (type === 'context_pressure') {
       const msg = raw.message || CONTEXT_PRESSURE_NUDGE;
       const fill = raw.context_fill_pct != null ? ` (${raw.context_fill_pct}% fill)` : '';

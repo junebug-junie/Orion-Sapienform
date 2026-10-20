@@ -119,3 +119,24 @@ artifact (`task_type=caption_frame`, no objects) is not a frame: it does not
 count toward `item_count`/scene-inventory `frame_count`, and a window holding
 only such an artifact does not vote into belief or presence. Tests:
 `tests/test_caption_gate.py`.
+
+### Accepted captions reach `vision_events` directly
+
+The council does not carry accepted captions: its transition gate skips every
+window whose believed labels did not change (`stable_scene`), and live
+2026-10-16 that skipped the first accepted caption ever ("A person is pushing a
+stroller on a sidewalk ...", 22:53 UTC) -- no `vision_events` row, so nothing
+reached Orion. Now each accepted caption is logged
+(`[WINDOW] caption_accepted stream=... labels=... text='...'`, text clipped to
+160 chars) and, with `WINDOW_CAPTION_EVENTS_ENABLED=true` (default), published
+as one `vision.event.bundle` on `CHANNEL_CAPTION_EVENTS_PUB`
+(`orion:vision:events` -> orion-vision-scribe -> `vision_events`) with
+`event_type=camera_caption`, the caption text as `narrative`, tags
+`camera_caption`, `motion_unverified`, `detector:<label>` (moving gate boxes
+only), and `evidence_refs` `artifact:`, `frame:`, `frame_ts:`, `box:<label>:`,
+`crop:`, `model:` (`app/caption_events.py`). Readers label these rows as a
+caption of one frame, never a checked fact
+(`orion/situational/street_material.py`): at most one per consumer, fetched
+under its own SQL limit so it cannot crowd out the council row. Counts:
+`vision_window_caption_events_{published,failed}_total`. Tests:
+`tests/test_caption_events.py`.

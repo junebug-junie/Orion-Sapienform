@@ -25,6 +25,7 @@ import httpx
 
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.curiosity.atlas import valid_run_id
+from orion.curiosity.focus import FocusRow, focus_story, read_for_runs as read_focus_for_runs, read_recent as read_recent_focus
 from orion.curiosity.run_story import _line_for, _obj
 from orion.introspect.redact import safe_exception_detail
 from orion.introspect.semantic_index import (
@@ -38,7 +39,13 @@ from orion.introspect.semantic_index import (
     nearest,
 )
 from orion.introspect.transport import CURIOSITY_REQUEST_CHANNEL, REQUEST_KIND, RESULT_KIND, RESULT_PREFIX
-from orion.schemas.introspect import CuriosityArguments, IntrospectRequestV1, IntrospectResultV1
+from orion.schemas.introspect import (
+    CuriosityArguments,
+    IntrospectItemV1,
+    IntrospectRequestV1,
+    IntrospectResultV1,
+    clip_json_text,
+)
 
 from scripts import curiosity_run_store as run_store
 from scripts.curiosity_introspect import index_text, occurred_at, run_item, self_question_item
@@ -86,6 +93,66 @@ UNINDEXED_SQL = (
     "SELECT EXISTS (SELECT 1 FROM journal_entries "
     "WHERE source_ref LIKE 'curiosity:%' AND created_at >= $1)"
 )
+
+
+def _iso(value: Optional[datetime]) -> Optional[str]:
+    return value.isoformat() if value is not None else None
+
+
+# Five focus items, or five run items each carrying a focus, must stay inside the 12000-char MCP
+# result budget even when every text field is escape-heavy: each free-text field is clipped on its
+# SERIALIZED length (clip_json_text), and nothing is said twice.
+FOCUS_TEXT_JSON_BUDGET = 600
+FOCUS_WHY_JSON_BUDGET = 300
+FOCUS_STORY_JSON_BUDGET = 700
+_ID_CAP = 80
+
+
+def _disposition_kind(focus: FocusRow) -> Optional[str]:
+    """explored / set_aside / None (unknown). The reason is in the story."""
+    if not focus.disposition:
+        return None
+    return focus.disposition.split(":", 1)[0]
+
+
+def focus_extra(focus: FocusRow) -> dict[str, Any]:
+    """A focus item's extra: the story first, in plain words. The question is the item's text."""
+    story, _ = clip_json_text(focus_story(focus), FOCUS_STORY_JSON_BUDGET)
+    why, why_cut = clip_json_text(focus.why, FOCUS_WHY_JSON_BUDGET)
+    return {
+        "story": story,
+        "status": focus.status,
+        "origin": focus.origin,
+        "why": why,
+        "why_truncated": why_cut,
+        "queued_at": _iso(focus.created_at),
+        "expires_at": _iso(focus.expires_at),
+        "taken_by_run": focus.offered_run_id,
+        "taken_at": _iso(focus.offered_at),
+        "turn_ok": focus.turn_ok,
+        # None = unknown (the run wrote none, or it could not be read) -- never "explored".
+        "disposition": _disposition_kind(focus),
+        "chat_correlation_id": (focus.chat_correlation_id or "")[:_ID_CAP] or None,
+    }
+
+
+def run_focus_extra(focus: FocusRow) -> dict[str, Any]:
+    """What a run item says about the focus it took: just enough to look it up with
+    curiosity(kind=focus). Run items are already near the budget on their own."""
+    return {"focus_id": focus.focus_id, "status": focus.status, "disposition": _disposition_kind(focus)}
+
+
+def focus_item(focus: FocusRow, now: datetime) -> IntrospectItemV1:
+    text, truncated = clip_json_text(focus.question, FOCUS_TEXT_JSON_BUDGET)
+    return IntrospectItemV1(
+        id=focus.focus_id,
+        occurred_at=focus.created_at or now,
+        kind="curiosity_focus",
+        epistemic_status="record",
+        text=text,
+        truncated=truncated,
+        extra=focus_extra(focus),
+    )
 
 
 class GraphUnreadError(RuntimeError):
@@ -226,12 +293,16 @@ class CuriosityIntrospectListener:
             return
         if args.kind == "self_question":
             mode = "self_question"
+        elif args.kind == "focus":
+            mode = "focus"
         else:
             mode = "one" if args.run_id else "search" if args.query else "recent"
         try:
             pool = self._pool()
             if mode == "self_question":
                 result = await self._self_questions(pool, args, now)
+            elif mode == "focus":
+                result = await self._focuses(pool, args, now)
             elif mode == "one":
                 result = await self._one(pool, args.run_id, now)
             elif mode == "search":
@@ -284,17 +355,35 @@ class CuriosityIntrospectListener:
     async def _items(
         self, pool: ReadOnlyPool, stories: list[dict[str, Any]], *, full: bool,
     ) -> list:
-        outcomes = await self._outcomes(pool, [str(s["run"]["run_id"]) for s in stories])
+        run_ids = [str(s["run"]["run_id"]) for s in stories]
+        outcomes = await self._outcomes(pool, run_ids)
+        focuses = await self._run_focuses(pool, run_ids)
         items = []
         for story in stories:
             rid = str(story["run"]["run_id"])
             extra = _graph_extra(story.get("stores"))
+            if rid in focuses:
+                extra["focus"] = run_focus_extra(focuses[rid])
             if "similarity" in story:
                 extra["similarity"] = round(float(story["similarity"]), 3)
             item = run_item(story, outcomes.get(rid), full=full, extra=extra)
             if item is not None:
                 items.append(item)
         return items
+
+    async def _run_focuses(self, pool: ReadOnlyPool, run_ids: list[str]) -> dict[str, FocusRow]:
+        """The focus each run took. {} when the focus table cannot be read (migration not
+        applied): a run's own record must not become unknown because of it."""
+        try:
+            return await read_focus_for_runs(pool, run_ids)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_introspect_focus_read_failed exc_type=%s detail=%s",
+                           type(exc).__name__, safe_exception_detail(exc))
+            return {}
+
+    async def _focuses(self, pool: ReadOnlyPool, args: CuriosityArguments, now: datetime) -> IntrospectResultV1:
+        rows, total = await read_recent_focus(pool, since=args.since, limit=args.limit)
+        return _ok(now, [focus_item(r, now) for r in rows], total)
 
     async def _one(self, pool: ReadOnlyPool, run_id: str, now: datetime) -> IntrospectResultV1:
         story = await self._story(pool, run_id)

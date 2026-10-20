@@ -29,6 +29,14 @@ on:
       - "services/orion-hub/scripts/ask_routes.py"
       - "services/orion-hub/tests/test_ask_resolve_pg.py"
       - "services/orion-hub/tests/test_ask_names_pg.py"
+      - "services/orion-hub/scripts/motion_story_routes.py"
+      - "services/orion-hub/tests/test_motion_story_routes.py"
+      - "services/orion-sql-db/manual_migration_vision_motion_story_v1.sql"
+      - "services/orion-sql-db/manual_migration_vision_motion_story_strip_v2.sql"
+      - "orion/curiosity/focus.py"
+      - "orion/curiosity/tests/test_focus_lifecycle.py"
+      - "orion/curiosity/tests/focus_fixtures.py"
+      - "services/orion-sql-db/manual_migration_curiosity_focus_request_v1.sql"
       - ".github/workflows/orion-memory-episode-tests.yml"
   push:
     branches: [main]
@@ -44,9 +52,15 @@ on:
       - "services/orion-hub/scripts/ask_routes.py"
       - "services/orion-hub/tests/test_ask_resolve_pg.py"
       - "services/orion-hub/tests/test_ask_names_pg.py"
+      - "services/orion-hub/scripts/motion_story_routes.py"
+      - "services/orion-hub/tests/test_motion_story_routes.py"
+      - "services/orion-sql-db/manual_migration_vision_motion_story_v1.sql"
+      - "services/orion-sql-db/manual_migration_vision_motion_story_strip_v2.sql"
       - "services/orion-sql-db/manual_migration_walkway_camera_v1.sql"
       - "services/orion-sql-db/manual_migration_vision_confirm_asks_v1.sql"
       - "services/orion-sql-db/manual_migration_vision_ask_names_v1.sql"
+      - "orion/curiosity/focus.py"
+      - "services/orion-sql-db/manual_migration_curiosity_focus_request_v1.sql"
       - ".github/workflows/orion-memory-episode-tests.yml"
 
 jobs:
@@ -105,6 +119,7 @@ jobs:
           PYTHONPATH=. python -m pytest -q -rs -p no:cacheprovider \
             orion/memory/episode/tests \
             orion/memory/referents/tests \
+            orion/curiosity/tests/test_focus_lifecycle.py \
             services/orion-memory-consolidation/tests \
             services/orion-memory-consolidation/evals \
             | tee pytest.out
@@ -117,6 +132,7 @@ jobs:
           PYTHONPATH=. python -m pytest -q -rs -p no:cacheprovider \
             services/orion-hub/tests/test_ask_resolve_pg.py \
             services/orion-hub/tests/test_ask_names_pg.py \
+            services/orion-hub/tests/test_motion_story_routes.py \
             | tee -a pytest.out
           if grep -q "SKIPPED" pytest.out; then
             echo "Postgres-backed memory episode tests skipped -- the service/env wiring is broken" >&2

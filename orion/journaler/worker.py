@@ -65,6 +65,9 @@ _TRIGGER_TO_MODE: dict[str, JournalMode] = {
     "town_episode": "digest",
     "walkway_forecast": "digest",
     "walkway_grade": "digest",
+    "walkway_day": "digest",
+    "walkway_week": "digest",
+    "walkway_month": "digest",
     "orion_day_letter": "daily",
 }
 

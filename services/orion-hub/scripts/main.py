@@ -43,6 +43,13 @@ from scripts.temporal_self_routes import page_router as temporal_self_page_route
 from scripts.personality_routes import page_router as personality_page_router, router as personality_router
 from orion.hub.runtime_activity import get_runtime_activity
 import scripts.api_routes as api_routes_runtime
+from scripts.substrate_store_warm import (
+    STARTUP_CONSUMER_WAIT_SEC as _SUBSTRATE_STORE_WAIT_SEC,
+    SubstrateStoreNotReadyError,
+    not_ready_exception_handler as _substrate_store_not_ready_handler,
+    signal_shutdown as _signal_substrate_store_shutdown,
+    wait_all_ready as _wait_all_substrate_stores_ready,
+)
 import scripts.concept_atlas_routes as concept_atlas_routes_runtime
 import scripts.self_atlas_cluster_history as self_atlas_cluster_history_runtime
 import scripts.vision_affect_ambient as vision_affect_ambient_runtime
@@ -276,6 +283,10 @@ app = FastAPI(
     version=settings.SERVICE_VERSION,
 )
 
+# A route that touches a concept graph store still loading in the background
+# (scripts/substrate_store_warm.py) answers 503 with the reason.
+app.add_exception_handler(SubstrateStoreNotReadyError, _substrate_store_not_ready_handler)
+
 # These are populated on startup and imported by other modules:
 bus: Optional[OrionBusAsync] = None
 rpc_bus: Optional[OrionBusAsync] = None
@@ -361,6 +372,7 @@ presence_context_store: Optional["PresenceContextStore"] = None
 substrate_autonomy_task: Optional[asyncio.Task] = None
 substrate_review_task: Optional[asyncio.Task] = None
 substrate_topic_foundry_scheduler_task: Optional[asyncio.Task] = None
+substrate_concept_seed_task: Optional[asyncio.Task] = None
 affect_ambient_loop_task: Optional[asyncio.Task] = None
 heartbeat_chassis: Optional[HeartbeatOnly] = None
 
@@ -453,7 +465,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global reading_turn_listener, reading_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -1072,8 +1084,20 @@ async def startup_event():
         # restart if Fuseki is slow/unreachable. seed_golden_concepts_at_startup()
         # still never raises either way -- this is purely to keep a slow/degraded
         # graph backend from stalling startup.
-        seeded_count = await asyncio.to_thread(api_routes_runtime.seed_golden_concepts_at_startup)
-        logger.info("substrate_concept_seed_loaded count=%s", seeded_count)
+        #
+        # Not awaited: the Orion store loads in the background
+        # (scripts/substrate_store_warm.py), so the seed waits for it in a
+        # worker thread while startup carries on.
+        async def _seed_golden_concepts_after_warm() -> None:
+            seeded_count = await asyncio.to_thread(
+                api_routes_runtime.seed_golden_concepts_at_startup,
+                wait_timeout_sec=_SUBSTRATE_STORE_WAIT_SEC,
+            )
+            logger.info("substrate_concept_seed_loaded count=%s", seeded_count)
+
+        substrate_concept_seed_task = asyncio.create_task(
+            _seed_golden_concepts_after_warm(), name="hub-substrate-concept-seed",
+        )
     else:
         logger.info("substrate_concept_seed_disabled reason=env_disabled")
 
@@ -1182,6 +1206,7 @@ async def startup_event():
         from scripts.topic_foundry_scheduler_policy import (
             next_wait_seconds as _tf_next_wait_seconds,
             should_retry_startup_tick as _tf_should_retry_startup_tick,
+            STARTUP_TICK_MAX_ATTEMPTS as _TF_STARTUP_TICK_MAX_ATTEMPTS,
         )
 
         topic_foundry_interval_sec = max(
@@ -1222,6 +1247,24 @@ async def startup_event():
             startup_attempt = 0
             if not startup_pending:
                 logger.info("substrate_topic_foundry_scheduler_startup_tick_disabled")
+            else:
+                # The startup tick ingests into the concept graph stores, which
+                # load in the background. Wait for them (in a worker thread) so
+                # the one boot-time ingest is not spent on a not-ready store.
+                not_ready = await asyncio.to_thread(
+                    _wait_all_substrate_stores_ready,
+                    (
+                        api_routes_runtime.SUBSTRATE_SEMANTIC_STORE,
+                        api_routes_runtime.SUBSTRATE_SEMANTIC_STORE_SELF,
+                        api_routes_runtime.SUBSTRATE_SEMANTIC_STORE_AITOWN,
+                    ),
+                    _SUBSTRATE_STORE_WAIT_SEC,
+                )
+                if not_ready:
+                    logger.warning(
+                        "substrate_topic_foundry_scheduler_startup_tick_stores_not_ready stores=%s",
+                        ",".join(not_ready),
+                    )
             while True:
                 # Timing/retry policy is pure and lives in
                 # scripts/topic_foundry_scheduler_policy.py so it is testable
@@ -1300,6 +1343,21 @@ async def startup_event():
                         ingest_summary.get("edges_written"),
                         ingest_summary.get("typed_edges_written"),
                     )
+                    # The boot ingest found the store still loading (the wait
+                    # above timed out): retry the startup tick on the same
+                    # bounded backoff instead of waiting a full interval.
+                    if (
+                        is_startup_tick
+                        and not startup_pending
+                        and ingest_summary.get("reason") == "substrate_store_unavailable"
+                        and startup_attempt + 1 < _TF_STARTUP_TICK_MAX_ATTEMPTS
+                    ):
+                        startup_attempt += 1
+                        startup_pending = True
+                        logger.info(
+                            "substrate_topic_foundry_scheduler_startup_tick_retry attempt=%s reason=substrate_store_unavailable",
+                            startup_attempt,
+                        )
                 except Exception as exc:  # advisory runtime loop; never crash service startup
                     logger.warning("substrate_topic_foundry_scheduler_ingest_error error=%s", exc)
 
@@ -1606,7 +1664,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global reading_turn_listener, reading_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -1644,6 +1702,12 @@ async def shutdown_event() -> None:
         except asyncio.CancelledError:
             pass
         substrate_review_task = None
+    # Release worker threads blocked waiting for a store (seed, topic-foundry
+    # startup tick); cancelling their tasks does not stop the threads.
+    _signal_substrate_store_shutdown()
+    if substrate_concept_seed_task is not None:
+        substrate_concept_seed_task.cancel()
+        substrate_concept_seed_task = None
     if substrate_topic_foundry_scheduler_task is not None:
         substrate_topic_foundry_scheduler_task.cancel()
         try:

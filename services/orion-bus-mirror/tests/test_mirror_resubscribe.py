@@ -97,3 +97,28 @@ async def test_mirror_resubscribes_after_a_drop_and_keeps_writing(tmp_path, monk
     assert bus.subscribe_calls == 2
     assert bus.subscribe_args[-1] == ((settings.MIRROR_PATTERN,), True)
     bus.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_mirror_exits_for_a_restart_when_writes_keep_failing(tmp_path, monkeypatch) -> None:
+    """A broken store must not leave a mirror that heartbeats while writing nothing."""
+
+    class _BrokenCodec:
+        def decode(self, data):
+            raise OSError("database or disk is full")
+
+    bus = _DropsFirstSubscribeBus([{"type": "pmessage", "channel": b"orion:x", "data": b"{}"}] * 5)
+    bus.codec = _BrokenCodec()
+    bus.connect = AsyncMock()
+    bus.close = AsyncMock()
+    monkeypatch.setattr("app.main.MIRROR_MAX_CONSECUTIVE_WRITE_FAILURES", 3)
+    monkeypatch.setattr(settings, "MIRROR_PARQUET_DIR", str(tmp_path / "parquet"))
+    monkeypatch.setattr(settings, "MIRROR_SQLITE_PATH", str(tmp_path / "mirror.sqlite"))
+    monkeypatch.setattr(settings, "MIRROR_GRAPH_ENABLED", False)
+
+    with patch("app.main.OrionBusAsync", return_value=bus), patch(
+        "app.main.build_heartbeat_chassis", return_value=AsyncMock(spec=HeartbeatOnly)
+    ):
+        with pytest.raises(SystemExit):
+            await asyncio.wait_for(mirror_bus(), 10)
+    bus.close.assert_awaited_once()

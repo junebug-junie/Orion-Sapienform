@@ -57,7 +57,7 @@ async def run_cancel_worker(stop_event: Any | None = None) -> None:
     bus = OrionBusAsync(url=settings.orion_bus_url)
     channel = settings.channel_harness_run_cancel
     await bus.connect()
-    logger.info("subscribed cancel channel=%s", channel)
+    logger.info("starting cancel channel=%s", channel)
 
     async def handle(msg: dict[str, Any]) -> None:
         try:

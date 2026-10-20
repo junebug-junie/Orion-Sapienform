@@ -888,7 +888,7 @@ async def run_bus_worker(
     if bus is None:
         bus = OrionBusAsync(url=settings.orion_bus_url)
     await bus.connect()
-    logger.info("subscribed lane=%s channel=%s", lane, channel)
+    logger.info("starting lane=%s channel=%s", lane, channel)
 
     legacy_lock = asyncio.Lock()
     tasks: set[asyncio.Task] = set()

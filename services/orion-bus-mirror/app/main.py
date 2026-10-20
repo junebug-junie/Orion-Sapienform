@@ -25,6 +25,10 @@ from app.graph_writer import (
 from app.settings import settings
 
 
+# Consecutive failed sqlite/graph writes before the mirror exits for a restart.
+MIRROR_MAX_CONSECUTIVE_WRITE_FAILURES = 50
+
+
 def _serialize_envelope(decoded: DecodeResult) -> str:
     if decoded.ok:
         parsed = decoded.envelope.model_dump(by_alias=True, mode="json")
@@ -322,7 +326,28 @@ async def mirror_bus() -> None:
                 settings.MIRROR_SQLITE_PRUNE_INTERVAL_SEC,
             )
 
+            write_failures = 0
+
             async def mirror_one(message: dict) -> None:
+                nonlocal write_failures
+                try:
+                    await _mirror_message(message)
+                except Exception:
+                    write_failures += 1
+                    if write_failures >= MIRROR_MAX_CONSECUTIVE_WRITE_FAILURES:
+                        # A store that stays broken (disk full, corrupt db) must not
+                        # leave a mirror that heartbeats while writing nothing: exit
+                        # and let the container restart it, as before this loop
+                        # resubscribed in-process. SystemExit is not an Exception, so
+                        # run_subscription does not swallow it.
+                        logger.error(
+                            "bus_mirror_write_failing consecutive={}; exiting for restart", write_failures
+                        )
+                        raise SystemExit(1)
+                    raise
+                write_failures = 0
+
+            async def _mirror_message(message: dict) -> None:
                 now = datetime.now(timezone.utc)
                 timestamp = now.isoformat()
                 channel = message.get("channel")
@@ -345,7 +370,8 @@ async def mirror_bus() -> None:
             # A Redis drop (including a slow-consumer kill at the pubsub output
             # buffer limit, the 2026-10-02 crash loop) resubscribes in-process with
             # backoff instead of exiting, so the retention loop and graph tracker
-            # keep running. A failed write on one message is logged and skipped.
+            # keep running. A failed write on one message is logged and skipped;
+            # MIRROR_MAX_CONSECUTIVE_WRITE_FAILURES in a row exits the process.
             await run_subscription(
                 bus, settings.MIRROR_PATTERN, mirror_one, stop_event=None,
                 name="bus-mirror-pattern", patterns=True,

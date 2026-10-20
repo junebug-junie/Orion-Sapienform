@@ -130,3 +130,32 @@ def test_explicit_pause_on_an_auto_paused_game_sticks(monkeypatch,tmp_path):
             send('input','late','two',dict(port=1,lease=g['lease'],epoch=g['epoch'],seq=1,mask=0))
     rows,_=exercise(monkeypatch,tmp_path,scenario)
     assert next(r for r in rows if r.get('id')=='late')['error']=='session_paused:pause'
+
+
+def test_scripted_actions_are_attributed_and_disconnect_stops_them(monkeypatch,tmp_path):
+    def scenario(row,send):
+        if row.get('id')=='grant2':
+            send('scripted','script','one',dict(port=0,action='start',duration_seconds=5,expected_epoch=1))
+            send('disconnect','other','two')
+        elif row['kind']=='applied':
+            send('disconnect','sponsor','one')
+    rows,steps=exercise(monkeypatch,tmp_path,scenario)
+    applied=[r for r in rows if r['kind']=='applied']
+    assert applied and all(r['policy_id']=='scripted-right-jump-v1' for r in applied)
+    assert any(m[0]==384 for m in steps)
+    assert steps[-1]==(0,0)
+    assert any(r['kind']=='status' and r['state']=='paused' and r['scripted']==[] for r in rows)
+
+
+def test_pause_resume_does_not_restart_script(monkeypatch,tmp_path):
+    def scenario(row,send):
+        if row.get('id')=='grant2':
+            send('scripted','script','one',dict(port=0,action='start',duration_seconds=5,expected_epoch=1))
+        elif row['kind']=='applied':
+            send('pause','hold')
+        elif row.get('id')=='hold':
+            send('resume','again')
+    rows,steps=exercise(monkeypatch,tmp_path,scenario)
+    after=next(i for i,r in enumerate(rows) if r.get('id')=='again')
+    assert not any(r['kind']=='applied' for r in rows[after:])
+    assert steps[-1]==(0,0)

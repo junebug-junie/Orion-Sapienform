@@ -125,6 +125,21 @@ video/PCM packets, authenticated and owner-checked like input. Direct browser Or
 requests to this service remain forbidden; Hub proxies over the private socket.
 All session reads/mutations require the credential that created the session.
 
+## Scripted baseline (first P3 slice)
+
+Owner-only `POST /sessions/{id}/scripted` accepts `connection_id`, `generation`,
+`port`, `expected_epoch`, `action` (`start`/`stop`), and `duration_seconds`
+(integer 5–1800, default 60). Start transfers the caller's current live human
+lease only; stop rejects a different active script epoch. The fixed
+`scripted-right-jump-v1` runs inside the native worker at at most 15 Hz with
+a 100 ms hold deadline. It is an open-loop diagnostic, not learning.
+
+Human takeover, pause, sponsor disconnect, missed deadline and budget expiry
+cancel it permanently. No implicit reacquisition on resume. Status exposes
+active `scripted` summaries; applied journal/history rows add `policy_id` for
+script actions. Start/stop records include policy, epoch and reason; secrets
+remain excluded. No bus, metrics, memory, dependencies or env keys are added.
+
 Validated-input rejection/unknown responses now also include `port`, `epoch` and
 `seq`. This is additive: existing CLI clients can still inspect `rejected` or
 `unknown`. Hub ignores replies from an earlier lease. A connection that no longer

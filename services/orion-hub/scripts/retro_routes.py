@@ -51,7 +51,7 @@ def create_router(config):
         await authorize(request)
         valid = ((request.method=='GET' and path in ('games','health/ready')) or
                  (request.method=='POST' and path=='sessions') or
-                 re.fullmatch(r'sessions/[0-9a-f-]{36}'+('(?:/evidence)?' if request.method=='GET' else '/(?:control|pause|resume|stop)'),path))
+                 re.fullmatch(r'sessions/[0-9a-f-]{36}'+('(?:/evidence)?' if request.method=='GET' else '/(?:control|pause|resume|stop|scripted)'),path))
         if not valid: raise HTTPException(404)
         try:
             async with client() as c:

@@ -71,3 +71,96 @@ def test_resilience_importable_without_loguru(monkeypatch: pytest.MonkeyPatch) -
         # later tests in the same process see the normal loguru-backed logger.
         monkeypatch.undo()
         importlib.reload(resilience_module)
+
+
+class _ScriptedPubSub:
+    """Yields scripted get_message results: dicts are messages, exceptions are raised."""
+
+    def __init__(self, script: list[object], stop) -> None:
+        self._script = list(script)
+        self._stop = stop
+
+    async def get_message(self, ignore_subscribe_messages=True, timeout=1.0):
+        if not self._script:
+            self._stop.set()
+            return None
+        item = self._script.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
+class _ScriptedBus:
+    def __init__(self, sessions: list[object]) -> None:
+        self.sessions = list(sessions)
+        self.subscribe_calls = 0
+
+    def subscribe(self, channel: str):
+        import contextlib
+
+        bus = self
+
+        @contextlib.asynccontextmanager
+        async def _cm():
+            bus.subscribe_calls += 1
+            session = bus.sessions.pop(0)
+            if isinstance(session, BaseException):
+                raise session
+            yield session
+
+        return _cm()
+
+
+def _msg(n: int) -> dict:
+    return {"type": "message", "data": n}
+
+
+@pytest.mark.asyncio
+async def test_run_subscription_resubscribes_after_a_mid_stream_drop() -> None:
+    """Live 2026-10-20: a redis TimeoutError from get_message ended the listener for good."""
+    import asyncio
+
+    from orion.core.bus.resilience import run_subscription
+
+    stop = asyncio.Event()
+    seen: list[int] = []
+
+    class _RedisTimeout(Exception):  # redis.exceptions.TimeoutError is not asyncio's
+        pass
+
+    first = _ScriptedPubSub([_msg(1), _RedisTimeout("Timeout reading from socket")], stop)
+    second = _ScriptedPubSub([_msg(2)], stop)
+    bus = _ScriptedBus([first, ConnectionError("bus down"), second])
+
+    async def handle(msg: dict) -> None:
+        seen.append(msg["data"])
+
+    await asyncio.wait_for(
+        run_subscription(bus, "orion:test", handle, stop_event=stop, name="t", max_backoff_sec=0.01),
+        timeout=10,
+    )
+    assert seen == [1, 2]
+    assert bus.subscribe_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_run_subscription_survives_handler_errors_and_skips_non_messages() -> None:
+    import asyncio
+
+    from orion.core.bus.resilience import run_subscription
+
+    stop = asyncio.Event()
+    seen: list[int] = []
+
+    def handle(msg: dict) -> None:  # sync handler
+        if msg["data"] == 1:
+            raise ValueError("bad payload")
+        seen.append(msg["data"])
+
+    session = _ScriptedPubSub([_msg(1), None, {"type": "subscribe", "data": 9}, _msg(2)], stop)
+    bus = _ScriptedBus([session])
+    await asyncio.wait_for(
+        run_subscription(bus, "orion:test", handle, stop_event=stop, name="t"), timeout=10
+    )
+    assert seen == [2]
+    assert bus.subscribe_calls == 1

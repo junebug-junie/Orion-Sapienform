@@ -7,6 +7,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.schemas.harness_finalize import HarnessPostTurnClosureV1
 
 from .settings import Settings, get_settings
@@ -78,31 +79,13 @@ async def run_post_turn_closure_listener(
         logger.info("post_turn_closure listener disabled by config")
         return
 
-    channel = s.channel_post_turn_closure
-    logger.info("post_turn_closure listener subscribing channel=%s", channel)
-
-    try:
-        async with bus.subscribe(channel) as pubsub:
-            while True:
-                if stop_event is not None and stop_event.is_set():
-                    break
-                try:
-                    msg = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                        timeout=1.2,
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                if not msg or msg.get("type") not in ("message", "pmessage"):
-                    continue
-                try:
-                    await _handle_bus_message(bus, msg, settings=s, on_closure=on_closure)
-                except Exception:
-                    logger.exception("post_turn_closure unhandled bus worker error")
-    except asyncio.CancelledError:
-        raise
-    finally:
-        logger.info("post_turn_closure listener stopped channel=%s", channel)
+    await run_subscription(
+        bus,
+        s.channel_post_turn_closure,
+        lambda msg: _handle_bus_message(bus, msg, settings=s, on_closure=on_closure),
+        stop_event=stop_event,
+        name="post_turn_closure listener",
+    )
 
 
 async def start_post_turn_closure_listener(

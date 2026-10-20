@@ -101,6 +101,6 @@ Phase 0 acceptance after restart: `SELECT min(observed_at) FROM vision_crop_obse
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2776
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -494,7 +494,11 @@ not count), case-insensitive, earliest `labeled_at` first. It is skipped when
 the two are already linked, have any pair verdict, or when linking would join
 two groups she said are 'different' (a cannot-link through anyone already
 confirmed the same). Idempotent (`ON CONFLICT DO NOTHING`), logged as
-`[VISION_SAME_NAME_LINK]`. Applies to answers applied from 2026-10-20 on; older
+`[VISION_SAME_NAME_LINK]`. Correcting a typed name to a different one (not
+just its case) first drops the 'same' links the old name made -- rows involving
+that individual written by a `vision_individual` ask, never her own "same
+person?" answers (`[VISION_SAME_NAME_UNLINK]`); there is no card to undo an
+automatic link, so the rename is the undo. Applies to answers applied from 2026-10-20 on; older
 applied answers are not re-linked.
 
 **Answers from a walkway story card** (2026-10-18). The Hub's "Walkway stories"

@@ -1723,7 +1723,7 @@ def _propagate_label(conn, individual_id: str, label: str, ask_id: str, at: date
         # Two typed names in one confirmed group: copies follow the newest, but say so.
         others = sorted({r[0] for r in conn.execute(text(
             "SELECT label FROM vision_individual WHERE individual_id = ANY(:ids) AND label IS NOT NULL "
-            "AND NOT label_copied AND label <> :l"), {"ids": group, "l": label}).fetchall()})
+            "AND NOT label_copied AND lower(label) <> lower(:l)"), {"ids": group, "l": label}).fetchall()})
         if others:
             logger.warning("[VISION_GROUP_NAME_CONFLICT] individual_id=%s new=%r other_typed=%r ask_id=%s",
                            individual_id, label, others, ask_id)
@@ -1757,7 +1757,9 @@ def _apply_typed_name(conn, individual_id: str, label: str, ask_id: str, at: dat
     this?" card, a walkway story card, a name box on a "same person?" card): a
     'same' link to an existing individual she already typed that name for
     (``_link_same_name``), then the individual, then everyone confirmed the same
-    person, then their open cards."""
+    person, then their open cards. A typed name that replaces a different
+    typed name first drops the same-name links the old name made."""
+    _unlink_old_name(conn, individual_id, label, ask_id)
     _link_same_name(conn, individual_id, label, ask_id, at)
     if not _set_typed_label(conn, individual_id, label, ask_id, at):
         return False
@@ -1875,6 +1877,30 @@ def _link_same_name(conn, individual_id: str, name: str, ask_id: str, at: dateti
     logger.info("[VISION_SAME_NAME_LINK] individual_id=%s other=%s name=%r ask_id=%s",
                 individual_id, other, name, ask_id)
     return other
+
+
+def _unlink_old_name(conn, individual_id: str, label: str, ask_id: str) -> int:
+    """She corrected a typed name ("Maya" -> "Mya"): the 'same' links that only
+    came from the old name go. Those are rows involving this individual written
+    by a typed-name ask (source_kind vision_individual: a who-is-this or story
+    answer, or a split it caused), never her own "same person?" answers. No-op
+    when the old name was copied or differs only in case."""
+    from sqlalchemy import text
+
+    prev = conn.execute(text(
+        "SELECT label, label_copied FROM vision_individual WHERE individual_id=:i"), {"i": individual_id}).fetchone()
+    if prev is None or not prev[0] or prev[1] or prev[0].lower() == label.lower():
+        return 0
+    gone = conn.execute(text(
+        "DELETE FROM vision_individual_pair_verdict p WHERE p.verdict='same' "
+        "AND :i IN (p.individual_a, p.individual_b) AND EXISTS (SELECT 1 FROM orion_ask q "
+        "  WHERE q.ask_id = p.ask_id AND q.source_kind = :k) "
+        "RETURNING CASE WHEN p.individual_a = :i THEN p.individual_b ELSE p.individual_a END"),
+        {"i": individual_id, "k": SOURCE_KIND_INDIVIDUAL}).fetchall()
+    if gone:
+        logger.info("[VISION_SAME_NAME_UNLINK] individual_id=%s old=%r new=%r ask_id=%s others=%s",
+                    individual_id, prev[0], label, ask_id, ",".join(sorted(r[0] for r in gone)))
+    return len(gone)
 
 
 def _apply_answers(conn, now: datetime) -> int:

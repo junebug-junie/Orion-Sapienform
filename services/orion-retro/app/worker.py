@@ -33,7 +33,12 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
         played = dict(base=0, at=0)
         def load(save_id):
             meta, data = store.read(game['game_id'], save_id, core.identity)
-            core.restore(data)
+            try: previous = core.snapshot()
+            except RuntimeError: raise ValueError('save_serialize_failed')
+            try: core.restore(data)
+            except RuntimeError:
+                core.restore(previous)  # a failed rollback stays fatal: core state is unknown
+                raise ValueError('save_restore_failed')
             played.update(base=meta['played_frames'], at=frame)
             record('load', save_id=save_id, save_frame=meta['frame'], played_frames=meta['played_frames'])
             return meta

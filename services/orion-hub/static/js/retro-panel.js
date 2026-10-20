@@ -181,10 +181,11 @@
   async function newGame(save_id){++intent;wanted=false;
     // One game exists at a time: New game ends the current one instead of failing with session_active.
     if(sid){closeConnections();try{await api(`sessions/${sid}/stop`,{});}catch(err){if(err.message!=='unknown_session')throw err;}sid=null;}
-    const epoch=transportEpoch;await sound();if(epoch!==transportEpoch || document.hidden)return;
+    const epoch=transportEpoch;await sound();if(epoch!==transportEpoch || document.hidden)return false;
     const body={game_id:el('game').value,idempotency_key:Array.from(crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,"0")).join("")};
     if(save_id)body.save_id=save_id;
-    const s=await api('sessions',body);sid=s.session_id;if(epoch===transportEpoch && !document.hidden)await connect();}
+    const s=await api('sessions',body);sid=s.session_id;if(epoch!==transportEpoch || document.hidden)return false;
+    await connect();return true;}
   action('new',()=>newGame());
   action('save',async()=>{
     if(!sid)throw Error('Start or load a game first.');
@@ -200,8 +201,9 @@
     if(current && current.game_id===el('game').value && ['running','paused'].includes(current.state)){
       // Restore in place; the worker swaps the whole game state between two frames.
       await api(`sessions/${sid}/load`,{save_id});
-      if(lease){screen.focus();report('Save loaded. Playing.');}else report('Save loaded. Click the game to keep playing.');
-    } else { await newGame(save_id); report('Save loaded. Playing.'); }
+      if(lease && current.state==='running'){screen.focus();report('Save loaded. Playing.');}
+      else report('Save loaded (paused; the picture updates when play resumes). Click the game to keep playing.');
+    } else if(await newGame(save_id)) report('Save loaded. Playing.');
   });
   action('join',connect);
   action('pause',async()=>{++intent;wanted=false;try{if(sid)await api(`sessions/${sid}/pause`,{});}finally{neutral();}report('Paused. Click the game to keep playing.');});

@@ -197,3 +197,73 @@ def test_compose_mounts_saves_from_a_required_host_dir():
     assert '${RETRO_SAVES_DIR:?save-state directory required}:/saves' in volumes
     assert 'RETRO_SAVES_DIR=' in (root/'.env_example').read_text()
     assert Settings().saves == Path('/saves')
+
+
+def test_disk_fault_on_load_refuses_without_killing_the_game(monkeypatch, tmp_path, native):
+    (tmp_path/'saves').mkdir()
+    identity = dict(rom_sha256=digest(native[1]), core_sha256=digest(native[0]))
+    good = SaveStore(tmp_path/'saves').write('fixture', identity, b'\0'*4, frame=1, played_frames=1, session_id='o')
+    real = Path.read_bytes
+    def broken(self):
+        if self.suffix == '.state': raise PermissionError('fixture: unreadable state')
+        return real(self)
+    monkeypatch.setattr(Path, 'read_bytes', broken)
+    def scenario(row, enqueue):
+        if row['kind'] == 'ready': enqueue('load', {'save_id': good['save_id']})
+    rows, hashes, _ = run_worker(monkeypatch, tmp_path, native, scenario, loops=10)
+    assert next(r for r in rows if r['kind'] == 'reply')['error'] == 'save_io_failed'
+    assert not any(r['kind'] == 'fatal' for r in rows) and len(hashes) >= 8
+
+
+def test_disk_fault_on_save_refuses(tmp_path, monkeypatch):
+    store = SaveStore(tmp_path)
+    def full(self, *a, **k): raise OSError(28, 'No space left on device')
+    monkeypatch.setattr(Path, 'mkdir', full)
+    with pytest.raises(ValueError, match='save_io_failed'):
+        store.write('game', IDENTITY, b'x', frame=0, played_frames=0, session_id='s')
+
+
+def test_rejected_unserialize_rolls_back_and_keeps_playing(monkeypatch, tmp_path, native):
+    (tmp_path/'saves').mkdir()
+    identity = dict(rom_sha256=digest(native[1]), core_sha256=digest(native[0]))
+    good = SaveStore(tmp_path/'saves').write('fixture', identity, b'\0'*4, frame=1, played_frames=1, session_id='o')
+    real = CoreProbe.restore
+    def refuse_once(self, state):
+        if state == b'\0'*4: raise RuntimeError('restore failed')
+        return real(self, state)
+    monkeypatch.setattr(CoreProbe, 'restore', refuse_once)
+    def scenario(row, enqueue):
+        if row['kind'] == 'status' and row['frame'] >= 3 and not scenario.sent:
+            scenario.sent = row['steps']; enqueue('load', {'save_id': good['save_id']})
+    scenario.sent = 0
+    rows, hashes, events = run_worker(monkeypatch, tmp_path, native, scenario, loops=20)
+    reply = next(r for r in rows if r['kind'] == 'reply')
+    assert reply['error'] == 'save_restore_failed'
+    assert not any(r['kind'] == 'fatal' for r in rows)
+    # Rolled back: the game continues from where it was, not from the save.
+    assert len(set(hashes)) == len(hashes)
+    assert 'load' not in {e['kind'] for e in events}
+
+
+def test_metadata_with_extra_fields_still_lists_and_is_not_pruned(tmp_path):
+    store = SaveStore(tmp_path)
+    meta = store.write('game', IDENTITY, b'x', frame=0, played_frames=0, session_id='s')
+    path = tmp_path/'game'/f"{meta['save_id']}.json"
+    path.write_text(json.dumps(dict(meta, future_field=1)))
+    (tmp_path/'game'/'.deadbeef.state.tmp').write_bytes(b'partial')
+    store.write('game', IDENTITY, b'y', frame=1, played_frames=1, session_id='s')
+    assert meta['save_id'] in [m['save_id'] for m in store.list('game')]
+    assert not list((tmp_path/'game').glob('.*.tmp'))
+
+
+def test_catalog_accepts_twenty_games_and_caps_at_64(tmp_path):
+    from app.session import MAX_GAMES
+    cfg, _ = api_fixture(tmp_path)
+    base = json.loads(cfg.catalog.read_text())[0]
+    def write(n):
+        cfg.catalog.write_text(json.dumps([dict(base, game_id=f'game-{i}', title=f'Game {i}') for i in range(n)]))
+    write(20)
+    assert len(Sessions(cfg).games()) == 20
+    write(MAX_GAMES); assert len(Sessions(cfg).games()) == 64
+    write(MAX_GAMES+1)
+    with pytest.raises(ValueError, match='1..64'): Sessions(cfg)

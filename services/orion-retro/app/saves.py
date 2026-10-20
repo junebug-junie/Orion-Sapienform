@@ -39,7 +39,13 @@ class SaveStore:
             raise ValueError('invalid_game')
         return self.root / game_id
 
-    def write(self, game_id, identity, state, *, frame, played_frames, session_id):
+    def write(self, game_id, identity, state, **fields):
+        # Disk faults refuse the request; they must never kill the game (worker
+        # treats anything but ValueError as fatal).
+        try: return self._write(game_id, identity, state, **fields)
+        except OSError: raise ValueError('save_io_failed')
+
+    def _write(self, game_id, identity, state, *, frame, played_frames, session_id):
         if not available(self.root): raise ValueError('saves_unavailable')
         if not 0 < len(state) <= self.max_bytes: raise ValueError('save_too_large')
         directory = self._dir(game_id)
@@ -70,7 +76,7 @@ class SaveStore:
         for path in directory.glob('*.json'):
             try: meta = json.loads(path.read_text())
             except (OSError, ValueError): continue
-            if (isinstance(meta, dict) and set(meta) == FIELDS and meta['game_id'] == game_id
+            if (isinstance(meta, dict) and FIELDS <= set(meta) and meta['game_id'] == game_id
                     and path.stem == meta['save_id'] and SAVE_ID.match(meta['save_id'])
                     and (directory / f"{meta['save_id']}.state").is_file()):
                 rows.append(meta)
@@ -86,6 +92,10 @@ class SaveStore:
         return meta
 
     def read(self, game_id, save_id, identity):
+        try: return self._read(game_id, save_id, identity)
+        except OSError: raise ValueError('save_io_failed')
+
+    def _read(self, game_id, save_id, identity):
         meta = self.meta(game_id, save_id, identity)
         path = self._dir(game_id) / f'{save_id}.state'
         if path.stat().st_size != meta['bytes'] or meta['bytes'] > self.max_bytes:
@@ -100,7 +110,8 @@ class SaveStore:
         for meta in keep[self.max_per_game:]:
             (directory / f"{meta['save_id']}.json").unlink(missing_ok=True)
             (directory / f"{meta['save_id']}.state").unlink(missing_ok=True)
-        live = {m['save_id'] for m in keep[:self.max_per_game]}
-        # A crash between the two renames can leave a .state with no metadata.
+        # A crash between the two renames can leave a .state with no metadata,
+        # or a temp file. Only files with no metadata file at all are removed.
         for orphan in directory.glob('*.state'):
-            if orphan.stem not in live: orphan.unlink(missing_ok=True)
+            if not (directory / f'{orphan.stem}.json').exists(): orphan.unlink(missing_ok=True)
+        for tmp in directory.glob('.*.tmp'): tmp.unlink(missing_ok=True)

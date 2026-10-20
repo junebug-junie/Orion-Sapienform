@@ -14,6 +14,10 @@ from .saves import SaveStore, available
 from orion.retro.probe import digest
 
 
+# Startup hashes every ROM once; NES ROMs are small, so 64 stays well under a second.
+MAX_GAMES = 64
+
+
 class Sessions:
     def __init__(self, settings):
         self.settings = settings
@@ -21,7 +25,7 @@ class Sessions:
         self.catalog = {}; self.session = None; self.process = None
         self.pending = {}; self.connections = set(); self.history = deque(maxlen=256)
         self.media = None; self.media_task = None; self.latest_media = None; self.media_version = 0
-        self.requests = {}; self.task = None; self.stopping = False
+        self.requests = {}; self.task = None; self.stopping = False; self.starting_save = None
         self.ready = asyncio.Event()
         self.settings.artifacts.mkdir(parents=True, exist_ok=True)
         self.status_path = self.settings.artifacts/'status.json'
@@ -31,8 +35,8 @@ class Sessions:
                 self.session.update(state='failed', reason='service_restart', scripted=[])
                 self.persist()
         catalog = json.loads(settings.catalog.read_text())
-        if not isinstance(catalog, list) or not 1 <= len(catalog) <= 16:
-            raise ValueError('catalog must contain 1..16 games')
+        if not isinstance(catalog, list) or not 1 <= len(catalog) <= MAX_GAMES:
+            raise ValueError(f'catalog must contain 1..{MAX_GAMES} games')
         for item in catalog:
             if set(item) != {'game_id','title','file','rom_sha256','ports','provenance'}:
                 raise ValueError('invalid catalog fields')
@@ -98,7 +102,8 @@ class Sessions:
         sid = str(uuid.uuid4())
         self.session = dict(session_id=sid, generation=self.generation, state='starting',
                             game_id=game_id, frame=0, owner=owner, save_enabled=self.save_enabled(),
-                            loaded_save=save_id, scripted=[])
+                            loaded_save=None, scripted=[])
+        self.starting_save = save_id
         self.persist(); self.history.clear()
         self.process = ctx.Process(target=run, args=(self.commands,self.urgent,self.replies,self.stop_event,
                             self.settings,dict(self.catalog[game_id], save_id=save_id),sid,self.generation,self.media), daemon=True)
@@ -135,7 +140,8 @@ class Sessions:
                         if future and not future.done(): future.set_result(row)
                         if 'frame' in row.get('result', {}): self.history.append(row['result'])
                     elif kind == 'ready':
-                        ready = True; self.ready.set(); self.session.update(state='running', identity=row['identity'], runtime_sha256=row['runtime_sha256'], fps=row['fps'])
+                        # The worker loads a start save before it reports ready.
+                        ready = True; self.ready.set(); self.session.update(state='running', identity=row['identity'], runtime_sha256=row['runtime_sha256'], fps=row['fps'], loaded_save=self.starting_save)
                         self.persist()
                     elif kind == 'status':
                         self.session.update({k:v for k,v in row.items() if k!='kind'})

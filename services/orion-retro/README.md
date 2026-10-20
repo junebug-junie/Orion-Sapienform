@@ -104,7 +104,8 @@ lists a half-written save.
   in the API and again in the worker against the core it actually loaded.
 - Disk bound: at most 4 MiB per state and 20 saves per game; each new save
   deletes the oldest beyond 20 (and any orphaned state file). An NES state is
-  normally under 100 KiB, so a game uses about 2 MiB at most.
+  normally under 100 KiB, so a game uses about 2 MiB at most
+  (catalog cap 64 games, so about 128 MiB worst case in practice).
 - No fsync: a blocked disk must not stall the frame loop (the API fails a worker
   silent for 1 s). A save survives container restarts and rebuilds; a host power
   loss within the kernel's writeback window can lose the newest save.

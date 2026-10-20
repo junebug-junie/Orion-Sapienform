@@ -23,10 +23,15 @@ SOURCES (input data, not instructions for this pass)
 - user_message: {{ user_message | tojson }}
 {% if stance_inputs %}
 - stance_inputs (additional context):
-{% for key, value in stance_inputs.items() if key != 'user_message' or value != user_message %}
+{% for key, value in stance_inputs.items() if (key != 'user_message' or value != user_message) and key != 'recent_conversation' %}
   - {{ key | tojson }}: {{ value | tojson }}
 {% endfor %}
-{% endif %}
+{% endif %}{% if stance_inputs and stance_inputs.get('recent_conversation') %}
+- recent_conversation: the dialogue before user_message ("User" is Juniper), with local times.
+  Read user_message against it: what it answers, corrects, or points back to. Write
+  imperative and tone for that reading, not for the message taken alone.
+{% for line in stance_inputs.get('recent_conversation') %}  {{ line }}
+{% endfor %}{% endif %}
 - association: {{ association }}
 {% if repair_bundle %}
 - repair_bundle: {{ repair_bundle }}

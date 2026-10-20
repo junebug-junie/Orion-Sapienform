@@ -51,12 +51,13 @@
 # of sync with each other (an earlier draft of this fix did that: a stale
 # key count in one comment vs. the actual list in another).
 #
-# Bring up from a worktree ON ATHENA (never the shared checkout). Not via
-# scripts/safe_docker_build.sh: that wrapper hardcodes -f services/$SERVICE/
-# docker-compose.yml and has no way to target this second compose file --
-# passing -f yourself would merge both files and risk recreating the main
-# vision-host service too. Run docker compose directly instead, from a
-# worktree, with the same dual --env-file convention:
+# Bring up from the clean primary main checkout ON ATHENA (2026-10-20). The
+# post-pull rebuild redeploys this lane itself when services/orion-vision-host/
+# changes and the lane is running (rebuild_affected_services.py
+# --running-extra-compose); by hand use the wrapper's --compose-file flag, which
+# targets this file INSTEAD of docker-compose.yml (never merges them):
+#   scripts/safe_docker_build.sh orion-vision-host --compose-file docker-compose.circe-qwen.yml up -d --build
+# Equivalent raw command, same dual --env-file convention:
 #   docker compose \
 #     --env-file .env \
 #     --env-file services/orion-vision-host/.env \

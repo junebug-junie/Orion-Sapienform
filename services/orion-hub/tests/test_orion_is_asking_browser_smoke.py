@@ -47,6 +47,11 @@ def _asks(open_ids):
                     "source_ref": "ind-3", "created_at": "2026-10-15T21:30:00+00:00", "evidence_refs": [],
                     "image_ref": f"thumb:{FACE_A}",
                     "image_refs": [f"thumb:{FACE_A}", f"thumb:{FACE_B}", f"thumb:{FACE_C}"]})
+    if "c1" in open_ids:
+        out.append({"ask_id": "c1", "question": "Is this Juniper? It is my best guess, but I am not sure.",
+                    "source_kind": "vision_person_confirm", "source_ref": "ind-4|Juniper",
+                    "created_at": "2026-10-20T19:00:00+00:00", "evidence_refs": [],
+                    "image_ref": f"thumb:{FACE_C}", "image_refs": [f"thumb:{FACE_C}"]})
     return out
 
 
@@ -63,7 +68,7 @@ def test_orion_is_asking_panel_browser_smoke():
 
     page_html = f"<!doctype html><html><body>{_panel_html()}<script src=\"/static/js/vision-asks.js\"></script></body></html>"
     script = (HUB / "static" / "js" / "vision-asks.js").read_text(encoding="utf-8")
-    open_ids = {"m-confirm", "m-revise", "m-reject", "v1", "p1", "v3"}
+    open_ids = {"m-confirm", "m-revise", "m-reject", "v1", "p1", "v3", "c1"}
     posted: list[tuple[str, dict]] = []
 
     def handle(route):
@@ -94,7 +99,7 @@ def test_orion_is_asking_panel_browser_smoke():
         page.goto("http://hub.test/home")
 
         page.wait_for_selector('[data-ask-id="m-confirm"]')
-        assert "Orion has 6 questions for you." in page.inner_text("#visionAsksStatus")
+        assert "Orion has 7 questions for you." in page.inner_text("#visionAsksStatus")
         assert "Orion is asking" in page.inner_text("#visionAsksCard")
         # Database text is inert: the markup in a question renders as text and never runs.
         assert "<img src=x" in page.inner_text('[data-ask-id="m-reject"]')
@@ -152,6 +157,20 @@ def test_orion_is_asking_panel_browser_smoke():
         assert posted[-1] == ("v3/answer", {"answer": "Theo", "pictures": [
             {"image_ref": f"thumb:{FACE_B}", "verdict": "same"},
             {"image_ref": f"thumb:{FACE_C}", "verdict": "different", "name": "Other kid"}]})
+        posted.clear()
+
+        # "Is this Juniper?": one picture, three choices, one Send; nothing is sent
+        # until a choice is made; "No" sends no.
+        card_c = '[data-ask-id="c1"]'
+        assert page.locator(f"{card_c} img").count() == 1
+        assert page.locator(f"{card_c} [data-ask-choice]").count() == 3
+        assert "Yes, it is Juniper" in page.inner_text(card_c) and "Can't tell" in page.inner_text(card_c)
+        page.click(f'{card_c} [data-ask-action="send"]')
+        assert posted == []
+        page.locator(f'{card_c} input[value="no"]').check()
+        page.click(f'{card_c} [data-ask-action="send"]')
+        page.wait_for_selector(card_c, state="detached")
+        assert posted[-1] == ("c1/answer", {"answer": "no"})
         posted.clear()
         page.set_viewport_size({"width": 1280, "height": 800})
 

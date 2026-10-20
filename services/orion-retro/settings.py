@@ -7,6 +7,7 @@ import os
 @dataclass(frozen=True)
 class Settings:
     enabled: bool = False
+    cognition_enabled: bool = False
     catalog: Path = Path('/catalog/catalog.json')
     artifacts: Path = Path('/evidence')
     core: Path = Path('/opt/retro/core.so')
@@ -17,7 +18,8 @@ class Settings:
 
     @classmethod
     def from_env(cls):
-        return cls(enabled=os.getenv('RETRO_ENABLED', 'false').lower() == 'true')
+        return cls(enabled=os.getenv('RETRO_ENABLED', 'false').lower() == 'true',
+                   cognition_enabled=os.getenv('RETRO_COGNITION_ENABLED', 'false').lower() == 'true')
 
     def token(self):
         value = self.token_file.read_text().strip()

@@ -36,6 +36,15 @@ Spec: `docs/superpowers/specs/2026-10-15-orion-prediction-service-design.md`.
 A seasonality is used only when training holds 2 full cycles (monthly is refused today). MSTL
 skips cycles longer than a day: STL at the weekly period costs ~26 s per fit vs ~2.3 s.
 
+## Grading the overheat warning
+
+Every issued forecast stores each threshold's probability (`prediction_exceedance`). Once its window
+has passed it is scored two ways: `hit_raw` (any single reading crossed -- what the 34 C reflex acts on)
+and `hit_mean` (a 5-minute mean crossed -- what the forecast models). `GET /series/{id}/live` returns,
+per threshold and per outcome: Brier score, the base-rate Brier, skill (above 0 = knows *when*, not just
+*how often*) and calibration bins. `worse_than_baseline` now compares only forecasts where champion and
+baseline differ, and needs >= 5 % worse with p < 0.05.
+
 ## Change events
 
 Known moments the world changed under a series, stored in `prediction_change_event`:

@@ -31,6 +31,19 @@ experiment dispatcher. Where the build departs from the design below, the build 
   max residual once (n+1)·q ≥ n, so at the default 40 windows the 95 % upper bound is the max
   observed error (conservative); at 14 the 80 % and 95 % ranges coincide.
 
+## Grading the exceedance + the alert tie (2026-10-20, follow-up PR)
+
+The `shed` probability was shown beside every reflex decision but never stored, so its quality was
+unknown. `prediction_exceedance` stores each issued probability with its window [origin+grain,
+origin+grain+window); the reducer writes `hit_raw` / `hit_mean` once the window passes; `/live` grades it
+(Brier, base rate, skill, calibration). `worse_than_baseline` fired on a tie ("1.00x" with 4 of 5
+horizons served by naive); it now uses only differing forecasts, >= 1.05x and a paired test p < 0.05.
+
+Measured on the house meter, 2026-10-20 (for the inputs PR that follows): house kWh minus the cabinet
+nodes and the portable AC rises +0.33 kWh/h per F above 75 F outdoor (3 h earlier; p ~1e-18) -- the
+central AC. Hours with it likely on: cabinet 1.3 C cooler and the portable AC ~126 W lighter. Input to
+build: outdoor F above 75, 3 h earlier (known 48 h ahead from the forecast).
+
 ## Change events (2026-10-20, follow-up PR)
 
 The cabinet regime moved twice in two days, both visible in `orion_biometrics_summary`:

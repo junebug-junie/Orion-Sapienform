@@ -161,6 +161,8 @@ def _spec(raw: dict) -> SeriesSpec:
             name=str(t["name"]), value=float(t["value"]),
             window_min=_multiple(duration_min(t["window"]), grain, f"{sid}.thresholds.{t['name']}"),
             max_probability=None if mp is None else float(mp)))
+    if horizons and any(t.window_min > max(horizons) for t in thresholds):
+        raise SeriesConfigError(f"{sid}: a threshold window is longer than the longest horizon")
     exclude = []
     for e in raw.get("exclude") or ():
         start, end = _ts(e["start"], f"{sid}.exclude"), _ts(e["end"], f"{sid}.exclude")

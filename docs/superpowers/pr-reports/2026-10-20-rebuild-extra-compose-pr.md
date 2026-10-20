@@ -133,6 +133,6 @@ next time services/orion-energy changes.
 
 ## PR link
 
-<link>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2808
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -588,9 +588,12 @@ Each tick it:
    street (every unnamed recent person cluster), other named people's
    clusters, and clusters she said are not them. Calibrating on the other
    named people alone let ~9% of street clusters through on live data
-   (2026-10-20). The accept bar is dropped unless one of the person's own
-   clusters, held out with every album crop from its days, scores above it,
-   so a channel that only matches same-day clothes accepts nobody.
+   (2026-10-20). The street is fitted on and guessed on, so about alpha of it
+   clears any armed bar: alpha is split across people (alpha / people), and a
+   bar is armed only when at least 3 of the person's own clusters, each held
+   out with every album crop from its days, exist and half of them clear it.
+   Below about 2 x people / alpha impostor clusters (~280 at 7 people) the
+   bound is the street maximum: no unnamed cluster can be accepted yet.
    `reject_below` is the same rule on cross-day genuine crop scores (>= 19).
    NULL = ask only. On 2026-10-20 no person had an accept bar: everything is
    `unsure` until her answers grow the albums.

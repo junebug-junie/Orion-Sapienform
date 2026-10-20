@@ -1,4 +1,4 @@
--- ORION-MIGRATION-REQUIRED-BY: orion-sql-writer, orion-hub
+-- ORION-MIGRATION-REQUIRED-BY: orion-sql-writer
 -- Walkway person learning, Phase 1 (2026-10-20): Orion learns who people are
 -- from Juniper's answers. Design: docs/superpowers/specs/2026-10-20-walkway-person-learning-design.md
 --

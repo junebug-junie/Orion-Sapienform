@@ -113,7 +113,7 @@ async def vision_individuals_loop(settings: Settings) -> None:
             summary, opened = await asyncio.to_thread(
                 run_one_individuals_cycle, postgres_uri=postgres_uri, cfg=cfg, zones_by_stream=zones,
                 person_cfg=person_cfg if run_person else None)
-            if run_person:
+            if run_person and "person_people" in summary:   # it really ran (not skipped / failed)
                 person_last = time.monotonic()
             backoff = None
             for ask in opened:

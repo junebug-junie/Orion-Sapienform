@@ -7,12 +7,16 @@ answers put in an album: the cluster's crops are removed from every album,
 every bar is refitted without them, and the cluster is then guessed like an
 unnamed one. Outcomes:
 
-- correct accept: "probably <its own person>";
+- correct accept: "probably <its own person>" (the cluster AND its person's
+  other crops from the same days are held out, so clothes cannot carry it);
 - WRONG accept: "probably <someone else>" -- the gate is zero of these;
 - unsure: Orion would ask; reject: no person fits; no album: its person has
   no other cluster to learn from (cannot be recognised yet).
 
-Also reported, per channel: cross-day separation, the AUC of genuine CLUSTER
+Also reported: street accepts, how many unnamed clusters get "probably X"
+with the full album. An armed bar lets about alpha / people of the street
+through by construction, so treat that number as likely wrong accepts until
+answers confirm them. Per channel: cross-day separation, the AUC of genuine CLUSTER
 scores (each of a person's clusters held out with every album crop from its
 days) against impostor cluster scores (the street, other people, ruled-out
 clusters), the populations the accept bar is fitted on. 0.5 = no better than
@@ -76,7 +80,11 @@ def evaluate(album: Dict[str, Dict[int, List[pm.Crop]]], cfg: pm.PersonModelConf
     counts = {"correct_accept": 0, "wrong_accept": 0, "unsure": 0, "unsure_right_person": 0,
               "reject": 0, "no_album": 0}
     for cid, (truth, crops) in sorted(clusters.items()):
-        held = {p: {pol: [c for c in cs if c.cluster != cid] for pol, cs in pols.items()}
+        # Hold out the cluster AND every crop of its person from the same days
+        # (same clothes), as fit_bar's own gate does.
+        days = {c.day for c in crops}
+        held = {p: {pol: [c for c in cs if c.cluster != cid and not (p == truth and c.day in days)]
+                    for pol, cs in pols.items()}
                 for p, pols in album.items()}
         held = {p: pols for p, pols in held.items() if pols.get(1)}
         if truth not in held:
@@ -107,6 +115,16 @@ def evaluate(album: Dict[str, Dict[int, List[pm.Crop]]], cfg: pm.PersonModelConf
                 accept_bars += fit.bar.accept_at is not None
         separation[ch] = {"cross_day_cluster_auc": auc(gen, imp), "n_genuine_clusters": len(gen),
                           "n_impostor_clusters": len(imp), "people_with_accept_bar": accept_bars}
+    # Street accepts: guesses "probably X" on unnamed clusters with the full
+    # album. About alpha / people of the street clears an armed bar by
+    # construction, so read this as the bar's likely wrong-accept count until
+    # Juniper's answers say otherwise.
+    full_bars = pm.fit_all(album, cfg, street)
+    street_guess = pm.attribute(street, album, full_bars, {}, cfg)
+    street_accepts: Dict[str, int] = {}
+    for g in street_guess:
+        if g["band"] == "accept":
+            street_accepts[g["person_label"]] = street_accepts.get(g["person_label"], 0) + 1
     scored = len(clusters) - counts["no_album"]
     return {
         "model_version": pm.MODEL_VERSION, "alpha": cfg.alpha, "top_k": cfg.top_k,
@@ -116,6 +134,8 @@ def evaluate(album: Dict[str, Dict[int, List[pm.Crop]]], cfg: pm.PersonModelConf
         "correct_accept_rate": round(counts["correct_accept"] / scored, 4) if scored else None,
         "unsure_rate": round(counts["unsure"] / scored, 4) if scored else None,
         "separation": separation, "per_cluster": per_cluster,
+        "street_accepts": sum(street_accepts.values()), "street_accepts_by_person": street_accepts,
+        "street_unsure": sum(1 for g in street_guess if g["band"] == "unsure"),
         "gate_passed": counts["wrong_accept"] == 0,
     }
 

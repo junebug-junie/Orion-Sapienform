@@ -16,10 +16,21 @@ fitted from the album itself:
   clusters through on live data (2026-10-20). Unnamed clusters that really
   are the person only raise the bar (conservative). A cluster is accepted
   when its score is above the bound;
-- the accept bar is dropped unless at least one of the person's own clusters,
-  held out together with every album crop from its days, scores above it:
-  a channel that only matches same-day clothes cannot accept anyone;
-- ``reject_below``: alpha-quantile of cross-day genuine CROP scores (needs >= 19).
+- the street is both what the bar is fitted on and what is guessed on, so
+  about alpha of street clusters clear any armed bar. alpha is therefore
+  split across people (Bonferroni: alpha / number of people), and a bar is
+  armed only when at least ``MIN_GENUINE_CLUSTERS`` of the person's own
+  clusters, each held out together with every album crop from its days,
+  exist and at least half of them score above it: the person must beat the
+  street across days, not once by luck. A channel that only matches same-day
+  clothes accepts nobody;
+- ``reject_below``: alpha-quantile of cross-day genuine CROP scores (needs
+  >= 19). Crops of one cluster are correlated, so that n is nominal; the
+  bar is applied to a cluster median against the full album, which only
+  makes rejects rarer (conservative).
+
+A person with no armed bar still gets ``unsure`` guesses: those are the
+input to the capped "Is this X?" asks, the way albums grow.
 
 Three bands: accept ("probably X"), unsure (ask), reject (not X). A guess
 never writes ``vision_individual.label``.
@@ -50,6 +61,8 @@ PERSON_TABLES = ("vision_person_exemplar", "vision_person_bar", "vision_person_a
 PURITY_MIN_CROPS = 4
 # Crops per unnamed cluster that are scored (newest first).
 ATTRIBUTION_CROPS = 20
+# An accept bar is armed only with this many held-out own clusters, at least half above it.
+MIN_GENUINE_CLUSTERS = 3
 
 
 @dataclass(frozen=True)
@@ -227,7 +240,8 @@ def score_cluster(crops: Sequence[Crop], person: str, channel: str, album: Dict[
 def fit_bar(person: str, channel: str, album: Dict[str, Dict[int, List[Crop]]], cfg: PersonModelConfig,
             street: Optional[Dict[str, List[Crop]]] = None) -> Fit:
     """Fit one person's bar on one channel. ``album``: person -> polarity -> crops;
-    ``street``: unnamed recent clusters (cluster -> crops)."""
+    ``street``: unnamed recent clusters (cluster -> crops). The accept bound
+    uses alpha / number of people in the album."""
     own = album.get(person, {})
     pos = _Side(own.get(1, []), channel)
     neg = _Side(own.get(-1, []), channel)
@@ -247,15 +261,17 @@ def fit_bar(person: str, channel: str, album: Dict[str, Dict[int, List[Crop]]], 
         if s is not None:
             genuine_clusters.append(s)
     own_clusters = {c.cluster for c in own.get(1, [])}
+    ruled_out = _by_cluster(own.get(-1, []))
     groups = list(_by_cluster(c for other, pol in album.items() if other != person
                               for c in pol.get(1, [])).values())
-    groups += list(_by_cluster(own.get(-1, [])).values())
-    groups += [cs for cid, cs in (street or {}).items() if cid not in own_clusters]
+    groups += list(ruled_out.values())
+    groups += [cs for cid, cs in (street or {}).items() if cid not in own_clusters and cid not in ruled_out]
     sides: Dict[Tuple[str, str, int], _Side] = {(person, channel, 1): pos, (person, channel, -1): neg}
     impostor = [s for s in (score_cluster(cs, person, channel, album, cfg, sides) for cs in groups)
                 if s is not None]
-    accept_at = conformal_accept_at(impostor, cfg.alpha)
-    if accept_at is not None and not any(g > accept_at for g in genuine_clusters):
+    accept_at = conformal_accept_at(impostor, cfg.alpha / max(1, len(album)))
+    above = sum(1 for g in genuine_clusters if accept_at is not None and g > accept_at)
+    if len(genuine_clusters) < MIN_GENUINE_CLUSTERS or 2 * above < len(genuine_clusters):
         accept_at = None
     bar = Bar(person, channel, accept_at, conformal_reject_below(genuine, cfg.alpha),
               len(genuine), len(impostor))
@@ -264,11 +280,16 @@ def fit_bar(person: str, channel: str, album: Dict[str, Dict[int, List[Crop]]], 
 
 def pick_channel(crops: Sequence[Crop], person: str, bars: Dict[Tuple[str, str], Bar],
                  album: Dict[str, Dict[int, List[Crop]]], cfg: PersonModelConfig) -> Optional[str]:
-    """Face when both sides have faces and a face bar exists; else the fallback."""
-    if (any("face" in c.vecs for c in crops) and (person, "face") in bars
-            and any("face" in c.vecs for c in album.get(person, {}).get(1, []))):
+    """Face when both sides have faces and the face bar can decide (has an
+    accept or reject bound), else the fallback, else face with an open bar."""
+    face = (any("face" in c.vecs for c in crops) and (person, "face") in bars
+            and any("face" in c.vecs for c in album.get(person, {}).get(1, [])))
+    decides = lambda b: b.accept_at is not None or b.reject_below is not None  # noqa: E731
+    if face and decides(bars[(person, "face")]):
         return "face"
-    return cfg.fallback_channel if (person, cfg.fallback_channel) in bars else None
+    if (person, cfg.fallback_channel) in bars:
+        return cfg.fallback_channel
+    return "face" if face else None
 
 
 def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[Crop]]],
@@ -369,6 +390,8 @@ def desired_exemplars(conn, tz: ZoneInfo) -> Tuple[List[dict], dict]:
     rows: List[dict] = []
     stats = {"named_clusters": len(named), "impure_clusters": 0, "purity_floor": floor}
     for iid, label, copied, ask_id in named:
+        if not label.strip():
+            continue
         cl = by_cluster.get(iid, [])
         split = split_cosine([c.vecs["body"] for c in cl if "body" in c.vecs])
         if floor is not None and split is not None and split < floor:
@@ -382,6 +405,8 @@ def desired_exemplars(conn, tz: ZoneInfo) -> Tuple[List[dict], dict]:
             "SELECT v.crop_id, v.ask_id, i.label FROM vision_ask_picture_verdict v "
             "JOIN vision_individual i ON i.individual_id = v.individual_id "
             "WHERE v.verdict = 'different' AND v.crop_id IS NOT NULL AND i.label IS NOT NULL")).fetchall():
+        if not label.strip():
+            continue
         person = names.get(label.strip().casefold(), label.strip())
         rows.append({"person": person, "crop_id": crop_id, "polarity": -1, "source": "picture_different",
                      "ask_id": ask_id})

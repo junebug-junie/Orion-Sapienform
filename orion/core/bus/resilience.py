@@ -47,10 +47,15 @@ def subscription_health(now: float | None = None) -> dict[str, Any]:
 
     Times are wall-clock epoch seconds; ``*_age_sec`` is how long ago, from ``now``.
     A quiet channel is not down: ``last_message_age_sec`` only says when traffic last came.
+    A stopped listener stays listed as down, so stopping one deliberately at runtime
+    leaves health degraded. A handler that hangs keeps ``subscribed`` True: this
+    reports whether the subscription is open, not whether messages are processed.
     """
     now = time.time() if now is None else now
     listeners = []
-    for state in sorted(_SUBSCRIPTION_STATES.values(), key=lambda st: st.name):
+    # list() first: a health monitor may read this from a worker thread while
+    # the loop registers a listener.
+    for state in sorted(list(_SUBSCRIPTION_STATES.values()), key=lambda st: st.name):
         row = asdict(state)
         for key in ("last_subscribed_at", "last_message_at", "last_failure_at"):
             at = row[key]
@@ -114,6 +119,12 @@ async def run_subscription(
     label = ",".join(channels)
     backoff = min(1.0, max_backoff_sec)
     state = SubscriptionState(name=name, channel=label)
+    previous = _SUBSCRIPTION_STATES.get(name)
+    if previous is not None and previous.running:
+        _sub_logger.warning(
+            "%s registered twice while the first is still running; health now reports only the newer one",
+            name,
+        )
     _SUBSCRIPTION_STATES[name] = state
     try:
         while stop_event is None or not stop_event.is_set():

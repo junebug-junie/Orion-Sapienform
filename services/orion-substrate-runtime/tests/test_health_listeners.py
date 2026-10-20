@@ -46,3 +46,23 @@ def test_health_ok_when_grammar_and_listeners_are_ok(monkeypatch):
     out = _health(main, monkeypatch, grammar_ok=True)
     assert out["ok"] is True and out["status"] == "ok" and out["listeners_down"] == []
     assert out["listeners"][0]["channel"] == "c"
+
+
+def test_health_monitor_flags_a_down_listener(monkeypatch):
+    from types import SimpleNamespace
+
+    import app.health_monitor as hm
+
+    monkeypatch.setattr(hm, "build_substrate_grammar_truth", lambda store: {"degraded": False})
+    monkeypatch.setattr(resilience, "_SUBSCRIPTION_STATES", {})
+    resilience._SUBSCRIPTION_STATES["finalize_appraisal listener"] = resilience.SubscriptionState(
+        name="finalize_appraisal listener", channel="c", subscribed=False
+    )
+    settings = SimpleNamespace(enable_biometrics_pressure_organ=False)
+    check = next(c for c in hm.run_checks(store=None, settings=settings) if c.key == "substrate_listeners_down")
+    assert check.healthy is False and check.severity == "critical"
+    assert "finalize_appraisal listener" in check.message
+
+    resilience._SUBSCRIPTION_STATES["finalize_appraisal listener"].subscribed = True
+    check = next(c for c in hm.run_checks(store=None, settings=settings) if c.key == "substrate_listeners_down")
+    assert check.healthy is True and check.message == ""

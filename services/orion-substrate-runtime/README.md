@@ -95,7 +95,9 @@ Every bus listener runs through `orion.core.bus.resilience.run_subscription`, wh
 - `listeners_down`: names of those listeners.
 - `listeners[]`: per listener `channel`, `subscribed`, `messages_total`, `failures_total`, `last_failure`, and `last_subscribed_age_sec` / `last_message_age_sec` / `last_failure_age_sec`. A quiet channel is not down; `last_message_age_sec` only says when traffic last came.
 
-`ok`/`status` are degraded when either the grammar truth or the listeners are. Before 2026-10-20 a listener that died left `/health` unchanged while chat lost finalize appraisal.
+`ok`/`status` are degraded when either the grammar truth or the listeners are. `HealthMonitor` also raises a critical `substrate_listeners_down` attention card when a listener is still down after its recheck delay, so a listener that cannot reconnect pages instead of only showing on a curl. Before 2026-10-20 a listener that died left `/health` unchanged while chat lost finalize appraisal.
+
+`subscribed` means the subscription is open, not that messages are being processed: a hung handler still reads subscribed. A listener stopped on purpose at runtime stays listed as down.
 
 ## Health monitoring -> hub pending-attention box
 

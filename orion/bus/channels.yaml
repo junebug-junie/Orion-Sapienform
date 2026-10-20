@@ -1338,10 +1338,27 @@ channels:
     schema_id: "VisionEventPayload"
     message_kind: "vision.event.bundle"
     # orion-vision-window: accepted camera captions (event_type camera_caption).
-    producer_services: ["orion-vision-council", "orion-vision-window"]
+    # orion-vision-retina (doorbell): one doorbell_ring / doorbell_motion
+    # event per Ring push (app/ring_events.py).
+    producer_services: ["orion-vision-council", "orion-vision-window", "orion-vision-retina"]
     consumer_services: ["orion-vision-scribe"]
     stability: "experimental"
     since: "2026-01-08"
+
+  # Street events (docs/superpowers/specs/2026-10-20-street-continuity-handoff-
+  # design.md section 6): facts about the street that may compete for
+  # attention. Producer today: orion-vision-retina (doorbell, kind
+  # doorbell_ring, salience 1.0). The handoff reducer (orion-sql-writer) adds
+  # handoff_* kinds in a later PR. Consumer: orion-substrate-runtime (pending
+  # PR, node:substrate.street); nothing subscribes yet.
+  - name: "orion:vision:street:events"
+    kind: "event"
+    schema_id: "StreetEventV1"
+    message_kind: "vision.street.event.v1"
+    producer_services: ["orion-vision-retina"]
+    consumer_services: ["orion-substrate-runtime"]
+    stability: "experimental"
+    since: "2026-10-20"
 
   - name: "orion:vision:events:sql-write"
     kind: "event"
@@ -2331,6 +2348,16 @@ channels:
     stability: "experimental"
     since: "2026-09-05"
     description: "Append-only, versioned self-concept claims -- the identity.yaml-replacement store (self-model rebuild arc, Layer 2/Patch 3). Fed by three producers: Layer 3's real LLM reflection findings (orion-cortex-exec), Self Atlas's per-cluster LLM-written descriptions (orion-hub, services/orion-hub/scripts/self_atlas_cluster_history.py), and -- since 2026-09-08 -- Orion's own first-person `:SelfDefinition` from a self-inquiry curiosity run, mirrored by orion-hub under concept_id `self:definition` / produced_by `curiosity_self_inquiry` (orion/curiosity/self_inquiry.py). That last one is read back into every chat turn's identity kernel via the felt-state reader's `orion_self_definition` lane. Additive to identity.yaml, not a replacement."
+
+  - name: "orion:personality:naming"
+    kind: "event"
+    schema_id: "DispositionNamingV1"
+    message_kind: "personality.naming.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-10-20"
+    description: "Orion's verdict on one personality disposition shown in a self-inquiry naming run (name / reject / merge / no_answer), with the packet Orion was shown and Hub's structural check. orion-sql-writer appends it to orion_disposition_naming; orion-durable-runs (single writer of personality_*) reads that table and applies it. Spec docs/superpowers/specs/2026-10-17-personality-orion-names-dispositions-design.md (PR #2742)."
 
   - name: "orion:self_sense:eval:write"
     kind: "event"

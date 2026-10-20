@@ -788,6 +788,21 @@ def _get_named_substrate_store(attr_name: str, *, log_prefix: str) -> Any:
     store = getattr(api_mod, attr_name, None)
     if store is None:
         logger.info("%s_not_attached", log_prefix)
+        return None
+    # Stores load in the background (scripts/substrate_store_warm.py). While
+    # one is loading the caller gets None -> its existing honest
+    # "substrate_store_unavailable" answer (with warm-up state attached by
+    # _unavailable), never the empty cache of a store that has not loaded.
+    from .substrate_store_warm import WarmingSubstrateStore
+
+    if isinstance(store, WarmingSubstrateStore):
+        ready = store.get_ready()
+        if ready is None:
+            status = store.warm_status()
+            if status["state"] in ("not_started", "failed"):
+                store.start_warm()  # background thread; never builds on this one
+            logger.info("%s_not_ready state=%s", log_prefix, status["state"])
+        return ready
     return store
 
 
@@ -823,7 +838,27 @@ def _unavailable(reason: str, error: Optional[str] = None, **extra: Any) -> dict
     if error:
         payload["error"] = error
     payload.update(extra)
+    if reason == "substrate_store_unavailable":
+        warming = _stores_still_loading()
+        if warming:
+            # Say *why* during Hub's boot warm-up, not just "unavailable".
+            payload["store_warmup"] = warming
     return payload
+
+
+def _stores_still_loading() -> list[dict[str, Any]]:
+    """Warm-up state of every concept graph store not yet loaded; [] if all are
+    loaded or api_routes is not importable (isolated router tests)."""
+    import sys
+
+    api_mod = sys.modules.get("scripts.api_routes")
+    status_fn = getattr(api_mod, "substrate_store_warm_status", None) if api_mod else None
+    if not callable(status_fn):
+        return []
+    try:
+        return [status for status in status_fn() if not status.get("ready")]
+    except Exception:  # pragma: no cover - status is advisory
+        return []
 
 
 class _CountingSubstrateStore:

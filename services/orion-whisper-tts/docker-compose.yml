@@ -45,6 +45,8 @@ services:
       # Identity
       - SERVICE_NAME=whisper-tts
       - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - NODE_NAME=${NODE_NAME:-athena}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC:-10}
 
       # Bus Channels
       - CHANNEL_TTS_INTAKE=${CHANNEL_TTS_INTAKE}

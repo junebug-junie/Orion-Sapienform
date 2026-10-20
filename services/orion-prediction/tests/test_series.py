@@ -46,6 +46,7 @@ def test_duration(value, expected):
     ({"seasonalities": [{"name": "odd", "period": "13min"}]}, "multiple"),
     ({"source": {"kind": "biometrics", "node": "n", "key": "Bad-Key"}}, "key"),
     ({"transform": "logit"}, "transform"),
+    ({"thresholds": [{"name": "hot", "value": 31.0, "window": "12h"}]}, "longer than the longest horizon"),
 ])
 def test_bad_registry_refused(over, msg):
     with pytest.raises(SeriesConfigError, match=msg):

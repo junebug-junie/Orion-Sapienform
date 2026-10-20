@@ -13,6 +13,14 @@ from typing import Any, Sequence
 
 from app.series import SeriesSpec
 
+# Event tables the event_pair estimator may read (read-only), keyed by selector ``source``.
+# Each entry: (table, timestamp column, event-type column, stream column). Add a table here and to
+# EventSelector.source in app/main.py; nothing else changes.
+EVENT_SOURCES = {
+    "vision_events": ("vision_events", "created_at", "event_type", "stream_id"),
+}
+EVENT_READ_TIMEOUT_MS = 10_000
+
 _KEY = re.compile(r"^[a-z0-9_]{1,40}$")
 TABLES = {
     "prediction_model_run": ("run_id", "selection_id", "kind", "assignment", "residual_paths"),
@@ -21,6 +29,7 @@ TABLES = {
     "prediction_intervention": ("intervention_id", "action", "arm", "experiment_id"),
     "prediction_effect_estimate": ("estimate_id", "claim_kind", "effect", "details"),
     "prediction_change_event": ("event_id", "scope", "effect", "started_at", "ended_at", "retracted_at"),
+    "prediction_exceedance": ("exceedance_id", "probability", "window_start", "window_end", "hit_raw", "hit_mean"),
 }
 
 
@@ -76,6 +85,26 @@ class PostgresStore:
             raise ValueError(f"unknown source kind {src.kind}")
         return [(r["ts"], r["v"]) for r in self._all(sql + " ORDER BY 1", args)]
 
+    def event_times(self, source: str, event_type: str, stream_id: str | None, since: datetime, until: datetime,
+                    limit: int) -> list[datetime]:
+        """Timestamps of one event selector in [since, until), oldest first. Read-only transaction with a
+        statement timeout: this reads a table other services write. Returns up to ``limit + 1`` rows so the
+        caller can tell when it hit the cap."""
+        if source not in EVENT_SOURCES:
+            raise ValueError(f"unknown event source {source!r}")
+        table, ts, kind, stream = EVENT_SOURCES[source]
+        sql = f"SELECT {ts} AS ts FROM {table} WHERE {kind} = %s AND {ts} >= %s AND {ts} < %s"
+        args: list = [event_type, since, until]
+        if stream_id is not None:
+            sql += f" AND {stream} = %s"
+            args.append(stream_id)
+        sql += f" ORDER BY {ts} LIMIT %s"
+        args.append(limit + 1)
+        with self.pool.connection() as conn, conn.transaction():
+            conn.execute("SET TRANSACTION READ ONLY")
+            conn.execute(f"SET LOCAL statement_timeout = {int(EVENT_READ_TIMEOUT_MS)}")
+            return [r["ts"] for r in conn.execute(sql, args).fetchall()]
+
     # --- model runs -----------------------------------------------------------------------
     def insert_runs(self, rows: list[dict]) -> None:
         cols = ("run_id", "selection_id", "series_id", "kind", "model", "fitted_at", "train_start", "train_end",
@@ -95,19 +124,6 @@ class PostgresStore:
             " ORDER BY kind, model", (series_id,))
 
     # --- forecasts + scores ---------------------------------------------------------------
-    def insert_forecasts(self, rows: list[dict]) -> int:
-        sql = ("INSERT INTO prediction_forecast (run_id, series_id, model, role, issued_at, origin_ts, target_ts, "
-               "horizon_min, point, quantiles) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb) "
-               "ON CONFLICT (series_id, role, origin_ts, horizon_min) DO NOTHING")
-        n = 0
-        with self.pool.connection() as conn, conn.transaction():
-            for r in rows:
-                cur = conn.execute(sql, (r["run_id"], r["series_id"], r["model"], r["role"], r["issued_at"],
-                                         r["origin_ts"], r["target_ts"], r["horizon_min"], r["point"],
-                                         _j(r["quantiles"])))
-                n += cur.rowcount
-        return n
-
     def last_origin(self, series_id: str) -> datetime | None:
         rows = self._all("SELECT max(origin_ts) AS o FROM prediction_forecast "
                          "WHERE series_id = %s AND role = 'champion'", (series_id,))
@@ -139,8 +155,47 @@ class PostgresStore:
 
     def live_scores(self, series_id: str, since: datetime) -> list[dict]:
         return self._all(
-            "SELECT role, origin_ts, horizon_min, abs_error, in_80, in_95 FROM prediction_forecast "
-            "WHERE series_id = %s AND score_status = 'scored' AND target_ts >= %s", (series_id, since))
+            "SELECT role, origin_ts, horizon_min, point, abs_error, in_80, in_95 FROM prediction_forecast "
+            "WHERE series_id = %s AND score_status = 'scored' AND target_ts >= %s ORDER BY horizon_min, origin_ts",
+            (series_id, since))
+
+    # --- exceedance probabilities + outcomes ----------------------------------------------
+    def insert_issue(self, forecast_rows: list[dict], exceedance_rows: list[dict]) -> None:
+        """One issue's forecast rows and threshold probabilities in ONE transaction: a failure leaves
+        neither, so the next tick re-issues the bucket instead of skipping it half-written."""
+        f_sql = ("INSERT INTO prediction_forecast (run_id, series_id, model, role, issued_at, origin_ts, target_ts, "
+                 "horizon_min, point, quantiles) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb) "
+                 "ON CONFLICT (series_id, role, origin_ts, horizon_min) DO NOTHING")
+        e_sql = ("INSERT INTO prediction_exceedance (series_id, origin_ts, issued_at, name, threshold, window_start, "
+                 "window_end, probability, n_paths, served_baseline) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                 "ON CONFLICT (series_id, origin_ts, name) DO NOTHING")
+        with self.pool.connection() as conn, conn.transaction():
+            for r in forecast_rows:
+                conn.execute(f_sql, (r["run_id"], r["series_id"], r["model"], r["role"], r["issued_at"],
+                                     r["origin_ts"], r["target_ts"], r["horizon_min"], r["point"], _j(r["quantiles"])))
+            for r in exceedance_rows:
+                conn.execute(e_sql, (r["series_id"], r["origin_ts"], r["issued_at"], r["name"], r["threshold"],
+                                     r["window_start"], r["window_end"], r["probability"], r["n_paths"],
+                                     r["served_baseline"]))
+
+    def due_exceedances(self, series_id: str, before: datetime, limit: int = 2000) -> list[dict]:
+        return self._all("SELECT exceedance_id, threshold, window_start, window_end FROM prediction_exceedance "
+                         "WHERE series_id = %s AND scored_at IS NULL AND window_end <= %s ORDER BY window_start LIMIT %s",
+                         (series_id, before, limit))
+
+    def write_exceedance_outcomes(self, rows: list[dict]) -> None:
+        sql = ("UPDATE prediction_exceedance SET scored_at = %s, hit_raw = %s, hit_mean = %s, max_raw = %s, "
+               "n_readings = %s, n_buckets_observed = %s WHERE exceedance_id = %s AND scored_at IS NULL")
+        with self.pool.connection() as conn, conn.transaction():
+            for r in rows:
+                conn.execute(sql, (r["scored_at"], r["hit_raw"], r["hit_mean"], r["max_raw"], r["n_readings"],
+                                   r["n_buckets_observed"], r["exceedance_id"]))
+
+    def graded_exceedances(self, series_id: str, since: datetime) -> list[dict]:
+        return self._all("SELECT name, threshold, window_start, window_end, probability, hit_raw, hit_mean, "
+                         "served_baseline FROM prediction_exceedance "
+                         "WHERE series_id = %s AND scored_at IS NOT NULL AND n_readings > 0 "
+                         "AND probability IS NOT NULL AND window_start >= %s", (series_id, since))
 
     # --- interventions, experiments, effects ----------------------------------------------
     def insert_intervention(self, row: dict) -> dict:

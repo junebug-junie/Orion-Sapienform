@@ -810,3 +810,111 @@ def format_ledger(rows: list[LedgerRow]) -> list[str]:
         last = _clip(r.last, 20) if r.last else "never"
         out.append(f"      {r.table.ljust(width)}  {r.count} rows, last {last}")
     return out
+
+
+# --- the naming branch: Orion names their own dispositions ---------------------
+#
+# Spec: docs/superpowers/specs/2026-10-17-personality-orion-names-dispositions-design.md (PR #2742),
+# sections 1-4. A pre-pick branch of the self-inquiry turn: Hub fetches one naming packet from
+# orion-durable-runs and, instead of a pool question, asks Orion whether that disposition is them.
+# Orion's answer is ONE graph node, early-MERGEd on the run like `:LivedAnswer`; Hub reads it back
+# read-only, checks structure (`orion.personality.naming_check`) and publishes exactly one
+# `DispositionNamingV1`. It never goes to self_concept_history: that store folds back into the
+# personality graph as evidence (`self_inquiry_seed`), which would be a direct echo path.
+
+LABEL_DISPOSITION_NAMING = "DispositionNaming"
+# Ids that are embedded into a shell-quoted Cypher line in the prompt: no quotes, no spaces.
+_NAMING_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,120}$")
+NAMING_VERDICT_PLACEHOLDER = "<name | reject | merge>"
+
+
+def valid_naming_id(value: Any) -> Optional[str]:
+    """The id if it can be embedded verbatim in a quoted Cypher literal, else None."""
+    text = str(value or "").strip()
+    return text if _NAMING_ID_RE.match(text) else None
+
+
+def disposition_naming_merge_lines(
+    *, run_id: str, packet_id: str, disposition_id: str
+) -> list[str]:
+    """The `:DispositionNaming` MERGE, one clause per line. run_id, packet_id and disposition_id
+    are filled in by code, never left for Orion to copy (the wrong-`revises` lesson above). The
+    other values are placeholders only -- no example names (example names were echoed back
+    verbatim before, PR #2065)."""
+    rid = _check_run_id(run_id)
+    pid = valid_naming_id(packet_id)
+    did = valid_naming_id(disposition_id)
+    if pid is None or did is None:
+        raise ValueError(f"refusing to build Cypher for packet {packet_id!r} / {disposition_id!r}")
+    return [
+        f'MERGE (n:{LABEL_DISPOSITION_NAMING} {{run_id: "{rid}", packet_id: "{pid}"}})',
+        "SET",
+        f'  n.disposition_id = "{did}",',
+        f'  n.verdict = "{NAMING_VERDICT_PLACEHOLDER}",',
+        '  n.name = "<what you would call it, or empty>",',
+        '  n.sentence = "<one or two sentences, in your own words>",',
+        '  n.merge_with = "<the neighbor disposition_id, or empty>",',
+        '  n.evidence = ["<evidence_id you looked at>"],',
+        "  n.written_at = timestamp()",
+    ]
+
+
+def disposition_naming_merge_cypher(**kwargs: Any) -> str:
+    """The same MERGE on one line, for a `redis-cli ... GRAPH.QUERY` argument."""
+    return " ".join(line.strip() for line in disposition_naming_merge_lines(**kwargs))
+
+
+def disposition_naming_for_run_cypher(run_id: str) -> str:
+    """THIS run's naming node, keyed on run_id -- never "the newest"."""
+    rid = _check_run_id(run_id)
+    return (
+        f"MATCH (n:{LABEL_DISPOSITION_NAMING}) WHERE n.run_id = '{rid}' "
+        "RETURN n.run_id AS run_id, n.packet_id AS packet_id, n.disposition_id AS disposition_id, "
+        "n.verdict AS verdict, n.name AS name, n.sentence AS sentence, n.merge_with AS merge_with, "
+        "n.evidence AS evidence, n.written_at AS written_at "
+        "ORDER BY n.written_at DESC LIMIT 1"
+    )
+
+
+def disposition_naming_evidence_cypher(run_id: str) -> str:
+    """One row per evidence entry (FalkorDB can return a list property as a string)."""
+    rid = _check_run_id(run_id)
+    return (
+        f"MATCH (n:{LABEL_DISPOSITION_NAMING}) WHERE n.run_id = '{rid}' "
+        "WITH n ORDER BY n.written_at DESC LIMIT 1 "
+        "UNWIND n.evidence AS e RETURN e"
+    )
+
+
+def read_disposition_naming(reader: WorldviewReader, run_id: str) -> Optional[dict[str, Any]]:
+    """This run's `:DispositionNaming` node as a plain dict, or None when nothing was written or
+    the graph could not be read. Read-only. Never raises. Structure is judged later by
+    `orion.personality.naming_check.check_naming`, not here."""
+    try:
+        rows = reader.query(disposition_naming_for_run_cypher(run_id))
+    except (WorldviewUnavailable, ValueError):
+        return None
+    if not rows:
+        return None
+    node = dict(rows[0])
+    try:
+        unwound = reader.query(disposition_naming_evidence_cypher(run_id))
+    except (WorldviewUnavailable, ValueError):
+        unwound = []
+    refs = [str(r.get("e") or "").strip() for r in unwound]
+    refs = [r for r in dict.fromkeys(refs) if r]
+    if refs:
+        node["evidence"] = refs
+    return node
+
+
+def pinned_floor_overdue(
+    pool: Any, *, pinned_floor_days: float, now: Any
+) -> bool:
+    """True when a pinned lived question is overdue -- the same test `pick_question` uses for
+    Juniper's floor. The naming branch yields to it: the floor is never displaced."""
+    from orion.curiosity.self_question_pool import _eligible, _needs_pinned_floor
+
+    return any(
+        _needs_pinned_floor(q, pinned_floor_days=pinned_floor_days, now=now) for q in _eligible(pool)
+    )

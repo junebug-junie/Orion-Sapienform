@@ -266,3 +266,17 @@ still loading (~0.48 s measured). Nova then failed at frame 0 with
 `worker_unavailable`. With the wait, all 6 catalog games pass `retro_play.mjs`
 (4/4 Start taps, no drops). Regression:
 `test_command_waits_for_a_starting_worker_instead_of_failing_the_session`.
+
+
+### Optional goal experiment
+
+`Try Orion goals · 60s` requires default-off `RETRO_COGNITION_ENABLED` (Retro)
+and `HUB_RETRO_COGNITION_ENABLED` (Hub/relay). It hands off only the currently
+owned port. The UI displays goal/rationale/outcome; `Take this controller`,
+Pause, blur and disconnect retain priority. Five-second motor goals expire to
+wait if background planning is unavailable. The gateway uses GPU-pool background
+admission; thermal refusal is not an emulator failure and must not be bypassed.
+
+See the [goal-loop implementation record](../superpowers/specs/2026-10-20-retro-goal-loop-implementation.md)
+for the fingerprinted Nova observation scope, unknown cases, local evidence,
+and the real-planner acceptance gate. No deployment or game restart is implied.

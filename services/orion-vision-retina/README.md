@@ -86,7 +86,7 @@ cp .env_example .env
 ### Ring doorbell source (2026-10-17)
 
 `RETINA_SOURCE_TYPE=ring` (`app/ring_source.py`), deployed as
-`orion-vision-retina-doorbell` (profile `doorbell`, stream/camera id
+`orion-vision-retina-doorbell` (no compose profile, stream/camera id
 `doorbell`). The doorbell is battery-powered with no Ring Protect plan, so it
 has no RTSP, no saved recordings, and cannot take a snapshot while it records
 ([Ring snapshot limitations](https://github.com/dgreif/ring/wiki/Snapshot-Limitations)).
@@ -109,10 +109,11 @@ The only picture source is a live view. So:
   `ring_last_event_ts`. `last_frame_age_sec` growing between visits is normal
   for this camera.
 
-Login, once, after the first `up`:
+No compose profile: the normal `up` (and the post-pull rebuild) builds and
+starts it. Until the Ring login it waits and reports `ring not authenticated`
+in health. Login, once:
 
 ```bash
-scripts/safe_docker_build.sh orion-vision-retina --profile doorbell up -d --build orion-vision-retina-doorbell
 docker exec -it orion-vision-retina-doorbell python -m app.ring_login
 ```
 

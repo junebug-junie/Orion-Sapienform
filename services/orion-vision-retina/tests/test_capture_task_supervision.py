@@ -269,6 +269,30 @@ def test_publish_stall_ignores_an_event_camera_between_events():
     assert svc.publish_stall(svc._started_at + 10_000) is None
 
 
+def test_unauthenticated_ring_doorbell_never_exits_for_restart(tmp_path):
+    """The doorbell has no compose profile (2026-10-20): it starts on every
+    plain `up`, logged in or not. Not logged in it must wait degraded, never
+    exit -- under restart: unless-stopped that would be a crash loop."""
+    import asyncio
+
+    from app.ring_source import RingEventFrameSource
+
+    svc = _svc()
+    svc.source = RingEventFrameSource("", state_dir=str(tmp_path))
+    assert asyncio.run(svc.source._connect_once()) is False
+    assert asyncio.run(svc.capture_once()) is False
+    assert "ring not authenticated" in svc.metrics.last_error
+    assert svc.metrics.frames_failed == 0
+    # Two hours on, capture_loop still ticking (it does: the source's empty
+    # read returns at once), nothing published: degraded, never an exit.
+    mono = time.monotonic() + 7200
+    svc._loop_tick_mono = mono
+    later = svc._started_at + 7200
+    assert svc.publish_stall(later) is not None
+    assert svc.publisher_dead(later, mono) is None
+    assert svc.exit_codes == []
+
+
 def test_publish_stall_disabled_by_zero():
     svc = _svc(RETINA_PUBLISH_STALL_SECONDS=0)
     assert svc.publish_stall(svc._started_at + 10_000) is None

@@ -223,7 +223,14 @@ class RingEventFrameSource:
         await self._connect_once()
 
     async def _connect_once(self) -> bool:
-        from ring_doorbell import Auth, Ring, RingEventListener
+        try:
+            from ring_doorbell import Auth, Ring, RingEventListener
+        except ImportError as exc:
+            # Outside the try below this killed _supervise silently and health
+            # read the generic "connecting to camera".
+            self.last_error = f"ring library missing in this image: {exc}"
+            logger.error(f"[RETINA] {self.last_error}")
+            return False
 
         token = _read_json(Path(self.state_dir) / TOKEN_FILE)
         if not token:

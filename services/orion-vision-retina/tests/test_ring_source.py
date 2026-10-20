@@ -197,7 +197,10 @@ def test_settings_refuse_ring_with_no_event_kinds():
 def test_doorbell_instance_matches_router_and_zones():
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
     svc = compose["services"]["orion-vision-retina-doorbell"]
-    assert svc["profiles"] == ["doorbell"]
+    # No profile: the post-pull rebuild runs a plain `up` and never starts a
+    # profile service that is not already running, so a profiled doorbell
+    # never deployed itself (2026-10-17). Unauthenticated, it only waits.
+    assert "profiles" not in svc
     env = dict(e.split("=", 1) for e in svc["environment"])
     assert env["RETINA_SOURCE_TYPE"] == "ring"
     assert env["RETINA_STREAM_ID"] == "doorbell" and env["RETINA_CAMERA_ID"] == "doorbell"

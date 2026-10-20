@@ -135,6 +135,11 @@ class Settings(BaseSettings):
     POWER_INTENT_SETTLED_CHANNEL: str = "orion:power:intent:settled"
     DIFFUSION_DTYPE: str = "fp16"
     DIFFUSION_ENABLE_MODEL_CPU_OFFLOAD: bool = True
+    # /ready says ready only while this card has at least this many GB free for this process (free
+    # + already reserved by it). Offloaded FLUX peaks at ~24GB; on circe gpu2 (32GB) the agent-gpu2
+    # seat leaves ~7.8GB free (measured 2026-10-20) and an empty card ~31GB. 20 sits between both.
+    # 0 = off (old behaviour: loaded + not draining). See /ready in app/main.py.
+    DIFFUSION_READY_MIN_GPU_GB: float = 20.0
     DIFFUSION_NUM_INFERENCE_STEPS: int = 4
     DIFFUSION_GUIDANCE_SCALE: float = 0.0
     DIFFUSION_MAX_SEQUENCE_LENGTH: int = 256

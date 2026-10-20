@@ -48,6 +48,14 @@ with the server's own `GET /props`: the loaded file must equal the profile's `hf
 | down | no answer | no |
 | unloaded / evicted | a swap seat not loaded / a resident pushed off by a swap | no |
 
+A `kind: service` role is probed on its `health` path (up = answers below 500), except a
+launch-managed one: that is probed on its `launch.ready` path and must answer 2xx with
+`{"ready": true}` or `{"status": "ok"}` -- the lane controller's own readiness contract
+(`orion.gpu_pool.config.ready_body_ok`, `RoleSpec.discovery_path`). Today that is diffusion only
+(`/ready`, which also says no when the card has no room). Incident 2026-10-16 -> 10-20: diffusion's
+`/health` said 200 for 4 days beside the agent-gpu2 seat, so a faulted gpu2 looked "both sides up"
+and `fault_cleared:discovery` never fired.
+
 ## Bus (everything except the llama.cpp edge)
 
 | channel | what |

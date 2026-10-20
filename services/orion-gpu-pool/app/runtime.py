@@ -306,7 +306,7 @@ class PoolRuntime:
         for role, spec in self.cfg.roles.items():
             url = self.cfg.url(role)
             try:
-                self.probes[role] = await self.prober(role, url, spec.kind, spec.health)
+                self.probes[role] = await self.prober(role, url, spec.kind, spec.discovery_path)
             except Exception as exc:  # noqa: BLE001
                 self.probes[role] = Probe(False, error=f"{type(exc).__name__}: {exc}", checked_at=self.now())
         self._last_probe = self.now()
@@ -1365,7 +1365,10 @@ class PoolRuntime:
 
     async def _clear_faults(self) -> None:
         """fault -> idle once discovery sees a consistent card: the evicted residents healthy and
-        the seat down (unloaded), or the seat confirmed up and its residents down (loaded)."""
+        the seat down (unloaded), or the seat confirmed up and its residents down (loaded). A
+        launch-managed resident counts as up only when its ``launch.ready`` says so
+        (RoleSpec.discovery_path): diffusion's /health said up beside the seat for 4 days
+        (2026-10-16), so neither branch matched and the card never left fault."""
         for card in list(self.cards.values()):
             seat = card.swap_role
             if card.swap_state != "fault" or not seat or seat not in self.cfg.roles:

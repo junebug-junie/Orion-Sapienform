@@ -81,6 +81,14 @@ class CardSpec(BaseModel):
     host: str | None = None                 # a ``hosts:`` name; None = the pool's ``host``
 
 
+def ready_body_ok(body: Any) -> bool:
+    """The one readiness contract for a ``launch.ready`` path, shared by the lane controller (its
+    wait after ``up``) and the pool's discovery probe: a JSON object saying ``{"ready": true}``
+    (diffusion-host /ready) or ``{"status": "ok"}`` (llama.cpp /health). Anything else is not ready.
+    The caller also requires a 2xx: diffusion-host answers 503 when not ready."""
+    return isinstance(body, dict) and (body.get("ready") is True or body.get("status") == "ok")
+
+
 def _http_path(value: str) -> str:
     if not value.startswith("/"):
         raise ValueError(f"{value!r} must be an HTTP path starting with '/'")
@@ -198,6 +206,22 @@ class RoleSpec(BaseModel):
     # Stage 5: roles that must never compute at the same time as this one (same card). Symmetric:
     # the scheduler places nothing on R while a lease is active on a role R lists or that lists R.
     serialize_with: list[str] = Field(default_factory=list)
+
+    @property
+    def discovery_path(self) -> str:
+        """The path discovery probes for a ``kind: service`` role. A launch-managed service is
+        probed on its ``launch.ready`` path -- the same one the lane controller trusts -- not on
+        ``health``. Incident 2026-10-16 -> 10-20: diffusion-host's /health answered 200 for 4 days
+        while it could not generate (the gpu2 seat held the card), so the pool saw both sides of the
+        card "up" and never cleared the fault. llm roles ignore this (discovery reads /props)."""
+        if self.kind == "service" and self.launch is not None:
+            return self.launch.ready
+        return self.health
+
+    @property
+    def discovery_strict(self) -> bool:
+        """True = the probe must pass ``ready_body_ok`` on a 2xx, not just answer below 500."""
+        return self.kind == "service" and self.launch is not None
 
     @model_serializer(mode="wrap")
     def _wire(self, handler):

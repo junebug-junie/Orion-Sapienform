@@ -299,7 +299,7 @@ file /tmp/orion-diffusion-smoke.png   # should say PNG image data
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /health` | Liveness. Always 200 if the process is up; reports whether the model has finished loading. |
-| `GET /ready` | Readiness. 200 once the model is loaded, 503 otherwise (permanently, after a load failure exhausts its retries — restart to retry again). |
+| `GET /ready` | Readiness. 200 only when the model is loaded, not draining, AND the card has at least `DIFFUSION_READY_MIN_GPU_GB` (default 20) free for this process; 503 otherwise (permanently after a load failure exhausts its retries — restart to retry again). Body: `ready`, `model_loaded`, `gpu_available_gb`, `gpu_min_gb`, `gpu_check_error`. With CPU offload a loaded pipeline holds almost no GPU memory, so "loaded" alone said nothing about the card: on 2026-10-16 this answered ready for 4 days on a gpu2 the agent-gpu2 seat held (~7.8 GB free). The GPU pool probes this path. |
 | `POST /generate` | Generate one image. See above. |
 
 ## Tests

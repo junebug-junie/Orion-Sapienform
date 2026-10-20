@@ -58,8 +58,8 @@ lost training example.
    gallery. The walkway individuals work (2026-10-15) already stores every
    crop embedding, strangers included. This design leaves `identity_face`
    alone and builds albums only in sql-writer from Juniper's answers.
-   **Juniper decides.** Recommendation: keep `identity_face` as it is; allow
-   answer-built albums here.
+   **Decided (Juniper, 2026-10-20): yes, Orion builds answer-built albums
+   here.** `identity_face` stays as it is.
 2. **Can anything but a face recognise someone across days?** Body and OSNet
    vectors are mostly clothing. Juniper has 125 labelled crops but 1 with a
    face. If body vectors only match same-outfit, albums will mostly help
@@ -170,6 +170,27 @@ presence may read `accept` attributions, marked as a guess. Separate PR.
 When there are >= 300 `+1` exemplars across >= 5 people: train a small
 linear projection on the frozen face/body vectors (metric learning, triplet
 loss, CPU). Ships only through the same eval gate as a new `model_version`.
+
+### Phase 1 calibration finding (2026-10-20, live dry run)
+
+Impostors = "every other person's +1 exemplars and P's -1 exemplars" (above)
+is not enough. Fitted that way, one person's bar accepted 23 of 252 unnamed
+street clusters: the street is a different population from the 6 other named
+people. Built instead (PR on `feat/vision-person-model`):
+
+- `accept_at` is fitted on CLUSTER scores (the decision unit) of the street
+  (every unnamed recent cluster), other named people's clusters and ruled-out
+  clusters. Unnamed clusters that really are P only raise the bar.
+- The accept bar is dropped unless one of P's own clusters, held out with
+  every album crop from its days, scores above it.
+- A cluster's score is the median of its crops' scores, not top-k over pairs
+  (top-k inflates with cluster size).
+
+Result on live data: no person has an accept bar; every guess is `unsure`;
+leave-one-cluster-out eval 0 wrong accepts, 5 of 8 unsure guesses name the
+right person. Cross-day cluster separation: body AUC 0.76 (4 genuine
+clusters), face 0.69 (3). "Probably X" will appear only once answers grow the
+albums enough that a held-out visit beats the street.
 
 ## Metric gate (Phase 1 score)
 
@@ -303,8 +324,7 @@ later removed). Items below are not done unless marked.
 
 ### D. Decisions waiting on Juniper
 
-- Missing question 1 (answer-built albums vs the 2026-08-21 one-subject
-  gallery rule).
+- ~~Missing question 1~~ answered 2026-10-20: albums allowed.
 - Missing question 3 (when "probably X" may reach other consumers).
 
 ## Recommended next patch

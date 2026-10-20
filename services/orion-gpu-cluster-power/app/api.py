@@ -109,6 +109,8 @@ def create_app() -> FastAPI:
         # fatal: the PSU proxy must keep serving /psu/* even when the bus is down.
         app.state.heartbeat_chassis = None
         try:
+            if not settings.orion_bus_enabled:
+                raise RuntimeError("bus disabled (ORION_BUS_ENABLED=false)")
             chassis = build_heartbeat_chassis()
             await chassis.start_background()
             app.state.heartbeat_chassis = chassis

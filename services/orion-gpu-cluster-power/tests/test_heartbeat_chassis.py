@@ -46,7 +46,24 @@ def test_old_hand_rolled_heartbeat_loop_is_gone() -> None:
     assert not hasattr(api, "heartbeat_loop")
 
 
+def test_bus_disabled_starts_no_heartbeat(monkeypatch) -> None:
+    built = []
+    monkeypatch.setattr(api, "build_heartbeat_chassis", lambda: built.append(1))
+    monkeypatch.setattr(PsuService, "init_bus", AsyncMock())
+    monkeypatch.setattr(settings, "orion_bus_enabled", False)
+    app = api.create_app()
+
+    async def _run():
+        await app.router.startup()
+        assert app.state.heartbeat_chassis is None
+        await app.router.shutdown()
+
+    asyncio.run(_run())
+    assert built == []
+
+
 def test_startup_starts_and_shutdown_stops_heartbeat(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "orion_bus_enabled", True)
     fake = AsyncMock(spec=HeartbeatOnly)
     monkeypatch.setattr(api, "build_heartbeat_chassis", lambda: fake)
     monkeypatch.setattr(PsuService, "init_bus", AsyncMock())  # no real bus
@@ -64,6 +81,7 @@ def test_startup_starts_and_shutdown_stops_heartbeat(monkeypatch) -> None:
 
 
 def test_heartbeat_start_failure_is_not_fatal(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "orion_bus_enabled", True)
     fake = AsyncMock(spec=HeartbeatOnly)
     fake.start_background.side_effect = RuntimeError("bus unreachable")
     monkeypatch.setattr(api, "build_heartbeat_chassis", lambda: fake)

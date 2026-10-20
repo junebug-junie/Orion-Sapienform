@@ -60,7 +60,8 @@ What exists, verified live or in code on 2026-10-20:
 
 One live observation shapes the design: at 16:24 UTC today the doorbell saw a
 person standing on the porch 6 s after the walkway saw a person walking on the
-patio. The two views probably **overlap** near the house. Overlap is a gift:
+patio. Juniper confirmed the views **fully overlap** on the central walkway.
+Overlap is a gift:
 the same person seen on both cameras at the same moment is free, labelled
 training data for cross-camera identity.
 
@@ -79,35 +80,64 @@ training data for cross-camera identity.
 - **Doorbell geometry.** Trace one real doorbell frame. Replace the
   whole-frame `porch` zone with porch / walk / sidewalk / street, so a story
   can say "left along the sidewalk to the right", not just "on the porch".
-- **Ring kind travels.** Add optional `source_meta` to
-  `VisionFramePointerPayload`. It is `extra=forbid`, so this is a
-  consumer-first migration: every validating consumer ships the field before
-  the retina sends it (memory: additive fields on forbid models). The router
-  copies it onto the artifact; `orion-sql-writer` writes one `doorbell_ring`
-  event per ding.
+- **Every Ring event is recorded.** The retina publishes the Ring event
+  itself (it is a fact of the doorbell, not of a frame): one
+  `doorbell_ring` or `doorbell_motion` vision event per Ring push, on the
+  existing `orion:vision:events` rail, plus a `StreetEventV1` for a ring.
+  No frame-pointer schema change. **Live bug fixed here:** today a ring that
+  arrives while the motion-triggered live view is open, or in its cooldown,
+  is dropped with "ignored: burst running or in cooldown"
+  (`ring_source.py:292`). That is the usual case (walk up = motion, then
+  press). A ring must always be recorded, and extends the live view.
 
 ### 2. Camera topology (a small fact file with a consumer)
 
 `config/vision_topology.yaml` names the **portals** between cameras:
 
+Juniper (2026-10-20): **the two cameras fully overlap on the central walkway
+that runs from the front door out toward the street**, and a sidewalk walker
+leaving the door camera on its right later shows up on the walkway camera's
+left (and the reverse). So there are three kinds of link:
+
 ```yaml
 version: 1
 portals:
-  - id: door_to_walkway
-    from: {stream: doorbell, edge: right, zones: [sidewalk]}
-    to:   {stream: walkway,  edge: left,  zones: [walkway]}
-    kind: gap          # gap | overlap
-    prior_gap_frame_widths: 1.5   # Juniper's estimate; learned value replaces it
-  - id: walkway_to_door
-    from: {stream: walkway,  edge: left,  zones: [walkway]}
-    to:   {stream: doorbell, edge: right, zones: [sidewalk]}
-    kind: gap
-    prior_gap_frame_widths: 1.5
-  - id: porch_overlap
-    streams: [doorbell, walkway]
-    zones: {doorbell: [porch], walkway: [patio]}
+  # Central walkway: both cameras see it at the same time.
+  - id: central_walk
     kind: overlap
+    streams: [doorbell, walkway]
+    max_skew_sec: 3
+  # Someone on the central walkway moving toward the house is about to reach
+  # the door: the walkway camera sees them before Ring's motion sensor fires.
+  - id: approach_door
+    kind: approach
+    from: {stream: walkway, dir_depth: 1}   # +1 = toward the house
+    to:   {stream: doorbell, event: [doorbell_motion, doorbell_ring]}
+    prior_sec: [3, 30]
+  # Sidewalk, past the edge of the door camera's view.
+  - id: door_to_walkway
+    kind: gap
+    from: {stream: doorbell, edge: right}
+    to:   {stream: walkway,  edge: left}
+    prior_gap_frame_widths: 1.5   # learned value replaces it
+  - id: walkway_to_door
+    kind: gap
+    from: {stream: walkway,  edge: left}
+    to:   {stream: doorbell, edge: right}
+    prior_gap_frame_widths: 1.5
 ```
+
+The walkway-camera zone that is the central walkway is not traced yet. Until
+it is, an overlap pair is any two same-label stories on both cameras whose
+times overlap within `max_skew_sec`, and the doorbell's single `porch` zone
+stands in for it.
+
+An `approach_door` expectation is graded against the next Ring motion or
+ring event: `met` if one arrives in the window. A ring after an approach is
+the expected outcome. A ring with **no** approach seen first is itself
+informative: either the walkway camera missed someone (a `detector_miss` on
+the walkway), or the person came along the sidewalk out of the walkway
+camera's view.
 
 Two to three entries, one consumer (the handoff reducer below). It is not an
 ontology. Edges and gap sizes are Juniper's answer (see Missing questions);
@@ -280,9 +310,10 @@ significant, or the estimator is broken).
 
 ## Missing questions (for Juniper)
 
-1. **Layout.** Door camera's right edge leads to the walkway camera's left
-   edge, as you said. Roughly how much sidewalk is between the two views, in
-   steps or meters? Do the views overlap near the porch?
+1. **Layout.** ANSWERED 2026-10-20: full overlap on the central walkway;
+   sidewalk walkers leave the door camera's right and enter the walkway
+   camera's left. Still open: how much sidewalk lies between the two views
+   (the learned gap replaces the prior either way).
 2. **Ring motion zones.** Does the Ring trigger on sidewalk walkers, or
    mostly on the porch? Today's 14 events were mostly parked cars and someone
    standing on the porch.
@@ -307,9 +338,8 @@ significant, or the estimator is broken).
 - New table `vision_handoff_hypothesis`: `handoff_id`, `kind`, `prior`,
   `status (open|true|false)`, `settled_by (data|juniper)`, `evidence jsonb`,
   `deadline`, `settled_at`.
-- `VisionFramePointerPayload.source_meta: dict | None` (consumer-first).
-- `vision_events` types: `doorbell_ring`, `handoff_met`, `handoff_late`,
-  `handoff_missed`.
+- `vision_events` types: `doorbell_ring`, `doorbell_motion`, `handoff_met`,
+  `handoff_late`, `handoff_missed`, `overlap_pair`.
 - New schema `StreetEventV1` + bus channel `orion:vision:street:events`
   (`orion/schemas/vision.py`, `registry.py`, `channels.yaml`).
 - New attention candidate node `node:substrate.street`.
@@ -325,7 +355,6 @@ significant, or the estimator is broken).
 - `services/orion-sql-db/manual_migration_vision_handoff_v1.sql`
 - `services/orion-vision-retina/app/main.py`, `ring_source.py` (ring kind;
   self-opened views)
-- `services/orion-vision-frame-router/` (copy `source_meta`)
 - `orion/schemas/vision.py`, `orion/schemas/registry.py`,
   `orion/bus/channels.yaml`, `orion/schemas/attention_candidate.py`
 - `services/orion-substrate-runtime/app/worker.py` (street node, Rung 6 domain)

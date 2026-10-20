@@ -31,6 +31,22 @@ experiment dispatcher. Where the build departs from the design below, the build 
   max residual once (n+1)·q ≥ n, so at the default 40 windows the 95 % upper bound is the max
   observed error (conservative); at 14 the 80 % and 95 % ranges coincide.
 
+## Change events (2026-10-20, follow-up PR)
+
+The cabinet regime moved twice in two days, both visible in `orion_biometrics_summary`:
+the athena GPU0 -> passive T10 swap (10-15 18:54-19:00 UTC: gpu0_temp_c 70 -> 55 C, fan_pct_max floor
+~44 -> ~65 %, idle chassis_watts ~385 -> ~425 W), and the vision bring-up with the cabinet open
+(10-16 21:30 -> 10-17 00:35 UTC: cabinet_lidar_mm erratic then settled 116 -> 94 mm, magnetic 36 -> 33.5
+uT, temp dipped to 25.5 C while open, then ~2 C higher than between the events). The sensor's geometry
+changed, so part of that 2 C may be the sensor's new position rather than heat. From 10-18 the cabinet
+crosses 34 C (278 readings to 10-20) with the AC already at its ~860 W ceiling.
+
+`prediction_change_event` (`app/events.py`) records these: `exclude` masks a window from training and
+actuals; `break` gives Prophet a level-shift regressor immediately and, after `MIN_POST_BREAK_DAYS`
+(10, enough for the 40-window backtest), becomes every model's training start, invalidating the served
+selection on the spot (selection records its `train_from`). Measured: one day after a 2 C step,
+Prophet's error is 0.009 C with the regressor vs 0.93 C without.
+
 ## Covariate models (2026-10-16, follow-up PR)
 
 `direct_ar` / `direct_arx` (`app/direct.py`): one ridge regression per lead time on origin-time

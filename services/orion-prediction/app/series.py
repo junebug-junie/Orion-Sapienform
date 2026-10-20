@@ -76,6 +76,8 @@ class SeriesSpec:
     horizons_min: tuple[int, ...] = ()
     thresholds: tuple[Threshold, ...] = ()
     covariates: tuple[str, ...] = ()
+    # Pending change-event breaks (app/events.py): Prophet fits a level shift at each one.
+    breaks: tuple[datetime, ...] = ()
 
     @property
     def max_horizon_steps(self) -> int:

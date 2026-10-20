@@ -46,7 +46,7 @@ class Effects:
 
     # --- level 1 --------------------------------------------------------------------------
     def scenario(self, series_id: str, covariate_id: str, path: list[float], days: float = 7.0) -> dict:
-        spec = self._spec(series_id, "target")
+        spec = self.engine.effective(self._spec(series_id, "target"), self.engine.clock())
         if covariate_id not in spec.covariates:
             raise CausalError(f"{covariate_id} is not a declared covariate of {series_id}")
         cov = self._spec(covariate_id)
@@ -103,6 +103,7 @@ class Effects:
         if st is None or st.served is None:
             return {"safe": False, "reason": "no current selection"}
         now = self.engine.clock()
+        spec = self.engine.effective(spec, now)
         series = self.engine.load_series(spec, now, timedelta(minutes=spec.train_window_min + spec.grain_min))
         origin = self.engine.latest_complete_bucket(spec, now)
         try:

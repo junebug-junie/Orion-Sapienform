@@ -40,6 +40,7 @@ from app.backtest import (
     step_owner,
     stitch,
 )
+from app.events import with_events
 from app.frame import floor_ts, mask_windows, to_grain, train_ready, training_slice
 from app.models import build_models, split_seasonalities
 from app.series import Registry, Seasonality, SeriesSpec
@@ -71,6 +72,10 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _parse_ts(value: str | None) -> datetime | None:
+    return datetime.fromisoformat(value) if value else None
+
+
 def _clean(a: np.ndarray) -> list:
     return [[None if not np.isfinite(v) else float(v) for v in row] for row in np.asarray(a, dtype=float)]
 
@@ -91,6 +96,7 @@ class Served:
     residuals: dict[str, np.ndarray]   # champion / baseline -> stitched residual paths
     usable: tuple[Seasonality, ...]
     refused: tuple[str, ...]
+    train_from: datetime | None = None  # the effective training start this selection was built on
 
 
 @dataclass
@@ -104,6 +110,7 @@ class SeriesState:
     last_select_seconds: float | None = None
     last_tick_error: str | None = None
     last_input_ts: datetime | None = None
+    events: dict = field(default_factory=dict)   # with_events summary, for /health
 
 
 class Engine:
@@ -122,6 +129,15 @@ class Engine:
         self.source = source
         self.clock = clock
         self.state: dict[str, SeriesState] = {s.series_id: SeriesState() for s in registry.targets()}
+
+    # --- change events --------------------------------------------------------------------
+    def effective(self, spec: SeriesSpec, now: datetime) -> SeriesSpec:
+        """The registry spec with change events folded in (exclusions, adopted/pending breaks)."""
+        loader = getattr(self.store, "change_events", None)
+        events = loader() if loader else []
+        eff, summary = with_events(spec, events, now)
+        self.state.setdefault(spec.series_id, SeriesState()).events = summary
+        return eff
 
     # --- data -----------------------------------------------------------------------------
     def history_span(self, spec: SeriesSpec) -> timedelta:
@@ -194,7 +210,8 @@ class Engine:
                                 {r["model"]: r["metrics"] for r in rows if r["kind"] == "model"}),
             selection_id=str(champ["selection_id"]), selected_at=champ["fitted_at"],
             run_ids={"champion": str(champ["run_id"]), "baseline": str(base["run_id"])},
-            residuals=residuals, usable=usable, refused=tuple(champ["refused_seasonalities"]))
+            residuals=residuals, usable=usable, refused=tuple(champ["refused_seasonalities"]),
+            train_from=_parse_ts((champ.get("metrics") or {}).get("train_from")))
         st.next_select_at = champ["fitted_at"] + self.select_interval
         return True
 
@@ -235,7 +252,8 @@ class Engine:
                 (base_id, "baseline_blend", sel.baseline_assignment, True, base_res)):
             rows.append({**common, "run_id": run_id, "kind": kind, "model": kind,
                          "n_windows": int(np.any(np.isfinite(paths), axis=1).sum()),
-                         "metrics": {"covariates": list(spec.covariates), "gate_version": GATE_VERSION},
+                         "metrics": {"covariates": list(spec.covariates), "gate_version": GATE_VERSION,
+                                     "train_from": spec.train_from.isoformat() if spec.train_from else None},
                          "assignment": {str(k): v for k, v in assignment.items()},
                          "served_baseline": served_baseline, "backtest_seconds": blend_s,
                          "residual_paths": _clean(paths), "errors": []})
@@ -243,7 +261,7 @@ class Engine:
         st.served = Served(selection=sel, selection_id=selection_id, selected_at=now,
                            run_ids={"champion": champ_id, "baseline": base_id},
                            residuals={"champion": champ_res, "baseline": base_res},
-                           usable=tuple(usable), refused=tuple(refused))
+                           usable=tuple(usable), refused=tuple(refused), train_from=spec.train_from)
         st.next_select_at = now + self.select_interval
         st.last_select_seconds = time.monotonic() - t0
         st.last_select_error = None
@@ -252,8 +270,12 @@ class Engine:
         return sel
 
     def selection_due(self, spec: SeriesSpec, now: datetime) -> bool:
-        nxt = self.state[spec.series_id].next_select_at
-        return nxt is None or now >= nxt
+        """``spec`` is the effective spec: a change event that moved the training start (a break
+        adopted) makes the served selection stale at once."""
+        st = self.state[spec.series_id]
+        if st.served is not None and st.served.train_from != spec.train_from:
+            return True
+        return st.next_select_at is None or now >= st.next_select_at
 
     # --- issue ----------------------------------------------------------------------------
     def build_forecast(self, spec: SeriesSpec, series: pd.Series, origin: pd.Timestamp, now: datetime) -> dict:
@@ -459,6 +481,7 @@ class Engine:
     # --- tick -----------------------------------------------------------------------------
     async def tick_series(self, spec: SeriesSpec, now: datetime, sync) -> None:
         st = self.state[spec.series_id]
+        spec = await sync(self.effective, spec, now)
         if st.served is None and st.next_select_at is None:
             await sync(self.restore, spec)
         if self.selection_due(spec, now):

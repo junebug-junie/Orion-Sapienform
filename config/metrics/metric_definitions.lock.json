@@ -1,12 +1,11 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 749,
+  "metric_count": 750,
   "_last_change": {
-    "change_count": 2,
-    "high_severity_count": 1,
+    "change_count": 1,
+    "high_severity_count": 0,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-vision-council/orion:vision:events (all_producers: \u2026rion-vision-window'] -> \u2026rion-vision-retina', 'orion-vision-window'])",
-      "medium added metric://bus_channel/orion-vision-retina/orion:vision:street:events"
+      "medium added metric://bus_channel/orion-hub/orion:personality:naming"
     ]
   },
   "definitions": {
@@ -2306,6 +2305,17 @@
       ],
       "declared_consumers": [
         "orion-hub"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:personality:naming": {
+      "schema_id": "DispositionNamingV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

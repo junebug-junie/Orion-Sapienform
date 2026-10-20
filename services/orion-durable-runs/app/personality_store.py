@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from orion.personality.situation import COMPANY_CLOSE_GRACE, SituationInputs
-from orion.personality.graph import CHOICE_LANE, EvidenceRow, HistoryRow, Node, choice_style_from_rows, project_frame
+from orion.personality.graph import CHOICE_LANE, REKEY_LANES, EvidenceRow, HistoryRow, Node, choice_style_from_rows, project_frame
 from orion.schemas.personality import FRAME_MAX_DISPOSITIONS, PersonalityFrameV1
 
 from app.personality_sources import SEED_CURSOR, Cursor
@@ -250,6 +250,23 @@ class PersonalityStore:
                 "SELECT source, cursor_at, cursor_ref FROM personality_cursor WHERE source <> %(beat)s",
                 {"beat": TICK_HEARTBEAT})).fetchall()
         return {r["source"]: Cursor(r["cursor_at"], r["cursor_ref"] or "") for r in rows}
+
+    async def rekey_hits(self, ids: Iterable[str]) -> dict[str, list[tuple[str, Any, datetime]]]:
+        """Each node's evidence in ``REKEY_LANES`` as (lane, meta, occurred_at), for ``rekey_sources``."""
+        want = sorted(set(ids))
+        if not want:
+            return {}
+        async with self._pool.connection() as conn:
+            rows = await (await conn.execute(
+                "SELECT disposition_id, lane, meta, occurred_at FROM personality_evidence "
+                "WHERE disposition_id = ANY(%(ids)s) AND lane = ANY(%(lanes)s)",
+                {"ids": want, "lanes": list(REKEY_LANES)})).fetchall()
+        hits: dict[str, list[tuple[str, Any, datetime]]] = {}
+        for r in rows:
+            meta = r["meta"]
+            hits.setdefault(r["disposition_id"], []).append(
+                (r["lane"], json.loads(meta) if isinstance(meta, str) else meta, r["occurred_at"]))
+        return hits
 
     async def existing_evidence_ids(self, ids: Iterable[str]) -> set[str]:
         want = sorted(set(ids))

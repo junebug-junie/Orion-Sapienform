@@ -38,6 +38,7 @@ PER_TICK_CAP = 200         # rows per source per tick
 EMBED_TEXT_MAX = 2000
 EXCERPT_MAX = 160
 SEED_CURSOR = "seed"       # one-shot marker: the first-boot self-inquiry seed was written
+REKEY_CURSOR = "rekey:source_v1"  # one-shot marker: lane_recent moved to source keys (graph.rekey_sources)
 # Journal source kinds that are copies of a lane already read at its source, so counting them would
 # fake cross-lane recurrence (the promotion rule needs independent lanes). Live 2026-10-16, 7 days:
 # 106 of 225 ``world_pulse`` journal bodies equal a reading's ``stage2_result_json.summary`` and the

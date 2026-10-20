@@ -146,7 +146,7 @@ def test_full_loop_on_postgres():
         clock = Clock(T0)
         assert (await driver(pool, clock).tick())["rows"] == {}
         curs = {r["source"]: r for r in await q(pool, "SELECT * FROM personality_cursor")}
-        assert set(curs) == set(ps.SOURCE_NAMES) | {ps.SEED_CURSOR, TICK_HEARTBEAT}
+        assert set(curs) == set(ps.SOURCE_NAMES) | {ps.SEED_CURSOR, ps.REKEY_CURSOR, TICK_HEARTBEAT}
         assert all(r["cursor_at"] == T0 for r in curs.values())
         # The heartbeat is never handed to the driver as a source cursor.
         assert TICK_HEARTBEAT not in await PersonalityStore(pool).load_cursors()
@@ -166,7 +166,8 @@ def test_full_loop_on_postgres():
         assert "chat:pre" not in ids and "journal:j2" not in ids
         active = await q(pool, "SELECT * FROM personality_disposition WHERE status = 'active'")
         assert len(active) == 1 and set(active[0]["lane_counts"]) == {"dream", "journal", "chat"}
-        assert set(active[0]["lane_recent"]) == {"dream", "journal", "chat"}
+        # j1 is a metacog journal: keyed by its source (graph.source_key), not its lane.
+        assert set(active[0]["lane_recent"]) == {"dream", "substrate_narration", "chat"}
         chat_cur = (await q(pool, "SELECT * FROM personality_cursor WHERE source = 'chat'"))[0]
         assert chat_cur["cursor_at"] == T0 + timedelta(minutes=1) and chat_cur["cursor_ref"] == "c2"
 
@@ -242,5 +243,21 @@ def test_situation_mix_groups_stamped_evidence_per_disposition():
         assert out["d1"] == {"n": 3, "arousal": {"idle": 2, "engaged": 1}, "day_phase": {"night": 2, "morning": 1},
                              "company": {"true": 1, "false": 2}}
         assert out["d2"] == {"n": 0, "arousal": {}, "day_phase": {}, "company": {"true": 0, "false": 0}}
+
+    with_db(scenario)
+
+
+def test_rekey_hits_reads_reverie_and_journal_hits_with_meta():
+    async def scenario(pool):
+        rows = [("e1", "reverie", "{}"), ("e2", "journal", json.dumps({"source_kind": "metacog"})),
+                ("e3", "dream", "{}")]
+        for eid, lane, meta in rows:
+            await ex(pool, "INSERT INTO personality_evidence (evidence_id, lane, source_ref, occurred_at, excerpt, "
+                           "disposition_id, meta) VALUES (%(e)s, %(l)s, %(e)s, %(at)s, 'x', 'd1', %(m)s::jsonb)",
+                     {"e": eid, "l": lane, "m": meta, "at": T0})
+        hits = await PersonalityStore(pool).rekey_hits(["d1", "d2"])
+        assert sorted(hits["d1"], key=lambda h: h[0]) == [("journal", {"source_kind": "metacog"}, T0),
+                                                          ("reverie", {}, T0)]
+        assert await PersonalityStore(pool).rekey_hits([]) == {}
 
     with_db(scenario)

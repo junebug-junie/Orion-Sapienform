@@ -25,7 +25,7 @@ SERVICE_ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(REPO_ROOT), str(SERVICE_ROOT)]
 
 from orion.personality.situation import SituationInputs  # noqa: E402
-from orion.personality.graph import Node  # noqa: E402
+from orion.personality.graph import EvidenceRow, Node  # noqa: E402
 
 from app import personality_sources as ps  # noqa: E402
 from app.personality_driver import PersonalityDriver, accept, embed_all  # noqa: E402
@@ -313,6 +313,13 @@ class FakeStore:
     async def existing_evidence_ids(self, ids):
         return {i for i in ids if i in self.evidence}
 
+    async def rekey_hits(self, ids):
+        want, hits = set(ids), {}
+        for e in self.evidence.values():
+            if e.disposition_id in want and e.lane in ("reverie", "journal"):
+                hits.setdefault(e.disposition_id, []).append((e.lane, e.meta, e.occurred_at))
+        return hits
+
     async def commit_tick(self, w: TickWrite):
         if self.fail_commit:
             raise ConnectionError("db gone")
@@ -368,7 +375,7 @@ def test_first_boot_starts_every_cursor_at_now_and_backfills_nothing():
     reader.add("chat", item("chat", "old", utc(hours=-3), "An old reply from before boot."))
     reader.seeds = [item("self_inquiry_seed", "s1", utc(hours=-5), "I care about continuity in my own record.")]
     out = asyncio.run(drv.tick())
-    assert set(store.cursors) == set(ps.SOURCE_NAMES) | {ps.SEED_CURSOR}
+    assert set(store.cursors) == set(ps.SOURCE_NAMES) | {ps.SEED_CURSOR, ps.REKEY_CURSOR}
     assert all(c.at == T0 for c in store.cursors.values())
     assert "chat:old" not in store.evidence and out["rows"] == {}
     (seed,) = store.nodes.values()
@@ -518,6 +525,36 @@ def test_recurrence_across_lanes_promotes_and_tick_without_evidence_persists_fad
         assert faded.lane_recent[lane] == pytest.approx(r * 0.5 ** (7 / 14), rel=1e-3)
     assert 0 < faded.weight < n.weight
     assert faded.updated_at == clock.at
+
+
+def test_rekey_runs_once_and_demotes_a_node_promoted_by_one_source_counted_twice():
+    # Live 2026-10-20: reverie + metacog journal narrate the same prediction-error signal and
+    # promoted 3 nodes as "two lanes". The first tick moves them to source keys, once.
+    drv, store, reader, emb, clock = world()
+    store.cursors = {name: Cursor(T0, "") for name in ps.SOURCE_NAMES} | {ps.SEED_CURSOR: Cursor(T0, "")}
+    legacy = Node(
+        disposition_id="disp-pe", origin="recurrence", status="active", label="The cabinet prediction error",
+        label_similarity=0.9, centroid=[1.0] + [0.0] * 7, centroid_n=8, weight=3.0, evidence_count=8,
+        lane_counts={"reverie": 4, "journal": 4}, chosen_count=0, first_seen_at=utc(hours=-6),
+        last_reinforced_at=utc(hours=-1), retired_at=None, updated_at=T0,
+        lane_recent={"reverie": 3.48, "journal": 3.48}, last_folded_at=utc(hours=-1), history_weight=3.0)
+    store.nodes[legacy.disposition_id] = legacy
+    for i in range(4):
+        for lane, meta in (("reverie", {}), ("journal", {"source_kind": "metacog"})):
+            eid = f"{lane}:{i}"
+            store.evidence[eid] = EvidenceRow(eid, lane, eid, utc(hours=-4, minutes=i), "x", "disp-pe", 0.9, 0.0, meta)
+    clock.at = utc(minutes=5)
+    asyncio.run(drv.tick())
+    n = store.nodes["disp-pe"]
+    assert set(n.lane_recent) == {"substrate_narration"} and n.status == "candidate"
+    assert n.lane_counts == {"reverie": 4, "journal": 4}  # the panel still shows lanes
+    assert ps.REKEY_CURSOR in store.cursors
+    assert any(h.disposition_id == "disp-pe" and h.status == "candidate" for h in store.history.values())
+    # Second tick: marker present, nothing is rebuilt (a fresh legacy key would stay as written).
+    store.nodes["disp-pe"] = replace(n, lane_recent={"reverie": 1.0})
+    clock.at = utc(minutes=10)
+    asyncio.run(drv.tick())
+    assert set(store.nodes["disp-pe"].lane_recent) == {"reverie"}
 
 
 def test_ongoing_self_inquiry_node_is_labelled_seed_origin():

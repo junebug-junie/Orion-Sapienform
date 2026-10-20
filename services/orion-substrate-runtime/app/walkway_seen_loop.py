@@ -139,7 +139,8 @@ async def run_walkway_seen_loop(
     logger.info("walkway_seen loop starting interval_sec=%.0f streams=%s lookback_days=%d", interval, streams, lookback)
     while stop_event is None or not stop_event.is_set():
         try:
-            engine, store = get_engine(), get_store()
+            # Off the loop: the first get_store() hydrates the whole substrate graph.
+            engine, store = await asyncio.to_thread(lambda: (get_engine(), get_store()))
             if engine is None or store is None:
                 logger.warning("walkway_seen skipped engine=%s store=%s", engine is not None, store is not None)
             else:

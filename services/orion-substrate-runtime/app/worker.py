@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import os
+import threading
 import time
 from collections import deque
 from collections.abc import Callable
@@ -503,7 +504,28 @@ def _prediction_error_label(node_id: str) -> str:
     return f"{domain[:1].upper()}{domain[1:]} prediction error"
 
 
+def _on_event_loop_thread() -> bool:
+    """True when called from a thread that is running an asyncio event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 class BiometricsSubstrateWorker:
+    # Single-flight build of the shared substrate store (_get_substrate_graph_store).
+    # A Falkor store hydrates the whole graph in its constructor. Before 2026-10-20
+    # six tick threads raced past the None check at boot and each hydrated its own
+    # copy, while a loop-thread caller built one inline and froze the event loop
+    # ~3 min. The build lock is held for the whole hydrate, so the event loop
+    # never waits on it; the warm lock only guards the warming flag. Class-level
+    # defaults so workers built via __new__ (tests) have them; one worker per process.
+    _substrate_graph_store_lock = threading.Lock()
+    _substrate_graph_store_warm_lock = threading.Lock()
+    _substrate_graph_store_warming = False
+    _substrate_graph_store: Any = None
+
     def __init__(self) -> None:
         self._settings = get_settings()
         self._store = BiometricsSubstrateStore(self._settings.postgres_uri)
@@ -640,6 +662,7 @@ class BiometricsSubstrateWorker:
 
     async def start(self) -> None:
         s = self._settings
+        self._start_substrate_graph_store_warm()
         if s.orion_bus_enabled:
             from orion.core.bus.async_service import OrionBusAsync
 
@@ -1338,18 +1361,45 @@ class BiometricsSubstrateWorker:
         need the same durable store and cache it on ``self._substrate_graph_store``
         so repeated ticks don't rebuild it. Fail-open: returns None on init error
         (caller decides whether that means "skip this tick").
-        """
-        try:
-            store = self._substrate_graph_store
-            if store is None:
-                from orion.substrate.graphdb_store import build_substrate_store_from_env
 
-                store = build_substrate_store_from_env()
-                self._substrate_graph_store = store
+        Built once, under a lock. Never built on the event-loop thread: building
+        hydrates the whole graph, so a loop-thread caller that arrives first gets
+        None (it skips, as on an init error) and the build starts in a background
+        thread instead.
+        """
+        store = self._substrate_graph_store
+        if store is not None:
             return store
-        except Exception:
-            logger.exception(log_label)
+        if _on_event_loop_thread():
+            self._start_substrate_graph_store_warm()
+            logger.info("substrate_store_warming caller=%s", log_label)
             return None
+        with self._substrate_graph_store_lock:
+            if self._substrate_graph_store is None:
+                try:
+                    from orion.substrate.graphdb_store import build_substrate_store_from_env
+
+                    self._substrate_graph_store = build_substrate_store_from_env()
+                except Exception:
+                    logger.exception(log_label)
+                    return None
+            return self._substrate_graph_store
+
+    def _start_substrate_graph_store_warm(self) -> None:
+        """Build the shared store in a daemon thread, once; never blocks the caller."""
+        with self._substrate_graph_store_warm_lock:
+            if self._substrate_graph_store is not None or self._substrate_graph_store_warming:
+                return
+            self._substrate_graph_store_warming = True
+
+        def _warm() -> None:
+            try:
+                self._get_substrate_graph_store(log_label="substrate_store_warm_failed")
+            finally:
+                with self._substrate_graph_store_warm_lock:
+                    self._substrate_graph_store_warming = False
+
+        threading.Thread(target=_warm, name="substrate-store-warm", daemon=True).start()
 
     def _get_bus_synaptic_client(self):
         """Return the cached read-only FalkorDB client for the bus synaptic graph

@@ -32,7 +32,9 @@ async def handle_post_turn_closure_message(
         len(closure.grammar_event_ids),
     )
     if on_closure is not None:
-        on_closure(closure)
+        # Off the loop: the handler writes to Falkor and may wait for the shared
+        # substrate store to finish hydrating.
+        await asyncio.to_thread(on_closure, closure)
 
 
 async def _handle_bus_message(

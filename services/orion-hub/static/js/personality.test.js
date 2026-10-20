@@ -230,7 +230,7 @@ test("namingRow keeps refused rows with reasons and the packet shown, text verba
 });
 
 test("namingFrom accepts the durable-runs wrapper or a bare list", () => {
-  assert.deepStrictEqual(p.namingFrom({ naming: [{ a: 1 }] }), [{ a: 1 }]);
+  assert.deepStrictEqual(p.namingFrom({ disposition_id: "d1", count: 1, namings: [{ a: 1 }] }), [{ a: 1 }]);
   assert.deepStrictEqual(p.namingFrom([{ a: 1 }]), [{ a: 1 }]);
   assert.deepStrictEqual(p.namingFrom({ rows: [{ b: 2 }] }), [{ b: 2 }]);
   assert.deepStrictEqual(p.namingFrom(null), []);

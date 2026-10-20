@@ -63,3 +63,9 @@ def test_curiosity_yields_to_eligible_chat():
     assert with_chat["yielded_to_chat"] == 1 and with_chat["new_candidate_won"] == 0
     without = replay.replay([(t, _frame(False))], series, "curiosity_phil_novel", min_readings=20, examples=1)
     assert without["new_candidate_won"] == 1
+
+
+def test_table_redactor_leaves_ordinary_words_alone():
+    redact = score._load_privacy_redactor()
+    assert redact("What am I, and what am I made of? 0.51 node:substrate.chat") == (
+        "What am I, and what am I made of? 0.51 node:substrate.chat")

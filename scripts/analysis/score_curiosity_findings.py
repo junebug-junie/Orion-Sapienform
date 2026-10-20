@@ -238,10 +238,35 @@ def kappa(a: list[str], b: list[str]) -> tuple[float, float]:
     return agree, (agree - pe) / (1 - pe)
 
 
+def _load_privacy_redactor():
+    """Word -> "[name]" for every term on the repo's personal-terms denylist.
+
+    The table goes into a tracked doc in a public repo, and Orion's findings name
+    real people. Uses ``scripts/check_personal_terms.py`` (the CI privacy gate) so
+    the redaction and the gate can never disagree. Hashes only; no names here.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("check_personal_terms", REPO / "scripts" / "check_personal_terms.py")
+    cpt = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cpt)
+    hashes, _ = cpt.load_denylist()
+
+    def redact(text: str) -> str:
+        def sub(m: re.Match) -> str:
+            return "[name]" if cpt.line_hits(m.group(0), hashes) else m.group(0)
+        return re.sub(r"[^\W\d_]+", sub, text)
+
+    return redact
+
+
 def table(rows) -> str:
+    redact = _load_privacy_redactor()
+
     def cell(s, n):
         s = clean(s).replace("|", "/")
-        return s if len(s) <= n else s[: n - 1] + "…"
+        s = s if len(s) <= n else s[: n - 1] + "…"
+        return redact(s)
     out = ["| date (UTC) | run | line | question | finding excerpt | register (judge/2nd) | novelty | pct in 7d phil | verdict |",
            "|---|---|---|---|---|---|---:|---:|---|"]
     for x in rows:

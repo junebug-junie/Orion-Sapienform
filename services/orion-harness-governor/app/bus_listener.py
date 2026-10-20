@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.resilience import run_subscription
 from orion.harness.cortex_client import HarnessCortexClient
 from orion.harness.cut_short import (
     FCC_CONTEXT_CEILING_ERROR_CODE,
@@ -910,43 +911,39 @@ async def run_bus_worker(
         for key in [key for key, running in admitted_inflight.items() if running is task]:
             admitted_inflight.pop(key, None)
 
+    def start_turn(msg: dict[str, Any]) -> None:
+        # Starts the turn as its own task and returns None: run_subscription awaits
+        # whatever this returns, and awaiting the turn would serialize the lane.
+        try:
+            decoded = bus.codec.decode(msg.get("data"))
+            payload = decoded.envelope.payload if decoded.ok else {}
+            body = payload if isinstance(payload, dict) else {}
+            # A turn under a GPU pool hold is admitted: it runs outside the legacy lock,
+            # or it would queue behind unrelated turns while its own card sits reserved for it.
+            admitted = isinstance(body.get("gpu_lease"), dict)
+            key = None
+            if admitted:
+                # One outstanding motor per fenced turn. Duplicate
+                # pub/sub delivery shares the original reply channel.
+                request = HarnessRunRequestV1.model_validate(payload)
+                fence = request.gpu_lease
+                key = f"{request.correlation_id}:{fence.lease_id}:{fence.generation}"
+                if key in admitted_inflight:
+                    return
+            task = asyncio.create_task(dispatch(msg, admitted))
+            tasks.add(task)
+            task.add_done_callback(finished)
+            if key is not None:
+                admitted_inflight[key] = task
+        except Exception:
+            logger.exception("unhandled bus worker error lane=%s", lane)
+
     try:
-        async with bus.subscribe(channel) as pubsub:
-            while True:
-                if stop_event is not None and stop_event.is_set():
-                    break
-                try:
-                    msg = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                        timeout=1.2,
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                if not msg or msg.get("type") not in ("message", "pmessage"):
-                    continue
-                try:
-                    decoded = bus.codec.decode(msg.get("data"))
-                    payload = decoded.envelope.payload if decoded.ok else {}
-                    body = payload if isinstance(payload, dict) else {}
-                    # A turn under a GPU pool hold is admitted: it runs outside the legacy lock,
-                    # or it would queue behind unrelated turns while its own card sits reserved for it.
-                    admitted = isinstance(body.get("gpu_lease"), dict)
-                    key = None
-                    if admitted:
-                        # One outstanding motor per fenced turn. Duplicate
-                        # pub/sub delivery shares the original reply channel.
-                        request = HarnessRunRequestV1.model_validate(payload)
-                        fence = request.gpu_lease
-                        key = f"{request.correlation_id}:{fence.lease_id}:{fence.generation}"
-                        if key in admitted_inflight:
-                            continue
-                    task = asyncio.create_task(dispatch(msg, admitted))
-                    tasks.add(task)
-                    task.add_done_callback(finished)
-                    if key is not None:
-                        admitted_inflight[key] = task
-                except Exception:
-                    logger.exception("unhandled bus worker error lane=%s", lane)
+        # Resubscribes with backoff after a Redis drop; in-flight turns, the legacy
+        # lock and the dedup map live out here, so they carry across a resubscribe.
+        await run_subscription(
+            bus, channel, start_turn, stop_event=stop_event, name=f"harness-governor-{lane}-lane"
+        )
     except asyncio.CancelledError:
         raise
     finally:

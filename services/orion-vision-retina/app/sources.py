@@ -837,6 +837,8 @@ def create_frame_source(
     ring_burst_seconds: float = 15.0,
     ring_cooldown_seconds: float = 30.0,
     ring_event_kinds: tuple[str, ...] = ("motion", "ding"),
+    ring_self_look_max_per_day: int = 8,
+    ring_self_look_min_spacing_seconds: float = 300.0,
 ) -> FrameSource:
     st = source_type.lower().strip()
     common = dict(width=width, height=height, reconnect_seconds=reconnect_seconds)
@@ -869,5 +871,7 @@ def create_frame_source(
             burst_seconds=ring_burst_seconds,
             cooldown_seconds=ring_cooldown_seconds,
             event_kinds=ring_event_kinds,
+            self_look_max_per_day=ring_self_look_max_per_day,
+            self_look_min_spacing_seconds=ring_self_look_min_spacing_seconds,
         )
     raise ValueError(f"unsupported RETINA_SOURCE_TYPE: {source_type!r}")

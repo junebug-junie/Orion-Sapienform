@@ -30,7 +30,7 @@ if "--running-extra-compose" in args:
     svc = args[args.index("--running-extra-compose") + 1]
     for line in os.environ.get("FAKE_EXTRA", "").split(";"):
         if line and line.split(",")[0] == svc:
-            print(line.split(",")[1])
+            print(line.split(",")[1] + "\\t" + line.split(",")[2])
     raise SystemExit(0)
 if "--pool-held-services" in args:
     svc = args[args.index("--pool-held-services") + 1]
@@ -576,12 +576,12 @@ def test_running_extra_compose_file_is_rebuilt_from_that_file(tmp_path: Path) ->
     completed, calls = _run(
         tmp_path,
         plan="orion-vision-host,build",
-        extra="orion-vision-host,docker-compose.circe-qwen.yml",
+        extra="orion-vision-host,docker-compose.circe-qwen.yml,vision-host-circe-qwen",
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert calls == [
         "orion-vision-host up -d --build",
-        "orion-vision-host --compose-file docker-compose.circe-qwen.yml up -d --build",
+        "orion-vision-host --compose-file docker-compose.circe-qwen.yml up -d --build --no-deps vision-host-circe-qwen",
     ]
 
 
@@ -589,17 +589,17 @@ def test_extra_compose_file_gets_force_recreate_with_its_stack(tmp_path: Path) -
     completed, calls = _run(
         tmp_path,
         plan="orion-vision-host,recreate",
-        extra="orion-vision-host,docker-compose.circe-qwen.yml",
+        extra="orion-vision-host,docker-compose.circe-qwen.yml,vision-host-circe-qwen",
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert calls[-1] == "orion-vision-host --compose-file docker-compose.circe-qwen.yml up -d --build --force-recreate"
+    assert calls[-1] == "orion-vision-host --compose-file docker-compose.circe-qwen.yml up -d --build --no-deps --force-recreate vision-host-circe-qwen"
 
 
 def test_failed_extra_compose_file_fails_its_stack(tmp_path: Path) -> None:
     completed, calls = _run(
         tmp_path,
         plan="orion-vision-host,build",
-        extra="orion-vision-host,docker-compose.circe-qwen.yml",
+        extra="orion-vision-host,docker-compose.circe-qwen.yml,vision-host-circe-qwen",
         safe_build_body='case "$*" in *circe-qwen*) exit 9;; esac\n',
     )
     assert "FAILED orion-vision-host/docker-compose.circe-qwen.yml (exit 9)" in completed.stderr
@@ -610,12 +610,12 @@ def test_dry_run_reports_extra_compose_files_without_building(tmp_path: Path) ->
     completed, calls = _run(
         tmp_path,
         plan="orion-vision-host,build",
-        extra="orion-vision-host,docker-compose.circe-qwen.yml",
+        extra="orion-vision-host,docker-compose.circe-qwen.yml,vision-host-circe-qwen",
         extra_args=["--dry-run"],
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert calls == []
-    assert "would rebuild running extra compose file: orion-vision-host --compose-file docker-compose.circe-qwen.yml" in completed.stdout
+    assert "would rebuild running extra compose file: orion-vision-host --compose-file docker-compose.circe-qwen.yml vision-host-circe-qwen" in completed.stdout
 
 
 def test_no_extra_compose_means_plain_up_only(tmp_path: Path) -> None:

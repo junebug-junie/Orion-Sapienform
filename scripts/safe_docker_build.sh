@@ -47,7 +47,7 @@ fi
 SERVICE="$1"
 if [ -z "$SERVICE" ]; then
     echo "safe_docker_build.sh: missing required <service-name> argument." >&2
-    echo "Usage: scripts/safe_docker_build.sh <service-name> [docker compose args...]" >&2
+    echo "Usage: scripts/safe_docker_build.sh <service-name> [--compose-file docker-compose.<name>.yml] [docker compose args...]" >&2
     exit 1
 fi
 shift
@@ -151,7 +151,7 @@ if [ -f "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" ] && command -v python3 >/dev/nu
             --task "deploy:$SERVICE" --session-id "$CLAUDE_CODE_SESSION_ID" >/dev/null 2>&1 || true
     else
         python3 "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" heartbeat \
-            --summary "docker compose $* for services/$SERVICE" \
+            --summary "docker compose $* for services/$SERVICE/$COMPOSE_FILE_NAME" \
             --task "deploy:$SERVICE" >/dev/null 2>&1 || true
     fi
 fi

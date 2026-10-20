@@ -366,9 +366,12 @@ rebuild_one() {
                 echo "[dry-run] would rebuild running profile service: $svc --profile $profile $name"
             done
         fi
-        for extra in $EXTRA_COMPOSE; do
-            echo "[dry-run] would rebuild running extra compose file: $svc --compose-file $extra"
-        done
+        if [ -n "$EXTRA_COMPOSE" ]; then
+            printf '%s\n' "$EXTRA_COMPOSE" | while IFS="$(printf '\t')" read -r extra names; do
+                [ -n "$extra" ] || continue
+                echo "[dry-run] would rebuild running extra compose file: $svc --compose-file $extra $names"
+            done
+        fi
         REBUILT=$((REBUILT + 1))
         return 0
     fi
@@ -442,15 +445,23 @@ $PROFILE_SERVICES
 EOF_PROFILES
     fi
 
-    for extra in $EXTRA_COMPOSE; do
-        echo "=== rebuild_services_from_git_diff: $svc (running extra compose file $extra) ==="
-        # shellcheck disable=SC2086
-        run_safe_build "$svc" --compose-file "$extra" up -d --build $RECREATE_FLAG </dev/null
-        if [ "$rc" -ne 0 ]; then
-            echo "rebuild_services_from_git_diff.sh: FAILED $svc/$extra (exit $rc)" >&2
-            svc_failed=1
-        fi
-    done
+    if [ -n "$EXTRA_COMPOSE" ]; then
+        TAB=$(printf '\t')
+        while IFS="$TAB" read -r extra names; do
+            [ -n "$extra" ] && [ -n "$names" ] || continue
+            echo "=== rebuild_services_from_git_diff: $svc (running extra compose file $extra: $names) ==="
+            # Only the services running now, --no-deps: a stopped sibling in the
+            # same file (or a depends_on edge) is never started.
+            # shellcheck disable=SC2086
+            run_safe_build "$svc" --compose-file "$extra" up -d --build --no-deps $RECREATE_FLAG $names </dev/null
+            if [ "$rc" -ne 0 ]; then
+                echo "rebuild_services_from_git_diff.sh: FAILED $svc/$extra (exit $rc)" >&2
+                svc_failed=1
+            fi
+        done <<EOF_EXTRA
+$EXTRA_COMPOSE
+EOF_EXTRA
+    fi
 
     if [ "$svc_failed" -ne 0 ]; then
         FAILED="$FAILED $svc"

@@ -1060,10 +1060,12 @@ def running_profile_services(
     suffix = f"{_SERVICES_DIR}/{service}/{_COMPOSE_FILE}"
     own_compose = compose_path.resolve().as_posix()
     running_from: dict[str, list[str]] = {}
-    for _project, compose_service, config_files in running:
+    project_of: dict[str, str] = {}
+    for project, compose_service, config_files in running:
         files = [f.strip().replace("\\", "/") for f in config_files.split(",") if f.strip()]
         if any(f == suffix or f.endswith("/" + suffix) for f in files):
             running_from[compose_service] = files
+            project_of[compose_service] = project
     skip = skip_profiles or set()
     out: list[tuple[str, str]] = []
     for name, spec in compose_services.items():
@@ -1072,7 +1074,12 @@ def running_profile_services(
         profiles = [str(p) for p in (spec.get("profiles") or [])]
         if not profiles or any(p in skip for p in profiles):
             continue
-        if running_from[name] != [own_compose] and _orphaned_copy_of(running_from[name], suffix, repo_root):
+        if (
+            running_from[name] != [own_compose]
+            and _orphaned_copy_of(running_from[name], suffix, repo_root)
+            # Same project main's `up` uses; another one would clash on container_name.
+            and project_of.get(name) == _expected_project(compose_path, service)
+        ):
             # Started from a checkout that no longer exists (a pruned
             # worktree): nothing but main can ever redeploy it again, and its
             # bind mounts point at a deleted directory. Adopt it. Confirmed
@@ -1108,8 +1115,19 @@ def _orphaned_copy_of(files: list[str], suffix: str, repo_root: Path) -> bool:
     """
     if len(files) != 1 or not files[0].endswith("/" + suffix) or Path(files[0]).exists():
         return False
-    parent = repo_root.resolve().parent.as_posix().rstrip("/") + "/"
-    return files[0].startswith(parent + repo_root.resolve().name)
+    prefix = repo_root.resolve().parent.as_posix().rstrip("/") + "/" + repo_root.resolve().name
+    rest = files[0][len(prefix):] if files[0].startswith(prefix) else None
+    return rest is not None and rest[:1] in ("/", "-")
+
+
+def _expected_project(compose_path: Path, service: str) -> str | None:
+    """The compose project an `up` of this file from here uses: its literal ``name:``,
+    else the service directory name. None when ``name:`` is interpolated (unknowable)."""
+    name = _load_compose(compose_path).get("name")
+    if name is None:
+        return service
+    name = str(name).strip()
+    return None if "$" in name else name
 
 
 def running_extra_compose_files(
@@ -1117,7 +1135,7 @@ def running_extra_compose_files(
     service: str,
     running: list[tuple[str, str, str]],
     pool_composes: set[str],
-) -> list[str]:
+) -> list[tuple[str, list[str]]]:
     """Second compose files of services/<service>/ with containers running from them now.
 
     The post-pull rebuild only ever ran ``services/<service>/docker-compose.yml``,
@@ -1125,35 +1143,51 @@ def running_extra_compose_files(
     confirmed live 2026-10-20, the Qwen caption lane (docker-compose.circe-qwen.yml)
     ran from 2026-10-16 and dropped every doorbell caption a merged PR had enabled.
 
-    Returns basenames whose containers run from exactly this checkout's copy of the
-    file, or from a copy that no longer exists (adopted, like profile services).
-    Never a file nothing runs from (never starts a lane an operator left off), never
-    one the GPU pool launches (``pool_composes``: its lane controller owns those), and
-    never a container started with this file plus an overlay.
+    Returns (basename, running compose services) for files whose containers run from
+    exactly this checkout's copy, or from a deleted worktree of this repo (adopted,
+    like profile services), under the project an `up` from here would use. Only those
+    services are redeployed (`up --no-deps <names>`): a stopped sibling in the same
+    file is never started. Never a file nothing runs from, never one the GPU pool
+    launches (``pool_composes``: its lane controller owns those), never a container
+    started with this file plus an overlay, and never a file whose own header says it
+    needs a different env file (orion-bus/docker-compose.atlas-standby.yml): the
+    wrapper always loads services/<service>/.env.
     """
     svc_dir = repo_root / _SERVICES_DIR / service
-    out: list[str] = []
+    out: list[tuple[str, list[str]]] = []
     for path in sorted(svc_dir.glob("docker-compose.*.yml")):
         name = path.name
         rel = f"{_SERVICES_DIR}/{service}/{name}"
         if rel in pool_composes:
             continue
         own = path.resolve().as_posix()
-        hits = []
-        for _project, _compose_service, config_files in running:
+        hits: list[tuple[str, str, list[str]]] = []
+        for project, compose_service, config_files in running:
             files = [f.strip().replace("\\", "/") for f in config_files.split(",") if f.strip()]
             if any(f == rel or f.endswith("/" + rel) for f in files):
-                hits.append(files)
+                hits.append((project, compose_service, files))
         if not hits:
             continue
-        if all(files == [own] or _orphaned_copy_of(files, rel, repo_root) for files in hits):
-            out.append(name)
+        if re.search(r"--env-file\s+\S*" + re.escape(f"{_SERVICES_DIR}/{service}/.env."), path.read_text(encoding="utf-8")):
+            print(
+                f"rebuild_affected_services: WARNING: {rel} runs, but its header names its own env file; "
+                "the wrapper cannot load it -- leaving it alone",
+                file=sys.stderr,
+            )
             continue
-        print(
-            f"rebuild_affected_services: WARNING: {rel} runs from "
-            f"{sorted({','.join(f) for f in hits if f != [own]})!r}, not {own!r} -- leaving it alone",
-            file=sys.stderr,
-        )
+        expected = _expected_project(path, service)
+        bad = [
+            (p, ",".join(f)) for p, _s, f in hits
+            if not (f == [own] or _orphaned_copy_of(f, rel, repo_root)) or p != expected
+        ]
+        if bad:
+            print(
+                f"rebuild_affected_services: WARNING: {rel} runs as {sorted(set(bad))!r}, "
+                f"not project {expected!r} from {own!r} -- leaving it alone",
+                file=sys.stderr,
+            )
+            continue
+        out.append((name, sorted({s for _p, s, _f in hits})))
     return out
 
 
@@ -1324,9 +1358,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--running-extra-compose",
         metavar="SERVICE",
-        help="Print each docker-compose.<name>.yml basename of SERVICE that has containers running "
-        "from it (and is not a GPU-pool launch file), then exit; prints nothing when docker or the "
-        "pool config cannot be read",
+        help="Print '<docker-compose.<name>.yml>\\t<running compose services>' for each second compose "
+        "file of SERVICE with containers running from it (not a GPU-pool launch file), then exit; "
+        "prints nothing when docker or the pool config cannot be read",
     )
     parser.add_argument(
         "--skip-profile",
@@ -1401,8 +1435,8 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 0
-        for name in running_extra_compose_files(repo_root, args.running_extra_compose, running, pool_composes):
-            print(name)
+        for name, services in running_extra_compose_files(repo_root, args.running_extra_compose, running, pool_composes):
+            print(name + "\t" + " ".join(services))
         return 0
 
     if args.running_profile_services:

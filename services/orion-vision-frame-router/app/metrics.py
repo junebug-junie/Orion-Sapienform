@@ -1,15 +1,9 @@
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.schemas.telemetry.system_health import SystemHealthV1
+from typing import Any
 
 from .state import RouterState
-
-BOOT_ID = str(uuid.uuid4())
 
 
 @dataclass
@@ -79,59 +73,49 @@ class RouterMetrics:
         self._bump(self.caption_failure_counts, reason or "host_error")
 
 
-def make_health_envelope(
+def make_health_details(
     *,
-    service_name: str,
-    service_version: str,
     router_enabled: bool,
     dry_run: bool,
     policy_path: str,
     metrics: RouterMetrics,
     state: RouterState,
-    heartbeat_interval_sec: float,
-    status: str = "ok",
-) -> BaseEnvelope:
-    # Threaded from the caller's real loop period rather than left at the schema
-    # default: orion-equilibrium-service computes grace = interval * 3.0 and marks
-    # the service "down" past it, so a hardcoded 10.0 silently mislabels any
-    # deployment that overrides HEALTH_INTERVAL_SECONDS.
-    payload = SystemHealthV1(
-        heartbeat_interval_sec=heartbeat_interval_sec,
-        service=service_name,
-        version=service_version,
-        boot_id=BOOT_ID,
-        last_seen_ts=datetime.now(timezone.utc),
-        status=status,  # type: ignore[arg-type]
-        details={
-            "frames_seen_total": metrics.frames_seen_total,
-            "frames_dispatched_total": metrics.frames_dispatched_total,
-            "identity_dispatched_total": metrics.identity_dispatched_total,
-            "identity_still_total": metrics.identity_still_total,
-            "identity_still_fallback_total": metrics.identity_still_fallback_total,
-            "frames_skipped_total": metrics.frames_skipped_total,
-            "inflight_total": state.inflight_total(),
-            "pending_count": len(state.pending),
-            "policy_path": policy_path,
-            "router_enabled": router_enabled,
-            "dry_run": dry_run,
-            "skip_reason_counts": dict(metrics.skip_reason_counts),
-            "host_replies_total": metrics.host_replies_total,
-            "host_trigger_updates_total": metrics.host_trigger_updates_total,
-            "host_errors_total": metrics.host_errors_total,
-            "host_timeouts_total": metrics.host_timeouts_total,
-            "decode_errors_total": metrics.decode_errors_total,
-            "caption_dispatched_total": metrics.caption_dispatched_total,
-            "caption_captioned_total": metrics.caption_captioned_total,
-            "caption_inflight": state.inflight_lane("caption"),
-            "caption_skip_counts": dict(metrics.caption_skip_counts),
-            "caption_no_caption_counts": dict(metrics.caption_no_caption_counts),
-            "caption_no_caption_streak": metrics.caption_no_caption_streak,
-            "caption_failure_counts": dict(metrics.caption_failure_counts),
-            "last_error": metrics.last_error,
-        },
-    )
-    return BaseEnvelope(
-        kind="system.health.v1",
-        source=ServiceRef(name=service_name, version=service_version),
-        payload=payload.model_dump(mode="json"),
-    )
+) -> dict[str, Any]:
+    """The `details` dict of this service's SystemHealthV1 heartbeat.
+
+    Called by HeartbeatOnly's heartbeat loop in a worker thread
+    (asyncio.to_thread), while the event loop keeps mutating `metrics` and
+    `state.pending`. So every container is copied once with a single C-level
+    call (dict(...) / list(...)), which holds the GIL for the whole copy, and
+    the counts are computed from those copies. A Python-level generator over
+    the live dict could raise "dictionary changed size during iteration" and
+    drop that tick's details.
+    """
+    pending = list(state.pending.values())
+    return {
+        "frames_seen_total": metrics.frames_seen_total,
+        "frames_dispatched_total": metrics.frames_dispatched_total,
+        "identity_dispatched_total": metrics.identity_dispatched_total,
+        "identity_still_total": metrics.identity_still_total,
+        "identity_still_fallback_total": metrics.identity_still_fallback_total,
+        "frames_skipped_total": metrics.frames_skipped_total,
+        "inflight_total": sum(1 for t in pending if t.lane == "host"),
+        "pending_count": len(pending),
+        "policy_path": policy_path,
+        "router_enabled": router_enabled,
+        "dry_run": dry_run,
+        "skip_reason_counts": dict(metrics.skip_reason_counts),
+        "host_replies_total": metrics.host_replies_total,
+        "host_trigger_updates_total": metrics.host_trigger_updates_total,
+        "host_errors_total": metrics.host_errors_total,
+        "host_timeouts_total": metrics.host_timeouts_total,
+        "decode_errors_total": metrics.decode_errors_total,
+        "caption_dispatched_total": metrics.caption_dispatched_total,
+        "caption_captioned_total": metrics.caption_captioned_total,
+        "caption_inflight": sum(1 for t in pending if t.lane == "caption"),
+        "caption_skip_counts": dict(metrics.caption_skip_counts),
+        "caption_no_caption_counts": dict(metrics.caption_no_caption_counts),
+        "caption_no_caption_streak": metrics.caption_no_caption_streak,
+        "caption_failure_counts": dict(metrics.caption_failure_counts),
+        "last_error": metrics.last_error,
+    }

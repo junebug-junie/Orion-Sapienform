@@ -9,6 +9,8 @@ class Settings(BaseSettings):
 
     SERVICE_NAME: str = "vision-frame-router"
     SERVICE_VERSION: str = "0.1.0"
+    # Host this process runs on, reported in the SystemHealthV1 heartbeat.
+    NODE_NAME: str = "athena"
     LOG_LEVEL: str = "INFO"
 
     ORION_BUS_URL: str = "redis://localhost:6379/0"

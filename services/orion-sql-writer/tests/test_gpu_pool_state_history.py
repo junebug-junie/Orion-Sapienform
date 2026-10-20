@@ -55,6 +55,10 @@ def test_snapshot_with_no_active_shed_holds_nothing_and_without_a_shed_view_is_u
     assert (state_history_row(calm)["shed_held_depth"], state_history_row(calm)["shed_reason"]) == ({}, None)
     old_pool = GpuPoolStateV1(**payload(queue_depth={"agent": 1}, leases=leases))
     assert (state_history_row(old_pool)["shed_held_depth"], state_history_row(old_pool)["shed_reason"]) == (None, None)
+    # Orion's own learned shed is not a heat reflex: held leases stay load for arousal.
+    self_shed = GpuPoolStateV1(**payload(queue_depth={"agent": 1}, leases=leases, shed={
+        "enabled": True, "active_reason": "orion_self_shed", "blocked": {"background": "orion_self_shed"}}))
+    assert (state_history_row(self_shed)["shed_held_depth"], state_history_row(self_shed)["shed_reason"]) == ({}, None)
 
 
 @pytest.mark.parametrize("missing", ["generated_at", "host", "backlog_depth", "queue_depth"])

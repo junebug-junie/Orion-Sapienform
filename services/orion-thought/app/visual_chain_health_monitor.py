@@ -40,12 +40,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
 
 import requests
 
 from orion.notify.client import NotifyClient
+from orion.reverie.baseline import AROUSAL_STRAINED_REASON, VisualBaselinePolicy
 
 from .settings import ThoughtSettings
 from .settings import settings as _default_settings
@@ -62,6 +64,11 @@ _EVENT_KINDS = {
     _ATTEMPT_STREAK_CHECK_KEY: "orion.reverie.visual_attempt_failure_streak.health.attention.v1",
 }
 Severity = Literal["info", "error", "critical"]
+# A deferral record counts as current only if its latest deferral is this recent: the scheduler
+# re-defers every retry_sec while arousal stays strained, so two retries plus one gap-check tick.
+# Older means the scheduler stopped reaching the arousal check (stale activity, an active attempt,
+# disabled ...) and arousal is not what is holding the painting.
+DEFERRAL_FRESH_SEC = 2 * VisualBaselinePolicy().retry_sec + 600
 
 
 @dataclass(frozen=True)
@@ -108,7 +115,7 @@ class DeferralEvidence:
 
 
 def _deferral_cause(ev: DeferralEvidence) -> str:
-    why = ", ".join(ev.arousal_reasons) or "reasons unavailable"
+    why = ", ".join(ev.arousal_reasons)
     heat = (" The cabinet is hot, so the GPU pool is also holding background work."
             if "cabinet_hot" in ev.arousal_reasons else "")
     return (f"(1) Orion's arousal reads strained ({why}), so the waking baseline painting has been "
@@ -142,7 +149,7 @@ def _painting_gap_check(*, age_hours: float | None, threshold_hours: float,
                 f"(threshold {threshold_hours:g} h). " + _deferral_cause(deferral)
                 + "the GPU lane controller refusing swaps (scripts/gpu_pool_actuator_probe.py); "
                 "the visual-chain worker wedged."
-                if deferral is not None and deferral.reason == "arousal_strained"
+                if deferral is not None and deferral.reason == AROUSAL_STRAINED_REASON
                 else
                 f"Orion has not produced a painting in {age_hours:.1f} hours "
                 f"(threshold {threshold_hours:g} h). Likely causes, most likely first: "
@@ -249,25 +256,31 @@ class VisualChainHealthMonitor:
         except Exception:
             logger.exception("visual_painting_gap_check_failed")
 
-    def _deferral_evidence(self) -> DeferralEvidence | None:
-        """The baseline checkpoint's deferral run plus arousal's reasons now. None when nothing is
-        recorded or the read fails: the alert then keeps its GPU-first wording. Never raises."""
+    def _deferral_evidence(self, now: datetime | None = None) -> DeferralEvidence | None:
+        """The baseline checkpoint's deferral run, only while it is CURRENT: its latest deferral
+        within DEFERRAL_FRESH_SEC and arousal strained right now. Otherwise None, and the alert
+        keeps its GPU-first wording (a stale record or a calm arousal is not the cause). Never raises."""
         try:
             from .store import visual_baseline_deferral
 
             raw = visual_baseline_deferral()
-            if not raw:
+            if not raw or raw.get("reason") != AROUSAL_STRAINED_REASON:
                 return None
-            reasons: tuple[str, ...] = ()
-            try:
-                from orion.regulation.arousal_read import read_arousal_sync
+            now = now or datetime.now(timezone.utc)
+            last_at = datetime.fromisoformat(str(raw.get("last_at")))
+            if last_at.tzinfo is None:
+                last_at = last_at.replace(tzinfo=timezone.utc)
+            if (now - last_at).total_seconds() > DEFERRAL_FRESH_SEC:
+                return None
+            from orion.regulation.arousal_read import read_arousal_sync
 
-                view = read_arousal_sync(
-                    self._settings.orion_bus_url, enabled=True, reader="visual_painting_gap",
-                    max_age_sec=float(self._settings.regulation_reader_max_age_sec))
-                reasons = tuple(view.reasons) if view.level == "strained" else ()
-            except Exception:
-                logger.warning("visual_painting_gap_arousal_read_failed", exc_info=True)
+            # Diagnostic read only (it gates nothing), so not behind the reverie reader flags.
+            view = read_arousal_sync(
+                self._settings.orion_bus_url, enabled=True, reader="visual_painting_gap",
+                max_age_sec=float(self._settings.regulation_reader_max_age_sec))
+            if view.level != "strained":
+                return None
+            reasons = tuple(view.reasons)
             return DeferralEvidence(reason=str(raw.get("reason")), since=raw.get("since"),
                                     last_at=raw.get("last_at"), arousal_reasons=reasons)
         except Exception:

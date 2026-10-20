@@ -106,3 +106,24 @@ def test_an_agent_system_call_still_beats_a_younger_distill_hold():
     distill = _distill("d", "2026-10-20T14:41:00+00:00")
     got = _grants(_run(CFG, [call, distill]))
     assert got.get("a") == "agent"
+
+
+def test_agent_system_call_waits_for_a_running_distill_hold_or_takes_its_gap():
+    """Blast radius (review): before, an agent system one-off on gpu1 recalled a running distill
+    hold owner_waiting. Now both are owners: no recall. With gpu2 unloaded the call waits while
+    the run has a call in flight, and shares nothing in the run's idle gap either (H3 needs
+    strictly higher priority) -- Hub reading/curiosity calls on the agent route can wait for one
+    distill run (live 27-97 s)."""
+    now = NOW
+    running = lease("memory_distill", "granted", "agent", priority="system", kind="hold", retryable=True,
+                    lease_id="d", age=30, granted_at=now)
+    call = lease("agent", priority="system", lease_id="a", age=5)
+    old = _run(_old_cfg(), [running, call], gpu2_loaded=False)
+    new = _run(CFG, [running, call], gpu2_loaded=False)
+    assert [r.lease_id for r in of(Recall, old)] == ["d"]
+    assert of(Recall, new) == []
+    assert "a" not in _grants(new)
+    # A background agent hold's gap, by contrast, is open to the same system call (unchanged).
+    bg = lease("agent", "granted", "agent", priority="background", kind="hold", retryable=True,
+               lease_id="b", age=30, granted_at=now)
+    assert _grants(_run(CFG, [bg, call], gpu2_loaded=False)).get("a") == "agent"

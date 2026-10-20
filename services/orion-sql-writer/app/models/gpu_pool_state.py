@@ -6,7 +6,7 @@ from sqlalchemy import JSON, Column, DateTime, Index, String
 from sqlalchemy.sql import func
 
 from app.db import Base
-from orion.gpu_pool.shed import shed_held_queue
+from orion.gpu_pool.shed import REFLEX_REASONS, shed_held_queue
 
 
 class GpuPoolStateSQL(Base):
@@ -20,7 +20,8 @@ class GpuPoolStateSQL(Base):
     config_digest = Column(String, nullable=False)
     backlog_depth = Column(JSON, nullable=False)
     queue_depth = Column(JSON, nullable=False)
-    # Of queue_depth, what an active shed (heat) is holding back: {work_class: n}, and the reasons
+    # Of queue_depth, what an active heat-reflex shed (REFLEX_REASONS: cabinet_hot, cabinet_unknown,
+    # cooling_incident; not orion_self_shed) is holding back: {work_class: n}, and the reasons
     # (``+``-joined). NULL on rows from before 2026-10-20 or from a pool that sends no shed view:
     # unknown, not zero. manual_migration_regulation_gpu_shed_held_v1.sql.
     shed_held_depth = Column(JSON, nullable=True)
@@ -40,9 +41,9 @@ def state_history_row(state):
         if any(type(n) is not int or n < 0 for n in depths.values()):
             raise ValueError("GPU history depths must be nonnegative integers")
     at = state.generated_at.astimezone(timezone.utc)
-    # The held count needs both the shed view and the lease list; without either it is unknown.
-    held, reason = (shed_held_queue(state.leases, state.shed.get("blocked"))
-                    if {"shed", "leases"} <= state.model_fields_set and state.shed else (None, None))
+    # A pool with no shed lever sends shed={} (the schema default): unknown, stored as NULL.
+    held, reason = (shed_held_queue(state.leases, state.shed.get("blocked"), reasons=REFLEX_REASONS)
+                    if state.shed else (None, None))
     # Redelivery is the same observation even if the envelope id changes.
     identity = f"gpu_pool.state.v1:{state.host}:{at.isoformat()}:{state.config_digest}"
     return dict(snapshot_id=str(uuid5(NAMESPACE_URL, identity)), generated_at=at,

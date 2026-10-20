@@ -18,9 +18,10 @@ Rule, evaluated in this order (spec R3):
    input (``gpu_fault:<kind>:<seat>``), so it can neither strain nor clear. Live 2026-10-09: the
    controller refused every swap for 26 h (``config_unloadable``) and the jammed queue alone would
    have read strained for 20 h and held every optional decision.
-   The same holds for queue entries a GPU pool shed is holding back (``cabinet_hot`` and the other
-   heat reasons, ``orion.gpu_pool.shed``): they wait on heat, which S1 already reads, not on GPU
-   load. Only the queue left after them is load; when they alone put the queue at or above the floor,
+   The same holds for queue entries a heat-reflex shed is holding back (``cabinet_hot``,
+   ``cabinet_unknown``, ``cooling_incident``: ``orion.gpu_pool.shed.REFLEX_REASONS``; sql-writer
+   counts only these): they wait on heat, which S1 already reads, not on GPU load. Orion's own
+   ``orion_self_shed`` is NOT excluded: it fires below the reflex, where S1 does not read hot. Only the queue left after them is load; when they alone put the queue at or above the floor,
    S2 reads like a stale input (``gpu_shed:<reason>``), and a run of shed-held snapshots never counts
    toward ``gpu_sustain_sec``. Live 2026-10-18 -> 10-20: the shed held every queued background and
    system lease for ~26 of 54 h, and arousal read that queue as independent GPU strain.
@@ -278,6 +279,9 @@ def classify_arousal(
                 level = "idle"
                 reasons.append(f"no_juniper_turn_{engaged_minutes:g}m")
 
+    if held and not s2_shed and not s2_faulted:
+        # Annotate only: part of the queue is shed-held, the rest still counted as load.
+        reasons.append(f"gpu_shed_partial:{inputs.gpu_shed_reason or 'unknown'}:{held}")
     if inputs.gpu_fault and not s2_faulted:
         # Annotate only: the fault is real, but this step did not lean on the queue reading.
         reasons.append(f"gpu_fault:{inputs.gpu_fault}")

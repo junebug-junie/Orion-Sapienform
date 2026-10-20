@@ -151,7 +151,8 @@ class ShedBoard:
         return ShedView(enabled, blocked, active, rows)
 
 
-def shed_held_queue(leases: Any, blocked: Any) -> tuple[dict[str, int], str | None]:
+def shed_held_queue(leases: Any, blocked: Any, *,
+                    reasons: Any = None) -> tuple[dict[str, int], str | None]:
     """Of a pool snapshot's QUEUED leases, the ones a shed is holding back right now (U4's own
     test in ``scheduler.schedule``: no ``hold_lease_id`` and a priority in ``blocked``).
 
@@ -160,17 +161,21 @@ def shed_held_queue(leases: Any, blocked: Any) -> tuple[dict[str, int], str | No
     Returns ``({work_class: n}, reasons)``: the held count per work class (a subset of the
     snapshot's ``queue_depth``, which counts status ``queued`` only) and the reasons holding them,
     sorted and ``+``-joined (None when nothing is held). Readers use it so a queue a heat shed is
-    holding is not read as GPU load (``orion.regulation.arousal``, 2026-10-20)."""
+    holding is not read as GPU load (``orion.regulation.arousal``, 2026-10-20).
+
+    ``reasons``: count only leases held by these reasons (None = any). The history row passes
+    ``REFLEX_REASONS``: a lease held by Orion's own ``orion_self_shed`` waits on a choice made while
+    the cabinet is warm but below the reflex, which arousal's cabinet input does not read as hot."""
     blocked = blocked if isinstance(blocked, dict) else {}
     held: dict[str, int] = {}
-    reasons: set[str] = set()
+    seen: set[str] = set()
     for lease in leases or ():
         row = lease if isinstance(lease, dict) else vars(lease)
         if row.get("status") != "queued" or row.get("hold_lease_id") is not None:
             continue
         reason = blocked.get(row.get("priority"))
-        if not reason:
+        if not reason or (reasons is not None and reason not in reasons):
             continue
         held[row["work_class"]] = held.get(row["work_class"], 0) + 1
-        reasons.add(str(reason))
-    return held, ("+".join(sorted(reasons)) or None)
+        seen.add(str(reason))
+    return held, ("+".join(sorted(seen)) or None)

@@ -446,9 +446,10 @@ def test_shed_held_queue_never_earns_clear_time_for_a_latched_strain():
     assert prev.strain_latched
 
 
-def test_shed_holding_part_of_a_queue_leaves_real_load_visible():
+def test_shed_holding_part_of_a_queue_leaves_real_load_visible_and_says_so():
     r = classify_arousal(None, shed_inputs(depth=13, held=11, sustained=301.0))
-    assert r.arousal_level == "strained" and r.reasons == ["gpu_queue_sustained"]
+    assert r.arousal_level == "strained"
+    assert r.reasons == ["gpu_queue_sustained", "gpu_shed_partial:cabinet_hot:11"]
 
 
 def test_shed_holding_a_queue_below_the_floor_is_a_fresh_clear():

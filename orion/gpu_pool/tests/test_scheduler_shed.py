@@ -298,3 +298,13 @@ def test_shed_held_queue_agrees_with_the_scheduler_on_queued_leases():
     assert shed_held_queue([vars(l) for l in leases], {}) == ({}, None)
     assert shed_held_queue(leases, {"background": "orion_self_shed", "system": "cabinet_hot"})[1] \
         == "cabinet_hot+orion_self_shed"
+
+
+def test_shed_held_queue_reflex_filter_drops_orion_self_shed():
+    """The history row counts only heat-reflex holds: orion_self_shed fires below the reflex, where
+    arousal's cabinet input does not read hot, so its held leases stay load (review 2026-10-20)."""
+    from orion.gpu_pool.shed import REFLEX_REASONS, shed_held_queue
+
+    leases = [vars(lease("agent", priority="background", kind="hold", retryable=True, lease_id="r"))]
+    assert shed_held_queue(leases, {"background": "orion_self_shed"}, reasons=REFLEX_REASONS) == ({}, None)
+    assert shed_held_queue(leases, {"background": "cabinet_hot"}, reasons=REFLEX_REASONS) == ({"agent": 1}, "cabinet_hot")

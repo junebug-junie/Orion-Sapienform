@@ -458,6 +458,29 @@ def test_gap_message_without_deferral_keeps_gpu_first_wording():
     assert msg.index("GPU lane controller") < msg.index("wedged") and "arousal" not in msg
 
 
+def _fresh_deferral(age_sec=60.0):
+    from datetime import datetime, timedelta, timezone
+
+    last = datetime.now(timezone.utc) - timedelta(seconds=age_sec)
+    return {**LIVE_DEFERRAL, "last_at": last.isoformat()}
+
+
+def _gap_message(deferral, view):
+    with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
+        "app.visual_chain_health_monitor.requests.get", return_value=_pending([])
+    ), patch("app.store.visual_baseline_deferral", lambda: deferral), patch(
+        "orion.regulation.arousal_read.read_arousal_sync", return_value=view
+    ):
+        from app.visual_chain_health_monitor import VisualChainHealthMonitor
+
+        client_cls.return_value.attention_request.return_value = MagicMock(ok=True)
+        VisualChainHealthMonitor(_settings()).record_painting_gap(age_hours=54.0)
+        return client_cls.return_value.attention_request.call_args.kwargs["message"]
+
+
+STRAINED = ("cabinet_hot", "gpu_queue_sustained")
+
+
 def test_monitor_reads_deferral_and_arousal_only_during_a_gap_and_sends_it():
     from orion.regulation.arousal_view import ArousalView
 
@@ -465,9 +488,9 @@ def test_monitor_reads_deferral_and_arousal_only_during_a_gap_and_sends_it():
 
     def _deferral():
         reads.append(1)
-        return dict(LIVE_DEFERRAL)
+        return _fresh_deferral()
 
-    view = ArousalView(level="strained", reason="ok", reasons=("cabinet_hot", "gpu_queue_sustained"))
+    view = ArousalView(level="strained", reason="ok", reasons=STRAINED)
     with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
         "app.visual_chain_health_monitor.requests.get", return_value=_pending([])
     ), patch("app.store.visual_baseline_deferral", _deferral), patch(
@@ -483,6 +506,25 @@ def test_monitor_reads_deferral_and_arousal_only_during_a_gap_and_sends_it():
         msg = client_cls.return_value.attention_request.call_args.kwargs["message"]
     assert reads == [1]
     assert "arousal reads strained (cabinet_hot, gpu_queue_sustained)" in msg
+
+
+def test_stale_deferral_record_is_not_named_as_the_cause():
+    """The checkpoint keeps the record on every early return (stale activity, active attempt ...):
+    a deferral older than DEFERRAL_FRESH_SEC means arousal is no longer what holds the painting."""
+    from app.visual_chain_health_monitor import DEFERRAL_FRESH_SEC
+    from orion.regulation.arousal_view import ArousalView
+
+    msg = _gap_message(_fresh_deferral(DEFERRAL_FRESH_SEC + 60),
+                       ArousalView(level="strained", reason="ok", reasons=STRAINED))
+    assert "arousal" not in msg and "GPU lane controller" in msg
+
+
+@pytest.mark.parametrize("level", ["idle", "engaged", "unknown"])
+def test_deferral_is_not_named_when_arousal_is_not_strained_now(level):
+    from orion.regulation.arousal_view import ArousalView
+
+    msg = _gap_message(_fresh_deferral(), ArousalView(level=level, reason="ok"))
+    assert "arousal" not in msg and "GPU lane controller" in msg
 
 
 def test_deferral_read_failure_falls_back_to_the_old_wording():

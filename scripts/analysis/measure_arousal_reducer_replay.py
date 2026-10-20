@@ -40,6 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from orion.autonomy.cabinet_heat import read_cabinet_heat  # noqa: E402
+from orion.gpu_pool.shed import REFLEX_REASONS  # noqa: E402
 from orion.hardware_watch.rules import TempPoint  # noqa: E402
 from orion.regulation.arousal import (  # noqa: E402
     DEFAULT_CLEAR_SEC,
@@ -97,10 +98,12 @@ SELECT row_to_json(r) FROM (
  WHERE generated_at >= '{lo}'::timestamptz AND generated_at < '{hi}'::timestamptz ORDER BY host, generated_at
 ) r;
 SELECT row_to_json(r) FROM (
- SELECT DISTINCT 'shed_minute' AS kind, date_trunc('minute', generated_at) AS at,
-        substr(reason, 6) AS shed_reason FROM gpu_pool_events
- WHERE event IN ('unavailable', 'queued') AND reason LIKE 'shed:%'
+ SELECT 'shed_minute' AS kind, date_trunc('minute', generated_at) AS at,
+        string_agg(DISTINCT substr(reason, 6), '+' ORDER BY substr(reason, 6)) AS shed_reason
+ FROM gpu_pool_events
+ WHERE event IN ('unavailable', 'queued') AND reason LIKE ANY (ARRAY[{", ".join(f"'shed:{r}'" for r in sorted(REFLEX_REASONS))}])
  AND generated_at >= '{lo}'::timestamptz AND generated_at < '{hi}'::timestamptz
+ GROUP BY 2
 ) r;
 SELECT row_to_json(r) FROM (
  SELECT 'gpu_event' AS kind, generated_at AS at, event, reason, role FROM gpu_pool_events
@@ -122,7 +125,7 @@ def replay_readings(rows, start, end, *, tick_sec=120.0, engaged_minutes=DEFAULT
 
     ``gpu_shed=False`` replays the reducer as it was before shed-held queue entries were excluded
     (2026-10-20). ``reconstruct_shed``: for snapshots saved before the shed columns existed (NULL),
-    treat the whole queue as shed-held in any minute the pool logged a ``shed:*`` refusal or
+    treat the whole queue as shed-held in any minute the pool logged a heat-reflex ``shed:*`` refusal or
     re-queue -- a PROXY, valid only for windows where every queued lease was background/system
     (true 2026-10-18 -> 10-20: no interactive or urgent lease sat queued)."""
     start, end = utc(start), utc(end)

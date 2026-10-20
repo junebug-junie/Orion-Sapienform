@@ -379,10 +379,14 @@ def person_count_range(rollup: Mapping[str, Any] | None, kind: str = "person") -
 
 
 def _parent_range(rows: Sequence[Mapping[str, Any]], passings: int, kind: str = "person") -> dict[str, Any]:
-    """Low: the largest child low (most at once in any one hour). High: the summed clusters."""
-    lows = [(r["low"], r["method_low"]) for r in (person_count_range(c, kind) for c in rows) if r]
-    low, method_low = max(lows, default=(0, METHOD_LOW))
-    high, method_high = max(0, int(passings)), METHOD_HIGH
+    """Low: the largest child low (most at once in any one hour). High: the sum of the child
+    highs (a child whose clusters were raised to its low keeps that raise), never below the
+    summed clusters or the low."""
+    kids = [r for r in (person_count_range(c, kind) for c in rows) if r]
+    low, method_low = max(((r["low"], r["method_low"]) for r in kids), default=(0, METHOD_LOW))
+    clusters = max(0, int(passings))
+    high = max(clusters, sum(int(r["high"]) for r in kids))
+    method_high = METHOD_HIGH if high == clusters else METHOD_HIGH_RAISED
     if high < low:
         high, method_high = low, METHOD_HIGH_RAISED
     return {"low": int(low), "high": high, "method_low": method_low, "method_high": method_high}
@@ -398,8 +402,10 @@ def range_phrase(r: Mapping[str, Any] | None, kind: str = "person") -> str:
 
 
 def display_line(line: Any, rollup: Any) -> str:
-    """The line a reader may show. A row from before COUNT_RANGE_RULES_VERSION stored a bare
-    people count; it is re-rendered from its own fields. "" if that fails (never the old line)."""
+    """The line a reader may show. The stored line only when the row is known to be
+    rules_version COUNT_RANGE_RULES_VERSION or later; an older row is re-rendered from its own
+    fields; anything unreadable (no rollup, bad JSON, render error) is "" -- never the stored
+    line, which may hold a bare people count."""
     import json as _json
 
     r = rollup
@@ -407,16 +413,15 @@ def display_line(line: Any, rollup: Any) -> str:
         try:
             r = _json.loads(r)
         except ValueError:
-            r = None
-    stored = str(line or "").strip()
-    if not isinstance(r, Mapping) or not r.get("period_start"):
-        return stored
+            return ""
+    if not isinstance(r, Mapping):
+        return ""
     try:
         version = int(r.get("rules_version") or 1)
     except (TypeError, ValueError):
         version = 1
     if version >= COUNT_RANGE_RULES_VERSION:
-        return stored
+        return str(line or "").strip()
     try:
         return render_line(r)
     except Exception:  # noqa: BLE001 -- an unreadable old row shows nothing, not a bare count
@@ -1086,8 +1091,13 @@ def unsupported_numbers(prose: str, facts: Any) -> list[str]:
 _PEOPLE_NOUN = r"(?:people|persons?|passers-?by|pedestrians|walkers)"
 _COUNT_WORD = "|".join(sorted((w for w in _NUMBER_WORDS if w != "twice"), key=len, reverse=True))
 _BARE_PEOPLE_RE = re.compile(rf"\b(?:\d+|{_COUNT_WORD})\s+(?:[a-z-]+\s+)?{_PEOPLE_NOUN}\b", re.IGNORECASE)
-_RANGE_CUE_RE = re.compile(r"\b(?:at least|at most|up to|between|no more than|no fewer than)\b[^.;:]*$",
-                           re.IGNORECASE)
+# A range word right before the number ("at most 79 people"), or the low end of a pair right
+# before it ("at least 5, at most 79 people", "between 5 and 79", "2 to 5 people"), or a range
+# word right after it ("79 people at most"). Anything further away belongs to another phrase.
+_RANGE_BEFORE_RE = re.compile(
+    r"(?:\b(?:at least|at most|up to|no more than|no fewer than)\s+"
+    r"|\d+\s*(?:,|and|to|-|–)\s*(?:at most\s+)?)$", re.IGNORECASE)
+_RANGE_AFTER_RE = re.compile(r"^\s*(?:at most|or fewer|or less|at the most)\b", re.IGNORECASE)
 
 
 def bare_people_counts(prose: str) -> list[str]:
@@ -1095,6 +1105,7 @@ def bare_people_counts(prose: str) -> list[str]:
     text = _strip_calendar(prose or "")
     out: list[str] = []
     for m in _BARE_PEOPLE_RE.finditer(text):
-        if not _RANGE_CUE_RE.search(text[max(0, m.start() - 40):m.start()]):
+        if not (_RANGE_BEFORE_RE.search(text[max(0, m.start() - 40):m.start()])
+                or _RANGE_AFTER_RE.match(text[m.end():])):
             out.append(" ".join(m.group(0).split()))
     return out

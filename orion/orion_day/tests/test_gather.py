@@ -192,7 +192,8 @@ def test_walkway_day_rollup_line_is_read_for_the_letter_day_and_cited():
 
     line = ("Walkway Tue 29 Sep 2026: people: at least 4, at most 105 (the camera splits one person into "
             "several); 38 vehicles (12 distinct) passing.")
-    conn = fx.FakeConn(walkway={"stream_id": "walkway", "line": line, "complete": True})
+    conn = fx.FakeConn(walkway={"stream_id": "walkway", "line": line, "rollup": '{"rules_version": 2}',
+                                "complete": True})
     material = _gather(conn)
     assert material.walkway_day is not None and material.walkway_day.line == line
     call = next(args for sql, args in conn.calls if sql == gather.WALKWAY_DAY_SQL)
@@ -231,6 +232,9 @@ def test_walkway_day_from_an_old_row_is_a_people_range_never_a_bare_count():
     assert "people: at least 5, at most 137 (the camera splits one person into several)" in line
     assert "137 people" not in line and bare_people_counts(line) == []
     assert "rollup" in gather.WALKWAY_DAY_SQL
+    # A row whose rollup cannot be read shows nothing rather than its stored line.
+    no_rollup = fx.FakeConn(walkway={"stream_id": "walkway", "line": V1_LINE, "complete": True})
+    assert _gather(no_rollup).walkway_day is None
 
 
 def test_walkway_day_absent_or_failing_costs_only_its_own_section():

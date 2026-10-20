@@ -103,7 +103,7 @@ class _Engine:
 
 def _day_row(named):
     return {"stream_id": "walkway", "period_start": START, "label": DAY.isoformat(), "line": LINE,
-            "named": json.dumps(named)}
+            "named": json.dumps(named), "rollup": json.dumps({"rules_version": 2, "named": named})}
 
 
 def test_links_existing_named_entities_to_one_day_node_and_is_idempotent():
@@ -283,7 +283,7 @@ def test_sql_runs_against_postgres():
             "VALUES ('walkway','day',:s,:e,'2026-10-16',true,CAST(:j AS jsonb),:l), "
             "('walkway','day',:s2,:e2,'2026-10-17',false,'{}','partial')"),
             {"s": START, "e": START.replace(day=17), "s2": START.replace(day=17), "e2": START.replace(day=18),
-             "j": json.dumps({"named": {"Sam": {"times": ["11:56"], "individual_ids": ["ind-sam-copy"]}}}), "l": LINE})
+             "j": json.dumps({"rules_version": 2, "named": {"Sam": {"times": ["11:56"], "individual_ids": ["ind-sam-copy"]}}}), "l": LINE})
     store = _store_with(("ind-sam", "Sam"))
     out = wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done={},
                                now=datetime(2026, 10, 18, 3, 0, tzinfo=timezone.utc))

@@ -250,7 +250,7 @@ def test_tick_collect_exception_is_a_bounded_read_failure() -> None:
 
 def _rollup_row(grain: str = "day", passings: int = 185) -> dict:
     rollup = {
-        "label": "2026-09-24", "grain": grain, "local": {"date": "2026-09-24", "year": 2026},
+        "rules_version": 2, "label": "2026-09-24", "grain": grain, "local": {"date": "2026-09-24", "year": 2026},
         "complete": False, "covered_until": "2026-09-25T04:00:00+00:00",
         "total": {"passings": passings, "distinct": 93, "sightings": 400},
         "kinds": {"person": {"passings": 105, "distinct": 50, "sightings": 200}},

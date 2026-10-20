@@ -411,7 +411,7 @@ def test_postgres_path_writes_rows_reads_them_back_and_is_idempotent(pg):
     assert day.rollup["peak_at_once"] == {"person": 2, "dog": 1, "vehicle": 1}
     assert day.rollup["busiest"]["at"] == "08:00" and day.rollup["busiest"]["peak_at_once"]["person"] == 2
     assert day.rollup["kinds"]["person"]["count_range"] == {
-        "low": 2, "high": 2, "method_low": "most_in_one_window", "method_high": "appearance_clusters"}
+        "low": 2, "high": 3, "method_low": "most_in_one_window", "method_high": "raised_to_low"}
     assert "busiest 08:00 (at most 2 passings; people at least 2, at most 2, most at once 1 dog)" in day.line
     assert "so far, through 21:00" in day.line and "No record" not in day.line
     assert "Camera down" in day.line and "03:00–04:00" in day.line
@@ -614,7 +614,9 @@ def test_every_grain_keeps_low_at_most_high_and_low_is_the_largest_hourly_low():
                 continue
             assert row["kinds"]["person"]["count_range"] == cr  # stored, not derived
             assert cr["low"] <= cr["high"], (grain, row["label"])
-            assert cr["high"] == max(row["kinds"]["person"]["passings"], cr["low"])
+            assert cr["high"] >= row["kinds"]["person"]["passings"]
+            if grain == "hour":
+                assert cr["high"] == max(row["kinds"]["person"]["passings"], cr["low"])
             assert wr.bare_people_counts(wr.render_line(row)) == [], wr.render_line(row)
     for day in by_grain["day"]:
         per = wr.Period("day", wr._parse(day["period_start"]), wr._parse(day["period_end"]))
@@ -651,7 +653,33 @@ def test_old_parent_rows_re_render_without_a_bare_people_count():
     assert wr.display_line("bare", {"period_start": "not a time", "rules_version": 1}) == ""
 
 
+def test_a_parent_keeps_a_child_high_that_was_raised_to_its_low():
+    # Hour A: 4 people in one window, 1 cluster (3 stood still) -> 4..4. Hour B: 1..1.
+    # The day may not say "at most 4": an honest top is 5.
+    t = utc(2026, 10, 15, 14, 0)
+    a = hour(t, [sight("w", t)] + [sight(f"s{i}", t, stationary=True) for i in range(3)],
+             peak_at_once={"person": 4})
+    b = hour(t + timedelta(hours=1), [sight("x", t + timedelta(hours=1))], peak_at_once={"person": 1})
+    d = date(2026, 10, 15)
+    children = [(h, a if h.start == t else b if h.start == t + timedelta(hours=1) else None)
+                for h in wr.child_periods(wr.day_period(d, TZ), TZ)]
+    cr = wr.build_parent("walkway", wr.day_period(d, TZ), children, TZ)["kinds"]["person"]["count_range"]
+    assert (cr["low"], cr["high"], cr["method_high"]) == (4, 5, "raised_to_low")
+
+
+def test_display_line_never_shows_a_stored_line_it_cannot_vouch_for():
+    assert wr.display_line("OLD 79 people", None) == ""
+    assert wr.display_line("OLD 79 people", "{not json") == ""
+    assert wr.display_line("OLD 79 people", {"rules_version": 1}) == ""  # cannot re-render
+    assert wr.display_line("ok", {"rules_version": 2}) == "ok"
+
+
 def test_bare_people_counts_finds_one_number_of_people_and_passes_ranges():
+    # A range word that belongs to another phrase does not excuse the count.
+    assert wr.bare_people_counts("at most 3 dogs and 40 people came") == ["40 people"]
+    assert wr.bare_people_counts("Up to noon, 79 people walked by") == ["79 people"]
+    assert wr.bare_people_counts("2 to 5 people") == []
+    assert wr.bare_people_counts("79 people at most") == []
     assert wr.bare_people_counts("79 people walked by.") == ["79 people"]
     assert wr.bare_people_counts("Five different people came.") == ["Five different people"]
     assert wr.bare_people_counts("at least 5, at most 79 people") == []

@@ -47,6 +47,8 @@ def test_an_old_row_reaches_orion_as_a_people_range_never_a_bare_count() -> None
                                   "line": V1_LINE, "rollup": json.dumps(V1_DAY)})
     assert RANGE_TEXT in card.line and "137 people" not in card.line
     assert bare_people_counts(card.preview()) == []
+    # No readable rollup: no card, never the stored line.
+    assert build_street_day_card({"stream_id": "walkway", "label": "d", "complete": True, "line": V1_LINE}) is None
 
 
 class _Conn:
@@ -101,7 +103,7 @@ def _loop(conn, streams=("walkway",)) -> CuriosityInvestigation:
 
 def test_newest_day_rollup_joins_the_material_next_to_the_captions() -> None:
     conn = _Conn({"stream_id": "walkway", "label": "2026-10-17", "complete": False, "line": LINE,
-                  "computed_at": NOW})
+                  "rollup": '{"rules_version": 2}', "computed_at": NOW})
     material = asyncio.run(_loop(conn)._read_study_material(NOW))
     assert conn.day_args == (["walkway"],)
     assert material.street_day is not None and material.street_day.line == LINE
@@ -126,7 +128,9 @@ def test_no_street_streams_means_no_query() -> None:
 
 
 def test_card_builder_refuses_blank_lines_and_marks_complete_days_plainly() -> None:
-    assert build_street_day_card({"stream_id": "walkway", "label": "d", "complete": True, "line": "  "}) is None
-    card = build_street_day_card({"stream_id": "walkway", "label": "2026-10-16", "complete": True, "line": "x."})
+    assert build_street_day_card({"stream_id": "walkway", "label": "d", "complete": True, "line": "  ",
+                                 "rollup": {"rules_version": 2}}) is None
+    card = build_street_day_card({"stream_id": "walkway", "label": "2026-10-16", "complete": True, "line": "x.",
+                                 "rollup": {"rules_version": 2}})
     assert card.preview() == "x."
     assert StudyMaterial(generated_at=NOW).street_day is None

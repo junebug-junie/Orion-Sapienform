@@ -31,6 +31,7 @@ T = datetime(2026, 10, 17, 6, 0, tzinfo=timezone.utc)
 
 def _row(grain="day", gate=False):
     rollup = {
+        "rules_version": 2,
         "total": {"passings": 185, "distinct": 93, "sightings": 400},
         "kinds": {"person": {"passings": 105, "distinct": 50, "sightings": 200}},
         "named": {"Alex": {"times": ["15:31"], "sightings": 2, "individual_ids": ["secret-ind"]}},

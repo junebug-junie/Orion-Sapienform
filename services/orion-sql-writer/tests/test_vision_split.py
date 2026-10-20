@@ -437,6 +437,30 @@ def test_split_moves_the_named_picture_and_its_close_face_and_keeps_identity(pg)
 
 
 @needs_pg
+def test_out_of_retention_counts_only_sightings_whose_crops_are_gone(pg) -> None:
+    """Person crops outlive VISION_CROP_RETENTION_DAYS (keep list): an old
+    sighting that still has its crops was planned over, so it is not counted."""
+    from sqlalchemy import text
+
+    old = NOW - timedelta(days=10)
+    with pg.begin() as conn:
+        _world(conn)
+        for sid, minute in (("s-old-kept", 0), ("s-old-gone", 30)):
+            conn.execute(text(
+                "INSERT INTO vision_individual_sighting (sighting_id, individual_id, stream_id, zone, started_at, "
+                "ended_at, dwell_sec, observation_count, thumb_ref) VALUES (:s, 'src', 'walkway', 'walk', :t, :t, 0, "
+                "1, 'thumb:old')"), {"s": sid, "t": old + timedelta(minutes=minute)})
+        conn.execute(text(
+            "INSERT INTO vision_crop_observation (crop_id, observation_id, stream_id, observed_at, label, score, "
+            "box_xyxy, zone, embedding, individual_id, created_at) VALUES ('old-kept', 'obs-old', 'walkway', :t, "
+            "'person', 0.9, '{0,0,10,10}', 'walk', :e, 'src', :t)"), {"t": old, "e": list(_vec(1, 0.05))})
+    with pg.begin() as conn:
+        vs.apply_splits(conn, NOW, CFG)
+    with pg.begin() as conn:
+        assert _split_row(conn)["sightings_out_of_retention"] == 1
+
+
+@needs_pg
 def test_split_is_idempotent(pg) -> None:
     with pg.begin() as conn:
         _world(conn)

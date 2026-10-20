@@ -39,8 +39,8 @@ proposal's read-only export: 4,988 crops, 2026-10-15 06:21 -> 2026-10-16
 
 Exit 0 = reproduced (individual counts exact for the baseline, +-5% for the
 deployed rule; mixed/split +-0.5 points), 1 = a number moved, 2 = cannot
-replay (crops pruned after VISION_CROP_RETENTION_DAYS=7, i.e. from about
-2026-10-22). ``--until``/``--since`` replay another window (e.g. the 24 h
+replay (non-person crops pruned after VISION_CROP_RETENTION_DAYS=7, i.e. from
+about 2026-10-22; person crops are kept since VISION_CROP_RETENTION_KEEP_LABELS). ``--until``/``--since`` replay another window (e.g. the 24 h
 after deploy) and print the table without asserting.
 
     python evals/run_vision_body_match_replay_eval.py --live postgresql://postgres:...@localhost:55432/conjourney

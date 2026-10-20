@@ -562,7 +562,7 @@ Needs `services/orion-sql-db/manual_migration_vision_confirm_asks_v1.sql`
 `vision_individual_split`); without them
 the individuals loop backs off with a clear error. Replay eval (read-only on live):
 `evals/run_vision_confirm_asks_replay_eval.py`. Retention: crops `VISION_CROP_RETENTION_DAYS` (7) except labels in
-`VISION_CROP_RETENTION_KEEP_LABELS` (`person`, kept forever as labelled examples),
+`VISION_CROP_RETENTION_KEEP_LABELS` (`person`: every person crop is kept, so Juniper's labels keep their examples),
 sightings `VISION_SIGHTING_RETENTION_DAYS` (90); unlabeled individuals unseen
 for the sighting retention are deleted, labeled ones stay.
 

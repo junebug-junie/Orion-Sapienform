@@ -21,6 +21,15 @@ Weight fades with a half-life. Nodes are born as ``candidate``, promoted to ``ac
 at least ``promote_min_lanes`` distinct non-seed lanes back them, and ``retired`` when they
 fade out or are never backed. Retired is terminal and never matched again.
 
+Independence, not lane names: ``lane_recent`` is keyed by SOURCE (``source_key``), not by lane. Two
+lanes that narrate the same upstream signal are one source. Reverie narrates the attention
+broadcast coalition and the metacog journal is opened by the self-signal episode gate; both start
+from ``substrate_node_prediction_error_history`` through the same attention eligibility rule. Live
+2026-10-20: on the 3 active prediction-error nodes, 16 of 27 metacog journal hits had a reverie hit
+on the same node within 10 minutes (1 of 27 at a 6 h or 3 h offset), so "two lanes" was one source
+and promoted them. ``lane_counts`` stays per lane (what the panel shows). ``rekey_sources`` moves
+nodes stored under the old lane keys onto source keys, once.
+
 Rows mirror ``services/orion-sql-db/manual_migration_personality_graph_v1.sql``:
 ``Node`` -> personality_disposition, ``EvidenceRow`` -> personality_evidence,
 ``HistoryRow`` -> personality_weight_history. Single writer: orion-durable-runs.
@@ -53,6 +62,8 @@ CHOICE_LANE = "curiosity_choice"
 SEED_LANE = "self_inquiry_seed"
 ORIGIN_SEED = "seed_self_inquiry"
 ORIGIN_RECURRENCE = "recurrence"
+# One source: reverie plus the metacog journal (see module docstring).
+SUBSTRATE_NARRATION = "substrate_narration"
 VALID_LANES = frozenset(get_args(PersonalityLane))
 _FRAME_MAX_WARNINGS = 20
 
@@ -191,6 +202,14 @@ def _derived_weight(lane_recent: Mapping[str, float], params: GraphParams) -> fl
     )
 
 
+def source_key(lane: str, meta: Mapping[str, Any] | None) -> str:
+    """The ``lane_recent`` key: the independent source behind this evidence (module docstring)."""
+    if lane == "reverie" or (lane == "journal" and isinstance(meta, Mapping)
+                             and meta.get("source_kind") == "metacog"):
+        return SUBSTRATE_NARRATION
+    return lane
+
+
 def _node_id(evidence_id: str) -> str:
     return "disp-" + hashlib.sha1(evidence_id.encode("utf-8")).hexdigest()[:16]
 
@@ -205,8 +224,9 @@ def _copy(node: Node) -> Node:
 
 
 def _promoting_lanes(node: Node, params: GraphParams) -> int:
-    return sum(1 for lane, r in node.lane_recent.items()
-               if lane != SEED_LANE and r >= params.promote_lane_min_recent)
+    """Distinct non-seed SOURCES (``lane_recent`` keys) at or above the recent floor."""
+    return sum(1 for key, r in node.lane_recent.items()
+               if key != SEED_LANE and r >= params.promote_lane_min_recent)
 
 
 # --- tick state -------------------------------------------------------------------------------
@@ -267,14 +287,14 @@ class _Tick:
                 best, best_sim = node, sim
         return best, best_sim
 
-    def reinforce(self, node: Node, ev: Evidence, emb: list[float], lane: str, sim: float,
+    def reinforce(self, node: Node, ev: Evidence, emb: list[float], lane: str, key: str, sim: float,
                   params: GraphParams) -> float:
         c = self.centroid(node) or emb
         before = node.weight
         # Clamp at the level where the lane's contribution caps: hits on a capped lane refresh it
         # instead of piling up, so a theme that goes quiet fades out in weeks whatever its volume
         # (unclamped, 2,600 reverie hits stayed above the cap ~134 days after the last one).
-        node.lane_recent[lane] = min(node.lane_recent.get(lane, 0.0) + 1.0, math.expm1(params.lane_cap))
+        node.lane_recent[key] = min(node.lane_recent.get(key, 0.0) + 1.0, math.expm1(params.lane_cap))
         node.weight = _derived_weight(node.lane_recent, params)
         gain = node.weight - before
         node.evidence_count += 1
@@ -296,9 +316,9 @@ class _Tick:
                 node.label, node.label_similarity = label, sim
         return gain
 
-    def create(self, ev: Evidence, emb: list[float], lane: str, origin: str, now: datetime,
+    def create(self, ev: Evidence, emb: list[float], lane: str, key: str, origin: str, now: datetime,
                params: GraphParams) -> Node:
-        gain = _derived_weight({lane: 1.0}, params)
+        gain = _derived_weight({key: 1.0}, params)
         # A node born from self-inquiry alone is a seed whichever entry point created it.
         origin = ORIGIN_SEED if lane == SEED_LANE else origin
         node = Node(
@@ -309,7 +329,7 @@ class _Tick:
             weight=gain, evidence_count=1, lane_counts={lane: 1},
             chosen_count=1 if lane == CHOICE_LANE else 0, first_seen_at=ev.occurred_at,
             last_reinforced_at=ev.occurred_at, retired_at=None, updated_at=now,
-            lane_recent={lane: 1.0}, last_folded_at=now,
+            lane_recent={key: 1.0}, last_folded_at=now,
         )
         # Id collision with an existing (e.g. retired) node: derive a distinct id deterministically.
         taken = {n.disposition_id for n in self.nodes}
@@ -405,10 +425,10 @@ def _ingest(tick: _Tick, evidence: Sequence[Evidence], *, now: datetime, params:
     for ev, emb, lane in valid:
         node, sim = tick.best_match(emb, eligible=eligible)
         if node is not None and sim >= params.match_threshold:
-            delta = tick.reinforce(node, ev, emb, lane, sim, params)
+            delta = tick.reinforce(node, ev, emb, lane, source_key(lane, ev.meta), sim, params)
             disp_id, similarity = node.disposition_id, sim
         else:
-            node = tick.create(ev, emb, lane, origin, now, params)
+            node = tick.create(ev, emb, lane, source_key(lane, ev.meta), origin, now, params)
             delta, disp_id, similarity = node.weight, node.disposition_id, 1.0
         tick.evidence_rows.append(EvidenceRow(
             evidence_id=ev.evidence_id, lane=lane, source_ref=str(ev.source_ref or ""),
@@ -449,6 +469,55 @@ def seed_nodes(seeds: Sequence[Evidence], *, now: datetime,
             origin=ORIGIN_SEED, eligible=lambda n: n.origin == ORIGIN_SEED)
     tick.statuses(now, params)
     return tick.result(now, params)
+
+
+# Lanes whose stored ``lane_recent`` key may hold another source's hits (before ``source_key``).
+REKEY_LANES = ("reverie", "journal")
+
+
+def rekey_sources(nodes: Sequence[Node], hits: Mapping[str, Sequence[tuple[str, Any, datetime]]], *,
+                  now: datetime, params: GraphParams = DEFAULT_PARAMS) -> FoldResult:
+    """One-time move of ``lane_recent`` from lane keys to source keys (``source_key``).
+
+    ``hits[disposition_id]`` lists that node's evidence in ``REKEY_LANES`` as (lane, meta,
+    occurred_at). Those keys are rebuilt by replaying the hits (fade by the half-life between hits,
+    +1 per hit, clamped as in ``reinforce``) up to the node's ``updated_at``; other keys are kept.
+    An active node that no longer has ``promote_min_lanes`` sources goes back to candidate: it was
+    promoted by one source counted twice. Returns every node whose ``lane_recent`` changed, with a
+    history row at ``now`` when weight or status moved. Inputs are not mutated."""
+    cap = math.expm1(params.lane_cap)
+    changed: list[Node] = []
+    history: list[HistoryRow] = []
+    for orig in nodes:
+        if orig.status == "retired":
+            continue
+        rebuilt: dict[str, float] = {}
+        last: dict[str, datetime] = {}
+        for lane, meta, at in sorted(hits.get(orig.disposition_id, ()), key=lambda h: h[2]):
+            if lane not in REKEY_LANES or _aware(at) is None:
+                continue
+            key = source_key(lane, meta)
+            r = rebuilt.get(key, 0.0)
+            if key in last and params.half_life_days > 0:
+                r *= 0.5 ** (max(0.0, _days(at - last[key])) / params.half_life_days)
+            rebuilt[key], last[key] = min(r + 1.0, cap), at
+        end = _aware(orig.updated_at)
+        for key, at in last.items():
+            if end is not None and params.half_life_days > 0:
+                rebuilt[key] *= 0.5 ** (max(0.0, _days(end - at)) / params.half_life_days)
+        node = _copy(orig)
+        node.lane_recent = {k: v for k, v in orig.lane_recent.items() if k not in REKEY_LANES} | rebuilt
+        if node.lane_recent == orig.lane_recent:
+            continue
+        node.weight = _derived_weight(node.lane_recent, params)
+        if node.status == "active" and _promoting_lanes(node, params) < params.promote_min_lanes:
+            node.status = "candidate"
+        if node.status != orig.status or node.weight != orig.weight:
+            history.append(HistoryRow(node.disposition_id, now, node.weight, node.status,
+                                      node.evidence_count))
+            node.history_weight = node.weight
+        changed.append(node)
+    return FoldResult(nodes=changed, evidence_rows=[], history=history)
 
 
 def _as_utc(dt: datetime) -> datetime:

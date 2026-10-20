@@ -4,7 +4,8 @@ A plain periodic task (no LangGraph): all state lives in the ``personality_*`` t
 per-source cursors, so a restart resumes exactly. One tick, every ``PERSONALITY_TICK_SEC`` and
 once on start:
 
-1. load non-retired nodes and the cursors;
+1. load non-retired nodes and the cursors; once (``rekey`` marker), move their ``lane_recent`` from
+   lane keys to source keys (``rekey_sources``), committed with this tick;
 2. first tick ever: write a start cursor (= now) for every source (no backfill) and seed nodes
    from the latest version of each curiosity self-inquiry concept (all-or-nothing: a failed embed
    leaves the ``seed`` marker unwritten, so the whole seed is retried next tick);
@@ -27,11 +28,12 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Optional, Sequence
 
-from orion.personality.graph import Evidence, FoldResult, Node, apply_fade, fold, seed_nodes
+from orion.personality.graph import Evidence, FoldResult, Node, apply_fade, fold, rekey_sources, seed_nodes
 from orion.personality.situation import COMPANY_CLOSE_GRACE, situation_at
 
 from app.personality_sources import (
     READ_LAG_SEC,
+    REKEY_CURSOR,
     SEED_CURSOR,
     SOURCE_NAMES,
     Candidate,
@@ -119,12 +121,13 @@ def accept(items: Sequence[SourceItem], existing: set[str], vectors: dict[str, O
     return out, (Cursor(last.at, last.ref) if last else None), False
 
 
-def merge(seeded: Optional[FoldResult], folded: FoldResult, input_ids: set[str]) -> FoldResult:
-    """Seed result + fold result, deduped (the fold's copy of a node wins)."""
+def merge(seeded: Optional[FoldResult], folded: FoldResult, input_ids: set[str],
+          rekeyed: Optional[FoldResult] = None) -> FoldResult:
+    """Rekey + seed + fold results, deduped (the fold's copy of a node wins)."""
     nodes: dict[str, Node] = {}
     history: dict[tuple[str, datetime], Any] = {}
     evidence = []
-    for res in (seeded, folded):
+    for res in (rekeyed, seeded, folded):
         if res is None:
             continue
         for n in res.nodes:
@@ -239,6 +242,17 @@ class PersonalityDriver:
         cursors = await self._store.load_cursors()
         write_cursors: dict[str, Cursor] = {}
 
+        rekeyed: Optional[FoldResult] = None
+        if REKEY_CURSOR not in cursors:
+            hits = await self._store.rekey_hits(n.disposition_id for n in nodes)
+            rekeyed = rekey_sources(nodes, hits, now=now)
+            by_id = {n.disposition_id: n for n in rekeyed.nodes}
+            demoted = [n.disposition_id for n in nodes
+                       if n.status == "active" and by_id.get(n.disposition_id, n).status != "active"]
+            nodes = [by_id.get(n.disposition_id, n) for n in nodes]
+            write_cursors[REKEY_CURSOR] = Cursor(now, "")
+            logger.info("personality_rekey nodes=%d demoted=%s", len(rekeyed.nodes), demoted)
+
         # First boot (per source): start at now, no backfill. Not read this tick.
         for name in SOURCE_NAMES:
             if name not in cursors:
@@ -307,7 +321,7 @@ class PersonalityDriver:
             folded = await asyncio.to_thread(fold, base, evidence, now=now)
         else:
             folded = await asyncio.to_thread(apply_fade, base, now=now)
-        result = merge(seeded, folded, input_ids)
+        result = merge(seeded, folded, input_ids, rekeyed)
         loaded = {n.disposition_id: node_key(n) for n in nodes}
 
         await self._store.commit_tick(TickWrite(now=now, evidence=result.evidence_rows, nodes=result.nodes,

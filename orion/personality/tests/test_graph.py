@@ -15,7 +15,9 @@ from orion.personality.graph import (
     choice_style_from_rows,
     fold,
     project_frame,
+    rekey_sources,
     seed_nodes,
+    source_key,
 )
 from orion.schemas.personality import FRAME_MAX_DISPOSITIONS, PersonalityFrameV1
 
@@ -361,7 +363,7 @@ def test_one_stray_second_lane_hit_does_not_promote_a_flood():
     evs.append(_ev(_axis(3), "journal", at=t0 + timedelta(minutes=30)))
     res = fold([], evs, now=NOW)
     node = res.nodes[0]
-    assert node.evidence_count == 501 and node.lane_recent == pytest.approx({"reverie": RMAX, "journal": 1.0})
+    assert node.evidence_count == 501 and node.lane_recent == pytest.approx({"substrate_narration": RMAX, "journal": 1.0})
     assert node.status == "candidate"
     promoted = fold([node], [_ev(_axis(3), "journal", at=NOW - timedelta(minutes=1))], now=NOW).nodes[0]
     assert promoted.lane_recent["journal"] == 2.0 and promoted.status == "active"
@@ -477,7 +479,7 @@ def test_flooded_lane_counter_is_clamped_so_a_quiet_theme_fades_in_weeks():
     import math as _m
 
     flood = _run_days({"reverie": 500}, 3)
-    assert flood.lane_recent["reverie"] == pytest.approx(_m.expm1(DEFAULT_PARAMS.lane_cap))
+    assert flood.lane_recent["substrate_narration"] == pytest.approx(_m.expm1(DEFAULT_PARAMS.lane_cap))
     # Then silence: an active node built the same way retires within ~10 weeks, not ~6 months.
     n = _node(status="active", lane_recent={"reverie": _m.expm1(1.5), "dream": _m.expm1(1.5)},
               lane_counts={"reverie": 1500, "dream": 6}, updated_at=NOW)
@@ -524,3 +526,62 @@ def test_history_records_slow_fade_once_it_adds_up():
         recorded += res.history
     assert recorded, "accumulated fade must reach the history"
     assert recorded[-1].weight < recorded[0].weight
+
+
+# --- sources, not lanes (live 2026-10-20: reverie + metacog journal are one source) ---------------
+
+METACOG = {"source_kind": "metacog"}
+
+
+def test_source_key_merges_reverie_and_metacog_journal_only():
+    assert source_key("reverie", {}) == source_key("journal", METACOG) == "substrate_narration"
+    assert source_key("journal", {"source_kind": "self_study"}) == "journal"
+    assert source_key("journal", {}) == "journal"
+    assert source_key("dream", METACOG) == "dream"
+
+
+def test_reverie_plus_metacog_journal_is_one_source_and_does_not_promote():
+    t0 = NOW - timedelta(hours=1)
+    evs = [_ev(_axis(4), lane, at=t0 + timedelta(minutes=i), meta=meta)
+           for i, (lane, meta) in enumerate([("reverie", {}), ("journal", METACOG)] * 3)]
+    node = fold([], evs, now=NOW).nodes[0]
+    assert node.lane_counts == {"reverie": 3, "journal": 3}
+    assert set(node.lane_recent) == {"substrate_narration"} and node.status == "candidate"
+    assert node.weight == pytest.approx(DEFAULT_PARAMS.lane_cap)
+    # An independent journal (self_study) is a second source and promotes.
+    other = [_ev(_axis(4), "journal", at=t0 + timedelta(minutes=10 + i), meta={"source_kind": "self_study"})
+             for i in range(2)]
+    assert fold([node], other, now=NOW).nodes[0].status == "active"
+
+
+def _legacy(**kw) -> Node:
+    return _node(**({"lane_counts": {"reverie": 3, "journal": 3}, "lane_recent": {"reverie": 3.0, "journal": 3.0}} | kw))
+
+
+def test_rekey_rebuilds_lane_keys_from_hits_and_demotes_a_double_counted_node():
+    hits = {"d1": [("reverie", {}, NOW - timedelta(days=1, minutes=i)) for i in range(3)]
+            + [("journal", METACOG, NOW - timedelta(days=1, minutes=i)) for i in range(3)]}
+    res = rekey_sources([_legacy(lane_recent={"reverie": 3.0, "journal": 3.0, "dream": 0.5})], hits, now=NOW)
+    (n,) = res.nodes
+    # 6 hits within minutes clamp at the cap, then fade one day to updated_at (NOW).
+    assert n.lane_recent == pytest.approx({"dream": 0.5, "substrate_narration": RMAX * HALF})
+    assert n.status == "candidate" and n.weight == pytest.approx(_derived_weight(n.lane_recent, DEFAULT_PARAMS))
+    (h,) = res.history
+    assert (h.at, h.status, h.weight) == (NOW, "candidate", n.weight) and n.history_weight == n.weight
+
+
+def test_rekey_keeps_a_node_with_a_real_second_source_active():
+    hits = {"d1": [("reverie", {}, NOW - timedelta(minutes=i)) for i in range(3)]
+            + [("journal", {"source_kind": "self_study"}, NOW - timedelta(minutes=i)) for i in range(3)]}
+    (n,) = rekey_sources([_legacy()], hits, now=NOW).nodes
+    assert set(n.lane_recent) == {"substrate_narration", "journal"} and n.status == "active"
+
+
+def test_rekey_leaves_untouched_nodes_out_and_is_idempotent():
+    hits = {"d1": [("dream", {}, NOW - timedelta(minutes=1))]}
+    assert rekey_sources([_node(lane_counts={"dream": 3})], {}, now=NOW).nodes == []
+    assert rekey_sources([_node(lane_counts={"dream": 3})], hits, now=NOW).nodes == []
+    first = rekey_sources([_legacy()], {"d1": [("reverie", {}, NOW - timedelta(minutes=i)) for i in range(4)]},
+                          now=NOW).nodes
+    assert rekey_sources(first, {"d1": [("reverie", {}, NOW - timedelta(minutes=i)) for i in range(4)]},
+                         now=NOW).nodes == []

@@ -396,9 +396,61 @@ def story_display(story: dict[str, Any], labels: dict[str, str],
     return name, sentence, why
 
 
+# Street continuity (orion-sql-writer app/vision_handoff_loop.py, 2026-10-20): the
+# other camera's sighting of the same passage. met / late = a predicted handoff
+# arrived; paired = both cameras saw them at the same moment on the central walk.
+_HANDOFF_SQL = """
+SELECT source_story_id, target_story_id, source_stream, target_stream, transit_sec, status
+FROM vision_handoff
+WHERE status IN ('met', 'late', 'paired')
+  AND (source_story_id = ANY($1::text[]) OR target_story_id = ANY($1::text[]))
+ORDER BY scored_at DESC NULLS LAST
+"""
+CAMERA_WORDS = {"doorbell": "door camera", "walkway": "walkway camera"}
+
+
+def handoff_info(story_id: str, row: Any) -> Optional[dict[str, Any]]:
+    """{"kind": "from" | "next" | "same", "camera", "seconds"} for one story,
+    from one vision_handoff row it is part of; None if it is not."""
+    if row is None or row["status"] not in ("met", "late", "paired"):
+        return None
+    if story_id == row["target_story_id"]:
+        other = row["source_stream"]
+        kind = "same" if row["status"] == "paired" else "from"
+    elif story_id == row["source_story_id"]:
+        other = row["target_stream"]
+        kind = "same" if row["status"] == "paired" else "next"
+    else:
+        return None
+    secs = row["transit_sec"]
+    return {"kind": kind, "camera": CAMERA_WORDS.get(other or "", f"{other} camera"),
+            "seconds": None if secs is None else int(round(abs(float(secs))))}
+
+
+async def _handoffs(conn: Any, stories: list[dict[str, Any]]) -> None:
+    """``handoff`` on each story (None when no other camera saw this passage).
+    Fail-open: before manual_migration_vision_handoff_v1.sql the cards show no line."""
+    for s in stories:
+        s["handoff"] = None
+    if not stories:
+        return
+    try:
+        rows = await conn.fetch(_HANDOFF_SQL, [s["story_id"] for s in stories])
+    except Exception as exc:  # noqa: BLE001 - the card still shows the stored story
+        logger.debug("motion_story_handoff_lookup_failed error=%s", exc)
+        return
+    for s in stories:
+        for r in rows:
+            info = handoff_info(s["story_id"], r)
+            if info is not None:
+                s["handoff"] = info
+                break
+
+
 async def _enrich(conn: Any, stories: list[dict[str, Any]]) -> None:
-    """Add ``people``, ``display_name``, ``display_sentence`` and ``name_source``.
+    """Add ``people``, ``display_name``, ``display_sentence``, ``name_source`` and ``handoff``.
     Fail-open: a missing individuals table leaves the stored sentence and no people."""
+    await _handoffs(conn, stories)
     if stories:
         links = await _late_links(conn, [s.get("evidence") or [] for s in stories])
         for s in stories:

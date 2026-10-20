@@ -202,6 +202,18 @@
     return box;
   }
 
+  // Street continuity (2026-10-20): the other camera's sighting of this passage,
+  // from the handoff reducer. {kind: "from" | "next" | "same", camera, seconds}.
+  function handoffText(h) {
+    if (!h || !h.camera) return "";
+    const secs = typeof h.seconds === "number" ? h.seconds : null;
+    if (h.kind === "same") return `The ${h.camera} saw them at the same moment.`;
+    if (secs === null) return "";
+    if (h.kind === "from") return `Came from the ${h.camera} ${secs} s earlier.`;
+    if (h.kind === "next") return `Seen next on the ${h.camera} ${secs} s later.`;
+    return "";
+  }
+
   function renderStory(doc, story, onVerdict, onPerson) {
     const item = el(doc, "div", "rounded-lg border border-gray-700 bg-gray-800/60 p-3 space-y-2");
     item.setAttribute("data-story-id", story.story_id);
@@ -213,6 +225,12 @@
       const was = el(doc, "div", "text-[10px] text-gray-500", `Orion first wrote: ${story.sentence}`);
       was.setAttribute("data-story-first-written", "1");
       item.appendChild(was);
+    }
+    const handoff = handoffText(story.handoff);
+    if (handoff) {
+      const line = el(doc, "div", "text-[11px] text-sky-300", handoff);
+      line.setAttribute("data-story-handoff", story.handoff.kind);
+      item.appendChild(line);
     }
     const meta = [localTime(story.started_at), `${story.kind}/${story.speed_class || "?"}`,
       `${story.detection_count} detections`];
@@ -431,7 +449,7 @@
   }
 
   const api = { VIEW_VALUE, VERDICTS, CANT_TELL, tallyLine, gateLine, pickThumbs, stripModel, hasPicture,
-                personTitle, actionLine, renderStory, mount };
+                personTitle, actionLine, handoffText, renderStory, mount };
 
   global.OrionWalkwayStories = api;
   if (typeof module !== "undefined" && module.exports) {

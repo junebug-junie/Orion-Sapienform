@@ -69,6 +69,7 @@ def _run(
     migrations: str = "",
     checker: str | None = None,
     applier: str | None = None,
+    safe_build_body: str | None = None,
 ):
     fake_root = tmp_path / "repo"
     fake_scripts = fake_root / "scripts"
@@ -89,6 +90,7 @@ def _run(
         + ("cat >/dev/null\n" if safe_build_reads_stdin else "")
         + "printf '%s\\n' \"$*\" >> \"$REBUILD_TEST_CAPTURE\"\n"
         + 'case "$*" in *" build") exit "${FAKE_BUILD_RC:-0}";; esac\n'
+        + (safe_build_body or "")
         + f"exit {safe_build_rc}\n"
     )
     safe_build.chmod(0o755)
@@ -358,7 +360,8 @@ def test_migrations_are_applied_before_any_rebuild(tmp_path: Path) -> None:
         checker=_CHECKER_REPORT, applier=_APPLIER,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert calls == [f"APPLY {_MIG}", "orion-hub up -d --build", "orion-sql-writer up -d --build"]
+    assert calls == [f"APPLY --defer-if-backup {_MIG}", "orion-hub up -d --build",
+                     "orion-sql-writer up -d --build"]
     out = completed.stdout
     # applier output, then the read-only report of what is live afterwards
     assert out.index("fake applier ran") < out.index("live state:")
@@ -370,6 +373,105 @@ def test_dry_run_passes_dry_run_to_the_applier(tmp_path: Path) -> None:
         applier=_APPLIER, extra_args=["--dry-run"],
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == [f"APPLY --dry-run {_MIG}"]
+
+
+# 2026-10-17 ~03:56 UTC: the nightly pg_dump held locks, the first pass hit lock_timeout, and hub +
+# sql-writer stayed refused until the file was applied by hand. Now the first pass defers (exit 3),
+# every rebuild runs, then the second pass waits for the backup and applies, and only the consumers
+# the deploy gate refused are rebuilt again. The fake gate refuses orion-hub until the fake applier
+# has "applied" (marker file).
+_DEFERRING_APPLIER = """\
+import os, sys
+args = sys.argv[1:]
+cap = os.environ["REBUILD_TEST_CAPTURE"]
+if "--required-by" in args:
+    print(os.environ.get("FAKE_REQUIRED_BY", "orion-hub"))
+    raise SystemExit(0)
+with open(cap, "a") as fh:
+    fh.write("APPLY " + " ".join(args) + "\\n")
+if "--defer-if-backup" in args:
+    print("post-pull migrations: a backup is running; DEFERRED")
+    raise SystemExit(3)
+rc = int(os.environ.get("FAKE_SECOND_APPLY_RC", "0"))
+if rc == 0:
+    open(cap + ".applied", "w").close()
+raise SystemExit(rc)
+"""
+
+_GATE = ('case "$*" in orion-hub*up*) [ -f "$REBUILD_TEST_CAPTURE.applied" ] || '
+         '{ echo "refused: migration not applied" >&2; exit 1; } ;; esac\n')
+
+
+def test_backup_defers_the_apply_until_after_the_other_rebuilds_then_retries_the_refused(
+        tmp_path: Path, monkeypatch) -> None:
+    completed, calls = _run(
+        tmp_path, plan="orion-hub,build;orion-planner,build", migrations=_MIG,
+        checker=_CHECKER_REPORT, applier=_DEFERRING_APPLIER, safe_build_body=_GATE,
+    )
+    assert calls == [
+        f"APPLY --defer-if-backup {_MIG}",
+        "orion-hub up -d --build",          # refused by the gate: migration deferred
+        "orion-planner up -d --build",      # not a consumer: deploys without waiting
+        f"APPLY {_MIG}",                    # the wait-and-apply pass, after every rebuild
+        "orion-hub up -d --build",          # the refused consumer, again
+    ], completed.stdout + completed.stderr
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "rebuilding the services the deploy gate refused: orion-hub" in completed.stdout
+    events = [ln.split(" ", 4)[3] for ln in _log_lines(tmp_path)]
+    assert "DEFERRED-APPLY" in events and "RETRY-AFTER-MIGRATION" in events
+    assert _log_lines(tmp_path)[-1].endswith("DONE rebuilt=2 failed=")
+
+
+def test_deferred_apply_that_cannot_run_leaves_the_consumer_refused(tmp_path: Path, monkeypatch) -> None:
+    """Exit 2 = not allowed here / live state UNKNOWN: nothing was applied, nothing is retried."""
+    monkeypatch.setenv("FAKE_SECOND_APPLY_RC", "2")
+    completed, calls = _run(
+        tmp_path, plan="orion-hub,build", migrations=_MIG, checker=_CHECKER_REPORT,
+        applier=_DEFERRING_APPLIER, safe_build_body=_GATE,
+    )
+    assert calls == [f"APPLY --defer-if-backup {_MIG}", "orion-hub up -d --build", f"APPLY {_MIG}"]
+    assert completed.returncode != 0
+    assert "deferred migration apply did not finish (exit 2)" in completed.stderr
+    assert "git pull will not return until the backup finishes" in completed.stderr
+
+
+def test_partly_failed_second_pass_still_retries_the_consumers(tmp_path: Path, monkeypatch) -> None:
+    """Exit 1: some file applied, another did not. Retry the refused consumers anyway; the deploy
+    gate refuses again any whose file is still missing (here the gate marker exists: it landed)."""
+    monkeypatch.setenv("FAKE_SECOND_APPLY_RC", "1")
+    (tmp_path / "safe-build-args.txt.applied").write_text("")  # hub's own file did land
+    completed, calls = _run(
+        tmp_path, plan="orion-hub,build", migrations=_MIG, checker=_CHECKER_REPORT,
+        applier=_DEFERRING_APPLIER,
+        safe_build_body='case "$*" in orion-hub*up*) [ -f "$REBUILD_TEST_CAPTURE.phase2" ] || '
+                        '{ touch "$REBUILD_TEST_CAPTURE.phase2"; exit 1; } ;; esac\n',
+    )
+    assert calls == [f"APPLY --defer-if-backup {_MIG}", "orion-hub up -d --build", f"APPLY {_MIG}",
+                     "orion-hub up -d --build"], completed.stdout + completed.stderr
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_only_consumers_of_the_deferred_file_are_retried(tmp_path: Path, monkeypatch) -> None:
+    """A service that failed for another reason is not rebuilt a second time."""
+    monkeypatch.setenv("FAKE_REQUIRED_BY", "orion-sql-writer")
+    completed, calls = _run(
+        tmp_path, plan="orion-hub,build", migrations=_MIG, checker=_CHECKER_REPORT,
+        applier=_DEFERRING_APPLIER, safe_build_body=_GATE,
+    )
+    assert calls == [f"APPLY --defer-if-backup {_MIG}", "orion-hub up -d --build", f"APPLY {_MIG}"]
+
+
+def test_migration_only_pull_still_runs_the_deferred_apply(tmp_path: Path) -> None:
+    completed, calls = _run(tmp_path, plan="", migrations=_MIG, checker=_CHECKER_REPORT,
+                            applier=_DEFERRING_APPLIER)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == [f"APPLY --defer-if-backup {_MIG}", f"APPLY {_MIG}"]
+
+
+def test_dry_run_never_runs_the_deferred_pass(tmp_path: Path) -> None:
+    completed, calls = _run(tmp_path, plan="orion-hub,build", migrations=_MIG, checker=_CHECKER_REPORT,
+                            applier=_DEFERRING_APPLIER, extra_args=["--dry-run"])
     assert calls == [f"APPLY --dry-run {_MIG}"]
 
 

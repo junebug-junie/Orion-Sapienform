@@ -119,6 +119,18 @@ RECREATE=$(printf '%s\n' "$PLAN" | awk -F'\t' '$2 == "recreate" {print $1}')
 # ORION_POST_PULL_APPLY_MIGRATIONS=0. Then the read-only report shows the live
 # verdict and the manual command for anything still unapplied. Only on a host
 # whose service list includes orion-sql-db (the classifier lists none on circe).
+#
+# A running backup (2026-10-17: nightly pg_dump held locks ~45 min, the apply
+# hit lock_timeout, hub and sql-writer stayed refused until applied by hand):
+# this first pass runs with --defer-if-backup, so it never waits; the applier
+# exits 3 when it deferred files behind a backup. Every rebuild then runs as
+# usual (consumers of the deferred files are refused by the deploy gate, the
+# rest deploy), and only after that does apply_deferred_migrations wait for
+# the backup, apply, and re-run the rebuild of the refused consumers.
+APPLY_RC=0
+APPLIER=""
+CHECK_PY=python3
+MIGRATIONS=""
 if [ "$LIST_ONLY" != "1" ]; then
     set +e
     MIGRATIONS=$(python3 "$PY" --migrations "$@" 2>/dev/null)
@@ -142,7 +154,7 @@ if [ "$LIST_ONLY" != "1" ]; then
         RAW_APPLY="docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 <"
         APPLIER="$REPO_ROOT/scripts/apply_post_pull_migrations.py"
         if [ -f "$APPLIER" ]; then
-            APPLY_ARGS=""
+            APPLY_ARGS="--defer-if-backup"
             if [ "$DRY_RUN" = "1" ]; then
                 APPLY_ARGS="--dry-run"
             fi
@@ -151,7 +163,10 @@ if [ "$LIST_ONLY" != "1" ]; then
             set +e
             # shellcheck disable=SC2086
             (cd "$REPO_ROOT" && "$CHECK_PY" "$APPLIER" $APPLY_ARGS $MIGRATIONS </dev/null 2>&1)
+            APPLY_RC=$?
             set -e
+        else
+            APPLIER=""
         fi
         REPORT_RC=1
         if [ -f "$CHECKER" ]; then
@@ -203,7 +218,39 @@ $CORTEX_ORCH_SVC"
     fi
 fi
 
+# Second pass for files the first pass deferred behind a running backup: wait
+# for it (bounded: ORION_MIGRATION_BACKUP_MAX_WAIT_S, default 90 min), then
+# apply. Sets DEFERRED_RAN=1 when the pass got to the files (exit 0, or 1 =
+# some file still refused/failed); the caller then retries the refused
+# consumers, and the deploy gate re-refuses any whose file did not land.
+# Runs after the rebuilds, so nothing else waits -- but the post-merge hook is
+# synchronous, so `git pull` itself does not return until this is done.
+DEFERRED_RAN=0
+apply_deferred_migrations() {
+    DEFERRED_RAN=0
+    [ "$APPLY_RC" = "3" ] && [ -n "$APPLIER" ] && [ "$DRY_RUN" != "1" ] || return 0
+    echo ""
+    echo "rebuild_services_from_git_diff.sh: migration(s) were deferred behind a running backup; waiting for it, then applying (Ctrl-C is safe: lock_timeout keeps every apply short; rerun this script or apply by hand later)"
+    echo "rebuild_services_from_git_diff.sh: git pull will not return until the backup finishes or ${ORION_MIGRATION_BACKUP_MAX_WAIT_S:-5400}s pass (ORION_MIGRATION_BACKUP_MAX_WAIT_S)" >&2
+    rebuild_log "DEFERRED-APPLY start"
+    set +e
+    # shellcheck disable=SC2086
+    (cd "$REPO_ROOT" && "$CHECK_PY" "$APPLIER" $MIGRATIONS </dev/null 2>&1)
+    local rc=$?
+    set -e
+    rebuild_log "DEFERRED-APPLY end rc=$rc"
+    if [ "$rc" = "0" ] || [ "$rc" = "1" ]; then
+        DEFERRED_RAN=1
+    fi
+    if [ "$rc" != "0" ]; then
+        echo "rebuild_services_from_git_diff.sh: deferred migration apply did not finish (exit $rc); consumers of any file still unapplied stay refused by the deploy gate until it is applied" >&2
+    fi
+}
+
 if [ -z "${SERVICES//[$'\n\r\t ']}" ]; then
+    # A failed second pass is reported on stderr but, like the first pass, never
+    # fails the pull: there is nothing to rebuild, and the deploy gate holds.
+    apply_deferred_migrations
     echo "rebuild_services_from_git_diff.sh: no affected services to rebuild on this host"
     echo "rebuild_services_from_git_diff.sh: (see rebuild_affected_services stderr above for host filter details)"
     if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ]; then
@@ -260,7 +307,10 @@ if [ "$DRY_RUN" != "1" ]; then
     rebuild_log "RUN base=${BASE_REF:-default} services=$(printf '%s ' $SERVICES)recreate=$(printf '%s ' $RECREATE)"
 fi
 
-for svc in $SERVICES; do
+# rebuild_one <service>: the full rebuild of one stack; adds it to FAILED or
+# counts it in REBUILT.
+rebuild_one() {
+    local svc="$1"
     RECREATE_FLAG=""
     if printf '%s\n' $RECREATE | grep -qx "$svc" 2>/dev/null; then
         RECREATE_FLAG="--force-recreate"
@@ -290,7 +340,7 @@ for svc in $SERVICES; do
     if [ "$POOL_RC" -ne 0 ]; then
         echo "rebuild_services_from_git_diff.sh: FAILED $svc -- cannot read GPU pool ownership (exit $POOL_RC); not starting anything" >&2
         FAILED="$FAILED $svc"
-        continue
+        return 0
     fi
     POOL_HOLD=$(printf '%s\n' "$POOL_PLAN" | awk -F '\t' '$1 == "hold" { print $2 }')
 
@@ -311,7 +361,7 @@ for svc in $SERVICES; do
             done
         fi
         REBUILT=$((REBUILT + 1))
-        continue
+        return 0
     fi
 
     echo ""
@@ -388,7 +438,40 @@ EOF_PROFILES
     else
         REBUILT=$((REBUILT + 1))
     fi
+}
+
+for svc in $SERVICES; do
+    rebuild_one "$svc"
 done
+
+# Files deferred behind a backup: wait, apply, then rebuild again the
+# consumers the deploy gate refused above. Only services that FAILED and are
+# named in a deferred file's REQUIRED-BY header are retried, once.
+apply_deferred_migrations
+if [ "$DEFERRED_RAN" = "1" ] && [ -n "${FAILED//[$'\n\r\t ']}" ]; then
+    set +e
+    # shellcheck disable=SC2086
+    NEEDS=$(cd "$REPO_ROOT" && "$CHECK_PY" "$APPLIER" --required-by $MIGRATIONS </dev/null 2>/dev/null)
+    set -e
+    RETRY=""
+    STILL_FAILED=""
+    for svc in $FAILED; do
+        if printf '%s\n' $NEEDS | grep -qx "$svc" 2>/dev/null; then
+            RETRY="$RETRY $svc"
+        else
+            STILL_FAILED="$STILL_FAILED $svc"
+        fi
+    done
+    if [ -n "${RETRY// }" ]; then
+        echo ""
+        echo "rebuild_services_from_git_diff.sh: deferred migration pass done; rebuilding the services the deploy gate refused:$RETRY"
+        rebuild_log "RETRY-AFTER-MIGRATION services=${RETRY# }"
+        FAILED="$STILL_FAILED"
+        for svc in $RETRY; do
+            rebuild_one "$svc"
+        done
+    fi
+fi
 
 echo ""
 echo "rebuild_services_from_git_diff.sh: rebuilt $REBUILT service(s)"

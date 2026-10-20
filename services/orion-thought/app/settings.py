@@ -438,6 +438,7 @@ class ThoughtSettings(BaseSettings):
     # row (reverie_visual_attempt) produced nothing -> CRITICAL card (emailed at once). 6 = one
     # more than the longest ordinary streak 2026-09-14..10-19; every streak >= 6 was an outage
     # (35 on 10-16, 16 on 10-09, 9 on 10-08 and 09-25). See evals/test_attempt_streak_replay.py.
+    # Runs inside the painting-gap loop: ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED=false stops it too.
     visual_attempt_streak_check_enabled: bool = Field(
         True, alias="ORION_VISUAL_ATTEMPT_STREAK_CHECK_ENABLED"
     )

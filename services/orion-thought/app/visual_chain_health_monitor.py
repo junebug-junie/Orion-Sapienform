@@ -156,8 +156,8 @@ def _attempt_streak_check(*, streak: int | None, threshold: int) -> HealthCheck:
             else ""
         ),
         recovery_message=(
-            f"[Orion reverie] recovered: {_ATTEMPT_STREAK_CHECK_KEY} -- a painting attempt produced "
-            "an image again."
+            f"[Orion reverie] recovered: {_ATTEMPT_STREAK_CHECK_KEY} -- the run of failed painting "
+            f"attempts is below {threshold} again (now {streak})."
             if not bad and streak is not None
             else ""
         ),

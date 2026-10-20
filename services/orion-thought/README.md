@@ -817,7 +817,9 @@ card (emailed at once), and a recovery note once an attempt produces an image.
 2026-10-16 -> 10-20 had 35 in a row while the only alert was one "error" gap
 card. 6 is one more than the longest ordinary streak on 2026-09-14..10-19;
 every streak of 6+ was an outage. Replay: `evals/test_attempt_streak_replay.py`.
-`ORION_VISUAL_ATTEMPT_STREAK_CHECK_ENABLED=false` turns it off.
+`ORION_VISUAL_ATTEMPT_STREAK_CHECK_ENABLED=false` turns it off (so does
+`ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED=false`: it runs in that loop). Attempts
+still `active`/`unknown` (in progress) never count as failures.
 
 ## Acknowledged visual activity and baseline execution
 

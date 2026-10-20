@@ -341,6 +341,16 @@ async def resolve_both_running(plan: LaunchPlan, snaps: dict[str, dict[str, Any]
                    seat.role, ",".join(p.role for p in empty),
                    {r: round(v) for r, v in mib.items()}, limit, intent.operation_id)
     for rp in empty:
+        if rp.drain is not None:
+            # Latch the drain so nothing is admitted between the in-flight check and the stop.
+            try:
+                await drain(rp)
+            except Exception:  # noqa: BLE001
+                try:
+                    await undrain(rp)
+                except Exception:  # noqa: BLE001
+                    pass
+                raise RuntimeError(f"{base}:empty_side_in_flight:{rp.role}")
         await phase("stopping")
         await stop(rp)
     return [p.role for p in empty]

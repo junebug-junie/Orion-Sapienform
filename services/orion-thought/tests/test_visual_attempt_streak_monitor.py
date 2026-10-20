@@ -104,3 +104,10 @@ async def test_the_gap_loop_also_reads_and_checks_the_streak(monkeypatch):
     monkeypatch.setattr(mon, "check_visual_attempt_streak", fake_check)
     await asyncio.wait_for(mon.run_visual_painting_gap_watchdog(stop, settings_obj=cfg), 2.0)
     assert seen == [3, 7]
+
+
+def test_streak_sql_never_counts_an_attempt_still_in_progress():
+    # 'active' is written when an attempt starts, 'unknown' while a generate may be on the card.
+    from app.store import _ATTEMPT_STREAK_SQL
+
+    assert "outcome NOT IN ('active', 'unknown')" in _ATTEMPT_STREAK_SQL

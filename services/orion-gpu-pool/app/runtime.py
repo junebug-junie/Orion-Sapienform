@@ -247,6 +247,13 @@ class PoolRuntime:
                     swap_role=row.get("swap_role"), residency_until=_ts(row.get("residency_until")),
                     loaded_at=_ts(row.get("loaded_at")), swap_generation=int(row.get("swap_generation") or 0),
                     swap_action=_action(row.get("swap_action")))
+            live = self.cards[card]
+            if live.swap_state == "fault":
+                # A fault that survived the restart keeps its start time and reason for the alert.
+                act = live.swap_action or {}
+                self._fault_since[card] = _ts(act.get("finished_at")) or self.now()
+                self._fault_why[card] = {"seat": live.swap_role, "reason": act.get("reason"),
+                                         "outcome": act.get("outcome"), "observed": None}
             for role, size in (_action((row or {}).get("seen_ctx")) or {}).items():
                 if role in self.cfg.roles and size:
                     self._ctx_seen.setdefault(role, int(size))
@@ -1134,6 +1141,10 @@ class PoolRuntime:
         """Called every tick after _clear_faults: alert on a card stuck in fault (see __init__)."""
         now = self.now()
         for name, card in self.cards.items():
+            if card.swap_state in ("loading", "unloading") and name in self._fault_since:
+                # An operator clear_fault (or anything else) is reconciling a faulted card: not
+                # recovered until it settles idle. If it faults again the clock keeps running.
+                continue
             if card.swap_state != "fault":
                 self._fault_since.pop(name, None)
                 why = self._fault_why.pop(name, None)

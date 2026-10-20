@@ -68,7 +68,7 @@ The 10-16 state ("seat holds gpu2, diffusion up beside it, card faulted") previo
 ## Tests run
 
 ```text
-services/orion-gpu-pool:            pytest tests -q            -> see CI (local: all pass; 15 Postgres skips)
+services/orion-gpu-pool:            pytest tests -q            -> 194 passed, 15 skipped (Postgres; run in CI)
 services/orion-gpu-lane-controller: pytest tests -q            -> 101 passed
 services/orion-diffusion-host:      pytest tests -q            -> 61 passed
 orion/gpu_pool/tests                                            -> 449 passed
@@ -117,6 +117,23 @@ UNVERIFIED: whether nvidia-smi inside diffusion-host's own container answers (it
 - Finding (nit): GB vs GiB; 20 is below the 24 GB peak.
   - Fix: docs say GiB, and that `/ready` means "card not taken", not "a generation fits". `_gpu_available_gb` formula test added.
 
+Second review (commit 2: alerts, e2e):
+
+- Finding (must-fix): the streak SQL counted attempts still in progress (`active`, `unknown`) as failures, so 5 ordinary failures + 1 running painting would page.
+  - Fix: `outcome NOT IN ('active', 'unknown')`.
+  - Evidence: run read-only on live Postgres with a CTE (produced, 5 failures, 1 active) -> 5; on the real table -> 35. Plus `test_streak_sql_never_counts_an_attempt_still_in_progress`.
+- Finding: an operator `clear_fault` sent "recovered" while the card was still reconciling, and reset the 30-min clock.
+  - Fix: `loading`/`unloading` after a fault counts as still faulted until it settles idle.
+  - Evidence: `test_an_operator_clear_is_not_recovery_until_the_card_settles`.
+- Finding: a fault that survived a pool restart lost its reason and start time in the alert.
+  - Fix: seeded from the stored `swap_action` at start.
+  - Evidence: `test_a_fault_that_survives_a_pool_restart_keeps_its_reason_and_start`.
+- Finding: the resolver checked "in flight" and then stopped without latching a drain.
+  - Fix: a drain-spec role is drained (latched) before the stop. If the drain fails, it is undrained and the resolver refuses.
+- Finding: nvidia-smi availability in diffusion-host's container was unchecked.
+  - Fix/evidence: its image declares `NVIDIA_DRIVER_CAPABILITIES=compute,utility` (the capability that injects nvidia-smi). A live exec is still UNVERIFIED (container stopped).
+- Nits fixed: the streak check runs in the gap loop (documented); recovery wording no longer claims "an image was produced"; dead fallback removed; first `/ready` after boot may time out once while CUDA starts (documented).
+
 ## Restart required
 
 Deploy order: circe first (controller + diffusion), then athena. Each command is one line, run from the clean primary `main` checkout after merge and `git pull`.
@@ -132,13 +149,14 @@ scripts/safe_docker_build.sh orion-thought up -d --build
 
 ## Risks / concerns
 
-- Severity: medium. Concern: the resolver stops containers on its own. Mitigation: only the side with at most 2 GiB, not ready, nothing in flight, and only when the other side holds more than 2 GiB; fenced by the pool's generation; flag off = old refusal.
+- Severity: medium. Concern: the resolver stops containers on its own. Mitigation: it stops only the side with at most 2 GiB that is not ready and has nothing in flight (drained first when it has a drain), and only when the other side holds more than 2 GiB. The pool's generation fences every stop. Flag off = old refusal.
 - Severity: low. Concern: an idle offloaded diffusion holds ~0 GiB. If the *seat* is the broken side and diffusion is idle, neither holds memory, so the resolver refuses. Mitigation: refusal is safe, and the 30-min critical card fires.
 - Severity: low. Concern: the 6-attempt streak would also have paged on 09-25 and 10-08 (9 in a row, causes unknown). Mitigation: both were real ~14 h outages that the gap check also flagged.
-- Severity: low. Concern: fault-alert timer is memory only; a pool restart restarts the 30 min. Mitigation: the boot reconcile re-faults within seconds, so the clock restarts at most once per restart.
+- Severity: low. Concern: the fault-alert timer is memory-only. Mitigation: a fault stored before a restart is re-seeded from its `swap_action.finished_at`. A fault made by the boot reconcile itself starts its clock at boot.
+- Severity: low. Concern: pre-existing, not from this PR: `check_service_env_compose_parity.py orion-gpu-pool` reports `GPU_POOL_LEASE_RETENTION_HOURS` missing from compose on main (this gate is not in CI). `orion-thought` `test_settings_mind_enrichment` fails identically on origin/main.
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2785
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

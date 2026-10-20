@@ -550,11 +550,14 @@ def visual_last_painting_age_hours() -> float | None:
         return None
 
 
-# Attempts since the newest produced one (bounded lookback; the table is small). Outcomes live:
-# produced, abandoned, deferred_resource, deferred_thermal, failed.
+# Decided attempts since the newest produced one (bounded lookback; the table is small). Closed
+# outcomes: produced, abandoned, deferred_resource, deferred_thermal, failed. 'active' (inserted when
+# an attempt starts) and 'unknown' (a generate may still be on the card) are undecided: never a
+# failure, or 5 ordinary failures + 1 painting in progress would page as 6.
 _ATTEMPT_STREAK_SQL = """
 SELECT count(*) FROM reverie_visual_attempt
 WHERE started_at > now() - make_interval(days => :days)
+  AND outcome NOT IN ('active', 'unknown')
   AND started_at > COALESCE(
       (SELECT max(started_at) FROM reverie_visual_attempt
         WHERE outcome = 'produced' AND started_at > now() - make_interval(days => :days)),

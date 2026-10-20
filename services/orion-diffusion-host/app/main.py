@@ -430,7 +430,8 @@ def _gpu_available_gb() -> float:
     process's torch allocator already reserved (so a generation in flight does not read as "no
     room"). cudaMemGetInfo, i.e. the driver's own count -- other tenants included. Blocking (the
     first call may initialise CUDA, ~1-5 s and a ~0.3-0.5 GiB context): /ready runs it in a
-    thread with a timeout, never on the event loop."""
+    thread with a timeout, never on the event loop. The first /ready after boot can therefore
+    read not-ready once (timeout while CUDA initialises); the next poll answers."""
     import torch
 
     device = torch.device(settings.DIFFUSION_DEVICE)
@@ -461,7 +462,7 @@ async def ready():
                                                       _GPU_CHECK_TIMEOUT_SEC), 2)
             room = available >= need
         except Exception as exc:  # noqa: BLE001 -- cannot see the card = not ready (fail closed)
-            gpu_error = f"{type(exc).__name__}: {exc}"[:200] or type(exc).__name__
+            gpu_error = f"{type(exc).__name__}: {exc}"[:200]
             room = False
     body = {
         "ready": _pipe is not None and not _draining and room,

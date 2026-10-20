@@ -217,3 +217,62 @@ def test_an_undelivered_fault_alert_is_retried_in_minutes_not_hours():
         await rt.drain_alerts()
         assert calls == ["faulted", "faulted"]
     run(go())
+
+
+def test_an_operator_clear_is_not_recovery_until_the_card_settles():
+    from orion.schemas.gpu_pool import GpuPoolControlV1
+
+    async def go():
+        rt, clock = make(mode="enforce")
+        rt._world.up |= {SEAT, "diffusion"}
+        sent = []
+
+        async def alert(card, state, view):
+            sent.append((state, view))
+            return True
+        rt.fault_alert = alert
+        await boot(rt)
+        [st] = [m for m in actuations(rt) if m.action == "status"]
+        await result(rt, st, "succeeded", observed=BOTH, in_flight=False)
+        await step(rt, clock, 31 * 60, every=60)
+        await rt.drain_alerts()
+        assert [s for s, _ in sent] == ["faulted"]
+        since = rt._fault_since["gpu2"]
+        reply = await rt.control(GpuPoolControlV1(verb="clear_fault", card="gpu2", actor="juniper"))
+        assert reply.ok and rt.cards["gpu2"].swap_state in ("loading", "unloading")
+        await step(rt, clock, 30)
+        await rt.drain_alerts()
+        assert [s for s, _ in sent] == ["faulted"]        # no false all-clear while reconciling
+        assert rt._fault_since["gpu2"] == since           # the clock keeps running
+    run(go())
+
+
+def test_a_fault_that_survives_a_pool_restart_keeps_its_reason_and_start():
+    from datetime import timedelta
+
+    from app.store import MemoryStore
+
+    async def go():
+        store = MemoryStore()
+        rt0, clock0 = make(mode="enforce")
+        faulted_at = clock0() - timedelta(hours=3)
+        await store.upsert_card({"card": "gpu2", "lent": False, "swapped_in": [], "swap_state": "fault",
+                                 "swap_role": SEAT, "swap_generation": 365,
+                                 "swap_action": {"action": "load", "action_id": "agent-gpu2:load:g365:x",
+                                                 "reason": "seat_and_evicted_both_running",
+                                                 "outcome": "failed", "finished_at": faulted_at.isoformat()}})
+        rt, clock = make(mode="enforce", store=store)
+        rt._world.up |= {SEAT, "diffusion"}
+        sent = []
+
+        async def alert(card, state, view):
+            sent.append(view)
+            return True
+        rt.fault_alert = alert
+        await rt.start()
+        await announce(rt)
+        await rt.tick()
+        await rt.drain_alerts()
+        [view] = sent                                    # 3 h old: alerts on the first tick
+        assert view["reason"] == "seat_and_evicted_both_running" and view["minutes"] >= 180
+    run(go())

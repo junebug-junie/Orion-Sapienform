@@ -93,12 +93,13 @@ def test_frame_and_reply_listeners_resubscribe_after_redis_errors(monkeypatch):
     _fast_backoff(monkeypatch, router_main)
 
     async def body():
-        for loop_name, handler_name, patterns in (
-            ("_frames_loop", "handle_frame_envelope", False),
-            ("_reply_loop", "handle_reply_envelope", True),
+        settings = Settings()
+        for loop_name, handler_name, channel, patterns in (
+            ("_frames_loop", "handle_frame_envelope", settings.CHANNEL_FRAMES_IN, False),
+            ("_reply_loop", "handle_reply_envelope", f"{settings.CHANNEL_REPLY_PREFIX}:*", True),
         ):
             bus = _FlakyBus("a", "b")
-            svc = FrameRouterService(settings=Settings(), bus=bus)
+            svc = FrameRouterService(settings=settings, bus=bus)
             seen = []
 
             async def handle(env, seen=seen):
@@ -110,6 +111,6 @@ def test_frame_and_reply_listeners_resubscribe_after_redis_errors(monkeypatch):
             svc._shutdown.set()
             await asyncio.wait_for(task, 5)
             assert len(bus.subscribe_calls) == 3, loop_name
-            assert all(p is patterns for _, p in bus.subscribe_calls), loop_name
+            assert bus.subscribe_calls == [((channel,), patterns)] * 3, loop_name
 
     asyncio.run(body())

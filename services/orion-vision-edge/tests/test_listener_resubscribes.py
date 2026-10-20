@@ -105,6 +105,7 @@ def test_detector_loop_resubscribes_after_redis_errors(monkeypatch):
     # app.context opens the camera and loads detectors at import; stand it in.
     monkeypatch.setitem(sys.modules, "app.context", context)
     monkeypatch.delitem(sys.modules, "app.detector_worker", raising=False)
+    before = set(sys.modules)
     worker = importlib.import_module("app.detector_worker")
     _fast_backoff(monkeypatch, worker)
 
@@ -122,5 +123,8 @@ def test_detector_loop_resubscribes_after_redis_errors(monkeypatch):
     try:
         asyncio.run(body())
     finally:
-        sys.modules.pop("app.detector_worker", None)
+        # Drop every app module imported against the stub context and test SOURCE.
+        for key in set(sys.modules) - before:
+            if key.startswith("app."):
+                sys.modules.pop(key, None)
         edge_settings.get_settings.cache_clear()

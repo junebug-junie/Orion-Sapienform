@@ -83,6 +83,8 @@
         if(!lease || msg.applied.epoch!==lease.epoch || msg.applied.port!==lease.port)return;
         outstanding.delete(msg.applied.seq);screen.dataset.appliedFrame=msg.applied.frame;
       } else {if(msg.epoch!==undefined && (!lease || msg.epoch!==lease.epoch || msg.port!==lease.port))return;
+        // A newer input replaced this one before its frame; the lease is still live.
+        if(msg.rejected==='superseded' || msg.rejected==='expired_in_queue'){outstanding.delete(msg.seq);return;}
         lease=null;outstanding.clear();clearInterval(timer);report('Control interrupted: '+(msg.rejected||msg.unknown||'connection unavailable')+'. Use Connect / resume.');}
 
     };

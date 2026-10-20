@@ -248,6 +248,6 @@ post-pull applier may already have applied the migration; it is additive-DDL onl
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2828
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

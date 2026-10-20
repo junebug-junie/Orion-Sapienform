@@ -6,6 +6,7 @@ import traceback
 from sqlalchemy.orm import Session
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.core.sql_router.db import SessionLocal
 
 def default_writer(model_class, payload: dict, db: Session):
@@ -21,27 +22,32 @@ def start_worker_thread(
     writer_func=default_writer,
     publish_channel=None,
 ):
+    bus = OrionBusAsync(bus_url)
+
+    async def handle(msg: dict) -> None:
+        try:
+            data = msg.get("data")
+            if isinstance(data, (bytes, bytearray)):
+                data = data.decode("utf-8", "ignore")
+            if isinstance(data, str):
+                data = json.loads(data)
+            with SessionLocal() as db:
+                row = writer_func(model_class, data, db)
+                print(f"✅ Inserted row: {getattr(row, 'id', '[no id]')}")
+            if publish_channel:
+                await bus.publish(publish_channel, data)
+        except Exception as e:
+            print(f"❌ Error in worker: {e}")
+            traceback.print_exc()
+
     async def worker_async() -> None:
-        bus = OrionBusAsync(bus_url)
         await bus.connect()
         print(f"📡 Subscribed to {channel} (model={model_class.__name__})")
         try:
-            async with bus.subscribe(channel) as pubsub:
-                async for msg in bus.iter_messages(pubsub):
-                    try:
-                        data = msg.get("data")
-                        if isinstance(data, (bytes, bytearray)):
-                            data = data.decode("utf-8", "ignore")
-                        if isinstance(data, str):
-                            data = json.loads(data)
-                        with SessionLocal() as db:
-                            row = writer_func(model_class, data, db)
-                            print(f"✅ Inserted row: {getattr(row, 'id', '[no id]')}")
-                        if publish_channel:
-                            await bus.publish(publish_channel, data)
-                    except Exception as e:
-                        print(f"❌ Error in worker: {e}")
-                        traceback.print_exc()
+            await run_subscription(
+                bus, channel, handle, stop_event=None,
+                name=f"sql-router-writer:{channel}:{model_class.__name__}",
+            )
         finally:
             await bus.close()
 

@@ -55,14 +55,30 @@ PERCEPTION_WALKWAY_NODE_ID = "node:substrate.perception_walkway"
 # below should call it world (it is an outdoor camera) and give it the
 # camera-absent check PERCEPTION_NODE_ID gets.
 NO_ATTENTION_CONSUMER_NODE_IDS: frozenset[str] = frozenset({PERCEPTION_WALKWAY_NODE_ID})
-NO_CURIOSITY_CONSUMER_NODE_IDS: frozenset[str] = frozenset()
+
+# Street EVENTS (doorbell ring, graded cross-camera handoffs), 2026-10-20:
+# docs/superpowers/specs/2026-10-20-street-continuity-handoff-design.md
+# section 6, Juniper's rule in PR #2763 (answer 7). Written by
+# orion-substrate-runtime from orion:vision:street:events through the gate in
+# orion/substrate/street_attention.py. Admitted to attention (deliberately NOT
+# in NO_ATTENTION_CONSUMER_NODE_IDS: its value comes from gated events, not
+# pixels) and labelled as the outside world (is_world_source_id). Fenced from
+# endogenous curiosity until Juniper decides that consumer after live data, the
+# same go-live rule the walkway node followed. Rollback: add it to
+# NO_ATTENTION_CONSUMER_NODE_IDS, or SUBSTRATE_STREET_ATTENTION_ENABLED=false.
+STREET_NODE_ID = "node:substrate.street"
+
+NO_CURIOSITY_CONSUMER_NODE_IDS: frozenset[str] = frozenset({STREET_NODE_ID})
+
+# Substrate nodes that measure the outside world, not Orion's body.
+_WORLD_NODE_IDS: frozenset[str] = frozenset({PERCEPTION_NODE_ID, STREET_NODE_ID})
 
 
 def is_world_source_id(source_id: str | None) -> bool:
-    """True for an external (world) source id: chat, camera surprise, or any
-    future ``world:*`` source. Everything else is the body."""
+    """True for an external (world) source id: chat, camera surprise, street
+    events, or any future ``world:*`` source. Everything else is the body."""
     sid = str(source_id or "")
-    return sid.startswith(WORLD_SOURCE_PREFIX) or sid == PERCEPTION_NODE_ID
+    return sid.startswith(WORLD_SOURCE_PREFIX) or sid in _WORLD_NODE_IDS
 
 
 # Polarity comes from the semantic layer (orion.metrics.semantics.

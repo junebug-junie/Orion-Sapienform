@@ -455,6 +455,31 @@ channels:
       prompt_sites:
         - "orion.attention.self_readings:render_self_readings"
 
+  # orion/substrate/street_attention.py street_gate() + held_reading(): the
+  # salience (StreetEventV1.salience, producer-computed who x what x surprise)
+  # of the strongest street event that passed the gate within
+  # SUBSTRATE_STREET_ATTENTION_HOLD_SEC (90 s), else 0.0. Written by
+  # services/orion-substrate-runtime/app/worker.py _street_attention_tick every
+  # 30 s and on every gate pass. FalkorDB node only; the field digester's
+  # staleness decay never touches it (not a FieldStateV1 node vector).
+  - node: "node:substrate.street"
+    producer: orion-substrate-runtime
+    channel: prediction_error
+    level: [node]
+    category: self_monitoring
+    meaning: "TRIGGER: a street event passed the attention gate -- a doorbell ring (always), or a graded cross-camera handoff with p < 0.05 from a camera that is up, under the hourly cap. Value is the event's salience (ring 1.0), held 90 s, then 0.0. The outside world, not Orion's body."
+    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.street'"
+    consumers:
+      - "orion.substrate.attention_broadcast:world_first_signals"
+    semantics:
+      value_kind: trigger
+      rest: "0.0 = the street listener is up, a street camera delivered a frame recently, and no event passed the gate in the last 90 s. Written as a real 0.0 every tick, never decayed to it."
+      # rest_range: no live data yet (2026-10-20, consumer ships before rings
+      # reach the bus, PR #2816). By construction: 0.0 except <= 4 x 90 s per hour.
+      rest_range: [0.0, 0.0]
+      sparsity: designed_sparse
+      absent_means: "written every tick while measurable; the tick writes nothing while the street listener is not subscribed or no street camera (walkway, doorbell) delivered a frame within 600 s, so the reading ages and attention reads it absent after 180 s."
+
   # orion/substrate/prediction_error.py:1354 -- stage 1: 1 - cos(embedding,
   # stream EWMA) (:1451); stage 2: z of that vs its own EWMA, negatives
   # clipped (:290), score = min(1, z/3) (:1478). worker.py:1683-1694 writes

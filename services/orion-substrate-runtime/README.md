@@ -1570,6 +1570,37 @@ deleted.
   `docs/superpowers/pr-reports/2026-09-25-route-pe-touched-runs-and-topic-coherence-pr.md`.
 
 
+## Street events -> workspace attention (`node:substrate.street`, 2026-10-20)
+
+Spec: `docs/superpowers/specs/2026-10-20-street-continuity-handoff-design.md` section 6.
+Pure rules: `orion/substrate/street_attention.py`.
+
+- **Listener:** `SUBSTRATE_STREET_EVENTS_CHANNEL` (`orion:vision:street:events`,
+  `StreetEventV1`) via `run_subscription` (resubscribes after a drop; shown in `/health`
+  `listeners` as `substrate_street_events_listener`).
+- **Gate:** `doorbell_ring` always passes (it still uses up the hourly budget). Every other
+  kind needs `p_value < 0.05`, every camera in `stream_ids` up (a frame seen on
+  `orion:vision:artifacts` within `SUBSTRATE_STREET_CAMERA_UP_MAX_AGE_SEC`, 600 s; recorded by
+  the perception listener, so with `SUBSTRATE_PERCEPTION_PREDICTION_ERROR_TICK_ENABLED=false`
+  every non-ring event is refused as `camera_unseen`), and fewer than
+  `SUBSTRATE_STREET_ATTENTION_MAX_PER_HOUR` (4) passes in the trailing hour. No event-level
+  "unusual for the hour" reading exists yet, so the event's own `p_value` stands in for it.
+- **Node:** every `SUBSTRATE_STREET_ATTENTION_TICK_INTERVAL_SEC` (30 s) and on every pass,
+  `prediction_error` = the strongest passed salience inside `SUBSTRATE_STREET_ATTENTION_HOLD_SEC`
+  (90 s), else a real 0.0. Nothing is written while the listener is down or no street camera
+  (walkway, doorbell) sent a frame recently, so attention reads the node absent, not calm. The
+  node is an outside-world source (`is_world_source_id`) and is fenced from endogenous curiosity.
+- **Trace:** one `substrate_street_event kind=... salience=... verdict=pass|block reason=...
+  correlation_id=...` line per event; `substrate_street_attention_won` when the broadcast's
+  coalition contains the node; counters under `/health` -> `street_attention`. A passed event's
+  correlation id rides on the node (`contributing_turn_ids`) into the broadcast's
+  `attended_node_ids`.
+- **Rung 6 `street_handoff`:** one raw reading per `handoff_met|late|missed`: `-ln(p_value)` nats
+  (p floored at 1e-6). Calibrated rest point: mean 1 nat, variance 1 (`-ln U` is Exponential(1)).
+  Recorded under `SUBSTRATE_PREDICTION_RAW_READINGS_ENABLED`; no per-domain flag.
+- **Kill switch:** `SUBSTRATE_STREET_ATTENTION_ENABLED=false` (no listener, no writes), or add
+  the id to `NO_ATTENTION_CONSUMER_NODE_IDS`.
+
 ## Cabinet warming -> workspace attention (attend-to-act loop, 2026-10-01)
 
 `SUBSTRATE_CABINET_HEAT_ATTENTION_ENABLED` (OFF; Juniper flips): every 30 s writes

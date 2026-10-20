@@ -162,6 +162,14 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="orion-substrate-runtime", lifespan=lifespan)
 
 
+def _street_attention_status() -> dict | None:
+    try:
+        return worker.street_attention_status()
+    except Exception:  # noqa: BLE001 -- counters must never cost /health
+        logger.warning("street_attention_status_failed", exc_info=True)
+        return None
+
+
 @app.get("/health")
 async def health() -> dict:
     s = get_settings()
@@ -178,6 +186,8 @@ async def health() -> dict:
         "listeners_ok": listeners["ok"],
         "listeners_down": listeners["down"],
         "listeners": listeners["listeners"],
+        # node:substrate.street gate counters (orion/substrate/street_attention.py).
+        "street_attention": _street_attention_status(),
         "service": s.service_name,
         "version": s.service_version,
         "node": s.node_name,

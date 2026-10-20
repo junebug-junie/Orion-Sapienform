@@ -1349,8 +1349,9 @@ channels:
   # design.md section 6): facts about the street that may compete for
   # attention. Producer today: orion-vision-retina (doorbell, kind
   # doorbell_ring, salience 1.0). The handoff reducer (orion-sql-writer) adds
-  # handoff_* kinds in a later PR. Consumer: orion-substrate-runtime (pending
-  # PR, node:substrate.street); nothing subscribes yet.
+  # handoff_* kinds in a later PR. Consumer: orion-substrate-runtime
+  # (_street_events_listener_loop: gate -> node:substrate.street, Rung 6
+  # street_handoff; orion/substrate/street_attention.py).
   - name: "orion:vision:street:events"
     kind: "event"
     schema_id: "StreetEventV1"

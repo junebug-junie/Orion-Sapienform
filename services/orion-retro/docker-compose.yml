@@ -23,6 +23,7 @@ services:
         tag: "{{.Name}}"
     environment:
       RETRO_ENABLED: ${RETRO_ENABLED:-false}
+      RETRO_COGNITION_ENABLED: ${RETRO_COGNITION_ENABLED:-false}
     network_mode: none
     volumes:
       - ${RETRO_SOCKET_DIR:?private socket directory required}:/ipc

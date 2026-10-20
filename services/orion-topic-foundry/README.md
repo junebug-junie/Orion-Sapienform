@@ -227,6 +227,14 @@ LLM path is considered usable when:
 1. `TOPIC_FOUNDRY_LLM_ENABLE=true` (feature enabled), and
 2. `TOPIC_FOUNDRY_LLM_USE_BUS=true` and `ORION_BUS_ENABLED=true` (transport resolves to bus).
 
+**GPU heat shed:** a batch makes one LLM call per topic/boundary. When the gateway reply says
+the GPU pool is shedding (`raw.details.reason` = `shed:<name>`, e.g. `shed:cabinet_hot`),
+`TopicFoundryLLMClient.request_json` returns `None` for later calls without sending them, for
+30 s doubling to 180 s (or the gateway's `retry_after_sec` if longer); one call per window
+probes, and the first real answer ends it. `None` is what a refused call already returned, so
+callers fall back exactly as before. Logs: one `gpu_shed_backoff_start` / `gpu_shed_backoff_end
+... skipped=N` pair per episode. Code: `orion/gpu_pool/shed_backoff.py`.
+
 **`TOPIC_FOUNDRY_LLM_BUS_ROUTE` is a route *key* into `orion-llm-gateway`'s route table**
 (`LLM_GATEWAY_ROUTE_TABLE_JSON`, e.g. `chat`/`agent`/`metacog`/`quick` — check that gateway's
 own live env for the current real keys, they're operator-configured and can change). It is

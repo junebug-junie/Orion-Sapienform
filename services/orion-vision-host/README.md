@@ -148,13 +148,19 @@ harmless only because the values happened to coincide — fixed for the same
 reason as round 1, not left as a known-benign exception now that the
 principle above is stated as a blanket "no exceptions."
 
-**Bring up (from a worktree ON ATHENA, never the shared checkout):**
+**Bring up (2026-10-20: from the clean primary main checkout, like every live
+deploy).** The post-pull rebuild redeploys this lane on its own whenever
+`services/orion-vision-host/` changes and the lane is running
+(`rebuild_affected_services.py --running-extra-compose`). Before that it never
+did, and the lane ran its 2026-10-16 image and env for days, dropping every
+doorbell caption. By hand, the wrapper's `--compose-file` flag targets this file
+INSTEAD of `docker-compose.yml` (never merged with it), with every deploy check:
 
-Not via `scripts/safe_docker_build.sh` -- that wrapper hardcodes
-`-f services/$SERVICE/docker-compose.yml` and has no hook for a second
-compose file for the same service; passing `-f` yourself would merge both
-files and risk touching the main vision-host service too. Run docker
-compose directly:
+```bash
+scripts/safe_docker_build.sh orion-vision-host --compose-file docker-compose.circe-qwen.yml up -d --build
+```
+
+The equivalent raw command, for reference:
 
 ```bash
 # Confirm the GPU is actually free RIGHT NOW -- do not trust an earlier

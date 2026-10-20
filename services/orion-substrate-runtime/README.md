@@ -1590,8 +1590,9 @@ Spec: `docs/superpowers/specs/2026-10-20-strain-loop-design.md` Part 2. Pure rul
 
 - **1.0 on a strain news event.** Onset (the level turns strained), escalation (a new strain cause
   joins the episode, or the cabinet first crosses critical 34 C in the episode), reminder (still
-  strained at 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h). At most 8 per local day
-  (`ORION_SITUATION_TIMEZONE`), at least 30 min apart; reminders may not take the last 2 slots.
+  strained 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h after the onset was sent). At most 8 per local
+  day (`ORION_SITUATION_TIMEZONE`), at least 30 min apart; reminders may not take the last 2 slots.
+  An escalation blocked by the daily cap is carried to the next local day and sent if it still holds.
 - **Nothing for 300 s after an event**, so the 1.0's age is the event's age. World-first treats the
   node as event-written (glossary `absent_means` starts "only written"): it fades and stops competing
   at the 300 s orienting window.

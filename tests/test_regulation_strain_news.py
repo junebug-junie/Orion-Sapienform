@@ -170,7 +170,30 @@ def test_daily_cap_and_reminders_leave_the_last_two_slots_for_news():
     state = sn.replace(state, events_today=8, last_event_at=t - timedelta(hours=1))
     t2 = t + timedelta(minutes=5)
     ev, state = strain_news(state, R(t2, temp=34.5), t2, TZ)
-    assert ev is None and not state.escalation_pending   # dropped at the cap, not carried
+    assert ev is None and state.escalation_pending      # blocked by the cap, carried
+
+
+def test_cap_blocked_escalation_is_sent_next_local_day_only_if_it_still_holds():
+    late = datetime(2026, 10, 18, 23, 0, tzinfo=TZ).astimezone(timezone.utc)
+    full = StrainNewsState(day=late.astimezone(TZ).date(), events_today=8,
+                           last_event_at=late - timedelta(hours=1), episode_since=T0,
+                           episode_causes=frozenset({"gpu_queue_sustained"}),
+                           episode_noticed_at=T0, reminders_consumed=10)
+    ev, state = strain_news(full, R(late, temp=34.5), late, TZ)
+    assert ev is None and state.escalation_pending
+    after = late + timedelta(hours=1, minutes=5)          # 00:05 local, next day
+    ev, _ = strain_news(state, R(after, temp=34.3), after, TZ)
+    assert ev is not None and ev.kind == "escalation" and ev.critical and ev.events_today == 1
+    # The cabinet cooled overnight: nothing left to say now...
+    ev, st2 = strain_news(state, R(after, temp=31.0), after, TZ)
+    assert ev is None and not st2.escalation_pending
+    # ...but it was never said, so a later crossing still escalates.
+    again = after + timedelta(hours=3)
+    ev, _ = strain_news(st2, R(again, temp=34.2), again, TZ)
+    assert ev is not None and ev.kind == "escalation" and ev.critical
+    # The strain ended overnight: the carried escalation goes with the episode.
+    ev, st3 = strain_news(state, R(after, level="idle", since=after), after, TZ)
+    assert ev is None and not st3.escalation_pending
 
 
 def test_local_day_resets_the_count():
@@ -239,14 +262,52 @@ def test_restart_does_not_refire_onset():
     assert ev is not None and ev.kind == "reminder"
 
 
-def test_restart_with_no_recorded_event_onsets_a_long_episode_once_and_skips_old_reminders():
+def test_restart_with_no_recorded_event_onsets_a_long_episode_once_and_reminds_from_the_onset():
     now = T0 + timedelta(hours=54)
     state = seed_state([], R(now), now, TZ)
     ev, state = strain_news(state, R(now), now, TZ)
     assert ev is not None and ev.kind == "onset"
-    later = now + timedelta(minutes=40)
+    ev, state = strain_news(state, R(now + timedelta(minutes=20)), now + timedelta(minutes=20), TZ)
+    assert ev is None                       # old reminder slots are not replayed
+    later = now + timedelta(minutes=30)
     ev, _ = strain_news(state, R(later), later, TZ)
-    assert ev is None                       # elapsed reminder slots consumed at onset
+    assert ev is not None and ev.kind == "reminder" and ev.reminder_index == 0
+
+
+def test_onset_lag_after_since_does_not_cost_the_30_min_reminder():
+    """Live, the onset lands a regulate step (+ a tick) after the reading's since. Reminders
+    count from the sent onset, so the 30 min one still clears the 30 min gap."""
+    since = T0 - timedelta(seconds=150)
+    seq = [(T0 + timedelta(seconds=30 * i), R(T0 + timedelta(seconds=30 * i), since=since))
+           for i in range(int(timedelta(hours=9) / timedelta(seconds=30)))]
+    events, _ = run(seq)
+    assert [(e.kind, e.reminder_index, e.at - T0) for e in events] == [
+        ("onset", None, timedelta(0)),
+        ("reminder", 0, timedelta(minutes=30)),
+        ("reminder", 1, timedelta(hours=1)),
+        ("reminder", 2, timedelta(hours=2)),
+        ("reminder", 3, timedelta(hours=4)),
+        ("reminder", 4, timedelta(hours=8)),
+    ]
+
+
+def test_seed_anchors_reminders_on_the_recorded_onset():
+    since = T0 - timedelta(seconds=150)
+    now = T0 + timedelta(minutes=45)
+    seeded = seed_state([T0], R(now, since=since), now, TZ)
+    assert seeded.episode_noticed_at == T0 and seeded.reminders_consumed == 1
+    t1h = T0 + timedelta(hours=1)
+    ev, _ = strain_news(seeded, R(t1h, since=since), t1h, TZ)
+    assert ev is not None and ev.kind == "reminder" and ev.reminder_index == 1
+
+
+def test_relief_ends_the_hold_at_once():
+    from orion.attention.sustained import EVENT_ORIENTING_WINDOW_SEC
+
+    _, state = run(strained_for(0.0))
+    t = T0 + timedelta(seconds=60)
+    _, state = strain_news(state, R(t, level="idle", since=t, reasons=("strain_cleared",)), t, TZ)
+    assert rest_write_allowed(state, t, EVENT_ORIENTING_WINDOW_SEC)
 
 
 def test_rest_write_is_held_inside_the_orienting_window():

@@ -1556,7 +1556,14 @@ class BiometricsSubstrateWorker:
     # state; rebuilt from the node's own persisted event rows on the first known reading.
     _strain_news_state: Any = None
     _strain_history_warm: bool = False
+    _strain_warm_checked_at: Any = None
+    _strain_failed_at: Any = None
+    _strain_pe_off_logged: bool = False
     _strain_redis: Any = None
+    # A failed tick (DB down) is retried after this, not every 30 s with a traceback each time.
+    _STRAIN_FAILURE_BACKOFF = timedelta(minutes=5)
+    # The 7-day history size is re-counted this often (it can fall back under 200).
+    _STRAIN_WARM_RECHECK = timedelta(minutes=30)
 
     def _read_regulation_reading(self, now: datetime) -> tuple[Any, Any]:
         """(ArousalReadingV1 or None, ArousalView). None whenever ``arousal_view`` says unknown
@@ -1598,6 +1605,15 @@ class BiometricsSubstrateWorker:
         """
         if not self._settings.enable_strain_attention:
             return
+        if not _prediction_error_nodes_enabled():
+            # The node can never be written, so its history can never warm: say so once.
+            if not self._strain_pe_off_logged:
+                self._strain_pe_off_logged = True
+                logger.warning(
+                    "substrate_strain_news_skipped prediction_error_nodes_disabled "
+                    "(SUBSTRATE_WRITE_PREDICTION_ERROR_NODES is off)"
+                )
+            return
         from zoneinfo import ZoneInfo
 
         from orion.attention.sustained import EVENT_ORIENTING_WINDOW_SEC
@@ -1611,8 +1627,11 @@ class BiometricsSubstrateWorker:
         )
         from orion.substrate.prediction_error_magnitude import DEFAULT_MIN_READINGS, WINDOW_7D
 
+        now = datetime.now(timezone.utc)
+        failed_at = self._strain_failed_at
+        if failed_at is not None and now - failed_at < self._STRAIN_FAILURE_BACKOFF:
+            return
         try:
-            now = datetime.now(timezone.utc)
             tz = ZoneInfo(str(self._settings.orion_situation_timezone or "UTC"))
             reading, view = self._read_regulation_reading(now)
             if reading is None:
@@ -1635,23 +1654,28 @@ class BiometricsSubstrateWorker:
                     len(times), self._strain_news_state.events_today,
                     self._strain_news_state.episode_since, self._strain_news_state.last_event_at,
                 )
-            if not self._strain_history_warm:
+            checked = self._strain_warm_checked_at
+            if checked is None or now - checked >= self._STRAIN_WARM_RECHECK:
                 # World-first needs DEFAULT_MIN_READINGS 7-day readings before it can call any
                 # value unusual. Until then an event would be spent where attention cannot see
-                # it: build the calm history first, step the news later.
+                # it: build the calm history first, step the news later. Re-counted every
+                # _STRAIN_WARM_RECHECK (cheap while warming, and history can shrink).
                 n = self._store.count_prediction_error_history(
                     node_id=STRAIN_NODE_ID, since=now - WINDOW_7D
                 )
-                if n < DEFAULT_MIN_READINGS:
-                    self._write_prediction_error_node(
-                        node_id=STRAIN_NODE_ID, error=REST_VALUE, now=now, reducer_key="strain_news"
-                    )
+                self._strain_warm_checked_at = now
+                self._strain_history_warm = n >= DEFAULT_MIN_READINGS
+                if not self._strain_history_warm:
                     logger.info(
                         "substrate_strain_news_tick_warming history_rows=%d needed=%d level=%s",
                         n, DEFAULT_MIN_READINGS, reading.arousal_level,
                     )
-                    return
-                self._strain_history_warm = True
+            if not self._strain_history_warm:
+                if rest_write_allowed(self._strain_news_state, now, EVENT_ORIENTING_WINDOW_SEC):
+                    self._write_prediction_error_node(
+                        node_id=STRAIN_NODE_ID, error=REST_VALUE, now=now, reducer_key="strain_news"
+                    )
+                return
             event, self._strain_news_state = strain_news(
                 self._strain_news_state, reading, now, tz
             )
@@ -1692,8 +1716,13 @@ class BiometricsSubstrateWorker:
                 state.reminders_consumed,
                 wrote,
             )
+            self._strain_failed_at = None
         except Exception:
-            logger.exception("substrate_strain_news_tick_failed")
+            if self._strain_failed_at is None:
+                logger.exception("substrate_strain_news_tick_failed")
+            else:
+                logger.warning("substrate_strain_news_tick_failed again; backing off")
+            self._strain_failed_at = now
 
     async def _strain_attention_tick_loop(self) -> None:
         interval = float(self._settings.strain_attention_tick_interval_sec)

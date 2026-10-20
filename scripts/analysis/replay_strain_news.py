@@ -19,6 +19,10 @@ transition's level, ``since`` and causes, and takes the cabinet temperature from
 ``cabinet_hot`` is inferred while strained from the cabinet at/above critical with the thermal
 gate's hysteresis (34 C on, 33 C re-arm), which is the cabinet reflex's ``critical`` rule but not
 its unknown-plus-AC-low branch. A GPU cause that joins mid-episode is invisible to this replay.
+Regulation is assumed known for the whole time between transitions (no unknown gaps, no history
+warm-up, no restarts) and each onset fires at the transition's own time (live it lands one
+regulate step later; reminders count from the sent onset either way). Both over-generate events,
+which is conservative for the budget.
 
 Projection: each event holds attention for at most the 300 s orienting window
 (``EVENT_ORIENTING_WINDOW_SEC``) = the log ticks in [event, event + 300 s), capped at 10. Per
@@ -237,6 +241,11 @@ def render(reports: Sequence[DayReport], events: Sequence[StrainNewsEvent], tz) 
         "LIMITS: transitions-only history. Causes between transitions are the transition's own plus",
         "cabinet_hot inferred from biometrics cabinet_temp_c >= 34 C (re-arm 33 C). A GPU cause that",
         "joins mid-episode is not visible. Kinds: O=onset E=escalation R=reminder.",
+        "Regulation is assumed known between transitions (no unknown gaps, warm-up or restarts);",
+        "this over-generates events, conservative for the budget. The rule enforces <= 8 events/day",
+        "and the 30 min gap; the 3 % and 10 % numbers are MEASURED here, not enforced by the rule",
+        "(8 events x 300 s = 2.78 % of a day's time; the tick share runs a little higher on",
+        "days the attention log has fewer ticks than 2,880).",
         "Partial days (*: first day of the attention log, today) are judged against the median",
         "full day's ticks and winners, not the ticks seen so far.",
         "",

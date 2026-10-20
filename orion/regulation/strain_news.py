@@ -15,8 +15,9 @@ Events (one at most per call):
   set joins it (``STRAIN_CAUSE_REASONS``), or the cabinet first crosses critical in this episode
   (the thermal gate's own ``DEFAULT_CRITICAL_C``; once per episode, no re-arm: a cabinet hovering
   around 34 C re-crosses it many times a day and that is not worse in kind).
-* ``reminder`` -- still strained at 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h after the episode
-  began (``reminder_offsets``): it fades and comes back, less often the longer it lasts.
+* ``reminder`` -- still strained 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h after the onset was
+  sent (``reminder_offsets``): it fades and comes back, less often the longer it lasts. Anchored
+  on the sent onset, not the reading's ``since``, so the 30 min reminder clears the 30 min gap.
 
 Relief (strained -> idle/engaged) is not an event: attention scores only the bad direction.
 It ends the episode.
@@ -28,8 +29,10 @@ Budget (hard rules; ``scripts/analysis/replay_strain_news.py`` replays them over
    DROPPED: it waits for the next reminder slot.
 2. At most ``MAX_EVENTS_PER_DAY`` (8) per local day (``tz``; resets at local midnight). Reminders
    may not use the last ``RESERVED_FOR_NEWS`` (2) slots, so a day of reminders still leaves room
-   for a real change. A cap-blocked event of any kind is DROPPED, not carried into the next day:
-   "past the cap, nothing more is written that day", and a day-old onset is not news.
+   for a real change. Past the cap nothing more is written that day. A cap-blocked onset or
+   reminder is DROPPED (a day-old onset is not news). A cap-blocked ESCALATION is carried to the
+   next local day and sent only if the episode is still open and the change still holds (the
+   cause is still present / the cabinet is still critical).
 3. An unknown, stale, future-stamped or missing reading never fires and never counts as relief:
    the state is kept as it was (only the local-day counter rolls over).
 
@@ -113,6 +116,10 @@ class StrainNewsState:
     pending_new_causes: Tuple[str, ...] = ()
     pending_critical: bool = False
     reminders_consumed: int = 0
+    # When this episode's onset was actually sent. Reminders count from here, not from the
+    # reading's ``since``: the onset lands one regulate step (and up to one tick) after ``since``,
+    # so a schedule anchored on ``since`` put the 30 min reminder inside the 30 min gap.
+    episode_noticed_at: Optional[datetime] = None
 
 
 def _utc(dt: datetime) -> datetime:
@@ -186,7 +193,7 @@ def strain_news(
         return None, replace(
             state, episode_since=None, episode_causes=frozenset(), critical_announced=False,
             onset_pending=False, escalation_pending=False, pending_new_causes=(),
-            pending_critical=False, reminders_consumed=0,
+            pending_critical=False, reminders_consumed=0, episode_noticed_at=None,
         )
 
     since = _utc(reading.since)
@@ -202,7 +209,7 @@ def strain_news(
             state, episode_since=since, episode_causes=causes,
             critical_announced=bool(crit), onset_pending=True, escalation_pending=False,
             pending_new_causes=(), pending_critical=False,
-            reminders_consumed=reminder_offsets(now - since),
+            reminders_consumed=0, episode_noticed_at=None,
         )
     else:
         joined = causes - state.episode_causes
@@ -225,8 +232,9 @@ def strain_news(
                     pending_critical=state.pending_critical or crossed,
                 )
 
-    due = reminder_offsets(now - since)
-    reminder_due = (not state.onset_pending) and due > state.reminders_consumed
+    noticed = state.episode_noticed_at
+    due = reminder_offsets(now - noticed) if noticed is not None else 0
+    reminder_due = (not state.onset_pending) and noticed is not None and due > state.reminders_consumed
     gap_ok = state.last_event_at is None or now - state.last_event_at >= MIN_GAP
 
     kind: Optional[EventKind] = None
@@ -241,15 +249,40 @@ def strain_news(
 
     cap = MAX_EVENTS_PER_DAY - (RESERVED_FOR_NEWS if kind == "reminder" else 0)
     if state.events_today >= cap:
-        # Dropped, not carried: past the cap nothing more is written today.
+        if kind == "escalation":
+            # Carried, not dropped: nothing more is written today, but an open episode that got
+            # worse in kind is still news tomorrow while it holds (replay 2026-10-18: the first
+            # critical-heat escalation was the 9th event of the day and would never have been
+            # sent). Sent at the first tick of the next local day if still true.
+            return None, state
+        # Onset / reminder: dropped. A dropped onset still marks the episode noticed (its
+        # reminders run from here), so it is not re-sent tomorrow as day-old news.
         return None, replace(
-            state, onset_pending=False, escalation_pending=False, pending_new_causes=(),
-            pending_critical=False, reminders_consumed=max(state.reminders_consumed, due),
+            state, onset_pending=False, reminders_consumed=max(state.reminders_consumed, due),
+            episode_noticed_at=noticed or now,
         )
     if not gap_ok:
         if kind == "reminder":
             return None, replace(state, reminders_consumed=due)  # waits for the next slot
         return None, state  # onset / escalation: deferred
+
+    if kind == "escalation" and state.events_today == 0 and state.last_event_at is not None \
+            and local_day(state.last_event_at, tz) != today:
+        # Carried over the day line by the cap: send only what still holds. A cause that left,
+        # or a cabinet that cooled below critical, is no longer news.
+        # What is dropped here was never sent: it goes back to "not announced", so it escalates
+        # if it comes back.
+        still = tuple(c for c in state.pending_new_causes if c in causes)
+        still_crit = state.pending_critical and crit is True
+        unsent = frozenset(state.pending_new_causes) - frozenset(still)
+        state = replace(
+            state, episode_causes=state.episode_causes - unsent,
+            critical_announced=state.critical_announced and not (state.pending_critical and not still_crit),
+            pending_new_causes=still, pending_critical=still_crit,
+            escalation_pending=bool(still or still_crit),
+        )
+        if not state.escalation_pending:
+            return None, state
 
     count = state.events_today + 1
     event = StrainNewsEvent(
@@ -266,9 +299,10 @@ def strain_news(
     new_state = replace(
         state, events_today=count, last_event_at=now, onset_pending=False,
         escalation_pending=False, pending_new_causes=(), pending_critical=False,
-        # Any event resets nothing in the reminder schedule (it counts from the episode start),
+        # Any event resets nothing in the reminder schedule (it counts from the sent onset),
         # but slots already due are consumed so a reminder never follows right behind news.
         reminders_consumed=due,
+        episode_noticed_at=noticed or now,
     )
     return event, new_state
 
@@ -300,23 +334,27 @@ def seed_state(
     if not reading_is_known(reading, now, max_age_sec) or reading.arousal_level != "strained":
         return state
     since = _utc(reading.since)
-    if not any(t >= since for t in times):
+    episode_times = [t for t in times if t >= since]
+    if not episode_times:
         return state  # nothing sent for this episode yet: the next step fires its onset
+    noticed = episode_times[0]
     temp = reading.cabinet_temp_c
     # Conservative: at or near critical (>= the thermal gate's 33 C re-arm point) a pre-restart
     # critical may already have been announced, so it counts as announced.
     announced = temp is not None and temp >= DEFAULT_CRITICAL_REARM_C
     return replace(
         state, episode_since=since, episode_causes=_causes(reading),
-        critical_announced=announced, reminders_consumed=reminder_offsets(now - since),
+        critical_announced=announced, episode_noticed_at=noticed,
+        reminders_consumed=reminder_offsets(now - noticed),
     )
 
 
 def rest_write_allowed(state: StrainNewsState, now: datetime, orienting_window_sec: float) -> bool:
     """The calm 0.0 is not written while the last event is still inside attention's orienting
     window: the 1.0 must be carried unchanged so its age is the event's age (world-first fades
-    an event-written node by that age and stops it at the window)."""
-    if state.last_event_at is None:
+    an event-written node by that age and stops it at the window). Relief (no open episode)
+    ends the hold at once: a strain that cleared is no longer news."""
+    if state.last_event_at is None or state.episode_since is None:
         return True
     return (_utc(now) - state.last_event_at).total_seconds() >= float(orienting_window_sec)
 

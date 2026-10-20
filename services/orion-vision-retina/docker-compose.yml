@@ -212,15 +212,16 @@ services:
   # The token lands in /mnt/telemetry/vision/ring_state (owner-only, mounted
   # into this container only -- the other retinas share retina_state and must
   # not read Ring credentials); the source picks it up within a minute, no
-  # restart. Behind the
-  # `doorbell` profile, like the walkway:
-  #   scripts/safe_docker_build.sh orion-vision-retina --profile doorbell up -d --build orion-vision-retina-doorbell
+  # restart. No compose profile (2026-10-20): unlike the walkway, whose empty
+  # RTSP URL is refused at boot, an unauthenticated doorbell just waits and
+  # retries ("ring not authenticated"), so a plain `up` -- and the post-pull
+  # rebuild, which never starts a profile service that is not running --
+  # builds and starts it. Behind a profile it never deployed itself.
   orion-vision-retina-doorbell:
     logging:
       driver: journald
       options:
         tag: "{{.Name}}"
-    profiles: ["doorbell"]
     build:
       context: ../..
       dockerfile: services/orion-vision-retina/Dockerfile

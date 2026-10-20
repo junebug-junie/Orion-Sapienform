@@ -302,6 +302,57 @@ def test_face_cap_is_separate_from_the_slow_rule_cap(pg) -> None:
         assert len(vi._open_asks(conn, NOW + timedelta(days=1), TZ, cfg)) == 1
 
 
+def _add_regular(conn, iid: str, visits: int, *, thumbs: bool) -> None:
+    """A body-only regular: one sighting a day for ``visits`` days (the slow rule)."""
+    from sqlalchemy import text
+
+    conn.execute(text(
+        "INSERT INTO vision_individual (individual_id, stream_id, kind, centroid, centroid_n, first_seen_at, "
+        "last_seen_at, sighting_count, distinct_days) VALUES (:i, 'walkway', 'person', :c, :n, :a, :b, :n, :n)"),
+        {"i": iid, "c": list(_vec(1)), "n": visits, "a": NOW - timedelta(days=visits), "b": NOW - timedelta(hours=1)})
+    for d in range(visits):
+        t = NOW - timedelta(days=d, hours=1)
+        conn.execute(text(
+            "INSERT INTO vision_individual_sighting (sighting_id, individual_id, stream_id, started_at, ended_at, "
+            "dwell_sec, observation_count, thumb_ref) VALUES (:s, :i, 'walkway', :t, :t, 0, 1, :th)"),
+            {"s": f"s-{iid}-{d}", "i": iid, "t": t, "th": f"thumb:{iid[0] * 63}{d % 10}" if thumbs else None})
+
+
+@needs_pg
+def test_no_picture_no_who_is_this_and_it_does_not_block_the_next(pg) -> None:
+    """C.2 (2026-10-20): a regular with no thumbnail gets no card (live:
+    ask-9645... went out with image_refs=[]), stays a candidate, and does not
+    use up the slot of a regular behind it that has pictures."""
+    from sqlalchemy import text
+
+    cfg = vi.IndividualsConfig(ask_daily_cap=1, ask_face_min_faces=0)
+    with pg.begin() as conn:
+        _add_regular(conn, "blank", 12, thumbs=False)     # ranks first (more sightings)
+        _add_regular(conn, "shown", 10, thumbs=True)
+        opened = vi._open_asks(conn, NOW, TZ, cfg)
+        assert [(a["source_ref"], bool(a["image_refs"])) for a in opened] == [("shown", True)]
+        assert conn.execute(text("SELECT count(*) FROM orion_ask WHERE source_ref='blank'")).scalar() == 0
+        # Pictures arrive later: the blank one is still a candidate.
+        conn.execute(text("UPDATE vision_individual_sighting SET thumb_ref='thumb:' || repeat('b', 64) "
+                          "WHERE individual_id='blank'"))
+        later = vi._open_asks(conn, NOW + timedelta(days=1), TZ, cfg)
+    assert [a["source_ref"] for a in later] == ["blank"]
+
+
+@needs_pg
+def test_a_face_without_its_picture_does_not_block_the_next_face(pg) -> None:
+    from sqlalchemy import text
+
+    cfg = vi.IndividualsConfig(confirm_ask_daily_cap=1)
+    with pg.begin() as conn:
+        _add_person(conn, "p0", _vec(1.0), 9, FACE("0"))
+        _add_person(conn, "p1", _vec(0.0, 1.0), 6, FACE("1"))
+        conn.execute(text("UPDATE vision_individual_sighting SET face_thumb_ref=NULL, thumb_ref=NULL "
+                          "WHERE individual_id='p0'"))
+        opened = vi._open_asks(conn, NOW, TZ, cfg)
+    assert [a["source_ref"] for a in opened] == ["p1"]
+
+
 @needs_pg
 def test_unparseable_pair_answer_is_applied_as_nothing(pg) -> None:
     from sqlalchemy import text

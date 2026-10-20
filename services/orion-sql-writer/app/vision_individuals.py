@@ -2162,9 +2162,9 @@ def _open_face_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -
           AND {_NOT_ASKED_SQL.format(kind="'vision_individual'", ref="i.individual_id")}
           AND NOT EXISTS (SELECT 1 FROM orion_ask p WHERE p.source_kind=:same AND p.status='open'
                           AND (p.source_ref LIKE i.individual_id || '|%' OR p.source_ref LIKE '%|' || i.individual_id))
-        ORDER BY i.face_n DESC, i.individual_id LIMIT :b
+        ORDER BY i.face_n DESC, i.individual_id
     """), {"f": cfg.ask_face_min_faces, "k": people, "recent": now - timedelta(days=cfg.candidate_days),
-           "cool": cool, "same": SOURCE_KIND_SAME, "b": budget - len(out)}).fetchall()
+           "cool": cool, "same": SOURCE_KIND_SAME}).fetchall()
     # One "who is this?" per person: individuals Juniper said are the same
     # share an answer (_propagate_label), so a group already asked is skipped.
     asked_groups = {groups.get(r[0], r[0]) for r in conn.execute(text(
@@ -2208,6 +2208,8 @@ def _open_sighting_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfi
         return []
     # Only real visits count: stationary sightings (a prop) are excluded from
     # the counts, and an individual that is a fixture right now is not asked about.
+    # No LIMIT: a candidate skipped below (no picture) must not use up a slot,
+    # or it would block everyone behind it on every tick.
     cands = conn.execute(text(f"""
         SELECT i.individual_id, i.kind, v.n, v.d, i.label FROM vision_individual i
         JOIN LATERAL (
@@ -2218,11 +2220,13 @@ def _open_sighting_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfi
         WHERE i.label IS NULL AND NOT i.stationary AND i.sighting_count >= :n AND i.distinct_days >= :d
           AND v.n >= :n AND v.d >= :d
           AND {_NOT_ASKED_SQL.format(kind="'vision_individual'", ref="i.individual_id")}
-        ORDER BY v.n DESC, i.individual_id LIMIT :b
-    """), {"n": cfg.ask_min_sightings, "d": cfg.ask_min_days, "b": budget, "tz": str(tz.key),
+        ORDER BY v.n DESC, i.individual_id
+    """), {"n": cfg.ask_min_sightings, "d": cfg.ask_min_days, "tz": str(tz.key),
            "cool": now - timedelta(days=cfg.ask_cooldown_days)}).fetchall()
     out: List[dict] = []
     for iid, kind, sc, dd, label in cands:
+        if len(out) >= budget:
+            break
         if not should_ask(label=label, sighting_count=sc, distinct_days=dd,
                           min_sightings=cfg.ask_min_sightings, min_days=cfg.ask_min_days):
             continue
@@ -2230,11 +2234,13 @@ def _open_sighting_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfi
         minutes = [r[1].astimezone(tz).hour * 60 + r[1].astimezone(tz).minute for r in srows]
         mean, r = circular_mean_minute(minutes)
         images = _images(srows, now, cfg)
+        if not images:
+            continue  # no picture, no ask: Juniper cannot answer a blank card; it stays a candidate
         ask = OrionAskV1(
             ask_id=f"ask-{uuid.uuid4().hex}",
             question=ask_question(kind=kind, sighting_count=sc, distinct_days=dd, mean_minute=mean, r=r),
             evidence_refs=[f"sighting:{row[0]}" for row in srows[:5]],
-            image_ref=images[0] if images else None, image_refs=images, created_at=now,
+            image_ref=images[0], image_refs=images, created_at=now,
             expires_at=now + timedelta(days=cfg.ask_expiry_days),
             source_kind=SOURCE_KIND_INDIVIDUAL, source_ref=iid,
         )

@@ -249,3 +249,30 @@ def test_event_without_names_key_still_validates():
     payload = _pair_event("yes").model_dump(mode="json")
     payload.pop("names")
     assert OrionAskAnsweredV1.model_validate(payload).names == {}
+
+
+def _confirm_event(answer="yes", ref="aaa|Kid next door", status="answered"):
+    return OrionAskAnsweredV1(
+        ask_id="ask-confirm", status=status, answer=answer,
+        answered_at=datetime(2026, 10, 20, 19, 0, tzinfo=timezone.utc),
+        source_kind="vision_person_confirm", source_ref=ref,
+    )
+
+
+def test_is_this_x_yes_names_the_individual():
+    store = InMemorySubstrateGraphStore()
+    out = _apply(_confirm_event(), store)
+    assert out is not None
+    node = store.get_node_by_id(entity_node_id_for_individual("aaa"))
+    assert node.label == "Kid next door" and node.metadata["label_ask_id"] == "ask-confirm"
+
+
+@pytest.mark.parametrize("event", [
+    _confirm_event("no"),
+    _confirm_event(None, status="dismissed"),
+    _confirm_event("yes", ref="aaa"),          # no name in the ref
+])
+def test_is_this_x_without_a_yes_names_nobody(event):
+    store = InMemorySubstrateGraphStore()
+    assert _apply(event, store) is None
+    assert not store.snapshot().nodes

@@ -26,6 +26,8 @@ VisionWindowPayload → evidence_transition (host label delta) → VisionSceneIn
 5. **Projection** — `project_interpretation_to_events` maps grounded `event_candidates` to `VisionEventBundleItem` entries.
 6. **Publish** — the event bundle is published on `orion:vision:events` (and returned on RPC reply when applicable).
 
+**GPU heat shed:** when the gateway reply says the pool is shedding (`raw.details.reason` = `shed:<name>`), the council skips the LLM call for later windows (intake and RPC) for 30 s doubling to 180 s, or the gateway's `retry_after_sec` if longer; one window per backoff probes, and the first real answer ends it. A skipped window is handled exactly like a refused one (parse_failed / host fallback). Logs: one `gpu_shed_backoff_start` and one `gpu_shed_backoff_end ... skipped=N` line per episode. Code: `orion/gpu_pool/shed_backoff.py`, `CouncilService._call_llm_raw`.
+
 Bus intake honors the transition gate; **RPC requests always run interpretation** (on-demand callers must not hang or get silent no-ops). Concurrent windows on the same stream coalesce via `interpret_in_flight` so atlas metacog is not double-called on the same transition. Host pipe only — edge is out of scope.
 
 ## Unresolved percepts (things Orion could not name)

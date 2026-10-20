@@ -253,7 +253,7 @@ def test_script_api_requires_owner_live_connection_generation_and_valid_budget(t
         assert c.post(path,json=body|{'duration_seconds':1801},headers=h).status_code==422
         assert not calls
         assert c.post(path,json=body,headers=h).status_code==200
-        assert calls==[('scripted','c'*36,dict(port=0,action='start',expected_epoch=1,duration_seconds=60))]
+        assert calls==[('scripted','c'*36,dict(port=0,action='start',expected_epoch=1,duration_seconds=60,cognition=False))]
 
 
 def test_paused_viewer_disconnect_releases_capacity(tmp_path):

@@ -327,6 +327,12 @@ rebuild_one() {
     fi
     # shellcheck disable=SC2086
     PROFILE_SERVICES=$(python3 "$PY" --running-profile-services "$svc" $SKIP_PROFILE_ARGS || true)
+    # Second compose files of this stack (docker-compose.<name>.yml) with a
+    # container running from them now. A plain `up` only ever read
+    # docker-compose.yml, so the Qwen caption lane (docker-compose.circe-qwen.yml)
+    # kept its 2026-10-16 image and env through every pull (2026-10-20). Never
+    # starts a lane that is not running; GPU-pool launch files are skipped.
+    EXTRA_COMPOSE=$(python3 "$PY" --running-extra-compose "$svc" || true)
 
     # GPU-pool launch targets of this stack (config/gpu_pool.yaml `launch:`).
     # A STOPPED one was evicted by the pool on purpose: build its image, never
@@ -358,6 +364,12 @@ rebuild_one() {
             printf '%s\n' "$PROFILE_SERVICES" | while IFS="$(printf '\t')" read -r profile name; do
                 [ -n "$name" ] || continue
                 echo "[dry-run] would rebuild running profile service: $svc --profile $profile $name"
+            done
+        fi
+        if [ -n "$EXTRA_COMPOSE" ]; then
+            printf '%s\n' "$EXTRA_COMPOSE" | while IFS="$(printf '\t')" read -r extra names; do
+                [ -n "$extra" ] || continue
+                echo "[dry-run] would rebuild running extra compose file: $svc --compose-file $extra $names"
             done
         fi
         REBUILT=$((REBUILT + 1))
@@ -431,6 +443,24 @@ rebuild_one() {
         done <<EOF_PROFILES
 $PROFILE_SERVICES
 EOF_PROFILES
+    fi
+
+    if [ -n "$EXTRA_COMPOSE" ]; then
+        TAB=$(printf '\t')
+        while IFS="$TAB" read -r extra names; do
+            [ -n "$extra" ] && [ -n "$names" ] || continue
+            echo "=== rebuild_services_from_git_diff: $svc (running extra compose file $extra: $names) ==="
+            # Only the services running now, --no-deps: a stopped sibling in the
+            # same file (or a depends_on edge) is never started.
+            # shellcheck disable=SC2086
+            run_safe_build "$svc" --compose-file "$extra" up -d --build --no-deps $RECREATE_FLAG $names </dev/null
+            if [ "$rc" -ne 0 ]; then
+                echo "rebuild_services_from_git_diff.sh: FAILED $svc/$extra (exit $rc)" >&2
+                svc_failed=1
+            fi
+        done <<EOF_EXTRA
+$EXTRA_COMPOSE
+EOF_EXTRA
     fi
 
     if [ "$svc_failed" -ne 0 ]; then

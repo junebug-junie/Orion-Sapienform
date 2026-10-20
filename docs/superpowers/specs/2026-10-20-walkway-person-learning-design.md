@@ -72,9 +72,10 @@ lost training example.
 ### Phase 0 -- stop deleting labelled examples (one env key)
 
 - `VISION_CROP_RETENTION_KEEP_LABELS=person` (orion-sql-writer). The crop
-  prune skips rows whose `label` is in this list. Person crops are ~250/day,
-  ~10 KB each: ~1 GB/year. Vehicles (~8k/day) keep the 7-day prune.
-- Ship ON. `0`/empty = old behaviour.
+  prune skips rows whose `label` is in this list. Person crops measured
+  2026-10-20: 4778 on the first day (burst), then 69-1036/day, ~5 KB each
+  (mostly the embedding): about 1-2 GB/year. Vehicles keep the 7-day prune.
+- Ship ON. `0`/empty = old behaviour. **Shipped: PR #2776, deployed 2026-10-20.**
 
 ### Phase 1 -- albums, learned bars, eval
 
@@ -259,36 +260,46 @@ later removed). Items below are not done unless marked.
   -- person thumb share should rise well above the pre-deploy 106/973.
 - A new "who is this?" ask carries `image_refs` from a sighting older than 3 days.
 
-### C. Build items (agent work, in order)
+### C. Build items (status 2026-10-20, end of day)
 
-1. **Phase 0** of this spec (person crops survive the 7-day prune). Urgent.
-2. **No picture, no ask.** `_open_asks` in `vision_individuals.py` posts a
-   "who is this?" ask with `image_refs=[]` when no snapshot exists. Skip that
-   individual (it stays a candidate) instead of posting an unanswerable card.
-   Same rule for the Phase 1 `vision_person_confirm` ask. Test: an
-   individual with no thumbs produces no ask row.
-3. **Retire the picture-less open ask.** `ask-9645cdc1bdd64660b80a07380b7c71ef`
-   (individual `47d187c4c302450dbdfbd640e99d7167`, 27 sightings / 5 days) was
-   posted with no picture. Expire it so the cooldown lets a new ask with
-   pictures open (its 4 thumbs from 2026-10-16 still exist). One-row status
-   update: production write, needs Juniper's OK.
-4. **Impure clusters (gap in Phase 1).** That same individual's two viewable
-   thumbs look like different people (dark figure walking at night; red
-   shirt crouching). Phase 1 attributes whole clusters, so an impure cluster
-   would put one person's crops in another's album. Add before Phase 1 ships:
-   a purity check (spread of the cluster's crop vectors, or a split when
-   crops form two groups) and an ask answer "these are different people"
-   that removes the cluster's crops from albums. Measure first: how many
-   labelled clusters are impure today.
-5. **Disk alarm** on `/mnt/telemetry` (469G disk, 336G free on 2026-10-20;
-   face frames kept forever add ~170 MB/day, ~62 GB/year). Reuse an existing
-   host/disk health signal if one exists before adding one.
-6. **Tracking doc.** Link this spec under the walkway reach queue
-   (`docs/superpowers/plans/2026-10-18-walkway-reach-into-orion-queue.md`,
-   PR #2752, still open) once that merges.
-7. **Cleanup.** Remove the merged #2765 worktree
-   (`../Orion-Sapienform-vision-photos-keep-and-story-links`) via
-   `make prune-merged-worktrees`.
+1. **Phase 0: DONE.** PR #2776, deployed, live container has
+   `VISION_CROP_RETENTION_KEEP_LABELS=person`. Acceptance (oldest person crop
+   stops moving forward while vehicles keep pruning) is checkable from 2026-10-22.
+2. **No picture, no ask: DONE.** PR #2782, deployed. Also fixed: both
+   "who is this?" openers fetched only budget-many candidates, so a skipped
+   one held the day's slot on every tick. The replay eval now fails any
+   picture-less ask. The Phase 1 `vision_person_confirm` opener must follow
+   the same rule (skip, never `LIMIT` by budget before the skip).
+3. **Retire the picture-less open ask: WAITING ON JUNIPER (operator step).**
+   The plan above was wrong: the re-ask cooldown counts from the ask's
+   `created_at` (`_NOT_ASKED_SQL`), so `expired` still blocks until about
+   2026-11-18. `withdrawn` is not in the blocking list and the Hub only shows
+   `open`. Approved by Juniper, blocked for agent sessions (production write):
+   `psql postgresql://postgres:postgres@localhost:55432/conjourney -c "UPDATE orion_ask SET status='withdrawn' WHERE ask_id='ask-9645cdc1bdd64660b80a07380b7c71ef' AND status='open'"`
+   The next tick opens a new ask with the individual's 4 sighting thumbs.
+4. **Impure clusters: MEASURED, build with Phase 1.** Read-only, 2026-10-20,
+   over surviving crops with embeddings (202 labelled crops in 11 named
+   clusters; 774 in 240 unnamed). Reference scales from Juniper's data:
+   - Same person (crops in one sighting, crop vs crop), p10 / p50: body 0.836 / 0.894,
+     OSNet 0.635 / 0.738, face 0.286 / 0.546.
+   - Different people ('different' pair verdicts, crop vs crop), p50 / p90: body 0.703 / 0.814,
+     OSNet 0.601 / 0.687, face 0.268 / 0.417. Centroid vs centroid (n = 4), body p50 0.821.
+   - Purity test: 2-means split of a cluster's crops; mixed if the two halves'
+     centroids are below the same-person p10 and each half has >= 2 crops.
+     Body: 1 of 52 clusters with >= 4 crops, **1 of 6 named** (`f5694d84...`,
+     3 vs 2 crops at 0.81). OSNet: 1 of 51, 0 named. Face: 0 of 3.
+   - The C.3 individual's 10 surviving crops look like one person (body split
+     0.94); the two odd thumbs are probably from crops already pruned.
+   - Caveat: only 4 'different' verdicts calibrate the scale, so this is a
+     screen, not a verdict. Phase 1 design consequence: a cluster that fails
+     the split test contributes no `+1` exemplars (abstain) until Juniper
+     answers; add the "these are different people" answer as planned. Script:
+     re-derive from this description; it was a one-off scratch file.
+5. **Disk alarm: ALREADY EXISTS.** `scripts/disk_threshold_watchdog.py`, cron
+   every 15 min, covers `/mnt/telemetry`, Hub attention card at 90 %. Last run
+   2026-10-20 06:00 UTC: 25 % used (336 G free). No change needed.
+6. **Tracking doc: WAITING** on PR #2752 to merge, then link this spec there.
+7. **Cleanup: DONE.** Worktrees for #2765, #2776, #2782 removed.
 
 ### D. Decisions waiting on Juniper
 
@@ -297,6 +308,11 @@ later removed). Items below are not done unless marked.
 - Missing question 3 (when "probably X" may reach other consumers).
 
 ## Recommended next patch
+
+(Updated 2026-10-20: Phase 0 and C.2 shipped.) Phase 1, after Juniper answers
+section D question 1. Include the C.4 abstain rule.
+
+Original recommendation:
 
 Phase 0 alone, today: `VISION_CROP_RETENTION_KEEP_LABELS=person` in
 orion-sql-writer with a test that person crops survive the prune and vehicle

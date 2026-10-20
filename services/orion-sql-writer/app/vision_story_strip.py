@@ -70,7 +70,7 @@ class StripConfig:
     strip_dir: str = "/mnt/telemetry/vision/story_strips"
     dark_contrast: float = 0.10
     pending_sec: float = 3600.0
-    retention_days: float = 30.0
+    retention_days: float = 0.0  # 0 = strips are kept forever
     frame_w: float = 2560.0
     frame_h: float = 1920.0
 

@@ -31,6 +31,8 @@ MIGRATION_V2 = REPO_ROOT / "services" / "orion-sql-db" / "manual_migration_visio
 # The person route writes orion_ask rows and reads vision_individual (2026-10-18).
 WALKWAY_MIGRATIONS = [REPO_ROOT / "services" / "orion-sql-db" / f"manual_migration_{f}.sql" for f in (
     "walkway_camera_v1", "walkway_privacy_v2", "vision_confirm_asks_v1", "vision_ask_names_v1")]
+# vision_crop_observation.individual_id: the late individual links (2026-10-20).
+SPLIT_MIGRATION = REPO_ROOT / "services" / "orion-sql-db" / "manual_migration_vision_split_v1.sql"
 needs_pg = pytest.mark.skipif(not ADMIN_DSN, reason="ORION_MEMORY_EPISODE_TEST_DATABASE_URL not set")
 
 
@@ -138,7 +140,8 @@ def _run(body, published=None):
         try:
             for f in WALKWAY_MIGRATIONS:
                 await pool.execute(f.read_text())
-            for st in _statements(MIGRATION.read_text()) + _statements(MIGRATION_V2.read_text()):
+            for st in (_statements(MIGRATION.read_text()) + _statements(MIGRATION_V2.read_text())
+                       + _statements(SPLIT_MIGRATION.read_text())):
                 await pool.execute(st)   # CONCURRENTLY: one statement at a time
             app = FastAPI()
             app.include_router(msr.router)
@@ -346,6 +349,45 @@ def test_people_in_lists_each_individual_once_with_its_crops_and_first_thumb() -
     got = msr.people_in(ev, "walker", "person")
     assert [(p["individual_id"], p["crop_ids"], p["thumb"], p["short_id"]) for p in got] == [
         ("ind-a", ["c1", "c2"], THUMB, "ind-a"), ("ind-b", ["c4"], None, "ind-b")]
+
+
+def test_fill_late_links_fills_only_null_ids_and_keeps_order() -> None:
+    ev = [{"crop_id": "c1", "individual_id": None}, {"crop_id": "c2", "individual_id": "ind-a"},
+          {"crop_id": "c3", "individual_id": None}, {"individual_id": None}]
+    assert msr.unlinked_crop_ids(ev) == ["c1", "c3"]
+    got = msr.fill_late_links(ev, {"c1": "ind-j", "c2": "ind-z"})
+    assert [e.get("individual_id") for e in got] == ["ind-j", "ind-a", None, None]  # c2 kept, c3 unknown
+    assert ev[0]["individual_id"] is None                                           # input not mutated
+
+
+async def _crop(pool, crop_id: str, individual_id) -> None:
+    await pool.execute(
+        "INSERT INTO vision_crop_observation (crop_id, observation_id, stream_id, observed_at, label, score, "
+        "box_xyxy, individual_id) VALUES ($1, 'obs', 'walkway', now(), 'person', 0.9, ARRAY[1,2,3,4]::real[], $2)",
+        crop_id, individual_id)
+
+
+@needs_pg
+def test_a_story_frozen_before_its_crops_were_linked_still_shows_and_names_the_person() -> None:
+    # Live 2026-10-20: story 3ca2d1c1... had individual_id null on all 3 evidence
+    # crops while vision_crop_observation linked them to Juniper's individual.
+    async def body(pool, client):
+        await _individual(pool, "ind-juniper", "Juniper")
+        sid = await _walk(pool, 1, [None, None, None])
+        for k in range(3):
+            await _crop(pool, f"s1c{k}", "ind-juniper")
+        r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
+        assert r.status_code == 200, r.text
+        story = next(s for s in r.json()["stories"] if s["story_id"] == sid)
+        assert [(p["individual_id"], p["label"], p["crop_ids"]) for p in story["people"]] == [
+            ("ind-juniper", "Juniper", ["s1c0", "s1c1", "s1c2"])]
+        assert story["display_sentence"].startswith("Juniper walked") and story["name_source"] == "rule"
+        # The naming button the card now shows works on the late link too.
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-juniper",
+                              json={"action": "name", "name": "June"})
+        assert r.status_code == 200, r.text
+
+    _run(body, [])
 
 
 def _ev(*ids, clipped=False):

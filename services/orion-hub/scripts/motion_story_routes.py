@@ -318,6 +318,46 @@ def _evidence_list(raw: Any) -> list[dict[str, Any]]:
     return [e for e in (raw or []) if isinstance(e, dict)]
 
 
+# A story's evidence is frozen when the story closes, often seconds before the
+# individuals reducer assigns its crops (2026-10-20: 101 of 147 person stories
+# over 5 days said "no individual" for crops that were linked). orion-sql-writer
+# now fills those nulls in the story row (vision_motion_loop.relink_stories);
+# this read covers the seconds before that and stories it has not reached,
+# while the crop rows still exist (VISION_CROP_RETENTION_DAYS, 7).
+_LATE_LINKS_SQL = """
+SELECT crop_id, individual_id FROM vision_crop_observation
+WHERE crop_id = ANY($1::text[]) AND individual_id IS NOT NULL
+"""
+
+
+def unlinked_crop_ids(evidence: list[dict[str, Any]]) -> list[str]:
+    return [str(e["crop_id"]) for e in evidence if e.get("crop_id") and e.get("individual_id") is None]
+
+
+def fill_late_links(evidence: list[dict[str, Any]], links: dict[str, str]) -> list[dict[str, Any]]:
+    """``evidence`` with null individual_ids filled from ``links`` (crop_id -> id).
+    An id already in the evidence is never changed."""
+    return [{**e, "individual_id": links[str(e.get("crop_id"))]}
+            if e.get("individual_id") is None and links.get(str(e.get("crop_id"))) else e
+            for e in evidence]
+
+
+async def _late_links(conn: Any, evidences: list[list[dict[str, Any]]]) -> dict[str, str]:
+    """crop_id -> individual_id for the unlinked crops in ``evidences``. Fail-open
+    ({}), inside a savepoint so a failure never aborts the caller's transaction
+    (e.g. vision_crop_observation.individual_id missing: manual_migration_vision_split_v1.sql)."""
+    ids = sorted({cid for ev in evidences for cid in unlinked_crop_ids(ev)})
+    if not ids:
+        return {}
+    try:
+        async with conn.transaction():
+            rows = await conn.fetch(_LATE_LINKS_SQL, ids)
+    except Exception as exc:  # noqa: BLE001 - the stored evidence still renders
+        logger.warning("motion_story_late_links_failed error=%s", exc)
+        return {}
+    return {r["crop_id"]: r["individual_id"] for r in rows}
+
+
 def people_in(evidence: list[dict[str, Any]], role: str, kind: str) -> list[dict[str, Any]]:
     """One entry per distinct individual id in ``evidence``, in first-seen order."""
     out: dict[str, dict[str, Any]] = {}
@@ -359,6 +399,10 @@ def story_display(story: dict[str, Any], labels: dict[str, str],
 async def _enrich(conn: Any, stories: list[dict[str, Any]]) -> None:
     """Add ``people``, ``display_name``, ``display_sentence`` and ``name_source``.
     Fail-open: a missing individuals table leaves the stored sentence and no people."""
+    if stories:
+        links = await _late_links(conn, [s.get("evidence") or [] for s in stories])
+        for s in stories:
+            s["evidence"] = fill_late_links(s.get("evidence") or [], links)
     for s in stories:
         s["people"] = people_in(s.get("evidence") or [], "walker", s.get("kind") or "person")
         s["display_name"], s["display_sentence"], s["name_source"] = s.get("name_label"), s.get("sentence"), "stored"
@@ -371,14 +415,17 @@ async def _enrich(conn: Any, stories: list[dict[str, Any]]) -> None:
             for r in await conn.fetch(
                     "SELECT story_id, kind, evidence FROM vision_motion_story WHERE story_id = ANY($1::text[])",
                     together):
-                partners[r["story_id"]] = r
+                partners[r["story_id"]] = {"kind": r["kind"], "evidence": _evidence_list(r["evidence"])}
+            plinks = await _late_links(conn, [r["evidence"] for r in partners.values()])
+            for r in partners.values():
+                r["evidence"] = fill_late_links(r["evidence"], plinks)
         for s in stories:
             seen = {p["individual_id"] for p in s["people"]}
             for t in s.get("together_story_ids") or []:
                 r = partners.get(t)
                 if r is None:
                     continue
-                for p in people_in(_evidence_list(r["evidence"]), "companion", r["kind"] or "person"):
+                for p in people_in(r["evidence"], "companion", r["kind"] or "person"):
                     if p["individual_id"] not in seen:
                         seen.add(p["individual_id"])
                         p["story_id"] = t
@@ -457,13 +504,18 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                     "FROM vision_motion_story WHERE story_id = $1 AND published", story_id)
                 if story is None:
                     raise HTTPException(status_code=404, detail="story_not_found")
-                person = next((p for p in people_in(_evidence_list(story["evidence"]), "walker", story["kind"])
+                # The same late links the list shows (_enrich), so a person the card offers can be named.
+                ev = _evidence_list(story["evidence"])
+                ev = fill_late_links(ev, await _late_links(conn, [ev]))
+                person = next((p for p in people_in(ev, "walker", story["kind"])
                                if p["individual_id"] == individual_id), None)
                 if person is None and story["together_story_ids"]:
                     for r in await conn.fetch(
                             "SELECT story_id, kind, evidence FROM vision_motion_story WHERE story_id = ANY($1::text[]) "
                             "ORDER BY story_id", list(story["together_story_ids"])):
-                        person = next((p for p in people_in(_evidence_list(r["evidence"]), "companion", r["kind"])
+                        pev = _evidence_list(r["evidence"])
+                        pev = fill_late_links(pev, await _late_links(conn, [pev]))
+                        person = next((p for p in people_in(pev, "companion", r["kind"])
                                        if p["individual_id"] == individual_id), None)
                         if person is not None:
                             break

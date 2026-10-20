@@ -59,6 +59,19 @@ def test_prune_removes_only_old_files_and_empty_folders(tmp_path):
 
 
 
+def test_default_retention_keeps_frames_forever(tmp_path):
+    t = {"now": 1_000_000.0}
+    store = _store(tmp_path, t, min_interval_sec=0.0)   # default retention_days: 0 = forever
+    rel = store.save("cam0", Image.new("RGB", (16, 16)), {"candidates": CANDS})
+    t["now"] += 400 * 86400
+    stale_tmp = (tmp_path / rel).with_name(".x.jpg.1.tmp")
+    stale_tmp.write_bytes(b"x")
+    os.utime(stale_tmp, (t["now"] - 2 * 86400, t["now"] - 2 * 86400))
+    assert store.prune() == 1                            # only the crashed write's leftover
+    assert (tmp_path / rel).exists() and (tmp_path / rel).with_suffix(".json").exists()
+    assert not stale_tmp.exists()
+
+
 def test_save_retries_once_when_the_pruner_removes_the_day_folder(tmp_path, monkeypatch):
     t = {"now": 1_000_000.0}
     store = _store(tmp_path, t, min_interval_sec=0.0)

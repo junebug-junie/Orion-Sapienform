@@ -5,6 +5,7 @@ import threading
 from typing import Callable, Dict, Any, Optional, Coroutine
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 
 from .settings import Settings
 
@@ -68,6 +69,8 @@ async def bus_listener_loop(
     settings: Settings,
     bus_publish: Callable[[str], None],
     action_handlers: Dict[str, Callable[[], Any]],
+    *,
+    stop: Optional[asyncio.Event] = None,
 ) -> None:
     """
     Blocking loop: listens for commands on VOIP_BUS_COMMAND_CHANNEL and dispatches actions.
@@ -82,36 +85,35 @@ async def bus_listener_loop(
         flush=True,
     )
 
-    try:
-        async with bus.subscribe(channel) as pubsub:
-            async for msg in bus.iter_messages(pubsub):
-                data = msg.get("data") or {}
-                if isinstance(data, (bytes, bytearray)):
-                    try:
-                        data = data.decode("utf-8", "ignore")
-                    except Exception:
-                        data = {}
-                if isinstance(data, str):
-                    try:
-                        import json
+    def _handle(msg: dict) -> None:
+        data = msg.get("data") or {}
+        if isinstance(data, (bytes, bytearray)):
+            try:
+                data = data.decode("utf-8", "ignore")
+            except Exception:
+                data = {}
+        if isinstance(data, str):
+            try:
+                import json
 
-                        data = json.loads(data)
-                    except Exception:
-                        data = {}
-                action = data.get("action")
-                print(f"[VOIP] Bus command received: {action} payload={data}", flush=True)
+                data = json.loads(data)
+            except Exception:
+                data = {}
+        action = data.get("action")
+        print(f"[VOIP] Bus command received: {action} payload={data}", flush=True)
 
-                try:
-                    handler = action_handlers.get(action)
-                    if handler is None:
-                        bus_publish("unknown_command", action=action, raw=data)
-                        continue
-                    handler()
-                except Exception as e:
-                    bus_publish("command_error", action=action, error=str(e))
-    except Exception as e:
-        print(f"[VOIP] Bus listener crashed: {e}", flush=True)
-        bus_publish("listener_crashed", error=str(e))
+        try:
+            handler = action_handlers.get(action)
+            if handler is None:
+                bus_publish("unknown_command", action=action, raw=data)
+                return
+            handler()
+        except Exception as e:
+            bus_publish("command_error", action=action, error=str(e))
+
+    # Resubscribes with backoff when Redis drops; before this one error ended the
+    # listener for good while the endpoint kept answering calls.
+    await run_subscription(bus, channel, _handle, stop_event=stop, name="voip-bus-command")
 
 
 def start_bus_listener_thread(

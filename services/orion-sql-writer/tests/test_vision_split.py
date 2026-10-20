@@ -766,7 +766,7 @@ def test_a_name_typed_on_a_story_is_a_typed_label_linked_to_the_same_name(pg, ca
 
 
 @needs_pg
-def test_story_name_skips_a_different_verdict_and_plain_answers_do_not_link(pg) -> None:
+def test_story_name_skips_a_different_verdict_and_plain_answers_link_too(pg) -> None:
     from sqlalchemy import text
 
     with pg.begin() as conn:
@@ -777,7 +777,7 @@ def test_story_name_skips_a_different_verdict_and_plain_answers_do_not_link(pg) 
                           "decided_at) VALUES ('anon', 'maya-1', 'different', 'ask-pair', :t)"), {"t": NOW})
         _add_individual(conn, "maya-2", n=3, face_n=0, face=None, label="Maya", labeled_at=NOW - timedelta(days=1))
         _story_ask(conn, "ask-story-1", "vision_individual", "anon", answer="Maya", name="Maya")
-        # A plain "who is this?" answer (no story_id) keeps today's behaviour: no same-name link.
+        # A plain "who is this?" answer (no story_id) links the same way (2026-10-20).
         conn.execute(text("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, answer, "
                           "answered_at) VALUES ('who-plain', 'q', 'vision_individual', 'plain', 'answered', 'Maya', :t)"),
                      {"t": NOW - timedelta(minutes=5)})
@@ -786,9 +786,215 @@ def test_story_name_skips_a_different_verdict_and_plain_answers_do_not_link(pg) 
     with pg.begin() as conn:
         assert _label(conn, "anon")[0] == "Maya" and _label(conn, "plain")[0] == "Maya"
         # maya-1 has a 'different' with anon: skipped, the next "Maya" is linked instead.
+        # plain (answered later) joins the earliest typed "Maya", maya-1.
         assert [tuple(r) for r in conn.execute(text(
-            "SELECT individual_a, individual_b, verdict FROM vision_individual_pair_verdict "
-            "ORDER BY 1, 2")).fetchall()] == [("anon", "maya-1", "different"), ("anon", "maya-2", "same")]
+            "SELECT individual_a, individual_b, verdict, ask_id FROM vision_individual_pair_verdict "
+            "ORDER BY 1, 2")).fetchall()] == [("anon", "maya-1", "different", "ask-pair"),
+                                              ("anon", "maya-2", "same", "ask-story-1"),
+                                              ("maya-1", "plain", "same", "who-plain")]
+
+
+# --- every typed name links to the same name (2026-10-20) --------------------------------------------
+
+
+def _who_ask(conn, ask_id: str, iid: str, answer: str, *, minute=0) -> None:
+    """A plain Hub "who is this?" answer (no story_id), as the Hub writes it."""
+    from sqlalchemy import text
+
+    conn.execute(text("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, answer, "
+                      "answered_at) VALUES (:a, 'q', 'vision_individual', :i, 'answered', :ans, :t)"),
+                 {"a": ask_id, "i": iid, "ans": answer, "t": NOW - timedelta(minutes=30) + timedelta(minutes=minute)})
+
+
+def _pair_ask(conn, ask_id: str, a: str, b: str, answer: str, names: dict, *, minute=0) -> None:
+    """A "same person?" answer with name boxes, as the Hub writes it."""
+    import json
+
+    from sqlalchemy import text
+
+    conn.execute(text("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, answer, "
+                      "answered_at, answer_detail) VALUES (:a, 'q', 'vision_same_individual', :r, 'answered', "
+                      ":ans, :t, CAST(:d AS jsonb))"),
+                 {"a": ask_id, "r": vi.pair_ref(a, b), "ans": answer, "d": json.dumps({"names": names}),
+                  "t": NOW - timedelta(minutes=30) + timedelta(minutes=minute)})
+
+
+def _pairs(conn) -> list:
+    from sqlalchemy import text
+
+    return [tuple(r) for r in conn.execute(text(
+        "SELECT individual_a, individual_b, verdict, ask_id FROM vision_individual_pair_verdict "
+        "ORDER BY 1, 2")).fetchall()]
+
+
+@needs_pg
+def test_a_who_is_this_name_links_to_the_same_typed_name_and_logs(pg, caplog) -> None:
+    import logging
+
+    with pg.begin() as conn:
+        _add_individual(conn, "anon", n=3, face_n=0, face=None)
+        _add_individual(conn, "maya-1", n=3, face_n=0, face=None, label="Maya", labeled_at=NOW - timedelta(days=2))
+        _who_ask(conn, "who-1", "anon", " maya ")
+    caplog.set_level(logging.INFO, logger="sql-writer.vision_individuals")
+    with pg.begin() as conn:
+        vi._apply_answers(conn, NOW)
+    with pg.begin() as conn:
+        assert _label(conn, "anon") == ("maya", False, "who-1")
+        assert _pairs(conn) == [("anon", "maya-1", "same", "who-1")]
+    assert any("[VISION_SAME_NAME_LINK] individual_id=anon other=maya-1 name='maya' ask_id=who-1" in r.message
+               for r in caplog.records)
+    # Idempotent: a second tick (and re-linking the same name) adds nothing.
+    with pg.begin() as conn:
+        vi._apply_answers(conn, NOW)
+        assert vi._link_same_name(conn, "anon", "Maya", "who-again", NOW) is None
+        assert _pairs(conn) == [("anon", "maya-1", "same", "who-1")]
+
+
+@needs_pg
+def test_a_who_is_this_name_skips_a_copied_name_and_a_different_through_the_group(pg) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _add_individual(conn, "anon", n=3, face_n=0, face=None)
+        # Only copied "Maya" (never typed for this one): not a target.
+        _add_individual(conn, "copy", n=3, face_n=0, face=None, label="Maya", labeled_at=NOW - timedelta(days=3))
+        conn.execute(text("UPDATE vision_individual SET label_copied=true WHERE individual_id='copy'"))
+        # maya-1 is confirmed the same as "x", and she said x is not anon: linking
+        # anon to maya-1 would make anon = x through the group.
+        _add_individual(conn, "maya-1", n=3, face_n=0, face=None, label="Maya", labeled_at=NOW - timedelta(days=2))
+        _add_individual(conn, "x", n=3, face_n=0, face=None)
+        conn.execute(text("INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, ask_id, "
+                          "decided_at) VALUES ('maya-1', 'x', 'same', 'p1', :t), ('anon', 'x', 'different', 'p2', :t)"),
+                     {"t": NOW})
+        _who_ask(conn, "who-1", "anon", "Maya")
+    with pg.begin() as conn:
+        vi._apply_answers(conn, NOW)
+    with pg.begin() as conn:
+        assert _label(conn, "anon") == ("Maya", False, "who-1")
+        assert _pairs(conn) == [("anon", "x", "different", "p2"), ("maya-1", "x", "same", "p1")]
+
+
+@needs_pg
+def test_pair_card_names_link_once_per_group_and_never_across_a_different(pg) -> None:
+    with pg.begin() as conn:
+        _add_individual(conn, "a1", n=3, face_n=0, face=None)
+        _add_individual(conn, "b1", n=3, face_n=0, face=None)
+        _add_individual(conn, "c1", n=3, face_n=0, face=None)
+        _add_individual(conn, "d1", n=3, face_n=0, face=None)
+        _add_individual(conn, "bo-1", n=3, face_n=0, face=None, label="Bo", labeled_at=NOW - timedelta(days=2))
+        _add_individual(conn, "cy-1", n=3, face_n=0, face=None, label="Cy", labeled_at=NOW - timedelta(days=2))
+        # "same" with one name: both faces get it, the pair joins "Bo" once (a1's link
+        # puts b1 in bo-1's group already).
+        _pair_ask(conn, "pair-1", "a1", "b1", "yes", {"a1": "Bo"})
+        # "different" naming both "Cy": c1 links to cy-1; d1 must not (cy-1's group
+        # now holds c1, whom she just said d1 is not).
+        _pair_ask(conn, "pair-2", "c1", "d1", "no", {"c1": "Cy", "d1": "Cy"}, minute=1)
+    with pg.begin() as conn:
+        vi._apply_answers(conn, NOW)
+    with pg.begin() as conn:
+        assert _label(conn, "a1")[0] == "Bo" and _label(conn, "b1")[0] == "Bo"
+        assert _label(conn, "c1")[0] == "Cy" and _label(conn, "d1")[0] == "Cy"
+        assert _pairs(conn) == [("a1", "b1", "same", "pair-1"), ("a1", "bo-1", "same", "pair-1"),
+                                ("c1", "cy-1", "same", "pair-2"), ("c1", "d1", "different", "pair-2")]
+
+
+@needs_pg
+def test_a_corrected_name_drops_the_old_names_links_but_not_her_pair_answers(pg, caplog) -> None:
+    import logging
+
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _add_individual(conn, "anon", n=3, face_n=0, face=None)
+        _add_individual(conn, "maya-1", n=3, face_n=0, face=None, label="Maya", labeled_at=NOW - timedelta(days=2))
+        _add_individual(conn, "kid", n=3, face_n=0, face=None, label="Maya", labeled_at=NOW - timedelta(days=1))
+        conn.execute(text("UPDATE vision_individual SET label_copied=true WHERE individual_id='kid'"))
+        # Her own "same person?" answer about anon and pal: never a name link, it stays.
+        _add_individual(conn, "pal", n=3, face_n=0, face=None)
+        conn.execute(text("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, answer, "
+                          "answered_at, applied_at) VALUES ('pair-own', 'q', 'vision_same_individual', :r, "
+                          "'answered', 'yes', :t, :t)"), {"r": vi.pair_ref("anon", "pal"), "t": NOW})
+        conn.execute(text("INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, ask_id, "
+                          "decided_at) VALUES ('anon', 'pal', 'same', 'pair-own', :t), "
+                          "('kid', 'maya-1', 'same', 'p0', :t)"), {"t": NOW})
+        _who_ask(conn, "who-1", "anon", "Maya")
+        _who_ask(conn, "who-2", "anon", "Mya", minute=1)   # a typo fix
+    caplog.set_level(logging.INFO, logger="sql-writer.vision_individuals")
+    with pg.begin() as conn:
+        vi._apply_answers(conn, NOW)
+    with pg.begin() as conn:
+        assert _label(conn, "anon") == ("Mya", False, "who-2")
+        assert _pairs(conn) == [("anon", "pal", "same", "pair-own"), ("kid", "maya-1", "same", "p0")]
+        # maya-1's group keeps its copied "Maya".
+        assert _label(conn, "kid")[0] == "Maya"
+    assert any("[VISION_SAME_NAME_UNLINK] individual_id=anon old='Maya' new='Mya' ask_id=who-2 others=maya-1"
+               in r.message for r in caplog.records)
+
+
+@needs_pg
+def test_a_case_only_difference_is_one_name_not_a_conflict(pg, caplog) -> None:
+    import logging
+
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _add_individual(conn, "anon", n=3, face_n=0, face=None)
+        _add_individual(conn, "maya-1", n=3, face_n=0, face=None, label="Maya", labeled_at=NOW - timedelta(days=2))
+        _who_ask(conn, "who-1", "anon", "maya")
+        _who_ask(conn, "who-2", "anon", "MAYA", minute=1)   # case only: the link stays
+    caplog.set_level(logging.INFO, logger="sql-writer.vision_individuals")
+    with pg.begin() as conn:
+        vi._apply_answers(conn, NOW)
+    with pg.begin() as conn:
+        assert _pairs(conn) == [("anon", "maya-1", "same", "who-1")]
+        assert conn.execute(text("SELECT label FROM vision_individual WHERE individual_id='maya-1'")).scalar() == "Maya"
+    assert not any("VISION_GROUP_NAME_CONFLICT" in r.message or "VISION_SAME_NAME_UNLINK" in r.message
+                   for r in caplog.records)
+
+
+@needs_pg
+def test_healed_pair_names_link_once(pg) -> None:
+    import json
+
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _add_individual(conn, "a1", n=3, face_n=0, face=None)
+        _add_individual(conn, "b1", n=3, face_n=0, face=None)
+        _add_individual(conn, "bo-1", n=3, face_n=0, face=None, label="Bo", labeled_at=NOW - timedelta(days=2))
+        # An older writer applied the verdict but not the name.
+        conn.execute(text("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, answer, "
+                          "answered_at, applied_at, answer_detail) VALUES ('pair-old', 'q', 'vision_same_individual', "
+                          ":r, 'answered', 'no', :t, :t, CAST(:d AS jsonb))"),
+                     {"r": vi.pair_ref("a1", "b1"), "t": NOW - timedelta(hours=1), "d": json.dumps({"names": {"a1": "Bo"}})})
+        conn.execute(text("INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, ask_id, "
+                          "decided_at) VALUES ('a1', 'b1', 'different', 'pair-old', :t)"), {"t": NOW})
+    for _ in range(2):
+        with pg.begin() as conn:
+            vi._apply_answers(conn, NOW)
+    with pg.begin() as conn:
+        assert _label(conn, "a1")[0] == "Bo"
+        assert _pairs(conn) == [("a1", "b1", "different", "pair-old"), ("a1", "bo-1", "same", "pair-old")]
+
+
+@needs_pg
+def test_a_name_never_links_across_a_split(pg) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        # A split moved "Cora" pictures off src into new-1 ('different') and linked new-1 to cora-1.
+        _add_individual(conn, "src", n=3, face_n=0, face=None)
+        _add_individual(conn, "new-1", n=3, face_n=0, face=None, label="Cora", labeled_at=NOW - timedelta(days=1))
+        _add_individual(conn, "cora-1", n=3, face_n=0, face=None, label="Cora", labeled_at=NOW - timedelta(days=2))
+        conn.execute(text("INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, ask_id, "
+                          "decided_at) VALUES ('new-1', 'src', 'different', 'sp', :t), "
+                          "('cora-1', 'new-1', 'same', 'sp', :t)"), {"t": NOW})
+        _who_ask(conn, "who-1", "src", "Cora")
+    with pg.begin() as conn:
+        vi._apply_answers(conn, NOW)
+    with pg.begin() as conn:
+        assert _label(conn, "src")[0] == "Cora"
+        assert _pairs(conn) == [("cora-1", "new-1", "same", "sp"), ("new-1", "src", "different", "sp")]
 
 
 @needs_pg

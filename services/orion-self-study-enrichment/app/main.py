@@ -11,6 +11,7 @@ from typing import Dict
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
+from orion.core.bus.resilience import run_subscription
 
 from .cache import content_hash, read_cached, write_cached
 from .claude_runner import run_claude_once
@@ -173,18 +174,22 @@ def handle_request_payload(settings: Settings, payload: dict) -> None:
 
 
 async def run_consumer(settings: Settings, bus: OrionBusAsync, stop: asyncio.Event) -> None:
-    channel = settings.CHANNEL_SELF_STUDY_ENRICHMENT_REQUESTED
-    async with bus.subscribe(channel) as pubsub:
-        async for msg in bus.iter_messages(pubsub):
-            if stop.is_set():
-                break
-            try:
-                raw = msg.get("data")
-                payload = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
-            except Exception:
-                logger.exception("self_study_enrichment_bad_payload")
-                continue
-            handle_request_payload(settings, payload)
+    def _handle(msg: dict) -> None:
+        try:
+            raw = msg.get("data")
+            payload = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
+        except Exception:
+            logger.exception("self_study_enrichment_bad_payload")
+            return
+        handle_request_payload(settings, payload)
+
+    await run_subscription(
+        bus,
+        settings.CHANNEL_SELF_STUDY_ENRICHMENT_REQUESTED,
+        _handle,
+        stop_event=stop,
+        name="self-study-enrichment-requested",
+    )
 
 
 async def main_async() -> None:

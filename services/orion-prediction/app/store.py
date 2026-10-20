@@ -21,6 +21,7 @@ TABLES = {
     "prediction_intervention": ("intervention_id", "action", "arm", "experiment_id"),
     "prediction_effect_estimate": ("estimate_id", "claim_kind", "effect", "details"),
     "prediction_change_event": ("event_id", "scope", "effect", "started_at", "ended_at", "retracted_at"),
+    "prediction_exceedance": ("exceedance_id", "probability", "window_start", "window_end", "hit_raw", "hit_mean"),
 }
 
 
@@ -139,8 +140,37 @@ class PostgresStore:
 
     def live_scores(self, series_id: str, since: datetime) -> list[dict]:
         return self._all(
-            "SELECT role, origin_ts, horizon_min, abs_error, in_80, in_95 FROM prediction_forecast "
+            "SELECT role, origin_ts, horizon_min, point, abs_error, in_80, in_95 FROM prediction_forecast "
             "WHERE series_id = %s AND score_status = 'scored' AND target_ts >= %s", (series_id, since))
+
+    # --- exceedance probabilities + outcomes ----------------------------------------------
+    def insert_exceedances(self, rows: list[dict]) -> None:
+        sql = ("INSERT INTO prediction_exceedance (series_id, origin_ts, issued_at, name, threshold, window_start, "
+               "window_end, probability, n_paths, served_baseline) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+               "ON CONFLICT (series_id, origin_ts, name) DO NOTHING")
+        with self.pool.connection() as conn, conn.transaction():
+            for r in rows:
+                conn.execute(sql, (r["series_id"], r["origin_ts"], r["issued_at"], r["name"], r["threshold"],
+                                   r["window_start"], r["window_end"], r["probability"], r["n_paths"],
+                                   r["served_baseline"]))
+
+    def due_exceedances(self, series_id: str, before: datetime, limit: int = 2000) -> list[dict]:
+        return self._all("SELECT exceedance_id, threshold, window_start, window_end FROM prediction_exceedance "
+                         "WHERE series_id = %s AND scored_at IS NULL AND window_end <= %s ORDER BY window_start LIMIT %s",
+                         (series_id, before, limit))
+
+    def write_exceedance_outcomes(self, rows: list[dict]) -> None:
+        sql = ("UPDATE prediction_exceedance SET scored_at = %s, hit_raw = %s, hit_mean = %s, max_raw = %s, "
+               "n_readings = %s WHERE exceedance_id = %s AND scored_at IS NULL")
+        with self.pool.connection() as conn, conn.transaction():
+            for r in rows:
+                conn.execute(sql, (r["scored_at"], r["hit_raw"], r["hit_mean"], r["max_raw"], r["n_readings"],
+                                   r["exceedance_id"]))
+
+    def graded_exceedances(self, series_id: str, since: datetime) -> list[dict]:
+        return self._all("SELECT name, probability, hit_raw, hit_mean, served_baseline FROM prediction_exceedance "
+                         "WHERE series_id = %s AND scored_at IS NOT NULL AND n_readings > 0 "
+                         "AND probability IS NOT NULL AND window_start >= %s", (series_id, since))
 
     # --- interventions, experiments, effects ----------------------------------------------
     def insert_intervention(self, row: dict) -> dict:

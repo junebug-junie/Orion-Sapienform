@@ -210,3 +210,136 @@ async def test_run_subscription_propagates_cancellation() -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_subscription_health_reports_down_while_backing_off_and_up_after() -> None:
+    """A listener stuck retrying must read as down, not healthy (2026-10-20)."""
+    import asyncio
+
+    from orion.core.bus import resilience
+    from orion.core.bus.resilience import run_subscription, subscription_health
+
+    resilience._SUBSCRIPTION_STATES.pop("health-t", None)
+    stop = asyncio.Event()
+    gate = asyncio.Event()
+    snapshots: list[dict] = []
+
+    class _GatedPubSub:
+        async def get_message(self, ignore_subscribe_messages=True, timeout=1.0):
+            snapshots.append(subscription_health())
+            if not gate.is_set():
+                gate.set()
+                return _msg(1)
+            stop.set()
+            return None
+
+    bus = _ScriptedBus([ConnectionError("bus down"), _GatedPubSub()])
+    task = asyncio.create_task(
+        run_subscription(bus, "orion:test", lambda m: None, stop_event=stop, name="health-t", max_backoff_sec=0.2)
+    )
+    for _ in range(50):
+        row = next((r for r in subscription_health()["listeners"] if r["name"] == "health-t"), None)
+        if row and row["failures_total"]:
+            break
+        await asyncio.sleep(0.01)
+    during = subscription_health()
+    assert "health-t" in during["down"] and during["ok"] is False
+    assert row["last_failure"].startswith("ConnectionError")
+
+    await asyncio.wait_for(task, timeout=10)
+    up = next(r for r in snapshots[0]["listeners"] if r["name"] == "health-t")
+    assert up["subscribed"] is True and "health-t" not in snapshots[0]["down"]
+    done = next(r for r in subscription_health()["listeners"] if r["name"] == "health-t")
+    assert done["messages_total"] == 1 and done["running"] is False and done["subscribed"] is False
+    assert done["last_message_age_sec"] is not None
+    resilience._SUBSCRIPTION_STATES.pop("health-t", None)
+
+
+@pytest.mark.asyncio
+async def test_run_subscription_passes_several_channels_and_patterns() -> None:
+    import asyncio
+    import contextlib
+
+    from orion.core.bus import resilience
+    from orion.core.bus.resilience import run_subscription
+
+    stop = asyncio.Event()
+    calls: list[tuple] = []
+
+    class _Bus:
+        def subscribe(self, *channels, patterns=False):
+            calls.append((channels, patterns))
+
+            @contextlib.asynccontextmanager
+            async def _cm():
+                yield _ScriptedPubSub([{"type": "pmessage", "data": 1}], stop)
+
+            return _cm()
+
+    seen: list[dict] = []
+    await asyncio.wait_for(
+        run_subscription(_Bus(), ["a:*", "b:*"], seen.append, stop_event=stop, name="multi-t", patterns=True),
+        timeout=10,
+    )
+    assert calls == [(("a:*", "b:*"), True)]
+    assert seen == [{"type": "pmessage", "data": 1}]
+    assert resilience._SUBSCRIPTION_STATES["multi-t"].channel == "a:*,b:*"
+    resilience._SUBSCRIPTION_STATES.pop("multi-t", None)
+
+
+@pytest.mark.asyncio
+async def test_subscription_health_flips_down_when_a_live_subscription_drops() -> None:
+    """The incident shape: subscribed and working, then the connection drops."""
+    import asyncio
+
+    from orion.core.bus import resilience
+    from orion.core.bus.resilience import run_subscription, subscription_health
+
+    resilience._SUBSCRIPTION_STATES.pop("drop-t", None)
+    stop = asyncio.Event()
+    seen_states: list[bool] = []
+    release = asyncio.Event()
+
+    def row() -> dict:
+        found = [r for r in subscription_health()["listeners"] if r["name"] == "drop-t"]
+        assert found, "listener never registered"
+        return found[0]
+
+    class _DropAfterOne:
+        def __init__(self) -> None:
+            self.sent = False
+
+        async def get_message(self, ignore_subscribe_messages=True, timeout=1.0):
+            if not self.sent:
+                self.sent = True
+                return _msg(1)
+            seen_states.append(row()["subscribed"])
+            raise ConnectionError("Connection closed by server.")
+
+    class _WaitThenStop:
+        async def get_message(self, ignore_subscribe_messages=True, timeout=1.0):
+            await release.wait()
+            stop.set()
+            return None
+
+    bus = _ScriptedBus([_DropAfterOne(), _WaitThenStop()])
+    task = asyncio.create_task(
+        run_subscription(bus, "orion:test", lambda m: None, stop_event=stop, name="drop-t", max_backoff_sec=0.3)
+    )
+    for _ in range(100):
+        if seen_states and not row()["subscribed"]:
+            break
+        await asyncio.sleep(0.005)
+    assert seen_states == [True]  # up while the session was live
+    after_drop = row()
+    assert after_drop["subscribed"] is False and "drop-t" in subscription_health()["down"]
+    assert after_drop["failures_total"] == 1 and after_drop["messages_total"] == 1
+    for _ in range(200):
+        if row()["subscribed"]:
+            break
+        await asyncio.sleep(0.005)
+    assert row()["subscribed"] is True  # resubscribed
+    release.set()
+    await asyncio.wait_for(task, timeout=10)
+    resilience._SUBSCRIPTION_STATES.pop("drop-t", None)

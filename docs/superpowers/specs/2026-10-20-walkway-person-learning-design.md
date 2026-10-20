@@ -148,7 +148,7 @@ both sides have faces; otherwise the eval-chosen fallback channel.
 **Ask.** New ask kind `vision_person_confirm`: "Is this Juniper?" with the
 cluster's crops, answers yes / no / can't tell. Chosen from unsure-band
 clusters, closest to the middle of the band first. Shares the existing
-`VISION_ASK_DAILY_CAP`. When no person has a bar yet, the existing "who is
+`ORION_ASK_DAILY_CAP`. When no person has a bar yet, the existing "who is
 this?" ask runs unchanged.
 
 **Hub.** Ask card renders the new kind. Story card and ask card show an

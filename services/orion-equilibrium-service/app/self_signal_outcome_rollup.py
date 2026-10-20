@@ -15,7 +15,11 @@ landed) it:
 
 Read failures make the cycle do nothing (retried next poll): an unread hour is never written as
 calm, and an unread persisted set never triggers a recompute of hours whose PE history has already
-been pruned. The latest associations stay in memory for the episode gate's open-row evidence.
+been pruned. The latest associations stay in memory for the episode gate's open-row evidence,
+with the last ``consecutive_holds`` hourly computations per pair (seeded from
+``self_signal_outcome_association`` at start): an open row carries a clause only once its verdict
+held that many hours in a row -- the same rule orion-thought's self-readings reader applies
+(``orion.attention.self_signal_outcomes.held_latest_by_pair``).
 """
 
 from __future__ import annotations
@@ -26,14 +30,19 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Mapping
 
 from orion.attention.self_signal_outcomes import (
+    ASSOCIATION_COLUMNS,
+    DEFAULT_CONSECUTIVE_HOLDS,
     HOUR,
     MAX_HOURS,
     WINDOW_7D,
     associate_all,
+    association_history_limit,
+    association_history_sql,
+    best_per_signal,
     build_hour_row,
     classify_signal_hours,
+    held_latest_by_pair,
     hour_floor,
-    index_by_signal,
     rpc_outcome_hours,
     turn_outcome_hours,
 )
@@ -135,6 +144,20 @@ class SelfSignalOutcomeReader(NodePeHistoryReader):
                 logger.warning("self_signal_hour_row_invalid hour_id=%s err=%s", hid, exc)
         return sorted(out, key=lambda r: r.hour_start)
 
+    def fetch_association_rows(self, since: datetime, holds: int) -> list[SelfSignalOutcomeAssociationV1]:
+        """The newest persisted association per (signal, outcome, hour) since ``since``: seeds the
+        holds rule after a restart so a run that was already going is not reset by it."""
+        rows = self._rows(
+            association_history_sql("%s", "%s"), (since, association_history_limit(holds)),
+        )
+        out: list[SelfSignalOutcomeAssociationV1] = []
+        for r in rows:
+            try:
+                out.append(SelfSignalOutcomeAssociationV1.model_validate(dict(zip(ASSOCIATION_COLUMNS, r))))
+            except Exception as exc:  # noqa: BLE001 -- one malformed row hides only itself
+                logger.warning("self_signal_association_row_invalid err=%s", exc)
+        return out
+
 
 def _aware(ts: datetime) -> datetime:
     return ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
@@ -162,11 +185,24 @@ class SelfSignalOutcomeRollup:
     computed: bool = False  # associations computed at least once this process
     # association_ids that really reached the bus: an open row only cites a persisted row.
     published_ids: set[str] = field(default_factory=set)
+    # A clause renders only after its verdict held on this many consecutive hourly computations.
+    consecutive_holds: int = DEFAULT_CONSECUTIVE_HOLDS
+    # Earlier hourly computations that were persisted (seeded from the table, then each cycle's
+    # published rows); the newest ``consecutive_holds`` + 2 hours are kept.
+    history: list[SelfSignalOutcomeAssociationV1] = field(default_factory=list)
 
     def renderable(self) -> Mapping[str, SelfSignalOutcomeAssociationV1]:
-        """signal_id -> its strongest association that may be shown (episode open rows); only
-        associations whose row was published, so the cited association_id resolves."""
-        return index_by_signal([a for a in self.latest if a.association_id in self.published_ids])
+        """signal_id -> its strongest association that may be shown (episode open rows): only
+        pairs whose clause held on the last ``consecutive_holds`` hourly computations, and only
+        the current computation's published rows, so the cited association_id resolves and an
+        unpublished hour never falls back to last hour's row."""
+        current = [a for a in self.latest if a.association_id in self.published_ids]
+        ids = {a.association_id for a in current}
+        held = held_latest_by_pair(self.history + current, holds=self.consecutive_holds)
+        return best_per_signal(a for a in held if a.association_id in ids)
+
+    def _history_since(self, now: datetime) -> datetime:
+        return hour_floor(now) - HOUR * (max(1, int(self.consecutive_holds)) + 1)
 
     def needs_cycle(self, now: datetime, history_start: datetime | None) -> bool:
         """Cheap pre-check (no history copies): something is due, or nothing computed yet."""
@@ -201,8 +237,10 @@ class SelfSignalOutcomeRollup:
         now = _aware(now)
         try:
             if not self.loaded:
-                for row in reader.fetch_hour_rows(now - timedelta(hours=MAX_HOURS)):
-                    self.known_hours[hour_floor(row.hour_start)] = row
+                known = {hour_floor(r.hour_start): r for r in reader.fetch_hour_rows(now - timedelta(hours=MAX_HOURS))}
+                seeded = reader.fetch_association_rows(self._history_since(now), self.consecutive_holds)
+                self.known_hours.update(known)
+                self.history = seeded
                 self.loaded = True
             due = self.due_hours(now, history_start)
             if not due and self.computed:
@@ -230,6 +268,12 @@ class SelfSignalOutcomeRollup:
             for h in sorted(self.known_hours)[: len(self.known_hours) - MAX_HOURS]:
                 self.known_hours.pop(h, None)
         hours = [self.known_hours[h] for h in sorted(self.known_hours)]
+        # The previous computation joins the history only if it was persisted (published).
+        since = self._history_since(now)
+        self.history = [
+            a for a in self.history + [a for a in self.latest if a.association_id in self.published_ids]
+            if _aware(a.computed_at) >= since
+        ]
         self.latest = associate_all(hours, computed_at=now, min_hours=self.min_hours)
         self.published_ids = set()
         self.computed = True

@@ -227,6 +227,7 @@ class EquilibriumService(BaseChassis):
             SelfSignalOutcomeRollup(
                 grace_sec=float(settings.self_signal_outcome_grace_sec),
                 min_hours=int(settings.self_signal_outcome_min_hours),
+                consecutive_holds=int(settings.self_signal_outcome_consecutive_holds),
             )
             if settings.self_signal_outcome_association_enabled
             else None

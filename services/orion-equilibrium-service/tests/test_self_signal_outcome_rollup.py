@@ -34,8 +34,9 @@ BIO = "node:substrate.biometrics"
 
 
 class FakeReader:
-    def __init__(self, persisted=(), fail_on: str = ""):
+    def __init__(self, persisted=(), fail_on: str = "", associations=()):
         self.persisted = list(persisted)
+        self.associations = list(associations)
         self.fail_on = fail_on
         self.calls: list[str] = []
 
@@ -47,6 +48,10 @@ class FakeReader:
     def fetch_hour_rows(self, since):
         self._maybe_fail("hours")
         return list(self.persisted)
+
+    def fetch_association_rows(self, since, holds):
+        self._maybe_fail("associations")
+        return [a for a in self.associations if a.computed_at >= since]
 
     def fetch_turn_rows(self, start, end):
         self._maybe_fail("turns")
@@ -108,13 +113,12 @@ def test_a_cycle_writes_hour_rows_and_every_association() -> None:
 
 
 def test_a_read_failure_skips_the_cycle_and_writes_nothing() -> None:
-    for where in ("hours", "turns", "rpc"):
+    for where in ("hours", "associations", "turns", "rpc"):
         r = SelfSignalOutcomeRollup()
         res = _cycle(r, FakeReader(fail_on=where))
         assert res.skipped.startswith("read_failed"), where
         assert res.hour_rows == [] and r.latest == []
-        if where != "hours":
-            assert r.known_hours == {}
+        assert r.known_hours == {} and r.history == []
 
 
 def test_restart_does_not_recompute_persisted_hours() -> None:
@@ -140,13 +144,85 @@ CLAUSE = ("when this is high, my next hour had a failed turn 6.0x as often at eq
 
 
 def test_renderable_only_holds_clauses() -> None:
-    r = SelfSignalOutcomeRollup()
+    r = SelfSignalOutcomeRollup(consecutive_holds=1)
     quiet = _assoc("", verdict="below_min_n").model_copy(update={"outcome": "rpc_timeout",
                                                                  "association_id": "ssa-9999999999"})
     r.latest = [_assoc(CLAUSE), quiet]
     assert dict(r.renderable()) == {}  # nothing published yet: an open row must not cite it
     r.published_ids = {"ssa-0123456789", "ssa-9999999999"}
     assert list(r.renderable()) == ["node:substrate.bus_synaptic"]
+
+
+def _hourly(n: int, *, verdict: str = "tends_more", end: datetime = NOW) -> list[SelfSignalOutcomeAssociationV1]:
+    """n hourly computations of the bus_synaptic x turn_failed pair, oldest first."""
+    out = []
+    for i in range(n):
+        at = end - timedelta(hours=n - 1 - i)
+        tends = verdict.startswith("tends")
+        out.append(_assoc(CLAUSE if tends else "", verdict=verdict).model_copy(
+            update={"association_id": f"ssa-{i:010d}", "computed_at": at}))
+    return out
+
+
+def _published(rows):
+    r = SelfSignalOutcomeRollup()
+    r.history, r.latest = list(rows[:-1]), [rows[-1]]
+    r.published_ids = {rows[-1].association_id}
+    return r
+
+
+def test_open_row_clause_needs_six_consecutive_hourly_holds() -> None:
+    assert SelfSignalOutcomeRollup().consecutive_holds == 6
+    assert list(_published(_hourly(6)).renderable()) == [BUS]
+    assert dict(_published(_hourly(5)).renderable()) == {}
+    gap = _hourly(7)
+    del gap[2]
+    assert dict(_published(gap).renderable()) == {}
+    flip = _hourly(6)
+    flip[3] = flip[3].model_copy(update={"verdict": "no_clear_difference", "clause": ""})
+    assert dict(_published(flip).renderable()) == {}
+
+
+def test_an_unpublished_current_row_never_falls_back_to_last_hour() -> None:
+    rows = _hourly(7)
+    r = _published(rows)
+    r.published_ids = set()
+    assert dict(r.renderable()) == {}
+
+
+def test_equilibrium_and_the_shared_rule_agree() -> None:
+    """orion-thought's reader is sso.index_by_signal over persisted rows (its tests pin that);
+    equilibrium's open rows must say exactly the same thing over the same rows."""
+    cases = [_hourly(6), _hourly(5), _hourly(9), _hourly(6, verdict="no_clear_difference")]
+    flip = _hourly(8)
+    flip[4] = flip[4].model_copy(update={"verdict": "tends_less"})
+    cases.append(flip)
+    for rows in cases:
+        want = {k: v.association_id for k, v in sso.index_by_signal(rows).items()}
+        got = {k: v.association_id for k, v in _published(rows).renderable().items()}
+        assert got == want
+
+
+def test_a_restart_seeds_the_run_from_persisted_rows_and_cycles_extend_it() -> None:
+    """A run already going is not reset by a restart, and each published cycle joins the run."""
+    first = SelfSignalOutcomeRollup()
+    persisted = _cycle(first, FakeReader()).hour_rows
+    seeded = _hourly(5, end=NOW - timedelta(hours=1))
+    r = SelfSignalOutcomeRollup()
+    reader = FakeReader(persisted=persisted, associations=seeded)
+    _cycle(r, reader)
+    assert [a.association_id for a in r.history] == [a.association_id for a in seeded]
+    # The fake world has no clause of its own; pretend this hour's computation repeated the pair.
+    r.latest = [_assoc(CLAUSE).model_copy(update={"association_id": "ssa-now", "computed_at": NOW})]
+    r.published_ids = {"ssa-now"}
+    assert r.renderable()[BUS].association_id == "ssa-now"
+    # Next hour: the published row moves into history, old hours beyond the window are trimmed.
+    nxt = NOW + timedelta(hours=1)
+    r.computed = False
+    r.run_cycle(now=nxt, reader=reader, history=lambda n: HIST.get(n, []), node_ids=list(HIST),
+                history_start=NOW - timedelta(days=7))
+    ids = [a.association_id for a in r.history]
+    assert "ssa-now" in ids and all(a.computed_at >= nxt - timedelta(hours=8) for a in r.history)
 
 
 # --- the episode open row ------------------------------------------------------------------------
@@ -197,11 +273,13 @@ def test_flag_ships_on_and_is_in_every_config_surface() -> None:
     s = Settings()
     assert s.self_signal_outcome_association_enabled is True
     assert s.self_signal_outcome_min_hours == 24
+    assert s.self_signal_outcome_consecutive_holds == 6
     env = (ROOT / ".env_example").read_text()
     compose = (ROOT / "docker-compose.yml").read_text()
     for key in ("EQUILIBRIUM_SELF_SIGNAL_OUTCOME_ASSOCIATION_ENABLED=true",
                 "EQUILIBRIUM_SELF_SIGNAL_OUTCOME_MIN_HOURS=24",
                 "EQUILIBRIUM_SELF_SIGNAL_OUTCOME_GRACE_SEC=600",
+                "EQUILIBRIUM_SELF_SIGNAL_OUTCOME_CONSECUTIVE_HOLDS=6",
                 "CHANNEL_EQUILIBRIUM_SELF_SIGNAL_HOUR=orion:equilibrium:self_signal:hour",
                 "CHANNEL_EQUILIBRIUM_SELF_SIGNAL_OUTCOME_ASSOCIATION=orion:equilibrium:self_signal:outcome_association"):
         assert key in env, key

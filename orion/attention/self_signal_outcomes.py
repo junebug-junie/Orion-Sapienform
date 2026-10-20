@@ -24,7 +24,8 @@ Three steps, each a pure function the producer (orion-equilibrium-service) and t
    - hours are not independent (episodes span hours, failures burst): the SE is inflated by
      ``serial_inflation`` (AR(1), from consecutive hours);
    - 17+ pairs are re-tested every hour: z is Bonferroni-adjusted for every renderable pair
-     (``family_z``). Repeated looks over time remain (PR report).
+     (``family_z``). Repeated looks over time: a clause is read out only after its verdict held
+     on ``DEFAULT_CONSECUTIVE_HOLDS`` consecutive hourly computations (``held_latest_by_pair``).
 
 A clause ("when this is high, my next hour had a failed turn 3.1x as often at equal activity ...")
 exists only when both sides have at least ``min_hours`` hours AND the adjusted interval excludes 1.
@@ -78,6 +79,40 @@ MAX_HOURS = 24 * 90
 MAX_ROWS = 500_000
 
 OUTCOMES: tuple[str, ...] = ("turn_failed", "response_repair", "rpc_timeout")
+# A clause renders only when its verdict (same direction) held on each of the last this-many
+# consecutive hourly computations (``held_latest_by_pair``): Bonferroni covers the 17+ pairs
+# tested together, not the same pair re-tested every hour. 6 looks at ~1 h apart; a gap resets.
+DEFAULT_CONSECUTIVE_HOLDS = 6
+CLAUSE_VERDICTS: tuple[str, ...] = ("tends_more", "tends_less")
+# Columns both readers (orion-thought, orion-equilibrium-service) load for the holds rule.
+ASSOCIATION_COLUMNS: tuple[str, ...] = (
+    "association_id", "computed_at", "signal_id", "outcome", "window_start", "window_end",
+    "n_high", "events_high", "n_normal", "events_normal", "rate_high", "rate_normal", "ratio",
+    "ci_low", "ci_high", "ci_method", "ci_z", "se_inflation", "n_comparisons", "n_strata",
+    "min_hours", "min_history_hours", "verdict", "excluded_reason", "clause",
+)
+
+
+def association_history_sql(since: str, limit: str) -> str:
+    """The newest row per (signal, outcome, UTC hour of computed_at) since ``since``: what
+    ``held_latest_by_pair`` needs, one row per hourly computation (a restart's recompute inside an
+    hour collapses here as in ``hourly_runs``). ``since``/``limit`` are the caller driver's
+    placeholders (":since" for SQLAlchemy text, "%s" for psycopg). Rides
+    idx_self_signal_assoc_pair_time."""
+    cols = ", ".join(ASSOCIATION_COLUMNS)
+    hour = "date_trunc('hour', computed_at AT TIME ZONE 'UTC')"
+    return (
+        f"SELECT DISTINCT ON (signal_id, outcome, {hour}) {cols} "
+        f"FROM self_signal_outcome_association WHERE computed_at >= {since} "
+        f"ORDER BY signal_id, outcome, {hour} DESC, computed_at DESC LIMIT {limit}"
+    )
+
+
+def association_history_limit(holds: int) -> int:
+    """Row cap for ``association_history_sql``: every possible pair x the hours a reader looks
+    back (``holds`` + 4 h of freshness/alignment slack). A truncated pair loses its OLDEST hours
+    (ordered newest first), which reads as "not held", never as held."""
+    return MAX_SIGNALS_PER_HOUR * len(OUTCOMES) * (max(1, int(holds)) + 4)
 
 TURN_SOURCE = "harness_turn_trace.run_artifact: compliance_verdict='failed' / response_repair_ran=true, by created_at hour"
 RPC_SOURCE = "transport_baseline_hourly: timeout_count>0 over success_count+timeout_count, keys not '#gpu_pool_wait'"
@@ -619,14 +654,79 @@ def latest_by_pair(
     return [best[k] for k in sorted(best)]
 
 
-def index_by_signal(
+def hourly_runs(
     rows: Iterable[SelfSignalOutcomeAssociationV1],
+) -> dict[tuple[str, str], dict[datetime, SelfSignalOutcomeAssociationV1]]:
+    """(signal_id, outcome) -> {hour_floor(computed_at): newest row computed in that hour}. A
+    restart that recomputes inside the same hour is one computation, not two."""
+    out: dict[tuple[str, str], dict[datetime, SelfSignalOutcomeAssociationV1]] = {}
+    for r in rows:
+        by_hour = out.setdefault((r.signal_id, r.outcome), {})
+        h = hour_floor(r.computed_at)
+        if h not in by_hour or _aware(r.computed_at) > _aware(by_hour[h].computed_at):
+            by_hour[h] = r
+    return out
+
+
+def consecutive_holds(by_hour: Mapping[datetime, SelfSignalOutcomeAssociationV1]) -> int:
+    """How many consecutive hourly computations, ending at the newest, carry the newest row's
+    clause-bearing verdict. 0 when the newest has no clause. A missing hour or a different
+    verdict (including a direction flip) ends the run."""
+    if not by_hour:
+        return 0
+    h = max(by_hour)
+    verdict = by_hour[h].verdict
+    if verdict not in CLAUSE_VERDICTS or not by_hour[h].clause:
+        return 0
+    n = 0
+    while h in by_hour and by_hour[h].verdict == verdict and by_hour[h].clause:
+        n += 1
+        h -= HOUR
+    return n
+
+
+def held_latest_by_pair(
+    rows: Iterable[SelfSignalOutcomeAssociationV1],
+    *,
+    holds: int = DEFAULT_CONSECUTIVE_HOLDS,
+    fresh_since: datetime | None = None,
+) -> list[SelfSignalOutcomeAssociationV1]:
+    """The newest row of each (signal, outcome) pair that may render: its clause-bearing verdict
+    held on each of the last ``holds`` consecutive hourly computations (``hourly_runs``), and the
+    newest computation is not older than ``fresh_since``. The association is re-tested every hour,
+    so one hour's interval excluding 1 is not enough: a fluke has to survive ``holds`` looks in a
+    row before Orion is told it. ``holds <= 1`` is the old rule (newest row with a clause)."""
+    need = max(1, int(holds))
+    out: list[SelfSignalOutcomeAssociationV1] = []
+    for k, by_hour in sorted(hourly_runs(rows).items()):
+        newest = by_hour[max(by_hour)]
+        if fresh_since is not None and _aware(newest.computed_at) < _aware(fresh_since):
+            continue
+        if consecutive_holds(by_hour) >= need:
+            out.append(newest)
+    return out
+
+
+def best_per_signal(
+    held: Iterable[SelfSignalOutcomeAssociationV1],
 ) -> Mapping[str, SelfSignalOutcomeAssociationV1]:
-    """signal_id -> its one renderable association (only signals that have one)."""
-    latest = latest_by_pair(rows)
+    """signal_id -> the strongest of its already-held rows (``held_latest_by_pair``)."""
+    held = list(held)
     out: dict[str, SelfSignalOutcomeAssociationV1] = {}
-    for sid in sorted({r.signal_id for r in latest}):
-        b = best_clause(latest, sid)
+    for sid in sorted({r.signal_id for r in held}):
+        b = best_clause(held, sid)
         if b is not None:
             out[sid] = b
     return out
+
+
+def index_by_signal(
+    rows: Iterable[SelfSignalOutcomeAssociationV1],
+    *,
+    holds: int = DEFAULT_CONSECUTIVE_HOLDS,
+    fresh_since: datetime | None = None,
+) -> Mapping[str, SelfSignalOutcomeAssociationV1]:
+    """signal_id -> its one renderable association (only signals that have one). ``rows`` must
+    hold each pair's last ``holds`` hourly computations (``association_history_sql``);
+    fewer reads as "not held yet", never as held."""
+    return best_per_signal(held_latest_by_pair(rows, holds=holds, fresh_since=fresh_since))

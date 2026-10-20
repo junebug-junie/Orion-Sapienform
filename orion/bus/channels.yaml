@@ -1338,10 +1338,27 @@ channels:
     schema_id: "VisionEventPayload"
     message_kind: "vision.event.bundle"
     # orion-vision-window: accepted camera captions (event_type camera_caption).
-    producer_services: ["orion-vision-council", "orion-vision-window"]
+    # orion-vision-retina (doorbell): one doorbell_ring / doorbell_motion
+    # event per Ring push (app/ring_events.py).
+    producer_services: ["orion-vision-council", "orion-vision-window", "orion-vision-retina"]
     consumer_services: ["orion-vision-scribe"]
     stability: "experimental"
     since: "2026-01-08"
+
+  # Street events (docs/superpowers/specs/2026-10-20-street-continuity-handoff-
+  # design.md section 6): facts about the street that may compete for
+  # attention. Producer today: orion-vision-retina (doorbell, kind
+  # doorbell_ring, salience 1.0). The handoff reducer (orion-sql-writer) adds
+  # handoff_* kinds in a later PR. Consumer: orion-substrate-runtime (pending
+  # PR, node:substrate.street); nothing subscribes yet.
+  - name: "orion:vision:street:events"
+    kind: "event"
+    schema_id: "StreetEventV1"
+    message_kind: "vision.street.event.v1"
+    producer_services: ["orion-vision-retina"]
+    consumer_services: ["orion-substrate-runtime"]
+    stability: "experimental"
+    since: "2026-10-20"
 
   - name: "orion:vision:events:sql-write"
     kind: "event"

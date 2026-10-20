@@ -622,3 +622,47 @@ class VisionUnresolvedV1(BaseModel):
     what_was_tried: List[str] = Field(default_factory=list)
     evidence_refs: List[str] = Field(default_factory=list)
     image_ref: Optional[str] = None
+
+
+# Street events (docs/superpowers/specs/2026-10-20-street-continuity-handoff-
+# design.md, section 6). One fact about the street that may compete for
+# Orion's attention: a doorbell press, a cross-camera handoff outcome, a known
+# person's arrival. Producer today: orion-vision-retina (doorbell_ring only).
+# The handoff kinds are produced by the handoff reducer (orion-sql-writer,
+# later PR); orion-substrate-runtime consumes the channel (later PR).
+StreetEventKind = Literal[
+    "doorbell_ring",
+    "handoff_met",
+    "handoff_late",
+    "handoff_missed",
+    "overlap_pair",
+    "known_person_arrived",
+    "approach_door",
+]
+StreetSubjectKind = Literal["person", "dog", "vehicle", "unknown"]
+
+
+class StreetEventV1(BaseModel):
+    """One street event on ``orion:vision:street:events``.
+
+    ``salience`` is the spec's ``who x what x surprise`` (0..1); a doorbell
+    ring is always 1.0. ``p_value`` is set only by events graded against a
+    model (handoffs): the probability of an outcome at least this unlikely.
+    ``individual_id`` / ``person_guess`` are a walkway individual and a
+    Juniper-given name guess, never a face match.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["vision.street.event.v1"] = "vision.street.event.v1"
+    event_id: str
+    kind: StreetEventKind
+    stream_ids: List[str] = Field(min_length=1)
+    occurred_at: datetime
+    subject_kind: StreetSubjectKind = "unknown"
+    individual_id: Optional[str] = None
+    person_guess: Optional[str] = None
+    salience: float = Field(ge=0.0, le=1.0)
+    p_value: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    evidence_refs: List[str] = Field(default_factory=list)
+    correlation_id: str

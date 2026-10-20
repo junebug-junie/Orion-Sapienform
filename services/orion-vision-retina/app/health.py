@@ -40,6 +40,20 @@ class RetinaMetrics:
     ring_bursts_failed: int = 0
     ring_last_event_kind: str | None = None
     ring_last_event_ts: float | None = None
+    # Every recorded push, whatever the live view did (2026-10-20: a ding
+    # during a motion burst used to vanish).
+    ring_dings_total: int = 0
+    ring_motions_total: int = 0
+    ring_last_ding_ts: float | None = None
+    ring_bursts_extended: int = 0
+    ring_vision_events_published: int = 0
+    ring_street_events_published: int = 0
+    ring_events_publish_failed: int = 0
+    # Active looking (live views Orion opened because it expected someone).
+    ring_self_looks_today: int = 0
+    ring_self_looks_total: int = 0
+    ring_last_self_look_ts: float | None = None
+    ring_last_self_look_reason: str | None = None
 
 
 def last_frame_age_sec(metrics: RetinaMetrics, now: float | None = None) -> float | None:
@@ -105,6 +119,17 @@ def make_system_health_envelope(
             "ring_bursts_failed": metrics.ring_bursts_failed,
             "ring_last_event_kind": metrics.ring_last_event_kind,
             "ring_last_event_ts": metrics.ring_last_event_ts,
+            "dings_total": metrics.ring_dings_total,
+            "motions_total": metrics.ring_motions_total,
+            "last_ding_ts": metrics.ring_last_ding_ts,
+            "ring_bursts_extended": metrics.ring_bursts_extended,
+            "ring_vision_events_published": metrics.ring_vision_events_published,
+            "ring_street_events_published": metrics.ring_street_events_published,
+            "ring_events_publish_failed": metrics.ring_events_publish_failed,
+            "self_looks_today": metrics.ring_self_looks_today,
+            "self_looks_total": metrics.ring_self_looks_total,
+            "last_self_look_ts": metrics.ring_last_self_look_ts,
+            "last_self_look_reason": metrics.ring_last_self_look_reason,
             "last_error": metrics.last_error,
             "storage_dir": storage_dir,
         },

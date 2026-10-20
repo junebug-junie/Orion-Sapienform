@@ -62,7 +62,17 @@ class RetinaService:
             ring_burst_seconds=self.settings.RETINA_RING_BURST_SECONDS,
             ring_cooldown_seconds=self.settings.RETINA_RING_COOLDOWN_SECONDS,
             ring_event_kinds=self.settings.ring_event_kinds(),
+            ring_self_look_max_per_day=self.settings.RETINA_RING_SELF_LOOK_MAX_PER_DAY,
+            ring_self_look_min_spacing_seconds=self.settings.RETINA_RING_SELF_LOOK_MIN_SPACING_SECONDS,
         )
+        # Ring source: every recorded push is published as events.
+        if hasattr(self.source, "event_sink"):
+            self.source.event_sink = self._on_ring_push
+        self._ring_publish_tasks: set[asyncio.Task] = set()
+        self._self_look_task: Optional[asyncio.Task] = None
+        # Last key value acted on: one live view per handoff, not one per poll.
+        self._self_look_last_value: str | None = None
+        self._self_look_last_logged: tuple[str, str] | None = None
         self.metrics = RetinaMetrics()
         self._capture_task: Optional[asyncio.Task] = None
         self._health_task: Optional[asyncio.Task] = None
@@ -124,6 +134,9 @@ class RetinaService:
         self._loop_tick_mono = time.monotonic()
         self._capture_task = self._spawn_forever(self.capture_loop(), "capture_loop")
         self._health_task = self._spawn_forever(self._health_loop(), "health_loop")
+        if self.settings.RETINA_RING_SELF_LOOK_ENABLED and hasattr(self.source, "self_look"):
+            self._self_look_task = self._spawn_forever(self._self_look_loop(), "self_look_loop")
+            logger.info(f"[RETINA] ring self-look watching {self.settings.RETINA_RING_SELF_LOOK_KEY}")
         if self.settings.RETINA_CLIP_ENABLED:
             self._clip_consumer_task = self._spawn_forever(self._clip_consume_loop(), "clip_consume_loop")
             logger.info(
@@ -186,7 +199,7 @@ class RetinaService:
 
     async def stop(self) -> None:
         self._shutdown.set()
-        for task in (self._capture_task, self._health_task, self._clip_consumer_task):
+        for task in (self._capture_task, self._health_task, self._clip_consumer_task, self._self_look_task):
             if task:
                 task.cancel()
                 try:
@@ -467,6 +480,76 @@ class RetinaService:
             elapsed = time.time() - t0
             await asyncio.sleep(max(0.0, interval - elapsed))
 
+    def _on_ring_push(self, push) -> None:  # noqa: ANN001 -- ring_source.RingPush
+        """RingEventFrameSource.event_sink (sync, on the loop): publish without
+        blocking the push listener."""
+        task = asyncio.get_running_loop().create_task(self._publish_ring_push(push))
+        self._ring_publish_tasks.add(task)
+        task.add_done_callback(self._ring_publish_tasks.discard)
+
+    async def _publish_ring_push(self, push) -> None:  # noqa: ANN001
+        from .ring_events import build_street_event, build_vision_event, street_event_envelope, vision_event_envelope
+
+        s = self.settings
+        sid = s.RETINA_STREAM_ID
+        item = build_vision_event(push, stream_id=sid)
+        if item is not None:
+            try:
+                env = vision_event_envelope(push, item, service_name=s.SERVICE_NAME, service_version=s.SERVICE_VERSION)
+                await self.bus.publish(s.CHANNEL_VISION_EVENTS_PUB, env)
+                self.metrics.ring_vision_events_published += 1
+                logger.info(
+                    f"[RETINA] ring vision_event_published type={item.event_type} event_id={item.event_id} "
+                    f"corr={push.correlation_id} channel={s.CHANNEL_VISION_EVENTS_PUB}"
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.metrics.ring_events_publish_failed += 1
+                logger.warning(f"[RETINA] ring vision_event_publish_failed corr={push.correlation_id}: {exc}")
+        street = build_street_event(push, stream_id=sid)
+        if street is not None:
+            try:
+                env = street_event_envelope(push, street, service_name=s.SERVICE_NAME, service_version=s.SERVICE_VERSION)
+                await self.bus.publish(s.CHANNEL_STREET_EVENTS_PUB, env)
+                self.metrics.ring_street_events_published += 1
+                logger.info(
+                    f"[RETINA] ring street_event_published kind={street.kind} event_id={street.event_id} "
+                    f"corr={push.correlation_id} channel={s.CHANNEL_STREET_EVENTS_PUB}"
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.metrics.ring_events_publish_failed += 1
+                logger.warning(f"[RETINA] ring street_event_publish_failed corr={push.correlation_id}: {exc}")
+
+    async def self_look_once(self) -> str | None:
+        """One poll of the self-look key. Returns the outcome, or None when
+        the key is absent or already acted on."""
+        raw = await self.bus.redis.get(self.settings.RETINA_RING_SELF_LOOK_KEY)
+        if raw is None:
+            self._self_look_last_value = None  # key expired: the next SET counts
+            return None
+        value = (raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)).strip() or "unnamed"
+        if value == self._self_look_last_value:
+            return None
+        outcome = self.source.self_look(value)
+        # started / an open burst already looking / today's cap: done with
+        # this value. cooldown / spacing / not_ready: retry while the key lives.
+        if outcome in ("started", "burst_running", "daily_cap"):
+            self._self_look_last_value = value
+        if (value, outcome) != self._self_look_last_logged:
+            self._self_look_last_logged = (value, outcome)
+            logger.info(
+                f"[RETINA] ring self_look handoff={value!r} outcome={outcome} "
+                f"today={self.source.self_looks_today}/{self.settings.RETINA_RING_SELF_LOOK_MAX_PER_DAY}"
+            )
+        return outcome
+
+    async def _self_look_loop(self) -> None:
+        while not self._shutdown.is_set():
+            try:
+                await self.self_look_once()
+            except Exception as exc:  # noqa: BLE001 -- a bus hiccup must not kill the loop
+                logger.warning(f"[RETINA] ring self_look poll failed: {type(exc).__name__}: {exc}")
+            await asyncio.sleep(self.settings.RETINA_RING_SELF_LOOK_POLL_SECONDS)
+
     async def capture_once(self) -> bool:
         self._sample_attempted = True
         result = await self.source.read()
@@ -564,7 +647,9 @@ class RetinaService:
             if elapsed > 0:
                 self.metrics.fps_observed = 1.0 / elapsed
         self._last_publish_ts = now
-        logger.info(f"[RETINA] Published frame pointer: {saved.image_path}")
+        ring_corr = (result.source_meta or {}).get("ring_correlation_id")
+        suffix = f" ring_corr={ring_corr}" if ring_corr else ""
+        logger.info(f"[RETINA] Published frame pointer: {saved.image_path}{suffix}")
         return True
 
     def _copy_source_metrics(self) -> None:
@@ -578,6 +663,14 @@ class RetinaService:
             m.ring_bursts_failed = int(src.bursts_failed)
             m.ring_last_event_kind = src.last_event_kind
             m.ring_last_event_ts = src.last_event_ts
+            m.ring_dings_total = int(src.dings_total)
+            m.ring_motions_total = int(src.motions_total)
+            m.ring_last_ding_ts = src.last_ding_ts
+            m.ring_bursts_extended = int(src.bursts_extended)
+            m.ring_self_looks_today = int(src.self_looks_today)
+            m.ring_self_looks_total = int(src.self_looks_total)
+            m.ring_last_self_look_ts = src.last_self_look_ts
+            m.ring_last_self_look_reason = src.last_self_look_reason
         if not hasattr(src, "quiet_wait_remaining"):
             return  # not RTSP
         m.source_quiet_wait_remaining_sec = float(src.quiet_wait_remaining())
@@ -669,24 +762,27 @@ class RetinaService:
             return f"source is streaming (newest frame {src_age:.0f}s old) but {stall}"
         return None
 
+    def health_envelope(self, stall: str | None) -> BaseEnvelope:
+        return make_system_health_envelope(
+            service_name=self.settings.SERVICE_NAME,
+            service_version=self.settings.SERVICE_VERSION,
+            camera_id=self.settings.RETINA_CAMERA_ID,
+            stream_id=self.settings.RETINA_STREAM_ID,
+            source_type=self.settings.RETINA_SOURCE_TYPE,
+            source_ok=self._source_ok(),
+            metrics=self.metrics,
+            capture_stalled=stall,
+            heartbeat_interval_sec=self.settings.HEALTH_INTERVAL_SECONDS,
+            fps_target=self.settings.RETINA_FPS,
+            storage_dir=self.settings.FRAME_STORAGE_DIR,
+        )
+
     async def _health_loop(self) -> None:
         while not self._shutdown.is_set():
             stall: str | None = None
             try:
                 stall = self.publish_stall()
-                env = make_system_health_envelope(
-                    service_name=self.settings.SERVICE_NAME,
-                    service_version=self.settings.SERVICE_VERSION,
-                    camera_id=self.settings.RETINA_CAMERA_ID,
-                    stream_id=self.settings.RETINA_STREAM_ID,
-                    source_type=self.settings.RETINA_SOURCE_TYPE,
-                    source_ok=self._source_ok(),
-                    metrics=self.metrics,
-                    capture_stalled=stall,
-                    heartbeat_interval_sec=self.settings.HEALTH_INTERVAL_SECONDS,
-                    fps_target=self.settings.RETINA_FPS,
-                    storage_dir=self.settings.FRAME_STORAGE_DIR,
-                )
+                env = self.health_envelope(stall)
                 await self.bus.publish(self.settings.CHANNEL_SYSTEM_HEALTH, env)
             except Exception as exc:
                 logger.warning(f"[RETINA] health publish failed: {exc}")
@@ -713,6 +809,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Orion Vision Retina", version="0.2.0", lifespan=lifespan)
+
+
+@app.get("/health")
+async def health_endpoint():
+    """The same SystemHealthV1 payload the health loop publishes, read now."""
+    service._copy_source_metrics()
+    return service.health_envelope(service.publish_stall()).payload
 
 
 @app.post("/capture/clip")

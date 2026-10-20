@@ -211,10 +211,11 @@ New pure function `apply_namings(nodes, namings, *, embed_scores, now)`. The dri
 **Grounding check (durable-runs, deterministic, no word list).** For `name`, embed
 `name + " " + sentence` and score its cosine to every non-retired node centroid. Record
 `grounding_rank` (where the named node ranks) and `grounding_margin` (its cosine minus the best
-other node). Accept the name only when `grounding_rank == 1`. Otherwise record
-`apply_status=ungrounded` and leave the node unnamed. This blocks a generic or flattering name
-("a curious mind") that does not point at its own pattern better than at the others. Whether
-bge-large separates names this short is **UNVERIFIED**. P0 measures it before it becomes a gate.
+other node). **Record only, never refuse (Juniper, 2026-10-20).** Every NAME is applied and
+displayed, and `grounding_rank` / `grounding_margin` are stored on the naming row and shown in the
+panel next to the name. A generic or flattering name ("a curious mind") that points at its own
+pattern no better than at the others stays visible as such, not hidden. Whether bge-large
+separates names this short is **UNVERIFIED**. P0 measures it.
 
 **NAME.** New node fields: `name`, `name_sentence`, `named_at`, `naming_id`. The `label` keeps its
 current meaning (the excerpt) and its update rule at `graph.py:293`. Weight, `lane_recent`,
@@ -276,13 +277,13 @@ Hub Personality tab:
 
 | Failure | Evidence that catches it | Effect |
 |---|---|---|
-| **Echo loop.** The name is read back in every lane. Orion writes about "my X". That text lands near X's centroid and feeds X. | Per node: `naming_lift` = hits per day in the 14 days after naming divided by hits per day in the 14 days before. Compare named active nodes with unnamed active nodes. Also count evidence rows after naming whose excerpt contains the exact name string (the node's own name, not a word list). | Measured from P1. If named nodes' lift is clearly above unnamed nodes' lift, P3 adds a gate: evidence that quotes the node's own name folds with `weight_delta=0` and `meta.cites_own_name=true`. Missing question 3. |
-| **Flattering names.** | `grounding_rank` and `grounding_margin` on every name. A flattering name is generic, so it ranks its node below a neighbor. | Ungrounded names are logged, never displayed. |
+| **Echo loop.** The name is read back in every lane from the first name (decision 1). Orion writes about "my X". That text lands near X's centroid and feeds X. | **Gate from day one (decision 2):** evidence whose text contains the node's own current name (exact string, case-insensitive; the node's own name, not a word list) folds with no weight: it is recorded with `meta.cites_own_name=true`, counts in `lane_counts`, but adds no `lane_recent` hit. Still measured: `naming_lift` = hits per day in the 14 days after naming divided by the 14 days before, named versus unnamed active nodes, to catch paraphrased echoes the exact-string gate misses. | Exact-name echo cannot grow a node. Paraphrase echo shows up as lift. |
+| **Flattering names.** | `grounding_rank` and `grounding_margin` on every name. A flattering name is generic, so it ranks its node below a neighbor. | Record only (decision 3): the name is displayed, and the panel marks it "points elsewhere: rank N". |
 | **Rejecting real but uncomfortable patterns.** | Rejection does not hide a node from Juniper. The panel lists rejected nodes with their weight trend. A rejected node that doubles its evidence is re-shown, with its `prior_verdict`. | Count: rejected nodes that later reach the top 5 by weight. |
 | **Rename churn.** | `renames_per_node_30d` from the log. The 14-day minimum gap and the doubled-evidence rule bound it at about 2 a month per node. | A node renamed 3 or more times is flagged in the panel. |
 | **LLM-voice names** ("The Reflective Weaver"). | No word list (house rule). The grounding check is the structural test. The P0 eval reports the names Orion actually writes for the 21 live nodes, before any of them is shown in a cue. | Juniper reads the P0 sample. |
 | **Empty-shell answers.** | `no_answer` and `refused` are rows, not silence. The early MERGE makes a cut-off run still leave a partial node, which Hub refuses with a named reason. | Refusal rate by reason, in the panel. |
-| **Name turns into an adjective personality.** The parent spec refuses "you are warm and curious". A name like "the careful one" is that. | The cue always prints the excerpt and counts next to the name. Section 5 tone dials are measurement only. P0 shows how many sample names are trait adjectives. | Missing question 2. |
+| **Name turns into an adjective personality.** The parent spec refuses "you are warm and curious". A name like "the careful one" is that. | The cue always prints the excerpt and counts next to the name. Section 5 tone dials are measurement only. P0 shows how many sample names are trait adjectives. | Names go to every lane at once (decision 1), so the excerpt-beside-name rule is the only guard. |
 | **Consumer break.** `DispositionV1` is `extra="forbid"`. If durable-runs emits `name` before a reader accepts it, that reader's cue goes `invalid_frame` (fail-open, but dark). | Deploy order: readers first (Hub, orion-thought, cortex-exec, curiosity), durable-runs last. `skip_reason` counts on the Hub cue route. | Ordering note in the PR. |
 
 ## Proposal-mode items
@@ -308,23 +309,24 @@ Hub Personality tab:
     subtract its pooled `lane_recent` from A. The log keeps everything needed for that. A script
     for it is part of P2.
 
-## Missing questions
+## Decisions (Juniper, 2026-10-20)
 
-1. **The trigger has never fired.** 0 nodes have ever been active. The best two-lane node today is
-   `disp-8880e9aeb87124c6` (journal 1.0 recent hit + seed 3.47, and the seed lane does not count).
-   Should naming wait for `active`, or also show a candidate with >= 2 non-seed lanes at any recent
-   level? Recommendation: wait. Naming a single-lane flood teaches Orion to name noise.
-2. Should a name appear in the cue for every lane, or only in self-inquiry and the Hub panel until
-   the echo metric has 14 days of data? Recommendation: self-inquiry and Hub only for the first
-   14 days after the first name.
-3. Echo gate: record only (P1), or zero-weight any evidence that quotes the node's own name from
-   day one? Recommendation: record first, then decide with numbers.
-4. Grounding check: a gate (refuse an ungrounded name) or record only? Recommendation: a gate,
-   but only after P0 shows that the rank-1 rate on honest names is high enough.
-5. Does Juniper want a veto or a "rename this" button in the panel? Recommendation: no. The name
-   is Orion's. Juniper's existing `good_tone` / `bad_tone` tags remain the steering channel.
-6. `merge_min_cosine = 0.70` is a starting knob, not a finding. P0 reports the pairwise cosines of
-   the live nodes so the number is set from data.
+Q1 resolved itself: since #2738/#2778 there are 3 active nodes, so "wait for `active`" fires.
+
+1. **Name reach: everywhere right away.** A name appears in every lane's cue (chat stance, reverie,
+   curiosity kickoff, outreach) as soon as it is applied. No 14-day self-inquiry-only period.
+2. **Echo: zero-weight from day one.** Evidence quoting the node's own current name adds no
+   weight (section 7, row 1). `naming_lift` is still measured for paraphrased echo.
+3. **Grounding: record only, never refuse.** Every name stands; rank and margin are shown in the
+   panel (section 5).
+4. **No veto or rename button.** Names are Orion's. Juniper's `good_tone` / `bad_tone` tags remain
+   the steering channel.
+
+Still open, set from data in P0: `merge_min_cosine = 0.70` is a starting knob. P0 reports the
+pairwise cosines of the live nodes.
+
+Why 1 and 2 go together: names in every cue make the echo loop most likely, and the day-one gate
+is what stops an exact-name echo from growing the node.
 
 ## Proposed schema / API changes
 
@@ -371,9 +373,9 @@ Hub Personality tab:
 ## Acceptance checks
 
 0. **Prerequisite.** At least one node has `status='active'`:
-   `SELECT count(*) FROM personality_disposition WHERE status='active'`. Today: 0. All checks below
-   are UNVERIFIED until this is non-zero.
-1. **P0 eval (offline, read-only):** names for the 21 live nodes, generated by the chat model from real
+   `SELECT count(*) FROM personality_disposition WHERE status='active'`. Met 2026-10-20: 3 active
+   (self-inquiry, telemetry/prediction-error cluster, biometrics prediction error).
+1. **P0 eval (offline, read-only):** names for the active nodes and the top candidates by weight, generated by the chat model from real
    packets and not persisted. Report: grounding rank-1 rate, pairwise node cosines, how many names
    are trait adjectives (read by Juniper), and the verdict on the four machine-status nodes. The
    expected verdict is REJECT.
@@ -392,7 +394,9 @@ Hub Personality tab:
    rows, and still shows in the panel.
 7. **Refusal path:** unit tests for each refusal reason. Live: the refusal-rate panel shows real
    counts (zero is a valid count, but it must be a count, not an absent panel).
-8. **Echo metric:** after 14 days, `naming_lift` for named versus unnamed active nodes, reported as
+8. **Echo gate (from day one):** a test and a live row: evidence whose text contains the node's own
+   name has `meta.cites_own_name=true`, raises `lane_counts`, and adds no `lane_recent` hit.
+   **Echo metric:** after 14 days, `naming_lift` for named versus unnamed active nodes, reported as
    numbers in a follow-up note.
 9. **Gates:** `pytest orion/personality`, `services/orion-durable-runs/tests`,
    `services/orion-hub/tests/test_curiosity_self_inquiry.py`, schema registry and bus channel checks,
@@ -402,11 +406,13 @@ Hub Personality tab:
 
 1. **P0, grounding eval (read-only, no schema).** `scripts/analysis/eval_personality_naming_grounding.py`
    builds real packets from live tables, asks the chat model for a verdict per node (not persisted),
-   embeds the names, and reports checks 1 and 6 of section 7. This patch answers missing questions
-   4 and 6 and shows Juniper real names before anything is built on them.
+   embeds the names, and reports checks 1 and 6 of section 7. This patch sets `merge_min_cosine` from data,
+   measures how well names point at their own node (shown, never a gate), and shows Juniper real
+   names before anything is built on them.
 2. **P1, contract + reducer + durable-runs.** Schemas, migration, `naming.py`, `apply_namings`, the
-   `naming` source, the two routes, and the frame fields. Deploy readers first.
+   `naming` source, the two routes, the frame fields, and the own-name echo gate in `fold` (decision 2).
+   Deploy readers first.
 3. **P2, Hub producer.** Pre-pick branch, naming prompt, `:DispositionNaming` read, bus publish,
    sql-writer route, merge-rollback script. Live checks 2 to 4.
-4. **P3, read-back + panel + echo.** `cue.py` name line (scope per missing question 2), Hub panel
+4. **P3, read-back + panel + echo.** `cue.py` name line in every lane (decision 1), Hub panel
    columns and history, `naming_lift`. Live checks 5, 6 and 8.

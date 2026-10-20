@@ -101,6 +101,8 @@ class LoopConfig:
         return self.motion
 
     def strip_for(self, stream_id: str) -> Optional[StripConfig]:
+        """The strip config for one stream. Its frame size is only the fallback:
+        capture uses each crop's own frame size and assembly the story's."""
         if self.strip is None:
             return None
         m = self.motion_for(stream_id)
@@ -394,7 +396,7 @@ _last_orphan_sweep: List[Optional[float]] = [None]
 # cursor (the pending files dedupe), and never reads the last second.
 CAPTURE_OVERLAP_SEC = 10.0
 CAPTURE_SQL = (
-    "SELECT crop_id, observed_at, label, box_xyxy, camera_id, created_at, individual_id "
+    "SELECT crop_id, observed_at, label, box_xyxy, camera_id, created_at, individual_id{frame} "
     "FROM vision_crop_observation WHERE stream_id = :s AND created_at > :a "
     "AND created_at <= now() - interval '1 second' AND label = ANY(:kinds) "
     "ORDER BY created_at, crop_id LIMIT 2000"
@@ -427,8 +429,10 @@ def capture_step(engine, stream_id: str, ts: datetime, cfg: LoopConfig) -> Dict[
     after = (cursor - timedelta(seconds=CAPTURE_OVERLAP_SEC)) if cursor else \
         ts - timedelta(seconds=CAPTURE_FIRST_LOOKBACK_SEC)
     with engine.connect() as conn:
-        rows = conn.execute(text(CAPTURE_SQL), {"s": stream_id, "a": after,
-                                                "kinds": sorted(PUBLISH_KINDS)}).fetchall()
+        with_frame = not columns_missing(conn, "vision_crop_observation", CROP_FRAME_COLUMNS)
+        sql = CAPTURE_SQL.format(frame=", frame_width, frame_height" if with_frame else "")
+        rows = conn.execute(text(sql), {"s": stream_id, "a": after,
+                                        "kinds": sorted(PUBLISH_KINDS)}).fetchall()
         # Props (the patio skeleton, stationary things) are detected every frame and
         # never become stories. A fresh crop has no individual_id yet, so match by box.
         prop_boxes = read_context(conn, stream_id, [], cfg.prop_individual_ids)[2] if rows else []
@@ -441,7 +445,9 @@ def capture_step(engine, stream_id: str, ts: datetime, cfg: LoopConfig) -> Dict[
         if not r[3] or len(r[3]) != 4:
             continue
         box = tuple(float(v) for v in r[3])
-        c = PendingCrop(crop_id=r[0], t=r[1], label=r[2], box=box, camera_id=r[4])
+        fw, fh = (r[7], r[8]) if with_frame else (None, None)
+        c = PendingCrop(crop_id=r[0], t=r[1], label=r[2], box=box, camera_id=r[4],
+                        frame_w=float(fw) if fw and fh else None, frame_h=float(fh) if fw and fh else None)
         if r[6] in props or any(kind == r[2] and box_iou(box, b) >= cfg.motion.prop_iou for kind, b in prop_boxes):
             skipped += 1
             mark_skipped(c, "prop_overlap", strip)
@@ -461,15 +467,21 @@ def assemble_step(engine, stream_id: str, ts: datetime, cfg: LoopConfig) -> int:
     strip = cfg.strip_for(stream_id)
     assert strip is not None
     with engine.connect() as conn:
+        # The story's measured frame (edges migration) scales its boxes onto the saved frame.
+        frame_cols = "" if columns_missing(conn, "vision_motion_story", ("frame_w", "frame_h")) \
+            else ", frame_w, frame_h"
         rows = conn.execute(text(
-            "SELECT story_id, evidence, created_at FROM vision_motion_story WHERE stream_id = :s AND published "
-            "AND evidence_strip IS NULL AND created_at > :since ORDER BY created_at LIMIT :n"),
+            f"SELECT story_id, evidence, created_at{frame_cols} FROM vision_motion_story WHERE stream_id = :s "
+            "AND published AND evidence_strip IS NULL AND created_at > :since ORDER BY created_at LIMIT :n"),
             {"s": stream_id, "since": ts - timedelta(seconds=strip.pending_sec), "n": STRIPS_PER_TICK}).fetchall()
     done = 0
-    for story_id, evidence, created_at in rows:
+    for row in rows:
+        story_id, evidence, created_at = row[0], row[1], row[2]
+        fw, fh = (row[3], row[4]) if frame_cols else (None, None)
+        story_strip = replace(strip, frame_w=float(fw), frame_h=float(fh)) if fw and fh else strip
         ev = evidence if isinstance(evidence, list) else json.loads(evidence or "[]")
         try:
-            rec = assemble_strip(story_id, stream_id, ev, cfg=strip)
+            rec = assemble_strip(story_id, stream_id, ev, cfg=story_strip)
         except Exception as exc:
             logger.warning("story_strip_assemble_failed story_id=%s error=%s", story_id, exc)
             if created_at is None or created_at > ts - timedelta(seconds=strip.pending_sec * ASSEMBLE_GIVE_UP_SHARE):

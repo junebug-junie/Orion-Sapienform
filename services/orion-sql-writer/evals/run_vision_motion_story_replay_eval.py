@@ -98,7 +98,8 @@ def check(stories, labels, cfg: MotionConfig):
             for e in s.evidence:
                 p.crops.append(MotionCrop(e["crop_id"], datetime.fromisoformat(e["t"]), e["label"],
                                           tuple(e["box"]), individual_id=e["individual_id"],
-                                          frame_w=s.frame_w, frame_h=s.frame_h))
+                                          frame_w=s.frame_w if s.frame_size_source == "detection" else None,
+                                          frame_h=s.frame_h if s.frame_size_source == "detection" else None))
             iid, _label, _why = name_for(p, labels, cfg)
             if iid != s.individual_id:
                 failures.append(f"{s.story_id}: name not allowed by the strict rule")

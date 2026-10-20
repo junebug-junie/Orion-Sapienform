@@ -47,7 +47,7 @@ from uuid import uuid4
 import requests
 
 from orion.notify.client import NotifyClient
-from orion.reverie.baseline import AROUSAL_STRAINED_REASON, VisualBaselinePolicy
+from orion.reverie.baseline import AROUSAL_STRAINED_REASON, DEFAULT_RETRY_SEC
 
 from .settings import ThoughtSettings
 from .settings import settings as _default_settings
@@ -68,7 +68,7 @@ Severity = Literal["info", "error", "critical"]
 # re-defers every retry_sec while arousal stays strained, so two retries plus one gap-check tick.
 # Older means the scheduler stopped reaching the arousal check (stale activity, an active attempt,
 # disabled ...) and arousal is not what is holding the painting.
-DEFERRAL_FRESH_SEC = 2 * VisualBaselinePolicy().retry_sec + 600
+DEFERRAL_FRESH_SEC = 2 * DEFAULT_RETRY_SEC + 600
 
 
 @dataclass(frozen=True)

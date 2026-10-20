@@ -11,6 +11,8 @@ from orion.schemas.reverie_visual import VisualBaselineEligibilityV1, VisualActi
 # or GPU queue backed up), a due baseline image is deferred by `retry_sec`, exactly like a
 # retry. Same spelling as orion.regulation.arousal_view.AROUSAL_STRAINED_REASON.
 AROUSAL_STRAINED_REASON = "arousal_strained"
+# Default seconds between baseline retries (and between arousal deferrals of one need).
+DEFAULT_RETRY_SEC = 600.0
 # Checkpoint key for the current run of arousal deferrals (2026-10-20): {"reason", "since",
 # "last_at"} -- when the first deferral of this need happened and the latest one. Cleared when an
 # attempt is issued or a new painting lands. orion-thought's painting-gap alert reads it to name
@@ -22,7 +24,7 @@ class VisualBaselinePolicy(BaseModel):
     enabled: bool = False
     policy_id: str = "visual_baseline.v1"
     interval_sec: float = Field(default=5400, gt=0)
-    retry_sec: float = Field(default=600, gt=0)
+    retry_sec: float = Field(default=DEFAULT_RETRY_SEC, gt=0)
     freshness_sec: float = Field(default=60, gt=0)
     timeout_sec: float = Field(default=2, gt=0, le=10)
     target_id: str = "host:circe_gpu"

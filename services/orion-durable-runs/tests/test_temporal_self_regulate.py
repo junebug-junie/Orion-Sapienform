@@ -378,6 +378,7 @@ def test_fault_jam_reads_unknown_through_a_restart_then_real_load_strains():
 DSN = os.getenv("ORION_ADMISSION_TEST_DSN")
 MIGRATION = REPO_ROOT / "services/orion-sql-db/manual_migration_temporal_self_event_v1.sql"
 HISTORY_MIGRATION = REPO_ROOT / "services/orion-sql-db/manual_migration_regulation_history.sql"
+SHED_MIGRATION = REPO_ROOT / "services/orion-sql-db/manual_migration_regulation_gpu_shed_held_v1.sql"
 
 
 async def _with_schema(scenario):
@@ -404,7 +405,7 @@ def test_store_reads_and_transition_write_on_postgres():
 
     async def scenario(pool):
         async with pool.connection() as conn:
-            for sql in (MIGRATION.read_text(), HISTORY_MIGRATION.read_text()):
+            for sql in (MIGRATION.read_text(), HISTORY_MIGRATION.read_text(), SHED_MIGRATION.read_text()):
                 await conn.execute(sql, prepare=False)
             await conn.execute("""CREATE TABLE chat_history_log (id varchar PRIMARY KEY, source varchar, prompt text,
                                   client_meta jsonb, created_at timestamp DEFAULT now())""")

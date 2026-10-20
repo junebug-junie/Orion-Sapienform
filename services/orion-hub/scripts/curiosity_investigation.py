@@ -86,6 +86,7 @@ from typing import Any, Awaitable, Callable, Mapping, Optional, Tuple
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.resilience import run_subscription
 
 from .endogenous_outreach import in_quiet_hours
 from orion.regulation.arousal_view import (
@@ -4764,19 +4765,21 @@ class CuriosityInvestigation:
         """
         if self._bus is None:
             return
-        try:
-            async with self._bus.subscribe(CURIOSITY_TURN_REQUEST_CHANNEL) as pubsub:
-                async for msg in self._bus.iter_messages(pubsub):
-                    try:
-                        task = asyncio.create_task(self._serve_turn_request(msg))
-                        self._turn_tasks.add(task)
-                        task.add_done_callback(self._turn_tasks.discard)
-                    except Exception:  # noqa: BLE001
-                        logger.exception("curiosity_turn_request_failed")
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001
-            logger.exception("curiosity_turn_request_loop_failed")
+
+        def _spawn(msg: dict[str, Any]) -> None:
+            # Returns None, not the task: run_subscription awaits what the handler
+            # returns, and awaiting a turn here would serialize the stream.
+            task = asyncio.create_task(self._serve_turn_request(msg))
+            self._turn_tasks.add(task)
+            task.add_done_callback(self._turn_tasks.discard)
+
+        await run_subscription(
+            self._bus,
+            CURIOSITY_TURN_REQUEST_CHANNEL,
+            _spawn,
+            stop_event=self._stop,
+            name="hub.curiosity_turn_request",
+        )
 
     async def _serve_turn_request(self, msg: dict[str, Any]) -> None:
         try:
@@ -4986,17 +4989,13 @@ class CuriosityInvestigation:
         out goes through the same second turn and the same gates as before."""
         if self._bus is None:
             return
-        try:
-            async with self._bus.subscribe(DURABLE_RUN_STATE_CHANNEL) as pubsub:
-                async for msg in self._bus.iter_messages(pubsub):
-                    try:
-                        await self._handle_run_state(msg)
-                    except Exception:  # noqa: BLE001
-                        logger.exception("curiosity_run_state_failed")
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001
-            logger.exception("curiosity_run_state_loop_failed")
+        await run_subscription(
+            self._bus,
+            DURABLE_RUN_STATE_CHANNEL,
+            self._handle_run_state,
+            stop_event=self._stop,
+            name="hub.curiosity_run_state",
+        )
 
     async def _enqueue_help_requests_after_run(self, run_id: str) -> int:
         """Enqueue HelpRequests for a finished run at most once.

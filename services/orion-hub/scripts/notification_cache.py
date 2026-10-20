@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Deque, Dict, List, Optional, Set
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.schemas.notify import HubNotificationEvent
 
 logger = logging.getLogger("orion-hub.notifications")
@@ -51,14 +52,9 @@ class NotificationCache:
         if not self._bus:
             return
         logger.info("Subscribing to in-app notifications: %s", self.channel)
-        try:
-            async with self._bus.subscribe(self.channel) as pubsub:
-                async for msg in self._bus.iter_messages(pubsub):
-                    await self._handle_message(msg)
-        except asyncio.CancelledError:
-            logger.info("Notification cache task cancelled.")
-        except Exception as exc:
-            logger.error("Notification cache loop failed: %s", exc, exc_info=True)
+        await run_subscription(
+            self._bus, self.channel, self._handle_message, stop_event=None, name="hub.notification_cache"
+        )
 
     async def _handle_message(self, msg: Dict[str, Any]) -> None:
         if not self._bus:

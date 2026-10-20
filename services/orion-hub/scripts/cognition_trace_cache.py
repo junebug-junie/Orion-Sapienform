@@ -8,6 +8,7 @@ from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.schemas.cortex.types import StepExecutionResult
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 
@@ -84,14 +85,9 @@ class CognitionTraceCache:
         if not self._bus:
             return
         logger.info("Subscribing to cognition trace channel: %s", self.subscribe_channel)
-        try:
-            async with self._bus.subscribe(self.subscribe_channel) as pubsub:
-                async for msg in self._bus.iter_messages(pubsub):
-                    await self._handle_message(msg)
-        except asyncio.CancelledError:
-            logger.info("cognition_trace_cache task cancelled.")
-        except Exception as exc:
-            logger.error("cognition_trace_cache loop failed: %s", exc, exc_info=True)
+        await run_subscription(
+            self._bus, self.subscribe_channel, self._handle_message, stop_event=None, name="hub.cognition_trace_cache"
+        )
 
     async def _handle_message(self, msg: Dict[str, Any]) -> None:
         if not self._bus:

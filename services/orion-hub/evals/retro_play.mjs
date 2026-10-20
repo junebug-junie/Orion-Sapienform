@@ -79,7 +79,9 @@ try{
   report.game=await frame.$eval('#game',e=>e.value);
   await frame.click('#new');
   await frame.waitForFunction(()=>Number(document.querySelector('#screen').dataset.appliedFrame)>0,{timeout:15000}).catch(()=>{});
-  await frame.click('#screen');await page.keyboard.press('Enter');
+  await frame.click('#screen');
+  // Title screens: tap Start a few times (quick taps, like a person), then play.
+  for(let k=0;k<4;k++){await pause(1500);await page.keyboard.press('Enter');}
   // Scripted play: run right, jump every ~0.7 s, release briefly every few seconds.
   const end=Date.now()+seconds*1000;let i=0;
   while(Date.now()<end){
@@ -104,7 +106,7 @@ try{
     if(fs.existsSync(file)){
       const rows=fs.readFileSync(file,'utf8').trim().split('\n').map(l=>JSON.parse(l));
       const ts=r=>Date.parse(r.utc), applied=rows.filter(r=>r.kind==='applied');
-      report.server={applied:applied.length,
+      report.server={applied:applied.length, start_presses_applied:applied.filter(r=>r.mask&8).length,
         applied_gap_ms:stats(applied.slice(1).map((r,k)=>ts(r)-ts(applied[k]))),
         events:rows.filter(r=>r.kind!=='applied').map(r=>[r.utc.slice(11,23),r.kind,r.state||r.action||'',r.reason||''])};
     }
@@ -118,4 +120,5 @@ console.log(JSON.stringify({error:report.error?.split('\n')[0],game:report.game,
   send_interval_ms:c.send_interval_ms,ack_ms:c.ack_ms,timer_lag_ms:c.timer_lag_ms,longtask_ms_total:c.longtask_ms_total,
   hub_longtask_ms_total:c.hub_longtask_ms_total,rejects:c.rejects?.length,closes:c.closes?.length,
   last_status:c.status?.at(-1)?.[1],frames_drawn:c.frames_drawn,server:report.server&&{applied:report.server.applied,gap:report.server.applied_gap_ms,
+  start_presses_applied:report.server.start_presses_applied,
   drops:report.server.events.filter(e=>/disconnect|no_controller/.test(e[3])).length}},null,1));

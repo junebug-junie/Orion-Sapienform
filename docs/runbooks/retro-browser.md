@@ -221,3 +221,13 @@ node services/orion-hub/evals/retro_play.mjs --url https://athena.tail348bbe.ts.
 
 `--url` is required. A run starts a real game on that service and ends any game
 already running there, so do not run it while someone is playing.
+
+### Quick taps
+
+A newer input that replaces a pending one before the next frame no longer erases
+the older one's buttons: they are held for exactly one frame (`latch` in
+`app/control.py`). A latched direction yields to the current opposite direction.
+Live 2026-10-20: on Crystalis's title screen, 1 of 4 quick Start taps reached the
+game; with the latch, 4 of 4 did and the intro started. Regression:
+`test_tap_inside_one_frame_still_reaches_the_game`. `retro_play.mjs` now taps
+Start 4 times and reports `start_presses_applied` from the server journal.

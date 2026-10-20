@@ -298,3 +298,19 @@ def test_lease_survives_throttled_browser_heartbeat():
     a.submit('one',intent(g),.6); assert a.frame(.61)[0] == [256,0]
     a.submit('one',intent(g,2),1.6); assert a.frame(1.61)[0] == [256,0]  # 1 s heartbeat
     assert a.frame(1.6+T)[0] == [0,0] and 0 not in a.leases  # silence still expires
+
+
+def test_tap_inside_one_frame_still_reaches_the_game():
+    # Live 2026-10-20: Enter's press and release arrived before the same frame; the
+    # release replaced the press and Crystalis never saw Start.
+    a = Arbiter([0]); g=a.control('one',0,'acquire',0); a.frame(0)
+    a.submit('one',intent(g,1,mask=8),.01); a.submit('one',intent(g,2,mask=0),.011)
+    masks, applied, _ = a.frame(.02)
+    assert masks == [8,0] and applied[0]['mask'] == 8
+    assert a.frame(.03)[0] == [0,0]  # held for exactly one frame
+
+
+def test_latched_direction_yields_to_the_current_opposite():
+    a = Arbiter([0]); g=a.control('one',0,'acquire',0); a.frame(0)
+    a.submit('one',intent(g,1,mask=64),.01); a.submit('one',intent(g,2,mask=128),.011)  # left then right
+    assert a.frame(.02)[0] == [128,0]

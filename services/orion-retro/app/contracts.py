@@ -27,3 +27,12 @@ class Input(Strict):
     seq: int = Field(ge=0, le=2**53-1)
     port: int = Field(ge=0, le=1)
     mask: int = Field(ge=0, le=65535)
+
+
+class ScriptControl(Strict):
+    connection_id: str = Field(min_length=36, max_length=36)
+    generation: str = Field(min_length=36, max_length=36)
+    port: int = Field(ge=0, le=1)
+    action: Literal['start', 'stop']
+    duration_seconds: int = Field(default=60, ge=5, le=1800)
+    expected_epoch: int = Field(ge=1)

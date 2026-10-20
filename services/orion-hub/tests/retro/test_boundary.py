@@ -23,6 +23,10 @@ def test_network_boundary_without_access_code(tmp_path):
         assert c.post('/api/retro/sessions',json={},headers=good).status_code==503
         assert c.post('/api/retro/login',json={},headers=good).status_code==404
         assert c.post('/api/retro/logout',json={},headers=good).status_code==404
+        script='/api/retro/sessions/'+'a'*36+'/scripted'
+        assert c.post(script,json={}).status_code==403
+        assert c.post(script,json={},headers=good).status_code==503
+        assert c.get(script).status_code==404
         assert c.get('/api/retro/arbitrary').status_code==404
         with pytest.raises(WebSocketDisconnect):
             with c.websocket_connect('/api/retro/sessions/'+'a'*36+'/input',headers={'Origin':'https://evil.example'}):pass

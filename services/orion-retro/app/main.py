@@ -8,7 +8,7 @@ import uuid
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 from settings import Settings
-from .contracts import Start, Control, Input
+from .contracts import Start, Control, Input, ScriptControl
 from .session import Sessions
 
 
@@ -82,6 +82,13 @@ def create_app(settings=None):
     @app.post('/sessions/{sid}/{operation}')
     async def lifecycle(sid: str, operation: str, request: Request):
         m = owned(sid, request.headers)
+        if operation == 'scripted':
+            try: body = ScriptControl.model_validate_json(await request.body())
+            except ValidationError: raise HTTPException(422, 'invalid_script_control')
+            if body.generation != m.generation: raise ValueError('session_generation_mismatch')
+            if body.connection_id not in m.connections: raise ValueError('connection_not_live')
+            return await m.command('scripted', body.connection_id,
+                                   body.model_dump(exclude={'connection_id', 'generation'}))
         if operation == 'control':
             try: body = Control.model_validate_json(await request.body())
             except ValidationError: raise HTTPException(422, 'invalid_control')

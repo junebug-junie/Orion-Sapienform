@@ -9,6 +9,7 @@ import queue
 import time
 import uuid
 from .worker import run
+from .media import MediaSlot
 
 
 class Sessions:
@@ -25,7 +26,7 @@ class Sessions:
         if self.status_path.exists():
             self.session = json.loads(self.status_path.read_text())
             if self.session['state'] in ('starting', 'running', 'paused'):
-                self.session.update(state='failed', reason='service_restart')
+                self.session.update(state='failed', reason='service_restart', scripted=[])
                 self.persist()
         catalog = json.loads(settings.catalog.read_text())
         if not isinstance(catalog, list) or not 1 <= len(catalog) <= 16:
@@ -70,11 +71,11 @@ class Sessions:
         if len(self.requests) >= 256: raise ValueError('idempotency_capacity_restart_required')
         ctx = mp.get_context('spawn')
         self.commands = ctx.Queue(32); self.urgent = ctx.Queue(8); self.replies = ctx.Queue(128); self.stop_event = ctx.Event()
-        self.media = ctx.Queue(2); self.latest_media = None; self.media_version = 0
+        self.media = MediaSlot(ctx); self.latest_media = None; self.media_version = 0
         self.ready = asyncio.Event()
         sid = str(uuid.uuid4())
         self.session = dict(session_id=sid, generation=self.generation, state='starting',
-                            game_id=game_id, frame=0, owner=owner, save_enabled=False)
+                            game_id=game_id, frame=0, owner=owner, save_enabled=False, scripted=[])
         self.persist(); self.history.clear()
         self.process = ctx.Process(target=run, args=(self.commands,self.urgent,self.replies,self.stop_event,
                             self.settings,self.catalog[game_id],sid,self.generation,self.media), daemon=True)
@@ -115,6 +116,8 @@ class Sessions:
                         self.persist()
                     elif kind == 'status':
                         self.session.update({k:v for k,v in row.items() if k!='kind'})
+                    elif kind == 'applied':
+                        self.history.append({k:v for k,v in row.items() if k!='kind'})
                     elif kind == 'fatal':
                         await self.stop('failed', row['error'], from_monitor=True); return
                 if not self.process.is_alive():
@@ -179,8 +182,8 @@ class Sessions:
         self.commands.cancel_join_thread(); self.commands.close()
         self.urgent.cancel_join_thread(); self.urgent.close()
         self.replies.cancel_join_thread(); self.replies.close()
-        if self.media: self.media.cancel_join_thread(); self.media.close()
-        self.session.update(state=state, reason=reason)
+        self.media = None  # A dead writer's lock may be abandoned; never reuse it.
+        self.session.update(state=state, reason=reason, scripted=[])
         try:
             self.persist()
         finally:

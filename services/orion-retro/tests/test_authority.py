@@ -227,6 +227,35 @@ def test_hub_credential_cannot_access_operator_session(tmp_path):
         assert c.get('/health/ready',headers={'Authorization':'Bearer '+'b'*48}).json()['session'] is None
 
 
+def test_script_api_requires_owner_live_connection_generation_and_valid_budget(tmp_path):
+    from dataclasses import replace
+    cfg=settings(tmp_path);hub=tmp_path/'hub.token';hub.write_text('b'*48)
+    app=create_app(replace(cfg,hub_token_file=hub))
+    calls=[]
+    class Manager:
+        session={'session_id':'a'*36,'owner':'operator'}
+        generation='g'*36
+        connections={'c'*36}
+        def require(self,sid):
+            if sid!=self.session['session_id']:raise ValueError('unknown_session')
+        async def command(self,*args):
+            calls.append(args);return {'scripted':[]}
+        async def stop(self,**kwargs):pass
+    body=dict(connection_id='c'*36,generation='g'*36,port=0,action='start',expected_epoch=1)
+    path='/sessions/'+'a'*36+'/scripted'
+    with TestClient(app) as c:
+        app.state.manager=Manager()
+        h={'Authorization':'Bearer '+'a'*48}
+        assert c.post(path,json=body).status_code==401
+        assert c.post(path,json=body,headers={'Authorization':'Bearer '+'b'*48}).status_code==403
+        for change in ({'connection_id':'d'*36},{'generation':'h'*36}):
+            assert c.post(path,json=body|change,headers=h).status_code==409
+        assert c.post(path,json=body|{'duration_seconds':1801},headers=h).status_code==422
+        assert not calls
+        assert c.post(path,json=body,headers=h).status_code==200
+        assert calls==[('scripted','c'*36,dict(port=0,action='start',expected_epoch=1,duration_seconds=60))]
+
+
 def test_paused_viewer_disconnect_releases_capacity(tmp_path):
     import time
     cfg=settings(tmp_path)

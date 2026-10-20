@@ -75,6 +75,67 @@ try{
   await page.click('#join');await pause(500);
   const resumed=await page.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state);
   assert.equal(resumed,'running');
+  // Real native script handoff, visible identity, human takeover and disconnect.
+  await page.evaluate(()=>Object.defineProperty(navigator,'getGamepads',{configurable:true,value:()=>[]}));
+  await page.click('#scripted');
+  await page.waitForFunction(()=>document.querySelector('#policy').textContent.includes('scripted-right-jump-v1'));
+  await pause(600);
+  const scriptedActions=await page.evaluate(async sid=>(await (await fetch(`/api/retro/sessions/${sid}/evidence`)).json()).applied,state.session_id);
+  assert(scriptedActions.some(a=>a.policy_id==='scripted-right-jump-v1' && a.mask===384),'script never actuated');
+  await page.click('#takeover');
+  await page.waitForFunction(()=>document.activeElement===document.querySelector('#screen'));
+  await page.keyboard.down('ArrowLeft');await pause(250);await page.keyboard.up('ArrowLeft');
+  await page.waitForFunction(async()=>(await (await fetch('/api/retro/health/ready')).json()).session.scripted.length===0);
+  const humanActions=await page.evaluate(async sid=>(await (await fetch(`/api/retro/sessions/${sid}/evidence`)).json()).applied,state.session_id);
+  assert(humanActions.some(a=>!a.policy_id && a.mask===64),'human takeover never actuated');
+  await page.click('#scripted');await pause(300);
+  await page.evaluate(()=>window.dispatchEvent(new Event('blur')));await pause(400);
+  const stoppedScript=await page.evaluate(async()=>(await (await fetch('/api/retro/health/ready')).json()).session);
+  assert.equal(stoppedScript.state,'paused');assert.deepEqual(stoppedScript.scripted,[]);
+  await page.click('#screen');
+  await page.waitForFunction(async()=>(await (await fetch('/api/retro/health/ready')).json()).session.state==='running');
+  await pause(300);
+  // A rejected handoff cannot strand the human's existing connection.
+  await page.evaluate(()=>{
+    const original=window.fetch;
+    window.fetch=(path,opts)=>{
+      if(String(path).endsWith('/scripted')){
+        window.fetch=original;
+        opts={...opts,body:JSON.stringify({...JSON.parse(opts.body),expected_epoch:999999})};
+      }
+      return original(path,opts);
+    };
+  });
+  await page.click('#scripted');
+  await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('Handoff failed'));
+  await page.click('#takeover');
+  await page.waitForFunction(()=>document.activeElement===document.querySelector('#screen'));
+  await page.keyboard.down('ArrowLeft');await pause(250);await page.keyboard.up('ArrowLeft');
+  const recovered=await page.evaluate(async sid=>(await (await fetch(`/api/retro/sessions/${sid}/evidence`)).json()).applied,state.session_id);
+  assert(recovered.slice(-8).some(a=>!a.policy_id && a.mask===64),'rejected handoff stranded human');
+  // Exercise server-enforced budget with the same UI; shorten only this request.
+  await page.evaluate(()=>{
+    const original=window.fetch;
+    window.fetch=(path,opts)=>{
+      if(String(path).endsWith('/scripted')){
+        window.fetch=original;
+        opts={...opts,body:JSON.stringify({...JSON.parse(opts.body),duration_seconds:5})};
+      }
+      return original(path,opts);
+    };
+  });
+  await page.click('#scripted');
+  await page.waitForFunction(async()=>{
+    const s=(await (await fetch('/api/retro/health/ready')).json()).session;
+    return s.state==='paused' && s.scripted.length===0;
+  },{timeout:8000,polling:100});
+  await page.click('#takeover');
+  await page.waitForFunction(async()=>(await (await fetch('/api/retro/health/ready')).json()).session.state==='running');
+  await pause(300);
+  await page.click('#scripted');await pause(200);await page.click('#pause');await pause(200);
+  await page.click('#screen');
+  await page.waitForFunction(async()=>(await (await fetch('/api/retro/health/ready')).json()).session.state==='running');
+  await pause(300);
   await page.click('#pause');await pause(150);await page.click('#join');await pause(500);
   // Cancel an in-flight resume: it must not acquire control after blur.
   await page.click('#pause');await pause(150);
@@ -110,5 +171,5 @@ try{
   await pause(150);assert.equal(await tab.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'stopped');
   await tab.close();
   assert.deepEqual(errors,[]);
-  fs.writeFileSync(out+'/browser.json',JSON.stringify({status:'PASS',ackDelayMs:Number(process.env.RETRO_ACK_DELAY_MS || 0),game:process.env.RETRO_EVAL_GAME,observed,hubTab:true,tabExitPaused:true,keyboard:true,syntheticStandardGamepad:true,blurPaused:true,reconnect:true,selfHeal:Boolean(Number(process.env.RETRO_ACK_DELAY_MS || 0)),unverified:['physical gamepad','user-device audio output','input-to-photon latency','30-minute actual-client A/V drift']},null,2));
+  fs.writeFileSync(out+'/browser.json',JSON.stringify({status:'PASS',ackDelayMs:Number(process.env.RETRO_ACK_DELAY_MS || 0),game:process.env.RETRO_EVAL_GAME,observed,scriptedHandoff:true,scriptedTakeover:true,scriptedDisconnect:true,hubTab:true,tabExitPaused:true,keyboard:true,syntheticStandardGamepad:true,blurPaused:true,reconnect:true,selfHeal:Boolean(Number(process.env.RETRO_ACK_DELAY_MS || 0)),unverified:['physical gamepad','user-device audio output','input-to-photon latency','30-minute actual-client A/V drift','cognition/learning']},null,2));
 } catch(error) { if(page){console.error(await page.$eval('#status',e=>e.textContent));await page.screenshot({path:out+'/failure.png'});}throw error; } finally {await browser.close();}

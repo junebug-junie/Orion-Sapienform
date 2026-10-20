@@ -362,3 +362,12 @@ def test_outbox_publishes_and_marks_only_on_success(pg) -> None:
     assert asyncio.run(hl.publish_outbox(up, pg, service_name="t", service_version="0")) == 1
     assert up.sent[0][0] == vh.STREET_CHANNEL and up.sent[0][1].kind == "vision.street.event.v1"
     assert hl.fetch_outbox(pg) == []
+
+
+def test_stale_facts_are_recorded_but_not_published(pg) -> None:
+    # A restart catching up on an hour-old approach must not bid for attention now.
+    with pg.begin() as conn:
+        _story(conn, "w_toward", "walkway", T0 - timedelta(seconds=10), T0, dir_depth=1, landed=T0 + timedelta(seconds=60))
+    out = _cycle(pg, T0 + timedelta(seconds=1800))
+    (a,) = _rows(pg, "SELECT street_event FROM vision_handoff WHERE source_story_id='w_toward'")
+    assert a["street_event"] is None and out["street_stale_skipped"] == 1

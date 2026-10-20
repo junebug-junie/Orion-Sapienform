@@ -78,6 +78,11 @@ RING_APPROACH_LOOKBACK_SEC = 120.0
 STORIES_PER_TICK = 500
 CROPS_PER_SIDE = 12
 HOUR_HISTORY_DAYS = 28
+# A street event is a bid for attention NOW: after a restart or a backlog,
+# facts older than this are recorded in vision_handoff but not published.
+# approach_door is a heads-up, so it has a much shorter shelf life.
+STREET_MAX_AGE_SEC = 3600.0
+APPROACH_MAX_AGE_SEC = 300.0
 
 
 @dataclass(frozen=True)
@@ -372,6 +377,10 @@ class Ctx:
 
 def _street(ctx: Ctx, f: StreetFacts) -> Optional[dict]:
     if not ctx.cfg.street_events_enabled:
+        return None
+    max_age = APPROACH_MAX_AGE_SEC if f.kind == "approach_door" else STREET_MAX_AGE_SEC
+    if (ctx.now - f.occurred_at).total_seconds() > max_age:
+        ctx.bump("street_stale_skipped")
         return None
     try:
         return street_event(f)

@@ -15,7 +15,7 @@
     if (!wanted || away || !sid || connecting || lease || document.hidden || !document.hasFocus()) return;
     const now = performance.now(); if (now-healWindow > 10000) { heals = 0; healWindow = now; }
     if (++heals > 3) { report('Could not get the controller back. Press New game.'); return; }
-    setTimeout(() => { if (!away && !lease && !connecting && !document.hidden) connect().catch(err => report(err.message)); }, 300);
+    setTimeout(() => { if (wanted && !away && !lease && !connecting && !document.hidden) connect().catch(err => report(err.message)); }, 300);
   }
   async function api(path, data) {
     const r = await fetch('/api/retro/'+path, {method:data === undefined?'GET':'POST', headers:{'Content-Type':'application/json'}, body:data === undefined?undefined:JSON.stringify(data)});

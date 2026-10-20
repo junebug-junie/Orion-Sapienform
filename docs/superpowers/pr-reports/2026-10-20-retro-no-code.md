@@ -23,7 +23,7 @@ No env keys changed. browser.code is no longer created or required; existing fil
 6 Hub tests and 58 Retro tests passed.
 
 ## Evals run
-Real Chromium/native emulator eval: Mario renders and applies controls, but the generic script stayed silent (audioPeak=0), so full Mario browser qualification remains UNVERIFIED. Authored Pad Lab is the deterministic browser acceptance target; no ROM committed.
+Real Chromium/native emulator eval: Mario renders and applies controls, but the generic script stayed silent (audioPeak=0), so full Mario browser qualification remains UNVERIFIED. Authored Pad Lab browser acceptance passed, including no-code entry, keyboard/gamepad input, audio, blur pause, reconnect and Hub tab navigation; no ROM committed.
 
 ## Docker/build/smoke checks
 Retro restarted from synchronized clean main; live catalog includes Tetris, Crystalis and Super Mario Bros. Hub deploy follows merge.
@@ -38,4 +38,4 @@ Rebuild/recreate Hub from clean main after merge.
 Anyone who can reach Hub can control Retro, as requested. Physical controller and user-device audio/latency remain unverified.
 
 ## PR link
-Added on creation.
+https://github.com/junebug-junie/Orion-Sapienform/pull/2762

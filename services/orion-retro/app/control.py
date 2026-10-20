@@ -65,6 +65,8 @@ class Arbiter:
             # The previous input never reached a frame. Keep its buttons for one frame
             # so a quick tap (press and release in the same frame) is not lost.
             # Live 2026-10-20: Start never reached Crystalis's title screen.
+            for axis in (48, 192):  # a newer latched direction replaces an older one
+                if item['mask'] & axis: item['latch'] &= ~axis
             item['latch'] |= item['mask']
         item.update(seq=data['seq'], mask=data['mask'], expires=now+LEASE_TTL, pending=data['seq'])
 

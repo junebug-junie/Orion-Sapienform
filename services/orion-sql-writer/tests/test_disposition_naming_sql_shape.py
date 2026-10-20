@@ -13,6 +13,7 @@ from pathlib import Path
 
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
@@ -83,7 +84,8 @@ def test_table_matches_the_migration_columns() -> None:
 
 
 def _session(monkeypatch):
-    engine = create_engine("sqlite://")
+    # One shared connection: _write runs _write_row in a worker thread.
+    engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
     DispositionNamingSQL.__table__.create(bind=engine)
     session = sessionmaker(bind=engine)()
     monkeypatch.setattr(worker, "get_session", lambda: session)
@@ -119,3 +121,17 @@ def test_refused_row_keeps_its_reasons(monkeypatch) -> None:
     assert worker._write_row(DispositionNamingSQL, naming.model_dump(mode="json")) is True
     row = session.query(DispositionNamingSQL).one()
     assert row.refused_reasons == ["merge_target_not_shown"] and row.merge_with == "disp-9"
+
+
+def test_bus_payload_writes_through_the_real_write_path(monkeypatch) -> None:
+    # Regression (review 2026-10-20): _write dumped the model without mode="json", so the nested
+    # packet's datetimes broke the jsonb insert and no naming row was ever stored.
+    import asyncio
+
+    session = _session(monkeypatch)
+    naming = _naming()
+    ok = asyncio.run(worker._write(DispositionNamingSQL, DispositionNamingV1, naming.model_dump(mode="json"),
+                                   kind=PERSONALITY_NAMING_KIND))
+    assert ok is True
+    row = session.query(DispositionNamingSQL).filter_by(naming_id=naming.naming_id).one()
+    assert row.shown["generated_at"].startswith("2026-10-20") and row.evidence_refs == ["ev-1"]

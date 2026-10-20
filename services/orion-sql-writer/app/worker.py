@@ -2164,6 +2164,12 @@ async def _write(
             raise
         data = (state_history_row(obj) if sql_model_cls is GpuPoolStateSQL else
                 obj.model_dump() if hasattr(obj, "model_dump") else obj.dict())
+        if sql_model_cls is DispositionNamingSQL:
+            # jsonb columns hold the nested packet (datetimes inside); the engine's serializer is
+            # plain json.dumps. Top-level written_at stays a datetime for its timestamptz column.
+            as_json = obj.model_dump(mode="json")
+            for key in ("shown", "evidence_refs", "refused_reasons"):
+                data[key] = as_json[key]
     else:
         data = payload if isinstance(payload, dict) else {}
 

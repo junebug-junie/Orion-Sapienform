@@ -626,7 +626,9 @@ async def personality_frame():
     store = _personality_store()
     now = datetime.now(timezone.utc)
     frame = await _personality_read(store.frame(now, warnings=personality.frame_warnings(now)))
-    return frame.model_dump(mode="json")
+    # exclude_none: an unnamed node carries no name keys, so readers built before self-naming
+    # (DispositionV1 is extra="forbid") keep validating the frame if durable-runs deploys first.
+    return frame.model_dump(mode="json", exclude_none=True)
 
 
 _PERSONALITY_STATUSES = {"active", "candidate", "retired", "all"}

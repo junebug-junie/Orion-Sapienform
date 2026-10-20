@@ -1251,6 +1251,25 @@ still a real column pair in `orion.curiosity.self_question_pool`, just not
 reachable over HTTP today. Full contract and inspection queries:
 `orion/curiosity/README.md` §13.
 
+**Naming branch (2026-10-20).** Before the pool pick, a self-inquiry tick may
+become a naming sitting: Orion is shown one of their own personality
+dispositions (counts, lanes, evidence excerpts, situation mix, neighbors; not
+weight) and asked "Is this you?". Order: an overdue pinned lived question
+always wins; else Hub GETs `<HUB_CURIOSITY_DURABLE_RUNS_URL>/personality/naming/next`
+(204 = nothing due); a packet runs only while fewer than
+`HUB_CURIOSITY_SELF_NAMING_DAILY_CAP` (default 1) naming runs started today
+(Redis `orion:curiosity:self_naming:count:<local date>`). Flag:
+`HUB_CURIOSITY_SELF_NAMING_ENABLED` (default `true`). Orion writes one
+`:DispositionNaming` node (early MERGE, ids filled in by code); Hub reads it
+read-only, checks structure (`orion/personality/naming_check.py`, never repairs
+an id) and publishes exactly one `DispositionNamingV1` on
+`orion:personality:naming` -- `no_answer` when nothing was written or the run
+failed. The shown packet is kept in Redis
+(`orion:curiosity:self_naming:packet:<run_id>`, 7 days) so the durable
+completion event can be checked against what Orion saw. Logs:
+`curiosity_disposition_naming_shown`, `curiosity_disposition_naming_published`,
+`curiosity_self_naming_skipped reason=...`.
+
 #### 4.2.2 Self-sense eval: the daily 4-question identity check, scheduled
 
 A THIRD line of the same loop (`tick_self_sense_eval`,

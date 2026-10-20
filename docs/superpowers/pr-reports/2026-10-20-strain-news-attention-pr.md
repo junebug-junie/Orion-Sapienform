@@ -277,6 +277,6 @@ scripts/safe_docker_build.sh orion-substrate-runtime up -d --build
 
 ## PR link
 
-(filled in after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2821
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef, ChatRequestPayload, LLMMessage
 from orion.schemas.vision import (
@@ -122,32 +123,35 @@ class CouncilService:
         await self.bus.close()
 
     async def _consume(self):
-        async with self.bus.subscribe(settings.CHANNEL_COUNCIL_INTAKE) as pubsub:
-            async for msg in self.bus.iter_messages(pubsub):
-                if self._shutdown_event.is_set():
-                    break
+        await run_subscription(
+            self.bus,
+            settings.CHANNEL_COUNCIL_INTAKE,
+            self._on_intake,
+            stop_event=self._shutdown_event,
+            name="vision-council.consume",
+        )
 
-                data = msg.get("data")
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok:
-                    continue
-
-                env = decoded.envelope
-                asyncio.create_task(self._process_window(env, is_rpc=False))
+    def _on_intake(self, msg):
+        # Starts its own task and returns None so the stream is not held up.
+        decoded = self.bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            return
+        asyncio.create_task(self._process_window(decoded.envelope, is_rpc=False))
 
     async def _consume_rpc(self):
-        async with self.bus.subscribe(settings.CHANNEL_COUNCIL_REQUEST) as pubsub:
-             async for msg in self.bus.iter_messages(pubsub):
-                if self._shutdown_event.is_set():
-                    break
+        await run_subscription(
+            self.bus,
+            settings.CHANNEL_COUNCIL_REQUEST,
+            self._on_rpc,
+            stop_event=self._shutdown_event,
+            name="vision-council.consume_rpc",
+        )
 
-                data = msg.get("data")
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok:
-                    continue
-
-                env = decoded.envelope
-                asyncio.create_task(self._handle_rpc(env))
+    def _on_rpc(self, msg):
+        decoded = self.bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            return
+        asyncio.create_task(self._handle_rpc(decoded.envelope))
 
     async def _handle_rpc(self, env: BaseEnvelope):
         try:

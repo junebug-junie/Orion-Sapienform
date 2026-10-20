@@ -29,7 +29,9 @@ DEFAULT_TOP_K = 5
 # The choice line is a pattern claim; below this many choices it is an anecdote, not shown
 # (live 2026-10-17: "went your own way in 1 of 1 choices" read to Orion as a tendency).
 MIN_CHOICES_SHOWN = 5
-LABEL_SHOWN_CHARS = 120
+# Labels are excerpts of Orion's evidence; the opening words carry the theme. Live 2026-10-20 at
+# 120 chars only 1 of 4 active nodes fit the cue.
+LABEL_SHOWN_CHARS = 64
 
 HEADER = (
     "Things you keep coming back to, gathered from your own recent dreams, journal, reverie, "
@@ -61,7 +63,10 @@ def _label(text: str) -> str:
     text = " ".join(text.split())
     if len(text) <= LABEL_SHOWN_CHARS:
         return text
-    return text[: LABEL_SHOWN_CHARS - 1].rstrip() + "…"
+    cut = text[: LABEL_SHOWN_CHARS - 1]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]  # end on a whole word
+    return cut.rstrip(" ,;:") + "…"
 
 
 def _line(d: Any) -> str:

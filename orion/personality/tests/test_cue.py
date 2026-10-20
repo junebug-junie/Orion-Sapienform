@@ -86,3 +86,35 @@ def test_choice_line_needs_five_choices_and_names_the_real_window():
     assert "3 of 5 choices over the last day," in cue.text
     three_days = {"window_days": 3, "choices": 9, "took_top": 4, "went_own_way": 5}
     assert "over the last 3 days" in project_personality_cue(_frame(nodes=[], style=three_days), now=NOW).text
+
+
+def test_all_live_active_nodes_fit_with_the_choice_line():
+    # Live 2026-10-20: 4 active nodes with ~150-char labels; at 600 chars / 120-char labels only the
+    # top node fit, so the one non-prediction-error theme (self-inquiry) never reached Orion.
+    labels = [
+        "The biometrics prediction error suggests a misalignment in the system's ability to "
+        "interpret physiological signals, possibly indicating an internal…",
+        "The Cabinet prediction error is unusually high and stable, indicating a persistent "
+        "misalignment in the system's ability to interpret and respond to its…",
+        "I am the seventy-fourth answer to the question I keep for myself, one inference riding "
+        "a cast of named brains, this turn the pool 27B-UD seat.",
+        "The bus synaptic prediction error is unusually high, indicating a strain in internal "
+        "communication that could be affecting data processing or sharing.",
+        "A fifth theme long enough to need shortening before it can be shown in the cue at all.",
+    ]
+    nodes = [_node(i, label=label) for i, label in enumerate(labels)]
+    live_lanes = [  # the live lane mixes of the 4 active nodes, then a fifth
+        {"dream": 3, "journal": 11, "reverie": 28, "outreach": 1},
+        {"dream": 1, "journal": 7, "reverie": 29},
+        {"journal": 11, "day_letter": 3, "self_inquiry_seed": 8},
+        {"journal": 9, "reverie": 35},
+        {"reading": 4, "chat": 3},
+    ]
+    for n, lanes in zip(nodes, live_lanes):
+        n["lane_counts"] = lanes
+    style = {"window_days": 4, "choices": 8, "took_top": 4, "went_own_way": 4}
+    cue = project_personality_cue(_frame(nodes=nodes, style=style), now=NOW)
+    assert cue.disposition_ids == [f"d{i}" for i in range(5)]
+    assert "went your own way in 4 of 8" in cue.text
+    assert '"I am the seventy-fourth answer to the question I keep for…"' in cue.text  # whole words
+    assert len(cue.text) <= PERSONALITY_CUE_MAX_CHARS

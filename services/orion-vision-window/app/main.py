@@ -13,6 +13,7 @@ from loguru import logger
 from pydantic import ValidationError
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.vision_sighting import IDENTITY_SIGHTING_KIND, IdentitySightingV1
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
@@ -303,29 +304,34 @@ class WindowService:
         return False
 
     async def _consume(self) -> None:
-        async with self.bus.subscribe(settings.CHANNEL_WINDOW_INTAKE) as pubsub:
-            async for msg in self.bus.iter_messages(pubsub):
-                if self._shutdown_event.is_set():
-                    break
-                data = msg.get("data")
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok:
-                    continue
-                env = decoded.envelope
-                try:
-                    if isinstance(env.payload, dict):
-                        payload = VisionArtifactPayload(**env.payload)
-                    else:
-                        payload = env.payload
-                except Exception as e:
-                    logger.warning(f"[WINDOW] Invalid artifact payload: {e}")
-                    continue
-                sk = stream_key_from_artifact(payload)
-                logger.debug(f"[WINDOW] ingest accepted stream={sk} artifact={payload.artifact_id}")
-                self._m_ingest += 1
-                async with self._buffer_lock:
-                    self._buffers[sk].append({"artifact": payload, "ts": time.time(), "env": env})
-                await self._publish_crop_observation(payload, env)
+        await run_subscription(
+            self.bus,
+            settings.CHANNEL_WINDOW_INTAKE,
+            self._on_intake,
+            stop_event=self._shutdown_event,
+            name="vision-window.consume",
+        )
+
+    async def _on_intake(self, msg: dict) -> None:
+        data = msg.get("data")
+        decoded = self.bus.codec.decode(data)
+        if not decoded.ok:
+            return
+        env = decoded.envelope
+        try:
+            if isinstance(env.payload, dict):
+                payload = VisionArtifactPayload(**env.payload)
+            else:
+                payload = env.payload
+        except Exception as e:
+            logger.warning(f"[WINDOW] Invalid artifact payload: {e}")
+            return
+        sk = stream_key_from_artifact(payload)
+        logger.debug(f"[WINDOW] ingest accepted stream={sk} artifact={payload.artifact_id}")
+        self._m_ingest += 1
+        async with self._buffer_lock:
+            self._buffers[sk].append({"artifact": payload, "ts": time.time(), "env": env})
+        await self._publish_crop_observation(payload, env)
 
     async def _consume_identity(self) -> None:
         """Separate loop, separate channel from _consume() above --
@@ -345,76 +351,85 @@ class WindowService:
         sticky-confirmed-vs-flicker reasoning. A fresh "confirmed" reading
         is never subject to that hold-off and always overwrites.
         """
-        async with self.bus.subscribe(settings.CHANNEL_WINDOW_IDENTITY_INTAKE) as pubsub:
-            async for msg in self.bus.iter_messages(pubsub):
-                if self._shutdown_event.is_set():
-                    break
-                data = msg.get("data")
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok:
-                    continue
-                env = decoded.envelope
-                try:
-                    if isinstance(env.payload, dict):
-                        payload = VisionArtifactPayload(**env.payload)
-                    else:
-                        payload = env.payload
-                except Exception as e:
-                    logger.warning(f"[WINDOW] Invalid identity artifact payload: {e}")
-                    continue
-                try:
-                    verdict = identity_verdict_summary(payload)
-                    self._identity_checks[verdict["outcome"]] += 1
-                    logger.info(
-                        f"[WINDOW] identity_check stream={stream_key_from_artifact(payload)} "
-                        f"outcome={verdict['outcome']} faces={verdict['faces']} "
-                        f"similarity={verdict['similarity']} detect_conf={verdict['detect_confidence']} "
-                        f"corr={payload.correlation_id} totals={dict(self._identity_checks)}"
-                    )
-                except Exception as e:  # the trace must never kill the identity loop
-                    logger.warning(f"[WINDOW] identity_check trace failed: {e}")
-                hint = identity_hint_from_artifact(payload)
-                confidence = identity_confidence_from_artifact(payload)
-                try:
-                    await self._maybe_publish_sighting(payload, hint)
-                except Exception as e:  # a sighting must never kill the identity loop
-                    logger.warning(f"[WINDOW] identity sighting publish failed: {e}")
-                if hint is None and confidence is None:
-                    # No usable signal at all (no face detected, or a
-                    # gallery-misconfig candidate) -- nothing to store.
-                    # Never clears a still-fresh prior reading either way;
-                    # the freshness gate in _flush_and_publish is what
-                    # decides whether an older reading is still usable, not
-                    # this arrival.
-                    continue
-                sk = stream_key_from_artifact(payload)
-                async with self._identity_lock:
-                    existing = self._identity_by_stream.get(sk)
-                    if _should_ignore_uncertain_reading(
-                        existing, confidence, now=time.time(), max_age_sec=settings.WINDOW_IDENTITY_MAX_AGE_SEC
-                    ):
-                        logger.debug(
-                            f"[WINDOW] identity_hint stream={sk} unsure_reading_ignored "
-                            f"still_fresh_confirmed=true"
-                        )
-                        continue
-                    self._identity_by_stream[sk] = {"hint": hint, "confidence": confidence, "ts": time.time()}
+        await run_subscription(
+            self.bus,
+            settings.CHANNEL_WINDOW_IDENTITY_INTAKE,
+            self._on_identity,
+            stop_event=self._shutdown_event,
+            name="vision-window.consume_identity",
+        )
+
+    async def _on_identity(self, msg: dict) -> None:
+        data = msg.get("data")
+        decoded = self.bus.codec.decode(data)
+        if not decoded.ok:
+            return
+        env = decoded.envelope
+        try:
+            if isinstance(env.payload, dict):
+                payload = VisionArtifactPayload(**env.payload)
+            else:
+                payload = env.payload
+        except Exception as e:
+            logger.warning(f"[WINDOW] Invalid identity artifact payload: {e}")
+            return
+        try:
+            verdict = identity_verdict_summary(payload)
+            self._identity_checks[verdict["outcome"]] += 1
+            logger.info(
+                f"[WINDOW] identity_check stream={stream_key_from_artifact(payload)} "
+                f"outcome={verdict['outcome']} faces={verdict['faces']} "
+                f"similarity={verdict['similarity']} detect_conf={verdict['detect_confidence']} "
+                f"corr={payload.correlation_id} totals={dict(self._identity_checks)}"
+            )
+        except Exception as e:  # the trace must never kill the identity loop
+            logger.warning(f"[WINDOW] identity_check trace failed: {e}")
+        hint = identity_hint_from_artifact(payload)
+        confidence = identity_confidence_from_artifact(payload)
+        try:
+            await self._maybe_publish_sighting(payload, hint)
+        except Exception as e:  # a sighting must never kill the identity loop
+            logger.warning(f"[WINDOW] identity sighting publish failed: {e}")
+        if hint is None and confidence is None:
+            # No usable signal at all (no face detected, or a
+            # gallery-misconfig candidate) -- nothing to store.
+            # Never clears a still-fresh prior reading either way;
+            # the freshness gate in _flush_and_publish is what
+            # decides whether an older reading is still usable, not
+            # this arrival.
+            return
+        sk = stream_key_from_artifact(payload)
+        async with self._identity_lock:
+            existing = self._identity_by_stream.get(sk)
+            if _should_ignore_uncertain_reading(
+                existing, confidence, now=time.time(), max_age_sec=settings.WINDOW_IDENTITY_MAX_AGE_SEC
+            ):
                 logger.debug(
-                    f"[WINDOW] identity_hint stream={sk} "
-                    f"subject={hint['subject'] if hint else None} confidence={confidence}"
+                    f"[WINDOW] identity_hint stream={sk} unsure_reading_ignored "
+                    f"still_fresh_confirmed=true"
                 )
+                return
+            self._identity_by_stream[sk] = {"hint": hint, "confidence": confidence, "ts": time.time()}
+        logger.debug(
+            f"[WINDOW] identity_hint stream={sk} "
+            f"subject={hint['subject'] if hint else None} confidence={confidence}"
+        )
 
     async def _consume_rpc(self) -> None:
-        async with self.bus.subscribe(settings.CHANNEL_WINDOW_REQUEST) as pubsub:
-            async for msg in self.bus.iter_messages(pubsub):
-                if self._shutdown_event.is_set():
-                    break
-                data = msg.get("data")
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok:
-                    continue
-                env = decoded.envelope
-                asyncio.create_task(self._handle_rpc(env))
+        await run_subscription(
+            self.bus,
+            settings.CHANNEL_WINDOW_REQUEST,
+            self._on_rpc,
+            stop_event=self._shutdown_event,
+            name="vision-window.consume_rpc",
+        )
+
+    def _on_rpc(self, msg: dict) -> None:
+        # Starts its own task and returns None so the stream is not held up.
+        decoded = self.bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            return
+        asyncio.create_task(self._handle_rpc(decoded.envelope))
 
     async def _handle_rpc(self, env: BaseEnvelope) -> None:
         try:

@@ -368,7 +368,8 @@ def _build_personality():
     embed, close_embed = http_embedder(_settings.personality_embed_url)
     return PersonalityDriver(store=PersonalityStore(_checkpointer_cm), reader=PersonalitySourceReader(_checkpointer_cm),
                              embed=embed, now=lambda: datetime.now(timezone.utc),
-                             tick_sec=_settings.personality_tick_sec, close_embedder=close_embed)
+                             tick_sec=_settings.personality_tick_sec, close_embedder=close_embed,
+                             naming_enabled=_settings.personality_naming_apply_enabled)
 
 
 @asynccontextmanager
@@ -613,7 +614,8 @@ async def _personality_read(coro):
         return await coro
     except (UndefinedTable, UndefinedColumn) as exc:
         raise HTTPException(503, "personality tables missing: apply "
-                                 "services/orion-sql-db/manual_migration_personality_graph_v1.sql") from exc
+                                 "services/orion-sql-db/manual_migration_personality_graph_v1.sql and "
+                                 "manual_migration_personality_naming_v1.sql") from exc
 
 
 @app.get("/personality/frame")
@@ -644,6 +646,32 @@ async def personality_evidence(disposition_id: Optional[str] = None, limit: int 
     """Evidence rows, newest first; optionally one disposition's."""
     rows = await _personality_read(_personality_store().evidence(disposition_id or None, limit=max(1, min(limit, 500))))
     return {"disposition_id": disposition_id, "count": len(rows), "evidence": rows}
+
+
+@app.get("/personality/naming/next")
+async def personality_naming_next():
+    """The next DispositionNamingPacketV1 for Hub's self-inquiry naming run, or 204 when nothing is
+    due (or PERSONALITY_NAMING_APPLY_ENABLED=false). Read-only: a node counts as shown only when
+    Orion's answer row is applied, so a run that never answers leaves nothing behind."""
+    from datetime import datetime, timezone
+
+    from fastapi import Response
+
+    store = _personality_store()
+    if not personality.naming_enabled:
+        return Response(status_code=204, headers={"X-Personality-Naming": "disabled"})
+    packet = await _personality_read(store.naming_next(datetime.now(timezone.utc)))
+    if packet is None:
+        return Response(status_code=204)
+    return packet.model_dump(mode="json")
+
+
+@app.get("/personality/naming")
+async def personality_naming(disposition_id: Optional[str] = None, limit: int = 50):
+    """The naming log (orion_disposition_naming), newest first; optionally one disposition's."""
+    rows = await _personality_read(_personality_store().namings(disposition_id or None,
+                                                                limit=max(1, min(limit, 500))))
+    return {"disposition_id": disposition_id, "count": len(rows), "namings": rows}
 
 
 @app.get("/runs/unfinished")

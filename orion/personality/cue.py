@@ -76,7 +76,8 @@ def _label(text: str, max_chars: int = LABEL_SHOWN_CHARS) -> str:
 
 
 def _name(d: Any) -> str:
-    return " ".join(str(getattr(d, "name", None) or "").split())
+    # A '"' in a model-written name would break the quoted framing; it reads as "'".
+    return " ".join(str(getattr(d, "name", None) or "").split()).replace('"', "'")
 
 
 def _line(d: Any, named_label_chars: int = LABEL_SHOWN_CHARS) -> str:
@@ -131,7 +132,8 @@ def project_personality_cue(
     # line goes last and is kept if it fits. Unnamed-only cues fit exactly as before naming.
     while True:
         text = ""
-        for named_chars in (LABEL_SHOWN_CHARS, NAMED_LABEL_MIN_CHARS):
+        any_named = any(_name(d) for d in shown)
+        for named_chars in (LABEL_SHOWN_CHARS, NAMED_LABEL_MIN_CHARS) if any_named else (LABEL_SHOWN_CHARS,):
             lines = [HEADER] + [_line(d, named_chars) for d in shown] if shown else []
             if choice:
                 lines.append(choice)

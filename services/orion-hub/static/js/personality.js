@@ -188,7 +188,9 @@
     const grounding = name && Number.isFinite(rank) && rank > 1
       ? `points elsewhere: rank ${rank}${Number.isFinite(margin) ? ` (margin ${margin.toFixed(2)})` : ""}` : "";
     let badge;
-    if (n.orion_verdict === "rejected") badge = { kind: "rejected", text: "Orion: not me" };
+    // 'rejected' is the column value durable-runs was asked for; 'reject' is the NamingVerdict
+    // literal (orion/schemas/personality.py). Either is Orion saying "not me".
+    if (n.orion_verdict === "rejected" || n.orion_verdict === "reject") badge = { kind: "rejected", text: "Orion: not me" };
     else if (n.merged_into) {
       const target = lookup && typeof lookup === "function" ? lookup(String(n.merged_into)) : null;
       badge = { kind: "merged", text: `merged into ${target || n.merged_into}` };
@@ -486,7 +488,6 @@
     const head = el("tr");
     COLUMNS.forEach((h) => head.append(el("th", NUM_COLUMNS.has(h) ? { class: "num" } : null, h)));
     table.append(head);
-    nodes.forEach((n) => { if (n && n.disposition_id) view.nodes.set(String(n.disposition_id), n); });
     const lookup = (id) => {
       const t = view.nodes.get(id);
       return t ? (t.name || t.label || id) : null;
@@ -522,20 +523,38 @@
     box.append(scroll);
   }
 
-  async function loadNodes(status, seq) {
-    const target = { active: ["pActive", "pActiveCount", "No active nodes yet."],
-                     candidate: ["pCandidates", "pCandidateCount", "No candidates."],
-                     retired: ["pRetired", "pRetiredCount", "Nothing retired."] }[status];
+  const NODE_TARGETS = { active: ["pActive", "pActiveCount", "No active nodes yet."],
+                         candidate: ["pCandidates", "pCandidateCount", "No candidates."],
+                         retired: ["pRetired", "pRetiredCount", "Nothing retired."] };
+
+  async function fetchNodes(status) {
     try {
-      const body = await getJson(`/api/personality/dispositions?status=${status}&limit=${NODE_LIMIT}`);
-      if (seq !== view.seq) return;
-      renderNodes(target[0], target[1], nodesFrom(body), target[2], (view.frame || {})[`${status}_count`]);
+      return { status, nodes: nodesFrom(await getJson(`/api/personality/dispositions?status=${status}&limit=${NODE_LIMIT}`)) };
     } catch (err) {
-      if (seq !== view.seq) return;
-      $(target[1]).textContent = "";
-      $(target[0]).replaceChildren(el("div", { class: "err" }, `Could not load ${status} nodes: ${err.message}`));
+      return { status, err };
     }
   }
+
+  // All three groups land before any renders, so a "merged into X" badge resolves X the same way
+  // on every load, against this refresh's nodes only.
+  async function loadNodes(seq) {
+    const results = await Promise.all(["active", "candidate", "retired"].map(fetchNodes));
+    if (seq !== view.seq) return;
+    view.nodes = new Map();
+    results.forEach((r) => (r.nodes || []).forEach((n) => {
+      if (n && n.disposition_id) view.nodes.set(String(n.disposition_id), n);
+    }));
+    results.forEach(({ status, nodes, err }) => {
+      const target = NODE_TARGETS[status];
+      if (err) {
+        $(target[1]).textContent = "";
+        $(target[0]).replaceChildren(el("div", { class: "err" }, `Could not load ${status} nodes: ${err.message}`));
+        return;
+      }
+      renderNodes(target[0], target[1], nodes, target[2], (view.frame || {})[`${status}_count`]);
+    });
+  }
+
 
   function clearNodes() {
     view.nodes.clear();
@@ -573,7 +592,7 @@
       clearNodes();
       return;
     }
-    await Promise.all(["active", "candidate", "retired"].map((s) => loadNodes(s, seq)));
+    await loadNodes(seq);
   }
 
   // Inside the Hub tab iframe, document.hidden only tracks the browser tab, not the Hub panel's

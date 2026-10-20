@@ -230,3 +230,8 @@ def test_unnamed_nodes_never_get_the_shorter_named_excerpt():
 def test_frame_from_older_durable_runs_without_name_fields_still_renders():
     cue = project_personality_cue(_frame(), now=NOW)  # _node carries no name keys at all
     assert cue.skip_reason is None and "you call this" not in cue.text
+
+
+def test_double_quote_in_a_name_does_not_break_the_quoted_framing():
+    cue = project_personality_cue(_frame(nodes=[_named(0, 'the "gap"')]), now=NOW)
+    assert "you call this \"the 'gap'\": \"the walkway" in cue.text

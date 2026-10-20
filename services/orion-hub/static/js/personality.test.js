@@ -187,6 +187,9 @@ test("nameView badges: named, rejected, merged (resolved), not yet shown, not re
   assert.strictEqual(named.grounding, "");   // rank 1 grounds to its own node
   const rejected = p.nameView({ name: null, orion_verdict: "rejected", weight: 3 });
   assert.deepStrictEqual(rejected.badge, { kind: "rejected", text: "Orion: not me" });
+  // The NamingVerdict literal is "reject"; either value must badge, even with a stale name.
+  assert.strictEqual(p.nameView({ name: "old", orion_verdict: "reject" }).badge.kind, "rejected");
+  assert.strictEqual(p.nameView({ orion_verdict: "name" }).badge.kind, "unshown");
   const merged = p.nameView({ merged_into: "d9" }, (id) => (id === "d9" ? "the watch" : null));
   assert.strictEqual(merged.badge.text, "merged into the watch");
   assert.strictEqual(p.nameView({ merged_into: "d9" }).badge.text, "merged into d9");

@@ -244,3 +244,27 @@ def test_paused_viewer_disconnect_releases_capacity(tmp_path):
                 if m.viewers==0:break
                 time.sleep(.01)
             assert m.viewers==0
+
+
+def test_slow_ack_does_not_gate_reading_the_next_input(tmp_path):
+    # Live 2026-10-20: one slow acknowledgment held the next input in the socket,
+    # the 250 ms lease expired mid-play, and the game paused under the player.
+    import asyncio, uuid
+    cfg=settings(tmp_path)
+    sid=str(uuid.uuid4());generation=str(uuid.uuid4())
+    class Manager:
+        session={'session_id':sid,'owner':'operator'};process=True;connections=set()
+        async def command(self,op,connection,data):
+            if data['seq']==1: await asyncio.sleep(.4)
+            return {'port':0,'epoch':1,'seq':data['seq'],'mask':0,'frame':data['seq']}
+        async def disconnect(self,*args):pass
+        async def stop(self,**kwargs):pass
+    m=Manager();m.generation=generation
+    app=create_app(cfg)
+    with TestClient(app) as c:
+        app.state.manager=m
+        with c.websocket_connect('/sessions/'+sid+'/input',headers={'Authorization':'Bearer '+'a'*48}) as ws:
+            ws.receive_json()
+            for seq in (1,2):
+                ws.send_json(dict(version=1,session_id=sid,generation=generation,lease='a'*48,epoch=1,seq=seq,port=0,mask=0))
+            assert [ws.receive_json()['applied']['seq'] for _ in range(2)]==[2,1]

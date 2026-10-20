@@ -108,12 +108,28 @@ def create_app(settings=None):
             await ws.close(code=1008); return
         connection = str(uuid.uuid4()); m.connections.add(connection)
         await ws.accept()
+        lock = asyncio.Lock(); inflight = set(); failed = asyncio.Event()
         async def send(row):
-            await asyncio.wait_for(ws.send_json(row), .25)
+            async with lock:
+                await asyncio.wait_for(ws.send_json(row), .25)
+        async def apply(data):
+            # Each input waits for its native frame off the read loop. A slow
+            # acknowledgment must not hold newer input until the lease expires.
+            try:
+                try:
+                    result = await m.command('input', connection, data)
+                    await send({'applied':result})
+                except ValueError as exc:
+                    reason = str(exc)[:200]
+                    # A lost reply cannot prove that the native frame never ran.
+                    verdict = 'unknown' if reason in ('worker_unavailable', 'session_stopped') else 'rejected'
+                    await send({verdict:reason, 'seq':data['seq'], 'epoch':data['epoch'], 'port':data['port']})
+            except (WebSocketDisconnect, asyncio.TimeoutError, RuntimeError):
+                failed.set()
         try:
             await send({'connection_id':connection, 'generation':m.generation})
             window = time.monotonic(); count = 0
-            while connection in m.connections:
+            while connection in m.connections and not failed.is_set():
                 try: raw = await asyncio.wait_for(ws.receive_text(), .1)
                 except asyncio.TimeoutError: continue
                 now = time.monotonic()
@@ -123,20 +139,19 @@ def create_app(settings=None):
                     await ws.close(code=1008); break
                 try:
                     data = Input.model_validate_json(raw).model_dump()
-                    if data['session_id'] != sid or data['generation'] != m.generation:
-                        raise ValueError('session_generation_mismatch')
-                    result = await m.command('input', connection, data)
-                    await send({'applied':result})
                 except ValidationError:
-                    await send({'rejected':'invalid_input'})
-                except ValueError as exc:
-                    reason = str(exc)[:200]
-                    # A lost reply cannot prove that the native frame never ran.
-                    verdict = 'unknown' if reason in ('worker_unavailable', 'session_stopped') else 'rejected'
-                    await send({verdict:reason, 'seq':data['seq'], 'epoch':data['epoch'], 'port':data['port']})
+                    await send({'rejected':'invalid_input'}); continue
+                if data['session_id'] != sid or data['generation'] != m.generation:
+                    await send({'rejected':'session_generation_mismatch', 'seq':data['seq'],
+                                'epoch':data['epoch'], 'port':data['port']}); continue
+                # Tasks start in creation order, so inputs reach the worker in arrival order.
+                task = asyncio.create_task(apply(data))
+                inflight.add(task); task.add_done_callback(inflight.discard)
         except (WebSocketDisconnect, asyncio.TimeoutError, RuntimeError):
             pass
         finally:
+            for task in list(inflight): task.cancel()
+            await asyncio.gather(*inflight, return_exceptions=True)
             await m.disconnect(connection, sid, m.generation)
             try: await ws.close()
             except RuntimeError: pass

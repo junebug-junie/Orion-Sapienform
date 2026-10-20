@@ -8,6 +8,7 @@ from .media import MediaProbe
 from .control import Arbiter
 from .evidence import Evidence
 from .scripted import Scripted
+from .observation import Observer, outcome
 
 
 def run(commands, urgent, replies, stop, settings, game, session, generation, media=None):
@@ -22,6 +23,7 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
         def record(kind, **fields):
             evidence.write(dict(kind=kind, session_id=session, generation=generation, frame=frame, **fields))
         scripted = Scripted(authority, record)
+        observer = Observer(core)
         sources = sorted(Path(__file__).parent.glob('*.py')) + [Path(__file__).parents[1]/'settings.py']
         runtime_sha = hashlib.sha256(b''.join(p.name.encode()+b'\0'+p.read_bytes() for p in sources)).hexdigest()
         record('start', game_id=game['game_id'], identity=core.identity, runtime_sha256=runtime_sha)
@@ -68,8 +70,10 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
                         if state != 'running': raise ValueError(not_running())
                         port = data['port']
                         if data['action'] == 'start':
+                            if data.get('cognition') and not settings.cognition_enabled:
+                                raise ValueError('retro_cognition_disabled')
                             scripted.start(cmd['connection'], port, data['duration_seconds'],
-                                           time.monotonic(), frame, data['expected_epoch'])
+                                           time.monotonic(), frame, data['expected_epoch'], data.get('cognition', False))
                             reject_pending('control_revoked', [port])
                         else:
                             active = scripted.active.get(port)
@@ -77,6 +81,9 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
                                 raise ValueError('stale_script_epoch')
                             scripted.stop(port, 'operator_stop')
                         result = {'scripted': scripted.public()}
+                    elif op == 'goal':
+                        if state != 'running': raise ValueError(not_running())
+                        result = scripted.goal(cmd['connection'], data, time.monotonic())
                     elif op in ('pause', 'resume', 'disconnect'):
                         if op == 'disconnect':
                             scripted.cancel('sponsor_disconnected', cmd['connection'])
@@ -107,7 +114,24 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
             if state == 'running':
                 scripted.tick(time.monotonic())
                 masks, applied, neutral = authority.frame(time.monotonic())
+                for event in applied:
+                    policy = scripted.active.get(event['port'])
+                    goals = policy['goals'] if policy else None
+                    if (goals and goals.accepted_current() and event['seq'] == policy['seq']
+                            and policy['goal_attempt_id'] == goals.accepted['attempt_id']):
+                        goals.applied_start(frame+1, observer.read())
                 core.step(*masks); frame += 1
+                for port, policy in scripted.active.items():
+                    goals = policy['goals']
+                    if not goals: continue
+                    now = time.monotonic()
+                    if goals.ready_for_observation(now):
+                        observation = observer.read()
+                        previous = goals.start_observation if goals.accepted_current() else {}
+                        goal = goals.accepted['goal'] if goals.accepted_current() else 'wait'
+                        verdict = outcome(previous or {}, observation, goal)
+                        goals.offer(port, policy['grant']['epoch'], frame, observation, now, verdict)
+
                 if media is not None: core.publish(media, frame)
                 if neutral: record('neutral', ports=neutral)
                 if not authority.leases and (neutral or time.monotonic() >= acquire_deadline):

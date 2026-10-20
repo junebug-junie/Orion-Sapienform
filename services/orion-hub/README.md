@@ -4109,3 +4109,60 @@ as "Orion first wrote: ..." when it differs.
 `/retro` offers native NES viewing/control without an additional access code through a
 private Unix socket. Disabled by default. See [setup and acceptance](../../docs/runbooks/retro-browser.md)
 for exact-origin configuration, credentials, browser checks and known limits.
+
+### Cabinet sonification (live instrument)
+
+In Biometrics → Cabinet, **Listen** starts a quiet magnetic-field tone. Pitch rises
+logarithmically from 110–440 Hz across fixed 20–60 µT bounds. Values outside those
+bounds are visibly clipped. This is an audible measurement display, not an alarm
+or inference about Orion's feelings. Start at low device volume with headphones.
+
+The three-voice implementation also contains near-to-fast LiDAR pulses and a
+hysteretic sampled-movement onset. **LiDAR and vibration remain disabled pending
+controlled movement calibration**; their proposed 0–4000 mm and 0.10/0.06 g onset /
+re-arm settings are not approved operating ranges. The source inspector shows
+this explicitly. A future reviewed preset patch must attach rest/intervention
+samples before changing either `approved` flag. Existing history loses transient
+detail; history playback and optional voices are separate future patches.
+
+Mute and Solo change the mix without restarting it. **Stop**, leaving Cabinet,
+hiding the page, a failed poll, suspended audio, or losing fresh calibrated input
+stops playback; press Listen again to resume. Sources expire after five seconds,
+individually, even if another Nano keeps the merged snapshot fresh. The instrument
+reuses the Cabinet poller and owns its own audio context. TTS has no dependable
+public lifecycle hook here: use Stop manually during TTS; Stop does not stop TTS.
+No armed state or preferences are persisted, and no microphone is requested.
+Speaker sound may influence the cabinet's existing ambient observations.
+
+Open **Source readings and sound targets** for native units, source ID/time,
+physical bounds, normalized level, audio targets, clipping and mute reasons.
+**Record local trace** opts into a maximum 600 records in memory; **Download trace**
+ends capture and downloads the preset and validated frames/targets as JSON. Nothing
+is uploaded or retained across reloads. Traces can reveal activity timing; share
+them deliberately. Remove the module, its template controls and the three poll /
+visibility integration calls to roll back; no stored Orion state changes.
+
+Verification (from repository root):
+
+```bash
+node --test services/orion-hub/static/js/cabinet-sonification.test.js services/orion-hub/static/js/cabinet-sensors.test.js
+python -m pytest services/orion-hub/tests/test_cabinet_sonification_provenance.py services/orion-hub/tests/test_cabinet_sensors_panel.py -q
+python services/orion-hub/evals/cabinet_sonification_server.py --port 18097
+# In another shell; PUPPETEER_MODULE can point to an existing Puppeteer install:
+node services/orion-hub/evals/cabinet_sonification_browser.cjs http://127.0.0.1:18097
+```
+
+The browser eval uses rendered Hub controls and native Web Audio, replays sanitized
+real measurements with their original timestamps for deterministic mapping, and
+renders a finite/unclipped offline mix with test-only approval of all three voices.
+Its interaction fixtures advance source timestamps; they do not prove live freshness.
+The loopback server starts no Hub workers and accesses no stores.
+
+Manual listening acceptance remains required: capture quiet → controlled LiDAR
+motion → gentle disturbance → quiet with UTC markers and headphones. Inspect
+missingness, clipping, repeated samples and return to the actual measured baseline.
+Record device volume, artifacts, audibility and which voice changes are discernible.
+For a blinded replay, shuffle at least ten labeled changes per voice, retain the
+trial order privately, and record the listener's source/direction choices and error
+count before revealing labels. This patch has no completed human listening trial;
+do not interpret the automated audio render as evidence of perceptual usefulness.

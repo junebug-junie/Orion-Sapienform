@@ -441,6 +441,11 @@ class Settings(BaseSettings):
     gpu_pool_events_retention_days: int = Field(30, alias="GPU_POOL_EVENTS_RETENTION_DAYS")
 
     gpu_pool_state_history_retention_days: int = Field(30, alias="GPU_POOL_STATE_HISTORY_RETENTION_DAYS")
+    # self_signal_outcome_association: ~21 rows/hour (equilibrium's hourly rollup). Readers need
+    # only each pair's last few hours (consecutive-holds rule); 30 days of audit history. 0 disables.
+    self_signal_outcome_association_retention_days: int = Field(
+        30, alias="SELF_SIGNAL_OUTCOME_ASSOCIATION_RETENTION_DAYS"
+    )
 
     # 15 -> 3 days (2026-08-20, Juniper's call, made against measured numbers).
     #
@@ -755,9 +760,9 @@ class Settings(BaseSettings):
     # 7.5s fair share a 45s budget gives the first of six tables. `effective_max_elapsed_sec`
     # on /grammar/truth is what tells you which cap actually bound.
     #
-    # Fourteen tables need >=5s each; adding GPU state history raises 66 -> 70.
+    # Fifteen tables need >=5s each; adding self_signal_outcome_association raises 70 -> 75.
     grammar_retention_periodic_max_cycle_sec: float = Field(
-        70.0, alias="GRAMMAR_RETENTION_PERIODIC_MAX_CYCLE_SEC"
+        75.0, alias="GRAMMAR_RETENTION_PERIODIC_MAX_CYCLE_SEC"
     )
     sql_writer_allow_accepted_pressure_ingest: bool = Field(
         False,

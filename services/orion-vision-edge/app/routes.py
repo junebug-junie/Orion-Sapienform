@@ -39,9 +39,8 @@ async def health():
         "ok": True,
         "service": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
-        # Matches the literal `node` reported by main.py's heartbeat_loop -- no
-        # per-node NODE_NAME setting exists yet for this service.
-        "node": "vision-edge-node",
+        # Same `node` main.py's heartbeat_loop reports.
+        "node": settings.NODE_NAME,
         "stream_id": settings.STREAM_ID,
         "source": settings.source_redacted,
         "detectors": settings.detector_names,

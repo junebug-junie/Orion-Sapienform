@@ -195,7 +195,7 @@ def test_gap_between_12_and_48_hours_is_classified_not_unknown() -> None:
 
 
 @pytest.mark.parametrize("hours", [12, 15, 24, 36, 47.9])
-def test_no_gap_band_falls_through_to_unknown(hours: float) -> None:
+def test_every_12_to_48h_gap_reorients(hours: float) -> None:
     last = datetime(2026, 10, 18, 7, 0, 0, tzinfo=timezone.utc)
     clock = classify_conversation_phase(last, last + timedelta(hours=hours), TZ)
     assert clock["phase_change"] in {"long_gap", "next_day"}
@@ -212,3 +212,11 @@ def test_same_local_day_12h_gap_is_long_gap() -> None:
 def test_48_hours_and_over_is_stale_thread() -> None:
     last = datetime(2026, 10, 18, 7, 0, 0, tzinfo=timezone.utc)
     assert classify_conversation_phase(last, last + timedelta(hours=48), TZ)["phase_change"] == "stale_thread"
+
+
+def test_gap_over_two_local_midnights_is_long_gap_not_next_day() -> None:
+    # Sat 22:00 MDT -> Mon 07:00 MDT, 33 h, two days crossed.
+    last = datetime(2026, 10, 18, 4, 0, 0, tzinfo=timezone.utc)
+    clock = classify_conversation_phase(last, last + timedelta(hours=33), TZ)
+    assert clock["phase_change"] == "long_gap"
+    assert clock["crossed_day"] is True

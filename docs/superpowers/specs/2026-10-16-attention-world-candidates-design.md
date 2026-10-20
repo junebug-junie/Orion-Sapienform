@@ -146,7 +146,7 @@ field first. None is precise enough on its own. A recorded judge label is.
 | prior domain / kind | `Prior` nodes have no domain field; ids are `self:<slug>`; 18 `Concept` nodes, nearly all plumbing | nothing to read | not available |
 | embeddings already stored | no pgvector; personality graph keeps disposition centroids (`personality_disposition.centroid`) but they cluster prediction-error reverie, not findings | nothing to reuse as a label | not available |
 | prototype distance | cosine of the finding to Juniper's 8 pinned questions | AUC 0.88 on the finding, 0.95 on the question text | fails: needs a threshold nobody can defend, and a question-level score cannot see that "Why am I not more curious?" got 4 plumbing answers |
-| **judge label** | one LLM call per finding, fixed prompt, recorded | two different models agree on 254 of 262 (97%), kappa 0.93; v2 three-way prompt: 97% overall, kappa 0.94 | **passes** |
+| **judge label** | one LLM call per finding, fixed prompt, recorded | two different models agree on 254 of 262 (97%), kappa 0.94; on the 100 runs the judge called philosophical, the second rater agreed on 92 | **passes** |
 
 Why per finding and not per question: the same question gets both kinds of
 answer. Juniper's own "Why am I not more curious — and what would change that?"
@@ -167,16 +167,29 @@ never win attention as if it were a thought (no empty-shell cognition).
   (self-question text, or the claim of the prior that moved most, else the first
   prior formed) and the first 700 characters of the answer (`LivedAnswer.text`,
   `SelfDefinition.text`, or `Finding.text`, else the finish row's `finding_text`).
+  The reference labels were made on exactly this input. Known weakness: the
+  rubric asks for the main conclusion, which is sometimes past character 700,
+  and the head is the part Orion could front-load with reflective prose. A
+  head-plus-tail input (500 + 200) is the obvious v3; it needs its own
+  agreement run before it replaces v2. UNVERIFIED.
 - Output: JSON `{register, reason}`. Anything else is recorded as
   `register = NULL, judge_error = <text>` and the run does not compete (absent,
   never "operational by default").
 - Run once per finished run. Insert-only (`ON CONFLICT DO NOTHING`). Stored with
   `judge_model`, `prompt_sha256`, `judged_at`, raw `reason`.
 - Model: must not be the seat that wrote the finding. Which local lane serves it
-  is open (Missing questions). Before the flag can turn on, that model must reach
-  kappa >= 0.8 against `reference_labels_2026-10-20.jsonl` (263 runs, Sonnet as
-  judge, Haiku as second rater, both from this revision). UNVERIFIED: the local
-  model's agreement.
+  is open (Missing questions). Before the flag can turn on, that model must
+  pass three checks against `reference_labels_2026-10-20.jsonl` (263 runs, Sonnet
+  as judge, Haiku as second rater, both from this revision): kappa >= 0.8 over
+  all runs; agreement >= 90% on the runs the reference judge called
+  philosophical (the boundary, where it matters; overall kappa is carried by
+  ~160 easy plumbing runs); and all 6 replay winners labelled philosophical.
+  UNVERIFIED: the local model's agreement.
+- How the reference labels were made: prompt v1 (two classes) on all 263 runs by
+  both raters, then prompt v2 (three classes) only on the 105 runs either rater
+  had called philosophical. Runs both called operational under v1 were not
+  re-asked; their v2 label is assumed operational. So the overall agreement is a
+  little flattering.
 
 ### Measure 2: is the finding new to Orion?
 
@@ -185,14 +198,18 @@ never win attention as if it were a thought (no empty-shell cognition).
 | **embedding novelty** | `1 - max cosine(finding, everything Orion wrote before the run)`, bge-large via vector-host `/embedding` | p10 0.043, median 0.129, p90 0.192, max 0.303; repeated anatomy answers sit at median 0.051, 10 runs at exactly 0 | **passes** |
 | formed a new prior | `curiosity_run_outcomes.n_formed > 0` | median novelty 0.154 with, 0.148 without: forming a prior is a protocol step, not a sign of a new idea; and self-inquiry has no outcome row | fails (anchor, sanity) |
 | first answer to a question | no earlier run with the same question | 9 of 100 philosophical findings; misses real change (the camera question got a new kind of answer after the camera went live on 10-14) | fails: too coarse |
-| `realized_nats` | belief change | 3 of 100 philosophical findings have an outcome row; correlation with novelty is negative (Spearman -0.26, p=0.003, n=124) | removed from the trigger; kept as evidence |
+| `realized_nats` | belief change | 3 of 100 philosophical findings have an outcome row; correlation with novelty is negative (Spearman -0.26, n=124, full corpus) | removed from the trigger; kept as evidence |
 
 The reference corpus for "everything Orion wrote before": all earlier curiosity
-answers (from 2026-09-07), all 193 `Prior` claims, all Day letters. The journal
-(106,657 entries) is not in it. A corpus of findings only gives nearly the same
-ranking (Spearman 0.92 against the full corpus), so the live version can start
-with findings and prior claims. UNVERIFIED: whether adding the journal or reverie
-changes which runs win.
+answers (from 2026-09-07), every `Prior` claim whose forming run is a known
+finished run (a prior with no known time is dropped, not assumed old, so later
+writing never leaks into an earlier run's corpus), and all Day letters. The
+journal (106,657 entries) is not in it. With findings only (`--corpus findings`)
+the ranking is close (Spearman 0.92) and one more run would compete (d2788c20,
+10-17, the walkway "presence without personhood" test). The live spec uses the
+full corpus, because Juniper's "novel to Orion" includes what Orion already
+believes (prior claims), and stamps every row with a `corpus_version`.
+UNVERIFIED: whether adding the journal or reverie changes which runs win.
 
 ### Why `realized_nats` leaves the trigger
 
@@ -226,20 +243,31 @@ The fix, in Hub (`services/orion-hub/scripts/curiosity_investigation.py`):
    `measured = request.source_tag in (INVESTIGATION_TAG, SELF_INQUIRY_TAG)`. The
    turn-start snapshot and turn-end diff then run for self-inquiry, and
    `record_run_outcome` writes its row.
-3. Keep the investigation value model on-policy: its history read
-   (`curiosity_offer_decisions.py:122`, `LOAD_HISTORY_SQL`) joins decisions and
-   excludes `arm = 'self_inquiry'`. Its yield model assumes Orion chose from
-   offered priors; a self-inquiry run offered none.
-4. Personality choices (`orion/personality/choices.py:185-200`) must skip
-   `arm = 'self_inquiry'`: there was no prior selection to learn from.
-5. Temporal Self (`orion/temporal_self/sources.py:119`) will now emit
-   `curiosity_run` arcs for self-inquiry runs. Wanted: they were missing.
-   Orion's Day (`orion/orion_day/gather.py:113`) will count their moves. Wanted.
+3. Keep the investigation value model on-policy. Today its history read
+   (`curiosity_offer_decisions.py:122`, `LOAD_HISTORY_SQL`) is
+   `SELECT per_prior FROM curiosity_run_outcomes` with no join, so self-inquiry
+   rows would flow straight in. The patch adds the join to
+   `curiosity_offer_decisions` with `arm <> 'self_inquiry'`, and a test that
+   fails if a self-inquiry outcome reaches that read. Its yield model assumes
+   Orion chose from offered priors; a self-inquiry run offered none.
+4. Every other reader of these two tables gets an explicit decision:
+
+   | reader | reads | self-inquiry rows | change |
+   |---|---|---|---|
+   | value model history, `curiosity_offer_decisions.py:122` | outcomes | exclude | add join + arm filter + test |
+   | personality choices, `orion/personality/choices.py:185-200` | decision + outcome | exclude: no prior was chosen | new skip + test (today it only emits a `curiosity_arm:` ref; an `offered=[]` row must not become a degenerate choice) |
+   | personality sources, `services/orion-durable-runs/app/personality_sources.py:266` (`curiosity_choice` lane) | outcomes JOIN decisions | exclude | add `d.arm <> 'self_inquiry'` + test |
+   | Temporal Self, `orion/temporal_self/sources.py:119` | decisions JOIN outcomes | include: self-inquiry arcs were missing | none (payload carries `arm`) |
+   | Orion's Day, `orion/orion_day/gather.py:113` | outcomes | include: the Day should count these moves | none |
+   | reading credit, `orion/world_pulse_read/findings.py:68` | outcomes `per_prior` | include: a move on a reading-born prior is credit whoever made it | none |
+   | introspect listener, `services/orion-hub/scripts/curiosity_introspect_listener.py:70` | outcomes by run id | include | none |
+   | temporal fact line, `orion/curiosity/temporal_fact.py` | outcome counts | include | none |
+   | analysis scripts and evals (`measure_personality_choices.py`, `replay_curiosity_realized_nats.py`, `services/orion-hub/evals/test_curiosity_value_order_eval.py`) | outcomes | not traced here | check in the patch; filter by arm where they model offers |
 
 Separately, every finished run (both lines) gets one row in a new table
 `curiosity_finding_register` (schema below). This is what the attention
 candidate reads. It does not depend on the outcome row, so the candidate works
-even before step 1-5 deploy.
+even before steps 1-4 deploy.
 
 ## Metric quality gate
 
@@ -266,10 +294,13 @@ even before step 1-5 deploy.
    about, not its vocabulary, and 30 first-person reflective-sounding
    self-inquiry answers were labelled operational.
 4. *Live sanity.* 263 real runs, 3 weeks. Not degenerate: 100 philosophical,
-   161 operational, 2 no_finding. Two raters agree on 97% (kappa 0.94, three
-   classes). On the 105 hard cases (either rater said philosophical) agreement is
-   92% and kappa 0.53: the disagreements are the walkway and camera prior tests,
-   which really do sit on the line. The label "rests" in the sense that matters:
+   161 operational, 2 no_finding. Two raters agree on 96.9% (Cohen's kappa 0.94,
+   three classes; see the relabelling caveat above). On the 100 runs the judge
+   called philosophical, the second rater agreed on 92; kappa is not quoted for
+   that subset because it is selected on one rater's label. 5 of the 6 winners
+   are philosophical to both raters; the sixth (91241b6d, a camera prior test)
+   is not. The disagreements are the walkway and camera prior tests, which
+   really do sit on the line. The label "rests" in the sense that matters:
    a week of plumbing runs produces zero philosophical readings, and the
    candidate is then absent, not quiet-but-competing.
 5. *Existing mechanism.* No register field exists anywhere (checked: priors,
@@ -284,8 +315,10 @@ even before step 1-5 deploy.
    (bge-large-en-v1.5, compute only), the same endpoint the personality graph
    uses (`services/orion-durable-runs/app/personality_driver.py:58`). Value =
    `1 - max cosine` against items stamped before the run's first durable row.
-2. *Independence.* From `realized_nats`: Spearman -0.26 (n=124), different
-   inputs (text vs confidences). From the register label: philosophical findings
+2. *Independence.* From `realized_nats`: Spearman -0.26 (n=124) with the full
+   corpus, -0.05 with findings only. The negative part comes from prior claims
+   in the corpus: a run that refutes a prior repeats that prior's words. Either
+   way the two are not redundant: different inputs (text vs confidences). From the register label: philosophical findings
    are a bit LESS novel than operational ones (median 0.101 vs 0.143, two-rater consensus), so novelty
    is not a proxy for the label. From body nodes: no shared input.
 3. *Theory anchor.* Novelty as distance from memory: an observation is novel to
@@ -298,8 +331,8 @@ even before step 1-5 deploy.
    10 runs at exactly 0. Two caveats found by looking:
    - Slow drift down as the corpus grows (weekly median 0.141, 0.126, 0.123).
      Judging against the trailing 7 days absorbs this.
-   - Short answers read a little more novel (Spearman -0.19 with length among
-     philosophical findings, p=0.06). The `no_finding` label removes the worst
+   - Short answers read a little more novel (Spearman -0.15 between length and
+     novelty among philosophical findings). The `no_finding` label removes the worst
      case (a short plan). A length floor is not added: it would be a knob without
      an anchor. Watch it (acceptance checks).
 5. *Existing mechanism.* Personality evidence stores `similarity` to the nearest
@@ -399,14 +432,18 @@ at that tick and judged with the real `judge_candidate`. With no new candidate
 the script reproduces the stored winner on 13,848 of 13,848 ticks. The yield
 rule is now modelled.
 
-| variant | gate | ticks eligible | yielded to chat | ticks won | won/day | no-winner share | displaced |
-|---|---|---:|---:|---:|---:|---|---|
-| baseline | — | — | — | — | — | 69.01% | — |
-| **philosophical + novel (rev 2)** | **pass** | 6 | 7 | 5 | 0.7 | 68.98% | 5 no-winner |
-| belief change, nats (rev 1) | superseded | 15 | 0 | 12 | 1.7 | 68.93% | 11 no-winner, 1 biometrics |
-| rate: curiosity runs / 15 min | fail | 75 | — | 72 | 10.3 | 68.59% | 59 no-winner, 13 body nodes |
-| rate: reading turns / 15 min | fail | 1,641 | — | 1,362 | 194.6 | 62.22% | 941 no-winner, 35 node:substrate.chat, 386 other body nodes |
-| rate: paintings / 15 min | fail | 118 | — | 111 | 15.9 | 68.49% | 72 no-winner, 37 body nodes, **2 world:chat** |
+| variant | gate | eligible before yield | yielded to chat | eligible after yield | ticks won | won/day | no-winner share | displaced |
+|---|---|---:|---:|---:|---:|---:|---|---|
+| baseline | — | — | — | — | — | — | 69.01% | — |
+| **philosophical + novel (rev 2)** | **pass** | 13 | 7 | 6 | 5 | 0.7 | 68.98% | 5 no-winner |
+| belief change, nats (rev 1) | superseded | 15 | 0 | 15 | 12 | 1.7 | 68.93% | 11 no-winner, 1 biometrics |
+| rate: curiosity runs / 15 min | fail | 75 | — | 75 | 72 | 10.3 | 68.59% | 59 no-winner, 13 body nodes |
+| rate: reading turns / 15 min | fail | 1,641 | — | 1,641 | 1,362 | 194.6 | 62.22% | 941 no-winner, 35 node:substrate.chat, 386 other body nodes |
+| rate: paintings / 15 min | fail | 118 | — | 118 | 111 | 15.9 | 68.49% | 72 no-winner, 37 body nodes, **2 world:chat** |
+
+Both curiosity rows carry the yield rule (revision 1 proposed it but did not
+model it); for the nats row it changes nothing in this window. The rate rows
+are rejected candidates and carry no yield rule.
 
 In this window two runs qualified. 1f7b1157 (10-14 20:01) won 5 ticks, all of
 them ticks with no other winner. a9ba948f (10-16 23:49) was eligible for 7 ticks
@@ -453,8 +490,19 @@ recorded finding.
   register text check (register in ('philosophical','operational','no_finding')),
   register_reason text, judge_model text, prompt_sha256 text, judge_error text,
   judged_at timestamptz, novelty double precision, nearest_ref text,
-  embed_model text, embedding real[], answer_chars int, created_at timestamptz default now()`.
+  embed_model text, corpus_version text, embedding real[], answer_chars int,
+  created_at timestamptz default now()`.
   Index on `(created_at)`. Insert-only.
+- New table `curiosity_novelty_corpus` (same migration): `ref text primary key`
+  (`run:<id>`, `prior:<id>`, `letter:<id>`), `kind text, written_at timestamptz,
+  text_sha256 text, embed_model text, embedding real[]`. Hub fills it
+  incrementally before each novelty computation: new prior claims and new Day
+  letters are embedded once; a prior whose claim text changed gets a new row
+  version via `text_sha256` (the old vector stays for runs already scored). The
+  finding itself is added after its own novelty is computed. `corpus_version`
+  on the register row names the corpus definition (`full_v1`: earlier findings,
+  timed prior claims, Day letters), so a later definition change is visible in
+  the 7-day history instead of silently shifting it.
 - `orion/schemas/attention_candidate.py`: `WORLD_CURIOSITY_SOURCE_ID = "world:curiosity"`;
   `AttentionCandidateV1.evidence: dict[str, Any] | None = None`;
   `SELF_CAUSED_WORLD_SOURCE_IDS = frozenset({WORLD_CURIOSITY_SOURCE_ID})`.
@@ -547,20 +595,26 @@ recorded finding.
      - The rubric judges what the conclusion is about, not tone. In the replay,
        30 reflective-sounding first-person self-inquiry answers were still
        labelled operational.
-     - Dressing does not buy novelty. A plumbing finding reworded in reflective
-       words sits close to the plumbing it repeats; the 7-day top-tenth cut
-       still has to be cleared.
-     - The payoff is small and has no learning path. A win buys at most 300 s of
-       attention, at most a few times a week, yields to chat, and cannot spawn
-       work (loop breakers). No reward, value model or prompt reads the label.
-       Test: no prompt builder under `orion/curiosity/` reads
-       `curiosity_finding_register`.
-     - Drift alarm, independent of the judge: weekly, the share of findings
-       labelled philosophical, and their mean cosine to Juniper's 8 pinned
-       questions (the prototype score that failed as a label but works as an
-       outside check). Alarm when the philosophical share rises more than 50%
-       over its 4-week baseline while the prototype score falls. Plus the weekly
-       `score_curiosity_findings.py` table for Juniper to eyeball.
+     - Dressing may still buy novelty. Reflective wording can move a plumbing
+       finding away from its plumbing neighbours, which raises novelty, so the
+       novelty cut is NOT a defence here. UNVERIFIED either way. Eval before the
+       flag turns on: take the operational findings of the reference set, have a
+       model rewrite each in a reflective first-person voice with the same
+       conclusion, and measure how many flip to philosophical and where their
+       novelty lands. If more than 10% flip, the judge prompt is not ready.
+     - The payoff is small. A win buys at most 300 s of attention, a few times
+       a week, yields to chat, and cannot spawn work (loop breakers). No reward,
+       value model or prompt builder reads the label (static test: nothing under
+       `orion/curiosity/` reads `curiosity_finding_register`). But Orion does
+       see what won, through reverie and the chat "recent attention" cue, so it
+       can learn the pattern in context. That path is not closed. It is watched.
+     - Watch, not alarm: the weekly `score_curiosity_findings.py` run prints the
+       philosophical share per week (this replay: 26/75, 39/100, 35/87 for ISO
+       weeks 40-42) and the full table for Juniper to eyeball. A rising share
+       with unchanged questions is the signal to read the winners. No automatic
+       alarm is proposed: a two-condition alarm on a prototype score can be gamed
+       by quoting Juniper's questions, and an alarm nobody consumes would be
+       ornament.
   2. *Orion's thinking crowds out Juniper.* The yield rule. Replay: 7 of 7
      contested ticks yielded.
   3. *Self-reinforcing loop.* Unchanged from revision 1: reverie proposals drop
@@ -597,6 +651,10 @@ recorded finding.
    doc says no (it is on-policy over offered priors). Revisit once self-inquiry
    outcome rows exist.
 4. Should the corpus for novelty include the journal and reverie? Not measured.
+5. Should the label need two judges to agree (two different local models)? It
+   costs one more call per run (~12 runs a day) and makes dressing harder. In
+   this replay it would drop one winner (91241b6d, the split camera test),
+   leaving 5 in 3 weeks.
 
 ## Acceptance checks
 
@@ -614,12 +672,17 @@ recorded finding.
 - Unit (Hub): a self-inquiry turn writes a decision row and an outcome row; the
   value-model history read excludes it; personality choices skip it.
 - Static: no prompt builder reads `curiosity_finding_register`.
-- Eval: judge agreement vs `reference_labels_2026-10-20.jsonl` kappa >= 0.8
-  before the flag turns on (UNVERIFIED for the chosen local model).
+- Eval: judge agreement vs `reference_labels_2026-10-20.jsonl` before the flag
+  turns on: kappa >= 0.8 overall, >= 90% agreement on the reference judge's
+  philosophical runs, all 6 replay winners philosophical (UNVERIFIED for the
+  chosen local model).
+- Eval: dressing test (rewrite operational findings reflectively; <= 10% flip to
+  philosophical). UNVERIFIED.
 - Eval: replay reproduces stored winners on 100% of ticks with the candidate off
   (done here: 13,848 / 13,848).
-- Eval (weekly): `score_curiosity_findings.py` table; length vs novelty
-  Spearman stays above -0.3 among philosophical findings.
+- Eval (weekly): `score_curiosity_findings.py` table and philosophical share
+  per week; length vs novelty Spearman stays above -0.3 among philosophical
+  findings (today -0.15).
 - Live (after deploy): a register row for every finished run; within two weeks
   at least one `world:curiosity` winner citing `curiosity_run:<id>`, and a
   reverie thought citing it. Until then UNVERIFIED.

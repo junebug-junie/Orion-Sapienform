@@ -48,7 +48,7 @@ import json
 import re
 import subprocess
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import sys
@@ -171,29 +171,51 @@ def embeddings(texts: dict[str, str], cache: Path | None) -> dict[str, np.ndarra
     return {k: v / np.linalg.norm(v) for k, v in have.items() if k in texts}
 
 
-def score(runs, priors, letters, labels: list[dict[str, str]], since: str, cache):
-    run_t = {r["run_id"]: r["started"] for r in runs}
+def _dt(value) -> datetime | None:
+    """Aware datetime from a Postgres/JSON timestamp string; None when missing or unparseable."""
+    if not value:
+        return None
+    try:
+        t = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def score(runs, priors, letters, labels: list[dict[str, str]], since: str, cache, corpus_kind: str = "full"):
+    """Novelty for every run with an answer. ``since`` only filters the OUTPUT: the
+    philosophical history is built from every labelled run, so the window start never
+    truncates a verdict. Corpus items without a known time (a prior whose forming run is
+    not a finished curiosity run) are dropped rather than assumed old: assuming old
+    would leak later writing into an earlier run's corpus."""
+    run_t = {r["run_id"]: _dt(r["started"]) for r in runs}
     texts = {f"run:{r['run_id']}": r["answer"] for r in runs}
-    texts.update({f"prior:{k}": p["claim"] or k for k, p in priors.items()})
-    texts.update({f"letter:{x['id']}": x["text"] or "" for x in letters})
+    if corpus_kind == "full":
+        texts.update({f"prior:{k}": p["claim"] for k, p in priors.items() if clean(p.get("claim"))})
+        texts.update({f"letter:{x['id']}": x["text"] or "" for x in letters})
     emb = embeddings(texts, cache)
-    corpus = [(r["t"], f"run:{r['run_id']}", r["run_id"]) for r in runs]
-    corpus += [(run_t.get(p["run_id"], "2000"), f"prior:{k}", p["run_id"]) for k, p in priors.items()]
-    corpus += [(x["t"], f"letter:{x['id']}", None) for x in letters]
-    corpus = [c for c in corpus if c[1] in emb]
+    corpus = [(_dt(r["t"]), f"run:{r['run_id']}", r["run_id"]) for r in runs]
+    if corpus_kind == "full":
+        corpus += [(run_t.get(p["run_id"]), f"prior:{k}", p["run_id"]) for k, p in priors.items()]
+        corpus += [(_dt(x["t"]), f"letter:{x['id']}", None) for x in letters]
+    corpus = [c for c in corpus if c[0] is not None and c[1] in emb]
     rows = []
     for r in runs:
         k = f"run:{r['run_id']}"
-        if r["t"] < since or k not in emb:
+        started = _dt(r["started"])
+        if k not in emb or started is None:
             continue
-        prev = [c for c in corpus if c[0] < r["started"] and c[2] != r["run_id"]]
-        sims = np.stack([emb[c[1]] for c in prev]) @ emb[k] if prev else np.zeros(1)
+        prev = [c for c in corpus if c[0] < started and c[2] != r["run_id"]]
+        if not prev:
+            continue  # nothing written before: novelty is undefined, not 1.0
+        sims = np.stack([emb[c[1]] for c in prev]) @ emb[k]
         j = int(np.argmax(sims))
         regs = [lab.get(r["run_id"]) for lab in labels]
         rows.append({**r, "novelty": round(float(1 - sims.max()), 4),
-                     "nearest": prev[j][1] if prev else None, "registers": regs,
+                     "nearest": prev[j][1], "registers": regs,
                      "register": regs[0] if regs else None})
-    return assign_verdicts(rows)
+    rows = assign_verdicts(rows)
+    return [x for x in rows if x["t"] >= since]
 
 
 def assign_verdicts(rows: list[dict]) -> list[dict]:
@@ -206,9 +228,8 @@ def assign_verdicts(rows: list[dict]) -> list[dict]:
     """
     phil = [x for x in rows if x["register"] == "philosophical"]
     for x in rows:
-        t = datetime.fromisoformat(x["t"])
-        hist = [(datetime.fromisoformat(y["t"]), y["novelty"]) for y in phil
-                if t - WINDOW < datetime.fromisoformat(y["t"]) <= t]
+        t = _dt(x["t"])
+        hist = [(_dt(y["t"]), y["novelty"]) for y in phil if t - WINDOW < _dt(y["t"]) <= t]
         if x["register"] == "philosophical":
             mag = compute_prediction_error_magnitude(value=x["novelty"], observed_at=t, history=hist,
                                                      now=t, min_readings=MIN_HISTORY)
@@ -229,13 +250,31 @@ def assign_verdicts(rows: list[dict]) -> list[dict]:
     return rows
 
 
-def kappa(a: list[str], b: list[str]) -> tuple[float, float]:
+def kappa(a: list[str], b: list[str]) -> tuple[float, float | None]:
+    """(raw agreement, Cohen's kappa over every label seen). Kappa is None when chance
+    agreement is 1 (both raters used one label only): it is undefined, not perfect."""
     n = len(a)
     agree = sum(x == y for x, y in zip(a, b)) / n
-    pa = sum(x == "philosophical" for x in a) / n
-    pb = sum(y == "philosophical" for y in b) / n
-    pe = pa * pb + (1 - pa) * (1 - pb)
-    return agree, (agree - pe) / (1 - pe)
+    cats = set(a) | set(b)
+    pe = sum((a.count(c) / n) * (b.count(c) / n) for c in cats)
+    return agree, (None if pe >= 1.0 else (agree - pe) / (1 - pe))
+
+
+def spearman(x: list[float], y: list[float]) -> float | None:
+    """Rank correlation (average ranks for ties). None for fewer than 3 pairs."""
+    if len(x) < 3:
+        return None
+    def ranks(v):
+        order = np.argsort(v, kind="mergesort")
+        r = np.empty(len(v))
+        r[order] = np.arange(len(v), dtype=float)
+        vals = np.asarray(v)
+        for u in np.unique(vals):
+            m = vals == u
+            r[m] = r[m].mean()
+        return r
+    rx, ry = ranks(x), ranks(y)
+    return float(np.corrcoef(rx, ry)[0, 1])
 
 
 def _load_privacy_redactor():
@@ -283,6 +322,8 @@ def main() -> int:
     ap.add_argument("--since", default="2026-09-29")
     ap.add_argument("--labels", action="append", default=[], help="JSONL {run_id, register}; first = judge")
     ap.add_argument("--cache", type=Path)
+    ap.add_argument("--corpus", choices=("full", "findings"), default="full",
+                    help="full = earlier answers + prior claims + Day letters; findings = earlier answers only")
     ap.add_argument("--events-out", type=Path)
     ap.add_argument("--table-out", type=Path)
     args = ap.parse_args()
@@ -295,12 +336,32 @@ def main() -> int:
                 lab[d["run_id"]] = d["register"]
         labels.append(lab)
     runs, priors, letters = assemble()
-    rows = score(runs, priors, letters, labels, args.since, args.cache)
+    rows = score(runs, priors, letters, labels, args.since, args.cache, args.corpus)
     print(f"runs scored: {len(rows)}  since {args.since}")
     if len(labels) >= 2:
         both = [x for x in rows if x["registers"][0] and x["registers"][1]]
-        agree, k = kappa([x["registers"][0] for x in both], [x["registers"][1] for x in both])
-        print(f"judge vs rater 2: n={len(both)} agreement={agree:.3f} kappa={k:.3f}")
+        hard = [x for x in both if "philosophical" in x["registers"][:2]]
+        for name, pop in (("all", both), ("either said philosophical", hard)):
+            agree, k = kappa([x["registers"][0] for x in pop], [x["registers"][1] for x in pop])
+            print(f"judge vs rater 2, {name}: n={len(pop)} agreement={agree:.3f} kappa="
+                  f"{'undefined' if k is None else f'{k:.3f}'}")
+        win = [x for x in rows if x["verdict"] == "COMPETES"]
+        print("winners where rater 2 also said philosophical:",
+              sum(x["registers"][1] == "philosophical" for x in win), "of", len(win))
+    nats = [x for x in rows if x.get("nats") is not None]
+    phil_rows = [x for x in rows if x["register"] == "philosophical"]
+    print(f"spearman novelty vs realized_nats: n={len(nats)} rho="
+          f"{spearman([x['novelty'] for x in nats], [x['nats'] for x in nats])}")
+    print(f"spearman answer length vs novelty, philosophical: n={len(phil_rows)} rho="
+          f"{spearman([len(x['answer']) for x in phil_rows], [x['novelty'] for x in phil_rows])}")
+    weeks = Counter()
+    phil_weeks = Counter()
+    for x in rows:
+        wk = _dt(x["t"]).strftime("%G-W%V")
+        weeks[wk] += 1
+        phil_weeks[wk] += x["register"] == "philosophical"
+    print("philosophical share by ISO week:",
+          {w: f"{phil_weeks[w]}/{weeks[w]}" for w in sorted(weeks)})
     print("register by line:", dict(Counter((x["line"], x["register"]) for x in rows)))
     print("novelty p10/p50/p90:", np.percentile([x["novelty"] for x in rows], [10, 50, 90]).round(3).tolist())
     print("verdicts:", dict(Counter(x["verdict"] for x in rows)))

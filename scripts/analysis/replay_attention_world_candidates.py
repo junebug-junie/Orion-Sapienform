@@ -222,6 +222,7 @@ def replay(frames, series, variant: str, *, min_readings: int, examples: int):
     displaced: Counter = Counter()
     eligible_ticks = 0
     yielded = 0
+    eligible_before_yield = 0
     won_days: Counter = Counter()
     ex: list[tuple] = []
     seen_refs: set[str] = set()
@@ -242,6 +243,9 @@ def replay(frames, series, variant: str, *, min_readings: int, examples: int):
         if cand is not None:
             vd = verdict_dict(cand)
             chat_eligible = any(c.get("source_id") == "world:chat" and c.get("eligible") for c in cands)
+            if vd["eligible"]:
+                eligible_before_yield += 1
+            # Both curiosity variants carry the yield rule (revision 1 proposed it too, unmodelled).
             if vd["eligible"] and chat_eligible and variant.startswith("curiosity"):
                 vd = {**vd, "eligible": False, "reason": "yields to Juniper (world:chat eligible)"}
                 yielded += 1
@@ -262,8 +266,9 @@ def replay(frames, series, variant: str, *, min_readings: int, examples: int):
         "variant": variant,
         "frames": n,
         "stored_winner_reproduced": stored_match,
-        "eligible_ticks": eligible_ticks,
+        "eligible_before_yield": eligible_before_yield,
         "yielded_to_chat": yielded,
+        "eligible_ticks": eligible_ticks,
         "new_candidate_won": won,
         "won_per_day": round(won / max(1e-9, (frames[-1][0] - frames[0][0]).total_seconds() / 86400), 1),
         "no_winner_before": round(base_no / n, 4),
@@ -298,7 +303,8 @@ def main() -> int:
     print(f"frames {frames[0][0]} .. {frames[-1][0]}  n={len(frames)}")
     for r in results:
         print(f"\n== {r['variant']}")
-        for k in ("frames", "stored_winner_reproduced", "eligible_ticks", "yielded_to_chat", "new_candidate_won",
+        for k in ("frames", "stored_winner_reproduced", "eligible_before_yield", "yielded_to_chat",
+                  "eligible_ticks", "new_candidate_won",
                   "won_per_day",
                   "no_winner_before", "no_winner_after"):
             print(f"  {k}: {r[k]}")

@@ -198,11 +198,15 @@ def step(
     rank = severity_rank(severity)
     if state.fired_rank < 0:
         reason = "sustained_past_turn" if turn_explained else "episode_open"
+        # "First window" = first window no turn explains (a turn-explained window never
+        # fires), so a turn-explained window 1 does not let window 2 open at nominal and
+        # window 3 escalate. Never deferred once the sustained override holds.
         if (
             defer_nominal_open
             and reason == "episode_open"
             and severity == "nominal"
-            and state.flagged_windows == 1
+            and not sustained
+            and state.flagged_windows - state.turn_explained_windows == 1
         ):
             # Wait one window so the open carries the band the onset reaches (module doc).
             return AnomalyEpisodeDecision(state, False, "open_deferred", severity, turn_explained, new_episode)

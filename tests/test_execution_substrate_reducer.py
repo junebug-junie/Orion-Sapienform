@@ -1244,13 +1244,30 @@ def test_shed_failed_atom_counts_as_shed_not_failure() -> None:
             "Step failed: step=s1, error_kind=gpu_pool_unavailable, shed_reason=cabinet_hot",
             event_id="e2",
         ),
-        _exec_atom("exec_result_assembled", "Result assembled: status=fail", event_id="e3"),
+        _exec_atom("exec_result_assembled", "Result assembled: status=fail, shed_reason=cabinet_hot",
+                   event_id="e3"),
     ]
     run = extract_execution_state_from_events(events, now=FIXED_TS)
     assert run.failed_step_count == 0
     assert run.shed_step_count == 1
+    assert run.result_shed is True
     assert run.status == "fail"
     assert run.pressure_hints["failure_pressure"] == 0.0
+
+
+def test_plan_failure_after_an_earlier_shed_step_is_still_a_failure() -> None:
+    """Review 2026-10-20: an optional recall step is shed, then the plan fails on its own
+    (empty output / inactive verb -- no exec_step_failed atom). The fail is real."""
+    events = [
+        _exec_atom("exec_step_failed",
+                   "Step failed: step=pre_recall, error_kind=gpu_pool_unavailable, shed_reason=cabinet_hot",
+                   event_id="e1"),
+        _exec_atom("exec_result_assembled", "Result assembled: status=fail", event_id="e2"),
+    ]
+    run = extract_execution_state_from_events(events, now=FIXED_TS)
+    assert run.shed_step_count == 1 and run.failed_step_count == 0
+    assert run.result_shed is False
+    assert run.pressure_hints["failure_pressure"] == 1.0
 
 
 def test_failure_pressure_still_counts_real_failures() -> None:
@@ -1259,9 +1276,12 @@ def test_failure_pressure_still_counts_real_failures() -> None:
                                   egress_emitted=False)["failure_pressure"] == 1.0
     # A fail status with no shed behind it (validation, timeout) is a failure.
     assert compute_pressure_hints(_run(status="fail"), egress_emitted=False)["failure_pressure"] == 1.0
-    # Partial run whose only failures were sheds: not a failure.
-    assert compute_pressure_hints(_run(status="partial", shed_step_count=2),
+    # Partial run whose own result was the shed: not a failure.
+    assert compute_pressure_hints(_run(status="partial", shed_step_count=2, result_shed=True),
                                   egress_emitted=False)["failure_pressure"] == 0.0
+    # Shed steps but the result itself was not the shed: still a failure.
+    assert compute_pressure_hints(_run(status="partial", shed_step_count=2),
+                                  egress_emitted=False)["failure_pressure"] == 1.0
     assert compute_pressure_hints(_run(status="success"), egress_emitted=False)["failure_pressure"] == 0.0
 
 
@@ -1274,13 +1294,15 @@ def test_merge_keeps_shed_count_across_batches() -> None:
         now=FIXED_TS,
     )
     second = extract_execution_state_from_events(
-        [_exec_atom("exec_result_assembled", "Result assembled: status=fail", event_id="e2")],
+        [_exec_atom("exec_result_assembled", "Result assembled: status=fail, shed_reason=cabinet_hot",
+                    event_id="e2")],
         now=FIXED_TS,
     )
-    # Alone, the second batch is a fail with no shed behind it.
-    assert second.pressure_hints["failure_pressure"] == 1.0
     merged = merge_execution_run_state(first, second)
     assert merged.shed_step_count == 1
+    assert merged.result_shed is True
+    # Order-independent: the result batch first, the shed step second.
+    assert merge_execution_run_state(second, first).pressure_hints["failure_pressure"] == 0.0
     assert merged.failed_step_count == 0
     assert merged.pressure_hints["failure_pressure"] == 0.0
 
@@ -1289,4 +1311,6 @@ def test_projection_without_shed_field_still_loads() -> None:
     """Rows persisted before 2026-10-20 have no shed_step_count; they load with 0."""
     payload = _run(status="fail", failed_step_count=1).model_dump(mode="json")
     payload.pop("shed_step_count")
-    assert ExecutionRunStateV1.model_validate(payload).shed_step_count == 0
+    payload.pop("result_shed")
+    loaded = ExecutionRunStateV1.model_validate(payload)
+    assert loaded.shed_step_count == 0 and loaded.result_shed is False

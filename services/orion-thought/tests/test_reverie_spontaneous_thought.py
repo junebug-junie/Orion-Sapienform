@@ -674,3 +674,22 @@ async def test_tick_non_pool_failure_stays_none(monkeypatch):
     assert await reverie.run_reverie_once(
         AsyncMock(), broadcast_reader=lambda: _broadcast(), cortex_client=cortex
     ) is None
+
+
+@pytest.mark.asyncio
+async def test_successful_plan_with_a_shed_side_step_still_yields_a_thought(monkeypatch):
+    """Review 2026-10-20: a shed recall side step must not discard a real narration."""
+    from app import reverie
+
+    monkeypatch.setattr(reverie, "load_recent_loop_outcomes", lambda ids: {})
+    cortex = AsyncMock()
+    cortex.execute_plan = AsyncMock(return_value={
+        "status": "success",
+        "final_text": json.dumps({"interpretation": GROUNDED_TEXT, "evidence_refs": ["ol-1"]}),
+        "steps": [{"status": "fail", "error": "gpu_pool_unavailable:shed:cabinet_hot"}],
+    })
+    result = await reverie.run_reverie_once(
+        AsyncMock(), broadcast_reader=lambda: _broadcast(), cortex_client=cortex,
+        raise_llm_unavailable=True,
+    )
+    assert result is not None

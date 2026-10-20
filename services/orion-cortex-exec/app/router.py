@@ -1274,6 +1274,7 @@ class PlanRunner:
                         final_text_present=False,
                         reasoning_present=False,
                         thinking_source="none",
+                        shed_reason=shed_reason_from_error(recall_step.error),
                     )
                     return PlanExecutionResult(
                         verb_name=plan.verb_name,
@@ -1645,6 +1646,13 @@ class PlanRunner:
         record_assembled_grammar(
             ctx,
             status=overall_status,
+            # Same error the PlanExecutionResult below returns: a plan that failed because
+            # its last step was shed reads as shed, not as a failure (2026-10-20).
+            shed_reason=(
+                None
+                if overall_status == "success" or not step_results
+                else shed_reason_from_error(step_results[-1].error)
+            ),
             final_text_present=bool((final_text or "").strip()),
             reasoning_present=bool(reasoning_content or reasoning_trace or metacog_traces),
             thinking_source=str(thinking_source or "none"),

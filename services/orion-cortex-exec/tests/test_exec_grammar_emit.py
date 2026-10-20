@@ -672,6 +672,7 @@ def _failed_run_events(error: str) -> list:
     )
     collector.record_result_assembled(
         status="fail", final_text_present=False, reasoning_present=False, thinking_source="none",
+        shed_reason=shed_reason_from_error(error),  # router.py: the plan's returned error
     )
     collector.record_result_emitted(reply_present=True, status="fail")
     return build_cortex_exec_grammar_events(collector)

@@ -178,7 +178,7 @@ def shed_reason_from_error(error: Any) -> str | None:
     rest = error[idx + len(_SHED_MARKER):]
     name = []
     for ch in rest:
-        if ch.isalnum() or ch == "_":
+        if ch.isascii() and (ch.isalnum() or ch == "_"):
             name.append(ch)
         else:
             break
@@ -187,7 +187,12 @@ def shed_reason_from_error(error: Any) -> str | None:
 
 def is_gpu_pool_refusal(error: Any) -> bool:
     """True when ``error`` names any GPU-pool refusal (``gpu_pool_unavailable`` or ``...:<reason>``),
-    shed or not: the LLM was never asked, so the caller's own prompt/work was not judged."""
+    shed or not: the LLM was never asked, so the caller's own prompt/work was not judged.
+
+    Prefix match, unlike ``shed_reason_from_error``'s substring match, on purpose: this is
+    asked of a plan's own returned error (cortex-exec sets it to the failing step's error
+    verbatim), and a wrapped string such as ``metacog_draft_fallback:gpu_pool_unavailable:...``
+    names a different outcome (the caller fell back), not a bare refusal."""
     if not isinstance(error, str):
         return False
     text = error.strip()

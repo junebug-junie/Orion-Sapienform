@@ -82,7 +82,7 @@ def _quick_escalations(result):
 
 def test_nominal_open_deferral_removes_double_fires_without_losing_novelty():
     """2026-10-20: a nominal open waits one window and fires with that window's band.
-    15 days: 140 -> 112 fires, escalations one window after a fire 18 -> 11, and dream
+    15 days: 140 -> 106 fires, fewer escalations one window after a fire, and dream
     novelty unchanged (nominal keys carry no dream weight)."""
     from orion.metacog import anomaly_episode as ae
     import replay_telemetry_anomaly_episodes as rte
@@ -95,7 +95,7 @@ def test_nominal_open_deferral_removes_double_fires_without_losing_novelty():
     finally:
         rte.step = orig
     assert _total(old, "after_fires") == 140
-    assert _total(after, "after_fires") == 112
+    assert _total(after, "after_fires") == 106
     assert _quick_escalations(after) < _quick_escalations(old)
     assert sum(after["per_day"][d]["after_new_key_pressure"] for d in STEADY) == \
         sum(old["per_day"][d]["after_new_key_pressure"] for d in STEADY)

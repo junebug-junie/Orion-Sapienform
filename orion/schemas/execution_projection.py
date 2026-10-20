@@ -29,6 +29,11 @@ class ExecutionRunStateV1(BaseModel):
     # Steps refused by a deliberate GPU-pool shed (see failed_step_count). Its own
     # independently max()-merged counter (merge.py), not derived by subtraction.
     shed_step_count: int = 0
+    # True when the run's own result error was a deliberate GPU-pool shed (cortex-exec's
+    # exec_result_assembled atom carries ``shed_reason=<name>``): its fail/partial status
+    # is the shed, not a failure. OR-merged. A fail status without it is a real failure,
+    # even if some earlier step was shed (inactive verb, empty output, ...).
+    result_shed: bool = False
     # harness-governor-only step count, split from started_step_count (which blends
     # cortex-exec + harness-governor) so the FCC motor's own step load can be measured
     # without cortex-exec sub-steps diluting it. See NODE_CHANNELS "harness_step_load".

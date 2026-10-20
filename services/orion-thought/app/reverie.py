@@ -1026,7 +1026,10 @@ async def run_reverie_once(
         else:
             if report_metacog_health:
                 check_reverie_metacog_timeout(False)
-        failure = exec_failure_reason(exec_result)
+        # Only a plan that did not succeed was refused: exec_failure_reason() also falls back
+        # to any failed side step (e.g. recall), which must not discard a real narration.
+        plan_ok = isinstance(exec_result, dict) and exec_result.get("status") == "success"
+        failure = None if plan_ok else exec_failure_reason(exec_result)
         if failure is not None and is_gpu_pool_refusal(failure):
             logger.info(
                 "reverie tick refused by gpu pool corr=%s reason=%s", correlation_id, failure

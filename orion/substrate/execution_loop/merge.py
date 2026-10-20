@@ -69,6 +69,7 @@ def merge_execution_run_state(
     merged.completed_step_count = max(existing.completed_step_count, incoming.completed_step_count)
     merged.failed_step_count = max(existing.failed_step_count, incoming.failed_step_count)
     merged.shed_step_count = max(existing.shed_step_count, incoming.shed_step_count)
+    merged.result_shed = existing.result_shed or incoming.result_shed
     merged.step_count = max(existing.step_count, incoming.step_count)
     merged.harness_started_step_count = max(
         existing.harness_started_step_count, incoming.harness_started_step_count

@@ -362,7 +362,11 @@ class CortexExecGrammarCollector:
         thinking_source: str,
         llm_serving_node: str | None = None,
         reasoning_char_count: int = 0,
+        shed_reason: str | None = None,
     ) -> None:
+        """``shed_reason`` is set only when the plan's own returned error is a deliberate
+        GPU-pool shed (``gpu_pool_unavailable:shed:<name>``): the plan failed *because* it
+        was shed. Any other plan failure leaves it unset and still reads as a failure."""
         ref = f"cortex.exec.result:{self.correlation_id}"
         summary = (
             f"Final result assembled: status={status}, "
@@ -373,6 +377,8 @@ class CortexExecGrammarCollector:
         )
         if llm_serving_node:
             summary += f", llm_serving_node={llm_serving_node}"
+        if shed_reason:
+            summary += f", shed_reason={shed_reason}"
         self._put_atom(
             "exec_result_assembled",
             GrammarAtomV1(
@@ -528,6 +534,7 @@ def record_assembled_grammar(
     thinking_source: str,
     llm_serving_node: str | None = None,
     reasoning_char_count: int = 0,
+    shed_reason: str | None = None,
 ) -> None:
     collector = ctx.get("_cortex_exec_grammar_collector")
     if collector is None:
@@ -539,6 +546,7 @@ def record_assembled_grammar(
         thinking_source=thinking_source,
         llm_serving_node=llm_serving_node,
         reasoning_char_count=reasoning_char_count,
+        shed_reason=shed_reason,
     )
 
 

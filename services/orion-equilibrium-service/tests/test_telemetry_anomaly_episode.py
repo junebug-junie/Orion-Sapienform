@@ -351,3 +351,21 @@ def test_lone_nominal_blip_does_not_fire_and_deferral_survives_restart():
     restored = state_from_dict(json.loads(json.dumps(state_to_dict(state))))
     d = _flag(restored, T0 + 60, ratio=1.2)
     assert d.fire and d.reason == "episode_open" and d.severity == "nominal"
+
+
+def test_deferral_counts_from_the_first_window_no_turn_explains():
+    """Review: turn-explained window 1, nominal window 2, degraded window 3 must fire once."""
+    windows = [(T0, True, 1.2, "task_execution", True), (T0 + 60, True, 1.2, None, False),
+               (T0 + 120, True, 1.8, None, False)]
+    _, fires = _run(windows)
+    assert fires == [(T0 + 120, "episode_open", "degraded")]
+
+
+def test_nominal_open_is_not_deferred_under_the_sustained_override():
+    windows = [(T0 + 60 * i, True, 1.2, "task_execution", True) for i in range(3)]
+    _, fires = _run(windows, sustained_windows=3)
+    assert fires == [(T0 + 120, "sustained_past_turn", "nominal")]
+    # A fresh nominal window on an episode whose sustained history already holds fires at once.
+    state, _ = _run([(T0 + 60 * i, True, 1.2, "task_execution", True) for i in range(2)])
+    d = _flag(state, T0 + 120, ratio=1.2, sustained_windows=3)
+    assert d.fire

@@ -20,6 +20,7 @@ After #2772 was deployed, the operator still could not play. Evidence from sessi
 
 - `services/orion-retro/app/control.py`: `LEASE_TTL = 2.0` replaces `GRANT_GRACE` and the 0.25 s input expiry.
 - `services/orion-retro/tests/test_authority.py`: expiry test parameterized on `LEASE_TTL`; new throttled-heartbeat regression test.
+- `services/orion-hub/evals/retro_browser.mjs`: self-heal check waits for `running`, then measures frame progress (removes the race).
 - `services/orion-retro/evals/container_smoke.py`: expiry wait reads `LEASE_TTL` instead of a hard-coded 0.4 s.
 - `services/orion-retro/README.md`, `docs/runbooks/retro-browser.md`: contract text.
 
@@ -40,9 +41,11 @@ services/orion-retro/tests: 34 passed; new test fails with LEASE_TTL=.25
 ## Evals run
 
 ```text
-retro_browser.py (worktree image, Pad Lab): delay 0 PASS; delay 350: 2 PASS, 1 FAIL
-(the fail was at mjs:69, the post-heal 'running' check; it did not reproduce
-on 2 reruns, so it looks like a timing race in the eval, UNVERIFIED)
+retro_browser.py (worktree image, Pad Lab): delay 0 PASS; delay 350 after eval fix: 6/6 PASS
+(before the fix: 1 FAIL in 5 locally, plus CI, at mjs:69: 'paused' where 'running' was expected.
+ Evidence: acks delayed from before the drop advanced appliedFrame, so the check
+ ran while the self-heal reconnect was still in flight. The eval now waits
+ for 'running', then measures progress)
 ```
 
 ## Docker/build/smoke checks

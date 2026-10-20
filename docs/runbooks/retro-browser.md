@@ -221,3 +221,25 @@ node services/orion-hub/evals/retro_play.mjs --url https://athena.tail348bbe.ts.
 
 `--url` is required. A run starts a real game on that service and ends any game
 already running there, so do not run it while someone is playing.
+
+### Quick taps
+
+A newer input that replaces a pending one before the next frame no longer erases
+the older one's buttons: they are held for exactly one frame (`latch` in
+`app/control.py`). A newer latched direction replaces an older one, and a latched direction yields to
+the current opposite one. A `superseded` reply therefore no longer means "never
+reached a frame": its buttons are held for that one frame.
+Live 2026-10-20: on Crystalis's title screen, 1 of 4 quick Start taps reached the
+game; with the latch, 4 of 4 did and the intro started. Regression:
+`test_tap_inside_one_frame_still_reaches_the_game`. `retro_play.mjs` now taps
+Start 4 times and reports `start_presses_applied` from the server journal.
+
+### Start readiness
+
+A command (such as the browser's resume right after New game) first waits for the
+worker to report ready, up to the 10 s start limit. Then its 0.75 s command
+timeout starts. Before 2026-10-20 the command clock started while the core was
+still loading (~0.48 s measured). Nova then failed at frame 0 with
+`worker_unavailable`. With the wait, all 6 catalog games pass `retro_play.mjs`
+(4/4 Start taps, no drops). Regression:
+`test_command_waits_for_a_starting_worker_instead_of_failing_the_session`.

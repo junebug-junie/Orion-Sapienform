@@ -280,7 +280,7 @@ def test_cancelled_input_cannot_abandon_timeout_cleanup():
         async def stop(self,*args):
             await asyncio.sleep(.2);self.done=True
     async def scenario():
-        fake=Fake()
+        fake=Fake(); fake.ready=asyncio.Event(); fake.ready.set()
         task=asyncio.create_task(Sessions.command(fake,'input','c',{}))
         await asyncio.sleep(.8);task.cancel()
         await asyncio.gather(task,return_exceptions=True)
@@ -298,3 +298,76 @@ def test_lease_survives_throttled_browser_heartbeat():
     a.submit('one',intent(g),.6); assert a.frame(.61)[0] == [256,0]
     a.submit('one',intent(g,2),1.6); assert a.frame(1.61)[0] == [256,0]  # 1 s heartbeat
     assert a.frame(1.6+T)[0] == [0,0] and 0 not in a.leases  # silence still expires
+
+
+def test_tap_inside_one_frame_still_reaches_the_game():
+    # Live 2026-10-20: Enter's press and release arrived before the same frame; the
+    # release replaced the press and Crystalis never saw Start.
+    a = Arbiter([0]); g=a.control('one',0,'acquire',0); a.frame(0)
+    a.submit('one',intent(g,1,mask=8),.01); a.submit('one',intent(g,2,mask=0),.011)
+    masks, applied, _ = a.frame(.02)
+    assert masks == [8,0] and applied[0]['mask'] == 8
+    assert a.frame(.03)[0] == [0,0]  # held for exactly one frame
+
+
+def test_latched_direction_yields_to_the_current_opposite():
+    a = Arbiter([0]); g=a.control('one',0,'acquire',0); a.frame(0)
+    a.submit('one',intent(g,1,mask=64),.01); a.submit('one',intent(g,2,mask=128),.011)  # left then right
+    assert a.frame(.02)[0] == [128,0]
+
+
+def test_flick_across_both_directions_keeps_the_newest():
+    # Review 2026-10-20: left, right, release inside one frame cleared the axis.
+    a = Arbiter([0]); g=a.control('one',0,'acquire',0); a.frame(0)
+    for seq,mask in ((1,64),(2,128),(3,0)): a.submit('one',intent(g,seq,mask=mask),.01+seq/1000)
+    assert a.frame(.02)[0] == [128,0]
+
+
+def test_latch_does_not_follow_a_takeover():
+    a = Arbiter([0]); g=a.control('one',0,'acquire',0); a.frame(0)
+    a.submit('one',intent(g,1,mask=8),.01); a.submit('one',intent(g,2,mask=0),.011)
+    t = a.control('two',0,'takeover',.012)
+    assert a.frame(.02)[0] == [0,0]  # neutral handoff frame, no inherited Start
+    a.submit('two',intent(t,1,mask=0),.021); assert a.frame(.03)[0] == [0,0]
+
+
+def test_command_waits_for_a_starting_worker_instead_of_failing_the_session():
+    # Live 2026-10-20: New game's resume arrived while the core was still loading
+    # (~0.5 s); with Nova it passed the 0.75 s command timeout and the session failed.
+    import asyncio, queue
+    class Fake:
+        process=True;stopping=False;pending={};commands=queue.Queue();urgent=queue.Queue();session={}
+        stopped=False
+        async def stop(self,*a): self.stopped=True
+        def persist(self): pass
+    async def scenario():
+        fake=Fake(); fake.ready=asyncio.Event()
+        async def worker():
+            await asyncio.sleep(1.0); fake.ready.set()  # slower than the 0.75 s budget
+            while True:
+                try: cmd=fake.urgent.get_nowait(); break
+                except queue.Empty: await asyncio.sleep(.01)
+            fake.pending[cmd['id']].set_result({'result':{'state':'running'}})
+        task=asyncio.create_task(worker())
+        result=await Sessions.command(fake,'resume'); await task
+        return result, fake.stopped
+    assert asyncio.run(scenario())==({'state':'running'},False)
+
+
+def test_waiters_released_together_still_respect_the_pending_cap():
+    # Review 2026-10-20: inputs waiting on startup were not counted; all woke at once
+    # and could overflow the 32-slot queue, failing the new session.
+    import asyncio, queue
+    class Fake:
+        process=True;stopping=False;pending={};commands=queue.Queue(32);urgent=queue.Queue(8)
+        session={'session_id':'s1'};stopped=False
+        async def stop(self,*a): self.stopped=True
+    async def scenario():
+        fake=Fake(); fake.ready=asyncio.Event()
+        tasks=[asyncio.create_task(Sessions.command(fake,'input','c',{})) for _ in range(40)]
+        await asyncio.sleep(.05); fake.ready.set(); await asyncio.sleep(.05)
+        for f in list(fake.pending.values()): f.set_result({'result':{}})
+        out=await asyncio.gather(*tasks,return_exceptions=True)
+        return fake.stopped, sum(isinstance(o,ValueError) and str(o)=='unavailable_or_busy' for o in out), fake.commands.qsize()
+    stopped, refused, queued = asyncio.run(scenario())
+    assert not stopped and refused == 16 and queued == 24

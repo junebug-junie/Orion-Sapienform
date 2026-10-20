@@ -45,7 +45,7 @@ class Arbiter:
         self.neutral.add(port)
         item = dict(connection=connection, epoch=self.epochs[port],
                     token=secrets.token_urlsafe(32), expires=now+LEASE_TTL,
-                    seq=-1, mask=0, pending=None)
+                    seq=-1, mask=0, latch=0, pending=None)
         self.leases[port] = item
         return {'port': port, 'lease': item['token'], 'epoch': item['epoch']}
 
@@ -61,6 +61,13 @@ class Arbiter:
             raise ValueError('unsupported_buttons')
         if data['mask'] & 48 == 48 or data['mask'] & 192 == 192:
             raise ValueError('opposing_directions')
+        if item['pending'] is not None:
+            # The previous input never reached a frame. Keep its buttons for one frame
+            # so a quick tap (press and release in the same frame) is not lost.
+            # Live 2026-10-20: Start never reached Crystalis's title screen.
+            for axis in (48, 192):  # a newer latched direction replaces an older one
+                if item['mask'] & axis: item['latch'] &= ~axis
+            item['latch'] |= item['mask']
         item.update(seq=data['seq'], mask=data['mask'], expires=now+LEASE_TTL, pending=data['seq'])
 
     def frame(self, now):
@@ -71,10 +78,13 @@ class Arbiter:
                 continue
             if p in self.neutral:
                 continue
-            masks[p] = item['mask']
+            mask = item['mask'] | item['latch']
+            for axis in (48, 192):  # a latched direction yields to the current opposite one
+                if mask & axis == axis: mask = (mask & ~axis) | (item['mask'] & axis)
+            masks[p] = mask; item['latch'] = 0
             if item['pending'] is not None:
                 applied.append({'port': p, 'epoch': item['epoch'], 'seq': item['pending'],
-                                'mask': item['mask']})
+                                'mask': mask})
                 item['pending'] = None
         neutral = sorted(self.neutral)
         self.neutral.clear()

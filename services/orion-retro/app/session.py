@@ -19,6 +19,7 @@ class Sessions:
         self.pending = {}; self.connections = set(); self.history = deque(maxlen=256)
         self.media = None; self.media_task = None; self.latest_media = None; self.media_version = 0
         self.requests = {}; self.task = None; self.stopping = False
+        self.ready = asyncio.Event()
         self.settings.artifacts.mkdir(parents=True, exist_ok=True)
         self.status_path = self.settings.artifacts/'status.json'
         if self.status_path.exists():
@@ -70,6 +71,7 @@ class Sessions:
         ctx = mp.get_context('spawn')
         self.commands = ctx.Queue(32); self.urgent = ctx.Queue(8); self.replies = ctx.Queue(128); self.stop_event = ctx.Event()
         self.media = ctx.Queue(2); self.latest_media = None; self.media_version = 0
+        self.ready = asyncio.Event()
         sid = str(uuid.uuid4())
         self.session = dict(session_id=sid, generation=self.generation, state='starting',
                             game_id=game_id, frame=0, owner=owner, save_enabled=False)
@@ -109,7 +111,7 @@ class Sessions:
                         if future and not future.done(): future.set_result(row)
                         if 'frame' in row.get('result', {}): self.history.append(row['result'])
                     elif kind == 'ready':
-                        ready = True; self.session.update(state='running', identity=row['identity'], runtime_sha256=row['runtime_sha256'], fps=row['fps'])
+                        ready = True; self.ready.set(); self.session.update(state='running', identity=row['identity'], runtime_sha256=row['runtime_sha256'], fps=row['fps'])
                         self.persist()
                     elif kind == 'status':
                         self.session.update({k:v for k,v in row.items() if k!='kind'})
@@ -127,6 +129,19 @@ class Sessions:
 
     async def command(self, op, connection='', data=None):
         if not self.process or self.stopping or len(self.pending) >= 24: raise ValueError('unavailable_or_busy')
+        if not self.ready.is_set():
+            # A command sent right after start (the browser's resume) must not spend its
+            # 0.75 s budget on core loading (~0.5 s live), or the session fails.
+            # 4.5 s stays under Hub's 5 s proxy timeout; monitor() fails a worker not
+            # ready within 10 s. Re-check after the wait: waiters are not yet in
+            # pending, so the cap (24, below the 32-slot queue) must be enforced
+            # again, and a restart must not hand an old waiter the new session.
+            sid = (self.session or {}).get('session_id')
+            try: await asyncio.wait_for(self.ready.wait(), 4.5)
+            except asyncio.TimeoutError: raise ValueError('worker_unavailable')
+            if (not self.process or self.stopping or len(self.pending) >= 24
+                    or (self.session or {}).get('session_id') != sid):
+                raise ValueError('unavailable_or_busy')
         rid = str(uuid.uuid4()); future = asyncio.get_running_loop().create_future()
         self.pending[rid] = future
         try:
@@ -148,6 +163,7 @@ class Sessions:
         process, self.process = self.process, None
         if not process: return
         self.stopping = True
+        self.ready.set()  # wake start-time waiters so they fail now, not after their timeout
         if self.task and not from_monitor: self.task.cancel()
         if self.media_task: self.media_task.cancel()
         self.latest_media = None

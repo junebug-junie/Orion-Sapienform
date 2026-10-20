@@ -12,6 +12,10 @@ attends to has stopped) and keeps the rest.
 
 An open ``company`` arc (seam S1: someone at the room camera) adds "Someone has been here since
 21:02 [arc:<id>]", naming the person only when the arc carries a confirmed identity label.
+
+A strain arc (strain loop part 1) adds "Strained since Sat 12:07 (GPU jobs backed up, cabinet too
+hot) [arc:<id>]" while it is open, or "Was strained 12:07 to 14:30 (...) [arc:<id>]" for today's
+latest closed one. The time is when the episode began, even on an earlier day.
 """
 
 from __future__ import annotations
@@ -132,6 +136,44 @@ def _company_clause(frame: TemporalSelfFrameV1, tz_name: str) -> tuple[str, list
     return f"{who} has been here since {since} {_ref(arc)}.", [arc]
 
 
+# The regulation step's strain causes (``orion.regulation.arousal.STRAIN_CAUSES``) in plain words.
+STRAIN_CAUSE_WORDS = {"cabinet_hot": "cabinet too hot", "gpu_queue_sustained": "GPU jobs backed up"}
+
+
+def strain_cause_text(label: str) -> str:
+    """A strain arc's label ("gpu_queue_sustained+cabinet_hot") as words; an unknown code stays as
+    it is, never dropped."""
+    return ", ".join(STRAIN_CAUSE_WORDS.get(c, c) for c in label.split("+") if c)
+
+
+def _strain_clause(frame: TemporalSelfFrameV1, tz_name: str) -> tuple[str, list[ArcSummaryV1]] | None:
+    tz = ZoneInfo(tz_name)
+    strains = [a for a in frame.arcs_today if a.kind == "strain"]
+    active = frame.active_by_kind.get("strain")
+    arc = active if active is not None and active.status == "open" else None
+    if arc is None:
+        opened = [a for a in strains if a.status == "open"]
+        arc = max(opened, key=lambda a: (a.began_at, a.arc_id), default=None)
+    closed = arc is None
+    if closed:
+        arc = max((a for a in strains if a.status == "closed"),
+                  key=lambda a: (a.ended_at or a.began_at, a.arc_id), default=None)
+    if arc is None:
+        return None
+    began = as_utc(arc.episode_began_at or arc.began_at)
+    assert began is not None
+
+    def clock(at) -> str:
+        local = as_utc(at).astimezone(tz)
+        return local.strftime("%H:%M") if local.date().isoformat() == frame.day_id else local.strftime("%a %H:%M")
+
+    causes = strain_cause_text(arc.subject_label)
+    why = f" ({causes})" if causes else ""
+    if closed:
+        return f"Was strained {clock(began)} to {clock(arc.ended_at or arc.began_at)}{why} {_ref(arc)}.", [arc]
+    return f"Strained since {clock(began)}{why} {_ref(arc)}.", [arc]
+
+
 def _thread_arc(thread: OpenThreadV1, concern: dict[str, ArcSummaryV1]) -> ArcSummaryV1 | None:
     """The arc a thread cites: its own ``arc_id`` (frames since thread arc ids), else the open
     concern arc of the same subject in ``arcs_today`` (older frames; may have fallen off the cap)."""
@@ -229,6 +271,10 @@ def project_stance_cue(
             last = max(talks, key=lambda a: (a.last_seen_at, a.arc_id))
             if previous is None or last.arc_id != previous.arc_id:
                 clauses.append((f"Juniper last spoke {_ago(now, last.last_seen_at)} ago {_ref(last)}.", [last]))
+
+    strain = _strain_clause(frame, tz_name)
+    if strain is not None:
+        clauses.append(strain)
 
     company = _company_clause(frame, tz_name)
     if company is not None:

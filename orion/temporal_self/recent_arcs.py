@@ -30,7 +30,7 @@ from pydantic import ValidationError
 
 from orion.schemas.temporal_self import ArcSummaryV1, TemporalSelfFrameV1
 from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for
-from orion.temporal_self.stance_cue import DEFAULT_MAX_AGE_SEC, MAX_FUTURE_SKEW_SEC, span_words
+from orion.temporal_self.stance_cue import DEFAULT_MAX_AGE_SEC, MAX_FUTURE_SKEW_SEC, span_words, strain_cause_text
 
 MAX_LIMIT = 5
 RECENT_ARCS_MAX_CHARS = 400
@@ -58,6 +58,9 @@ def _what(arc: ArcSummaryV1) -> str:
         return _KIND_WORDS[arc.kind]
     if arc.kind == "attention":
         return f"attention on {label}"
+    if arc.kind == "strain":
+        causes = strain_cause_text(arc.subject_label)
+        return f"strained ({causes})" if causes else "strained"
     return f"{arc.kind}: {label}"
 
 

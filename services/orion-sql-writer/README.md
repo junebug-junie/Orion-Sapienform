@@ -582,12 +582,18 @@ Each tick it:
    same-sighting crop pairs (learned each tick) looks like two people and adds
    nothing until she answers. Rows whose answer no longer holds (a rename, a
    split) get `revoked_at`.
-2. Refits the bars (`vision_person_bar`, per person and channel) only when the
-   album changed. Genuine scores leave out the scored crop's cluster AND its
-   local day, so a channel that only matches same-day clothes gets no accept
-   bar. `accept_at` is a conformal false-accept bound at
-   `VISION_PERSON_FALSE_ACCEPT_ALPHA` (0.05; needs >= 19 impostor scores),
-   `reject_below` the same rule on genuine scores. NULL = ask only.
+2. Refits the bars (`vision_person_bar`, per person and channel). `accept_at`
+   is a conformal false-accept bound at `VISION_PERSON_FALSE_ACCEPT_ALPHA`
+   (0.05) over the CLUSTER scores of everyone who is not that person: the
+   street (every unnamed recent person cluster), other named people's
+   clusters, and clusters she said are not them. Calibrating on the other
+   named people alone let ~9% of street clusters through on live data
+   (2026-10-20). The accept bar is dropped unless one of the person's own
+   clusters, held out with every album crop from its days, scores above it,
+   so a channel that only matches same-day clothes accepts nobody.
+   `reject_below` is the same rule on cross-day genuine crop scores (>= 19).
+   NULL = ask only. On 2026-10-20 no person had an accept bar: everything is
+   `unsure` until her answers grow the albums.
 3. Guesses (`vision_person_attribution`): one row per unnamed, recently seen
    person cluster, its best person, band `accept` ("probably X") or `unsure`.
    Score = median over its newest 20 crops of the mean top-`VISION_PERSON_TOP_K`

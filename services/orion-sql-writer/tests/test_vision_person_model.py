@@ -59,6 +59,13 @@ def _person(name: str, axis: int, clusters: int, per: int = 3, spread: float = 0
     return out
 
 
+def _street(n: int = 30, seed: int = 3) -> dict:
+    """``n`` unnamed one-visit clusters pointing nowhere in particular."""
+    rng = np.random.default_rng(seed)
+    return {f"st{i}": [_crop(f"st{i}-{j}", f"st{i}", "2026-10-12", rng.normal(0, 1, 8)) for j in range(3)]
+            for i in range(n)}
+
+
 # --- conformal bars ----------------------------------------------------------------------------------
 
 
@@ -110,21 +117,36 @@ def test_genuine_scores_are_cross_day_only() -> None:
     (a channel that only matches same-day clothes)."""
     same_day = [_crop(c.crop_id, c.cluster, "2026-10-01", c.vecs["body"]) for c in _person("j", 0, 2)]
     album = {"Juniper": {1: same_day}, **{f"p{i}": {1: _person(f"p{i}", i, 2)} for i in range(1, 6)}}
-    bar, genuine, impostor = pm.fit_bar("Juniper", "body", album, CFG)
-    assert genuine == [] and len(impostor) >= 19
-    assert bar.accept_at is None
+    fit = pm.fit_bar("Juniper", "body", album, CFG, _street())
+    assert fit.genuine_crops == [] and fit.genuine_clusters == [] and len(fit.impostor_clusters) >= 19
+    assert fit.bar.accept_at is None
+    # The same two clusters on two days do earn one.
+    two_days = {**album, "Juniper": {1: _person("j", 0, 2)}}
+    assert pm.fit_bar("Juniper", "body", two_days, CFG, _street()).bar.accept_at is not None
 
 
 def test_a_well_separated_person_gets_an_accept_bar_and_strangers_do_not_pass() -> None:
     album = {"Juniper": {1: _person("j", 0, 4)}, **{f"p{i}": {1: _person(f"p{i}", i, 2)} for i in range(1, 8)}}
-    bar, genuine, impostor = pm.fit_bar("Juniper", "body", album, CFG)
-    assert bar.accept_at is not None and len(impostor) >= 19
     new_visit = [_crop(f"jn{i}", "jnew", "2026-10-15", _vec(1, 0.02 * i)) for i in range(3)]
     stranger = [_crop(f"sn{i}", "snew", "2026-10-15", _vec(*([1.0] * 8))) for i in range(3)]  # near nobody
-    bars = pm.fit_all(album, CFG)
+    street = {**_street(), "jnew": new_visit, "snew": stranger}
+    fit = pm.fit_bar("Juniper", "body", album, CFG, street)
+    assert fit.bar.accept_at is not None and len(fit.impostor_clusters) >= 19
+    bars = pm.fit_all(album, CFG, street)
     got = {g["individual_id"]: g for g in pm.attribute({"jnew": new_visit, "snew": stranger}, album, bars, {}, CFG)}
     assert got["jnew"]["person_label"] == "Juniper" and got["jnew"]["band"] == "accept"
     assert got.get("snew", {}).get("band") != "accept"
+
+
+def test_the_street_raises_the_bar_named_people_alone_do_not() -> None:
+    """Live 2026-10-20: calibrated only on other named people, ~9% of street
+    clusters cleared a person's bar. Street look-alikes must raise it."""
+    album = {"Juniper": {1: _person("j", 0, 4)}, **{f"p{i}": {1: _person(f"p{i}", i, 3)} for i in range(1, 8)}}
+    lookalikes = {f"la{i}": [_crop(f"la{i}-{j}", f"la{i}", "2026-10-12", _vec(1, 0.35 + 0.01 * i, 0.1 * j))
+                             for j in range(3)] for i in range(25)}
+    without = pm.fit_bar("Juniper", "body", album, CFG, {}).bar.accept_at
+    with_street = pm.fit_bar("Juniper", "body", album, CFG, lookalikes).bar.accept_at
+    assert without is not None and (with_street is None or with_street > without)
 
 
 def test_accepted_for_two_people_is_downgraded_to_unsure() -> None:
@@ -262,6 +284,8 @@ def _world(conn) -> None:
             _add_cluster(conn, f"p{p}d{d}", f"Person{p}", near(p), day=d + 2)
     _add_cluster(conn, "unk-j", None, near(0), day=0)
     _add_cluster(conn, "unk-x", None, [pm.unit([1, 1, 1, 1, 1, 1, 1, 1])] * 3, day=0)
+    for i in range(30):   # the street the accept bars are calibrated on
+        _add_cluster(conn, f"st{i}", None, [pm.unit(rng.normal(0, 1, 8)) for _ in range(3)], day=1)
 
 
 @needs_pg
@@ -271,7 +295,7 @@ def test_cycle_builds_albums_fits_bars_and_guesses(pg) -> None:
     with pg.begin() as conn:
         _world(conn)
         s = pm.run_person_model(conn, NOW, CFG)
-    assert s["person_people"] == 8 and s["person_bars_refit"] == 1
+    assert s["person_people"] == 8 and s["person_street_clusters"] == 32 and s["person_accept_bars"] >= 1
     with pg.begin() as conn:
         n = conn.execute(text("SELECT count(*) FROM vision_person_exemplar WHERE revoked_at IS NULL")).scalar()
         assert n == 4 * 3 + 7 * 2 * 3
@@ -288,7 +312,7 @@ def test_cycle_builds_albums_fits_bars_and_guesses(pg) -> None:
 
 
 @needs_pg
-def test_unchanged_album_does_not_refit_and_a_rename_revokes(pg) -> None:
+def test_a_rename_revokes_and_the_refit_moves(pg) -> None:
     from sqlalchemy import text
 
     with pg.begin() as conn:
@@ -296,13 +320,14 @@ def test_unchanged_album_does_not_refit_and_a_rename_revokes(pg) -> None:
         pm.run_person_model(conn, NOW, CFG)
         fitted = conn.execute(text("SELECT max(fitted_at) FROM vision_person_bar")).scalar()
     with pg.begin() as conn:
-        assert pm.run_person_model(conn, NOW + timedelta(minutes=10), CFG)["person_bars_refit"] == 0
-        assert conn.execute(text("SELECT max(fitted_at) FROM vision_person_bar")).scalar() == fitted
+        again = pm.run_person_model(conn, NOW + timedelta(minutes=10), CFG)
+        assert again["person_exemplars_added"] == 0 and again["person_exemplars_revoked"] == 0   # idempotent
         conn.execute(text("UPDATE vision_individual SET label='Theo' WHERE individual_id='jun0'"))
         s = pm.run_person_model(conn, NOW + timedelta(minutes=20), CFG)
-    assert s["person_exemplars_revoked"] == 3 and s["person_exemplars_added"] == 3 and s["person_bars_refit"] == 1
+    assert s["person_exemplars_revoked"] == 3 and s["person_exemplars_added"] == 3
     with pg.begin() as conn:
         assert conn.execute(text("SELECT max(fitted_at) FROM vision_person_bar")).scalar() > fitted
+        assert conn.execute(text("SELECT count(*) FROM vision_person_bar WHERE person_label='Theo'")).scalar() >= 1
 
 
 @needs_pg

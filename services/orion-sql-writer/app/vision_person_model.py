@@ -5,20 +5,24 @@ album of crops (+1 "this is them", -1 "this is not them"), built only from her
 answers. Per person and channel (face | body | osnet) a confidence bar is
 fitted from the album itself:
 
-- genuine scores: each +1 crop scored against the rest of its person's album,
-  leaving out its whole cluster AND every crop from the same local day, so a
-  channel that only matches same-day clothes cannot earn an accept bar;
-- impostor scores: other people's +1 crops and the person's own -1 crops,
-  scored against the person's album (leaving out the scored crop's cluster);
-- ``accept_at``: conformal bound on false accepts at ``alpha`` (a cluster is
-  accepted when its score is above it); needs >= 19 impostor scores;
-- ``reject_below``: the alpha-quantile of genuine scores, same rule.
+- a cluster's score for a person: the MEDIAN over its crops of each crop's
+  mean top-k cosine to that person's +1 album (album crops of the same
+  cluster left out), lowered when a -1 crop is closer than the nearest +1;
+- ``accept_at``: conformal bound on false accepts at ``alpha``, fitted on
+  CLUSTER scores of everyone who is not this person: the street (every
+  unnamed recent cluster), other named people's clusters, and clusters with
+  crops Juniper said are not them. The street is the population a guess is
+  made on; calibrating only on the other named people let ~9% of street
+  clusters through on live data (2026-10-20). Unnamed clusters that really
+  are the person only raise the bar (conservative). A cluster is accepted
+  when its score is above the bound;
+- the accept bar is dropped unless at least one of the person's own clusters,
+  held out together with every album crop from its days, scores above it:
+  a channel that only matches same-day clothes cannot accept anyone;
+- ``reject_below``: alpha-quantile of cross-day genuine CROP scores (needs >= 19).
 
-An unnamed cluster's score is the MEDIAN of its crops' scores. Calibration is
-per crop, and the median never inflates with cluster size (top-k over every
-crop pair would), so the false-accept bound stays conservative. Three bands:
-accept ("probably X"), unsure (ask), reject (not X). A guess never writes
-``vision_individual.label``.
+Three bands: accept ("probably X"), unsure (ask), reject (not X). A guess
+never writes ``vision_individual.label``.
 
 Design: docs/superpowers/specs/2026-10-20-walkway-person-learning-design.md.
 """
@@ -36,7 +40,7 @@ import numpy as np
 
 logger = logging.getLogger("sql-writer.vision_person_model")
 
-MODEL_VERSION = "median-topk-v1"
+MODEL_VERSION = "median-topk-street-v1"
 CHANNELS = ("face", "body", "osnet")
 RECONCILED_SOURCES = ("cluster_label", "pair_same", "picture_different")
 PEOPLE_KINDS = ("person", "man", "woman", "child", "kid")
@@ -172,10 +176,58 @@ def _score_one(v: np.ndarray, pos: _Side, pos_mask: np.ndarray, neg: _Side, neg_
     return score
 
 
-def fit_bar(person: str, channel: str, album: Dict[str, Dict[int, List[Crop]]], cfg: PersonModelConfig
-            ) -> Tuple[Bar, List[float], List[float]]:
-    """Fit one person's bar on one channel. ``album``: person -> polarity -> crops.
-    Returns (bar, genuine scores, impostor scores)."""
+@dataclass(frozen=True)
+class Fit:
+    bar: Bar
+    genuine_crops: List[float]       # cross-day, per crop (reject bar)
+    genuine_clusters: List[float]    # the person's own clusters, held out with their days
+    impostor_clusters: List[float]   # street + other people + ruled-out clusters (accept bar)
+
+
+def _by_cluster(crops: Iterable[Crop]) -> Dict[str, List[Crop]]:
+    out: Dict[str, List[Crop]] = {}
+    for c in crops:
+        out.setdefault(c.cluster, []).append(c)
+    return out
+
+
+def score_cluster(crops: Sequence[Crop], person: str, channel: str, album: Dict[str, Dict[int, List[Crop]]],
+                  cfg: PersonModelConfig, sides: Optional[Dict[Tuple[str, str, int], _Side]] = None
+                  ) -> Optional[float]:
+    """Median over the cluster's crops of their score against the person's album
+    (album crops from this same cluster left out). Same formula as _score_one."""
+    def side(pol: int) -> _Side:
+        key = (person, channel, pol)
+        if sides is not None and key in sides:
+            return sides[key]
+        sd = _Side(album.get(person, {}).get(pol, []), channel)
+        if sides is not None:
+            sides[key] = sd
+        return sd
+
+    qs = [c.vecs[channel] for c in crops if channel in c.vecs]
+    pos, neg = side(1), side(-1)
+    if not qs or not len(pos):
+        return None
+    names = np.array(sorted({c.cluster for c in crops}))
+    cols = pos.m[~np.isin(pos.cluster, names)]
+    if not cols.shape[0]:
+        return None
+    q = np.stack(qs)
+    sims = q @ cols.T
+    top = -np.sort(-sims, axis=1)[:, :min(cfg.top_k, cols.shape[0])]
+    score = top.mean(axis=1)
+    if len(neg):
+        ncols = neg.m[~np.isin(neg.cluster, names)]
+        if ncols.shape[0]:
+            score = score - np.maximum(0.0, (q @ ncols.T).max(axis=1) - top[:, 0])
+    return float(np.median(score))
+
+
+def fit_bar(person: str, channel: str, album: Dict[str, Dict[int, List[Crop]]], cfg: PersonModelConfig,
+            street: Optional[Dict[str, List[Crop]]] = None) -> Fit:
+    """Fit one person's bar on one channel. ``album``: person -> polarity -> crops;
+    ``street``: unnamed recent clusters (cluster -> crops)."""
     own = album.get(person, {})
     pos = _Side(own.get(1, []), channel)
     neg = _Side(own.get(-1, []), channel)
@@ -187,47 +239,27 @@ def fit_bar(person: str, channel: str, album: Dict[str, Dict[int, List[Crop]]], 
                        neg, neg.cluster != c.cluster, cfg.top_k)
         if s is not None:
             genuine.append(s)
-    impostors = [c for other, pol in album.items() if other != person for c in pol.get(1, [])] + own.get(-1, [])
-    impostor: List[float] = []
-    for c in impostors:
-        if channel not in c.vecs or not len(pos):
-            continue
-        s = _score_one(c.vecs[channel], pos, pos.cluster != c.cluster, neg, neg.cluster != c.cluster, cfg.top_k)
+    genuine_clusters: List[float] = []
+    for k, cs in _by_cluster(own.get(1, [])).items():
+        days = {c.day for c in cs}
+        held = {**album, person: {**own, 1: [c for c in own.get(1, []) if c.day not in days]}}
+        s = score_cluster(cs, person, channel, held, cfg)
         if s is not None:
-            impostor.append(s)
+            genuine_clusters.append(s)
+    own_clusters = {c.cluster for c in own.get(1, [])}
+    groups = list(_by_cluster(c for other, pol in album.items() if other != person
+                              for c in pol.get(1, [])).values())
+    groups += list(_by_cluster(own.get(-1, [])).values())
+    groups += [cs for cid, cs in (street or {}).items() if cid not in own_clusters]
+    sides: Dict[Tuple[str, str, int], _Side] = {(person, channel, 1): pos, (person, channel, -1): neg}
+    impostor = [s for s in (score_cluster(cs, person, channel, album, cfg, sides) for cs in groups)
+                if s is not None]
     accept_at = conformal_accept_at(impostor, cfg.alpha)
-    # Gate 4 of the spec: a channel that never accepts a correct cross-day
-    # match does not get an accept band.
-    if accept_at is not None and not any(g > accept_at for g in genuine):
+    if accept_at is not None and not any(g > accept_at for g in genuine_clusters):
         accept_at = None
     bar = Bar(person, channel, accept_at, conformal_reject_below(genuine, cfg.alpha),
               len(genuine), len(impostor))
-    return bar, genuine, impostor
-
-
-def score_cluster(crops: Sequence[Crop], person: str, channel: str, album: Dict[str, Dict[int, List[Crop]]],
-                  cfg: PersonModelConfig, sides: Optional[Dict[Tuple[str, str, int], _Side]] = None
-                  ) -> Optional[float]:
-    """Median over the cluster's crops of their score against the person's album
-    (album crops from this same cluster left out)."""
-    def side(pol: int) -> _Side:
-        key = (person, channel, pol)
-        if sides is not None and key in sides:
-            return sides[key]
-        sd = _Side(album.get(person, {}).get(pol, []), channel)
-        if sides is not None:
-            sides[key] = sd
-        return sd
-
-    pos, neg = side(1), side(-1)
-    if not len(pos):
-        return None
-    names = np.array(sorted({c.cluster for c in crops}))
-    pos_mask = ~np.isin(pos.cluster, names)
-    neg_mask = ~np.isin(neg.cluster, names) if len(neg) else np.zeros(0, dtype=bool)
-    scores = [s for s in (_score_one(c.vecs[channel], pos, pos_mask, neg, neg_mask, cfg.top_k)
-                          for c in crops if channel in c.vecs) if s is not None]
-    return float(np.median(scores)) if scores else None
+    return Fit(bar, genuine, genuine_clusters, impostor)
 
 
 def pick_channel(crops: Sequence[Crop], person: str, bars: Dict[Tuple[str, str], Bar],
@@ -410,12 +442,13 @@ def load_album(conn, tz: ZoneInfo) -> Tuple[Dict[str, Dict[int, List[Crop]]], st
     return build_album(rows, load_crops_by_id(conn, (r[1] for r in rows), tz)), fingerprint
 
 
-def fit_all(album: Dict[str, Dict[int, List[Crop]]], cfg: PersonModelConfig) -> Dict[Tuple[str, str], Bar]:
+def fit_all(album: Dict[str, Dict[int, List[Crop]]], cfg: PersonModelConfig,
+            street: Optional[Dict[str, List[Crop]]] = None) -> Dict[Tuple[str, str], Bar]:
     bars = {}
     for person in sorted(album):
         for ch in CHANNELS:
             if any(ch in c.vecs for c in album[person].get(1, [])):
-                bars[(person, ch)] = fit_bar(person, ch, album, cfg)[0]
+                bars[(person, ch)] = fit_bar(person, ch, album, cfg, street).bar
     return bars
 
 
@@ -431,18 +464,7 @@ def _write_bars(conn, bars: Dict[Tuple[str, str], Bar], fingerprint: str, now: d
              "i": b.n_impostor, "f": fingerprint, "v": MODEL_VERSION, "t": now})
 
 
-def _read_bars(conn) -> Tuple[Dict[Tuple[str, str], Bar], Optional[str]]:
-    from sqlalchemy import text
-
-    rows = conn.execute(text(
-        "SELECT person_label, channel, accept_at, reject_below, n_genuine, n_impostor, album_fingerprint, "
-        "model_version FROM vision_person_bar")).fetchall()
-    fps = {(r[6], r[7]) for r in rows}
-    fp = next(iter(fps))[0] if len(fps) == 1 and next(iter(fps))[1] == MODEL_VERSION else None
-    return {(r[0], r[1]): Bar(r[0], r[1], r[2], r[3], r[4], r[5]) for r in rows}, fp
-
-
-def _unnamed_clusters(conn, now: datetime, cfg: PersonModelConfig, tz: ZoneInfo) -> Dict[str, List[Crop]]:
+def unnamed_clusters(conn, now: datetime, cfg: PersonModelConfig, tz: ZoneInfo) -> Dict[str, List[Crop]]:
     from sqlalchemy import text
 
     ids = [r[0] for r in conn.execute(text(
@@ -494,24 +516,24 @@ def write_attributions(conn, guesses: List[dict], now: datetime) -> Tuple[int, i
 
 
 def run_person_model(conn, now: datetime, cfg: PersonModelConfig) -> dict:
-    """One cycle: reconcile the album, refit bars if it changed, re-guess."""
+    """One cycle: reconcile the album, refit the bars (the street they are
+    calibrated on changes every cycle), re-guess."""
     tz = ZoneInfo(cfg.local_tz)
     if not tables_present(conn):
         return {"person_model": "skipped: apply services/orion-sql-db/manual_migration_vision_person_album_v1.sql"}
     rows, stats = desired_exemplars(conn, tz)
     added, revoked = reconcile_exemplars(conn, rows, now)
     album, fingerprint = load_album(conn, tz)
-    bars, fitted_on = _read_bars(conn)
-    refit = fitted_on != fingerprint
-    if refit:
-        bars = fit_all(album, cfg)
-        _write_bars(conn, bars, fingerprint, now)
-    guesses = attribute(_unnamed_clusters(conn, now, cfg, tz), album, bars, _blocked(conn), cfg)
+    street = unnamed_clusters(conn, now, cfg, tz)
+    bars = fit_all(album, cfg, street)
+    _write_bars(conn, bars, fingerprint, now)
+    guesses = attribute(street, album, bars, _blocked(conn), cfg)
     n, gone = write_attributions(conn, guesses, now)
     return {
         "person_exemplars_added": added, "person_exemplars_revoked": revoked,
-        "person_impure_clusters": stats["impure_clusters"], "person_bars_refit": int(refit),
-        "person_people": len(album), "person_guesses": n,
+        "person_impure_clusters": stats["impure_clusters"],
+        "person_people": len(album), "person_street_clusters": len(street),
+        "person_accept_bars": sum(1 for b in bars.values() if b.accept_at is not None), "person_guesses": n,
         "person_accepts": sum(1 for g in guesses if g["band"] == "accept"),
         "person_guesses_revoked": gone,
     }

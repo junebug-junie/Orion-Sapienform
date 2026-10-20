@@ -12,10 +12,11 @@ unnamed one. Outcomes:
 - unsure: Orion would ask; reject: no person fits; no album: its person has
   no other cluster to learn from (cannot be recognised yet).
 
-Also reported, per channel: cross-day separation, the AUC of genuine scores
-(same person, other days and clusters) against impostor scores (other people,
-"different" pictures) over the full album. 0.5 = no better than chance. A
-channel that only separates same-day clothes shows ~0.5 here.
+Also reported, per channel: cross-day separation, the AUC of genuine CLUSTER
+scores (each of a person's clusters held out with every album crop from its
+days) against impostor cluster scores (the street, other people, ruled-out
+clusters), the populations the accept bar is fitted on. 0.5 = no better than
+chance. A channel that only separates same-day clothes shows ~0.5 here.
 
 Album rule is the live one (``desired_exemplars``: named clusters that pass
 the purity split, plus "different" pictures as -1). READ ONLY on --live unless
@@ -65,7 +66,8 @@ def mcnemar_p(b: int, c: int) -> float:
     return min(1.0, 2 * tail)
 
 
-def evaluate(album: Dict[str, Dict[int, List[pm.Crop]]], cfg: pm.PersonModelConfig) -> dict:
+def evaluate(album: Dict[str, Dict[int, List[pm.Crop]]], cfg: pm.PersonModelConfig,
+             street: Dict[str, List[pm.Crop]]) -> dict:
     clusters: Dict[str, Tuple[str, List[pm.Crop]]] = {}
     for person, pol in album.items():
         for c in pol.get(1, []):
@@ -81,7 +83,7 @@ def evaluate(album: Dict[str, Dict[int, List[pm.Crop]]], cfg: pm.PersonModelConf
             counts["no_album"] += 1
             per_cluster[cid] = {"truth": truth, "outcome": "no_album"}
             continue
-        bars = pm.fit_all(held, cfg)
+        bars = pm.fit_all(held, cfg, street)
         newest = sorted(crops, key=lambda c: c.day, reverse=True)[:pm.ATTRIBUTION_CROPS]
         guess = pm.attribute({cid: newest}, held, bars, {}, cfg)
         if not guess:
@@ -96,17 +98,20 @@ def evaluate(album: Dict[str, Dict[int, List[pm.Crop]]], cfg: pm.PersonModelConf
                             "guess": guess[0] if guess else None}
     separation = {}
     for ch in pm.CHANNELS:
-        gen, imp = [], []
+        gen, imp, accept_bars = [], [], 0
         for person in album:
             if any(ch in c.vecs for c in album[person].get(1, [])):
-                _, g, i = pm.fit_bar(person, ch, album, cfg)
-                gen += g
-                imp += i
-        separation[ch] = {"cross_day_auc": auc(gen, imp), "n_genuine": len(gen), "n_impostor": len(imp)}
+                fit = pm.fit_bar(person, ch, album, cfg, street)
+                gen += fit.genuine_clusters
+                imp += fit.impostor_clusters
+                accept_bars += fit.bar.accept_at is not None
+        separation[ch] = {"cross_day_cluster_auc": auc(gen, imp), "n_genuine_clusters": len(gen),
+                          "n_impostor_clusters": len(imp), "people_with_accept_bar": accept_bars}
     scored = len(clusters) - counts["no_album"]
     return {
         "model_version": pm.MODEL_VERSION, "alpha": cfg.alpha, "top_k": cfg.top_k,
         "fallback_channel": cfg.fallback_channel, "people": len(album), "clusters": len(clusters),
+        "street_clusters": len(street),
         **counts,
         "correct_accept_rate": round(counts["correct_accept"] / scored, 4) if scored else None,
         "unsure_rate": round(counts["unsure"] / scored, 4) if scored else None,
@@ -158,7 +163,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not album:
             print(json.dumps({"verdict": "nothing to evaluate", **stats}))
             return 2
-        metrics = evaluate(album, cfg)
+        street = pm.unnamed_clusters(conn, datetime.now(timezone.utc), cfg, tz)
+        metrics = evaluate(album, cfg, street)
         metrics["album"] = {**stats, "exemplars": len(ex)}
         metrics["vs_previous"] = compare_previous(conn, metrics)
     summary = {k: v for k, v in metrics.items() if k != "per_cluster"}

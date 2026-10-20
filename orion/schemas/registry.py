@@ -543,6 +543,7 @@ from orion.schemas.person_model import (
 from orion.schemas.vision import (
     VisionArtifactPayload,
     VisionSceneInventoryV1,
+    StreetEventV1,
     VisionCropV1,
     VisionCropObservationV1,
     PerceptExpectationV1,
@@ -1012,6 +1013,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "VisionEdgeArtifact": VisionEdgeArtifact,
     "VisionEdgeActivityPayload": VisionEdgeActivityPayload,
     "VisionSceneInventoryV1": VisionSceneInventoryV1,
+    "StreetEventV1": StreetEventV1,
     "VisionCropV1": VisionCropV1,
     "VisionCropObservationV1": VisionCropObservationV1,
     "PerceptExpectationV1": PerceptExpectationV1,
@@ -1774,6 +1776,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "VisionSceneInventoryV1": SchemaRegistration(
         model=VisionSceneInventoryV1,
         kind="vision.scene.inventory.v1",
+    ),
+    "StreetEventV1": SchemaRegistration(
+        model=StreetEventV1,
+        kind="vision.street.event.v1",
     ),
     # Walkway camera (docs/superpowers/specs/2026-09-22-walkway-camera-busy-
     # world-design.md). PerceptExpectationV1/VisionCropV1 are persisted/nested

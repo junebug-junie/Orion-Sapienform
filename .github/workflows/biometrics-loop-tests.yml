@@ -2,7 +2,8 @@ name: Biometrics substrate loop
 # The biometrics node/pressure reducers, the pressure organ and the node catalog had no CI:
 # four tests in this set sat red on main for weeks (they asserted circe was expected offline
 # after the catalog flipped it). Also pins the retired-host prune (atlas, 2026-10-16):
-# tests/test_retired_biometrics_node.py.
+# tests/test_retired_biometrics_node.py. Offline-node pressure clearing and standby
+# (silent-node) exclusion from the biometrics prediction error, 2026-10-20.
 on:
   pull_request:
     paths:
@@ -20,6 +21,9 @@ on:
       - 'tests/test_node_pressure_reducer.py'
       - 'tests/test_biometrics_grammar_extract.py'
       - 'tests/test_fleet_roster_coverage.py'
+      - 'tests/test_offline_node_stuck_pressure.py'
+      - 'tests/test_biometrics_silent_node_exclusion.py'
+      - 'orion/schemas/prediction_error_definitions.py'
       - '.github/workflows/biometrics-loop-tests.yml'
   push:
     branches: [main]
@@ -38,6 +42,9 @@ on:
       - 'tests/test_node_pressure_reducer.py'
       - 'tests/test_biometrics_grammar_extract.py'
       - 'tests/test_fleet_roster_coverage.py'
+      - 'tests/test_offline_node_stuck_pressure.py'
+      - 'tests/test_biometrics_silent_node_exclusion.py'
+      - 'orion/schemas/prediction_error_definitions.py'
       - '.github/workflows/biometrics-loop-tests.yml'
   workflow_dispatch:
 permissions:
@@ -61,4 +68,6 @@ jobs:
             tests/test_node_biometrics_reducer.py \
             tests/test_node_pressure_reducer.py \
             tests/test_biometrics_grammar_extract.py \
-            tests/test_fleet_roster_coverage.py
+            tests/test_fleet_roster_coverage.py \
+            tests/test_offline_node_stuck_pressure.py \
+            tests/test_biometrics_silent_node_exclusion.py

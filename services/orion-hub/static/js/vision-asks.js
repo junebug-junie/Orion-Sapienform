@@ -54,12 +54,33 @@
   }
 
   const SAME_PERSON_KIND = "vision_same_individual";
+  // "Is this <name>?" (orion-sql-writer person learning, 2026-10-20): yes / no,
+  // "Can't tell" is a dismissal. source_ref is "<individual_id>|<name>".
+  const PERSON_CONFIRM_KIND = "vision_person_confirm";
   const WHO_IS_THIS_KIND = "vision_individual";
   // More than this many pictures would not fit a phone-width card.
   const MAX_IMAGES = 4;
 
   function isSamePerson(ask) {
     return !!ask && String(ask.source_kind || "") === SAME_PERSON_KIND;
+  }
+
+  function isPersonConfirm(ask) {
+    return !!ask && String(ask.source_kind || "") === PERSON_CONFIRM_KIND;
+  }
+
+  // The name an "Is this <name>?" card asks about ("" when the ref has none).
+  function personConfirmName(ask) {
+    const ref = String((ask && ask.source_ref) || "");
+    const i = ref.indexOf("|");
+    return i > 0 ? ref.slice(i + 1).trim() : "";
+  }
+
+  // What an "Is this <name>?" card sends: yes / no, or a dismissal for "Can't tell".
+  function personConfirmSubmission(choice) {
+    if (choice === "yes" || choice === "no") return { action: "answer", answer: choice, extra: null };
+    if (choice === "unsure") return { action: "dismiss", answer: "", extra: null };
+    return null;
   }
 
   // Every picture an ask shows, in order, no repeats: image_refs, else the
@@ -103,6 +124,8 @@
       image: images[0] || { kind: "none", ref: "" },
       images: images,
       samePerson: isSamePerson(a),
+      personConfirm: isPersonConfirm(a),
+      personName: isPersonConfirm(a) ? personConfirmName(a) : "",
       askedAt: a.created_at ? String(a.created_at) : "",
       about: a.source_kind ? String(a.source_kind) + ": " + String(a.source_ref || "") : "",
       resolvable: isResolvable(a),
@@ -413,6 +436,59 @@
     return card;
   }
 
+  function renderPersonConfirm(doc, vm, onAction) {
+    const card = el(doc, "div", "rounded-lg border border-sky-800 bg-gray-800/60 p-3 space-y-2");
+    card.setAttribute("data-ask-id", vm.askId);
+    card.setAttribute("data-ask-kind", "person-confirm");
+    card.appendChild(el(doc, "div", "text-sm text-gray-100", vm.question));
+    if (vm.images.length) card.appendChild(renderImages(doc, vm, null));
+    if (vm.askedAt) card.appendChild(el(doc, "div", "text-[11px] text-gray-500", "Asked " + vm.askedAt));
+
+    const group = el(doc, "fieldset", "flex flex-wrap items-center gap-3 border-0 p-0 m-0");
+    setStyle(group, { border: "0", padding: "0", margin: "0" });
+    group.setAttribute("data-ask-choices", vm.askId);
+    const legend = el(doc, "legend", "sr-only", vm.personName ? "Is this " + vm.personName + "?" : "Is this them?");
+    setStyle(legend, { position: "absolute", width: "1px", height: "1px", overflow: "hidden",
+      clip: "rect(0 0 0 0)", whiteSpace: "nowrap" });
+    group.appendChild(legend);
+    const groupName = nextId("ask-choice");
+    let choice = "";
+    const yesText = vm.personName ? "Yes, it is " + vm.personName : "Yes";
+    [["yes", yesText], ["no", "No"], ["unsure", "Can't tell"]].forEach(function (c) {
+      const label = el(doc, "label", "inline-flex items-center gap-1 text-xs text-gray-200");
+      const radio = el(doc, "input", "");
+      radio.setAttribute("type", "radio");
+      radio.setAttribute("name", groupName);
+      radio.setAttribute("value", c[0]);
+      radio.setAttribute("data-ask-choice", c[0]);
+      radio.addEventListener("change", function () { choice = c[0]; });
+      label.appendChild(radio);
+      label.appendChild(el(doc, "span", "", c[1]));
+      group.appendChild(label);
+    });
+    card.appendChild(group);
+
+    const sendBtn = el(doc, "button", "text-xs rounded px-3 py-1 bg-sky-700 hover:bg-sky-600 text-white", "Send");
+    sendBtn.setAttribute("type", "button");
+    sendBtn.setAttribute("data-ask-action", "send");
+    const note = el(doc, "div", "text-[11px] text-amber-300 hidden");
+    sendBtn.addEventListener("click", function () {
+      const sub = personConfirmSubmission(choice);
+      if (!sub) {
+        note.textContent = errorLine(422, "pick_an_answer");
+        note.classList.remove("hidden");
+        return;
+      }
+      sendBtn.disabled = true;
+      return Promise.resolve(onAction(vm.askId, sub.action, sub.answer, note, undefined, sub.extra)).finally(function () {
+        sendBtn.disabled = false;
+      });
+    });
+    card.appendChild(sendBtn);
+    card.appendChild(note);
+    return card;
+  }
+
   // What a multi-picture "who is this?" card sends about pictures 2..n.
   // choices[i] is "same" | "different" | "unsure" for picture i (i >= 1).
   function pictureSubmission(views, choices, names) {
@@ -432,6 +508,7 @@
     const vm = askCardViewModel(ask);
     if (vm.resolvable) return renderResolvable(doc, vm, onAction);
     if (vm.samePerson) return renderSamePerson(doc, vm, onAction);
+    if (vm.personConfirm) return renderPersonConfirm(doc, vm, onAction);
     const card = el(doc, "div", "rounded-lg border border-sky-800 bg-gray-800/60 p-3 space-y-2");
     card.setAttribute("data-ask-id", vm.askId);
     card.appendChild(el(doc, "div", "text-sm text-gray-100", vm.question));
@@ -644,6 +721,9 @@
     isSamePerson: isSamePerson,
     pairIds: pairIds,
     samePersonSubmission: samePersonSubmission,
+    isPersonConfirm: isPersonConfirm,
+    personConfirmName: personConfirmName,
+    personConfirmSubmission: personConfirmSubmission,
     pictureSubmission: pictureSubmission,
     askCardViewModel: askCardViewModel,
     statusLine: statusLine,

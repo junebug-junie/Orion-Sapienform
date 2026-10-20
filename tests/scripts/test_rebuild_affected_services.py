@@ -732,6 +732,122 @@ def test_profile_service_started_from_another_checkout_is_left_alone(tmp_path: P
     assert _profile_services(ROOT, "orion-vision-retina", ps, tmp_path) == []
 
 
+def test_profile_service_from_a_deleted_worktree_is_adopted(tmp_path: Path) -> None:
+    """2026-10-20: orion-energy-portal ran from a pruned worktree and was skipped on
+    every pull; only main can ever redeploy it, so it is adopted."""
+    gone = (ROOT.parent / f"{ROOT.name}-pruned-worktree").as_posix()
+    ps = [f"orion-vision-retina\torion-vision-retina-walkway\t{gone}/services/orion-vision-retina/docker-compose.yml"]
+    assert _profile_services(ROOT, "orion-vision-retina", ps, tmp_path) == ["walkway\torion-vision-retina-walkway"]
+    # Another compose project would clash with main's on container_name: left alone.
+    ps = [f"custom\torion-vision-retina-walkway\t{gone}/services/orion-vision-retina/docker-compose.yml"]
+    assert _profile_services(ROOT, "orion-vision-retina", ps, tmp_path) == []
+
+
+# --- Second compose files (2026-10-20 Qwen caption lane incident) -------------
+
+
+def _extra(service: str, ps_lines: list[str], tmp_path: Path, repo: Path = ROOT) -> list[str]:
+    ps_file = tmp_path / "docker-ps.txt"
+    ps_file.write_text("\n".join(ps_lines) + "\n")
+    proc = subprocess.run(
+        [sys.executable, str(MODULE), "--repo-root", str(repo), "--running-extra-compose", service,
+         "--docker-ps-file", str(ps_file)],
+        capture_output=True, text=True, check=False, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.splitlines()
+
+
+_QWEN = (ROOT / "services/orion-vision-host/docker-compose.circe-qwen.yml").resolve().as_posix()
+_QWEN_PROJECT = "orion-vision-host-qwen"  # the file's own `name:`
+_ATLAS = (ROOT / "services/orion-llamacpp-host/docker-compose.atlas-workers.yml").resolve().as_posix()
+
+
+def test_running_qwen_lane_is_rebuilt_from_its_own_file(tmp_path: Path) -> None:
+    ps = [f"{_QWEN_PROJECT}\tvision-host-circe-qwen\t{_QWEN}"]
+    assert _extra("orion-vision-host", ps, tmp_path) == ["docker-compose.circe-qwen.yml\tvision-host-circe-qwen"]
+
+
+def test_stopped_extra_compose_lane_is_never_started(tmp_path: Path) -> None:
+    main = (ROOT / "services/orion-vision-host/docker-compose.yml").resolve().as_posix()
+    assert _extra("orion-vision-host", [f"orion-vision-host\tvision-host\t{main}"], tmp_path) == []
+
+
+def test_extra_compose_from_another_place_or_project_is_left_alone(tmp_path: Path) -> None:
+    for project, files in (
+        (_QWEN_PROJECT, "/srv/elsewhere/services/orion-vision-host/docker-compose.circe-qwen.yml"),
+        (_QWEN_PROJECT, f"{_QWEN},/tmp/overlay.yml"),  # overlay
+        ("orion-vision-host", _QWEN),  # a different project: main's up would clash
+    ):
+        assert _extra("orion-vision-host", [f"{project}\tvision-host-circe-qwen\t{files}"], tmp_path) == []
+
+
+def test_extra_compose_from_a_deleted_worktree_is_adopted(tmp_path: Path) -> None:
+    gone = (ROOT.parent / f"{ROOT.name}-pruned-worktree").as_posix()
+    ps = [f"{_QWEN_PROJECT}\tvision-host-circe-qwen\t{gone}/services/orion-vision-host/docker-compose.circe-qwen.yml"]
+    assert _extra("orion-vision-host", ps, tmp_path) == ["docker-compose.circe-qwen.yml\tvision-host-circe-qwen"]
+    # No separator after the repo name: an unrelated clone, not a worktree of this repo.
+    other = (ROOT.parent / f"{ROOT.name}X").as_posix()
+    ps = [f"{_QWEN_PROJECT}\tvision-host-circe-qwen\t{other}/services/orion-vision-host/docker-compose.circe-qwen.yml"]
+    assert _extra("orion-vision-host", ps, tmp_path) == []
+
+
+def _sibling_repo(tmp_path: Path) -> tuple[Path, Path]:
+    """tmp/Repo (main) + tmp/Repo-wt (a LIVE worktree), each with one two-service lane file."""
+    lane = "services:\n  lane-a: {image: x}\n  lane-b: {image: x}\n"
+    roots = []
+    for name in ("Repo", "Repo-wt"):
+        d = tmp_path / name / "services" / "orion-x"
+        d.mkdir(parents=True)
+        (d / "docker-compose.yml").write_text("services:\n  main: {image: x}\n  side: {image: x, profiles: [p]}\n")
+        (d / "docker-compose.lane.yml").write_text(lane)
+        roots.append(tmp_path / name)
+    return roots[0], roots[1]
+
+
+def test_live_sibling_worktree_deploys_are_never_taken_over(tmp_path: Path) -> None:
+    """A path under the repo's worktree prefix that still EXISTS is a live worktree
+    deploy: main's up would silently replace it."""
+    repo, wt = _sibling_repo(tmp_path)
+    lane = (wt / "services/orion-x/docker-compose.lane.yml").as_posix()
+    assert _extra("orion-x", [f"orion-x\tlane-a\t{lane}"], tmp_path, repo) == []
+    prof = (wt / "services/orion-x/docker-compose.yml").as_posix()
+    assert _profile_services(repo, "orion-x", [f"orion-x\tside\t{prof}"], tmp_path) == []
+
+
+def test_only_the_running_services_of_an_extra_file_are_named(tmp_path: Path) -> None:
+    repo, _wt = _sibling_repo(tmp_path)
+    lane = (repo / "services/orion-x/docker-compose.lane.yml").resolve().as_posix()
+    assert _extra("orion-x", [f"orion-x\tlane-b\t{lane}"], tmp_path, repo) == ["docker-compose.lane.yml\tlane-b"]
+
+
+def test_extra_file_that_needs_its_own_env_file_is_left_alone(tmp_path: Path) -> None:
+    """orion-bus/docker-compose.atlas-standby.yml runs with .env.atlas-standby; the
+    wrapper always loads services/<svc>/.env, so it must never redeploy it."""
+    standby = (ROOT / "services/orion-bus/docker-compose.atlas-standby.yml").resolve().as_posix()
+    import yaml
+
+    project = (yaml.safe_load(Path(standby).read_text()) or {}).get("name") or "orion-bus"
+    assert _extra("orion-bus", [f"{project}\tbus-core-standby\t{standby}"], tmp_path) == []
+
+
+def test_gpu_pool_launch_files_are_left_to_the_lane_controller(tmp_path: Path) -> None:
+    ps = [
+        f"orion-llamacpp-host\tatlas-agent\t{_ATLAS}",
+        # The controller's own container path: missing on the host, but not an orphan.
+        "orion-llamacpp-host\tatlas-agent-burst\t/repo/services/orion-llamacpp-host/docker-compose.atlas-workers.yml",
+    ]
+    assert _extra("orion-llamacpp-host", ps, tmp_path) == []
+
+
+def test_controller_path_is_not_an_orphan_even_without_the_pool_skip() -> None:
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import rebuild_affected_services as rebuild
+
+    rows = [("orion-llamacpp-host", "atlas-agent-burst", "/repo/services/orion-llamacpp-host/docker-compose.atlas-workers.yml")]
+    assert rebuild.running_extra_compose_files(ROOT, "orion-llamacpp-host", rows, set()) == []
+
+
 def test_docker_unavailable_starts_no_profile_services(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()

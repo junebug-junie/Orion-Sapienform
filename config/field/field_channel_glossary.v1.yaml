@@ -200,7 +200,9 @@ channels:
   - channel: execution_friction
     level: [node]
     category: task_execution
-    meaning: "How much resistance (retries/backoff) execution is encountering on a node."
+    meaning: "How much resistance (retries/backoff) execution is encountering on a node. Failed
+      steps over started steps; deliberate GPU-pool sheds (gpu_pool_unavailable:shed:*) are
+      excluded from the failed count since 2026-10-20."
     evidence_dimension: reliability_pressure
 
   - channel: reasoning_load
@@ -216,7 +218,9 @@ channels:
   - channel: failure_pressure
     level: [node]
     category: task_execution
-    meaning: "Recent execution failure rate/severity on a node."
+    meaning: "Recent execution failure rate/severity on a node. A step the GPU pool shed on
+      purpose (gpu_pool_unavailable:shed:*, e.g. cabinet_hot) is not a failure and does not
+      raise it (since 2026-10-20); pool deadline/outage refusals and every other error still do."
     evidence_dimension: reliability_pressure
 
   - channel: egress_confidence_deficit

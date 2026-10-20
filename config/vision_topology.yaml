@@ -29,9 +29,12 @@ portals:
     to: {stream: doorbell, event: [doorbell_motion, doorbell_ring]}
     prior_sec: [3, 30]
   # Sidewalk, past the edge of the door camera's view.
+  # exclude_dir_depth 1: a doorbell story moving toward the camera is walking up
+  # to the door, not along the sidewalk. Replay 2026-10-20: the only "missed"
+  # door_to_walkway (21:02 UTC, right and toward the door, porch) was a visitor.
   - id: door_to_walkway
     kind: gap
-    from: {stream: doorbell, edge: right}
+    from: {stream: doorbell, edge: right, exclude_dir_depth: 1}
     to: {stream: walkway, edge: left}
     prior_gap_frame_widths: 1.5
   - id: walkway_to_door

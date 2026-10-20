@@ -49,6 +49,9 @@ class Portal:
     from_edge: Optional[str] = None
     to_edge: Optional[str] = None
     from_dir_depth: Optional[int] = None
+    # Gap portals: a departure moving this way in depth is not a departure
+    # through the portal (on the doorbell, +1 = toward the door, not the sidewalk).
+    from_exclude_dir_depth: Optional[int] = None
     to_events: Tuple[str, ...] = ()
     max_skew_sec: float = 0.0
     prior_sec: Tuple[float, float] = (0.0, 0.0)
@@ -138,8 +141,12 @@ def parse_topology(raw: dict) -> Topology:
             gap = float(_req(p, "prior_gap_frame_widths", pid))
             if gap <= 0:
                 raise TopologyError(f"portal {pid!r}: prior_gap_frame_widths must be > 0")
+            excl = f.get("exclude_dir_depth")
+            if excl is not None and int(excl) not in (-1, 1):
+                raise TopologyError(f"portal {pid!r}: from.exclude_dir_depth must be -1 or 1")
             portals.append(Portal(id=pid, kind=kind, from_stream=str(f["stream"]), to_stream=str(t["stream"]),
-                                  from_edge=fe, to_edge=te, prior_gap_frame_widths=gap))
+                                  from_edge=fe, to_edge=te, prior_gap_frame_widths=gap,
+                                  from_exclude_dir_depth=None if excl is None else int(excl)))
     if not portals:
         raise TopologyError("topology has no portals")
     places = {str(k): tuple(str(z) for z in (v or [])) for k, v in (raw.get("place_zones") or {}).items()}

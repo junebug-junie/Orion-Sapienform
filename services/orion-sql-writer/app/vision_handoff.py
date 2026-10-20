@@ -52,7 +52,9 @@ arrival in the middle of the band has ``p`` near 1. The attention gate is
 eval checks uniformity and that a quiet hour yields zero gate passes.
 
 **Grade** (same three-way rule as ``vision_rhythm``): ``met`` matched inside
-the window, ``late`` inside the late margin, ``missed`` only when the target
+the window, ``early`` / ``late`` inside the early margin (one window width,
+never before the departure) / late margin (twice the window), ``missed`` only
+when the target
 camera was looking for at least ``min_coverage`` of the window, else
 ``unscorable``. The doorbell only sees during Ring bursts or self-looks, so
 its coverage is the census frames it actually delivered.
@@ -84,8 +86,10 @@ STREET_CHANNEL = "orion:vision:street:events"
 SOURCE_KIND_SAME = "vision_same_individual"
 HANDOFF_RULE_REF = "rule:handoff"
 
-GRADED = ("met", "late", "missed", "ambiguous", "unscorable")
-ARRIVED = ("met", "late")
+GRADED = ("met", "early", "late", "missed", "ambiguous", "unscorable")
+# Arrivals: they train the gap. "early" = before the band, inside the early
+# margin (a 10-90% band leaves ~10% of ordinary walkers early by design).
+ARRIVED = ("met", "early", "late")
 HYPOTHESES = ("detector_miss", "late", "turned_back", "entered_place", "unexplained")
 RING_HYPOTHESES = ("detector_miss", "out_of_view")
 # 10%-90% band (spec section 3).
@@ -243,6 +247,8 @@ def gap_departure(f: StoryFacts, portal, cfg: HandoffConfig) -> Optional[Tuple[f
         return None
     if portal.lateral_sign == 0 or f.dir_lateral != portal.lateral_sign:
         return None
+    if portal.from_exclude_dir_depth is not None and f.dir_depth == portal.from_exclude_dir_depth:
+        return None
     if f.exit_edge not in (portal.from_edge, "inside"):
         return None
     if f.exit_speed is None or f.exit_speed < cfg.min_exit_speed:
@@ -326,6 +332,11 @@ def window_for(departed_at: datetime, dist: float, speed: float, band: Band, cfg
     ws, we = departed_at + timedelta(seconds=a), departed_at + timedelta(seconds=b)
     late = min(2.0 * (b - a), cfg.max_late_sec)
     return ws, we, we + timedelta(seconds=late)
+
+
+def early_from(departed_at: datetime, window_start: datetime, window_end: datetime) -> datetime:
+    """Start of the early margin: one window width before the window, never before departure."""
+    return max(departed_at, window_start - (window_end - window_start))
 
 
 def observed_g(transit_sec: float, dist: float, speed: float, portal_kind: str) -> float:
@@ -414,17 +425,19 @@ class Candidate:
 
 @dataclass(frozen=True)
 class Decision:
-    status: str                       # met | late | ambiguous | none
+    status: str                       # met | early | late | ambiguous | none (overlap: paired | unpaired)
     chosen: Optional[Candidate] = None
     n_candidates: int = 0
 
 
 def decide_match(cands: Sequence[Candidate], *, window_start: datetime, window_end: datetime, late_until: datetime,
-                 cfg: HandoffConfig) -> Decision:
-    """Best candidate in [window_start, late_until]. A unique one that clears
-    the appearance bar wins; with none clearing it, a lone candidate wins on
-    timing alone; anything else is ambiguous (and never trains the gap)."""
-    live = [c for c in cands if window_start <= c.story.started_at <= late_until]
+                 cfg: HandoffConfig, early: Optional[datetime] = None) -> Decision:
+    """Best candidate in [early, late_until] (``early`` defaults to the window
+    start). A unique one that clears the appearance bar wins; with none
+    clearing it, a lone candidate wins on timing alone; anything else is
+    ambiguous (and never trains the gap)."""
+    lo = early or window_start
+    live = [c for c in cands if lo <= c.story.started_at <= late_until]
     if not live:
         return Decision("none")
     strong = sorted((c for c in live if c.score is not None and cfg.bar(c.channel) is not None
@@ -441,7 +454,8 @@ def decide_match(cands: Sequence[Candidate], *, window_start: datetime, window_e
         mid = window_start + (window_end - window_start) / 2
         best = min(live, key=lambda c: abs((c.story.started_at - mid).total_seconds()))
         return Decision("ambiguous", best, len(live))
-    return Decision("met" if chosen.story.started_at <= window_end else "late", chosen, len(live))
+    t = chosen.story.started_at
+    return Decision("early" if t < window_start else "met" if t <= window_end else "late", chosen, len(live))
 
 
 def grade_unmatched(coverage: float, cfg: HandoffConfig) -> str:
@@ -539,6 +553,7 @@ SALIENCE_WHAT = {
     "doorbell_ring": 1.0,
     "approach_door": 0.6,       # "arrival at door"
     "handoff_met": 0.4,
+    "handoff_early": 0.4,
     "handoff_late": 0.4,
     "handoff_missed": 0.4,
     "overlap_pair": 0.2,
@@ -590,7 +605,7 @@ def narrative(status: str, *, kind: str, source_stream: str, target_stream: str,
     src, tgt = camera_words(source_stream), camera_words(target_stream)
     if status in ARRIVED and transit_sec is not None:
         s = f"{who.capitalize()} left the {src} and reached the {tgt} {round(transit_sec)} s later"
-        return s + (", later than expected." if status == "late" else ", as expected.")
+        return s + {"late": ", later than expected.", "early": ", sooner than expected."}.get(status, ", as expected.")
     if status == "missed":
         return f"{who.capitalize()} left the {src} toward the {tgt}, which was watching, and never arrived."
     if status == "paired":

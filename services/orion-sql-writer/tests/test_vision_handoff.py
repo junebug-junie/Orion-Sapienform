@@ -62,6 +62,8 @@ def test_repo_topology_has_the_four_portals_juniper_described() -> None:
                                  "to": {"stream": "b", "edge": "left"}, "prior_gap_frame_widths": 1}]}, "left or right"),
     ({"version": 1, "portals": [{"id": "g", "kind": "gap", "from": {"stream": "a", "edge": "left"},
                                  "to": {"stream": "a", "edge": "left"}, "prior_gap_frame_widths": 1}]}, "two different"),
+    ({"version": 1, "portals": [{"id": "g", "kind": "gap", "from": {"stream": "a", "edge": "left", "exclude_dir_depth": 2},
+                                 "to": {"stream": "b", "edge": "left"}, "prior_gap_frame_widths": 1}]}, "exclude_dir_depth"),
     ({"version": 1, "portals": [{"id": "p", "kind": "approach", "from": {"stream": "w", "dir_depth": 0},
                                  "to": {"stream": "d", "event": ["x"]}, "prior_sec": [3, 30]}]}, "dir_depth"),
     ({"version": 1, "portals": [{"id": "p", "kind": "approach", "from": {"stream": "w", "dir_depth": 1},
@@ -84,6 +86,14 @@ def test_inside_exit_moving_toward_the_portal_edge_is_projected() -> None:
     # (0.3 + 0.4*1.5) / 0.05 = 18 s; (0.3 + 3*1.5) / 0.05 = 96 s; late margin 2 x 78 s.
     assert (ws - T0).total_seconds() == pytest.approx(18) and (we - T0).total_seconds() == pytest.approx(96)
     assert (late - we).total_seconds() == pytest.approx(156)
+
+
+def test_a_doorbell_visitor_walking_up_to_the_door_is_not_a_sidewalk_departure() -> None:
+    # Replay 2026-10-20 21:02 UTC: right and toward the door on the porch -> a false "missed".
+    visitor = facts(stream_id="doorbell", dir_lateral=1, dir_depth=1, exit_foot_x=0.55, exit_speed=0.035)
+    assert D2W.from_exclude_dir_depth == 1 and vh.gap_departure(visitor, D2W, CFG) is None
+    assert vh.gap_departure(facts(stream_id="doorbell", dir_lateral=1, dir_depth=0, exit_foot_x=0.55,
+                                  exit_speed=0.035), D2W, CFG) is not None
 
 
 def test_exit_on_the_edge_needs_no_projection() -> None:
@@ -246,6 +256,16 @@ WS, WE, LATE = T0 + timedelta(seconds=18), T0 + timedelta(seconds=96), T0 + time
 def test_lone_candidate_in_window_is_met_on_timing() -> None:
     d = vh.decide_match([cand(40)], window_start=WS, window_end=WE, late_until=LATE, cfg=CFG)
     assert d.status == "met" and d.chosen.score is None
+
+
+def test_an_arrival_just_before_the_band_is_early_not_missed() -> None:
+    # A 10-90% band leaves ~10% of ordinary walkers before it: they must be found.
+    early = vh.early_from(T0, WS, WE)
+    assert early == T0   # one window width (78 s) before 18 s is before the departure: clamped
+    d = vh.decide_match([cand(10)], window_start=WS, window_end=WE, late_until=LATE, cfg=CFG, early=early)
+    assert d.status == "early"
+    assert vh.decide_match([cand(10)], window_start=WS, window_end=WE, late_until=LATE, cfg=CFG).status == "none"
+    assert vh.early_from(T0, T0 + timedelta(seconds=100), T0 + timedelta(seconds=130)) == T0 + timedelta(seconds=70)
 
 
 def test_late_margin_is_late_and_outside_is_nothing() -> None:

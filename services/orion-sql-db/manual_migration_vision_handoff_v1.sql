@@ -6,11 +6,11 @@
 --
 -- 1. vision_handoff: one row per expectation (gap / approach portal), overlap pair,
 --    or doorbell ring nobody was seen approaching. status:
---      open | met | late | missed | ambiguous | unscorable  (expectations)
---      paired | ambiguous                                   (overlap pairs)
+--      open | met | early | late | missed | ambiguous | unscorable  (expectations)
+--      paired | ambiguous | unpaired                            (overlap pairs)
 --      unannounced                                          (a ring with no approach seen)
---    g = transit_sec x exit_speed - exit_dist (frame widths) is the learned gap; met and
---    late rows train the next band. street_event / street_published_at are the outbox
+--    g = transit_sec x exit_speed - exit_dist (frame widths) is the learned gap; met, early
+--    and late rows train the next band. street_event / street_published_at are the outbox
 --    for the StreetEventV1 publish on orion:vision:street:events.
 -- 2. vision_handoff_hypothesis: up to five explanations of a missed handoff (and two of an
 --    unannounced ring), each settled true/false from data by its deadline.

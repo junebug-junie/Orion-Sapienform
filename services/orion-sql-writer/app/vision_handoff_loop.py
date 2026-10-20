@@ -54,7 +54,7 @@ from app.settings import Settings
 from app.vision_handoff import (
     ARRIVED, HANDOFF_LOCK_KEY, HANDOFF_RULE_REF, HYPOTHESES, LOOK_KEY, MODEL_VERSION, RING_HYPOTHESES,
     SOURCE_KIND_SAME, STREET_CHANNEL, Band, Candidate, HandoffConfig, StoryFacts, StreetFacts, appearance,
-    approach_departure, arrival_consistent, attention_gate, choose_band, decide_match, decide_overlap,
+    approach_departure, arrival_consistent, attention_gate, choose_band, decide_match, decide_overlap, early_from,
     facts_from_row, gap_departure, grade_unmatched, handoff_id, hypothesis_deadlines, hypothesis_priors,
     merged_expect_value, narrative, observed_g, overlap_seconds, p_value_arrival, p_value_missed,
     salience, same_person_question, settle_final, street_event, strong_appearance, ttl_seconds, turned_back,
@@ -203,14 +203,14 @@ def person_guess(conn, individual_ids: Sequence[Optional[str]], have_table: bool
 
 def learned_gaps(conn, portal_id: str, *, exclude: Optional[str] = None
                  ) -> Tuple[Dict[str, List[float]], Dict[str, int], Dict[str, int]]:
-    """(g values of met+late rows per kind, met counts per kind, missed counts per kind)."""
+    """(g values of met+early+late rows per kind, met counts per kind, missed counts per kind)."""
     from sqlalchemy import text
 
     learned: Dict[str, List[float]] = {}
     met: Dict[str, int] = {}
     missed: Dict[str, int] = {}
     for kind, status, g in conn.execute(text(
-            "SELECT subject_kind, status, g FROM vision_handoff WHERE portal_id=:p AND status IN ('met','late','missed') "
+            "SELECT subject_kind, status, g FROM vision_handoff WHERE portal_id=:p AND status IN ('met','early','late','missed') "
             "AND handoff_id <> :x ORDER BY scored_at DESC LIMIT 2000"), {"p": portal_id, "x": exclude or ""}).fetchall():
         if status == "missed":
             missed[kind] = missed.get(kind, 0) + 1
@@ -499,19 +499,21 @@ def step_grade(ctx: Ctx) -> None:
         upd: Dict[str, Any] = {"scored_at": ctx.now}
         target_t: Optional[datetime] = None
         status: str
+        early = early_from(r["departed_at"], r["window_start"], r["window_end"])
         if portal.kind == "approach":
-            hits = _approach_hits(ctx, portal, r["window_start"], r["late_until"])
+            hits = _approach_hits(ctx, portal, early, r["late_until"])
             if hits:
                 target_t, ev_id, story_id = hits[0]
-                status = "met" if target_t <= r["window_end"] else "late"
+                status = ("early" if target_t < r["window_start"] else "met" if target_t <= r["window_end"]
+                          else "late")
                 upd.update(target_event_id=ev_id, target_story_id=story_id)
             else:
                 status = "none"
         else:
             src_vecs = vectors(ctx.conn, src.crop_ids, ctx.tz) if src else []
-            cands = _gap_candidates(ctx, portal, r["subject_kind"], r["window_start"], r["late_until"], src_vecs)
+            cands = _gap_candidates(ctx, portal, r["subject_kind"], early, r["late_until"], src_vecs)
             d = decide_match(cands, window_start=r["window_start"], window_end=r["window_end"],
-                             late_until=r["late_until"], cfg=rules)
+                             late_until=r["late_until"], cfg=rules, early=early)
             status = d.status
             if d.chosen is not None:
                 c = d.chosen

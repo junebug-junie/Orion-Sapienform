@@ -397,12 +397,12 @@ def story_display(story: dict[str, Any], labels: dict[str, str],
 
 
 # Street continuity (orion-sql-writer app/vision_handoff_loop.py, 2026-10-20): the
-# other camera's sighting of the same passage. met / late = a predicted handoff
+# other camera's sighting of the same passage. met / early / late = a predicted handoff
 # arrived; paired = both cameras saw them at the same moment on the central walk.
 _HANDOFF_SQL = """
 SELECT source_story_id, target_story_id, source_stream, target_stream, transit_sec, status
 FROM vision_handoff
-WHERE status IN ('met', 'late', 'paired')
+WHERE status IN ('met', 'early', 'late', 'paired')
   AND (source_story_id = ANY($1::text[]) OR target_story_id = ANY($1::text[]))
 ORDER BY scored_at DESC NULLS LAST
 """
@@ -412,7 +412,7 @@ CAMERA_WORDS = {"doorbell": "door camera", "walkway": "walkway camera"}
 def handoff_info(story_id: str, row: Any) -> Optional[dict[str, Any]]:
     """{"kind": "from" | "next" | "same", "camera", "seconds"} for one story,
     from one vision_handoff row it is part of; None if it is not."""
-    if row is None or row["status"] not in ("met", "late", "paired"):
+    if row is None or row["status"] not in ("met", "early", "late", "paired"):
         return None
     if story_id == row["target_story_id"]:
         other = row["source_stream"]

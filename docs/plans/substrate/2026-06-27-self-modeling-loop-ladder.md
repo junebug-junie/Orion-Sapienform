@@ -238,3 +238,15 @@ rejections, 0 adoptions since 2026-09-03.
   (runtime uses the constants), `SUBSTRATE_PREDICTION_EXPECTATION_TUNER_ENABLED=false`
   (no proposals), `SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED=false` (no applies).
 - **Live check.** `services/orion-substrate-runtime/evals/run_prediction_expectation_live_check.py`.
+
+### Rung 6 redesign as an organ (2026-10-20)
+
+The 10-16 tuner proposed 9 times and adopted 0. Its input reading was mostly zeros: a
+real change averaged over ~700 idle tasks. Both rung-6 builds started from the mutation
+pipeline and looked for a number to feed it. Neither started from the job.
+
+The successor design is the **self-monitor organ**:
+`docs/superpowers/specs/2026-10-20-self-monitor-organ-design.md`. It collects every bet
+Orion makes that the world settles, and keeps a per-faculty track record. It acts in one
+direction only (more caution, never less), and it gives Orion that record as
+self-knowledge. The mutation pipeline stays as one of its effectors.

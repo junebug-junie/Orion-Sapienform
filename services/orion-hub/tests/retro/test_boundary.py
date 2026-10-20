@@ -28,10 +28,27 @@ def test_network_boundary_without_access_code(tmp_path):
         assert c.post(script,json={},headers=good).status_code==503
         assert c.get(script).status_code==404
         assert c.get('/api/retro/arbitrary').status_code==404
+        # Save states: same origin rule as pause/resume; listing is a narrow GET.
+        for op in ('save','load'):
+            path='/api/retro/sessions/'+'a'*36+'/'+op
+            assert c.post(path,json={}).status_code==403
+            assert c.post(path,json={},headers=good).status_code==503
+            assert c.get(path).status_code==404
+        assert c.get('/api/retro/games/pad-lab/saves').status_code==503
+        assert c.get('/api/retro/games/../saves').status_code==404
+        assert c.get('/api/retro/games/Pad_Lab/saves').status_code==404
+        assert c.post('/api/retro/games/pad-lab/saves',json={},headers=good).status_code==404
         with pytest.raises(WebSocketDisconnect):
             with c.websocket_connect('/api/retro/sessions/'+'a'*36+'/input',headers={'Origin':'https://evil.example'}):pass
         html=c.get('/retro').text
         assert '/static/js/retro-panel.js' in html
+        for control in ('id="save"','id="saves"','id="load"','id="fullscreen"','id="stage"','id="exitFullscreen"'):
+            assert control in html
+        js=(Path(__file__).resolve().parents[2]/'static/js/retro-panel.js').read_text()
+        for wired in ("el('stage')","action('save'","action('load'","action('fullscreen'","'PageUp'","'PageDown'"):
+            assert wired in js
+        index=(Path(__file__).resolve().parents[2]/'templates/index.html').read_text()
+        assert 'allow="autoplay; gamepad; fullscreen" allowfullscreen' in index  # iframe may go fullscreen
         assert 'id="login"' not in html and 'id="code"' not in html
         assert 'y'*48 not in html
         cfg.HUB_RETRO_ENABLED=False

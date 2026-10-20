@@ -45,6 +45,40 @@ try{
   });
   assert(observed.frame>60 && observed.applied>60 && observed.audioFrames>48000 && observed.audioPeak>0 && observed.colors>=2,JSON.stringify(observed));
   await page.screenshot({path:out+'/browser.png',fullPage:true});
+  // Save state: the whole game is written on the server and listed newest first.
+  await page.waitForSelector('#saveBar:not([hidden])');
+  await page.click('#save');
+  await page.waitForFunction(()=>document.querySelector('#status').textContent.startsWith('Saved'));
+  const saveId=await page.$eval('#saves',s=>s.value);
+  assert.match(saveId,/^[0-9a-f]{32}$/);
+  const listed=await page.evaluate(async g=>(await (await fetch(`/api/retro/games/${g}/saves`)).json()),process.env.RETRO_EVAL_GAME);
+  assert.equal(listed[0].save_id,saveId);assert(listed[0].compatible && listed[0].frame>60,JSON.stringify(listed[0]));
+  assert.equal(await page.evaluate(()=>document.activeElement.id),'screen');
+  // Keys that scroll a page must not move the page while the game has focus.
+  await page.click('#screen');await page.evaluate(()=>window.scrollTo(0,0));  // click() scrolls the canvas into view first
+  assert(await page.evaluate(()=>document.scrollingElement.scrollHeight>innerHeight),'page must scroll for this check to mean anything');
+  for(const key of ['PageDown','End','Space','PageDown']){await page.keyboard.press(key);await pause(60);}
+  assert.equal(await page.evaluate(()=>scrollY),0,'a scroll key moved the page under the game');
+  await page.keyboard.press('PageUp');await pause(60);
+  // Fullscreen: PageUp/PageDown keep fullscreen, and arrows still drive the game.
+  await page.click('#fullscreen');
+  await page.waitForFunction(()=>document.fullscreenElement?.id==='stage',{timeout:3000});
+  await page.waitForFunction(()=>document.activeElement.id==='screen');
+  const canvasFill=await page.$eval('#screen',c=>({w:c.getBoundingClientRect().width,h:c.getBoundingClientRect().height,vw:innerWidth,vh:innerHeight,fit:getComputedStyle(c).objectFit,pix:getComputedStyle(c).imageRendering}));
+  assert(canvasFill.w===canvasFill.vw && canvasFill.h===canvasFill.vh && canvasFill.fit==='contain' && canvasFill.pix==='pixelated',JSON.stringify(canvasFill));
+  for(const key of ['PageDown','PageUp','Home','End']){await page.keyboard.press(key);await pause(60);}
+  assert.equal(await page.evaluate(()=>document.fullscreenElement?.id),'stage','a scroll key left fullscreen');
+  await page.keyboard.down('ArrowLeft');await pause(250);await page.keyboard.up('ArrowLeft');
+  const fsActions=await page.evaluate(async()=>{const s=(await (await fetch('/api/retro/health/ready')).json()).session;
+    return (await (await fetch(`/api/retro/sessions/${s.session_id}/evidence`)).json()).applied;});
+  assert(fsActions.slice(-12).some(a=>!a.policy_id && a.mask===64),'arrow key in fullscreen never applied');
+  await page.click('#exitFullscreen');
+  await page.waitForFunction(()=>!document.fullscreenElement);
+  // Load restores in place, into the running session.
+  await page.click('#load');
+  await page.waitForFunction(()=>document.querySelector('#status').textContent.startsWith('Save loaded'));
+  const afterLoad=await page.evaluate(async()=>(await (await fetch('/api/retro/health/ready')).json()).session);
+  assert.equal(afterLoad.loaded_save,saveId);assert.equal(afterLoad.state,'running');
   await page.click('#join');await pause(500);
   // Verify gamepad mapping through the actual authority's applied-action journal.
   await page.evaluate(()=>{
@@ -163,6 +197,12 @@ try{
   assert.equal(await page.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'paused');
   await page.click('#stop');await pause(150);
   assert.equal(await page.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'stopped');
+  // After the game ends (as after a service restart), Load starts a fresh game from the save.
+  await page.click('#load');
+  await page.waitForFunction(()=>document.querySelector('#status').textContent.startsWith('Save loaded'));
+  const fromSave=await page.evaluate(async()=>(await (await fetch('/api/retro/health/ready')).json()).session);
+  assert(fromSave.loaded_save===saveId && fromSave.state==='running' && fromSave.session_id!==state.session_id,JSON.stringify(fromSave));
+  await page.click('#stop');await pause(150);
   const tab=await browser.newPage();await tab.goto(url+'/__retro_tab_test');
   await tab.click('#retroTabButton');
   await tab.waitForFunction(()=>document.querySelector('#retroPanelFrame').getAttribute('src')==='/retro');
@@ -184,5 +224,5 @@ try{
   await pause(150);assert.equal(await tab.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'stopped');
   await tab.close();
   assert.deepEqual(errors,[]);
-  fs.writeFileSync(out+'/browser.json',JSON.stringify({status:'PASS',ackDelayMs:Number(process.env.RETRO_ACK_DELAY_MS || 0),game:process.env.RETRO_EVAL_GAME,observed,cognitiveFixtureHandoff:true,scriptedHandoff:true,scriptedTakeover:true,scriptedDisconnect:true,hubTab:true,tabExitPaused:true,keyboard:true,syntheticStandardGamepad:true,blurPaused:true,reconnect:true,selfHeal:Boolean(Number(process.env.RETRO_ACK_DELAY_MS || 0)),unverified:['physical gamepad','user-device audio output','input-to-photon latency','30-minute actual-client A/V drift','cognition/learning']},null,2));
+  fs.writeFileSync(out+'/browser.json',JSON.stringify({status:'PASS',ackDelayMs:Number(process.env.RETRO_ACK_DELAY_MS || 0),game:process.env.RETRO_EVAL_GAME,observed,cognitiveFixtureHandoff:true,scriptedHandoff:true,scriptedTakeover:true,scriptedDisconnect:true,hubTab:true,tabExitPaused:true,saveLoadInPlace:true,loadFreshSession:true,scrollKeysInert:true,fullscreen:true,keyboard:true,syntheticStandardGamepad:true,blurPaused:true,reconnect:true,selfHeal:Boolean(Number(process.env.RETRO_ACK_DELAY_MS || 0)),unverified:['physical gamepad','user-device audio output','input-to-photon latency','30-minute actual-client A/V drift','cognition/learning']},null,2));
 } catch(error) { if(page){console.error(await page.$eval('#status',e=>e.textContent));await page.screenshot({path:out+'/failure.png'});}throw error; } finally {await browser.close();}

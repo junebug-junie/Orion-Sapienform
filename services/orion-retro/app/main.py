@@ -8,7 +8,7 @@ import uuid
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 from settings import Settings
-from .contracts import Start, Control, Input, ScriptControl, Goal
+from .contracts import Start, Control, Input, ScriptControl, Goal, LoadSave
 from .session import Sessions
 
 
@@ -73,7 +73,11 @@ def create_app(settings=None):
 
     @app.post('/sessions')
     async def start(body: Start, request: Request):
-        return await manager().start(body.game_id, body.idempotency_key, auth(request.headers))
+        return await manager().start(body.game_id, body.idempotency_key, auth(request.headers), body.save_id)
+
+    @app.get('/games/{game_id}/saves')
+    async def saves(game_id: str):
+        return manager().list_saves(game_id)
 
     @app.get('/sessions/{sid}')
     async def status(sid: str, request: Request):
@@ -105,6 +109,15 @@ def create_app(settings=None):
             return await m.command('control', body.connection_id,
                                    dict(port=body.port, action=body.action))
         if operation in ('pause','resume'): return await m.command(operation)
+        if operation in ('save', 'load'):
+            if not m.save_enabled(): raise ValueError('saves_unavailable')
+            if operation == 'save': return await m.command('save')
+            try: body = LoadSave.model_validate_json(await request.body())
+            except ValidationError: raise HTTPException(422, 'invalid_load')
+            # Refuse a missing or mismatched save before it reaches the worker; the
+            # worker re-checks identity and digest against the core it actually loaded.
+            m.saves.meta(m.session['game_id'], body.save_id, m.identity(m.session['game_id']))
+            return await m.command('load', data={'save_id': body.save_id})
         if operation == 'stop':
             await m.stop(); return m.session
         raise HTTPException(404)

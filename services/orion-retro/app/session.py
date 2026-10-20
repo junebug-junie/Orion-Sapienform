@@ -10,6 +10,12 @@ import time
 import uuid
 from .worker import run
 from .media import MediaSlot
+from .saves import SaveStore, available
+from orion.retro.probe import digest
+
+
+# Startup hashes every ROM once; NES ROMs are small, so 64 stays well under a second.
+MAX_GAMES = 64
 
 
 class Sessions:
@@ -19,7 +25,7 @@ class Sessions:
         self.catalog = {}; self.session = None; self.process = None
         self.pending = {}; self.connections = set(); self.history = deque(maxlen=256)
         self.media = None; self.media_task = None; self.latest_media = None; self.media_version = 0
-        self.requests = {}; self.task = None; self.stopping = False
+        self.requests = {}; self.task = None; self.stopping = False; self.starting_save = None
         self.ready = asyncio.Event()
         self.settings.artifacts.mkdir(parents=True, exist_ok=True)
         self.status_path = self.settings.artifacts/'status.json'
@@ -29,8 +35,8 @@ class Sessions:
                 self.session.update(state='failed', reason='service_restart', scripted=[])
                 self.persist()
         catalog = json.loads(settings.catalog.read_text())
-        if not isinstance(catalog, list) or not 1 <= len(catalog) <= 16:
-            raise ValueError('catalog must contain 1..16 games')
+        if not isinstance(catalog, list) or not 1 <= len(catalog) <= MAX_GAMES:
+            raise ValueError(f'catalog must contain 1..{MAX_GAMES} games')
         for item in catalog:
             if set(item) != {'game_id','title','file','rom_sha256','ports','provenance'}:
                 raise ValueError('invalid catalog fields')
@@ -49,10 +55,27 @@ class Sessions:
                 raise ValueError('invalid title')
             self.catalog[item['game_id']] = dict(item, path=path)
         if not settings.core.is_file(): raise ValueError('core missing')
+        # Read the file only; the native core is loaded solely in the worker child.
+        self.core_sha256 = digest(settings.core)
+        self.saves = SaveStore(settings.saves, settings.save_max_per_game, settings.save_max_bytes)
+
+    def save_enabled(self):
+        return available(self.settings.saves)
+
+    def identity(self, game_id):
+        return dict(rom_sha256=self.catalog[game_id]['rom_sha256'], core_sha256=self.core_sha256)
+
+    def list_saves(self, game_id):
+        if game_id not in self.catalog: raise ValueError('unknown_game')
+        if not self.save_enabled(): return []
+        identity = self.identity(game_id)
+        return [dict(m, compatible=m['rom_sha256'] == identity['rom_sha256']
+                     and m['core_sha256'] == identity['core_sha256'])
+                for m in self.saves.list(game_id)]
 
     def games(self):
         return [dict(game_id=v['game_id'], title=v['title'], ports=v['ports'],
-                     rom_sha256=v['rom_sha256'], save_enabled=False)
+                     rom_sha256=v['rom_sha256'], save_enabled=self.save_enabled())
                 for v in self.catalog.values()]
 
     def persist(self):
@@ -60,14 +83,17 @@ class Sessions:
         tmp.write_text(json.dumps(self.session)+'\n')
         tmp.replace(self.status_path)
 
-    async def start(self, game_id, key, owner="operator"):
+    async def start(self, game_id, key, owner="operator", save_id=None):
         key = owner+":"+key
         if key in self.requests:
             old_game, old_id = self.requests[key]
-            if old_game != game_id: raise ValueError('idempotency_conflict')
+            if old_game != (game_id, save_id): raise ValueError('idempotency_conflict')
             return {'session_id': old_id}
         if game_id not in self.catalog: raise ValueError('unknown_game')
         if self.process is not None or self.stopping: raise ValueError('session_active')
+        if save_id is not None:
+            if not self.save_enabled(): raise ValueError('saves_unavailable')
+            self.saves.meta(game_id, save_id, self.identity(game_id))  # refuse before spawning
         if len(self.requests) >= 256: raise ValueError('idempotency_capacity_restart_required')
         ctx = mp.get_context('spawn')
         self.commands = ctx.Queue(32); self.urgent = ctx.Queue(8); self.replies = ctx.Queue(128); self.stop_event = ctx.Event()
@@ -75,11 +101,13 @@ class Sessions:
         self.ready = asyncio.Event()
         sid = str(uuid.uuid4())
         self.session = dict(session_id=sid, generation=self.generation, state='starting',
-                            game_id=game_id, frame=0, owner=owner, save_enabled=False, scripted=[])
+                            game_id=game_id, frame=0, owner=owner, save_enabled=self.save_enabled(),
+                            loaded_save=None, scripted=[])
+        self.starting_save = save_id
         self.persist(); self.history.clear()
         self.process = ctx.Process(target=run, args=(self.commands,self.urgent,self.replies,self.stop_event,
-                            self.settings,self.catalog[game_id],sid,self.generation,self.media), daemon=True)
-        self.process.start(); self.requests[key] = (game_id, sid)
+                            self.settings,dict(self.catalog[game_id], save_id=save_id),sid,self.generation,self.media), daemon=True)
+        self.process.start(); self.requests[key] = ((game_id, save_id), sid)
         self.task = asyncio.create_task(self.monitor())
         self.media_task = asyncio.create_task(self.monitor_media())
         return dict(self.session)
@@ -112,7 +140,8 @@ class Sessions:
                         if future and not future.done(): future.set_result(row)
                         if 'frame' in row.get('result', {}): self.history.append(row['result'])
                     elif kind == 'ready':
-                        ready = True; self.ready.set(); self.session.update(state='running', identity=row['identity'], runtime_sha256=row['runtime_sha256'], fps=row['fps'])
+                        # The worker loads a start save before it reports ready.
+                        ready = True; self.ready.set(); self.session.update(state='running', identity=row['identity'], runtime_sha256=row['runtime_sha256'], fps=row['fps'], loaded_save=self.starting_save)
                         self.persist()
                     elif kind == 'status':
                         self.session.update({k:v for k,v in row.items() if k!='kind'})
@@ -154,6 +183,8 @@ class Sessions:
             if 'error' in row: raise ValueError(row['error'])
             if 'state' in row['result']:
                 self.session['state'] = row['result']['state']; self.persist()
+            if 'loaded' in row['result']:
+                self.session['loaded_save'] = row['result']['loaded']['save_id']; self.persist()
             return row['result']
         except (asyncio.TimeoutError, queue.Full):
             # Shielded: a cancelled caller (closed input socket) must not abandon cleanup.

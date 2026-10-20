@@ -152,6 +152,6 @@ PYTHONPATH=. python scripts/backfill_vision_rollups.py --days 7 --apply
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2781 (spec: #2763)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

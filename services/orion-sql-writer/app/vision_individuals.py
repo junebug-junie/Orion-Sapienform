@@ -1079,6 +1079,9 @@ class IndividualsConfig:
     batch_rows: int = 5000
     lookback_ceiling_sec: float = 3600.0
     crop_retention_days: float = 7.0
+    # Crop labels the retention prune never deletes: their rows (and
+    # embeddings) are Juniper's labelled examples. Empty = prune every label.
+    crop_retention_keep_labels: tuple[str, ...] = ("person",)
     sighting_retention_days: float = 90.0
     patio_present_sec: float = 120.0
     patio_grace_sec: float = 600.0
@@ -2247,7 +2250,8 @@ def _prune(conn, now: datetime, cfg: IndividualsConfig, summary: dict) -> None:
     sight_cut = now - timedelta(days=cfg.sighting_retention_days)
     summary["pruned_crops"] = conn.execute(text(
         "DELETE FROM vision_crop_observation WHERE crop_id IN (SELECT crop_id FROM vision_crop_observation "
-        "WHERE observed_at < :c LIMIT 20000)"), {"c": crop_cut}).rowcount or 0
+        "WHERE observed_at < :c AND label <> ALL(CAST(:keep AS text[])) LIMIT 20000)"),
+        {"c": crop_cut, "keep": list(cfg.crop_retention_keep_labels)}).rowcount or 0
     summary["pruned_sightings"] = conn.execute(text(
         "DELETE FROM vision_individual_sighting WHERE sighting_id IN (SELECT sighting_id FROM "
         "vision_individual_sighting WHERE started_at < :c LIMIT 20000)"), {"c": sight_cut}).rowcount or 0

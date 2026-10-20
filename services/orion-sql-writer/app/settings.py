@@ -541,6 +541,9 @@ class Settings(BaseSettings):
     # Match candidates: individuals seen within this many days, plus all labeled ones.
     vision_individuals_candidate_days: float = Field(30.0, alias="VISION_INDIVIDUALS_CANDIDATE_DAYS")
     vision_crop_retention_days: float = Field(7.0, alias="VISION_CROP_RETENTION_DAYS")
+    # Comma list of crop labels the retention prune never deletes (labelled
+    # examples for person learning). "0" or empty = prune every label.
+    vision_crop_retention_keep_labels: str = Field("person", alias="VISION_CROP_RETENTION_KEEP_LABELS")
     vision_sighting_retention_days: float = Field(90.0, alias="VISION_SIGHTING_RETENTION_DAYS")
     # Zone head counts (the patio; config/vision_zones.yaml presence: true):
     # "present" if a non-stationary box was seen in the zone within this many

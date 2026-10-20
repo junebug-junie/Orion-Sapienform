@@ -49,6 +49,7 @@ from orion.substrate.cabinet_ambient_spike_consumer import (
     apply_cabinet_ambient_spike_bump,
     build_cabinet_ambient_spike_grammar_events,
 )
+from orion.substrate.biometrics_loop.report_cadence import NodeReportCadence, silent_nodes
 from orion.substrate.biometrics_loop.pressure_organ import (
     build_absence_trigger_event,
     sweep_absent_nodes,
@@ -1166,6 +1167,40 @@ class BiometricsSubstrateWorker:
         )
         return event.event_id
 
+    def _silent_biometrics_nodes(
+        self, projection: NodeBiometricsProjectionV1, now: datetime
+    ) -> frozenset[str]:
+        """Nodes left out of this tick's biometrics prediction error.
+
+        A node whose last report is older than N x its own report interval (hecate
+        powered down to BMC-only standby) has frozen hints; counting them added a
+        0.0 delta per key. See orion/substrate/biometrics_loop/report_cadence.py.
+        The interval tracker learns on every tick, even with the kill switch off.
+        Logs only when the set changes.
+        """
+        cadence = getattr(self, "_report_cadence", None)
+        if cadence is None:
+            cadence = NodeReportCadence()
+            self._report_cadence = cadence
+        cadence.observe(projection)
+        if not self._settings.biometrics_silent_node_exclusion:
+            return frozenset()
+        silent = silent_nodes(
+            projection,
+            now=now,
+            cadence=cadence,
+            multiple=self._settings.biometrics_silent_node_cadence_multiple,
+        )
+        if silent != getattr(self, "_last_silent_biometrics_nodes", frozenset()):
+            logger.info(
+                "biometrics_silent_nodes excluded=%s fleet_cadence_sec=%s multiple=%s",
+                ",".join(sorted(silent)) or "-",
+                cadence.fleet_cadence_sec(),
+                self._settings.biometrics_silent_node_cadence_multiple,
+            )
+            self._last_silent_biometrics_nodes = silent
+        return silent
+
     def _absence_sweep(self, now: datetime) -> list[GrammarEventV1]:
         """Evaluate nodes that are sending nothing.
 
@@ -1252,6 +1287,7 @@ class BiometricsSubstrateWorker:
                 stale_after_sec=self._settings.biometrics_node_stale_after_sec,
                 min_confidence=self._settings.biometrics_pressure_min_confidence,
                 now=now,
+                offline_frozen_hint_guard=self._settings.biometrics_offline_frozen_hint_guard,
             )
         except Exception:
             # Never let the absence path take down the ordinary tick: a node being
@@ -1302,6 +1338,7 @@ class BiometricsSubstrateWorker:
                 stale_after_sec=self._settings.biometrics_node_stale_after_sec,
                 min_confidence=self._settings.biometrics_pressure_min_confidence,
                 now=now,
+                offline_frozen_hint_guard=self._settings.biometrics_offline_frozen_hint_guard,
             )
 
         quarantined: list[str] = []
@@ -1314,7 +1351,10 @@ class BiometricsSubstrateWorker:
 
         if last_id is not None:
             curr_projection = load_node_bio()
-            error = biometrics_prediction_error(prev_projection, curr_projection)
+            silent = self._silent_biometrics_nodes(curr_projection, now)
+            error = biometrics_prediction_error(
+                prev_projection, curr_projection, exclude_nodes=silent
+            )
             evidence_event_ids = _prediction_error_evidence_event_ids(
                 events, quarantined_event_ids=quarantined
             )

@@ -269,6 +269,7 @@ def invoke_biometrics_pressure(
     stale_after_sec: int = DEFAULT_STALE_AFTER_SEC,
     min_confidence: float = DEFAULT_MIN_CONFIDENCE,
     now: datetime | None = None,
+    offline_frozen_hint_guard: bool = True,
 ) -> OrganEmissionV1:
     clock = _utc_now(now)
     node_id = _node_id_from_trigger(trigger_event, catalog)
@@ -385,6 +386,18 @@ def invoke_biometrics_pressure(
                 observed_at=clock,
             )
         )
+
+    # An expected-offline node that has gone stale is not reporting, so its
+    # `pressure_hints` are frozen at the last value it sent -- not a reading of now.
+    # Rules C/D/E below read those hints as current evidence: Rule C re-added
+    # `strain` (reinforced/detected) right after Rule A suppressed it, and hecate's
+    # frozen `stability` 0.9996 clears HINT_THRESHOLD forever. Rule A is the whole
+    # verdict for such a node. Kill switch: BIOMETRICS_OFFLINE_FROZEN_HINT_GUARD=false
+    # (orion-substrate-runtime) restores the old behaviour.
+    if expected_online is False and stale and offline_frozen_hint_guard:
+        hints = {}
+        capabilities = []
+        active_pressures = []
 
     has_hints = _has_pressure_hints(hints)
     hint_kind = _primary_hint_kind(hints)

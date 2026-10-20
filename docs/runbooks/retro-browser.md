@@ -191,9 +191,15 @@ Undo: `sudo tailscale serve --bg --set-path /api/retro off`.
 
 The Retro tab also unloads Hub's other embedded pages (e.g. the `/spark/ui` WebGL
 visualizer) while it is open. That visualizer used ~22% of the shared browser
-thread. New game ends an existing game instead of failing with `session_active`.
+thread. Leaving Retro reloads those pages, so their in-page state (scroll,
+filters, a loaded Gephi graph) starts fresh. New game ends the existing game
+instead of failing with `session_active`. Every Hub window shares one Hub
+credential, so New game in one window also ends a game started in another; saves
+are off. The relay has its own 8-socket cap, separate from Hub's; Retro itself
+still allows 2 input sockets.
 A paused game's inputs now answer `session_paused:<why>`, so the page reconnects
-after a lapsed lease or a dropped controller, and honors only an explicit Pause.
+after a lapsed lease, a dropped controller or an overload pause (at most 3 times in
+10 s). It honors an explicit Pause, including one pressed on an already auto-paused game.
 
 ## Play harness (`evals/retro_play.mjs`)
 
@@ -213,5 +219,5 @@ node services/orion-hub/evals/retro_play.mjs --url https://athena.tail348bbe.ts.
   place of the deployed ones, so client fixes can be tried against live without a
   deploy.
 
-It starts a real game on the live service, so do not run it while someone is
-playing.
+`--url` is required. A run starts a real game on that service and ends any game
+already running there, so do not run it while someone is playing.

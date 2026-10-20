@@ -15,6 +15,8 @@ services:
       args:
         INSTALL_DEV_DEPS: ${INSTALL_DEV_DEPS:-true}
     container_name: ${PROJECT}-hub-retro-gateway
+    # Skip Hub's entrypoint: it waits for the Redis bus, which this relay never uses.
+    entrypoint: []
     network_mode: "host"
     restart: unless-stopped
     env_file:

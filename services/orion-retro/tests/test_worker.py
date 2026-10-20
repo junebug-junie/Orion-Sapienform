@@ -119,3 +119,14 @@ def test_paused_input_names_why_play_stopped(monkeypatch,tmp_path):
     rows,_=exercise(monkeypatch,tmp_path,scenario)
     assert next(r for r in rows if r.get('id')=='late')['error']=='session_paused:disconnect'
     assert next(r for r in rows if r.get('id')=='held')['error']=='session_paused:pause'
+
+
+def test_explicit_pause_on_an_auto_paused_game_sticks(monkeypatch,tmp_path):
+    # Review 2026-10-20: Pause after a lapsed controller kept paused_by=disconnect, so a
+    # browser would heal and resume a game the operator meant to hold.
+    def scenario(row,send):
+        if row.get('id')=='grant2':
+            g=row['result'];send('disconnect','bye1','one');send('disconnect','bye2','two');send('pause','hold')
+            send('input','late','two',dict(port=1,lease=g['lease'],epoch=g['epoch'],seq=1,mask=0))
+    rows,_=exercise(monkeypatch,tmp_path,scenario)
+    assert next(r for r in rows if r.get('id')=='late')['error']=='session_paused:pause'

@@ -19,7 +19,9 @@ const puppeteer=require('puppeteer');
 
 const args=Object.fromEntries(process.argv.slice(2).reduce((acc,a,i,all)=>{
   if(a.startsWith('--')){const next=all[i+1];acc.push([a.slice(2),next===undefined||next.startsWith('--')?true:next]);}return acc;},[]));
-const url=String(args.url||'https://athena.tail348bbe.ts.net').replace(/\/$/,'');
+// Explicit target only: a run starts (and replaces) a real game on that service.
+if(!args.url||args.url===true){console.error('--url is required (e.g. https://athena.tail348bbe.ts.net)');process.exit(2);}
+const url=String(args.url).replace(/\/$/,'');
 const seconds=Number(args.seconds||30), cpu=Number(args.cpu||1), out=path.resolve(String(args.out||'retro-play-out'));
 const game=args.game?String(args.game):null;
 fs.mkdirSync(out,{recursive:true});

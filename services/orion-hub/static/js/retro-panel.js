@@ -20,7 +20,8 @@
     setTimeout(() => { healPending = false;
       if (mine === intent && wanted && !away && !lease && !connecting && !document.hidden) connect().catch(err => report(err.message)); }, 300);
   }
-  // Transport loss heals; a server-side pause (another window, CLI, overload) is respected.
+  // Transport loss, a lapsed lease and an overload pause heal (bounded by heal()'s
+  // 3-per-10 s budget); an explicit Pause from any window or the CLI is respected.
   // session_paused:<why> comes from the worker; only an explicit pause is honored.
   const SERVER_PAUSE = new Set(['control_revoked', 'session_paused:pause', 'session_not_running', 'stopped', 'session_stopped']);
   function lost(reason) {

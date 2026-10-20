@@ -51,3 +51,12 @@ def test_gateway_process_serves_only_retro_with_the_same_boundary(tmp_path, monk
         assert c.get('/api/retro-gateway/health').json()=={'status':'ok'}
         assert c.post('/api/retro/sessions',json={},headers={'Origin':'https://evil.example'}).status_code==403
         assert c.post('/api/retro/sessions',json={},headers={'Origin':'http://testserver'}).status_code==503
+
+
+def test_gateway_compose_service_is_loopback_and_skips_the_bus_wait():
+    import yaml
+    compose=yaml.safe_load((Path(__file__).resolve().parents[2]/'docker-compose.yml').read_text())
+    gw=compose['services']['hub-retro-gateway']
+    assert gw['entrypoint']==[] and gw['command'][:2]==['uvicorn','scripts.retro_gateway:app']
+    assert gw['command'][gw['command'].index('--host')+1]=='127.0.0.1'
+    assert gw['volumes']==compose['services']['hub-app']['volumes'][:2]  # socket + auth only

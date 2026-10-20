@@ -47,6 +47,7 @@ from scripts.substrate_store_warm import (
     STARTUP_CONSUMER_WAIT_SEC as _SUBSTRATE_STORE_WAIT_SEC,
     SubstrateStoreNotReadyError,
     not_ready_exception_handler as _substrate_store_not_ready_handler,
+    signal_shutdown as _signal_substrate_store_shutdown,
     wait_all_ready as _wait_all_substrate_stores_ready,
 )
 import scripts.concept_atlas_routes as concept_atlas_routes_runtime
@@ -1205,6 +1206,7 @@ async def startup_event():
         from scripts.topic_foundry_scheduler_policy import (
             next_wait_seconds as _tf_next_wait_seconds,
             should_retry_startup_tick as _tf_should_retry_startup_tick,
+            STARTUP_TICK_MAX_ATTEMPTS as _TF_STARTUP_TICK_MAX_ATTEMPTS,
         )
 
         topic_foundry_interval_sec = max(
@@ -1341,6 +1343,21 @@ async def startup_event():
                         ingest_summary.get("edges_written"),
                         ingest_summary.get("typed_edges_written"),
                     )
+                    # The boot ingest found the store still loading (the wait
+                    # above timed out): retry the startup tick on the same
+                    # bounded backoff instead of waiting a full interval.
+                    if (
+                        is_startup_tick
+                        and not startup_pending
+                        and ingest_summary.get("reason") == "substrate_store_unavailable"
+                        and startup_attempt + 1 < _TF_STARTUP_TICK_MAX_ATTEMPTS
+                    ):
+                        startup_attempt += 1
+                        startup_pending = True
+                        logger.info(
+                            "substrate_topic_foundry_scheduler_startup_tick_retry attempt=%s reason=substrate_store_unavailable",
+                            startup_attempt,
+                        )
                 except Exception as exc:  # advisory runtime loop; never crash service startup
                     logger.warning("substrate_topic_foundry_scheduler_ingest_error error=%s", exc)
 
@@ -1685,6 +1702,9 @@ async def shutdown_event() -> None:
         except asyncio.CancelledError:
             pass
         substrate_review_task = None
+    # Release worker threads blocked waiting for a store (seed, topic-foundry
+    # startup tick); cancelling their tasks does not stop the threads.
+    _signal_substrate_store_shutdown()
     if substrate_concept_seed_task is not None:
         substrate_concept_seed_task.cancel()
         substrate_concept_seed_task = None

@@ -131,9 +131,10 @@ def test_store_is_built_exactly_once_under_concurrent_callers() -> None:
     threads.append(threading.Thread(target=lambda: warm.start_background_warm([holder])))
     for t in threads:
         t.start()
+    # Release before joining: a build_blocking thread may own the build.
+    threading.Timer(0.2, builder.release.set).start()
     for t in threads:
         t.join(5)
-    builder.release.set()
     assert _wait_until(holder.is_ready)
     assert builder.calls == 1
 
@@ -205,6 +206,13 @@ def test_durable_backend_holder_is_not_built_at_import(monkeypatch) -> None:
     monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "")
     eager = api_routes._substrate_store_holder("orion", _builder)
     assert calls["n"] == 1 and eager.is_ready(), "in-memory backends stay synchronous (no network, no scan)"
+
+    async def _import_from_loop():
+        # api_routes can be first imported from inside a running loop (lazy
+        # imports in async code, TestClient apps); the in-memory path must work there.
+        return api_routes._substrate_store_holder("orion", _builder)
+
+    assert asyncio.run(_import_from_loop()).is_ready()
 
 
 def test_concept_atlas_gets_none_and_reason_while_store_loads(monkeypatch) -> None:
@@ -307,3 +315,96 @@ def test_wait_all_ready_returns_names_still_loading() -> None:
     assert warm.wait_all_ready([fast, slow, object()], timeout=0.2) == ["aitown"]
     slow_builder.release.set()
     assert warm.wait_all_ready([fast, slow], timeout=5) == []
+
+
+def test_wait_ready_retries_a_failed_build_until_deadline(monkeypatch) -> None:
+    """Review finding 2026-10-20: a failed first build (Falkor not up yet at
+    boot) must not make every later waiter return None at once."""
+    monkeypatch.setattr(warm, "RETRY_AFTER_FAILURE_SEC", 0.05)
+    monkeypatch.setattr(warm, "_WAIT_SLICE_SEC", 0.02)
+    attempts = {"n": 0}
+
+    def _flaky() -> InMemorySubstrateGraphStore:
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise ConnectionError("falkor not up yet")
+        return InMemorySubstrateGraphStore()
+
+    holder = warm.WarmingSubstrateStore("orion", _flaky)
+    holder.build_blocking()
+    assert holder.warm_status()["state"] == warm.STATE_FAILED
+    assert isinstance(holder.wait_ready(2), InMemorySubstrateGraphStore)
+    assert attempts["n"] == 3
+    assert warm.wait_all_ready([holder], timeout=0.1) == []
+
+
+def test_shutdown_releases_waiters(monkeypatch) -> None:
+    monkeypatch.setattr(warm, "_SHUTDOWN", threading.Event())
+    builder = _GatedBuilder()
+    holder = warm.WarmingSubstrateStore("aitown", builder)
+    holder.start_warm()
+    threading.Timer(0.1, warm.signal_shutdown).start()
+    started = time.monotonic()
+    assert holder.wait_ready(30) is None
+    assert time.monotonic() - started < 3, "shutdown must not wait out the timeout"
+    builder.release.set()
+
+
+def test_dunder_probes_are_not_forwarded_to_the_store() -> None:
+    import copy
+
+    builder = _GatedBuilder()
+    holder = warm.WarmingSubstrateStore("orion", builder)
+    holder.start_warm()
+    assert not hasattr(holder, "__deepcopy__")
+    with pytest.raises(AttributeError):
+        holder.__getstate_custom__  # noqa: B018 - dunder-shaped name, never forwarded
+    assert copy.copy(holder) is not None  # no SubstrateStoreNotReadyError from probing
+    builder.release.set()
+
+
+def test_review_scheduler_tick_skips_while_semantic_store_loads(monkeypatch) -> None:
+    """Review finding 2026-10-20: execute_once marks the queue item reviewed
+    before consolidating, so a tick during warm-up must not run at all."""
+    builder = _GatedBuilder()
+    holder = warm.WarmingSubstrateStore("orion", builder)
+    holder.start_warm()
+    assert _wait_until(lambda: builder.calls == 1)
+    monkeypatch.setattr(api_routes, "SUBSTRATE_SEMANTIC_STORE", holder)
+    touched: list[str] = []
+    monkeypatch.setattr(
+        api_routes.SUBSTRATE_REVIEW_QUEUE_STORE, "refresh_from_storage", lambda: touched.append("queue")
+    )
+
+    result = api_routes.execute_substrate_review_scheduled_cycle()
+    assert result["status"] == "skipped"
+    assert result["reason"] == "substrate_store_not_ready"
+    assert touched == [], "no queue side effect while the store loads"
+    with pytest.raises(warm.SubstrateStoreNotReadyError):
+        api_routes.api_substrate_review_runtime_execute_once()
+    builder.release.set()
+
+
+def test_api_routes_module_wires_holders_and_starts_background_warm() -> None:
+    """Module-level wiring, not just the helper: all three stores are holders."""
+    live = _live_api_routes()
+    live_warm = _live_warm()
+    names = []
+    for attr in ("SUBSTRATE_SEMANTIC_STORE", "SUBSTRATE_SEMANTIC_STORE_SELF", "SUBSTRATE_SEMANTIC_STORE_AITOWN"):
+        holder = getattr(live, attr)
+        assert isinstance(holder, live_warm.WarmingSubstrateStore), attr
+        names.append(holder.warm_name)
+    assert names == ["orion", "self", "aitown"]
+    assert [s["store"] for s in live.substrate_store_warm_status()] == ["orion", "self", "aitown"]
+
+
+def test_startup_event_does_not_await_the_concept_seed() -> None:
+    """The seed runs as a background task that waits for the store; startup
+    itself must never await it (source pin -- startup_event is too heavy to run)."""
+    import inspect
+
+    import scripts.main as main_mod
+
+    source = inspect.getsource(main_mod.startup_event)
+    assert "await asyncio.to_thread(api_routes_runtime.seed_golden_concepts_at_startup)" not in source
+    assert "substrate_concept_seed_task = asyncio.create_task(" in source

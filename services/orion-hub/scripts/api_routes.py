@@ -323,7 +323,9 @@ def _substrate_store_holder(name: str, builder: Any) -> WarmingSubstrateStore:
     holder = WarmingSubstrateStore(name, builder)
     backend = str(os.getenv("SUBSTRATE_STORE_BACKEND", "")).strip().lower()
     if backend in _IN_MEMORY_SUBSTRATE_BACKENDS:
-        holder.build_blocking()
+        # No network, no scan: safe even when this module is imported from a
+        # running event loop.
+        holder.build_blocking(allow_event_loop=True)
     return holder
 
 
@@ -404,6 +406,18 @@ SUBSTRATE_SEMANTIC_STORE_SELF = _substrate_store_holder("self", _build_self_subs
 start_background_warm(
     (SUBSTRATE_SEMANTIC_STORE, SUBSTRATE_SEMANTIC_STORE_SELF, SUBSTRATE_SEMANTIC_STORE_AITOWN)
 )
+
+
+def _semantic_store_ready() -> bool:
+    store = SUBSTRATE_SEMANTIC_STORE
+    return not isinstance(store, WarmingSubstrateStore) or store.is_ready()
+
+
+def _require_semantic_store_ready() -> None:
+    """Raise SubstrateStoreNotReadyError (-> 503) before any side effect when
+    the Orion store is still loading."""
+    if isinstance(SUBSTRATE_SEMANTIC_STORE, WarmingSubstrateStore):
+        SUBSTRATE_SEMANTIC_STORE.require()
 
 
 def substrate_store_warm_status() -> list[dict[str, Any]]:
@@ -6264,6 +6278,20 @@ def execute_substrate_review_scheduled_cycle(
         _emit_substrate_review_scheduler_log(payload=payload)
         return payload
 
+    # execute_once marks the queue item reviewed (cycle_count, remaining_cycles)
+    # before it consolidates against the semantic store, so a tick while that
+    # store is still loading would spend a review cycle on a guaranteed failure.
+    if not _semantic_store_ready():
+        return _emit(
+            {
+                "event": "review_scheduler_tick",
+                "tick_id": tick_id,
+                "status": "skipped",
+                "reason": "substrate_store_not_ready",
+                "at": tick_now.isoformat(),
+            }
+        )
+
     # The operator endpoints run in FastAPI's threadpool, genuinely parallel with
     # this loop's asyncio.to_thread. GraphReviewQueue persists by full-table swap
     # (DELETE then re-INSERT every item), so an interleaved write drops the other
@@ -6813,6 +6841,7 @@ def api_substrate_review_runtime_status(
 @router.post("/api/substrate/review-runtime/execute-once")
 def api_substrate_review_runtime_execute_once(request: SubstrateReviewExecuteRequest | None = None) -> Dict[str, Any]:
     req = request or SubstrateReviewExecuteRequest()
+    _require_semantic_store_ready()
     with _review_cycle_lock_or_conflict():
         return _execute_substrate_review_cycle(
             allow_followup=False,
@@ -6823,6 +6852,7 @@ def api_substrate_review_runtime_execute_once(request: SubstrateReviewExecuteReq
 @router.post("/api/substrate/review-runtime/execute-once-followup")
 def api_substrate_review_runtime_execute_once_followup(request: SubstrateReviewExecuteRequest | None = None) -> Dict[str, Any]:
     req = request or SubstrateReviewExecuteRequest()
+    _require_semantic_store_ready()
     with _review_cycle_lock_or_conflict():
         return _execute_substrate_review_cycle(
             allow_followup=True,

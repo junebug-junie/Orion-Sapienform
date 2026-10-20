@@ -40,6 +40,18 @@ STATE_FAILED = "failed"
 # A failed build is retried by the next caller, but not more often than this.
 RETRY_AFTER_FAILURE_SEC = 30.0
 
+# wait_ready() polls in slices this long, so it notices retries and shutdown.
+_WAIT_SLICE_SEC = 1.0
+
+# Set by Hub's shutdown handler: background waiters give up promptly instead
+# of holding an uncancellable to_thread worker for up to 900 s.
+_SHUTDOWN = threading.Event()
+
+
+def signal_shutdown() -> None:
+    """Release every thread blocked in ``wait_ready`` (Hub shutdown)."""
+    _SHUTDOWN.set()
+
 
 def on_event_loop_thread() -> bool:
     """True when called from a thread that is running an asyncio event loop."""
@@ -74,7 +86,13 @@ class SubstrateStoreNotReadyError(RuntimeError):
 
 
 class WarmingSubstrateStore:
-    """One substrate store, built once off the event loop."""
+    """One substrate store, built once off the event loop.
+
+    Code that checks capabilities on the store's *type* (e.g.
+    ``getattr(type(store), ...)`` in orion/substrate/store.py and
+    routed_store.py) must be given ``resolve_ready_store(holder)``, not the
+    holder: the holder's type has none of the store's methods.
+    """
 
     def __init__(self, name: str, builder: Callable[[], Any]) -> None:
         self._warm_name = name
@@ -140,7 +158,15 @@ class WarmingSubstrateStore:
                 self._warm_error = f"{type(exc).__name__}: {exc}"
                 self._warm_failed_mono = time.monotonic()
                 self._warm_build_seconds = round(elapsed, 2)
+                self._warm_ready.set()
             logger.exception("substrate_store_warm_failed store=%s secs=%.1f", self._warm_name, elapsed)
+        except BaseException:  # pragma: no cover - interpreter shutdown etc.
+            with self._warm_lock:
+                if self._warm_state == STATE_WARMING:
+                    self._warm_state = STATE_FAILED
+                    self._warm_failed_mono = time.monotonic()
+                self._warm_ready.set()
+            raise
         else:
             elapsed = time.monotonic() - started
             with self._warm_lock:
@@ -149,16 +175,17 @@ class WarmingSubstrateStore:
                 self._warm_error = None
                 self._warm_build_seconds = round(elapsed, 2)
                 self._warm_build_count += 1
+                self._warm_ready.set()
             logger.info(
                 "substrate_store_ready store=%s type=%s secs=%.1f",
                 self._warm_name, type(store).__name__, elapsed,
             )
-        finally:
-            self._warm_ready.set()
 
-    def build_blocking(self) -> Any:
-        """Build now on this thread if nobody else is. Refuses the event-loop thread."""
-        if on_event_loop_thread():
+    def build_blocking(self, *, allow_event_loop: bool = False) -> Any:
+        """Build now on this thread if nobody else is. Refuses the event-loop
+        thread unless ``allow_event_loop`` -- only for builders that do no I/O
+        (the in-memory store), since a module may be imported from a loop."""
+        if not allow_event_loop and on_event_loop_thread():
             raise RuntimeError(f"substrate store '{self._warm_name}' must not be built on the event loop")
         if self._claim_build():
             self._run_build()
@@ -182,11 +209,23 @@ class WarmingSubstrateStore:
         """
         if on_event_loop_thread():
             raise RuntimeError(f"wait_ready on substrate store '{self._warm_name}' from the event loop")
-        if self._warm_store is not None:
-            return self._warm_store
-        if self._warm_state == STATE_NOT_STARTED:
-            self.start_warm()
-        self._warm_ready.wait(timeout)
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        while self._warm_store is None and not _SHUTDOWN.is_set():
+            # Start (or, after the backoff, retry a failed) build; no-op while
+            # one is already running.
+            if self._warm_state in (STATE_NOT_STARTED, STATE_FAILED):
+                self.start_warm()
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                break
+            # Short slices: a failed build sets the event, the backoff must
+            # still elapse before the next retry, and shutdown must not wait
+            # out a 900 s timeout.
+            slice_sec = _WAIT_SLICE_SEC if remaining is None else min(_WAIT_SLICE_SEC, remaining)
+            if self._warm_state == STATE_WARMING:
+                self._warm_ready.wait(slice_sec)
+            else:
+                _SHUTDOWN.wait(slice_sec)
         return self._warm_store
 
     def require(self) -> Any:
@@ -201,7 +240,9 @@ class WarmingSubstrateStore:
     # ── proxy ────────────────────────────────────────────────────────────
     def __getattr__(self, attr: str) -> Any:
         # Only called for names not found on the holder itself.
-        if attr.startswith("_warm"):
+        # Dunder probes (copy, pickle, mock spec, ...) must not be forwarded:
+        # they would raise not-ready while loading, or copy the holder's lock.
+        if attr.startswith("_warm") or (attr.startswith("__") and attr.endswith("__")):
             raise AttributeError(attr)
         return getattr(self.require(), attr)
 

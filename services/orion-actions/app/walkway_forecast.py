@@ -53,7 +53,14 @@ from typing import Any, Awaitable, Callable, Iterable, Sequence
 from zoneinfo import ZoneInfo
 
 from orion.journaler import JournalTriggerV1
-from orion.vision.walkway_rollup import unsupported_numbers
+from orion.vision.walkway_rollup import (
+    RANGE_KINDS,
+    SPLIT_NOTE,
+    bare_people_counts,
+    display_line,
+    person_count_range,
+    unsupported_numbers,
+)
 
 from .vision_pg import fetch_rows
 
@@ -367,6 +374,28 @@ ROLLUP_KIND_BY_GRAIN = {"day": "walkway_day", "week": "walkway_week", "month": "
 WALKWAY_GUARDED_KINDS = frozenset({"walkway_forecast", "walkway_grade", *ROLLUP_KIND_BY_GRAIN.values()})
 
 
+def _point_facts(point: Any) -> dict[str, Any] | None:
+    """Busiest / quietest child: its passings as an upper bound, people as a range."""
+    if not isinstance(point, dict):
+        return None
+    out: dict[str, Any] = {"at": point.get("at"), "passings_at_most": point.get("passings", 0)}
+    if point.get("usual") is not None:
+        out["usual_passings_at_most"] = point["usual"]
+    people = point.get("people")
+    if isinstance(people, dict) and "low" in people and "high" in people:
+        out["people"] = {"at_least": people["low"], "at_most": people["high"]}
+    peaks = {k: v for k, v in (point.get("peak_at_once") or {}).items() if k not in RANGE_KINDS}
+    if peaks:
+        out["most_at_once"] = peaks
+    return out
+
+
+def _baseline_facts(base: Any) -> dict[str, Any] | None:
+    if not isinstance(base, dict):
+        return None
+    return {"mean_passings_at_most": base.get("mean_passings"), "periods": base.get("periods")}
+
+
 def compact_rollup_facts(rollup: dict[str, Any]) -> dict[str, Any]:
     """The rollup without per-individual maps and ids: what the entry may say."""
     from orion.situational.street_material import label_camera_caption
@@ -376,22 +405,31 @@ def compact_rollup_facts(rollup: dict[str, Any]) -> dict[str, Any]:
         name: {k: v for k, v in (entry or {}).items() if k in ("times", "days", "sightings")}
         for name, entry in (rollup.get("named") or {}).items()
     }
-    kinds = {k: {"passings": v.get("passings", 0), "distinct": v.get("distinct", 0)}
-             for k, v in (rollup.get("kinds") or {}).items()}
+    # People are a range (2026-10-20): at least the most in one frame, at most the clusters.
+    # Their bare passings/distinct (cluster counts) never reach the entry.
+    kinds: dict[str, Any] = {}
+    for k, v in (rollup.get("kinds") or {}).items():
+        if k in RANGE_KINDS:
+            r = person_count_range(rollup, k)
+            if r:
+                kinds[k] = {"at_least": r["low"], "at_most": r["high"], "note": SPLIT_NOTE}
+        else:
+            kinds[k] = {"passings": v.get("passings", 0), "distinct": v.get("distinct", 0)}
     reg = rollup.get("regulars") or {}
     facts: dict[str, Any] = {
         "period": rollup.get("label"),
         "local": rollup.get("local"),
         "complete": bool(rollup.get("complete")),
         "covered_until": rollup.get("covered_until"),
-        "total": rollup.get("total"),
+        # Passings include the people clusters, so the total is only an upper bound.
+        "total": {"passings_at_most": int((rollup.get("total") or {}).get("passings", 0) or 0)},
         "kinds": kinds,
         "excluded_not_counted": rollup.get("excluded"),
         "named": named,
         "unnamed_regulars": {"count": reg.get("count", 0), "by_kind": reg.get("by_kind", {})},
-        "busiest": rollup.get("busiest"),
-        "quietest": rollup.get("quietest"),
-        "usual_total": rollup.get("baseline"),
+        "busiest": _point_facts(rollup.get("busiest")),
+        "quietest": _point_facts(rollup.get("quietest")),
+        "usual_total": _baseline_facts(rollup.get("baseline")),
         "camera": {k: cam.get(k) for k in ("up_minutes", "expected_minutes", "up_hours", "expected_hours",
                                             "status", "down_spans", "missing_spans")},
         "captions": [label_camera_caption(str(c.get("text") or ""), c.get("detector") or [], at=c.get("at"))
@@ -407,15 +445,21 @@ def build_rollup_seed(kind: str, row: dict[str, Any]) -> dict[str, Any] | None:
     rollup = row.get("rollup")
     if isinstance(rollup, str):
         rollup = json.loads(rollup)
-    if not isinstance(rollup, dict) or not str(row.get("line") or "").strip():
+    if not isinstance(rollup, dict):
+        return None
+    # A row from before rules_version 2 stored a bare people count: re-rendered as a range.
+    line = display_line(row.get("line"), rollup)
+    if not line:
         return None
     return {
         "kind": kind,
         "for_date": str((rollup.get("local") or {}).get("date") or ""),
         "period": rollup.get("label"),
         "facts": compact_rollup_facts(rollup),
-        "lines": [str(row["line"]).strip()],
-        "rule": "Every number in the entry must come from facts; hours the camera was down are not 'nobody came'.",
+        "lines": [line],
+        "rule": ("Every number in the entry must come from facts; hours the camera was down are not "
+                 "'nobody came'. People are a range: say 'at least N, at most M people', never one "
+                 "number of people (the camera splits one person into several)."),
     }
 
 
@@ -430,8 +474,11 @@ def guard_walkway_draft(draft: Any, trigger: JournalTriggerV1) -> tuple[Any, lis
     except ValueError:
         return draft, []
     lines = [str(x) for x in (seed.get("lines") or []) if str(x).strip()]
-    body_bad = unsupported_numbers(str(draft.body or ""), seed)
-    title_bad = unsupported_numbers(str(draft.title or ""), seed)
+    # Rollup entries: people are a range, so "79 people" is refused even though 79 is a fact
+    # (it is the top of the range, not a head count).
+    people = bare_people_counts if trigger.trigger_kind in ROLLUP_KIND_BY_GRAIN.values() else (lambda _t: [])
+    body_bad = unsupported_numbers(str(draft.body or ""), seed) + people(str(draft.body or ""))
+    title_bad = unsupported_numbers(str(draft.title or ""), seed) + people(str(draft.title or ""))
     if not body_bad and not title_bad:
         return draft, []
     update: dict[str, Any] = {}

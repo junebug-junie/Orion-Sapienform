@@ -37,8 +37,20 @@ What is counted (and what is not):
   clusters in one hour while no frame held more than 5 people). So every hour
   also records ``peak_at_once``: the most of each kind detected in a single
   vision window (``vision_scene_inventory.counts``) -- a lower bound from a
-  different producer than the sightings. The two together bracket the truth;
-  lines show both for the busiest hour.
+  different producer than the sightings. The two together bracket the truth.
+* **People are always a range (rules_version 2, 2026-10-20).** Juniper: every
+  Orion-facing people count prints "at least <most at once>, at most <clusters>",
+  never a bare cluster count. Each rollup with people carries
+  ``kinds.person.count_range = {low, high, method_low, method_high}``:
+  low is the most people in one vision window (``peak_at_once.person``; for a day,
+  week or month the largest hourly low), less any prop individual of kind person
+  (the patio skeleton is detected as a person) sighted that hour, and never below 1
+  when a person was sighted; high is the person clusters (passings), raised to low
+  when a person was in frame but excluded from passings (stationary). So
+  ``low <= high`` at every grain. One-frame glimpse stories do not count (spec
+  decision 6 is open). Rows written before version 2 have no ``count_range``:
+  ``person_count_range`` derives it from their fields and ``display_line``
+  re-renders their line, so a reader never shows the old bare count.
 * **Camera minutes** come from ``vision_scene_inventory``: one row per vision
   window, written whether or not anything was seen, so a minute with no row is a
   minute the camera did not deliver frames. An hour the camera saw for fewer
@@ -62,7 +74,19 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 SCHEMA = "vision_rollup.v1"
-RULES_VERSION = 1
+RULES_VERSION = 2
+# The first rules_version whose stored ``line`` shows people as a range. Older rows are
+# re-rendered at read time (display_line).
+COUNT_RANGE_RULES_VERSION = 2
+# Kinds counted as a range. Vehicles keep their count until they are checked the same way.
+RANGE_KINDS = ("person",)
+METHOD_LOW = "most_in_one_window"            # vision_scene_inventory.counts, max per hour
+METHOD_LOW_LESS_PROP = "most_in_one_window_less_props"
+METHOD_LOW_SIGHTED = "one_sighting"          # no window count, but a person was sighted
+METHOD_LOW_UNCORRECTED = "most_in_one_window_uncorrected"  # pre-v2 row: props not taken out
+METHOD_HIGH = "appearance_clusters"          # individuals per hour (passings), summed
+METHOD_HIGH_RAISED = "raised_to_low"         # clusters below the window count (stationary)
+SPLIT_NOTE = "the camera splits one person into several"
 GRAINS = ("hour", "day", "week", "month")
 KINDS = ("person", "dog", "bicycle", "stroller", "vehicle")
 KIND_PLURAL = {"person": "people", "dog": "dogs", "bicycle": "bicycles", "stroller": "strollers",
@@ -319,11 +343,92 @@ def _max_peaks(rows: Iterable[Mapping[str, Any] | None]) -> dict[str, int]:
     return out
 
 
+def count_range(peak: Any, passings: Any, *, props: int = 0) -> dict[str, Any]:
+    """People as a range for one hour. ``peak``: most in one vision window; ``passings``: the
+    person clusters; ``props``: prop individuals of this kind sighted in the hour (each may be
+    one of the window's detections, so the floor drops by that many)."""
+    peak, high, props = max(0, int(peak or 0)), max(0, int(passings or 0)), max(0, int(props or 0))
+    low, method_low = peak, METHOD_LOW
+    if props and peak:
+        low, method_low = max(0, peak - props), METHOD_LOW_LESS_PROP
+    if high and low < 1:
+        low, method_low = 1, METHOD_LOW_SIGHTED
+    method_high = METHOD_HIGH
+    if high < low:
+        high, method_high = low, METHOD_HIGH_RAISED
+    return {"low": low, "high": high, "method_low": method_low, "method_high": method_high}
+
+
+def person_count_range(rollup: Mapping[str, Any] | None, kind: str = "person") -> Optional[dict[str, Any]]:
+    """The stored range, or (a row from before rules_version 2) one derived from its fields:
+    ``peak_at_once`` (already the max over hours for a parent) and the kind's passings. None
+    when the kind did not pass."""
+    if not isinstance(rollup, Mapping):
+        return None
+    k = (rollup.get("kinds") or {}).get(kind) or {}
+    stored = k.get("count_range")
+    if isinstance(stored, Mapping) and "low" in stored and "high" in stored:
+        return dict(stored)
+    passings = int(k.get("passings", 0) or 0)
+    if passings <= 0:
+        return None
+    r = count_range(((rollup.get("peak_at_once") or {}).get(kind)) or 0, passings)
+    if r["method_low"] == METHOD_LOW:
+        r["method_low"] = METHOD_LOW_UNCORRECTED
+    return r
+
+
+def _parent_range(rows: Sequence[Mapping[str, Any]], passings: int, kind: str = "person") -> dict[str, Any]:
+    """Low: the largest child low (most at once in any one hour). High: the summed clusters."""
+    lows = [(r["low"], r["method_low"]) for r in (person_count_range(c, kind) for c in rows) if r]
+    low, method_low = max(lows, default=(0, METHOD_LOW))
+    high, method_high = max(0, int(passings)), METHOD_HIGH
+    if high < low:
+        high, method_high = low, METHOD_HIGH_RAISED
+    return {"low": int(low), "high": high, "method_low": method_low, "method_high": method_high}
+
+
+def range_phrase(r: Mapping[str, Any] | None, kind: str = "person") -> str:
+    """"people: at least 5, at most 79 (the camera splits one person into several)"."""
+    if not r:
+        return ""
+    low, high = int(r.get("low", 0)), int(r.get("high", 0))
+    s = f"{KIND_PLURAL[kind]}: at least {low}, at most {high}"
+    return s + (f" ({SPLIT_NOTE})" if high > low else "")
+
+
+def display_line(line: Any, rollup: Any) -> str:
+    """The line a reader may show. A row from before COUNT_RANGE_RULES_VERSION stored a bare
+    people count; it is re-rendered from its own fields. "" if that fails (never the old line)."""
+    import json as _json
+
+    r = rollup
+    if isinstance(r, (str, bytes)):
+        try:
+            r = _json.loads(r)
+        except ValueError:
+            r = None
+    stored = str(line or "").strip()
+    if not isinstance(r, Mapping) or not r.get("period_start"):
+        return stored
+    try:
+        version = int(r.get("rules_version") or 1)
+    except (TypeError, ValueError):
+        version = 1
+    if version >= COUNT_RANGE_RULES_VERSION:
+        return stored
+    try:
+        return render_line(r)
+    except Exception:  # noqa: BLE001 -- an unreadable old row shows nothing, not a bare count
+        return ""
+
+
 def _peak_phrase(peaks: Mapping[str, int]) -> str:
-    """"most at once 5 people" -- the kind with the highest single-window count. Vehicles are
-    left out: the scene counts include parked cars, so their peak says nothing about passing."""
-    best = max(((int(v), k) for k, v in (peaks or {}).items() if int(v) > 0 and k not in ("vehicle", "other")),
-               default=None)
+    """"most at once 2 dogs" -- the kind with the highest single-window count. Vehicles are
+    left out: the scene counts include parked cars, so their peak says nothing about passing.
+    People are left out too: their window count is the low end of their range."""
+    best = max(((int(v), k) for k, v in (peaks or {}).items()
+                if int(v) > 0 and k not in ("vehicle", "other", *RANGE_KINDS)), default=None)
     if best is None:
         return ""
     n, k = best
@@ -379,12 +484,14 @@ def _story_block(gate: Mapping[str, Any], stories: Sequence[StoryRow], max_sente
 def build_hour(inp: HourInputs, tz: ZoneInfo) -> dict[str, Any]:
     p = inp.period
     excluded = {"stationary": 0, "prop": 0, "patio": 0, "parked_repeat": 0}
+    prop_seen: dict[str, set] = {}
     per_ind: dict[str, dict[str, Any]] = {}
     for s in sorted(inp.sightings, key=lambda r: r.started_at):
         if not (p.start <= _utc(s.started_at) < p.end):
             continue
         if s.individual_id in inp.prop_ids:
             excluded["prop"] += 1
+            prop_seen.setdefault(_kind(s.kind), set()).add(s.individual_id)
             continue
         if s.stationary or s.individual_stationary:
             excluded["stationary"] += 1
@@ -426,6 +533,11 @@ def build_hour(inp: HourInputs, tz: ZoneInfo) -> dict[str, Any]:
         if len(captions) >= MAX_HOUR_CAPTIONS:
             break
 
+    peaks = _peaks(inp.peak_at_once)
+    for k in RANGE_KINDS:
+        if k in kinds:
+            kinds[k]["count_range"] = count_range(peaks.get(k, 0), kinds[k]["passings"],
+                                                  props=len(prop_seen.get(k, ())))
     up = max(0, min(60, int(inp.camera_minutes)))
     status = camera_status(up, 60, saw_something=bool(per_ind) or any(excluded.values()))
     rollup = {
@@ -433,7 +545,7 @@ def build_hour(inp: HourInputs, tz: ZoneInfo) -> dict[str, Any]:
         "period_start": p.start.isoformat(), "period_end": p.end.isoformat(), "label": period_label(p, tz),
         "tz": tz.key, "local": local_fields(p, tz), "complete": True,
         "kinds": kinds, "total": _totals(kinds), "excluded": excluded,
-        "peak_at_once": _peaks(inp.peak_at_once),
+        "peak_at_once": peaks,
         "named": named, "individuals": individuals,
         "camera": {"up_minutes": up, "expected_minutes": 60, "status": status,
                    "down_spans": [f"{hhmm(p.start, tz)}–{hhmm(p.end, tz)}"] if status == "down" else []},
@@ -539,6 +651,9 @@ def build_parent(
                 info["label"] = v["label"]
     for info in ind_info.values():
         _add_kind(kinds, info["kind"], distinct=1)
+    for k in RANGE_KINDS:
+        if int((kinds.get(k) or {}).get("passings", 0)) > 0:
+            kinds[k]["count_range"] = _parent_range(rows, kinds[k]["passings"], k)
 
     named: dict[str, dict[str, Any]] = {}
     for per, r in covered:
@@ -615,6 +730,7 @@ def build_parent(
             "expected_minutes": _expected(per, r),
             "status": cam.get("status") if r is not None else "missing",
             "peak_at_once": dict((r or {}).get("peak_at_once") or {}),
+            "people": person_count_range(r),
         }
         if per.grain == "hour":
             entry["hour"] = per.start.astimezone(tz).hour
@@ -635,7 +751,8 @@ def build_parent(
     def _point(e: Optional[Mapping[str, Any]]) -> Optional[dict[str, Any]]:
         if e is None:
             return None
-        out = {"at": e["at"], "passings": e["passings"], "peak_at_once": e.get("peak_at_once") or {}}
+        out = {"at": e["at"], "passings": e["passings"], "peak_at_once": e.get("peak_at_once") or {},
+               "people": e.get("people")}
         if grain == "day":
             out["usual"] = hour_baselines.get(int(e["hour"]))
         return out
@@ -711,13 +828,29 @@ def build_parent(
 # --- template line --------------------------------------------------------------------------------
 
 
-def _count_phrase(kinds: Mapping[str, Mapping[str, int]], field_name: str = "passings") -> str:
+def _count_phrase(kinds: Mapping[str, Mapping[str, int]], field_name: str = "passings", *,
+                  skip: Sequence[str] = (), with_distinct: bool = False) -> str:
     parts = []
     for k in (*KINDS, "other"):
+        if k in skip:
+            continue
         n = int((kinds.get(k) or {}).get(field_name, 0))
         if n:
-            parts.append(f"{n} {KIND_SINGULAR[k] if n == 1 else KIND_PLURAL[k]}")
+            s = f"{n} {KIND_SINGULAR[k] if n == 1 else KIND_PLURAL[k]}"
+            if with_distinct:
+                s += f" ({int((kinds.get(k) or {}).get('distinct', 0))} distinct)"
+            parts.append(s)
     return ", ".join(parts)
+
+
+def _upper(n: Any) -> str:
+    """A passings total: an upper bound (one passer can be split into several clusters)."""
+    n = int(n or 0)
+    return "0 passings" if n == 0 else f"at most {n} passing{'s' if n != 1 else ''}"
+
+
+def _range_short(r: Mapping[str, Any] | None) -> str:
+    return f"people at least {int(r['low'])}, at most {int(r['high'])}" if r else ""
 
 
 def _fmt_num(x: Optional[float]) -> str:
@@ -757,14 +890,21 @@ def render_line(rollup: Mapping[str, Any]) -> str:
             body = ("nobody passed" if cam.get("status") == "ok"
                     else f"nobody seen in the {up} minutes the camera was up")
         else:
+            kinds = rollup.get("kinds") or {}
             peak = _peak_phrase(rollup.get("peak_at_once") or {})
-            body = f"{passings} passing ({_count_phrase(rollup.get('kinds') or {})}{'; ' + peak if peak else ''})"
+            others = _count_phrase(kinds, skip=RANGE_KINDS)
+            segs = [range_phrase(person_count_range(rollup))]
+            if others:
+                segs.append(f"{others} passing" + (f" ({peak})" if peak else ""))
+            elif peak:
+                segs.append(peak)
+            body = "; ".join(x for x in segs if x)
         named = rollup.get("named") or {}
         if named:
             body += "; " + ", ".join(f"{name} at {', '.join(v.get('times') or [])}" for name, v in named.items())
         base = (rollup.get("baseline") or {}).get("mean_passings")
         if base is not None and cam.get("status") == "ok":
-            body += f" (usual for this hour {_fmt_num(base)})"
+            body += f" (usual for this hour at most {_fmt_num(base)} passing{'' if base == 1 else 's'})"
         if cam.get("status") == "partial":
             body += f". Camera up {up} of {expected} minutes"
         return f"{head}: {body}{unknown_note}."
@@ -773,11 +913,12 @@ def render_line(rollup: Mapping[str, Any]) -> str:
         return f"{head}: no record (nothing was counted for this period yet)."
     if expected and cam.get("status") == "down" and passings == 0:
         return f"{head}: camera was down ({_fmt_hours(up)} of {_fmt_hours(expected)} seen), so no count."
-    distinct = int(total.get("distinct", 0))
     if passings == 0:
         parts = ["nobody passed while the camera was watching"]
     else:
-        parts = [f"{passings} passings ({_count_phrase(rollup.get('kinds') or {})}) by {distinct} distinct"]
+        kinds = rollup.get("kinds") or {}
+        others = _count_phrase(kinds, skip=RANGE_KINDS, with_distinct=True)
+        parts = [x for x in (range_phrase(person_count_range(rollup)), f"{others} passing" if others else "") if x]
     named = rollup.get("named") or {}
     if named:
         if grain == "day":
@@ -794,22 +935,25 @@ def render_line(rollup: Mapping[str, Any]) -> str:
         parts.append(f"{n} unnamed regular{'s' if n != 1 else ''} ({where})")
     b, q = rollup.get("busiest"), rollup.get("quietest")
     if b:
-        s = f"busiest {_at_words(b['at'], grain)} ({b['passings']}"
+        s = f"busiest {_at_words(b['at'], grain)} ({_upper(b['passings'])}"
         if grain == "day" and b.get("usual") is not None:
-            s += f", usual {_fmt_num(b['usual'])}"
+            s += f", usual at most {_fmt_num(b['usual'])}"
+        people = _range_short(b.get("people"))
+        if people:
+            s += f"; {people}"
         peak = _peak_phrase(b.get("peak_at_once") or {})
         if peak:
             s += f", {peak}"
         s += ")"
         if q and q["at"] != b["at"]:
-            s += f", quietest {_at_words(q['at'], grain)} ({q['passings']}"
+            s += f", quietest {_at_words(q['at'], grain)} ({_upper(q['passings'])}"
             if grain == "day" and q.get("usual") is not None:
-                s += f", usual {_fmt_num(q['usual'])}"
+                s += f", usual at most {_fmt_num(q['usual'])}"
             s += ")"
         parts.append(s)
     base = (rollup.get("baseline") or {}).get("mean_passings")
     if base is not None:
-        parts.append(f"usual {grain} {_fmt_num(base)}")
+        parts.append(f"usual {grain} at most {_fmt_num(base)} passing{'' if base == 1 else 's'}")
     line = f"{head}: " + "; ".join(parts) + "."
     gaps = []
     for word, key in (("Camera down", "down_spans"), ("No record", "missing_spans")):
@@ -934,3 +1078,23 @@ def unsupported_numbers(prose: str, facts: Any) -> list[str]:
         if n is not None and float(n) not in allowed:
             bad.append(w)
     return bad
+
+
+# A people count in prose with no range word before it ("79 people walked by"). The rollup
+# says people only as "at least N, at most M"; a composed entry that states one number of
+# people is refused even when the number is in the facts (it is the top of the range).
+_PEOPLE_NOUN = r"(?:people|persons?|passers-?by|pedestrians|walkers)"
+_COUNT_WORD = "|".join(sorted((w for w in _NUMBER_WORDS if w != "twice"), key=len, reverse=True))
+_BARE_PEOPLE_RE = re.compile(rf"\b(?:\d+|{_COUNT_WORD})\s+(?:[a-z-]+\s+)?{_PEOPLE_NOUN}\b", re.IGNORECASE)
+_RANGE_CUE_RE = re.compile(r"\b(?:at least|at most|up to|between|no more than|no fewer than)\b[^.;:]*$",
+                           re.IGNORECASE)
+
+
+def bare_people_counts(prose: str) -> list[str]:
+    """People counts in ``prose`` stated as one number, not as a range."""
+    text = _strip_calendar(prose or "")
+    out: list[str] = []
+    for m in _BARE_PEOPLE_RE.finditer(text):
+        if not _RANGE_CUE_RE.search(text[max(0, m.start() - 40):m.start()]):
+            out.append(" ".join(m.group(0).split()))
+    return out

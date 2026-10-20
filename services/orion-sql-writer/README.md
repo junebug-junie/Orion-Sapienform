@@ -735,6 +735,16 @@ no model. Design: `docs/superpowers/plans/2026-10-18-walkway-rollups-design.md`.
   Not counted, tallied under `excluded`: stationary sightings/individuals,
   `VISION_MOTION_PROP_INDIVIDUAL_IDS`, no-embed zones, and vehicles seen in
   `VISION_ROLLUP_PARKED_MIN_HOURS` (4) or more hours of the trailing 24 h.
+- **People are a range** (`rules_version` 2, 2026-10-20). Person clusters
+  over-count (one person splits into several), so `kinds.person.count_range =
+  {low, high, method_low, method_high}`: low = most people in one vision window
+  (`peak_at_once.person`, less a person-kind prop sighted that hour; a parent takes
+  its largest child low), high = person clusters (passings). Lines say "people: at
+  least 5, at most 79 (the camera splits one person into several)" and other
+  totals read "at most N passings". Vehicles keep their count. A version bump
+  rebuilds the hours inside `VISION_ROLLUP_CATCHUP_HOURS`; older rows keep v1 and
+  every reader re-renders them (`walkway_rollup.display_line`), or run the backfill
+  with `--apply` to rebuild them for good.
 - **Camera minutes** = minutes with a `vision_scene_inventory` row. An hour with
   fewer than 15 seen minutes reads "camera was down", never "nobody passed"; a
   child period with no row reads "No record".

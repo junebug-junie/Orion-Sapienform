@@ -22,7 +22,12 @@ When an hour is ready: closed for ``settle_sec`` AND the individuals reducer's
 cursor (landing time of crops it has turned into sightings) is past the hour's
 end. A sighting can still grow after that (merge gap), so the newest
 ``recompute_hours`` closed hours are rebuilt every tick; older hours are built
-once, when missing, back to ``catchup_hours``.
+once, when missing, back to ``catchup_hours``. An hour inside ``catchup_hours``
+whose stored ``rules_version`` is older than ``RULES_VERSION`` is rebuilt too, once,
+so a rules change (2026-10-20: people as a range) reaches the recent rows without a
+backfill. Older rows keep their version; readers re-render them
+(``walkway_rollup.display_line``), and ``scripts/backfill_vision_rollups.py``
+rebuilds them for good.
 """
 
 from __future__ import annotations
@@ -55,6 +60,7 @@ from orion.vision.walkway_rollup import (
     HOUR_BASELINE_DAYS,
     MIN_BASELINE_PERIODS,
     MONTH_BASELINE_MONTHS,
+    RULES_VERSION,
     WEEK_BASELINE_WEEKS,
 )
 
@@ -180,6 +186,16 @@ def build_parent_row(store: Store, stream_id: str, period: Period, tz: ZoneInfo,
     return rollup
 
 
+def _stale(row: Optional[Mapping[str, Any]]) -> bool:
+    """Missing, or written under older counting rules."""
+    if row is None:
+        return True
+    try:
+        return int(row.get("rules_version") or 1) < RULES_VERSION
+    except (TypeError, ValueError):
+        return True
+
+
 def ready_until(reader: Reader, stream_id: str, now: datetime, cfg: RollupConfig) -> Optional[datetime]:
     """End of the newest hour whose sightings are settled, or None if the individuals
     reducer has never run for this stream."""
@@ -221,7 +237,7 @@ def refresh_stream(reader: Reader, store: Store, stream_id: str, now: datetime, 
         recompute_from = ready - timedelta(hours=cfg.recompute_hours)
         while t < ready:
             per = Period("hour", t, t + timedelta(hours=1))
-            if t >= recompute_from or store.get(stream_id, "hour", t) is None:
+            if t >= recompute_from or _stale(store.get(stream_id, "hour", t)):
                 todo.append(per)
             t += timedelta(hours=1)
     gate = reader.story_gate()

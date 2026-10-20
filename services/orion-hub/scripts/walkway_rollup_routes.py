@@ -10,6 +10,9 @@ history" panel under the "Walkway (live)" picture (static/js/walkway-history.js)
   kind, named people, regulars, busiest/quietest, camera minutes and down hours,
   captions, stories only when the spot-check gate passed). The per-individual maps
   (individual ids) are never sent.
+- People are a range (2026-10-20): ``people`` is ``{low, high, method_low, method_high}``
+  (at least the most in one frame, at most the clusters), and a row written before
+  rules_version 2 gets its line re-rendered so the panel never shows a bare people count.
 
 Read-only. Same asyncpg pool as the ask card (``app.state.memory_pg_pool``); a missing
 table (migration not applied) is a 503 ``rollup_schema_missing``.
@@ -23,6 +26,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from orion.vision.walkway_rollup import display_line, person_count_range
 from scripts.ask_routes import _iso, _pool, _raise_store_http
 
 router = APIRouter(tags=["walkway-rollups"])
@@ -70,7 +74,8 @@ def panel_row(row: Any) -> dict[str, Any]:
     return {
         "stream_id": row["stream_id"], "grain": row["grain"], "label": row["label"],
         "period_start": _iso(row["period_start"]), "period_end": _iso(row["period_end"]),
-        "complete": bool(row["complete"]), "line": row["line"], "computed_at": _iso(row["computed_at"]),
+        "complete": bool(row["complete"]), "line": display_line(row["line"], rollup),
+        "computed_at": _iso(row["computed_at"]), "people": person_count_range(rollup),
         **parts,
     }
 

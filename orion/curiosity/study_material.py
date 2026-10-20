@@ -49,6 +49,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional, Sequence
 
+from orion.vision.walkway_rollup import display_line
+
 # How much to put in front of Orion. Enough to choose between, few enough that
 # the material does not crowd out its own self-model in the turn's context.
 DEFAULT_CRYSTALLIZATION_SAMPLE = 12
@@ -636,7 +638,7 @@ def build_street_caption_cards(
 # be today, still running (`complete` false; the line says "so far").
 
 STREET_DAY_ROLLUP_SQL = (
-    "SELECT stream_id, label, complete, line, computed_at FROM vision_rollup "
+    "SELECT stream_id, label, complete, line, rollup, computed_at FROM vision_rollup "
     "WHERE stream_id = ANY($1::text[]) AND grain = 'day' "
     "ORDER BY period_start DESC LIMIT 1"
 )
@@ -659,7 +661,12 @@ def build_street_day_card(row: Any) -> Optional[StreetDayCard]:
     if row is None:
         return None
     try:
-        line = str(row["line"] or "").strip()
+        try:
+            rollup = row["rollup"]
+        except (KeyError, IndexError):
+            rollup = None
+        # People as a range: a row from before rules_version 2 is re-rendered, never shown bare.
+        line = display_line(row["line"], rollup)
         if not line:
             return None
         return StreetDayCard(stream_id=str(row["stream_id"] or ""), day=str(row["label"] or ""), line=line,

@@ -6,6 +6,8 @@ Pure part: orion/vision/walkway_rollup.py. Engine: app/vision_rollup.py.
 
 from __future__ import annotations
 
+import copy
+import json
 import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -67,7 +69,8 @@ def test_passing_is_one_individual_per_hour_not_one_crop_or_sighting():
     t = utc(2026, 10, 17, 20, 0)
     r = hour(t, [sight("a", t + timedelta(minutes=5)), sight("a", t + timedelta(minutes=9)),
                  sight("b", t + timedelta(minutes=30), kind="dog")])
-    assert r["kinds"]["person"] == {"passings": 1, "distinct": 1, "sightings": 2}
+    assert {k: r["kinds"]["person"][k] for k in ("passings", "distinct", "sightings")} == {
+        "passings": 1, "distinct": 1, "sightings": 2}
     assert r["total"] == {"passings": 2, "distinct": 2, "sightings": 3}
 
 
@@ -292,7 +295,8 @@ def test_engine_builds_in_order_and_every_grain_agrees():
     sat8 = store.rows[("walkway", "hour", wr.local_midnight(date(2026, 10, 17), TZ) + timedelta(hours=8))]
     assert sat8["baseline"]["mean_passings"] == 2.0
     assert sat8["peak_at_once"] == {"person": 2}
-    assert "most at once 2 people" in store.lines[("walkway", "hour", sat8 and wr._parse(sat8["period_start"]))]
+    assert sat8["kinds"]["person"]["count_range"]["low"] == 2
+    assert "people: at least 2, at most 2" in store.lines[("walkway", "hour", wr._parse(sat8["period_start"]))]
     assert sat["regulars"]["ids"] == ["regular"]
 
 
@@ -406,7 +410,9 @@ def test_postgres_path_writes_rows_reads_them_back_and_is_idempotent(pg):
     assert day.rollup["captions"][0]["text"] == "A dog on a leash."
     assert day.rollup["peak_at_once"] == {"person": 2, "dog": 1, "vehicle": 1}
     assert day.rollup["busiest"]["at"] == "08:00" and day.rollup["busiest"]["peak_at_once"]["person"] == 2
-    assert "busiest 08:00 (2, most at once 2 people)" in day.line
+    assert day.rollup["kinds"]["person"]["count_range"] == {
+        "low": 2, "high": 2, "method_low": "most_in_one_window", "method_high": "appearance_clusters"}
+    assert "busiest 08:00 (at most 2 passings; people at least 2, at most 2, most at once 1 dog)" in day.line
     assert "so far, through 21:00" in day.line and "No record" not in day.line
     assert "Camera down" in day.line and "03:00–04:00" in day.line
     run_one_rollup_cycle(postgres_uri=_schema_uri(), cfg=cfg, now=now, since=day0)
@@ -449,7 +455,7 @@ def test_sightings_without_frame_record_are_unknown_not_down():
     r = hour(t, [sight("a", t + timedelta(minutes=5))], minutes=0)
     assert r["camera"]["status"] == "unknown" and r["total"]["passings"] == 1
     line = wr.render_line(r)
-    assert "camera was down" not in line and "1 passing" in line and "record incomplete" in line
+    assert "camera was down" not in line and "people: at least 1, at most 1" in line and "record incomplete" in line
 
 
 def test_no_busiest_or_quietest_when_nothing_passed():
@@ -465,7 +471,9 @@ def test_compound_detector_labels_map_to_kinds_and_other_never_names_a_peak():
     assert wr._kind("mailbox") == "other"
     assert wr._peaks({"mail truck": 2, "vehicle": 1, "person": 1}) == {"vehicle": 2, "person": 1}
     assert wr._peak_phrase({"other": 4, "vehicle": 3}) == ""
-    assert wr._peak_phrase({"other": 4, "person": 2}) == "most at once 2 people"
+    # People are a range now; their window count is its low end, never a peak phrase.
+    assert wr._peak_phrase({"other": 4, "person": 2}) == ""
+    assert wr._peak_phrase({"dog": 2, "person": 5}) == "most at once 2 dogs"
 
 
 def test_guard_dates_and_minutes_cannot_vouch_for_counts_and_times_must_match():
@@ -499,3 +507,153 @@ def test_backfill_never_starts_before_the_first_frame_record():
                          since=wr.local_midnight(date(2026, 10, 16), TZ))
     assert out["clamped_to_first_frame"] == first.isoformat()
     assert min(k[2] for k in store.rows if k[1] == "hour") == first
+
+
+# --- people as a range (rules_version 2, 2026-10-20) ------------------------------------------
+#
+# Juniper: every Orion-facing people count prints "at least <most at once>, at most <clusters>".
+# Live 2026-10-16 12:00 MDT: 79 person clusters, never more than 5 people in one frame.
+
+NOON_1016 = utc(2026, 10, 16, 18, 0)  # 12:00 MDT
+
+
+def _noon_1016() -> dict:
+    t = NOON_1016
+    s = [sight(f"p{i}", t + timedelta(seconds=40 * i)) for i in range(79)]
+    s += [sight(f"b{i}", t + timedelta(minutes=i), kind="bicycle") for i in range(5)]
+    s += [sight(f"v{i}", t + timedelta(minutes=2 * i), kind="vehicle") for i in range(8)]
+    return hour(t, s, peak_at_once={"person": 5, "bicycle": 1, "vehicle": 3})
+
+
+def _v1(row: dict) -> dict:
+    """The same row as rules_version 1 wrote it: no count_range anywhere."""
+    old = copy.deepcopy(row)
+    old["rules_version"] = 1
+    for v in (old.get("kinds") or {}).values():
+        v.pop("count_range", None)
+    for e in old.get("series") or []:
+        e.pop("people", None)
+    for k in ("busiest", "quietest"):
+        if old.get(k):
+            old[k].pop("people", None)
+    return old
+
+
+def test_1016_noon_reads_at_least_5_at_most_79_not_79_people():
+    r = _noon_1016()
+    assert r["rules_version"] == 2
+    assert r["kinds"]["person"]["passings"] == 79
+    assert r["kinds"]["person"]["count_range"] == {
+        "low": 5, "high": 79, "method_low": "most_in_one_window", "method_high": "appearance_clusters"}
+    line = wr.render_line(r)
+    assert "people: at least 5, at most 79 (the camera splits one person into several)" in line
+    assert "79 people" not in line and "92 passing" not in line
+    assert "5 bicycles, 8 vehicles passing" in line  # other kinds keep their count
+    assert wr.bare_people_counts(line) == [] and wr.unsupported_numbers(line, r) == []
+
+
+def test_live_1016_noon_row_as_stored_re_renders_with_its_range():
+    # The live v1 row (read 2026-10-20): kinds.person 79 passings, peak 5, the old bare line.
+    r = _v1(_noon_1016())
+    old_line = ("Walkway 12:00–13:00 (Fri 16 Oct): 92 passing (79 people, 5 bicycles, 8 vehicles; "
+                "most at once 5 people).")
+    shown = wr.display_line(old_line, json.dumps(r))
+    assert "people: at least 5, at most 79 (the camera splits one person into several)" in shown
+    assert "79 people" not in shown and wr.bare_people_counts(shown) == []
+    assert wr.person_count_range(r) == {"low": 5, "high": 79, "method_low": "most_in_one_window_uncorrected",
+                                        "method_high": "appearance_clusters"}
+
+
+def test_hour_range_low_is_most_in_one_window_and_never_above_high():
+    t = utc(2026, 10, 17, 18, 0)
+    for passings in range(0, 6):
+        for peak in range(0, 7):
+            s = [sight(f"p{i}", t + timedelta(minutes=i)) for i in range(passings)]
+            r = hour(t, s, peak_at_once={"person": peak} if peak else {})
+            cr = r["kinds"].get("person", {}).get("count_range")
+            if passings == 0:
+                assert cr is None and "people" not in wr.render_line(r)
+                continue
+            assert cr["low"] <= cr["high"]
+            assert cr["low"] == max(peak, 1)  # one sighted person is a floor of 1
+            assert cr["high"] == max(passings, cr["low"])
+            assert cr["method_low"] == ("most_in_one_window" if peak else "one_sighting")
+            assert wr.bare_people_counts(wr.render_line(r)) == []
+
+
+def test_a_prop_seen_as_a_person_comes_off_the_floor():
+    # The patio skeleton is a person-kind prop (live 2026-10-20) and the scene inventory
+    # counts it in peak_at_once.
+    t = utc(2026, 10, 15, 16, 0)
+    s = [sight("skeleton", t + timedelta(minutes=1)), sight("walker", t + timedelta(minutes=2))]
+    r = hour(t, s, peak_at_once={"person": 2}, prop_ids=frozenset({"skeleton"}))
+    assert r["kinds"]["person"]["count_range"] == {
+        "low": 1, "high": 1, "method_low": "most_in_one_window_less_props", "method_high": "appearance_clusters"}
+    # A stationary person stays in the window count but not in the clusters: high is raised.
+    r = hour(t, [sight("walker", t), sight("stander", t, stationary=True)], peak_at_once={"person": 2})
+    assert r["kinds"]["person"]["count_range"]["high"] == 2
+    assert r["kinds"]["person"]["count_range"]["method_high"] == "raised_to_low"
+
+
+def test_every_grain_keeps_low_at_most_high_and_low_is_the_largest_hourly_low():
+    now = utc(2026, 10, 18, 3, 30)
+    reader = _fake(date(2026, 10, 12), 6, now)
+    reader.peaks = lambda s, lo, hi: {k: {"person": 3 if k.astimezone(TZ).hour == 8 else 1}
+                                      for k in reader._m if lo <= k < hi and k in reader._peak_hours}
+    store = MemoryStore()
+    refresh_stream(reader, store, "walkway", now, RollupConfig(settle_sec=60),
+                   since=wr.local_midnight(date(2026, 10, 12), TZ))
+    by_grain: dict = {}
+    for (_, grain, _), row in store.rows.items():
+        by_grain.setdefault(grain, []).append(row)
+    assert set(by_grain) == {"hour", "day", "week", "month"}
+    for grain, rows in by_grain.items():
+        for row in rows:
+            cr = wr.person_count_range(row)
+            if cr is None:
+                continue
+            assert row["kinds"]["person"]["count_range"] == cr  # stored, not derived
+            assert cr["low"] <= cr["high"], (grain, row["label"])
+            assert cr["high"] == max(row["kinds"]["person"]["passings"], cr["low"])
+            assert wr.bare_people_counts(wr.render_line(row)) == [], wr.render_line(row)
+    for day in by_grain["day"]:
+        per = wr.Period("day", wr._parse(day["period_start"]), wr._parse(day["period_end"]))
+        hours = [store.rows.get(("walkway", "hour", h.start)) for h in wr.child_periods(per, TZ)]
+        lows = [wr.person_count_range(h)["low"] for h in hours if h and wr.person_count_range(h)]
+        assert day["kinds"]["person"]["count_range"]["low"] == max(lows) == 3
+    for parent in by_grain["week"] + by_grain["month"]:
+        assert parent["kinds"]["person"]["count_range"]["low"] == 3
+
+
+def test_a_bump_in_rules_version_rebuilds_old_hours_inside_the_catchup_window():
+    now = utc(2026, 10, 18, 3, 30)
+    reader = _fake(date(2026, 10, 16), 2, now)
+    store = MemoryStore()
+    cfg = RollupConfig(settle_sec=60, recompute_hours=3, catchup_hours=6)
+    refresh_stream(reader, store, "walkway", now, cfg)
+    for k in [k for k in store.rows if k[1] == "hour"]:
+        store.rows[k] = _v1(store.rows[k])
+    out = refresh_stream(reader, store, "walkway", now, cfg)
+    assert out["hours"] == 6  # every v1 hour in the window, not just the recompute 3
+    assert all(r["rules_version"] == 2 for k, r in store.rows.items() if k[1] == "hour")
+    assert refresh_stream(reader, store, "walkway", now, cfg)["hours"] == 3  # then back to normal
+
+
+def test_old_parent_rows_re_render_without_a_bare_people_count():
+    d = date(2026, 10, 15)
+    children = _day_rows(d, lambda i: [f"p{i}", "a"] if i in (8, 9, 17) else [])
+    day = wr.build_parent("walkway", wr.day_period(d, TZ), children, TZ)
+    old = _v1(day)
+    shown = wr.display_line("Walkway Thu 15 Oct 2026: 6 passings (6 people) by 4 distinct.", old)
+    assert "people: at least 1, at most 6" in shown and wr.bare_people_counts(shown) == []
+    assert "busiest" in shown and "at most 2 passings" in shown
+    assert wr.display_line("x", day) == "x"  # a v2 row's stored line is shown as is
+    assert wr.display_line("bare", {"period_start": "not a time", "rules_version": 1}) == ""
+
+
+def test_bare_people_counts_finds_one_number_of_people_and_passes_ranges():
+    assert wr.bare_people_counts("79 people walked by.") == ["79 people"]
+    assert wr.bare_people_counts("Five different people came.") == ["Five different people"]
+    assert wr.bare_people_counts("at least 5, at most 79 people") == []
+    assert wr.bare_people_counts("between 5 and 79 people") == []
+    assert wr.bare_people_counts("people: at least 5, at most 79 (the camera splits one person into several)") == []

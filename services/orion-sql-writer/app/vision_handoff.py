@@ -44,7 +44,9 @@ outcome at least this unlikely under the model:
   ``(missed + 1) / (missed + arrived + 2)``.
 
 Calm state: on ordinary days p-values of met handoffs are spread evenly over
-0..1, so about 5% fall below 0.05 by chance. There is no floor: an on-time
+0..1, so about 5% fall below 0.05 by chance. The conformal p has a floor of
+``2 / (n + 1)`` with ``n`` calibration values: below n = 39 no arrival can
+pass p < 0.05 (too little history to call anything surprising). There is no floor: an on-time
 arrival in the middle of the band has ``p`` near 1. The attention gate is
 ``p < attention_p`` AND (a known person OR unusual for the hour); the replay
 eval checks uniformity and that a quiet hour yields zero gate passes.
@@ -67,7 +69,7 @@ import math
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -671,7 +673,3 @@ def merged_expect_value(existing: Optional[bytes | str], hid: str, until: dateti
 def ttl_seconds(until: datetime, now: datetime) -> Optional[int]:
     s = (until - now).total_seconds()
     return int(math.ceil(s)) if s > 0 else None
-
-
-def iter_ids(rows: Iterable) -> List[str]:
-    return [r[0] for r in rows]

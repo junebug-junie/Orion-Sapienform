@@ -286,3 +286,12 @@ def test_cancelled_input_cannot_abandon_timeout_cleanup():
         await asyncio.sleep(.3)
         return fake.done
     assert asyncio.run(scenario())
+
+
+def test_fresh_lease_waits_for_first_input_across_the_grant_round_trip():
+    # Live 2026-10-20: every Connect / resume lost its lease before the browser's
+    # first input crossed Hub and Tailscale (>250 ms after the grant).
+    a = Arbiter([0]); g=a.control('one',0,'acquire',0)
+    a.frame(0); assert a.frame(.6)[0] == [0,0] and 0 in a.leases
+    a.submit('one',intent(g),.6); assert a.frame(.61)[0] == [256,0]
+    assert a.frame(.86)[0] == [0,0] and 0 not in a.leases  # later inputs keep the 250 ms expiry

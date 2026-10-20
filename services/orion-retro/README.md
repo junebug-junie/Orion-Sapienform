@@ -70,7 +70,8 @@ Only NES button bits are accepted, including A=256, B=1, Start=8, Right=128.
 Opposing directions are rejected. Takeover releases the old mask for one frame
 before the new owner's input; old epochs and connections cannot regain authority.
 Start/resume without acquiring any controller pauses after a five-second grace.
-Send updated input at least every 100 ms. Inputs expire after 250 ms; expiry of
+Send updated input at least every 100 ms. Inputs expire after 250 ms (a fresh grant
+waits 1 s for its first input, holding no buttons); expiry of
 the last lease or last controller disconnect pauses. UI blur handlers belong to
 P2; this server requires no browser message to expire a lease.
 

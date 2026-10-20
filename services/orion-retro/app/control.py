@@ -3,6 +3,7 @@ import secrets
 
 # libretro B, select, start, up/down/left/right, A. No SNES-only buttons.
 NES_MASK = sum(1 << bit for bit in (0, 2, 3, 4, 5, 6, 7, 8))
+GRANT_GRACE = 1.0
 
 
 class Arbiter:
@@ -39,8 +40,10 @@ class Arbiter:
             raise ValueError('port_owned')
         self.epochs[port] += 1
         self.neutral.add(port)
+        # The client can send only after the grant reply crosses Hub and the network,
+        # so a fresh lease waits longer for its first input. It holds no buttons meanwhile.
         item = dict(connection=connection, epoch=self.epochs[port],
-                    token=secrets.token_urlsafe(32), expires=now+.25,
+                    token=secrets.token_urlsafe(32), expires=now+GRANT_GRACE,
                     seq=-1, mask=0, pending=None)
         self.leases[port] = item
         return {'port': port, 'lease': item['token'], 'epoch': item['epoch']}

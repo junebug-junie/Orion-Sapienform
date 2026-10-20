@@ -133,3 +133,23 @@ frame collapse to the release. Input from both browsers shares the API's 24-comm
 cap, so a stall longer than about 0.5 s can return `unavailable_or_busy` (shown as
 Control interrupted). Timeout cleanup is shielded from socket cancellation
 (`test_cancelled_input_cannot_abandon_timeout_cleanup`).
+
+### Grant grace
+
+A fresh lease waits 1 s for its first input; after that, each input still expires
+after 250 ms. Before 2026-10-20 the 250 ms clock started at the grant, before the
+grant reply had crossed Hub and Tailscale to the browser. Every Connect / resume
+from a remote laptop then lost control with zero applied inputs. A granted lease
+holds the neutral mask, so the longer first window cannot hold a button down.
+Regression: `test_fresh_lease_waits_for_first_input_across_the_grant_round_trip`.
+
+### One-button play
+
+The page shows the game picker, New game and Mute. Player choice, Connect /
+resume, Pause, Stop, Start and Take this controller are under More. After New
+game (or a click on the game), lost control heals itself: up to three reconnects
+in 10 s, then the page asks for New game. Leaving the window still releases
+control and cancels pending reconnects; returning focus or clicking the game
+reacquires it. Pause and Stop turn self-healing off until the next click on the
+game. The browser eval's delayed-ack variant now asserts that play resumes after
+acknowledgments return, with no Connect click.

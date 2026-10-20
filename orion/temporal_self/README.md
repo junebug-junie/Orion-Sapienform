@@ -52,6 +52,28 @@ Results land in `thought_decision.day_citations` (Hub turn trace) and
 (rebuild with `tests/patch4_rows/build_fixtures.py`). Latency eval:
 `services/orion-thought/evals/run_temporal_self_cue_latency_eval.py`.
 
+### Strain arcs (strain loop part 1, 2026-10-20)
+
+Spec: `docs/superpowers/specs/2026-10-20-strain-loop-design.md`. Source: the regulation step's own
+`arousal_transition` rows in `temporal_self_event` (level changes plus cause/seed rows). The
+adapter keeps each row's own `event_id`: the chronicle stores every folded event in that same
+table, so a new id would insert a copy that the next read folds again. One `strain` arc per
+episode: opens on `strained`, causes join its label in the order they joined, closes on
+`idle`/`engaged` (`process_ended`) or `unknown` (`source_stale`); a strained row with a new
+episode start, a not-strained row after an outage (`prev_dropped:gap`), or no row for
+`strain_stale_sec` (4,500 s; regulation writes a keepalive every 30 min while strained) closes the
+open arc at its last row (`source_stale`), so a lost closing row or the flag turned off can never
+leave "strained since" standing. It carries over midnight like `company`, and `episode_began_at`
+keeps when the episode began. Nothing binds to it by time, and dream replay skips it
+(`services/orion-dream/app/replay.py` `ARC_EXCLUDED_KINDS`: a days-long arc would fill every
+replay). Known limit, shared with `company`: a reducer state reset that re-folds from local
+midnight has no onset row for an episode carried from yesterday, so that arc is missing until the
+next keepalive (at most 30 min).
+Readers: stance cue ("Strained since Sat 12:07 (GPU jobs backed up, cabinet too hot) [arc:]",
+or "Was strained 09:00 to 09:40 (...)"), Day letter ("Strained: ..."), reverie block, citation
+truth (`strained since` / `was strained`, matched against `episode_began_at` too). Kill switch:
+`TEMPORAL_SELF_STRAIN_ARCS_ENABLED` (orion-durable-runs).
+
 ### Thread arc ids and the truth eval (2026-10-12)
 
 `OpenThreadV1.arc_id` names the concern arc a thread is, so the cue cites every open thread

@@ -299,6 +299,10 @@ def _build_temporal_self(saver: Any):
         return await regulation_store.record_transition(
             _checkpointer_cm, regulation_store.transition_row(prev, new, day_id))
 
+    async def record_cause(reading, day_id, joined, seed) -> bool:
+        return await regulation_store.record_transition(
+            _checkpointer_cm, regulation_store.cause_row(reading, day_id, joined, seed))
+
     async def read_immune_series(now):
         """R4: 24 h of every glossary channel that carries semantics, one sample per minute."""
         from orion.field.channel_glossary import load_glossary
@@ -318,6 +322,7 @@ def _build_temporal_self(saver: Any):
     deps = TemporalSelfDeps(
         read_inputs=read_inputs, read_drives=read_drives, project=project,
         record_transition=record_transition, now=lambda: datetime.now(timezone.utc),
+        record_cause=record_cause if s.temporal_self_strain_arcs_enabled else None,
         chronicle=chronicle.step if chronicle is not None else None,
         read_immune_series=read_immune_series if s.temporal_self_immune_enabled else None,
         record_immune=record_immune,
@@ -352,7 +357,9 @@ def _build_chronicle():
         event_retention_days=s.temporal_self_event_retention_days,
         arc_retention_days=s.temporal_self_arc_retention_days,
         day_retention_days=s.temporal_self_day_retention_days)
-    return Chronicler(store=ChronicleStore(_checkpointer_cm), reader=SourceReader(_checkpointer_cm, reducer.tz_name),
+    return Chronicler(store=ChronicleStore(_checkpointer_cm), reader=SourceReader(
+        _checkpointer_cm, reducer.tz_name,
+        exclude_kinds=() if s.temporal_self_strain_arcs_enabled else ("arousal_transition",)),
                       cfg=cfg, now=lambda: datetime.now(timezone.utc))
 
 

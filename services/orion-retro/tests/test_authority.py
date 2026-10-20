@@ -26,12 +26,13 @@ def test_takeover_neutralizes_before_new_owner_and_rejects_old_epoch():
 
 
 def test_expiry_cannot_be_revived_and_ports_are_independent():
+    from app.control import LEASE_TTL as T
     a = Arbiter([0,1]); p1=a.control('one',0,'acquire',0); p2=a.control('two',1,'acquire',0)
     a.frame(0); a.submit('one',intent(p1),0); a.submit('two',intent(p2,mask=128),.1)
     assert a.frame(.2)[0] == [256,128]
-    assert a.frame(.26)[0] == [0,128]
-    with pytest.raises(ValueError): a.submit('one',intent(p1,2),.26)
-    a.disconnect('two'); assert a.frame(.27)[0] == [0,0]
+    assert a.frame(T+.01)[0] == [0,128]
+    with pytest.raises(ValueError): a.submit('one',intent(p1,2),T+.01)
+    a.disconnect('two'); assert a.frame(T+.02)[0] == [0,0]
 
 
 @pytest.mark.parametrize('change', [{'mask':2}, {'mask':48}, {'mask':192}, {'epoch':99}, {'lease':'wrong'}, {'seq':0}])
@@ -288,10 +289,12 @@ def test_cancelled_input_cannot_abandon_timeout_cleanup():
     assert asyncio.run(scenario())
 
 
-def test_fresh_lease_waits_for_first_input_across_the_grant_round_trip():
-    # Live 2026-10-20: every Connect / resume lost its lease before the browser's
-    # first input crossed Hub and Tailscale (>250 ms after the grant).
+def test_lease_survives_throttled_browser_heartbeat():
+    # Live 2026-10-20: the browser's 50 ms timer ran at about 1 Hz, so a 250 ms
+    # lease expired before the second input; the first arrived ~500 ms after grant.
+    from app.control import LEASE_TTL as T
     a = Arbiter([0]); g=a.control('one',0,'acquire',0)
     a.frame(0); assert a.frame(.6)[0] == [0,0] and 0 in a.leases
     a.submit('one',intent(g),.6); assert a.frame(.61)[0] == [256,0]
-    assert a.frame(.86)[0] == [0,0] and 0 not in a.leases  # later inputs keep the 250 ms expiry
+    a.submit('one',intent(g,2),1.6); assert a.frame(1.61)[0] == [256,0]  # 1 s heartbeat
+    assert a.frame(1.6+T)[0] == [0,0] and 0 not in a.leases  # silence still expires

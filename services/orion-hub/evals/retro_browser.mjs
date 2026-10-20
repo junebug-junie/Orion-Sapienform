@@ -61,12 +61,13 @@ try{
   assert(p2actions.some(a=>a.port===1 && a.mask===384),'P2 gamepad input never applied');
   if(Number(process.env.RETRO_ACK_DELAY_MS || 0)){
     // Lost acknowledgments still release control; restored ones resume play with no Connect click.
-    const before=await page.$eval('#screen',c=>Number(c.dataset.appliedFrame));
     await page.evaluate(()=>{window.__dropRetroAck=true;});
     await page.waitForFunction(()=>/Reconnecting|Could not/.test(document.querySelector('#status').textContent),{timeout:3000});
     await page.evaluate(()=>{window.__dropRetroAck=false;});
+    // Acks delayed from before the drop can still land; measure only after the heal's new lease.
+    await page.waitForFunction(async()=>(await (await fetch('/api/retro/health/ready')).json()).session.state==='running',{timeout:6000,polling:100});
+    const before=await page.$eval('#screen',c=>Number(c.dataset.appliedFrame));
     await page.waitForFunction(b=>Number(document.querySelector('#screen').dataset.appliedFrame)>b+30,{timeout:6000},before);
-    assert.equal(await page.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'running');
   }
   await page.evaluate(()=>window.dispatchEvent(new Event('blur')));await pause(400);
   const afterBlur=await page.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state);

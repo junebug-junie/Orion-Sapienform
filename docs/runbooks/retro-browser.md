@@ -111,7 +111,7 @@ Do not remove operator artifacts or downgrade to a save-capable core implicitly.
 Inputs are sent every 50 ms independently of acknowledgment arrival. A browser
 allows at most 24 outstanding inputs, 4 KiB of WebSocket send buffering, and one
 second without acknowledgment of its oldest input; crossing a bound releases
-control. The server's 250 ms input expiry remains unchanged. Negative replies for
+control. The server's lease expiry is 2 s (see Lease expiry below). Negative replies for
 validated input include port/epoch/sequence so old replies cannot clear a newer
 lease. Repeated Connect / resume reuses an open input connection. An expired,
 unleased connection closing does not cancel another connection's resume grace.
@@ -153,3 +153,14 @@ control and cancels pending reconnects; returning focus or clicking the game
 reacquires it. Pause and Stop turn self-healing off until the next click on the
 game. The browser eval's delayed-ack variant now asserts that play resumes after
 acknowledgments return, with no Connect click.
+
+### Lease expiry
+
+A lease now expires after 2 s without input (`LEASE_TTL`), at grant and after
+each input. Live 2026-10-20, after #2772: on each grant the first input arrived
+about 500 ms later, and the second never arrived within 250 ms. The browser ran the
+Retro page's 50 ms timer at about 1 Hz, as browsers do for pages they treat as
+background. Key presses and releases are still sent at once. Socket close,
+blur and hidden tabs still release control immediately. The cost: a browser
+that freezes without closing its socket can hold its last buttons for up to 2 s.
+Regression: `test_lease_survives_throttled_browser_heartbeat`.

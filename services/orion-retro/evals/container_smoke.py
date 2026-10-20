@@ -13,6 +13,10 @@ import httpx
 from websockets.asyncio.client import unix_connect
 from orion.retro.pad_lab import build_rom
 from operator_smoke import smoke
+import importlib.util
+_spec = importlib.util.spec_from_file_location('retro_control', Path(__file__).resolve().parents[1]/'app/control.py')
+_control = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_control)
+LEASE_TTL = _control.LEASE_TTL
 
 
 def docker(*args):
@@ -57,7 +61,7 @@ async def faults(socket, token, name, evidence):
             g=call(current+'/control',dict(connection_id=hello['connection_id'],port=0))
             data.update(lease=g['lease'],epoch=g['epoch'],seq=2)
             await ws.send(json.dumps(data));assert 'applied' in json.loads(await ws.recv())
-            await asyncio.sleep(.4)
+            await asyncio.sleep(LEASE_TTL+.15)
             assert call(current)['state']=='paused','expired lease kept running'
         call(current+'/stop',{})
         current,s=await start()

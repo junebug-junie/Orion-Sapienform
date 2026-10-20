@@ -638,3 +638,39 @@ async def test_tick_threads_continuity_into_plan_context(monkeypatch):
     step = cortex.execute_plan.call_args.kwargs["req"].context["chain_step"]
     assert step == {"index": 1, "is_final": False, "prior_thoughts": ["earlier thought"],
                     "next_focus_hint": "the backup"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error", ["gpu_pool_unavailable:shed:cabinet_hot", "gpu_pool_unavailable:deadline"]
+)
+async def test_tick_raises_llm_unavailable_on_gpu_pool_refusal(monkeypatch, error):
+    """A refused narration is not a hollow thought: the tick says so (2026-10-20)."""
+    from app import reverie
+
+    monkeypatch.setattr(reverie, "load_recent_loop_outcomes", lambda ids: {})
+    cortex = AsyncMock()
+    cortex.execute_plan = AsyncMock(return_value={"status": "fail", "error": error, "steps": []})
+    with pytest.raises(reverie.ReverieLlmUnavailable) as info:
+        await reverie.run_reverie_once(
+            AsyncMock(), broadcast_reader=lambda: _broadcast(), cortex_client=cortex,
+            raise_llm_unavailable=True,
+        )
+    assert info.value.reason == error
+    # Standalone tick keeps its never-raise contract.
+    assert await reverie.run_reverie_once(
+        AsyncMock(), broadcast_reader=lambda: _broadcast(), cortex_client=cortex
+    ) is None
+    assert info.value.shed_reason == ("cabinet_hot" if "shed" in error else None)
+
+
+@pytest.mark.asyncio
+async def test_tick_non_pool_failure_stays_none(monkeypatch):
+    from app import reverie
+
+    monkeypatch.setattr(reverie, "load_recent_loop_outcomes", lambda ids: {})
+    cortex = AsyncMock()
+    cortex.execute_plan = AsyncMock(return_value={"status": "fail", "error": "timeout", "steps": []})
+    assert await reverie.run_reverie_once(
+        AsyncMock(), broadcast_reader=lambda: _broadcast(), cortex_client=cortex
+    ) is None

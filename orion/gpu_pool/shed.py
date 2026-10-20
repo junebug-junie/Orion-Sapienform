@@ -149,3 +149,46 @@ class ShedBoard:
                              "valid_until": s.valid_until.isoformat(), "detail": s.detail} for s in sigs],
             })
         return ShedView(enabled, blocked, active, rows)
+
+
+# ---------------------------------------------------------------------------------------------
+# Reading a shed back out of a refusal. When the pool sheds a request, orion-llm-gateway answers
+# ``raw.error="gpu_pool_unavailable"`` with ``raw.details.reason="shed:<name>"``, and cortex-exec's
+# ``gateway_error_step_failure`` folds that into the step error ``gpu_pool_unavailable:shed:<name>``
+# (optionally followed by ``: <message>``). A shed is the pool doing its job on purpose -- it is
+# not a failure of the work that was refused. Other ``gpu_pool_unavailable:*`` reasons (deadline,
+# pool_bus_unavailable, no_serviceable_role) are real capacity failures and are NOT sheds.
+# ---------------------------------------------------------------------------------------------
+
+GPU_POOL_UNAVAILABLE_PREFIX = "gpu_pool_unavailable"
+_SHED_MARKER = f"{GPU_POOL_UNAVAILABLE_PREFIX}:shed:"
+
+
+def shed_reason_from_error(error: Any) -> str | None:
+    """The shed reason name (e.g. ``cabinet_hot``) when ``error`` is a GPU-pool shed, else None.
+
+    Matches only ``gpu_pool_unavailable:shed:<name>`` (anywhere in the text, so a plan-level
+    error that wraps the step error still matches). ``<name>`` is the leading ``[A-Za-z0-9_]``
+    run; an empty name is not a shed."""
+    if not isinstance(error, str):
+        return None
+    idx = error.find(_SHED_MARKER)
+    if idx < 0:
+        return None
+    rest = error[idx + len(_SHED_MARKER):]
+    name = []
+    for ch in rest:
+        if ch.isalnum() or ch == "_":
+            name.append(ch)
+        else:
+            break
+    return "".join(name)[:64] or None
+
+
+def is_gpu_pool_refusal(error: Any) -> bool:
+    """True when ``error`` names any GPU-pool refusal (``gpu_pool_unavailable`` or ``...:<reason>``),
+    shed or not: the LLM was never asked, so the caller's own prompt/work was not judged."""
+    if not isinstance(error, str):
+        return False
+    text = error.strip()
+    return text == GPU_POOL_UNAVAILABLE_PREFIX or text.startswith(f"{GPU_POOL_UNAVAILABLE_PREFIX}:")

@@ -315,7 +315,19 @@ class CortexExecGrammarCollector:
             self._edge_specs.append((started.atom_id, atom.atom_id, "derived_from"))
         self._last_completed_atom_id = atom.atom_id
 
-    def record_step_failed(self, *, order: int, step_name: str, error_kind: str) -> None:
+    def record_step_failed(
+        self,
+        *,
+        order: int,
+        step_name: str,
+        error_kind: str,
+        shed_reason: str | None = None,
+    ) -> None:
+        """``shed_reason`` (e.g. ``cabinet_hot``) marks a step the GPU pool refused on purpose
+        (``gpu_pool_unavailable:shed:<name>``, see orion.gpu_pool.shed.shed_reason_from_error).
+        It rides as an extra ``shed_reason=<name>`` summary kv next to the unchanged
+        ``error_kind`` bucket, so the reducer (orion/substrate/execution_loop/grammar_extract.py)
+        can tell a deliberate shed from a real failure."""
         started_key = f"exec_step_started:{order}:{step_name}"
         key = f"exec_step_failed:{order}:{step_name}"
         ref = f"cortex.exec.step_result:{self.correlation_id}:{order}:{step_name}"
@@ -326,7 +338,10 @@ class CortexExecGrammarCollector:
             semantic_role="exec_step_failed",
             layer="step",
             dimensions=["execution", "failure", "step"],
-            summary=f"Step failed: step={step_name}, error_kind={error_kind}",
+            summary=(
+                f"Step failed: step={step_name}, error_kind={error_kind}"
+                + (f", shed_reason={shed_reason}" if shed_reason else "")
+            ),
             confidence=0.9,
             salience=0.9,
             source_event_id=f"{self.correlation_id}:{order}",

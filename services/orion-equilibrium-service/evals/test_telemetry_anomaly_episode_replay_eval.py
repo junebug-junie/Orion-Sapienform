@@ -72,3 +72,30 @@ def test_dream_novelty_pressure_from_telemetry_is_roughly_unchanged():
     before = sum(r["per_day"][d]["before_new_key_pressure"] for d in STEADY)
     after = sum(r["per_day"][d]["after_new_key_pressure"] for d in STEADY)
     assert abs(after - before) <= 0.25 * before, (before, after)
+
+
+def _quick_escalations(result):
+    f = result["after_fires"]
+    return sum(1 for a, b in zip(f, f[1:])
+               if b["reason"] == "severity_escalation" and b["window_end"] - a["window_end"] <= 75)
+
+
+def test_nominal_open_deferral_removes_double_fires_without_losing_novelty():
+    """2026-10-20: a nominal open waits one window and fires with that window's band.
+    15 days: 140 -> 112 fires, escalations one window after a fire 18 -> 11, and dream
+    novelty unchanged (nominal keys carry no dream weight)."""
+    from orion.metacog import anomaly_episode as ae
+    import replay_telemetry_anomaly_episodes as rte
+
+    after = replay(ITEMS)
+    orig = rte.step
+    try:
+        rte.step = lambda s, **kw: ae.step(s, defer_nominal_open=False, **kw)
+        old = replay(ITEMS)
+    finally:
+        rte.step = orig
+    assert _total(old, "after_fires") == 140
+    assert _total(after, "after_fires") == 112
+    assert _quick_escalations(after) < _quick_escalations(old)
+    assert sum(after["per_day"][d]["after_new_key_pressure"] for d in STEADY) == \
+        sum(old["per_day"][d]["after_new_key_pressure"] for d in STEADY)

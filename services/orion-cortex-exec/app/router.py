@@ -32,6 +32,7 @@ from .recall_utils import (
 )
 from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionRequest, PlanExecutionResult, StepExecutionResult
 from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
+from orion.gpu_pool.shed import shed_reason_from_error
 from .supervisor import Supervisor
 from .settings import settings
 from .grammar_emit import (
@@ -1162,6 +1163,7 @@ class PlanRunner:
                         order=0,
                         step_name=recall_step.step_name or "pcr_continuity_recall",
                         error_kind=short_error_kind(recall_step.error),
+                        shed_reason=shed_reason_from_error(recall_step.error),
                     )
             memory_used = recall_step is not None and recall_step.status == "success"
             recall_count = 0
@@ -1212,6 +1214,7 @@ class PlanRunner:
                     order=0,
                     step_name=recall_step.step_name or "pre_recall",
                     error_kind=short_error_kind(recall_step.error),
+                    shed_reason=shed_reason_from_error(recall_step.error),
                 )
             memory_used = recall_step.status == "success"
             recall_count = 0
@@ -1365,6 +1368,7 @@ class PlanRunner:
                     order=step.order,
                     step_name=step.step_name,
                     error_kind=short_error_kind(step_res.error),
+                    shed_reason=shed_reason_from_error(step_res.error),
                 )
             if isinstance(step_res.result, dict) and "RecallService" in step_res.result:
                 recall_debug = step_res.result.get("RecallService", {})
@@ -1410,6 +1414,7 @@ class PlanRunner:
                             order=step.order,
                             step_name=phase3_recall_step.step_name or "pcr_belief_recall",
                             error_kind=short_error_kind(phase3_recall_step.error),
+                            shed_reason=shed_reason_from_error(phase3_recall_step.error),
                         )
                     memory_used = phase3_recall_step.status == "success"
                 if isinstance(phase3_debug, dict) and isinstance(recall_debug, dict):

@@ -77,7 +77,7 @@ def _run(
     checker: str | None = None,
     applier: str | None = None,
     safe_build_body: str | None = None,
-    init_git: bool = False,
+    init_git: bool | str = False,
 ):
     fake_root = tmp_path / "repo"
     fake_scripts = fake_root / "scripts"
@@ -104,9 +104,23 @@ def _run(
     safe_build.chmod(0o755)
 
     if init_git:
-        for cmd in (["init", "-q", "-b", "main"], ["add", "-A"],
-                    ["-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-qm", "init"]):
-            subprocess.run(["git", *cmd], cwd=fake_root, check=True, capture_output=True)
+        def g(*cmd, cwd=fake_root):
+            subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=T", *cmd],
+                           cwd=cwd, check=True, capture_output=True)
+        g("init", "-q", "-b", "main")
+        g("add", "-A")
+        g("commit", "-qm", "init")
+        remote = tmp_path / "remote.git"
+        g("init", "--bare", "-q", str(remote), cwd=tmp_path)
+        g("remote", "add", "origin", str(remote))
+        g("push", "-qu", "origin", "main")
+        if init_git == "stale":  # origin/main already ahead when the run starts
+            other = tmp_path / "other"
+            g("clone", "-q", "-b", "main", str(remote), str(other), cwd=tmp_path)
+            (other / "ahead.txt").write_text("ahead\n")
+            g("add", "ahead.txt", cwd=other)
+            g("commit", "-qm", "ahead", cwd=other)
+            g("push", "-q", "origin", "main", cwd=other)
 
     env = os.environ.copy()
     env.pop("ORION_DEPLOY_PINNED_HEAD", None)
@@ -645,3 +659,17 @@ def test_every_safe_build_call_is_pinned_to_the_run_start_head(tmp_path: Path) -
                           capture_output=True, text=True, check=True).stdout.strip()
     pins = [c for c in calls if c.startswith("PIN=")]
     assert pins and set(pins) == {f"PIN={head}"}
+
+
+def test_run_started_on_stale_main_is_not_pinned(tmp_path: Path) -> None:
+    """A run that starts behind origin/main must not get a pin, or the wrapper
+    would accept the stale main it used to refuse."""
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-a,build",
+        init_git="stale",
+        safe_build_body='echo "PIN=$ORION_DEPLOY_PINNED_HEAD" >> "$REBUILD_TEST_CAPTURE"\n',
+    )
+    assert completed.returncode == 0, completed.stderr
+    pins = [c for c in calls if c.startswith("PIN=")]
+    assert pins == ["PIN="]

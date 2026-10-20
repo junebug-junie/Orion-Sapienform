@@ -291,6 +291,7 @@ def _wrapper_repo(tmp_path: Path, stub_rc: int) -> tuple[Path, Path, Path, dict]
            "ORION_AGENT_BOARD_PATH": str(tmp_path / "board.jsonl")}
     env.pop("ORION_ALLOW_UNAPPLIED_MIGRATION", None)
     env.pop("CLAUDE_CODE_SESSION_ID", None)
+    env.pop("ORION_DEPLOY_PINNED_HEAD", None)
     return primary, wt, marker, env
 
 

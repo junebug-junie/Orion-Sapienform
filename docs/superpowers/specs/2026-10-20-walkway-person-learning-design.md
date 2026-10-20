@@ -228,8 +228,77 @@ loss, CPU). Ships only through the same eval gate as a new `model_version`.
   refit bar row's `fitted_at` moves. If `unsure` is under 20% of scored
   clusters, treat the bars as miscalibrated.
 
+## Handoff: everything still open (2026-10-20)
+
+Context for a fresh agent. PR #2765 (photos kept forever, per-label snapshot
+slot, story-link relink) is merged and its images are deployed. This spec is
+PR #2767 (squash-merge it: early branch commits held names the privacy gate
+later removed). Items below are not done unless marked.
+
+### A. Operator steps (Juniper runs; agent sessions are blocked from these)
+
+1. **Restart to pick up keep-forever.** Primary checkout `.env` files were
+   already switched to `0` on 2026-10-20 (backups in the session scratchpad);
+   the running containers still hold 10/14/30 days until restarted:
+   `scripts/safe_docker_build.sh orion-vision-host up -d && scripts/safe_docker_build.sh orion-sql-writer up -d`
+   Verify after: `ls /mnt/telemetry/orion-vision-host/crop_thumbs | wc -l` stays
+   >= 1458 and `du -sh /mnt/telemetry/orion-vision-host/face_frames` stays
+   >= 2.4G over the next hour.
+2. **Story-link backfill** (must run before crop rows age out, 7 days from
+   2026-10-15..19). 72 of 147 person stories in the last 5 days were still
+   unlinked after deploy. Dry run, then `--apply`:
+   `.venv/bin/python services/orion-sql-writer/scripts/backfill_story_evidence_links.py --dsn postgresql://postgres:postgres@localhost:55432/conjourney --job-dir /tmp/story-evidence-relink [--apply]`
+   Undo: `--restore /tmp/story-evidence-relink`.
+
+### B. Live verification of #2765 (UNVERIFIED as of 2026-10-20 04:00 UTC)
+
+- `[MOTION_STORY] relinked` log line in orion-sql-writer. (Story
+  `3ca2d1c15fd53c423a38400ddc582709` did gain its link after deploy.)
+- Person crops get thumbnails while vehicles are present:
+  `SELECT label, count(*), count(thumb_ref) FROM vision_crop_observation WHERE created_at > now()-interval '1 day' GROUP BY 1`
+  -- person thumb share should rise well above the pre-deploy 106/973.
+- A new "who is this?" ask carries `image_refs` from a sighting older than 3 days.
+
+### C. Build items (agent work, in order)
+
+1. **Phase 0** of this spec (person crops survive the 7-day prune). Urgent.
+2. **No picture, no ask.** `_open_asks` in `vision_individuals.py` posts a
+   "who is this?" ask with `image_refs=[]` when no snapshot exists. Skip that
+   individual (it stays a candidate) instead of posting an unanswerable card.
+   Same rule for the Phase 1 `vision_person_confirm` ask. Test: an
+   individual with no thumbs produces no ask row.
+3. **Retire the picture-less open ask.** `ask-9645cdc1bdd64660b80a07380b7c71ef`
+   (individual `47d187c4c302450dbdfbd640e99d7167`, 27 sightings / 5 days) was
+   posted with no picture. Expire it so the cooldown lets a new ask with
+   pictures open (its 4 thumbs from 2026-10-16 still exist). One-row status
+   update: production write, needs Juniper's OK.
+4. **Impure clusters (gap in Phase 1).** That same individual's two viewable
+   thumbs look like different people (dark figure walking at night; red
+   shirt crouching). Phase 1 attributes whole clusters, so an impure cluster
+   would put one person's crops in another's album. Add before Phase 1 ships:
+   a purity check (spread of the cluster's crop vectors, or a split when
+   crops form two groups) and an ask answer "these are different people"
+   that removes the cluster's crops from albums. Measure first: how many
+   labelled clusters are impure today.
+5. **Disk alarm** on `/mnt/telemetry` (469G disk, 336G free on 2026-10-20;
+   face frames kept forever add ~170 MB/day, ~62 GB/year). Reuse an existing
+   host/disk health signal if one exists before adding one.
+6. **Tracking doc.** Link this spec under the walkway reach queue
+   (`docs/superpowers/plans/2026-10-18-walkway-reach-into-orion-queue.md`,
+   PR #2752, still open) once that merges.
+7. **Cleanup.** Remove the merged #2765 worktree
+   (`../Orion-Sapienform-vision-photos-keep-and-story-links`) via
+   `make prune-merged-worktrees`.
+
+### D. Decisions waiting on Juniper
+
+- Missing question 1 (answer-built albums vs the 2026-08-21 one-subject
+  gallery rule).
+- Missing question 3 (when "probably X" may reach other consumers).
+
 ## Recommended next patch
 
 Phase 0 alone, today: `VISION_CROP_RETENTION_KEEP_LABELS=person` in
 orion-sql-writer with a test that person crops survive the prune and vehicle
-crops do not. Every day it waits deletes more labelled examples.
+crops do not. Every day it waits deletes more labelled examples. Then C.2
+(no picture, no ask) in the same service.

@@ -335,6 +335,8 @@ retro_guard_skips() {
     out=$(python3 "$guard" </dev/null 2>&1)
     guard_rc=$?
     set -e
+    # One log record per line: collapse a traceback or multi-line docker error.
+    out=$(printf '%s' "$out" | tr '\n\t' '  ' | cut -c1-400)
     case "$guard_rc" in
         0) return 1 ;;
         3) reason=retro_session_live ;;
@@ -362,6 +364,23 @@ rebuild_one() {
     fi
     if retro_guard_skips "$svc" "$RECREATE_FLAG"; then
         return 0
+    fi
+    # A game can start during a multi-minute build. For a guarded stack, build
+    # first, check again, and only then recreate (the up below hits the cache).
+    if [ "$DRY_RUN" != "1" ] && [ "${ORION_REBUILD_IGNORE_LIVE_RETRO:-0}" != "1" ] &&
+        [ -f "$REPO_ROOT/scripts/check_retro_session_live.py" ] &&
+        case " $RETRO_GUARDED " in *" $svc "*) true ;; *) false ;; esac; then
+        echo ""
+        echo "=== rebuild_services_from_git_diff: $svc (build, then re-check for a live retro game) ==="
+        run_safe_build "$svc" build
+        if [ "$rc" -ne 0 ]; then
+            echo "rebuild_services_from_git_diff.sh: FAILED $svc build (exit $rc)" >&2
+            FAILED="$FAILED $svc"
+            return 0
+        fi
+        if retro_guard_skips "$svc" "$RECREATE_FLAG"; then
+            return 0
+        fi
     fi
 
     # Profile-gated compose services of this stack that are RUNNING on this

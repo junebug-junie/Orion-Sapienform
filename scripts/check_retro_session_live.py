@@ -29,6 +29,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 NOT_LIVE, LIVE, UNKNOWN = 0, 3, 4
 LIVE_STATES = frozenset({"starting", "running", "paused"})
@@ -86,8 +87,12 @@ def check(container: str, repo_root: Path, docker: str = "docker") -> tuple[int,
     if not evidence_dir.is_dir():
         return UNKNOWN, f"container {container} running; evidence dir {evidence_dir} missing"
     status_path = evidence_dir / "status.json"
-    if not status_path.exists():
+    try:
+        mtime = status_path.stat().st_mtime
+    except FileNotFoundError:
         return NOT_LIVE, f"container {container} running; no session ever started ({status_path} absent)"
+    except OSError as exc:
+        return UNKNOWN, f"container {container} running; cannot stat {status_path}: {exc}"
     try:
         session = json.loads(status_path.read_text())
         state = session["state"]
@@ -95,7 +100,11 @@ def check(container: str, repo_root: Path, docker: str = "docker") -> tuple[int,
         return UNKNOWN, f"container {container} running; {status_path} unreadable: {exc}"
     game = session.get("game_id", "?") if isinstance(session, dict) else "?"
     if state in LIVE_STATES:
-        return LIVE, f"session state={state} game={game} in running container {container}"
+        # status.json is written at start/ready/state changes, not per frame, so
+        # age is not proof of staleness; it is reported so an operator can judge.
+        age_h = max(0.0, time.time() - mtime) / 3600
+        return LIVE, (f"session state={state} game={game} in running container {container}"
+                      f" (status.json last written {age_h:.1f}h ago)")
     return NOT_LIVE, f"session state={state} game={game}; not live"
 
 

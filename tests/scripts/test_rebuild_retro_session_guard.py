@@ -117,16 +117,19 @@ def test_env_file_fallback_when_mount_absent(tmp_path, monkeypatch):
 
 
 def _run(tmp_path: Path, *, plan: str, docker: dict, extra_env: dict | None = None,
-         extra_args: list[str] | None = None):
+         extra_args: list[str] | None = None, safe_body: str = "", guard_src: str | None = None):
     fake_scripts = tmp_path / "repo" / "scripts"
     fake_scripts.mkdir(parents=True)
     script = fake_scripts / SCRIPT.name
     shutil.copy2(SCRIPT, script)
-    shutil.copy2(GUARD, fake_scripts / GUARD.name)
+    if guard_src is None:
+        shutil.copy2(GUARD, fake_scripts / GUARD.name)
+    else:
+        (fake_scripts / GUARD.name).write_text(guard_src)
     (fake_scripts / "rebuild_affected_services.py").write_text(_FAKE_CLASSIFIER)
     capture = tmp_path / "calls.txt"
     safe = fake_scripts / "safe_docker_build.sh"
-    safe.write_text('#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$CAPTURE"\nexit 0\n')
+    safe.write_text('#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$CAPTURE"\n' + safe_body + 'exit 0\n')
     safe.chmod(0o755)
     env = os.environ.copy()
     env.pop("ORION_REBUILD_IGNORE_LIVE_RETRO", None)
@@ -169,7 +172,8 @@ def test_stale_file_with_dead_container_rebuilds(tmp_path):
         tmp_path, plan="orion-retro,build;orion-hub,build",
         docker=_docker_env(tmp_path, running=False, state="running"))
     assert done.returncode == 0, done.stderr
-    assert calls == ["orion-retro up -d --build", "orion-hub up -d --build"]
+    assert calls == ["orion-retro build", "orion-retro up -d --build",
+                     "orion-hub build", "orion-hub up -d --build"]
     assert "SKIPPED" not in log
 
 
@@ -190,3 +194,43 @@ def test_dry_run_reports_the_skip(tmp_path):
     assert done.returncode == 0
     assert "[dry-run] would skip: orion-retro reason=retro_session_live" in done.stdout
     assert "[dry-run] would rebuild: orion-retro" not in done.stdout
+
+
+def test_game_started_during_build_is_not_recreated(tmp_path):
+    docker = _docker_env(tmp_path, running=True, state="stopped")
+    status = tmp_path / "evidence" / "status.json"
+    # The build "takes minutes"; Juniper starts a game meanwhile.
+    body = f'case "$*" in *" build") echo \'{{"state": "running", "game_id": "g"}}\' > "{status}";; esac\n'
+    done, calls, log = _run(tmp_path, plan="orion-hub,build", docker=docker, safe_body=body)
+    assert done.returncode == 0, done.stderr
+    assert calls == ["orion-hub build"]
+    assert "SKIPPED orion-hub reason=retro_session_live" in log
+
+
+def test_guard_crash_is_unknown_and_skips_with_one_line_log(tmp_path):
+    crash = "import sys\nprint('line one')\nprint('line two')\nraise SystemExit(1)\n"
+    done, calls, log = _run(tmp_path, plan="orion-retro,build",
+                            docker=_docker_env(tmp_path, running=True, state="running"), guard_src=crash)
+    assert done.returncode == 0
+    assert calls == []
+    skipped = [line for line in log.splitlines() if "SKIPPED" in line]
+    assert len(skipped) == 1 and "reason=retro_session_unknown" in skipped[0]
+    assert "line one line two" in skipped[0]
+
+
+def test_done_line_lists_failed_and_deferred(tmp_path):
+    docker = _docker_env(tmp_path, running=True, state="paused")
+    body = 'case "$*" in orion-thought*) exit 1;; esac\n'
+    done, _calls, log = _run(tmp_path, plan="orion-thought,build;orion-hub,build", docker=docker, safe_body=body)
+    assert done.returncode == 1
+    assert log.rstrip().endswith("DONE rebuilt=0 failed=orion-thought deferred=orion-hub")
+
+
+def test_missing_docker_binary_is_unknown(tmp_path, monkeypatch):
+    monkeypatch.setenv("ORION_DOCKER_BIN", str(tmp_path / "no-such-docker"))
+    assert guard.main(["--repo-root", str(tmp_path)]) == guard.UNKNOWN
+
+
+def test_live_reason_reports_status_age(tmp_path, monkeypatch, capsys):
+    assert _guard(tmp_path, monkeypatch, running=True, state="running") == guard.LIVE
+    assert "last written 0.0h ago" in capsys.readouterr().out

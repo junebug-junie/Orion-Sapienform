@@ -46,7 +46,8 @@ MAX_SNAPSHOT_ROWS = 100_000
 CANDIDATES_SQL = (
     "SELECT story_id, kind, ended_at, evidence FROM vision_motion_story WHERE ended_at >= :since "
     "AND jsonb_typeof(evidence) = 'array' "
-    "AND jsonb_path_exists(evidence, '$[*] ? (@.individual_id == null)') ORDER BY ended_at")
+    "AND jsonb_path_exists(evidence, '$[*] ? (!exists(@.individual_id) || @.individual_id == null)') "
+    "ORDER BY ended_at")
 
 
 def _ev(raw):
@@ -131,16 +132,19 @@ def report(job: Path, changes: list[dict], done: int, errors: int, applied: bool
         f"report.md\n")
 
 
-def restore(engine, job: Path) -> int:
+def restore(engine, job: Path) -> tuple[int, int]:
+    """(rows restored, rows in the snapshot). A row whose evidence changed after the
+    backfill (e.g. the loop filled another null) is left alone and shows as a shortfall."""
     from sqlalchemy import text
 
     n = 0
+    lines = (job / "snapshot.jsonl").read_text().splitlines()
     with engine.begin() as conn:
-        for line in (job / "snapshot.jsonl").read_text().splitlines():
+        for line in lines:
             c = json.loads(line)
             n += conn.execute(text(RELINK_UPDATE_SQL), {
                 "id": c["story_id"], "new": json.dumps(c["old"]), "old": json.dumps(c["new"])}).rowcount or 0
-    return n
+    return n, len(lines)
 
 
 def main(argv=None) -> int:
@@ -157,8 +161,10 @@ def main(argv=None) -> int:
 
     engine = create_engine(a.dsn, pool_pre_ping=True)
     if a.restore:
-        print(f"restored {restore(engine, Path(a.restore))} row(s)")
-        return 0
+        done, total = restore(engine, Path(a.restore))
+        print(f"restored {done} of {total} snapshot row(s)"
+              + ("" if done == total else " -- the rest changed after the backfill and were left alone"))
+        return 0 if done == total else 1
     job = Path(a.job_dir)
     job.mkdir(parents=True, exist_ok=True)
     with engine.connect() as conn:

@@ -213,8 +213,16 @@ def test_strips_are_kept_forever_by_default() -> None:
     assert "\nVISION_STORY_STRIP_RETENTION_DAYS=0\n" in (SERVICE / ".env_example").read_text()
     # Keep-forever story retention never deletes a story that still has a saved picture.
     forever = vl.story_prune_sql(vl.LoopConfig(strip=ss.StripConfig()))
-    aged = vl.story_prune_sql(vl.LoopConfig(strip=ss.StripConfig(retention_days=30.0)))
+    aged = vl.story_prune_sql(vl.LoopConfig(strip=ss.StripConfig(retention_days=30.0), strip_keep_forever=False))
     assert aged == vl.STORY_PRUNE_SQL and forever.startswith(vl.STORY_PRUNE_SQL) and "evidence_strip" in forever
+    # Strips switched off still keep the stories that hold pictures (review 2026-10-20) ...
+    assert vl.story_prune_sql(vl.LoopConfig(strip=None)) == forever
+    # ... and without the strip columns the plain prune runs instead of failing every tick.
+    assert vl.story_prune_sql(vl.LoopConfig(), strip_columns=False) == vl.STORY_PRUNE_SQL
+    s = Settings(SQL_WRITER_SUBSCRIBE_CHANNELS=[], VISION_STORY_STRIPS_ENABLED=False)
+    assert vl.loop_config(s).strip is None and vl.loop_config(s).strip_keep_forever is True
+    s = Settings(SQL_WRITER_SUBSCRIBE_CHANNELS=[], VISION_STORY_STRIP_RETENTION_DAYS=30)
+    assert vl.loop_config(s).strip_keep_forever is False
 
 
 def test_config_parity_strip_keys_on_by_default() -> None:
@@ -280,7 +288,8 @@ def _insert(engine, crops) -> None:
 def _loop_cfg(tmp: Path, strip_retention_days: float = 30.0) -> vl.LoopConfig:
     """Strip retention 30 exercises the age prune; 0 (the shipped default) keeps strips forever."""
     return vl.LoopConfig(initial_lookback_sec=600, clean_since=T0 - timedelta(hours=1),
-                         strip=cfg_for(tmp, retention_days=strip_retention_days))
+                         strip=cfg_for(tmp, retention_days=strip_retention_days),
+                         strip_keep_forever=strip_retention_days <= 0)
 
 
 def _cycle(cfg, now):
@@ -582,6 +591,7 @@ def test_backfill_script_snapshots_then_fills_null_links_and_can_restore(pg, tmp
         ev = conn.execute(text("SELECT evidence FROM vision_motion_story")).scalar()
     assert [e["individual_id"] for e in ev] == ["ind-j"] * 3 + [None]
     assert bf.main(["--dsn", PG, "--restore", str(job)]) == 0
+    assert bf.main(["--dsn", PG, "--restore", str(job)]) == 1     # already restored: shortfall is reported
     with pg.connect() as conn:
         ev = conn.execute(text("SELECT evidence FROM vision_motion_story")).scalar()
     assert [e["individual_id"] for e in ev] == [None] * 4

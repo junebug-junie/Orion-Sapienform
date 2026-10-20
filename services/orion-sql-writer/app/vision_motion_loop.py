@@ -76,6 +76,9 @@ class LoopConfig:
     clean_since: Optional[datetime] = None
     prop_individual_ids: Tuple[str, ...] = ()
     strip: Optional[StripConfig] = None
+    # VISION_STORY_STRIP_RETENTION_DAYS <= 0: pictures are kept forever, so story
+    # retention never deletes a story that still has one -- even with strips off.
+    strip_keep_forever: bool = True
 
 
 def parse_utc(value: str) -> Optional[datetime]:
@@ -110,6 +113,7 @@ def loop_config(settings: Settings) -> LoopConfig:
             frame_w=float(settings.vision_motion_frame_width),
             frame_h=float(settings.vision_motion_frame_height),
         ) if bool(settings.vision_story_strips_enabled) else None,
+        strip_keep_forever=float(settings.vision_story_strip_retention_days) <= 0,
     )
 
 
@@ -422,9 +426,9 @@ def assemble_step(engine, stream_id: str, ts: datetime, cfg: LoopConfig) -> int:
 RELINK_LOOKBACK_SEC = 6 * 3600.0
 RELINK_MAX_STORIES = 500
 RELINK_CANDIDATES_SQL = (
-    "SELECT story_id, evidence FROM vision_motion_story WHERE ended_at >= :since "
+    "SELECT story_id, evidence FROM vision_motion_story WHERE stream_id = ANY(:streams) AND ended_at >= :since "
     "AND jsonb_typeof(evidence) = 'array' "
-    "AND jsonb_path_exists(evidence, '$[*] ? (@.individual_id == null)') "
+    "AND jsonb_path_exists(evidence, '$[*] ? (!exists(@.individual_id) || @.individual_id == null)') "
     "ORDER BY ended_at DESC LIMIT :n")
 RELINK_CROPS_SQL = (
     "SELECT crop_id, individual_id FROM vision_crop_observation "
@@ -461,13 +465,15 @@ def _evidence_value(raw: Any) -> Any:
     return json.loads(raw) if isinstance(raw, str) else raw
 
 
-def relink_stories(conn, since: datetime, *, limit: int = RELINK_MAX_STORIES) -> Dict[str, int]:
-    """Fill null evidence individual_ids of stories that ended at/after ``since``.
+def relink_stories(conn, since: datetime, streams: Sequence[str], *,
+                   limit: int = RELINK_MAX_STORIES) -> Dict[str, int]:
+    """Fill null evidence individual_ids of ``streams``' stories that ended at/after ``since``
+    (filtered by stream so the (stream_id, ended_at) index applies).
     Returns {"stories": rows rewritten, "crops": entries filled}."""
     from sqlalchemy import text
 
     rows = [(r[0], _evidence_value(r[1])) for r in conn.execute(
-        text(RELINK_CANDIDATES_SQL), {"since": since, "n": int(limit)}).fetchall()]
+        text(RELINK_CANDIDATES_SQL), {"streams": list(streams), "since": since, "n": int(limit)}).fetchall()]
     ids = sorted({cid for _, ev in rows for cid in unlinked_crop_ids(ev)})
     if not ids:
         return {"stories": 0, "crops": 0}
@@ -494,12 +500,12 @@ _KEEP_STORY_WITH_PICTURE = (
     "ELSE '[]'::jsonb END) c WHERE c ? 'file')))")
 
 
-def story_prune_sql(cfg: LoopConfig) -> str:
+def story_prune_sql(cfg: LoopConfig, *, strip_columns: bool = True) -> str:
     """Story retention. When strips are kept forever (strip retention 0), a story
     that still has a saved picture is never deleted, so the picture keeps its
-    story (the Hub reads a strip through its story row)."""
-    keep_forever = cfg.strip is not None and cfg.strip.retention_days <= 0
-    return STORY_PRUNE_SQL + (_KEEP_STORY_WITH_PICTURE if keep_forever else "")
+    story (the Hub reads a strip through its story row). Without the strip
+    columns (migration not applied) no story can have a picture: plain prune."""
+    return STORY_PRUNE_SQL + (_KEEP_STORY_WITH_PICTURE if cfg.strip_keep_forever and strip_columns else "")
 
 
 def prune_strips(engine, ts: datetime, cfg: LoopConfig) -> int:
@@ -569,9 +575,9 @@ def run_one_motion_cycle(*, postgres_uri: str, cfg: LoopConfig, zones_by_stream:
         lock_conn.commit()
         with engine.begin() as conn:
             _check_tables(conn)
+            missing = strip_columns_missing(conn)
             strips_on = cfg.strip is not None
             if strips_on:
-                missing = strip_columns_missing(conn)
                 if missing:
                     strips_on = False
                     summary["strips"] = "migration missing: " + ",".join(missing)
@@ -606,7 +612,7 @@ def run_one_motion_cycle(*, postgres_uri: str, cfg: LoopConfig, zones_by_stream:
                     logger.warning("story_strip_assemble_step_failed stream=%s error=%s", stream_id, exc)
         try:
             with engine.begin() as conn:
-                linked = relink_stories(conn, ts - timedelta(seconds=RELINK_LOOKBACK_SEC))
+                linked = relink_stories(conn, ts - timedelta(seconds=RELINK_LOOKBACK_SEC), cfg.streams)
             summary["relinked_stories"], summary["relinked_crops"] = linked["stories"], linked["crops"]
             if linked["stories"]:
                 logger.info("[MOTION_STORY] relinked stories=%d crops=%d", linked["stories"], linked["crops"])
@@ -618,9 +624,12 @@ def run_one_motion_cycle(*, postgres_uri: str, cfg: LoopConfig, zones_by_stream:
             except Exception as exc:
                 logger.warning("story_strip_prune_failed error=%s", exc)
         if cfg.retention_days > 0:
-            with engine.begin() as conn:
-                summary["pruned"] = conn.execute(text(story_prune_sql(cfg)),
-                    {"cut": ts - timedelta(days=cfg.retention_days)}).rowcount or 0
+            try:
+                with engine.begin() as conn:
+                    summary["pruned"] = conn.execute(text(story_prune_sql(cfg, strip_columns=not missing)),
+                        {"cut": ts - timedelta(days=cfg.retention_days)}).rowcount or 0
+            except Exception as exc:
+                logger.warning("motion_story_prune_failed error=%s", exc)
     finally:
         if lock_conn is not None:
             try:

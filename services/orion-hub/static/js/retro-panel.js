@@ -12,7 +12,7 @@
   // asking for Connect / resume. intent changes on every New/Pause/Stop/connect, so
   // an older connect or pending heal can never override a newer choice.
   let wanted = false, away = false, connecting = 0, intent = 0, healPending = false, heals = 0, healWindow = 0;
-  let scriptedMode = false;
+  let scriptedMode = false, cognitivePort = null, planning = false, plannedAttempt = null;
   function heal() {
     if (!wanted || away || !sid || connecting || lease || healPending || document.hidden || !document.hasFocus()) return;
     const now = performance.now(); if (now-healWindow > 10000) { heals = 0; healWindow = now; }
@@ -40,7 +40,7 @@
     gain.gain.value=el('mute').checked?0:1; await audio.resume();
   }
   function closeConnections() {
-    scriptedMode=false;
+    scriptedMode=false;cognitivePort=null;
     transportEpoch++; clearInterval(timer); keys.clear(); lease=null; outstanding.clear();
     if (input) { input.onclose=null; input.close(); } if (media) { media.onclose=null; media.close(); }
     input=null;media=null; pendingPacket=null; flushAudio();
@@ -71,12 +71,12 @@
     const result=await api(`sessions/${sid}/control`,{connection_id:connection,port:Number(el('port').value),action});
     if(epoch!==transportEpoch || document.hidden)return;
     lease=result;
-    scriptedMode=false;
+    scriptedMode=false;cognitivePort=null;
     seq=0; outstanding.clear();clearInterval(timer);timer=setInterval(send,50);send();screen.focus();
   }
   const wsURL = path => `${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/retro/${path}`;
   async function connect() {
-    scriptedMode=false;
+    scriptedMode=false;cognitivePort=null;
     const mine = ++intent; connecting = mine; away = false;
     try { await connectNow(); if (mine === intent) wanted = true; }
     finally { if (connecting === mine) connecting = 0; }
@@ -175,25 +175,43 @@
     if(epoch!==transportEpoch || document.hidden)return;
     await grant('takeover');wanted=true;report('Playing.');
   });
-  action('scripted',async()=>{
+  async function handoff(cognition=false){
     if(!lease || input?.readyState!==WebSocket.OPEN)throw Error('Connect to this player before handing it to the script.');
     const port=lease.port, expected_epoch=lease.epoch, epoch=transportEpoch;
     ++intent;wanted=false;scriptedMode=true;lease=null;keys.clear();outstanding.clear();clearInterval(timer);
     try{
-      await api(`sessions/${sid}/scripted`,{connection_id:connection,generation,port,expected_epoch,action:'start',duration_seconds:60});
-    }catch(err){scriptedMode=false;throw Error(`Handoff failed: ${err.message}. Use Take this controller to return.`);}
+      await api(`sessions/${sid}/scripted`,{connection_id:connection,generation,port,expected_epoch,action:'start',duration_seconds:60,cognition});
+    }catch(err){scriptedMode=false;cognitivePort=null;throw Error(`Handoff failed: ${err.message}. Use Take this controller to return.`);}
     if(epoch!==transportEpoch)return;
-    report('Scripted right/jump baseline — 60 seconds. Take this controller to interrupt.');
+    cognitivePort=cognition?port:null;plannedAttempt=null;
+    report(cognition?'Orion goal experiment — 60 seconds. Take this controller to interrupt.':'Scripted right/jump baseline — 60 seconds. Take this controller to interrupt.');
     await showPolicy();
-  });
+  }
+  action('scripted',()=>handoff());
+  action('cognitive',()=>handoff(true));
   async function showPolicy(){
     if(!sid)return;
     const current=sid, state=await api(`sessions/${sid}`);
     if(current!==sid)return;
-    if(state.state==='paused' && !(state.scripted||[]).length)scriptedMode=false;
+    if(state.state==='paused' && !(state.scripted||[]).length){scriptedMode=false;cognitivePort=null;}
     el('policy').textContent=(state.scripted||[]).length
-      ? state.scripted.map(p=>`Player ${p.port+1}: ${p.policy_id} (scripted, ${p.duration_seconds}s limit)`).join(' · ')
+      ? state.scripted.map(p=>`Player ${p.port+1}: ${p.policy_id} (${p.cognition?'goal experiment':'scripted'}, ${p.duration_seconds}s limit)`).join(' · ')
       : 'No scripted controller active.';
+    const policy=(state.scripted||[]).find(p=>p.port===cognitivePort && p.cognition);
+    if(!policy)return;
+    const facts=policy.cognition, attempt=facts.attempt;
+    el('goal').textContent=`${facts.goal?.goal||'wait'}: ${facts.goal?.rationale||'Waiting for an observed attempt.'} Outcome: ${attempt?.outcome||'unknown'}`;
+    if(!attempt || planning || plannedAttempt===attempt.attempt_id)return;
+    planning=true;plannedAttempt=attempt.attempt_id;
+    // Planner requests never block input/media or the native frame loop.
+    const epoch=transportEpoch, currentConnection=connection;
+    void api(`sessions/${current}/plan`,{connection_id:connection,generation,
+      port:policy.port,expected_epoch:policy.epoch}).then(result=>{
+        if(epoch===transportEpoch && connection===currentConnection && cognitivePort!==null)
+          el('goal').textContent=`${result.goal}: ${result.rationale}`;
+      }).catch(err=>{
+        if(epoch===transportEpoch)el('goal').textContent=`Planner unavailable: ${err.message}. Motor returns to wait; takeover remains available.`;
+      }).finally(()=>{planning=false;});
   }
   // Read-only ownership display also tells a second window which port is scripted.
   let pollingPolicy=false;

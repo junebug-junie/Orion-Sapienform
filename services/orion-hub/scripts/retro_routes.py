@@ -11,6 +11,8 @@ from fastapi.responses import FileResponse, JSONResponse
 def create_router(config):
     router = APIRouter()
     sockets = set()
+    planning = False
+    last_plan = float("-inf")
 
     def enabled():
         if not config.HUB_RETRO_ENABLED: raise HTTPException(503, 'retro_disabled')
@@ -47,11 +49,53 @@ def create_router(config):
 
     @router.api_route('/api/retro/{path:path}', methods=['GET','POST'])
     async def proxy(path: str, request: Request):
+        nonlocal planning, last_plan
         import re
         await authorize(request)
+        if request.method == 'POST' and re.fullmatch(r'sessions/[0-9a-f-]{36}/plan', path):
+            if not getattr(config, 'HUB_RETRO_COGNITION_ENABLED', False):
+                raise HTTPException(503, 'retro_cognition_disabled')
+            if planning: raise HTTPException(429, 'planner_busy')
+            import json
+            try:
+                data = json.loads(await body(request))
+                if (not isinstance(data, dict) or set(data) != {'connection_id', 'generation', 'port', 'expected_epoch'}
+                        or type(data['port']) is not int or data['port'] not in (0, 1)
+                        or type(data['expected_epoch']) is not int
+                        or not all(isinstance(data[k], str) and len(data[k]) == 36
+                                   for k in ('connection_id', 'generation'))):
+                    raise ValueError()
+            except (ValueError, TypeError): raise HTTPException(422, 'invalid_plan_request')
+            planning = True
+            try:
+                from scripts.retro_planner import choose
+                async with client() as c:
+                    async with c.get('http://retro/'+path.rsplit('/', 1)[0], headers=credentials()) as r:
+                        state = await r.json()
+                        if r.status != 200: return JSONResponse(state, status_code=r.status)
+                    policy = next((p for p in state.get('scripted', []) if p['port'] == data['port']
+                                   and p['epoch'] == data['expected_epoch'] and p.get('cognition')), None)
+                    if not policy or state['generation'] != data['generation']:
+                        raise HTTPException(409, 'stale_controller')
+                    attempt = policy['cognition']['attempt']
+                    if not attempt: raise HTTPException(409, 'observation_pending')
+                    accepted = policy['cognition'].get('goal')
+                    if accepted and accepted['attempt_id'] == attempt['attempt_id']:
+                        return JSONResponse(accepted)
+                    if time.monotonic()-last_plan < 5:
+                        raise HTTPException(429, 'planner_rate_limited')
+                    last_plan = time.monotonic()
+                    choice = await choose(config, attempt)
+                    goal = data | choice | {'attempt_id': attempt['attempt_id']}
+                    async with c.post('http://retro/'+path.rsplit('/', 1)[0]+'/goal',
+                                      headers=credentials(), json=goal) as r:
+                        return JSONResponse(await r.json(), status_code=r.status)
+            except HTTPException: raise
+            except Exception: raise HTTPException(503, 'planner_unavailable_or_invalid')
+            finally: planning = False
         valid = ((request.method=='GET' and path in ('games','health/ready')) or
                  (request.method=='POST' and path=='sessions') or
-                 re.fullmatch(r'sessions/[0-9a-f-]{36}'+('(?:/evidence)?' if request.method=='GET' else '/(?:control|pause|resume|stop|scripted)'),path))
+                 re.fullmatch(r'sessions/[0-9a-f-]{36}'+('(?:/evidence)?' if request.method=='GET' else '/(?:control|pause|resume|stop|scripted|goal)'),path))
         if not valid: raise HTTPException(404)
         try:
             async with client() as c:

@@ -134,6 +134,6 @@ No restart required. The next `git pull` on athena runs the new applier and rebu
 
 ## PR link
 
-(filled in after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2769
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

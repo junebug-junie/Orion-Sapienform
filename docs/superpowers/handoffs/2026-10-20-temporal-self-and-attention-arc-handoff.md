@@ -60,7 +60,8 @@ Last 72 h attention winners (substrate_attention_broadcast_log): none 81.2%, exe
 ## 5. Small open items
 
 - **Vision-split migration header.** `services/orion-sql-db/manual_migration_vision_split_v1.sql` says to apply it with `scripts/undo_vision_split.py`, but that script undoes splits. The table exists live now, so someone applied it. Correct the header so the next reader is not misled.
-- **Suppression clean-up loop** (found in #2714). `node_pressure_suppressed` maps to `strain` only, so `availability` on a stale expected-offline node never clears, and frozen hints re-add `strain`. atlas was the only live case. Fix it in `pressure_reducer.py` / `pressure_organ.py`.
+- **FIXED in PR #2809 (verify after deploy):** stuck pressure and hecate standby. Check for `biometrics_silent_nodes excluded=hecate`, receipts with `definition_version: 2`, hecate `pressure_score` 0. Expect biometrics to win attention 1.8-3.8% (replay) until the 7-day history refills.
+- **(was) Suppression clean-up loop** (found in #2714). `node_pressure_suppressed` maps to `strain` only, so `availability` on a stale expected-offline node never clears, and frozen hints re-add `strain`. atlas was the only live case. Fix it in `pressure_reducer.py` / `pressure_organ.py`.
 - **hecate frozen keys.** While hecate is off (on-demand), its 9 frozen keys water down the biometrics mean. Should the mean skip stale nodes?
 - **Old atlas names on circe.** `docker-compose.atlas-workers.yml`, `ATLAS_*` env keys, `orion-atlas-llamacpp-*` containers, `gpu_pool.yaml` / `llm_profiles.yaml` keys. Rename them in their own patch, with restarts on circe. `services/orion-bus/docker-compose.atlas-standby.yml` has no deployment target. Ask Juniper whether to delete it.
 - **`REDIS_PROJECTION_EXCLUDE`.** Clear it now: dream, thought and proposal-runtime have all been rebuilt since #2643.

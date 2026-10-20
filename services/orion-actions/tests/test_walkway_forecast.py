@@ -250,7 +250,7 @@ def test_tick_collect_exception_is_a_bounded_read_failure() -> None:
 
 def _rollup_row(grain: str = "day", passings: int = 185) -> dict:
     rollup = {
-        "label": "2026-09-24", "grain": grain, "local": {"date": "2026-09-24", "year": 2026},
+        "rules_version": 2, "label": "2026-09-24", "grain": grain, "local": {"date": "2026-09-24", "year": 2026},
         "complete": False, "covered_until": "2026-09-25T04:00:00+00:00",
         "total": {"passings": passings, "distinct": 93, "sightings": 400},
         "kinds": {"person": {"passings": 105, "distinct": 50, "sightings": 200}},
@@ -317,6 +317,52 @@ def test_guard_replaces_prose_with_an_invented_number_and_keeps_honest_prose() -
     # Other journal kinds are never touched.
     other = trigger.model_copy(update={"trigger_kind": "daily_summary"})
     assert wf.guard_walkway_draft(invented, other) == (invented, [])
+
+
+# A day row as rules_version 1 wrote it (before people became a range, 2026-10-20).
+V1_DAY = {
+    "schema": "vision_rollup.v1", "rules_version": 1, "stream_id": "walkway", "grain": "day",
+    "period_start": "2026-10-16T06:00:00+00:00", "period_end": "2026-10-17T06:00:00+00:00",
+    "label": "2026-10-16", "tz": "America/Denver", "complete": True,
+    "covered_until": "2026-10-17T06:00:00+00:00",
+    "kinds": {"person": {"passings": 137, "distinct": 89, "sightings": 151},
+              "vehicle": {"passings": 40, "distinct": 12, "sightings": 60}},
+    "total": {"passings": 177, "distinct": 101, "sightings": 211}, "peak_at_once": {"person": 5, "vehicle": 3},
+    "camera": {"up_minutes": 1400, "expected_minutes": 1440, "status": "ok", "down_spans": [], "missing_spans": []},
+    "busiest": {"at": "12:00", "passings": 92, "peak_at_once": {"person": 5}}, "quietest": None,
+    "baseline": {"mean_passings": None, "periods": 0},
+}
+V1_LINE = ("Walkway Fri 16 Oct 2026: 177 passings (137 people, 40 vehicles) by 101 distinct; "
+           "busiest 12:00 (92, most at once 5 people).")
+RANGE_TEXT = "people: at least 5, at most 137 (the camera splits one person into several)"
+
+
+def test_rollup_seed_gives_people_only_as_a_range() -> None:
+    from orion.vision.walkway_rollup import bare_people_counts
+
+    seed = wf.build_rollup_seed("walkway_day", {"rollup": json.dumps(V1_DAY), "line": V1_LINE})
+    assert RANGE_TEXT in seed["lines"][0] and bare_people_counts(seed["lines"][0]) == []
+    facts = seed["facts"]
+    assert facts["kinds"]["person"] == {"at_least": 5, "at_most": 137,
+                                        "note": "the camera splits one person into several"}
+    assert facts["kinds"]["vehicle"] == {"passings": 40, "distinct": 12}
+    assert facts["total"] == {"passings_at_most": 177}
+    assert facts["busiest"] == {"at": "12:00", "passings_at_most": 92}
+    dumped = json.dumps(facts)
+    assert "89" not in dumped and "101" not in dumped  # person / total cluster counts never reach the entry
+
+
+def test_guard_refuses_a_bare_people_count_even_when_the_number_is_a_fact() -> None:
+    from orion.journaler.schemas import JournalEntryDraftV1
+
+    seed = wf.build_rollup_seed("walkway_day", {"rollup": json.dumps(V1_DAY), "line": V1_LINE})
+    trigger = wf.build_walkway_trigger("walkway_day", seed, stream_id="walkway")
+    bare = JournalEntryDraftV1(mode="digest", title="The street", body="137 people walked by today.")
+    fixed, bad = wf.guard_walkway_draft(bare, trigger)
+    assert bad == ["137 people"] and fixed.body == seed["lines"][0]
+    ranged = JournalEntryDraftV1(mode="digest", title="The street",
+                                 body="At least 5, at most 137 people walked by; 40 vehicles.")
+    assert wf.guard_walkway_draft(ranged, trigger) == (ranged, [])
 
 
 def test_days_watched_counts_frame_minutes_not_sightings_or_rollup_rows() -> None:

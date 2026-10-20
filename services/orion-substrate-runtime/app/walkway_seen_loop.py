@@ -37,7 +37,7 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger("orion.substrate.runtime.walkway_seen")
 
 DAYS_SQL = (
-    "SELECT stream_id, period_start, label, line, rollup->'named' AS named FROM vision_rollup "
+    "SELECT stream_id, period_start, label, line, rollup->'named' AS named, rollup FROM vision_rollup "
     "WHERE grain = 'day' AND complete AND stream_id = ANY(:streams) AND period_start > :since "
     "ORDER BY period_start"
 )
@@ -54,6 +54,17 @@ def _named(raw: Any) -> dict[str, Any]:
         except ValueError:
             return {}
     return raw if isinstance(raw, dict) else {}
+
+
+def _line(row: Any) -> str:
+    """People as a range: a row from before rules_version 2 is re-rendered, never stored bare."""
+    from orion.vision.walkway_rollup import display_line
+
+    try:
+        rollup = row["rollup"]
+    except (KeyError, IndexError):
+        rollup = None
+    return display_line(row["line"], rollup)
 
 
 def link_recent_days(*, engine: Any, store: Any, streams: tuple[str, ...], lookback_days: int,
@@ -92,7 +103,7 @@ def link_recent_days(*, engine: Any, store: Any, streams: tuple[str, ...], lookb
             if done.get(key) == linked:
                 continue
             record = map_walkway_day_seen_to_substrate(
-                stream_id=row["stream_id"], day=day, line=str(row["line"] or ""), seen=seen,
+                stream_id=row["stream_id"], day=day, line=_line(row), seen=seen,
                 observed_at=row["period_start"] if row["period_start"].tzinfo else
                 row["period_start"].replace(tzinfo=timezone.utc))
             if record is None:

@@ -103,7 +103,7 @@ class _Engine:
 
 def _day_row(named):
     return {"stream_id": "walkway", "period_start": START, "label": DAY.isoformat(), "line": LINE,
-            "named": json.dumps(named)}
+            "named": json.dumps(named), "rollup": json.dumps({"rules_version": 2, "named": named})}
 
 
 def test_links_existing_named_entities_to_one_day_node_and_is_idempotent():
@@ -134,6 +134,36 @@ def test_links_existing_named_entities_to_one_day_node_and_is_idempotent():
                                                  stream_id="walkway"))
     later = wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done=done)
     assert later and later[0]["people"] == ["Nobody Named Yet", "Robin", "Sam"] and later[0]["edges_created"] == 1
+
+
+# A day row as rules_version 1 wrote it (before people became a range, 2026-10-20).
+V1_DAY = {
+    "schema": "vision_rollup.v1", "rules_version": 1, "stream_id": "walkway", "grain": "day",
+    "period_start": "2026-10-16T06:00:00+00:00", "period_end": "2026-10-17T06:00:00+00:00",
+    "label": "2026-10-16", "tz": "America/Denver", "complete": True,
+    "covered_until": "2026-10-17T06:00:00+00:00",
+    "kinds": {"person": {"passings": 137, "distinct": 89, "sightings": 151},
+              "vehicle": {"passings": 40, "distinct": 12, "sightings": 60}},
+    "total": {"passings": 177, "distinct": 101, "sightings": 211}, "peak_at_once": {"person": 5, "vehicle": 3},
+    "camera": {"up_minutes": 1400, "expected_minutes": 1440, "status": "ok", "down_spans": [], "missing_spans": []},
+    "busiest": {"at": "12:00", "passings": 92, "peak_at_once": {"person": 5}}, "quietest": None,
+    "baseline": {"mean_passings": None, "periods": 0},
+}
+V1_LINE = ("Walkway Fri 16 Oct 2026: 177 passings (137 people, 40 vehicles) by 101 distinct; "
+           "busiest 12:00 (92, most at once 5 people).")
+RANGE_TEXT = "people: at least 5, at most 137 (the camera splits one person into several)"
+
+
+def test_an_old_day_row_lands_in_the_graph_as_a_people_range():
+    from orion.vision.walkway_rollup import bare_people_counts
+
+    store = _store_with(("ind-robin", "Robin"))
+    row = dict(_day_row({"Robin": {"times": ["13:33"], "individual_ids": ["ind-robin"]}}),
+               line=V1_LINE, rollup=json.dumps(V1_DAY))
+    assert "rollup FROM vision_rollup" in wsl.DAYS_SQL
+    wsl.link_recent_days(engine=_Engine([row]), store=store, streams=("walkway",), lookback_days=3, done={})
+    summary = store.get_node_by_id(walkway_day_node_id("walkway", DAY)).metadata["summary"]
+    assert RANGE_TEXT in summary and "137 people" not in summary and bare_people_counts(summary) == []
 
 
 def test_no_named_person_with_an_entity_means_no_record():
@@ -253,7 +283,7 @@ def test_sql_runs_against_postgres():
             "VALUES ('walkway','day',:s,:e,'2026-10-16',true,CAST(:j AS jsonb),:l), "
             "('walkway','day',:s2,:e2,'2026-10-17',false,'{}','partial')"),
             {"s": START, "e": START.replace(day=17), "s2": START.replace(day=17), "e2": START.replace(day=18),
-             "j": json.dumps({"named": {"Sam": {"times": ["11:56"], "individual_ids": ["ind-sam-copy"]}}}), "l": LINE})
+             "j": json.dumps({"rules_version": 2, "named": {"Sam": {"times": ["11:56"], "individual_ids": ["ind-sam-copy"]}}}), "l": LINE})
     store = _store_with(("ind-sam", "Sam"))
     out = wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done={},
                                now=datetime(2026, 10, 18, 3, 0, tzinfo=timezone.utc))

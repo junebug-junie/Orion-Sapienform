@@ -12,7 +12,11 @@ Checks (exit 1 on failure):
 - no stationary / prop / patio / parked-repeat sighting is counted: the
   excluded tallies plus counted sightings equal the raw sightings in the window;
 - story sentences appear only when the spot-check gate passed;
-- names are only labels Juniper typed (``vision_individual.label``).
+- names are only labels Juniper typed (``vision_individual.label``);
+- people are a range (rules_version 2): every row with people carries
+  ``kinds.person.count_range`` with ``low <= high``; an hour's low is its most people in
+  one window (less a person-kind prop sighted that hour, never below 1); a parent's low is
+  the largest low of its children; and no line states one bare number of people.
 
 Names are printed (this is Juniper's own eval on her own machine) unless
 ``--redact``.
@@ -36,6 +40,8 @@ sys.path.insert(0, str(HERE.parents[1]))
 sys.path.insert(0, str(HERE.parents[3]))
 
 from app.vision_rollup import MemoryStore, RollupConfig, run_one_rollup_cycle  # noqa: E402
+from orion.vision.walkway_rollup import bare_people_counts, child_periods, Period, _parse  # noqa: E402
+from zoneinfo import ZoneInfo  # noqa: E402
 
 DEFAULT_PG = "postgresql://postgres:postgres@localhost:55432/conjourney"
 PROP_IDS = ("fefb24d7e4074e9f827ad711874f6edf",)
@@ -63,10 +69,40 @@ def check(store: MemoryStore, stream: str) -> list[str]:
             child_sum = sum(int(e.get("passings", 0)) for e in series)
             if child_sum != int(r["total"]["passings"]):
                 fails.append(f"{grain} {r['label']}: passings {r['total']['passings']} != children {child_sum}")
+        fails.extend(_range_fails(store, s, grain, start, r))
         stories = r.get("stories") or {}
         if not stories.get("gate_passed") and (stories.get("sentences") or stories.get("count")):
             fails.append(f"{grain} {r['label']}: story content with the gate closed")
     return fails
+
+
+def _range_fails(store: MemoryStore, s: str, grain: str, start: datetime, r: dict) -> list[str]:
+    out: list[str] = []
+    line = store.lines[(s, grain, start)]
+    bare = bare_people_counts(line)
+    if bare:
+        out.append(f"{grain} {r['label']}: bare people count {bare} in {line!r}")
+    person = (r.get("kinds") or {}).get("person") or {}
+    if int(person.get("passings", 0) or 0) <= 0:
+        return out
+    cr = person.get("count_range")
+    if not cr:
+        return out + [f"{grain} {r['label']}: people passed but no count_range"]
+    if not 0 < cr["low"] <= cr["high"] or cr["high"] < int(person["passings"]):
+        out.append(f"{grain} {r['label']}: bad range {cr} for {person['passings']} clusters")
+    if grain == "hour":
+        peak = int((r.get("peak_at_once") or {}).get("person", 0) or 0)
+        if cr["method_low"] == "most_in_one_window" and cr["low"] != peak:
+            out.append(f"hour {r['label']}: low {cr['low']} != most in one window {peak}")
+    else:
+        tz = ZoneInfo(r.get("tz") or "America/Denver")
+        kids = [store.rows.get((s, "hour" if grain == "day" else "day", c.start))
+                for c in child_periods(Period(grain, _parse(r["period_start"]), _parse(r["period_end"])), tz)]
+        lows = [k["kinds"]["person"]["count_range"]["low"] for k in kids
+                if k and ((k.get("kinds") or {}).get("person") or {}).get("count_range")]
+        if lows and cr["low"] != max(lows):
+            out.append(f"{grain} {r['label']}: low {cr['low']} != largest child low {max(lows)}")
+    return out
 
 
 def main() -> int:
@@ -128,7 +164,7 @@ def main() -> int:
             print(" ", f)
         return 1
     print("\nPASS: day = sum of hours, week/month = sum of days, down hours read 'camera was down', "
-          "story content only behind the gate.")
+          "story content only behind the gate, people always a range (low <= high, no bare count).")
     return 0
 
 

@@ -68,6 +68,7 @@ from orion.schemas.orion_day import (
 )
 from orion.schemas.temporal_self import TemporalSelfDayBlockV1, TemporalSelfDayV1
 from orion.temporal_self.day_block import render_closed_day_block
+from orion.vision.walkway_rollup import display_line
 from orion.world_pulse_read.findings import PriorLookup, ReadRefV1, findings_for_reads
 from orion.world_pulse_read.introspect import reading_items_between
 
@@ -201,7 +202,7 @@ ORDER BY occurred_at, event_id
 
 WALKWAY_DAY_STREAM = "walkway"
 WALKWAY_DAY_SQL = """
-SELECT stream_id, line, complete
+SELECT stream_id, line, rollup, complete
 FROM vision_rollup
 WHERE stream_id = $1 AND grain = 'day' AND period_start = $2
 """
@@ -461,10 +462,21 @@ async def gather_world_pulse_digest(conn: Any, letter_date: date) -> WorldPulseD
 
 async def gather_walkway_day(conn: Any, letter_date: date, start: datetime) -> WalkwayDayV1 | None:
     row = await conn.fetchrow(WALKWAY_DAY_SQL, WALKWAY_DAY_STREAM, start)
-    if row is None or not str(row["line"] or "").strip():
+    if row is None:
         return None
-    return WalkwayDayV1(stream_id=str(row["stream_id"]), day=letter_date, line=str(row["line"]).strip(),
+    # People as a range: a row from before rules_version 2 is re-rendered, never shown bare.
+    line = display_line(row["line"], _row_get(row, "rollup"))
+    if not line:
+        return None
+    return WalkwayDayV1(stream_id=str(row["stream_id"]), day=letter_date, line=line,
                         complete=bool(row["complete"]))
+
+
+def _row_get(row: Any, key: str) -> Any:
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
 
 
 async def gather_corrections(conn: Any, start: datetime, end: datetime) -> list[OrionDayCorrectionV1]:

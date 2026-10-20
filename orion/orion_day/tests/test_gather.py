@@ -190,8 +190,10 @@ def test_letter_date_matches_the_compactor_day():
 def test_walkway_day_rollup_line_is_read_for_the_letter_day_and_cited():
     from orion.orion_day.budget import build_llm_view, material_ref_records
 
-    line = "Walkway Tue 29 Sep 2026: 185 passings (105 people, 38 vehicles) by 93 distinct."
-    conn = fx.FakeConn(walkway={"stream_id": "walkway", "line": line, "complete": True})
+    line = ("Walkway Tue 29 Sep 2026: people: at least 4, at most 105 (the camera splits one person into "
+            "several); 38 vehicles (12 distinct) passing.")
+    conn = fx.FakeConn(walkway={"stream_id": "walkway", "line": line, "rollup": '{"rules_version": 2}',
+                                "complete": True})
     material = _gather(conn)
     assert material.walkway_day is not None and material.walkway_day.line == line
     call = next(args for sql, args in conn.calls if sql == gather.WALKWAY_DAY_SQL)
@@ -201,6 +203,38 @@ def test_walkway_day_rollup_line_is_read_for_the_letter_day_and_cited():
     view = build_llm_view(material)
     assert f"[{ref}] {line}" in view.digest_md and ref in view.included_refs
     assert material.sources["walkway_day"].status == "ok"
+
+
+# A day row as rules_version 1 wrote it (before people became a range, 2026-10-20).
+V1_DAY = {
+    "schema": "vision_rollup.v1", "rules_version": 1, "stream_id": "walkway", "grain": "day",
+    "period_start": "2026-10-16T06:00:00+00:00", "period_end": "2026-10-17T06:00:00+00:00",
+    "tz": "America/Denver", "complete": True, "covered_until": "2026-10-17T06:00:00+00:00",
+    "kinds": {"person": {"passings": 137, "distinct": 89, "sightings": 151},
+              "vehicle": {"passings": 40, "distinct": 12, "sightings": 60}},
+    "total": {"passings": 177, "distinct": 101, "sightings": 211}, "peak_at_once": {"person": 5, "vehicle": 3},
+    "camera": {"up_minutes": 1400, "expected_minutes": 1440, "status": "ok", "down_spans": [], "missing_spans": []},
+    "busiest": {"at": "12:00", "passings": 92, "peak_at_once": {"person": 5}}, "quietest": None,
+    "baseline": {"mean_passings": None, "periods": 0},
+}
+V1_LINE = ("Walkway Fri 16 Oct 2026: 177 passings (137 people, 40 vehicles) by 101 distinct; "
+           "busiest 12:00 (92, most at once 5 people).")
+
+
+def test_walkway_day_from_an_old_row_is_a_people_range_never_a_bare_count():
+    import json
+
+    from orion.vision.walkway_rollup import bare_people_counts
+
+    conn = fx.FakeConn(walkway={"stream_id": "walkway", "line": V1_LINE, "rollup": json.dumps(V1_DAY),
+                                "complete": True})
+    line = _gather(conn).walkway_day.line
+    assert "people: at least 5, at most 137 (the camera splits one person into several)" in line
+    assert "137 people" not in line and bare_people_counts(line) == []
+    assert "rollup" in gather.WALKWAY_DAY_SQL
+    # A row whose rollup cannot be read shows nothing rather than its stored line.
+    no_rollup = fx.FakeConn(walkway={"stream_id": "walkway", "line": V1_LINE, "complete": True})
+    assert _gather(no_rollup).walkway_day is None
 
 
 def test_walkway_day_absent_or_failing_costs_only_its_own_section():

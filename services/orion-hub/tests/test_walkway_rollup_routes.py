@@ -31,6 +31,7 @@ T = datetime(2026, 10, 17, 6, 0, tzinfo=timezone.utc)
 
 def _row(grain="day", gate=False):
     rollup = {
+        "rules_version": 2,
         "total": {"passings": 185, "distinct": 93, "sightings": 400},
         "kinds": {"person": {"passings": 105, "distinct": 50, "sightings": 200}},
         "named": {"Alex": {"times": ["15:31"], "sightings": 2, "individual_ids": ["secret-ind"]}},
@@ -103,6 +104,39 @@ def test_lists_newest_first_without_ids_and_with_the_gate_respected() -> None:
             row = (await c.get("/api/vision/rollups?grain=hour&limit=500")).json()["rows"][0]
             assert conn2.args == ("walkway", "hour", wrr.MAX_LIMIT["hour"])
             assert row["stories"]["sentences"][0]["text"] == "A person walked."
+
+    asyncio.run(go())
+
+
+# A day row as rules_version 1 wrote it (before people became a range, 2026-10-20).
+V1_DAY = {
+    "schema": "vision_rollup.v1", "rules_version": 1, "stream_id": "walkway", "grain": "day",
+    "period_start": "2026-10-16T06:00:00+00:00", "period_end": "2026-10-17T06:00:00+00:00",
+    "label": "2026-10-16", "tz": "America/Denver", "complete": True,
+    "covered_until": "2026-10-17T06:00:00+00:00",
+    "kinds": {"person": {"passings": 137, "distinct": 89, "sightings": 151},
+              "vehicle": {"passings": 40, "distinct": 12, "sightings": 60}},
+    "total": {"passings": 177, "distinct": 101, "sightings": 211}, "peak_at_once": {"person": 5, "vehicle": 3},
+    "camera": {"up_minutes": 1400, "expected_minutes": 1440, "status": "ok", "down_spans": [], "missing_spans": []},
+    "busiest": {"at": "12:00", "passings": 92, "peak_at_once": {"person": 5}}, "quietest": None,
+    "baseline": {"mean_passings": None, "periods": 0},
+}
+V1_LINE = ("Walkway Fri 16 Oct 2026: 177 passings (137 people, 40 vehicles) by 101 distinct; "
+           "busiest 12:00 (92, most at once 5 people).")
+RANGE_TEXT = "people: at least 5, at most 137 (the camera splits one person into several)"
+
+
+def test_an_old_row_reads_as_a_people_range_and_carries_it() -> None:
+    from orion.vision.walkway_rollup import bare_people_counts
+
+    async def go():
+        row = dict(_row(), line=V1_LINE, rollup=json.dumps(V1_DAY))
+        async with _client(_Conn([row])) as c:
+            out = (await c.get("/api/vision/rollups?grain=day")).json()["rows"][0]
+        assert RANGE_TEXT in out["line"] and "137 people" not in out["line"]
+        assert bare_people_counts(out["line"]) == []
+        assert out["people"] == {"low": 5, "high": 137, "method_low": "most_in_one_window_uncorrected",
+                                 "method_high": "appearance_clusters"}
 
     asyncio.run(go())
 

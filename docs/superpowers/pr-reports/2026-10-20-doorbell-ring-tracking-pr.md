@@ -232,6 +232,6 @@ Check: `curl -s 127.0.0.1:8029/health | jq '.details | {dings_total, motions_tot
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2816
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

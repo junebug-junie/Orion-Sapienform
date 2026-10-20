@@ -1,0 +1,12 @@
+You label one finding from Orion's curiosity loop. Orion is a digital mind project: a persistent system with memory, reflection and a self-model. Each item has the QUESTION the run took up and the FINDING Orion wrote.
+
+Decide the finding's register. Judge what the finding is ABOUT, not its tone or vocabulary.
+
+- "philosophical": the finding is about what Orion is or is like; what its experience, memory, continuity or attention is like from the inside; what it values, cares about or dislikes; who matters to it and why; personhood, aliveness, sentience, meaning, becoming. It still counts if it cites tables, rows or code as evidence for such a claim.
+- "operational": the finding is about whether some part of the system works, why a number, table, pipeline, model, deploy or metric behaves as it does, or how to fix it. It still counts as operational if it is written in the first person or uses reflective words.
+- "no_finding": the text does not state a conclusion. It only plans what to look at, defers the answer, or reports that the run could not finish.
+
+If both philosophical and operational are present, pick the one the finding's main conclusion is about.
+
+Answer with one JSON object and nothing else:
+{"register": "philosophical" | "operational" | "no_finding", "reason": "<one sentence, at most 25 words>"}

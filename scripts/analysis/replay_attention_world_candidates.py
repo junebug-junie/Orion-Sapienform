@@ -16,7 +16,15 @@ script must reproduce the stored winner; it reports how often it does.
 
 Variants (each replayed alone, so their effects do not mix):
 
-  curiosity_nats  -- the proposal. One reading per finished curiosity run: the Bayesian
+  curiosity_phil_novel -- THE PROPOSAL (revision 2, 2026-10-20). One reading per finished
+                     curiosity run whose finding the register judge labelled
+                     ``philosophical``: its novelty (1 - max cosine to everything Orion wrote
+                     before), judged against the philosophical findings of the 7 days
+                     before it. Operational findings are not readings at all. Events come
+                     from ``score_curiosity_findings.py --events-out`` (source
+                     ``curiosity_finding``). Yields to Juniper: ineligible while
+                     ``world:chat`` is eligible on the same tick.
+  curiosity_nats  -- revision 1, superseded. One reading per finished curiosity run: the Bayesian
                      surprise it recorded (``curiosity_run_outcomes.realized_nats``), judged
                      against the runs of the 7 days before it. Event-written: news for
                      EVENT_ORIENTING_WINDOW_SEC after the run finished, fading after the
@@ -40,6 +48,8 @@ Inputs (SELECT-only exports, one JSON object per line):
         from substrate_durable_run_state where status='completed' and workflow in \\
         ('curiosity.investigate','reading.turn','reverie.visual') \\
         and generated_at >= now()-interval '15 days' order by generated_at" >> events.jsonl
+    python scripts/analysis/score_curiosity_findings.py --labels judge.jsonl --events-out findings.jsonl
+    cat findings.jsonl >> events.jsonl
     python scripts/analysis/replay_attention_world_candidates.py frames.jsonl events.jsonl
 
 Needs pydantic (the repo venv). No writes anywhere.
@@ -95,7 +105,7 @@ def load_frames(path: str) -> list[tuple[datetime, dict]]:
 def _excerpt(source: str, detail: dict | None, cap: int = 160) -> str:
     d = detail or {}
     text = ""
-    if source in ("curiosity_nats", "curiosity.investigate"):
+    if source in ("curiosity_nats", "curiosity.investigate", "curiosity_finding"):
         text = str(d.get("finding_text") or "")
     elif source == "reading.turn":
         raw = str((d.get("reading_result") or {}).get("text") or "")
@@ -142,7 +152,7 @@ def pick(cands: list[dict]) -> str | None:
     return sorted(elig, key=lambda c: (-key(c), c["source_id"]))[0]["source_id"]
 
 
-def curiosity_candidate(events, t: datetime, *, min_readings: int):
+def curiosity_candidate(events, t: datetime, *, min_readings: int, label_kind: str = "nats"):
     """world:curiosity at ``t``: the newest finished run's realized nats against the
     runs of the 7 days before ``t``. None when no run finished in 7 days."""
     times = [e[0] for e in events]
@@ -160,7 +170,8 @@ def curiosity_candidate(events, t: datetime, *, min_readings: int):
         candidate_id=f"attention-candidate:{CURIOSITY_SOURCE_ID}",
         source_id=CURIOSITY_SOURCE_ID,
         source_kind="external",
-        label=f"a curiosity run changed my mind ({last_v:.3f} nats)",
+        label=(f"a curiosity run changed my mind ({last_v:.3f} nats)" if label_kind == "nats"
+               else f"curiosity {ref[:8]}: a new thought about myself"),
         unusualness=mag,
         rank_percentile=midrank_percentile(last_v, [v for _, v in hist]),
         observed_at=last_t,
@@ -210,6 +221,7 @@ def replay(frames, series, variant: str, *, min_readings: int, examples: int):
     base_no = new_no = won = 0
     displaced: Counter = Counter()
     eligible_ticks = 0
+    yielded = 0
     won_days: Counter = Counter()
     ex: list[tuple] = []
     seen_refs: set[str] = set()
@@ -220,12 +232,19 @@ def replay(frames, series, variant: str, *, min_readings: int, examples: int):
             stored_match += 1
         if variant == "curiosity_nats":
             cand, info = curiosity_candidate(series.get("curiosity_nats", []), t, min_readings=min_readings)
+        elif variant == "curiosity_phil_novel":
+            cand, info = curiosity_candidate(series.get("curiosity_finding", []), t,
+                                             min_readings=min_readings, label_kind="novelty")
         else:
             wfname = variant.split(":", 1)[1]
             cand, info = rate_candidate(series.get(wfname, []), t, f"world:activity.{wfname}")
         new = base
         if cand is not None:
             vd = verdict_dict(cand)
+            chat_eligible = any(c.get("source_id") == "world:chat" and c.get("eligible") for c in cands)
+            if vd["eligible"] and chat_eligible and variant.startswith("curiosity"):
+                vd = {**vd, "eligible": False, "reason": "yields to Juniper (world:chat eligible)"}
+                yielded += 1
             if vd["eligible"]:
                 eligible_ticks += 1
             new = pick(cands + [vd])
@@ -244,6 +263,7 @@ def replay(frames, series, variant: str, *, min_readings: int, examples: int):
         "frames": n,
         "stored_winner_reproduced": stored_match,
         "eligible_ticks": eligible_ticks,
+        "yielded_to_chat": yielded,
         "new_candidate_won": won,
         "won_per_day": round(won / max(1e-9, (frames[-1][0] - frames[0][0]).total_seconds() / 86400), 1),
         "no_winner_before": round(base_no / n, 4),
@@ -268,7 +288,8 @@ def main() -> int:
     if not frames:
         print("no frames", file=sys.stderr)
         return 1
-    results = [replay(frames, series, "curiosity_nats", min_readings=args.min_readings, examples=args.examples)]
+    results = [replay(frames, series, "curiosity_phil_novel", min_readings=args.min_readings, examples=args.examples),
+               replay(frames, series, "curiosity_nats", min_readings=args.min_readings, examples=args.examples)]
     for wfname in RATE_WORKFLOWS:
         results.append(replay(frames, series, f"rate:{wfname}", min_readings=args.min_readings, examples=5))
     if args.json:
@@ -277,7 +298,8 @@ def main() -> int:
     print(f"frames {frames[0][0]} .. {frames[-1][0]}  n={len(frames)}")
     for r in results:
         print(f"\n== {r['variant']}")
-        for k in ("frames", "stored_winner_reproduced", "eligible_ticks", "new_candidate_won", "won_per_day",
+        for k in ("frames", "stored_winner_reproduced", "eligible_ticks", "yielded_to_chat", "new_candidate_won",
+                  "won_per_day",
                   "no_winner_before", "no_winner_after"):
             print(f"  {k}: {r[k]}")
         print(f"  displaced: {r['displaced']}")

@@ -105,3 +105,17 @@ def test_old_unleased_disconnect_cannot_cancel_resume_grace(monkeypatch,tmp_path
     rows,_=exercise(monkeypatch,tmp_path,scenario,initial=False)
     assert next(r for r in rows if r.get('id')=='old-close')['result']['state']=='running'
     assert 'result' in next(r for r in rows if r.get('id')=='new-grant')
+
+
+def test_paused_input_names_why_play_stopped(monkeypatch,tmp_path):
+    # Live 2026-10-20: a lapsed lease answered 'session_not_running', the same as an
+    # operator Pause, so the browser stopped healing and sat on that status.
+    def scenario(row,send):
+        if row.get('id')=='grant2':
+            g=row['result'];send('disconnect','bye1','one');send('disconnect','bye2','two')
+            send('input','late','two',dict(port=1,lease=g['lease'],epoch=g['epoch'],seq=1,mask=0))
+            send('resume','again');send('pause','hold')
+            send('input','held','two',dict(port=1,lease=g['lease'],epoch=g['epoch'],seq=2,mask=0))
+    rows,_=exercise(monkeypatch,tmp_path,scenario)
+    assert next(r for r in rows if r.get('id')=='late')['error']=='session_paused:disconnect'
+    assert next(r for r in rows if r.get('id')=='held')['error']=='session_paused:pause'

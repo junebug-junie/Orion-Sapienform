@@ -21,7 +21,8 @@
       if (mine === intent && wanted && !away && !lease && !connecting && !document.hidden) connect().catch(err => report(err.message)); }, 300);
   }
   // Transport loss heals; a server-side pause (another window, CLI, overload) is respected.
-  const SERVER_PAUSE = new Set(['control_revoked', 'session_not_running', 'deadline_overrun', 'stopped', 'session_stopped']);
+  // session_paused:<why> comes from the worker; only an explicit pause is honored.
+  const SERVER_PAUSE = new Set(['control_revoked', 'session_paused:pause', 'session_not_running', 'stopped', 'session_stopped']);
   function lost(reason) {
     if (SERVER_PAUSE.has(reason)) { wanted = false; report('Paused. Click the game to keep playing.'); return; }
     report('Reconnecting…'); heal();
@@ -155,7 +156,10 @@
     el('player').hidden=false;
     if(state.session && ['running','paused','starting'].includes(state.session.state)){el('game').value=state.session.game_id;report('Game '+state.session.state+'. Click the game to play.');}else report('Choose a game and press New game.');}
   const action = (id, fn) => el(id).onclick=async()=>{el(id).disabled=true;try{await fn();}catch(err){report(err.message);}finally{el(id).disabled=false;}};
-  action('new',async()=>{++intent;wanted=false;const epoch=transportEpoch;await sound();if(epoch!==transportEpoch || document.hidden)return;const s=await api('sessions',{game_id:el('game').value,idempotency_key:Array.from(crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,"0")).join("")});sid=s.session_id;if(epoch===transportEpoch && !document.hidden)await connect();});
+  action('new',async()=>{++intent;wanted=false;
+    // One game exists at a time: New game ends the current one instead of failing with session_active.
+    if(sid){closeConnections();try{await api(`sessions/${sid}/stop`,{});}catch(err){if(err.message!=='unknown_session')throw err;}sid=null;}
+    const epoch=transportEpoch;await sound();if(epoch!==transportEpoch || document.hidden)return;const s=await api('sessions',{game_id:el('game').value,idempotency_key:Array.from(crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,"0")).join("")});sid=s.session_id;if(epoch===transportEpoch && !document.hidden)await connect();});
   action('join',connect);
   action('pause',async()=>{++intent;wanted=false;try{if(sid)await api(`sessions/${sid}/pause`,{});}finally{neutral();}report('Paused. Click the game to keep playing.');});
   action('stop',async()=>{++intent;wanted=false;try{if(sid)await api(`sessions/${sid}/stop`,{});}finally{neutral();}sid=null;report('Game stopped.');});

@@ -164,3 +164,54 @@ background. Key presses and releases are still sent at once. Socket close,
 blur and hidden tabs still release control immediately. The cost: a browser
 that freezes without closing its socket can hold its last buttons for up to 2 s.
 Regression: `test_lease_survives_throttled_browser_heartbeat`.
+
+## Dedicated relay (hub-retro-gateway)
+
+Game traffic (`/api/retro/*`) runs in its own small process, `hub-retro-gateway`
+(`services/orion-hub/scripts/retro_gateway.py`, loopback port
+`HUB_RETRO_GATEWAY_PORT`, default 8092). It uses the same router, origin check and
+credentials as Hub, and it starts in under a second. Hub keeps its own copy of the
+routes, so play still works through Hub until the route below exists.
+
+Why: Hub's single event loop also serves every open Hub page. A/B with
+`retro_play.mjs` on 2026-10-20, with a Hub page open in another tab:
+- Through Hub: 55 inputs reached the server, acknowledgments took 720 ms p50, and
+  play dropped 4 times.
+- Through the relay: 944 inputs, 17 ms p50, no drops.
+
+One-time route (operator, on athena; tailscale serve strips the mount path):
+
+```sh
+sudo tailscale serve --bg --set-path /api/retro http://127.0.0.1:8092/api/retro
+```
+
+Check: `tailscale serve status` lists `/api/retro`, and
+`curl -s http://127.0.0.1:8092/api/retro-gateway/health` returns `{"status":"ok"}`.
+Undo: `sudo tailscale serve --bg --set-path /api/retro off`.
+
+The Retro tab also unloads Hub's other embedded pages (e.g. the `/spark/ui` WebGL
+visualizer) while it is open. That visualizer used ~22% of the shared browser
+thread. New game ends an existing game instead of failing with `session_active`.
+A paused game's inputs now answer `session_paused:<why>`, so the page reconnects
+after a lapsed lease or a dropped controller, and honors only an explicit Pause.
+
+## Play harness (`evals/retro_play.mjs`)
+
+Plays like a person: real Chromium, real Hub tab, scripted Mario input. It records
+input cadence, acknowledgment latency, socket closes, status text, main-thread long
+tasks and the server journal.
+
+```sh
+node services/orion-hub/evals/retro_play.mjs --url https://athena.tail348bbe.ts.net \
+  --hub --game super-mario-bros --seconds 30 --cpu 4 \
+  --evidence-dir ~/.local/share/orion/retro/service/evidence --out /tmp/retro-play
+```
+
+- `--hub` plays inside Hub's tab (iframe); omit it for standalone `/retro`.
+- `--cpu N` throttles the renderer.
+- `--override /static/js/x.js=local/file.js[,...]` serves working-copy files in
+  place of the deployed ones, so client fixes can be tried against live without a
+  deploy.
+
+It starts a real game on the live service, so do not run it while someone is
+playing.

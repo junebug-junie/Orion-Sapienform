@@ -32,3 +32,22 @@ def test_network_boundary_without_access_code(tmp_path):
         assert 'y'*48 not in html
         cfg.HUB_RETRO_ENABLED=False
         assert c.get('/api/retro/games').status_code==503
+
+
+def test_gateway_process_serves_only_retro_with_the_same_boundary(tmp_path, monkeypatch):
+    # The dedicated relay must enforce Hub's origin rule and expose nothing but Retro.
+    import sys
+    hub=Path(__file__).resolve().parents[2]
+    (tmp_path/'hub.token').write_text('y'*48)
+    for k,v in dict(HUB_RETRO_ENABLED='true',HUB_RETRO_ORIGIN='http://testserver',HUB_RETRO_AUTH_DIR=str(tmp_path),HUB_RETRO_SOCKET='/nonexistent').items():
+        monkeypatch.setenv(k,v)
+    monkeypatch.syspath_prepend(str(hub))
+    for name in [m for m in sys.modules if m=='app' or m.startswith(('app.','scripts'))]:
+        monkeypatch.delitem(sys.modules,name)
+    from scripts.retro_gateway import app
+    paths={r.path for r in app.routes}
+    assert paths=={'/retro','/api/retro/{path:path}','/api/retro/sessions/{sid}/{channel}','/api/retro-gateway/health'}
+    with TestClient(app) as c:
+        assert c.get('/api/retro-gateway/health').json()=={'status':'ok'}
+        assert c.post('/api/retro/sessions',json={},headers={'Origin':'https://evil.example'}).status_code==403
+        assert c.post('/api/retro/sessions',json={},headers={'Origin':'http://testserver'}).status_code==503

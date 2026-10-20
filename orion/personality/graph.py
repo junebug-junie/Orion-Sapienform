@@ -483,7 +483,7 @@ def rekey_sources(nodes: Sequence[Node], hits: Mapping[str, Sequence[tuple[str, 
     occurred_at). Those keys are rebuilt by replaying the hits (fade by the half-life between hits,
     +1 per hit, clamped as in ``reinforce``) up to the node's ``updated_at``; other keys are kept.
     An active node that no longer has ``promote_min_lanes`` sources goes back to candidate: it was
-    promoted by one source counted twice. Returns every node whose ``lane_recent`` changed, with a
+    promoted by one source counted twice; its candidate TTL restarts at ``now``. Returns every node whose ``lane_recent`` changed, with a
     history row at ``now`` when weight or status moved. Inputs are not mutated."""
     cap = math.expm1(params.lane_cap)
     changed: list[Node] = []
@@ -511,7 +511,9 @@ def rekey_sources(nodes: Sequence[Node], hits: Mapping[str, Sequence[tuple[str, 
             continue
         node.weight = _derived_weight(node.lane_recent, params)
         if node.status == "active" and _promoting_lanes(node, params) < params.promote_min_lanes:
-            node.status = "candidate"
+            # A fresh candidate window: the demotion is a recount, not neglect, so the candidate
+            # TTL must not retire (terminal) a long-quiet node in the same tick.
+            node.status, node.last_folded_at = "candidate", now
         if node.status != orig.status or node.weight != orig.weight:
             history.append(HistoryRow(node.disposition_id, now, node.weight, node.status,
                                       node.evidence_count))

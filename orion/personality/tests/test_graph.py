@@ -585,3 +585,23 @@ def test_rekey_leaves_untouched_nodes_out_and_is_idempotent():
                           now=NOW).nodes
     assert rekey_sources(first, {"d1": [("reverie", {}, NOW - timedelta(minutes=i)) for i in range(4)]},
                          now=NOW).nodes == []
+
+
+def test_rekey_splits_a_mixed_journal_key_into_its_sources():
+    hits = {"d1": [("journal", METACOG, NOW - timedelta(minutes=i)) for i in range(3)]
+            + [("journal", {"source_kind": "self_study"}, NOW - timedelta(minutes=10 + i)) for i in range(3)]}
+    (n,) = rekey_sources([_node(status="candidate", lane_counts={"journal": 6})], hits, now=NOW).nodes
+    assert set(n.lane_recent) == {"substrate_narration", "journal"}
+    assert n.lane_recent["journal"] == pytest.approx(3.0, rel=1e-3)  # 10-12 min of fade
+    # Two sources now: the next status pass promotes it.
+    assert apply_fade([n], now=NOW + timedelta(minutes=1)).nodes[0].status == "active"
+
+
+def test_rekey_demotion_restarts_the_candidate_ttl_instead_of_retiring():
+    old = NOW - timedelta(days=20)
+    hits = {"d1": [("reverie", {}, old - timedelta(minutes=i)) for i in range(3)]
+            + [("journal", METACOG, old - timedelta(minutes=i)) for i in range(3)]}
+    node = _legacy(last_reinforced_at=old, last_folded_at=old, lane_recent={"reverie": 3.0, "journal": 3.0, "dream": 3.0})
+    (n,) = rekey_sources([node], hits, now=NOW).nodes
+    assert n.status == "candidate" and n.last_folded_at == NOW
+    assert apply_fade([n], now=NOW + timedelta(minutes=1)).nodes[0].status == "candidate"

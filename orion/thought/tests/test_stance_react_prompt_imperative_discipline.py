@@ -72,10 +72,17 @@ def test_stance_prompt_reads_message_against_recent_conversation() -> None:
     rendered = _render_stance(
         {
             "user_message": "It was eventful",
-            "recent_conversation": ["- User (Sun Oct 18, 1:40 am): Big day later today at Lagoon"],
+            "recent_conversation": [
+                "- User (Sun Oct 18, 1:40 am): Big day later today at Lagoon",
+                "(\u2014 about 45 hours pass \u2014)",
+            ],
         }
     )
-    assert "Sun Oct 18, 1:40 am" in rendered and "Lagoon" in rendered
+    # Plain lines, rendered once -- not an escaped JSON blob in the generic loop.
+    assert rendered.count("Big day later today at Lagoon") == 1
+    assert "  - User (Sun Oct 18, 1:40 am): Big day later today at Lagoon\n" in rendered
+    assert "\u2014 about 45 hours pass \u2014" in rendered
+    assert "\\u2014" not in rendered
     assert "Read user_message against it" in rendered
 
 

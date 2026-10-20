@@ -40,7 +40,9 @@ from orion.schemas.reverie import ConcernCardV1, SpontaneousThoughtV1
 from orion.schemas.thought import CoalitionSnapshotV1
 
 from .rpc_health import fold_bus
-from .bus_listener import extract_stance_react_payload
+from orion.gpu_pool.shed import is_gpu_pool_refusal, shed_reason_from_error
+
+from .bus_listener import exec_failure_reason, extract_stance_react_payload
 from .cortex_client import CortexExecClient
 from .settings import settings
 from .store import (
@@ -55,6 +57,22 @@ from .store import (
 logger = logging.getLogger("orion-thought.reverie")
 
 BroadcastReader = Callable[[], AttentionBroadcastProjectionV1 | None]
+
+
+class ReverieLlmUnavailable(RuntimeError):
+    """The GPU pool refused the narration call (``gpu_pool_unavailable[:<reason>]``).
+
+    Raised by ``run_reverie_once`` instead of returning None, because None means "the
+    model answered and there was nothing grounded to say" -- a judgement on the theme.
+    A refusal is no judgement: the model was never asked. The chain (chain.py) must not
+    count it toward the theme's no_coalition streak; on 2026-10-20 the hot cabinet's
+    ``shed:cabinet_hot`` refusals were pushing healthy themes into forced cooldown.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.shed_reason = shed_reason_from_error(reason)
 
 
 def _source() -> ServiceRef:
@@ -819,8 +837,14 @@ async def run_reverie_once(
     cortex_client: CortexExecClient | None = None,
     chain_context: tuple[str, int] | None = None,
     continuity: ChainContinuity | None = None,
+    raise_llm_unavailable: bool = False,
 ) -> SpontaneousThoughtV1 | None:
     """One spontaneous-thought tick. Returns the published thought, or None.
+
+    ``raise_llm_unavailable``: the one exception to "never a raise". When True, a GPU-pool
+    refusal of the narration call raises ``ReverieLlmUnavailable`` so the chain
+    (chain.py) can tell "the pool refused" from "nothing grounded to say". When False
+    (the standalone tick) the refusal is logged and the tick returns None as before.
 
     Returns None (publishes nothing) when there is no coalition to narrate or the
     narration comes back hollow — never empty-shell cognition, never a raise.
@@ -1002,6 +1026,15 @@ async def run_reverie_once(
         else:
             if report_metacog_health:
                 check_reverie_metacog_timeout(False)
+        # Only a plan that did not succeed was refused: exec_failure_reason() also falls back
+        # to any failed side step (e.g. recall), which must not discard a real narration.
+        plan_ok = isinstance(exec_result, dict) and exec_result.get("status") == "success"
+        failure = None if plan_ok else exec_failure_reason(exec_result)
+        if failure is not None and is_gpu_pool_refusal(failure):
+            logger.info(
+                "reverie tick refused by gpu pool corr=%s reason=%s", correlation_id, failure
+            )
+            raise ReverieLlmUnavailable(failure)
         raw_payload = extract_stance_react_payload(exec_result)
 
         thought = parse_reverie_payload(
@@ -1101,6 +1134,10 @@ async def run_reverie_once(
                         ),
                     )
                 persist_salience_trace(trace)
+    except ReverieLlmUnavailable:
+        if raise_llm_unavailable:
+            raise
+        return None
     except Exception as exc:
         # A tick must never raise (hard constraint) — a bus/narration/parse
         # failure degrades to a dropped tick, not a crash.

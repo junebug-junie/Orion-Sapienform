@@ -25,6 +25,21 @@ This module turns the per-window stream into episodes:
   error; firing on them double-counts the turn. A turn-explained window does
   not consume the episode's single fire, so an anomaly that outlasts the turn
   still fires on its first window no turn explains.
+* **Nominal open waits one window** (2026-10-20). An episode whose first
+  flagged window is only in the ``nominal`` band does not fire on it; it fires
+  on its second flagged window (if any) with that window's band, which is the
+  max band of the first two windows (nominal is the lowest flagged band). So
+  the opening fire carries the band the onset reached, and no
+  ``severity_escalation`` can follow one minute later. Live 10-20: 4 of 29
+  fires in 6h were nominal ``episode_open`` + ``severity_escalation`` on the
+  next window -- one onset, two LLM metacog entries. Chosen over "suppress
+  escalation for 2 windows": suppressing/absorbing the escalation leaves the
+  band the onset really reached unreported, and orion-dream's novelty weights
+  only degraded/critical keys (15-day replay: novelty 10.0 -> 7.0 when
+  absorbing, 10.0 -> 10.0 when deferring). Degraded/critical opens still fire
+  at once (no added latency on real-band onsets). Cost: a lone single-window
+  nominal blip (threshold flicker, zero dream weight) no longer fires.
+  15-day replay: 140 -> 112 fires.
 * **Sustained override.** Once ``sustained_windows`` (default 15) flagged
   windows have landed within the trailing ``sustained_horizon_sec`` (default
   1800s) -- counted across episode boundaries, so an outage that flickers
@@ -104,7 +119,7 @@ class AnomalyEpisodeDecision:
     state: AnomalyEpisodeStateV1
     fire: bool
     # episode_open | severity_escalation | sustained_past_turn when fire; otherwise one of
-    # calm | turn_explained | within_episode | stale_window
+    # calm | turn_explained | within_episode | open_deferred | stale_window
     reason: str
     severity: str
     turn_explained: bool
@@ -138,6 +153,7 @@ def step(
     turn_suppress: bool = True,
     sustained_windows: int = DEFAULT_SUSTAINED_WINDOWS,
     sustained_horizon_sec: float = DEFAULT_SUSTAINED_HORIZON_SEC,
+    defer_nominal_open: bool = True,
 ) -> AnomalyEpisodeDecision:
     """Fold one scored window into the episode state.
 
@@ -182,6 +198,18 @@ def step(
     rank = severity_rank(severity)
     if state.fired_rank < 0:
         reason = "sustained_past_turn" if turn_explained else "episode_open"
+        # "First window" = first window no turn explains (a turn-explained window never
+        # fires), so a turn-explained window 1 does not let window 2 open at nominal and
+        # window 3 escalate. Never deferred once the sustained override holds.
+        if (
+            defer_nominal_open
+            and reason == "episode_open"
+            and severity == "nominal"
+            and not sustained
+            and state.flagged_windows - state.turn_explained_windows == 1
+        ):
+            # Wait one window so the open carries the band the onset reaches (module doc).
+            return AnomalyEpisodeDecision(state, False, "open_deferred", severity, turn_explained, new_episode)
         return AnomalyEpisodeDecision(state, True, reason, severity, turn_explained, new_episode)
     if rank > state.fired_rank:
         return AnomalyEpisodeDecision(state, True, "severity_escalation", severity, turn_explained, new_episode)

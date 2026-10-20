@@ -158,7 +158,9 @@ class PoolRuntime:
                  state_publish_sec: float = 5.0, replay_payload_max_bytes: int = 262144,
                  shed_enabled: bool = False, orion_shed_enabled: bool = False,
                  orion_shed_caps: OrionShedCaps | None = None, orion_shed_ledger: OrionShedLedger | None = None,
-                 controller_alert: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None = None):
+                 controller_alert: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None = None,
+                 fault_alert: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None = None,
+                 fault_alert_after_sec: float = 1800.0, fault_realert_sec: float = 21600.0):
         if mode not in POOL_MODES:
             raise ValueError(f"GPU_POOL_MODE must be one of {POOL_MODES}, got {mode!r}")
 
@@ -214,6 +216,16 @@ class PoolRuntime:
         self.controller_health = ControllerHealth()
         self.controller_alert = controller_alert
         self._alert_tasks: set[asyncio.Task] = set()
+        # Card-fault alert (incident 2026-10-16 -> 10-20: gpu2 faulted 4 days, nobody was told -- the
+        # painting-gap card fired once at "error", the guardian watches controller refusals, and a
+        # faulted card is neither). A card in fault longer than fault_alert_after_sec raises a
+        # critical card (immediate email), again every fault_realert_sec while it stays faulted, and
+        # an info card when it clears. Memory only: a pool restart restarts the clock.
+        self.fault_alert = fault_alert
+        self.fault_alert_after_sec, self.fault_realert_sec = fault_alert_after_sec, fault_realert_sec
+        self._fault_since: dict[str, datetime] = {}
+        self._fault_alerted_at: dict[str, datetime] = {}
+        self._fault_why: dict[str, dict[str, Any]] = {}
         self._started = False
         self._recent_actions: dict[str, list[str]] = {}
         self._ctx_saved: dict[str, int] = {}
@@ -584,6 +596,7 @@ class PoolRuntime:
             t = time.monotonic()
             await self._check_actuation()
             await self._clear_faults()
+            self._check_fault_alerts()
             self._phase("actuation", t)
             await self._schedule_and_apply()
             if self._last_state is None or (now - self._last_state).total_seconds() >= self.state_publish_sec:
@@ -938,6 +951,11 @@ class PoolRuntime:
             if outcome in ("failed_restored", "refused", "unreachable", "fault_cleared", "stuck"):
                 c.cooldown_until = now + timedelta(seconds=d.swap_cooldown_sec)
         await self._save_cards(cards, "actuate_result")
+        if state == "fault":
+            for c in cards:
+                self._fault_since.setdefault(c.card, now)
+                self._fault_why[c.card] = {"seat": seat, "reason": reason, "outcome": outcome,
+                                           "observed": (detail or {}).get("observed")}
         log = logger.warning if state == "fault" or event in ("swap_failed", "actuate_refused") else logger.info
         log("gpu_pool_actuate_done seat=%s action_id=%s outcome=%s state=%s reason=%s",
             seat, act.get("action_id"), outcome, state, reason)
@@ -1111,6 +1129,52 @@ class PoolRuntime:
         logger.warning("gpu_pool_controller_recovered seat=%s host=%s kind=%s refusals=%s degraded_since=%s",
                        seat, t.host, t.kind, t.count, view["degraded_since"])
         self._fire_controller_alert(seat, "recovered", view)
+
+    def _check_fault_alerts(self) -> None:
+        """Called every tick after _clear_faults: alert on a card stuck in fault (see __init__)."""
+        now = self.now()
+        for name, card in self.cards.items():
+            if card.swap_state != "fault":
+                self._fault_since.pop(name, None)
+                why = self._fault_why.pop(name, None)
+                if self._fault_alerted_at.pop(name, None) is not None:
+                    self._fire_fault_alert(name, "recovered", {"card": name, "cleared_at": now.isoformat(),
+                                                               **(why or {})})
+                continue
+            since = self._fault_since.setdefault(name, now)
+            age = (now - since).total_seconds()
+            last = self._fault_alerted_at.get(name)
+            if age < self.fault_alert_after_sec or (last is not None and
+                                                    (now - last).total_seconds() < self.fault_realert_sec):
+                continue
+            self._fault_alerted_at[name] = now
+            view = {"card": name, "seat": card.swap_role, "since": since.isoformat(),
+                    "minutes": round(age / 60),
+                    **self._fault_why.get(name, {"seat": card.swap_role})}
+            logger.error("gpu_pool_card_fault_alert card=%s seat=%s minutes=%.0f reason=%s",
+                         name, view.get("seat"), age / 60, view.get("reason"))
+            self._fire_fault_alert(name, "faulted", view)
+
+    def _fire_fault_alert(self, card: str, state: str, view: dict[str, Any]) -> None:
+        """Fire-and-forget, like the controller alert. An undelivered "faulted" card is retried in
+        ~10 min (not on every tick, and not only after fault_realert_sec)."""
+        if self.fault_alert is None:
+            return
+        sent_at = self.now()
+
+        async def send() -> None:
+            ok = False
+            try:
+                ok = bool(await self.fault_alert(card, state, view))
+            except Exception:  # noqa: BLE001
+                logger.exception("gpu_pool_fault_alert_failed card=%s state=%s", card, state)
+            if not ok and state == "faulted" and self._fault_alerted_at.get(card) == sent_at:
+                self._fault_alerted_at[card] = sent_at - timedelta(
+                    seconds=max(0.0, self.fault_realert_sec - 600.0))
+
+        task = asyncio.create_task(send())
+        self._alert_tasks.add(task)
+        task.add_done_callback(self._alert_tasks.discard)
 
     def _fire_controller_alert(self, seat: str, state: str, view: dict[str, Any]) -> None:
         """Fire-and-forget: the alert does HTTP and must never hold the lease lock or fail a result."""

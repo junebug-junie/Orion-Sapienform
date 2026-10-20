@@ -422,10 +422,15 @@ async def health() -> dict:
     }
 
 
+_GPU_CHECK_TIMEOUT_SEC = 5.0
+
+
 def _gpu_available_gb() -> float:
-    """GB of this card this process could use right now: the card's free memory plus what this
+    """GiB of this card this process could use right now: the card's free memory plus what this
     process's torch allocator already reserved (so a generation in flight does not read as "no
-    room"). cudaMemGetInfo, i.e. the driver's own count -- other tenants included."""
+    room"). cudaMemGetInfo, i.e. the driver's own count -- other tenants included. Blocking (the
+    first call may initialise CUDA, ~1-5 s and a ~0.3-0.5 GiB context): /ready runs it in a
+    thread with a timeout, never on the event loop."""
     import torch
 
     device = torch.device(settings.DIFFUSION_DEVICE)
@@ -442,17 +447,21 @@ async def ready():
     10-20: this container restarted onto gpu2 while the agent-gpu2 llama seat held ~24GB of its
     32GB, loaded "successfully" into CPU RAM, and answered ready for 4 days with ~7.8GB free --
     a generation needs ~24GB at peak. The GPU pool probes this path (launch.ready), so it must
-    say no when the card is taken. DIFFUSION_READY_MIN_GPU_GB=0 turns the room check off."""
+    say no when the card is taken. DIFFUSION_READY_MIN_GPU_GB=0 turns the room check off.
+    "Ready" means the card is not taken, NOT a promise that a generation fits: the threshold (20
+    GiB) sits below the ~24 GB peak on purpose, to separate "seat on the card" (~7.6 GiB free)
+    from "card free" (~30 GiB) with margin either side."""
     need = settings.DIFFUSION_READY_MIN_GPU_GB
     available: Optional[float] = None
     gpu_error: Optional[str] = None
     room = True
     if _pipe is not None and need > 0:
         try:
-            available = round(_gpu_available_gb(), 2)
+            available = round(await asyncio.wait_for(asyncio.to_thread(_gpu_available_gb),
+                                                      _GPU_CHECK_TIMEOUT_SEC), 2)
             room = available >= need
         except Exception as exc:  # noqa: BLE001 -- cannot see the card = not ready (fail closed)
-            gpu_error = f"{type(exc).__name__}: {exc}"[:200]
+            gpu_error = f"{type(exc).__name__}: {exc}"[:200] or type(exc).__name__
             room = False
     body = {
         "ready": _pipe is not None and not _draining and room,

@@ -87,10 +87,11 @@ all down).
   `GPU_LANE_RESOLVE_EMPTY_MAX_MIB` of GPU memory AND not ready -- then runs the load/unload as
   usual. It needs proof the other side holds the card (more than that limit). Evidence: host PIDs
   from `docker top <container> -eo pid` joined to `nvidia-smi --query-compute-apps` run via
-  `docker exec` in one of the card's containers (read-only; the only docker calls outside
-  compose). Any doubt refuses and the card stays faulted: `:gpu_memory_unknown`,
+  `docker exec` in every running role's own container, merged (read-only; the only docker calls
+  outside compose). Any doubt refuses and the card stays faulted: `:gpu_memory_unknown`,
   `:both_hold_gpu_memory`, `:neither_holds_gpu_memory` (also a blind nvidia-smi),
-  `:empty_side_ready:<role>`. Log: `launch_exec_resolve_both_running seat=... stopping=... gpu_mib=...`.
+  `:empty_side_ready:<role>`, `:empty_side_in_flight:<role>` (drain status not `in_flight:false`).
+  A load/unload that fails after the resolver stopped something says so: `...:resolved=<role>`. Log: `launch_exec_resolve_both_running seat=... stopping=... gpu_mib=...`.
 - Residents (`swap: null`) are never loaded directly (`not_a_swap_seat`): they come back only as a
   seat's evictions.
 - Log line per action: `launch_exec load role=agent-gpu2 service=atlas-agent-burst

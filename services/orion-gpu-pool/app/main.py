@@ -37,7 +37,7 @@ from orion.schemas.hardware_watch import (
     HardwareWatchReflexShedV1,
 )
 
-from app.controller_alert import make_notify_alert
+from app.controller_alert import build_fault_request, make_notify_alert
 from app.guards import GuardReader
 from app.orion_shed_store import PostgresOrionShedLedger
 from app.runtime import SLOW_LOCK_MS, PoolRuntime
@@ -335,7 +335,11 @@ async def lifespan(app: FastAPI):
         orion_shed_ledger=PostgresOrionShedLedger(_pool),
         controller_alert=(make_notify_alert(_settings.notify_base_url, _settings.notify_api_token,
                                             source=_settings.service_name)
-                          if _settings.controller_alert_enabled else None))
+                          if _settings.controller_alert_enabled else None),
+        fault_alert=(make_notify_alert(_settings.notify_base_url, _settings.notify_api_token,
+                                       source=_settings.service_name, builder=build_fault_request)
+                     if _settings.fault_alert_enabled else None),
+        fault_alert_after_sec=_settings.fault_alert_after_sec, fault_realert_sec=_settings.fault_realert_sec)
     # Stage 5.7: every swap seat with a launch block is actuated; pause_actuation is the only stop.
     logger.info("gpu_pool_actuation mode=%s seats=%s", _settings.mode, sorted(runtime.actuated) or "none")
     # The actuator's replies are subscribed BEFORE start(): start() asks about a swap the previous

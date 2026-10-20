@@ -24,9 +24,10 @@ deleted in stage 5.6):
   ``GPU_LANE_RESOLVE_EMPTY_MAX_MIB``) and is not ready is stopped, but only when the other side
   provably holds the card; then the load/unload runs as usual. Evidence: ``docker top`` (the
   role's host PIDs) joined to ``nvidia-smi --query-compute-apps`` run through ``docker exec`` in
-  one of the card's own containers. Any doubt -- no answer, both hold memory, neither does, the
-  empty side says ready -- refuses as before and the card stays faulted for a human. These two
-  read-only commands are the only ``docker`` calls outside compose.
+  EVERY running role's own container (merged, so each side is judged by its own view too). Any
+  doubt -- no answer, both hold memory, neither does, the empty side says ready or has work in
+  flight -- refuses as before and the card stays faulted for a human. These two read-only
+  commands are the only ``docker`` calls outside compose.
 """
 from __future__ import annotations
 
@@ -275,13 +276,16 @@ def _gpu_mib_by_role_sync(snaps: dict[str, dict[str, Any]], roles: list[str]) ->
         if not found:
             return None
         pids[role] = found
-    apps = None
+    # nvidia-smi in EVERY role's own container, merged: a container always sees its own processes,
+    # so a side that reads empty is empty by its own view -- even if a PID namespace hid it from the
+    # other container's nvidia-smi. Any container that cannot answer = no evidence.
+    apps: dict[int, float] = {}
     for cid in (cid for ids in containers.values() for cid in ids):
-        apps = _gpu_apps_sync(cid)
-        if apps is not None:
-            break
-    if apps is None:
-        return None
+        view = _gpu_apps_sync(cid)
+        if view is None:
+            return None
+        for pid, mib in view.items():
+            apps[pid] = max(apps.get(pid, 0.0), mib)
     return {role: sum(apps.get(pid, 0.0) for pid in found) for role, found in pids.items()}
 
 
@@ -290,6 +294,15 @@ async def gpu_mib_by_role(snaps: dict[str, dict[str, Any]], roles: list[str]) ->
         return await asyncio.to_thread(_gpu_mib_by_role_sync, snaps, roles)
     except Exception:  # noqa: BLE001 -- no evidence is a refusal, never a guess
         return None
+
+
+async def _in_flight(plan: RolePlan) -> bool:
+    """True unless the role's drain status says nothing is in flight (unknown counts as busy)."""
+    try:
+        state = await request(plan.base_url + plan.drain.status)
+    except Exception:  # noqa: BLE001 -- running but not answering: cannot prove it idle
+        return True
+    return not (isinstance(state, dict) and state.get("in_flight") is False)
 
 
 async def resolve_both_running(plan: LaunchPlan, snaps: dict[str, dict[str, Any]], running: set[str],
@@ -319,6 +332,10 @@ async def resolve_both_running(plan: LaunchPlan, snaps: dict[str, dict[str, Any]
     for rp in empty:
         if await ready(rp):
             raise RuntimeError(f"{base}:empty_side_ready:{rp.role}")
+        if rp.drain is not None and await _in_flight(rp):
+            # Memory alone does not prove idle (a CPU-offloaded step holds little); work in flight
+            # is never stopped by the resolver.
+            raise RuntimeError(f"{base}:empty_side_in_flight:{rp.role}")
     await authority(intent)
     logger.warning("launch_exec_resolve_both_running seat={} stopping={} gpu_mib={} limit_mib={} action_id={}",
                    seat.role, ",".join(p.role for p in empty),
@@ -381,10 +398,10 @@ async def _load(plan: LaunchPlan, intent: Intent, authority: Authority) -> dict[
     seat = plan.seat
     drained: list[RolePlan] = []
     stopped: list[RolePlan] = []
+    resolved: list[str] = []
     try:
         snaps = await _observe_all(plan)
         running = {r for r, s in snaps.items() if _running(s)}
-        resolved: list[str] = []
         if seat.role in running and running & {p.role for p in plan.evicts}:
             resolved = await resolve_both_running(plan, snaps, running, intent, authority)
             snaps = await _observe_all(plan)
@@ -412,6 +429,10 @@ async def _load(plan: LaunchPlan, intent: Intent, authority: Authority) -> dict[
         return {"status": "success"}
     except Exception as exc:  # noqa: BLE001 -- no model output or subprocess stderr in evidence
         error = _error(exc)
+        if resolved:
+            # restored=None below means "nothing was evicted by this load's own steps"; the
+            # resolver's stops are named here so the pool event shows them.
+            error += ":resolved=" + ",".join(resolved)
         out: dict[str, Any] = {"status": "failed", "error": error}
         if drained or stopped:
             try:
@@ -439,10 +460,10 @@ async def _unload(plan: LaunchPlan, intent: Intent, authority: Authority) -> dic
     seat = plan.seat
     seat_drained = False
     seat_stopped = False
+    resolved: list[str] = []
     try:
         snaps = await _observe_all(plan)
         running = {r for r, s in snaps.items() if _running(s)}
-        resolved: list[str] = []
         if seat.role in running and any(p.role in running for p in plan.evicts):
             resolved = await resolve_both_running(plan, snaps, running, intent, authority)
             snaps = await _observe_all(plan)
@@ -477,6 +498,10 @@ async def _unload(plan: LaunchPlan, intent: Intent, authority: Authority) -> dic
         return {"status": "success"}
     except Exception as exc:  # noqa: BLE001
         error = _error(exc)
+        if resolved:
+            # e.g. upstream_not_idle after the empty evicted role was already stopped: harmless (it
+            # held nothing and was not ready); the pool sees it down and the next unload restarts it.
+            error += ":resolved=" + ",".join(resolved)
         if seat_drained and not seat_stopped:
             try:
                 await undrain(seat)   # the seat keeps serving; never leave it silently draining

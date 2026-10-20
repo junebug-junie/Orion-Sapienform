@@ -147,3 +147,73 @@ def test_boot_before_the_seat_announces_does_not_clear_the_fault_the_wrong_way()
         await rt.tick()
         assert rt.cards["gpu2"].swap_state == "idle" and SEAT in rt.cards["gpu2"].swapped_in
     run(go())
+
+
+# --- nobody was told: a card stuck in fault must reach Juniper ----------------------------------
+# 10-16 -> 10-20 the only alert was the painting-gap card (error severity, once, 12 h in). The
+# guardian watches controller refusals; this was a card fault with a healthy controller.
+
+def test_a_card_stuck_in_fault_raises_a_critical_alert_repeats_and_recovers():
+    from app.controller_alert import build_fault_request
+
+    async def go():
+        rt, clock = make(mode="enforce")
+        rt._world.up |= {SEAT, "diffusion"}            # both look up: discovery cannot clear it
+        sent: list[tuple[str, str, dict]] = []
+
+        async def alert(card, state, view):
+            sent.append((card, state, view))
+            return True
+        rt.fault_alert = alert
+        await boot(rt)
+        [st] = [m for m in actuations(rt) if m.action == "status"]
+        await result(rt, st, "succeeded", observed=BOTH, in_flight=False)
+        assert rt.cards["gpu2"].swap_state == "fault"
+
+        await step(rt, clock, 29 * 60, every=60)
+        await rt.drain_alerts()
+        assert sent == []                              # self-repair gets its chance first
+        await step(rt, clock, 2 * 60, every=60)
+        await rt.drain_alerts()
+        [(card, state, view)] = sent
+        assert (card, state) == ("gpu2", "faulted") and view["seat"] == SEAT
+        assert view["reason"] == "reconcile_ambiguous:boot" and view["minutes"] >= 30
+        req = build_fault_request(card, state, view, source="orion-gpu-pool")
+        assert req.severity == "critical" and req.require_ack   # emailed at once by orion-notify
+
+        await step(rt, clock, 5 * 3600, every=600)
+        await rt.drain_alerts()
+        assert len(sent) == 1                          # no spam
+        await step(rt, clock, 3600 + 60, every=600)
+        await rt.drain_alerts()
+        assert [s for _, s, _ in sent] == ["faulted", "faulted"]   # still stuck: told again at 6 h
+
+        rt._world.up.discard("diffusion")              # someone stops the empty diffusion
+        await step(rt, clock, 60)
+        await rt.drain_alerts()
+        assert rt.cards["gpu2"].swap_state == "idle"
+        assert sent[-1][1] == "recovered"
+        assert build_fault_request("gpu2", "recovered", sent[-1][2], source="x").severity == "info"
+    run(go())
+
+
+def test_an_undelivered_fault_alert_is_retried_in_minutes_not_hours():
+    async def go():
+        rt, clock = make(mode="enforce")
+        rt._world.up |= {SEAT, "diffusion"}
+        calls = []
+
+        async def alert(card, state, view):
+            calls.append(state)
+            return len(calls) > 1                      # notify down the first time
+        rt.fault_alert = alert
+        await boot(rt)
+        [st] = [m for m in actuations(rt) if m.action == "status"]
+        await result(rt, st, "succeeded", observed=BOTH, in_flight=False)
+        await step(rt, clock, 31 * 60, every=60)
+        await rt.drain_alerts()
+        assert calls == ["faulted"]
+        await step(rt, clock, 11 * 60, every=60)
+        await rt.drain_alerts()
+        assert calls == ["faulted", "faulted"]
+    run(go())

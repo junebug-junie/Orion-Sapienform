@@ -434,6 +434,16 @@ class ThoughtSettings(BaseSettings):
     visual_painting_gap_check_interval_sec: float = Field(
         600.0, alias="ORION_VISUAL_PAINTING_GAP_CHECK_INTERVAL_SEC", gt=0
     )
+    # Failed-attempt streak (2026-10-20, same loop as the gap check): N painting attempts in a
+    # row (reverie_visual_attempt) produced nothing -> CRITICAL card (emailed at once). 6 = one
+    # more than the longest ordinary streak 2026-09-14..10-19; every streak >= 6 was an outage
+    # (35 on 10-16, 16 on 10-09, 9 on 10-08 and 09-25). See evals/test_attempt_streak_replay.py.
+    visual_attempt_streak_check_enabled: bool = Field(
+        True, alias="ORION_VISUAL_ATTEMPT_STREAK_CHECK_ENABLED"
+    )
+    visual_attempt_failure_streak_threshold: int = Field(
+        6, alias="ORION_VISUAL_ATTEMPT_FAILURE_STREAK_THRESHOLD", ge=1
+    )
     # How often the watchdog re-checks reverie_visual_chain's newest row age.
     # 600s (not field-digester's own 900s precedent -- review finding, fixed:
     # that comment previously named 900s but this field's default was always

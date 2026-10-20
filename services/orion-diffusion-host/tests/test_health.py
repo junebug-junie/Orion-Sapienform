@@ -102,3 +102,31 @@ def test_draining_is_still_not_ready_with_room(loaded):
     loaded.setattr(diffusion_main, "_draining", True)
     loaded.setattr(diffusion_main, "_gpu_available_gb", lambda: 30.5)
     assert TestClient(app).get("/ready").status_code == 503
+
+
+def test_gpu_available_is_free_plus_own_reserved_in_gib(monkeypatch):
+    import types
+
+    gib = 1024 ** 3
+    seen = {}
+
+    def mem_get_info(device):
+        seen["device"] = str(device)
+        return (int(7.6 * gib), 32 * gib)
+
+    fake_torch = types.SimpleNamespace(
+        device=lambda d: d,
+        cuda=types.SimpleNamespace(mem_get_info=mem_get_info, memory_reserved=lambda device: int(0.4 * gib)),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    assert round(diffusion_main._gpu_available_gb(), 2) == 8.0
+    assert seen["device"] == settings.DIFFUSION_DEVICE
+
+
+def test_ready_times_out_closed_on_a_hung_gpu_read(loaded):
+    import time as _time
+
+    loaded.setattr(diffusion_main, "_GPU_CHECK_TIMEOUT_SEC", 0.05)
+    loaded.setattr(diffusion_main, "_gpu_available_gb", lambda: _time.sleep(0.5) or 30.0)
+    resp = TestClient(app).get("/ready")
+    assert resp.status_code == 503 and resp.json()["gpu_check_error"]

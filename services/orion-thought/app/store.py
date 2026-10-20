@@ -550,6 +550,40 @@ def visual_last_painting_age_hours() -> float | None:
         return None
 
 
+# Attempts since the newest produced one (bounded lookback; the table is small). Outcomes live:
+# produced, abandoned, deferred_resource, deferred_thermal, failed.
+_ATTEMPT_STREAK_SQL = """
+SELECT count(*) FROM reverie_visual_attempt
+WHERE started_at > now() - make_interval(days => :days)
+  AND started_at > COALESCE(
+      (SELECT max(started_at) FROM reverie_visual_attempt
+        WHERE outcome = 'produced' AND started_at > now() - make_interval(days => :days)),
+      '-infinity'::timestamptz)
+"""
+
+
+def visual_attempt_failure_streak() -> int | None:
+    """How many painting attempts in a row produced nothing (newest first, back to the last
+    produced one, within the painting-age lookback). None if the read failed. Never raises.
+
+    Incident 2026-10-16 -> 10-20: 35 attempts in a row ended `abandoned` (gpu2 faulted, the pool
+    granted no diffusion hold). History 2026-09-14 -> 10-19 (405 attempts): every streak of 6 or
+    more was an outage (35; 16 = the 10-09/10 controller incident; 9 on 10-08 and 09-25), and the
+    longest ordinary streak was 5. See evals/test_attempt_streak_replay.py."""
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            if not conn.execute(text("SELECT to_regclass('reverie_visual_attempt')")).scalar():
+                return None
+            row = conn.execute(text(_ATTEMPT_STREAK_SQL), {"days": _PAINTING_AGE_LOOKBACK_DAYS}).first()
+            return int(row[0]) if row else None
+    except Exception as exc:
+        logger.warning("visual_attempt_failure_streak query failed err=%s", exc)
+        return None
+
+
 def load_latest_visual_chain_continuity_state(*, with_identity: bool = False):
     """Most recent visual-chain row's `prior_description`, `continuity_
     streak`, AND `context_slot_rotation`, in ONE round trip (review finding

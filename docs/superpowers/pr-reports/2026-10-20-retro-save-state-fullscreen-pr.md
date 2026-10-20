@@ -162,6 +162,6 @@ The catalog `mv` must happen after the new code is pulled and before the retro r
 
 ## PR link
 
-(see PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2825
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

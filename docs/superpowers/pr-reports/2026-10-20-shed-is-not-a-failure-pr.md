@@ -197,6 +197,6 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && for s in orion-cortex-
 
 ## PR link
 
-(filled after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2819
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

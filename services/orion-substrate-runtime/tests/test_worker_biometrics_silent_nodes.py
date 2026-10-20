@@ -62,8 +62,13 @@ def test_silent_node_helper_and_kill_switch(enabled: bool, expected: set[str]) -
     assert set(out) == expected
 
 
-def test_tick_passes_silent_nodes_to_the_producer(monkeypatch) -> None:
-    worker = _worker(True)
+@pytest.mark.parametrize("enabled,expected_exclude,expected_version", [(True, {"hecate"}, 2), (False, set(), 1)])
+def test_tick_passes_silent_nodes_to_the_producer(
+    monkeypatch, enabled: bool, expected_exclude: set[str], expected_version: int
+) -> None:
+    """Kill switch off stamps v1: the old formula ran, and the attention baseline
+    must not fold v1 numbers under the v2 label."""
+    worker = _worker(enabled)
     worker._settings.biometrics_grammar_batch_limit = 500
     for i in range(5):
         ts = T0 + timedelta(seconds=31 * i)
@@ -99,6 +104,6 @@ def test_tick_passes_silent_nodes_to_the_producer(monkeypatch) -> None:
 
     monkeypatch.setattr(worker_module, "biometrics_prediction_error", fake_pe)
     worker._tick()
-    assert seen["exclude"] == {"hecate"}
+    assert seen["exclude"] == expected_exclude
     receipt = worker._store.save_receipt.call_args[0][0]
-    assert receipt.state_deltas[0].after["definition_version"] == 2
+    assert receipt.state_deltas[0].after["definition_version"] == expected_version

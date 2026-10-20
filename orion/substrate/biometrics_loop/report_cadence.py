@@ -11,13 +11,20 @@ only in `orion_biometrics_cluster.measurements_by_node`, never in this projectio
 there is no BMC key here to keep or drop.
 
 "Stopped reporting" is relative, not an absolute number of seconds: a node is silent
-when the age of its last report is more than `multiple` times its own typical report
-interval. The interval is learned from the projection's own `last_seen_at` advances
+when its last report is more than `multiple` times its own typical report interval
+behind the newest report any node has sent. The interval is learned from the projection's own `last_seen_at` advances
 (median of the last 16, needing at least 3, so one long gap -- a node waking from a 5-day standby -- does
 not move it). A node with no interval learned yet in this process (hecate after a
 restart while it is down) is judged against the fleet's median interval: every node
 runs the same orion-biometrics agent. With nothing learned at all (the first tick after
 a restart), nothing is excluded, which is the pre-2026-10-20 behaviour.
+
+The tracker observes the projection once per runtime tick. When one tick's batch
+holds several reports from a node (catch-up after a stall; batch limit 500, about 61
+events per report), it records one long interval instead of several short ones. The
+learned interval can only drift up from that, which delays exclusion -- the safe
+direction. All events of one report share one `observed_at`, so a report split
+across two ticks does not create a false short interval.
 
 Live cadence, 3 days of grammar_events to 2026-10-20: athena median 31.24 s, circe
 31.32 s; the longest gap either had was 94 s (3x). `DEFAULT_MULTIPLE = 6` is twice that
@@ -79,16 +86,29 @@ class NodeReportCadence:
 def silent_nodes(
     projection: NodeBiometricsProjectionV1,
     *,
-    now: datetime,
     cadence: NodeReportCadence,
     multiple: float = DEFAULT_MULTIPLE,
 ) -> frozenset[str]:
-    """Nodes whose last report is older than `multiple` x their own report interval.
+    """Nodes whose last report is more than `multiple` x their own report interval
+    behind the newest report in the projection.
 
     Their `pressure_hints` are the last values they sent, not readings of now. A node
     with no `last_seen_at` is skipped (it has never reported, so it has no hints).
+
+    Age is measured against the newest `last_seen_at` in the projection, not the wall
+    clock. After a worker restart or a stall the runtime replays a backlog, and every
+    node's report is minutes or hours old by the wall clock; against the clock, every
+    node would read silent and the error would be a false 0.0. Against the newest
+    report, a node is silent only relative to the nodes that are still reporting. For
+    the same reason the newest reporter itself can never be silent, so at least one
+    node always counts.
     """
-    clock = _aware(now)
+    seen = [
+        _aware(s.last_seen_at) for s in (projection.nodes or {}).values() if s.last_seen_at
+    ]
+    if not seen:
+        return frozenset()
+    newest = max(seen)
     fleet = cadence.fleet_cadence_sec()
     out: set[str] = set()
     for node_id, state in (projection.nodes or {}).items():
@@ -97,7 +117,7 @@ def silent_nodes(
         interval = cadence.cadence_sec(node_id) or fleet
         if not interval or interval <= 0:
             continue
-        age = (clock - _aware(state.last_seen_at)).total_seconds()
+        age = (newest - _aware(state.last_seen_at)).total_seconds()
         if age > multiple * interval:
             out.add(node_id)
     return frozenset(out)

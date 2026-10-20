@@ -94,14 +94,21 @@ def _stuck_pressure() -> ActiveNodePressureProjectionV1:
     )
 
 
-def _run_sweeps(catalog: NodeCatalog, ticks: int, **kwargs) -> tuple[ActiveNodePressureProjectionV1, list[int]]:
+def _run_sweeps(
+    catalog: NodeCatalog,
+    ticks: int,
+    *,
+    spacing_sec: float = 400,
+    start: ActiveNodePressureProjectionV1 | None = None,
+    **kwargs,
+) -> tuple[ActiveNodePressureProjectionV1, list[int]]:
     node_bio = _node_bio()
-    state = {"pressure": _stuck_pressure()}
+    state = {"pressure": start or _stuck_pressure()}
     selected_per_tick: list[int] = []
     for i in range(ticks):
         # 400 s apart: past the reducer's 300 s merge window, so no candidate is
         # held back by dedup and the loop shows up if it exists.
-        now = NOW + timedelta(seconds=400 * i)
+        now = NOW + timedelta(seconds=spacing_sec * i)
         targets = sweep_suppressible_nodes(
             node_bio=node_bio,
             active_pressure=state["pressure"],
@@ -138,6 +145,33 @@ def test_suppression_clears_every_pressure_and_the_sweep_goes_quiet(catalog: Nod
     # Self-terminating: selected once, then never again.
     assert selected[0] == 1
     assert sum(selected[1:]) == 0
+
+
+def test_live_hecate_shape_score_only_is_cleared(catalog: NodeCatalog) -> None:
+    """Review finding: live hecate (2026-10-20) was active [], suppressed
+    ["strain"], pressure_score 1.0. With empty lists the sweep never selected it,
+    so the score never cleared. The score now counts as something to clear."""
+    start = _stuck_pressure()
+    node = start.nodes["nyx"]
+    node.active_pressures = []
+    node.suppressed_pressures = ["strain"]
+    node.availability_status = "suppressed"
+    node.pressure_score = 1.0
+    pressure, selected = _run_sweeps(catalog, ticks=5, start=start)
+    assert pressure.nodes["nyx"].pressure_score == 0.0
+    assert selected[0] == 1 and sum(selected[1:]) == 0
+
+
+def test_settles_at_the_runtime_sweep_rate_through_the_merge_window(catalog: NodeCatalog) -> None:
+    """The runtime sweeps about every second. A recent strain acceptance holds the
+    suppression in the 300 s merge window; it must still land once it opens."""
+    start = _stuck_pressure()
+    start.nodes["nyx"].last_accepted_at = {"strain": NOW}
+    pressure, selected = _run_sweeps(catalog, ticks=330, spacing_sec=1, start=start)
+    node = pressure.nodes["nyx"]
+    assert node.active_pressures == []
+    assert node.pressure_score == 0.0
+    assert selected[-1] == 0
 
 
 def test_frozen_hints_do_not_re_add_strain_after_suppression(catalog: NodeCatalog) -> None:

@@ -84,12 +84,12 @@ def test_standby_node_is_silent_and_reporting_nodes_are_not() -> None:
         }
     )
     # hecate has no learned interval in this process: judged by the fleet's (31 s).
-    assert silent_nodes(proj, now=T0, cadence=cadence) == frozenset({"hecate"})
+    assert silent_nodes(proj, cadence=cadence) == frozenset({"hecate"})
 
 
 def test_nothing_learned_excludes_nothing() -> None:
     proj = _proj({"hecate": (HECATE_LAST_SEEN, HECATE_FROZEN)})
-    assert silent_nodes(proj, now=T0, cadence=NodeReportCadence()) == frozenset()
+    assert silent_nodes(proj, cadence=NodeReportCadence()) == frozenset()
 
 
 def test_threshold_is_relative_to_the_node_own_cadence() -> None:
@@ -99,8 +99,36 @@ def test_threshold_is_relative_to_the_node_own_cadence() -> None:
         cadence.observe(_proj({"slow": (T0 + timedelta(minutes=10 * i), {}),
                                "fast": (T0 + timedelta(seconds=31 * i), {})}))
     end = T0 + timedelta(minutes=50)
-    proj = _proj({"slow": (end - timedelta(minutes=30), {}), "fast": (end - timedelta(minutes=30), {})})
-    assert silent_nodes(proj, now=end, cadence=cadence) == frozenset({"fast"})
+    proj = _proj(
+        {
+            "slow": (end - timedelta(minutes=30), {}),
+            "fast": (end - timedelta(minutes=30), {}),
+            "ref": (end, {}),  # a node still reporting sets "now"
+        }
+    )
+    assert silent_nodes(proj, cadence=cadence) == frozenset({"fast"})
+
+
+def test_backlog_replay_does_not_silence_every_node() -> None:
+    """Review finding: after a restart the runtime replays a backlog, so every
+    node's report is an hour old by the wall clock. Age is measured against the
+    newest report, so the reporting nodes still count and hecate alone is out."""
+    cadence = _learned(["athena", "circe"])
+    hour_ago = T0 - timedelta(hours=1)
+    proj = _proj(
+        {
+            "athena": (hour_ago, {}),
+            "circe": (hour_ago - timedelta(seconds=20), {}),
+            "hecate": (HECATE_LAST_SEEN, HECATE_FROZEN),
+        }
+    )
+    assert silent_nodes(proj, cadence=cadence) == frozenset({"hecate"})
+
+
+def test_single_node_is_never_silent() -> None:
+    cadence = _learned(["athena"])
+    proj = _proj({"athena": (T0 - timedelta(days=2), {})})
+    assert silent_nodes(proj, cadence=cadence) == frozenset()
 
 
 def test_frozen_standby_keys_no_longer_dilute_the_mean() -> None:
@@ -129,7 +157,7 @@ def test_hecate_counts_normally_when_up() -> None:
     prev = _proj({"athena": (T0 - timedelta(seconds=31), {"strain": 0.2}),
                   "hecate": (T0 - timedelta(seconds=31), {"strain": 0.1})})
     curr = _proj({"athena": (T0, {"strain": 0.2}), "hecate": (T0, {"strain": 0.4})})
-    silent = silent_nodes(curr, now=T0, cadence=cadence)
+    silent = silent_nodes(curr, cadence=cadence)
     assert silent == frozenset()
     assert biometrics_prediction_error(prev, curr, exclude_nodes=silent) == pytest.approx(
         min(1.0, (0.3 / 2) / _THRESHOLD)

@@ -327,6 +327,7 @@ def _prediction_error_receipt(
     prediction_error: float,
     now: datetime,
     caused_by_event_ids: Sequence[str] = (),
+    definition_version: int | None = None,
 ) -> Any:
     from orion.schemas.prediction_error_definitions import prediction_error_definition_version
     from orion.schemas.reduction_receipt import ReductionReceiptV1
@@ -352,7 +353,11 @@ def _prediction_error_receipt(
                     # version moves and folds only matching receipts
                     # (orion/schemas/prediction_error_definitions.py). Kept out of
                     # pressure_hints so no digester channel is created for it.
-                    "definition_version": prediction_error_definition_version(reducer_key),
+                    "definition_version": (
+                        definition_version
+                        if definition_version is not None
+                        else prediction_error_definition_version(reducer_key)
+                    ),
                 },
                 caused_by_event_ids=list(
                     caused_by_event_ids[:_PREDICTION_ERROR_EVIDENCE_CAP]
@@ -526,6 +531,10 @@ class BiometricsSubstrateWorker:
     _substrate_graph_store_warm_lock = threading.Lock()
     _substrate_graph_store_warming = False
     _substrate_graph_store: Any = None
+    # Per-node biometrics report interval, learned in-process (report_cadence.py),
+    # and the last silent-node set logged. Instance attributes once assigned.
+    _report_cadence: Any = None
+    _last_silent_biometrics_nodes: frozenset = frozenset()
 
     def __init__(self) -> None:
         self._settings = get_settings()
@@ -1178,7 +1187,7 @@ class BiometricsSubstrateWorker:
         The interval tracker learns on every tick, even with the kill switch off.
         Logs only when the set changes.
         """
-        cadence = getattr(self, "_report_cadence", None)
+        cadence = self._report_cadence
         if cadence is None:
             cadence = NodeReportCadence()
             self._report_cadence = cadence
@@ -1187,11 +1196,10 @@ class BiometricsSubstrateWorker:
             return frozenset()
         silent = silent_nodes(
             projection,
-            now=now,
             cadence=cadence,
             multiple=self._settings.biometrics_silent_node_cadence_multiple,
         )
-        if silent != getattr(self, "_last_silent_biometrics_nodes", frozenset()):
+        if silent != self._last_silent_biometrics_nodes:
             logger.info(
                 "biometrics_silent_nodes excluded=%s fleet_cadence_sec=%s multiple=%s",
                 ",".join(sorted(silent)) or "-",
@@ -1365,6 +1373,11 @@ class BiometricsSubstrateWorker:
                     prediction_error=error,
                     now=now,
                     caused_by_event_ids=evidence_event_ids,
+                    # Kill switch off = the v1 formula ran, so stamp v1: the
+                    # attention baseline must not mix the two under one version.
+                    definition_version=(
+                        None if self._settings.biometrics_silent_node_exclusion else 1
+                    ),
                 )
             )
             # Write the node on every tick, not just when error > 0.0 -- the

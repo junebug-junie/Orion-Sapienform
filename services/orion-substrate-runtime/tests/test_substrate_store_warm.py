@@ -101,3 +101,31 @@ async def test_post_turn_closure_handler_runs_off_the_event_loop(monkeypatch):
     )
     await ptc.handle_post_turn_closure_message(closure, on_closure=on_closure)
     assert seen == [False]
+
+
+def test_loop_caller_returns_at_once_while_a_build_is_in_progress(monkeypatch):
+    """The build lock is held for the whole hydrate; the loop must never wait on it."""
+    release = threading.Event()
+
+    def blocked_build():
+        release.wait(5)
+        return object()
+
+    monkeypatch.setattr("orion.substrate.graphdb_store.build_substrate_store_from_env", blocked_build)
+    worker = _worker()
+    builder = threading.Thread(target=lambda: worker._get_substrate_graph_store(log_label="tick"))
+    builder.start()
+    time.sleep(0.1)  # the tick thread now holds the build lock
+
+    async def on_loop():
+        started = time.monotonic()
+        store = worker._get_substrate_graph_store(log_label="loop")
+        return store, time.monotonic() - started
+
+    try:
+        store, elapsed = asyncio.run(on_loop())
+    finally:
+        release.set()
+        builder.join(timeout=5)
+    assert store is None
+    assert elapsed < 0.1

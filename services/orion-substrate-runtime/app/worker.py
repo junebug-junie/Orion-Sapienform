@@ -517,8 +517,11 @@ class BiometricsSubstrateWorker:
     # A Falkor store hydrates the whole graph in its constructor. Before 2026-10-20
     # six tick threads raced past the None check at boot and each hydrated its own
     # copy, while a loop-thread caller built one inline and froze the event loop
-    # ~3 min. Class-level: one worker per process, and tests build via __new__.
+    # ~3 min. The build lock is held for the whole hydrate, so the event loop
+    # never waits on it; the warm lock only guards the warming flag. Class-level
+    # defaults so workers built via __new__ (tests) have them; one worker per process.
     _substrate_graph_store_lock = threading.Lock()
+    _substrate_graph_store_warm_lock = threading.Lock()
     _substrate_graph_store_warming = False
     _substrate_graph_store: Any = None
 
@@ -1383,7 +1386,7 @@ class BiometricsSubstrateWorker:
 
     def _start_substrate_graph_store_warm(self) -> None:
         """Build the shared store in a daemon thread, once; never blocks the caller."""
-        with self._substrate_graph_store_lock:
+        with self._substrate_graph_store_warm_lock:
             if self._substrate_graph_store is not None or self._substrate_graph_store_warming:
                 return
             self._substrate_graph_store_warming = True
@@ -1392,7 +1395,8 @@ class BiometricsSubstrateWorker:
             try:
                 self._get_substrate_graph_store(log_label="substrate_store_warm_failed")
             finally:
-                self._substrate_graph_store_warming = False
+                with self._substrate_graph_store_warm_lock:
+                    self._substrate_graph_store_warming = False
 
         threading.Thread(target=_warm, name="substrate-store-warm", daemon=True).start()
 

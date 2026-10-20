@@ -308,12 +308,47 @@ def test_bus_transport_grant_listener_resubscribes_after_a_drop():
     t._bus = _Bus()
 
     async def go():
+        import time as _time
+
+        since = _time.time()
         t._listener = asyncio.create_task(t._listen())
         try:
-            await asyncio.wait_for(t._subscribed(), timeout=5)
+            await asyncio.wait_for(t._subscribed(since), timeout=5)
             return await t.wait_granted("L1", timeout_sec=10)
         finally:
             t._listener.cancel()
 
     assert asyncio.run(go()) == {"url": "http://c:8015"}
     assert len(calls) == 2
+
+
+def test_bus_transport_enter_timeout_stops_the_listener_and_closes_the_bus(monkeypatch):
+    """The listener retries forever, so a failed __aenter__ must cancel it, not leave it behind."""
+    import orion.core.bus.async_service as async_service
+    from orion.evals.model_replay.pool_hold import BusControlTransport
+
+    closed = []
+
+    class _DownBus:
+        def __init__(self, url):
+            pass
+
+        async def connect(self):
+            return None
+
+        async def close(self):
+            closed.append(True)
+
+        def subscribe(self, *channels):
+            raise ConnectionError("bus down")
+
+    monkeypatch.setattr(async_service, "OrionBusAsync", _DownBus)
+    t = BusControlTransport("redis://unused", timeout_sec=0.2)
+
+    async def go():
+        with pytest.raises(asyncio.TimeoutError):
+            await t.__aenter__()
+        return t._listener.done()
+
+    assert asyncio.run(go()) is True
+    assert closed == [True]

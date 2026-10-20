@@ -37,6 +37,7 @@ import asyncio
 import json
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Protocol
@@ -348,13 +349,20 @@ class BusControlTransport:
 
         self._bus = OrionBusAsync(url=self.bus_url)
         await self._bus.connect()
+        opened_at = time.time()
         self._listener = asyncio.create_task(self._listen())
-        await asyncio.wait_for(self._subscribed(), timeout=self.timeout_sec)
+        try:
+            await asyncio.wait_for(self._subscribed(opened_at), timeout=self.timeout_sec)
+        except BaseException:
+            await self.__aexit__()  # the listener retries forever; do not leave it behind
+            raise
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
         if self._listener:
             self._listener.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._listener
         await self._bus.close()
 
     @property
@@ -371,11 +379,13 @@ class BusControlTransport:
                                stop_event=None, name=_POOL_EVENTS_LISTENER)
 
     @staticmethod
-    async def _subscribed() -> None:
-        """Holds go out only once the grant listener is subscribed, so no grant is missed."""
+    async def _subscribed(since: float) -> None:
+        """Holds go out only once the grant listener is subscribed, so no grant is missed.
+        ``since`` skips a row left by an earlier transport in this process."""
         from orion.core.bus.resilience import subscription_health
 
         while not any(r["name"] == _POOL_EVENTS_LISTENER and r["subscribed"]
+                      and (r["last_subscribed_at"] or 0) >= since
                       for r in subscription_health()["listeners"]):
             await asyncio.sleep(0.02)
 

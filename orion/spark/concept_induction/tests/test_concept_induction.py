@@ -723,6 +723,8 @@ class ConceptInductionTests(unittest.TestCase):
 
         async def _handle(envelope, channel):
             handled.append(channel)
+            if len(handled) == 1:
+                raise ValueError("bad envelope")  # must be counted, not end intake
 
         worker.handle_envelope = _handle
         worker.bus = FakeStreamingBus(sessions=[
@@ -739,6 +741,8 @@ class ConceptInductionTests(unittest.TestCase):
         self.assertEqual(status["bus_subscription_failures_total"], 1)
         self.assertIn("ConnectionError", status["worker_last_exception"])
         self.assertEqual(status["stop_reason"], "stopped")
+        self.assertEqual(status["total_events_failed"], 1)
+        self.assertIn("bad envelope", status["last_handler_exception"])
 
     def test_worker_done_callback_captures_exception(self):
         worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))

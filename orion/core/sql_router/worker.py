@@ -6,7 +6,7 @@ import traceback
 from sqlalchemy.orm import Session
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.resilience import run_subscription
+from orion.core.bus.resilience import publish_with_reconnect, run_subscription
 from orion.core.sql_router.db import SessionLocal
 
 def default_writer(model_class, payload: dict, db: Session):
@@ -22,7 +22,7 @@ def start_worker_thread(
     writer_func=default_writer,
     publish_channel=None,
 ):
-    bus = OrionBusAsync(bus_url)
+    bus = None  # built inside the worker thread's own event loop
 
     async def handle(msg: dict) -> None:
         try:
@@ -35,12 +35,14 @@ def start_worker_thread(
                 row = writer_func(model_class, data, db)
                 print(f"✅ Inserted row: {getattr(row, 'id', '[no id]')}")
             if publish_channel:
-                await bus.publish(publish_channel, data)
+                await publish_with_reconnect(bus, publish_channel, data, log_label="sql_router_publish")
         except Exception as e:
             print(f"❌ Error in worker: {e}")
             traceback.print_exc()
 
     async def worker_async() -> None:
+        nonlocal bus
+        bus = OrionBusAsync(bus_url)
         await bus.connect()
         print(f"📡 Subscribed to {channel} (model={model_class.__name__})")
         try:

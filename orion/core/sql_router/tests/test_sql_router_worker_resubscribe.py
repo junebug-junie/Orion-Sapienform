@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import threading
 
+from orion.core.bus import resilience
 from orion.core.sql_router import worker as worker_mod
 
 
@@ -74,12 +76,9 @@ def test_worker_resubscribes_after_the_subscription_drops(monkeypatch) -> None:
         rows.append(payload)
         return None
 
-    real_sleep = asyncio.sleep
-
-    async def fast_sleep(delay, *a, **k):  # keep the 1 s backoff out of the test
-        return await real_sleep(min(delay, 0.01), *a, **k)
-
-    monkeypatch.setattr(worker_mod.asyncio, "sleep", fast_sleep)
+    # Keep the 1 s backoff out of the test. The daemon thread idles on its last session after.
+    monkeypatch.setattr(worker_mod, "run_subscription",
+                        functools.partial(resilience.run_subscription, max_backoff_sec=0.01))
     worker_mod.start_worker_thread("redis://unused", "orion:test:rows", _Model, writer_func=writer,
                                    publish_channel="orion:test:out")
     assert bus.two_published.wait(timeout=10)

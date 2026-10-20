@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -75,6 +76,8 @@ class WorkerLivenessState:
     total_events_seen: int = 0
     total_events_accepted: int = 0
     total_events_rejected: int = 0
+    total_events_failed: int = 0
+    last_handler_exception: str | None = None
     stop_reason: str | None = None
 
 
@@ -145,6 +148,7 @@ class ConceptWorker:
         self.trigger_decisions: List[dict] = []
         self._stopped = False
         self._stop_event = asyncio.Event()
+        self._stop_requested_at: float | None = None
         self._intake_listening = False
         self._liveness = WorkerLivenessState(
             worker_initialized=True,
@@ -1081,7 +1085,13 @@ class ConceptWorker:
             status["bus_consumer_started"] = row["last_subscribed_at"] is not None
             status["bus_subscribed"] = row["subscribed"]
             status["bus_subscription_failures_total"] = row["failures_total"]
-            if status["worker_last_exception"] is None and row["last_failure"]:
+            # A failure after stop() began closing the bus is shutdown noise, not a fault.
+            stopped_at = self._stop_requested_at
+            if (
+                status["worker_last_exception"] is None
+                and row["last_failure"]
+                and (stopped_at is None or row["last_failure_at"] < stopped_at)
+            ):
                 status["worker_last_exception"] = row["last_failure"]
         return status
 
@@ -1209,9 +1219,16 @@ class ConceptWorker:
             decoded.envelope.kind,
         )
         self._liveness.total_events_accepted += 1
-        await self.handle_envelope(decoded.envelope, str(channel or "unknown"))
+        try:
+            await self.handle_envelope(decoded.envelope, str(channel or "unknown"))
+        except Exception as exc:  # noqa: BLE001 - one bad envelope must not end intake
+            self._liveness.total_events_failed += 1
+            self._liveness.last_handler_exception = repr(exc)
+            logger.exception("concept_induction_worker_handle_failed channel=%s error=%s", channel, exc)
 
     async def stop(self) -> None:
+        if self._stop_requested_at is None:
+            self._stop_requested_at = time.time()
         self._stop_event.set()
         if self._stopped:
             return

@@ -3279,6 +3279,24 @@
             </div>
             <div id="cabinetStatus" class="text-xs text-gray-400 min-h-[1.25rem]">Open this subview to start polling.</div>
             <div id="cabinetSources" class="text-xs text-gray-400 min-h-[1rem]"></div>
+            <div id="cabinetSonification" class="rounded-xl border border-gray-700 bg-gray-950/40 p-4 text-sm text-gray-200">
+              <h3 class="font-semibold">Listen to the cabinet</h3>
+              <p class="text-xs text-gray-400">Magnetic field → pitch · distance → pulse rate · sampled movement → percussion. Start at low volume; headphones recommended. Speaker sound can influence cabinet observations. Stop manually during TTS.</p>
+              <p class="text-xs text-amber-300">LiDAR and vibration voices await controlled movement calibration and remain disabled. History playback is not included.</p>
+              <div class="flex flex-wrap gap-3 my-3">
+                <button type="button" id="cabinetSoundListen" class="border rounded px-3 py-1">Listen</button>
+                <button type="button" id="cabinetSoundStop" class="border rounded px-3 py-1">Stop</button>
+                <button type="button" id="cabinetSoundRecord" class="border rounded px-3 py-1">Record local trace</button>
+                <button type="button" id="cabinetSoundDownload" class="border rounded px-3 py-1">Download trace</button>
+              </div>
+              <div class="flex flex-wrap gap-4 my-2">
+                <span><label><input type="checkbox" data-sound-mute="magnetic"> Mute magnetic</label> <button type="button" class="border rounded px-2" data-sound-solo="magnetic" aria-pressed="false">Solo magnetic</button></span>
+                <span><label><input type="checkbox" data-sound-mute="lidar"> Mute lidar</label> <button type="button" class="border rounded px-2" data-sound-solo="lidar" aria-pressed="false">Solo lidar</button></span>
+                <span><label><input type="checkbox" data-sound-mute="vibration"> Mute vibration</label> <button type="button" class="border rounded px-2" data-sound-solo="vibration" aria-pressed="false">Solo vibration</button></span>
+              </div>
+              <div id="cabinetSoundStatus" role="status">Stopped</div>
+              <details><summary>Source readings and sound targets</summary><pre id="cabinetSoundDebug" class="text-xs overflow-auto max-h-96"></pre></details>
+            </div>
             <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-col gap-4">
               <div class="flex flex-wrap items-start justify-between gap-3">
                 <div>
@@ -4445,6 +4463,7 @@
   <script src="/static/js/exo-exploration.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cocreation-signals.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/field-attention.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/cabinet-sonification.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cabinet-sensors.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/energy-strip.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/biometrics-view.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>

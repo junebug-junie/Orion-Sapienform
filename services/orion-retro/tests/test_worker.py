@@ -5,7 +5,7 @@ from app import worker
 from settings import Settings
 
 
-def exercise(monkeypatch,tmp_path,scenario, *, crash=False, quota=268435456, initial=True, loops=20, tick=None):
+def exercise(monkeypatch,tmp_path,scenario, *, crash=False, quota=268435456, initial=True, loops=20, tick=None, cognition=False):
     commands=queue.Queue(); urgent=queue.Queue(); result=[]; steps=[]
     clock=SimpleNamespace(now=0., loops=0)
     class Stop:
@@ -30,7 +30,7 @@ def exercise(monkeypatch,tmp_path,scenario, *, crash=False, quota=268435456, ini
     if initial:
         enqueue('control','grant1','one',dict(port=0,action='acquire'))
         enqueue('control','grant2','two',dict(port=1,action='acquire'))
-    worker.run(commands,urgent,Replies(),Stop(),Settings(artifacts=tmp_path,session_bytes=quota),
+    worker.run(commands,urgent,Replies(),Stop(),Settings(artifacts=tmp_path,session_bytes=quota,cognition_enabled=cognition),
                {'path':tmp_path/'unused.nes','ports':[0,1],'game_id':'test'},'session','generation')
     return result,steps
 
@@ -130,3 +130,55 @@ def test_explicit_pause_on_an_auto_paused_game_sticks(monkeypatch,tmp_path):
             send('input','late','two',dict(port=1,lease=g['lease'],epoch=g['epoch'],seq=1,mask=0))
     rows,_=exercise(monkeypatch,tmp_path,scenario)
     assert next(r for r in rows if r.get('id')=='late')['error']=='session_paused:pause'
+
+
+def test_scripted_actions_are_attributed_and_disconnect_stops_them(monkeypatch,tmp_path):
+    def scenario(row,send):
+        if row.get('id')=='grant2':
+            send('scripted','script','one',dict(port=0,action='start',duration_seconds=5,expected_epoch=1))
+            send('disconnect','other','two')
+        elif row['kind']=='applied':
+            send('disconnect','sponsor','one')
+    rows,steps=exercise(monkeypatch,tmp_path,scenario)
+    applied=[r for r in rows if r['kind']=='applied']
+    assert applied and all(r['policy_id']=='scripted-right-jump-v1' for r in applied)
+    assert any(m[0]==384 for m in steps)
+    assert steps[-1]==(0,0)
+    assert any(r['kind']=='status' and r['state']=='paused' and r['scripted']==[] for r in rows)
+
+
+def test_pause_resume_does_not_restart_script(monkeypatch,tmp_path):
+    def scenario(row,send):
+        if row.get('id')=='grant2':
+            send('scripted','script','one',dict(port=0,action='start',duration_seconds=5,expected_epoch=1))
+        elif row['kind']=='applied':
+            send('pause','hold')
+        elif row.get('id')=='hold':
+            send('resume','again')
+    rows,steps=exercise(monkeypatch,tmp_path,scenario)
+    after=next(i for i,r in enumerate(rows) if r.get('id')=='again')
+    assert not any(r['kind']=='applied' for r in rows[after:])
+    assert steps[-1]==(0,0)
+
+
+def test_native_goal_ack_precedes_attributed_applied_input(monkeypatch, tmp_path):
+    sent = set()
+    def scenario(row, send):
+        if row.get('id') == 'grant1':
+            send('scripted', 'handoff', 'one', dict(port=0, action='start', duration_seconds=60,
+                 expected_epoch=row['result']['epoch'], cognition=True))
+        if row['kind'] == 'status' and row.get('scripted') and 'goal' not in sent:
+            policy = row['scripted'][0]
+            attempt = policy['cognition']['attempt']
+            if attempt:
+                sent.add('goal')
+                send('goal', 'goal', 'one', dict(port=0, expected_epoch=policy['epoch'],
+                     attempt_id=attempt['attempt_id'], goal='jump_right',
+                     rationale='test fixture', planner_id='test'))
+    rows, steps = exercise(monkeypatch, tmp_path, scenario, cognition=True, loops=50)
+    ack = next(i for i, r in enumerate(rows) if r.get('id') == 'goal')
+    assert 'result' in rows[ack]
+    applied = [r for r in rows[ack+1:] if r['kind'] == 'applied' and r.get('goal_attempt_id')]
+    assert applied and any(r['mask'] & 128 for r in applied)
+    assert all(r['policy_id'] == 'goal-motor-v1' for r in applied)
+    assert not any(r['kind'] == 'fatal' for r in rows)

@@ -29,6 +29,9 @@ def equilibrium_status_for_service(
         return False, None
     if svc.status == "down":
         return True, "down"
+    # down_for_ms is heartbeat lateness, 0 while heartbeats arrive. Heartbeats say
+    # "degraded" while a bus listener is down, and that must not restart anything
+    # (test_fresh_degraded_heartbeat_never_triggers_remediation).
     if svc.status == "degraded" and svc.down_for_ms > grace_sec * 1000:
         return True, "degraded_beyond_grace"
     return False, None

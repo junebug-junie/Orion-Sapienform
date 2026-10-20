@@ -12,6 +12,7 @@
   // asking for Connect / resume. intent changes on every New/Pause/Stop/connect, so
   // an older connect or pending heal can never override a newer choice.
   let wanted = false, away = false, connecting = 0, intent = 0, healPending = false, heals = 0, healWindow = 0;
+  let scriptedMode = false, cognitivePort = null, planning = false, plannedAttempt = null;
   function heal() {
     if (!wanted || away || !sid || connecting || lease || healPending || document.hidden || !document.hasFocus()) return;
     const now = performance.now(); if (now-healWindow > 10000) { heals = 0; healWindow = now; }
@@ -25,6 +26,7 @@
   // session_paused:<why> comes from the worker; only an explicit pause is honored.
   const SERVER_PAUSE = new Set(['control_revoked', 'session_paused:pause', 'session_not_running', 'stopped', 'session_stopped']);
   function lost(reason) {
+    if(scriptedMode){report('Scripted controller handed off. Use Take this controller to return.');return;}
     if (SERVER_PAUSE.has(reason)) { wanted = false; report('Paused. Click the game to keep playing.'); return; }
     report('Reconnecting…'); heal();
   }
@@ -38,6 +40,7 @@
     gain.gain.value=el('mute').checked?0:1; await audio.resume();
   }
   function closeConnections() {
+    scriptedMode=false;cognitivePort=null;
     transportEpoch++; clearInterval(timer); keys.clear(); lease=null; outstanding.clear();
     if (input) { input.onclose=null; input.close(); } if (media) { media.onclose=null; media.close(); }
     input=null;media=null; pendingPacket=null; flushAudio();
@@ -68,10 +71,12 @@
     const result=await api(`sessions/${sid}/control`,{connection_id:connection,port:Number(el('port').value),action});
     if(epoch!==transportEpoch || document.hidden)return;
     lease=result;
+    scriptedMode=false;cognitivePort=null;
     seq=0; outstanding.clear();clearInterval(timer);timer=setInterval(send,50);send();screen.focus();
   }
   const wsURL = path => `${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/retro/${path}`;
   async function connect() {
+    scriptedMode=false;cognitivePort=null;
     const mine = ++intent; connecting = mine; away = false;
     try { await connectNow(); if (mine === intent) wanted = true; }
     finally { if (connecting === mine) connecting = 0; }
@@ -164,7 +169,55 @@
   action('join',connect);
   action('pause',async()=>{++intent;wanted=false;try{if(sid)await api(`sessions/${sid}/pause`,{});}finally{neutral();}report('Paused. Click the game to keep playing.');});
   action('stop',async()=>{++intent;wanted=false;try{if(sid)await api(`sessions/${sid}/stop`,{});}finally{neutral();}sid=null;report('Game stopped.');});
-  action('takeover',()=>grant('takeover'));
+  action('takeover',async()=>{
+    if(input?.readyState!==WebSocket.OPEN){await connect();return;}
+    const epoch=transportEpoch;await api(`sessions/${sid}/resume`,{});
+    if(epoch!==transportEpoch || document.hidden)return;
+    await grant('takeover');wanted=true;report('Playing.');
+  });
+  async function handoff(cognition=false){
+    if(!lease || input?.readyState!==WebSocket.OPEN)throw Error('Connect to this player before handing it to the script.');
+    const port=lease.port, expected_epoch=lease.epoch, epoch=transportEpoch;
+    ++intent;wanted=false;scriptedMode=true;lease=null;keys.clear();outstanding.clear();clearInterval(timer);
+    try{
+      await api(`sessions/${sid}/scripted`,{connection_id:connection,generation,port,expected_epoch,action:'start',duration_seconds:60,cognition});
+    }catch(err){scriptedMode=false;cognitivePort=null;throw Error(`Handoff failed: ${err.message}. Use Take this controller to return.`);}
+    if(epoch!==transportEpoch)return;
+    cognitivePort=cognition?port:null;plannedAttempt=null;
+    report(cognition?'Orion goal experiment — 60 seconds. Take this controller to interrupt.':'Scripted right/jump baseline — 60 seconds. Take this controller to interrupt.');
+    await showPolicy();
+  }
+  action('scripted',()=>handoff());
+  action('cognitive',()=>handoff(true));
+  async function showPolicy(){
+    if(!sid)return;
+    const current=sid, state=await api(`sessions/${sid}`);
+    if(current!==sid)return;
+    if(state.state==='paused' && !(state.scripted||[]).length){scriptedMode=false;cognitivePort=null;}
+    el('policy').textContent=(state.scripted||[]).length
+      ? state.scripted.map(p=>`Player ${p.port+1}: ${p.policy_id} (${p.cognition?'goal experiment':'scripted'}, ${p.duration_seconds}s limit)`).join(' · ')
+      : 'No scripted controller active.';
+    const policy=(state.scripted||[]).find(p=>p.port===cognitivePort && p.cognition);
+    if(!policy)return;
+    const facts=policy.cognition, attempt=facts.attempt;
+    el('goal').textContent=`${facts.goal?.goal||'wait'}: ${facts.goal?.rationale||'Waiting for an observed attempt.'} Outcome: ${attempt?.outcome||'unknown'}`;
+    if(!attempt || planning || plannedAttempt===attempt.attempt_id)return;
+    planning=true;plannedAttempt=attempt.attempt_id;
+    // Planner requests never block input/media or the native frame loop.
+    const epoch=transportEpoch, currentConnection=connection;
+    void api(`sessions/${current}/plan`,{connection_id:connection,generation,
+      port:policy.port,expected_epoch:policy.epoch}).then(result=>{
+        if(epoch===transportEpoch && connection===currentConnection && cognitivePort!==null)
+          el('goal').textContent=`${result.goal}: ${result.rationale}`;
+      }).catch(err=>{
+        if(epoch===transportEpoch)el('goal').textContent=`Planner unavailable: ${err.message}. Motor returns to wait; takeover remains available.`;
+      }).finally(()=>{planning=false;});
+  }
+  // Read-only ownership display also tells a second window which port is scripted.
+  let pollingPolicy=false;
+  setInterval(async()=>{if(document.hidden || pollingPolicy)return;pollingPolicy=true;
+    try{await showPolicy();}catch(_){el('policy').textContent='Controller status unavailable.';}
+    finally{pollingPolicy=false;}},1000);
   action('start',async()=>{screen.focus();keys.add('Enter');send();setTimeout(()=>keys.delete('Enter'),150);});
   el('mute').onchange=()=>{if(gain)gain.gain.value=el('mute').checked?0:1;};
   el('port').onchange=neutral;
@@ -173,6 +226,6 @@
   window.addEventListener('blur',()=>{away=true;neutral();});window.addEventListener('pagehide',neutral);window.addEventListener('gamepaddisconnected',neutral);
   document.addEventListener('visibilitychange',()=>{if(document.hidden){away=true;neutral();}else{away=false;heal();}});
   window.addEventListener('focus',()=>{away=false;heal();});
-  screen.addEventListener('pointerdown',()=>{away=false;if(sid)wanted=true;heals=0;heal();});
+  screen.addEventListener('pointerdown',()=>{away=false;if(scriptedMode)return;if(sid)wanted=true;heals=0;heal();});
   void load().catch(err=>{el('player').hidden=false;report(err.message);});
 })();

@@ -109,7 +109,7 @@ def test_gate_uses_the_better_baseline_per_horizon_and_falls_back():
 
 
 def test_a_lower_average_that_is_noise_is_not_served_but_a_real_win_is():
-    sp = spec(horizons=["5min"])
+    sp = spec(horizons=["5min"], thresholds=[])
     h = sp.max_horizon_steps
     rng = np.random.default_rng(6)
     naive = rng.normal(0, 1.0, (40, h))
@@ -141,7 +141,7 @@ def test_real_backtest_loop_on_synthetic_daily_series_prefers_seasonal_structure
 
 def test_gate_is_paired_a_model_that_fails_the_hard_windows_cannot_win():
     # Review repro: candidate is 1.5x worse than naive on shared windows but NaN on the hard ones.
-    sp = spec(horizons=["5min"])
+    sp = spec(horizons=["5min"], thresholds=[])
     h = sp.max_horizon_steps
     rng = np.random.default_rng(11)
     naive = rng.normal(0, 0.1, (30, h))
@@ -156,7 +156,7 @@ def test_gate_is_paired_a_model_that_fails_the_hard_windows_cannot_win():
 
 
 def test_gate_refuses_a_good_model_that_skipped_too_many_windows():
-    sp = spec(horizons=["5min"])
+    sp = spec(horizons=["5min"], thresholds=[])
     h = sp.max_horizon_steps
     naive = np.random.default_rng(12).normal(0, 1.0, (40, h))
     cand = naive * 0.5
@@ -167,7 +167,7 @@ def test_gate_refuses_a_good_model_that_skipped_too_many_windows():
 
 
 def test_backtest_decides_seasonalities_per_window_and_scores_against_real_actuals():
-    sp = spec(horizons=["5min"], train_window="10d", seasonalities=[{"name": "weekly", "period": "7d"}])
+    sp = spec(horizons=["5min"], train_window="10d", seasonalities=[{"name": "weekly", "period": "7d"}], thresholds=[])
     s = daily_series(17, seed=13)
     seen = []
 

@@ -12,6 +12,45 @@ import zlib
 from orion.retro.probe import CoreProbe
 
 
+class MediaSlot:
+    """One bounded packet, with no pipe or blocking receive after worker death.
+
+    A process killed while owning the lock abandons this session's slot. Both
+    sides try the lock without waiting; the API can still detect/stop the child.
+    A new session gets a new slot/lock. Never repair or reuse an abandoned lock.
+    """
+    CAPACITY = 512 * 512 * 4 + 65536 + 4096
+
+    def __init__(self, context):
+        self.buffer = context.RawArray('B', self.CAPACITY)
+        self.size = context.RawValue('I', 0)
+        self.lock = context.Lock()
+
+    def put_nowait(self, packet):
+        if len(packet) > self.CAPACITY or not self.lock.acquire(False):
+            raise queue.Full
+        try:
+            if self.size.value:
+                raise queue.Full
+            memoryview(self.buffer).cast('B')[:len(packet)] = packet
+            self.size.value = len(packet)
+        finally:
+            self.lock.release()
+
+    def get_nowait(self):
+        if not self.lock.acquire(False):
+            raise queue.Empty
+        try:
+            size = self.size.value
+            if not size:
+                raise queue.Empty
+            packet = bytes(memoryview(self.buffer).cast('B')[:size])
+            self.size.value = 0
+            return packet
+        finally:
+            self.lock.release()
+
+
 class MediaProbe(CoreProbe):
     def __init__(self, *args):
         self.video = b''; self.pcm = bytearray(); self.geometry = (0, 0)

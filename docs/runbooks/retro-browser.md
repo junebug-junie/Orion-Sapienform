@@ -4,9 +4,30 @@ Hub `/retro` provides keyboard/gamepad play without an additional access code. T
 core remains in the isolated Retro container. No ROM or core runs in the browser.
 No images, audio or inputs enter memory, chat or cognition. No save/load API exists.
 
+## Scripted baseline
+
+After starting the game and connecting a controller, open More and choose
+**Run scripted baseline · 60s**. It transfers only your current port to the
+visibly labeled `scripted-right-jump-v1` baseline. It repeats right/jump;
+it does not perceive, learn, or demonstrate Orion's game competence.
+**Take this controller** interrupts it with the existing neutral-frame handoff.
+Pause, leaving/closing the sponsoring browser, a missed policy deadline, or the
+60-second budget stops it. Resume returns human control, never restarts the script.
+Status lists active scripted ports; the evidence journal attributes applied
+actions by policy ID and epoch. No cognition or memory writes occur.
+
+The owner-scoped service API also accepts a 5–1800 second budget. Start requires
+the live input connection, generation, port, and `expected_epoch` of the human
+lease being transferred. Stop names the current script epoch. Neither operation
+implicitly starts or resumes a game. There is no arbitrary-code upload.
+See [remaining original-spec gates](../superpowers/specs/2026-10-20-retro-continuation-status.md).
+
 ## Setup
 
-From clean primary main after merge, sync templates and prepare private credentials:
+For a new installation, from clean primary main after merge, sync templates and
+prepare private credentials. **Do not rerun `install_catalog.py` on an existing
+custom catalog:** it reconstructs the kit catalog and can remove imported entries.
+An existing installation should preserve its catalog and credentials.
 
 ```sh
 python3 scripts/sync_local_env_from_example.py
@@ -58,8 +79,10 @@ claim of equivalent WAN latency or congestion handling to WebRTC.
 
 The native child copies video before the callback expires, strips row padding,
 and copies stereo s16le PCM. Media is transient. Every two emulated frames it
-tries a bounded two-item media queue; full queues drop packets without blocking
+tries a fixed-size single-packet shared slot; a busy/full slot drops packets without blocking
 the controller loop. A separate API task compresses packets off the event loop.
+Slot locks are acquired without waiting. If a worker dies mid-copy, the API
+discards the abandoned slot with that session rather than blocking on a partial pipe packet.
 Only the latest compressed packet is retained. At most two viewers exist; sends
 have a 250 ms deadline. Paused disconnects release viewer slots.
 
@@ -243,3 +266,17 @@ still loading (~0.48 s measured). Nova then failed at frame 0 with
 `worker_unavailable`. With the wait, all 6 catalog games pass `retro_play.mjs`
 (4/4 Start taps, no drops). Regression:
 `test_command_waits_for_a_starting_worker_instead_of_failing_the_session`.
+
+
+### Optional goal experiment
+
+`Try Orion goals · 60s` requires default-off `RETRO_COGNITION_ENABLED` (Retro)
+and `HUB_RETRO_COGNITION_ENABLED` (Hub/relay). It hands off only the currently
+owned port. The UI displays goal/rationale/outcome; `Take this controller`,
+Pause, blur and disconnect retain priority. Five-second motor goals expire to
+wait if background planning is unavailable. The gateway uses GPU-pool background
+admission; thermal refusal is not an emulator failure and must not be bypassed.
+
+See the [goal-loop implementation record](../superpowers/specs/2026-10-20-retro-goal-loop-implementation.md)
+for the fingerprinted Nova observation scope, unknown cases, local evidence,
+and the real-planner acceptance gate. No deployment or game restart is implied.

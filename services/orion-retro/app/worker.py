@@ -7,6 +7,8 @@ from orion.retro.probe import CoreProbe
 from .media import MediaProbe
 from .control import Arbiter
 from .evidence import Evidence
+from .scripted import Scripted
+from .observation import Observer, outcome
 
 
 def run(commands, urgent, replies, stop, settings, game, session, generation, media=None):
@@ -20,6 +22,8 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
         authority = Arbiter(game['ports'])
         def record(kind, **fields):
             evidence.write(dict(kind=kind, session_id=session, generation=generation, frame=frame, **fields))
+        scripted = Scripted(authority, record)
+        observer = Observer(core)
         sources = sorted(Path(__file__).parent.glob('*.py')) + [Path(__file__).parents[1]/'settings.py']
         runtime_sha = hashlib.sha256(b''.join(p.name.encode()+b'\0'+p.read_bytes() for p in sources)).hexdigest()
         record('start', game_id=game['game_id'], identity=core.identity, runtime_sha256=runtime_sha)
@@ -61,14 +65,36 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
                         if data['port'] in pending:
                             send(dict(kind='reply', id=pending.pop(data['port']), error='lease_replaced'))
                         record('control', port=data['port'], action=data['action'])
+                        scripted.tick(time.monotonic())
+                    elif op == 'scripted':
+                        if state != 'running': raise ValueError(not_running())
+                        port = data['port']
+                        if data['action'] == 'start':
+                            if data.get('cognition') and not settings.cognition_enabled:
+                                raise ValueError('retro_cognition_disabled')
+                            scripted.start(cmd['connection'], port, data['duration_seconds'],
+                                           time.monotonic(), frame, data['expected_epoch'], data.get('cognition', False))
+                            reject_pending('control_revoked', [port])
+                        else:
+                            active = scripted.active.get(port)
+                            if active and active['grant']['epoch'] != data['expected_epoch']:
+                                raise ValueError('stale_script_epoch')
+                            scripted.stop(port, 'operator_stop')
+                        result = {'scripted': scripted.public()}
+                    elif op == 'goal':
+                        if state != 'running': raise ValueError(not_running())
+                        result = scripted.goal(cmd['connection'], data, time.monotonic())
                     elif op in ('pause', 'resume', 'disconnect'):
                         if op == 'disconnect':
+                            scripted.cancel('sponsor_disconnected', cmd['connection'])
                             released = authority.disconnect(cmd['connection'])
                             reject_pending('control_revoked', released)
                             if released and not authority.leases: state = 'paused'; paused_by = 'disconnect'
                         elif op == 'pause' and state == 'paused':
+                            scripted.cancel('pause')
                             paused_by = 'pause'  # an explicit Pause makes an auto-pause stick
                         elif (op == 'pause' and state != 'paused') or (op == 'resume' and state != 'running'):
+                            scripted.cancel(op)
                             authority.clear()
                             reject_pending('control_revoked')
                             state = 'paused' if op == 'pause' else 'running'; paused_by = op
@@ -86,15 +112,36 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
                 except ValueError as exc:
                     send(dict(kind='reply', id=request, error=str(exc)))
             if state == 'running':
+                scripted.tick(time.monotonic())
                 masks, applied, neutral = authority.frame(time.monotonic())
+                for event in applied:
+                    policy = scripted.active.get(event['port'])
+                    goals = policy['goals'] if policy else None
+                    if (goals and goals.accepted_current() and event['seq'] == policy['seq']
+                            and policy['goal_attempt_id'] == goals.accepted['attempt_id']):
+                        goals.applied_start(frame+1, observer.read())
                 core.step(*masks); frame += 1
+                for port, policy in scripted.active.items():
+                    goals = policy['goals']
+                    if not goals: continue
+                    now = time.monotonic()
+                    if goals.ready_for_observation(now):
+                        observation = observer.read()
+                        previous = goals.start_observation if goals.accepted_current() else {}
+                        goal = goals.accepted['goal'] if goals.accepted_current() else 'wait'
+                        verdict = outcome(previous or {}, observation, goal)
+                        goals.offer(port, policy['grant']['epoch'], frame, observation, now, verdict)
+
                 if media is not None: core.publish(media, frame)
                 if neutral: record('neutral', ports=neutral)
                 if not authority.leases and (neutral or time.monotonic() >= acquire_deadline):
                     state = 'paused'; paused_by = 'no_controller'
                     record('transition', state=state, reason='no_controller')
                 for event in applied:
+                    scripted.annotate(event)
                     record('applied', **event)
+                    if 'policy_id' in event:
+                        send(dict(kind='applied', **event, frame=frame))
                     request = pending.pop(event['port'], None)
                     if request: send(dict(kind='reply', id=request, result=dict(event, frame=frame)))
                 for port in list(pending):
@@ -106,6 +153,7 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
                 misses = misses+1 if late else 0
                 if late: deadline = now  # never execute catch-up bursts
                 if misses >= 3:
+                    scripted.cancel('deadline_overrun')
                     state = 'paused'; paused_by = 'deadline_overrun'; authority.clear(); reject_pending('deadline_overrun')
                     core.buttons = (0, 0)
                     record('transition', state=state, reason='deadline_overrun')
@@ -115,8 +163,10 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
             now = time.monotonic()
             if now-last_status >= .1:
                 send(dict(kind='status', state=state, frame=frame, video_frames=core.video_frames,
-                          audio_samples=core.audio_samples, frame_hash=core.frame_hash))
+                          audio_samples=core.audio_samples, frame_hash=core.frame_hash,
+                          scripted=scripted.public()))
                 last_status = now
+        scripted.cancel('worker_stop')
         authority.clear(); core.buttons = (0, 0)
         reject_pending('stopped')
         record('transition', state='stopped', reason='operator_or_service_stop')

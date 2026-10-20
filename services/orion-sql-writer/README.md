@@ -568,6 +568,50 @@ the individuals loop backs off with a clear error. Replay eval (read-only on liv
 sightings `VISION_SIGHTING_RETENTION_DAYS` (90); unlabeled individuals unseen
 for the sighting retention are deleted, labeled ones stay.
 
+**Person learning** (`app/vision_person_model.py`, inside the individuals
+tick at most every `VISION_PERSON_MODEL_INTERVAL_SEC` (600), flag
+`VISION_PERSON_MODEL_ENABLED`, on). Orion learns who people are from Juniper's
+answers (design: `docs/superpowers/specs/2026-10-20-walkway-person-learning-design.md`).
+Each tick it:
+
+1. Reconciles the album (`vision_person_exemplar`). A cluster Juniper named
+   (typed: `cluster_label`; carried by a "same person" answer: `pair_same`)
+   adds its crops as +1 for that name. A "different" picture adds its crop as
+   -1 for the cluster's name (`picture_different`). A named cluster whose best
+   two-way split of body vectors is less alike than the 10th percentile of
+   same-sighting crop pairs (learned each tick) looks like two people and adds
+   nothing until she answers. Rows whose answer no longer holds (a rename, a
+   split) get `revoked_at`.
+2. Refits the bars (`vision_person_bar`, per person and channel). `accept_at`
+   is a conformal false-accept bound at `VISION_PERSON_FALSE_ACCEPT_ALPHA`
+   (0.05) over the CLUSTER scores of everyone who is not that person: the
+   street (every unnamed recent person cluster), other named people's
+   clusters, and clusters she said are not them. Calibrating on the other
+   named people alone let ~9% of street clusters through on live data
+   (2026-10-20). The street is fitted on and guessed on, so about alpha of it
+   clears any armed bar: alpha is split across people (alpha / people), and a
+   bar is armed only when at least 3 of the person's own clusters, each held
+   out with every album crop from its days, exist and half of them clear it.
+   Below about 2 x people / alpha impostor clusters (~280 at 7 people) the
+   bound is the street maximum: no unnamed cluster can be accepted yet.
+   `reject_below` is the same rule on cross-day genuine crop scores (>= 19).
+   NULL = ask only. On 2026-10-20 no person had an accept bar: everything is
+   `unsure` until her answers grow the albums.
+3. Guesses (`vision_person_attribution`): one row per unnamed, recently seen
+   person cluster, its best person, band `accept` ("probably X") or `unsure`.
+   Score = median over its newest 20 crops of the mean top-`VISION_PERSON_TOP_K`
+   cosines to the album. Face when both sides have faces, else
+   `VISION_PERSON_FALLBACK_CHANNEL` (body). Accepted for two people = unsure;
+   a person ruled out by a -1 crop in the cluster is never guessed. A guess
+   never writes `vision_individual.label`.
+
+Needs `manual_migration_vision_person_album_v1.sql`; without it the step logs
+`person_model: skipped` and the rest of the tick runs. Eval (read-only on
+live; `--write` stores a `vision_person_model_eval` row):
+`evals/run_person_recognition_eval.py --live <dsn>` -- leave-one-cluster-out,
+gate = zero wrong accepts; a new model version must beat the last on an exact
+McNemar test (p < 0.05).
+
 **Rhythm loop** (`app/vision_rhythm.py`, every `VISION_RHYTHM_INTERVAL_SEC`,
 default 900 s). Subjects are individuals and the labels in
 `VISION_RHYTHM_LABELS` (arrivals from `vision_scene_inventory`: first positive

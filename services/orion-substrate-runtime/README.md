@@ -1588,7 +1588,8 @@ Pure rules: `orion/substrate/street_attention.py`.
 - **Node:** every `SUBSTRATE_STREET_ATTENTION_TICK_INTERVAL_SEC` (30 s) and on every pass,
   `prediction_error` = the strongest passed salience inside `SUBSTRATE_STREET_ATTENTION_HOLD_SEC`
   (90 s), else a real 0.0. Nothing is written while the listener is down or no street camera
-  (walkway, doorbell) sent a frame recently, so attention reads the node absent, not calm. The
+  (walkway, doorbell) sent a frame recently (after one closing 0.0 if a hold just ended), so
+  attention reads the node absent, not calm. The
   node is an outside-world source (`is_world_source_id`) and is fenced from endogenous curiosity.
 - **Trace:** one `substrate_street_event kind=... salience=... verdict=pass|block reason=...
   correlation_id=...` line per event; `substrate_street_attention_won` when the broadcast's

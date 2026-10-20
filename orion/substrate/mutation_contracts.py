@@ -219,7 +219,7 @@ CONTRACTS: dict[MutationClassV1, MutationClassContract] = {
     # limits validate_patch() can check without knowing the domain.
     "prediction_expectation_patch": MutationClassContract(
         mutation_class="prediction_expectation_patch",
-        allowed_targets=("execution", "chat"),
+        allowed_targets=("execution", "chat", "street_handoff"),
         allowed_fields=("alpha", "min_variance"),
         bounds={"alpha": (0.01, 0.6), "min_variance": (1e-13, 0.03)},
         risk_tier="low",

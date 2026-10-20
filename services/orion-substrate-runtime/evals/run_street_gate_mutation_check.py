@@ -1,7 +1,9 @@
 """Mutation check for the street attention gate (orion/substrate/street_attention.py).
 
 Each mutation breaks one gate rule; the pure tests must fail for every one. A
-surviving mutation means a rule has no test. Restores the file after each run.
+surviving mutation means a rule has no test. Rewrites the tracked source in
+place and restores it after each run (try/finally); a hard kill mid-run can
+leave it mutated -- check `git diff orion/substrate/street_attention.py`.
 
 Run from repo root:
   python services/orion-substrate-runtime/evals/run_street_gate_mutation_check.py

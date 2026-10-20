@@ -134,10 +134,13 @@ def _domains() -> dict[str, DomainSpec]:
             rollback_window_sec=24 * 3600,
         ),
         # One reading per graded street handoff (-ln p_value, nats;
-        # orion/substrate/street_attention.py). A handful a day, so it gets the
-        # schema's 24 h maximum like chat, and the tuner's MIN_FIT_READINGS
-        # (300) keeps it from proposing anything for weeks. Rest point under a
-        # calibrated model: mean 1 nat, variance 1.
+        # orion/substrate/street_attention.py). Rest point under a calibrated
+        # model: mean 1 nat, variance 1. The schema's 24 h rollback maximum,
+        # like chat. EXPECTED TO STAY INERT: the tuner needs WARMUP +
+        # MIN_FIT + MIN_HOLDOUT = 480 readings inside its 72 h window (~160
+        # graded handoffs a day); the street makes a handful. Recorded now so
+        # the corpus exists; the contract (mutation_contracts.py) allows the
+        # target so an adoption is possible once volume is real.
         st.STREET_HANDOFF_DOMAIN: DomainSpec(
             st.STREET_HANDOFF_DOMAIN,
             Expectation(st.STREET_HANDOFF_EWMA_ALPHA, st.STREET_HANDOFF_MIN_VARIANCE),

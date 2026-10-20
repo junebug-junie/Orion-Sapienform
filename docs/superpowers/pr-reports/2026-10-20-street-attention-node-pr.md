@@ -140,8 +140,11 @@ for the hour clause and the hourly cap does the habituation. A known person
   redelivered event hits the primary key, not a second row). p floored at 1e-6 (max 13.8 nats).
 - Floor stated: under a calibrated model p is uniform, so `-ln p` is Exponential(1):
   E = 1 nat, Var = 1. A reading near 1 nat is the rest point, not signal.
-- Default expectation alpha 0.2, min_variance 0.01; rollback window 24 h. The tuner needs
-  480 readings before it can propose anything, so it stays silent for weeks.
+- Default expectation alpha 0.2, min_variance 1e-3 (so the tuner's x10 step stays inside the
+  contract's 0.03 outer bound); rollback window 24 h. `street_handoff` is added to the
+  `prediction_expectation_patch` contract's `allowed_targets`. **Expected to stay inert:** the
+  tuner needs 480 readings inside its 72 h window (~160 graded handoffs a day); the street
+  makes a handful. The corpus is recorded now so an adoption becomes possible if volume grows.
 - Consumer of the tuned expectation: `handoff_surprise_z` on the trace line.
 - **Producer field needed:** the spec's reading is the arrival log-score, which
   `StreetEventV1` cannot carry. The producer must add `arrival_log_score: float | None`
@@ -152,9 +155,13 @@ for the hour clause and the hourly cap does the habituation. A known person
 ## Tests run
 
 ```text
-pytest orion/substrate/tests/test_street_attention.py                       26 passed
+pytest orion/substrate/tests/test_street_attention.py + test_prediction_expectation.py
+       + test_mutation_v21.py                                              94 passed
+pytest orion/substrate/tests -k "mutation or expectation or contract or curiosity or
+       broadcast or attention"                                             376 passed
 pytest services/orion-substrate-runtime/tests/test_worker_street_attention.py \
-       services/orion-substrate-runtime/evals/test_street_attention_eval.py  15 passed
+       services/orion-substrate-runtime/evals/test_street_attention_eval.py \
+       services/orion-substrate-runtime/tests/test_worker_prediction_expectation.py  19 passed
 pytest tests/test_attention_world_first*.py tests/test_attention_sustained_body.py \
        tests/test_attention_self_readings.py tests/test_metric_*.py \
        tests/test_street_event_bus_catalog.py orion/substrate/tests/test_prediction_expectation.py \
@@ -192,10 +199,32 @@ image; no new dependency.
 
 ## Review findings fixed
 
-- Finding (self): the bus handler, the tick and the perception listener touch the street state
-  from different threads; iterating the held deque while another thread appends can raise.
-  - Fix: one `RLock` around every read and write; counters go through `bump()`.
-  - Evidence: tests and mutation check re-run green.
+Code review ran in a subagent against `origin/main...HEAD`: no blockers, 5 should, 4 nits.
+
+- Finding: no lock across threads (handler thread, tick thread, perception listener, /health).
+  - Fix: one `RLock` in `StreetAttentionState` around every read and write; counters go
+    through `bump()`.
+  - Evidence: tests and mutation check green.
+- Finding: with the cameras dark, a held ring stayed the last written value (1.0) and kept
+  competing as fresh for up to 180 s after the 90 s hold.
+  - Fix: the first tick after a hold ends writes one closing 0.0, then goes silent (absent).
+  - Evidence: `test_a_held_ring_with_dark_cameras_closes_with_one_zero_then_goes_silent`.
+- Finding: Rung 6 `street_handoff` could never be adopted (`mutation_contracts.py`
+  `allowed_targets` was execution/chat; a 0.01 floor x10 also broke the 0.03 outer bound).
+  - Fix: target added; default floor 1e-3; the domain is documented as expected to stay inert.
+  - Evidence: `orion/substrate/tests` mutation/expectation tests, 376 passed.
+- Finding: the world-first win test ranked the street alone.
+  - Fix: a ring against a top-2% perception reading and a top-5% body node; a week at the cap
+    habituates the ring to band `high`, a light week reads `unusual`.
+  - Evidence: two new tests in `test_street_attention.py`.
+- Finding: live-data step must say UNVERIFIED. It does (metric gate item 4). Follow-up: once
+  rings flow, pull `substrate_node_prediction_error_history` for `node:substrate.street` and
+  run `run_street_attention_eval.py --live`.
+- Nits fixed: `.env_example` names the perception-listener dependency; the mutation script
+  warns that it rewrites the tracked file. Not changed: `attention_wins_total` counts cycles
+  whose selected coalition contains the node (the winning loop's refs), which is the winner's
+  coalition, documented as such; glossary `category: self_monitoring` matches the other camera
+  nodes (the glossary has no world category).
 
 ## Restart required
 
@@ -224,4 +253,6 @@ and `docker logs orion-athena-substrate-runtime 2>&1 | grep substrate_street_`.
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2826
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)

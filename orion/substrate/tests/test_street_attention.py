@@ -206,6 +206,39 @@ def test_a_held_ring_wins_world_first_and_a_zero_rests() -> None:
     assert "not busy" in calm.ineligible[0].reason  # judged quiet, not absent
 
 
+def _cand(node_id: str, current: float, hist_values: list[float]):
+    hist = [(NOW - timedelta(seconds=30 * (i + 1)), v) for i, v in enumerate(hist_values)]
+    mag = compute_prediction_error_magnitude(value=current, observed_at=NOW, history=hist, now=NOW)
+    return node_candidate(
+        node_id=node_id, label=node_id, magnitude=mag, observed_at=NOW, now=NOW,
+        history_values=[v for _, v in hist],
+    )
+
+
+def test_a_ring_beats_busy_perception_and_a_high_body_node() -> None:
+    """The street against real rivals, not alone: a fresh ring on a mostly-zero
+    week is at its ceiling; a perception reading in its top 2% and a body node
+    in its top 5% rank below it."""
+    r = random.Random(3)
+    street = _street_candidate(1.0)
+    perception = _cand("node:substrate.perception", 0.9, [r.random() * 0.5 for _ in range(1960)] + [0.95] * 40)
+    body = _cand("node:substrate.execution", 0.8, [r.random() * 0.5 for _ in range(1900)] + [0.85] * 100)
+    ranking = rank_candidates([perception, body, street])
+    assert [v.candidate.source_id for v in ranking.eligible] == [
+        STREET_NODE_ID, "node:substrate.perception", "node:substrate.execution",
+    ]
+
+
+def test_a_street_at_its_cap_all_week_habituates_out_of_unusual() -> None:
+    """~10% nonzero (4 passes x 90 s an hour, every hour): a new ring is still
+    eligible but only 'high', not 'unusual'; a lighter week reads 'unusual'."""
+    capped = [1.0 if i % 10 == 0 else 0.0 for i in range(2000)]
+    busy = rank_candidates([_cand(STREET_NODE_ID, 1.0, capped)])
+    assert busy.winner is not None and busy.winner.band == "high"
+    light = rank_candidates([_street_candidate(1.0)])
+    assert light.winner is not None and light.winner.band == "unusual"
+
+
 def test_a_stale_street_reading_is_absent_not_calm() -> None:
     hist = [(NOW - timedelta(seconds=30 * (i + 1)), 0.0) for i in range(2000)]
     old = NOW - timedelta(seconds=400)
@@ -264,7 +297,7 @@ def test_domain_spec_is_registered_with_a_24h_rollback_window() -> None:
     assert SPEC.domain == "street_handoff"
     assert SPEC.target_surface == "prediction_expectation:street_handoff"
     assert SPEC.rollback_window_sec == 24 * 3600
-    assert SPEC.default == Expectation(0.2, 0.01)
+    assert SPEC.default == Expectation(0.2, 1e-3)
 
 
 def test_too_few_handoffs_propose_nothing() -> None:
@@ -290,6 +323,6 @@ def test_unset_surface_reads_as_the_default(tmp_path, monkeypatch) -> None:
 
 def test_handoff_surprise_z_reads_the_expectation() -> None:
     st = StreetAttentionState()
-    assert st.handoff_surprise_z(1.0, alpha=0.2, min_variance=0.01) is None  # no baseline yet
-    z = st.handoff_surprise_z(5.0, alpha=0.2, min_variance=0.01)
+    assert st.handoff_surprise_z(1.0, alpha=0.2, min_variance=1e-3) is None  # no baseline yet
+    z = st.handoff_surprise_z(5.0, alpha=0.2, min_variance=1e-3)
     assert z is not None and z > 10  # variance floor binds on the 2nd reading

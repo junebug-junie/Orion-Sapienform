@@ -72,11 +72,13 @@ CAP_WINDOW_SEC = 3600.0
 
 # Rung 6 starting expectation for street_handoff. alpha 0.2: the same
 # real-observation alpha execution and chat use (prediction_error.py), no
-# domain reason found to differ. min_variance 0.01: the calibrated variance of
-# -ln U is 1, so a floor two orders below it never binds once warm, and only
-# stops a cold start dividing by ~0.
+# domain reason found to differ. min_variance 1e-3: the calibrated variance of
+# -ln U is 1, so a floor three orders below it never binds once warm, and only
+# stops a cold start dividing by ~0. Kept so the tuner's x10 step (1e-2) stays
+# inside the prediction_expectation_patch contract's outer bound (0.03,
+# orion/substrate/mutation_contracts.py) -- a larger floor would be refused.
 STREET_HANDOFF_EWMA_ALPHA = 0.2
-STREET_HANDOFF_MIN_VARIANCE = 0.01
+STREET_HANDOFF_MIN_VARIANCE = 1e-3
 
 __all__ = [
     "STREET_NODE_ID",
@@ -184,6 +186,8 @@ class StreetAttentionState:
     node_writes_total: int = 0
     ticks_unmeasured_total: int = 0
     last_event_at: float | None = None
+    # Last value the runtime wrote to the node (0.0 before the first write).
+    last_written_value: float = 0.0
     last_verdict: dict[str, Any] | None = None
     # street_handoff EWMA, read only for the trace (handoff_surprise_z).
     handoff_ewma: float = 0.0

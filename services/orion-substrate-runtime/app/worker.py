@@ -1736,6 +1736,7 @@ class BiometricsSubstrateWorker:
             contributing_id=last_corr,
             evidence_event_ids=[f"street_event:{h.event_id}" for h in held],
         )
+        state.last_written_value = value
         state.bump("node_writes_total")
 
     def _street_attention_tick(self, *, now: datetime | None = None) -> None:
@@ -1773,7 +1774,12 @@ class BiometricsSubstrateWorker:
                 float(s.street_camera_up_max_age_sec),
             ):
                 reason = "no street camera frame in the last %.0fs" % float(s.street_camera_up_max_age_sec)
-            if reason is not None and not held:
+            if reason is not None and not held and state.last_written_value > 0.0:
+                # The hold just ended while the street is unmeasurable: write
+                # one 0.0 so the held value does not keep competing as fresh
+                # for another 180 s, then go silent (absent) from the next tick.
+                logger.info("substrate_street_attention_hold_closed reason=%r", reason)
+            elif reason is not None and not held:
                 state.bump("ticks_unmeasured_total")
                 logger.info("substrate_street_attention_tick_unmeasured reason=%r", reason)
                 return

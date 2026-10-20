@@ -170,6 +170,18 @@ def test_a_held_ring_is_still_written_with_the_cameras_dark(listener_up) -> None
     assert [x["error"] for x in w.writes] == [1.0, 1.0]
 
 
+def test_a_held_ring_with_dark_cameras_closes_with_one_zero_then_goes_silent(listener_up) -> None:
+    """Review 2026-10-20: without the closing 0.0 the held 1.0 stayed the last
+    reading and kept competing as fresh for up to 180 s after the hold."""
+    w = _worker()
+    w._process_street_event(_payload(), now=NOW)
+    w._street_attention_tick(now=NOW + timedelta(seconds=30))
+    w._street_attention_tick(now=NOW + timedelta(seconds=91))
+    w._street_attention_tick(now=NOW + timedelta(seconds=121))
+    assert [x["error"] for x in w.writes] == [1.0, 1.0, 0.0]
+    assert w._street_state().ticks_unmeasured_total == 1
+
+
 def test_perception_artifacts_mark_the_camera_up() -> None:
     w = _worker()
     w._bus = SimpleNamespace(

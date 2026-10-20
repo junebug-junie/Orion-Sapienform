@@ -143,4 +143,4 @@ orion-rag runs nowhere, so it needs no restart.
 
 ## PR link
 
-PENDING
+https://github.com/junebug-junie/Orion-Sapienform/pull/2811

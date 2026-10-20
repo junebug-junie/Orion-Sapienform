@@ -280,6 +280,15 @@ ORDER BY concept_id, version DESC, created_at DESC
 """
 
 
+# Self-naming answers (orion_disposition_naming, written by orion-sql-writer). NOT a PersonalityLane:
+# never folded as evidence; ``graph.apply_namings`` applies them after the fold, in the same tick.
+# Keyset on (created_at, naming_id): created_at is the writer's insert time, so a row is read once,
+# in arrival order. The read lag (``hi``) covers a writer transaction that commits late.
+NAMING_SQL = ("SELECT naming_id, disposition_id, verdict, hub_check, name, sentence, merge_with, written_at, "
+              "created_at FROM orion_disposition_naming WHERE " + _keyset("created_at", "naming_id"))
+NAMING_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)  # no cursor yet: read every answer ever written
+
+
 async def _fetch(conn: Any, sql: str, params: dict) -> list[dict]:
     cur = await conn.execute(sql, params)
     return list(await cur.fetchall())
@@ -316,3 +325,16 @@ class PersonalitySourceReader:
                 await conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
                 rows = await _fetch(conn, SEED_SQL, {"now": now})
         return [self_inquiry_item(r) for r in rows]
+
+    async def read_namings(self, cursor: Optional[Cursor], hi: datetime) -> list[dict]:
+        """Naming rows strictly after ``cursor`` and before ``hi``. With no cursor, from the start:
+        Hub may publish answers before this reducer is deployed (readers deploy first)."""
+        cur = cursor or Cursor(NAMING_EPOCH, "")
+        if cur.at >= hi:
+            return []
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute("SET TRANSACTION READ ONLY")
+                await conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                rows = await _fetch(conn, NAMING_SQL, {"at": cur.at, "ref": cur.ref, "hi": hi, "limit": self._limit})
+        return [dict(r) for r in rows]

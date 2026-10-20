@@ -13,6 +13,14 @@ from typing import Any, Sequence
 
 from app.series import SeriesSpec
 
+# Event tables the event_pair estimator may read (read-only), keyed by selector ``source``.
+# Each entry: (table, timestamp column, event-type column, stream column). Add a table here and to
+# EventSelector.source in app/main.py; nothing else changes.
+EVENT_SOURCES = {
+    "vision_events": ("vision_events", "created_at", "event_type", "stream_id"),
+}
+EVENT_READ_TIMEOUT_MS = 10_000
+
 _KEY = re.compile(r"^[a-z0-9_]{1,40}$")
 TABLES = {
     "prediction_model_run": ("run_id", "selection_id", "kind", "assignment", "residual_paths"),
@@ -76,6 +84,26 @@ class PostgresStore:
         else:
             raise ValueError(f"unknown source kind {src.kind}")
         return [(r["ts"], r["v"]) for r in self._all(sql + " ORDER BY 1", args)]
+
+    def event_times(self, source: str, event_type: str, stream_id: str | None, since: datetime, until: datetime,
+                    limit: int) -> list[datetime]:
+        """Timestamps of one event selector in [since, until), oldest first. Read-only transaction with a
+        statement timeout: this reads a table other services write. Returns up to ``limit + 1`` rows so the
+        caller can tell when it hit the cap."""
+        if source not in EVENT_SOURCES:
+            raise ValueError(f"unknown event source {source!r}")
+        table, ts, kind, stream = EVENT_SOURCES[source]
+        sql = f"SELECT {ts} AS ts FROM {table} WHERE {kind} = %s AND {ts} >= %s AND {ts} < %s"
+        args: list = [event_type, since, until]
+        if stream_id is not None:
+            sql += f" AND {stream} = %s"
+            args.append(stream_id)
+        sql += f" ORDER BY {ts} LIMIT %s"
+        args.append(limit + 1)
+        with self.pool.connection() as conn, conn.transaction():
+            conn.execute("SET TRANSACTION READ ONLY")
+            conn.execute(f"SET LOCAL statement_timeout = {int(EVENT_READ_TIMEOUT_MS)}")
+            return [r["ts"] for r in conn.execute(sql, args).fetchall()]
 
     # --- model runs -----------------------------------------------------------------------
     def insert_runs(self, rows: list[dict]) -> None:

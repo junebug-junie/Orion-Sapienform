@@ -84,7 +84,7 @@ async def _check_with_timeout(
     genuine NVML/driver wedge -- exactly the state this watchdog exists to
     detect -- is a documented way for an NVML call to HANG rather than
     fast-return. Called in-line on the single shared event loop, that hang
-    freezes `heartbeat_loop`, `listener_task`, and `stt_task` right along
+    freezes the bus heartbeat, `listener_task`, and `stt_task` right along
     with this one, and the failure-counting logic below never even runs --
     the watchdog cannot act during its own target scenario. Running it via
     `asyncio.to_thread` keeps the loop free; `asyncio.wait_for` turns an
@@ -104,7 +104,7 @@ async def cuda_watchdog_loop(
     check_timeout_sec: float | None = None,
 ) -> None:
     """Runs for the life of the process, cancelled on shutdown -- same
-    convention ``heartbeat_loop`` (main.py) already uses.
+    convention main.py's listener tasks already use.
 
     ``is_cuda_available`` and ``on_trigger`` are injected rather than calling
     ``torch.cuda.is_available()`` / ``restart_process()`` directly, so tests

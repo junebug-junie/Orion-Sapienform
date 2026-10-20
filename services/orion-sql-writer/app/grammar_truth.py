@@ -1001,6 +1001,7 @@ def _retention_truth_block(settings) -> dict[str, Any]:
 
 _EXTRA_RETENTION_TABLES = (
     "gpu_pool_state_history",
+    "self_signal_outcome_association",
     "grammar_edges",
     "grammar_atoms",
     "substrate_organ_emissions",
@@ -1385,6 +1386,38 @@ def apply_gpu_pool_state_retention(
     return state
 
 
+def apply_self_signal_outcome_association_retention(
+    retention_days: int,
+    *,
+    max_batches: int | None = None,
+    max_elapsed_sec: float | None = None,
+) -> GrammarRetentionState:
+    """Bounded retention for self_signal_outcome_association (SelfSignalOutcomeAssociationV1 rows,
+    ~21 per hour from orion-equilibrium-service's hourly rollup). Readers only need each pair's
+    last few hourly computations (the consecutive-holds rule); older rows are audit history.
+    Ages by `created_at`; plain `default_engine`."""
+    settings = get_settings()
+    state = _apply_bounded_table_retention(
+        engine=default_engine,
+        table="self_signal_outcome_association",
+        id_column="association_id",
+        retention_days=retention_days,
+        batch_size=settings.grammar_events_retention_batch_size,
+        max_batches=(
+            settings.grammar_events_retention_max_batches_per_startup
+            if max_batches is None
+            else max_batches
+        ),
+        max_elapsed_sec=(
+            settings.grammar_events_retention_max_elapsed_sec
+            if max_elapsed_sec is None
+            else max_elapsed_sec
+        ),
+    )
+    _extra_retention_state["self_signal_outcome_association"] = state
+    return state
+
+
 def apply_biometrics_cluster_retention(
     retention_days: int,
     *,
@@ -1492,6 +1525,7 @@ GRAMMAR_RETENTION_TABLES: tuple[tuple[str, Any], ...] = (
     ("substrate_durable_run_state", apply_substrate_durable_run_state_retention),
     ("gpu_pool_events", apply_gpu_pool_events_retention),
     ("gpu_pool_state_history", apply_gpu_pool_state_retention),
+    ("self_signal_outcome_association", apply_self_signal_outcome_association_retention),
 )
 
 

@@ -58,6 +58,15 @@ button.label-btn { all: unset; cursor: pointer; word-break: break-word; }
 button.label-btn:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; border-radius: 4px; }
 tr.evidence-row > td { background: var(--plane); padding: 6px 10px 10px 24px; }
 table.evidence td.excerpt { white-space: pre-wrap; }
+td.name { word-break: break-word; min-width: 120px; }
+.node-name { font-weight: 600; }
+.badge.naming-named { border-color: var(--series-1); }
+.badge.naming-rejected { border-color: var(--critical); }
+.badge.naming-unshown, .badge.naming-unknown { color: var(--ink-muted); }
+.name-sentence { font-style: italic; margin-bottom: 6px; word-break: break-word; }
+.naming-history h4 { margin: 4px 0; font-size: 12px; }
+pre.packet { white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; font-size: 11px; }
+.echo { margin: 6px 0; }
 .spark-wrap { display: inline-block; vertical-align: middle; color: var(--series-1); }
 .spark { display: block; }
 pre.cue { white-space: pre-wrap; word-break: break-word; margin: 0; padding: 10px; border-radius: 8px;
@@ -93,7 +102,7 @@ details.group summary { cursor: pointer; font-weight: 600; }
 
   <section class="panel">
     <h2>Active <span class="muted" id="pActiveCount"></span></h2>
-    <div class="muted">Strongest first. Click a row for the evidence behind it.</div>
+    <div class="muted">Strongest first. Click a row for the evidence behind it and Orion's naming history.</div>
     <div id="pActive"></div>
   </section>
 

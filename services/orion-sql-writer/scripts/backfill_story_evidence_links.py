@@ -7,7 +7,8 @@ when it closes, often seconds before the individuals reducer assigns the crops
 patch on, orion-sql-writer fills those nulls every tick for stories that ended in
 the last 6 h (``app.vision_motion_loop.relink_stories``). This script does the
 same for older stories, while their crop rows still exist
-(``VISION_CROP_RETENTION_DAYS``, 7): after that the link cannot be recovered.
+(``VISION_CROP_RETENTION_DAYS``, 7, except labels in
+``VISION_CROP_RETENTION_KEEP_LABELS``): after that the link cannot be recovered.
 
 Additive and null-only: an evidence entry that already has an id is never
 changed, no entry is added, removed or reordered, and each row is only updated

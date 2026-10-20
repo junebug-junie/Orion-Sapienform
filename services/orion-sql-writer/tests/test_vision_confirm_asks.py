@@ -344,6 +344,38 @@ def test_prune_keeps_individuals_in_an_open_pair_ask(pg) -> None:
 
 
 @needs_pg
+@pytest.mark.parametrize("keep,left", [(("person",), {"p-old", "p-new", "v-new"}),
+                                       ((), {"p-new", "v-new"})])
+def test_prune_keeps_crops_with_a_kept_label(pg, keep, left) -> None:
+    """Person crops are labelled examples (2026-10-20 person-learning spec,
+    Phase 0): the 7-day prune skips them; vehicles still go. Empty = old rule."""
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        for cid, label, age in (("p-old", "person", 30), ("p-new", "person", 1),
+                                ("v-old", "car", 30), ("v-new", "car", 1)):
+            conn.execute(text(
+                "INSERT INTO vision_crop_observation (crop_id, observation_id, stream_id, observed_at, label, "
+                "score, box_xyxy) VALUES (:c, 'obs', 'walkway', :t, :l, 0.9, '{0,0,1,1}')"),
+                {"c": cid, "t": NOW - timedelta(days=age), "l": label})
+        summary: dict = {}
+        vi._prune(conn, NOW, vi.IndividualsConfig(crop_retention_keep_labels=keep), summary)
+        got = {r[0] for r in conn.execute(text("SELECT crop_id FROM vision_crop_observation")).fetchall()}
+    assert got == left
+    assert summary["pruned_crops"] == 4 - len(left)
+
+
+@pytest.mark.parametrize("raw,want", [("person", ("person",)), (" person , dog ", ("person", "dog")),
+                                      ("0", ()), ("", ())])
+def test_keep_labels_env_parsing(raw, want, monkeypatch) -> None:
+    from app.settings import Settings
+    from app.vision_individuals_loop import individuals_config
+
+    monkeypatch.setenv("VISION_CROP_RETENTION_KEEP_LABELS", raw)
+    assert individuals_config(Settings()).crop_retention_keep_labels == want
+
+
+@needs_pg
 def test_one_who_is_this_per_confirmed_person(pg) -> None:
     from sqlalchemy import text
 

@@ -323,7 +323,7 @@ def _evidence_list(raw: Any) -> list[dict[str, Any]]:
 # over 5 days said "no individual" for crops that were linked). orion-sql-writer
 # now fills those nulls in the story row (vision_motion_loop.relink_stories);
 # this read covers the seconds before that and stories it has not reached,
-# while the crop rows still exist (VISION_CROP_RETENTION_DAYS, 7).
+# while the crop rows still exist (VISION_CROP_RETENTION_DAYS, 7; person crops are kept).
 _LATE_LINKS_SQL = """
 SELECT crop_id, individual_id FROM vision_crop_observation
 WHERE crop_id = ANY($1::text[]) AND individual_id IS NOT NULL

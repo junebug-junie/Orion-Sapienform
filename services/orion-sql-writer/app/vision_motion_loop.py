@@ -418,7 +418,7 @@ def assemble_step(engine, stream_id: str, ts: datetime, cfg: LoopConfig) -> int:
 # crops a few seconds later, so the frozen evidence says "no individual" for
 # crops that ARE linked (live: 101 of 147 person stories over 5 days). Each
 # tick fills those nulls from vision_crop_observation while the crop rows
-# still exist (VISION_CROP_RETENTION_DAYS, 7) -- in the story row itself, so
+# still exist (VISION_CROP_RETENTION_DAYS, 7; person crops are kept) -- in the story row itself, so
 # the link outlives the crop rows. Null-only: an id already in the evidence is
 # never changed.
 # ---------------------------------------------------------------------------

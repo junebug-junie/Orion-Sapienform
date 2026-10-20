@@ -34,17 +34,22 @@ DEFAULT_CAPTION_STREAMS: frozenset[str] = frozenset({"cam0"})
 # (projection._build_evidence): caption stoplist tokens and a caption count.
 CAPTION_EVIDENCE_KEYS: tuple[str, ...] = ("soft_labels", "caption_count")
 
+# Non-text marker set on a stripped window. Grounding reads it to keep the
+# activity-claim confidence cap (a still frame cannot show activity), and
+# intake reads it to skip windows that had nothing but a caption.
+CAPTIONS_WITHHELD_KEY = "captions_withheld"
+
 
 def parse_caption_streams(raw: str | Iterable[str] | None) -> frozenset[str]:
     """Comma list (or iterable) to a set of stream ids. Empty means no stream."""
     if raw is None:
         return frozenset()
     parts = raw.split(",") if isinstance(raw, str) else list(raw)
-    return frozenset(str(p).strip() for p in parts if str(p).strip())
+    return frozenset(str(p).strip().lower() for p in parts if str(p).strip())
 
 
 def captions_admitted(window: VisionWindowPayload, caption_streams: frozenset[str]) -> bool:
-    return stream_key_from_window(window) in caption_streams
+    return stream_key_from_window(window).lower() in caption_streams
 
 
 def window_for_council(
@@ -62,9 +67,33 @@ def window_for_council(
     if not summary:
         return window
     summary["captions"] = []
+    summary[CAPTIONS_WITHHELD_KEY] = True
     evidence = summary.get("evidence")
     if isinstance(evidence, dict):
         summary["evidence"] = {
             k: v for k, v in evidence.items() if k not in CAPTION_EVIDENCE_KEYS
         }
     return window.model_copy(update={"summary": summary})
+
+
+def captions_withheld(window: VisionWindowPayload) -> bool:
+    return bool((window.summary or {}).get(CAPTIONS_WITHHELD_KEY))
+
+
+def is_caption_only_after_strip(window: VisionWindowPayload) -> bool:
+    """True when captions were withheld and the window had no detection pass.
+
+    orion-vision-window publishes windows holding only a late caption artifact
+    (``item_count`` 0; it counts detection passes only). With the caption gone
+    there is nothing left to interpret; an LLM call would invent content.
+    """
+    if not captions_withheld(window):
+        return False
+    summary = window.summary or {}
+    if summary.get("item_count") is None:
+        # Not a window-service summary shape; do not guess it is empty.
+        return False
+    try:
+        return int(summary.get("item_count") or 0) == 0
+    except (TypeError, ValueError):
+        return False

@@ -53,7 +53,11 @@ from .interpretation import (
     parse_llm_content,
     project_interpretation_to_events,
 )
-from .caption_policy import parse_caption_streams, window_for_council
+from .caption_policy import (
+    is_caption_only_after_strip,
+    parse_caption_streams,
+    window_for_council,
+)
 from .llm_reply import extract_chat_result_text as _extract_chat_result_text
 from .unresolved import UnresolvedRateLimiter, build_unresolved
 
@@ -209,6 +213,15 @@ class CouncilService:
         # percept keeps the full window: it names the caption as "caption
         # model said: ...", attributed, never as the council's own fact.
         council_window = window_for_council(payload, CAPTION_STREAMS)
+        if is_caption_only_after_strip(council_window):
+            # Only a caption artifact, no detector pass: nothing left to
+            # interpret once the caption is withheld.
+            logger.info(
+                f"[COUNCIL] caption_only_window skip stream={stream_key_from_window(payload)} "
+                f"window_id={payload.window_id}"
+            )
+            await self._maybe_publish_unresolved(payload, None, env)
+            return
         interpretation, parse_outcome = await self._generate_interpretation(council_window, env)
         if parse_outcome.parse_mode == "stable_scene":
             logger.info(

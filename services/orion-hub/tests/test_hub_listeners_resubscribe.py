@@ -171,3 +171,44 @@ def test_curiosity_turn_requests_resubscribe_and_never_serialize_the_stream() ->
     started, bus = asyncio.run(scenario())
     assert started == [1, 2]
     assert len(bus.calls) == 2
+
+
+def test_hub_health_reads_degraded_while_a_listener_is_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A listener stuck in backoff must show on /health, not hide behind status=ok."""
+    from scripts import api_routes
+
+    name = "hub.health_probe"
+    state = resilience.SubscriptionState(name=name, channel="orion:test", subscribed=True)
+    monkeypatch.setattr(resilience, "_SUBSCRIPTION_STATES", {name: state})
+    up = api_routes.health()
+    assert up["status"] == "ok" and up["listeners_ok"] is True
+    state.subscribed = False
+    down = api_routes.health()
+    assert down["status"] == "degraded" and down["listeners_ok"] is False
+    assert down["listeners_down"] == [name]
+
+
+class _Codec:
+    def decode(self, data):
+        class _Decoded:
+            pass
+
+        out = _Decoded()
+        out.ok = isinstance(data, dict)
+        if out.ok:
+            out.envelope = type("Env", (), {"payload": data})()
+        return out
+
+
+def test_embodiment_handler_records_outcome_fields_and_skips_undecodable() -> None:
+    cache = embodiment_outcome_cache.EmbodimentOutcomeCache(enabled=True, channel="c")
+    cache._bus = type("B", (), {"codec": _Codec()})()
+    payload = {
+        "intent_correlation_id": "corr-1", "source": "mc", "status": "done",
+        "reason": "ok", "player_id": "p1", "extra": "ignored",
+    }
+    cache._handle_message({"type": "message", "data": payload})
+    cache._handle_message({"type": "message", "data": b"not-an-envelope"})
+    assert cache.recent() == [
+        {"intent_correlation_id": "corr-1", "source": "mc", "status": "done", "reason": "ok", "player_id": "p1"}
+    ]

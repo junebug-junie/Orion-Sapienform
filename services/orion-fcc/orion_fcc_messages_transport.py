@@ -6,6 +6,7 @@ never model progress. Non-streaming replies require a complete message.
 
 import asyncio
 import json
+import logging
 from contextlib import suppress
 from copy import deepcopy
 
@@ -16,6 +17,54 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.requests import ClientDisconnect
 
 PING = 'event: ping\ndata: {"type":"ping"}\n\n'
+
+# uvicorn's logger is the one whose INFO lines reach `docker logs` in this container.
+logger = logging.getLogger("uvicorn.error")
+
+# Opening sentence of Claude Code's compaction prompt (2.1.304, the CLI in the governor and
+# Hub). The CLI sends that prompt as the last user turn WITH the turn's tools still attached
+# and only asks, in text, for no tool calls. Claude models obey; the local Qwen lanes often
+# call a tool, and the CLI keeps the text before the call ("Now let me read the remaining
+# files...") as the summary, so the task is lost: 33 of 51 live compactions on 2026-10-17.
+COMPACTION_PROMPT_MARK = "Your task is to create a detailed summary of the conversation so far"
+
+
+def _text_of(content):
+    if isinstance(content, str):
+        return content
+    parts = []
+    for block in content or ():
+        text = getattr(block, "text", None)
+        if text is None and isinstance(block, dict):
+            text = block.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+    return "\n".join(parts)
+
+
+def is_compaction_request(request_data):
+    """True when the last turn is the CLI's own compaction prompt from the user role."""
+    messages = getattr(request_data, "messages", None) or []
+    if not messages:
+        return False
+    last = messages[-1]
+    if getattr(last, "role", None) != "user":
+        return False
+    return COMPACTION_PROMPT_MARK in _text_of(getattr(last, "content", None))
+
+
+def prepare_request(request_data):
+    """Compaction requests go upstream with no tools, so the model can only answer in text.
+
+    Earlier tool calls in the history stay as they are; only the offer of new ones is removed.
+    Every other request is returned unchanged (same object)."""
+    if not is_compaction_request(request_data) or not getattr(request_data, "tools", None):
+        return request_data
+    logger.info(
+        "fcc_compaction_tools_stripped model=%s tools=%d messages=%d",
+        getattr(request_data, "model", None), len(request_data.tools), len(request_data.messages),
+    )
+    return request_data.model_copy(update={"tools": None, "tool_choice": None})
 
 
 async def with_heartbeats(body, interval=15.0):

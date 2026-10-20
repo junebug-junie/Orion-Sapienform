@@ -21,13 +21,14 @@ def patch_routes(path):
     )
     text = text.replace(
         "from . import dependencies",
-        "from orion_fcc_messages_transport import adapt_message_response\n\nfrom . import dependencies",
+        "from orion_fcc_messages_transport import adapt_message_response, prepare_request\n\n"
+        "from . import dependencies",
     )
     text = text.replace(
         '"""Create a message (always streaming)."""\n    return handler.create(request_data)',
         '"""Honor the Messages wire format and maintain SSE liveness."""\n'
         "    return await adapt_message_response(\n"
-        "        handler.create(request_data),\n"
+        "        handler.create(prepare_request(request_data)),\n"
         '        stream="stream" in request_data.model_fields_set and request_data.stream is True,\n'
         "        disconnected=request.is_disconnected,\n"
         "    )",

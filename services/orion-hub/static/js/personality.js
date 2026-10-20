@@ -8,6 +8,8 @@
  *   GET /api/personality/cue                          the frame + the cue text the lanes get
  *   GET /api/personality/dispositions?status=S&limit=N nodes (+ history) per status
  *   GET /api/personality/evidence?disposition_id=&limit=N one node's evidence rows
+ *   GET /api/personality/naming?disposition_id=        one node's self-naming log (every attempt)
+ * Names, name sentences and refusal reasons are model-written: textContent only, like labels.
  */
 (function (root) {
   "use strict";
@@ -172,6 +174,96 @@
     };
   }
 
+  // --- self-naming (spec 2026-10-17 section 6) ---------------------------------------------------
+  // The verdict badge for a node. Rows from a durable-runs older than self-naming carry none of
+  // the naming keys: that reads "naming not reported", never "not yet shown".
+  const NAMING_KEYS = ["name", "orion_verdict", "merged_into", "name_grounding_rank"];
+
+  function nameView(node, lookup) {
+    const n = node || {};
+    const name = typeof n.name === "string" ? n.name.trim() : "";
+    const sentence = typeof n.name_sentence === "string" ? n.name_sentence.trim() : "";
+    const rank = Number(n.name_grounding_rank);
+    const margin = Number(n.name_grounding_margin);
+    const grounding = name && Number.isFinite(rank) && rank > 1
+      ? `points elsewhere: rank ${rank}${Number.isFinite(margin) ? ` (margin ${margin.toFixed(2)})` : ""}` : "";
+    let badge;
+    // 'rejected' is the column value durable-runs was asked for; 'reject' is the NamingVerdict
+    // literal (orion/schemas/personality.py). Either is Orion saying "not me".
+    if (n.orion_verdict === "rejected" || n.orion_verdict === "reject") badge = { kind: "rejected", text: "Orion: not me" };
+    else if (n.merged_into) {
+      const target = lookup && typeof lookup === "function" ? lookup(String(n.merged_into)) : null;
+      badge = { kind: "merged", text: `merged into ${target || n.merged_into}` };
+    } else if (name) badge = { kind: "named", text: "named" };
+    else if (NAMING_KEYS.some((k) => Object.prototype.hasOwnProperty.call(n, k))) {
+      badge = { kind: "unshown", text: "not yet shown" };
+    } else badge = { kind: "unknown", text: "naming not reported" };
+    return { name, sentence, grounding, badge };
+  }
+
+  const namingFrom = (body) => listFrom(body, ["naming", "rows", "items"]);
+
+  function asList(value) {
+    if (Array.isArray(value)) return value.map((v) => String(v));
+    if (value == null || value === "") return [];
+    if (typeof value === "string") {
+      try { const parsed = JSON.parse(value); if (Array.isArray(parsed)) return parsed.map((v) => String(v)); }
+      catch (_) { /* plain text */ }
+      return [value];
+    }
+    return [String(value)];
+  }
+
+  // The packet Orion was shown, pretty-printed; jsonb may arrive as an object or a JSON string.
+  function packetText(shown) {
+    if (shown == null || shown === "") return "";
+    let v = shown;
+    if (typeof v === "string") { try { v = JSON.parse(v); } catch (_) { return v; } }
+    if (v && typeof v === "object" && !Object.keys(v).length) return "";
+    return JSON.stringify(v, null, 2);
+  }
+
+  function namingRow(r) {
+    const row = r || {};
+    const refused = asList(row.refused_reasons);
+    return {
+      id: String(row.naming_id || ""),
+      at: fmtAt(row.written_at),
+      verdict: String(row.verdict || "?"),
+      name: row.name ? String(row.name) : "—",
+      sentence: row.sentence ? String(row.sentence) : "",
+      merge_with: row.merge_with ? String(row.merge_with) : "",
+      refused: refused.length ? refused.join(", ") : "",
+      evidence_refs: asList(row.evidence_refs).join(", "),
+      packet: packetText(row.shown),
+      packet_id: String(row.packet_id || ""),
+    };
+  }
+
+  // Echo: evidence rows whose meta says they quote the node's own current name. Counted only over
+  // the rows loaded; rows from before durable-runs stamped the mark carry no key, and that is said.
+  function metaOf(row) {
+    const m = row && row.meta;
+    if (m && typeof m === "object") return m;
+    if (typeof m === "string") { try { const p = JSON.parse(m); return p && typeof p === "object" ? p : {}; } catch (_) { return {}; } }
+    return {};
+  }
+
+  function echoSummary(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    const metas = list.map(metaOf);
+    const marked = metas.filter((m) => Object.prototype.hasOwnProperty.call(m, "cites_own_name")).length;
+    const cites = metas.filter((m) => m.cites_own_name === true).length;
+    if (!list.length) return { cites: 0, marked: 0, n: 0, text: "" };
+    if (!marked) {
+      return { cites: 0, marked: 0, n: list.length,
+               text: `Echo: none of the ${list.length} loaded evidence rows carry the cites_own_name mark yet.` };
+    }
+    return { cites, marked, n: list.length,
+             text: `Echo: ${cites} of ${list.length} loaded evidence rows quote this node's own name` +
+               (marked < list.length ? ` (${list.length - marked} ${list.length - marked === 1 ? "row predates" : "rows predate"} the mark).` : ".") };
+  }
+
   function evidenceRow(e) {
     const row = e || {};
     return {
@@ -239,7 +331,7 @@
 
   const api = {
     escapeHtml, fmtAt, fmtNum, fmtSigned, lanesText, sparklineModel, sparklineSvg, nodesFrom, evidenceFrom,
-    situationText, situationDetail, NO_SITUATION_TEXT, dispositionRow, evidenceRow, pageState, countsText, shownCountText, renderParamsText, choiceStyleText, skipText, EMPTY_TEXT, NODE_LIMIT,
+    situationText, situationDetail, NO_SITUATION_TEXT, nameView, namingFrom, namingRow, packetText, echoSummary, dispositionRow, evidenceRow, pageState, countsText, shownCountText, renderParamsText, choiceStyleText, skipText, EMPTY_TEXT, NODE_LIMIT,
     EVIDENCE_LIMIT,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
@@ -247,8 +339,8 @@
 
   // --- DOM layer ------------------------------------------------------------------------------
   const $ = (id) => document.getElementById(id);
-  const view = { seq: 0, frame: null };
-  const COLUMNS = ["Label", "Weight", "Evidence", "Lanes", "When", "Chosen", "First seen", "Last reinforced"];
+  const view = { seq: 0, frame: null, nodes: new Map() };
+  const COLUMNS = ["Label", "Name", "Weight", "Evidence", "Lanes", "When", "Chosen", "First seen", "Last reinforced"];
   const NUM_COLUMNS = new Set(["Weight", "Evidence", "Chosen"]);
 
   function el(tag, attrs, text) {
@@ -316,6 +408,39 @@
     cell.append(table);
   }
 
+  function renderNaming(box, rows, err) {
+    box.replaceChildren(el("h4", null, "Naming history"));
+    if (err) {
+      box.append(el("div", { class: err.status === 404 ? "muted" : "err" }, err.status === 404
+        ? `No naming log from durable-runs (${err.message}).` : `Could not load naming history: ${err.message}`));
+      return;
+    }
+    if (!rows.length) { box.append(el("div", { class: "muted" }, "Orion has not been shown this node to name yet.")); return; }
+    const table = el("table", { class: "evidence naming" });
+    const head = el("tr");
+    ["When", "Verdict", "Name", "Sentence", "Refused because", "Evidence cited", "Packet shown"]
+      .forEach((h) => head.append(el("th", null, h)));
+    table.append(head);
+    rows.map(namingRow).forEach((r) => {
+      const tr = el("tr", { title: r.id });
+      tr.append(el("td", { class: "time" }, r.at));
+      tr.append(el("td", null, r.merge_with ? `${r.verdict} → ${r.merge_with}` : r.verdict));
+      tr.append(el("td", null, r.name));
+      tr.append(el("td", { class: "excerpt" }, r.sentence));
+      tr.append(el("td", { class: r.refused ? "err" : "" }, r.refused));
+      tr.append(el("td", null, r.evidence_refs));
+      const packet = el("td");
+      if (r.packet) {
+        const det = el("details");
+        det.append(el("summary", null, r.packet_id || "packet"), el("pre", { class: "packet" }, r.packet));
+        packet.append(det);
+      } else packet.textContent = "—";
+      tr.append(packet);
+      table.append(tr);
+    });
+    box.append(table);
+  }
+
   async function toggleEvidence(tr, row, button) {
     const next = tr.nextElementSibling;
     if (next && next.classList.contains("evidence-row")) {
@@ -328,16 +453,29 @@
     button.setAttribute("aria-expanded", "true");
     const holder = el("tr", { class: "evidence-row", id: button.getAttribute("aria-controls") });
     const cell = el("td", { colspan: String(COLUMNS.length) });
-    cell.append(el("div", { class: "muted" }, "loading evidence…"));
+    const nameBox = el("div", { class: "naming-box" });
+    if (row.naming.sentence) nameBox.append(el("div", { class: "name-sentence" }, `Orion: "${row.naming.sentence}"`));
+    const historyBox = el("div", { class: "naming-history" }, "loading naming history…");
+    const echoBox = el("div", { class: "muted echo" });
+    const evBox = el("div", null);
+    evBox.append(el("div", { class: "muted" }, "loading evidence…"));
+    cell.append(nameBox, historyBox, echoBox, evBox);
     holder.append(cell);
     tr.after(holder);
+    const id = encodeURIComponent(row.id);
+    const naming = getJson(`/api/personality/naming?disposition_id=${id}`)
+      .then((body) => { if (holder.isConnected) renderNaming(historyBox, namingFrom(body), null); })
+      .catch((err) => { if (holder.isConnected) renderNaming(historyBox, [], err); });
     try {
-      const body = await getJson(`/api/personality/evidence?disposition_id=${encodeURIComponent(row.id)}&limit=${EVIDENCE_LIMIT}`);
+      const body = await getJson(`/api/personality/evidence?disposition_id=${id}&limit=${EVIDENCE_LIMIT}`);
       if (!holder.isConnected) return;   // closed (or refreshed away) while loading
-      renderEvidence(cell, evidenceFrom(body));
+      const rows = evidenceFrom(body);
+      echoBox.textContent = echoSummary(rows).text;
+      renderEvidence(evBox, rows);
     } catch (err) {
-      if (holder.isConnected) cell.replaceChildren(el("div", { class: "err" }, `Could not load evidence: ${err.message}`));
+      if (holder.isConnected) evBox.replaceChildren(el("div", { class: "err" }, `Could not load evidence: ${err.message}`));
     }
+    await naming;
   }
 
   function renderNodes(boxId, countId, nodes, emptyText, total) {
@@ -350,7 +488,11 @@
     const head = el("tr");
     COLUMNS.forEach((h) => head.append(el("th", NUM_COLUMNS.has(h) ? { class: "num" } : null, h)));
     table.append(head);
-    nodes.map(dispositionRow).forEach((r, i) => {
+    const lookup = (id) => {
+      const t = view.nodes.get(id);
+      return t ? (t.name || t.label || id) : null;
+    };
+    nodes.map((n) => ({ ...dispositionRow(n), naming: nameView(n, lookup) })).forEach((r, i) => {
       const tr = el("tr", { class: "node", title: `${r.origin} · ${r.id} — click for evidence` });
       // The label is a real button (keyboard + screen reader); the whole row is also clickable.
       const button = el("button", { type: "button", class: "label-btn", "aria-expanded": "false",
@@ -358,6 +500,11 @@
       const labelCell = el("td", { class: "label" });
       labelCell.append(button);
       tr.append(labelCell);
+      const nameCell = el("td", { class: "name" });
+      if (r.naming.name) nameCell.append(el("span", { class: "node-name", title: r.naming.sentence || "" }, r.naming.name), " ");
+      nameCell.append(el("span", { class: `badge naming-${r.naming.badge.kind}` }, r.naming.badge.text));
+      if (r.naming.grounding) nameCell.append(el("div", { class: "muted grounding" }, r.naming.grounding));
+      tr.append(nameCell);
       const w = el("td", { class: "num weight" });
       const spark = el("span", { class: "spark-wrap" });
       spark.innerHTML = sparklineSvg(r.history);   // numbers + escaped title only
@@ -376,22 +523,41 @@
     box.append(scroll);
   }
 
-  async function loadNodes(status, seq) {
-    const target = { active: ["pActive", "pActiveCount", "No active nodes yet."],
-                     candidate: ["pCandidates", "pCandidateCount", "No candidates."],
-                     retired: ["pRetired", "pRetiredCount", "Nothing retired."] }[status];
+  const NODE_TARGETS = { active: ["pActive", "pActiveCount", "No active nodes yet."],
+                         candidate: ["pCandidates", "pCandidateCount", "No candidates."],
+                         retired: ["pRetired", "pRetiredCount", "Nothing retired."] };
+
+  async function fetchNodes(status) {
     try {
-      const body = await getJson(`/api/personality/dispositions?status=${status}&limit=${NODE_LIMIT}`);
-      if (seq !== view.seq) return;
-      renderNodes(target[0], target[1], nodesFrom(body), target[2], (view.frame || {})[`${status}_count`]);
+      return { status, nodes: nodesFrom(await getJson(`/api/personality/dispositions?status=${status}&limit=${NODE_LIMIT}`)) };
     } catch (err) {
-      if (seq !== view.seq) return;
-      $(target[1]).textContent = "";
-      $(target[0]).replaceChildren(el("div", { class: "err" }, `Could not load ${status} nodes: ${err.message}`));
+      return { status, err };
     }
   }
 
+  // All three groups land before any renders, so a "merged into X" badge resolves X the same way
+  // on every load, against this refresh's nodes only.
+  async function loadNodes(seq) {
+    const results = await Promise.all(["active", "candidate", "retired"].map(fetchNodes));
+    if (seq !== view.seq) return;
+    view.nodes = new Map();
+    results.forEach((r) => (r.nodes || []).forEach((n) => {
+      if (n && n.disposition_id) view.nodes.set(String(n.disposition_id), n);
+    }));
+    results.forEach(({ status, nodes, err }) => {
+      const target = NODE_TARGETS[status];
+      if (err) {
+        $(target[1]).textContent = "";
+        $(target[0]).replaceChildren(el("div", { class: "err" }, `Could not load ${status} nodes: ${err.message}`));
+        return;
+      }
+      renderNodes(target[0], target[1], nodes, target[2], (view.frame || {})[`${status}_count`]);
+    });
+  }
+
+
   function clearNodes() {
+    view.nodes.clear();
     ["pActive", "pCandidates", "pRetired"].forEach((id) => $(id).replaceChildren());
     ["pActiveCount", "pCandidateCount", "pRetiredCount"].forEach((id) => { $(id).textContent = ""; });
   }
@@ -426,7 +592,7 @@
       clearNodes();
       return;
     }
-    await Promise.all(["active", "candidate", "retired"].map((s) => loadNodes(s, seq)));
+    await loadNodes(seq);
   }
 
   // Inside the Hub tab iframe, document.hidden only tracks the browser tab, not the Hub panel's

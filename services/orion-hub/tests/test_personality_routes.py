@@ -380,3 +380,55 @@ def test_personality_page_browser_smoke(scenario):
             assert button.get_attribute("aria-expanded") == "false"
         assert errors == [], errors
         browser.close()
+
+
+# --- self-naming log proxy -------------------------------------------------------------------
+
+
+NAMING_ROWS = {"disposition_id": "d1", "count": 2, "naming": [
+    {"naming_id": "n2", "run_id": "r2", "packet_id": "p2", "disposition_id": "d1", "verdict": "name",
+     "name": "<i>the gap</i>", "sentence": "It is the space I keep checking.", "merge_with": None,
+     "evidence_refs": ["e1"], "shown": {"label": "the gap", "excerpts": ["x"]}, "hub_check": {"rank": 2},
+     "refused_reasons": [], "written_at": _iso(NOW)},
+    {"naming_id": "n1", "run_id": "r1", "packet_id": "p1", "disposition_id": "d1", "verdict": "refused",
+     "name": None, "sentence": None, "merge_with": None, "evidence_refs": [], "shown": {},
+     "hub_check": {}, "refused_reasons": ["name_too_long"], "written_at": _iso(NOW - timedelta(hours=1))},
+]}
+
+
+def test_naming_forwards_disposition_id_verbatim(wire):
+    up = Upstream({"/personality/naming": (200, NAMING_ROWS)})
+    resp = wire(up).get("/api/personality/naming?disposition_id=d1")
+    assert resp.status_code == 200
+    assert resp.json() == NAMING_ROWS
+    assert "no-store" in resp.headers["cache-control"]
+    assert str(up.calls[0].url) == "http://durable.test:8124/personality/naming?disposition_id=d1"
+
+
+@pytest.mark.parametrize("url,code", [
+    ("/api/personality/naming", 422),
+    ("/api/personality/naming?disposition_id=a/../b", 400),
+    ("/api/personality/naming?disposition_id=" + "x" * 129, 400),
+])
+def test_naming_rejects_bad_ids_without_calling_upstream(wire, url, code):
+    up = Upstream({"/personality/naming": (200, NAMING_ROWS)})
+    assert wire(up).get(url).status_code == code
+    assert up.calls == []
+
+
+def test_naming_on_an_older_durable_runs_is_a_named_404(wire):
+    # Durable-runs without the self-naming route: the panel must say so, not show an empty history.
+    resp = wire(Upstream({})).get("/api/personality/naming?disposition_id=d1")
+    assert resp.status_code == 404
+
+
+def test_naming_upstream_down_is_a_502(wire):
+    resp = wire(Upstream(error=httpx.ConnectError("boom"))).get("/api/personality/naming?disposition_id=d1")
+    assert resp.status_code == 502 and "durable_runs_unavailable" in resp.json()["detail"]
+
+
+def test_named_frame_renders_the_name_in_the_hub_cue(wire):
+    frame = {**FRAME, "dispositions": [{**NODE, "name": "the gap", "name_sentence": "why"}]}
+    body = wire(Upstream({"/personality/frame": (200, frame)})).get("/api/personality/cue").json()
+    assert body["cue"]["text"].split("\n")[1].startswith(
+        '- you call this "the gap": "the gap between what I predicted and what arrived" (dreams, journal; 7 times')

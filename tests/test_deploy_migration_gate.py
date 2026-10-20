@@ -393,6 +393,82 @@ def test_wrapper_fetches_and_refuses_when_remote_main_advanced(tmp_path):
     assert not marker.exists()
 
 
+def _advance_remote(tmp_path, name="remote.txt"):
+    remote = tmp_path / "remote.git"
+    other = tmp_path / f"other-{name}"
+    subprocess.run(["git", "clone", "-q", "-b", "main", str(remote), str(other)], check=True)
+    _git(other, "config", "user.email", "t@example.com")
+    _git(other, "config", "user.name", "T")
+    (other / name).write_text("new remote main\n")
+    _git(other, "add", name)
+    _git(other, "commit", "-qm", "advance remote")
+    _git(other, "push", "-q", "origin", "main")
+
+
+def _head(repo):
+    return _git(repo, "rev-parse", "HEAD").strip()
+
+
+def test_pinned_run_deploys_after_remote_main_advanced_mid_run(tmp_path):
+    """2026-10-20: a PR merged mid post-pull run and every remaining service was
+    refused. A run pinned to the commit it started on keeps deploying it."""
+    primary, _, marker, env = _wrapper_repo(tmp_path, 0)
+    env["ORION_DEPLOY_PINNED_HEAD"] = _head(primary)
+    first = _run(primary, env, "up", "-d")
+    assert first.returncode == 0, first.stderr
+    _advance_remote(tmp_path)  # a PR merges on GitHub mid-run
+    p = _run(primary, env, "up", "-d")
+    assert p.returncode == 0, p.stderr
+    assert "fake-docker" in p.stdout and marker.exists()
+    assert "origin/main advanced" in p.stderr
+    # Same situation without the pin is still refused.
+    env.pop("ORION_DEPLOY_PINNED_HEAD")
+    assert "not synchronized" in _run(primary, env, "up", "-d").stderr
+
+
+def test_pinned_run_refuses_when_main_moved_off_the_pin(tmp_path):
+    primary, _, marker, env = _wrapper_repo(tmp_path, 0)
+    env["ORION_DEPLOY_PINNED_HEAD"] = _head(primary)
+    _advance_remote(tmp_path)
+    _git(primary, "pull", "-q", "--ff-only", "origin", "main")
+    p = _run(primary, env, "up", "-d")
+    assert p.returncode == 1
+    assert "moved during this run" in p.stderr
+    assert "fake-docker" not in p.stdout and not marker.exists()
+
+
+@pytest.mark.parametrize("diverge", [False, True])
+def test_pinned_run_refuses_main_ahead_or_diverged(tmp_path, diverge):
+    primary, _, marker, env = _wrapper_repo(tmp_path, 0)
+    if diverge:
+        _advance_remote(tmp_path)
+    (primary / "local.txt").write_text("local only\n")
+    _git(primary, "add", "local.txt")
+    _git(primary, "commit", "-qm", "local commit")
+    env["ORION_DEPLOY_PINNED_HEAD"] = _head(primary)
+    p = _run(primary, env, "up", "-d")
+    assert p.returncode == 1
+    assert "not in origin/main's history" in p.stderr
+    assert "fake-docker" not in p.stdout and not marker.exists()
+
+
+def test_pinned_run_still_refuses_dirty_main(tmp_path):
+    primary, _, marker, env = _wrapper_repo(tmp_path, 0)
+    env["ORION_DEPLOY_PINNED_HEAD"] = _head(primary)
+    (primary / "dirty.txt").write_text("not deployed\n")
+    p = _run(primary, env, "up", "-d")
+    assert p.returncode == 1 and "dirty main" in p.stderr
+    assert not marker.exists()
+
+
+def test_pinned_run_still_refuses_worktree(tmp_path):
+    _, wt, marker, env = _wrapper_repo(tmp_path, 0)
+    env["ORION_DEPLOY_PINNED_HEAD"] = _head(wt)
+    p = _run(wt, env, "up", "-d")
+    assert p.returncode == 1 and "linked worktree" in p.stderr
+    assert not marker.exists()
+
+
 # ------------------------------------------------------------------ CI header check
 
 

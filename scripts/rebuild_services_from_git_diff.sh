@@ -77,6 +77,12 @@ fi
 # a log write never fails the rebuild.
 REBUILD_LOG="${ORION_REBUILD_LOG:-${HOME:-/tmp}/.orion/post_pull_rebuild.log}"
 REBUILD_HEAD=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+# Judge every `up` of this run against the commit the run started on, not
+# against an origin/main that a PR merge moves mid-run (2026-10-20: one merge
+# refused 55 remaining services). safe_docker_build.sh still refuses a main
+# that moved, is ahead of, or diverged from origin/main.
+ORION_DEPLOY_PINNED_HEAD=$(git -C "$REPO_ROOT" rev-parse --verify HEAD 2>/dev/null || true)
+export ORION_DEPLOY_PINNED_HEAD
 rebuild_log() {
     (
         mkdir -p "$(dirname "$REBUILD_LOG")" &&

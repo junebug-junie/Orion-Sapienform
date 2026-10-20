@@ -77,6 +77,7 @@ def _run(
     checker: str | None = None,
     applier: str | None = None,
     safe_build_body: str | None = None,
+    init_git: bool = False,
 ):
     fake_root = tmp_path / "repo"
     fake_scripts = fake_root / "scripts"
@@ -102,7 +103,13 @@ def _run(
     )
     safe_build.chmod(0o755)
 
+    if init_git:
+        for cmd in (["init", "-q", "-b", "main"], ["add", "-A"],
+                    ["-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-qm", "init"]):
+            subprocess.run(["git", *cmd], cwd=fake_root, check=True, capture_output=True)
+
     env = os.environ.copy()
+    env.pop("ORION_DEPLOY_PINNED_HEAD", None)
     env["REBUILD_TEST_CAPTURE"] = str(capture)
     env["FAKE_PLAN"] = plan
     env["FAKE_PROFILES"] = profiles
@@ -622,3 +629,19 @@ def test_no_extra_compose_means_plain_up_only(tmp_path: Path) -> None:
     completed, calls = _run(tmp_path, plan="orion-vision-host,build")
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert calls == ["orion-vision-host up -d --build"]
+
+
+def test_every_safe_build_call_is_pinned_to_the_run_start_head(tmp_path: Path) -> None:
+    """2026-10-20: a PR merge mid-run refused every remaining service. The run
+    hands the wrapper the commit it started on so it judges against that."""
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-a,build;orion-b,build",
+        init_git=True,
+        safe_build_body='echo "PIN=$ORION_DEPLOY_PINNED_HEAD" >> "$REBUILD_TEST_CAPTURE"\n',
+    )
+    assert completed.returncode == 0, completed.stderr
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp_path / "repo",
+                          capture_output=True, text=True, check=True).stdout.strip()
+    pins = [c for c in calls if c.startswith("PIN=")]
+    assert pins and set(pins) == {f"PIN={head}"}

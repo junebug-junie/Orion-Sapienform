@@ -610,6 +610,18 @@ class SubstrateMutationStore:
             item.target_surface == target_surface and item.status == "queued" for item in list(self._queue.values())
         )
 
+    def latest_proposal_at(self, target_surface: str) -> datetime | None:
+        """When the newest proposal for this surface was created, or None.
+
+        Read from the store (loaded from Postgres at boot), so a rate limit
+        built on it survives a Hub restart -- an in-process timestamp did not
+        (2026-10-20: every Hub rebuild re-armed rung 6's daily proposal)."""
+        with self._lock:
+            return max(
+                (p.created_at for p in self._proposals.values() if p.target_surface == target_surface),
+                default=None,
+            )
+
     def queue_status_for_proposal(self, proposal_id: str) -> str | None:
         for item in self._queue.values():
             if item.proposal_id == proposal_id:

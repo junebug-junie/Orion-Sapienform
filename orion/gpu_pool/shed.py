@@ -149,3 +149,28 @@ class ShedBoard:
                              "valid_until": s.valid_until.isoformat(), "detail": s.detail} for s in sigs],
             })
         return ShedView(enabled, blocked, active, rows)
+
+
+def shed_held_queue(leases: Any, blocked: Any) -> tuple[dict[str, int], str | None]:
+    """Of a pool snapshot's QUEUED leases, the ones a shed is holding back right now (U4's own
+    test in ``scheduler.schedule``: no ``hold_lease_id`` and a priority in ``blocked``).
+
+    ``leases``: ``GpuPoolStateV1.leases`` (models or dicts). ``blocked``: ``GpuPoolStateV1.shed
+    ["blocked"]`` (priority -> reason name; empty when nothing is shed or the lever is off).
+    Returns ``({work_class: n}, reasons)``: the held count per work class (a subset of the
+    snapshot's ``queue_depth``, which counts status ``queued`` only) and the reasons holding them,
+    sorted and ``+``-joined (None when nothing is held). Readers use it so a queue a heat shed is
+    holding is not read as GPU load (``orion.regulation.arousal``, 2026-10-20)."""
+    blocked = blocked if isinstance(blocked, dict) else {}
+    held: dict[str, int] = {}
+    reasons: set[str] = set()
+    for lease in leases or ():
+        row = lease if isinstance(lease, dict) else vars(lease)
+        if row.get("status") != "queued" or row.get("hold_lease_id") is not None:
+            continue
+        reason = blocked.get(row.get("priority"))
+        if not reason:
+            continue
+        held[row["work_class"]] = held.get(row["work_class"], 0) + 1
+        reasons.add(str(reason))
+    return held, ("+".join(sorted(reasons)) or None)

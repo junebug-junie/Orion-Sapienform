@@ -308,6 +308,33 @@ def test_store_reads_a_controller_fault_from_pool_events():
     assert set(pool.event_params[0]["events"]) == {"actuate_refused", "swap_failed", "swapped"}
 
 
+def test_store_reads_the_shed_held_queue_and_selects_its_columns():
+    """2026-10-20: the shed columns (sql-writer, manual_migration_regulation_gpu_shed_held_v1)
+    reach the reducer, so the live heat-held queue is not GPU load. A json column may arrive as text."""
+    from app import regulation_store
+    from orion.regulation.arousal import classify_arousal
+
+    held = {"memory_distill": 2, "agent": 9}
+    snaps = [{"host": "circe", "generated_at": T0 - timedelta(seconds=5 * i), "queue_depth": dict(held),
+              "shed_held_depth": json.dumps(held) if i % 2 else dict(held), "shed_reason": "cabinet_hot"}
+             for i in range(70)]
+    out = asyncio.run(regulation_store._gpu(_GpuPool(snaps, []), T0, floor=2, sustain_sec=300.0))
+    assert out["gpu_queue_depth"] == 11 and out["gpu_queue_sustained_sec"] == 0.0
+    assert (out["gpu_queue_shed_held"], out["gpu_shed_reason"]) == (11, "cabinet_hot")
+    assert "shed_held_depth" in regulation_store.GPU_SNAPSHOTS_SQL and "shed_reason" in regulation_store.GPU_SNAPSHOTS_SQL
+    inputs = ArousalInputsV1(observed_at=T0, juniper_turn_read_ok=True, minutes_since_juniper_turn=300.0,
+                             cabinet_read_ok=True, cabinet_reflex=None, cabinet_thermal_state="elevated", **out)
+    assert classify_arousal(None, inputs).reasons == ["gpu_shed:cabinet_hot"]
+
+
+def test_store_reads_rows_saved_before_the_shed_columns_as_nothing_held():
+    from app import regulation_store
+
+    out = asyncio.run(regulation_store._gpu(_GpuPool(_jam(T0), []), T0, floor=2, sustain_sec=300.0))
+    assert out["gpu_queue_shed_held"] == 0 and out["gpu_shed_reason"] is None
+    assert out["gpu_queue_sustained_sec"] >= 300.0
+
+
 def test_store_fault_read_failure_makes_gpu_stale_not_load():
     from app import regulation_store
 

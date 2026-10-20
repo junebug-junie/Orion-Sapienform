@@ -568,6 +568,41 @@ the individuals loop backs off with a clear error. Replay eval (read-only on liv
 sightings `VISION_SIGHTING_RETENTION_DAYS` (90); unlabeled individuals unseen
 for the sighting retention are deleted, labeled ones stay.
 
+**Person learning** (`app/vision_person_model.py`, inside the individuals
+tick at most every `VISION_PERSON_MODEL_INTERVAL_SEC` (600), flag
+`VISION_PERSON_MODEL_ENABLED`, on). Orion learns who people are from Juniper's
+answers (design: `docs/superpowers/specs/2026-10-20-walkway-person-learning-design.md`).
+Each tick it:
+
+1. Reconciles the album (`vision_person_exemplar`). A cluster Juniper named
+   (typed: `cluster_label`; carried by a "same person" answer: `pair_same`)
+   adds its crops as +1 for that name. A "different" picture adds its crop as
+   -1 for the cluster's name (`picture_different`). A named cluster whose best
+   two-way split of body vectors is less alike than the 10th percentile of
+   same-sighting crop pairs (learned each tick) looks like two people and adds
+   nothing until she answers. Rows whose answer no longer holds (a rename, a
+   split) get `revoked_at`.
+2. Refits the bars (`vision_person_bar`, per person and channel) only when the
+   album changed. Genuine scores leave out the scored crop's cluster AND its
+   local day, so a channel that only matches same-day clothes gets no accept
+   bar. `accept_at` is a conformal false-accept bound at
+   `VISION_PERSON_FALSE_ACCEPT_ALPHA` (0.05; needs >= 19 impostor scores),
+   `reject_below` the same rule on genuine scores. NULL = ask only.
+3. Guesses (`vision_person_attribution`): one row per unnamed, recently seen
+   person cluster, its best person, band `accept` ("probably X") or `unsure`.
+   Score = median over its newest 20 crops of the mean top-`VISION_PERSON_TOP_K`
+   cosines to the album. Face when both sides have faces, else
+   `VISION_PERSON_FALLBACK_CHANNEL` (body). Accepted for two people = unsure;
+   a person ruled out by a -1 crop in the cluster is never guessed. A guess
+   never writes `vision_individual.label`.
+
+Needs `manual_migration_vision_person_album_v1.sql`; without it the step logs
+`person_model: skipped` and the rest of the tick runs. Eval (read-only on
+live; `--write` stores a `vision_person_model_eval` row):
+`evals/run_person_recognition_eval.py --live <dsn>` -- leave-one-cluster-out,
+gate = zero wrong accepts; a new model version must beat the last on an exact
+McNemar test (p < 0.05).
+
 **Rhythm loop** (`app/vision_rhythm.py`, every `VISION_RHYTHM_INTERVAL_SEC`,
 default 900 s). Subjects are individuals and the labels in
 `VISION_RHYTHM_LABELS` (arrivals from `vision_scene_inventory`: first positive

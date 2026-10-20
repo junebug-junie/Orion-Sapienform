@@ -79,7 +79,8 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
         _entry("pcr_memory", "memory_recall", "PCR (persistent chat recall) memory payload."),
         _entry("memory_digest", "memory_recall", "Compact digest of recalled memory."),
         _entry("continuity_digest", "memory_recall", "Digest of continuity-relevant recalled memory."),
-        # --- derived summary: deterministic reduction of other context, not itself live ---
+        # --- derived summary: deterministic reduction of other context or of persisted past
+        # records (recent_arcs, recent_attention), not itself live ---
         _entry("belief_digest", "derived_summary", "Reduction of the unified relational belief graph."),
         _entry("situation_brief", "derived_summary", "Situation summary derived from ctx."),
         _entry("presence_context", "derived_summary", "Presence/availability framing derived from ctx."),
@@ -112,8 +113,8 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
         _entry(
             "recent_attention",
             "derived_summary",
-            "Orion's last few narrated moments of attention, read from persisted "
-            "substrate_attention_schema rows and age-labelled ('about 2 hours ago'); a record of "
+            "Orion's last few narrated moments of attention: a fixed-template reduction (no LLM) of "
+            "persisted substrate_attention_schema rows, age-labelled ('about 2 hours ago'); a record of "
             "recent past attention, not this tick (app/recent_attention_reader.py, "
             "orion/substrate/recent_attention_cue.py).",
         ),

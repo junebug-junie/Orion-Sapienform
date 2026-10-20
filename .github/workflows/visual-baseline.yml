@@ -63,7 +63,7 @@ jobs:
           tests/test_action_outcome_resolution.py tests/test_feedback_runtime_store.py
           tests/test_express_outward_action.py
           tests/test_dim_reverie_outcomes_covers_terminal_reasons.py
-          orion/reverie/tests/test_proposal.py
+          orion/reverie/tests/test_proposal.py orion/reverie/tests/test_proposal_world_winner.py
       - name: Thought storage, source, HTTP and replica contracts
         run: >-
           python -m pytest -q services/orion-thought/tests/test_visual_activity.py

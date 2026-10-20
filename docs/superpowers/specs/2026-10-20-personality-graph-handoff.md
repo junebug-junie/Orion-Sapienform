@@ -34,6 +34,7 @@ The answer being built is a **bottom-up personality graph**:
 | #2739 | Every evidence row records `meta.situation` (arousal, day phase, company) at its own time |
 | #2743 | "When" column (situation mix per node) in the panel; reads wait for the Temporal Self chronicle watermark minus `COMPANY_CLOSE_GRACE` (180 s) so situations are final when stamped |
 | #2746 | The choice line needs at least 5 choices and names the window it really covers |
+| #2770 | The cue fits every active node: limit 600 → 900 characters, labels shortened to 64 characters at a whole word. Deployed 10-20. |
 
 ### How the weights work (`graph.py`)
 
@@ -63,12 +64,11 @@ The answer being built is a **bottom-up personality graph**:
 
 ## Problems the live data shows (do these next, in this order)
 
-1. **Orion sees only 1 of the 4 active themes.**
-   - Cause: the cue is capped at 600 characters (`PERSONALITY_CUE_MAX_CHARS`), and each label line shows up to 120 characters plus lanes and counts. After the header and the choice line, only the top node fits.
-   - Effect: the self-inquiry theme (#3), the only non-prediction-error node, never reaches Orion.
-   - Fix in `orion/personality/cue.py`: shorten the shown label (about 60-70 characters) and/or trim the header, so 3-5 nodes fit. Keep the cap, or raise it deliberately; `PersonalityCueV1.text` has a `max_length`.
-   - Verify against the live frame, then deploy durable-runs, thought and Hub, which all share the renderer.
-2. **Correlated lanes promote prediction-error themes.**
+1. ~~**Orion sees only 1 of the 4 active themes.**~~ **Done in #2770, deployed 10-20.**
+   - Evidence: the Hub `/api/personality/cue` lists all 4 ids in 732 characters, and all three containers run the new limits (900, 64).
+   - Still **UNVERIFIED** for orion-thought, because no chat turn or reverie has run since the deploy. Check that `docker logs orion-athena-thought 2>&1 | grep personality_cue` shows `rendered=True` with 4 ids.
+   - Effect: Orion now sees the self-inquiry theme. That makes step 2 more urgent, because 3 of the 4 themes Orion now sees are prediction-error narration.
+2. **START HERE: correlated lanes promote prediction-error themes.**
    - 3 of the 4 active nodes are prediction-error narration backed by reverie plus the journal. Most of that journal is `source_kind=metacog`. Both narrate the same substrate signals, so "two lanes" is really one source.
    - This was flagged as a risk in #2738 and is now confirmed.
    - Next: measure lane co-occurrence per node from `personality_evidence` (4 days of data now). Then decide between down-weighting or merging correlated lane pairs (for example, treat metacog journal and reverie as one lane family for promotion) and leaving it.

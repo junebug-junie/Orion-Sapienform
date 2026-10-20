@@ -67,6 +67,9 @@ These deploy scripts only: `scripts/rebuild_affected_services.py`, `scripts/rebu
   tests/scripts/test_safe_docker_build_compose_file.py \
   tests/scripts/test_safe_docker_build_heartbeat.py -q          -> 131 passed
 services/orion-vision-host/tests/test_circe_qwen_lane_compose.py -> 6 passed
+POST_PULL_MIGRATIONS_TEST_POSTGRES_URI=<throwaway postgres:16> pytest tests/test_post_pull_apply_migrations_postgres.py -> 9 passed
+  (CI caught this one: its fake helper did not know --running-extra-compose and fell through to
+   its default answer, which the rebuild read as an extra compose file; the fake now no-ops it)
 Mutation check: removing the "path still exists" guard in _orphaned_copy_of
   -> test_live_sibling_worktree_deploys_are_never_taken_over FAILS; restored -> passes
 ```

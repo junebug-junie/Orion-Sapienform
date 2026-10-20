@@ -268,6 +268,7 @@ class FakeReader:
         self.items: dict[str, list[SourceItem]] = {}
         self.seeds: list[SourceItem] = []
         self.seed_reads = 0
+        self.namings: list[dict] = []  # orion_disposition_naming rows
 
     def add(self, source: str, item: SourceItem) -> None:
         self.items.setdefault(source, []).append(item)
@@ -285,9 +286,14 @@ class FakeReader:
         self.seed_reads += 1
         return [s for s in self.seeds if s.at <= now]
 
+    async def read_namings(self, cursor, hi):
+        cur = (cursor.at, cursor.ref) if cursor is not None else (datetime(1970, 1, 1, tzinfo=timezone.utc), "")
+        rows = sorted(self.namings, key=lambda r: (r["created_at"], r["naming_id"]))
+        return [r for r in rows if (r["created_at"], r["naming_id"]) > cur and r["created_at"] < hi][:200]
+
 
 def _copy(n: Node) -> Node:
-    return replace(n, centroid=list(n.centroid), lane_counts=dict(n.lane_counts))
+    return replace(n, centroid=list(n.centroid), lane_counts=dict(n.lane_counts), lane_recent=dict(n.lane_recent))
 
 
 class FakeStore:

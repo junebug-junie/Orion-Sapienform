@@ -183,9 +183,17 @@ from orion.curiosity.self_inquiry import (
     read_self_definition_count,
     read_self_question_mints,
     self_definition_from_detail,
+    pinned_floor_overdue,
+    read_disposition_naming,
+    valid_naming_id,
 )
+from orion.personality.naming_check import check_naming
 from orion.cognition.recall_query import cap_retrieval_query
-from orion.curiosity.self_inquiry_prompt import PreviousLivedAnswer, build_self_inquiry_prompt
+from orion.curiosity.self_inquiry_prompt import (
+    PreviousLivedAnswer,
+    build_self_inquiry_prompt,
+    build_self_naming_prompt,
+)
 from orion.curiosity.self_question_pool import (
     SELECT_ALL_SQL,
     UPSERT_ASK_SQL,
@@ -275,7 +283,12 @@ from orion.schemas.durable_run import (
 from orion.curiosity.urgent_prompt import build_urgent_prompt
 from orion.schemas.curiosity_urgent import CuriosityUrgentSeedV1
 from orion.schemas.curiosity_focus import FOCUS_QUESTION_MAX_CHARS, CuriosityFocusAnchorV1
-from orion.schemas.personality import PersonalityCueV1
+from orion.schemas.personality import (
+    PERSONALITY_NAMING_KIND,
+    DispositionNamingPacketV1,
+    DispositionNamingV1,
+    PersonalityCueV1,
+)
 
 # RPC source name on the pool ``status`` reads Hub makes for a carried hold ref (stage 4.4).
 GPU_LEASE_STATUS_SOURCE = "orion-hub"
@@ -348,6 +361,17 @@ def _urgent_requested_ts(value: Any) -> float:
 _SELF_COOLDOWN_KEY = "orion:curiosity:self:last_inquiry_at"
 _SELF_DAILY_COUNT_KEY_PREFIX = "orion:curiosity:self:count:"
 _SELF_LAST_RUN_KEY = "orion:curiosity:self:last_run_id"
+# The naming branch of the self-inquiry line (Orion names their own dispositions; spec
+# docs/superpowers/specs/2026-10-17-personality-orion-names-dispositions-design.md). Its own
+# daily counter (a naming run also counts as one self-inquiry run), and the packet each naming
+# run was shown -- kept so the durable completion event, which may arrive hours later or after
+# a Hub restart, can check the answer against exactly what Orion saw.
+_SELF_NAMING_DAILY_COUNT_KEY_PREFIX = "orion:curiosity:self_naming:count:"
+_SELF_NAMING_PACKET_KEY_PREFIX = "orion:curiosity:self_naming:packet:"
+_SELF_NAMING_PACKET_TTL_SEC = 7 * 86400
+PERSONALITY_NAMING_CHANNEL = "orion:personality:naming"
+NAMING_NEXT_PATH = "/personality/naming/next"
+NAMING_FETCH_TIMEOUT_SEC = 3.0
 _SELF_RECENT_FAMILIES_KEY = "orion:curiosity:self:recent_families"
 _SELF_RECENT_FAMILIES_MAX = 12
 
@@ -902,6 +926,10 @@ class CuriosityInvestigation:
         self_lived_weight: float = 0.75,
         self_pinned_floor_days: float = 7.0,
         sandbox_repo_root: str = "/repo",
+        # Naming branch: off here so bare constructions (tests) make no network call;
+        # settings ship it on (HUB_CURIOSITY_SELF_NAMING_ENABLED).
+        self_naming_enabled: bool = False,
+        self_naming_daily_cap: int = 1,
         # --- the self-sense eval line ---------------------------------------
         self_sense_eval_enabled: bool = False,
         self_sense_eval_daily_cap: int = 1,
@@ -1104,6 +1132,12 @@ class CuriosityInvestigation:
         self.self_lived_weight = float(self_lived_weight)
         self.self_pinned_floor_days = float(self_pinned_floor_days)
         self.sandbox_repo_root = str(sandbox_repo_root or "/repo")
+        self.self_naming_enabled = bool(self_naming_enabled)
+        self.self_naming_daily_cap = int(self_naming_daily_cap)
+        # In-process fallbacks for the Redis state below (tests, or Redis down).
+        self._naming_done_today = 0
+        self._naming_done_today_date: Optional[str] = None
+        self._naming_packets: dict[str, DispositionNamingPacketV1] = {}
         self._self_last_monotonic: Optional[float] = None
         self._self_done_today = 0
         self._self_done_today_date: Optional[str] = None
@@ -3410,6 +3444,14 @@ class CuriosityInvestigation:
 
         await self._ensure_self_question_seed()
         pool = merge_seed_with_rows(load_seed_questions(), await self._fetch_self_questions())
+        # Pre-pick branch: one naming sitting instead of a pool question, when durable-runs has a
+        # disposition due and Juniper's pinned floor is not overdue (spec section 1).
+        packet = await self._choose_naming_packet(pool, now=now)
+        if packet is not None:
+            return await self._self_name(
+                packet=packet, view=view, now=now, run_id=run_id,
+                correlation_id=correlation_id, done_today=done_today,
+            )
         recent = await self._read_recent_self_families()
         picked = pick_question(
             pool=pool,
@@ -3480,58 +3522,12 @@ class CuriosityInvestigation:
                 consumer_run_id=run_id,
             )
         material = StudyMaterial(generated_at=now)
-        if self.kickoff_via_cortex:
-            try:
-                dispatched = await self._dispatch_durable_run(
-                    run_id=run_id,
-                    correlation_id=correlation_id,
-                    prompt=prompt,
-                    material=material,
-                    line=LINE_SELF_INQUIRY,
-                    retrieval_query=retrieval_query,
-                )
-            except asyncio.CancelledError:
-                if not self.durable_admission_enabled:
-                    await self._refund_investigation(previous_stamp, LINE_SELF_INQUIRY)
-                raise
-            if dispatched:
-                return "dispatched"
-            if self.durable_admission_enabled:
-                # Registration may have committed before the receipt was lost.
-                # Never bypass admission or refund a potentially queued run.
-                logger.warning("curiosity_admission_unconfirmed run=%s", run_id)
-                return None
-            logger.warning(
-                "curiosity_durable_dispatch_fell_back run=%s line=%s -- running the turn in-process",
-                run_id,
-                LINE_SELF_INQUIRY,
-            )
-        try:
-            if self.kickoff_via_cortex:
-                turn = await self._turn_result_for(
-                    CuriosityTurnRequestV1(
-                        run_id=run_id,
-                        correlation_id=correlation_id,
-                        prompt=prompt,
-                        fcc_model_label=self._fcc_model_label,
-                        timeout_sec=float(self.timeout_sec),
-                        source_tag=SELF_INQUIRY_TAG,
-                        retrieval_query=retrieval_query,
-                    ),
-                    hold_lock=False,
-                )
-                text, debug = turn.text, dict(turn.debug)
-            else:
-                text, debug = await self._generate(
-                    prompt,
-                    correlation_id,
-                    source=SELF_INQUIRY_TAG,
-                    parent_run_id=run_id,
-                    **({"retrieval_query": retrieval_query} if retrieval_query else {}),
-                )
-        except asyncio.CancelledError:
-            await self._refund_investigation(previous_stamp, LINE_SELF_INQUIRY)
-            raise
+        stop, text, debug = await self._run_self_turn(
+            run_id=run_id, correlation_id=correlation_id, prompt=prompt, material=material,
+            retrieval_query=retrieval_query, previous_stamp=previous_stamp,
+        )
+        if stop is not None:
+            return stop or None
         if not text:
             logger.info("curiosity_self_inquiry_no_text run=%s debug=%s", run_id, debug)
             return "empty_generation"
@@ -3593,6 +3589,331 @@ class CuriosityInvestigation:
                 line=LINE_SELF_INQUIRY,
             )
         return None
+
+    async def _run_self_turn(
+        self,
+        *,
+        run_id: str,
+        correlation_id: str,
+        prompt: str,
+        material: StudyMaterial,
+        retrieval_query: Optional[str],
+        previous_stamp: Optional[str],
+    ) -> tuple[Optional[str], str, dict]:
+        """Run one self-inquiry turn: durable dispatch first, in-process as the fallback.
+
+        Returns ``(stop, text, debug)``. ``stop`` is ``"dispatched"`` when durable-runs took the
+        run, ``""`` when admission is unconfirmed (the caller returns None and must not refund),
+        and None when the turn ran here and ``text``/``debug`` hold its result."""
+        if self.kickoff_via_cortex:
+            try:
+                dispatched = await self._dispatch_durable_run(
+                    run_id=run_id,
+                    correlation_id=correlation_id,
+                    prompt=prompt,
+                    material=material,
+                    line=LINE_SELF_INQUIRY,
+                    retrieval_query=retrieval_query,
+                )
+            except asyncio.CancelledError:
+                if not self.durable_admission_enabled:
+                    await self._refund_investigation(previous_stamp, LINE_SELF_INQUIRY)
+                raise
+            if dispatched:
+                return "dispatched", "", {}
+            if self.durable_admission_enabled:
+                # Registration may have committed before the receipt was lost.
+                # Never bypass admission or refund a potentially queued run.
+                logger.warning("curiosity_admission_unconfirmed run=%s", run_id)
+                return "", "", {}
+            logger.warning(
+                "curiosity_durable_dispatch_fell_back run=%s line=%s -- running the turn in-process",
+                run_id,
+                LINE_SELF_INQUIRY,
+            )
+        try:
+            if self.kickoff_via_cortex:
+                turn = await self._turn_result_for(
+                    CuriosityTurnRequestV1(
+                        run_id=run_id,
+                        correlation_id=correlation_id,
+                        prompt=prompt,
+                        fcc_model_label=self._fcc_model_label,
+                        timeout_sec=float(self.timeout_sec),
+                        source_tag=SELF_INQUIRY_TAG,
+                        retrieval_query=retrieval_query,
+                    ),
+                    hold_lock=False,
+                )
+                text, debug = turn.text, dict(turn.debug)
+            else:
+                text, debug = await self._generate(
+                    prompt,
+                    correlation_id,
+                    source=SELF_INQUIRY_TAG,
+                    parent_run_id=run_id,
+                    **({"retrieval_query": retrieval_query} if retrieval_query else {}),
+                )
+        except asyncio.CancelledError:
+            await self._refund_investigation(previous_stamp, LINE_SELF_INQUIRY)
+            raise
+        return None, text, debug
+
+    # --- the naming branch --------------------------------------------------
+    #
+    # Orion names their own dispositions (spec docs/superpowers/specs/2026-10-17-personality-
+    # orion-names-dispositions-design.md, sections 1-4; decisions 2026-10-20). Same turn, same
+    # credentials and budget as any self-inquiry run; one different question, one different
+    # write (`:DispositionNaming`), one different mirror (`orion:personality:naming`, never
+    # self_concept_history -- that store folds back into the personality graph as evidence).
+
+    def _naming_daily_key(self, now: datetime) -> str:
+        local = now.astimezone(self._tz) if self._tz else now
+        return f"{_SELF_NAMING_DAILY_COUNT_KEY_PREFIX}{local.date().isoformat()}"
+
+    def _roll_naming_counter(self, now: datetime) -> None:
+        today = (now.astimezone(self._tz) if self._tz else now).date().isoformat()
+        if self._naming_done_today_date != today:
+            self._naming_done_today_date = today
+            self._naming_done_today = 0
+
+    async def _naming_runs_today(self, now: datetime) -> int:
+        """Naming runs started today (operator's local date). Redis is the durable source, the
+        same store as every other line's daily cap; counted at start, so a run still in flight
+        counts. In-process fallback when Redis is absent or unreadable."""
+        self._roll_naming_counter(now)
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return self._naming_done_today
+        try:
+            raw = await redis.get(self._naming_daily_key(now))
+            return max(int(raw or 0), self._naming_done_today)
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_self_naming_count_read_failed", exc_info=True)
+            return self._naming_done_today
+
+    async def _record_naming_run(
+        self, now: datetime, run_id: str, packet: DispositionNamingPacketV1
+    ) -> None:
+        self._roll_naming_counter(now)
+        self._naming_done_today += 1
+        self._naming_packets[run_id] = packet
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return
+        try:
+            key = self._naming_daily_key(now)
+            await redis.incr(key)
+            await redis.expire(key, _STATE_TTL_SEC)
+            await redis.setex(
+                f"{_SELF_NAMING_PACKET_KEY_PREFIX}{run_id}",
+                _SELF_NAMING_PACKET_TTL_SEC,
+                packet.model_dump_json(),
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_self_naming_state_write_failed run=%s", run_id, exc_info=True)
+
+    async def _naming_packet_for(self, run_id: str) -> Optional[DispositionNamingPacketV1]:
+        """The packet a naming run was shown, or None when this run was not a naming run."""
+        packet = self._naming_packets.get(run_id)
+        if packet is not None:
+            return packet
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return None
+        try:
+            raw = await redis.get(f"{_SELF_NAMING_PACKET_KEY_PREFIX}{run_id}")
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_self_naming_packet_read_failed run=%s", run_id, exc_info=True)
+            return None
+        if not raw:
+            return None
+        try:
+            return DispositionNamingPacketV1.model_validate_json(raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_self_naming_packet_invalid run=%s err=%s", run_id, exc)
+            return None
+
+    async def _fetch_naming_packet(self) -> tuple[Optional[DispositionNamingPacketV1], str]:
+        """(packet, reason). GET {durable_runs_url}/personality/naming/next -- same base URL as
+        the personality cue. 204 -> (None, "nothing_due"). Never raises."""
+        root = str(self.durable_runs_url or "").strip().rstrip("/")
+        if not root:
+            return None, "no_url"
+        try:
+            async with httpx.AsyncClient(timeout=NAMING_FETCH_TIMEOUT_SEC) as client:
+                resp = await asyncio.wait_for(
+                    client.get(f"{root}{NAMING_NEXT_PATH}"), timeout=NAMING_FETCH_TIMEOUT_SEC
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.info("curiosity_self_naming_fetch_failed err=%s: %s", type(exc).__name__, str(exc)[:200])
+            return None, "fetch_failed"
+        if resp.status_code == 204:
+            return None, "nothing_due"
+        if resp.status_code != 200:
+            return None, f"http_{resp.status_code}"
+        try:
+            return DispositionNamingPacketV1.model_validate(resp.json()), "ok"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_self_naming_packet_invalid err=%s", str(exc)[:300])
+            return None, "invalid_packet"
+
+    async def _choose_naming_packet(
+        self, pool: Any, *, now: datetime
+    ) -> Optional[DispositionNamingPacketV1]:
+        """The pre-pick decision. A packet only when: the branch is on, no pinned lived question
+        is overdue, today's naming cap has room, and durable-runs has a disposition due."""
+        if not self.self_naming_enabled:
+            return None
+        reason: Optional[str] = None
+        packet: Optional[DispositionNamingPacketV1] = None
+        if pinned_floor_overdue(pool, pinned_floor_days=self.self_pinned_floor_days, now=now):
+            reason = "pinned_floor_due"
+        elif self.self_naming_daily_cap >= 0 and (
+            await self._naming_runs_today(now)
+        ) >= self.self_naming_daily_cap:
+            reason = "daily_cap"
+        else:
+            packet, fetched = await self._fetch_naming_packet()
+            if packet is None:
+                reason = fetched
+            elif valid_naming_id(packet.packet_id) is None or valid_naming_id(packet.disposition_id) is None:
+                reason, packet = "unsafe_ids", None
+        if packet is None:
+            logger.info("curiosity_self_naming_skipped reason=%s", reason)
+        return packet
+
+    async def _self_name(
+        self,
+        *,
+        packet: DispositionNamingPacketV1,
+        view: WorldviewSnapshot,
+        now: datetime,
+        run_id: str,
+        correlation_id: str,
+        done_today: int,
+    ) -> Optional[str]:
+        """One naming sitting. Held under `_run_lock`. Uses one self-inquiry slot; adds none."""
+        prompt = build_self_naming_prompt(
+            packet=packet,
+            run_id=run_id,
+            view=view,
+            granted_tables=SELF_INQUIRY_PG_TABLES,
+            own_graph=self.graph_own,
+            atlas_graph=self.graph_atlas,
+            hub_url=self.hub_url,
+            max_hops=self.max_hops,
+            graph_enabled=self.graph_enabled,
+        )
+        self._self_last_monotonic = time.monotonic()
+        self._self_done_today = done_today + 1
+        previous_stamp = await self._read_cooldown_stamp(LINE_SELF_INQUIRY)
+        await self._record_investigation(now, run_id, LINE_SELF_INQUIRY)
+        await self._record_naming_run(now, run_id, packet)
+        logger.info(
+            "curiosity_disposition_naming_shown run=%s disposition=%s packet=%s evidence=%s "
+            "neighbors=%s prior=%s corr=%s",
+            run_id,
+            packet.disposition_id,
+            packet.packet_id,
+            len(packet.evidence),
+            len(packet.neighbors),
+            packet.prior_verdict.verdict if packet.prior_verdict else "-",
+            correlation_id,
+        )
+        self._mind_appraisal_by_run_id[run_id] = _investigation_subject_from_view(view)
+        material = StudyMaterial(generated_at=now)
+        stop, text, debug = await self._run_self_turn(
+            run_id=run_id, correlation_id=correlation_id, prompt=prompt, material=material,
+            retrieval_query=cap_retrieval_query(packet.label_excerpt), previous_stamp=previous_stamp,
+        )
+        if stop is not None:
+            # Durable-runs owns the turn; the completion (or failure) event publishes the row.
+            return stop or None
+        outcome = None
+        if text:
+            outcome, footprint, hops, _evidence = await self._read_turn_result(run_id)
+            await self._publish_attention_schema(
+                run_id=run_id, outcome=outcome, correlation_id=correlation_id, now=now
+            )
+            await self._journal(
+                material=material,
+                text=text,
+                correlation_id=correlation_id,
+                run_id=run_id,
+                harness_step_count=debug.get("harness_step_count"),
+                harness_grounding_status=debug.get("harness_grounding_status"),
+                harness_elapsed_sec=debug.get("elapsed_sec"),
+                harness_fcc_elapsed_sec=debug.get("fcc_elapsed_sec"),
+                graph_footprint=footprint,
+                hop_notes=hops,
+                line=LINE_SELF_INQUIRY,
+            )
+            await self._enqueue_help_requests_after_run(run_id)
+        else:
+            logger.info("curiosity_self_inquiry_no_text run=%s debug=%s", run_id, debug)
+        # Exactly one row per naming run, with or without text.
+        await self._mirror_disposition_naming(run_id=run_id, correlation_id=correlation_id, packet=packet)
+        if not text:
+            return "empty_generation"
+        if outcome is not None and outcome.reach_out:
+            await self._maybe_reach_out(
+                outcome=outcome, finding_text=text, run_id=run_id, hop_notes=(), line=LINE_SELF_INQUIRY,
+            )
+        return None
+
+    async def _read_run_disposition_naming(self, run_id: str) -> Optional[dict[str, Any]]:
+        reader = self._reader
+        if reader is None:
+            return None
+        try:
+            return await asyncio.to_thread(read_disposition_naming, reader, run_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_disposition_naming_read_failed run=%s err=%s", run_id, exc)
+            return None
+
+    async def _mirror_disposition_naming(
+        self,
+        *,
+        run_id: str,
+        correlation_id: str,
+        packet: DispositionNamingPacketV1,
+        read_graph: bool = True,
+    ) -> Optional[DispositionNamingV1]:
+        """Read the run's `:DispositionNaming` read-only, check its structure, publish exactly one
+        `DispositionNamingV1` on orion:personality:naming. ``read_graph=False`` for a run that
+        never finished (published as no_answer). Returns the row, or None if publishing failed."""
+        raw = await self._read_run_disposition_naming(run_id) if read_graph else None
+        row = check_naming(raw, packet, run_id)
+        self._naming_packets.pop(run_id, None)
+        if self._bus is None:
+            return None
+        try:
+            await self._bus.publish(
+                PERSONALITY_NAMING_CHANNEL,
+                BaseEnvelope(
+                    kind=PERSONALITY_NAMING_KIND,
+                    source=self._source_ref,
+                    correlation_id=uuid5(NAMESPACE_URL, f"{SELF_INQUIRY_TAG}:naming:{run_id}"),
+                    payload=row.model_dump(mode="json"),
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_disposition_naming_publish_failed run=%s", run_id, exc_info=True)
+            return None
+        logger.info(
+            "curiosity_disposition_naming_published run=%s disposition=%s packet=%s verdict=%s "
+            "hub_check=%s reasons=%s naming_id=%s corr=%s",
+            run_id,
+            row.disposition_id,
+            row.packet_id,
+            row.verdict,
+            row.hub_check,
+            ",".join(row.refused_reasons) or "-",
+            row.naming_id,
+            correlation_id,
+        )
+        return row
 
     async def _read_run_self_definition(self, run_id: str) -> Optional[SelfDefinition]:
         reader = self._reader
@@ -5049,6 +5370,14 @@ class CuriosityInvestigation:
         if state.workflow == "curiosity.investigate" and state.status in {"failed", "abandoned", "cancelled"}:
             await self._release_carry_forward_if_unseen(state.run_id)
             await self._settle_focus_after_run_end(state.run_id)
+            # A naming run that never finished still leaves its one row (no_answer), so the
+            # re-ask clock and the refusal rate stay countable. Keyed on the stored packet.
+            failed_packet = await self._naming_packet_for(state.run_id)
+            if failed_packet is not None:
+                await self._mirror_disposition_naming(
+                    run_id=state.run_id, correlation_id=state.correlation_id,
+                    packet=failed_packet, read_graph=False,
+                )
         if state.workflow != "curiosity.investigate" or state.status != "completed":
             return
         # Normally the turn end already stamped it; this only catches a stamp that failed.
@@ -5061,7 +5390,17 @@ class CuriosityInvestigation:
             # An investigation may revise lived answers it was shown
             # (`_lived_questions_section`); Hub owns the mirror, same as below.
             await self._mirror_investigation_lived_answers(state.run_id, state.correlation_id)
-        if str(detail.get("line") or LINE_INVESTIGATE) == LINE_SELF_INQUIRY:
+        naming_packet = (
+            await self._naming_packet_for(state.run_id)
+            if str(detail.get("line") or LINE_INVESTIGATE) == LINE_SELF_INQUIRY
+            else None
+        )
+        if naming_packet is not None:
+            # A naming sitting writes `:DispositionNaming`, never LivedAnswer/SelfDefinition.
+            await self._mirror_disposition_naming(
+                run_id=state.run_id, correlation_id=state.correlation_id, packet=naming_packet
+            )
+        elif str(detail.get("line") or LINE_INVESTIGATE) == LINE_SELF_INQUIRY:
             # Hub owns the mirror because Hub has the memory pool for the version
             # lookup. Prefer detail when the runner carried it; otherwise read
             # the run's graph node directly (same as the in-process path).

@@ -1,12 +1,15 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 748,
+  "metric_count": 750,
   "_last_change": {
-    "change_count": 2,
-    "high_severity_count": 2,
+    "change_count": 5,
+    "high_severity_count": 3,
     "changes": [
+      "high   routing_changed metric://bus_channel/orion-vision-council/orion:vision:events (all_producers: \u2026rion-vision-window'] -> \u2026rion-vision-retina', 'orion-vision-window'])",
       "high   semantics_changed metric://field_channel/orion-field-digester/execution_friction (meaning: \u2026g on a node. -> \u2026g on a node. Failed steps over started steps; deliberate GP\u2026)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/failure_pressure (meaning: \u2026y on a node. -> \u2026y on a node. A step the GPU pool shed on purpose (gpu_pool_\u2026)"
+      "high   semantics_changed metric://field_channel/orion-field-digester/failure_pressure (meaning: \u2026y on a node. -> \u2026y on a node. A step the GPU pool shed on purpose (gpu_pool_\u2026)",
+      "medium added metric://bus_channel/orion-hub/orion:personality:naming",
+      "medium added metric://bus_channel/orion-vision-retina/orion:vision:street:events"
     ]
   },
   "definitions": {
@@ -2310,6 +2313,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-hub/orion:personality:naming": {
+      "schema_id": "DispositionNamingV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-hub/orion:reading:lifecycle": {
       "schema_id": "ReadingLifecycleV1",
       "all_producers": [
@@ -3487,6 +3501,7 @@
       "schema_id": "VisionEventPayload",
       "all_producers": [
         "orion-vision-council",
+        "orion-vision-retina",
         "orion-vision-window"
       ],
       "declared_consumers": [
@@ -3630,6 +3645,17 @@
         "orion-juniper-affective-state"
       ],
       "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-retina/orion:vision:street:events": {
+      "schema_id": "StreetEventV1",
+      "all_producers": [
+        "orion-vision-retina"
+      ],
+      "declared_consumers": [
+        "orion-substrate-runtime"
+      ],
+      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-vision-scribe/orion:exec:result:VisionScribeService": {

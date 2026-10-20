@@ -1497,6 +1497,10 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "services.orion-hub.scripts.api_routes:_mutation_arousal_level -> "
             "orion.substrate.mutation_pressure:PressureAccumulator.ready_for_proposal "
             "(no self-modification proposal while strained)",
+            "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> "
+            "orion.temporal_self.arcs:_fold_strain (strain loop part 1: one `strain` arc per "
+            "episode from the arousal_transition rows; read by the chat stance cue, the Day "
+            "letter and the reverie arc block)",
         ),
         notes=(
             "Temporal Self rev 4 (PR #2369) R3. Inputs: E1 Juniper turns "

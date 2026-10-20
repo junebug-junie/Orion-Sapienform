@@ -87,6 +87,13 @@ DispositionStatus = Literal["candidate", "active", "retired"]
 PersonalityCueSkipReason = Literal["disabled", "fetch_failed", "invalid_frame", "stale", "empty", "render_failed"]
 DISPOSITION_LABEL_MAX_CHARS = 160
 FRAME_MAX_DISPOSITIONS = 12
+NAMING_NAME_MAX_CHARS = 40
+NAMING_NAME_MAX_WORDS = 6
+NAMING_SENTENCE_MIN_CHARS = 20
+NAMING_SENTENCE_MAX_CHARS = 240
+NAMING_PACKET_MAX_EVIDENCE = 5
+NAMING_PACKET_MAX_NEIGHBORS = 3
+PERSONALITY_NAMING_KIND = "personality.naming.v1"
 # Room for the header, five shortened node lines and the choice line (live 2026-10-20: at 600 only
 # the top node fit, so the one non-prediction-error theme never reached Orion).
 PERSONALITY_CUE_MAX_CHARS = 900
@@ -112,6 +119,10 @@ class DispositionV1(BaseModel):
     chosen_count: int = Field(default=0, ge=0)  # curiosity picks that reinforced it
     first_seen_at: AwareDatetime
     last_reinforced_at: AwareDatetime
+    # Orion's own name for the node (self-naming, docs/.../2026-10-17-personality-orion-names-
+    # dispositions-design.md). None until Orion names it. ``label`` keeps its meaning (the excerpt).
+    name: Optional[str] = Field(default=None, max_length=NAMING_NAME_MAX_CHARS)
+    name_sentence: Optional[str] = Field(default=None, max_length=NAMING_SENTENCE_MAX_CHARS)
 
 
 class ChoiceStyleV1(BaseModel):
@@ -153,3 +164,97 @@ class PersonalityCueV1(BaseModel):
     frame_generated_at: Optional[AwareDatetime] = None
     disposition_ids: List[str] = Field(default_factory=list)
     skip_reason: Optional[PersonalityCueSkipReason] = None
+
+
+
+# --- Self-naming (Orion names their own dispositions) ------------------------------------------
+# Spec: docs/superpowers/specs/2026-10-17-personality-orion-names-dispositions-design.md (PR #2742),
+# decisions 2026-10-20: names reach every lane at once; evidence quoting a node's own name adds no
+# weight; grounding is recorded, never a refusal; no Juniper veto.
+# Flow: durable-runs GET /personality/naming/next -> DispositionNamingPacketV1 -> Hub self-inquiry
+# naming run -> DispositionNamingV1 on orion:personality:naming -> orion-sql-writer ->
+# orion_disposition_naming -> durable-runs applies it (single writer of personality_*).
+
+NamingVerdict = Literal["name", "reject", "merge", "no_answer"]
+NamingHubCheck = Literal["accepted", "refused"]
+NamingRefusedReason = Literal[
+    "unknown_disposition", "packet_mismatch", "merge_target_not_shown", "evidence_not_shown",
+    "name_too_long", "name_equals_label", "empty_sentence", "missing_name", "missing_merge_target",
+    "no_evidence_refs", "sentence_too_long",
+]
+
+
+class NamingEvidenceV1(BaseModel):
+    """One evidence row shown to Orion in a naming packet."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    evidence_id: str = Field(min_length=1)
+    lane: str = Field(min_length=1)
+    occurred_at: AwareDatetime
+    excerpt: str = Field(min_length=1, max_length=DISPOSITION_LABEL_MAX_CHARS)
+
+
+class NamingNeighborV1(BaseModel):
+    """A nearby non-retired node: the only valid MERGE targets."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    disposition_id: str = Field(min_length=1)
+    label: str = Field(min_length=1, max_length=DISPOSITION_LABEL_MAX_CHARS)  # name if named, else excerpt
+    cosine: float = Field(ge=-1.0, le=1.0)
+
+
+class NamingPriorVerdictV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    verdict: NamingVerdict
+    name: Optional[str] = Field(default=None, max_length=NAMING_NAME_MAX_CHARS)
+    sentence: Optional[str] = Field(default=None, max_length=NAMING_SENTENCE_MAX_CHARS)
+    at: AwareDatetime
+
+
+class DispositionNamingPacketV1(BaseModel):
+    """What Orion is shown about one node. Built by durable-runs from its own rows. Weight is not
+    shown: it is not a fact Orion can check against the excerpts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["personality.naming.packet.v1"] = "personality.naming.packet.v1"
+    packet_id: str = Field(min_length=16, max_length=16)  # sha1(disposition_id, evidence ids, generated_at)[:16]
+    disposition_id: str = Field(min_length=1)
+    label_excerpt: str = Field(min_length=1, max_length=DISPOSITION_LABEL_MAX_CHARS)
+    origin: DispositionOrigin
+    evidence_count: int = Field(ge=0)
+    lane_counts: dict[str, int] = Field(default_factory=dict)
+    first_seen_at: AwareDatetime
+    last_reinforced_at: AwareDatetime
+    evidence: List[NamingEvidenceV1] = Field(min_length=1, max_length=NAMING_PACKET_MAX_EVIDENCE)
+    # {"arousal": {"strained": 10}, "day_phase": {...}, "company": {"true": 3, "false": 7}}
+    situation_mix: dict[str, dict[str, int]] = Field(default_factory=dict)
+    situation_coverage: float = Field(ge=0.0, le=1.0)
+    neighbors: List[NamingNeighborV1] = Field(default_factory=list, max_length=NAMING_PACKET_MAX_NEIGHBORS)
+    prior_verdict: Optional[NamingPriorVerdictV1] = None
+    generated_at: AwareDatetime
+
+
+class DispositionNamingV1(BaseModel):
+    """Orion's answer to one packet. Exactly one per naming run (``no_answer`` when nothing was
+    written). Hub checks structure (``hub_check``); it never repairs an id."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["personality.naming.v1"] = "personality.naming.v1"
+    naming_id: str = Field(min_length=1)  # uuid5(NAMESPACE_URL, f"{run_id}:{packet_id}")
+    run_id: str = Field(min_length=1)
+    packet_id: str = Field(min_length=16, max_length=16)
+    disposition_id: str = Field(min_length=1)
+    verdict: NamingVerdict
+    name: Optional[str] = Field(default=None, max_length=200)  # raw; length rules are hub_check reasons
+    sentence: Optional[str] = Field(default=None, max_length=2000)
+    merge_with: Optional[str] = None
+    evidence_refs: List[str] = Field(default_factory=list, max_length=NAMING_PACKET_MAX_EVIDENCE * 4)
+    shown: DispositionNamingPacketV1
+    hub_check: NamingHubCheck
+    refused_reasons: List[NamingRefusedReason] = Field(default_factory=list)
+    written_at: AwareDatetime

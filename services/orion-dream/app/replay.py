@@ -266,7 +266,10 @@ ARC_WEIGHT_MAX = 0.75  # below a 0.8-salience crystallization too: an arc never 
 ARC_DWELL_SATURATE_MIN = 60.0
 ARC_RETURNS_SATURATE = 3
 ARC_CANDIDATES_MAX = 20
-ARC_EXCLUDED_KINDS = frozenset({"sleep"})  # a sleep never replays a sleep
+# A sleep never replays a sleep. A strain arc is a body state lasting hours to days: its dwell
+# would saturate the weight and put it in every replay while strained (strain loop part 1 keeps it
+# out of dreams until that is designed on purpose).
+ARC_EXCLUDED_KINDS = frozenset({"sleep", "strain"})
 
 
 def arc_replay_slots(k: int) -> int:

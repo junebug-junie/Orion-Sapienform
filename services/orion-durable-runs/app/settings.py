@@ -173,6 +173,11 @@ class Settings(BaseSettings):
     # TEMPORAL_SELF_CHRONICLE_ENABLED (regulation keeps running). Tables:
     # services/orion-sql-db/manual_migration_temporal_self_v1.sql.
     temporal_self_chronicle_enabled: bool = Field(True, alias="TEMPORAL_SELF_CHRONICLE_ENABLED")
+    # Strain loop part 1 (docs/superpowers/specs/2026-10-20-strain-loop-design.md): the regulate
+    # node writes a row when a strain cause joins an episode (or seeds one), and the chronicle folds
+    # arousal_transition rows into one `strain` arc per episode (chat stance cue, Day letter,
+    # reverie). Off: no cause rows, no strain arcs; level rows and arousal are unchanged.
+    temporal_self_strain_arcs_enabled: bool = Field(True, alias="TEMPORAL_SELF_STRAIN_ARCS_ENABLED")
     # K: consecutive broadcast ticks that open or resume an attention arc (~110 s live). PR #2597 sweep.
     temporal_self_arc_min_ticks: int = Field(3, ge=1, alias="TEMPORAL_SELF_ARC_MIN_TICKS")
     # R: a suspended arc may return within this window, else it closes (PR #2597 sweep: 30, not 180).
@@ -201,6 +206,11 @@ class Settings(BaseSettings):
     # what chat stance / reverie / curiosity / outreach read back. Kill switch: PERSONALITY_ENABLED.
     personality_enabled: bool = Field(True, alias="PERSONALITY_ENABLED")
     personality_tick_sec: float = Field(600.0, gt=0.0, alias="PERSONALITY_TICK_SEC")
+    # Self-naming (docs/superpowers/specs/2026-10-17-personality-orion-names-dispositions-design.md):
+    # each tick applies Orion's answers from orion_disposition_naming (name / reject / merge) to the
+    # graph, and GET /personality/naming/next hands Hub the next packet. false -> answers wait in the
+    # table (cursor does not move) and /personality/naming/next answers 204.
+    personality_naming_apply_enabled: bool = Field(True, alias="PERSONALITY_NAMING_APPLY_ENABLED")
     # vector-host /embedding (bge-large, compute only). durable-runs and vector-host share app-net.
     personality_embed_url: str = Field("http://orion-athena-vector-host:8320/embedding",
                                        alias="PERSONALITY_EMBED_URL")

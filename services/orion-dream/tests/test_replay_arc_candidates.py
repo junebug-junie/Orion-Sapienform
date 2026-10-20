@@ -64,7 +64,7 @@ def test_label_falls_back_to_subject_ref():
 # --- filters -----------------------------------------------------------------
 
 
-def test_closed_only_and_sleep_excluded():
+def test_closed_only_and_sleep_and_strain_excluded():
     from app.replay import arc_candidates
 
     rows = [
@@ -72,6 +72,7 @@ def test_closed_only_and_sleep_excluded():
         _arc("open1", status="open"),
         _arc("susp1", status="suspended"),
         _arc("sleep1", kind="sleep"),
+        _arc("strain1", kind="strain"),  # a body state lasting days would saturate every replay
         {**_arc("closed_no_end"), "ended_at": None},
     ]
     assert [c.ref_id for c in arc_candidates(rows, SINCE, NOW)] == ["arc:closed1"]

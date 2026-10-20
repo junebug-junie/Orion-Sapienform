@@ -60,6 +60,7 @@ from .self_signal_outcome import SelfSignalHourSQL, SelfSignalOutcomeAssociation
 from .field_channel_anomaly_score import FieldChannelAnomalyScoreSQL
 from .chat_stance_belief import ChatStanceBeliefLogSQL
 from .self_concept_history import SelfConceptHistorySQL
+from .disposition_naming import DispositionNamingSQL
 from .self_sense_eval_log import SelfSenseEvalLogSQL
 from .evidence_unit import EvidenceUnitSQL
 from .social_room_turn import SocialRoomTurnSQL
@@ -164,6 +165,7 @@ __all__ = [
     "JournalEntryIndexSQL",
     "ChatStanceBeliefLogSQL",
     "SelfConceptHistorySQL",
+    "DispositionNamingSQL",
     "EvidenceUnitSQL",
     "SocialRoomTurnSQL",
     "ExternalRoomMessageSQL",

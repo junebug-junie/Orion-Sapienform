@@ -130,7 +130,12 @@ Live chats stay turn-by-turn, because Orion speaks for itself through embodiment
 | digest item, politics/conflict/crime | **no** | — |
 | `AgendaContextV1`, Juniper's chats/location | **no** | — (private, never mirrored) |
 
-Cap of 3 per day, with seeded choice among eligible items. Each event stores the real item's `item_id`, so Orion can later compare how the town reacted with how the world did. A mirrored event's title is a single LLM paraphrase into town terms, checked by the personal-terms detector (`scripts/check_personal_terms.py`) and the entity rule. If either check fails, it falls back to the template's own fixed title.
+Cap of 3 per day across both digest and weather inputs, with seeded choice among eligible items. Every mirror event carries a typed `source_ref`:
+
+- Digest: `{kind: "digest", item_id}` from `DailyWorldPulseItemV1`, received on `orion:world_pulse:digest:item`.
+- Weather: `{kind: "weather", snapshot_id}` referencing an immutable snapshot retained by the adapter in Convex. The snapshot stores the public provider URL, provider observation/alert ID when available, observation time, acquisition time, and the allow-listed weather fields used by the template. `snapshot_id` is a SHA-256 hash of the canonical provider reference, observation time and selected fields; reacquiring the same observation does not create another event.
+
+`WeatherCurrentV1` and `WeatherAlertV1` have no `item_id` and are nested situational context, not standalone feed messages. The adapter therefore polls a public weather source for an explicitly configured **town region**, then normalizes only the fields needed by these models. It must not read Juniper's situational context or infer the region from her location. Missing provider configuration, unavailable observations or missing observation time produce no weather event. The snapshot must exist before its event can be accepted; digest references must resolve to a retained digest item. This lets an inspector trace either source without pretending weather has a digest ID. A mirrored event's title is a single LLM paraphrase into town terms, checked by the personal-terms detector (`scripts/check_personal_terms.py`) and the entity rule. If either check fails, it falls back to the template's own fixed title.
 
 ### 6. Orion predicts; the simulation scores
 
@@ -153,11 +158,11 @@ Scores are published as a typed bus event (§7). Nothing trains on them in this 
 
 ### 7. Bus contract and the memory wall
 
-**One trusted bridge.** Every new Convex function in `convex/sim/` is an `internalMutation`/`internalQuery`, so nothing that reaches `:3210` without the admin key can call it. Only `orion-embodiment` (which holds the admin key) calls them. Everyone else talks to the town over the bus, and embodiment enforces the source caps:
+**One trusted bridge.** Convex endpoints in `convex/sim/` use `internalQuery` for reads, `internalMutation` for validated state changes, and `internalAction` for scene generation, live-result picking and resampling that call the LLM. Actions read a versioned snapshot through a query, perform external calls, then submit their proposed results to a mutation. That mutation rechecks the state version and legal results and commits each scene ID at most once; stale proposals are rejected without effects. Resamples never call the effect-commit mutation. The town engine and cron may invoke these internal functions. External access requires the admin key and goes through `orion-embodiment`, which holds that key. Everyone else talks to the town over the bus, and embodiment enforces the source caps:
 
 | channel | schema | producer → consumer |
 |---|---|---|
-| `orion:town:sim:event:request` | `TownSimEventRequestV1` (`source`, `kind`, `title`, `effects[]`, `quest?`, `requested_by`, `correlation_id`) | Hub (Juniper's form), cortex-exec (Orion's outside tool), town_mirror → embodiment |
+| `orion:town:sim:event:request` | `TownSimEventRequestV1` (`source`, `kind`, `title`, `effects[]`, `quest?`, `source_ref?`, `requested_by`, `correlation_id`; `source_ref` required for mirror) | Hub (Juniper's form), cortex-exec (Orion's outside tool), town_mirror → embodiment |
 | `orion:town:sim:event:result` | `TownSimEventResultV1` (`accepted`, `reason`, `event_id`) | embodiment → Hub, cortex-exec |
 | `orion:town:sim:scene:resolved` | `TownSimSceneResolvedV1` (participants, purpose, legal results, chosen results, effects applied, seed) | embodiment (polls `simScenes`) → sql-writer |
 | `orion:town:sim:prediction:scored` | `TownSimPredictionScoreV1` (probabilities, outcome, `brier`, `brier_resample`, `brier_base_rate`, purpose) | embodiment → sql-writer (later: self-calibration) |
@@ -181,12 +186,12 @@ Scores are published as a typed bus event (§7). Nothing trains on them in this 
 
 ## Proposed schema / API changes
 
-- **Convex (new, overlay):** the tables in §1, plus internal functions `sim/events:inject`, `sim/tick:run` (cron), `sim/scenes:write`, `sim/scenes:resolveLive`, `sim/predict:open|submit|score`, `sim/state:snapshot`.
+- **Convex (new, overlay):** the tables in §1 plus `simMirrorSnapshots` for weather provenance, and internal functions `sim/events:inject`, `sim/tick:run` (cron), `sim/scenes:write`, `sim/scenes:resolveLive`, `sim/predict:open|submit|score`, `sim/state:snapshot`. LLM orchestration uses internal actions; state reads and commits use internal queries/mutations (§7). Add an internal snapshot-ingest mutation for the trusted weather adapter.
 - **Bus (new):** the four channels in §7, in `orion/bus/channels.yaml`.
 - **Schemas (new):** `orion/schemas/town_sim.py`, with `TownSimEventRequestV1`, `TownSimEventResultV1`, `TownSimSceneResolvedV1` and `TownSimPredictionScoreV1`. All are `extra="forbid"` and registered in `orion/schemas/registry.py`.
 - **Cortex verbs (new):** `town_forecast`, `town_add_event`.
 - **Postgres (new, manual migration):** `town_sim_scene_resolved`, `town_sim_prediction_score` (header `ORION-MIGRATION-REQUIRED-BY: orion-sql-writer`).
-- **Env (new, shipped ON):** in `orion-embodiment`: `EMBODIMENT_TOWN_SIM_ENABLED=true`, `EMBODIMENT_TOWN_ORION_EVENTS_PER_DAY=5`, `EMBODIMENT_TOWN_ORION_OPEN_QUESTS_MAX=2`, `EMBODIMENT_TOWN_MIRROR_PER_DAY=3`. In Convex env: `SIM_SCENE_LLM_MODEL=quick_background`, `SIM_PREDICT_RESAMPLES=3`.
+- **Env (new, shipped ON):** in `orion-embodiment`: `EMBODIMENT_TOWN_SIM_ENABLED=true`, `EMBODIMENT_TOWN_ORION_EVENTS_PER_DAY=5`, `EMBODIMENT_TOWN_ORION_OPEN_QUESTS_MAX=2`, `EMBODIMENT_TOWN_MIRROR_PER_DAY=3`, plus `EMBODIMENT_TOWN_WEATHER_PROVIDER_URL` and `EMBODIMENT_TOWN_WEATHER_REGION` (both empty until an operator selects a public source and town region; weather polling is disabled while either is empty). In Convex env: `SIM_SCENE_LLM_MODEL=quick_background`, `SIM_PREDICT_RESAMPLES=3`.
 - **Cards:** a `sim:` block per character in `town_cards.yaml` / `.local.yaml`.
 
 ## Files likely to touch
@@ -226,7 +231,7 @@ Scores are published as a typed bus event (§7). Nothing trains on them in this 
 - **A6 (prediction signal):** ≥ 50 scored scenes. Orion's Brier score is reported against both baselines and broken down by purpose. Verdict recorded: signal / no signal.
 - **A7 (injection):** a Juniper event and an Orion event each create an `simEvents` row with the right `source`. Orion's 6th event of the day is refused with a reason.
 - **A8 (wall holds):** after the 24h run, no new `memory_crystallizations` rows from the town and no town rows readable by `orion_readonly`.
-- **A9 (mirror):** in 24h, ≤ 3 `mirror` events, each linked to a real feed item id, none containing personal terms (`check_personal_terms.py`).
+- **A9 (mirror):** in 24h, ≤ 3 `mirror` events across both input types, each with a resolvable `source_ref`, none containing personal terms (`check_personal_terms.py`). Fixtures cover digest-item and weather-snapshot provenance, duplicate observations, missing provider configuration and failed fetches. A weather event must resolve to its retained public observation; the adapter must never read private situational context. With weather configured, the live smoke must trace at least one event to each source type; otherwise record the weather rail as `UNVERIFIED`.
 
 ## Risks
 
@@ -236,7 +241,16 @@ Scores are published as a typed bus event (§7). Nothing trains on them in this 
 - **Mirror leaks private or sensitive news into a toy world.** Mitigation: feed categories allow-list, personal-terms gate, daily cap.
 - **Orion spams quests.** Mitigation: caps plus the closed effect set.
 
-## Recommended implementation order
+## Missing questions
+
+- Which public weather provider and town region should the operator select for PR 5? Weather remains disabled until these are explicit; digest mirroring can proceed independently.
+- Which existing Orion loop should call the outside event tool in PR 4? Start with the background embodiment path (§7), and record the final caller before wiring autonomy.
+
+## Recommended next patch
+
+Start with the dialogue echo fix and live-turn roles. Verify the partner-copy regression before changing simulation state. The remaining build order is:
+
+### Recommended implementation order
 
 1. **PR 1 — echo fix and live-turn roles (§4b first bullet).** Small. Fixes the worst live symptom on its own.
 2. **PR 2 — sim core:** tables, tick, events (`sim`/`juniper` sources), cards → numbers, entity rule. A1, A7 (Juniper half).

@@ -1548,6 +1548,9 @@ async def execute_unified_turn(
     harness_req = HarnessRunRequestV1(
         gpu_lease=payload.get("gpu_lease"),
         resume_key=payload.get("resume_key"),
+        # Only a curiosity run that took a focus (curiosity_investigation._generate). Honored on
+        # Orion's own turns only: a chat client's payload never reaches the system prompt.
+        curiosity_focus=payload.get("curiosity_focus") if utterance_origin == "orion" else None,
         inference_timeout_sec=inference_timeout_sec,
         reply_budget_sec=reply_budget_sec,
         reading_binding=reading_binding,

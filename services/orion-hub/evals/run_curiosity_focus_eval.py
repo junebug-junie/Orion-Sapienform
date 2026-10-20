@@ -11,7 +11,8 @@ orion/curiosity/tests/test_focus_lifecycle.py):
    Juniper-origin call replaces it and the reply names what it replaced.
 2. Take: CuriosityInvestigation._take_focus for run A on a readable graph; the real
    build_kickoff_prompt shows the question first and asks for focus_disposition with run A's id.
-   A second run takes nothing.
+   A second run takes nothing. The typed copy Hub hands the governor (CuriosityFocusAnchorV1)
+   renders into the --append-system-prompt focus anchor, so compaction cannot lose it.
 3. Outcome: run A wrote `focus_disposition: "set_aside: ..."` on its :TurnOutcome;
    CuriosityInvestigation._stamp_focus reads it back (read-only) and stamps it.
 4. Read back: the `curiosity` responder with kind=focus says "taken by run A ... set aside".
@@ -151,6 +152,15 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 -- one linear scen
             failures.append(f"kickoff lacks {needle!r}")
     if prompt.index(cf.FOCUS_HEADER) > prompt.index("LAST, IF YOU WANT EITHER OF THESE"):
         failures.append("the focus is not shown before the outcome section")
+    # 2b. Compaction-proof copy: the typed focus Hub hands the governor renders into the
+    # system-prompt anchor with the question and run A's disposition node.
+    from orion.harness.task_anchor import build_focus_anchor
+
+    anchor = build_focus_anchor(loop._focus_anchor(taken, RUN_A)) if taken is not None else None
+    for needle in ("FOCUS ANCHOR", "How much of the bus traffic is heartbeats?",
+                   f'MERGE (t:TurnOutcome {{run_id: "{RUN_A}"}})', '"set_aside: <why not>"'):
+        if not anchor or needle not in anchor:
+            failures.append(f"system-prompt focus anchor lacks {needle!r}")
     if asyncio.run(loop._take_focus(WorldviewSnapshot(), RUN_B)) is not None:
         failures.append("a second run took an already taken focus")
 

@@ -1,5 +1,7 @@
 """Explicitly handed-off, open-loop baseline. No perception or learning claim."""
 
+from .goals import Goals, POLICY_ID as GOAL_POLICY_ID
+
 POLICY_ID = 'scripted-right-jump-v1'
 INTERVAL = 1 / 15
 HOLD_TTL = .1
@@ -12,11 +14,12 @@ class Scripted:
         self.active = {}
 
     def public(self):
-        return [dict(port=p, policy_id=POLICY_ID, epoch=s['grant']['epoch'],
-                     duration_seconds=s['duration'], started_frame=s['frame'])
+        return [dict(port=p, policy_id=s['policy_id'], epoch=s['grant']['epoch'],
+                     duration_seconds=s['duration'], started_frame=s['frame'],
+                     cognition=s['goals'].public() if s['goals'] else None)
                 for p, s in sorted(self.active.items())]
 
-    def start(self, sponsor, port, duration, now, frame, expected_epoch):
+    def start(self, sponsor, port, duration, now, frame, expected_epoch, cognition=False):
         old = self.authority.leases.get(port)
         # Explicit transfer of the caller's own live controller only. Scripts
         # cannot seize another human's port, even through the shared Hub identity.
@@ -27,8 +30,9 @@ class Scripted:
         grant = self.authority.control(connection, port, 'takeover', now)
         self.active[port] = dict(sponsor=sponsor, connection=connection, grant=grant,
                                  duration=duration, until=now+duration, next=now,
-                                 seq=0, frame=frame)
-        self.record('policy_started', port=port, policy_id=POLICY_ID,
+                                 seq=0, frame=frame, goals=Goals(self.record) if cognition else None,
+                                 policy_id=GOAL_POLICY_ID if cognition else POLICY_ID)
+        self.record('policy_started', port=port, policy_id=self.active[port]['policy_id'],
                     epoch=grant['epoch'], duration_seconds=duration)
 
     def stop(self, port, reason):
@@ -37,7 +41,7 @@ class Scripted:
             return
         # A human may already have taken over. Never release their newer lease.
         self.authority.disconnect(s['connection'])
-        self.record('policy_stopped', port=port, policy_id=POLICY_ID,
+        self.record('policy_stopped', port=port, policy_id=s['policy_id'],
                     epoch=s['grant']['epoch'], reason=reason)
 
     def cancel(self, reason, sponsor=None):
@@ -57,7 +61,8 @@ class Scripted:
             elif now >= s['next']:
                 # Four decisions jumping right, eleven walking right. A fixed
                 # diagnostic sequence, independent of pixels, RAM, or outcomes.
-                mask = 128 | (256 if s['seq'] % 15 < 4 else 0)
+                mask = (s['goals'].mask(now, s['seq']) if s['goals'] else
+                        128 | (256 if s['seq'] % 15 < 4 else 0))
                 s['seq'] += 1
                 self.authority.submit(s['connection'],
                     dict(s['grant'], seq=s['seq'], mask=mask), now)
@@ -67,4 +72,15 @@ class Scripted:
     def annotate(self, event):
         s = self.active.get(event['port'])
         if s and event['epoch'] == s['grant']['epoch']:
-            event['policy_id'] = POLICY_ID
+            event['policy_id'] = s['policy_id']
+            if s['goals'] and s['goals'].accepted:
+                event['goal_attempt_id'] = s['goals'].accepted['attempt_id']
+
+    def goal(self, sponsor, data, now):
+        s = self.active.get(data['port'])
+        lease = self.authority.leases.get(data['port'])
+        if (not s or not s['goals'] or s['sponsor'] != sponsor or not lease
+                or now >= s['until'] or lease['connection'] != s['connection'] or lease['expires'] <= now
+                or s['grant']['epoch'] != data['expected_epoch']):
+            raise ValueError('goal_requires_active_controller')
+        return s['goals'].accept(data, now)

@@ -5,7 +5,7 @@ from app import worker
 from settings import Settings
 
 
-def exercise(monkeypatch,tmp_path,scenario, *, crash=False, quota=268435456, initial=True, loops=20, tick=None):
+def exercise(monkeypatch,tmp_path,scenario, *, crash=False, quota=268435456, initial=True, loops=20, tick=None, cognition=False):
     commands=queue.Queue(); urgent=queue.Queue(); result=[]; steps=[]
     clock=SimpleNamespace(now=0., loops=0)
     class Stop:
@@ -30,7 +30,7 @@ def exercise(monkeypatch,tmp_path,scenario, *, crash=False, quota=268435456, ini
     if initial:
         enqueue('control','grant1','one',dict(port=0,action='acquire'))
         enqueue('control','grant2','two',dict(port=1,action='acquire'))
-    worker.run(commands,urgent,Replies(),Stop(),Settings(artifacts=tmp_path,session_bytes=quota),
+    worker.run(commands,urgent,Replies(),Stop(),Settings(artifacts=tmp_path,session_bytes=quota,cognition_enabled=cognition),
                {'path':tmp_path/'unused.nes','ports':[0,1],'game_id':'test'},'session','generation')
     return result,steps
 
@@ -159,3 +159,26 @@ def test_pause_resume_does_not_restart_script(monkeypatch,tmp_path):
     after=next(i for i,r in enumerate(rows) if r.get('id')=='again')
     assert not any(r['kind']=='applied' for r in rows[after:])
     assert steps[-1]==(0,0)
+
+
+def test_native_goal_ack_precedes_attributed_applied_input(monkeypatch, tmp_path):
+    sent = set()
+    def scenario(row, send):
+        if row.get('id') == 'grant1':
+            send('scripted', 'handoff', 'one', dict(port=0, action='start', duration_seconds=60,
+                 expected_epoch=row['result']['epoch'], cognition=True))
+        if row['kind'] == 'status' and row.get('scripted') and 'goal' not in sent:
+            policy = row['scripted'][0]
+            attempt = policy['cognition']['attempt']
+            if attempt:
+                sent.add('goal')
+                send('goal', 'goal', 'one', dict(port=0, expected_epoch=policy['epoch'],
+                     attempt_id=attempt['attempt_id'], goal='jump_right',
+                     rationale='test fixture', planner_id='test'))
+    rows, steps = exercise(monkeypatch, tmp_path, scenario, cognition=True, loops=50)
+    ack = next(i for i, r in enumerate(rows) if r.get('id') == 'goal')
+    assert 'result' in rows[ack]
+    applied = [r for r in rows[ack+1:] if r['kind'] == 'applied' and r.get('goal_attempt_id')]
+    assert applied and any(r['mask'] & 128 for r in applied)
+    assert all(r['policy_id'] == 'goal-motor-v1' for r in applied)
+    assert not any(r['kind'] == 'fatal' for r in rows)

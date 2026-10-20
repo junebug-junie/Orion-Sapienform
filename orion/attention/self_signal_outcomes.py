@@ -84,6 +84,9 @@ OUTCOMES: tuple[str, ...] = ("turn_failed", "response_repair", "rpc_timeout")
 # tested together, not the same pair re-tested every hour. 6 looks at ~1 h apart; a gap resets.
 DEFAULT_CONSECUTIVE_HOLDS = 6
 CLAUSE_VERDICTS: tuple[str, ...] = ("tends_more", "tends_less")
+# The newest computation must be at most this old for any reader to show its clause: a stalled
+# producer stops the clause instead of repeating an old claim forever (the producer runs hourly).
+ASSOCIATION_MAX_AGE = timedelta(hours=3)
 # Columns both readers (orion-thought, orion-equilibrium-service) load for the holds rule.
 ASSOCIATION_COLUMNS: tuple[str, ...] = (
     "association_id", "computed_at", "signal_id", "outcome", "window_start", "window_end",
@@ -96,23 +99,27 @@ ASSOCIATION_COLUMNS: tuple[str, ...] = (
 def association_history_sql(since: str, limit: str) -> str:
     """The newest row per (signal, outcome, UTC hour of computed_at) since ``since``: what
     ``held_latest_by_pair`` needs, one row per hourly computation (a restart's recompute inside an
-    hour collapses here as in ``hourly_runs``). ``since``/``limit`` are the caller driver's
-    placeholders (":since" for SQLAlchemy text, "%s" for psycopg). Rides
-    idx_self_signal_assoc_pair_time."""
+    hour collapses here as in ``hourly_runs``), newest hours first across all pairs, so a LIMIT cut
+    drops the OLDEST hours (reads as "not held", never as held) rather than whole pairs.
+    ``since``/``limit`` are the caller driver's placeholders (":since" for SQLAlchemy text, "%s"
+    for psycopg). Rides idx_self_signal_assoc_pair_time."""
     cols = ", ".join(ASSOCIATION_COLUMNS)
     hour = "date_trunc('hour', computed_at AT TIME ZONE 'UTC')"
     return (
+        f"SELECT {cols} FROM ("
         f"SELECT DISTINCT ON (signal_id, outcome, {hour}) {cols} "
         f"FROM self_signal_outcome_association WHERE computed_at >= {since} "
-        f"ORDER BY signal_id, outcome, {hour} DESC, computed_at DESC LIMIT {limit}"
+        f"ORDER BY signal_id, outcome, {hour} DESC, computed_at DESC"
+        f") per_hour ORDER BY computed_at DESC, signal_id, outcome LIMIT {limit}"
     )
 
 
 def association_history_limit(holds: int) -> int:
-    """Row cap for ``association_history_sql``: every possible pair x the hours a reader looks
-    back (``holds`` + 4 h of freshness/alignment slack). A truncated pair loses its OLDEST hours
-    (ordered newest first), which reads as "not held", never as held."""
-    return MAX_SIGNALS_PER_HOUR * len(OUTCOMES) * (max(1, int(holds)) + 4)
+    """Row cap for ``association_history_sql``: every possible pair x the hour buckets a reader's
+    window can span (``holds`` + 5: freshness ``ASSOCIATION_MAX_AGE`` plus alignment slack).
+    ``MAX_SIGNALS_PER_HOUR`` caps signals per hour, not per window, so a changing signal set can
+    exceed it; the cut then drops the oldest hours first (fails closed)."""
+    return MAX_SIGNALS_PER_HOUR * len(OUTCOMES) * (max(1, int(holds)) + 5)
 
 TURN_SOURCE = "harness_turn_trace.run_artifact: compliance_verdict='failed' / response_repair_ran=true, by created_at hour"
 RPC_SOURCE = "transport_baseline_hourly: timeout_count>0 over success_count+timeout_count, keys not '#gpu_pool_wait'"

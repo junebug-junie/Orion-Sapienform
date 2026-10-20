@@ -502,7 +502,7 @@ class EquilibriumService(BaseChassis):
             recall_enabled=settings.metacog_recall_enabled,
             history_ok=history_error is None,
             tends_to=(
-                {sid: association_payload(a) for sid, a in rollup.renderable().items()}
+                {sid: association_payload(a) for sid, a in rollup.renderable(now).items()}
                 if rollup is not None
                 else None
             ),
@@ -569,7 +569,7 @@ class EquilibriumService(BaseChassis):
         logger.info(
             "self_signal_outcome_cycle hours=%d/%d associations=%d/%d renderable=%s %s",
             published_hours, len(result.hour_rows), published_assoc, len(result.associations),
-            ",".join(sorted(rollup.renderable())) or "-",
+            ",".join(sorted(rollup.renderable(now))) or "-",
             summarize_self_signal_associations(result.associations),
         )
 

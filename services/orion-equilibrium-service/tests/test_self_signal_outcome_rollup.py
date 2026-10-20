@@ -148,9 +148,9 @@ def test_renderable_only_holds_clauses() -> None:
     quiet = _assoc("", verdict="below_min_n").model_copy(update={"outcome": "rpc_timeout",
                                                                  "association_id": "ssa-9999999999"})
     r.latest = [_assoc(CLAUSE), quiet]
-    assert dict(r.renderable()) == {}  # nothing published yet: an open row must not cite it
+    assert dict(r.renderable(NOW)) == {}  # nothing published yet: an open row must not cite it
     r.published_ids = {"ssa-0123456789", "ssa-9999999999"}
-    assert list(r.renderable()) == ["node:substrate.bus_synaptic"]
+    assert list(r.renderable(NOW)) == ["node:substrate.bus_synaptic"]
 
 
 def _hourly(n: int, *, verdict: str = "tends_more", end: datetime = NOW) -> list[SelfSignalOutcomeAssociationV1]:
@@ -173,21 +173,27 @@ def _published(rows):
 
 def test_open_row_clause_needs_six_consecutive_hourly_holds() -> None:
     assert SelfSignalOutcomeRollup().consecutive_holds == 6
-    assert list(_published(_hourly(6)).renderable()) == [BUS]
-    assert dict(_published(_hourly(5)).renderable()) == {}
+    assert list(_published(_hourly(6)).renderable(NOW)) == [BUS]
+    assert dict(_published(_hourly(5)).renderable(NOW)) == {}
     gap = _hourly(7)
     del gap[2]
-    assert dict(_published(gap).renderable()) == {}
+    assert dict(_published(gap).renderable(NOW)) == {}
     flip = _hourly(6)
     flip[3] = flip[3].model_copy(update={"verdict": "no_clear_difference", "clause": ""})
-    assert dict(_published(flip).renderable()) == {}
+    assert dict(_published(flip).renderable(NOW)) == {}
+
+
+def test_a_stale_computation_stops_the_open_row_clause_like_thought() -> None:
+    r = _published(_hourly(6))
+    assert list(r.renderable(NOW + timedelta(hours=2, minutes=59))) == [BUS]
+    assert dict(r.renderable(NOW + timedelta(hours=3, minutes=1))) == {}
 
 
 def test_an_unpublished_current_row_never_falls_back_to_last_hour() -> None:
     rows = _hourly(7)
     r = _published(rows)
     r.published_ids = set()
-    assert dict(r.renderable()) == {}
+    assert dict(r.renderable(NOW)) == {}
 
 
 def test_equilibrium_and_the_shared_rule_agree() -> None:
@@ -199,7 +205,7 @@ def test_equilibrium_and_the_shared_rule_agree() -> None:
     cases.append(flip)
     for rows in cases:
         want = {k: v.association_id for k, v in sso.index_by_signal(rows).items()}
-        got = {k: v.association_id for k, v in _published(rows).renderable().items()}
+        got = {k: v.association_id for k, v in _published(rows).renderable(NOW).items()}
         assert got == want
 
 
@@ -215,7 +221,7 @@ def test_a_restart_seeds_the_run_from_persisted_rows_and_cycles_extend_it() -> N
     # The fake world has no clause of its own; pretend this hour's computation repeated the pair.
     r.latest = [_assoc(CLAUSE).model_copy(update={"association_id": "ssa-now", "computed_at": NOW})]
     r.published_ids = {"ssa-now"}
-    assert r.renderable()[BUS].association_id == "ssa-now"
+    assert r.renderable(NOW)[BUS].association_id == "ssa-now"
     # Next hour: the published row moves into history, old hours beyond the window are trimmed.
     nxt = NOW + timedelta(hours=1)
     r.computed = False

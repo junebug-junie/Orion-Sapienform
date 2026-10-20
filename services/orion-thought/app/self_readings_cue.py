@@ -43,8 +43,8 @@ _FETCH_SQL = (
 # section E): the newest row per (signal, outcome, hour) over the last SELF_SIGNAL_OUTCOME_
 # CONSECUTIVE_HOLDS hours (orion.attention.self_signal_outcomes.association_history_sql), so the
 # shared holds rule can see each pair's run. The newest row must be refreshed within
-# ASSOCIATION_MAX_AGE: a stalled producer stops the clause instead of repeating an old claim forever.
-ASSOCIATION_MAX_AGE = timedelta(hours=3)
+# orion.attention.self_signal_outcomes.ASSOCIATION_MAX_AGE (3 h, shared with equilibrium): a stalled
+# producer stops the clause instead of repeating an old claim forever.
 # Re-read at most this often (the producer refreshes hourly).
 ASSOCIATION_REFRESH_SEC = 300.0
 # The 7-day seed is ~62k rows (0.3 s live 2026-10-14); a stuck database must not pin a thread.
@@ -122,7 +122,7 @@ def refresh_associations(now: datetime) -> None:
     unreadable table caches an empty index, retried after ASSOCIATION_REFRESH_SEC."""
     global _assoc, _assoc_refreshing
     try:
-        from orion.attention.self_signal_outcomes import HOUR, index_by_signal
+        from orion.attention.self_signal_outcomes import ASSOCIATION_MAX_AGE, HOUR, index_by_signal
         from orion.schemas.self_signal_outcome import SelfSignalOutcomeAssociationV1
 
         holds = int(settings.self_signal_outcome_consecutive_holds)

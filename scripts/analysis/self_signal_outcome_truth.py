@@ -332,7 +332,7 @@ def persisted() -> int:
     # DEFAULT_CONSECUTIVE_HOLDS consecutive hourly computations (held_latest_by_pair).
     from orion.attention.self_signal_outcomes import (
         ASSOCIATION_COLUMNS, DEFAULT_CONSECUTIVE_HOLDS, association_history_limit, association_history_sql,
-        hourly_runs, consecutive_holds, held_latest_by_pair,
+        ASSOCIATION_MAX_AGE, hourly_runs, consecutive_holds, held_latest_by_pair,
     )
     from orion.schemas.self_signal_outcome import SelfSignalOutcomeAssociationV1
 
@@ -341,7 +341,8 @@ def persisted() -> int:
                 (f"{holds + 4} hours", association_history_limit(holds)))
     hist = [SelfSignalOutcomeAssociationV1.model_validate(dict(zip(ASSOCIATION_COLUMNS, r))) for r in cur.fetchall()]
     runs = {k: consecutive_holds(v) for k, v in hourly_runs(hist).items()}
-    held = held_latest_by_pair(hist, holds=holds)
+    held = held_latest_by_pair(hist, holds=holds,
+                               fresh_since=datetime.now(timezone.utc) - ASSOCIATION_MAX_AGE)
     print(f"{len(hours)} persisted hours, {len(assocs)} latest associations, "
           f"{sum(1 for a in assocs if a['clause'])} with a clause this hour, "
           f"{len(held)} renderable (held {holds} consecutive hours)")

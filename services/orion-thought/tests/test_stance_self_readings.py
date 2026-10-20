@@ -12,6 +12,7 @@ import pytest
 from jinja2 import Environment
 
 import app.self_readings_cue as cue_mod
+import orion.attention.self_signal_outcomes as sso_mod
 from app.bus_listener import build_stance_react_context, run_stance_react
 from app.reverie import build_reverie_context
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1, AttentionFrameV1, OpenLoopV1
@@ -312,7 +313,7 @@ async def test_flag_on_renders_the_cited_clause(monkeypatch) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rows", [
     pytest.param(_held(_ASSOC_ROW, 5), id="five-of-six-holds"),
-    pytest.param(_held(_ASSOC_ROW, gap_at=3), id="missing-hour"),
+    pytest.param(_held(_ASSOC_ROW, 7, gap_at=3), id="missing-hour"),
     pytest.param(_held(_ASSOC_ROW, flip_at=2), id="verdict-flip"),
     pytest.param([_ASSOC_ROW], id="one-hour-only"),
 ])
@@ -320,6 +321,12 @@ async def test_a_clause_that_has_not_held_six_hours_renders_nothing(monkeypatch,
     base = await _block_with(monkeypatch, enabled=True, assoc_rows=[])
     block = await _block_with(monkeypatch, enabled=True, assoc_rows=rows)
     assert block.text == base.text and "when this is high" not in block.text
+
+
+@pytest.mark.asyncio
+async def test_a_gap_older_than_the_run_does_not_matter(monkeypatch) -> None:
+    block = await _block_with(monkeypatch, enabled=True, assoc_rows=_held(_ASSOC_ROW, 8, gap_at=6))
+    assert "[assoc:ssa-0123456789]" in block.text
 
 
 @pytest.mark.asyncio
@@ -341,7 +348,7 @@ def test_reader_asks_for_enough_history_for_the_holds_rule(monkeypatch) -> None:
     (since, holds), = seen
     assert holds == 6
     # The newest row may be up to ASSOCIATION_MAX_AGE old; its run reaches 6 hours further back.
-    assert fx.NOW - since >= cue_mod.ASSOCIATION_MAX_AGE + timedelta(hours=6)
+    assert fx.NOW - since >= sso_mod.ASSOCIATION_MAX_AGE + timedelta(hours=6)
 
 
 @pytest.mark.asyncio
@@ -388,8 +395,9 @@ def test_association_query_is_fresh_bounded_and_one_row_per_pair_hour() -> None:
     sql = association_history_sql(":since", ":limit")
     assert "DISTINCT ON (signal_id, outcome, date_trunc('hour', computed_at AT TIME ZONE 'UTC'))" in sql
     assert "computed_at >= :since" in sql and sql.endswith("LIMIT :limit")
-    assert association_history_limit(6) == 32 * 3 * 10
-    assert cue_mod.ASSOCIATION_MAX_AGE.total_seconds() == 3 * 3600
+    assert association_history_limit(6) == 32 * 3 * 11
+    assert sql.rstrip().endswith("ORDER BY computed_at DESC, signal_id, outcome LIMIT :limit")
+    assert sso_mod.ASSOCIATION_MAX_AGE.total_seconds() == 3 * 3600
 
 
 def test_flag_ships_on() -> None:

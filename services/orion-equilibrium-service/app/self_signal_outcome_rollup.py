@@ -31,6 +31,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 from orion.attention.self_signal_outcomes import (
     ASSOCIATION_COLUMNS,
+    ASSOCIATION_MAX_AGE,
     DEFAULT_CONSECUTIVE_HOLDS,
     HOUR,
     MAX_HOURS,
@@ -191,14 +192,19 @@ class SelfSignalOutcomeRollup:
     # published rows); the newest ``consecutive_holds`` + 2 hours are kept.
     history: list[SelfSignalOutcomeAssociationV1] = field(default_factory=list)
 
-    def renderable(self) -> Mapping[str, SelfSignalOutcomeAssociationV1]:
+    def renderable(self, now: datetime) -> Mapping[str, SelfSignalOutcomeAssociationV1]:
         """signal_id -> its strongest association that may be shown (episode open rows): only
-        pairs whose clause held on the last ``consecutive_holds`` hourly computations, and only
-        the current computation's published rows, so the cited association_id resolves and an
-        unpublished hour never falls back to last hour's row."""
+        pairs whose clause held on the last ``consecutive_holds`` hourly computations, whose
+        newest computation is at most ``ASSOCIATION_MAX_AGE`` old (same freshness as
+        orion-thought), and only the current computation's published rows, so the cited
+        association_id resolves and an unpublished hour never falls back to last hour's row.
+        "Held" here counts rows published to the bus; orion-thought counts rows persisted by
+        sql-writer. They differ only if sql-writer drops a row, until the next restart re-seeds
+        this history from the table."""
         current = [a for a in self.latest if a.association_id in self.published_ids]
         ids = {a.association_id for a in current}
-        held = held_latest_by_pair(self.history + current, holds=self.consecutive_holds)
+        held = held_latest_by_pair(self.history + current, holds=self.consecutive_holds,
+                                   fresh_since=_aware(now) - ASSOCIATION_MAX_AGE)
         return best_per_signal(a for a in held if a.association_id in ids)
 
     def _history_since(self, now: datetime) -> datetime:

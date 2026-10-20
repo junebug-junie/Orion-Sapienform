@@ -43,10 +43,17 @@ class _Engine:
 
 class _FakeRedis:
     def __init__(self):
-        self.sets, self.deletes = {}, []
+        self.sets, self.deletes, self.values, self.expires = {}, [], {}, {}
+
+    def get(self, key):
+        return self.values.get(key)
 
     def set(self, key, value, ex=None):
         self.sets[key] = ex
+        self.values[key] = value
+
+    def expire(self, key, ttl):
+        self.expires[key] = ttl
 
     def delete(self, key):
         self.deletes.append(key)
@@ -88,6 +95,33 @@ def test_met_window_deletes_the_key(monkeypatch) -> None:
     conn = _Conn([_window("e1", T0 - timedelta(minutes=5), T0 + timedelta(minutes=25))])
     vr.run_one_expect_refresh(engine=_Engine(conn), redis_url="redis://x", now=T0)
     assert client.deletes == ["orion:vision:expect:walkway"] and client.sets == {}
+
+
+def test_open_handoff_keeps_the_key_through_a_met_rhythm_window(monkeypatch) -> None:
+    # The handoff loop wrote handoff_until 4 minutes out: rhythm must not DEL it.
+    import json
+
+    client = _fake_redis_module(monkeypatch)
+    client.values["orion:vision:expect:walkway"] = json.dumps(
+        {"handoff_ids": ["h1"], "handoff_until": (T0 + timedelta(minutes=4)).isoformat()})
+    monkeypatch.setattr(vr, "_occurred", lambda *a, **k: T0)
+    conn = _Conn([_window("e1", T0 - timedelta(minutes=5), T0 + timedelta(minutes=25))])
+    vr.run_one_expect_refresh(engine=_Engine(conn), redis_url="redis://x", now=T0)
+    assert client.deletes == [] and client.expires == {"orion:vision:expect:walkway": 240}
+
+
+def test_rhythm_set_never_shortens_an_open_handoff(monkeypatch) -> None:
+    import json
+
+    client = _fake_redis_module(monkeypatch)
+    client.values["orion:vision:expect:walkway"] = json.dumps(
+        {"handoff_ids": ["h1"], "handoff_until": (T0 + timedelta(minutes=40)).isoformat()})
+    monkeypatch.setattr(vr, "_occurred", lambda *a, **k: None)
+    conn = _Conn([_window("e1", T0 - timedelta(minutes=5), T0 + timedelta(minutes=25))])
+    vr.run_one_expect_refresh(engine=_Engine(conn), redis_url="redis://x", now=T0)
+    assert client.sets == {"orion:vision:expect:walkway": 40 * 60}
+    val = json.loads(client.values["orion:vision:expect:walkway"])
+    assert val["expectation_ids"] == ["e1"] and val["handoff_ids"] == ["h1"]
 
 
 def test_missing_table_is_migration_missing(monkeypatch) -> None:

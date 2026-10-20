@@ -1347,15 +1347,16 @@ channels:
 
   # Street events (docs/superpowers/specs/2026-10-20-street-continuity-handoff-
   # design.md section 6): facts about the street that may compete for
-  # attention. Producer today: orion-vision-retina (doorbell, kind
-  # doorbell_ring, salience 1.0). The handoff reducer (orion-sql-writer) adds
-  # handoff_* kinds in a later PR. Consumer: orion-substrate-runtime (pending
-  # PR, node:substrate.street); nothing subscribes yet.
+  # attention. Producers: orion-vision-retina (doorbell, kind doorbell_ring,
+  # salience 1.0) and the handoff reducer in orion-sql-writer (approach_door,
+  # handoff_met for a known person, handoff_missed once unexplained,
+  # overlap_pair). Consumer: orion-substrate-runtime (pending PR,
+  # node:substrate.street); nothing subscribes yet.
   - name: "orion:vision:street:events"
     kind: "event"
     schema_id: "StreetEventV1"
     message_kind: "vision.street.event.v1"
-    producer_services: ["orion-vision-retina"]
+    producer_services: ["orion-vision-retina", "orion-sql-writer"]
     consumer_services: ["orion-substrate-runtime"]
     stability: "experimental"
     since: "2026-10-20"

@@ -714,6 +714,39 @@ class Settings(BaseSettings):
     # steering starts within this many seconds of a window opening rather
     # than up to one rhythm tick late. 0 disables (the rhythm tick still sets it).
     vision_expect_refresh_interval_sec: float = Field(60.0, alias="VISION_EXPECT_REFRESH_INTERVAL_SEC")
+    # Street continuity (app/vision_handoff.py + _loop.py, 2026-10-20): one passage
+    # across the door and walkway cameras. Portals: config/vision_topology.yaml.
+    # Off = no handoff rows, no steering, no street events, no handoff asks.
+    vision_handoff_enabled: bool = Field(True, alias="VISION_HANDOFF_ENABLED")
+    vision_handoff_interval_sec: float = Field(15.0, alias="VISION_HANDOFF_INTERVAL_SEC")
+    # Motion-story kinds that open gap handoffs and overlap pairs (vehicles: no --
+    # parked cars would pair all day).
+    vision_handoff_kinds: str = Field("person,dog,bicycle,stroller", alias="VISION_HANDOFF_KINDS")
+    # Kinds that open approach_door expectations and may open the doorbell's own live view.
+    vision_handoff_look_kinds: str = Field("person,dog", alias="VISION_HANDOFF_LOOK_KINDS")
+    # The prior band is replaced by the learned (split-conformal 10-90%) band after
+    # this many met handoffs per portal and kind.
+    vision_handoff_min_met: int = Field(10, alias="VISION_HANDOFF_MIN_MET")
+    # Target camera looked at less than this share of the window -> unscorable, never missed.
+    vision_handoff_min_coverage: float = Field(0.8, alias="VISION_HANDOFF_MIN_COVERAGE")
+    # "Strong appearance" bars: cosine of the two stories' centroid vectors. Measured
+    # live 2026-10-20 (walkway, 23 individuals): different people's body centroids
+    # 95th pct 0.90, 99th 0.93; OSNet 95th 0.79, 99th 0.82. Face: the same-ask's 0.40 plus margin.
+    vision_handoff_min_face_cosine: float = Field(0.50, alias="VISION_HANDOFF_MIN_FACE_COSINE")
+    vision_handoff_min_body_cosine: float = Field(0.92, alias="VISION_HANDOFF_MIN_BODY_COSINE")
+    vision_handoff_min_osnet_cosine: float = Field(0.82, alias="VISION_HANDOFF_MIN_OSNET_COSINE")
+    # Attention gate: p below this AND (known person OR unusual for the hour).
+    vision_handoff_attention_p: float = Field(0.05, alias="VISION_HANDOFF_ATTENTION_P")
+    # "Same person?" asks opened from a strong met / overlap pair, per local day. 0 = none.
+    vision_handoff_same_ask_daily_cap: int = Field(2, alias="VISION_HANDOFF_SAME_ASK_DAILY_CAP")
+    vision_handoff_initial_lookback_sec: float = Field(3600.0, alias="VISION_HANDOFF_INITIAL_LOOKBACK_SEC")
+    # Set orion:vision:expect:walkway while a walkway arrival window is ahead.
+    vision_handoff_steer_enabled: bool = Field(True, alias="VISION_HANDOFF_STEER_ENABLED")
+    # Set orion:vision:look:doorbell (the retina opens a live view, capped by
+    # RETINA_RING_SELF_LOOK_MAX_PER_DAY) while a doorbell arrival window is ahead.
+    vision_handoff_self_look_enabled: bool = Field(True, alias="VISION_HANDOFF_SELF_LOOK_ENABLED")
+    # Publish StreetEventV1 on orion:vision:street:events (outbox in vision_handoff).
+    vision_handoff_street_events_enabled: bool = Field(True, alias="VISION_HANDOFF_STREET_EVENTS_ENABLED")
 
     grammar_retention_interval_sec: float = Field(
         60.0, alias="GRAMMAR_RETENTION_INTERVAL_SEC"

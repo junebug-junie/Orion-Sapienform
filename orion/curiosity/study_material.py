@@ -481,6 +481,7 @@ _REASON_PLAIN = {
     "council_uncertainty": "the vision council was unsure",
     "no_label": "no detector label was confident enough",
     "surprise": "it looked unlike what that camera usually sees",
+    "handoff_missed": "someone left one camera toward the other and never arrived",
 }
 
 

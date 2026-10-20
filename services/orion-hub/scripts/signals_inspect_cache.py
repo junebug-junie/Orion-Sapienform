@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.signals.models import OrionSignalV1
 from orion.signals.stub_detection import is_stub_signal
 
@@ -109,14 +110,9 @@ class SignalsInspectCache:
         if not self._bus:
             return
         logger.info("Subscribing to signal gateway output pattern: %s", self.subscribe_pattern)
-        try:
-            async with self._bus.subscribe(self.subscribe_pattern, patterns=True) as pubsub:
-                async for msg in self._bus.iter_messages(pubsub):
-                    await self._handle_message(msg)
-        except asyncio.CancelledError:
-            logger.info("signals_inspect_cache task cancelled.")
-        except Exception as exc:
-            logger.error("signals_inspect_cache loop failed: %s", exc, exc_info=True)
+        await run_subscription(
+            self._bus, self.subscribe_pattern, self._handle_message, stop_event=None, name="hub.signals_inspect_cache", patterns=True
+        )
 
     async def _handle_message(self, msg: Dict[str, Any]) -> None:
         if not self._bus:

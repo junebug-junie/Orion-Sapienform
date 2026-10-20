@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.notify import HubNotificationEvent
 
@@ -89,18 +90,13 @@ class BusSynapticTriggerNotifier:
             return
 
         logger.info("Subscribing to metacog triggers: %s", self.metacog_trigger_channel)
-        try:
-            async with self._bus.subscribe(self.metacog_trigger_channel) as pubsub:
-                async for msg in self._bus.iter_messages(pubsub):
-                    try:
-                        await self._handle_metacog_trigger(msg)
-                    except Exception as exc:
-                        logger.exception("bus_synaptic_notifier_handle_failed: %s", exc)
-
-        except asyncio.CancelledError:
-            logger.info("bus_synaptic_trigger_notifier task cancelled")
-        except Exception as exc:
-            logger.error("bus_synaptic_trigger_notifier loop failed: %s", exc, exc_info=True)
+        await run_subscription(
+            self._bus,
+            self.metacog_trigger_channel,
+            self._handle_metacog_trigger,
+            stop_event=None,
+            name="hub.bus_synaptic_trigger_notifier",
+        )
 
     async def _handle_metacog_trigger(self, msg: Dict[str, Any]) -> None:
         """Process an incoming metacog trigger."""

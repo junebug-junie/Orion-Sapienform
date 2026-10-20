@@ -17,6 +17,7 @@ from typing import Annotated, Optional, Any, List, Dict, Tuple, Literal
 from urllib.parse import urlparse
 import aiohttp
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import subscription_health
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -1008,8 +1009,15 @@ async def root():
 
 @router.get("/health")
 def health():
-    """Simple health check endpoint."""
-    return {"status": "ok", "service": settings.SERVICE_NAME}
+    """Health check. A bus listener stuck retrying reads as degraded (still HTTP 200)."""
+    listeners = subscription_health()
+    return {
+        "status": "ok" if listeners["ok"] else "degraded",
+        "service": settings.SERVICE_NAME,
+        "listeners_ok": listeners["ok"],
+        "listeners_down": listeners["down"],
+        "listeners": listeners["listeners"],
+    }
 
 
 @router.get("/api/substrate/tier-outcomes/latest")

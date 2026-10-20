@@ -40,6 +40,11 @@ Last 72 h attention winners (substrate_attention_broadcast_log): none 81.2%, exe
 
 ## 3. Check first (possible regressions)
 
+0. **Arousal has been stuck on "strained" since 2026-10-18 12:07 UTC (found 10-20 22:00).** While it reads strained, the arousal readers block curiosity (`curiosity_investigation_blocked reason=arousal_strained`, `curiosity_self_inquiry_blocked`). The last curiosity run finished 10-18 05:10. This probably also explains part of the reverie volume drop (reverie chain is arousal reader 5). The reason is `gpu_queue_sustained`, from `gpu_pool_state_history` (circe). From 10-18 ~12:00 the agent lane holds 3-10 waiting requests in every hour (10 at 22:00 on 10-20), and `memory_distill` holds 2. At the same time `gpu_pool_events` shows a tight loop: holder `vision-council`, work_class `metacog`, about 900 per hour, admitted -> unavailable (`shed:cabinet_hot`) -> cancelled. Note that the arousal reading has `cabinet_temp_c` 32.26 and `cabinet_reflex` null, so the pool's "cabinet hot" shed and arousal's cabinet view disagree. Questions:
+   - Is the agent-lane queue real load or jobs that can never be served?
+   - Why does the pool shed for cabinet_hot at 32 C?
+   - Why does vision-council retry with no backoff?
+   - Should `shed:*` / `unavailable` count as a fault in `GPU_FAULT_EVENTS` (`orion/regulation/arousal.py:62`) so that a jammed queue is not read as strain? This is the same fault-vs-load seam as #2628.
 1. **Reverie volume is falling.** Thoughts per day: 10-15 620, 10-16 314, 10-17 205, 10-18 118, 10-19 55, 10-20 24 (partial). Some drop is expected: calm ticks no longer start a chain (#2707), chains stop when settled, and the sustained rule (#2718) removed most body and bus winners. A steady fall to near zero is not explained by that. Find out whether reverie is starving or broken. Compare reverie skips (`no winner this tick`), chain terminal reasons in `substrate_reverie_chain`, and winners per day. Perception winners dropped from about 8% to 3.7%, so check perception too.
 2. **Daydream steps still paraphrase.** After #2707 a step names `next_focus` ("investigate the specific nodes…"), but the next step gets no new information, so it restates. The next lever: give the step the real "what changed" detail for its winner (which pressure hint moved, which bus links went anomalous, the caption difference for perception). Measure with `services/orion-thought/evals/` (the #2707 continuity eval): first-to-last bigram overlap must fall below the same-subject cross-chain baseline.
 3. **Cabinet wins 2.6%.** Cabinet is the room sensors, and the prompt labels it "body unusual for itself". See open decision 4.2.
@@ -84,6 +89,6 @@ Last 72 h attention winners (substrate_attention_broadcast_log): none 81.2%, exe
 
 ## 8. Suggested first move for the new session
 
-1. Run check 3.1 (reverie volume). It is the only item that may be a live regression.
+1. Run check 3.0 (stuck strained arousal blocks curiosity), then 3.1 (reverie volume).
 2. Ask Juniper for a go on #2722 (`world:curiosity`). If she says go, build it, then build the `world:chat` message-evidence patch.
 3. Then do check 3.2 ("what changed" detail for reverie steps), as a proposal first, because it changes what reverie is given.

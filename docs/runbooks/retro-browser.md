@@ -133,3 +133,12 @@ frame collapse to the release. Input from both browsers shares the API's 24-comm
 cap, so a stall longer than about 0.5 s can return `unavailable_or_busy` (shown as
 Control interrupted). Timeout cleanup is shielded from socket cancellation
 (`test_cancelled_input_cannot_abandon_timeout_cleanup`).
+
+### Grant grace
+
+A fresh lease waits 1 s for its first input; after that, each input still expires
+after 250 ms. Before 2026-10-20 the 250 ms clock started at the grant, before the
+grant reply had crossed Hub and Tailscale to the browser. Every Connect / resume
+from a remote laptop then lost control with zero applied inputs. A granted lease
+holds the neutral mask, so the longer first window cannot hold a button down.
+Regression: `test_fresh_lease_waits_for_first_input_across_the_grant_round_trip`.

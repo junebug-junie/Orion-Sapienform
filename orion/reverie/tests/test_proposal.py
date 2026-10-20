@@ -38,7 +38,7 @@ def _thought(salience=0.8, interpretation=GROUNDED, evidence=("ol-1",), coalitio
 
 
 def test_grounded_thought_becomes_review_gated_candidate():
-    c = spontaneous_thought_to_candidate(_thought(), self_state_id="ss-1")
+    c = spontaneous_thought_to_candidate(_thought(), fallback_target_id="ss-1")
     assert c is not None
     assert c.source == REVERIE_PROPOSAL_SOURCE
     assert c.thought_id == "th-1"
@@ -48,7 +48,7 @@ def test_grounded_thought_becomes_review_gated_candidate():
 def test_candidate_always_requires_policy_gate_never_auto():
     # The load-bearing safety invariant: a spontaneous proposal can NEVER carry a
     # gate that would let it auto-dispatch.
-    c = spontaneous_thought_to_candidate(_thought(salience=1.0), self_state_id="ss-1")
+    c = spontaneous_thought_to_candidate(_thought(salience=1.0), fallback_target_id="ss-1")
     assert c is not None
     assert c.required_policy_gate == "operator_review"
     assert c.required_policy_gate not in ("none", "read_only")
@@ -58,8 +58,8 @@ def test_candidate_always_requires_policy_gate_never_auto():
 def test_autoaction_posture_recorded_but_gate_unchanged():
     # Arming ORION_REVERIE_AUTOACTION_ENABLED records an inspectable posture but
     # must NOT lower the gate — the load-bearing Phase B safety property.
-    off = spontaneous_thought_to_candidate(_thought(), self_state_id="ss-1")
-    on = spontaneous_thought_to_candidate(_thought(), self_state_id="ss-1", autoaction_enabled=True)
+    off = spontaneous_thought_to_candidate(_thought(), fallback_target_id="ss-1")
+    on = spontaneous_thought_to_candidate(_thought(), fallback_target_id="ss-1", autoaction_enabled=True)
     assert "reverie_autoaction:off" in off.reasons
     assert "reverie_autoaction:on" in on.reasons
     # The gate is operator_review in BOTH cases — auto-action never auto-dispatches.
@@ -69,21 +69,21 @@ def test_autoaction_posture_recorded_but_gate_unchanged():
 
 def test_hollow_thought_yields_no_candidate():
     hollow = _thought(evidence=(), interpretation="x")  # short + no evidence
-    assert spontaneous_thought_to_candidate(hollow, self_state_id="ss-1") is None
+    assert spontaneous_thought_to_candidate(hollow, fallback_target_id="ss-1") is None
 
 
 def test_low_salience_yields_no_candidate():
-    assert spontaneous_thought_to_candidate(_thought(salience=0.2), self_state_id="ss-1") is None
+    assert spontaneous_thought_to_candidate(_thought(salience=0.2), fallback_target_id="ss-1") is None
 
 
 def test_absent_coalition_targets_self_state_without_raising():
     # A thought with no coalition is hollow → None, never a raise.
-    assert spontaneous_thought_to_candidate(_thought(coalition=False), self_state_id="ss-1") is None
+    assert spontaneous_thought_to_candidate(_thought(coalition=False), fallback_target_id="ss-1") is None
 
 
 def test_evidence_refs_capped():
     t = _thought(evidence=["ol-1"])  # grounded
-    c = spontaneous_thought_to_candidate(t, self_state_id="ss-1")
+    c = spontaneous_thought_to_candidate(t, fallback_target_id="ss-1")
     assert len(c.evidence_refs) <= 200
 
 
@@ -101,7 +101,7 @@ def test_semantic_lift_audit_ref_thought_survives_proposal_path():
     assert not t.hollow
     # Sanity: without the stamp's extra_grounding, a strict recompute would drop it.
     assert t.hollow_reason_for() == "unanchored_evidence_outside_coalition"
-    c = spontaneous_thought_to_candidate(t, self_state_id="ss-1")
+    c = spontaneous_thought_to_candidate(t, fallback_target_id="ss-1")
     assert c is not None
     assert c.thought_id == "th-2"
 

@@ -28,6 +28,7 @@ def fast_zoo(monkeypatch):
 
 class FakeStore:
     def __init__(self, points):
+        self.exceedances = []
         self.raw = sorted(points)
         self.runs: list[dict] = []
         self.forecasts: list[dict] = []
@@ -79,6 +80,35 @@ class FakeStore:
 
     def live_scores(self, sid, since):
         return [f for f in self.forecasts if f.get("score_status") == "scored" and f["target_ts"] >= since]
+
+    exceedances: list = []
+
+    fail_next_issue = False
+
+    def insert_issue(self, forecast_rows, exceedance_rows):
+        if self.fail_next_issue:          # all-or-nothing, like the real transaction
+            self.fail_next_issue = False
+            raise ConnectionError("pg hiccup")
+        self.insert_forecasts(forecast_rows)
+        self.insert_exceedances(exceedance_rows)
+
+    def insert_exceedances(self, rows):
+        have = {(e["origin_ts"], e["name"]) for e in self.exceedances}
+        for r in rows:
+            if (r["origin_ts"], r["name"]) not in have:
+                self.exceedances.append({**r, "exceedance_id": next(self._ids), "scored_at": None})
+
+    def due_exceedances(self, sid, before, limit=2000):
+        return [e for e in self.exceedances if e["scored_at"] is None and e["window_end"] <= before][:limit]
+
+    def write_exceedance_outcomes(self, rows):
+        by = {e["exceedance_id"]: e for e in self.exceedances}
+        for r in rows:
+            by[r["exceedance_id"]].update(r)
+
+    def graded_exceedances(self, sid, since):
+        return [e for e in self.exceedances if e["scored_at"] is not None and (e.get("n_readings") or 0) > 0
+                and e["probability"] is not None and e["window_start"] >= since]
 
 
 def _setup(days=12.0, noise=0.05):
@@ -211,13 +241,14 @@ def test_live_metrics_compare_champion_to_baseline_on_the_same_origins():
     reg, spec, s, store, end = _setup()
     eng = _engine(reg, store, Clock(end), [])
     o = end - timedelta(hours=1)
-    for role, err in (("champion", 0.5), ("baseline", 1.0)):
-        store.forecasts.append({"series_id": "test.temp", "role": role, "origin_ts": o, "horizon_min": 60,
+    for role, err, pt in (("champion", 0.5, 28.0), ("baseline", 1.0, 28.5)):
+        store.forecasts.append({"series_id": "test.temp", "role": role, "origin_ts": o, "horizon_min": 60, "point": pt,
                                 "target_ts": o + timedelta(hours=1), "abs_error": err, "in_80": True,
                                 "in_95": True, "score_status": "scored", "scored_at": end})
     live = eng.live_metrics(spec, end + timedelta(minutes=1))
     assert live["horizons"]["60"]["rel_mae_vs_baseline"] == pytest.approx(0.5)
-    assert live["rel_mae_vs_baseline_24h"] == pytest.approx(0.5)
+    assert live["horizons"]["60"]["rel_mae_differing"] == pytest.approx(0.5)
+    assert live["horizons"]["60"]["n_differing"] == 1 and live["horizons"]["60"]["p_baseline_better"] is None
 
 
 def test_restore_refuses_a_selection_that_no_longer_fits_the_registry():
@@ -397,3 +428,94 @@ def test_an_unreadable_events_table_keeps_forecasting_on_the_last_good_list():
     st = eng.state["test.temp"]
     assert len(store.forecasts) > n and "change_events_unreadable" in st.alerts
     assert st.events["excluded_windows"]          # still applying the cached exclusion
+
+
+
+def _live_pairs(store, end, n, champ_err, base_err, same_point=False, rng=None):
+    rng = rng or np.random.default_rng(0)
+    for i in range(n):
+        o = end - timedelta(hours=20) + timedelta(minutes=5 * i)
+        ce, be = champ_err + rng.normal(0, 0.05), base_err + rng.normal(0, 0.05)
+        for role, err, pt in (("champion", ce, 28.0), ("baseline", be if not same_point else ce, 28.0 if same_point else 28.3)):
+            store.forecasts.append({"series_id": "test.temp", "role": role, "origin_ts": o, "horizon_min": 5, "point": pt,
+                                    "target_ts": o + timedelta(minutes=5), "abs_error": abs(err), "in_80": True,
+                                    "in_95": True, "score_status": "scored", "scored_at": end})
+
+
+def test_worse_than_baseline_ignores_ties_and_fires_on_a_significant_loss():
+    reg, spec, s, store, end = _setup()
+    eng = _engine(reg, store, Clock(end), [])
+    asyncio.run(eng.tick(_sync))
+    store.forecasts = []
+    _live_pairs(store, end, 200, 0.3, 0.3, same_point=True)       # baseline served: identical forecasts
+    live = eng.live_metrics(spec, end)
+    assert live["horizons"]["5"]["n_differing"] == 0 and "worse_than_baseline" not in eng.alerts_for(spec, end, live, end)
+    store.forecasts = []
+    _live_pairs(store, end, 200, 0.45, 0.3)                       # champion clearly worse where it differs
+    live = eng.live_metrics(spec, end)
+    assert live["horizons"]["5"]["n_independent"] == 200 and live["horizons"]["5"]["p_baseline_better"] < 0.05
+    assert live["losing_horizons"] == [5] and "5 min" in eng.alerts_for(spec, end, live, end)["worse_than_baseline"]
+    store.forecasts = []
+    _live_pairs(store, end, 200, 0.30, 0.30)                      # differing but a coin flip: no alert
+    live = eng.live_metrics(spec, end)
+    assert "worse_than_baseline" not in eng.alerts_for(spec, end, live, end)
+
+
+def test_each_issue_stores_its_threshold_probabilities_and_they_get_an_outcome():
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    assert [e["name"] for e in store.exceedances] == ["hot"]
+    e = store.exceedances[0]
+    assert e["window_start"] == e["origin_ts"] + timedelta(minutes=5)
+    assert e["window_end"] == e["window_start"] + timedelta(minutes=30)
+    # The next 30 min: bucket means stay under 31 C but one raw reading spikes over it.
+    t = end
+    store.raw += [(t + timedelta(seconds=30 * i), 30.0) for i in range(70)]
+    store.raw.append((t + timedelta(minutes=12, seconds=7), 31.6))
+    clock.t = end + timedelta(minutes=40)
+    assert eng.score_exceedances(spec, clock.t) == 1
+    assert e["hit_raw"] is True and e["hit_mean"] is False and e["max_raw"] == 31.6
+
+
+
+def test_a_long_horizon_is_not_judged_until_it_has_enough_independent_forecasts():
+    reg, spec, s, store, end = _setup()
+    eng = _engine(reg, store, Clock(end), [])
+    store.forecasts = []
+    rng = np.random.default_rng(1)
+    for i in range(400):                                   # 400 overlapping 6 h forecasts, 5 min apart
+        o = end - timedelta(days=2) + timedelta(minutes=5 * i)
+        for role, err, pt in (("champion", 1.5 + rng.normal(0, .05), 28.0), ("baseline", 1.0, 28.4)):
+            store.forecasts.append({"series_id": "test.temp", "role": role, "origin_ts": o, "horizon_min": 360,
+                                    "point": pt, "target_ts": o + timedelta(hours=6), "abs_error": err,
+                                    "in_80": True, "in_95": True, "score_status": "scored", "scored_at": end})
+    live = eng.live_metrics(spec, end)
+    h = live["horizons"]["360"]
+    assert h["n_differing"] == 400 and h["n_independent"] == 6 and h["p_baseline_better"] is None
+    assert live["losing_horizons"] == []
+
+
+def test_a_failed_issue_write_leaves_nothing_and_the_bucket_is_reissued():
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    store.fail_next_issue = True
+    asyncio.run(eng.tick(_sync))
+    assert store.forecasts == [] and store.exceedances == []
+    clock.t += timedelta(seconds=30)
+    asyncio.run(eng.tick(_sync))
+    assert store.forecasts and [e["name"] for e in store.exceedances] == ["hot"]
+
+
+def test_a_partly_observed_window_is_unknown_unless_a_crossing_was_seen():
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    e = store.exceedances[0]
+    store.raw += [(end + timedelta(seconds=30 * i), 30.0) for i in range(4)]     # 2 min of data, then silence
+    clock.t = end + timedelta(minutes=40)
+    eng.score_exceedances(spec, clock.t)
+    assert e["hit_raw"] is None and e["hit_mean"] is None and e["n_buckets_observed"] == 1

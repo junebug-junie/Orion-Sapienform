@@ -219,7 +219,16 @@ def sweep_suppressible_nodes(
         prior = (active_pressure.nodes or {}).get(node_id)
         if prior is None:
             continue
-        if not prior.active_pressures and not prior.capability_impacts:
+        # pressure_score counts too: before 2026-10-20 suppression cleared the lists
+        # but left the score, and live hecate sat suppressed at score 1.0 with empty
+        # lists -- never re-selected, so never cleared, and still read as "felt" by
+        # orion/substrate/relational/adapters/biometrics_ctx.py. Suppression now
+        # zeroes the score, so this still goes quiet after one pass.
+        if (
+            not prior.active_pressures
+            and not prior.capability_impacts
+            and float(prior.pressure_score or 0.0) <= 0.0
+        ):
             continue
         out.append(node_id)
     return sorted(out)
@@ -269,6 +278,7 @@ def invoke_biometrics_pressure(
     stale_after_sec: int = DEFAULT_STALE_AFTER_SEC,
     min_confidence: float = DEFAULT_MIN_CONFIDENCE,
     now: datetime | None = None,
+    offline_frozen_hint_guard: bool = True,
 ) -> OrganEmissionV1:
     clock = _utc_now(now)
     node_id = _node_id_from_trigger(trigger_event, catalog)
@@ -385,6 +395,19 @@ def invoke_biometrics_pressure(
                 observed_at=clock,
             )
         )
+
+    # An expected-offline node that has gone stale is not reporting, so its
+    # `pressure_hints` are frozen at the last value it sent -- not a reading of now.
+    # Rules C/D/E below read those hints as current evidence: on the next sweep
+    # after Rule A suppressed `strain`, Rule C re-added it (reinforced/detected) --
+    # within one emission the merge window hides this. hecate's
+    # frozen `stability` 0.9996 clears HINT_THRESHOLD forever. Rule A is the whole
+    # verdict for such a node. Kill switch: BIOMETRICS_OFFLINE_FROZEN_HINT_GUARD=false
+    # (orion-substrate-runtime) restores the old behaviour.
+    if expected_online is False and stale and offline_frozen_hint_guard:
+        hints = {}
+        capabilities = []
+        active_pressures = []
 
     has_hints = _has_pressure_hints(hints)
     hint_kind = _primary_hint_kind(hints)

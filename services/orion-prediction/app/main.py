@@ -193,7 +193,8 @@ async def live(series_id: str) -> dict[str, Any]:
     if spec is None or spec.role != "target":
         raise HTTPException(404, "unknown target series")
     out = await asyncio.to_thread(e.live_metrics, spec, e.clock())
-    return {"series_id": series_id, "live": out, "alerts": e.state[series_id].alerts}
+    grades = await asyncio.to_thread(e.exceedance_grades, spec, e.clock())
+    return {"series_id": series_id, "live": out, "exceedance": grades, "alerts": e.state[series_id].alerts}
 
 
 class ScenarioBody(BaseModel):

@@ -10,7 +10,7 @@ Today Orion matches. It does not learn. Each new walkway crop joins the closest
 stored "individual" (a cluster of crops) or starts a new one. A name Juniper
 gives labels one cluster. Nothing carries that name to the next day.
 
-Live, 2026-10-20: 275 person clusters, 13 named. Juniper is 2 clusters, Esme 4.
+Live, 2026-10-20: 275 person clusters, 13 named. Juniper is 2 clusters; another named person is 4.
 Juniper named herself on a story on 10-19; the clusters Orion opens tomorrow
 will not know it.
 
@@ -27,8 +27,8 @@ and is gated on the eval.
 
 **Urgent (Phase 0):** labelled examples are being deleted right now. Crop rows
 (and their embeddings) are pruned after 7 days (`VISION_CROP_RETENTION_DAYS=7`).
-Maeve and Amanda Feld already have 0 surviving crops; Teddy has 4 left of 30
-sightings; Esme's 10-15 crops go within a day. Every lost labelled crop is a
+Two named people already have 0 surviving crops; a third has 4 left of 30
+sightings; a fourth person's 10-15 crops go within a day. Every lost labelled crop is a
 lost training example.
 
 ## Current architecture

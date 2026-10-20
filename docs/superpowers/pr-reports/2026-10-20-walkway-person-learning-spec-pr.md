@@ -1,7 +1,7 @@
 ## Summary
 
 - Design spec: Orion learns who people are on the walkway from Juniper's answers (albums of confirmed crops, per-person confidence bars, "Is this Juniper?" asks, held-out eval).
-- Flags an urgent data loss: labelled person crops are pruned after 7 days (Maeve, Amanda Feld already at 0 crops). Phase 0 fixes it with one env key.
+- Flags an urgent data loss: labelled person crops are pruned after 7 days (two named people already at 0 crops). Phase 0 fixes it with one env key.
 - Docs only. No code, schema, or env change in this PR.
 
 ## Outcome moved

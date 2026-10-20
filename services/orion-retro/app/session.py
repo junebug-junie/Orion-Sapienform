@@ -132,10 +132,16 @@ class Sessions:
         if not self.ready.is_set():
             # A command sent right after start (the browser's resume) must not spend its
             # 0.75 s budget on core loading (~0.5 s live), or the session fails.
-            # monitor() already fails a worker that is not ready within 10 s.
-            try: await asyncio.wait_for(self.ready.wait(), 10)
+            # 4.5 s stays under Hub's 5 s proxy timeout; monitor() fails a worker not
+            # ready within 10 s. Re-check after the wait: waiters are not yet in
+            # pending, so the cap (24, below the 32-slot queue) must be enforced
+            # again, and a restart must not hand an old waiter the new session.
+            sid = (self.session or {}).get('session_id')
+            try: await asyncio.wait_for(self.ready.wait(), 4.5)
             except asyncio.TimeoutError: raise ValueError('worker_unavailable')
-            if not self.process or self.stopping: raise ValueError('unavailable_or_busy')
+            if (not self.process or self.stopping or len(self.pending) >= 24
+                    or (self.session or {}).get('session_id') != sid):
+                raise ValueError('unavailable_or_busy')
         rid = str(uuid.uuid4()); future = asyncio.get_running_loop().create_future()
         self.pending[rid] = future
         try:
@@ -157,6 +163,7 @@ class Sessions:
         process, self.process = self.process, None
         if not process: return
         self.stopping = True
+        self.ready.set()  # wake start-time waiters so they fail now, not after their timeout
         if self.task and not from_monitor: self.task.cancel()
         if self.media_task: self.media_task.cancel()
         self.latest_media = None

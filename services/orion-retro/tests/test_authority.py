@@ -352,3 +352,22 @@ def test_command_waits_for_a_starting_worker_instead_of_failing_the_session():
         result=await Sessions.command(fake,'resume'); await task
         return result, fake.stopped
     assert asyncio.run(scenario())==({'state':'running'},False)
+
+
+def test_waiters_released_together_still_respect_the_pending_cap():
+    # Review 2026-10-20: inputs waiting on startup were not counted; all woke at once
+    # and could overflow the 32-slot queue, failing the new session.
+    import asyncio, queue
+    class Fake:
+        process=True;stopping=False;pending={};commands=queue.Queue(32);urgent=queue.Queue(8)
+        session={'session_id':'s1'};stopped=False
+        async def stop(self,*a): self.stopped=True
+    async def scenario():
+        fake=Fake(); fake.ready=asyncio.Event()
+        tasks=[asyncio.create_task(Sessions.command(fake,'input','c',{})) for _ in range(40)]
+        await asyncio.sleep(.05); fake.ready.set(); await asyncio.sleep(.05)
+        for f in list(fake.pending.values()): f.set_result({'result':{}})
+        out=await asyncio.gather(*tasks,return_exceptions=True)
+        return fake.stopped, sum(isinstance(o,ValueError) and str(o)=='unavailable_or_busy' for o in out), fake.commands.qsize()
+    stopped, refused, queued = asyncio.run(scenario())
+    assert not stopped and refused == 16 and queued == 24

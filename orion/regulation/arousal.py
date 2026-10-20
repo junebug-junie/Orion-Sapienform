@@ -54,6 +54,17 @@ DEFAULT_CLEAR_SEC = 600.0
 # 155 refusals came a median 601 s apart, never more than 604 s. Three cadences: one missed or
 # late refusal does not end a fault that is still there.
 GPU_FAULT_LOOKBACK_SEC = 1800.0
+
+# The reasons that put Orion in ``strained`` (S1, S2), in the order ``classify_arousal`` writes
+# them. One owner: the regulation step's cause rows and the chronology's strain arc read these.
+STRAIN_CAUSES: Tuple[str, ...] = ("cabinet_hot", "gpu_queue_sustained")
+
+
+def strain_causes(reasons: Iterable[str]) -> list[str]:
+    """The strain causes among a reading's ``reasons``, in ``STRAIN_CAUSES`` order. Empty while a
+    latched strain is only holding (``strain_holding``/``strain_clearing``)."""
+    have = set(reasons)
+    return [c for c in STRAIN_CAUSES if c in have]
 # gpu_pool_events rows that say whether a seat's lane controller can act. A refusal on the pool's
 # own action is ``actuate_refused``; a refusal on a status probe is ``swap_failed`` with reason
 # ``status_refused:<reason>``. Only ``swapped`` (the controller did what was asked) ends a fault:
@@ -217,7 +228,7 @@ def classify_arousal(
     level: Optional[str] = None
     if s1_hot or s2_strain:
         level, latched, clear_since = "strained", True, None
-        reasons += (["cabinet_hot"] if s1_hot else []) + (["gpu_queue_sustained"] if s2_strain else [])
+        reasons += [c for c, on in zip(STRAIN_CAUSES, (s1_hot, s2_strain)) if on]
     elif latched:
         if s1_fresh and s2_clear:
             clear_since = clear_since or now

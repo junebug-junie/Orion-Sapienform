@@ -173,6 +173,11 @@ class Settings(BaseSettings):
     # TEMPORAL_SELF_CHRONICLE_ENABLED (regulation keeps running). Tables:
     # services/orion-sql-db/manual_migration_temporal_self_v1.sql.
     temporal_self_chronicle_enabled: bool = Field(True, alias="TEMPORAL_SELF_CHRONICLE_ENABLED")
+    # Strain loop part 1 (docs/superpowers/specs/2026-10-20-strain-loop-design.md): the regulate
+    # node writes a row when a strain cause joins an episode (or seeds one), and the chronicle folds
+    # arousal_transition rows into one `strain` arc per episode (chat stance cue, Day letter,
+    # reverie). Off: no cause rows, no strain arcs; level rows and arousal are unchanged.
+    temporal_self_strain_arcs_enabled: bool = Field(True, alias="TEMPORAL_SELF_STRAIN_ARCS_ENABLED")
     # K: consecutive broadcast ticks that open or resume an attention arc (~110 s live). PR #2597 sweep.
     temporal_self_arc_min_ticks: int = Field(3, ge=1, alias="TEMPORAL_SELF_ARC_MIN_TICKS")
     # R: a suspended arc may return within this window, else it closes (PR #2597 sweep: 30, not 180).

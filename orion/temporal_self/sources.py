@@ -24,6 +24,7 @@ import json
 from datetime import datetime
 from typing import Any, Callable, Iterable, Mapping
 
+from orion.regulation.arousal import strain_causes
 from orion.schemas.temporal_self import LABEL_MAX, TemporalSelfEventV1
 from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for
 
@@ -388,6 +389,43 @@ def presence_transition(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEven
     )
 
 
+AROUSAL_LEVELS = frozenset({"engaged", "idle", "strained", "unknown"})
+AROUSAL_EVENT_PREFIX = "arousal_transition:"
+
+
+def arousal_transition(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """temporal_self_event rows the regulation step wrote itself (``source_table='regulation'``,
+    ``services/orion-durable-runs/app/regulation_store.py``): one per level change, plus one per
+    strain cause that joins an episode already strained. Time: occurred_at. Subject:
+    ``orion:arousal``. Verdict: the new level.
+
+    The event keeps the row's OWN ``event_id``. The chronicle stores every event it folds in that
+    same table: a new id would make each fold insert a copy that the next read folds again.
+
+    ``since`` is the reading's episode start (when the level was entered); ``causes`` are the
+    strain causes in the reading (``orion.regulation.arousal.STRAIN_CAUSES``)."""
+    event_id = str(row.get("event_id") or "")
+    payload = _json(row.get("payload_json")) or {}
+    if not event_id.startswith(AROUSAL_EVENT_PREFIX) or not isinstance(payload, dict):
+        return None
+    to_level = payload.get("to")
+    reading = payload.get("reading") if isinstance(payload.get("reading"), dict) else {}
+    if to_level not in AROUSAL_LEVELS:
+        return None
+    return _event(
+        kind="arousal_transition", table="regulation", ref=event_id[len(AROUSAL_EVENT_PREFIX):],
+        at=row.get("occurred_at"), tz_name=tz_name, subject_ref="orion:arousal", label=str(to_level),
+        verdict=str(to_level),
+        payload={
+            "from": payload.get("from"), "to": to_level, "since": _iso(reading.get("since")),
+            "causes": strain_causes(reading.get("reasons") or []),
+            "cabinet_temp_c": reading.get("cabinet_temp_c"), "gpu_queue_depth": reading.get("gpu_queue_depth"),
+            # The previous reading was too old to carry (an outage): what happened in the gap is unseen.
+            "gap": "prev_dropped:gap" in (reading.get("reasons") or []),
+        },
+    )
+
+
 def _iso(value: Any) -> str | None:
     dt = as_utc(value)
     return dt.isoformat() if dt else None
@@ -413,6 +451,7 @@ ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
     "vision_percept": vision_percept,
     "memory_episode": memory_episode,
     "presence_transition": presence_transition,
+    "arousal_transition": arousal_transition,
 }
 
 

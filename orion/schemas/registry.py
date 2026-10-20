@@ -115,6 +115,12 @@ from orion.schemas.personality import (
     PersonalityChoiceV1,
     PersonalityCueV1,
     PersonalityFrameV1,
+    PERSONALITY_NAMING_KIND,
+    DispositionNamingPacketV1,
+    DispositionNamingV1,
+    NamingEvidenceV1,
+    NamingNeighborV1,
+    NamingPriorVerdictV1,
 )
 from orion.schemas.vision_sighting import IDENTITY_SIGHTING_KIND, IdentitySightingV1
 from orion.schemas.context_exec import ContextExecPermissionV1
@@ -1593,6 +1599,13 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "DispositionV1": DispositionV1,
     "ChoiceStyleV1": ChoiceStyleV1,
     "PersonalityCueV1": PersonalityCueV1,
+    # Self-naming (PR #2742): the answer crosses the bus (Hub -> sql-writer), the packet crosses
+    # HTTP (durable-runs -> Hub); both are also in SCHEMA_REGISTRY. Nested models live here only.
+    "DispositionNamingV1": DispositionNamingV1,
+    "DispositionNamingPacketV1": DispositionNamingPacketV1,
+    "NamingEvidenceV1": NamingEvidenceV1,
+    "NamingNeighborV1": NamingNeighborV1,
+    "NamingPriorVerdictV1": NamingPriorVerdictV1,
     "IdentitySightingV1": IdentitySightingV1,
     "ContextExecPermissionV1": ContextExecPermissionV1,
     "SelfExperimentSpecV1": SelfExperimentSpecV1,
@@ -2105,6 +2118,14 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "PersonalityFrameV1": SchemaRegistration(
         model=PersonalityFrameV1,
         kind="personality.frame.v1",
+    ),
+    "DispositionNamingV1": SchemaRegistration(
+        model=DispositionNamingV1,
+        kind=PERSONALITY_NAMING_KIND,
+    ),
+    "DispositionNamingPacketV1": SchemaRegistration(
+        model=DispositionNamingPacketV1,
+        kind="personality.naming.packet.v1",
     ),
 }
 

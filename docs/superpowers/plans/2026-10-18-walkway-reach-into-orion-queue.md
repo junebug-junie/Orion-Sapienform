@@ -8,6 +8,8 @@ live and verified.
 
 ## Queued for resolution (need to maximize these areas and optimize)
 
+Context spec for all seven parts plus the over-count and caption-as-fact problems: [PR #2763](https://github.com/junebug-junie/Orion-Sapienform/pull/2763) (`docs/superpowers/specs/2026-10-20-walkway-followups-context-spec.md`).
+
 | Part of Orion | What walkway content reaches it | Live? |
 |---|---|---|
 | **Chat stance** | The street line: who was outside in the last 15 minutes (names first) and recent captions. | Render yes; reaching a real chat turn is UNVERIFIED (nothing records it). |

@@ -102,6 +102,11 @@ class ReducerConfig:
     # host crash): closed source_stale at its last row, so "someone has been here" is never
     # asserted past the evidence. 2.5x tolerates one lost keepalive plus write/read lag.
     company_stale_sec: float = 1500.0
+    # Strain (strain loop part 1): regulation writes a keepalive row every STRAIN_KEEPALIVE_SEC
+    # (1800 s) while strained. An open strain arc with no row for 2.5x that means the closing row
+    # was lost, the producer died, or the kind stopped being read (flag off): closed source_stale
+    # at its last row, so "strained since" is never asserted past the evidence.
+    strain_stale_sec: float = 4500.0
 
 
 LANE_RULES = {
@@ -118,8 +123,9 @@ LANE_RULES = {
                 "sighting), unknown / a producer restart / no row for company_stale_sec (source_stale); "
                 "label only when identity was confirmed; spans days"),
     "strain": ("arousal_transition (the regulation step's own rows); opens on strained, cause rows add to "
-               "the label; closes on idle/engaged (process_ended) or unknown (source_stale); a strained row "
-               "with a new episode start closes the old arc at its last row (source_stale); spans days"),
+               "the label, keepalives (every 30 min) only refresh; closes on idle/engaged (process_ended) or "
+               "unknown (source_stale); a strained row with a new episode start, a not-strained row after an "
+               "outage, or no row for strain_stale_sec closes it at its last row (source_stale); spans days"),
 }
 
 
@@ -689,6 +695,12 @@ def _fold_strain(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None:
         return
     if arc is None:
         return  # not strained, nothing open: no arc
+    if e.payload.get("gap"):
+        # Regulation came back after an outage reading not-strained: when the strain ended in the
+        # gap was not observed, so the arc ends at its last row.
+        _add_evidence(arc, ref)
+        _end_strain(state, arc, "source_stale", arc.last_seen_at)
+        return
     _extend(arc, max(t, arc.last_seen_at), ref, accrue=True)
     _end_strain(state, arc, "process_ended" if to_level in ("idle", "engaged") else "source_stale", t)
 
@@ -839,6 +851,8 @@ def _expire(state: TemporalSelfStateV1, at: datetime, cfg: ReducerConfig) -> Non
             _close(arc, "return_window_expired", arc.last_seen_at)
         if arc.kind == "company" and arc.status == "open" and _secs(arc.last_seen_at, at) > cfg.company_stale_sec:
             _end_company(state, arc, "source_stale", arc.last_seen_at)  # no keepalive: producer gone
+        if arc.kind == "strain" and arc.status == "open" and _secs(arc.last_seen_at, at) > cfg.strain_stale_sec:
+            _end_strain(state, arc, "source_stale", arc.last_seen_at)  # no keepalive: no evidence past it
 
 
 def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
@@ -875,7 +889,8 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
             continuations.append(TemporalSelfArcV1(
                 arc_id=arc_id_for(next_day, "strain", arc.subject_ref, arc.arc_id), day_id=next_day,
                 kind="strain", subject_ref=arc.subject_ref, subject_label=arc.subject_label,
-                began_at=day_end, last_seen_at=day_end, status="open",
+                # last_seen keeps the real last row, so the stale timeout keeps counting from it.
+                began_at=day_end, last_seen_at=last_row_at, status="open",
                 segments=[ArcSegmentV1(began_at=day_end, ended_at=day_end)],
                 carried_from_previous_day=True, carried_from_arc_id=arc.arc_id,
                 episode_began_at=arc.episode_began_at,

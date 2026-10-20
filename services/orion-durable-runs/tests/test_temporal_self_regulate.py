@@ -199,6 +199,31 @@ def test_strain_cause_rows_off_by_flag_and_not_when_calm():
     assert causes.rows == []                                     # idle: nothing to record
 
 
+def test_strain_keepalive_every_30_min_while_strained_and_none_after():
+    w, causes = World(), Causes()
+    d = driver(w, record_cause=causes)
+    w.depth, w.sustained = 4, 320.0
+    tick(d)                                                      # onset at T0
+    for _ in range(15):                                          # 30 min of 2-min steps
+        w.now += timedelta(seconds=120)
+        tick(d)
+    assert [r[:2] for r in causes.rows] == [([], False)]         # one keepalive, at T0 + 30 min
+    for _ in range(15):
+        w.now += timedelta(seconds=120)
+        tick(d)
+    assert len(causes.rows) == 2
+    w.depth, w.sustained = 0, 0.0                                # strain clears after 10 clean min
+    for _ in range(20):
+        w.now += timedelta(seconds=120)
+        tick(d)
+    assert w.projected[-1].arousal.arousal_level != "strained"
+    n = len(causes.rows)
+    for _ in range(20):
+        w.now += timedelta(seconds=120)
+        tick(d)
+    assert len(causes.rows) == n                                 # not strained: no keepalives
+
+
 def test_cause_row_shape_matches_the_level_row():
     from app import regulation_store
     from orion.schemas.regulation import ArousalReadingV1

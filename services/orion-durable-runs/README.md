@@ -571,10 +571,13 @@ Strain loop part 1 (2026-10-20, `docs/superpowers/specs/2026-10-20-strain-loop-d
 level row is written only when the level changes, so a cause that joins an episode already
 strained (the cabinet going critical mid-episode) was never recorded. While strained, the node
 now also writes one row per strain cause new to the episode (`cause_row`, event id
-`...:strained:at:<observed_at>`, `payload.joined`), and one seed row (`payload.seed = true`) when
-the episode has nothing recorded yet (the first step after deploy, a lost onset row). At most
-two cause rows per episode plus a seed. Same table, kind and label, so readers of levels still
-read `strained`. The causes already recorded ride in the checkpoint as `strain_causes_seen`.
+`...:strained:at:<observed_at>`, `payload.joined`), one seed row (`payload.seed = true`) when
+the episode has nothing recorded yet (the first step after deploy, a lost onset row), and a
+keepalive (`joined = []`) every `STRAIN_KEEPALIVE_SEC` (1,800 s) so the chronology can close an
+arc whose closing row was lost. A failed write is retried on the next step. Same table, kind and label, so readers of levels still
+read `strained` (`scripts/analysis/measure_arousal_reader_replay.py` filters them out, since they
+would restart a level's age). The causes already recorded and the last row's time ride in the
+checkpoint as `strain_causes_seen` / `strain_row_at`.
 Kill switch: `TEMPORAL_SELF_STRAIN_ARCS_ENABLED=false` (no cause rows, no strain arcs).
 
 Kill switches: `TEMPORAL_SELF_ENABLED=false` (no thread), `ORION_REGULATION_AROUSAL_ENABLED=false`

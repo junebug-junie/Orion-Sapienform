@@ -420,6 +420,8 @@ def arousal_transition(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEvent
             "from": payload.get("from"), "to": to_level, "since": _iso(reading.get("since")),
             "causes": strain_causes(reading.get("reasons") or []),
             "cabinet_temp_c": reading.get("cabinet_temp_c"), "gpu_queue_depth": reading.get("gpu_queue_depth"),
+            # The previous reading was too old to carry (an outage): what happened in the gap is unseen.
+            "gap": "prev_dropped:gap" in (reading.get("reasons") or []),
         },
     )
 

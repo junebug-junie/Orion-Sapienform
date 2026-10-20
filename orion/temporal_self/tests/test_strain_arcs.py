@@ -39,6 +39,15 @@ def cause(t: datetime, since: datetime, causes, joined=(), seed=False) -> dict:
                              "reading": _reading("strained", since, causes, observed=t)}}
 
 
+def keep(since: datetime, lo: datetime, hi: datetime, causes=("gpu_queue_sustained",)) -> list[dict]:
+    """The regulate node's keepalives every 30 min strictly inside (lo, hi)."""
+    out, t = [], lo + timedelta(minutes=30)
+    while t < hi:
+        out.append(cause(t, since, causes))
+        t += timedelta(minutes=30)
+    return out
+
+
 def evs(rows):
     return S.adapt("arousal_transition", rows)
 
@@ -139,13 +148,15 @@ def test_replay_identity_fold_twice_and_chunked():
 def test_episode_carries_over_midnight_with_its_real_start():
     late = datetime(2026, 10, 10, 5, 0, tzinfo=timezone.utc)  # 23:00 local 10-09
     midnight = datetime(2026, 10, 10, 6, 0, tzinfo=timezone.utc)
-    s = fold(initial_state(), events=evs([level("idle", "strained", late, [GPU])]))
+    s = fold(initial_state(), events=evs([level("idle", "strained", late, [GPU]),
+                                          *keep(late, late, midnight + timedelta(minutes=31))]))
     s = advance_clock(s, midnight + timedelta(minutes=30))
     s, days = drain_closed_days(s)
     (old,) = [a for a in days[0].arcs if a.kind == "strain"]
     assert old.closed_reason == "day_boundary" and old.ended_at == midnight
     (cont,) = strains(s)
     assert cont.status == "open" and cont.carried_from_arc_id == old.arc_id and cont.began_at == midnight
+    assert cont.last_seen_at == midnight + timedelta(minutes=30)  # the newest keepalive: stale counts from it
     assert cont.episode_began_at == late and cont.subject_label == GPU and s.active["strain"] == cont.arc_id
     s = fold(s, events=evs([cause(midnight + timedelta(minutes=35), late, [GPU, HOT], joined=[HOT]),
                             level("strained", "idle", midnight + timedelta(minutes=40))]))
@@ -206,7 +217,8 @@ def test_strain_clause_checks_as_true_against_its_own_arc():
 def test_day_letter_and_reverie_block_name_the_episode():
     late = datetime(2026, 10, 10, 5, 0, tzinfo=timezone.utc)
     rows = [level("idle", "strained", at(0), [GPU]), level("strained", "idle", at(40)),
-            level("idle", "strained", late, [HOT])]
+            level("idle", "strained", late, [HOT]),
+            *keep(late, late, datetime(2026, 10, 10, 6, 31, tzinfo=timezone.utc), causes=(HOT,))]
     s = advance_clock(fold(initial_state(), events=evs(rows)), datetime(2026, 10, 10, 6, 30, tzinfo=timezone.utc))
     s, days = drain_closed_days(s)
     block = render_closed_day_block(days[0])
@@ -216,3 +228,37 @@ def test_day_letter_and_reverie_block_name_the_episode():
     now = at(90)
     recent = project_recent_arcs(_frame(rows[:2], now), now)
     assert "strained (GPU jobs backed up)" in recent.text
+
+
+# --------------------------------------------------------------------------- review fixes
+
+
+def test_keepalives_hold_an_episode_and_silence_closes_it_at_the_last_row():
+    rows = [level("idle", "strained", at(0), [GPU]), *keep(at(0), at(0), at(100))]  # rows to 01:30
+    s = advance_clock(fold(initial_state(), events=evs(rows)), at(150))
+    (arc,) = strains(s)
+    assert arc.status == "open" and arc.last_seen_at == at(90)
+    # A lost closing row, a dead producer or the kind switched off: no row for 75 min.
+    s = advance_clock(s, at(90 + 76))
+    (arc,) = strains(s)
+    assert arc.closed_reason == "source_stale" and arc.ended_at == at(90)
+    assert "strain" not in s.active
+
+
+def test_not_strained_after_an_outage_ends_the_arc_at_its_last_row():
+    gap = level("strained", "idle", at(60))
+    payload = json.loads(gap["payload_json"])
+    payload["reading"]["reasons"] = ["prev_dropped:gap", "no_juniper_turn_45m"]
+    gap["payload_json"] = json.dumps(payload)
+    s = fold(initial_state(), events=evs([level("idle", "strained", at(0), [GPU]), cause(at(30), at(0), [GPU]), gap]))
+    (arc,) = strains(s)
+    assert arc.closed_reason == "source_stale" and arc.ended_at == at(30)
+
+
+def test_citation_phrase_ignores_ordinary_strained():
+    from orion.temporal_self.citation_truth import KIND_PHRASES
+
+    strain = [p for p, k in KIND_PHRASES if k == "strain"]
+    assert any(p.search("Was strained 09:00 to 09:40") for p in strain)
+    assert any(p.search("Strained since Wed 12:07") for p in strain)
+    assert not any(p.search("the GPU queue was strained by the batch") for p in strain)

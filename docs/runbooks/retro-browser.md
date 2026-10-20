@@ -1,6 +1,6 @@
 # Retro browser play
 
-Hub `/retro` provides a scoped operator login and keyboard/gamepad play. The native
+Hub `/retro` provides keyboard/gamepad play without an additional access code. The native
 core remains in the isolated Retro container. No ROM or core runs in the browser.
 No images, audio or inputs enter memory, chat or cognition. No save/load API exists.
 
@@ -18,22 +18,19 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 
 Use the exact scheme, hostname and port from the browser. No wildcard, automatic
 Host trust or forwarded-header trust. HTTPS is recommended. HTTP supports keyboard
-play, but does not encrypt the login/session traffic; gamepads require a secure
+play, but does not encrypt game traffic; gamepads require a secure
 browser context (HTTPS or localhost). Do not expose this scoped operator interface
 on an untrusted HTTP network. Existing Hub routes do not gain authentication.
 
-The installer creates a distinct backend `hub.token` and browser `browser.code`
-in `~/.local/share/orion/retro/service/hub-auth/`, each mode 0600, directory 0700.
-Read `browser.code` locally and enter it on `/retro`; never use the backend or CLI
-credential in the browser. Hub stores up to eight random HttpOnly, SameSite=Strict
-sessions for eight hours, in memory; restart requires login again. The cookie is
-Secure for HTTPS origins. Logout revokes its sockets; neither code is logged or
-placed in a URL. Login attempts are limited to 20/minute across this single operator
-interface. This is one fixed `hub_operator`, not a multi-user account system.
-Rotate `browser.code` and restart Hub to revoke all browser sessions.
+Retro uses Hub's network access boundary: anyone who can reach Hub can control
+Retro. POST requests and WebSockets still require the configured exact Origin.
+There is no Retro login, cookie, access code or lock button. The installer creates
+only the distinct backend `hub.token` in `~/.local/share/orion/retro/service/hub-auth/`.
+It remains private (0600); neither it nor the CLI credential is sent to the browser.
+Old `browser.code` files are unused and may be deleted.
 
 Hub mounts only the dedicated Unix socket directory and Hub credential directory.
-The emulator gets only `hub.token`, not the browser code. Its network remains `none`.
+The emulator gets only `hub.token`, never browser-provided credentials. Its network remains `none`.
 CLI and Hub credentials cannot access each other's session or evidence. One game
 session still exists at a time. An active CLI session must be stopped by its owner
 before a browser can start a game. No browser-supplied principal is trusted.
@@ -41,12 +38,11 @@ before a browser can start a game. No browser-supplied principal is trusted.
 ## Use
 
 Open the Retro tab from Hub's section launcher (`/#retro`). Leaving the tab
-unloads its game frame and releases control. The standalone `/retro` page also works. Unlock, choose Spacegulls, and start a
+unloads its game frame and releases control. The standalone `/retro` page also works. Choose a game, and start a
 new game. Click the screen. Arrow keys move; Z jumps/flies; X is B; Enter is Start;
 Shift is Select. The Start button also sends Start. Sound begins after a click.
 
-A second window can connect to the current game using Player 2. Both windows use
-the scoped operator login. Select the player before connecting. Standard gamepad
+A second window can connect to the current game using Player 2. Both windows share the Hub operator. Select the player before connecting. Standard gamepad
 buttons map to the same controls. A competing controller is refused until explicit
 Take this controller; the previous lease then becomes invalid. Focus loss, hidden
 tab, gamepad removal and disconnect release control. The last controller leaving

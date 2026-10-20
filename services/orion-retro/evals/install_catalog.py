@@ -32,7 +32,7 @@ def install(kit, root, env):
         fd=os.open(token,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
         with os.fdopen(fd,'w') as f:f.write(secrets.token_urlsafe(48)+'\n')
     auth=root/'hub-auth';auth.mkdir(exist_ok=True,mode=0o700)
-    for name in ('hub.token','browser.code'):
+    for name in ('hub.token',):
         path=auth/name
         if not path.exists():
             fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)

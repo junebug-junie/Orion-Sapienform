@@ -4087,6 +4087,6 @@ as "Orion first wrote: ..." when it differs.
 
 ## Retro browser play
 
-`/retro` offers scoped operator login and native NES viewing/control through a
+`/retro` offers native NES viewing/control without an additional access code through a
 private Unix socket. Disabled by default. See [setup and acceptance](../../docs/runbooks/retro-browser.md)
 for exact-origin configuration, credentials, browser checks and known limits.

@@ -9,6 +9,7 @@ import queue
 import time
 import uuid
 from .worker import run
+from .media import MediaSlot
 
 
 class Sessions:
@@ -70,7 +71,7 @@ class Sessions:
         if len(self.requests) >= 256: raise ValueError('idempotency_capacity_restart_required')
         ctx = mp.get_context('spawn')
         self.commands = ctx.Queue(32); self.urgent = ctx.Queue(8); self.replies = ctx.Queue(128); self.stop_event = ctx.Event()
-        self.media = ctx.Queue(2); self.latest_media = None; self.media_version = 0
+        self.media = MediaSlot(ctx); self.latest_media = None; self.media_version = 0
         self.ready = asyncio.Event()
         sid = str(uuid.uuid4())
         self.session = dict(session_id=sid, generation=self.generation, state='starting',
@@ -181,7 +182,7 @@ class Sessions:
         self.commands.cancel_join_thread(); self.commands.close()
         self.urgent.cancel_join_thread(); self.urgent.close()
         self.replies.cancel_join_thread(); self.replies.close()
-        if self.media: self.media.cancel_join_thread(); self.media.close()
+        self.media = None  # A dead writer's lock may be abandoned; never reuse it.
         self.session.update(state=state, reason=reason, scripted=[])
         try:
             self.persist()

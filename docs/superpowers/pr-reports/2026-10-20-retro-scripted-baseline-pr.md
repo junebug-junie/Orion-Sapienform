@@ -1,6 +1,7 @@
 ## Summary
 
 - Add an explicit 60-second browser handoff to `scripted-right-jump-v1`.
+- Fix a CI-exposed media pipe deadlock after native-worker SIGKILL using a bounded shared slot.
 - Keep native frame authority, neutral-frame human takeover, deadline limits and
   sponsor-disconnect cancellation; no automatic script restart.
 - Attribute script actions in bounded local evidence and show active policy identity.
@@ -32,7 +33,8 @@ No cognition service or cross-service bus event is added.
 - `services/orion-retro/app/scripted.py`: bounded fixed policy and lease lifecycle.
 - `services/orion-retro/app/{contracts,main,worker,session}.py`: request validation,
   worker actuation, evidence attribution and status projection.
-- `services/orion-retro/tests/`: ownership, epochs, timing, cancellation and API checks.
+- `services/orion-retro/app/media.py`: nonblocking fixed-size shared packet slot.
+- `services/orion-retro/tests/`: ownership, epochs, timing, cancellation, killed media writer and API checks.
 - `services/orion-hub/scripts/retro_routes.py`: same-origin script route forwarding.
 - `services/orion-hub/templates/retro.html`, `static/js/retro-panel.js`: explicit
   handoff, policy label, takeover and human recovery.
@@ -68,7 +70,7 @@ No cognition service or cross-service bus event is added.
 
 ```text
 /tmp/orion-retro-service-venv/bin/python -m pytest tests/retro services/orion-retro/tests -q
-83 passed
+85 passed
 /tmp/orion-retro-service-venv/bin/python -m pytest services/orion-hub/tests/retro services/orion-hub/tests/test_hub_panel_reachability.py -q
 8 passed
 node --check services/orion-hub/static/js/retro-panel.js
@@ -83,9 +85,9 @@ The supplied local venv lacked Hub's already-pinned pydantic-settings; installed
 ## Evals run
 
 ```text
-retro_browser.py normal: PASS (/tmp/retro-scripted-browser-final/browser.json)
-retro_browser.py --ack-delay-ms 350: PASS (/tmp/retro-scripted-lag-final/browser.json)
-container_smoke.py: PASS (/tmp/retro-scripted-container-1/result.json)
+retro_browser.py normal: PASS (/tmp/retro-scripted-slot-browser/browser.json)
+retro_browser.py --ack-delay-ms 350: PASS (/tmp/retro-scripted-slot-lag/browser.json)
+container_smoke.py: PASS (/tmp/retro-scripted-slot-container/result.json)
 ```
 
 Browser checks include rendered template/linked asset, native frames and nonzero
@@ -108,6 +110,14 @@ No new live deployment. Isolated eval containers were removed by their harness.
 No ROM, credential, save, `.env`, or graph artifact is committed.
 
 ## Review findings fixed
+
+- Finding: CI killed the emulator mid-media-packet; `Queue.get_nowait()` blocked
+  the API waiting for the rest of a pipe packet. Local reproduction confirmed
+  the reader still blocked after the writer died.
+  - Fix: fixed-size shared slot with nonblocking locks; discard an abandoned
+    slot with its session. No blocking thread fallback or timeout increase.
+  - Evidence: spawned killed-writer regression, bounded-slot test and rebuilt
+    native container fault smoke. Independent review found no material issue.
 
 - Finding: delayed handoff could consume a newer human lease on the same connection.
   - Fix: strict `expected_epoch`, checked before transfer; stale stop also refuses

@@ -79,8 +79,10 @@ claim of equivalent WAN latency or congestion handling to WebRTC.
 
 The native child copies video before the callback expires, strips row padding,
 and copies stereo s16le PCM. Media is transient. Every two emulated frames it
-tries a bounded two-item media queue; full queues drop packets without blocking
+tries a fixed-size single-packet shared slot; a busy/full slot drops packets without blocking
 the controller loop. A separate API task compresses packets off the event loop.
+Slot locks are acquired without waiting. If a worker dies mid-copy, the API
+discards the abandoned slot with that session rather than blocking on a partial pipe packet.
 Only the latest compressed packet is retained. At most two viewers exist; sends
 have a 250 ms deadline. Paused disconnects release viewer slots.
 

@@ -970,11 +970,13 @@
       state.lastPayload = payload;
       state.lastFetchedAt = Date.now();
       renderPayload(payload);
+      if (state.active && window.OrionCabinetSonification) window.OrionCabinetSonification.receive(payload);
       setStatusLine(
         "Updated " + new Date().toLocaleTimeString() + " · polling every " + POLL_MS / 1000 + "s",
         "text-gray-500"
       );
     } catch (err) {
+      if (window.OrionCabinetSonification) window.OrionCabinetSonification.fail();
       // Keep last good render on transient fetch error; show poll-error badge.
       if (state.lastPayload) {
         setStatusLine(
@@ -1232,6 +1234,7 @@
   }
 
   function deactivate() {
+    if (window.OrionCabinetSonification) window.OrionCabinetSonification.stop("Cabinet hidden");
     state.active = false;
     stopTimer();
     // Rendered DOM is deliberately left in place -- switching away and back

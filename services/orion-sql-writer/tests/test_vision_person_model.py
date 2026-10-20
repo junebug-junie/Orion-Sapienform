@@ -32,6 +32,7 @@ for p in (str(SERVICE), str(REPO)):
 from app import vision_person_model as pm  # noqa: E402
 
 NOW = datetime(2026, 10, 20, 18, 0, tzinfo=timezone.utc)
+ZONE = __import__("zoneinfo").ZoneInfo("America/Denver")
 CFG = pm.PersonModelConfig()
 
 
@@ -428,3 +429,128 @@ def test_flag_off_writes_nothing(pg) -> None:
     summary, _ = vi.run_one_individuals_cycle(postgres_uri=PG, cfg=vi.IndividualsConfig(), zones_by_stream={},
                                               now=NOW, person_cfg=CFG)
     assert summary["person_people"] == 8
+
+
+# --- "Is this <name>?" asks (2026-10-20) ----------------------------------------------------------------
+
+
+def _thumb(conn, iid: str, day: int = 0, ref: str = "") -> None:
+    """One non-stationary sighting with a picture, so an ask about ``iid`` can show it."""
+    from sqlalchemy import text
+
+    t = NOW - timedelta(days=day, minutes=5)
+    conn.execute(text(
+        "INSERT INTO vision_individual_sighting (sighting_id, individual_id, stream_id, started_at, ended_at, "
+        "dwell_sec, observation_count, thumb_ref) VALUES (:s, :i, 'walkway', :t, :t, 0, 1, :th)"),
+        {"s": f"s-{iid}", "i": iid, "t": t, "th": ref or "thumb:" + (iid.encode().hex() * 64)[:64]})
+
+
+def _confirm_world(conn):
+    from sqlalchemy import text
+
+    _world(conn)
+    pm.run_person_model(conn, NOW, CFG)
+    _thumb(conn, "unk-j")
+    return {r[0]: r[1] for r in conn.execute(text(
+        "SELECT individual_id, person_label FROM vision_person_attribution WHERE revoked_at IS NULL"))}
+
+
+@needs_pg
+def test_is_this_x_opens_for_the_best_unsure_guess_with_a_picture(pg) -> None:
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    cfg = vi.IndividualsConfig(ask_daily_cap=2, ask_face_min_faces=0)
+    with pg.begin() as conn:
+        guesses = _confirm_world(conn)
+        assert guesses["unk-j"] == "Juniper"
+        opened = vi._open_person_confirm_asks(conn, NOW, ZONE, cfg)
+    # Only unk-j has a picture: the street clusters without one are skipped, never asked blank.
+    assert [(a["source_kind"], a["source_ref"]) for a in opened] == [("vision_person_confirm", "unk-j|Juniper")]
+    assert opened[0]["image_refs"] and opened[0]["question"].startswith("Is this Juniper?")
+    with pg.begin() as conn:
+        assert vi._open_person_confirm_asks(conn, NOW + timedelta(minutes=1), ZONE, cfg) == []   # already open
+        n = conn.execute(text(vi.ASKED_TODAY_SQL), {"d": vi.local_day_start(NOW, ZONE),
+                                                    "face": '["rule:face"]'}).scalar()
+    assert n == 1   # counted against ORION_ASK_DAILY_CAP with the slow rule
+
+
+@needs_pg
+def test_is_this_x_waits_when_the_slow_rule_used_the_day(pg) -> None:
+    from app import vision_individuals as vi
+
+    cfg = vi.IndividualsConfig(ask_daily_cap=1, ask_face_min_faces=0)
+    with pg.begin() as conn:
+        _confirm_world(conn)
+        conn.execute(__import__("sqlalchemy").text(
+            "INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, created_at) "
+            "VALUES ('ask-slow', 'q', 'vision_individual', 'someone', :t)"), {"t": NOW})
+        assert vi._open_person_confirm_asks(conn, NOW, ZONE, cfg) == []
+
+
+@needs_pg
+def test_yes_names_the_cluster_and_the_album_takes_it(pg) -> None:
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    cfg = vi.IndividualsConfig(ask_face_min_faces=0)
+    with pg.begin() as conn:
+        _confirm_world(conn)
+        (ask,) = vi._open_person_confirm_asks(conn, NOW, ZONE, cfg)
+        conn.execute(text("UPDATE orion_ask SET status='answered', answer='yes', answered_at=:t WHERE ask_id=:a"),
+                     {"t": NOW, "a": ask["ask_id"]})
+        vi._apply_answers(conn, NOW)
+        row = conn.execute(text("SELECT label, label_ask_id, label_copied FROM vision_individual "
+                                "WHERE individual_id='unk-j'")).one()
+        assert (row.label, row.label_ask_id, row.label_copied) == ("Juniper", ask["ask_id"], False)
+        pm.run_person_model(conn, NOW + timedelta(minutes=10), CFG)
+        n = conn.execute(text("SELECT count(*) FROM vision_person_exemplar e JOIN vision_crop_observation c "
+                              "USING (crop_id) WHERE c.individual_id='unk-j' AND e.polarity=1 "
+                              "AND e.person_label='Juniper' AND e.revoked_at IS NULL")).scalar()
+    assert n == 3
+
+
+@needs_pg
+def test_no_rules_the_name_out_for_that_cluster(pg) -> None:
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    cfg = vi.IndividualsConfig(ask_face_min_faces=0)
+    with pg.begin() as conn:
+        _confirm_world(conn)
+        (ask,) = vi._open_person_confirm_asks(conn, NOW, ZONE, cfg)
+        conn.execute(text("UPDATE orion_ask SET status='answered', answer='no', answered_at=:t WHERE ask_id=:a"),
+                     {"t": NOW, "a": ask["ask_id"]})
+        vi._apply_answers(conn, NOW)
+        assert conn.execute(text("SELECT label FROM vision_individual WHERE individual_id='unk-j'")).scalar() is None
+        negs = conn.execute(text("SELECT count(*) FROM vision_person_exemplar WHERE source='confirm_no' "
+                                 "AND person_label='Juniper' AND polarity=-1")).scalar()
+        assert negs == 3
+        pm.run_person_model(conn, NOW + timedelta(minutes=10), CFG)
+        # The answer survives reconciliation, and Orion stops guessing Juniper for it.
+        assert conn.execute(text("SELECT count(*) FROM vision_person_exemplar WHERE source='confirm_no' "
+                                 "AND revoked_at IS NULL")).scalar() == 3
+        got = conn.execute(text("SELECT person_label FROM vision_person_attribution WHERE individual_id='unk-j' "
+                                "AND revoked_at IS NULL")).scalar()
+        assert got != "Juniper"
+        # And never asks the same question again.
+        later = vi._open_person_confirm_asks(conn, NOW + timedelta(days=1), ZONE, cfg)
+        assert all(a["source_ref"] != "unk-j|Juniper" for a in later)
+
+
+@needs_pg
+def test_cant_tell_is_a_dismissal_and_that_pair_is_not_asked_again(pg) -> None:
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    cfg = vi.IndividualsConfig(ask_face_min_faces=0)
+    with pg.begin() as conn:
+        _confirm_world(conn)
+        (ask,) = vi._open_person_confirm_asks(conn, NOW, ZONE, cfg)
+        conn.execute(text("UPDATE orion_ask SET status='dismissed' WHERE ask_id=:a"), {"a": ask["ask_id"]})
+        later = vi._open_person_confirm_asks(conn, NOW + timedelta(days=2), ZONE, cfg)
+    assert all(a["source_ref"] != "unk-j|Juniper" for a in later)

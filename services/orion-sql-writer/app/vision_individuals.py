@@ -2292,14 +2292,14 @@ def _open_person_confirm_asks(conn, now: datetime, tz: ZoneInfo, cfg: Individual
     if budget <= 0:
         return []
     cands = conn.execute(text(f"""
-        SELECT a.individual_id, a.person_label, i.sighting_count, i.distinct_days
-        FROM vision_person_attribution a JOIN vision_individual i USING (individual_id)
-        WHERE a.revoked_at IS NULL AND a.band = 'unsure' AND i.label IS NULL AND NOT i.stationary
-          AND {_NOT_ASKED_SQL.format(kind="'vision_person_confirm'", ref="a.individual_id || '|' || a.person_label")}
+        SELECT g.individual_id, g.person_label, i.sighting_count, i.distinct_days
+        FROM vision_person_attribution g JOIN vision_individual i USING (individual_id)
+        WHERE g.revoked_at IS NULL AND g.band = 'unsure' AND i.label IS NULL AND NOT i.stationary
+          AND {_NOT_ASKED_SQL.format(kind="'vision_person_confirm'", ref="g.individual_id || '|' || g.person_label")}
           AND NOT EXISTS (SELECT 1 FROM orion_ask o WHERE o.status = 'open' AND (
-                (o.source_kind = 'vision_individual' AND o.source_ref = a.individual_id) OR
-                (o.source_kind = 'vision_person_confirm' AND o.source_ref LIKE a.individual_id || '|%')))
-        ORDER BY a.score DESC, a.individual_id
+                (o.source_kind = 'vision_individual' AND o.source_ref = g.individual_id) OR
+                (o.source_kind = 'vision_person_confirm' AND o.source_ref LIKE g.individual_id || '|%')))
+        ORDER BY g.score DESC, g.individual_id
     """), {"cool": now - timedelta(days=cfg.ask_cooldown_days)}).fetchall()
     out: List[dict] = []
     for iid, person, sc, dd in cands:

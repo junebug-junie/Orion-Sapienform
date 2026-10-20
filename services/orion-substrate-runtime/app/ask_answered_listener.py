@@ -11,6 +11,10 @@ A ``vision_same_individual`` ("same person?") answer that carries ``names``
 (2026-10-15: Juniper typed who one or both faces are) writes the same entity
 for each named individual, exactly as a "who is this?" answer for it would.
 
+A ``vision_person_confirm`` ("Is this <name>?", 2026-10-20) answered ``yes``
+writes the same entity for ``<individual_id>`` named ``<name>`` (source_ref
+"<individual_id>|<name>"); ``no`` names nobody.
+
 Not handled here, on purpose:
 - ``vision_individual.label`` in Postgres is set by ``orion-sql-writer`` from
   the ``orion_ask`` row on its own clock (the row is the truth, not this event).
@@ -38,6 +42,7 @@ logger = logging.getLogger("orion.substrate.runtime.ask_answered")
 _ASK_ANSWERED_KIND = "orion.ask.answered.v1"
 _VISION_INDIVIDUAL = "vision_individual"
 _VISION_SAME_INDIVIDUAL = "vision_same_individual"
+_VISION_PERSON_CONFIRM = "vision_person_confirm"
 _MAX_ALIASES = 20
 
 StoreGetter = Callable[[], Any]
@@ -93,6 +98,11 @@ def apply_answer_to_substrate(
             if result is not None:
                 written.append({"individual_id": individual_id, **result})
         return {"outcome": "pair_names", "entities": written} if written else None
+    if event.source_kind == _VISION_PERSON_CONFIRM:
+        individual_id, _, name = (event.source_ref or "").partition("|")
+        if (event.answer or "").strip().lower() != "yes" or not individual_id or not name.strip():
+            return None
+        return _write_individual_entity(event, individual_id, name, get_store=get_store, get_engine=get_engine)
     if event.source_kind != _VISION_INDIVIDUAL or not (event.answer or "").strip():
         return None
     return _write_individual_entity(event, event.source_ref, event.answer or "", get_store=get_store, get_engine=get_engine)

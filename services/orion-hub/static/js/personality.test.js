@@ -175,3 +175,83 @@ test("choice style names a one-day window in the singular", () => {
   assert.ok(text.includes("over the last day:"), text);
   assert.ok(!text.includes("1 days"), text);
 });
+
+// --- self-naming -------------------------------------------------------------------------------
+
+test("nameView badges: named, rejected, merged (resolved), not yet shown, not reported", () => {
+  const named = p.nameView({ name: " the gap ", name_sentence: "It is where I look.", orion_verdict: null,
+                             merged_into: null, name_grounding_rank: 1 });
+  assert.deepStrictEqual(named.badge, { kind: "named", text: "named" });
+  assert.strictEqual(named.name, "the gap");
+  assert.strictEqual(named.sentence, "It is where I look.");
+  assert.strictEqual(named.grounding, "");   // rank 1 grounds to its own node
+  const rejected = p.nameView({ name: null, orion_verdict: "rejected", weight: 3 });
+  assert.deepStrictEqual(rejected.badge, { kind: "rejected", text: "Orion: not me" });
+  const merged = p.nameView({ merged_into: "d9" }, (id) => (id === "d9" ? "the watch" : null));
+  assert.strictEqual(merged.badge.text, "merged into the watch");
+  assert.strictEqual(p.nameView({ merged_into: "d9" }).badge.text, "merged into d9");
+  assert.deepStrictEqual(p.nameView({ name: null, orion_verdict: null }).badge, { kind: "unshown", text: "not yet shown" });
+  // Older durable-runs: no naming keys at all.
+  assert.deepStrictEqual(p.nameView({ label: "x" }).badge, { kind: "unknown", text: "naming not reported" });
+  assert.strictEqual(p.nameView(null).badge.kind, "unknown");
+});
+
+test("nameView shows grounding only when the name points elsewhere, never hiding the name", () => {
+  const v = p.nameView({ name: "the gap", name_grounding_rank: 3, name_grounding_margin: -0.0412 });
+  assert.strictEqual(v.name, "the gap");
+  assert.strictEqual(v.badge.kind, "named");
+  assert.strictEqual(v.grounding, "points elsewhere: rank 3 (margin -0.04)");
+  assert.strictEqual(p.nameView({ name: "g", name_grounding_rank: 2 }).grounding, "points elsewhere: rank 2");
+  assert.strictEqual(p.nameView({ name: "g", name_grounding_rank: null }).grounding, "");
+  assert.strictEqual(p.nameView({ name_grounding_rank: 4 }).grounding, "");   // no name, nothing to ground
+});
+
+test("namingRow keeps refused rows with reasons and the packet shown, text verbatim", () => {
+  const refused = p.namingRow({ naming_id: "n1", verdict: "refused", name: "<script>x</script>",
+    refused_reasons: ["name_too_long", "no_evidence_ref"], evidence_refs: '["e1","e2"]',
+    shown: '{"label":"the gap","excerpts":["a"]}', packet_id: "p1", written_at: "2026-10-20T06:00:00Z" });
+  assert.strictEqual(refused.verdict, "refused");
+  assert.strictEqual(refused.name, "<script>x</script>");   // written with textContent, never innerHTML
+  assert.strictEqual(refused.refused, "name_too_long, no_evidence_ref");
+  assert.strictEqual(refused.evidence_refs, "e1, e2");
+  assert.match(refused.packet, /"label": "the gap"/);
+  assert.strictEqual(refused.packet_id, "p1");
+  const merge = p.namingRow({ verdict: "merge", merge_with: "d2", shown: {} });
+  assert.strictEqual(merge.merge_with, "d2");
+  assert.strictEqual(merge.packet, "");
+  assert.strictEqual(merge.name, "—");
+  const blank = p.namingRow(null);
+  assert.strictEqual(blank.verdict, "?");
+  assert.strictEqual(blank.refused, "");
+  assert.strictEqual(p.packetText("not json"), "not json");
+});
+
+test("namingFrom accepts the durable-runs wrapper or a bare list", () => {
+  assert.deepStrictEqual(p.namingFrom({ naming: [{ a: 1 }] }), [{ a: 1 }]);
+  assert.deepStrictEqual(p.namingFrom([{ a: 1 }]), [{ a: 1 }]);
+  assert.deepStrictEqual(p.namingFrom({ rows: [{ b: 2 }] }), [{ b: 2 }]);
+  assert.deepStrictEqual(p.namingFrom(null), []);
+});
+
+test("echoSummary counts cites_own_name from meta (string or object) and says when the mark is absent", () => {
+  const rows = [
+    { meta: '{"cites_own_name": true}' }, { meta: { cites_own_name: false } },
+    { meta: { cites_own_name: true } }, { meta: "{}" },
+  ];
+  const e = p.echoSummary(rows);
+  assert.strictEqual(e.cites, 2);
+  assert.strictEqual(e.marked, 3);
+  assert.strictEqual(e.text, "Echo: 2 of 4 loaded evidence rows quote this node's own name (1 row predates the mark).");
+  const none = p.echoSummary([{ meta: "{}" }, {}]);
+  assert.strictEqual(none.cites, 0);
+  assert.match(none.text, /none of the 2 loaded evidence rows carry the cites_own_name mark yet/);
+  assert.strictEqual(p.echoSummary([]).text, "");
+  assert.strictEqual(p.echoSummary([{ meta: "not json" }]).marked, 0);
+});
+
+test("DOM layer writes model-written naming text only via textContent", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "personality.js"), "utf8");
+  const writes = src.match(/\.innerHTML\s*=/g) || [];
+  assert.strictEqual(writes.length, 1);   // the sparkline only
+  assert.match(src, /el\("span", \{ class: "node-name", title: r\.naming\.sentence \|\| "" \}, r\.naming\.name\)/);
+});

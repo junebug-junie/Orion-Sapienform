@@ -95,6 +95,6 @@ docker exec -it orion-vision-retina-doorbell python -m app.ring_login
 
 ## PR link
 
-<link>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2768
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

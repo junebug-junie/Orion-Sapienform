@@ -310,3 +310,6 @@ jobs:
           fi
           echo "$files" | sed 's/^/  /'
           node --test $files
+
+      - name: Cabinet sonification source provenance parity
+        run: python -m pytest services/orion-hub/tests/test_cabinet_sonification_provenance.py -q -p no:cacheprovider

@@ -88,6 +88,19 @@ try{
   await page.waitForFunction(async()=>(await (await fetch('/api/retro/health/ready')).json()).session.scripted.length===0);
   const humanActions=await page.evaluate(async sid=>(await (await fetch(`/api/retro/sessions/${sid}/evidence`)).json()).applied,state.session_id);
   assert(humanActions.some(a=>!a.policy_id && a.mask===64),'human takeover never actuated');
+  // Synthetic planner, real native goal mailbox, input attribution and takeover.
+  // This is UI/boundary coverage; cognitive_loop.py separately requires a real LLM.
+  await page.click('#cognitive');
+  await page.waitForFunction(()=>document.querySelector('#policy').textContent.includes('goal-motor-v1'));
+  await page.waitForFunction(async()=>{
+    const s=(await (await fetch('/api/retro/health/ready')).json()).session;
+    return s.scripted.some(p=>p.cognition?.goal?.planner_id==='browser-fixture');
+  });
+  const cognitiveActions=await page.evaluate(async sid=>(await (await fetch(`/api/retro/sessions/${sid}/evidence`)).json()).applied,state.session_id);
+  assert(cognitiveActions.some(a=>a.policy_id==='goal-motor-v1' && a.goal_attempt_id && a.mask===0),'acknowledged wait never applied');
+  await page.click('#takeover');
+  await page.waitForFunction(()=>document.activeElement===document.querySelector('#screen'));
+  await page.keyboard.down('ArrowLeft');await pause(200);await page.keyboard.up('ArrowLeft');
   await page.click('#scripted');await pause(300);
   await page.evaluate(()=>window.dispatchEvent(new Event('blur')));await pause(400);
   const stoppedScript=await page.evaluate(async()=>(await (await fetch('/api/retro/health/ready')).json()).session);
@@ -171,5 +184,5 @@ try{
   await pause(150);assert.equal(await tab.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'stopped');
   await tab.close();
   assert.deepEqual(errors,[]);
-  fs.writeFileSync(out+'/browser.json',JSON.stringify({status:'PASS',ackDelayMs:Number(process.env.RETRO_ACK_DELAY_MS || 0),game:process.env.RETRO_EVAL_GAME,observed,scriptedHandoff:true,scriptedTakeover:true,scriptedDisconnect:true,hubTab:true,tabExitPaused:true,keyboard:true,syntheticStandardGamepad:true,blurPaused:true,reconnect:true,selfHeal:Boolean(Number(process.env.RETRO_ACK_DELAY_MS || 0)),unverified:['physical gamepad','user-device audio output','input-to-photon latency','30-minute actual-client A/V drift','cognition/learning']},null,2));
+  fs.writeFileSync(out+'/browser.json',JSON.stringify({status:'PASS',ackDelayMs:Number(process.env.RETRO_ACK_DELAY_MS || 0),game:process.env.RETRO_EVAL_GAME,observed,cognitiveFixtureHandoff:true,scriptedHandoff:true,scriptedTakeover:true,scriptedDisconnect:true,hubTab:true,tabExitPaused:true,keyboard:true,syntheticStandardGamepad:true,blurPaused:true,reconnect:true,selfHeal:Boolean(Number(process.env.RETRO_ACK_DELAY_MS || 0)),unverified:['physical gamepad','user-device audio output','input-to-photon latency','30-minute actual-client A/V drift','cognition/learning']},null,2));
 } catch(error) { if(page){console.error(await page.$eval('#status',e=>e.textContent));await page.screenshot({path:out+'/failure.png'});}throw error; } finally {await browser.close();}

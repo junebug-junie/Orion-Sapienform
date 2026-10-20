@@ -605,6 +605,20 @@ Each tick it:
    a person ruled out by a -1 crop in the cluster is never guessed. A guess
    never writes `vision_individual.label`.
 
+4. Asks *"Is this <name>?"* (`source_kind=vision_person_confirm`,
+   `source_ref=<individual_id>|<name>`) about the strongest unsure guesses of
+   individuals seen at least twice, from what is left of `ORION_ASK_DAILY_CAP`
+   after the slow rule (both are counted by `ASKED_TODAY_SQL`). Same rules as
+   the other openers: no picture, no ask; a skipped candidate never uses up a
+   slot; one open question per individual, both ways (the face and slow
+   openers skip an individual with an open "Is this <name>?" card, and a name
+   given anywhere closes it); a pair already answered or dismissed, in any
+   casing, is not asked again. `yes` names the individual through the usual
+   typed-name path (the album takes it as a named cluster on the next cycle;
+   orion-substrate-runtime writes the entity); `no` adds its newest 20 crops
+   (the ones guessed on) as `confirm_no` exemplars, kept across
+   reconciliation, and revokes that guess; Can't tell = dismiss.
+
 Needs `manual_migration_vision_person_album_v1.sql`; without it the step logs
 `person_model: skipped` and the rest of the tick runs. Eval (read-only on
 live; `--write` stores a `vision_person_model_eval` row):

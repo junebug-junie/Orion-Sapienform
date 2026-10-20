@@ -33,6 +33,7 @@ from app.backtest import (
     QUANTILES,
     Selection,
     exceedance_probability,
+    paired_win_p,
     q_key,
     quantile_paths,
     run_backtest,
@@ -41,6 +42,7 @@ from app.backtest import (
     stitch,
 )
 from app.events import adopt_after, with_events
+from app.grading import grade
 from app.frame import floor_ts, mask_windows, to_grain, train_ready, training_slice
 from app.models import build_models, split_seasonalities
 from app.series import Registry, Seasonality, SeriesSpec
@@ -56,7 +58,9 @@ logger = logging.getLogger("orion-prediction.engine")
 
 LIVE_WINDOW = timedelta(days=7)
 MIN_LIVE_COVERAGE_N = 200
-MIN_LIVE_PAIRS = 100
+MIN_INDEPENDENT = 20   # non-overlapping live forecasts a horizon needs before it can be judged
+# A live loss counts only if the champion is this much worse AND the loss is significant.
+WORSE_MARGIN = 1.05
 STALE_GRAINS = 3
 
 
@@ -397,7 +401,13 @@ class Engine:
             st.last_issue_error = ("issue_failed", f"{type(exc).__name__}: {exc}"[:300])
             logger.error("prediction_issue_failed series=%s err=%s", spec.series_id, st.last_issue_error[1])
             return False
-        await sync(self.store.insert_forecasts, built["rows"])
+        p = built["payload"]
+        exc_rows = [{"series_id": spec.series_id, "origin_ts": p.origin_ts, "issued_at": now, "name": e.name,
+                     "threshold": e.threshold, "window_start": p.origin_ts + timedelta(minutes=spec.grain_min),
+                     "window_end": p.origin_ts + timedelta(minutes=spec.grain_min + e.window_min),
+                     "probability": e.probability, "n_paths": e.n_paths, "served_baseline": p.served_baseline}
+                    for e in p.exceedance]
+        await sync(self.store.insert_issue, built["rows"], exc_rows)
         st.last_issue_error = None
         if built["failed_models"]:
             st.last_issue_error = ("model_fallback", f"{built['fallback_steps']} step(s) served by the baseline; "
@@ -437,6 +447,55 @@ class Engine:
         self.store.write_scores(scores)
         return len(scores)
 
+    def score_exceedances(self, spec: SeriesSpec, now: datetime) -> int:
+        """Outcome of each stored threshold probability once its window has passed (plus settle):
+        hit_raw = any single reading >= threshold, hit_mean = any grain-bucket mean >= threshold."""
+        cutoff = self.latest_complete_bucket(spec, now) + pd.Timedelta(minutes=spec.grain_min)
+        due = self.store.due_exceedances(spec.series_id, cutoff.to_pydatetime())
+        if not due:
+            return 0
+        lo, hi = min(r["window_start"] for r in due), max(r["window_end"] for r in due)
+        pts = [(t, v) for t, v in self.store.points(spec, lo, hi) if v is not None and np.isfinite(v)]
+        raw = pd.Series([v for _, v in pts], index=pd.DatetimeIndex([t for t, _ in pts]), dtype=float).sort_index() \
+            if pts else pd.Series(dtype=float, index=pd.DatetimeIndex([], tz="UTC"))
+        means = to_grain(pts, spec.grain_min, spec.agg, 0, start=lo, end=hi)
+        out = []
+        for r in due:
+            a, b = pd.Timestamp(r["window_start"]), pd.Timestamp(r["window_end"])
+            w = raw[(raw.index >= a) & (raw.index < b)]
+            m = means[(means.index >= a) & (means.index < b)]
+            n_buckets = int(round((b - a) / pd.Timedelta(minutes=spec.grain_min)))
+            observed = int(m.notna().sum())
+            complete = observed == n_buckets
+            # A crossing seen in partial data is real; "no crossing" needs the whole window observed --
+            # a sensor that stopped after 2 minutes must not read as a calm 30 minutes.
+            raw_hit = bool((w >= r["threshold"]).any()) if len(w) else False
+            mean_hit = bool((m.dropna() >= r["threshold"]).any())
+            out.append({"exceedance_id": r["exceedance_id"], "scored_at": now, "n_readings": int(len(w)),
+                        "n_buckets_observed": observed,
+                        "hit_raw": True if raw_hit else (False if complete else None),
+                        "hit_mean": True if mean_hit else (False if complete else None),
+                        "max_raw": float(w.max()) if len(w) else None})
+        self.store.write_exceedance_outcomes(out)
+        return len(out)
+
+    def exceedance_grades(self, spec: SeriesSpec, now: datetime) -> dict:
+        rows = self.store.graded_exceedances(spec.series_id, now - LIVE_WINDOW)
+        out = {}
+        for t in spec.thresholds:
+            span = timedelta(minutes=t.window_min)
+            # Same name, same threshold, same window: a changed config must not mix old rows in.
+            mine = [r for r in rows if r["name"] == t.name and r["threshold"] == t.value
+                    and r["window_end"] - r["window_start"] == span]
+            out[t.name] = {
+                "threshold": t.value, "window_min": t.window_min,
+                "vs_single_reading": grade([r["probability"] for r in mine if r["hit_raw"] is not None],
+                                           [r["hit_raw"] for r in mine if r["hit_raw"] is not None]),
+                "vs_bucket_mean": grade([r["probability"] for r in mine if r["hit_mean"] is not None],
+                                        [r["hit_mean"] for r in mine if r["hit_mean"] is not None]),
+            }
+        return out
+
     # --- monitor --------------------------------------------------------------------------
     def live_metrics(self, spec: SeriesSpec, now: datetime) -> dict:
         rows = self.store.live_scores(spec.series_id, now - LIVE_WINDOW)
@@ -462,11 +521,26 @@ class Engine:
             }
         out["n"] = len(champ)
         out["coverage80"] = float(np.mean([r["in_80"] for r in champ])) if champ else None
-        recent = [r for r in champ if r["origin_ts"] >= now - timedelta(hours=24)]
-        pairs24 = [(r["abs_error"], base[(r["origin_ts"], r["horizon_min"])]) for r in recent
-                   if (r["origin_ts"], r["horizon_min"]) in base]
-        out["rel_mae_vs_baseline_24h"] = rel(pairs24)
-        out["n_pairs_24h"] = len(pairs24)
+        # Champion vs baseline, per horizon, ONLY where they forecast something different (a horizon
+        # served by the baseline itself is a tie by construction -- 2026-10-20 the alert read "1.00x"
+        # with 4 of 5 horizons served by naive). Forecasts issued every grain overlap for h/grain
+        # steps, so only every k-th origin (k = h/grain) is an independent sample; rows arrive ordered
+        # by (horizon, origin). A horizon is judged only with >= MIN_INDEPENDENT such samples.
+        base_pt = {(r["origin_ts"], r["horizon_min"]): r["point"] for r in rows if r["role"] == "baseline"}
+        out["losing_horizons"] = []
+        for hm in spec.horizons_min:
+            diff = [(r["abs_error"], base[k]) for r in champ if r["horizon_min"] == hm
+                    and (k := (r["origin_ts"], hm)) in base and abs(r["point"] - base_pt[k]) > 1e-9]
+            step = max(1, hm // spec.grain_min)
+            thin = diff[::step]
+            h = out["horizons"][str(hm)]
+            h.update(n_differing=len(diff), n_independent=len(thin), rel_mae_differing=rel(diff),
+                     p_baseline_better=None)
+            if len(thin) >= MIN_INDEPENDENT:
+                c_err = np.array([a for a, _ in thin]); b_err = np.array([b for _, b in thin])
+                h["p_baseline_better"], _ = paired_win_p(b_err, c_err, lag=1)
+                if (h["rel_mae_differing"] or 0) >= WORSE_MARGIN and h["p_baseline_better"] < 0.05:
+                    out["losing_horizons"].append(hm)
         return out
 
     def alerts_for(self, spec: SeriesSpec, now: datetime, live: dict, last_issued: datetime | None) -> dict[str, str]:
@@ -488,10 +562,12 @@ class Engine:
         c = live.get("coverage80")
         if c is not None and live.get("n", 0) >= MIN_LIVE_COVERAGE_N and not (COVERAGE_BAND[0] <= c <= COVERAGE_BAND[1]):
             alerts["coverage_out_of_band"] = f"live 80% coverage {c:.2f} over {live['n']} scores"
-        rel = live.get("rel_mae_vs_baseline_24h")
-        if (st.served is not None and not st.served.selection.served_baseline and rel is not None
-                and live.get("n_pairs_24h", 0) >= MIN_LIVE_PAIRS and rel >= 1.0):
-            alerts["worse_than_baseline"] = f"24h MAE {rel:.2f}x the baseline over {live['n_pairs_24h']} pairs"
+        losing = live.get("losing_horizons") or []
+        if losing:
+            alerts["worse_than_baseline"] = "; ".join(
+                f"{hm} min: {live['horizons'][str(hm)]['rel_mae_differing']:.2f}x the baseline over "
+                f"{live['horizons'][str(hm)]['n_independent']} independent forecasts "
+                f"(p={live['horizons'][str(hm)]['p_baseline_better']:.3f})" for hm in losing)
         return alerts
 
     async def monitor(self, spec: SeriesSpec, now: datetime, sync) -> dict[str, str]:
@@ -522,6 +598,7 @@ class Engine:
             series = await sync(self.load_series, spec, now, timedelta(minutes=spec.train_window_min + spec.grain_min))
             await self.issue(spec, now, series, sync)
         await sync(self.score, spec, now)
+        await sync(self.score_exceedances, spec, now)
 
     async def tick(self, sync) -> None:
         now = self.clock()

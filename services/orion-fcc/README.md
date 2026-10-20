@@ -132,3 +132,27 @@ The eval permits exactly one WebFetch of arXiv 2310.19279, checks the source
 title in both the tool receipt and final reply, and enforces a 900-second total subprocess deadline.
 This proves the tool path, not Stage 2 journal landing. Use the reading verifier
 after an explicitly approved queue retry to check end-to-end completion.
+
+## Compaction requests go upstream without tools
+
+When the claude CLI compacts a long turn, it sends its summary prompt as the last user
+message with the turn's tools still attached, and only asks in text for no tool calls.
+The local Qwen lanes often call a tool anyway. The CLI then keeps the text written before
+that call ("Now let me read the remaining files...") as the summary, and the turn loses its
+task. Live 2026-10-17: 33 of 51 compactions had no `Summary:` section
+(`fcc_compaction_degenerate` in the governor log).
+
+`prepare_request` in `orion_fcc_messages_transport.py` spots that request (the last turn is a
+user message holding one of the CLI's fixed `COMPACTION_PROMPT_MARKS`: its "TEXT ONLY, do not
+call tools" preamble, or the opening its full and partial summary prompts share) and sends it
+upstream with `tools` and `tool_choice` removed. Earlier tool calls in the history are kept.
+All four live llama.cpp lanes accept that shape on their Anthropic path (checked with
+`/v1/messages/count_tokens`, which converts and templates without generating, 2026-10-20).
+Every other request is passed through unchanged. Each stripped request logs
+`fcc_compaction_tools_stripped` to `docker logs`.
+
+With no tools sent, upstream FCC's no-tools intercepts (`api/detection.py`) also see the
+request. They match title, filepath and safety-classifier shapes, not a CLI transcript.
+
+If a CLI upgrade rewords the prompt, the match stops and requests pass through as before
+(no failure, just no fix). The governor's `fcc_compaction_degenerate` count is the signal.

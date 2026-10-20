@@ -124,6 +124,10 @@ _SELECT_COLUMNS = (
 # only answers are yes / no; "not sure" is Dismiss. sql-writer reads the
 # answer as a verdict, so free text is refused here instead of being dropped there.
 SAME_INDIVIDUAL_KIND = "vision_same_individual"
+# "Is this <name>?" (orion-sql-writer person learning, 2026-10-20): yes / no too;
+# "can't tell" is Dismiss. source_ref "<individual_id>|<name>".
+PERSON_CONFIRM_KIND = "vision_person_confirm"
+YES_NO_KINDS = (SAME_INDIVIDUAL_KIND, PERSON_CONFIRM_KIND)
 YES_NO_ANSWERS = ("yes", "no")
 WHO_IS_THIS_KIND = "vision_individual"
 PAIR_SEP = "|"
@@ -142,7 +146,7 @@ WHERE ask_id = $1
   AND status = 'open'
   AND (expires_at IS NULL OR expires_at > now())
   AND source_kind <> ALL($4::text[])
-  AND (source_kind <> $5::text OR $3::text IS NULL OR $3::text = ANY($6::text[]))
+  AND (source_kind <> ALL($5::text[]) OR $3::text IS NULL OR $3::text = ANY($6::text[]))
 RETURNING ask_id, status, answer, answered_at, source_kind, source_ref
 """
 
@@ -471,7 +475,7 @@ async def _close_ask(
                     new_status,
                     answer,
                     list(RESOLVABLE_KINDS),
-                    SAME_INDIVIDUAL_KIND,
+                    list(YES_NO_KINDS),
                     list(YES_NO_ANSWERS),
                     None if detail is None else json.dumps(detail),
                 )
@@ -489,7 +493,7 @@ async def _close_ask(
     if row is None:
         if existing is None:
             raise HTTPException(status_code=404, detail="ask_not_found")
-        if (existing["source_kind"] == SAME_INDIVIDUAL_KIND and new_status == "answered"
+        if (existing["source_kind"] in YES_NO_KINDS and new_status == "answered"
                 and answer not in YES_NO_ANSWERS and existing["status"] == "open"
                 and (existing["expires_at"] is None or existing["expires_at"] > datetime.now(timezone.utc))):
             raise HTTPException(status_code=422, detail="answer_must_be_yes_or_no")

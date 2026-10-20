@@ -63,6 +63,22 @@ class Settings(BaseSettings):
     )
     biometrics_node_stale_after_sec: int = Field(180, alias="BIOMETRICS_NODE_STALE_AFTER_SEC")
     biometrics_pressure_min_confidence: float = Field(0.60, alias="BIOMETRICS_PRESSURE_MIN_CONFIDENCE")
+    # Kill switch: an expected-offline node that went stale is judged by Rule A
+    # (suppression) only; its frozen pressure_hints no longer re-add strain via
+    # Rules C/D/E (orion/substrate/biometrics_loop/pressure_organ.py).
+    biometrics_offline_frozen_hint_guard: bool = Field(
+        True, alias="BIOMETRICS_OFFLINE_FROZEN_HINT_GUARD"
+    )
+    # Kill switch: leave nodes that stopped reporting (hecate in BMC-only standby)
+    # out of node:substrate.biometrics' prediction-error mean. "Stopped" = last
+    # report older than BIOMETRICS_SILENT_NODE_CADENCE_MULTIPLE x the node's own
+    # learned report interval (orion/substrate/biometrics_loop/report_cadence.py).
+    biometrics_silent_node_exclusion: bool = Field(
+        True, alias="BIOMETRICS_SILENT_NODE_EXCLUSION"
+    )
+    biometrics_silent_node_cadence_multiple: float = Field(
+        6.0, alias="BIOMETRICS_SILENT_NODE_CADENCE_MULTIPLE"
+    )
     node_catalog_path: str = Field(
         "config/biometrics/node_catalog.yaml",
         alias="NODE_CATALOG_PATH",

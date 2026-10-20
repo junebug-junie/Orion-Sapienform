@@ -423,15 +423,33 @@ def test_backup_defers_the_apply_until_after_the_other_rebuilds_then_retries_the
     assert _log_lines(tmp_path)[-1].endswith("DONE rebuilt=2 failed=")
 
 
-def test_deferred_apply_that_fails_leaves_the_consumer_refused(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("FAKE_SECOND_APPLY_RC", "1")
+def test_deferred_apply_that_cannot_run_leaves_the_consumer_refused(tmp_path: Path, monkeypatch) -> None:
+    """Exit 2 = not allowed here / live state UNKNOWN: nothing was applied, nothing is retried."""
+    monkeypatch.setenv("FAKE_SECOND_APPLY_RC", "2")
     completed, calls = _run(
         tmp_path, plan="orion-hub,build", migrations=_MIG, checker=_CHECKER_REPORT,
         applier=_DEFERRING_APPLIER, safe_build_body=_GATE,
     )
     assert calls == [f"APPLY --defer-if-backup {_MIG}", "orion-hub up -d --build", f"APPLY {_MIG}"]
     assert completed.returncode != 0
-    assert "deferred migration apply did not finish (exit 1)" in completed.stderr
+    assert "deferred migration apply did not finish (exit 2)" in completed.stderr
+    assert "git pull will not return until the backup finishes" in completed.stderr
+
+
+def test_partly_failed_second_pass_still_retries_the_consumers(tmp_path: Path, monkeypatch) -> None:
+    """Exit 1: some file applied, another did not. Retry the refused consumers anyway; the deploy
+    gate refuses again any whose file is still missing (here the gate marker exists: it landed)."""
+    monkeypatch.setenv("FAKE_SECOND_APPLY_RC", "1")
+    (tmp_path / "safe-build-args.txt.applied").write_text("")  # hub's own file did land
+    completed, calls = _run(
+        tmp_path, plan="orion-hub,build", migrations=_MIG, checker=_CHECKER_REPORT,
+        applier=_DEFERRING_APPLIER,
+        safe_build_body='case "$*" in orion-hub*up*) [ -f "$REBUILD_TEST_CAPTURE.phase2" ] || '
+                        '{ touch "$REBUILD_TEST_CAPTURE.phase2"; exit 1; } ;; esac\n',
+    )
+    assert calls == [f"APPLY --defer-if-backup {_MIG}", "orion-hub up -d --build", f"APPLY {_MIG}",
+                     "orion-hub up -d --build"], completed.stdout + completed.stderr
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def test_only_consumers_of_the_deferred_file_are_retried(tmp_path: Path, monkeypatch) -> None:

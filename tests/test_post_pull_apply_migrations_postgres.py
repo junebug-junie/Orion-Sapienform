@@ -315,6 +315,22 @@ def test_running_pg_dump_is_waited_for_then_the_migration_lands(scratch):
     assert log.index("BACKUP-WAIT ") < log.index("BACKUP-WAIT-DONE") < log.index("APPLIED ")
 
 
+def test_idle_pg_dump_backend_is_not_waited_for(scratch):
+    """An orphaned pg_dump backend (2026-08-16..18) sits idle and holds no locks: apply at once."""
+    _q(scratch.pg, "CREATE TABLE pp_probe_keep (id int)")
+    f = scratch.add("manual_migration_pp_a.sql", _ADD_COLUMN)
+    idle = psycopg2.connect(application_name="pg_dump", **scratch.pg)
+    idle.autocommit = True
+    try:
+        assert _q(scratch.pg, "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'pg_dump'") == [(1,)]
+        rc, text = _apply(scratch, [f], max_wait_s=0)
+    finally:
+        idle.close()
+    assert rc == 0, text
+    assert "waiting for a running backup" not in text
+    assert _has_note(scratch.pg)
+
+
 def test_pg_dump_outlasting_the_max_wait_fails_and_holds(scratch):
     _q(scratch.pg, "CREATE TABLE pp_probe_keep (id int)")
     f = scratch.add("manual_migration_pp_a.sql", _ADD_COLUMN)

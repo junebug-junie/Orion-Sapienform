@@ -50,11 +50,12 @@ BACKUPS (incident 2026-10-17 ~03:56 UTC: the nightly pg_dump held AccessShareLoc
 apply of manual_migration_vision_motion_story_strip_v2.sql hit lock_timeout, and its consumers stayed
 refused until it was applied by hand). lock_timeout is never raised. Instead:
   * before each file, a read-only look at pg_stat_activity for a backup session
-    (application_name pg_dump / pg_dumpall / pg_basebackup, on this database). While one runs,
-    wait: poll every 30 s with a progress line, at most ORION_MIGRATION_BACKUP_MAX_WAIT_S in
-    total for the run (default 5400 = 90 min; ``--max-backup-wait``). Past that the file fails and
-    holds the rest, as a failed apply does. If the look itself fails, apply anyway (lock_timeout
-    still bounds it), as before this step existed.
+    (application_name pg_dump / pg_dumpall, on this database, inside a transaction -- an idle
+    orphaned backend holds no locks). While one runs, wait: poll every 30 s with a progress line,
+    at most ORION_MIGRATION_BACKUP_MAX_WAIT_S in total for the run, counted from the first wait
+    (default 5400 = 90 min; ``--max-backup-wait``; 0 = never wait, so a running backup fails the
+    file at once). Past that the file fails and holds the rest, as a failed apply does. If the
+    look itself fails, apply anyway (lock_timeout still bounds it), as before this step existed.
   * while psql runs, a watcher reads pg_blocking_pids() for the apply session (application_name
     ``orion-post-pull-migrate-<pid>``). A lock_timeout failure is retried (3 times, backoff
     30/60/120 s, each after waiting for the backup again) ONLY when every blocker seen was a backup
@@ -75,6 +76,8 @@ ENV
                                          DB also pick the role/database the default command writes
     ORION_MIGRATION_BACKUP_MAX_WAIT_S    longest total wait for a running backup (default 5400);
                                          ``--max-backup-wait`` overrides it
+    (an ORION_MIGRATION_APPLY_PSQL that runs ``docker exec`` must pass ``-e PGAPPNAME`` for the
+    blocker watch to find the apply session; without it no blocker is seen and nothing is retried)
 
 Exit: 0 = nothing left that this step should have applied; 1 = a file was refused, held, failed,
 or did not verify; 2 = not allowed here, or live state UNKNOWN (no answer is not "applied");
@@ -114,7 +117,8 @@ PGOPTIONS = f"-c lock_timeout={LOCK_TIMEOUT} -c statement_timeout={STATEMENT_TIM
 APPLY_TIMEOUT_S = 20 * 60
 
 # A running backup (2026-10-17 incident). Never raise lock_timeout; wait for the backup instead.
-BACKUP_APP_NAMES = ("pg_dump", "pg_dumpall", "pg_basebackup")
+# pg_basebackup is not here: it takes no relation locks, so it can never block an apply.
+BACKUP_APP_NAMES = ("pg_dump", "pg_dumpall")
 MAX_WAIT_ENV = "ORION_MIGRATION_BACKUP_MAX_WAIT_S"
 DEFAULT_MAX_WAIT_S = 90 * 60
 BACKUP_POLL_S = 30.0
@@ -124,13 +128,14 @@ APP_NAME = f"orion-post-pull-migrate-{os.getpid()}"
 LOCK_TIMEOUT_TEXT = "canceling statement due to lock timeout"
 EXIT_DEFERRED = 3
 
-# Read-only. Backup sessions that can hold locks in this database (pg_basebackup's walsender has no
-# datname). Its own session is excluded.
+# Read-only. Backup sessions that can hold locks in this database. Only sessions inside a
+# transaction: a running pg_dump keeps its snapshot transaction open for the whole dump, while an
+# idle (e.g. orphaned, see scripts/backup/orion_backup_databases.py) backend holds no locks.
 BACKUP_SQL = (
     "SELECT pid, application_name, "
     "coalesce(extract(epoch FROM now() - backend_start)::bigint, 0) "
     "FROM pg_stat_activity WHERE application_name = ANY(%s) AND pid <> pg_backend_pid() "
-    "AND (datname IS NULL OR datname = current_database()) ORDER BY pid"
+    "AND datname = current_database() AND xact_start IS NOT NULL ORDER BY pid"
 )
 # Read-only. Who blocks the apply session right now (its application_name is APP_NAME).
 BLOCKER_SQL = (
@@ -443,7 +448,13 @@ def run(paths: list[str], *, repo: Path = REPO_ROOT, ref: str = "HEAD", dry_run:
         stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
         write_log(lp, f"{stamp} {kind} {it.rel} head={sha} host={host}" + (f" {extra}" if extra else ""))
 
-    deadline = clock() + max_wait_s
+    budget = {"deadline": None, "first": None}  # the wait budget starts at the first real wait
+
+    def deadline() -> float:
+        if budget["deadline"] is None:
+            budget["first"] = clock()
+            budget["deadline"] = budget["first"] + max_wait_s
+        return budget["deadline"]
 
     def wait_for_backup(it: Item) -> str:
         """"" when no backup is running (or the look failed); "defer" (--defer-if-backup);
@@ -467,10 +478,10 @@ def run(paths: list[str], *, repo: Path = REPO_ROOT, ref: str = "HEAD", dry_run:
                 out(f"      a backup is running ({desc}); DEFERRED until it finishes")
                 log("DEFERRED", it, f"backup={desc}")
                 return "defer"
-            left = deadline - clock()
+            left = deadline() - clock()
             if left <= 0:
-                out(f"      a backup is still running ({desc}) after waiting {int(max_wait_s)}s "
-                    f"({MAX_WAIT_ENV}); not applied")
+                out(f"      a backup is still running ({desc}); waited {int(clock() - budget['first'])}s "
+                    f"in total, the most {MAX_WAIT_ENV} allows ({int(max_wait_s)}s); not applied")
                 log("BACKUP-WAIT-EXCEEDED", it, f"max_wait={int(max_wait_s)}s backup={desc}")
                 return "exceeded"
             if not waited_logged:
@@ -551,6 +562,8 @@ def run(paths: list[str], *, repo: Path = REPO_ROOT, ref: str = "HEAD", dry_run:
                 f"{len(backoff_s)} in {int(pause)}s, after the backup finishes")
             log("RETRY", it, f"attempt={attempt}/{len(backoff_s)} backoff={int(pause)}s "
                              f"blocker={watch.describe()}")
+            if budget["deadline"] is not None:
+                pause = max(0.0, min(pause, budget["deadline"] - clock()))
             sleep(pause)
         if gate == "defer":
             it.outcome = "deferred"
@@ -600,8 +613,9 @@ def run(paths: list[str], *, repo: Path = REPO_ROOT, ref: str = "HEAD", dry_run:
     if deferred_by:
         out(f"{TAG}: deferred from {deferred_by} on: a backup is running; run again without "
             "--defer-if-backup to wait for it (the rebuild script does this after the rebuilds)")
-        if rc == 0:
-            return EXIT_DEFERRED
+        # Even when a later file was refused (rc 1): the deferred file must get its second pass.
+        # That pass reports the refusal again.
+        return EXIT_DEFERRED
     return rc
 
 

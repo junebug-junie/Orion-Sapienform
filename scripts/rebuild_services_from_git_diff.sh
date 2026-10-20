@@ -219,15 +219,19 @@ $CORTEX_ORCH_SVC"
 fi
 
 # Second pass for files the first pass deferred behind a running backup: wait
-# for it (bounded: ORION_MIGRATION_BACKUP_MAX_WAIT_S, default 90 min), apply,
-# and print the consumers the caller should rebuild again. Sets DEFERRED_OK=1
-# when everything landed. Runs after the rebuilds, so nothing else waits.
-DEFERRED_OK=0
+# for it (bounded: ORION_MIGRATION_BACKUP_MAX_WAIT_S, default 90 min), then
+# apply. Sets DEFERRED_RAN=1 when the pass got to the files (exit 0, or 1 =
+# some file still refused/failed); the caller then retries the refused
+# consumers, and the deploy gate re-refuses any whose file did not land.
+# Runs after the rebuilds, so nothing else waits -- but the post-merge hook is
+# synchronous, so `git pull` itself does not return until this is done.
+DEFERRED_RAN=0
 apply_deferred_migrations() {
-    DEFERRED_OK=0
+    DEFERRED_RAN=0
     [ "$APPLY_RC" = "3" ] && [ -n "$APPLIER" ] && [ "$DRY_RUN" != "1" ] || return 0
     echo ""
     echo "rebuild_services_from_git_diff.sh: migration(s) were deferred behind a running backup; waiting for it, then applying (Ctrl-C is safe: lock_timeout keeps every apply short; rerun this script or apply by hand later)"
+    echo "rebuild_services_from_git_diff.sh: git pull will not return until the backup finishes or ${ORION_MIGRATION_BACKUP_MAX_WAIT_S:-5400}s pass (ORION_MIGRATION_BACKUP_MAX_WAIT_S)" >&2
     rebuild_log "DEFERRED-APPLY start"
     set +e
     # shellcheck disable=SC2086
@@ -235,14 +239,17 @@ apply_deferred_migrations() {
     local rc=$?
     set -e
     rebuild_log "DEFERRED-APPLY end rc=$rc"
-    if [ "$rc" = "0" ]; then
-        DEFERRED_OK=1
-    else
-        echo "rebuild_services_from_git_diff.sh: deferred migration apply did not finish (exit $rc); their consumers stay refused by the deploy gate until it is applied" >&2
+    if [ "$rc" = "0" ] || [ "$rc" = "1" ]; then
+        DEFERRED_RAN=1
+    fi
+    if [ "$rc" != "0" ]; then
+        echo "rebuild_services_from_git_diff.sh: deferred migration apply did not finish (exit $rc); consumers of any file still unapplied stay refused by the deploy gate until it is applied" >&2
     fi
 }
 
 if [ -z "${SERVICES//[$'\n\r\t ']}" ]; then
+    # A failed second pass is reported on stderr but, like the first pass, never
+    # fails the pull: there is nothing to rebuild, and the deploy gate holds.
     apply_deferred_migrations
     echo "rebuild_services_from_git_diff.sh: no affected services to rebuild on this host"
     echo "rebuild_services_from_git_diff.sh: (see rebuild_affected_services stderr above for host filter details)"
@@ -441,7 +448,7 @@ done
 # consumers the deploy gate refused above. Only services that FAILED and are
 # named in a deferred file's REQUIRED-BY header are retried, once.
 apply_deferred_migrations
-if [ "$DEFERRED_OK" = "1" ] && [ -n "${FAILED//[$'\n\r\t ']}" ]; then
+if [ "$DEFERRED_RAN" = "1" ] && [ -n "${FAILED//[$'\n\r\t ']}" ]; then
     set +e
     # shellcheck disable=SC2086
     NEEDS=$(cd "$REPO_ROOT" && "$CHECK_PY" "$APPLIER" --required-by $MIGRATIONS </dev/null 2>/dev/null)
@@ -457,7 +464,7 @@ if [ "$DEFERRED_OK" = "1" ] && [ -n "${FAILED//[$'\n\r\t ']}" ]; then
     done
     if [ -n "${RETRY// }" ]; then
         echo ""
-        echo "rebuild_services_from_git_diff.sh: deferred migration(s) applied; rebuilding the services the deploy gate refused:$RETRY"
+        echo "rebuild_services_from_git_diff.sh: deferred migration pass done; rebuilding the services the deploy gate refused:$RETRY"
         rebuild_log "RETRY-AFTER-MIGRATION services=${RETRY# }"
         FAILED="$STILL_FAILED"
         for svc in $RETRY; do

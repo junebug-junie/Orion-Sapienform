@@ -30,7 +30,7 @@ try{
   },Number(process.env.RETRO_ACK_DELAY_MS || 0));
   await page.goto(url+'/retro');
   assert.equal(await page.evaluate(async()=> (await fetch('/api/retro/games')).status),200);
-  await page.waitForSelector('#player:not([hidden])');
+  await page.waitForSelector('#player:not([hidden])');await page.$eval('#more',d=>{d.open=true;});
   if(await page.$('#code')) throw new Error('Unexpected access-code prompt');
   await page.select('#game',process.env.RETRO_EVAL_GAME);await page.click('#new');
   await page.waitForFunction(()=>Number(document.querySelector('#screen').dataset.appliedFrame)>10,{timeout:10000});
@@ -60,9 +60,13 @@ try{
   const p2actions=await page.evaluate(async sid=>(await (await fetch(`/api/retro/sessions/${sid}/evidence`)).json()).applied,state.session_id);
   assert(p2actions.some(a=>a.port===1 && a.mask===384),'P2 gamepad input never applied');
   if(Number(process.env.RETRO_ACK_DELAY_MS || 0)){
-    await page.evaluate(()=>{window.__dropRetroAck=true;});await pause(1700);
-    assert.equal(await page.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'paused');
-    await page.evaluate(()=>{window.__dropRetroAck=false;});await page.click('#join');await pause(600);
+    // Lost acknowledgments still release control; restored ones resume play with no Connect click.
+    const before=await page.$eval('#screen',c=>Number(c.dataset.appliedFrame));
+    await page.evaluate(()=>{window.__dropRetroAck=true;});
+    await page.waitForFunction(()=>/Reconnecting|Could not/.test(document.querySelector('#status').textContent),{timeout:3000});
+    await page.evaluate(()=>{window.__dropRetroAck=false;});
+    await page.waitForFunction(b=>Number(document.querySelector('#screen').dataset.appliedFrame)>b+30,{timeout:6000},before);
+    assert.equal(await page.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'running');
   }
   await page.evaluate(()=>window.dispatchEvent(new Event('blur')));await pause(400);
   const afterBlur=await page.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state);
@@ -88,22 +92,22 @@ try{
   await tab.click('#retroTabButton');
   await tab.waitForFunction(()=>document.querySelector('#retroPanelFrame').getAttribute('src')==='/retro');
   let frame=await (await tab.$('#retroPanelFrame')).contentFrame();
-  await frame.waitForSelector('#player:not([hidden])');await frame.select('#game',process.env.RETRO_EVAL_GAME);
+  await frame.waitForSelector('#player:not([hidden])');await frame.$eval('#more',d=>{d.open=true;});await frame.select('#game',process.env.RETRO_EVAL_GAME);
   await frame.click('#new');await frame.waitForFunction(()=>Number(document.querySelector('#screen').dataset.appliedFrame)>10);
   await tab.click('#hubTabButton');await pause(400);
   assert.equal(await tab.$eval('#retroPanelFrame',e=>e.getAttribute('src')),'about:blank');
   assert.equal(await tab.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'paused');
   await tab.click('#retroTabButton');await pause(300);frame=await (await tab.$('#retroPanelFrame')).contentFrame();
-  await frame.waitForSelector('#player:not([hidden])');await frame.click('#join');await pause(400);
+  await frame.waitForSelector('#player:not([hidden])');await frame.$eval('#more',d=>{d.open=true;});await frame.click('#join');await pause(400);
   assert.equal(await tab.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'running');
   // Another self-routing tab can hide Retro before its hash handler executes.
   await tab.evaluate(()=>{document.querySelector('#retro').classList.add('hidden');location.hash='#personality';});
   await tab.waitForFunction(()=>document.querySelector('#retroPanelFrame').getAttribute('src')==='about:blank');await pause(400);
   assert.equal(await tab.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'paused');
   await tab.click('#retroTabButton');await pause(300);frame=await (await tab.$('#retroPanelFrame')).contentFrame();
-  await frame.waitForSelector('#player:not([hidden])');await frame.click('#stop');
+  await frame.waitForSelector('#player:not([hidden])');await frame.$eval('#more',d=>{d.open=true;});await frame.click('#stop');
   await pause(150);assert.equal(await tab.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'stopped');
   await tab.close();
   assert.deepEqual(errors,[]);
-  fs.writeFileSync(out+'/browser.json',JSON.stringify({status:'PASS',ackDelayMs:Number(process.env.RETRO_ACK_DELAY_MS || 0),game:process.env.RETRO_EVAL_GAME,observed,hubTab:true,tabExitPaused:true,keyboard:true,syntheticStandardGamepad:true,blurPaused:true,reconnect:true,unverified:['physical gamepad','user-device audio output','input-to-photon latency','30-minute actual-client A/V drift']},null,2));
+  fs.writeFileSync(out+'/browser.json',JSON.stringify({status:'PASS',ackDelayMs:Number(process.env.RETRO_ACK_DELAY_MS || 0),game:process.env.RETRO_EVAL_GAME,observed,hubTab:true,tabExitPaused:true,keyboard:true,syntheticStandardGamepad:true,blurPaused:true,reconnect:true,selfHeal:Boolean(Number(process.env.RETRO_ACK_DELAY_MS || 0)),unverified:['physical gamepad','user-device audio output','input-to-photon latency','30-minute actual-client A/V drift']},null,2));
 } catch(error) { if(page){console.error(await page.$eval('#status',e=>e.textContent));await page.screenshot({path:out+'/failure.png'});}throw error; } finally {await browser.close();}

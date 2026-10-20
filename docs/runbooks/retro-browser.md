@@ -142,3 +142,14 @@ grant reply had crossed Hub and Tailscale to the browser. Every Connect / resume
 from a remote laptop then lost control with zero applied inputs. A granted lease
 holds the neutral mask, so the longer first window cannot hold a button down.
 Regression: `test_fresh_lease_waits_for_first_input_across_the_grant_round_trip`.
+
+### One-button play
+
+The page shows the game picker, New game and Mute. Player choice, Connect /
+resume, Pause, Stop, Start and Take this controller are under More. After New
+game (or a click on the game), lost control heals itself: up to three reconnects
+in 10 s, then the page asks for New game. Leaving the window still releases
+control and cancels pending reconnects; returning focus or clicking the game
+reacquires it. Pause and Stop turn self-healing off until the next click on the
+game. The browser eval's delayed-ack variant now asserts that play resumes after
+acknowledgments return, with no Connect click.

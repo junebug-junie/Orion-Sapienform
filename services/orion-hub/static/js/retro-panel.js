@@ -8,6 +8,15 @@
   const keys = new Set(), sources = new Set();
   const bits = {ArrowUp:16, ArrowDown:32, ArrowLeft:64, ArrowRight:128, KeyZ:256, KeyX:1, Enter:8, ShiftLeft:4, ShiftRight:4};
   const report = text => { el('status').textContent = text; };
+  // wanted: the player chose to play, so lost control heals itself instead of
+  // asking for Connect / resume. Bounded so a refused port cannot loop.
+  let wanted = false, away = false, connecting = false, heals = 0, healWindow = 0;
+  function heal() {
+    if (!wanted || away || !sid || connecting || lease || document.hidden || !document.hasFocus()) return;
+    const now = performance.now(); if (now-healWindow > 10000) { heals = 0; healWindow = now; }
+    if (++heals > 3) { report('Could not get the controller back. Press New game.'); return; }
+    setTimeout(() => { if (!away && !lease && !connecting && !document.hidden) connect().catch(err => report(err.message)); }, 300);
+  }
   async function api(path, data) {
     const r = await fetch('/api/retro/'+path, {method:data === undefined?'GET':'POST', headers:{'Content-Type':'application/json'}, body:data === undefined?undefined:JSON.stringify(data)});
     const value = await r.json(); if (!r.ok) throw Error(typeof value.detail==='string'?value.detail:'Request failed'); return value;
@@ -22,7 +31,7 @@
     if (input) { input.onclose=null; input.close(); } if (media) { media.onclose=null; media.close(); }
     input=null;media=null; pendingPacket=null; flushAudio();
   }
-  function neutral() { closeConnections(); report('Controller released. Use Connect / resume to return.'); }
+  function neutral() { closeConnections(); report('Paused. Click the game to keep playing.'); }
   function mask() {
     let m=0; for(const code of keys) m |= bits[code] || 0;
     let pads=[];try { pads=navigator.getGamepads?.() || []; } catch (_) { /* Keyboard remains available over HTTP. */ }
@@ -39,7 +48,7 @@
     if(!lease || input?.readyState!==WebSocket.OPEN)return;
     if(outstanding.size>=24 || input.bufferedAmount>4096 ||
         (outstanding.size && performance.now()-outstanding.values().next().value>1000)){
-      neutral();report('Connection stalled. Use Connect / resume.');return;
+      neutral();report('Connection stalled. Reconnecting…');heal();return;
     }
     outstanding.set(seq+1,performance.now());input.send(JSON.stringify({version:1,session_id:sid,generation,...lease,seq:++seq,mask:mask()}));
   }
@@ -52,6 +61,10 @@
   }
   const wsURL = path => `${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/retro/${path}`;
   async function connect() {
+    connecting = true; away = false;
+    try { await connectNow(); wanted = true; } finally { connecting = false; }
+  }
+  async function connectNow() {
     // An open input socket can be resumed directly. Replacing it races its old
     // disconnect against the resume and can interrupt another controller.
     if(input?.readyState===WebSocket.OPEN && connection){
@@ -63,7 +76,7 @@
       await api(`sessions/${sid}/resume`,{});
       if(epoch!==transportEpoch || document.hidden)return;
       if(!lease)await grant();else screen.focus();
-      report('Connected.');return;
+      report('Playing.');return;
     }
     closeConnections(); const epoch=transportEpoch; await sound();
     if(epoch!==transportEpoch || document.hidden)return;
@@ -85,13 +98,13 @@
       } else {if(msg.epoch!==undefined && (!lease || msg.epoch!==lease.epoch || msg.port!==lease.port))return;
         // A newer input replaced this one before its frame; the lease is still live.
         if(msg.rejected==='superseded' || msg.rejected==='expired_in_queue'){outstanding.delete(msg.seq);return;}
-        lease=null;outstanding.clear();clearInterval(timer);report('Control interrupted: '+(msg.rejected||msg.unknown||'connection unavailable')+'. Use Connect / resume.');}
+        lease=null;outstanding.clear();clearInterval(timer);report('Lost the controller ('+(msg.rejected||msg.unknown||'connection unavailable')+'). Reconnecting…');heal();}
 
     };
     media=new WebSocket(wsURL(`sessions/${sid}/media`)); media.binaryType='arraybuffer';
-    media.onclose=()=>{if(epoch===transportEpoch){neutral();report('Video connection closed. Use Connect / resume.');}};
+    media.onclose=()=>{if(epoch===transportEpoch){neutral();report('Video connection closed. Reconnecting…');heal();}};
     media.onmessage=e=>{pendingPacket={data:e.data,epoch};void drain();};
-    report('Connected. Click the screen, then press Start.');
+    report('Playing. Press Enter to start.');
   }
   async function drain() {
     if(decoding)return;decoding=true;
@@ -130,19 +143,21 @@
   }
   async function load(){const games=await api('games');el('game').replaceChildren(...games.map(g=>{const o=document.createElement('option');o.value=g.game_id;o.textContent=g.title;o.dataset.ports=JSON.stringify(g.ports);return o;}));el('game').value=games.some(g=>g.game_id==='spacegulls')?'spacegulls':games[0]?.game_id;const state=await api('health/ready');sid=state.session?.session_id;
     el('player').hidden=false;
-    if(state.session && ['running','paused','starting'].includes(state.session.state)){el('game').value=state.session.game_id;report('Game '+state.session.state+'. Connect / resume to control it.');}else report('Choose a game.');}
+    if(state.session && ['running','paused','starting'].includes(state.session.state)){el('game').value=state.session.game_id;wanted=true;report('Game '+state.session.state+'. Click the game to play.');}else report('Choose a game and press New game.');}
   const action = (id, fn) => el(id).onclick=async()=>{el(id).disabled=true;try{await fn();}catch(err){report(err.message);}finally{el(id).disabled=false;}};
   action('new',async()=>{const epoch=transportEpoch;await sound();if(epoch!==transportEpoch || document.hidden)return;const s=await api('sessions',{game_id:el('game').value,idempotency_key:Array.from(crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,"0")).join("")});sid=s.session_id;if(epoch===transportEpoch && !document.hidden)await connect();});
   action('join',connect);
-  action('pause',async()=>{if(sid)await api(`sessions/${sid}/pause`,{});neutral();});
-  action('stop',async()=>{if(sid)await api(`sessions/${sid}/stop`,{});neutral();sid=null;report('Game stopped.');});
+  action('pause',async()=>{wanted=false;if(sid)await api(`sessions/${sid}/pause`,{});neutral();report('Paused. Click the game to keep playing.');});
+  action('stop',async()=>{wanted=false;if(sid)await api(`sessions/${sid}/stop`,{});neutral();sid=null;report('Game stopped.');});
   action('takeover',()=>grant('takeover'));
   action('start',async()=>{screen.focus();keys.add('Enter');send();setTimeout(()=>keys.delete('Enter'),150);});
   el('mute').onchange=()=>{if(gain)gain.gain.value=el('mute').checked?0:1;};
   el('port').onchange=neutral;
   screen.addEventListener('keydown',e=>{if(bits[e.code]){e.preventDefault();if(!keys.has(e.code)){keys.add(e.code);send();}}});
   window.addEventListener('keyup',e=>{keys.delete(e.code);send();});
-  window.addEventListener('blur',neutral);window.addEventListener('pagehide',neutral);window.addEventListener('gamepaddisconnected',neutral);
-  document.addEventListener('visibilitychange',()=>{if(document.hidden)neutral();});
-  void load().catch(err=>report(err.message));
+  window.addEventListener('blur',()=>{away=true;neutral();});window.addEventListener('pagehide',neutral);window.addEventListener('gamepaddisconnected',neutral);
+  document.addEventListener('visibilitychange',()=>{if(document.hidden){away=true;neutral();}else{away=false;heal();}});
+  window.addEventListener('focus',()=>{away=false;heal();});
+  screen.addEventListener('pointerdown',()=>{away=false;if(sid)wanted=true;heals=0;heal();});
+  void load().catch(err=>{el('player').hidden=false;report(err.message);});
 })();

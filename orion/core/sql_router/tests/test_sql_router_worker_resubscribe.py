@@ -29,6 +29,7 @@ class _ScriptedBus:
         self.sessions = list(sessions)
         self.subscribe_calls = 0
         self.published: list[tuple[str, object]] = []
+        self.two_published = threading.Event()
 
     async def connect(self) -> None:
         return None
@@ -38,6 +39,8 @@ class _ScriptedBus:
 
     async def publish(self, channel: str, msg: object) -> None:
         self.published.append((channel, msg))
+        if len(self.published) == 2:
+            self.two_published.set()
 
     def subscribe(self, *channels: str):
         bus = self
@@ -66,12 +69,9 @@ def test_worker_resubscribes_after_the_subscription_drops(monkeypatch) -> None:
     monkeypatch.setattr(worker_mod, "SessionLocal", contextlib.nullcontext)
 
     rows: list[dict] = []
-    two = threading.Event()
 
     def writer(model_class, payload, db):
         rows.append(payload)
-        if len(rows) == 2:
-            two.set()
         return None
 
     real_sleep = asyncio.sleep
@@ -82,7 +82,7 @@ def test_worker_resubscribes_after_the_subscription_drops(monkeypatch) -> None:
     monkeypatch.setattr(worker_mod.asyncio, "sleep", fast_sleep)
     worker_mod.start_worker_thread("redis://unused", "orion:test:rows", _Model, writer_func=writer,
                                    publish_channel="orion:test:out")
-    assert two.wait(timeout=10)
+    assert bus.two_published.wait(timeout=10)
     assert rows == [{"n": 1}, {"n": 2}]
     assert bus.subscribe_calls == 3
     assert bus.published == [("orion:test:out", {"n": 1}), ("orion:test:out", {"n": 2})]

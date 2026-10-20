@@ -43,6 +43,7 @@ async def run_subscription(
     stop_event: asyncio.Event | None,
     name: str,
     max_backoff_sec: float = 60.0,
+    stuck_reads: int = 5,
 ) -> None:
     """Pass every message on ``channel`` to ``handle`` until ``stop_event`` is set.
 
@@ -53,14 +54,20 @@ async def run_subscription(
     orion-substrate-runtime, and chat lost finalize appraisal until a code fix).
     A handler error is logged and the next message is read. ``handle`` may be sync
     or async.
+
+    The backoff resets only once a session delivers a message, so a Redis that
+    accepts SUBSCRIBE and drops at once still backs off. ``get_message`` returns
+    None on a quiet channel within its own 1 s timeout; ``stuck_reads`` reads in a
+    row that overrun the outer 1.2 s guard mean a dead connection, so the session
+    is reopened instead of polled forever.
     """
-    backoff = 1.0
+    backoff = min(1.0, max_backoff_sec)
     try:
         while stop_event is None or not stop_event.is_set():
             _sub_logger.info("%s subscribing channel=%s", name, channel)
             try:
                 async with bus.subscribe(channel) as pubsub:
-                    backoff = 1.0
+                    overruns = 0
                     while stop_event is None or not stop_event.is_set():
                         try:
                             msg = await asyncio.wait_for(
@@ -68,9 +75,16 @@ async def run_subscription(
                                 timeout=1.2,
                             )
                         except asyncio.TimeoutError:
+                            overruns += 1
+                            if overruns >= stuck_reads:
+                                raise ConnectionError(
+                                    f"{overruns} reads in a row overran the read timeout"
+                                ) from None
                             continue
+                        overruns = 0
                         if not msg or msg.get("type") not in ("message", "pmessage"):
                             continue
+                        backoff = min(1.0, max_backoff_sec)
                         try:
                             result = handle(msg)
                             if inspect.isawaitable(result):

@@ -164,3 +164,49 @@ async def test_run_subscription_survives_handler_errors_and_skips_non_messages()
     )
     assert seen == [2]
     assert bus.subscribe_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_run_subscription_reopens_a_session_whose_reads_hang() -> None:
+    """A dead connection can make every read overrun the guard; that must not poll forever."""
+    import asyncio
+
+    from orion.core.bus.resilience import run_subscription
+
+    stop = asyncio.Event()
+    seen: list[int] = []
+
+    class _HangingPubSub:
+        async def get_message(self, ignore_subscribe_messages=True, timeout=1.0):
+            raise asyncio.TimeoutError  # what the outer wait_for raises on an overrun
+
+    bus = _ScriptedBus([_HangingPubSub(), _ScriptedPubSub([_msg(7)], stop)])
+    await asyncio.wait_for(
+        run_subscription(
+            bus, "orion:test", seen.append, stop_event=stop, name="t",
+            max_backoff_sec=0.01, stuck_reads=3,
+        ),
+        timeout=10,
+    )
+    assert seen == [_msg(7)]
+    assert bus.subscribe_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_run_subscription_propagates_cancellation() -> None:
+    import asyncio
+
+    from orion.core.bus.resilience import run_subscription
+
+    class _QuietPubSub:
+        async def get_message(self, ignore_subscribe_messages=True, timeout=1.0):
+            await asyncio.sleep(0.01)
+            return None
+
+    task = asyncio.create_task(
+        run_subscription(_ScriptedBus([_QuietPubSub()]), "orion:test", print, stop_event=None, name="t")
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task

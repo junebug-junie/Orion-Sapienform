@@ -388,3 +388,18 @@ def test_proposals_for_a_domain_are_spaced_a_day_apart(isolated_surface) -> None
     store.set_queue_status(store.queue_item_id_for_proposal(first[0].proposal_id), "rejected")
     assert tuner.propose(store=store, now=now + timedelta(hours=2)) == []
     assert len(tuner.propose(store=store, now=now + timedelta(hours=25))) == 1
+
+
+def test_proposal_spacing_survives_a_hub_restart(isolated_surface) -> None:
+    # Live 2026-10-16..18: 9 proposals in ~35 h, each ~4 min after a Hub
+    # rebuild, because the spacing lived only in the tuner's memory.
+    reader = _Readings(_timed(_iid(1500, seed=2)))
+    store = SubstrateMutationStore()
+    now = T0 + timedelta(minutes=1500)
+    before = PredictionExpectationTuner(read_readings=reader, read_live=get_prediction_expectation)
+    first = before.propose(store=store, now=now)
+    assert len(first) == 1
+    store.set_queue_status(store.queue_item_id_for_proposal(first[0].proposal_id), "rejected")
+    after_restart = PredictionExpectationTuner(read_readings=reader, read_live=get_prediction_expectation)
+    assert after_restart.propose(store=store, now=now + timedelta(hours=2)) == []
+    assert len(after_restart.propose(store=store, now=now + timedelta(hours=25))) == 1

@@ -47,6 +47,16 @@ class Settings(BaseSettings):
     # Max wait for a `launch.drain` role's in-flight work to finish before its stop (launch.drain has
     # no timeout key). Renamed from GPU2_DRAIN_TIMEOUT_SEC in 5.6; same meaning and default.
     GPU_LANE_DRAIN_TIMEOUT_SEC: float = 300.0
+    # Seat and evicted role both running on one card (incident 2026-10-16: a rebuild restarted
+    # diffusion-host beside the agent-gpu2 seat; gpu2 stayed faulted 4 days). On: the controller
+    # stops the side that holds no GPU memory and is not ready (nvidia-smi through `docker exec`,
+    # PIDs from `docker top`), then runs the requested load/unload as usual. It never stops a side
+    # holding more than GPU_LANE_RESOLVE_EMPTY_MAX_MIB, and refuses (the card stays faulted) unless
+    # the other side provably holds the card. Off: refuse, as before.
+    GPU_LANE_RESOLVE_BOTH_RUNNING_ENABLED: bool = True
+    # A side at or below this many MiB counts as empty (a CUDA context is ~0.3-0.9 GB); the side
+    # kept must hold more. Live 2026-10-20: the agent-gpu2 llama-server held 23828 MiB on gpu2.
+    GPU_LANE_RESOLVE_EMPTY_MAX_MIB: float = 2048.0
 
 
 settings = Settings()

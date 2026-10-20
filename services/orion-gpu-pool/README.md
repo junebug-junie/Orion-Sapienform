@@ -48,6 +48,14 @@ with the server's own `GET /props`: the loaded file must equal the profile's `hf
 | down | no answer | no |
 | unloaded / evicted | a swap seat not loaded / a resident pushed off by a swap | no |
 
+A `kind: service` role is probed on its `health` path (up = answers below 500), except a
+launch-managed one: that is probed on its `launch.ready` path and must answer 2xx with
+`{"ready": true}` or `{"status": "ok"}` -- the lane controller's own readiness contract
+(`orion.gpu_pool.config.ready_body_ok`, `RoleSpec.discovery_path`). Today that is diffusion only
+(`/ready`, which also says no when the card has no room). Incident 2026-10-16 -> 10-20: diffusion's
+`/health` said 200 for 4 days beside the agent-gpu2 seat, so a faulted gpu2 looked "both sides up"
+and `fault_cleared:discovery` never fired.
+
 ## Bus (everything except the llama.cpp edge)
 
 | channel | what |
@@ -382,6 +390,17 @@ loads nothing -- 136 refusals over 26 h went unnoticed. Now (`orion/gpu_pool/con
 - One Hub Pending Attention card (orion-notify `/attention/request`, severity error; unacked 60 min ->
   email) when the seat turns degraded, one ack-free info card when it recovers.
   `GPU_POOL_CONTROLLER_ALERT_ENABLED=false` drops the cards only.
+
+### When a card is stuck in fault (card-fault alert)
+
+A faulted card gets no grants on any of its roles (on gpu2: no paintings, no agent-gpu2 seat).
+Incident 2026-10-16 -> 10-20: gpu2 sat faulted 4 days with a healthy controller, so the controller
+alert above never fired, and the mesh guardian (which probes controllers) said "ok" every hour.
+Now the pool itself raises a **critical** card (orion-notify emails critical at once) when a card
+has been in fault for `GPU_POOL_FAULT_ALERT_AFTER_SEC` (1800), again every
+`GPU_POOL_FAULT_REALERT_SEC` (21600) while it stays faulted, and an info card when it clears. An
+undelivered card is retried ~10 min later. Memory only: a pool restart restarts the clock.
+`GPU_POOL_FAULT_ALERT_ENABLED=false` drops the cards. Log: `gpu_pool_card_fault_alert card=...`.
 - The pool keeps retrying at the cooldown: the first retry the rebuilt controller accepts clears it.
 - Fix: rebuild the controller on circe (`services/orion-gpu-lane-controller`); confirm with
   `python3 scripts/gpu_pool_actuator_probe.py`.

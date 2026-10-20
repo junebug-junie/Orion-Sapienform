@@ -19,7 +19,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hunter, Rabbit
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
-from orion.gpu_pool.config import SWAP_GUARDS, load_pool_config
+from orion.gpu_pool.config import SWAP_GUARDS, PoolConfig, load_pool_config, ready_body_ok
 from orion.gpu_pool.discovery import Probe, load_profiles
 from orion.gpu_pool.lease_graph import build_lease_graph
 from orion.schemas.gpu_pool import (
@@ -37,7 +37,7 @@ from orion.schemas.hardware_watch import (
     HardwareWatchReflexShedV1,
 )
 
-from app.controller_alert import make_notify_alert
+from app.controller_alert import build_fault_request, make_notify_alert
 from app.guards import GuardReader
 from app.orion_shed_store import PostgresOrionShedLedger
 from app.runtime import SLOW_LOCK_MS, PoolRuntime
@@ -74,7 +74,12 @@ def _reply(env: BaseEnvelope, kind: str, payload: Any) -> BaseEnvelope:
                         payload=payload.model_dump(mode="json"))
 
 
-async def _probe(client: httpx.AsyncClient, role: str, url: str, kind: str, health: str, backend: str = "llamacpp") -> Probe:
+async def _probe(client: httpx.AsyncClient, role: str, url: str, kind: str, health: str, backend: str = "llamacpp",
+                 strict: bool = False) -> Probe:
+    """One look at a role's port. ``strict`` (a launch-managed service, RoleSpec.discovery_strict):
+    ``health`` is the role's ``launch.ready`` path and the answer must be a 2xx whose JSON passes
+    ``ready_body_ok`` -- the controller's own readiness contract. Otherwise a service is up when its
+    ``health`` path answers below 500 (kev's /docs is HTML)."""
     now = datetime.now(timezone.utc)
     try:
         if kind == "llm" and backend == "vllm":
@@ -91,10 +96,24 @@ async def _probe(client: httpx.AsyncClient, role: str, url: str, kind: str, heal
             r.raise_for_status()
             return Probe(True, r.json(), checked_at=now)
         r = await client.get(f"{url}{health}")
+        if strict:
+            body = r.json() if r.is_success else None
+            if r.is_success and ready_body_ok(body):
+                return Probe(True, checked_at=now)
+            return Probe(False, error=f"not ready: HTTP {r.status_code} on {health}", checked_at=now)
         return Probe(r.status_code < 500, error=None if r.status_code < 500 else f"HTTP {r.status_code}",
                      checked_at=now)
     except Exception as exc:  # noqa: BLE001
         return Probe(False, error=f"{type(exc).__name__}: {exc}"[:300], checked_at=now)
+
+
+def make_prober(client: httpx.AsyncClient, cfg: PoolConfig):
+    """The runtime's prober: each role's backend, and the strict ready contract for a
+    launch-managed service (the runtime passes RoleSpec.discovery_path as ``health``)."""
+    async def prober(role, url, kind, health):
+        spec = cfg.roles[role]
+        return await _probe(client, role, url, kind, health, spec.backend, strict=spec.discovery_strict)
+    return prober
 
 
 async def _on_lease(env: BaseEnvelope) -> BaseEnvelope | None:
@@ -301,8 +320,7 @@ async def lifespan(app: FastAPI):
 
     client = httpx.AsyncClient(timeout=_settings.probe_timeout_sec)
 
-    async def prober(role, url, kind, health):
-        return await _probe(client, role, url, kind, health, cfg.roles[role].backend)
+    prober = make_prober(client, cfg)
 
     runtime = PoolRuntime(
         cfg=cfg, profiles=profiles, store=_store, graph=build_lease_graph(lambda: cfg, saver), bus=_bus,
@@ -317,7 +335,11 @@ async def lifespan(app: FastAPI):
         orion_shed_ledger=PostgresOrionShedLedger(_pool),
         controller_alert=(make_notify_alert(_settings.notify_base_url, _settings.notify_api_token,
                                             source=_settings.service_name)
-                          if _settings.controller_alert_enabled else None))
+                          if _settings.controller_alert_enabled else None),
+        fault_alert=(make_notify_alert(_settings.notify_base_url, _settings.notify_api_token,
+                                       source=_settings.service_name, builder=build_fault_request)
+                     if _settings.fault_alert_enabled else None),
+        fault_alert_after_sec=_settings.fault_alert_after_sec, fault_realert_sec=_settings.fault_realert_sec)
     # Stage 5.7: every swap seat with a launch block is actuated; pause_actuation is the only stop.
     logger.info("gpu_pool_actuation mode=%s seats=%s", _settings.mode, sorted(runtime.actuated) or "none")
     # The actuator's replies are subscribed BEFORE start(): start() asks about a swap the previous

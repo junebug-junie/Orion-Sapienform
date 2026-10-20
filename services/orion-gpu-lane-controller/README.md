@@ -81,14 +81,25 @@ all down).
   `{"status": "ok"}` (llama.cpp `/health`). A new service's ready endpoint must return one of those.
 - **Failure reasons** carry the role: `container_state_not_safe:<role>`, `drain_timeout:<role>`
   (`GPU_LANE_DRAIN_TIMEOUT_SEC`), `stop_failed|stop_unconfirmed|startup_failed:<role>`,
-  `model_readiness_timeout:<role>`, `seat_and_evicted_both_running`, plus `:restoration_failed`.
+  `model_readiness_timeout:<role>`, `seat_and_evicted_both_running[:<why>]`, plus `:restoration_failed`.
+- **Seat and evicted role both running** (incident 2026-10-16: gpu2 faulted 4 days): with
+  `GPU_LANE_RESOLVE_BOTH_RUNNING_ENABLED=true` the controller stops the empty side -- at most
+  `GPU_LANE_RESOLVE_EMPTY_MAX_MIB` of GPU memory AND not ready -- then runs the load/unload as
+  usual. It needs proof the other side holds the card (more than that limit). Evidence: host PIDs
+  from `docker top <container> -eo pid` joined to `nvidia-smi --query-compute-apps` run via
+  `docker exec` in every running role's own container, merged (read-only; the only docker calls
+  outside compose). Any doubt refuses and the card stays faulted: `:gpu_memory_unknown`,
+  `:both_hold_gpu_memory`, `:neither_holds_gpu_memory` (also a blind nvidia-smi),
+  `:empty_side_ready:<role>`, `:empty_side_in_flight:<role>` (drain status not `in_flight:false`).
+  A load/unload that fails after the resolver stopped something says so: `...:resolved=<role>`. Log: `launch_exec_resolve_both_running seat=... stopping=... gpu_mib=...`.
 - Residents (`swap: null`) are never loaded directly (`not_a_swap_seat`): they come back only as a
   seat's evictions.
 - Log line per action: `launch_exec load role=agent-gpu2 service=atlas-agent-burst
   env=ATLAS_AGENT_BURST_CUDA_VISIBLE_DEVICES=2 ATLAS_AGENT_BURST_PROFILE_NAME=<profile>`.
 
 Keys: `GPU_POOL_ACTUATOR_NAME`, `GPU_POOL_FENCE_STATE_PATH`, `GPU_LANE_DRAIN_TIMEOUT_SEC`,
-`GPU_LANE_COMMAND_TIMEOUT_SEC`, `GPU_LANE_REPO_ROOT` (see `.env_example`).
+`GPU_LANE_COMMAND_TIMEOUT_SEC`, `GPU_LANE_REPO_ROOT`, `GPU_LANE_RESOLVE_BOTH_RUNNING_ENABLED`,
+`GPU_LANE_RESOLVE_EMPTY_MAX_MIB` (see `.env_example`).
 
 ## Deleted in stage 5.6 (kill means kill)
 

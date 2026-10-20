@@ -55,9 +55,11 @@ logger = logging.getLogger("orion-thought.visual_chain_health_monitor")
 _SOURCE_SERVICE = "orion-thought"
 _CHECK_KEY = "visual_chain_stale"
 _PAINTING_GAP_CHECK_KEY = "visual_painting_gap"
+_ATTEMPT_STREAK_CHECK_KEY = "visual_attempt_failure_streak"
 _EVENT_KINDS = {
     _CHECK_KEY: "orion.reverie.visual_chain_stale.health.attention.v1",
     _PAINTING_GAP_CHECK_KEY: "orion.reverie.visual_painting_gap.health.attention.v1",
+    _ATTEMPT_STREAK_CHECK_KEY: "orion.reverie.visual_attempt_failure_streak.health.attention.v1",
 }
 Severity = Literal["info", "error", "critical"]
 
@@ -131,6 +133,37 @@ def _painting_gap_check(*, age_hours: float | None, threshold_hours: float) -> H
     )
 
 
+def _attempt_streak_check(*, streak: int | None, threshold: int) -> HealthCheck:
+    """Third check (2026-10-20): N painting attempts in a row produced nothing.
+
+    The gap check above fired ONCE on 2026-10-16 15:10, at "error" (held as a pending card, one
+    email after 60 min unacked), and said nothing more while gpu2 stayed faulted for 4 days and 35
+    attempts in a row were abandoned. This one is "critical" (orion-notify emails it at once): a run
+    of failures is not heat that clears on its own. Threshold 6 = one more than the longest
+    ordinary streak on 2026-09-14 -> 10-19 (evals/test_attempt_streak_replay.py)."""
+    bad = streak is not None and streak >= threshold
+    return HealthCheck(
+        key=_ATTEMPT_STREAK_CHECK_KEY,
+        healthy=not bad,
+        severity="critical",
+        message=(
+            f"Orion's last {streak} painting attempts in a row produced nothing "
+            f"(threshold {threshold}). Most likely the painting GPU is not being given out: "
+            "check the GPU pool's gpu2 card (stuck in fault? the pool raises its own card after "
+            "30 min) and `docker ps` on circe for both atlas-agent-burst and diffusion-host "
+            "running at once (2026-10-16 precedent, 4 days)."
+            if bad
+            else ""
+        ),
+        recovery_message=(
+            f"[Orion reverie] recovered: {_ATTEMPT_STREAK_CHECK_KEY} -- the run of failed painting "
+            f"attempts is below {threshold} again (now {streak})."
+            if not bad and streak is not None
+            else ""
+        ),
+    )
+
+
 class VisualChainHealthMonitor:
     """Edge-triggered monitor with independent state per check key:
     `visual_chain_stale` (newest `reverie_visual_chain` row older than the
@@ -185,6 +218,21 @@ class VisualChainHealthMonitor:
             )
         except Exception:
             logger.exception("visual_painting_gap_check_failed")
+
+    def record_attempt_streak(self, *, streak: int | None) -> None:
+        """Call once per watchdog tick with the current failed-attempt streak. None = no
+        observation (state untouched). Never raises."""
+        if streak is None:
+            return
+        try:
+            self._run_tick_for_check(
+                _attempt_streak_check(
+                    streak=streak,
+                    threshold=self._settings.visual_attempt_failure_streak_threshold,
+                )
+            )
+        except Exception:
+            logger.exception("visual_attempt_streak_check_failed")
 
     def _run_tick_for_check(self, check: HealthCheck) -> None:
         key = check.key
@@ -294,6 +342,17 @@ def check_visual_painting_gap(age_hours: float | None) -> None:
         logger.exception("visual_painting_gap_check_failed")
 
 
+def check_visual_attempt_streak(streak: int | None) -> None:
+    """Module-level entrypoint for the failed-attempt streak check (same singleton). Never raises."""
+    global _MONITOR
+    try:
+        if _MONITOR is None:
+            _MONITOR = VisualChainHealthMonitor()
+        _MONITOR.record_attempt_streak(streak=streak)
+    except Exception:
+        logger.exception("visual_attempt_streak_check_failed")
+
+
 async def run_visual_painting_gap_watchdog(
     stop_event: asyncio.Event | None = None,
     *,
@@ -309,7 +368,7 @@ async def run_visual_painting_gap_watchdog(
     if not cfg.visual_painting_gap_check_enabled:
         logger.info("visual painting gap check disabled; watchdog not started")
         return
-    from .store import visual_last_painting_age_hours
+    from .store import visual_attempt_failure_streak, visual_last_painting_age_hours
 
     logger.info(
         "visual painting gap watchdog started interval=%ss threshold_h=%s",
@@ -323,6 +382,9 @@ async def run_visual_painting_gap_watchdog(
             age_h = await asyncio.to_thread(visual_last_painting_age_hours)
             # to_thread: the notify calls are synchronous requests (up to ~20 s).
             await asyncio.to_thread(check_visual_painting_gap, age_h)
+            if cfg.visual_attempt_streak_check_enabled:
+                streak = await asyncio.to_thread(visual_attempt_failure_streak)
+                await asyncio.to_thread(check_visual_attempt_streak, streak)
         except Exception:
             logger.exception("visual_painting_gap_watchdog_tick_failed")
         try:

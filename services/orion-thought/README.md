@@ -670,6 +670,8 @@ Flags:
 | `ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED` | `true` | Painting-gap check (2026-10-10), own loop, not gated on `ORION_VISUAL_CHAIN_ENABLED` (off in production, which is why the staleness watchdog never ran during the 27.6 h 2026-10-09/10 outage) |
 | `ORION_VISUAL_PAINTING_GAP_THRESHOLD_HOURS` | `12` | If no real painting (a `reverie_visual_chain` row with a `production_receipt`, timed by its `produced_at`) has landed in this many hours, fire an orion-notify `error` attention request (emails if left unacked). Calibrated in-sample on 2026-09-14..10-10: no gap fell between 7.6 h and 14.7 h |
 | `ORION_VISUAL_PAINTING_GAP_CHECK_INTERVAL_SEC` | `600` | How often the painting-gap loop re-reads the last painting's age |
+| `ORION_VISUAL_ATTEMPT_STREAK_CHECK_ENABLED` | `true` | Failed-attempt streak check (critical card) in the same loop |
+| `ORION_VISUAL_ATTEMPT_FAILURE_STREAK_THRESHOLD` | `6` | Painting attempts in a row with no image before the card |
 | `ORION_VISUAL_CHAIN_WATCHDOG_CHECK_INTERVAL_SEC` | `600` | How often the watchdog re-checks that staleness, independently of the worker's own loop |
 | `ORION_DIFFUSION_HOST_BASE_URL` | `http://100.112.254.99:8014` | circe's diffusion host |
 | `ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC` | `120` | `/generate` HTTP timeout (raised from `30` 2026-08-28 -- tuned for sdxl-turbo's near-instant single step; FLUX.1-schnell's real generation measured 49-56s live, timing out every tick until fixed) |
@@ -807,6 +809,17 @@ treated as no observation, not as recovery. Dream carry pictures
 (`brief.dream_hop`) write no chain row and never count. The threshold is
 calibrated in-sample on 2026-09-14..10-10 (no gap fell between 7.6 h and
 14.7 h); replay: `evals/test_painting_gap_replay.py`.
+
+`visual_attempt_failure_streak` (same loop, 2026-10-20): how many painting
+attempts in a row (`reverie_visual_attempt`) produced nothing. At
+`ORION_VISUAL_ATTEMPT_FAILURE_STREAK_THRESHOLD` (6) it raises a **critical**
+card (emailed at once), and a recovery note once an attempt produces an image.
+2026-10-16 -> 10-20 had 35 in a row while the only alert was one "error" gap
+card. 6 is one more than the longest ordinary streak on 2026-09-14..10-19;
+every streak of 6+ was an outage. Replay: `evals/test_attempt_streak_replay.py`.
+`ORION_VISUAL_ATTEMPT_STREAK_CHECK_ENABLED=false` turns it off (so does
+`ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED=false`: it runs in that loop). Attempts
+still `active`/`unknown` (in progress) never count as failures.
 
 ## Acknowledged visual activity and baseline execution
 

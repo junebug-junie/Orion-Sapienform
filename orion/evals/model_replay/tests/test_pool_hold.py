@@ -266,3 +266,54 @@ def test_leftovers_sweep_finds_unledgered_lease(tmp_path):
 
     released = asyncio.run(release_leftovers(pool, HoldLedger(tmp_path / "h.jsonl"), "t", sweep=sweep))
     assert released == ["UNSEEN"] and pool.live == set()
+
+
+def test_bus_transport_grant_listener_resubscribes_after_a_drop():
+    """Live 2026-10-20: one redis error ended a bare subscribe loop; every later grant was missed."""
+    import contextlib
+    from types import SimpleNamespace
+
+    from orion.evals.model_replay.pool_hold import BusControlTransport
+
+    class _PubSub:
+        def __init__(self, script):
+            self.script = list(script)
+
+        async def get_message(self, ignore_subscribe_messages=True, timeout=1.0):
+            if not self.script:
+                await asyncio.sleep(0.01)
+                return None
+            item = self.script.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+    grant = {"event": "granted", "lease_id": "L1", "detail": {"grant": {"url": "http://c:8015"}}}
+    sessions = [_PubSub([ConnectionError("Connection reset by peer")]),
+                _PubSub([{"type": "message", "data": grant}])]
+    calls = []
+
+    class _Bus:
+        codec = SimpleNamespace(decode=lambda data: SimpleNamespace(envelope=SimpleNamespace(payload=data)))
+
+        def subscribe(self, *channels):
+            @contextlib.asynccontextmanager
+            async def _cm():
+                calls.append(channels)
+                yield sessions.pop(0)
+
+            return _cm()
+
+    t = BusControlTransport("redis://unused")
+    t._bus = _Bus()
+
+    async def go():
+        t._listener = asyncio.create_task(t._listen())
+        try:
+            await asyncio.wait_for(t._subscribed(), timeout=5)
+            return await t.wait_granted("L1", timeout_sec=10)
+        finally:
+            t._listener.cancel()
+
+    assert asyncio.run(go()) == {"url": "http://c:8015"}
+    assert len(calls) == 2

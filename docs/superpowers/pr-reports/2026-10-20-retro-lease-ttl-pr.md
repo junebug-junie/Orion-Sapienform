@@ -20,6 +20,7 @@ After #2772 was deployed, the operator still could not play. Evidence from sessi
 
 - `services/orion-retro/app/control.py`: `LEASE_TTL = 2.0` replaces `GRANT_GRACE` and the 0.25 s input expiry.
 - `services/orion-retro/tests/test_authority.py`: expiry test parameterized on `LEASE_TTL`; new throttled-heartbeat regression test.
+- `services/orion-retro/evals/container_smoke.py`: expiry wait reads `LEASE_TTL` instead of a hard-coded 0.4 s.
 - `services/orion-retro/README.md`, `docs/runbooks/retro-browser.md`: contract text.
 
 ## Schema / bus / API changes
@@ -48,6 +49,7 @@ on 2 reruns, so it looks like a timing race in the eval, UNVERIFIED)
 
 ```text
 docker build orion-retro (worktree): OK
+container_smoke.py --image orion-retro-eval:ttl: PASS (expiry wait now LEASE_TTL+.15, read from app/control.py)
 ```
 
 ## Review findings fixed

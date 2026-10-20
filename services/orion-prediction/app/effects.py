@@ -119,7 +119,7 @@ class Effects:
         return np.array([(t - start).total_seconds() for t in rows], dtype=float)
 
     def event_pair(self, a: dict, b: dict, start: datetime, end: datetime, lag_min_sec: float, lag_max_sec: float,
-                   n_placebo: int = 999, seed: int = 0) -> dict:
+                   n_placebo: int = 999, seed: int = 0, placebo: str = "same_time_of_day") -> dict:
         """Does A raise B's rate within [lag_min, lag_max] after it? Stored as an observational estimate.
         Raises ``EventPairRefused`` (with counts) when there is too little data to answer."""
         if end <= start:
@@ -129,7 +129,8 @@ class Effects:
         if selector_key(a) == selector_key(b) and lag_min_sec <= 0:
             raise EventPairRefused("A and B are the same events: lag_min must be > 0 or each A counts itself")
         res = event_pair_effect(self._event_seconds(a, start, end), self._event_seconds(b, start, end),
-                                (end - start).total_seconds(), lag_min_sec, lag_max_sec, n_placebo, seed)
+                                (end - start).total_seconds(), lag_min_sec, lag_max_sec, n_placebo, seed,
+                                placebo=placebo)
         details = {"estimator": "event_pair", "a": a, "b": b, "start": start.isoformat(), "end": end.isoformat(),
                    **{k: v for k, v in res.__dict__.items() if k != "claim_kind"}}
         row = self.store.insert_effect({"action": f"event_pair:{selector_key(a)}",
@@ -139,7 +140,7 @@ class Effects:
         return {**row, "summary": (f"{selector_key(b)} was {res.rate_ratio:.2f}x its baseline rate within "
                                    f"[{lag_min_sec:g}s, {lag_max_sec:g}s] after {selector_key(a)} "
                                    f"({res.observed_b_in_windows} seen vs {res.expected_b_in_windows:.1f} expected; "
-                                   f"placebo p={res.p_value:.3f}). Observational: a common cause would look the same.")}
+                                   f"{res.placebo} placebo p={res.p_value:.3f}). Observational: a common cause would look the same.")}
 
     # --- level 3 --------------------------------------------------------------------------
     def guard(self, spec: SeriesSpec) -> dict:

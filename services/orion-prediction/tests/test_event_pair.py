@@ -50,14 +50,16 @@ def test_a_lag_window_that_misses_the_real_delay_finds_nothing():
     assert res.p_value > 0.05
 
 
-def test_independent_poisson_streams_false_positive_rate_is_near_alpha():
+@pytest.mark.parametrize("placebo", ["same_time_of_day", "circular"])
+def test_independent_poisson_streams_false_positive_rate_is_near_alpha(placebo):
     span = 7 * DAY
     hits = 0
     seeds = 300
     for seed in range(seeds):
         rng = np.random.default_rng(1000 + seed)
         a, b = _poisson(rng, 8, span), _poisson(rng, 30, span)
-        hits += event_pair_effect(a, b, span, 0.0, 600.0, n_placebo=199, seed=seed).p_value <= 0.05
+        hits += event_pair_effect(a, b, span, 0.0, 600.0, n_placebo=199, seed=seed,
+                                  placebo=placebo).p_value <= 0.05
     rate = hits / seeds
     assert 0.015 <= rate <= 0.09, rate
 
@@ -74,6 +76,39 @@ def test_bursty_b_independent_of_a_stays_calibrated():
         a = _poisson(rng, 8, span)
         hits += event_pair_effect(a, b, span, 0.0, 300.0, n_placebo=199, seed=seed).p_value <= 0.05
     assert hits / seeds <= 0.09
+
+
+def _daytime(rng, per_day: float, days: int) -> np.ndarray:
+    """Events only between 08:00 and 20:00, otherwise independent."""
+    n = rng.poisson(per_day * days)
+    return np.sort(rng.integers(0, days, n) * DAY + rng.uniform(8 * 3600, 20 * 3600, n))
+
+
+def test_shared_daily_rhythm_fools_the_free_shift_but_not_the_time_of_day_placebo():
+    days, seeds = 14, 120
+    hits = {"circular": 0, "same_time_of_day": 0}
+    for seed in range(seeds):
+        rng = np.random.default_rng(9000 + seed)
+        a, b = _daytime(rng, 6, days), _daytime(rng, 20, days)
+        for kind in hits:
+            hits[kind] += event_pair_effect(a, b, days * DAY, 0.0, 600.0, n_placebo=199, seed=seed,
+                                            placebo=kind).p_value <= 0.05
+    assert hits["circular"] / seeds > 0.25            # measured 45/120: why the default keeps time of day
+    assert hits["same_time_of_day"] / seeds <= 0.09, hits
+
+
+def test_time_of_day_placebo_still_finds_a_real_30s_follow():
+    rng = np.random.default_rng(11)
+    a = _daytime(rng, 6, 14)
+    b = np.sort(np.concatenate([a + 30.0, _daytime(rng, 20, 14)]))
+    res = event_pair_effect(a, b, 14 * DAY, 0.0, 60.0, n_placebo=499, seed=0)
+    assert res.p_value <= 0.002 and res.placebo == "same_time_of_day"
+
+
+def test_time_of_day_placebo_refuses_lags_near_its_jitter():
+    with pytest.raises(EventPairRefused, match="same_time_of_day"):
+        event_pair_effect(np.arange(10) * 3600.0, np.arange(10) * 3600.0, 7 * DAY, 0.0, 3600.0,
+                          placebo="same_time_of_day")
 
 
 def test_same_seed_same_answer():

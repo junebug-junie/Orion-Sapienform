@@ -267,6 +267,9 @@ class EventPairBody(BaseModel):
     lag_max_sec: float = Field(..., gt=0, le=86400)
     n_placebo: int = Field(999, ge=99, le=9999)
     seed: int = Field(0, ge=0)
+    # same_time_of_day: shift A by whole days (+/- 1 h), so a pair that only shares the daily rhythm
+    # reads as no effect (needs lag_max < 30 min). circular: shift A anywhere (rhythm-free series).
+    placebo: Literal["same_time_of_day", "circular"] = "same_time_of_day"
 
 
 @app.post("/effects/event-pair")
@@ -279,7 +282,7 @@ async def post_event_pair(body: EventPairBody) -> dict[str, Any]:
     try:
         return _jsonable(await asyncio.to_thread(effects.event_pair, body.a.model_dump(), body.b.model_dump(),
                                                  body.start, body.end, body.lag_min_sec, body.lag_max_sec,
-                                                 body.n_placebo, body.seed))
+                                                 body.n_placebo, body.seed, body.placebo))
     except EventPairRefused as exc:
         raise HTTPException(422, {"error": "refused", "claim_kind": "observational_effect", "reason": exc.reason,
                                   "min_a_events": MIN_A_EVENTS, **exc.detail}) from exc

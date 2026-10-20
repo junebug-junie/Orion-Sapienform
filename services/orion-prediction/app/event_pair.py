@@ -13,7 +13,15 @@ twice. Then:
 p-value. Placebo by circular shift: move every A by the same random offset (wrapping round the end
 of the range), keeping A's own spacing and B untouched, and recompute the ratio. Offsets are drawn
 from ``[lag_max, span - lag_max]`` so no placebo reproduces the real alignment within the lag
-window. ``p = (1 + #placebo ratio >= real) / (n_placebo + 1)``, one-sided ("A raises B").
+window (circular distance). ``p = (1 + #placebo ratio >= real) / (n_placebo + 1)``, one-sided ("A raises B").
+
+Two placebos. ``same_time_of_day`` (default) shifts A by whole days plus a jitter of up to
+``TOD_JITTER_SEC``, so every placebo A keeps its time of day. ``circular`` shifts A anywhere. The
+free shift moves A to other hours and then reads "both happen in the daytime" as an effect: with A
+and B independent but both daytime-only, it gives p <= 0.05 in ~38% of seeds versus ~6% for the
+time-of-day placebo (tests/test_event_pair.py). Street events follow the day, so the default keeps
+the daily rhythm. ``same_time_of_day`` needs lag_max < 30 min; use ``circular`` for longer lags
+on series with no daily rhythm.
 
 ``claim_kind`` is always ``observational_effect``: a common cause of A and B (time of day, one
 person who triggers both cameras) produces the same number. Rows are counted, not visits: a burst
@@ -28,6 +36,8 @@ import numpy as np
 
 CLAIM_KIND = "observational_effect"
 MIN_A_EVENTS = 5
+TOD_JITTER_SEC = 3600.0
+PLACEBOS = ("circular", "same_time_of_day")
 MIN_SPAN_LAGS = 10   # the range must hold >= 10 lag windows, or the placebo shifts barely differ
 
 
@@ -66,6 +76,21 @@ class EventPairResult:
     n_placebo: int
     placebo_ratio_quantiles: dict = field(default_factory=dict)
     seed: int = 0
+    placebo: str = "same_time_of_day"
+
+
+def _offsets(rng: np.random.Generator, n: int, span: float, lag_max: float, placebo: str) -> np.ndarray:
+    """Placebo shifts whose circular distance from the real alignment is > lag_max."""
+    if placebo == "circular":
+        return rng.uniform(lag_max, span - lag_max, size=n)
+    days = int(span // 86400.0)
+    out = np.empty(0)
+    for _ in range(50):   # rejection sampling; the accepted fraction is >= 1 - lag_max / TOD_JITTER_SEC
+        d = np.mod(rng.integers(0, days, size=n) * 86400.0 + rng.uniform(-TOD_JITTER_SEC, TOD_JITTER_SEC, n), span)
+        out = np.concatenate([out, d[np.minimum(d, span - d) > lag_max]])
+        if len(out) >= n:
+            return out[:n]
+    return out
 
 
 def _merged(starts: np.ndarray, width: float, span: float) -> tuple[np.ndarray, np.ndarray, float]:
@@ -95,7 +120,8 @@ def pair_stat(a: np.ndarray, b_sorted: np.ndarray, span: float, lag_min: float, 
 
 
 def event_pair_effect(a: np.ndarray, b: np.ndarray, span: float, lag_min: float, lag_max: float,
-                      n_placebo: int = 999, seed: int = 0, min_a: int = MIN_A_EVENTS) -> EventPairResult:
+                      n_placebo: int = 999, seed: int = 0, min_a: int = MIN_A_EVENTS,
+                      placebo: str = "same_time_of_day") -> EventPairResult:
     """Event times in seconds since the range start; anything outside [0, span) is dropped."""
     a = np.asarray(a, dtype=float)
     b = np.asarray(b, dtype=float)
@@ -110,29 +136,31 @@ def event_pair_effect(a: np.ndarray, b: np.ndarray, span: float, lag_min: float,
         raise EventPairRefused(f"event A has {len(a)} occurrence(s) in range; need >= {min_a}", **counts)
     if len(b) == 0:
         raise EventPairRefused("event B never occurs in range; there is no baseline rate", **counts)
+    if placebo not in PLACEBOS:
+        raise EventPairRefused(f"placebo must be one of {PLACEBOS}", **counts)
+    if placebo == "same_time_of_day" and (span < 2 * 86400.0 or lag_max >= TOD_JITTER_SEC / 2):
+        raise EventPairRefused("same_time_of_day needs >= 2 days of range and lag_max < 30 min", **counts)
     if n_placebo < 1:
         raise EventPairRefused("n_placebo must be >= 1", **counts)
     real = pair_stat(a, b, span, lag_min, lag_max)
     if not real.covered_sec > 0:
         raise EventPairRefused("A's lag windows fall outside the time range", **counts)
     rng = np.random.default_rng(seed)
-    offsets = rng.uniform(lag_max, span - lag_max, size=n_placebo)
-    placebo = np.empty(n_placebo)
-    for k, d in enumerate(offsets):
-        placebo[k] = pair_stat(np.mod(a + d, span), b, span, lag_min, lag_max).rate_ratio
-    placebo = placebo[np.isfinite(placebo)]
-    if len(placebo) == 0:
+    offsets = _offsets(rng, n_placebo, span, lag_max, placebo)
+    ratios = np.array([pair_stat(np.mod(a + d, span), b, span, lag_min, lag_max).rate_ratio for d in offsets])
+    ratios = ratios[np.isfinite(ratios)]
+    if len(ratios) == 0:
         raise EventPairRefused("no placebo shift produced a finite ratio", **counts)
-    hits = int(np.sum(placebo >= real.rate_ratio - 1e-12))
-    p = (1 + hits) / (1 + len(placebo))
-    q = np.quantile(placebo, [0.05, 0.5, 0.95])
+    hits = int(np.sum(ratios >= real.rate_ratio - 1e-12))
+    p = (1 + hits) / (1 + len(ratios))
+    q = np.quantile(ratios, [0.05, 0.5, 0.95])
     hour = 3600.0
     return EventPairResult(
         claim_kind=CLAIM_KIND, n_a=len(a), n_b=len(b), span_sec=float(span), lag_min_sec=float(lag_min),
         lag_max_sec=float(lag_max), observed_b_in_windows=real.observed, expected_b_in_windows=real.expected,
         covered_sec=real.covered_sec, rate_in_windows_per_hour=real.observed / real.covered_sec * hour,
         baseline_rate_per_hour=len(b) / span * hour, rate_ratio=real.rate_ratio, p_value=float(p),
-        n_placebo=int(len(placebo)), placebo_ratio_quantiles={"q05": float(q[0]), "q50": float(q[1]),
+        n_placebo=int(len(ratios)), placebo_ratio_quantiles={"q05": float(q[0]), "q50": float(q[1]),
                                                                "q95": float(q[2])},
-        seed=int(seed),
+        seed=int(seed), placebo=placebo,
     )

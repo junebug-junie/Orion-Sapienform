@@ -13,7 +13,7 @@ import logging
 from contextlib import asynccontextmanager
 import uuid
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from pydantic import AwareDatetime, BaseModel, Field
@@ -25,6 +25,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from app.causal import CausalError
 from app.effects import Effects
 from app.engine import Engine
+from app.event_pair import MIN_A_EVENTS, EventPairRefused
 from app.series import load_registry
 from app.settings import get_settings
 from app.store import PostgresStore
@@ -247,6 +248,45 @@ async def post_estimate(body: EstimateBody) -> dict[str, Any]:
     _ready()
     return await _causal(effects.estimate_intervention, str(body.intervention_id), body.series_id, body.pre_days,
                          body.lag_min)
+
+
+class EventSelector(BaseModel):
+    """One event stream. ``source`` names the table (only ``vision_events`` today; see store.EVENT_SOURCES).
+    Lengths are bounded so the stored action / series labels fit their 120-char columns."""
+    source: Literal["vision_events"] = "vision_events"
+    event_type: str = Field(..., pattern=r"^[a-z0-9_.:-]{1,50}$")
+    stream_id: str | None = Field(None, pattern=r"^[a-z0-9_.:-]{1,40}$")
+
+
+class EventPairBody(BaseModel):
+    a: EventSelector
+    b: EventSelector
+    start: AwareDatetime
+    end: AwareDatetime
+    lag_min_sec: float = Field(0.0, ge=0, le=86400)
+    lag_max_sec: float = Field(..., gt=0, le=86400)
+    n_placebo: int = Field(999, ge=99, le=9999)
+    seed: int = Field(0, ge=0)
+
+
+@app.post("/effects/event-pair")
+async def post_event_pair(body: EventPairBody) -> dict[str, Any]:
+    """Does event A raise event B's rate within [lag_min_sec, lag_max_sec] after it? Always
+    ``observational_effect``. Too little data -> 422 with ``error: refused`` and the counts, never a guess."""
+    _ready()
+    if body.end - body.start > timedelta(days=90):
+        raise HTTPException(422, "time range is longer than 90 days")
+    try:
+        return _jsonable(await asyncio.to_thread(effects.event_pair, body.a.model_dump(), body.b.model_dump(),
+                                                 body.start, body.end, body.lag_min_sec, body.lag_max_sec,
+                                                 body.n_placebo, body.seed))
+    except EventPairRefused as exc:
+        raise HTTPException(422, {"error": "refused", "claim_kind": "observational_effect", "reason": exc.reason,
+                                  "min_a_events": MIN_A_EVENTS, **exc.detail}) from exc
+    except Exception as exc:  # noqa: BLE001 -- a read that timed out is reported, not retried
+        if type(exc).__name__ == "QueryCanceled":
+            raise HTTPException(504, "event read exceeded the statement timeout; narrow the time range") from exc
+        raise
 
 
 @app.get("/experiments/guard")

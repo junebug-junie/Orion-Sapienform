@@ -132,6 +132,19 @@ def test_ask_image_refs_faces_first_newest_first_no_repeats() -> None:
     assert vi.ask_image_refs(rows, now=NOW, thumb_retention_days=7, ask_expiry_days=7) == []
 
 
+def test_ask_image_refs_keep_forever_offers_old_thumbs() -> None:
+    """Live 2026-10-20: ask-9645cdc1... was posted with no picture because its
+    individual's only thumbs were ~3.6 days old and the old 10-day retention left
+    a 3-day horizon. Retention 0 (the default) = the host keeps them forever."""
+    rows = [(FACE("1"), NOW - timedelta(days=3, hours=15), False, None),
+            (FACE("2"), NOW - timedelta(days=400), False, FACE("a")),
+            (FACE("3"), NOW, True, FACE("d"))]                        # no-embed zone still never shown
+    for keep_forever in (0, 0.0, -1):
+        assert vi.ask_image_refs(rows, now=NOW, thumb_retention_days=keep_forever, ask_expiry_days=7) == [
+            FACE("a"), FACE("1"), FACE("2")]
+    assert vi.IndividualsConfig().thumb_retention_days == 0.0
+
+
 def test_questions_are_plain() -> None:
     q = vi.face_ask_question(face_n=47, sighting_count=1)
     assert "who this is" in q and "once" in q

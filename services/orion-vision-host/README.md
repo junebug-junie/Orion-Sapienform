@@ -449,9 +449,12 @@ L2-normalized inline `embedding`; the detect artifact also carries
   embedder receives, so a no-embed-zone box cannot get one -- is also saved as
   a <=160 px JPEG (quality 70) named by its sha256 under
   `VISION_CROP_THUMB_DIR` (default `/mnt/telemetry/orion-vision-host/crop_thumbs`),
-  and the object gains `thumb_ref = "thumb:<sha256>"`. The host prunes files
-  not rewritten for `VISION_CROP_THUMB_RETENTION_DAYS` (10, longer than an
-  ask's 7-day life). orion-hub mounts the directory read-only and serves one
+  and the object gains `thumb_ref = "thumb:<sha256>"`. At most one per stream
+  AND label per `VISION_CROP_THUMB_MIN_INTERVAL_SEC` (per label since
+  2026-10-20: one shared slot let vehicles take ~2/3 of all thumbnails).
+  Kept forever: `VISION_CROP_THUMB_RETENTION_DAYS=0` (default since
+  2026-10-20; a positive value prunes files not rewritten for that many days).
+  `VISION_FACE_FRAMES_RETENTION_DAYS=0` keeps face frames forever the same way. orion-hub mounts the directory read-only and serves one
   thumbnail by hash at `/api/vision/crop-thumbs/<sha256>`. Empty dir disables.
 - Test: `tests/test_crop_embeddings_patio.py`, `tests/test_crop_thumbnails.py`,
   `tests/test_crop_faces.py` (embedder and face models mocked).

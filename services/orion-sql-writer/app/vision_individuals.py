@@ -839,23 +839,27 @@ def ask_image_refs(
 
     ``sightings`` are ``(thumb_ref, ended_at, zone_no_embed[, face_thumb_ref])``,
     any order. A thumbnail is a crop of ONE embedded box (or the face inside
-    it), never the whole frame. It must also outlive the ask: the host prunes
+    it), never the whole frame. ``thumb_retention_days`` <= 0 means the host
+    keeps thumbnails forever (the default since 2026-10-20), so every one is
+    offered, however old. Otherwise it must outlive the ask: the host prunes
     thumbnails ``thumb_retention_days`` after they were last written, and the
     ask stays open ``ask_expiry_days``, so only a thumb from a sighting that
     ended within the difference is offered. Empty -> the card shows no picture.
     """
-    if thumb_retention_days <= ask_expiry_days:
-        # Any thumbnail could be pruned while the ask is still open.
-        logger.warning("ask_image_ref_disabled thumb_retention_days=%s <= ask_expiry_days=%s",
-                       thumb_retention_days, ask_expiry_days)
-        return []
-    horizon = now - timedelta(days=thumb_retention_days - ask_expiry_days)
+    horizon: Optional[datetime] = None
+    if thumb_retention_days > 0:
+        if thumb_retention_days <= ask_expiry_days:
+            # Any thumbnail could be pruned while the ask is still open.
+            logger.warning("ask_image_ref_disabled thumb_retention_days=%s <= ask_expiry_days=%s",
+                           thumb_retention_days, ask_expiry_days)
+            return []
+        horizon = now - timedelta(days=thumb_retention_days - ask_expiry_days)
     faces: List[Tuple[datetime, str]] = []
     crops: List[Tuple[datetime, str]] = []
     for row in sightings:
         thumb_ref, ended_at, no_embed = row[0], row[1], row[2]
         face_ref = row[3] if len(row) > 3 else None
-        if no_embed or ended_at is None or ended_at < horizon:
+        if no_embed or ended_at is None or (horizon is not None and ended_at < horizon):
             continue
         for bucket, ref in ((faces, face_ref), (crops, None if faces_only else thumb_ref)):
             if ref and str(ref).startswith(THUMB_REF_PREFIX):
@@ -1095,9 +1099,10 @@ class IndividualsConfig:
     # After an ask expires unanswered, do not re-ask about that individual for this long.
     ask_cooldown_days: float = 30.0
     # orion-vision-host keeps crop thumbnails this long (its own prune, by
-    # file age). An ask only shows a thumbnail young enough to outlive the
-    # ask itself: taken within (thumb_retention_days - ask_expiry_days).
-    thumb_retention_days: float = 10.0
+    # file age); 0 = forever, so any thumbnail may be shown. A positive value:
+    # an ask only shows a thumbnail young enough to outlive the ask itself,
+    # taken within (thumb_retention_days - ask_expiry_days).
+    thumb_retention_days: float = 0.0
     # Faces (walkway person crops): cosine similarity to the nearest same-kind
     # face centroid that wins assignment over appearance. <= 0 disables.
     face_match_threshold: float = 0.60

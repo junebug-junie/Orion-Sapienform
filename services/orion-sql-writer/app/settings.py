@@ -555,10 +555,12 @@ class Settings(BaseSettings):
     vision_ask_min_sightings: int = Field(10, alias="VISION_ASK_MIN_SIGHTINGS")
     vision_ask_min_days: int = Field(5, alias="VISION_ASK_MIN_DAYS")
     vision_ask_expiry_days: float = Field(7.0, alias="VISION_ASK_EXPIRY_DAYS")
-    # Same key as orion-vision-host, which prunes crop thumbnails after this
-    # many days. An ask only shows a thumbnail young enough to outlive it; if
-    # this is not longer than VISION_ASK_EXPIRY_DAYS asks carry no picture.
-    vision_crop_thumb_retention_days: float = Field(10.0, alias="VISION_CROP_THUMB_RETENTION_DAYS")
+    # Same key as orion-vision-host. 0 (default, Juniper 2026-10-20) = the host
+    # keeps crop thumbnails forever, so an ask may show any of them. A positive
+    # value = the host prunes after this many days: an ask then only shows a
+    # thumbnail young enough to outlive it, and none if this is not longer
+    # than VISION_ASK_EXPIRY_DAYS.
+    vision_crop_thumb_retention_days: float = Field(0.0, alias="VISION_CROP_THUMB_RETENTION_DAYS")
     # An ask that expired unanswered is not repeated for this long.
     vision_ask_cooldown_days: float = Field(30.0, alias="VISION_ASK_COOLDOWN_DAYS")
     # The walkway camera's daily ask budget: vision_individual asks only (since 2026-10-06; memory
@@ -647,10 +649,13 @@ class Settings(BaseSettings):
     vision_story_strips_enabled: bool = Field(True, alias="VISION_STORY_STRIPS_ENABLED")
     vision_story_frames_dir: str = Field("/mnt/telemetry/vision/frames", alias="VISION_STORY_FRAMES_DIR")
     vision_story_strip_dir: str = Field("/mnt/telemetry/vision/story_strips", alias="VISION_STORY_STRIP_DIR")
-    # A strip is kept until this long after its story ended AND Juniper has
-    # given it a verdict ("Can't tell" counts). An unchecked story keeps its
+    # 0 (default, Juniper 2026-10-20) = strips are kept forever: no age rule
+    # deletes a strip, story retention never deletes a story row that still
+    # has its picture, and the orphan-directory sweep is off. A positive value
+    # = a strip is kept until this long after its story ended AND Juniper has
+    # given it a verdict ("Can't tell" counts); an unchecked story keeps its
     # picture until story retention deletes the story row itself.
-    vision_story_strip_retention_days: float = Field(30.0, alias="VISION_STORY_STRIP_RETENTION_DAYS")
+    vision_story_strip_retention_days: float = Field(0.0, alias="VISION_STORY_STRIP_RETENTION_DAYS")
     # Pending crops/frames waiting for their story; older ones are deleted.
     vision_story_strip_pending_sec: float = Field(3600.0, gt=0.0, alias="VISION_STORY_STRIP_PENDING_SEC")
     # dark = median RMS contrast (std of luma, 0..1) of the strip's crops below

@@ -490,3 +490,16 @@ def test_retention_keeps_stories_juniper_has_checked(pg) -> None:
     assert summary["pruned"] == 1
     with pg.connect() as conn:
         assert [r[0] for r in conn.execute(text("SELECT story_id FROM vision_motion_story"))] == ["a" * 32]
+
+
+def test_fill_evidence_links_fills_only_nulls_in_place_order() -> None:
+    from app import vision_motion_loop as vl
+
+    ev = [{"crop_id": "c1", "individual_id": None, "thumb": "t"}, {"crop_id": "c2", "individual_id": "ind-a"},
+          {"crop_id": "c3", "individual_id": None}, {"individual_id": None}]
+    assert vl.unlinked_crop_ids(ev) == ["c1", "c3"]
+    out, n = vl.fill_evidence_links(ev, {"c1": "ind-j", "c2": "ind-z"})
+    assert n == 1 and [e.get("individual_id") for e in out] == ["ind-j", "ind-a", None, None]
+    assert out[0]["thumb"] == "t" and ev[0]["individual_id"] is None      # input untouched
+    assert vl.fill_evidence_links(None, {"c1": "x"}) == (None, 0)
+    assert vl.unlinked_crop_ids("not a list") == []

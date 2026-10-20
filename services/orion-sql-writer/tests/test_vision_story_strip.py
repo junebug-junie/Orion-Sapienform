@@ -205,6 +205,18 @@ def test_pending_files_older_than_the_window_are_pruned(tmp_path) -> None:
     assert ss.prune_pending(cfg) == 1 and new.exists() and not old.exists()
 
 
+def test_strips_are_kept_forever_by_default() -> None:
+    from app.settings import Settings
+
+    assert ss.StripConfig().retention_days == 0.0
+    assert Settings(SQL_WRITER_SUBSCRIBE_CHANNELS=[]).vision_story_strip_retention_days == 0.0
+    assert "\nVISION_STORY_STRIP_RETENTION_DAYS=0\n" in (SERVICE / ".env_example").read_text()
+    # Keep-forever story retention never deletes a story that still has a saved picture.
+    forever = vl.story_prune_sql(vl.LoopConfig(strip=ss.StripConfig()))
+    aged = vl.story_prune_sql(vl.LoopConfig(strip=ss.StripConfig(retention_days=30.0)))
+    assert aged == vl.STORY_PRUNE_SQL and forever.startswith(vl.STORY_PRUNE_SQL) and "evidence_strip" in forever
+
+
 def test_config_parity_strip_keys_on_by_default() -> None:
     from app.settings import Settings
 
@@ -265,8 +277,10 @@ def _insert(engine, crops) -> None:
                  "ct": c.t + timedelta(seconds=2)})
 
 
-def _loop_cfg(tmp: Path) -> vl.LoopConfig:
-    return vl.LoopConfig(initial_lookback_sec=600, clean_since=T0 - timedelta(hours=1), strip=cfg_for(tmp))
+def _loop_cfg(tmp: Path, strip_retention_days: float = 30.0) -> vl.LoopConfig:
+    """Strip retention 30 exercises the age prune; 0 (the shipped default) keeps strips forever."""
+    return vl.LoopConfig(initial_lookback_sec=600, clean_since=T0 - timedelta(hours=1),
+                         strip=cfg_for(tmp, retention_days=strip_retention_days))
 
 
 def _cycle(cfg, now):
@@ -463,3 +477,111 @@ def create_engine_for_test():
     from sqlalchemy import create_engine
 
     return create_engine(PG)
+
+
+@needs_pg
+def test_keep_forever_never_deletes_a_strip_or_the_story_that_holds_it(pg, tmp_path) -> None:
+    """Juniper 2026-10-20: keep photos indefinitely. Strip retention 0: a verdict plus
+    a year does not prune a strip, story retention skips a story with a picture (but
+    still deletes a pictureless one), and the orphan sweep removes nothing."""
+    from sqlalchemy import text
+
+    cfg = _loop_cfg(tmp_path, strip_retention_days=0.0)
+    walk = [pc(f"k{i}", i * 2.5, x=600 + 160 * i) for i in range(4)]
+    for c in walk:
+        write_frame(Path(cfg.strip.frames_dir), c.t)
+    bare = [pc(f"b{i}", 600 + i * 2.5, x=600 + 160 * i) for i in range(4)]   # no frames: no picture
+    _insert(pg, walk + bare)
+    _cycle(cfg, T0 + timedelta(seconds=15))
+    _cycle(cfg, T0 + timedelta(seconds=200))
+    _cycle(cfg, T0 + timedelta(seconds=800))
+    with pg.connect() as conn:
+        rows = dict(conn.execute(text(
+            "SELECT story_id, evidence_strip->'frame' IS NOT NULL AND jsonb_typeof(evidence_strip->'frame') = 'object' "
+            "FROM vision_motion_story WHERE published")).fetchall())
+    assert sorted(rows.values()) == [False, True]
+    pictured = next(k for k, v in rows.items() if v)
+    d = Path(cfg.strip.strip_dir) / pictured
+    assert d.is_dir()
+    orphan = Path(cfg.strip.strip_dir) / ("5" * 32)
+    orphan.mkdir()
+    os.utime(orphan, (time.time() - 7200, time.time() - 7200))
+    with pg.begin() as conn:
+        conn.execute(text("INSERT INTO vision_motion_story_verdict (story_id, verdict, rules_version) "
+                          "VALUES (:s, 'right', 1)"), {"s": pictured})
+    s = _cycle(cfg, T0 + timedelta(days=365))
+    assert s["strips_pruned"] == 0 and d.is_dir() and orphan.is_dir()
+    assert s["pruned"] == 1                                   # only the pictureless, unchecked story
+    with pg.connect() as conn:
+        left = [r[0] for r in conn.execute(text("SELECT story_id FROM vision_motion_story")).fetchall()]
+        strip = conn.execute(text("SELECT evidence_strip FROM vision_motion_story WHERE story_id = :s"),
+                             {"s": pictured}).scalar()
+    assert left == [pictured] and "pruned_at" not in strip
+
+
+@needs_pg
+def test_a_story_closed_before_its_crops_were_linked_gets_the_links_on_a_later_tick(pg, tmp_path) -> None:
+    """Live 2026-10-20: story 3ca2d1c1... froze individual_id null for 3 crops the
+    individuals reducer linked to Juniper seconds later. The next tick fills them."""
+    from sqlalchemy import text
+
+    cfg = _loop_cfg(tmp_path)
+    walk = [pc(f"l{i}", i * 2.5, x=600 + 160 * i) for i in range(4)]
+    _insert(pg, walk)
+    _cycle(cfg, T0 + timedelta(seconds=15))
+    _cycle(cfg, T0 + timedelta(seconds=200))
+    with pg.connect() as conn:
+        sid, ev = conn.execute(text("SELECT story_id, evidence FROM vision_motion_story WHERE published")).one()
+    assert [e["individual_id"] for e in ev] == [None] * 4
+    # The reducer links three of the four crops after the story closed; the fourth already
+    # carries an id in the evidence (simulated) and must never be overwritten.
+    with pg.begin() as conn:
+        conn.execute(text("UPDATE vision_crop_observation SET individual_id = 'ind-juniper' "
+                          "WHERE crop_id IN ('l0', 'l1', 'l2', 'l3')"))
+        ev[3]["individual_id"] = "ind-kept"
+        conn.execute(text("UPDATE vision_motion_story SET evidence = CAST(:e AS jsonb) WHERE story_id = :s"),
+                     {"e": json.dumps(ev), "s": sid})
+    s = _cycle(cfg, T0 + timedelta(seconds=215))
+    assert (s["relinked_stories"], s["relinked_crops"]) == (1, 3)
+    with pg.connect() as conn:
+        ev = conn.execute(text("SELECT evidence FROM vision_motion_story WHERE story_id = :s"), {"s": sid}).scalar()
+    assert [e["individual_id"] for e in ev] == ["ind-juniper"] * 3 + ["ind-kept"]
+    # Once filled, nothing is rewritten again; a crop row deleted by crop retention changes nothing.
+    with pg.begin() as conn:
+        conn.execute(text("DELETE FROM vision_crop_observation"))
+    s = _cycle(cfg, T0 + timedelta(seconds=230))
+    assert s["relinked_stories"] == 0
+
+
+@needs_pg
+def test_backfill_script_snapshots_then_fills_null_links_and_can_restore(pg, tmp_path) -> None:
+    import importlib.util
+
+    from sqlalchemy import text
+
+    spec = importlib.util.spec_from_file_location(
+        "backfill_story_evidence_links", SERVICE / "scripts" / "backfill_story_evidence_links.py")
+    bf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bf)
+    cfg = _loop_cfg(tmp_path)
+    _insert(pg, [pc(f"q{i}", i * 2.5, x=600 + 160 * i) for i in range(4)])
+    _cycle(cfg, T0 + timedelta(seconds=15))
+    _cycle(cfg, T0 + timedelta(seconds=200))
+    with pg.begin() as conn:
+        conn.execute(text("UPDATE vision_crop_observation SET individual_id = 'ind-j' WHERE crop_id <> 'q3'"))
+        # Older than the loop's 6 h relink window: only the backfill reaches it.
+        conn.execute(text("UPDATE vision_motion_story SET ended_at = now() - interval '2 days'"))
+    job = tmp_path / "job"
+    assert bf.main(["--dsn", PG, "--job-dir", str(job)]) == 0           # dry run writes nothing
+    with pg.connect() as conn:
+        ev = conn.execute(text("SELECT evidence FROM vision_motion_story")).scalar()
+    assert [e["individual_id"] for e in ev] == [None] * 4 and not (job / "snapshot.jsonl").exists()
+    assert bf.main(["--dsn", PG, "--job-dir", str(job), "--apply"]) == 0
+    assert (job / "snapshot.jsonl").exists() and (job / "before_after.csv").exists()
+    with pg.connect() as conn:
+        ev = conn.execute(text("SELECT evidence FROM vision_motion_story")).scalar()
+    assert [e["individual_id"] for e in ev] == ["ind-j"] * 3 + [None]
+    assert bf.main(["--dsn", PG, "--restore", str(job)]) == 0
+    with pg.connect() as conn:
+        ev = conn.execute(text("SELECT evidence FROM vision_motion_story")).scalar()
+    assert [e["individual_id"] for e in ev] == [None] * 4

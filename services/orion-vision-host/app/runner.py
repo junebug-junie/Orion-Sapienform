@@ -69,7 +69,7 @@ def _face_frame_store():
                 _FACE_FRAMES.stop_pruner()
             _FACE_FRAMES = FaceFrameStore(
                 root,
-                retention_days=float(getattr(settings, "VISION_FACE_FRAMES_RETENTION_DAYS", 14.0)),
+                retention_days=float(getattr(settings, "VISION_FACE_FRAMES_RETENTION_DAYS", 0.0)),
                 min_interval_sec=float(getattr(settings, "VISION_FACE_FRAMES_MIN_INTERVAL_SEC", 5.0)),
             )
             _FACE_FRAMES.start_pruner()
@@ -89,7 +89,7 @@ def _thumb_store() -> ThumbStore | None:
         return None
     if _THUMB_STORE is None or str(_THUMB_STORE.root) != root:
         _THUMB_STORE = ThumbStore(
-            root, retention_days=float(getattr(settings, "VISION_CROP_THUMB_RETENTION_DAYS", 10.0)))
+            root, retention_days=float(getattr(settings, "VISION_CROP_THUMB_RETENTION_DAYS", 0.0)))
         # Retention runs on its own daemon thread, never on the detect path.
         _THUMB_STORE.start_pruner()
     return _THUMB_STORE

@@ -579,8 +579,10 @@ a failed crop write logs to `bus_fallback_log` with embeddings and boxes
 redacted; if the zones file cannot load, every embedding is stripped (fail
 closed); ask images are crop thumbnails (`thumb:<sha256>`, written by
 orion-vision-host for embedded crops only and served by the Hub), never whole
-frames, and only from a sighting recent enough that the thumbnail outlives the
-ask (host keeps them `VISION_CROP_THUMB_RETENTION_DAYS`, 10, asks expire after 7; the same key is read here); an
+frames. `VISION_CROP_THUMB_RETENTION_DAYS=0` (default since 2026-10-20; the
+same key the host reads) keeps thumbnails forever, so any sighting's thumbnail
+may be offered; a positive value limits asks to sightings recent enough that
+the thumbnail outlives the ask (asks expire after 7 days); an
 unanswered expired ask is not repeated for `VISION_ASK_COOLDOWN_DAYS`; a window
 is `missed` only if census coverage (5 s windows bridged across gaps up to
 30 s) is at least `VISION_RHYTHM_MIN_COVERAGE`, and an individual's window is
@@ -614,7 +616,18 @@ new identity. Design: `docs/superpowers/specs/2026-10-16-walkway-motion-stories-
   the patio skeleton), and boxes overlapping their still/last boxes.
 - Table `vision_motion_story` (+ `_cursor`, `_verdict`), migration
   `services/orion-sql-db/manual_migration_vision_motion_story_v1.sql`
-  (auto-applies on pull). Stories are kept `VISION_MOTION_STORY_RETENTION_DAYS` (90).
+  (auto-applies on pull). Stories are kept `VISION_MOTION_STORY_RETENTION_DAYS` (90),
+  except a story that still has its picture while strips are kept forever (below).
+- Late individual links (2026-10-20): a story freezes each crop's
+  `individual_id` in `evidence` when it closes, often seconds before the
+  individuals reducer assigns the crops (live: 101 of 147 person stories over
+  5 days had no link). Each tick, `relink_stories` fills those nulls from
+  `vision_crop_observation` for stories that ended in the last 6 h (null-only,
+  never changes an id). The link then lives in the story row, so it outlives
+  crop retention (7 days). The Hub resolves the same link at read time for
+  the seconds before that. Trace: `[MOTION_STORY] relinked stories=.. crops=..`.
+  One-time backfill of older stories: `scripts/backfill_story_evidence_links.py`
+  (dry run by default; snapshots to `/tmp/` before `--apply`).
 - Trace: `[MOTION_STORY] stream=walkway crops=.. closed=.. published=.. glimpses=..
   dropped_props=.. cursor=..` once per tick.
 - **Hub only.** Nothing in Orion's cognition reads the table. The Hub's
@@ -670,11 +683,15 @@ read-only.
   thumbnails (13:09-18:47 MDT) read 0.133-0.3 (p10 0.187). Dark stories are
   still published (`dark=true`); the Hub's "only checkable" filter hides
   them by default.
-- Retention: a strip is kept until `VISION_STORY_STRIP_RETENTION_DAYS` (30)
-  after its story ended AND the story has a verdict ("Can't tell" counts);
-  `evidence_strip.pruned_at` is then set. An unchecked story keeps its strip
-  until story retention (`VISION_MOTION_STORY_RETENTION_DAYS`, 90) deletes the
-  story row itself; the hourly sweep then removes the orphan directory.
+- Retention: `VISION_STORY_STRIP_RETENTION_DAYS=0` (default since 2026-10-20,
+  Juniper: keep photos indefinitely) keeps every strip forever: no age rule
+  deletes one, story retention skips a story that still has a saved picture,
+  and the orphan-directory sweep is off (only stale pending files go). With a
+  positive value a strip is kept until that many days after its story ended
+  AND the story has a verdict ("Can't tell" counts); `evidence_strip.pruned_at`
+  is then set. An unchecked story keeps its strip until story retention
+  (`VISION_MOTION_STORY_RETENTION_DAYS`, 90) deletes the story row itself; the
+  hourly sweep then removes the orphan directory.
 - Robustness: the capture read re-covers 10 s behind its cursor (a crop row's
   `created_at` is its transaction start, so it can commit late) and skips the
   newest second; prop boxes (stationary individuals, the patio skeleton) are

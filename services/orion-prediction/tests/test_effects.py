@@ -93,7 +93,6 @@ def test_guard_says_unsafe_when_input_is_stale(monkeypatch):
 
 
 def test_intervention_estimate_refuses_a_history_window_that_crosses_a_break():
-    from datetime import timezone
     reg, spec, s, store, end = _setup()
     eng = _engine(reg, store, Clock(end + timedelta(hours=2)), [])
     brk = end - timedelta(days=2)

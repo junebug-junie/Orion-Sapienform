@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
+from psycopg.errors import QueryCanceled
 from pydantic import AwareDatetime, BaseModel, Field
 
 from orion.core.bus.async_service import OrionBusAsync
@@ -286,10 +287,8 @@ async def post_event_pair(body: EventPairBody) -> dict[str, Any]:
     except EventPairRefused as exc:
         raise HTTPException(422, {"error": "refused", "claim_kind": "observational_effect", "reason": exc.reason,
                                   "min_a_events": MIN_A_EVENTS, **exc.detail}) from exc
-    except Exception as exc:  # noqa: BLE001 -- a read that timed out is reported, not retried
-        if type(exc).__name__ == "QueryCanceled":
-            raise HTTPException(504, "event read exceeded the statement timeout; narrow the time range") from exc
-        raise
+    except QueryCanceled as exc:   # the read hit its statement timeout; reported, not retried
+        raise HTTPException(504, "event read exceeded the statement timeout; narrow the time range") from exc
 
 
 @app.get("/experiments/guard")

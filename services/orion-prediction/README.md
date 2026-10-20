@@ -74,7 +74,7 @@ Each A opens a window `[a + lag_min, a + lag_max)`; overlapping windows merge, s
 `rate_ratio` = B seen in the windows / (B's rate over the whole range x window length). The p-value
 comes from shifting all of A by one random offset many times (`p = (1 + #placebo >= real) / (N + 1)`).
 `same_time_of_day` (default) shifts by whole days +/- 1 h, so two streams that only share the daily
-rhythm read as no effect; `circular` shifts anywhere (38 % false positives on daytime-only
+rhythm read as no effect (needs >= 7 days; the range is cut to whole days); `circular` shifts anywhere (38 % false positives on daytime-only
 independent streams, ~5 % on rhythm-free ones). Too few A (< 5) or no B -> `422` with
 `detail.error = "refused"` and the counts. Each answer is stored in `prediction_effect_estimate`
 (`action = event_pair:<A>`, `series_id = <B>`, `effect` = rate ratio, details hold every count).

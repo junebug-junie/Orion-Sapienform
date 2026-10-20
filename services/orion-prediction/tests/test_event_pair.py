@@ -93,8 +93,27 @@ def test_shared_daily_rhythm_fools_the_free_shift_but_not_the_time_of_day_placeb
         for kind in hits:
             hits[kind] += event_pair_effect(a, b, days * DAY, 0.0, 600.0, n_placebo=199, seed=seed,
                                             placebo=kind).p_value <= 0.05
-    assert hits["circular"] / seeds > 0.25            # measured 45/120: why the default keeps time of day
+    assert hits["circular"] / seeds > 0.25            # measured 45/120 (38%): why the default keeps time of day
     assert hits["same_time_of_day"] / seeds <= 0.09, hits
+
+
+def test_time_of_day_placebo_keeps_time_of_day_on_a_part_day_range():
+    """Regression: wrapping round a 14.5-day range moved A by 12 h; the range is now cut to 14 days."""
+    seeds, hits = 120, 0
+    for seed in range(seeds):
+        rng = np.random.default_rng(7000 + seed)
+        a, b = _daytime(rng, 6, 15), _daytime(rng, 20, 15)
+        r = event_pair_effect(a, b, 14.5 * DAY, 0.0, 600.0, n_placebo=199, seed=seed)
+        assert r.span_sec == 14 * DAY
+        hits += r.p_value <= 0.05
+    assert hits / seeds <= 0.09, hits
+
+
+def test_refuses_more_placebo_work_than_the_budget():
+    rng = np.random.default_rng(0)
+    a, b = _poisson(rng, 20000, 7 * DAY), _poisson(rng, 20000, 7 * DAY)
+    with pytest.raises(EventPairRefused, match="n_placebo"):
+        event_pair_effect(a, b, 7 * DAY, 0.0, 60.0, n_placebo=9999)
 
 
 def test_time_of_day_placebo_still_finds_a_real_30s_follow():
@@ -114,8 +133,8 @@ def test_time_of_day_placebo_refuses_lags_near_its_jitter():
 def test_same_seed_same_answer():
     rng = np.random.default_rng(3)
     a, b = _poisson(rng, 8, 3 * DAY), _poisson(rng, 30, 3 * DAY)
-    r1 = event_pair_effect(a, b, 3 * DAY, 0.0, 300.0, n_placebo=199, seed=7)
-    r2 = event_pair_effect(a, b, 3 * DAY, 0.0, 300.0, n_placebo=199, seed=7)
+    r1 = event_pair_effect(a, b, 3 * DAY, 0.0, 300.0, n_placebo=199, seed=7, placebo="circular")
+    r2 = event_pair_effect(a, b, 3 * DAY, 0.0, 300.0, n_placebo=199, seed=7, placebo="circular")
     assert r1.p_value == r2.p_value and r1.rate_ratio == r2.rate_ratio
 
 
@@ -199,11 +218,13 @@ def test_refusal_stores_nothing():
     assert fx.store.inserted == []
 
 
-def test_same_selector_needs_a_positive_lag_min():
+@pytest.mark.parametrize("a_stream", ["walkway", None])
+def test_overlapping_selectors_need_a_positive_lag_min(a_stream):
     fx = _fx({})
-    s = {"source": "vision_events", "event_type": "person_presence", "stream_id": "walkway"}
+    a = {"source": "vision_events", "event_type": "person_presence", "stream_id": a_stream}
+    b = {"source": "vision_events", "event_type": "person_presence", "stream_id": "walkway"}
     with pytest.raises(EventPairRefused, match="lag_min"):
-        fx.event_pair(s, s, NOW - timedelta(days=7), NOW, 0.0, 300.0)
+        fx.event_pair(a, b, NOW - timedelta(days=7), NOW, 0.0, 300.0)
 
 
 def test_selector_key():

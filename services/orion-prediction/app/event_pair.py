@@ -21,7 +21,8 @@ free shift moves A to other hours and then reads "both happen in the daytime" as
 and B independent but both daytime-only, it gives p <= 0.05 in ~38% of seeds versus ~6% for the
 time-of-day placebo (tests/test_event_pair.py). Street events follow the day, so the default keeps
 the daily rhythm. ``same_time_of_day`` needs lag_max < 30 min; use ``circular`` for longer lags
-on series with no daily rhythm.
+on series with no daily rhythm. With ``same_time_of_day`` the range is cut to its last whole day
+(events after it are dropped): a wrap round a part-day range would land at another time of day.
 
 ``claim_kind`` is always ``observational_effect``: a common cause of A and B (time of day, one
 person who triggers both cameras) produces the same number. Rows are counted, not visits: a burst
@@ -38,6 +39,8 @@ CLAIM_KIND = "observational_effect"
 MIN_A_EVENTS = 5
 TOD_JITTER_SEC = 3600.0
 PLACEBOS = ("circular", "same_time_of_day")
+TOD_MIN_DAYS = 7          # fewer whole days give too few distinct day shifts for a fine p-value
+MAX_PLACEBO_WORK = 50_000_000   # n_placebo x (n_a + n_b); above this the request is refused
 MIN_SPAN_LAGS = 10   # the range must hold >= 10 lag windows, or the placebo shifts barely differ
 
 
@@ -125,6 +128,9 @@ def event_pair_effect(a: np.ndarray, b: np.ndarray, span: float, lag_min: float,
     """Event times in seconds since the range start; anything outside [0, span) is dropped."""
     a = np.asarray(a, dtype=float)
     b = np.asarray(b, dtype=float)
+    days = int(span // 86400.0)
+    if placebo == "same_time_of_day" and days >= TOD_MIN_DAYS:
+        span = days * 86400.0
     a = a[(a >= 0) & (a < span)]
     b = np.sort(b[(b >= 0) & (b < span)])
     counts = {"n_a": int(len(a)), "n_b": int(len(b)), "span_sec": float(span)}
@@ -138,8 +144,12 @@ def event_pair_effect(a: np.ndarray, b: np.ndarray, span: float, lag_min: float,
         raise EventPairRefused("event B never occurs in range; there is no baseline rate", **counts)
     if placebo not in PLACEBOS:
         raise EventPairRefused(f"placebo must be one of {PLACEBOS}", **counts)
-    if placebo == "same_time_of_day" and (span < 2 * 86400.0 or lag_max >= TOD_JITTER_SEC / 2):
-        raise EventPairRefused("same_time_of_day needs >= 2 days of range and lag_max < 30 min", **counts)
+    if placebo == "same_time_of_day" and (days < TOD_MIN_DAYS or lag_max >= TOD_JITTER_SEC / 2):
+        raise EventPairRefused(f"same_time_of_day needs >= {TOD_MIN_DAYS} days of range and lag_max < 30 min",
+                               **counts)
+    if n_placebo * (len(a) + len(b)) > MAX_PLACEBO_WORK:
+        raise EventPairRefused(f"n_placebo x events exceeds {MAX_PLACEBO_WORK:,}; narrow the range or lower "
+                               "n_placebo", **counts)
     if n_placebo < 1:
         raise EventPairRefused("n_placebo must be >= 1", **counts)
     real = pair_stat(a, b, span, lag_min, lag_max)

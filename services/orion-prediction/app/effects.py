@@ -126,8 +126,11 @@ class Effects:
             raise EventPairRefused("end must be after start")
         if end > self.engine.clock():
             raise EventPairRefused("end is in the future; events there have not happened yet")
-        if selector_key(a) == selector_key(b) and lag_min_sec <= 0:
-            raise EventPairRefused("A and B are the same events: lag_min must be > 0 or each A counts itself")
+        same_rows = (a["source"] == b["source"] and a["event_type"] == b["event_type"]
+                     and (a.get("stream_id") is None or b.get("stream_id") is None
+                          or a.get("stream_id") == b.get("stream_id")))
+        if same_rows and lag_min_sec <= 0:
+            raise EventPairRefused("A and B can be the same rows: lag_min must be > 0 or each A counts itself")
         res = event_pair_effect(self._event_seconds(a, start, end), self._event_seconds(b, start, end),
                                 (end - start).total_seconds(), lag_min_sec, lag_max_sec, n_placebo, seed,
                                 placebo=placebo)
@@ -251,6 +254,7 @@ class Effects:
         # Newest estimate per intervention only: re-estimating one occurrence must not count it twice.
         newest: dict[str, dict] = {}
         for r in rows:   # store.effects is newest-first
+            # ci_lo is NULL on event_pair rows (a rate ratio, not a shift in this series): keep them out.
             if r["claim_kind"] == "observational_effect" and r["ci_lo"] is not None:
                 newest.setdefault(str(r["intervention_id"]), r)
         obs = list(newest.values())

@@ -7,9 +7,11 @@ Hub goal planning runs outside the native process; see the bounded goal experime
 The fixed catalog is imported from operator-owned local kits, including Pad Lab,
 Nova and Spacegulls when installed. ROMs, credentials, saves and evidence are never
 committed. The API cannot download a ROM, select a host path or upload native code.
-All games currently have save/load disabled. Nova's strict serialized-state replay
-fails with the pinned core; Spacegulls passed the existing short replay check.
-Neither claim establishes game competence or browser play.
+Save states are enabled when the `RETRO_SAVES_DIR` host directory is mounted
+writable at `/saves` (see "Save states" below). Nova's strict serialized-state
+replay fails with the pinned core (a load resumes play, but not bit-identical
+replay); Spacegulls passed the existing short replay check. Neither claim
+establishes game competence.
 
 ## Local setup and deployment
 
@@ -63,6 +65,11 @@ request fields cannot select identities. No Hub authentication is claimed.
   If a reply is lost during timeout/shutdown, the result is `unknown`; inspect
   the retained evidence rather than assuming the action never happened.
 - POST pause/resume/stop endpoints: explicit lifecycle; resume requires new leases.
+- POST `/sessions/{id}/save`: worker serializes the core and writes a save state.
+- POST `/sessions/{id}/load` `{save_id}`: worker restores it in place (running or paused).
+- GET `/games/{game_id}/saves`: saves newest first, with frame, played frames,
+  UTC time and `compatible` (ROM and core SHA-256 both match).
+- POST `/sessions` with optional `save_id`: start a fresh session from a save.
 - GET `/sessions/{id}/evidence`: last 256 applied inputs and local artifact ID;
   full journal remains operator-local. Tokens are never journaled.
 
@@ -78,14 +85,40 @@ P2; this server requires no browser message to expire a lease.
 Native worker queues and HTTP/WS ingress are bounded. Three consecutive late
 frames pause, a silent/hung/crashed worker fails the session, and stop escalates
 from cooperative shutdown to termination/kill of only its child. Restart marks
-active persisted state failed (`service_restart`), never resumes play. Save/load
-is not offered. No raw A/V recording, model invocation or memory export occurs.
+active persisted state failed (`service_restart`), never resumes play by itself;
+start a new session from a save instead. No raw A/V recording, model invocation or memory export occurs.
+
+## Save states
+
+`RETRO_SAVES_DIR` (host) is bind-mounted at `/saves`. It must exist and be
+writable by `RETRO_UID`; otherwise `save_enabled` is false and save/load refuse
+with `saves_unavailable`. Layout: `<game_id>/<save_id>.state` (raw
+`retro_serialize` bytes) and `<save_id>.json` (game, ROM/core SHA-256, frame,
+played frames, UTC, state SHA-256). The JSON is written last, so a crash never
+lists a half-written save.
+
+- Only the worker process serializes, restores, writes and reads state files.
+  The API process lists metadata and pre-checks identity before a load.
+- A save made with a different ROM or core is refused (`save_identity_mismatch`);
+  a damaged state file is refused (`save_corrupt`). Both are checked twice:
+  in the API and again in the worker against the core it actually loaded.
+- Disk bound: at most 4 MiB per state and 20 saves per game; each new save
+  deletes the oldest beyond 20 (and any orphaned state file). An NES state is
+  normally under 100 KiB, so a game uses about 2 MiB at most
+  (catalog cap 64 games, so about 128 MiB worst case in practice).
+- No fsync: a blocked disk must not stall the frame loop (the API fails a worker
+  silent for 1 s). A save survives container restarts and rebuilds; a host power
+  loss within the kernel's writeback window can lose the newest save.
+- `frame` is the session's own frame clock; `played_frames` carries over through
+  loads, so it counts total play time across sessions.
+- Evidence records `save` (save_id, frame, played_frames, bytes) and `load`
+  (save_id, frame, save_frame, played_frames) events.
 
 ## Isolation and evidence
 
 Container: non-root UID/GID, read-only root, dropped capabilities, no-new-privileges,
 512 MiB RAM, 2 CPUs, 64 PIDs, journald, bounded tmpfs. Only catalog and credential
-are read-only mounts; dedicated evidence is writable. No Docker socket, host
+are read-only mounts; dedicated evidence and save-state directories are writable. No Docker socket, host
 credentials, production database or repo mount. Networking disabled; private Unix socket in a dedicated operator-only directory.
 No published TCP ports. Deployment validation must test actual egress denial.
 The container is the security boundary; a child process is fault isolation, not

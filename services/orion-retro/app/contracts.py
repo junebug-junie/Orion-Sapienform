@@ -10,6 +10,11 @@ class Strict(BaseModel):
 class Start(Strict):
     game_id: str = Field(pattern=r'^[a-z0-9][a-z0-9-]{0,63}$')
     idempotency_key: str = Field(min_length=1, max_length=64)
+    save_id: str | None = Field(default=None, pattern=r'^[0-9a-f]{32}$')
+
+
+class LoadSave(Strict):
+    save_id: str = Field(pattern=r'^[0-9a-f]{32}$')
 
 
 class Control(Strict):

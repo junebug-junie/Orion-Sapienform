@@ -21,7 +21,26 @@
       button.classList.toggle("border-gray-700", !isActive);
     }
 
+    // Hub's other embedded pages (e.g. the /spark/ui WebGL visualizer) keep rendering
+    // while hidden and share this tab's main thread with the game. Live 2026-10-20:
+    // the visualizer took ~22% of the thread and controller replies queued ~600 ms.
+    // Unload them while Retro is open; restore on exit.
+    const suspended = new Map();
+    function suspendOtherFrames() {
+      document.querySelectorAll("iframe[src]").forEach((frame) => {
+        const src = frame.getAttribute("src");
+        if (frame === panelFrame || !src || src === "about:blank" || suspended.has(frame)) return;
+        suspended.set(frame, src);
+        frame.src = "about:blank";
+      });
+    }
+    function restoreOtherFrames() {
+      suspended.forEach((src, frame) => { frame.src = src; });
+      suspended.clear();
+    }
+
     function activatePanel() {
+      suspendOtherFrames();
       document.querySelectorAll("#appPanels section[data-panel]").forEach((section) => {
         const key = section.getAttribute("data-panel");
         section.classList.toggle("hidden", key !== "retro");
@@ -36,6 +55,7 @@
     function deactivatePanel() {
       panelFrame.src = "about:blank";
       panel.classList.add("hidden");
+      restoreOtherFrames();
       styleTabButton(tabButton, false);
     }
 

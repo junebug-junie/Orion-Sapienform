@@ -68,6 +68,30 @@ Each copy is harder to take back than the source.
    Note: the doorbell stream wrote 0 crop observations in the last 72 h (it is
    event-driven), so it adds no rows to the counts below.
 
+### Spec questions answered (Juniper, 2026-10-20)
+
+4. **Room camera council keeps captions: YES.** Item 3 patch A takes captions out of
+   the council's input for the walkway only (`COUNCIL_CAPTION_STREAMS` default `cam0`).
+   The room camera (cam0) keeps them.
+5. **People counts show a range: YES.** Item 2 patch A: every Orion-facing line prints
+   "at least <most at once>, at most <clusters>", never a bare cluster count.
+6. **One-frame glimpse stories count as people: OPEN.** Not answered yet. Until it is,
+   glimpses do not count toward people (Item 2 stays on the cluster/most-at-once range).
+7. **The street (and any outside camera) should be able to win attention: YES — with
+   events, not raw surprise.** Juniper: "why wouldn't we want the street or office cam get
+   attention? … animals that see shit that is happening get attention." This reverses the
+   original fence (`NO_ATTENTION_CONSUMER_NODE_IDS`, walkway design PR #2677). The fence
+   existed because the walkway surprise signal could not tell events from noise (parked cars,
+   the patio prop, smeared frames). The Item 1 attention design doc must therefore let
+   *events* compete, not pixels: a person or dog arriving, a named person appearing,
+   something unusual for that hour (from routine predictions / rollups), a story that
+   passed the spot-check gate. Required in that design: habituation (the Nth ordinary
+   car of the day stops winning), a camera-down / corrupt-stream check so a dead or smeared
+   camera cannot raise salience, source labelled as outside world (fix the "body signal"
+   mislabel), and a measured cap on how often the street may take the top slot, with a
+   kill switch. Dependency: Items 2 and 3 first, so attention competes on honest counts and
+   honest descriptions.
+
 ---
 
 ## Item 2 — People are over-counted

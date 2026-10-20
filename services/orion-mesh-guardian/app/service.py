@@ -15,7 +15,7 @@ from orion.gpu_pool.config import load_pool_config
 from orion.schemas.gpu_pool import GPU_POOL_EVENT_CHANNEL
 
 from .attention import AttentionPublisher
-from .equilibrium_watch import equilibrium_status_for_service, watch_equilibrium
+from .equilibrium_watch import equilibrium_status_for_service, equilibrium_subscribed, watch_equilibrium
 from .gpu_watch import ActiveProbeTracker, RefusalWatch, RoleTarget, role_targets
 from .probe import run_probe
 from .remediator import docker_cli_selfcheck, execute_remediation
@@ -48,7 +48,6 @@ class MeshGuardianService:
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
         self._equilibrium_queue: asyncio.Queue = asyncio.Queue(maxsize=8)
-        self._equilibrium_task_alive = False
         self._crash_loops = CrashLoopTracker()
         self._bus_disconnects = CounterRiseTracker()
         self._alert_gate = AlertGate()
@@ -107,7 +106,9 @@ class MeshGuardianService:
         await self.bus.close()
 
     def equilibrium_subscriber_alive(self) -> bool:
-        return self._equilibrium_task_alive
+        # Subscribed right now, not merely "task started": False while the watch backs
+        # off after a Redis drop, True again once it has resubscribed.
+        return equilibrium_subscribed()
 
     async def _connect_bus_with_retry(
         self,
@@ -138,19 +139,12 @@ class MeshGuardianService:
                 backoff = min(backoff * 2.0, 15.0)
 
     async def _equilibrium_loop(self) -> None:
-        self._equilibrium_task_alive = True
-        try:
-            await watch_equilibrium(
-                self.bus,
-                self.settings.channel_equilibrium_snapshot,
-                self._equilibrium_queue,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("equilibrium watch failed")
-        finally:
-            self._equilibrium_task_alive = False
+        await watch_equilibrium(
+            self.bus,
+            self.settings.channel_equilibrium_snapshot,
+            self._equilibrium_queue,
+            stop_event=self._stop,
+        )
 
     async def _drain_equilibrium(self) -> None:
         while not self._equilibrium_queue.empty():

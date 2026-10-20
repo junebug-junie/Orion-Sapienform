@@ -11,6 +11,7 @@ from orion.bus.census import load_channel_catalog_names
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.codec import DecodeResult, OrionCodec
+from orion.core.bus.resilience import run_subscription
 from orion.graph.falkor_client import RedisGraphQueryClient
 
 from app.graph_writer import (
@@ -321,26 +322,34 @@ async def mirror_bus() -> None:
                 settings.MIRROR_SQLITE_PRUNE_INTERVAL_SEC,
             )
 
-            async with bus.subscribe(settings.MIRROR_PATTERN, patterns=True) as pubsub:
-                async for message in bus.iter_messages(pubsub):
-                    now = datetime.now(timezone.utc)
-                    timestamp = now.isoformat()
-                    channel = message.get("channel")
-                    if isinstance(channel, bytes):
-                        channel = channel.decode("utf-8", errors="replace")
-                    decoded = bus.codec.decode(message.get("data", b""))
-                    envelope_json = _serialize_envelope(decoded)
+            async def mirror_one(message: dict) -> None:
+                now = datetime.now(timezone.utc)
+                timestamp = now.isoformat()
+                channel = message.get("channel")
+                if isinstance(channel, bytes):
+                    channel = channel.decode("utf-8", errors="replace")
+                decoded = bus.codec.decode(message.get("data", b""))
+                envelope_json = _serialize_envelope(decoded)
 
-                    await conn.execute(
-                        "INSERT INTO bus_events(timestamp, channel, envelope_json) VALUES (?, ?, ?)",
-                        (timestamp, channel, envelope_json),
+                await conn.execute(
+                    "INSERT INTO bus_events(timestamp, channel, envelope_json) VALUES (?, ?, ?)",
+                    (timestamp, channel, envelope_json),
+                )
+                await conn.commit()
+
+                if graph_writer is not None and decoded.ok:
+                    await _record_graph_event(
+                        graph_writer, chain_tracker, decoded, channel, now.timestamp(), catalog_names
                     )
-                    await conn.commit()
 
-                    if graph_writer is not None and decoded.ok:
-                        await _record_graph_event(
-                            graph_writer, chain_tracker, decoded, channel, now.timestamp(), catalog_names
-                        )
+            # A Redis drop (including a slow-consumer kill at the pubsub output
+            # buffer limit, the 2026-10-02 crash loop) resubscribes in-process with
+            # backoff instead of exiting, so the retention loop and graph tracker
+            # keep running. A failed write on one message is logged and skipped.
+            await run_subscription(
+                bus, settings.MIRROR_PATTERN, mirror_one, stop_event=None,
+                name="bus-mirror-pattern", patterns=True,
+            )
     finally:
         if inflight_task is not None:
             inflight_task.cancel()

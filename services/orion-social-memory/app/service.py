@@ -10,6 +10,7 @@ from sqlalchemy import text
 from orion.inspection.social import build_social_inspection_snapshot
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.resilience import run_subscription
 from orion.schemas.social_chat import SocialRoomTurnStoredV1, SocialRoomTurnV1, TownContinuityReadV1
 from orion.schemas.social_calibration import SocialCalibrationSignalV1, SocialPeerCalibrationV1, SocialTrustBoundaryV1
 from orion.schemas.social_context import (
@@ -259,21 +260,30 @@ class SocialMemoryService:
 
     async def _consume_social_turns(self) -> None:
         assert self.bus is not None
-        async with self.bus.subscribe(self.settings.social_memory_input_channel) as pubsub:
-            async for msg in self.bus.iter_messages(pubsub):
-                decoded = self.bus.codec.decode(msg.get("data"))
-                if not decoded.ok:
-                    continue
-                env = decoded.envelope
-                if env.kind != "social.turn.stored.v1":
-                    continue
-                try:
-                    await self.process_social_turn(env.payload)
-                except Exception:
-                    logger.exception(
-                        "social_turn_stored_process_failed corr=%s",
-                        getattr(env, "correlation_id", None),
-                    )
+        # Resubscribes with backoff after a Redis drop instead of ending the consumer.
+        await run_subscription(
+            self.bus,
+            self.settings.social_memory_input_channel,
+            self._handle_social_turn_message,
+            stop_event=None,
+            name="social-memory-turns",
+        )
+
+    async def _handle_social_turn_message(self, msg: Dict[str, Any]) -> None:
+        assert self.bus is not None
+        decoded = self.bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            return
+        env = decoded.envelope
+        if env.kind != "social.turn.stored.v1":
+            return
+        try:
+            await self.process_social_turn(env.payload)
+        except Exception:
+            logger.exception(
+                "social_turn_stored_process_failed corr=%s",
+                getattr(env, "correlation_id", None),
+            )
 
     async def process_social_turn(self, payload: Dict[str, Any]) -> SocialRelationalMemoryUpdateV1:
         turn = SocialRoomTurnStoredV1.model_validate(payload)

@@ -80,6 +80,7 @@ frames pause, a silent/hung/crashed worker fails the session, and stop escalates
 from cooperative shutdown to termination/kill of only its child. Restart marks
 active persisted state failed (`service_restart`), never resumes play. Save/load
 is not offered. No raw A/V recording, model invocation or memory export occurs.
+Because a restart ends the game, the post-pull rebuild (`scripts/rebuild_services_from_git_diff.sh`) skips orion-retro and orion-hub while `scripts/check_retro_session_live.py` sees a live (or unreadable) session in a running container, logs `SKIPPED <svc> reason=retro_session_live`, and prints the command to run later; override with `ORION_REBUILD_IGNORE_LIVE_RETRO=1`.
 
 ## Isolation and evidence
 

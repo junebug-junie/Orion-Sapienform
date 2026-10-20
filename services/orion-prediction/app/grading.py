@@ -4,6 +4,9 @@ Brier score = mean (p - outcome)^2, 0 is perfect. The reference is the base rate
 the observed share of windows that crossed. Skill = 1 - Brier / Brier_base_rate: above 0 means the
 forecast knows *when* a crossing is coming, not just how often. Calibration bins compare the mean
 probability in each bin with how often it actually happened.
+
+``skill`` is None when the base rate is 0 or 1 (no crossing, or always crossing, in the window): the
+reference then has zero error and there is nothing to beat. Read the Brier score and the bins then.
 """
 from __future__ import annotations
 
@@ -20,7 +23,8 @@ def grade(probs: Sequence[float], hits: Sequence[bool]) -> dict:
     y = np.asarray(hits, dtype=float)
     n = len(p)
     if n == 0:
-        return {"n": 0, "brier": None, "base_rate": None, "brier_base_rate": None, "skill": None, "bins": []}
+        return {"n": 0, "brier": None, "base_rate": None, "brier_base_rate": None, "skill": None, "bins": [],
+                "enough": False}
     base = float(y.mean())
     brier = float(np.mean((p - y) ** 2))
     brier_ref = float(np.mean((base - y) ** 2))

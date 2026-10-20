@@ -4,9 +4,9 @@
 -- calibration) instead of only displayed.
 -- Spec: docs/superpowers/specs/2026-10-15-orion-prediction-service-design.md ("Grading the exceedance").
 --
--- Additive only (post-pull auto-apply allowlist): one new table.
-
-BEGIN;
+-- Additive only (post-pull auto-apply allowlist): one new table and two partial indexes for the
+-- per-tick reducer and the /live grading query. No BEGIN/COMMIT: CREATE INDEX CONCURRENTLY cannot run
+-- inside a transaction (and the allowlist requires CONCURRENTLY).
 
 CREATE TABLE IF NOT EXISTS prediction_exceedance (
     exceedance_id  bigserial PRIMARY KEY,
@@ -26,9 +26,13 @@ CREATE TABLE IF NOT EXISTS prediction_exceedance (
     hit_mean       boolean,                 -- any grain-bucket mean >= threshold (what the forecast models)
     max_raw        double precision,
     n_readings     integer,
+    n_buckets_observed integer,             -- of the window's buckets, how many had any reading
     UNIQUE (series_id, origin_ts, name)
 );
 
-COMMIT;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS prediction_exceedance_unscored_idx
+    ON prediction_exceedance (series_id, window_end) WHERE scored_at IS NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS prediction_exceedance_scored_idx
+    ON prediction_exceedance (series_id, window_start) WHERE scored_at IS NOT NULL;
 
 -- Undo: DROP TABLE prediction_exceedance;

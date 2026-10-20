@@ -6,20 +6,8 @@ from fastapi import FastAPI, APIRouter, Header, HTTPException, Depends, Request
 from .settings import settings, Settings
 from .service import PsuService
 from .bus import start_command_listener_background
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.schemas.telemetry.system_health import SystemHealthV1
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 import asyncio
-import uuid
-from datetime import datetime, timezone
-
-# SystemHealthV1 requires boot_id and last_seen_ts. Constructing it without them
-# raises inside the heartbeat loop's own try/except, which logs a warning and
-# sleeps -- so the service looks alive while publishing no heartbeat at all.
-# Confirmed live 2026-08-29 on orion-gpu-cluster-power: one failure per 30s tick,
-# indefinitely, and nothing downstream noticed the silence.
-# BOOT_ID identifies THIS process run, so a consumer can tell a restart from a
-# continuous uptime (same convention as services/orion-whisper-tts/app/main.py).
-BOOT_ID = str(uuid.uuid4())
 
 
 logger = logging.getLogger("orion-psu-proxy.api")
@@ -74,6 +62,26 @@ async def psu_cycle(
     return await service.cycle()
 
 
+# -------- Heartbeat --------
+
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Standard SystemHealthV1 heartbeat (orion:system:health) on its own bus
+    connection, separate from PsuService.bus (the command listener's), so a stuck
+    listener cannot silence liveness and vice versa. Replaces a hand-rolled 30s loop
+    that reported the fake node name "psu-node". Pattern:
+    docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md."""
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=settings.service_name,
+            service_version=settings.service_version,
+            node_name=settings.node_name,
+            bus_url=str(settings.orion_bus_url or ""),
+            bus_enabled=bool(settings.orion_bus_enabled and settings.orion_bus_url),
+            heartbeat_interval_sec=settings.heartbeat_interval_sec,
+        )
+    )
+
+
 # -------- App factory (thin main will call this) --------
 
 def create_app() -> FastAPI:
@@ -96,55 +104,36 @@ def create_app() -> FastAPI:
         if psu_service.bus_enabled:
             start_command_listener_background(psu_service)
 
-            # Start Heartbeat
-            app.state.heartbeat_task = asyncio.create_task(heartbeat_loop(psu_service))
+        # Standard SystemHealthV1 heartbeat on orion:system:health, on its own bus
+        # connection (see build_heartbeat_chassis). A failure here is logged, never
+        # fatal: the PSU proxy must keep serving /psu/* even when the bus is down.
+        app.state.heartbeat_chassis = None
+        try:
+            chassis = build_heartbeat_chassis()
+            await chassis.start_background()
+            app.state.heartbeat_chassis = chassis
+            logger.info(
+                "system_health_heartbeat_started service=%s node=%s interval_sec=%s",
+                settings.service_name,
+                settings.node_name,
+                settings.heartbeat_interval_sec,
+            )
+        except Exception as exc:
+            logger.warning("system_health_heartbeat_start_failed error=%s", exc)
 
         logger.info("Orion PSU Proxy startup complete.")
 
     @app.on_event("shutdown")
     async def on_shutdown():
-        if hasattr(app.state, "heartbeat_task") and app.state.heartbeat_task:
-            app.state.heartbeat_task.cancel()
+        chassis = getattr(app.state, "heartbeat_chassis", None)
+        if chassis is not None:
             try:
-                await app.state.heartbeat_task
-            except asyncio.CancelledError:
-                pass
+                await chassis.stop()
+            except Exception as exc:
+                logger.warning("system_health_heartbeat_stop_error error=%s", exc)
+            app.state.heartbeat_chassis = None
 
         if psu_service.bus:
             await psu_service.bus.close()
 
     return app
-
-async def heartbeat_loop(service: PsuService):
-    """Publishes a heartbeat every 30 seconds."""
-    logger.info("Heartbeat loop started.")
-    try:
-        while True:
-            try:
-                payload = SystemHealthV1(
-                    service=service.settings.service_name,
-                    version=service.settings.service_version,
-                    node="psu-node",
-                    status="ok",
-                    boot_id=BOOT_ID,
-                    last_seen_ts=datetime.now(timezone.utc),
-                    # heartbeat_interval_sec must match this loop's real period. Left at the
-                    # schema default of 10.0, orion-equilibrium-service computes
-                    # grace = interval * EQUILIBRIUM_GRACE_MULTIPLIER (3.0) = 30.0s and marks the
-                    # service "down" once delta > grace (service.py's status check). Publishing
-                    # every 30s leaves ZERO margin, so any event-loop delay or bus latency flips
-                    # it to down, emits a spurious transition and pushes distress_score.
-                    heartbeat_interval_sec=30.0,
-                ).model_dump(mode="json")
-
-                await service.bus.publish("orion:system:health", BaseEnvelope(
-                    kind="system.health.v1",
-                    source=ServiceRef(name=service.settings.service_name, version=service.settings.service_version),
-                    payload=payload
-                ))
-            except Exception as e:
-                logger.warning(f"Heartbeat failed: {e}")
-
-            await asyncio.sleep(30)
-    except asyncio.CancelledError:
-        logger.info("Heartbeat loop stopping...")

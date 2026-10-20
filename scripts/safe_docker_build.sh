@@ -9,7 +9,12 @@
 # deployment source while preserving isolated worktrees for development.
 #
 # Usage:
-#   scripts/safe_docker_build.sh <service-name> [docker compose args...]
+#   scripts/safe_docker_build.sh <service-name> [--compose-file docker-compose.<name>.yml] [docker compose args...]
+#
+# --compose-file targets a second compose file of the same service INSTEAD of
+# services/<service>/docker-compose.yml (never merged with it), e.g. the Qwen
+# caption lane in services/orion-vision-host/docker-compose.circe-qwen.yml.
+# Every check below still applies. Only docker-compose.<name>.yml basenames.
 #
 # Example:
 #   scripts/safe_docker_build.sh orion-cortex-orch build
@@ -46,6 +51,24 @@ if [ -z "$SERVICE" ]; then
     exit 1
 fi
 shift
+
+COMPOSE_FILE_NAME="docker-compose.yml"
+if [ "$1" = "--compose-file" ]; then
+    COMPOSE_FILE_NAME="$2"
+    case "$COMPOSE_FILE_NAME" in
+        docker-compose.yml) ;;
+        docker-compose.*.yml)
+            case "$COMPOSE_FILE_NAME" in
+                */*|*..*)
+                    echo "safe_docker_build.sh: --compose-file takes a basename, got '$COMPOSE_FILE_NAME'" >&2
+                    exit 1 ;;
+            esac ;;
+        *)
+            echo "safe_docker_build.sh: --compose-file must be docker-compose.<name>.yml, got '$COMPOSE_FILE_NAME'" >&2
+            exit 1 ;;
+    esac
+    shift 2
+fi
 
 # --- 2.1. Require live deployments to originate from canonical main --------
 IS_DEPLOY=0
@@ -97,8 +120,8 @@ if [ "$IS_DEPLOY" = "1" ]; then
     fi
 fi
 
-if [ ! -f "services/$SERVICE/docker-compose.yml" ]; then
-    echo "safe_docker_build.sh: no such service compose file: services/$SERVICE/docker-compose.yml" >&2
+if [ ! -f "services/$SERVICE/$COMPOSE_FILE_NAME" ]; then
+    echo "safe_docker_build.sh: no such service compose file: services/$SERVICE/$COMPOSE_FILE_NAME" >&2
     echo "Expected path does not exist. Check the service name and that you are" >&2
     echo "running this from the repo root." >&2
     exit 1
@@ -124,7 +147,7 @@ _SCRIPT_DIR_FOR_BOARD=$(cd "$(dirname "$0")" && pwd)
 if [ -f "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" ] && command -v python3 >/dev/null 2>&1; then
     if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
         python3 "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" heartbeat \
-            --summary "docker compose $* for services/$SERVICE" \
+            --summary "docker compose $* for services/$SERVICE/$COMPOSE_FILE_NAME" \
             --task "deploy:$SERVICE" --session-id "$CLAUDE_CODE_SESSION_ID" >/dev/null 2>&1 || true
     else
         python3 "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" heartbeat \
@@ -232,5 +255,5 @@ fi
 exec docker compose \
     --env-file .env \
     --env-file "services/$SERVICE/.env" \
-    -f "services/$SERVICE/docker-compose.yml" \
+    -f "services/$SERVICE/$COMPOSE_FILE_NAME" \
     "$@"

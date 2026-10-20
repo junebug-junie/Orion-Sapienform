@@ -26,6 +26,12 @@ if "--running-profile-services" in args:
         if owner == svc and profile not in skip:
             print(profile + "\\t" + name)
     raise SystemExit(0)
+if "--running-extra-compose" in args:
+    svc = args[args.index("--running-extra-compose") + 1]
+    for line in os.environ.get("FAKE_EXTRA", "").split(";"):
+        if line and line.split(",")[0] == svc:
+            print(line.split(",")[1])
+    raise SystemExit(0)
 if "--pool-held-services" in args:
     svc = args[args.index("--pool-held-services") + 1]
     # FAKE_POOL answers the first call, FAKE_POOL_AFTER (when set) every later one:
@@ -59,6 +65,7 @@ def _run(
     *,
     plan: str,
     profiles: str = "",
+    extra: str = "",
     pool: str = "",
     pool_after: str | None = None,
     pool_rc: int | None = None,
@@ -99,6 +106,7 @@ def _run(
     env["REBUILD_TEST_CAPTURE"] = str(capture)
     env["FAKE_PLAN"] = plan
     env["FAKE_PROFILES"] = profiles
+    env["FAKE_EXTRA"] = extra
     env["FAKE_POOL"] = pool
     env["FAKE_POOL_CALLS"] = str(tmp_path / "pool-calls")
     env.pop("FAKE_POOL_AFTER", None)
@@ -559,3 +567,58 @@ def test_nothing_to_rebuild_still_leaves_a_log_line(tmp_path: Path) -> None:
     assert calls == []
     lines = _log_lines(tmp_path)
     assert len(lines) == 1 and " NOTHING " in lines[0], lines
+
+
+# --- Second compose files (2026-10-20: Qwen caption lane ran stale for days) ---
+
+
+def test_running_extra_compose_file_is_rebuilt_from_that_file(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-vision-host,build",
+        extra="orion-vision-host,docker-compose.circe-qwen.yml",
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == [
+        "orion-vision-host up -d --build",
+        "orion-vision-host --compose-file docker-compose.circe-qwen.yml up -d --build",
+    ]
+
+
+def test_extra_compose_file_gets_force_recreate_with_its_stack(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-vision-host,recreate",
+        extra="orion-vision-host,docker-compose.circe-qwen.yml",
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls[-1] == "orion-vision-host --compose-file docker-compose.circe-qwen.yml up -d --build --force-recreate"
+
+
+def test_failed_extra_compose_file_fails_its_stack(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-vision-host,build",
+        extra="orion-vision-host,docker-compose.circe-qwen.yml",
+        safe_build_body='case "$*" in *circe-qwen*) exit 9;; esac\n',
+    )
+    assert "FAILED orion-vision-host/docker-compose.circe-qwen.yml (exit 9)" in completed.stderr
+    assert completed.returncode != 0
+
+
+def test_dry_run_reports_extra_compose_files_without_building(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-vision-host,build",
+        extra="orion-vision-host,docker-compose.circe-qwen.yml",
+        extra_args=["--dry-run"],
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == []
+    assert "would rebuild running extra compose file: orion-vision-host --compose-file docker-compose.circe-qwen.yml" in completed.stdout
+
+
+def test_no_extra_compose_means_plain_up_only(tmp_path: Path) -> None:
+    completed, calls = _run(tmp_path, plan="orion-vision-host,build")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == ["orion-vision-host up -d --build"]

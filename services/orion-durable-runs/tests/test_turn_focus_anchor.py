@@ -11,7 +11,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import pytest
 
@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(REPO_ROOT), str(SERVICE_ROOT)]
 
-from pydantic import BaseModel, ConfigDict  # noqa: E402
+from pydantic import ConfigDict  # noqa: E402
 
 from orion.schemas.curiosity_focus import CuriosityFocusAnchorV1  # noqa: E402
 from orion.schemas.durable_run import (  # noqa: E402
@@ -93,24 +93,17 @@ def test_a_set_focus_survives_the_durable_request_round_trip() -> None:
     assert again.brief.focus == FOCUS
 
 
-class _OldHubTurnRequestV1(BaseModel):
-    """CuriosityTurnRequestV1 as a Hub from before this field knows it (forbid)."""
-
-    model_config = ConfigDict(extra="forbid")
-    schema_version: Literal["curiosity.turn.request.v1"] = "curiosity.turn.request.v1"
-    run_id: str
-    correlation_id: str
-    prompt: str
-    fcc_model_label: str | None = None
-    timeout_sec: float
-    source_tag: str = "curiosity_investigation"
-    attempt: int = 1
-    assigned_lane: str | None = None
-    session_id: str | None = None
-    retrieval_query: str | None = None
-
-
 def test_new_runner_turn_without_focus_validates_on_an_old_hub() -> None:
+    """An old Hub's CuriosityTurnRequestV1 is this model minus `focus` (forbid). Checked on the
+    plain dump, not only exclude_none: the serializer itself drops an unset focus."""
+    from pydantic import create_model
+
+    fields = {
+        name: (info.annotation, info) for name, info in CuriosityTurnRequestV1.model_fields.items() if name != "focus"
+    }
+    old_hub = create_model("OldHubTurnRequestV1", __config__=ConfigDict(extra="forbid"), **fields)
     sent: list[CuriosityTurnRequestV1] = []
     asyncio.run(make_nodes(_deps(sent))["harness_turn"](_state(None)))
-    _OldHubTurnRequestV1.model_validate(sent[0].model_dump(mode="json", exclude_none=True))
+    old_hub.model_validate(sent[0].model_dump(mode="json"))
+    with pytest.raises(Exception):
+        old_hub.model_validate({**sent[0].model_dump(mode="json"), "focus": FOCUS.model_dump(mode="json")})

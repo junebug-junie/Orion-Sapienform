@@ -316,8 +316,13 @@ async def test_execute_unified_turn_threads_origin_into_harness_request(origin) 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("with_focus", [True, False])
-async def test_execute_unified_turn_puts_a_curiosity_focus_on_the_harness_request(with_focus) -> None:
+@pytest.mark.parametrize(
+    ("with_focus", "origin", "expected"),
+    [(True, "orion", True), (False, "orion", False),
+     # A Hub chat client's payload is the raw request body: it never reaches the system prompt.
+     (True, "juniper", False), (True, None, False)],
+)
+async def test_execute_unified_turn_puts_a_curiosity_focus_on_the_harness_request(with_focus, origin, expected) -> None:
     """The focus a curiosity run took rides payload -> HarnessRunRequestV1.curiosity_focus, where the
     governor anchors it in the system prompt (orion/harness/task_anchor.py::build_focus_anchor)."""
     from orion.schemas.curiosity_focus import CuriosityFocusAnchorV1
@@ -332,7 +337,7 @@ async def test_execute_unified_turn_puts_a_curiosity_focus_on_the_harness_reques
     with patches[0], patches[1], patches[2]:
         await execute_unified_turn(
             bus=MagicMock(), correlation_id=_CORR_ID, session_id="sess-1", user_message="investigate",
-            payload=payload, emit_observation_fn=lambda **_kwargs: None, utterance_origin="orion",
+            payload=payload, emit_observation_fn=lambda **_kwargs: None, utterance_origin=origin,
         )
     harness_req = harness_client_run.await_args.args[0]
-    assert harness_req.curiosity_focus == (focus if with_focus else None)
+    assert harness_req.curiosity_focus == (focus if expected else None)

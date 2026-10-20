@@ -104,3 +104,14 @@ def test_a_row_that_does_not_fit_the_contract_is_logged_not_fatal(monkeypatch, c
 
 # The turn-orchestrator half (payload -> HarnessRunRequestV1.curiosity_focus) lives in
 # test_turn_orchestrator_utterance_origin.py: importing that module purges `scripts.*`.
+
+
+def test_a_refused_dispatch_falls_back_in_process_and_still_carries_the_focus(monkeypatch):
+    loop, table, pool = _focus_loop(monkeypatch)
+    loop._bus = _CortexBus(reply={"status": "rejected"})
+    loop.kickoff_via_cortex = True
+    assert loop.durable_admission_enabled is False  # the only case that falls back
+    focus = _queue(pool)
+    asyncio.run(loop.tick())
+    sent = loop.seen_generate_kwargs["curiosity_focus"]
+    assert sent.question == focus.question and sent.run_id == table.rows[0]["offered_run_id"]

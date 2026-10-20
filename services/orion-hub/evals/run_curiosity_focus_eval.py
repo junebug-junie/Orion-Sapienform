@@ -158,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 -- one linear scen
 
     anchor = build_focus_anchor(loop._focus_anchor(taken, RUN_A)) if taken is not None else None
     for needle in ("FOCUS ANCHOR", "How much of the bus traffic is heartbeats?",
-                   f'run_id: "{RUN_A}", focus_disposition:', '"set_aside: <why not>"'):
+                   f'MERGE (t:TurnOutcome {{run_id: "{RUN_A}"}})', '"set_aside: <why not>"'):
         if not anchor or needle not in anchor:
             failures.append(f"system-prompt focus anchor lacks {needle!r}")
     if asyncio.run(loop._take_focus(WorldviewSnapshot(), RUN_B)) is not None:

@@ -9,6 +9,7 @@ from .control import Arbiter
 from .evidence import Evidence
 from .scripted import Scripted
 from .observation import Observer, outcome
+from .saves import SaveStore
 
 
 def run(commands, urgent, replies, stop, settings, game, session, generation, media=None):
@@ -27,6 +28,16 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
         sources = sorted(Path(__file__).parent.glob('*.py')) + [Path(__file__).parents[1]/'settings.py']
         runtime_sha = hashlib.sha256(b''.join(p.name.encode()+b'\0'+p.read_bytes() for p in sources)).hexdigest()
         record('start', game_id=game['game_id'], identity=core.identity, runtime_sha256=runtime_sha)
+        store = SaveStore(settings.saves, settings.save_max_per_game, settings.save_max_bytes)
+        # played_frames survives save/load; frame stays this session's monotonic clock.
+        played = dict(base=0, at=0)
+        def load(save_id):
+            meta, data = store.read(game['game_id'], save_id, core.identity)
+            core.restore(data)
+            played.update(base=meta['played_frames'], at=frame)
+            record('load', save_id=save_id, save_frame=meta['frame'], played_frames=meta['played_frames'])
+            return meta
+        if game.get('save_id'): load(game['save_id'])
         state = 'running'; paused_by = ''
         send(dict(kind='ready', identity=core.identity, runtime_sha256=runtime_sha, fps=core.av.timing.fps))
         period = 1 / core.av.timing.fps
@@ -84,6 +95,21 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
                     elif op == 'goal':
                         if state != 'running': raise ValueError(not_running())
                         result = scripted.goal(cmd['connection'], data, time.monotonic())
+                    elif op == 'save':
+                        if state not in ('running', 'paused'): raise ValueError(not_running())
+                        try: snapshot = core.snapshot()
+                        except RuntimeError: raise ValueError('save_serialize_failed')  # core state is untouched
+                        meta = store.write(game['game_id'], core.identity, snapshot, frame=frame,
+                                           played_frames=played['base']+frame-played['at'], session_id=session)
+                        record('save', save_id=meta['save_id'], played_frames=meta['played_frames'], bytes=meta['bytes'])
+                        result = {'saved': meta}
+                    elif op == 'load':
+                        if state not in ('running', 'paused'): raise ValueError(not_running())
+                        meta = load(data.get('save_id'))
+                        # Scripted/goal observations describe the replaced game; stop them.
+                        scripted.cancel('load')
+                        deadline = time.monotonic()
+                        result = {'loaded': meta}
                     elif op in ('pause', 'resume', 'disconnect'):
                         if op == 'disconnect':
                             scripted.cancel('sponsor_disconnected', cmd['connection'])

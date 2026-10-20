@@ -10,6 +10,8 @@ import time
 import uuid
 from .worker import run
 from .media import MediaSlot
+from .saves import SaveStore, available
+from orion.retro.probe import digest
 
 
 class Sessions:
@@ -49,10 +51,27 @@ class Sessions:
                 raise ValueError('invalid title')
             self.catalog[item['game_id']] = dict(item, path=path)
         if not settings.core.is_file(): raise ValueError('core missing')
+        # Read the file only; the native core is loaded solely in the worker child.
+        self.core_sha256 = digest(settings.core)
+        self.saves = SaveStore(settings.saves, settings.save_max_per_game, settings.save_max_bytes)
+
+    def save_enabled(self):
+        return available(self.settings.saves)
+
+    def identity(self, game_id):
+        return dict(rom_sha256=self.catalog[game_id]['rom_sha256'], core_sha256=self.core_sha256)
+
+    def list_saves(self, game_id):
+        if game_id not in self.catalog: raise ValueError('unknown_game')
+        if not self.save_enabled(): return []
+        identity = self.identity(game_id)
+        return [dict(m, compatible=m['rom_sha256'] == identity['rom_sha256']
+                     and m['core_sha256'] == identity['core_sha256'])
+                for m in self.saves.list(game_id)]
 
     def games(self):
         return [dict(game_id=v['game_id'], title=v['title'], ports=v['ports'],
-                     rom_sha256=v['rom_sha256'], save_enabled=False)
+                     rom_sha256=v['rom_sha256'], save_enabled=self.save_enabled())
                 for v in self.catalog.values()]
 
     def persist(self):
@@ -60,14 +79,17 @@ class Sessions:
         tmp.write_text(json.dumps(self.session)+'\n')
         tmp.replace(self.status_path)
 
-    async def start(self, game_id, key, owner="operator"):
+    async def start(self, game_id, key, owner="operator", save_id=None):
         key = owner+":"+key
         if key in self.requests:
             old_game, old_id = self.requests[key]
-            if old_game != game_id: raise ValueError('idempotency_conflict')
+            if old_game != (game_id, save_id): raise ValueError('idempotency_conflict')
             return {'session_id': old_id}
         if game_id not in self.catalog: raise ValueError('unknown_game')
         if self.process is not None or self.stopping: raise ValueError('session_active')
+        if save_id is not None:
+            if not self.save_enabled(): raise ValueError('saves_unavailable')
+            self.saves.meta(game_id, save_id, self.identity(game_id))  # refuse before spawning
         if len(self.requests) >= 256: raise ValueError('idempotency_capacity_restart_required')
         ctx = mp.get_context('spawn')
         self.commands = ctx.Queue(32); self.urgent = ctx.Queue(8); self.replies = ctx.Queue(128); self.stop_event = ctx.Event()
@@ -75,11 +97,12 @@ class Sessions:
         self.ready = asyncio.Event()
         sid = str(uuid.uuid4())
         self.session = dict(session_id=sid, generation=self.generation, state='starting',
-                            game_id=game_id, frame=0, owner=owner, save_enabled=False, scripted=[])
+                            game_id=game_id, frame=0, owner=owner, save_enabled=self.save_enabled(),
+                            loaded_save=save_id, scripted=[])
         self.persist(); self.history.clear()
         self.process = ctx.Process(target=run, args=(self.commands,self.urgent,self.replies,self.stop_event,
-                            self.settings,self.catalog[game_id],sid,self.generation,self.media), daemon=True)
-        self.process.start(); self.requests[key] = (game_id, sid)
+                            self.settings,dict(self.catalog[game_id], save_id=save_id),sid,self.generation,self.media), daemon=True)
+        self.process.start(); self.requests[key] = ((game_id, save_id), sid)
         self.task = asyncio.create_task(self.monitor())
         self.media_task = asyncio.create_task(self.monitor_media())
         return dict(self.session)
@@ -154,6 +177,8 @@ class Sessions:
             if 'error' in row: raise ValueError(row['error'])
             if 'state' in row['result']:
                 self.session['state'] = row['result']['state']; self.persist()
+            if 'loaded' in row['result']:
+                self.session['loaded_save'] = row['result']['loaded']['save_id']; self.persist()
             return row['result']
         except (asyncio.TimeoutError, queue.Full):
             # Shielded: a cancelled caller (closed input socket) must not abandon cleanup.

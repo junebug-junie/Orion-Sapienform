@@ -63,6 +63,7 @@ jobs:
           tests/test_action_outcome_resolution.py tests/test_feedback_runtime_store.py
           tests/test_express_outward_action.py
           tests/test_dim_reverie_outcomes_covers_terminal_reasons.py
+          orion/reverie/tests/test_proposal.py
       - name: Thought storage, source, HTTP and replica contracts
         run: >-
           python -m pytest -q services/orion-thought/tests/test_visual_activity.py
@@ -74,6 +75,7 @@ jobs:
           services/orion-thought/tests/test_visual_steps_db.py
           services/orion-thought/tests/test_bus_listener_visual_step.py
           services/orion-thought/tests/test_painting_act.py
+          services/orion-thought/tests/test_settings_mind_enrichment.py
       # One process per service: both services' tests import a top-level `app` package.
       - name: Durable render settlement contracts (execution-dispatch)
         run: python -m pytest -q services/orion-execution-dispatch-runtime/tests/test_visual_settlement.py

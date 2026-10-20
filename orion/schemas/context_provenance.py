@@ -95,6 +95,28 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
         _entry("trigger_kind", "derived_summary", "Classified kind of turn trigger."),
         _entry("context_summary", "derived_summary", "General context summary derived for the turn."),
         _entry("episode_summary", "derived_summary", "Summary of the current episode."),
+        _entry(
+            "metacog_event_evidence",
+            "derived_summary",
+            "Fixed-template rendering (no LLM) of the metacog trigger's own evidence mapping: "
+            "severity, magnitude, evidence lines, touched nodes (executor.py "
+            "_metacog_event_evidence_cue over orion/metacog map_metacog_trigger).",
+        ),
+        _entry(
+            "trigger_upstream_json",
+            "derived_summary",
+            "JSON-rendered trigger.upstream: the per-trigger-kind evidence the metacog gate "
+            "already built (fired conditions, recon loss, relational evidence). May be trimmed "
+            "to '{}' when the draft prompt is over budget.",
+        ),
+        _entry(
+            "recent_attention",
+            "derived_summary",
+            "Orion's last few narrated moments of attention, read from persisted "
+            "substrate_attention_schema rows and age-labelled ('about 2 hours ago'); a record of "
+            "recent past attention, not this tick (app/recent_attention_reader.py, "
+            "orion/substrate/recent_attention_cue.py).",
+        ),
         _entry("chat_stance_brief", "derived_summary", "Parsed task_mode/conversation_frame stance brief."),
         _entry("prior_chat_stance_brief", "derived_summary", "Previous turn's stance brief."),
         _entry("prior_stance", "derived_summary", "Previous turn's full stance."),
@@ -156,6 +178,21 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
             "instruction. Set by orion-thought for stance_react and reverie "
             "(app/personality_cue.py) and by Hub for curiosity kickoff and outreach.",
         ),
+        _entry(
+            "admission",
+            "live_runtime_projection",
+            "Whether Orion's background LLM work was made to wait: windowed read of gpu_pool_events "
+            "(n waits / of requests / longest wait over the last window), TTL-cached; key absent "
+            "means unknown, not calm (app/admission_cue.py).",
+        ),
+        _entry(
+            "recent_trend_signals",
+            "live_runtime_projection",
+            "Latest per-node prediction error and each node's most notable biometrics-induction "
+            "channel, read from already-persisted signal tables (app/metacog_trend_reader.py, "
+            "orion/substrate/metacog_trend_signals.py).",
+        ),
+        _entry("recent_trend_signals_json", "live_runtime_projection", "JSON-rendered recent_trend_signals."),
         _entry("curiosity_signals", "live_runtime_projection", "Live curiosity/drive signals."),
         _entry("metacog_substrate_cue", "live_runtime_projection", "Compact live substrate cue for metacog prompts."),
         _entry("substrate_eventfulness_score", "live_runtime_projection", "Live substrate eventfulness score."),
@@ -204,6 +241,8 @@ PLUMBING_KEYS: frozenset[str] = frozenset(
         "metacog_entry_id",
         # template switch only: labels Mind's numbers as Orion's own estimates (stance_react.j2)
         "self_readings_label_estimates",
+        # which inference node served the last LLM call (gateway meta.served_by), routing only:
+        "llm_serving_node",
         # memoization for context_provenance_for_ctx itself, not turn content:
         "_context_provenance_cache",
     }

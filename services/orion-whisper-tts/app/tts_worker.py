@@ -18,6 +18,10 @@ logger = logging.getLogger("orion-whisper-tts.worker")
 
 _tts_engine: TTSEngine | None = None
 
+# Running synthesis tasks. asyncio keeps only a weak reference to a task, so an
+# unreferenced fire-and-forget task can be garbage-collected mid-run.
+_inflight: set[asyncio.Task] = set()
+
 
 def get_tts_engine() -> TTSEngine:
     global _tts_engine
@@ -246,9 +250,11 @@ async def listener_worker(bus: OrionBusAsync, *, stop: asyncio.Event | None = No
 
             # Process asynchronously (fire and forget task to not block listener).
             # Returns None, not the task: run_subscription awaits a returned awaitable.
-            asyncio.create_task(
+            task = asyncio.create_task(
                 process_tts_request(bus, decoded.envelope, decoded.raw)
             )
+            _inflight.add(task)
+            task.add_done_callback(_inflight.discard)
 
         except Exception:
             logger.error("Error processing message loop", exc_info=True)

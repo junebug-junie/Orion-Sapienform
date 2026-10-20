@@ -1,13 +1,13 @@
 ## Summary
 
-Handoff step 4: before the personality graph grows "in situation S, theme T" subnodes (CAPS if-then), check whether any theme actually shows up in particular situations more than chance. **Answer today: no.** So this PR ships the measurement only, with no reducer change.
+Handoff step 4: before the personality graph grows "in situation S, theme T" subnodes (CAPS if-then), check whether any theme actually shows up in particular situations more than chance. **Answer today: no strong preference.** A moderate preference would go undetected at today's sample sizes (see "What the test can and cannot detect"). There is no evidence to build on, so this PR ships the measurement only, with no reducer change.
 
 - New read-only script `scripts/analysis/measure_personality_situation_specificity.py`, with tests and CI.
 - Verdict: do not build situation subnodes yet. Run the script again once there are about 2 more weeks of evidence.
 
 ## Outcome moved
 
-The question "are themes situation-specific?" now has a repeatable test with known power, instead of a guess.
+The question "are themes situation-specific?" now has a repeatable test with measured limits, instead of a guess.
 
 Live run (2026-10-20, 1,008 stamped rows, which fold into 401 episodes):
 
@@ -29,10 +29,22 @@ Every `personality_evidence` row carries `meta.situation` (arousal, day_phase, c
 ## How the test works
 
 - **Episodes, not rows.** A theme's rows in one lane that fall within 30 minutes of each other count as one episode.
-- **Lane-and-day baseline.** Each episode's expected situation mix is the mix of every episode in the same lane on the same UTC day. A theme seen only on a strained day is not a "strained" theme.
+- **Lane-and-day baseline.** Each episode's expected situation mix is the mix of every episode in the same lane on the same UTC day. This is deliberate: a theme seen only on a strained day is not a "strained" theme. The price is that this test cannot see day-level preferences (see below).
 - **Shuffle test.** Situation values are shuffled within each (lane, day) group, 2,000 times. The Benjamini-Hochberg q-value corrects for testing many pairs.
 - **Untestable is not null.** A theme without 8 episodes in groups whose situation varies is reported as untestable, never as "no effect".
-- **Power is checked in tests.** A planted preference across 15 episodes is found at p < 0.01. Across 20 seeds with no planted preference, at most 3 reach p < 0.05.
+- **Tested both ways.** A total planted preference (every episode in one situation) across 15 episodes is found at p < 0.01. Across 20 seeds with no planted preference, at most 3 reach p < 0.05.
+
+### What the test can and cannot detect
+
+Measured by the reviewer on the test world: a 50/50 background, 40 seeds per cell. Each cell is the share of seeds that reach p < 0.01.
+
+| Theme's episodes in one situation | n=10 | n=15 | n=25 |
+|---|---|---|---|
+| 70% | 0.03 | 0.03 | 0.10 |
+| 80% | 0.08 | 0.13 | 0.48 |
+| 90% | 0.28 | 0.63 | 0.85 |
+
+With 36 pairs tested, one hit at q ≤ 0.1 needs a p-value of about 0.003. Live themes have 10–41 informative episodes. So the test catches near-total preferences, and it misses a 70–80% preference. The (lane, UTC date) baseline also removes all differences between days. An arousal preference that follows whole days, for example "this theme shows up on strained days", cannot be detected by design. Only preferences within a day can.
 
 ## Architecture touched
 
@@ -79,7 +91,18 @@ Not applicable (read-only script).
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+Code review ran in a subagent. It found no code or statistical bug that changes the result. It checked:
+- **Permutation null:** valid, a stratified conditional test.
+- **"Informative" filter:** consistent between the observed value and the null.
+- **Company stored as true/false text:** handled correctly.
+- **Benjamini-Hochberg step-up:** correct.
+- **Episode chaining:** it pushes toward finding nothing, never toward a false positive.
+
+It reproduced 36 tested pairs, 1,008 rows and 401 episodes.
+
+- **Finding:** the report claimed "known power", but only near-total preferences are detectable at n ≤ 25.
+  - **Fix:** the report now states the measured power table and the day-level blind spot. The verdict now reads "no strong preference", not "no preference".
+  - **Evidence:** the section "What the test can and cannot detect".
 
 ## Restart required
 
@@ -91,7 +114,7 @@ No restart required.
 
 - **Severity:** low.
   - **Concern:** only about 4 days of stamped evidence exist (since 10-16 23:36). Most (node, dimension) pairs are untestable (249 of 285).
-  - **Mitigation:** run the script again around 11-03. Build subnodes only if active themes pass at q ≤ 0.1, and only if the burst window does not flip the preferred situation.
+  - **Mitigation:** run the script again around 11-03. Build subnodes only if active themes pass at q ≤ 0.1, and only if the burst window does not flip the preferred situation. A null result with more data still only rules out strong preferences.
 
 ## PR link
 

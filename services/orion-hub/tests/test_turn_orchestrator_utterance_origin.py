@@ -313,3 +313,26 @@ async def test_execute_unified_turn_threads_origin_into_harness_request(origin) 
 
     harness_req = harness_client_run.await_args.args[0]
     assert harness_req.utterance_origin == origin
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_focus", [True, False])
+async def test_execute_unified_turn_puts_a_curiosity_focus_on_the_harness_request(with_focus) -> None:
+    """The focus a curiosity run took rides payload -> HarnessRunRequestV1.curiosity_focus, where the
+    governor anchors it in the system prompt (orion/harness/task_anchor.py::build_focus_anchor)."""
+    from orion.schemas.curiosity_focus import CuriosityFocusAnchorV1
+
+    focus = CuriosityFocusAnchorV1(
+        focus_id="a21f96c9-f1aa-5c19-9562-91ed82a64b80", run_id="480ee593ead6",
+        question="Do walkway regulars keep a weekly rhythm?", origin="self", graph="orion_worldview",
+    )
+    harness_client_run = AsyncMock(return_value=_harness_run())
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    payload = {"curiosity_focus": focus.model_dump(mode="json")} if with_focus else {}
+    with patches[0], patches[1], patches[2]:
+        await execute_unified_turn(
+            bus=MagicMock(), correlation_id=_CORR_ID, session_id="sess-1", user_message="investigate",
+            payload=payload, emit_observation_fn=lambda **_kwargs: None, utterance_origin="orion",
+        )
+    harness_req = harness_client_run.await_args.args[0]
+    assert harness_req.curiosity_focus == (focus if with_focus else None)

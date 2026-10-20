@@ -273,6 +273,7 @@ from orion.schemas.durable_run import (
 )
 from orion.curiosity.urgent_prompt import build_urgent_prompt
 from orion.schemas.curiosity_urgent import CuriosityUrgentSeedV1
+from orion.schemas.curiosity_focus import FOCUS_QUESTION_MAX_CHARS, CuriosityFocusAnchorV1
 from orion.schemas.personality import PersonalityCueV1
 
 # RPC source name on the pool ``status`` reads Hub makes for a carried hold ref (stage 4.4).
@@ -1573,6 +1574,26 @@ class CuriosityInvestigation:
             return None
         return await take_focus(self._pool_provider(), run_id=run_id)
 
+    def _focus_anchor(self, focus, run_id: str) -> Optional[CuriosityFocusAnchorV1]:
+        """The typed focus for the governor's task anchor, or None (no focus, or a row that does
+        not fit the contract -- logged; the kickoff still shows the focus)."""
+        if focus is None:
+            return None
+        graph = str(self.graph_own or "")
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{0,64}", graph):
+            graph = ""  # outside the contract's charset: left out, not fatal
+        try:
+            return CuriosityFocusAnchorV1(
+                focus_id=str(focus.focus_id),
+                run_id=run_id,
+                question=" ".join(str(focus.question or "").split())[:FOCUS_QUESTION_MAX_CHARS],
+                origin=focus.origin,
+                graph=graph,
+            )
+        except Exception as exc:  # noqa: BLE001 -- the anchor is a safety net, never a gate
+            logger.warning("curiosity_focus_anchor_invalid run=%s focus_id=%s err=%s", run_id, focus.focus_id, exc)
+            return None
+
     async def _stamp_focus(self, run_id: str, *, turn_ok: bool) -> None:
         """Turn end: the focus this run took becomes `ran` (with the disposition the run wrote on
         its :TurnOutcome; none = unknown) or `failed`. Read-only on the graph. Never raises.
@@ -2422,6 +2443,8 @@ class CuriosityInvestigation:
         carry_forward = await self._take_carry_forward(run_id)
         corrections = await self._take_corrections(view, run_id)
         focus = await self._take_focus(view, run_id)
+        # Typed copy for the governor's task anchor (survives CLI compaction).
+        focus_anchor = self._focus_anchor(focus, run_id)
         open_lived_questions = await self._read_open_lived_questions(run_id)
         # Both durable-runs reads at once: each is bounded by TEMPORAL_SELF_FACT_TIMEOUT_SEC
         # and neither ever raises, so the kickoff waits for the slower one only.
@@ -2505,6 +2528,7 @@ class CuriosityInvestigation:
                     prompt=prompt,
                     material=material,
                     retrieval_query=retrieval_query,
+                    **({"focus": focus_anchor} if focus_anchor is not None else {}),
                 )
             except asyncio.CancelledError:
                 # Hub going away mid-dispatch (the RPC to cortex-orch can take
@@ -2549,6 +2573,7 @@ class CuriosityInvestigation:
                         timeout_sec=float(self.timeout_sec),
                         source_tag=INVESTIGATION_TAG,
                         retrieval_query=retrieval_query,
+                        focus=focus_anchor,
                     ),
                     hold_lock=False,  # tick already holds _run_lock
                 )
@@ -2560,6 +2585,7 @@ class CuriosityInvestigation:
                 text, debug = await self._generate(
                     prompt, correlation_id, parent_run_id=run_id,
                     **({"retrieval_query": retrieval_query} if retrieval_query else {}),
+                    **({"curiosity_focus": focus_anchor} if focus_anchor is not None else {}),
                 )
                 await self._spend_turn_ended(run_id, turn_ok=bool(text))
                 await self._stamp_corrections(run_id)
@@ -4068,6 +4094,7 @@ class CuriosityInvestigation:
         urgent: bool = False,
         retrieval_query: str | None = None,
         resume_key: str | None = None,
+        curiosity_focus: CuriosityFocusAnchorV1 | None = None,
     ) -> Tuple[str, dict]:
         """Real unified-turn generation. Returns ("", debug) on any failure,
         defer, or degraded run -- same "never fabricate, silence over a false
@@ -4114,6 +4141,10 @@ class CuriosityInvestigation:
         started = time.monotonic()
         turn_timeout = self.timeout_sec if timeout_sec is None else timeout_sec
         payload = _turn_payload(source, fcc_model_label or self._fcc_model_label)
+        if curiosity_focus is not None:
+            # The focus this run took: the governor anchors it in the system prompt
+            # (orion/harness/task_anchor.py::build_focus_anchor).
+            payload["curiosity_focus"] = curiosity_focus.model_dump(mode="json")
         if resume_key:
             # Durable-run retry: the governor resumes this run's killed `claude`
             # session instead of starting over (orion/harness/session_resume.py).
@@ -4544,6 +4575,7 @@ class CuriosityInvestigation:
         urgent: Optional[CuriosityUrgentSeedV1] = None,
         timeout_sec: Optional[float] = None,
         retrieval_query: Optional[str] = None,
+        focus: Optional[CuriosityFocusAnchorV1] = None,
     ) -> CuriosityRunBriefV1:
         # An urgent run is shown no study material: the brief's counts stay zero.
         material_brief = (
@@ -4568,6 +4600,7 @@ class CuriosityInvestigation:
             line=line,
             urgent=urgent,
             retrieval_query=cap_retrieval_query(retrieval_query),
+            focus=focus,
         )
 
     async def _dispatch_via_cortex(
@@ -4649,6 +4682,7 @@ class CuriosityInvestigation:
         urgent: Optional[CuriosityUrgentSeedV1] = None,
         timeout_sec: Optional[float] = None,
         retrieval_query: Optional[str] = None,
+        focus: Optional[CuriosityFocusAnchorV1] = None,
     ) -> bool:
         """Hand the run to cortex. True only when cortex replied `accepted`."""
         if self._bus is None:
@@ -4659,7 +4693,7 @@ class CuriosityInvestigation:
             correlation_id=correlation_id,
             brief=self._run_brief(
                 prompt=prompt, material=material, line=line, urgent=urgent, timeout_sec=timeout_sec,
-                retrieval_query=retrieval_query,
+                retrieval_query=retrieval_query, focus=focus,
             ),
             admission=(ResourceRequirementV1(
                 preferred_lane=self.llm_route or "agent",
@@ -4898,6 +4932,7 @@ class CuriosityInvestigation:
                     **({"gpu_lease": request.gpu_lease} if request.gpu_lease is not None else {}),
                     **({"urgent": True} if request.urgent is not None else {}),
                     **({"retrieval_query": request.retrieval_query} if request.retrieval_query else {}),
+                    **({"curiosity_focus": request.focus} if request.focus is not None else {}),
                     # Stable across attempts, leases and restarts; the purpose keeps two
                     # different turns of one run from sharing a session.
                     resume_key=f"{request.run_id}:{request.source_tag}",

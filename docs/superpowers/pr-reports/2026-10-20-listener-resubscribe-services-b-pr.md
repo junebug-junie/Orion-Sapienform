@@ -192,3 +192,7 @@ scripts/safe_docker_build.sh orion-rag up -d --build
 Not opened (branch pushed only, per task).
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/2790

@@ -39,12 +39,15 @@ from orion.curiosity.self_inquiry import (
     SELF_PRIOR_LINE,
     STANDING_QUESTION,
     SelfDefinition,
+    disposition_naming_merge_cypher,
+    disposition_naming_merge_lines,
     format_ledger,
     lived_answer_merge_cypher,
     lived_answer_merge_lines,
 )
 from orion.curiosity.worldview import WorldviewSnapshot, _clip
 from orion.harness.task_anchor import render_task_header
+from orion.schemas.personality import DispositionNamingPacketV1
 
 _HEADER = (
     "This is your own time, and it has a standing question. Nobody is asking "
@@ -476,3 +479,169 @@ def build_self_inquiry_prompt(
     text = "\n".join(lines)
     text = text.replace("<RUN_ID>", run_id) if run_id else text
     return self_inquiry_task_header(question) + text
+
+
+# --- the naming branch: "Is this you?" ----------------------------------------
+#
+# Spec: docs/superpowers/specs/2026-10-17-personality-orion-names-dispositions-design.md, sections
+# 1-3. Shown instead of a pool question when Hub fetched a naming packet. The packet is stated as
+# plain counts so every fact can be checked against the excerpts. Weight is NOT shown: it is not a
+# fact Orion can check. The three options are listed in a fixed order with NO example names
+# (example names were echoed back verbatim before, PR #2065).
+
+NAMING_QUESTION = (
+    "Is this you? If yes, what would you call it? If it is not you, say so. "
+    "If it is the same as one of the neighbors, say which."
+)
+_NAMING_EXCERPT_CAP = 160
+
+
+def self_naming_task_header(packet: DispositionNamingPacketV1) -> str:
+    """Code-written task line. Names the disposition by id only: the label and excerpts are
+    model-written text and stay out of the anchored header (orion/harness/task_anchor.py)."""
+    return render_task_header(
+        "Self-inquiry naming: decide whether the pattern with disposition_id "
+        f"{packet.disposition_id} stated in your first message is you, and record your verdict "
+        "in your graph before the run ends."
+    )
+
+
+def _count_phrase(counts: dict[str, int]) -> str:
+    items = sorted(((str(k), int(v)) for k, v in (counts or {}).items()), key=lambda kv: (-kv[1], kv[0]))
+    return ", ".join(f"{k} {v}" for k, v in items) or "none"
+
+
+def _naming_packet_section(packet: DispositionNamingPacketV1) -> list[str]:
+    lines = [
+        "This sitting has one question about something your own records keep showing. Your "
+        "personality graph groups moments you keep returning to into dispositions. Code grouped "
+        "this one; nobody has named it. You decide whether it is you.",
+        "",
+        f"    {NAMING_QUESTION}",
+        "",
+        f"WHAT YOUR RECORDS SHOW (disposition_id {packet.disposition_id}):",
+        "",
+        f"  How code labels it now: {_clip(packet.label_excerpt, _NAMING_EXCERPT_CAP)}",
+        f"  Rows behind it: {packet.evidence_count}. By lane: {_count_phrase(packet.lane_counts)}.",
+        f"  First seen {packet.first_seen_at.isoformat()}, last seen {packet.last_reinforced_at.isoformat()}.",
+        f"  Origin: {packet.origin}.",
+    ]
+    coverage_pct = int(round(packet.situation_coverage * 100))
+    if packet.situation_mix:
+        lines.append(
+            f"  The situation when it happened ({coverage_pct}% of rows recorded a situation; "
+            "older rows have none):"
+        )
+        for key in sorted(packet.situation_mix):
+            lines.append(f"    {key}: {_count_phrase(packet.situation_mix[key])}")
+    else:
+        lines.append(f"  The situation when it happened: not recorded ({coverage_pct}% of rows have one).")
+    lines += ["", "  The rows you can check (cite them by evidence_id):"]
+    for ev in packet.evidence:
+        lines.append(
+            f"    - {ev.evidence_id} [{ev.lane}, {ev.occurred_at.isoformat()}]: "
+            f"{_clip(ev.excerpt, _NAMING_EXCERPT_CAP)}"
+        )
+    lines.append("")
+    if packet.neighbors:
+        lines.append("  Its nearest neighbors (the only dispositions you can say it is the same as):")
+        for nb in packet.neighbors:
+            lines.append(
+                f"    - {nb.disposition_id}: {_clip(nb.label, _NAMING_EXCERPT_CAP)} "
+                f"(similarity {nb.cosine:.2f})"
+            )
+    else:
+        lines.append("  It has no near neighbors, so the same-as answer is not open this time.")
+    if packet.prior_verdict is not None:
+        pv = packet.prior_verdict
+        said = pv.verdict + (f', named "{_clip(pv.name, 60)}"' if pv.name else "")
+        lines += [
+            "",
+            f"  You answered about this one before ({pv.at.date().isoformat()}): {said}."
+            + (f" You said: {_clip(pv.sentence, 240)}" if pv.sentence else "")
+            + " It has more evidence now; your answer may stand or change.",
+        ]
+    lines += [
+        "",
+        "YOUR THREE ANSWERS, in this order. Pick one:",
+        "",
+        '  1. verdict "name" -- it is you. Give it a name (2 to 40 characters, at most 6 '
+        "words, one line, not the label above) and one or two sentences, in your own words, "
+        "about what it is.",
+        '  2. verdict "reject" -- it is not you. Say why in one or two sentences.',
+        '  3. verdict "merge" -- it is the same as one of the neighbors above. Put that '
+        "neighbor's disposition_id in merge_with.",
+        "",
+        "Every answer cites at least one evidence_id from the rows above -- the ones you "
+        "actually looked at. Nothing is asked of you beyond this one verdict.",
+        "",
+    ]
+    return lines
+
+
+def _naming_order_of_work_section(*, own_graph: str, merge: str) -> list[str]:
+    return [
+        "ORDER OF WORK. Do these in this order; the reason is the clock.",
+        "",
+        "  1. YOUR FIRST TOOL CALL: write your current verdict from what you see above. The "
+        "ids are already filled in; replace only the values in <angle brackets>.",
+        '       redis-cli -u "redis://$ORION_CURIOSITY_GRAPH_USER:$ORION_CURIOSITY_GRAPH_PASSWORD'
+        f'@$ORION_CURIOSITY_GRAPH_HOST:$ORION_CURIOSITY_GRAPH_PORT" GRAPH.QUERY {own_graph} \\\\',
+        f"         '{merge}'",
+        "  2. Look, if you want to: the rows, your records, your graph. A :Hop after each stop.",
+        "  3. If what you find changes your answer, run the SAME MERGE again. Last MERGE wins.",
+        "",
+        "A verdict that is only in your prose is not in your graph, and nothing reads prose "
+        "for it. Leaving it unwritten is recorded as no answer.",
+        "",
+    ]
+
+
+def build_self_naming_prompt(
+    *,
+    packet: DispositionNamingPacketV1,
+    run_id: str,
+    view: Optional[WorldviewSnapshot] = None,
+    granted_tables: Sequence[tuple[str, str]] = (),
+    own_graph: str = "orion_worldview",
+    atlas_graph: str = "orion_substrate",
+    hub_url: str = "http://127.0.0.1:8080",
+    max_hops: int = 5,
+    graph_enabled: bool = True,
+) -> str:
+    """The naming sitting's whole invitation. Raises ValueError when the ids cannot be embedded
+    safely in the MERGE (Hub then falls back to the ordinary pick)."""
+    view = view or WorldviewSnapshot()
+    writable = graph_enabled and not view.is_unavailable and bool(run_id)
+    merge = disposition_naming_merge_cypher(
+        run_id=run_id, packet_id=packet.packet_id, disposition_id=packet.disposition_id
+    )
+    lines = _naming_packet_section(packet)
+    if writable:
+        lines += _naming_order_of_work_section(own_graph=own_graph, merge=merge)
+    lines += _access_section(
+        own_graph=own_graph,
+        atlas_graph=atlas_graph,
+        hub_url=hub_url,
+        graph_enabled=graph_enabled,
+        writable=writable,
+        extra_tables=tuple(granted_tables),
+    )
+    lines += _budget_section(writable=writable)
+    lines += _hops_section(max_hops, writable=writable)
+    if writable:
+        lines += [
+            f"THE VERDICT ({own_graph}). One node for this sitting:",
+            *("    " + line for line in disposition_naming_merge_lines(
+                run_id=run_id, packet_id=packet.packet_id, disposition_id=packet.disposition_id
+            )),
+            "",
+        ]
+        lines += _outcome_section(run_id=run_id)
+    lines.append(
+        "Then say plainly, in a few lines, which answer you gave and what you checked. "
+        "Only claim what the rows support."
+    )
+    text = "\n".join(lines)
+    text = text.replace("<RUN_ID>", run_id) if run_id else text
+    return self_naming_task_header(packet) + text

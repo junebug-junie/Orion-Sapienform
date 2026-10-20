@@ -730,6 +730,8 @@ async def startup_event():
                 self_inquiry_min_cooldown_sec=settings.HUB_CURIOSITY_SELF_INQUIRY_MIN_COOLDOWN_SEC,
                 self_lived_weight=settings.HUB_CURIOSITY_SELF_LIVED_WEIGHT,
                 self_pinned_floor_days=settings.HUB_CURIOSITY_SELF_PINNED_FLOOR_DAYS,
+                self_naming_enabled=settings.HUB_CURIOSITY_SELF_NAMING_ENABLED,
+                self_naming_daily_cap=settings.HUB_CURIOSITY_SELF_NAMING_DAILY_CAP,
                 sandbox_repo_root=settings.HUB_CURIOSITY_SANDBOX_REPO_ROOT,
                 # The self-sense eval line: own budget, same loop. See
                 # scripts/curiosity_investigation.py's own comment on

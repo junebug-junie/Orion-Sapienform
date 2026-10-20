@@ -180,7 +180,7 @@ NamingHubCheck = Literal["accepted", "refused"]
 NamingRefusedReason = Literal[
     "unknown_disposition", "packet_mismatch", "merge_target_not_shown", "evidence_not_shown",
     "name_too_long", "name_equals_label", "empty_sentence", "missing_name", "missing_merge_target",
-    "no_evidence_refs",
+    "no_evidence_refs", "sentence_too_long",
 ]
 
 

@@ -78,6 +78,7 @@ from app.models import (
     FieldChannelAnomalyScoreSQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
+    DispositionNamingSQL,
     SelfSenseEvalLogSQL,
     SocialRoomTurnSQL,
     ExternalRoomMessageSQL,
@@ -132,6 +133,7 @@ from orion.schemas.self_signal_outcome import SelfSignalHourV1, SelfSignalOutcom
 from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
 from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
 from orion.schemas.self_concept_history import SelfConceptHistoryV1
+from orion.schemas.personality import DispositionNamingV1
 from orion.schemas.self_sense import SelfSenseEvalV1
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
@@ -274,6 +276,7 @@ INSERT_ONLY_MODELS = {
     DurableRunStateSQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
+    DispositionNamingSQL,
     SocialRoomTurnSQL,
     ChatResponseFeedbackSQL,
     MindRunSQL,
@@ -553,6 +556,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "FieldChannelAnomalyScoreSQL": (FieldChannelAnomalyScoreSQL, FieldChannelAnomalyScoreV1),
     "ChatStanceBeliefLogSQL": (ChatStanceBeliefLogSQL, ChatStanceBeliefLogV1),
     "SelfConceptHistorySQL": (SelfConceptHistorySQL, SelfConceptHistoryV1),
+    "DispositionNamingSQL": (DispositionNamingSQL, DispositionNamingV1),
     "SelfSenseEvalLogSQL": (SelfSenseEvalLogSQL, SelfSenseEvalV1),
     "SocialRoomTurnSQL": (SocialRoomTurnSQL, SocialRoomTurnV1),
     "ExternalRoomMessageSQL": (ExternalRoomMessageSQL, ExternalRoomMessageV1),

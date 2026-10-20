@@ -439,7 +439,9 @@ the Hub's ask card reads `orion_ask`.
 visual things to help them learn"). Two more kinds of ask, opened first each
 tick under their own cap `VISION_CONFIRM_ASK_DAILY_CAP` (6; counted by
 `source_kind='vision_same_individual'` or the `rule:face` evidence ref, so
-`ORION_ASK_DAILY_CAP` stays the 10-sightings rule's budget):
+`ORION_ASK_DAILY_CAP` stays the 10-sightings rule's budget). No ask of any
+kind opens without a picture: a candidate with no thumbnail is skipped, stays
+a candidate, and does not use up a slot. The kinds:
 
 1. *"Are these the same person?"* (`source_kind=vision_same_individual`,
    `source_ref=<id_a>|<id_b>`, sorted). Two unlabeled-or-half-labeled people,

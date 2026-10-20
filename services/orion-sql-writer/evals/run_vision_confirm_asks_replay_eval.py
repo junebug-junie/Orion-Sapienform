@@ -216,9 +216,10 @@ def main() -> int:
         return 2
     report = run(args.live, args.scratch, datetime.now(timezone.utc))
     print(json.dumps(report, indent=2, default=str))
-    # Pass/fail: every opened ask carries at least one picture, a pair carries two.
+    # Pass/fail: every opened ask carries at least one picture (no picture, no
+    # ask -- the slow rule too, since 2026-10-20), a pair carries two.
     bad = [a for a in report["asks_that_would_open"]
-           if a["images"] < (2 if a["kind"] == vi.SOURCE_KIND_SAME else 1) and a["rule"] != "sightings"]
+           if a["images"] < (2 if a["kind"] == vi.SOURCE_KIND_SAME else 1)]
     if bad:
         print(f"FAIL: {len(bad)} visual ask(s) without their pictures", file=sys.stderr)
         return 1

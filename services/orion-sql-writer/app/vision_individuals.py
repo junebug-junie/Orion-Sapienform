@@ -1753,8 +1753,12 @@ def _close_who_is_this(conn, individual_ids: Sequence[str], label: str, ask_id: 
 
 
 def _apply_typed_name(conn, individual_id: str, label: str, ask_id: str, at: datetime, now: datetime) -> bool:
-    """One typed name, applied the same way wherever it was typed: the
-    individual, then everyone confirmed the same person, then their open cards."""
+    """One typed name, applied the same way wherever it was typed (a "who is
+    this?" card, a walkway story card, a name box on a "same person?" card): a
+    'same' link to an existing individual she already typed that name for
+    (``_link_same_name``), then the individual, then everyone confirmed the same
+    person, then their open cards."""
+    _link_same_name(conn, individual_id, label, ask_id, at)
     if not _set_typed_label(conn, individual_id, label, ask_id, at):
         return False
     copied = _propagate_label(conn, individual_id, label, ask_id, at, replace_copied=True)
@@ -1818,8 +1822,10 @@ def _record_pictures(conn, rows: List[dict]) -> int:
 def same_name_target(conn, individual_id: str, name: str, *, exclude: Sequence[str] = ()) -> Optional[str]:
     """An existing individual (same stream and kind as ``individual_id``) Juniper
     already TYPED ``name`` for, that is not already confirmed the same person
-    (a 'same' path between them) and has no pair verdict with it. First by
-    labeled_at. None when there is none."""
+    (a 'same' path between them), has no pair verdict with it, and whose
+    confirmed group has no 'different' (cannot-link) with this one's group --
+    a link must never join two people she said are different, even through
+    others. First by labeled_at. None when there is none."""
     from sqlalchemy import text
 
     me = conn.execute(text("SELECT stream_id, kind FROM vision_individual WHERE individual_id=:i"),
@@ -1839,14 +1845,18 @@ def same_name_target(conn, individual_id: str, name: str, *, exclude: Sequence[s
         {"s": me[0], "k": me[1], "n": name, "skip": skip, "me": individual_id}).fetchall()]
     if not cands:
         return None
-    groups = same_groups((a, b) for a, b in conn.execute(text(
-        "SELECT individual_a, individual_b FROM vision_individual_pair_verdict WHERE verdict='same'")).fetchall())
-    mine = groups.get(individual_id, individual_id)
-    return next((c for c in cands if groups.get(c, c) != mine), None)
+    verdicts = conn.execute(text(
+        "SELECT individual_a, individual_b, verdict FROM vision_individual_pair_verdict "
+        "WHERE verdict IN ('same', 'different')")).fetchall()
+    groups = same_groups((a, b) for a, b, v in verdicts if v == "same")
+    g = lambda i: groups.get(i, i)  # noqa: E731
+    apart = {frozenset((g(a), g(b))) for a, b, v in verdicts if v == "different"}
+    mine = g(individual_id)
+    return next((c for c in cands if g(c) != mine and frozenset((g(c), mine)) not in apart), None)
 
 
 def _link_same_name(conn, individual_id: str, name: str, ask_id: str, at: datetime) -> Optional[str]:
-    """A name typed on a walkway story card: a 'same' link to an existing
+    """A typed name (any card): a 'same' link to an existing
     individual Juniper already typed that name for (the split's same-name link,
     app/vision_split.py). Never over an existing pair verdict (a 'different'
     she gave stays). Returns the linked id, or None."""
@@ -1869,10 +1879,11 @@ def _link_same_name(conn, individual_id: str, name: str, ask_id: str, at: dateti
 
 def _apply_answers(conn, now: datetime) -> int:
     """Every unapplied "who is this?" and "same person?" answer, oldest first, so
-    when two answers name one individual the later one wins. A name typed on a
-    walkway story card (answer_detail.story_id) is a "who is this?" answer that
-    also links the individual to an existing one Juniper gave the same name; a
-    story card's "someone else" / "not sure" records its picture verdicts only."""
+    when two answers name one individual the later one wins. Every typed name
+    also links the individual to an existing one Juniper gave the same name
+    (``_apply_typed_name``); a name typed on a walkway story card
+    (answer_detail.story_id) is a plain "who is this?" answer; a story card's
+    "someone else" / "not sure" records its picture verdicts only."""
     from sqlalchemy import text
 
     rows = conn.execute(text(
@@ -1885,8 +1896,6 @@ def _apply_answers(conn, now: datetime) -> int:
         if kind == SOURCE_KIND_INDIVIDUAL:
             label = _clean_name(answer)
             if label:
-                if _detail(detail).get("story_id"):
-                    _link_same_name(conn, ref, label, ask_id, at)
                 _apply_typed_name(conn, ref, label, ask_id, at, now)
                 _record_pictures(conn, picture_rows(ask_id, ref, _detail(detail), at))
         elif kind == SOURCE_KIND_STORY_PERSON:

@@ -486,14 +486,23 @@ built before these names marked a named pair answer applied (Hub deployed
 first), the next tick finds names whose individual's label is older than the
 answer and applies them (`[VISION_PAIR_NAMES_HEALED]`).
 
+**Same-name link** (2026-10-20; story cards only before that). Every typed
+name -- a "who is this?" answer, a walkway story name, a name box on a "same
+person?" card -- also adds a `'same'` pair verdict to an existing individual
+(same stream and kind) Juniper already TYPED that name for (a copied name does
+not count), case-insensitive, earliest `labeled_at` first. It is skipped when
+the two are already linked, have any pair verdict, or when linking would join
+two groups she said are 'different' (a cannot-link through anyone already
+confirmed the same). Idempotent (`ON CONFLICT DO NOTHING`), logged as
+`[VISION_SAME_NAME_LINK]`. Applies to answers applied from 2026-10-20 on; older
+applied answers are not re-linked.
+
 **Answers from a walkway story card** (2026-10-18). The Hub's "Walkway stories"
 card lets Juniper name, or correct, each person in a story. It writes the
 `orion_ask` row already answered (`applied_at` NULL), and this loop applies it:
 a typed name is a `vision_individual` ask with `answer_detail.story_id`, applied
 exactly as above (typed label, `label_ask_id` = that ask, last typed name wins),
-plus a `'same'` pair verdict to an existing individual (same stream and kind)
-Juniper already typed that name for, unless they are already linked or have a
-pair verdict (`[VISION_SAME_NAME_LINK]`). "Someone else" / "not sure" is a
+including the same-name link below. "Someone else" / "not sure" is a
 `vision_story_person` ask: only its `answer_detail.pictures` (one per story
 crop, with `crop_id`) land in `vision_ask_picture_verdict`; 'different' ones are
 split by the pass below (a split that would move most of the individual's

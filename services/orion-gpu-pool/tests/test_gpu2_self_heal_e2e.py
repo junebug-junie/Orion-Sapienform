@@ -22,7 +22,10 @@ from pathlib import Path
 
 import httpx
 import pytest
-from langgraph.checkpoint.memory import MemorySaver
+
+pytest.importorskip("loguru")   # the controller's logger; CI installs it (orion-gpu-pool-tests.yml)
+
+from langgraph.checkpoint.memory import MemorySaver  # noqa: E402
 
 from app.main import make_prober
 from app.runtime import PoolRuntime

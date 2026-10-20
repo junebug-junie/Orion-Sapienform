@@ -30,7 +30,7 @@ class Scripted:
         grant = self.authority.control(connection, port, 'takeover', now)
         self.active[port] = dict(sponsor=sponsor, connection=connection, grant=grant,
                                  duration=duration, until=now+duration, next=now,
-                                 seq=0, frame=frame, goals=Goals(self.record) if cognition else None,
+                                 seq=0, frame=frame, goal_attempt_id=None, goals=Goals(self.record) if cognition else None,
                                  policy_id=GOAL_POLICY_ID if cognition else POLICY_ID)
         self.record('policy_started', port=port, policy_id=self.active[port]['policy_id'],
                     epoch=grant['epoch'], duration_seconds=duration)
@@ -63,6 +63,9 @@ class Scripted:
                 # diagnostic sequence, independent of pixels, RAM, or outcomes.
                 mask = (s['goals'].mask(now, s['seq']) if s['goals'] else
                         128 | (256 if s['seq'] % 15 < 4 else 0))
+                goals = s['goals']
+                s['goal_attempt_id'] = (goals.accepted['attempt_id']
+                    if goals and goals.accepted_current() and now < goals.until else None)
                 s['seq'] += 1
                 self.authority.submit(s['connection'],
                     dict(s['grant'], seq=s['seq'], mask=mask), now)
@@ -73,8 +76,8 @@ class Scripted:
         s = self.active.get(event['port'])
         if s and event['epoch'] == s['grant']['epoch']:
             event['policy_id'] = s['policy_id']
-            if s['goals'] and s['goals'].accepted:
-                event['goal_attempt_id'] = s['goals'].accepted['attempt_id']
+            if s['goal_attempt_id'] and event['seq'] == s['seq']:
+                event['goal_attempt_id'] = s['goal_attempt_id']
 
     def goal(self, sponsor, data, now):
         s = self.active.get(data['port'])

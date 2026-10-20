@@ -117,7 +117,8 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
                 for event in applied:
                     policy = scripted.active.get(event['port'])
                     goals = policy['goals'] if policy else None
-                    if goals and goals.accepted_current() and time.monotonic() < goals.until:
+                    if (goals and goals.accepted_current() and event['seq'] == policy['seq']
+                            and policy['goal_attempt_id'] == goals.accepted['attempt_id']):
                         goals.applied_start(frame+1, observer.read())
                 core.step(*masks); frame += 1
                 for port, policy in scripted.active.items():

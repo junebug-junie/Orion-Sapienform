@@ -109,3 +109,16 @@ def test_late_accepted_goal_keeps_its_full_action_window():
     assert not g.ready_for_observation(30.1)
     assert not g.ready_for_observation(33.9)
     assert g.ready_for_observation(34)
+
+
+def test_wait_submitted_before_ack_is_not_attributed_to_new_goal():
+    a, s, g, data, rows = fixture()
+    s.tick(0); a.frame(0)  # takeover barrier; initial wait is pending
+    s.goal('human', data, .01)
+    event = a.frame(.02)[1][0]
+    s.annotate(event)
+    assert 'goal_attempt_id' not in event
+    s.tick(.07)
+    event = a.frame(.07)[1][0]
+    s.annotate(event)
+    assert event['goal_attempt_id'] == data['attempt_id']

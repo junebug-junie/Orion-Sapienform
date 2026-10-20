@@ -82,6 +82,7 @@ _WORDS: dict[str, tuple[str, str]] = {
     "node:substrate.route": ("how much my routing decisions are changing", "share of 4 decisions changed"),
     "node:substrate.codebase": ("how unusual the latest change to my own code was", "clipped z / 3"),
     "node:substrate.cabinet": ("my cabinet's warming alarm", "firings in the last hour"),
+    "node:substrate.strain": ("news that I am under strain (heat or a GPU backlog)", "news events in the last hour"),
 }
 
 _STATE_WORDS = {

@@ -788,6 +788,12 @@ class BiometricsSubstrateWorker:
                     self._cabinet_heat_tick_loop(), name="substrate-cabinet-heat-tick"
                 )
             )
+        if s.enable_strain_attention:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._strain_attention_tick_loop(), name="substrate-strain-news-tick"
+                )
+            )
         # World-model publish tick: the first real producer for
         # orion:exec:request:WorldModelService. Requires the bus (it is a
         # pure publisher, no listener half) -- default-off, see settings.py's
@@ -1539,6 +1545,163 @@ class BiometricsSubstrateWorker:
                 await asyncio.to_thread(self._cabinet_heat_tick)
             except Exception:
                 logger.exception("substrate_cabinet_heat_tick_loop_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+    # Strain news (docs/superpowers/specs/2026-10-20-strain-loop-design.md Part 2). Per-process
+    # state; rebuilt from the node's own persisted event rows on the first known reading.
+    _strain_news_state: Any = None
+    _strain_history_warm: bool = False
+    _strain_redis: Any = None
+
+    def _read_regulation_reading(self, now: datetime) -> tuple[Any, Any]:
+        """(ArousalReadingV1 or None, ArousalView). None whenever ``arousal_view`` says unknown
+        (absent, unparseable, stale, future-stamped, producer unknown, Redis error)."""
+        from orion.regulation.arousal_view import ArousalView, arousal_view
+        from orion.schemas.regulation import REGULATION_STATE_REDIS_KEY, parse_regulation_state
+
+        try:
+            client = self._strain_redis
+            if client is None:
+                import redis
+
+                client = redis.Redis.from_url(
+                    self._settings.orion_bus_url, socket_timeout=2.0, socket_connect_timeout=2.0
+                )
+                self._strain_redis = client
+            raw = client.get(REGULATION_STATE_REDIS_KEY)
+        except Exception as exc:  # noqa: BLE001 -- unreadable is unknown, never strained
+            self._strain_redis = None
+            logger.warning("substrate_strain_news_regulation_read_failed err=%s", exc)
+            return None, ArousalView(level="unknown", reason="read_failed")
+        view = arousal_view(raw, now=now)
+        if not view.known:
+            return None, view
+        state = parse_regulation_state(raw)
+        return (state.arousal if state is not None else None), view
+
+    def _strain_attention_tick(self) -> None:
+        """Write node:substrate.strain's prediction_error: 1.0 on a strain news event, else 0.0.
+
+        The strain LEVEL never competes for attention (it would win every tick of a 54 h
+        episode). Only rare news events do (orion/regulation/strain_news.py: onset, escalation,
+        reminders; <= 8 per local day, >= 30 min apart). An event's 1.0 is carried unwritten for
+        attention's orienting window (world-first fades it by its age and stops it at 300 s);
+        every other tick with a known reading writes a calm 0.0, so the node has the history
+        world-first needs to call a 1.0 unusual. An unknown or stale regulation reading writes
+        nothing. Each event is also recorded in substrate_node_prediction_error_history directly,
+        so a restart rebuilds the budget from it and never re-fires an onset. Fail-open.
+        """
+        if not self._settings.enable_strain_attention:
+            return
+        from zoneinfo import ZoneInfo
+
+        from orion.attention.sustained import EVENT_ORIENTING_WINDOW_SEC
+        from orion.regulation.strain_news import (
+            EVENT_VALUE,
+            REST_VALUE,
+            STRAIN_NODE_ID,
+            rest_write_allowed,
+            seed_state,
+            strain_news,
+        )
+        from orion.substrate.prediction_error_magnitude import DEFAULT_MIN_READINGS, WINDOW_7D
+
+        try:
+            now = datetime.now(timezone.utc)
+            tz = ZoneInfo(str(self._settings.orion_situation_timezone or "UTC"))
+            reading, view = self._read_regulation_reading(now)
+            if reading is None:
+                logger.info(
+                    "substrate_strain_news_tick_unmeasured reason=%s age_sec=%s",
+                    view.reason, view.age_sec,
+                )
+                return
+            if self._strain_news_state is None:
+                local_midnight = now.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+                since = min(local_midnight, reading.since, now - timedelta(hours=1))
+                since = max(since, now - WINDOW_7D)
+                times = self._store.fetch_prediction_error_event_times(
+                    node_id=STRAIN_NODE_ID, since=since
+                )
+                self._strain_news_state = seed_state(times, reading, now, tz)
+                logger.info(
+                    "substrate_strain_news_seeded events_found=%d events_today=%d "
+                    "episode_since=%s last_event_at=%s",
+                    len(times), self._strain_news_state.events_today,
+                    self._strain_news_state.episode_since, self._strain_news_state.last_event_at,
+                )
+            if not self._strain_history_warm:
+                # World-first needs DEFAULT_MIN_READINGS 7-day readings before it can call any
+                # value unusual. Until then an event would be spent where attention cannot see
+                # it: build the calm history first, step the news later.
+                n = self._store.count_prediction_error_history(
+                    node_id=STRAIN_NODE_ID, since=now - WINDOW_7D
+                )
+                if n < DEFAULT_MIN_READINGS:
+                    self._write_prediction_error_node(
+                        node_id=STRAIN_NODE_ID, error=REST_VALUE, now=now, reducer_key="strain_news"
+                    )
+                    logger.info(
+                        "substrate_strain_news_tick_warming history_rows=%d needed=%d level=%s",
+                        n, DEFAULT_MIN_READINGS, reading.arousal_level,
+                    )
+                    return
+                self._strain_history_warm = True
+            event, self._strain_news_state = strain_news(
+                self._strain_news_state, reading, now, tz
+            )
+            state = self._strain_news_state
+            if event is not None:
+                self._write_prediction_error_node(
+                    node_id=STRAIN_NODE_ID, error=EVENT_VALUE, now=now, reducer_key="strain_news"
+                )
+                try:
+                    self._store.save_prediction_error_history_samples(
+                        [(STRAIN_NODE_ID, now, EVENT_VALUE)]
+                    )
+                except Exception:
+                    logger.exception("substrate_strain_news_event_record_failed")
+                logger.info(
+                    "substrate_strain_news_event node_id=%s value=%.1f %s",
+                    STRAIN_NODE_ID, EVENT_VALUE, event.as_log_fields(),
+                )
+                return
+            wrote = "none"
+            if rest_write_allowed(state, now, EVENT_ORIENTING_WINDOW_SEC):
+                self._write_prediction_error_node(
+                    node_id=STRAIN_NODE_ID, error=REST_VALUE, now=now, reducer_key="strain_news"
+                )
+                wrote = "0.0"
+            logger.info(
+                "substrate_strain_news_tick_completed level=%s causes=%s cabinet_temp_c=%s "
+                "episode_since=%s events_today=%d last_event_at=%s onset_pending=%s "
+                "escalation_pending=%s reminders_consumed=%d wrote=%s",
+                reading.arousal_level,
+                "+".join(sorted(state.episode_causes)) or "-",
+                reading.cabinet_temp_c,
+                None if state.episode_since is None else state.episode_since.isoformat(),
+                state.events_today,
+                None if state.last_event_at is None else state.last_event_at.isoformat(),
+                state.onset_pending,
+                state.escalation_pending,
+                state.reminders_consumed,
+                wrote,
+            )
+        except Exception:
+            logger.exception("substrate_strain_news_tick_failed")
+
+    async def _strain_attention_tick_loop(self) -> None:
+        interval = float(self._settings.strain_attention_tick_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._strain_attention_tick)
+            except Exception:
+                logger.exception("substrate_strain_news_tick_loop_failed")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:

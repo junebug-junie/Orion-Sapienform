@@ -35,7 +35,7 @@ def test_prompt_reaching_nodes_come_from_the_glossary_and_exclude_world_and_plac
     assert nodes == sorted([
         "node:substrate.biometrics", "node:substrate.bus_synaptic", "node:substrate.cabinet",
         "node:substrate.chat", "node:substrate.codebase", "node:substrate.execution",
-        "node:substrate.route",
+        "node:substrate.route", "node:substrate.strain",
     ])
     assert "node:substrate.perception" not in nodes  # the world, not the body
     assert "node:substrate.harness_closure" not in nodes  # placeholder

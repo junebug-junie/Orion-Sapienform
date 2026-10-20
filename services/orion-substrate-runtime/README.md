@@ -1577,3 +1577,35 @@ deleted.
 (`orion/autonomy/cabinet_heat.py`: non-zero only while elevated AND rising >= 0.5 C / 15 min, via the
 shared `orion.hardware_watch.rules.cabinet_rise_c`), so the existing dynamics engine admits it to the
 broadcast. Replay: `scripts/analysis/replay_attention_eligibility.py --hours 72`.
+
+
+## Strain news -> workspace attention (strain loop Part 2, 2026-10-20)
+
+Spec: `docs/superpowers/specs/2026-10-20-strain-loop-design.md` Part 2. Pure rule:
+`orion/regulation/strain_news.py`.
+
+`SUBSTRATE_STRAIN_ATTENTION_ENABLED` (ON) runs a tick every
+`SUBSTRATE_STRAIN_ATTENTION_TICK_INTERVAL_SEC` (30 s). It reads Redis `orion:regulation:latest`
+(judged by `orion.regulation.arousal_view`) and writes `node:substrate.strain`'s `prediction_error`:
+
+- **1.0 on a strain news event.** Onset (the level turns strained), escalation (a new strain cause
+  joins the episode, or the cabinet first crosses critical 34 C in the episode), reminder (still
+  strained at 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h). At most 8 per local day
+  (`ORION_SITUATION_TIMEZONE`), at least 30 min apart; reminders may not take the last 2 slots.
+- **Nothing for 300 s after an event**, so the 1.0's age is the event's age. World-first treats the
+  node as event-written (glossary `absent_means` starts "only written"): it fades and stops competing
+  at the 300 s orienting window.
+- **0.0 on every other tick with a known reading.** World-first needs 200 readings in 7 days before
+  it can call any value unusual. A node written only on events (<= 56 a week) would never compete.
+- **Nothing while the reading is unknown or stale.** Unknown is never strain and never relief.
+
+The strain level itself never competes for attention. Each event is also written straight to
+`substrate_node_prediction_error_history`. After a restart the tick rebuilds the budget from those
+rows (`seed_state`), so an onset that was already sent is not sent again. Until the node has 200
+history rows, the tick writes only 0.0 and sends no event (log `substrate_strain_news_tick_warming`).
+
+Logs: `substrate_strain_news_event kind=... episode_since=... causes=... events_today=...`,
+`substrate_strain_news_tick_completed ...`, `substrate_strain_news_tick_unmeasured reason=...`.
+
+Budget replay (exit 1 on any day over 8 events, 3 % of ticks, or 10 % taken from other winners):
+`python scripts/analysis/replay_strain_news.py`.

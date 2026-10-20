@@ -1497,6 +1497,10 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "services.orion-hub.scripts.api_routes:_mutation_arousal_level -> "
             "orion.substrate.mutation_pressure:PressureAccumulator.ready_for_proposal "
             "(no self-modification proposal while strained)",
+            "services.orion-substrate-runtime.app.worker:"
+            "BiometricsSubstrateWorker._strain_attention_tick -> orion.regulation.strain_news:strain_news "
+            "(strained -> rare budgeted news events on node:substrate.strain for attention; "
+            "the level itself never competes)",
         ),
         notes=(
             "Temporal Self rev 4 (PR #2369) R3. Inputs: E1 Juniper turns "

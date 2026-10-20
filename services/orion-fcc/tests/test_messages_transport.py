@@ -360,14 +360,10 @@ class RouteTests(unittest.TestCase):
                 patch_error_emitter(path)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 # --- compaction requests go upstream without tools ----------------------------------------
 
 from orion_fcc_messages_transport import (  # noqa: E402
-    COMPACTION_PROMPT_MARK,
     is_compaction_request,
     prepare_request,
 )
@@ -382,8 +378,11 @@ HISTORY = [
 # The CLI's compaction turn: its no-tools preamble, then the summary prompt (Claude Code 2.1.304).
 COMPACT_TURN = (
     "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\n\n"
-    f"{COMPACTION_PROMPT_MARK}, paying close attention to the user's explicit requests"
+    "Your task is to create a detailed summary of the conversation so far, paying close "
+    "attention to the user's explicit requests"
 )
+# The CLI's partial-compaction wording, sent without the preamble here to test the other mark.
+PARTIAL_TURN = "Your task is to create a detailed summary of the RECENT portion of the conversation"
 
 
 def _req(last, **extra):
@@ -395,7 +394,11 @@ def _req(last, **extra):
 
 class CompactionRequestTests(unittest.TestCase):
     def test_compaction_turn_is_sent_without_tools_and_keeps_history(self):
-        for content in (COMPACT_TURN, [{"type": "text", "text": COMPACT_TURN}]):
+        for content in (
+            COMPACT_TURN,
+            [{"type": "text", "text": COMPACT_TURN}],
+            [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}, {"type": "text", "text": PARTIAL_TURN}],
+        ):
             out = prepare_request(_req({"role": "user", "content": content}))
             self.assertIsNone(out.tools)
             self.assertIsNone(out.tool_choice)
@@ -439,3 +442,7 @@ class CompactionRequestTests(unittest.TestCase):
             self.assertEqual(client.post("/v1/messages", json={**body, "stream": False}).status_code, 200)
         self.assertIsNone(seen[0].tools)
         self.assertEqual(len(seen[1].tools), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

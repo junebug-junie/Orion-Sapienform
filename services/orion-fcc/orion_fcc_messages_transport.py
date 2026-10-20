@@ -21,12 +21,16 @@ PING = 'event: ping\ndata: {"type":"ping"}\n\n'
 # uvicorn's logger is the one whose INFO lines reach `docker logs` in this container.
 logger = logging.getLogger("uvicorn.error")
 
-# Opening sentence of Claude Code's compaction prompt (2.1.304, the CLI in the governor and
-# Hub). The CLI sends that prompt as the last user turn WITH the turn's tools still attached
+# Fixed text of Claude Code's compaction prompts (2.1.304, the CLI in the governor and Hub):
+# the no-tools preamble, and the opening shared by its full, partial ("RECENT portion") and
+# "this conversation" wordings. The CLI sends that prompt as the last user turn WITH the turn's tools still attached
 # and only asks, in text, for no tool calls. Claude models obey; the local Qwen lanes often
 # call a tool, and the CLI keeps the text before the call ("Now let me read the remaining
 # files...") as the summary, so the task is lost: 33 of 51 live compactions on 2026-10-17.
-COMPACTION_PROMPT_MARK = "Your task is to create a detailed summary of the conversation so far"
+COMPACTION_PROMPT_MARKS = (
+    "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.",
+    "Your task is to create a detailed summary of ",
+)
 
 
 def _text_of(content):
@@ -50,13 +54,16 @@ def is_compaction_request(request_data):
     last = messages[-1]
     if getattr(last, "role", None) != "user":
         return False
-    return COMPACTION_PROMPT_MARK in _text_of(getattr(last, "content", None))
+    text = _text_of(getattr(last, "content", None))
+    return any(mark in text for mark in COMPACTION_PROMPT_MARKS)
 
 
 def prepare_request(request_data):
     """Compaction requests go upstream with no tools, so the model can only answer in text.
 
     Earlier tool calls in the history stay as they are; only the offer of new ones is removed.
+    Side effect: upstream FCC's no-tools request intercepts (api/detection.py) now see this
+    request; they only match title/filepath/safety-classifier shapes, never a CLI transcript.
     Every other request is returned unchanged (same object)."""
     if not is_compaction_request(request_data) or not getattr(request_data, "tools", None):
         return request_data

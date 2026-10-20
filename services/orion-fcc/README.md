@@ -143,11 +143,16 @@ task. Live 2026-10-17: 33 of 51 compactions had no `Summary:` section
 (`fcc_compaction_degenerate` in the governor log).
 
 `prepare_request` in `orion_fcc_messages_transport.py` spots that request (the last turn is a
-user message containing the CLI's fixed sentence `COMPACTION_PROMPT_MARK`) and sends it
-upstream with `tools` and `tool_choice` removed. Earlier tool calls in the history are kept;
-all four live llama.cpp templates render that history with no tools offered (checked with
-`/apply-template`, 2026-10-20). Every other request is passed through unchanged. Each stripped
-request logs `fcc_compaction_tools_stripped` to `docker logs`.
+user message holding one of the CLI's fixed `COMPACTION_PROMPT_MARKS`: its "TEXT ONLY, do not
+call tools" preamble, or the opening its full and partial summary prompts share) and sends it
+upstream with `tools` and `tool_choice` removed. Earlier tool calls in the history are kept.
+All four live llama.cpp lanes accept that shape on their Anthropic path (checked with
+`/v1/messages/count_tokens`, which converts and templates without generating, 2026-10-20).
+Every other request is passed through unchanged. Each stripped request logs
+`fcc_compaction_tools_stripped` to `docker logs`.
+
+With no tools sent, upstream FCC's no-tools intercepts (`api/detection.py`) also see the
+request. They match title, filepath and safety-classifier shapes, not a CLI transcript.
 
 If a CLI upgrade rewords the prompt, the match stops and requests pass through as before
 (no failure, just no fix). The governor's `fcc_compaction_degenerate` count is the signal.

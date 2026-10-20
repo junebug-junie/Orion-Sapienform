@@ -12,7 +12,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -147,6 +147,7 @@ async def health() -> dict[str, Any]:
                 "last_select_seconds": st.last_select_seconds,
                 "last_input_ts": st.last_input_ts.isoformat() if st.last_input_ts else None,
                 "alerts": st.alerts,
+                "change_events": st.events,
             }
     return {"ok": e is not None and _last_tick["ok"] is not False, "service": _settings.service_name,
             "enabled": _settings.enabled, "publish_enabled": _settings.publish_enabled,
@@ -285,3 +286,46 @@ async def get_effect(action: str, series_id: str) -> dict[str, Any]:
     """The Orion-facing answer: best available estimate of how much `action` moves `series_id`."""
     _ready()
     return await _causal(effects.best_effect, action, series_id)
+
+
+class ChangeEventBody(BaseModel):
+    scope: str = Field(..., pattern=r"^(\*|[a-z0-9_]+(\.[a-z0-9_]+)+)$")
+    effect: str = Field(..., pattern=r"^(break|exclude)$")
+    started_at: AwareDatetime
+    ended_at: AwareDatetime | None = None
+    title: str = Field(..., min_length=1, max_length=200)
+    notes: str = Field("", max_length=2000)
+    source: str = Field(..., min_length=1, max_length=80)
+
+
+@app.post("/change-events")
+async def post_change_event(body: ChangeEventBody) -> dict[str, Any]:
+    """Record a known change under a series: ``break`` (a changepoint) or ``exclude`` (a window to mask).
+    Applied on the next tick: the selection reruns because its event fingerprint changed. A break
+    becomes the training start once enough post-break data exists for the backtest (/health shows when)."""
+    e = _ready()
+    if body.scope != "*" and e.registry.get(body.scope) is None:
+        raise HTTPException(422, f"unknown series {body.scope}")
+    if body.effect == "exclude" and (body.ended_at is None or body.ended_at <= body.started_at):
+        raise HTTPException(422, "exclude needs ended_at after started_at")
+    if body.effect == "break" and body.ended_at is not None:
+        raise HTTPException(422, "a break is a moment; leave ended_at empty")
+    if body.started_at > e.clock() + timedelta(minutes=5):
+        raise HTTPException(422, "started_at is in the future; record a change after it happens")
+    row = await asyncio.to_thread(_store.insert_change_event, body.model_dump())
+    return {"change_event": _jsonable(row)}
+
+
+@app.delete("/change-events/{event_id}")
+async def delete_change_event(event_id: uuid.UUID) -> dict[str, Any]:
+    """Retract a mistaken event (kept in the table, ignored from now on; the selection reruns)."""
+    _ready()
+    if not await asyncio.to_thread(_store.retract_change_event, str(event_id)):
+        raise HTTPException(404, "unknown or already retracted change event")
+    return {"retracted": str(event_id)}
+
+
+@app.get("/change-events")
+async def get_change_events() -> dict[str, Any]:
+    _ready()
+    return {"change_events": _jsonable(await asyncio.to_thread(_store.change_events))}

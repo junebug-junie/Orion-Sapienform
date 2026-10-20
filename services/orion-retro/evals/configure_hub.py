@@ -9,7 +9,7 @@ def configure(env, root, origin):
     if u.scheme not in ('http','https') or not u.hostname or u.username or u.password or u.query or u.fragment or u.path not in ('','/'):
         raise ValueError('origin must be an exact http(s) origin, without path or credentials')
     origin=origin.rstrip('/')
-    for path in (root/'hub-auth/hub.token',root/'hub-auth/browser.code'):
+    for path in (root/'hub-auth/hub.token',):
         if not path.is_file():raise ValueError('run install_catalog.py first')
     values={'HUB_RETRO_ENABLED':'true','HUB_RETRO_ORIGIN':origin,
         'HUB_RETRO_SOCKET':'/run/orion-retro/retro.sock','HUB_RETRO_AUTH_DIR':'/run/orion-retro-auth',

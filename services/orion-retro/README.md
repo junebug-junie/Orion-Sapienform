@@ -117,7 +117,7 @@ schema migrations. A stopped service does not delete game data.
 
 ## Browser adapter (P2)
 
-Hub now supplies a separate scoped operator login and browser control/media proxy;
+Hub now supplies a browser control/media proxy using Hub’s network access boundary;
 see [Retro browser runbook](../../docs/runbooks/retro-browser.md). The original CLI
 credential remains separate. `/sessions/{id}/media` carries bounded transient
 video/PCM packets, authenticated and owner-checked like input. Direct browser Origin

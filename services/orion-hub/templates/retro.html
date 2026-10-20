@@ -5,8 +5,7 @@
 </style><script src="/static/js/retro-panel.js?v=1" defer></script></head>
 <body><header><h1>Retro</h1><a href="/#hub" target="_top">Back to Hub</a></header>
 <p>Play a local game. Orion is not controlling a player in this phase. Saves are unavailable.</p>
-<form id="login" class="bar"><label>Retro access code <input id="code" type="password" autocomplete="current-password" required></label><button class="primary">Unlock</button></form>
-<section id="player" hidden><div class="bar"><select id="game" aria-label="Game"></select><select id="port" aria-label="Controller"><option value="0">Player 1</option><option value="1">Player 2</option></select><button id="new" class="primary">New game</button><button id="join">Connect / resume</button><button id="pause">Pause</button><button id="stop">Stop</button><button id="logout">Lock</button></div>
+<section id="player" hidden><div class="bar"><select id="game" aria-label="Game"></select><select id="port" aria-label="Controller"><option value="0">Player 1</option><option value="1">Player 2</option></select><button id="new" class="primary">New game</button><button id="join">Connect / resume</button><button id="pause">Pause</button><button id="stop">Stop</button></div>
 <div class="screen"><canvas id="screen" width="256" height="240" tabindex="0" aria-label="Game screen. Arrow keys move, Z flies or jumps, X is B, Enter is Start."></canvas></div>
 <div class="bar"><button id="start">Start</button><button id="takeover">Take this controller</button><label><input type="checkbox" id="mute">Mute</label></div>
 <p>Click the screen to control it. <kbd>↑ ↓ ← →</kbd> move · <kbd>Z</kbd> jump / fly · <kbd>X</kbd> B · <kbd>Enter</kbd> Start · <kbd>Shift</kbd> Select. A standard gamepad also works over HTTPS.</p>

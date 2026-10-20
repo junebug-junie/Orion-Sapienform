@@ -29,9 +29,9 @@ try{
     };
   },Number(process.env.RETRO_ACK_DELAY_MS || 0));
   await page.goto(url+'/retro');
-  assert.equal(await page.evaluate(async()=> (await fetch('/api/retro/games')).status),401);
-  await page.type('#code',fs.readFileSync(out+'/auth/browser.code','utf8'));
-  await page.click('#login button');await page.waitForSelector('#player:not([hidden])');
+  assert.equal(await page.evaluate(async()=> (await fetch('/api/retro/games')).status),200);
+  await page.waitForSelector('#player:not([hidden])');
+  if(await page.$('#code')) throw new Error('Unexpected access-code prompt');
   await page.select('#game',process.env.RETRO_EVAL_GAME);await page.click('#new');
   await page.waitForFunction(()=>Number(document.querySelector('#screen').dataset.appliedFrame)>10,{timeout:10000});
   await page.click('#start');await pause(600);await page.click('#screen');

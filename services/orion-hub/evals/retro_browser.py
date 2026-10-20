@@ -47,7 +47,7 @@ def run(args):
     from orion.retro.pad_lab import build_rom
     output=args.output.resolve();output.mkdir(mode=0o700,exist_ok=False,parents=True)
     for d in ('auth','catalog','ipc','evidence'):(output/d).mkdir(mode=0o700)
-    for name in ('hub.token','browser.code','operator.token'):
+    for name in ('hub.token','operator.token'):
         p=output/'auth'/name;p.write_text(secrets.token_urlsafe(48));p.chmod(0o600)
     if args.catalog: catalog=args.catalog.resolve()
     else:

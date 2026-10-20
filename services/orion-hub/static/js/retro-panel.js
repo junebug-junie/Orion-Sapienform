@@ -127,22 +127,20 @@
     ctx.putImageData(image,0,0);screen.dataset.frame=h.frame;
   }
   async function load(){const games=await api('games');el('game').replaceChildren(...games.map(g=>{const o=document.createElement('option');o.value=g.game_id;o.textContent=g.title;o.dataset.ports=JSON.stringify(g.ports);return o;}));el('game').value=games.some(g=>g.game_id==='spacegulls')?'spacegulls':games[0]?.game_id;const state=await api('health/ready');sid=state.session?.session_id;
-    el('login').hidden=true;el('player').hidden=false;
+    el('player').hidden=false;
     if(state.session && ['running','paused','starting'].includes(state.session.state)){el('game').value=state.session.game_id;report('Game '+state.session.state+'. Connect / resume to control it.');}else report('Choose a game.');}
   const action = (id, fn) => el(id).onclick=async()=>{el(id).disabled=true;try{await fn();}catch(err){report(err.message);}finally{el(id).disabled=false;}};
-  el('login').onsubmit=async e=>{e.preventDefault();try{await api('login',{code:el('code').value});el('code').value='';await load();}catch(err){report(err.message);}};
   action('new',async()=>{const epoch=transportEpoch;await sound();if(epoch!==transportEpoch || document.hidden)return;const s=await api('sessions',{game_id:el('game').value,idempotency_key:Array.from(crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,"0")).join("")});sid=s.session_id;if(epoch===transportEpoch && !document.hidden)await connect();});
   action('join',connect);
   action('pause',async()=>{if(sid)await api(`sessions/${sid}/pause`,{});neutral();});
   action('stop',async()=>{if(sid)await api(`sessions/${sid}/stop`,{});neutral();sid=null;report('Game stopped.');});
   action('takeover',()=>grant('takeover'));
   action('start',async()=>{screen.focus();keys.add('Enter');send();setTimeout(()=>keys.delete('Enter'),150);});
-  action('logout',async()=>{neutral();await api('logout',{});el('player').hidden=true;el('login').hidden=false;});
   el('mute').onchange=()=>{if(gain)gain.gain.value=el('mute').checked?0:1;};
   el('port').onchange=neutral;
   screen.addEventListener('keydown',e=>{if(bits[e.code]){e.preventDefault();if(!keys.has(e.code)){keys.add(e.code);send();}}});
   window.addEventListener('keyup',e=>{keys.delete(e.code);send();});
   window.addEventListener('blur',neutral);window.addEventListener('pagehide',neutral);window.addEventListener('gamepaddisconnected',neutral);
   document.addEventListener('visibilitychange',()=>{if(document.hidden)neutral();});
-  void load().catch(()=>{});
+  void load().catch(err=>report(err.message));
 })();

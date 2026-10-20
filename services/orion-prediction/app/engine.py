@@ -40,7 +40,7 @@ from app.backtest import (
     step_owner,
     stitch,
 )
-from app.events import with_events
+from app.events import adopt_after, with_events
 from app.frame import floor_ts, mask_windows, to_grain, train_ready, training_slice
 from app.models import build_models, split_seasonalities
 from app.series import Registry, Seasonality, SeriesSpec
@@ -97,6 +97,7 @@ class Served:
     usable: tuple[Seasonality, ...]
     refused: tuple[str, ...]
     train_from: datetime | None = None  # the effective training start this selection was built on
+    events_key: str | None = None       # fingerprint of the change events it was built with
 
 
 @dataclass
@@ -131,11 +132,28 @@ class Engine:
         self.state: dict[str, SeriesState] = {s.series_id: SeriesState() for s in registry.targets()}
 
     # --- change events --------------------------------------------------------------------
+    def change_events(self) -> list[dict]:
+        """All live change events. A failed read falls back to the last good list (and the error is
+        surfaced as an alert) -- a hiccup on this table must not stop forecasting."""
+        loader = getattr(self.store, "change_events", None)
+        if loader is None:
+            return []
+        try:
+            self._events = loader()
+            self._events_error = None
+        except Exception as exc:  # noqa: BLE001
+            self._events_error = f"{type(exc).__name__}: {exc}"[:300]
+            logger.warning("prediction_change_events_unreadable err=%s (using %d cached)", self._events_error,
+                           len(getattr(self, "_events", [])))
+        return list(getattr(self, "_events", []))
+
     def effective(self, spec: SeriesSpec, now: datetime) -> SeriesSpec:
         """The registry spec with change events folded in (exclusions, adopted/pending breaks)."""
-        loader = getattr(self.store, "change_events", None)
-        events = loader() if loader else []
-        eff, summary = with_events(spec, events, now)
+        events = self.change_events()
+        eff, summary = with_events(spec, events, now,
+                                   adopt_after(self.backtest_windows, self.backtest_step_min, spec))
+        if getattr(self, "_events_error", None):
+            summary["error"] = self._events_error
         self.state.setdefault(spec.series_id, SeriesState()).events = summary
         return eff
 
@@ -177,8 +195,9 @@ class Engine:
         cols = {}
         for cid in spec.covariates:
             cov = self.registry.get(cid)
-            cols[cid] = to_grain(self.store.points(cov, start, end), cov.grain_min, cov.agg, 0,
-                                 start=start, end=end).reindex(index)
+            # The target's exclusions (incl. '*' change events) mask its covariates too.
+            cols[cid] = mask_windows(to_grain(self.store.points(cov, start, end), cov.grain_min, cov.agg, 0,
+                                              start=start, end=end), spec.exclude).reindex(index)
         return pd.DataFrame(cols, index=index)
 
     # --- select ---------------------------------------------------------------------------
@@ -211,7 +230,8 @@ class Engine:
             selection_id=str(champ["selection_id"]), selected_at=champ["fitted_at"],
             run_ids={"champion": str(champ["run_id"]), "baseline": str(base["run_id"])},
             residuals=residuals, usable=usable, refused=tuple(champ["refused_seasonalities"]),
-            train_from=_parse_ts((champ.get("metrics") or {}).get("train_from")))
+            train_from=_parse_ts((champ.get("metrics") or {}).get("train_from")),
+            events_key=(champ.get("metrics") or {}).get("events_key"))
         st.next_select_at = champ["fitted_at"] + self.select_interval
         return True
 
@@ -253,7 +273,8 @@ class Engine:
             rows.append({**common, "run_id": run_id, "kind": kind, "model": kind,
                          "n_windows": int(np.any(np.isfinite(paths), axis=1).sum()),
                          "metrics": {"covariates": list(spec.covariates), "gate_version": GATE_VERSION,
-                                     "train_from": spec.train_from.isoformat() if spec.train_from else None},
+                                     "train_from": spec.train_from.isoformat() if spec.train_from else None,
+                                     "events_key": st.events.get("fingerprint")},
                          "assignment": {str(k): v for k, v in assignment.items()},
                          "served_baseline": served_baseline, "backtest_seconds": blend_s,
                          "residual_paths": _clean(paths), "errors": []})
@@ -261,7 +282,8 @@ class Engine:
         st.served = Served(selection=sel, selection_id=selection_id, selected_at=now,
                            run_ids={"champion": champ_id, "baseline": base_id},
                            residuals={"champion": champ_res, "baseline": base_res},
-                           usable=tuple(usable), refused=tuple(refused), train_from=spec.train_from)
+                           usable=tuple(usable), refused=tuple(refused), train_from=spec.train_from,
+                           events_key=st.events.get("fingerprint"))
         st.next_select_at = now + self.select_interval
         st.last_select_seconds = time.monotonic() - t0
         st.last_select_error = None
@@ -273,7 +295,10 @@ class Engine:
         """``spec`` is the effective spec: a change event that moved the training start (a break
         adopted) makes the served selection stale at once."""
         st = self.state[spec.series_id]
-        if st.served is not None and st.served.train_from != spec.train_from:
+        backing_off = st.last_select_error is not None and st.next_select_at is not None and now < st.next_select_at
+        stale = st.served is not None and (st.served.train_from != spec.train_from
+                                           or st.served.events_key != st.events.get("fingerprint"))
+        if stale and not backing_off:
             return True
         return st.next_select_at is None or now >= st.next_select_at
 
@@ -458,6 +483,8 @@ class Engine:
             alerts["selection_failed"] = st.last_select_error
         if st.last_tick_error:
             alerts["tick_failed"] = st.last_tick_error
+        if st.events.get("error"):
+            alerts["change_events_unreadable"] = st.events["error"]
         c = live.get("coverage80")
         if c is not None and live.get("n", 0) >= MIN_LIVE_COVERAGE_N and not (COVERAGE_BAND[0] <= c <= COVERAGE_BAND[1]):
             alerts["coverage_out_of_band"] = f"live 80% coverage {c:.2f} over {live['n']} scores"

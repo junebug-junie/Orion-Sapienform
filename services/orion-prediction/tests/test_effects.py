@@ -90,3 +90,15 @@ def test_guard_says_unsafe_when_input_is_stale(monkeypatch):
     clock.t = end + timedelta(hours=3)   # sensor silent for 3 h
     g = Effects(eng).guard(spec)
     assert g["safe"] is False and "input stale" in g["reason"]
+
+
+def test_intervention_estimate_refuses_a_history_window_that_crosses_a_break():
+    from datetime import timezone
+    reg, spec, s, store, end = _setup()
+    eng = _engine(reg, store, Clock(end + timedelta(hours=2)), [])
+    brk = end - timedelta(days=2)
+    store.change_events = lambda: [{"scope": "*", "effect": "break", "started_at": brk, "ended_at": None}]
+    store.intervention = lambda i: {"intervention_id": i, "action": "x", "experiment_id": None,
+                                    "started_at": end - timedelta(hours=3), "ended_at": end - timedelta(hours=2)}
+    with pytest.raises(CausalError, match="break"):
+        Effects(eng).estimate_intervention("iv1", "test.temp")

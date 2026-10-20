@@ -21,7 +21,8 @@ from app.causal import (
     time_of_day_profile,
 )
 from app.engine import Engine, InputStale
-from app.frame import to_grain, training_slice
+from app.events import breaks_between
+from app.frame import mask_windows, to_grain, training_slice
 from app.models import build_models, split_seasonalities
 from app.series import SeriesSpec
 
@@ -41,8 +42,9 @@ class Effects:
         return spec
 
     def _series(self, spec: SeriesSpec, start: datetime, end: datetime) -> pd.Series:
-        return to_grain(self.store.points(spec, start, end), spec.grain_min, spec.agg, spec.max_fill_min,
-                        start=start, end=end)
+        """Regular view with the spec's exclusions (registry + change events) masked out."""
+        return mask_windows(to_grain(self.store.points(spec, start, end), spec.grain_min, spec.agg,
+                                     spec.max_fill_min, start=start, end=end), spec.exclude)
 
     # --- level 1 --------------------------------------------------------------------------
     def scenario(self, series_id: str, covariate_id: str, path: list[float], days: float = 7.0) -> dict:
@@ -82,7 +84,13 @@ class Effects:
         if end + timedelta(minutes=lag_min) > now:
             raise CausalError("the intervention window (plus lag) has not finished yet")
         span_start = start - timedelta(days=pre_days * 4)
-        series = self._series(spec, span_start, end + timedelta(minutes=lag_min + spec.grain_min))
+        stop = end + timedelta(minutes=lag_min + spec.grain_min)
+        crossed = breaks_between(self.engine.change_events(), series_id, span_start, stop)
+        if crossed:
+            raise CausalError(f"a change-event break at {crossed[-1].isoformat()} falls inside the "
+                              "intervention's history window; its counterfactual would straddle two regimes")
+        spec = self.engine.effective(spec, now)
+        series = self._series(spec, span_start, stop)
         usable, _ = split_seasonalities(spec, int(pre_days * 1440 // spec.grain_min))
         model = build_models(spec, usable)[ITS_MODEL]
         busy = [(r["started_at"], r["ended_at"] + timedelta(minutes=lag_min)) for r in self.store.interventions(limit=500)
@@ -148,7 +156,12 @@ class Effects:
         last = max(pd.Timestamp(b["end"]) for b in blocks).to_pydatetime()
         if last > self.engine.clock():
             raise CausalError("the experiment has blocks that have not finished")
-        history = self._series(spec, first - timedelta(days=PROFILE_DAYS), first)
+        spec = self.engine.effective(spec, self.engine.clock())
+        hist_start = first - timedelta(days=PROFILE_DAYS)
+        before = breaks_between(self.engine.change_events(), spec.series_id, hist_start, first)
+        if before:   # the time-of-day profile must come from the regime the experiment ran in
+            hist_start = before[-1]
+        history = self._series(spec, hist_start, first)
         profile = time_of_day_profile(history.dropna(), spec.grain_min) if history.notna().any() else None
         series = self._series(spec, first, last)
         est = analyze_switchback(series, blocks, exp["burn_in_min"], spec.grain_min, profile)

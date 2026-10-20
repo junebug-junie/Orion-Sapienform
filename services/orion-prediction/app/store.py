@@ -20,7 +20,7 @@ TABLES = {
     "prediction_experiment": ("experiment_id", "design", "guard", "status"),
     "prediction_intervention": ("intervention_id", "action", "arm", "experiment_id"),
     "prediction_effect_estimate": ("estimate_id", "claim_kind", "effect", "details"),
-    "prediction_change_event": ("event_id", "scope", "effect", "started_at", "ended_at"),
+    "prediction_change_event": ("event_id", "scope", "effect", "started_at", "ended_at", "retracted_at"),
 }
 
 
@@ -199,7 +199,12 @@ class PostgresStore:
     # --- change events ----------------------------------------------------------------------
     def change_events(self) -> list[dict]:
         return self._all("SELECT event_id, scope, effect, started_at, ended_at, title, notes, source, created_at "
-                         "FROM prediction_change_event ORDER BY started_at")
+                         "FROM prediction_change_event WHERE retracted_at IS NULL ORDER BY started_at")
+
+    def retract_change_event(self, event_id: str) -> bool:
+        rows = self._all("UPDATE prediction_change_event SET retracted_at = now() WHERE event_id = %s "
+                         "AND retracted_at IS NULL RETURNING event_id", (event_id,))
+        return bool(rows)
 
     def insert_change_event(self, row: dict) -> dict:
         row = {"event_id": str(uuid.uuid4()), "ended_at": None, "notes": "",

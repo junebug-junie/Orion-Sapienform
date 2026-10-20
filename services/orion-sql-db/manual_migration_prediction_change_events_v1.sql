@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS prediction_change_event (
     notes       text         NOT NULL DEFAULT '',
     source      varchar(80)  NOT NULL,
     created_at  timestamptz  NOT NULL DEFAULT now(),
+    retracted_at timestamptz,               -- set by DELETE /change-events/{id}; retracted events are ignored
     CHECK (effect <> 'exclude' OR (ended_at IS NOT NULL AND ended_at > started_at))
 );
 

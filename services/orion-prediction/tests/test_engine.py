@@ -342,4 +342,58 @@ def test_change_events_mask_training_and_an_adopted_break_forces_a_reselect():
     asyncio.run(eng.tick(_sync))
     second = eng.state["test.temp"].served
     assert second.selection_id != first.selection_id and second.train_from == brk
-    assert eng.state["test.temp"].events["breaks_adopted"]
+    assert eng.state["test.temp"].events["break_adopted"] == brk.isoformat()
+
+
+def _events_engine():
+    reg, spec, s, store, end = _setup(days=12.0)
+    clock = Clock(end + timedelta(seconds=90))
+    store.events = []
+    store.change_events = lambda: store.events
+    return reg, spec, store, end, clock, _engine(reg, store, clock, [])
+
+
+def test_a_failed_reselect_after_an_event_change_backs_off_instead_of_looping():
+    reg, spec, store, end, clock, eng = _events_engine()
+    asyncio.run(eng.tick(_sync))
+    store.events.append({"scope": "*", "effect": "exclude", "started_at": end - timedelta(days=1),
+                         "ended_at": end - timedelta(days=1) + timedelta(hours=1)})
+    calls = []
+
+    def boom(spec, now):
+        calls.append(now)
+        raise RuntimeError("fit failed")
+    eng.select = boom
+    for _ in range(3):
+        asyncio.run(eng.tick(_sync))
+        clock.t += timedelta(seconds=30)
+    assert len(calls) == 1 and "selection_failed" in eng.state["test.temp"].alerts
+
+
+def test_a_new_change_event_forces_one_reselect_then_settles():
+    reg, spec, store, end, clock, eng = _events_engine()
+    asyncio.run(eng.tick(_sync))
+    n0 = len({r["selection_id"] for r in store.runs})
+    store.events.append({"scope": "*", "effect": "exclude", "started_at": end - timedelta(days=1),
+                         "ended_at": end - timedelta(days=1) + timedelta(hours=1)})
+    asyncio.run(eng.tick(_sync))
+    asyncio.run(eng.tick(_sync))
+    assert len({r["selection_id"] for r in store.runs}) == n0 + 1
+
+
+def test_an_unreadable_events_table_keeps_forecasting_on_the_last_good_list():
+    reg, spec, store, end, clock, eng = _events_engine()
+    store.events.append({"scope": "*", "effect": "exclude", "started_at": end - timedelta(days=1),
+                         "ended_at": end - timedelta(days=1) + timedelta(hours=1)})
+    asyncio.run(eng.tick(_sync))
+    n = len(store.forecasts)
+
+    def down():
+        raise ConnectionError("pg down")
+    store.change_events = down
+    store.raw += [(end + timedelta(seconds=k), 28.0) for k in range(0, 300, 30)]
+    clock.t = end + timedelta(minutes=5, seconds=90)
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.temp"]
+    assert len(store.forecasts) > n and "change_events_unreadable" in st.alerts
+    assert st.events["excluded_windows"]          # still applying the cached exclusion

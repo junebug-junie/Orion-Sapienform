@@ -27,7 +27,7 @@ def test_a_break_is_pending_until_enough_data_then_becomes_the_training_start():
     early, s1 = with_events(sp, [ev("break", b)], b + timedelta(days=MIN_POST_BREAK_DAYS - 1))
     assert early.train_from == sp.train_from and early.breaks == (b,) and s1["breaks_pending"]
     late, s2 = with_events(sp, [ev("break", b)], b + timedelta(days=MIN_POST_BREAK_DAYS))
-    assert late.train_from == b and late.breaks == () and s2["breaks_adopted"]
+    assert late.train_from == b and late.breaks == () and s2["break_adopted"] == b.isoformat()
 
 
 def test_future_events_and_breaks_before_train_from_do_nothing():
@@ -52,3 +52,22 @@ def test_prophet_learns_a_level_shift_at_a_pending_break_that_it_misses_without_
     err = lambda s: np.mean(np.abs(build_models(s, list(s.seasonalities))["prophet"].forecast(y, 72, idx) - truth))
     e_with, e_without = err(with_break), err(sp)
     assert e_with < 0.1 and e_without > 3 * e_with
+
+
+def test_adoption_age_grows_with_the_backtest_it_must_feed():
+    from app.events import adopt_after
+    sp = spec(horizons=["5min", "1d"])
+    assert adopt_after(40, 180, sp) == timedelta(days=MIN_POST_BREAK_DAYS)          # 5 d + 1 d + 3 d < 10 d floor
+    assert adopt_after(80, 180, sp) == timedelta(minutes=80 * 180 + 1440, days=3)   # 14 d
+
+
+def test_prophet_skips_a_break_with_less_than_a_day_after_it():
+    n = 4 * 288 + 12                                       # break 1 h before the end
+    idx = pd.date_range(T0, periods=n, freq="5min", tz="UTC")
+    y = 28 + np.random.default_rng(2).normal(0, 0.05, n)
+    y[-12:] += 3.0                                         # a noisy spike right after the break
+    sp = spec(seasonalities=[])
+    with_break, _ = with_events(sp, [ev("break", idx[-12].to_pydatetime())], idx[-1].to_pydatetime())
+    f_b = build_models(with_break, [])["prophet"].forecast(y, 72, idx)
+    f_0 = build_models(sp, [])["prophet"].forecast(y, 72, idx)
+    np.testing.assert_allclose(f_b, f_0)                    # regressor not added: identical fit

@@ -12,7 +12,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -301,7 +301,8 @@ class ChangeEventBody(BaseModel):
 @app.post("/change-events")
 async def post_change_event(body: ChangeEventBody) -> dict[str, Any]:
     """Record a known change under a series: ``break`` (a changepoint) or ``exclude`` (a window to mask).
-    Takes effect at the next selection (breaks adopt as the training start after 10 days of data)."""
+    Applied on the next tick: the selection reruns because its event fingerprint changed. A break
+    becomes the training start once enough post-break data exists for the backtest (/health shows when)."""
     e = _ready()
     if body.scope != "*" and e.registry.get(body.scope) is None:
         raise HTTPException(422, f"unknown series {body.scope}")
@@ -309,8 +310,19 @@ async def post_change_event(body: ChangeEventBody) -> dict[str, Any]:
         raise HTTPException(422, "exclude needs ended_at after started_at")
     if body.effect == "break" and body.ended_at is not None:
         raise HTTPException(422, "a break is a moment; leave ended_at empty")
+    if body.started_at > e.clock() + timedelta(minutes=5):
+        raise HTTPException(422, "started_at is in the future; record a change after it happens")
     row = await asyncio.to_thread(_store.insert_change_event, body.model_dump())
     return {"change_event": _jsonable(row)}
+
+
+@app.delete("/change-events/{event_id}")
+async def delete_change_event(event_id: uuid.UUID) -> dict[str, Any]:
+    """Retract a mistaken event (kept in the table, ignored from now on; the selection reruns)."""
+    _ready()
+    if not await asyncio.to_thread(_store.retract_change_event, str(event_id)):
+        raise HTTPException(404, "unknown or already retracted change event")
+    return {"retracted": str(event_id)}
 
 
 @app.get("/change-events")

@@ -107,12 +107,14 @@ def _prophet(seasonalities: list[Seasonality], grain_min: int, breaks: tuple = (
         df = pd.DataFrame({"ds": ds, "y": y})
         future = pd.DataFrame({"ds": pd.date_range(ds[-1] + pd.Timedelta(minutes=grain_min), periods=h,
                                                     freq=f"{grain_min}min")})
-        # A known break inside the training window becomes a level-shift regressor (0 before, 1 after);
-        # one with no data on either side carries nothing to fit and is skipped.
+        # A known break inside the training window becomes a level-shift regressor (0 before, 1 after),
+        # once a day of post-break data exists to estimate it -- a shift fitted on a few noisy points
+        # would be carried across the whole horizon.
+        min_post = 1440 // grain_min
         for k, b in enumerate(breaks):
             b = pd.Timestamp(b).tz_convert("UTC").tz_localize(None)
             step = (df["ds"] >= b).astype(float)
-            if 0 < step.sum() < len(step):
+            if min_post <= step.sum() < len(step):
                 df[f"break_{k}"] = step
                 future[f"break_{k}"] = 1.0
                 m.add_regressor(f"break_{k}", prior_scale=1.0, standardize=False)

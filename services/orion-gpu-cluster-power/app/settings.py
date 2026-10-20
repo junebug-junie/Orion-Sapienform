@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     # one line per tick, while a real GPU host was offline for 45 minutes.
     service_version: str = Field("0.1.0", alias="SERVICE_VERSION")
 
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health), published by
+    # HeartbeatOnly in api.py. See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
+
     # Storage
     storage_root: str = Field("/mnt/graphdb", alias="STORAGE_ROOT")
     telemetry_root: str = Field("/mnt/telemetry", alias="TELEMETRY_ROOT")

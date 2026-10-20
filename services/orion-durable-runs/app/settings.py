@@ -201,6 +201,11 @@ class Settings(BaseSettings):
     # what chat stance / reverie / curiosity / outreach read back. Kill switch: PERSONALITY_ENABLED.
     personality_enabled: bool = Field(True, alias="PERSONALITY_ENABLED")
     personality_tick_sec: float = Field(600.0, gt=0.0, alias="PERSONALITY_TICK_SEC")
+    # Self-naming (docs/superpowers/specs/2026-10-17-personality-orion-names-dispositions-design.md):
+    # each tick applies Orion's answers from orion_disposition_naming (name / reject / merge) to the
+    # graph, and GET /personality/naming/next hands Hub the next packet. false -> answers wait in the
+    # table (cursor does not move) and /personality/naming/next answers 204.
+    personality_naming_apply_enabled: bool = Field(True, alias="PERSONALITY_NAMING_APPLY_ENABLED")
     # vector-host /embedding (bge-large, compute only). durable-runs and vector-host share app-net.
     personality_embed_url: str = Field("http://orion-athena-vector-host:8320/embedding",
                                        alias="PERSONALITY_EMBED_URL")

@@ -605,3 +605,12 @@ def test_rekey_demotion_restarts_the_candidate_ttl_instead_of_retiring():
     (n,) = rekey_sources([node], hits, now=NOW).nodes
     assert n.status == "candidate" and n.last_folded_at == NOW
     assert apply_fade([n], now=NOW + timedelta(minutes=1)).nodes[0].status == "candidate"
+
+
+def test_unnamed_frame_dump_has_no_name_keys_for_pre_naming_readers():
+    # durable-runs serves the frame with exclude_none: a reader whose DispositionV1 predates
+    # name/name_sentence (extra="forbid") must still validate an unnamed node.
+    frame = project_frame([_node()], now=NOW, choice_style=None, evidence_rows=5)
+    payload = frame.model_dump(mode="json", exclude_none=True)
+    assert all("name" not in d and "name_sentence" not in d for d in payload["dispositions"])
+    assert PersonalityFrameV1.model_validate(payload).dispositions[0].name is None

@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # --- Service metadata ---
     SERVICE_NAME: str = Field("vision-edge", alias="SERVICE_NAME")
     SERVICE_VERSION: str = Field("0.2.0", alias="SERVICE_VERSION")
+    # Host this process runs on (root .env NODE_NAME, passed by docker-compose.yml).
+    # Reported as `node` in the SystemHealthV1 heartbeat and /health; replaces the
+    # made-up "vision-edge-node" both used to send.
+    NODE_NAME: str = Field("athena", alias="NODE_NAME")
 
     # --- Camera source ---
     # Capture URL. May carry credentials (rtsp://USER:PASS@host/...), so it is

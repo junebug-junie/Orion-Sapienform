@@ -565,6 +565,35 @@ WHERE started_at > now() - make_interval(days => :days)
 """
 
 
+_BASELINE_DEFERRAL_SQL = "SELECT state->'deferral' FROM visual_baseline_checkpoint WHERE id = 1"
+
+
+def visual_baseline_deferral() -> dict | None:
+    """The waking baseline painting's current run of arousal deferrals, as proposal-runtime's
+    scheduler records it (``orion.reverie.baseline.DEFERRAL_KEY``: reason, since, last_at), or None
+    (none recorded, no checkpoint table, or the read failed). Never raises.
+
+    2026-10-18 12:07 -> 10-20: arousal read strained (cabinet heat + GPU queue) and every due
+    baseline was deferred; the painting-gap alert blamed the GPU controller instead."""
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            if not conn.execute(text("SELECT to_regclass('visual_baseline_checkpoint')")).scalar():
+                return None
+            row = conn.execute(text(_BASELINE_DEFERRAL_SQL)).first()
+            value = row[0] if row else None
+            if isinstance(value, str):
+                import json
+
+                value = json.loads(value)
+            return value if isinstance(value, dict) and value.get("reason") else None
+    except Exception as exc:
+        logger.warning("visual_baseline_deferral query failed err=%s", exc)
+        return None
+
+
 def visual_attempt_failure_streak() -> int | None:
     """How many painting attempts in a row produced nothing (newest first, back to the last
     produced one, within the painting-age lookback). None if the read failed. Never raises.

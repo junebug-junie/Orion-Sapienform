@@ -201,7 +201,7 @@
     return { name, sentence, grounding, badge };
   }
 
-  const namingFrom = (body) => listFrom(body, ["naming", "rows", "items"]);
+  const namingFrom = (body) => listFrom(body, ["namings", "rows", "items"]);  // durable-runs: {disposition_id, count, namings}
 
   function asList(value) {
     if (Array.isArray(value)) return value.map((v) => String(v));

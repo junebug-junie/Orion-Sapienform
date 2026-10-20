@@ -20,10 +20,10 @@ Removed /api/retro/login and /logout. Existing game/session APIs no longer requi
 No env keys changed. browser.code is no longer created or required; existing files are unused.
 
 ## Tests run
-Focused Hub and Retro regression suites.
+6 Hub tests and 58 Retro tests passed.
 
 ## Evals run
-Real Chromium/native emulator browser eval with operator-provided Super Mario Bros.; no ROM committed.
+Real Chromium/native emulator eval: Mario renders and applies controls, but the generic script stayed silent (audioPeak=0), so full Mario browser qualification remains UNVERIFIED. Authored Pad Lab is the deterministic browser acceptance target; no ROM committed.
 
 ## Docker/build/smoke checks
 Retro restarted from synchronized clean main; live catalog includes Tetris, Crystalis and Super Mario Bros. Hub deploy follows merge.

@@ -260,13 +260,17 @@ async def proxy_on_pool(
                                route_key, min_ctx, max_ctx, correlation_id or "-")
                 clamped, min_ctx = True, max_ctx
                 continue
-            logger.warning("passthrough_gpu_pool_unavailable route=%s class=%s holder=%s reason=%s corr=%s",
-                           route_key, spec.work_class, holder, exc.reason, correlation_id or "-")
+            (logger.debug if getattr(exc, "local", False) else logger.warning)(
+                "passthrough_gpu_pool_unavailable route=%s class=%s holder=%s reason=%s corr=%s",
+                route_key, spec.work_class, holder, exc.reason, correlation_id or "-")
             report.finish(POOL_UNAVAILABLE)
+            retry_after = getattr(exc, "retry_after_sec", None)
+            extra = {"retry_after_sec": round(float(retry_after), 1)} if retry_after is not None else {}
             return JSONResponse(error_body(
                 POOL_UNAVAILABLE, f"GPU pool could not place route '{route_key}': {exc.reason}",
-                reason=exc.reason, route=route_key, work_class=spec.work_class,
-            ), status_code=503)
+                reason=exc.reason, route=route_key, work_class=spec.work_class, **extra,
+            ), status_code=503,
+                headers={"Retry-After": str(max(1, int(round(float(retry_after)))))} if retry_after is not None else None)
 
         except BaseException as exc:
             report.finish(_exception_outcome(exc))

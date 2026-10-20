@@ -60,6 +60,7 @@ from .caption_policy import (
     window_for_council,
 )
 from .llm_reply import extract_chat_result_text as _extract_chat_result_text
+from orion.gpu_pool.shed_backoff import ShedBackoff, gateway_shed_refusal
 from .unresolved import UnresolvedRateLimiter, build_unresolved
 
 _MAX_DEBUG_INTERPRETATIONS = 20
@@ -81,6 +82,9 @@ class CouncilService:
         self._evidence_transition = EvidenceTransitionTracker()
         self._evidence_transition_lock = asyncio.Lock()
         self._unresolved_limiter = UnresolvedRateLimiter(settings.COUNCIL_UNRESOLVED_MIN_INTERVAL_SEC)
+        # While the GPU pool sheds this route (shed:cabinet_hot), skip the LLM call per window
+        # instead of asking again every ~6 s; one log line per episode (orion/gpu_pool/shed_backoff.py).
+        self._shed_backoff = ShedBackoff(name="vision-council", log=logger.warning)
 
     def _record_interpretation(
         self,
@@ -449,6 +453,12 @@ class CouncilService:
             logger.error("[COUNCIL] RPC bus not initialized; cannot call LLM gateway")
             return None
 
+        shed_key = str(settings.COUNCIL_LLM_ROUTE or "llm")
+        if self._shed_backoff.check(shed_key) is not None:
+            # Counted and reported by the backoff's episode-end log line.
+            logger.debug(f"[COUNCIL] LLM call skipped: GPU pool shedding ({self._shed_backoff.reason(shed_key)})")
+            return None
+
         try:
             async with self._llm_semaphore:
                 reply = await self._rpc_bus.rpc_request(
@@ -460,10 +470,16 @@ class CouncilService:
 
             decoded = self._rpc_bus.codec.decode(reply.get("data"))
             if not decoded.ok:
+                self._shed_backoff.abandon(shed_key)
                 logger.error(f"[COUNCIL] LLM decode error: {decoded.error}")
                 return None
 
             res_env = decoded.envelope
+            shed = gateway_shed_refusal(res_env.payload)
+            if shed is not None:
+                self._shed_backoff.resolve(shed_key, shed[0], hint_sec=shed[1])
+                return None
+            self._shed_backoff.resolve(shed_key, None)
             content = _extract_chat_result_text(res_env.payload)
 
             if not content:
@@ -476,11 +492,16 @@ class CouncilService:
             return content
 
         except TimeoutError:
+            self._shed_backoff.abandon(shed_key)
             logger.error("[COUNCIL] LLM timeout")
             return None
         except Exception as e:
+            self._shed_backoff.abandon(shed_key)
             logger.error(f"[COUNCIL] LLM error: {e}")
             return None
+        except BaseException:
+            self._shed_backoff.abandon(shed_key)
+            raise
 
 
 service = CouncilService()

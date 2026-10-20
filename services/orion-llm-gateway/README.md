@@ -220,6 +220,15 @@ Failure shape (bus): empty text with `raw.error = "gpu_pool_unavailable"` and
 header `X-Gpu-Pool-Bus: down`) until the pool RPC client is connected. HTTP: 503
 with `error.type = "gpu_pool_unavailable"`.
 
+Heat-shed backoff (2026-10-20, `orion/gpu_pool/shed_backoff.py`): when the pool refuses a one-shot
+lease with `shed:<name>` (e.g. `shed:cabinet_hot`), the pool client in this process refuses later
+leases of the same priority locally, without asking the pool, for 30 s doubling to 180 s (+-20 %
+jitter); one probe per window goes to the pool, and the first grant ends the episode. Holds,
+attach children and retryable leases are never gated. Those refusals carry
+`raw.details.retry_after_sec` (bus) / `error.retry_after_sec` plus a `Retry-After` header (HTTP).
+Logs: one `gpu_shed_backoff_start` / `gpu_shed_backoff_end ... skipped=N` pair per episode; the
+per-call `gpu_pool_unavailable` warning is debug-level for a locally answered refusal.
+
 Upstream failure shape (bus, since 2026-10-07): when the granted worker answers non-2xx, answers
 2xx with an error body (`{"error": ...}` and no completion), returns an empty template, or never
 answers (timeout / refused connection), the reply is the same shape -- empty text,

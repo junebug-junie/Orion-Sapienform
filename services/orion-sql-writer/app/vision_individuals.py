@@ -1229,9 +1229,11 @@ def _check_tables(conn) -> None:
 
 def run_one_individuals_cycle(
     *, postgres_uri: str, cfg: IndividualsConfig, zones_by_stream: Dict[str, List[Zone]],
-    now: Optional[datetime] = None,
+    now: Optional[datetime] = None, person_cfg: Any = None,
 ) -> Tuple[dict, List[dict]]:
-    """One full tick. Returns (summary, opened_asks as OrionAskV1 dicts to publish)."""
+    """One full tick. Returns (summary, opened_asks as OrionAskV1 dicts to publish).
+    ``person_cfg`` (a vision_person_model.PersonModelConfig): also run one person
+    model cycle (albums, bars, guesses) under the same lock, after answers apply."""
     from sqlalchemy import create_engine, text
 
     ts = now or datetime.now(timezone.utc)
@@ -1281,6 +1283,16 @@ def run_one_individuals_cycle(
             with engine.begin() as conn:
                 for k, v in apply_splits(conn, ts, cfg).items():
                     summary[k] = summary.get(k, 0) + v
+        if person_cfg is not None:
+            from app.vision_person_model import run_person_model
+
+            # Its own transaction: a failure here never blocks asks or the prune.
+            try:
+                with engine.begin() as conn:
+                    summary.update(run_person_model(conn, ts, person_cfg))
+            except Exception as exc:
+                summary["person_model_error"] = str(exc)[:200]
+                logger.warning("vision_person_model_failed error=%s", exc)
         with engine.begin() as conn:
             summary["asks_expired"] = conn.execute(text(
                 "UPDATE orion_ask SET status='expired' WHERE status='open' "

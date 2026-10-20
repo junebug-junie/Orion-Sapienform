@@ -541,6 +541,18 @@ class Settings(BaseSettings):
     # Match candidates: individuals seen within this many days, plus all labeled ones.
     vision_individuals_candidate_days: float = Field(30.0, alias="VISION_INDIVIDUALS_CANDIDATE_DAYS")
     vision_crop_retention_days: float = Field(7.0, alias="VISION_CROP_RETENTION_DAYS")
+    # Person learning (app/vision_person_model.py): albums of named people from
+    # Juniper's answers, learned accept/reject bars, "probably X" guesses for
+    # unnamed clusters. Off = no album, bars or guesses are written.
+    vision_person_model_enabled: bool = Field(True, alias="VISION_PERSON_MODEL_ENABLED")
+    # Bound on the false-accept rate of each person's accept bar (conformal).
+    vision_person_false_accept_alpha: float = Field(0.05, alias="VISION_PERSON_FALSE_ACCEPT_ALPHA")
+    # A crop's score is the mean of its top-k cosines to the person's album.
+    vision_person_top_k: int = Field(3, alias="VISION_PERSON_TOP_K")
+    # Channel used when a cluster or person has no face vectors (body | osnet).
+    vision_person_fallback_channel: str = Field("body", alias="VISION_PERSON_FALLBACK_CHANNEL")
+    # The person model runs inside the individuals tick at most this often.
+    vision_person_model_interval_sec: float = Field(600.0, alias="VISION_PERSON_MODEL_INTERVAL_SEC")
     # Comma list of crop labels the retention prune never deletes (labelled
     # examples for person learning). "0" or empty = prune every label.
     vision_crop_retention_keep_labels: str = Field("person", alias="VISION_CROP_RETENTION_KEEP_LABELS")

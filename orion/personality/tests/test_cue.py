@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from orion.personality.cue import HEADER, project_personality_cue
+from orion.personality.cue import HEADER, LABEL_SHOWN_CHARS, _label, project_personality_cue
 from orion.schemas.personality import PERSONALITY_CUE_MAX_CHARS
 
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
@@ -118,3 +118,12 @@ def test_all_live_active_nodes_fit_with_the_choice_line():
     assert "went your own way in 4 of 8" in cue.text
     assert '"I am the seventy-fourth answer to the question I keep for…"' in cue.text  # whole words
     assert len(cue.text) <= PERSONALITY_CUE_MAX_CHARS
+
+
+def test_label_shortening_edges():
+    assert _label("short label") == "short label"
+    assert _label("x" * 200) == "x" * (LABEL_SHOWN_CHARS - 1) + "…"  # no space: hard cut
+    assert _label("a " + "b" * 100) == "a " + "b" * (LABEL_SHOWN_CHARS - 3) + "…"  # keeps the theme
+    long = "word… " * 20
+    assert not _label(long).endswith("……")
+    assert not _label("Hello world. " * 10).endswith(".…")

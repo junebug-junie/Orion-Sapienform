@@ -64,9 +64,10 @@ def _label(text: str) -> str:
     if len(text) <= LABEL_SHOWN_CHARS:
         return text
     cut = text[: LABEL_SHOWN_CHARS - 1]
-    if " " in cut:
-        cut = cut.rsplit(" ", 1)[0]  # end on a whole word
-    return cut.rstrip(" ,;:") + "…"
+    word_cut = cut.rsplit(" ", 1)[0]
+    if len(word_cut) >= LABEL_SHOWN_CHARS // 2:  # end on a whole word unless that guts the label
+        cut = word_cut
+    return cut.rstrip(" ,;:.—-…") + "…"
 
 
 def _line(d: Any) -> str:

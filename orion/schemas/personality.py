@@ -87,7 +87,9 @@ DispositionStatus = Literal["candidate", "active", "retired"]
 PersonalityCueSkipReason = Literal["disabled", "fetch_failed", "invalid_frame", "stale", "empty", "render_failed"]
 DISPOSITION_LABEL_MAX_CHARS = 160
 FRAME_MAX_DISPOSITIONS = 12
-PERSONALITY_CUE_MAX_CHARS = 600
+# Room for the header, five shortened node lines and the choice line (live 2026-10-20: at 600 only
+# the top node fit, so the one non-prediction-error theme never reached Orion).
+PERSONALITY_CUE_MAX_CHARS = 900
 
 
 class DispositionV1(BaseModel):

@@ -567,6 +567,16 @@ gap longer than three ticks) is one `arousal_transition` row in
 hand-applied). The latest rest-drive reading (`orion:drive:rest:latest`) is embedded verbatim
 for the trace; arousal never reads it. No dial reads arousal yet (spec order 6).
 
+Strain loop part 1 (2026-10-20, `docs/superpowers/specs/2026-10-20-strain-loop-design.md`): a
+level row is written only when the level changes, so a cause that joins an episode already
+strained (the cabinet going critical mid-episode) was never recorded. While strained, the node
+now also writes one row per strain cause new to the episode (`cause_row`, event id
+`...:strained:at:<observed_at>`, `payload.joined`), and one seed row (`payload.seed = true`) when
+the episode has nothing recorded yet (the first step after deploy, a lost onset row). At most
+two cause rows per episode plus a seed. Same table, kind and label, so readers of levels still
+read `strained`. The causes already recorded ride in the checkpoint as `strain_causes_seen`.
+Kill switch: `TEMPORAL_SELF_STRAIN_ARCS_ENABLED=false` (no cause rows, no strain arcs).
+
 Kill switches: `TEMPORAL_SELF_ENABLED=false` (no thread), `ORION_REGULATION_AROUSAL_ENABLED=false`
 (reads `unknown`). Health: `/health` -> `temporal_self`.
 

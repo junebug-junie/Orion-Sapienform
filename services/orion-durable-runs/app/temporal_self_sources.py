@@ -175,6 +175,13 @@ SELECT transition_id, presence_id, from_state, to_state, occurred_at, identity_c
   CASE WHEN identity_confirmed THEN label END AS label
 FROM vision_presence_transition WHERE occurred_at >= %(lo)s AND occurred_at < %(hi)s
 """),
+    # Strain loop part 1: the regulation step's own rows in the event table (the chronicle's
+    # copies of other kinds share the table; only regulation writes this kind).
+    SourceQuery("arousal_transition", """
+SELECT event_id, occurred_at, payload_json FROM temporal_self_event
+WHERE source_kind = 'arousal_transition' AND source_table = 'regulation'
+  AND occurred_at >= %(lo)s AND occurred_at < %(hi)s
+"""),
 )
 
 REVERIE_CHAINS_SQL = """
@@ -224,9 +231,10 @@ async def _fetch(conn: Any, sql: str, params: dict) -> list[dict]:
 class SourceReader:
     """Reads one window from Postgres on the service's psycopg pool (dict rows)."""
 
-    def __init__(self, pool: Any, tz_name: str) -> None:
+    def __init__(self, pool: Any, tz_name: str, *, exclude_kinds: Iterable[str] = ()) -> None:
         self._pool = pool
         self._tz = tz_name
+        self._exclude = frozenset(exclude_kinds)
 
     async def read(
         self, lo: datetime, hi: datetime, *, ticks: bool = True, kinds: Optional[Iterable[str]] = None,
@@ -243,7 +251,7 @@ class SourceReader:
                 if ticks:
                     out_ticks = [tick_from_log_row(r) for r in await _fetch(conn, BROADCAST_SQL, {"lo": lo, "hi": hi})]
                 for q in QUERIES:
-                    if want is not None and q.kind not in want:
+                    if (want is not None and q.kind not in want) or q.kind in self._exclude:
                         continue
                     qlo = lo - q.slack
                     rows = await _fetch(conn, q.sql, {"lo": qlo, "hi": hi, "in_flight": list(VISUAL_IN_FLIGHT),

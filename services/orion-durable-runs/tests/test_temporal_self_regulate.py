@@ -133,6 +133,86 @@ def test_juniper_turn_wakes_engaged_within_one_step_and_outreach_does_not():
     assert w.projected[-1].arousal.arousal_level == "idle"
 
 
+class Causes:
+    """Fake ``record_cause``: what the regulate node asked to write (strain loop part 1)."""
+
+    def __init__(self):
+        self.rows: list[tuple] = []
+        self.fail = False
+
+    async def __call__(self, reading, day_id, joined, seed):
+        if self.fail:
+            return False
+        self.rows.append((list(joined), seed, reading.since))
+        return True
+
+
+def test_strain_cause_rows_record_each_joining_cause_once():
+    w, causes = World(), Causes()
+    d = driver(w, record_cause=causes)
+    w.depth, w.sustained = 4, 320.0
+    tick(d)                                                      # onset: the level row carries GPU
+    assert w.transitions[-1][1] == "strained" and causes.rows == []
+    w.now += timedelta(seconds=120)
+    w.reflex, w.thermal = "cabinet_hot", "hot"
+    tick(d)                                                      # the cabinet joins mid-episode
+    assert [r[:2] for r in causes.rows] == [(["cabinet_hot"], False)]
+    assert causes.rows[0][2] == T0                               # same episode
+    for _ in range(3):                                           # unchanged, or a cause dropping out
+        w.now += timedelta(seconds=120)
+        w.depth, w.sustained = 0, 0.0
+        tick(d)
+    assert len(causes.rows) == 1 and len(w.transitions) == 1
+
+
+def test_strain_seed_row_when_strained_with_nothing_recorded_then_retry_on_failure():
+    w = World()
+    saver = InMemorySaver()
+    w.depth, w.sustained = 4, 320.0
+    tick(driver(w, saver))                                       # flag off: onset written, no cause state
+    causes = Causes()
+    causes.fail = True
+    d = driver(w, saver, record_cause=causes)                    # deploy with the flag on, mid-episode
+    w.now += timedelta(seconds=120)
+    tick(d)
+    assert causes.rows == [] and "strain_cause_write_failed" in w.projected[-1].warnings
+    causes.fail = False
+    w.now += timedelta(seconds=120)
+    tick(d)                                                      # retried next step
+    assert [r[:2] for r in causes.rows] == [(["gpu_queue_sustained"], True)] and causes.rows[0][2] == T0
+    w.now += timedelta(seconds=120)
+    tick(d)
+    assert len(causes.rows) == 1
+
+
+def test_strain_cause_rows_off_by_flag_and_not_when_calm():
+    w = World()
+    d = driver(w)                                                # record_cause=None: the flag is off
+    w.reflex, w.thermal = "cabinet_hot", "hot"
+    tick(d)
+    assert w.projected[-1].arousal.arousal_level == "strained"
+    w2, causes = World(), Causes()
+    d2 = driver(w2, record_cause=causes)
+    for _ in range(3):
+        tick(d2)
+        w2.now += timedelta(seconds=120)
+    assert causes.rows == []                                     # idle: nothing to record
+
+
+def test_cause_row_shape_matches_the_level_row():
+    from app import regulation_store
+    from orion.schemas.regulation import ArousalReadingV1
+
+    r = ArousalReadingV1(arousal_level="strained", since=T0, observed_at=T0 + timedelta(minutes=5),
+                         reasons=["cabinet_hot"])
+    row = regulation_store.cause_row(r, "2026-10-10", ["cabinet_hot"], False)
+    assert row["event_id"] == f"arousal_transition:{T0.isoformat()}:strained:at:{(T0 + timedelta(minutes=5)).isoformat()}"
+    assert row["occurred_at"] == T0 + timedelta(minutes=5) and row["label"] == "strained"
+    payload = json.loads(row["payload"])
+    assert payload["from"] == payload["to"] == "strained" and payload["joined"] == ["cabinet_hot"]
+    assert row["event_id"] != regulation_store.transition_row(None, r, "2026-10-10")["event_id"]
+
+
 def test_strain_holds_through_a_restart_and_since_survives():
     w = World()
     saver = InMemorySaver()

@@ -48,7 +48,7 @@ from orion.schemas.temporal_self import (
     TemporalSelfStateV1,
 )
 from orion.temporal_self.broadcast import BroadcastTickView
-from orion.temporal_self.day import DEFAULT_TZ, day_id_for, day_window
+from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for, day_window
 
 INTERRUPTIONS_CAP = 64
 DAY_LIST_CAP = 256
@@ -117,6 +117,9 @@ LANE_RULES = {
                 "period, same-state keepalives only refresh; closes on absent (process_ended, at the last "
                 "sighting), unknown / a producer restart / no row for company_stale_sec (source_stale); "
                 "label only when identity was confirmed; spans days"),
+    "strain": ("arousal_transition (the regulation step's own rows); opens on strained, cause rows add to "
+               "the label; closes on idle/engaged (process_ended) or unknown (source_stale); a strained row "
+               "with a new episode start closes the old arc at its last row (source_stale); spans days"),
 }
 
 
@@ -316,7 +319,7 @@ def _forward_reach(arc: TemporalSelfArcV1, cfg: "ReducerConfig") -> float:
 
 # Arcs that are threads or facts about the room, not stretches of Orion's own process: nothing
 # binds to them by time.
-_NO_CONTEXT_KINDS = {"concern", "company"}
+_NO_CONTEXT_KINDS = {"concern", "company", "strain"}
 
 
 def _covers(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, at: datetime, cfg: "ReducerConfig") -> bool:
@@ -634,6 +637,62 @@ def _fold_presence(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None: 
         _end_company(state, arc, "source_stale", t)
 
 
+def _strain_arc(state: TemporalSelfStateV1) -> TemporalSelfArcV1 | None:
+    for arc in state.arcs.values():
+        if arc.kind == "strain" and arc.status == "open":
+            return arc
+    return None
+
+
+def _end_strain(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, reason: str, at: datetime) -> None:
+    _close(arc, reason, at)
+    if state.active.get("strain") == arc.arc_id:
+        del state.active["strain"]
+
+
+def _add_causes(arc: TemporalSelfArcV1, causes: list[str]) -> None:
+    """The label is every strain cause seen in the episode, in the order each joined."""
+    have = [c for c in arc.subject_label.split("+") if c]
+    arc.subject_label = "+".join(have + [c for c in causes if c not in have])
+
+
+def _fold_strain(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None:
+    """Strain: one arc per strain episode. Regulation writes a row only on a level change or when a
+    cause joins an episode (no keepalive), so an open arc's last row can be hours old: it is still
+    strained until a row says otherwise. Every row runs in the same durable-runs step as the
+    chronicle, and a dead input reads ``unknown``, which closes the arc."""
+    assert state.day_id is not None
+    to_level = e.payload.get("to")
+    t = e.occurred_at
+    ref = _ref(e)
+    since = as_utc(e.payload.get("since")) or t
+    arc = _strain_arc(state)
+    if to_level == "strained":
+        if arc is not None and arc.episode_began_at is not None and arc.episode_began_at != since:
+            # A new episode start while one was open: the regulation step restarted it (its last
+            # reading was too old to carry). The gap was not observed, so the old arc ends at its
+            # last row, never across the gap.
+            _end_strain(state, arc, "source_stale", arc.last_seen_at)
+            arc = None
+        if arc is None:
+            arc = TemporalSelfArcV1(
+                arc_id=arc_id_for(state.day_id, "strain", e.subject_ref or "orion:arousal", ref), day_id=state.day_id,
+                kind="strain", subject_ref=e.subject_ref or "orion:arousal", began_at=t, last_seen_at=t,
+                status="open", segments=[ArcSegmentV1(began_at=t, ended_at=t)], episode_began_at=min(since, t),
+            )
+            _add_evidence(arc, ref)
+            state.arcs[arc.arc_id] = arc
+        else:
+            _extend(arc, max(t, arc.last_seen_at), ref, accrue=True)
+        _add_causes(arc, list(e.payload.get("causes") or []))
+        state.active["strain"] = arc.arc_id
+        return
+    if arc is None:
+        return  # not strained, nothing open: no arc
+    _extend(arc, max(t, arc.last_seen_at), ref, accrue=True)
+    _end_strain(state, arc, "process_ended" if to_level in ("idle", "engaged") else "source_stale", t)
+
+
 def _fold_process(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: ReducerConfig) -> None:
     kind = PROCESS_KINDS[e.source_kind]
     assert state.day_id is not None and e.subject_ref is not None
@@ -748,6 +807,8 @@ def _fold_event(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: Reducer
         _fold_consolidation_close(state, e)
     elif k == "presence_transition":
         _fold_presence(state, e)
+    elif k == "arousal_transition":
+        _fold_strain(state, e)
     elif k in ("dream_hypothesis", "expectation_verdict", "action_outcome"):
         _fold_expectation(state, e)
         if k == "action_outcome":
@@ -796,7 +857,7 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
         if arc.day_id != old_day or arc.status == "closed":
             continue
         last_row_at = arc.last_seen_at
-        if arc.kind == "company" and arc.status == "open":
+        if arc.kind in ("company", "strain") and arc.status == "open":
             # Still open at midnight (the stale timeout already ran at day_end): going on.
             _extend(arc, max(day_end, arc.last_seen_at), None, accrue=True)
         _close(arc, "day_boundary", arc.last_seen_at)
@@ -809,6 +870,15 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
                 began_at=day_end, last_seen_at=last_row_at, status="open",
                 segments=[ArcSegmentV1(began_at=day_end, ended_at=day_end)],
                 carried_from_previous_day=True, carried_from_arc_id=arc.arc_id,
+            ))
+        elif arc.kind == "strain":
+            continuations.append(TemporalSelfArcV1(
+                arc_id=arc_id_for(next_day, "strain", arc.subject_ref, arc.arc_id), day_id=next_day,
+                kind="strain", subject_ref=arc.subject_ref, subject_label=arc.subject_label,
+                began_at=day_end, last_seen_at=day_end, status="open",
+                segments=[ArcSegmentV1(began_at=day_end, ended_at=day_end)],
+                carried_from_previous_day=True, carried_from_arc_id=arc.arc_id,
+                episode_began_at=arc.episode_began_at,
             ))
         elif arc.kind == "concern":
             cont = TemporalSelfArcV1(
@@ -823,7 +893,7 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
             continuations.append(cont)
         else:
             state.carry[f"{arc.kind}|{arc.subject_ref}"] = {"arc_id": arc.arc_id, "last_seen": arc.last_seen_at.isoformat()}
-    state.active = {c.kind: c.arc_id for c in continuations if c.kind == "company"}
+    state.active = {c.kind: c.arc_id for c in continuations if c.kind in ("company", "strain")}
     day_arcs = sorted((a for a in state.arcs.values() if a.day_id == old_day), key=lambda a: (a.began_at, a.arc_id))
     state.pending_closed_days.append(
         TemporalSelfDayV1(day_id=old_day, closed_at=day_end, frame=frame, arcs=[a.model_copy(deep=True) for a in day_arcs])

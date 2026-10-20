@@ -38,7 +38,7 @@ from typing import Any, Awaitable, Callable, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from orion.regulation.arousal import classify_arousal
+from orion.regulation.arousal import classify_arousal, strain_causes
 from orion.regulation.immune import ImmuneConfig, sweep as immune_sweep
 from orion.schemas.drive_reading import DriveReadingV1
 from orion.schemas.regulation import (
@@ -66,6 +66,9 @@ class TemporalSelfGraphState(TypedDict, total=False):
     warnings: list
     chronicle: Optional[dict]    # Chronicler.step() summary: watermark, lag, windows, error
     immune: dict                 # {last_run_at, open, findings[<=20], coverage, error, skipped}: carried across days
+    # Strain causes already recorded for the open strain episode (None: none recorded yet, or not
+    # strained). Carried across days so a long episode is not re-seeded at every midnight.
+    strain_causes_seen: Optional[list]
 
 
 @dataclass
@@ -75,6 +78,9 @@ class TemporalSelfDeps:
     project: Callable[[RegulationStateV1], Awaitable[None]]
     record_transition: Callable[[Optional[ArousalReadingV1], ArousalReadingV1, str], Awaitable[bool]]
     now: Callable[[], datetime]
+    # Strain loop part 1: write a row when a strain cause joins an episode, or to seed an episode
+    # the chronicle has no onset row for. None (TEMPORAL_SELF_STRAIN_ARCS_ENABLED=false): no rows.
+    record_cause: Optional[Callable[[ArousalReadingV1, str, list[str], bool], Awaitable[bool]]] = None
     arousal_enabled: bool = True
     engaged_minutes: float = 45.0
     gpu_queue_floor: int = 2
@@ -130,6 +136,29 @@ def _prev_inputs(raw: Optional[dict]) -> Optional[ArousalInputsV1]:
         return None
 
 
+async def _strain_causes_step(
+    deps: TemporalSelfDeps, reading: ArousalReadingV1, state: TemporalSelfGraphState, level_row_written: bool,
+    warnings: list,
+) -> Optional[list]:
+    """Strain loop part 1. A level row is written only when the level changes, so a cause that joins
+    an episode already strained (the cabinet going critical mid-episode) was never recorded. Write
+    one row per joined cause, and one seed row when strained with nothing recorded for the episode
+    (the first step after deploy, or a lost onset row). Returns the new ``strain_causes_seen``."""
+    if deps.record_cause is None or reading.arousal_level != "strained":
+        return None
+    causes = strain_causes(reading.reasons)
+    if level_row_written:
+        return causes  # the onset row carries this episode's causes
+    seen = state.get("strain_causes_seen")
+    joined = [c for c in causes if c not in (seen or [])]
+    if seen is not None and not joined:
+        return seen
+    if not await deps.record_cause(reading, state.get("day_id") or "", joined, seen is None):
+        warnings.append("strain_cause_write_failed")
+        return seen  # retried next step
+    return list(seen or []) + joined
+
+
 def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
     async def ingest(state: TemporalSelfGraphState) -> dict:
         ev = dict(state.get("event") or {})
@@ -159,12 +188,15 @@ def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
         drives, warnings = await deps.read_drives(now)
         warnings = list(warnings)
         transition = None
+        recorded = False
         # A new level episode began: the level changed, or the previous reading was too old to
         # carry (``since`` restarted after an outage). Either way ``since`` moved.
         if prev is None or prev.since != reading.since:
             transition = {"from": prev.arousal_level if prev else None, "to": reading.arousal_level}
-            if not await deps.record_transition(prev, reading, state.get("day_id") or ""):
+            recorded = await deps.record_transition(prev, reading, state.get("day_id") or "")
+            if not recorded:
                 warnings.append("transition_write_failed")
+        seen = await _strain_causes_step(deps, reading, state, recorded, warnings)
         open_findings = int((state.get("immune") or {}).get("open") or 0)
         model = RegulationStateV1(generated_at=now, arousal=reading, drives=drives, warnings=warnings,
                                   immune_findings_open=max(0, open_findings))
@@ -174,7 +206,7 @@ def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
             logger.warning("regulation_project_failed", exc_info=True)
             model = model.model_copy(update={"warnings": warnings + ["project_failed"]})
         return {"regulation": model.model_dump(mode="json"), "last_inputs": inputs.model_dump(mode="json"),
-                "transition": transition, "warnings": model.warnings}
+                "transition": transition, "warnings": model.warnings, "strain_causes_seen": seen}
 
     async def immune(state: TemporalSelfGraphState) -> dict:
         if deps.read_immune_series is None:

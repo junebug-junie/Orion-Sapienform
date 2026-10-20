@@ -289,3 +289,37 @@ def test_attempt_inserted_active_then_abandoned_ninety_minutes_later_is_late_not
         assert (await store.frame())["skipped_at_or_before_watermark"] == 1
 
     with_db(scenario_fn)
+
+
+def test_arousal_rows_fold_into_one_strain_arc_and_are_never_copied():
+    """Strain loop part 1. The regulation step's rows share the chronicle's event table: folding them
+    must keep their own ids (no copy the next read would fold again) and build one strain arc."""
+    async def scenario_fn(pool):
+        w = scenario()
+        onset = T0 + timedelta(minutes=1)
+        r0 = ArousalReadingV1(arousal_level="strained", since=onset, observed_at=onset,
+                              reasons=["gpu_queue_sustained"], gpu_queue_depth=4)
+        r1 = r0.model_copy(update={"observed_at": T0 + timedelta(minutes=9),
+                                   "reasons": ["cabinet_hot", "gpu_queue_sustained"], "cabinet_temp_c": 34.6})
+        r2 = ArousalReadingV1(arousal_level="idle", since=T0 + timedelta(minutes=30),
+                              observed_at=T0 + timedelta(minutes=30), reasons=["strain_cleared"])
+        rows = [regulation_store.transition_row(None, r0, "2026-10-10"),
+                regulation_store.cause_row(r1, "2026-10-10", ["cabinet_hot"], False),
+                regulation_store.transition_row(r1, r2, "2026-10-10")]
+        for row in rows:
+            w.add("arousal_transition", dict(row, payload_json=json.loads(row["payload"])))
+        await run_pg(pool, w, T0 + timedelta(hours=1))
+        lo, hi = T0 - timedelta(minutes=5), T0 + timedelta(minutes=50)
+        _, events = await SourceReader(pool, TZ).read(lo, hi, ticks=False, kinds=["arousal_transition"])
+        assert sorted(e.event_id for e in events) == sorted(r["event_id"] for r in rows)
+        async with pool.connection() as conn:
+            n = (await (await conn.execute(
+                "SELECT count(*) AS n FROM temporal_self_event WHERE source_kind = 'arousal_transition'")).fetchone())["n"]
+        assert n == 3  # folded twice over the run's many windows, still only the regulation step's rows
+        (arc,) = [canon(a) for a in await ChronicleStore(pool).arcs("2026-10-10") if a["kind"] == "strain"]
+        assert arc["subject_label"] == "gpu_queue_sustained+cabinet_hot"
+        assert arc["status"] == "closed" and arc["closed_reason"] == "process_ended"
+        _, off = await SourceReader(pool, TZ, exclude_kinds=("arousal_transition",)).read(lo, hi, ticks=False)
+        assert not [e for e in off if e.source_kind == "arousal_transition"]  # the flag's off path
+
+    with_db(scenario_fn)

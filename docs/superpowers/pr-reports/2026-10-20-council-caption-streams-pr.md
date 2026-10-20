@@ -116,6 +116,6 @@ Proof after restart: `docker logs orion-athena-vision-council 2>&1 | grep captio
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2777
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

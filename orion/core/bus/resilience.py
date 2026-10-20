@@ -5,7 +5,7 @@ import inspect
 import logging as _logging
 import time
 from dataclasses import asdict, dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Sequence
 
 try:
     from loguru import logger  # type: ignore
@@ -78,15 +78,23 @@ async def publish_with_reconnect(
 
 async def run_subscription(
     bus: OrionBusAsync,
-    channel: str,
+    channel: str | Sequence[str],
     handle: MessageHandler,
     *,
     stop_event: asyncio.Event | None,
     name: str,
+    patterns: bool = False,
     max_backoff_sec: float = 60.0,
     stuck_reads: int = 5,
 ) -> None:
     """Pass every message on ``channel`` to ``handle`` until ``stop_event`` is set.
+
+    ``channel`` is one channel or several; with ``patterns=True`` they are glob
+    patterns (PSUBSCRIBE) and messages arrive as ``pmessage``.
+
+    ``handle`` is awaited before the next message is read. A handler that must not
+    hold up the stream should start its own task and return None -- returning the
+    task would await it here.
 
     A subscription that fails or drops is opened again, waiting 1 s then doubling
     up to ``max_backoff_sec``. Without this, one Redis error ends a listener for
@@ -102,14 +110,19 @@ async def run_subscription(
     row that overrun the outer 1.2 s guard mean a dead connection, so the session
     is reopened instead of polled forever.
     """
+    channels = (channel,) if isinstance(channel, str) else tuple(channel)
+    label = ",".join(channels)
     backoff = min(1.0, max_backoff_sec)
-    state = SubscriptionState(name=name, channel=channel)
+    state = SubscriptionState(name=name, channel=label)
     _SUBSCRIPTION_STATES[name] = state
     try:
         while stop_event is None or not stop_event.is_set():
-            _sub_logger.info("%s subscribing channel=%s", name, channel)
+            _sub_logger.info("%s subscribing channel=%s", name, label)
             try:
-                async with bus.subscribe(channel) as pubsub:
+                subscription = (
+                    bus.subscribe(*channels, patterns=True) if patterns else bus.subscribe(*channels)
+                )
+                async with subscription as pubsub:
                     state.subscribed = True
                     state.last_subscribed_at = time.time()
                     overruns = 0
@@ -137,7 +150,7 @@ async def run_subscription(
                             if inspect.isawaitable(result):
                                 await result
                         except Exception:
-                            _sub_logger.exception("%s handle_failed channel=%s", name, channel)
+                            _sub_logger.exception("%s handle_failed channel=%s", name, label)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -146,7 +159,7 @@ async def run_subscription(
                 state.last_failure_at = time.time()
                 state.last_failure = f"{type(exc).__name__}: {exc}"[:200]
                 _sub_logger.exception(
-                    "%s subscription_failed channel=%s retry_in=%.0fs", name, channel, backoff
+                    "%s subscription_failed channel=%s retry_in=%.0fs", name, label, backoff
                 )
                 if stop_event is None:
                     await asyncio.sleep(backoff)
@@ -159,4 +172,4 @@ async def run_subscription(
     finally:
         state.subscribed = False
         state.running = False
-        _sub_logger.info("%s stopped channel=%s", name, channel)
+        _sub_logger.info("%s stopped channel=%s", name, label)

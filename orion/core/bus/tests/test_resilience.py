@@ -254,3 +254,35 @@ async def test_subscription_health_reports_down_while_backing_off_and_up_after()
     assert done["messages_total"] == 1 and done["running"] is False and done["subscribed"] is False
     assert done["last_message_age_sec"] is not None
     resilience._SUBSCRIPTION_STATES.pop("health-t", None)
+
+
+@pytest.mark.asyncio
+async def test_run_subscription_passes_several_channels_and_patterns() -> None:
+    import asyncio
+    import contextlib
+
+    from orion.core.bus import resilience
+    from orion.core.bus.resilience import run_subscription
+
+    stop = asyncio.Event()
+    calls: list[tuple] = []
+
+    class _Bus:
+        def subscribe(self, *channels, patterns=False):
+            calls.append((channels, patterns))
+
+            @contextlib.asynccontextmanager
+            async def _cm():
+                yield _ScriptedPubSub([{"type": "pmessage", "data": 1}], stop)
+
+            return _cm()
+
+    seen: list[dict] = []
+    await asyncio.wait_for(
+        run_subscription(_Bus(), ["a:*", "b:*"], seen.append, stop_event=stop, name="multi-t", patterns=True),
+        timeout=10,
+    )
+    assert calls == [(("a:*", "b:*"), True)]
+    assert seen == [{"type": "pmessage", "data": 1}]
+    assert resilience._SUBSCRIPTION_STATES["multi-t"].channel == "a:*,b:*"
+    resilience._SUBSCRIPTION_STATES.pop("multi-t", None)

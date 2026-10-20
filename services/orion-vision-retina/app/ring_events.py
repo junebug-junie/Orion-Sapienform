@@ -49,8 +49,10 @@ def doorbell_event_type(kind: str) -> str | None:
 
 
 def ring_event_id(push: RingPush) -> str:
-    """Stable per Ring push: a re-delivered push cannot write a second row."""
-    key = push.ring_event_id or push.correlation_id
+    """Stable per Ring push: a re-delivered push cannot write a second row
+    (vision_events.event_id is the primary key; the sql-writer merges). With
+    no Ring id, kind + Ring's created_at second stands in for it."""
+    key = push.ring_event_id or f"t{int(push.occurred_at)}"
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"orion:doorbell:{push.kind}:{key}"))
 
 

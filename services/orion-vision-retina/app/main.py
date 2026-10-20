@@ -32,6 +32,10 @@ from .settings import Settings, get_settings
 from .sources import create_frame_source
 
 
+# Longest self-look key value (a handoff id) kept for logs and health.
+SELF_LOOK_VALUE_MAX_CHARS = 80
+
+
 class RetinaService:
     def __init__(
         self,
@@ -527,6 +531,7 @@ class RetinaService:
             self._self_look_last_value = None  # key expired: the next SET counts
             return None
         value = (raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)).strip() or "unnamed"
+        value = value[:SELF_LOOK_VALUE_MAX_CHARS]  # set by another service: bound what we log
         if value == self._self_look_last_value:
             return None
         outcome = self.source.self_look(value)
@@ -667,6 +672,7 @@ class RetinaService:
             m.ring_motions_total = int(src.motions_total)
             m.ring_last_ding_ts = src.last_ding_ts
             m.ring_bursts_extended = int(src.bursts_extended)
+            m.ring_ding_reopens_refused = int(src.ding_reopens_refused)
             m.ring_self_looks_today = int(src.self_looks_today)
             m.ring_self_looks_total = int(src.self_looks_total)
             m.ring_last_self_look_ts = src.last_self_look_ts

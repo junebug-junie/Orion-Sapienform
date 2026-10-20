@@ -60,6 +60,11 @@ ANSWER_TIMEOUT_SECONDS = 10.0
 # A ring during an open live view extends it, up to this many burst lengths
 # in total (a stuck button must not stream all day).
 MAX_BURST_FACTOR = 4.0
+# A ding skips the cooldown, so a stuck button or repeated presses could keep
+# the battery camera streaming. At most this many ding-opened live views that
+# skipped the cooldown per window; later ones are still recorded.
+DING_REOPEN_MAX = 3
+DING_REOPEN_WINDOW_SECONDS = 600.0
 
 # Every spelling ring_doorbell 0.9.14 can hand us for a press or a motion.
 # Legacy (gcmData) pushes: listen/eventlistener.py _get_ding_event compares
@@ -93,7 +98,9 @@ class RingPush:
     occurred_at: float  # Ring's own created_at when present, else receipt
     received_ts: float
     correlation_id: str
-    live_view: str  # started | extended | already_open | cooldown | not_ready
+    # started | extended | queued (opens when the live view connects, or
+    # reopens after it closes) | already_open | cooldown | ding_capped
+    live_view: str
 
 
 def _write_private(path: Path, data: str) -> None:
@@ -205,6 +212,12 @@ class RingEventFrameSource:
         self._burst_correlation_id: str | None = None
         # Monotonic time a ring pushed the open live view out to; 0 = none.
         self._burst_extend_until = 0.0
+        # True only while the frame loop runs and will read _burst_extend_until.
+        self._frames_open = False
+        # A ding that came while the live view was connecting or closing.
+        self._pending_ding_corr: str | None = None
+        self._closing_for_stop = False
+        self._ding_reopen_times: list[float] = []
         self._self_look_day: str | None = None
         self._last_self_look_ts = 0.0
 
@@ -222,6 +235,7 @@ class RingEventFrameSource:
         self.motions_total = 0
         self.last_ding_ts: float | None = None
         self.bursts_extended = 0
+        self.ding_reopens_refused = 0
         self.self_looks_today = 0
         self.self_looks_total = 0
         self.last_self_look_ts: float | None = None
@@ -238,10 +252,12 @@ class RingEventFrameSource:
         return self.ever_connected and not self._has_new_frame()
 
     async def start(self) -> None:
+        self._closing_for_stop = False
         if self._supervise_task is None or self._supervise_task.done():
             self._supervise_task = asyncio.create_task(self._supervise())
 
     async def stop(self) -> None:
+        self._closing_for_stop = True
         tasks = [t for t in (self._supervise_task, self._burst_task) if t and not t.done()]
         for task in tasks:
             task.cancel()
@@ -394,16 +410,36 @@ class RingEventFrameSource:
 
     def _live_view_for(self, kind: str, now: float, corr: str) -> str:
         if self._burst_running():
-            if kind == "ding":
+            if kind != "ding":
+                self.events_ignored += 1
+                return "already_open"
+            if self._frames_open:
                 self._extend_burst(corr)
                 return "extended"
-            self.events_ignored += 1
-            return "already_open"
-        if kind != "ding" and not self.should_start_burst(now):
+            # Connecting (frames start covers it) or closing (_burst's finally
+            # reopens): never marked extended with no frame loop to read it.
+            self._pending_ding_corr = corr
+            return "queued"
+        if self.should_start_burst(now):
+            self._start_burst(kind, corr)
+            return "started"
+        if kind != "ding":
             self.events_ignored += 1
             return "cooldown"
+        if not self._take_ding_reopen(now):
+            self.events_ignored += 1
+            return "ding_capped"
         self._start_burst(kind, corr)
         return "started"
+
+    def _take_ding_reopen(self, now: float) -> bool:
+        """Quota for ding-opened live views that skip the cooldown."""
+        self._ding_reopen_times = [t for t in self._ding_reopen_times if now - t < DING_REOPEN_WINDOW_SECONDS]
+        if len(self._ding_reopen_times) >= DING_REOPEN_MAX:
+            self.ding_reopens_refused += 1
+            return False
+        self._ding_reopen_times.append(now)
+        return True
 
     def _extend_burst(self, corr: str) -> None:
         self.bursts_extended += 1
@@ -414,6 +450,7 @@ class RingEventFrameSource:
     def _start_burst(self, kind: str, corr: str) -> None:
         logger.info(f"[RETINA] ring {kind}: opening live view for {self.burst_seconds:.0f}s corr={corr}")
         self._burst_extend_until = 0.0
+        self._frames_open = False
         self._burst_correlation_id = corr
         self._burst_task = asyncio.create_task(self._burst(kind))
 
@@ -524,11 +561,27 @@ class RingEventFrameSource:
             deadline = frames_start + self.burst_seconds
             cap = frames_start + self.burst_seconds * MAX_BURST_FACTOR
             track = await asyncio.wait_for(video_track, timeout=self.burst_seconds)
-            # A ding while open moves _burst_extend_until (on_event).
-            while (remaining := min(cap, max(deadline, self._burst_extend_until)) - time.monotonic()) > 0:
-                frame = await asyncio.wait_for(track.recv(), timeout=remaining)
+            self._frames_open = True
+            if self._pending_ding_corr is not None:
+                # A ding while connecting: this full burst, from now, covers it.
+                self._event_kind = "ding"
+                self._burst_correlation_id = self._pending_ding_corr
+                self._pending_ding_corr = None
+
+            def until() -> float:
+                # A ding while open moves _burst_extend_until (on_event).
+                return min(cap, max(deadline, self._burst_extend_until))
+
+            while (remaining := until() - time.monotonic()) > 0:
+                try:
+                    frame = await asyncio.wait_for(track.recv(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    if until() - time.monotonic() > 0:
+                        continue  # extended while waiting for this frame
+                    raise
                 self._frame = frame
                 self._frame_ts = time.time()
+            self._frames_open = False
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 -- incl. TimeoutError and aiortc MediaStreamError
@@ -545,6 +598,7 @@ class RingEventFrameSource:
             # Frames already arrived: the timeout is the burst's normal end,
             # and a stream that ends early still delivered.
         finally:
+            self._frames_open = False
             for task in list(pending):
                 task.cancel()
             await pc.close()
@@ -554,6 +608,16 @@ class RingEventFrameSource:
                 logger.warning(f"[RETINA] ring live view close failed: {exc}")
             self._last_burst_end = time.time()
             self._frame = None
+            corr = self._pending_ding_corr
+            self._pending_ding_corr = None
+            if corr is not None and not self._closing_for_stop:
+                # A ding came while this view connected-and-failed or closed.
+                if self._take_ding_reopen(time.time()):
+                    logger.info(f"[RETINA] ring ding queued during live view close: reopening corr={corr}")
+                    self._start_burst("ding", corr)
+                else:
+                    self.events_ignored += 1
+                    logger.info(f"[RETINA] ring ding queued corr={corr}: reopen refused (ding quota)")
 
     async def read(self) -> FrameReadResult | None:
         """Newest live-view frame not yet served, else None."""

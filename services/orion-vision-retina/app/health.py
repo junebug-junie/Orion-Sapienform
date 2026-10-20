@@ -46,6 +46,7 @@ class RetinaMetrics:
     ring_motions_total: int = 0
     ring_last_ding_ts: float | None = None
     ring_bursts_extended: int = 0
+    ring_ding_reopens_refused: int = 0
     ring_vision_events_published: int = 0
     ring_street_events_published: int = 0
     ring_events_publish_failed: int = 0
@@ -123,6 +124,7 @@ def make_system_health_envelope(
             "motions_total": metrics.ring_motions_total,
             "last_ding_ts": metrics.ring_last_ding_ts,
             "ring_bursts_extended": metrics.ring_bursts_extended,
+            "ring_ding_reopens_refused": metrics.ring_ding_reopens_refused,
             "ring_vision_events_published": metrics.ring_vision_events_published,
             "ring_street_events_published": metrics.ring_street_events_published,
             "ring_events_publish_failed": metrics.ring_events_publish_failed,

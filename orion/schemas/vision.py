@@ -650,6 +650,9 @@ class StreetEventV1(BaseModel):
     model (handoffs): the probability of an outcome at least this unlikely.
     ``individual_id`` / ``person_guess`` are a walkway individual and a
     Juniper-given name guess, never a face match.
+
+    ``extra="forbid"``: a new field must reach every consumer before any
+    producer sends it (consumer-first migration).
     """
 
     model_config = ConfigDict(extra="forbid")

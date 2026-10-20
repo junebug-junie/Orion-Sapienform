@@ -464,6 +464,7 @@ def test_ding_during_open_live_view_is_recorded_and_extends_it(tmp_path):
         gate = asyncio.Event()
 
         async def slow_burst(kind):
+            src._frames_open = True  # in the frame loop, which reads the extension
             await gate.wait()
 
         src._burst = slow_burst
@@ -699,6 +700,9 @@ def test_ring_event_id_is_stable_per_push():
 
     assert ring_event_id(_push()) == ring_event_id(_push(correlation_id="00000000-0000-0000-0000-000000000000"))
     assert ring_event_id(_push()) != ring_event_id(_push(ring_event_id="9002"))
+    # No Ring id: Ring's created_at second, not the random correlation id.
+    a = _push(ring_event_id=None)
+    assert ring_event_id(a) == ring_event_id(_push(ring_event_id=None, correlation_id="00000000-0000-0000-0000-000000000001"))
 
 
 def test_health_reports_ring_counts(tmp_path):
@@ -717,3 +721,126 @@ def test_doorbell_compose_ships_self_look_on():
     env = doc["services"]["orion-vision-retina-doorbell"]["environment"]
     assert "RETINA_RING_SELF_LOOK_ENABLED=${DOORBELL_RING_SELF_LOOK_ENABLED:-true}" in env
     assert Settings(_env_file=None).RETINA_RING_SELF_LOOK_ENABLED is True
+
+
+# --- review fixes: no ding is marked covered without a live view ------------
+
+
+def test_ding_while_connecting_is_queued_and_served_by_frames_start(tmp_path, fake_aiortc):
+    dev = _Device()
+
+    async def run():
+        src = _burst_src(tmp_path, dev, burst=0.2)
+        src._burst_correlation_id = "motion-corr"
+        task = asyncio.create_task(src._burst("motion"))
+        src._burst_task = task
+        pushes = []
+        src.event_sink = pushes.append
+        src.on_event(_event(kind="ding"))  # before the first await: still connecting
+        kind_at_frames = None
+        while not task.done():
+            if src._frames_open and kind_at_frames is None:
+                kind_at_frames = (src._event_kind, src._burst_correlation_id)
+            await asyncio.sleep(0.005)
+        return src, pushes, kind_at_frames
+
+    src, pushes, kind_at_frames = asyncio.run(run())
+    assert pushes[0].live_view == "queued"
+    assert kind_at_frames == ("ding", pushes[0].correlation_id)
+    assert src._pending_ding_corr is None and len(dev.opened) == 1  # no second view needed
+
+
+def test_ding_while_closing_reopens_a_live_view(tmp_path, fake_aiortc):
+    """Frame loop over, close_webrtc_stream still awaiting: the ding must not
+    be marked extended with nothing left to read it."""
+
+    class _SlowClose(_Device):
+        async def close_webrtc_stream(self, session_id):
+            await asyncio.sleep(0.1)
+            await super().close_webrtc_stream(session_id)
+
+    dev = _SlowClose()
+
+    async def run():
+        src = _burst_src(tmp_path, dev, burst=0.1)
+        src.cooldown_seconds = 30
+        pushes = []
+        src.event_sink = pushes.append
+        src._burst_task = asyncio.create_task(src._burst("motion"))
+        while not src._frames_open:
+            await asyncio.sleep(0.005)
+        while src._frames_open:
+            await asyncio.sleep(0.005)
+        src.on_event(_event(kind="ding"))  # closing
+        first = src._burst_task
+        await first
+        second = src._burst_task
+        await second
+        return src, pushes, first is not second
+
+    src, pushes, reopened = asyncio.run(run())
+    assert pushes[0].live_view == "queued" and reopened
+    assert len(dev.opened) == 2 and dev.closed == dev.opened
+
+
+def test_extension_survives_a_frame_gap(tmp_path, fake_aiortc, monkeypatch):
+    """No frame for the rest of the original burst: the wait_for timeout must
+    re-read the extension instead of ending the burst."""
+    dev = _Device()
+    orig = _PC.__init__
+
+    def init(self, *a, **k):
+        orig(self, *a, **k)
+        self.track = _Track(1)  # one frame, then silence
+
+    monkeypatch.setattr(_PC, "__init__", init)
+
+    async def run():
+        src = _burst_src(tmp_path, dev, burst=0.3)
+        t0 = time.monotonic()
+        task = asyncio.create_task(src._burst("motion"))
+        await asyncio.sleep(0.2)
+        src._extend_burst("c-1")
+        await task
+        return src, time.monotonic() - t0
+
+    src, took = asyncio.run(run())
+    assert took >= 0.45, took
+    assert src.bursts_failed == 0
+
+
+def test_dings_in_cooldown_are_capped(tmp_path):
+    async def run():
+        src = _connected(tmp_path, cooldown_seconds=3600)
+        pushes = []
+        src.event_sink = pushes.append
+
+        async def fake_burst(kind):
+            src._last_burst_end = time.time()
+
+        src._burst = fake_burst
+        src._last_burst_end = time.time()  # in the cooldown
+        for i in range(rs.DING_REOPEN_MAX + 2):
+            src.on_event(_event(kind="ding", id=i))
+            for _ in range(3):
+                await asyncio.sleep(0)
+        return src, pushes
+
+    src, pushes = asyncio.run(run())
+    views = [p.live_view for p in pushes]
+    assert views == ["started"] * rs.DING_REOPEN_MAX + ["ding_capped"] * 2
+    assert src.dings_total == rs.DING_REOPEN_MAX + 2  # every press still recorded
+    assert src.ding_reopens_refused == 2
+
+
+def test_self_look_value_is_bounded(tmp_path):
+    async def run():
+        src = _connected(tmp_path, cooldown_seconds=0)
+        src._burst = lambda kind: asyncio.sleep(0)
+        svc = _service_with(src)
+        svc.bus.redis = _Redis()
+        svc.bus.redis.value = "x" * 500
+        await svc.self_look_once()
+        return src
+
+    assert len(asyncio.run(run()).last_self_look_reason) == 80

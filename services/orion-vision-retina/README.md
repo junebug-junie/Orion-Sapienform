@@ -116,7 +116,11 @@ The only picture source is a live view. So:
   - for a ding, one `StreetEventV1` on `orion:vision:street:events`
     (`doorbell_ring`, salience 1.0).
   A ding during an open live view extends it by `RETINA_RING_BURST_SECONDS`
-  (at most 4 bursts long in total); a ding in the cooldown opens a new one.
+  (at most 4 bursts long in total). A ding while the view is still connecting
+  or already closing is `queued`: the connecting view covers it, or a new one
+  opens after the close. A ding in the cooldown opens a new one, at most 3 per
+  10 min (`ding_capped` after that, counted in `ring_ding_reopens_refused`;
+  the press is still recorded).
   Burst frames keep their own envelope correlation ids (the frame router
   keys pending tasks by them); the push's id is in each frame's
   `Published frame pointer ... ring_corr=` log line.

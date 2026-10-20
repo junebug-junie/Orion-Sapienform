@@ -1042,9 +1042,11 @@ def classify_conversation_phase(
     risk = "none"
     adjustments: list[str] = []
     crossed_day = False
+    days_crossed = 0
     if last_user_turn_at:
         tz = ZoneInfo(tz_name)
-        crossed_day = last_user_turn_at.astimezone(tz).date() != now_utc.astimezone(tz).date()
+        days_crossed = (now_utc.astimezone(tz).date() - last_user_turn_at.astimezone(tz).date()).days
+        crossed_day = days_crossed != 0
         if delta_user is not None and delta_user < 120:
             phase = "same_breath"
         elif delta_user < 20 * 60:
@@ -1053,17 +1055,25 @@ def classify_conversation_phase(
             phase = "resumed_thread"
             continuity = "lightly_resume"
             risk = "low"
-        elif delta_user < 12 * 3600:
+        # long_gap runs to 48 h. It used to stop at 12 h, so every 12-48 h gap
+        # (the usual "talk again the next evening") fell through as "unknown"
+        # with continuity=continue_directly, and the crossed_day override
+        # below skips "unknown". Live 2026-10-20: a 45 h gap told the motor to
+        # continue directly, and Orion said "hope Lagoon was magical today"
+        # about a Lagoon day two days earlier.
+        elif delta_user < 48 * 3600:
             phase = "long_gap"
             continuity = "reorient"
             risk = "medium"
             adjustments.append("Reorient before acting on stale operational context.")
-        elif delta_user > 48 * 3600:
+        else:
             phase = "stale_thread"
             continuity = "revalidate_context"
             risk = "high"
             adjustments.append("Revalidate volatile assumptions and preflight checks.")
-        if crossed_day and phase not in {"stale_thread", "unknown"}:
+        # Exactly one local midnight: a 33 h Sat-night -> Mon-morning gap is
+        # not "next day", so it stays long_gap.
+        if days_crossed == 1 and phase not in {"stale_thread", "unknown"}:
             phase = "next_day"
             continuity = "reorient"
             risk = "medium"

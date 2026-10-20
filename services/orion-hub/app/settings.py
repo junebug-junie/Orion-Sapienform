@@ -1202,6 +1202,15 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_SELF_PINNED_FLOOR_DAYS: float = Field(
         default=7.0, alias="HUB_CURIOSITY_SELF_PINNED_FLOOR_DAYS"
     )
+    # Naming branch of the self-inquiry line: Orion is shown one personality disposition
+    # (GET HUB_CURIOSITY_DURABLE_RUNS_URL/personality/naming/next) and names, rejects or merges
+    # it. Uses an existing self-inquiry slot; never displaces an overdue pinned lived question.
+    HUB_CURIOSITY_SELF_NAMING_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_SELF_NAMING_ENABLED"
+    )
+    HUB_CURIOSITY_SELF_NAMING_DAILY_CAP: int = Field(
+        default=1, alias="HUB_CURIOSITY_SELF_NAMING_DAILY_CAP"
+    )
     # Where Orion's own repository is mounted INSIDE the FCC sandbox (the
     # harness governor's compose mounts it read-only at /repo). Rendered into
     # the self-inquiry prompt only; Hub never reads it.

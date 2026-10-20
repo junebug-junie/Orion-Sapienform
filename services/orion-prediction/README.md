@@ -67,6 +67,31 @@ break at 00:35).
 | `observational_effect` | `POST /interventions` then `POST /effects/estimate` | interrupted time series; interval and p-value from placebo runs at earlier times |
 | `experimental_effect` | `POST /experiments/design`, log blocks, `POST /experiments/{id}/analyze` | randomised ON/OFF switchback; the only causal answer |
 
+### Does event A make event B more likely? (`POST /effects/event-pair`)
+
+Always `observational_effect`. Reads `vision_events` read-only (10 s statement timeout, same
+`conjourney` database as the telemetry). Body:
+
+```json
+{"a": {"event_type": "doorbell_ring"},
+ "b": {"event_type": "person_presence", "stream_id": "walkway"},
+ "start": "2026-10-06T00:00:00Z", "end": "2026-10-20T00:00:00Z",
+ "lag_min_sec": 0, "lag_max_sec": 300, "n_placebo": 999, "seed": 0, "placebo": "same_time_of_day"}
+```
+
+Each A opens a window `[a + lag_min, a + lag_max)`; overlapping windows merge, so no B counts twice.
+`rate_ratio` = B seen in the windows / (B's rate over the whole range x window length). The p-value
+comes from shifting all of A by one random offset many times (`p = (1 + #placebo >= real) / (N + 1)`).
+`same_time_of_day` (default) shifts by whole days +/- 1 h, so two streams that only share the daily
+rhythm read as no effect (needs >= 7 days; the range is cut to whole days); `circular` shifts anywhere (38 % false positives on daytime-only
+independent streams, ~5 % on rhythm-free ones). Too few A (< 5) or no B -> `422` with
+`detail.error = "refused"` and the counts. Each answer is stored in `prediction_effect_estimate`
+(`action = event_pair:<A>`, `series_id = <B>`, `effect` = rate ratio, details hold every count).
+Counts are rows, not visits.
+
+Live (2026-10-20, 14 days): no `doorbell_ring` rows exist yet, so the doorbell pair refuses;
+walkway presence -> walkway caption (0-60 s) 32x, p = 0.006.
+
 `GET /effects/{action}?series_id=` returns the best available level. `GET /experiments/guard`
 says whether it is safe to start an ON block (P(≥ 32 °C within 30 min) < 5 %).
 
@@ -99,5 +124,6 @@ cd services/orion-prediction
 PYTHONPATH=../..:. python -m pytest tests -q
 PYTHONPATH=../..:. python evals/run_causal_calibration_eval.py          # planted effects, many seeds
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --windows 16 # real cabinet history
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_event_pair_live_eval.py  # live vision pairs, read-only
 python evals/export_cabinet_fixture.py --until <iso>                     # refresh the fixture
 ```

@@ -74,6 +74,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "field_channel_anomaly.score.v1": "FieldChannelAnomalyScoreSQL",
     "chat_stance.belief.write.v1": "ChatStanceBeliefLogSQL",
     "self_concept.history.write.v1": "SelfConceptHistorySQL",
+    "personality.naming.v1": "DispositionNamingSQL",
     "self_sense.eval.write.v1": "SelfSenseEvalLogSQL",
     "journal.entry.index.v1": "JournalEntryIndexSQL",
     "evidence.unit.v1": "EvidenceUnitSQL",
@@ -208,6 +209,7 @@ class Settings(BaseSettings):
             "orion:field_channel:anomaly_score",
             "orion:chat_stance:belief:write",
             "orion:self_concept:history:write",
+            "orion:personality:naming",
             "orion:self_sense:eval:write",
             "orion:journal:index",
             "orion:evidence:index:upsert",
@@ -439,6 +441,11 @@ class Settings(BaseSettings):
     gpu_pool_events_retention_days: int = Field(30, alias="GPU_POOL_EVENTS_RETENTION_DAYS")
 
     gpu_pool_state_history_retention_days: int = Field(30, alias="GPU_POOL_STATE_HISTORY_RETENTION_DAYS")
+    # self_signal_outcome_association: ~21 rows/hour (equilibrium's hourly rollup). Readers need
+    # only each pair's last few hours (consecutive-holds rule); 30 days of audit history. 0 disables.
+    self_signal_outcome_association_retention_days: int = Field(
+        30, alias="SELF_SIGNAL_OUTCOME_ASSOCIATION_RETENTION_DAYS"
+    )
 
     # 15 -> 3 days (2026-08-20, Juniper's call, made against measured numbers).
     #
@@ -753,9 +760,9 @@ class Settings(BaseSettings):
     # 7.5s fair share a 45s budget gives the first of six tables. `effective_max_elapsed_sec`
     # on /grammar/truth is what tells you which cap actually bound.
     #
-    # Fourteen tables need >=5s each; adding GPU state history raises 66 -> 70.
+    # Fifteen tables need >=5s each; adding self_signal_outcome_association raises 70 -> 75.
     grammar_retention_periodic_max_cycle_sec: float = Field(
-        70.0, alias="GRAMMAR_RETENTION_PERIODIC_MAX_CYCLE_SEC"
+        75.0, alias="GRAMMAR_RETENTION_PERIODIC_MAX_CYCLE_SEC"
     )
     sql_writer_allow_accepted_pressure_ingest: bool = Field(
         False,
@@ -870,6 +877,11 @@ class Settings(BaseSettings):
         # rather than merges.
         if "orion:self_concept:history:write" not in channels:
             channels.append("orion:self_concept:history:write")
+        # Same guarantee, same reason. personality.naming.v1 (Orion's verdicts
+        # on their own dispositions, Hub self-inquiry naming runs) is a
+        # code-default route with no feature toggle.
+        if "orion:personality:naming" not in channels:
+            channels.append("orion:personality:naming")
         # Same guarantee again, same reason. self_sense.eval.write.v1 is a
         # code-default route with no feature toggle (producer: services/
         # orion-hub/evals/run_self_sense_eval.py); this exact omission made

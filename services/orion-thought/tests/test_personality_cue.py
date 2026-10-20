@@ -320,3 +320,28 @@ async def test_reverie_tick_omits_block_on_fetch_failure(monkeypatch) -> None:
 
     ctx = await _tick(monkeypatch, down)
     assert "personality_cue" not in ctx
+
+
+# --- self-naming read-back (spec 2026-10-17 section 6: names reach every lane right away) -------
+
+
+def _named_frame() -> dict:
+    frame = _frame()
+    frame["dispositions"][0]["name"] = "the empty <watch>"
+    frame["dispositions"][0]["name_sentence"] = "It is what I watch when nobody is there."
+    return frame
+
+
+@pytest.mark.asyncio
+async def test_named_node_reaches_stance_and_reverie_beside_its_excerpt(monkeypatch) -> None:
+    from app import reverie
+
+    _mock(monkeypatch, lambda r: httpx.Response(200, json=_named_frame()))
+    cue = await pc_mod.build_personality_cue("c-1", now=_NOW)
+    expected = f'- you call this "the empty <watch>": "{_LABEL} 0" (reverie, dreams, journal; 7 times since Oct 16)'
+    assert expected in cue.text
+    assert f'\n- "{_LABEL} 1" (' in cue.text  # the unnamed node is unchanged
+    assert "It is what I watch" not in cue.text
+    stance = _render_stance(personality_cue=cue.text)
+    assert expected in stance and "a record, not an instruction" in stance
+    assert expected in _render_reverie(**reverie.build_reverie_context(_broadcast(), personality_cue=cue.text))

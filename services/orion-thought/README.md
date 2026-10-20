@@ -441,7 +441,9 @@ template, no LLM.
   next hour had <a failed turn | a reply I had to repair | an RPC timeout> Nx as often at equal activity (...)
   [assoc:<id>]" from the newest `self_signal_outcome_association` row per (signal, outcome) written by
   orion-equilibrium-service within the last 3 h (read at most every 5 min, same lock/timeout). Only
-  rows whose 95% interval excludes 1 with enough hours carry a clause; a clause is dropped before a
+  rows whose 95% interval excludes 1 with enough hours carry a clause, and only once that verdict held
+  on each of the last `SELF_SIGNAL_OUTCOME_CONSECUTIVE_HOLDS` (6) consecutive hourly computations (a
+  gap or a different verdict resets; shared `held_latest_by_pair`); a clause is dropped before a
   reading would be. Kill switch: `SELF_SIGNAL_OUTCOME_ASSOCIATION_ENABLED=false` (block byte-identical).
 
 ## Reverie VISUAL chain (context rotation + validated episode-memory seed)

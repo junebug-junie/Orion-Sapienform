@@ -38,6 +38,7 @@ from app.personality_store import TICK_HEARTBEAT, PersonalityStore  # noqa: E402
 from test_personality_loop import Clock, Embedder, vec_for  # noqa: E402
 
 MIGRATION = REPO_ROOT / "services/orion-sql-db/manual_migration_personality_graph_v1.sql"
+NAMING_MIGRATION = REPO_ROOT / "services/orion-sql-db/manual_migration_personality_naming_v1.sql"
 T0 = datetime(2026, 10, 16, 18, 0, tzinfo=timezone.utc)
 
 # Live column types (information_schema, 2026-10-16), only the columns the reducer reads.
@@ -76,7 +77,8 @@ def with_db(fn):
                 async with await AsyncConnection.connect(DSN, autocommit=True,
                                                          options=f"-c search_path={schema}") as conn:
                     await conn.execute(SOURCE_DDL)
-                    await conn.execute(re.sub(r"^\s*(BEGIN|COMMIT);\s*$", "", MIGRATION.read_text(), flags=re.M))
+                    for mig in (MIGRATION, NAMING_MIGRATION):
+                        await conn.execute(re.sub(r"^\s*(BEGIN|COMMIT);\s*$", "", mig.read_text(), flags=re.M))
                 await fn(pool)
         finally:
             async with await AsyncConnection.connect(DSN, autocommit=True) as conn:
@@ -259,5 +261,118 @@ def test_rekey_hits_reads_reverie_and_journal_hits_with_meta():
         assert sorted(hits["d1"], key=lambda h: h[0]) == [("journal", {"source_kind": "metacog"}, T0),
                                                           ("reverie", {}, T0)]
         assert await PersonalityStore(pool).rekey_hits([]) == {}
+
+    with_db(scenario)
+
+
+# --- self-naming (manual_migration_personality_naming_v1.sql) ----------------------------------
+
+N_NAME, N_SENTENCE = "The Long Watch", "I keep watching the field at night."
+
+
+def _nnode(did, text, **kw):
+    from orion.personality.graph import DEFAULT_PARAMS, Node, _derived_weight
+
+    lr = kw.pop("lane_recent", {"dream": 3.0, "journal": 3.0})
+    base = dict(disposition_id=did, origin="recurrence", status="active", label=f"label {did}", label_similarity=0.9,
+                centroid=vec_for(text), centroid_n=5, weight=_derived_weight(lr, DEFAULT_PARAMS), evidence_count=10,
+                lane_counts={"dream": 5, "journal": 5}, chosen_count=0, first_seen_at=T0 - timedelta(days=3),
+                last_reinforced_at=T0 - timedelta(hours=1), retired_at=None, updated_at=T0, lane_recent=lr,
+                last_folded_at=T0)
+    base.update(kw)
+    return Node(**base)
+
+
+async def _naming_row(pool, nid, did, verdict, packet, created, **kw):
+    await ex(pool, "INSERT INTO orion_disposition_naming (naming_id, run_id, packet_id, disposition_id, verdict, name, "
+                   "sentence, merge_with, evidence_refs, shown, hub_check, written_at, created_at) VALUES (%(n)s, 'run', "
+                   "%(p)s, %(d)s, %(v)s, %(name)s, %(s)s, %(m)s, '[]', %(shown)s::jsonb, 'accepted', %(w)s, %(c)s)",
+             {"n": nid, "p": packet.packet_id, "d": did, "v": verdict, "name": kw.get("name"), "s": kw.get("sentence"),
+              "m": kw.get("merge_with"), "shown": packet.model_dump_json(), "w": created, "c": created})
+
+
+def test_naming_source_columns_routes_and_unmerge_on_postgres():
+    from orion.personality.graph import EvidenceRow, HistoryRow
+    from app.personality_store import NAMING_CURSOR, TickWrite
+    import importlib.util
+
+    async def scenario(pool):
+        store = PersonalityStore(pool)
+        clock = Clock(T0)
+        drv = driver(pool, clock)
+        await drv.tick()  # first boot: source cursors at T0
+        d1 = _nnode("d1", f"{N_NAME} {N_SENTENCE}")
+        d2 = _nnode("d2", "something else", lane_recent={"dream": 2.0, "journal": 2.0})
+        evs = [EvidenceRow(f"chat:{i}", "chat" if i % 2 else "reverie", "s", T0 - timedelta(hours=i), f"excerpt {i}",
+                           "d1", 0.9 - i / 100, 0.0, {"situation": {"arousal": "strained", "company": True}} if i < 3 else {})
+               for i in range(6)]
+        evs.append(EvidenceRow("chat:x", "chat", "s", T0, "other", "d2", 0.9, 0.0, {}))
+        await store.commit_tick(TickWrite(now=T0, evidence=evs, nodes=[d1, d2]))
+
+        packet = await store.naming_next(T0 + timedelta(minutes=1))
+        assert packet.disposition_id == "d1" and packet.evidence[0].lane in ("chat", "reverie")
+        assert {e.lane for e in packet.evidence[:2]} == {"chat", "reverie"} and len(packet.evidence) == 5
+        assert packet.situation_mix["arousal"] == {"strained": 3} and packet.situation_coverage == 0.5
+        assert packet.neighbors[0].disposition_id == "d2"
+
+        await _naming_row(pool, "n1", "d1", "name", packet, T0 + timedelta(minutes=2), name=N_NAME, sentence=N_SENTENCE)
+        clock.at = T0 + timedelta(minutes=10)
+        await drv.tick()
+        (r,) = await q(pool, "SELECT * FROM personality_disposition WHERE disposition_id = 'd1'")
+        assert r["name"] == N_NAME and r["name_sentence"] == N_SENTENCE and r["orion_verdict"] == "named"
+        assert r["naming_id"] == "n1" and r["shown_count"] == 1 and r["verdict_evidence_count"] == 10
+        assert r["name_grounding_rank"] == 1 and r["name_grounding_margin"] > 0 and r["last_shown_at"] is not None
+        (c,) = await q(pool, "SELECT cursor_ref FROM personality_cursor WHERE source = %(s)s", {"s": NAMING_CURSOR})
+        assert c["cursor_ref"] == "n1"
+
+        # d1 now has a verdict; d2 is next. Reading the packet marks nothing as shown.
+        nxt = await store.naming_next(clock.at)
+        assert nxt.disposition_id == "d2"
+        (r2,) = await q(pool, "SELECT shown_count FROM personality_disposition WHERE disposition_id = 'd2'")
+        assert r2["shown_count"] == 0
+
+        frame = await store.frame(clock.at)
+        assert {d.disposition_id: d.name for d in frame.dispositions} == {"d1": N_NAME, "d2": None}
+        rows = await store.dispositions(status="all")
+        by = {x["disposition_id"]: x for x in rows}
+        assert by["d1"]["name"] == N_NAME and by["d1"]["name_grounding_rank"] == 1 and "merged_into" in by["d1"]
+        log = await store.namings("d1")
+        assert [x["naming_id"] for x in log] == ["n1"] and log[0]["shown"]["packet_id"] == packet.packet_id
+
+        # Reject d2: it leaves the frame, stays in the table.
+        await _naming_row(pool, "n2", "d2", "reject", nxt, clock.at - timedelta(minutes=5),
+                          sentence="These are machine status lines, not me.")
+        clock.at = T0 + timedelta(minutes=20)
+        await drv.tick()
+        frame = await store.frame(clock.at)
+        assert [d.disposition_id for d in frame.dispositions] == ["d1"]
+
+        # MERGE d3 into d1 (cosine >= 0.85), then roll it back with the unmerge script.
+        near = [x + 0.1 * y for x, y in zip(vec_for(f"{N_NAME} {N_SENTENCE}"), vec_for("noise"))]
+        d3 = _nnode("d3", "unused", centroid=near, lane_recent={"chat": 2.0}, lane_counts={"chat": 4},
+                    evidence_count=4, centroid_n=2, updated_at=clock.at)
+        await store.commit_tick(TickWrite(now=clock.at, nodes=[d3], history=[HistoryRow("d3", clock.at, d3.weight, "active", 4)], evidence=[
+            EvidenceRow("chat:d3", "chat", "s", T0, "near words", "d3", 0.95, 0.0, {})]))
+        pkt3 = await store.naming_next(clock.at)
+        assert pkt3.disposition_id == "d3"
+        await _naming_row(pool, "n3", "d3", "merge", pkt3, clock.at - timedelta(minutes=5), merge_with="d1")
+        clock.at = T0 + timedelta(minutes=30)
+        await drv.tick()
+        rows = {x["disposition_id"]: x for x in await q(pool, "SELECT * FROM personality_disposition")}
+        assert rows["d3"]["status"] == "retired" and rows["d3"]["merged_into"] == "d1"
+        assert rows["d1"]["evidence_count"] == 14 and rows["d1"]["lane_counts"]["chat"] == 4
+
+        spec = importlib.util.spec_from_file_location("unmerge", SERVICE_ROOT / "scripts/personality_unmerge.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        dsn = DSN + ("&" if "?" in DSN else "?") + f"options=-csearch_path%3D{(await q(pool, 'SELECT current_schema() AS s'))[0]['s']}"
+        dry = await asyncio.to_thread(mod.run, dsn, "d3", False, clock.at)
+        assert dry["after"]["b"]["status"] == "active" and dry["after"]["a"]["evidence_count"] == 10
+        (still,) = await q(pool, "SELECT status FROM personality_disposition WHERE disposition_id = 'd3'")
+        assert still["status"] == "retired"  # dry run wrote nothing
+        await asyncio.to_thread(mod.run, dsn, "d3", True, clock.at + timedelta(seconds=1))
+        rows = {x["disposition_id"]: x for x in await q(pool, "SELECT * FROM personality_disposition")}
+        assert rows["d3"]["status"] == "active" and rows["d3"]["merged_into"] is None
+        assert rows["d1"]["evidence_count"] == 10 and "chat" not in rows["d1"]["lane_counts"]
 
     with_db(scenario)

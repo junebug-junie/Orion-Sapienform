@@ -28,6 +28,7 @@ from contextlib import suppress
 from typing import Any, Callable, Optional
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.schemas.ask import OrionAskAnsweredV1
 
 from .settings import Settings, get_settings
@@ -223,30 +224,13 @@ async def run_ask_answered_listener(
     if not s.enable_ask_answered_listener:
         logger.info("ask_answered listener disabled by config")
         return
-    channel = s.channel_ask_answered
-    logger.info("ask_answered listener subscribing channel=%s", channel)
-    try:
-        async with bus.subscribe(channel) as pubsub:
-            while True:
-                if stop_event is not None and stop_event.is_set():
-                    break
-                try:
-                    msg = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                        timeout=1.2,
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                if not msg or msg.get("type") not in ("message", "pmessage"):
-                    continue
-                try:
-                    await _handle_bus_message(bus, msg, get_store=get_store, get_engine=get_engine)
-                except Exception:
-                    logger.exception("ask_answered unhandled error")
-    except asyncio.CancelledError:
-        raise
-    finally:
-        logger.info("ask_answered listener stopped channel=%s", channel)
+    await run_subscription(
+        bus,
+        s.channel_ask_answered,
+        lambda msg: _handle_bus_message(bus, msg, get_store=get_store, get_engine=get_engine),
+        stop_event=stop_event,
+        name="ask_answered listener",
+    )
 
 
 async def start_ask_answered_listener(

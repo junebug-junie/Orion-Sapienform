@@ -77,6 +77,22 @@ fi
 # a log write never fails the rebuild.
 REBUILD_LOG="${ORION_REBUILD_LOG:-${HOME:-/tmp}/.orion/post_pull_rebuild.log}"
 REBUILD_HEAD=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+# Judge every `up` of this run against the commit the run started on, not
+# against an origin/main that a PR merge moves mid-run (2026-10-20: one merge
+# refused 55 remaining services). safe_docker_build.sh still refuses a main
+# that moved, is ahead of, or diverged from origin/main. Pin only when the run
+# STARTS in sync with origin/main: a run started on an already-stale main stays
+# unpinned, so the wrapper refuses it exactly as before.
+ORION_DEPLOY_PINNED_HEAD=""
+if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] &&
+    git -C "$REPO_ROOT" fetch --quiet origin main 2>/dev/null; then
+    _pin_head=$(git -C "$REPO_ROOT" rev-parse --verify HEAD 2>/dev/null || true)
+    _pin_origin=$(git -C "$REPO_ROOT" rev-parse --verify origin/main 2>/dev/null || true)
+    if [ -n "$_pin_head" ] && [ "$_pin_head" = "$_pin_origin" ]; then
+        ORION_DEPLOY_PINNED_HEAD="$_pin_head"
+    fi
+fi
+export ORION_DEPLOY_PINNED_HEAD
 rebuild_log() {
     (
         mkdir -p "$(dirname "$REBUILD_LOG")" &&

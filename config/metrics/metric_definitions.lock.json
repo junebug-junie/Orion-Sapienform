@@ -2,9 +2,10 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 751,
   "_last_change": {
-    "change_count": 2,
-    "high_severity_count": 0,
+    "change_count": 3,
+    "high_severity_count": 1,
     "changes": [
+      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026vices.orion-hub.scripts.\u2026 -> \u2026vices.orion-durable-runs.app.temporal_self_chronicle:Chroni\u2026\u2026)",
       "medium added metric://bus_channel/orion-hub/orion:personality:naming",
       "medium added metric://field_channel/orion-substrate-runtime/node:substrate.street.prediction_error"
     ]
@@ -4809,6 +4810,7 @@
       "absent_means": "Redis orion:regulation:latest expired (TTL 360 s, three ticks) or arousal_level unknown (a stale input, or ORION_REGULATION_AROUSAL_ENABLED=false): arousal unavailable, and every reader keeps its pre-arousal behaviour. Never read as idle.",
       "declared_consumers": [
         "services.orion-dream.app.cycle:run_cycle_once (a due sleep is held while engaged or strained)",
+        "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> orion.temporal_self.arcs:_fold_strain (strain loop part 1: one `strain` arc per episode from the arousal_transition rows; read by the chat stance cue, the Day letter and the reverie arc block)",
         "services.orion-hub.scripts.api_routes:_mutation_arousal_level -> orion.substrate.mutation_pressure:PressureAccumulator.ready_for_proposal (no self-modification proposal while strained)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (strained holds; engaged doubles the cooldown)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick_self_inquiry (runs only at idle)",

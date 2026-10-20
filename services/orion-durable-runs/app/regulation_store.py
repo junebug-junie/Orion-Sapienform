@@ -173,6 +173,24 @@ def transition_row(prev: Optional[ArousalReadingV1], new: ArousalReadingV1, day_
     }
 
 
+def cause_row(new: ArousalReadingV1, day_id: str, joined: list[str], seed: bool) -> dict:
+    """Strain loop part 1: a row for a strain episode whose level did not change. ``joined``: the
+    causes new to the episode (empty for a keepalive); ``seed``: nothing was recorded for this
+    episode yet (the chronology has no onset row for it). Same table, kind and label as a level row, so every reader of levels
+    (personality situation) still reads ``strained`` at that time. Time: when it was observed."""
+    since = new.since.astimezone(timezone.utc)
+    observed = new.observed_at.astimezone(timezone.utc)
+    return {
+        "event_id": f"arousal_transition:{since.isoformat()}:{new.arousal_level}:at:{observed.isoformat()}",
+        "day_id": day_id,
+        "occurred_at": observed,
+        "source_ref": f"regulation.state.v1:{observed.isoformat()}",
+        "label": new.arousal_level,
+        "payload": json.dumps({"from": new.arousal_level, "to": new.arousal_level, "joined": list(joined),
+                               "seed": bool(seed), "reading": new.model_dump(mode="json")}),
+    }
+
+
 async def record_transition(pool: Any, row: dict) -> bool:
     try:
         async with pool.connection() as conn:

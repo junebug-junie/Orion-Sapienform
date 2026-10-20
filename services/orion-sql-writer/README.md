@@ -644,6 +644,53 @@ of a window opening rather than up to one rhythm tick late. Rhythm surprise stay
 this table; it is not wired to the substrate graph until live data passes the
 metric gate.
 
+**Street continuity loop** (`app/vision_handoff.py` rules, `app/vision_handoff_loop.py`
+I/O, every `VISION_HANDOFF_INTERVAL_SEC`, default 15 s; design:
+`docs/superpowers/specs/2026-10-20-street-continuity-handoff-design.md`). One passage
+across the door and walkway cameras. Portals live in `config/vision_topology.yaml`
+(override `VISION_TOPOLOGY_PATH`; loader `orion/vision/topology.py`): `central_walk`
+(overlap, the cameras see the central walkway together), `approach_door` (a walkway
+person moving toward the house expects a Ring motion / ring event or a doorbell story
+3-30 s later), `door_to_walkway` / `walkway_to_door` (the sidewalk gap). Tables:
+`manual_migration_vision_handoff_v1.sql` (`vision_handoff`, `vision_handoff_hypothesis`,
+`vision_handoff_cursor`); without it the loop backs off with a log line.
+
+- **Open** from new motion stories (cursor on `created_at`). Most walkway stories end
+  `inside` (the detector looks every ~5 s), so a departure is projected: moving toward
+  the portal edge, last foot within 0.6 of it, a measured exit speed (frame widths/s).
+  Window = `(exit_dist + g) / exit_speed` with `g` the prior x0.4..x3 until
+  `VISION_HANDOFF_MIN_MET` met for that portal and kind, then the split-conformal 10-90%
+  band of learned `g = transit_sec x exit_speed - exit_dist`. While a window is ahead it
+  sets `orion:vision:expect:walkway` (extend-only; the rhythm loop keeps the key until
+  `handoff_until`) or `orion:vision:look:doorbell` (= handoff id, TTL = window; the
+  retina opens a capped live view). Stories land ~50 s after the walker left, so about
+  half the windows are already past (`steer_too_late` in the tick summary).
+- **Grade** once the target camera's motion cursor passed the late margin: `met` /
+  `early` / `late` / `ambiguous` (two candidates, no clear appearance winner; never
+  trains), `missed` only if the target camera delivered census frames for at least
+  `VISION_HANDOFF_MIN_COVERAGE` of the window, else `unscorable` (the doorbell only
+  looks during Ring bursts and self-looks). Appearance: story centroid cosine, face then
+  body then OSNet. Writes `vision_events` `handoff_met` / `handoff_early` /
+  `handoff_late` / `handoff_missed` / `overlap_pair`.
+- **Misses** open five hypotheses (`detector_miss`, `late`, `turned_back`,
+  `entered_place`, `unexplained`) with counted-outcome priors (start at 1 each), settled
+  from data by deadline; `unexplained` writes a `vision_unresolved` row (reason
+  `handoff_missed`, the curiosity seam) and the `handoff_missed` street event. A ring
+  with no approach seen first is an `unannounced` row (walkway `detector_miss` or
+  `out_of_view`).
+- **Street events** (`StreetEventV1` on `orion:vision:street:events`, outbox columns on
+  `vision_handoff`, `VISION_HANDOFF_STREET_EVENTS_ENABLED`): `approach_door`,
+  `handoff_met` for a person-model accept guess, `handoff_missed` once unexplained,
+  `overlap_pair` (low salience). Salience = who x what x surprise (`SALIENCE_*` in
+  `vision_handoff.py`). p-value calm state and the conformal floor `2/(n+1)` are
+  documented in the module.
+- **Asks**: a strong met / overlap pair opens a `vision_same_individual` ask
+  (`VISION_HANDOFF_SAME_ASK_DAILY_CAP`, evidence `rule:handoff`). The handoff code never
+  writes a label, a pair verdict or a merge. No "where did they go?" ask: `OrionAskV1`
+  has no choices field.
+- Replay (read-only, the metric gate): `PYTHONPATH=. python
+  services/orion-sql-writer/evals/run_vision_handoff_replay_eval.py [--since ...]`.
+
 Safety rails added after review: each cycle holds a Postgres advisory lock
 (a second instance skips the tick); crops newer than
 `VISION_INDIVIDUALS_SETTLE_SEC` wait a tick so out-of-order writes are not

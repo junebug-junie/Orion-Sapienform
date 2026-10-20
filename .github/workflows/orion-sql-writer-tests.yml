@@ -17,6 +17,7 @@ on:
       - "tests/test_act_ledger_contract.py"
       - "orion/vision/**"
       - "config/vision_zones.yaml"
+      - "config/vision_topology.yaml"
       - "services/orion-sql-db/**"
       - "services/orion-sql-writer/**"
       - "services/orion-substrate-runtime/**"
@@ -37,6 +38,7 @@ on:
       - "tests/test_act_ledger_contract.py"
       - "orion/vision/**"
       - "config/vision_zones.yaml"
+      - "config/vision_topology.yaml"
       - "services/orion-sql-db/**"
       - "services/orion-sql-writer/**"
       - "services/orion-substrate-runtime/**"
@@ -93,6 +95,9 @@ jobs:
             services/orion-sql-writer/tests/test_vision_rhythm.py \
             services/orion-sql-writer/tests/test_vision_walkway_zones_thumbs_cursor.py \
             services/orion-sql-writer/tests/test_vision_expect_refresh.py \
+            services/orion-sql-writer/tests/test_vision_handoff.py \
+            services/orion-sql-writer/evals/test_vision_handoff_replay_eval.py \
+            tests/test_street_event_bus_catalog.py \
             services/orion-sql-writer/tests/test_vision_event_sql_shape.py \
             services/orion-sql-writer/tests/test_energy_sql_shape.py \
             services/orion-sql-writer/evals/test_walkway_reducers_eval.py \
@@ -174,7 +179,8 @@ jobs:
           import re
           conn.cursor().execute(pathlib.Path("services/orion-sql-db/manual_migration_vision_osnet_shadow_v1.sql").read_text())
           for f in ("vision_split_v1", "vision_reanchor_v1", "vision_motion_story_v1",
-                    "vision_motion_story_strip_v2", "vision_motion_story_edges_v1"):
+                    "vision_motion_story_strip_v2", "vision_motion_story_edges_v1",
+                    "vision_person_album_v1", "vision_scene_inventory", "vision_handoff_v1"):
               body = re.sub(r"--[^\n]*", "", pathlib.Path(f"services/orion-sql-db/manual_migration_{f}.sql").read_text())
               for stmt in body.split(";"):
                   if stmt.strip():
@@ -188,7 +194,8 @@ jobs:
             services/orion-sql-writer/tests/test_vision_reanchor.py \
             services/orion-sql-writer/tests/test_vision_motion.py \
             services/orion-sql-writer/tests/test_vision_story_strip.py \
-            services/orion-sql-writer/tests/test_vision_rollup.py | tee vision_pg.out
+            services/orion-sql-writer/tests/test_vision_rollup.py \
+            services/orion-sql-writer/tests/test_vision_handoff_pg.py | tee vision_pg.out
           if grep -q "SKIPPED" vision_pg.out; then
             echo "visual confirmation Postgres tests skipped -- ORION_TEST_PG_URI wiring is broken" >&2
             exit 1

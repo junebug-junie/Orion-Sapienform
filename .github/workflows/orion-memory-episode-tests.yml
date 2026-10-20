@@ -31,6 +31,9 @@ on:
       - "services/orion-hub/tests/test_ask_names_pg.py"
       - "services/orion-hub/scripts/motion_story_routes.py"
       - "services/orion-hub/tests/test_motion_story_routes.py"
+      - "services/orion-hub/static/js/walkway-stories.js"
+      - "services/orion-hub/tests/test_walkway_stories_js.py"
+      - "services/orion-sql-db/manual_migration_vision_handoff_v1.sql"
       - "services/orion-sql-db/manual_migration_vision_motion_story_v1.sql"
       - "services/orion-sql-db/manual_migration_vision_motion_story_strip_v2.sql"
       - "orion/curiosity/focus.py"
@@ -54,6 +57,9 @@ on:
       - "services/orion-hub/tests/test_ask_names_pg.py"
       - "services/orion-hub/scripts/motion_story_routes.py"
       - "services/orion-hub/tests/test_motion_story_routes.py"
+      - "services/orion-hub/static/js/walkway-stories.js"
+      - "services/orion-hub/tests/test_walkway_stories_js.py"
+      - "services/orion-sql-db/manual_migration_vision_handoff_v1.sql"
       - "services/orion-sql-db/manual_migration_vision_motion_story_v1.sql"
       - "services/orion-sql-db/manual_migration_vision_motion_story_strip_v2.sql"
       - "services/orion-sql-db/manual_migration_walkway_camera_v1.sql"
@@ -133,6 +139,7 @@ jobs:
             services/orion-hub/tests/test_ask_resolve_pg.py \
             services/orion-hub/tests/test_ask_names_pg.py \
             services/orion-hub/tests/test_motion_story_routes.py \
+            services/orion-hub/tests/test_walkway_stories_js.py \
             | tee -a pytest.out
           if grep -q "SKIPPED" pytest.out; then
             echo "Postgres-backed memory episode tests skipped -- the service/env wiring is broken" >&2

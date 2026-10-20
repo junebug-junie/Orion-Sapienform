@@ -93,8 +93,11 @@ class GraphParams:
     centroid_n_cap: int = 50  # running-mean memory, lets a node drift slowly
     history_min_rel_change: float = 0.01
     # MERGE (B into A) by Orion's own verdict only when the two centroids are at least this close.
-    # Starting knob (design 2026-10-17 section 5; the match threshold above is 0.82).
-    merge_min_cosine: float = 0.70
+    # The design's starting knob was 0.70; the P0 eval on live data (98 nodes, 2026-10-20) found
+    # pairwise centroid cosine median 0.633, p90 0.747, and 21% of all pairs >= 0.70, so 0.70 would
+    # let one in five arbitrary pairs merge. Nearest-neighbor cosine: median 0.827, p90 0.897. 0.85
+    # admits only pairs closer than a typical nearest neighbor (and above the 0.82 match threshold).
+    merge_min_cosine: float = 0.85
 
 
 DEFAULT_PARAMS = GraphParams()

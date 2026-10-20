@@ -276,6 +276,10 @@ def test_merge_too_far_or_missing_changes_nothing():
     (onlyb,) = res.nodes
     assert onlyb.disposition_id == "b" and onlyb.status == "active" and onlyb.shown_count == 1
     assert onlyb.naming_id is None and res.history == []
+    # cosine 0.80: over the design's first 0.70 knob, under the P0-set 0.85 default.
+    assert DEFAULT_PARAMS.merge_min_cosine == 0.85
+    near = apply_namings([a, node("c", centroid=axis(0, 0.75))], [nrow("merge", did="c", merge_with="a")], now=NOW)
+    assert near.outcomes[0].apply_status == "merge_too_far"
     miss = apply_namings([b], [nrow("merge", did="b", merge_with="zzz")], now=NOW)
     assert miss.outcomes[0].apply_status == "merge_target_missing"
     self_merge = apply_namings([b], [nrow("merge", did="b", merge_with="b")], now=NOW)

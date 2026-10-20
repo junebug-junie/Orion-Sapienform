@@ -160,6 +160,9 @@ The catalog `mv` must happen after the new code is pulled and before the retro r
 - **Low: the game picker with 20 entries is not exercised by the eval.** The picker is a native `<select>`, so 20 entries render as the browser's own scrolling dropdown and do not change the layout. The longest staged title is 32 characters. The Sessions test covers 20 and 64 games.
 - **Low: disk use.** Saves are capped at 20 per game and 4 MiB per state. An NES state is usually under 100 KiB.
 
+- **Note: CI.** The `Static repo gates` check fails on this PR. It fails the same way on `main` at `ca23dbc7a`: the definition drift gate reports `added metric://bus_channel/orion-hub/orion:personality:naming`. That metric comes from the personality-naming merge, not from this PR, so it should be re-locked on main.
+  - `service-container` failed once, in the cognitive-goal section of the browser eval ("acknowledged wait never applied"). This PR does not touch that section. A second run of the same commit passed, and a run after merging main passed.
+
 ## PR link
 
 https://github.com/junebug-junie/Orion-Sapienform/pull/2825

@@ -58,6 +58,7 @@ KIND_PHRASES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(?:open|conversation) threads?\b", re.I), "concern"),
     (re.compile(r"\breverie\b", re.I), "reverie"),
     (re.compile(r"\bbeen here since\b", re.I), "company"),
+    (re.compile(r"\bstrained since\b|\bwas strained (?:\w{3} )?\d{1,2}:\d{2}\b", re.I), "strain"),
 )
 _SPAN = r"(?:(?P<h>\d+)\s*h(?:ours?|rs?)?\.?)?\s*(?:(?P<m>\d+)\s*min(?:utes?|s)?\.?)?"
 AGO_RE = re.compile(rf"(?<![\w:])(?:(?P<under>under a minute)|{_SPAN})\s+ago\b", re.I)
@@ -90,6 +91,8 @@ class ArcFacts:
     ended_at: datetime | None
     last_seen_at: datetime | None
     attention_returns: int
+    # A strain arc carried over midnight began at the boundary; its episode began earlier.
+    episode_began_at: datetime | None = None
 
     @classmethod
     def from_row(cls, arc: Mapping[str, Any]) -> "ArcFacts":
@@ -98,6 +101,7 @@ class ArcFacts:
             subject_label=str(arc.get("subject_label") or ""), status=str(arc.get("status") or ""),
             began_at=_dt(arc["began_at"]), ended_at=_dt(arc.get("ended_at")), last_seen_at=_dt(arc.get("last_seen_at")),
             attention_returns=int(arc.get("attention_returns") or 0),
+            episode_began_at=_dt(arc.get("episode_began_at")),
         )
 
     def times(self) -> list[tuple[str, datetime]]:
@@ -106,11 +110,13 @@ class ArcFacts:
             out.append(("ended", self.ended_at))
         if self.last_seen_at is not None:
             out.append(("last seen", self.last_seen_at))
+        if self.episode_began_at is not None:
+            out.append(("episode began", self.episode_began_at))
         return out
 
     def moved_after(self, t: datetime) -> bool:
         """The row changed after ``t``: what it said at ``t`` is not stored."""
-        return any(seen > t + timedelta(seconds=MIN_TOLERANCE_SEC) for name, seen in self.times() if name != "began")
+        return any(seen > t + timedelta(seconds=MIN_TOLERANCE_SEC) for name, seen in self.times() if name not in ("began", "episode began"))
 
 
 @dataclass

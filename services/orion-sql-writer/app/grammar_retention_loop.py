@@ -56,6 +56,9 @@ def retention_days_for(settings: Settings) -> dict[str, int]:
         ),
         "gpu_pool_events": int(getattr(settings, "gpu_pool_events_retention_days", 0) or 0),
         "gpu_pool_state_history": int(getattr(settings, "gpu_pool_state_history_retention_days", 0) or 0),
+        "self_signal_outcome_association": int(
+            getattr(settings, "self_signal_outcome_association_retention_days", 0) or 0
+        ),
     }
 
 

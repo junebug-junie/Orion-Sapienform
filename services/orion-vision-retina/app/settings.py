@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     CHANNEL_RETINA_PUB: str = "orion:vision:frames"
     CHANNEL_RETINA_ERROR: str = "orion:vision:retina:error"
     CHANNEL_SYSTEM_HEALTH: str = "orion:system:health"
+    # Ring source only (app/ring_events.py): one vision event per Ring push
+    # (-> scribe -> vision_events) and one StreetEventV1 per ding.
+    CHANNEL_VISION_EVENTS_PUB: str = "orion:vision:events"
+    CHANNEL_STREET_EVENTS_PUB: str = "orion:vision:street:events"
 
     RETINA_SOURCE_TYPE: str = "folder"
     RETINA_SOURCE: str = "/mnt/telemetry/vision/intake"
@@ -109,11 +113,23 @@ class Settings(BaseSettings):
     #   EVENT_KINDS   Ring push kinds that open a live view.
     #   BURST_SECONDS how long each live view runs; RETINA_FPS samples it.
     #   COOLDOWN_SECONDS  from the end of one live view to the next start.
-    #                 Each live view wakes a battery camera.
+    #                 Each live view wakes a battery camera. A ding ignores
+    #                 it: a ring always opens (or extends) a live view.
     RETINA_RING_STATE_DIR: str = "/var/lib/orion-vision-ring"
     RETINA_RING_EVENT_KINDS: str = "motion,ding"
     RETINA_RING_BURST_SECONDS: float = 15.0
     RETINA_RING_COOLDOWN_SECONDS: float = 30.0
+    # Active looking (spec 2026-10-20 street continuity, section 5). The
+    # handoff reducer SETs RETINA_RING_SELF_LOOK_KEY (value = handoff id, with
+    # a TTL) when it expects someone at the door; the retina then opens a
+    # live view if none is open and the cooldown has passed, at most
+    # MAX_PER_DAY per UTC day and MIN_SPACING_SECONDS apart. Read from the
+    # bus Redis (ORION_BUS_URL); one open per distinct key value.
+    RETINA_RING_SELF_LOOK_ENABLED: bool = True
+    RETINA_RING_SELF_LOOK_MAX_PER_DAY: int = 8
+    RETINA_RING_SELF_LOOK_MIN_SPACING_SECONDS: float = 300.0
+    RETINA_RING_SELF_LOOK_KEY: str = "orion:vision:look:doorbell"
+    RETINA_RING_SELF_LOOK_POLL_SECONDS: float = 2.0
 
     # On-demand video+audio clip capture for AffectGPT (app/clip_capture.py).
     # Separate from RETINA_SOURCE/RETINA_CAMERA_ID above -- those drive the
@@ -216,12 +232,20 @@ class Settings(BaseSettings):
             raise ValueError("RETINA_RING_BURST_SECONDS must be > 0")
         if self.RETINA_RING_COOLDOWN_SECONDS < 0:
             raise ValueError("RETINA_RING_COOLDOWN_SECONDS must be >= 0")
+        if self.RETINA_RING_SELF_LOOK_MAX_PER_DAY < 0:
+            raise ValueError("RETINA_RING_SELF_LOOK_MAX_PER_DAY must be >= 0")
+        if self.RETINA_RING_SELF_LOOK_MIN_SPACING_SECONDS < 0:
+            raise ValueError("RETINA_RING_SELF_LOOK_MIN_SPACING_SECONDS must be >= 0")
+        if self.RETINA_RING_SELF_LOOK_POLL_SECONDS <= 0:
+            raise ValueError("RETINA_RING_SELF_LOOK_POLL_SECONDS must be > 0")
         if self.RETINA_SOURCE_TYPE.strip().lower() == "ring" and not self.ring_event_kinds():
             raise ValueError("RETINA_RING_EVENT_KINDS is empty: the doorbell would never open a live view")
         return self
 
     def ring_event_kinds(self) -> tuple[str, ...]:
-        return tuple(k.strip().lower() for k in self.RETINA_RING_EVENT_KINDS.split(",") if k.strip())
+        from .ring_source import normalize_kind
+
+        return tuple(normalize_kind(k) for k in self.RETINA_RING_EVENT_KINDS.split(",") if k.strip())
 
     def rtsp_session_state_path(self) -> str | None:
         """Per-stream file under RETINA_RTSP_SESSION_STATE_DIR (None if unset)."""

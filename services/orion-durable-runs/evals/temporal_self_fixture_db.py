@@ -135,6 +135,14 @@ def table_rows(rows: dict[str, list[dict]]) -> dict[str, list[dict]]:
     out["field_dominance_run"].extend(dict(r) for r in rows.get("field_dominance_run", []))
     out["vision_events"].extend(dict(r) for r in rows.get("vision_percept", []))
     out["vision_presence_transition"].extend(dict(r) for r in rows.get("presence_transition", []))
+    # Strain loop part 1: the regulation step's own rows live in the chronicle's event table.
+    for r in rows.get("arousal_transition", []):
+        payload = r["payload_json"] if isinstance(r["payload_json"], dict) else json.loads(r["payload_json"])
+        out["temporal_self_event"].append({
+            "event_id": r["event_id"], "day_id": r.get("day_id") or "", "occurred_at": r["occurred_at"],
+            "source_kind": "arousal_transition", "source_table": "regulation",
+            "source_ref": r.get("source_ref") or r["event_id"], "subject_ref": "orion:arousal",
+            "label": payload.get("to"), "payload_json": payload})
     for r in rows.get("memory_episode", []):
         out["episode_memory"].append(dict(r, created_at=r.get("occurred_at")))
     out["orion_biometrics_cluster"].extend(dict(r) for r in rows.get("body_cluster", []))

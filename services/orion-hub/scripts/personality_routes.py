@@ -7,6 +7,9 @@ cue text every lane (chat stance, reverie, curiosity kickoff, outreach) is hande
 - ``GET /api/personality/frame``        -> ``/personality/frame`` (PersonalityFrameV1)
 - ``GET /api/personality/dispositions`` -> ``/personality/dispositions?status=&limit=``
 - ``GET /api/personality/evidence``     -> ``/personality/evidence?disposition_id=&limit=``
+- ``GET /api/personality/naming``       -> ``/personality/naming?disposition_id=`` (required): every
+  self-naming attempt for one node (``orion_disposition_naming`` rows, refused ones included, with
+  the packet Orion was shown). An older durable-runs without the route is its own 404.
 - ``GET /api/personality/cue``          the frame rendered here with
   ``orion.personality.cue.project_personality_cue`` -- the same pure function the lanes call --
   at its DEFAULT ``max_age_sec``/``top_k``. That is exactly what the lanes get while their own
@@ -111,6 +114,14 @@ async def evidence(
     if disposition_id is not None and not _DISPOSITION_ID.fullmatch(disposition_id):
         raise HTTPException(400, "disposition_id must be 1-128 of [A-Za-z0-9_.:-]")
     return _ok(await _upstream("/personality/evidence", {"disposition_id": disposition_id, "limit": limit}))
+
+
+@router.get("/naming")
+async def naming(disposition_id: str = Query(...)) -> JSONResponse:
+    """One node's naming log, verbatim. Names and sentences are model-written: the panel escapes."""
+    if not _DISPOSITION_ID.fullmatch(disposition_id):
+        raise HTTPException(400, "disposition_id must be 1-128 of [A-Za-z0-9_.:-]")
+    return _ok(await _upstream("/personality/naming", {"disposition_id": disposition_id}))
 
 
 @router.get("/cue")

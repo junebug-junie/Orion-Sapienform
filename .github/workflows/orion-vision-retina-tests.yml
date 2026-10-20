@@ -7,6 +7,9 @@ on:
     paths:
       - 'services/orion-vision-retina/**'
       - 'orion/schemas/vision.py'
+      - 'orion/schemas/registry.py'
+      - 'orion/bus/channels.yaml'
+      - 'tests/test_street_event_bus_catalog.py'
       - 'orion/schemas/telemetry/system_health.py'
       - 'config/vision_frame_router.yaml'
       - 'config/vision_zones.yaml'
@@ -21,3 +24,4 @@ jobs:
           python-version: '3.10'
       - run: pip install -r services/orion-vision-retina/requirements.txt pytest pyyaml
       - run: PYTHONPATH=. python -m pytest services/orion-vision-retina/tests -q -p no:cacheprovider
+      - run: PYTHONPATH=. python -m pytest tests/test_street_event_bus_catalog.py -q -p no:cacheprovider

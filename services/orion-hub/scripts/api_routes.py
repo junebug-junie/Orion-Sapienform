@@ -131,6 +131,12 @@ from orion.core.schemas.substrate_mutation import (
     RecallStrategyProfileV1,
 )
 from orion.substrate import build_substrate_policy_store_from_env, build_substrate_store_from_env
+from .substrate_store_warm import (
+    WarmingSubstrateStore,
+    resolve_ready_store,
+    start_background_warm,
+    store_type_name,
+)
 from orion.substrate.consolidation import GraphConsolidationEvaluator
 from orion.substrate.policy_comparison import SubstratePolicyComparisonService
 from orion.substrate.review_queue import GraphReviewQueue
@@ -302,7 +308,28 @@ SUBSTRATE_REVIEW_TELEMETRY_STORE = GraphReviewTelemetryRecorder(
     sql_db_path=str(os.getenv("SUBSTRATE_REVIEW_TELEMETRY_SQL_DB_PATH", "")).strip() or None,
     postgres_url=_resolve_control_plane_postgres_url(),
 )
-SUBSTRATE_SEMANTIC_STORE = build_substrate_store_from_env()
+_IN_MEMORY_SUBSTRATE_BACKENDS = frozenset({"", "in_memory", "memory", "mem", "local"})
+
+
+def _substrate_store_holder(name: str, builder: Any) -> WarmingSubstrateStore:
+    """Wrap a store builder so a durable backend never builds at import time.
+
+    In-memory backends (tests, dev) build right here: no network, no scan.
+    Every other backend (falkor in production) builds in the background
+    thread started below this block -- each FalkorSubstrateStore scans its
+    whole graph in its constructor, which held uvicorn off :8080 for ~3.5 min
+    before 2026-10-20. See scripts/substrate_store_warm.py.
+    """
+    holder = WarmingSubstrateStore(name, builder)
+    backend = str(os.getenv("SUBSTRATE_STORE_BACKEND", "")).strip().lower()
+    if backend in _IN_MEMORY_SUBSTRATE_BACKENDS:
+        # No network, no scan: safe even when this module is imported from a
+        # running event loop.
+        holder.build_blocking(allow_event_loop=True)
+    return holder
+
+
+SUBSTRATE_SEMANTIC_STORE = _substrate_store_holder("orion", build_substrate_store_from_env)
 
 
 def _build_aitown_substrate_store_from_env() -> Any:
@@ -348,7 +375,7 @@ def _build_aitown_substrate_store_from_env() -> Any:
     return InMemorySubstrateGraphStore()
 
 
-SUBSTRATE_SEMANTIC_STORE_AITOWN = _build_aitown_substrate_store_from_env()
+SUBSTRATE_SEMANTIC_STORE_AITOWN = _substrate_store_holder("aitown", _build_aitown_substrate_store_from_env)
 
 
 def _build_self_substrate_store_from_env() -> Any:
@@ -372,10 +399,37 @@ def _build_self_substrate_store_from_env() -> Any:
     return InMemorySubstrateGraphStore()
 
 
-SUBSTRATE_SEMANTIC_STORE_SELF = _build_self_substrate_store_from_env()
+SUBSTRATE_SEMANTIC_STORE_SELF = _substrate_store_holder("self", _build_self_substrate_store_from_env)
+
+# Orion's own graph first (cognition reads it), then the Self Atlas, then AI
+# Town (largest scan, interpretability-only). Never awaited by import/startup.
+start_background_warm(
+    (SUBSTRATE_SEMANTIC_STORE, SUBSTRATE_SEMANTIC_STORE_SELF, SUBSTRATE_SEMANTIC_STORE_AITOWN)
+)
 
 
-def seed_golden_concepts_at_startup() -> int:
+def _semantic_store_ready() -> bool:
+    store = SUBSTRATE_SEMANTIC_STORE
+    return not isinstance(store, WarmingSubstrateStore) or store.is_ready()
+
+
+def _require_semantic_store_ready() -> None:
+    """Raise SubstrateStoreNotReadyError (-> 503) before any side effect when
+    the Orion store is still loading."""
+    if isinstance(SUBSTRATE_SEMANTIC_STORE, WarmingSubstrateStore):
+        SUBSTRATE_SEMANTIC_STORE.require()
+
+
+def substrate_store_warm_status() -> list[dict[str, Any]]:
+    """Per-store warm-up state for the three concept graph holders above."""
+    return [
+        holder.warm_status()
+        for holder in (SUBSTRATE_SEMANTIC_STORE, SUBSTRATE_SEMANTIC_STORE_SELF, SUBSTRATE_SEMANTIC_STORE_AITOWN)
+        if isinstance(holder, WarmingSubstrateStore)
+    ]
+
+
+def seed_golden_concepts_at_startup(*, wait_timeout_sec: float | None = None) -> int:
     """Load the 4 golden concepts (Orion, Juniper, Claude, relationship) into
     SUBSTRATE_SEMANTIC_STORE. Idempotent (fixed node_ids), safe to call on
     every startup. Never raises -- the try/except below degrades to 0 on
@@ -383,11 +437,23 @@ def seed_golden_concepts_at_startup() -> int:
     a Fuseki write timeout when SUBSTRATE_STORE_BACKEND=sparql). Callers on
     an async event loop should run this via asyncio.to_thread (see main.py's
     startup_event) since store writes can be blocking network calls.
+
+    The Orion store loads in the background (scripts/substrate_store_warm.py).
+    ``wait_timeout_sec`` lets a background caller wait for it; if it is still
+    not ready, this returns 0 and logs ``substrate_concept_seed_skipped`` --
+    it never seeds into a store that has not loaded.
     """
+    store = SUBSTRATE_SEMANTIC_STORE
+    if isinstance(store, WarmingSubstrateStore):
+        ready = store.wait_ready(wait_timeout_sec) if wait_timeout_sec is not None else store.get_ready()
+        if ready is None:
+            logger.warning("substrate_concept_seed_skipped reason=substrate_store_not_ready status=%s", store.warm_status())
+            return 0
+        store = ready
     try:
         from orion.substrate.seed import load_seed_concepts_into_store
 
-        return load_seed_concepts_into_store(SUBSTRATE_SEMANTIC_STORE)
+        return load_seed_concepts_into_store(store)
     except Exception as exc:  # pragma: no cover - defensive, mirrors other startup steps
         logger.warning("substrate_concept_seed_failed error=%s", exc)
         return 0
@@ -4112,7 +4178,7 @@ def _graphdb_overview_payload(*, limit: int = 10) -> Dict[str, Any]:
         "source": {
             **_source_meta(kind=source_kind, degraded=degraded, limit=limit, error=error),
             "query_kind": "overview",
-            "semantic_backend": type(SUBSTRATE_SEMANTIC_STORE).__name__,
+            "semantic_backend": store_type_name(SUBSTRATE_SEMANTIC_STORE),
             "truncated": bool(hotspot.truncated or contradiction.truncated or concept.truncated),
         },
         "data": {
@@ -4146,7 +4212,7 @@ def _graphdb_hotspots_payload(*, limit: int = 20) -> Dict[str, Any]:
         "source": {
             **_source_meta(kind=hotspot.source_kind, degraded=degraded, limit=limit, error=error),
             "query_kind": "hotspots",
-            "semantic_backend": type(SUBSTRATE_SEMANTIC_STORE).__name__,
+            "semantic_backend": store_type_name(SUBSTRATE_SEMANTIC_STORE),
             "truncated": bool(hotspot.truncated or contradiction.truncated or concept.truncated),
         },
         "data": {
@@ -4486,12 +4552,21 @@ def _sql_policy_comparison_payload(
 def _substrate_source_posture() -> Dict[str, Any]:
     control_kind = SUBSTRATE_REVIEW_QUEUE_STORE.source_kind()
     telemetry_kind = SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind()
-    semantic_kind_raw = getattr(SUBSTRATE_SEMANTIC_STORE, "source_kind", "graphdb")
-    semantic_kind = semantic_kind_raw() if callable(semantic_kind_raw) else semantic_kind_raw
+    semantic_store = resolve_ready_store(SUBSTRATE_SEMANTIC_STORE)
+    if semantic_store is None:
+        # Still loading: report it as such, never as a healthy empty graph.
+        warm = SUBSTRATE_SEMANTIC_STORE.warm_status()
+        semantic_kind = "warming" if warm["state"] != "failed" else "unavailable"
+        semantic_degraded = True
+        semantic_error = warm.get("error") or "substrate_store_warming"
+    else:
+        semantic_kind_raw = getattr(semantic_store, "source_kind", "graphdb")
+        semantic_kind = semantic_kind_raw() if callable(semantic_kind_raw) else semantic_kind_raw
+        semantic_degraded_raw = getattr(semantic_store, "degraded", False)
+        semantic_degraded = bool(semantic_degraded_raw() if callable(semantic_degraded_raw) else semantic_degraded_raw)
+        semantic_error = getattr(semantic_store, "last_error", lambda: None)()
     policy_kind = SUBSTRATE_POLICY_STORE.source_kind()
     control_degraded = bool(SUBSTRATE_REVIEW_QUEUE_STORE.degraded() or SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded())
-    semantic_degraded_raw = getattr(SUBSTRATE_SEMANTIC_STORE, "degraded", False)
-    semantic_degraded = bool(semantic_degraded_raw() if callable(semantic_degraded_raw) else semantic_degraded_raw)
     policy_degraded = bool(SUBSTRATE_POLICY_STORE.degraded())
     control_posture = "degraded" if control_degraded else ("postgres" if control_kind == "postgres" else "fallback")
     return {
@@ -4506,7 +4581,7 @@ def _substrate_source_posture() -> Dict[str, Any]:
             "kind": semantic_kind,
             "degraded": semantic_degraded,
             "posture": "degraded" if semantic_degraded else semantic_kind,
-            "error": getattr(SUBSTRATE_SEMANTIC_STORE, "last_error", lambda: None)(),
+            "error": semantic_error,
         },
         "policy": {
             "kind": policy_kind,
@@ -6203,6 +6278,20 @@ def execute_substrate_review_scheduled_cycle(
         _emit_substrate_review_scheduler_log(payload=payload)
         return payload
 
+    # execute_once marks the queue item reviewed (cycle_count, remaining_cycles)
+    # before it consolidates against the semantic store, so a tick while that
+    # store is still loading would spend a review cycle on a guaranteed failure.
+    if not _semantic_store_ready():
+        return _emit(
+            {
+                "event": "review_scheduler_tick",
+                "tick_id": tick_id,
+                "status": "skipped",
+                "reason": "substrate_store_not_ready",
+                "at": tick_now.isoformat(),
+            }
+        )
+
     # The operator endpoints run in FastAPI's threadpool, genuinely parallel with
     # this loop's asyncio.to_thread. GraphReviewQueue persists by full-table swap
     # (DELETE then re-INSERT every item), so an interleaved write drops the other
@@ -6752,6 +6841,7 @@ def api_substrate_review_runtime_status(
 @router.post("/api/substrate/review-runtime/execute-once")
 def api_substrate_review_runtime_execute_once(request: SubstrateReviewExecuteRequest | None = None) -> Dict[str, Any]:
     req = request or SubstrateReviewExecuteRequest()
+    _require_semantic_store_ready()
     with _review_cycle_lock_or_conflict():
         return _execute_substrate_review_cycle(
             allow_followup=False,
@@ -6762,6 +6852,7 @@ def api_substrate_review_runtime_execute_once(request: SubstrateReviewExecuteReq
 @router.post("/api/substrate/review-runtime/execute-once-followup")
 def api_substrate_review_runtime_execute_once_followup(request: SubstrateReviewExecuteRequest | None = None) -> Dict[str, Any]:
     req = request or SubstrateReviewExecuteRequest()
+    _require_semantic_store_ready()
     with _review_cycle_lock_or_conflict():
         return _execute_substrate_review_cycle(
             allow_followup=True,

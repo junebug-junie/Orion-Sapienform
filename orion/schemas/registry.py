@@ -115,6 +115,12 @@ from orion.schemas.personality import (
     PersonalityChoiceV1,
     PersonalityCueV1,
     PersonalityFrameV1,
+    PERSONALITY_NAMING_KIND,
+    DispositionNamingPacketV1,
+    DispositionNamingV1,
+    NamingEvidenceV1,
+    NamingNeighborV1,
+    NamingPriorVerdictV1,
 )
 from orion.schemas.vision_sighting import IDENTITY_SIGHTING_KIND, IdentitySightingV1
 from orion.schemas.context_exec import ContextExecPermissionV1
@@ -543,6 +549,7 @@ from orion.schemas.person_model import (
 from orion.schemas.vision import (
     VisionArtifactPayload,
     VisionSceneInventoryV1,
+    StreetEventV1,
     VisionCropV1,
     VisionCropObservationV1,
     PerceptExpectationV1,
@@ -1012,6 +1019,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "VisionEdgeArtifact": VisionEdgeArtifact,
     "VisionEdgeActivityPayload": VisionEdgeActivityPayload,
     "VisionSceneInventoryV1": VisionSceneInventoryV1,
+    "StreetEventV1": StreetEventV1,
     "VisionCropV1": VisionCropV1,
     "VisionCropObservationV1": VisionCropObservationV1,
     "PerceptExpectationV1": PerceptExpectationV1,
@@ -1593,6 +1601,13 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "DispositionV1": DispositionV1,
     "ChoiceStyleV1": ChoiceStyleV1,
     "PersonalityCueV1": PersonalityCueV1,
+    # Self-naming (PR #2742): the answer crosses the bus (Hub -> sql-writer), the packet crosses
+    # HTTP (durable-runs -> Hub); both are also in SCHEMA_REGISTRY. Nested models live here only.
+    "DispositionNamingV1": DispositionNamingV1,
+    "DispositionNamingPacketV1": DispositionNamingPacketV1,
+    "NamingEvidenceV1": NamingEvidenceV1,
+    "NamingNeighborV1": NamingNeighborV1,
+    "NamingPriorVerdictV1": NamingPriorVerdictV1,
     "IdentitySightingV1": IdentitySightingV1,
     "ContextExecPermissionV1": ContextExecPermissionV1,
     "SelfExperimentSpecV1": SelfExperimentSpecV1,
@@ -1774,6 +1789,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "VisionSceneInventoryV1": SchemaRegistration(
         model=VisionSceneInventoryV1,
         kind="vision.scene.inventory.v1",
+    ),
+    "StreetEventV1": SchemaRegistration(
+        model=StreetEventV1,
+        kind="vision.street.event.v1",
     ),
     # Walkway camera (docs/superpowers/specs/2026-09-22-walkway-camera-busy-
     # world-design.md). PerceptExpectationV1/VisionCropV1 are persisted/nested
@@ -2105,6 +2124,14 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "PersonalityFrameV1": SchemaRegistration(
         model=PersonalityFrameV1,
         kind="personality.frame.v1",
+    ),
+    "DispositionNamingV1": SchemaRegistration(
+        model=DispositionNamingV1,
+        kind=PERSONALITY_NAMING_KIND,
+    ),
+    "DispositionNamingPacketV1": SchemaRegistration(
+        model=DispositionNamingPacketV1,
+        kind="personality.naming.packet.v1",
     ),
 }
 

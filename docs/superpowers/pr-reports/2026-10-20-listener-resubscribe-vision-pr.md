@@ -184,3 +184,7 @@ scripts/safe_docker_build.sh orion-world-model up -d --build
 Not opened (branch pushed only).
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/2789

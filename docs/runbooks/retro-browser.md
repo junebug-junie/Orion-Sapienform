@@ -128,3 +128,8 @@ then held newer input past the 250 ms lease, and the game paused mid-play
 (`no_controller` in evidence). An older input that a newer one replaces before its
 frame is answered `superseded`; the browser counts that as resolved, not as lost
 control. Regression: `test_slow_ack_does_not_gate_reading_the_next_input`.
+Trade-offs: during a stall, a press and release that both arrive before one
+frame collapse to the release. Input from both browsers shares the API's 24-command
+cap, so a stall longer than about 0.5 s can return `unavailable_or_busy` (shown as
+Control interrupted). Timeout cleanup is shielded from socket cancellation
+(`test_cancelled_input_cannot_abandon_timeout_cleanup`).

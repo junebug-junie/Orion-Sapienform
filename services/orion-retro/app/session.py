@@ -138,7 +138,8 @@ class Sessions:
                 self.session['state'] = row['result']['state']; self.persist()
             return row['result']
         except (asyncio.TimeoutError, queue.Full):
-            await self.stop('failed', 'command_timeout_or_overload')
+            # Shielded: a cancelled caller (closed input socket) must not abandon cleanup.
+            await asyncio.shield(self.stop('failed', 'command_timeout_or_overload'))
             raise ValueError('worker_unavailable')
         finally:
             self.pending.pop(rid, None)

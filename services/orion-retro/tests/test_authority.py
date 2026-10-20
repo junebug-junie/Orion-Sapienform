@@ -268,3 +268,21 @@ def test_slow_ack_does_not_gate_reading_the_next_input(tmp_path):
             for seq in (1,2):
                 ws.send_json(dict(version=1,session_id=sid,generation=generation,lease='a'*48,epoch=1,seq=seq,port=0,mask=0))
             assert [ws.receive_json()['applied']['seq'] for _ in range(2)]==[2,1]
+
+
+def test_cancelled_input_cannot_abandon_timeout_cleanup():
+    # Review 2026-10-20: input tasks are cancelled when their socket closes. A
+    # cancel during command-timeout cleanup left stopping=True and the worker alive.
+    import asyncio, queue
+    class Fake:
+        process=True;stopping=False;pending={};commands=queue.Queue();done=False
+        async def stop(self,*args):
+            await asyncio.sleep(.2);self.done=True
+    async def scenario():
+        fake=Fake()
+        task=asyncio.create_task(Sessions.command(fake,'input','c',{}))
+        await asyncio.sleep(.8);task.cancel()
+        await asyncio.gather(task,return_exceptions=True)
+        await asyncio.sleep(.3)
+        return fake.done
+    assert asyncio.run(scenario())

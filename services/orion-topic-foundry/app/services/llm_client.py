@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, LLMMessage, ServiceRef
-from orion.gpu_pool.shed_backoff import ShedBackoff, gateway_shed_refusal
+from orion.gpu_pool.shed_backoff import ShedBackoff, gateway_error_reason, gateway_shed_refusal
 
 from app.settings import settings
 
@@ -91,11 +91,13 @@ class TopicFoundryLLMClient:
     ) -> Optional[Dict[str, Any]]:
         use_bus = self._use_bus()
         shed_key = self._shed_key()
+        probe = None
         try:
             if not use_bus:
                 logger.warning("LLM request skipped; bus transport disabled")
                 return None
-            if self._shed_backoff.check(shed_key) is not None:
+            wait, probe = self._shed_backoff.admit(shed_key)
+            if wait is not None:
                 logger.debug("LLM request skipped; GPU pool shedding (%s)", self._shed_backoff.reason(shed_key))
                 return None
             result = self._bus_chat_result(
@@ -105,17 +107,21 @@ class TopicFoundryLLMClient:
                 max_tokens=max_tokens,
             )
         except Exception as exc:  # noqa: BLE001
-            self._shed_backoff.abandon(shed_key)
+            self._shed_backoff.abandon(shed_key, token=probe)
             logger.warning("LLM request failed: %s", exc)
             return None
         except BaseException:
-            self._shed_backoff.abandon(shed_key)
+            self._shed_backoff.abandon(shed_key, token=probe)
             raise
 
-        shed = gateway_shed_refusal(result)
-        self._shed_backoff.resolve(shed_key, shed[0] if shed else None, hint_sec=shed[1] if shed else None)
-        if shed is not None:
+        if result is None:   # the worker thread died without a stored exception
+            self._shed_backoff.abandon(shed_key, token=probe)
             return None
+        shed = gateway_shed_refusal(result)
+        if shed is not None:
+            self._shed_backoff.resolve(shed_key, shed[0], token=probe, hint_sec=shed[1])
+            return None
+        self._shed_backoff.resolve(shed_key, gateway_error_reason(result), token=probe)
         content = str(result.content or result.text or "")
 
         if not content:

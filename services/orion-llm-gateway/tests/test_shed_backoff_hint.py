@@ -42,6 +42,7 @@ async def test_bus_reply_carries_retry_after_on_a_shed_refusal(fake_pool, monkey
     details = out.payload.raw["details"]
     assert out.payload.raw["error"] == "gpu_pool_unavailable"
     assert details["reason"] == "shed:cabinet_hot" and details["retry_after_sec"] == 57.2
+    assert details["local"] is True
     assert not [r for r in caplog.records if "gpu_pool_unavailable" in r.getMessage()]
 
 
@@ -51,7 +52,7 @@ async def test_non_shed_refusal_shape_and_warning_unchanged(fake_pool, monkeypat
     monkeypatch.setattr(pool_placement, "gpu_lease", _refusing("no_serviceable_role"))
     with caplog.at_level(logging.WARNING):
         out = await gateway.handle_chat(_env())
-    assert "retry_after_sec" not in out.payload.raw["details"]
+    assert "retry_after_sec" not in out.payload.raw["details"] and "local" not in out.payload.raw["details"]
     assert [r for r in caplog.records if "gpu_pool_unavailable" in r.getMessage()]
 
 

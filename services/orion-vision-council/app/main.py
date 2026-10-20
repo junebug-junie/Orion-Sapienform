@@ -60,7 +60,7 @@ from .caption_policy import (
     window_for_council,
 )
 from .llm_reply import extract_chat_result_text as _extract_chat_result_text
-from orion.gpu_pool.shed_backoff import ShedBackoff, gateway_shed_refusal
+from orion.gpu_pool.shed_backoff import ShedBackoff, gateway_error_reason as _gateway_error_reason, gateway_shed_refusal
 from .unresolved import UnresolvedRateLimiter, build_unresolved
 
 _MAX_DEBUG_INTERPRETATIONS = 20
@@ -454,7 +454,8 @@ class CouncilService:
             return None
 
         shed_key = str(settings.COUNCIL_LLM_ROUTE or "llm")
-        if self._shed_backoff.check(shed_key) is not None:
+        wait, probe = self._shed_backoff.admit(shed_key)
+        if wait is not None:
             # Counted and reported by the backoff's episode-end log line.
             logger.debug(f"[COUNCIL] LLM call skipped: GPU pool shedding ({self._shed_backoff.reason(shed_key)})")
             return None
@@ -470,16 +471,16 @@ class CouncilService:
 
             decoded = self._rpc_bus.codec.decode(reply.get("data"))
             if not decoded.ok:
-                self._shed_backoff.abandon(shed_key)
+                self._shed_backoff.abandon(shed_key, token=probe)
                 logger.error(f"[COUNCIL] LLM decode error: {decoded.error}")
                 return None
 
             res_env = decoded.envelope
             shed = gateway_shed_refusal(res_env.payload)
             if shed is not None:
-                self._shed_backoff.resolve(shed_key, shed[0], hint_sec=shed[1])
+                self._shed_backoff.resolve(shed_key, shed[0], token=probe, hint_sec=shed[1])
                 return None
-            self._shed_backoff.resolve(shed_key, None)
+            self._shed_backoff.resolve(shed_key, _gateway_error_reason(res_env.payload), token=probe)
             content = _extract_chat_result_text(res_env.payload)
 
             if not content:
@@ -492,15 +493,15 @@ class CouncilService:
             return content
 
         except TimeoutError:
-            self._shed_backoff.abandon(shed_key)
+            self._shed_backoff.abandon(shed_key, token=probe)
             logger.error("[COUNCIL] LLM timeout")
             return None
         except Exception as e:
-            self._shed_backoff.abandon(shed_key)
+            self._shed_backoff.abandon(shed_key, token=probe)
             logger.error(f"[COUNCIL] LLM error: {e}")
             return None
         except BaseException:
-            self._shed_backoff.abandon(shed_key)
+            self._shed_backoff.abandon(shed_key, token=probe)
             raise
 
 

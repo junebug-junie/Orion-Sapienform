@@ -225,7 +225,10 @@ lease with `shed:<name>` (e.g. `shed:cabinet_hot`), the pool client in this proc
 leases of the same priority locally, without asking the pool, for 30 s doubling to 180 s (+-20 %
 jitter); one probe per window goes to the pool, and the first grant ends the episode. Holds,
 attach children and retryable leases are never gated. Those refusals carry
-`raw.details.retry_after_sec` (bus) / `error.retry_after_sec` plus a `Retry-After` header (HTTP).
+`raw.details.retry_after_sec` (bus) / `error.retry_after_sec` plus a `Retry-After` header (HTTP),
+and `local: true` when this gateway answered without asking the pool. A probe the pool queues
+instead of refusing ends the episode after 3 s (the pool refuses a shed lease on its first 1 s
+tick); a probe ending in `deadline`/`cancelled`/`pool_*` only releases the probe.
 Logs: one `gpu_shed_backoff_start` / `gpu_shed_backoff_end ... skipped=N` pair per episode; the
 per-call `gpu_pool_unavailable` warning is debug-level for a locally answered refusal.
 

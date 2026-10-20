@@ -78,6 +78,9 @@ _BACKGROUND: set = set()
 # One per process, keyed by lease priority: the pool sheds by priority (orion/gpu_pool/shed.py), so a
 # "shed:cabinet_hot" for one background call holds for every background call this process makes.
 SHED_BACKOFF = ShedBackoff(name="gpu_pool_client")
+# A probe still queued after this long was not shed (the pool refuses a shed one-shot lease on its
+# first tick, GPU_POOL_TICK_SEC = 1 s): three ticks of margin.
+QUEUED_PROBE_CLEARS_SEC = 3.0
 
 
 class LeaseBacklogged(LeaseUnavailable):
@@ -142,25 +145,40 @@ async def gpu_lease(
     # "shed:<name>" (scheduler D3); holds, attach children and retryable leases wait in the pool
     # instead, so they are never gated here.
     shed_key = priority if (hold is None and kind == "request" and not retryable) else None
+    token: int | None = None
+    on_queued = None
     if shed_key is not None:
-        wait = SHED_BACKOFF.check(shed_key)
+        wait, token = SHED_BACKOFF.admit(shed_key)
         if wait is not None:
             raise LeaseUnavailable(SHED_BACKOFF.reason(shed_key) or "shed:backoff", retry_after_sec=wait, local=True)
+        if token is not None:
+            # The pool refuses a shed one-shot lease on its first tick (~1 s). A probe it QUEUED and
+            # still holds after QUEUED_PROBE_CLEARS_SEC was not shed: end the episode now, so the
+            # rest of this process is not refused while the probe waits in line.
+            key, tok = shed_key, token
+
+            def on_queued() -> None:
+                timers.append(asyncio.get_running_loop().call_later(
+                    QUEUED_PROBE_CLEARS_SEC, lambda: SHED_BACKOFF.resolve(key, None, token=tok)))
+    timers: list[asyncio.TimerHandle] = []
     try:
         lease, req = await _acquire(bus, req, source=source, deadline=deadline, rpc_timeout=rpc_timeout,
-                                    retryable=retryable)
+                                    retryable=retryable, on_queued=on_queued)
     except LeaseUnavailable as exc:
         if shed_key is not None:
-            SHED_BACKOFF.resolve(shed_key, exc.reason)
+            SHED_BACKOFF.resolve(shed_key, exc.reason, token=token)
             if is_shed_reason(exc.reason):
                 exc.retry_after_sec = SHED_BACKOFF.remaining(shed_key)
         raise
     except BaseException:
         if shed_key is not None:
-            SHED_BACKOFF.abandon(shed_key)
+            SHED_BACKOFF.abandon(shed_key, token=token)
         raise
+    finally:
+        for t in timers:
+            t.cancel()
     if shed_key is not None:
-        SHED_BACKOFF.resolve(shed_key, None)
+        SHED_BACKOFF.resolve(shed_key, None, token=token)
 
     beat = asyncio.create_task(_heartbeat(bus, lease, source, heartbeat_sec or (10.0 if req.kind == "request" else 30.0)))
     outcome, detail = "ok", None
@@ -180,8 +198,9 @@ async def gpu_lease(
 
 
 async def _acquire(bus: Any, req: GpuLeaseRequestV1, *, source: str, deadline: datetime, rpc_timeout: float,
-                   retryable: bool) -> tuple[Lease, GpuLeaseRequestV1]:
-    """The acquire/attach exchange: a granted Lease, or a typed exception (withdrawn first)."""
+                   retryable: bool, on_queued: Any = None) -> tuple[Lease, GpuLeaseRequestV1]:
+    """The acquire/attach exchange: a granted Lease, or a typed exception (withdrawn first).
+    ``on_queued()`` runs once when the pool queues the lease (the shed probe's timer)."""
     lease: Lease | None = None
     reply: GpuLeaseReplyV1 | None = None
     unreachable = False
@@ -196,6 +215,8 @@ async def _acquire(bus: Any, req: GpuLeaseRequestV1, *, source: str, deadline: d
             if reply.status == "granted" and reply.grant:
                 lease = Lease(reply.lease_id, reply.grant)
             elif reply.status == "queued":
+                if on_queued is not None:
+                    on_queued()
                 lease, wait_reason = await _wait_for_grant(bus, pubsub, reply.lease_id, deadline)
     except BaseException:
         # Cancelled or failed mid-acquire: withdraw by request_id (idempotent; works even if the

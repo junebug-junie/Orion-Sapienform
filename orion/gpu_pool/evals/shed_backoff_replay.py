@@ -59,26 +59,28 @@ def replay(arrivals: list[Arrival], *, clear_at: float | None = None, seed: int 
         shedding = clear_at is None or a.t < clear_at
         cb = callers.setdefault(a.caller, ShedBackoff(name=a.caller, clock=clock, rng=rng, log=quiet)) \
             if a.caller in CALLER_GATED else None
-        if cb is not None and cb.check("llm") is not None:
+        cwait, ctok = cb.admit("llm") if cb is not None else (None, None)
+        if cwait is not None:
             if not shedding:
                 skipped_after_clear[a.caller] = skipped_after_clear.get(a.caller, 0) + 1
             continue                                        # caller skipped: no gateway RPC
         prio = PRIORITY.get(a.caller, "system")
-        if gateway.check(prio) is not None:                 # gateway refused locally: no pool lease
+        gwait, gtok = gateway.admit(prio)
+        if gwait is not None:                               # gateway refused locally: no pool lease
             if not shedding:
                 skipped_after_clear[a.caller] = skipped_after_clear.get(a.caller, 0) + 1
             if cb is not None:
-                cb.resolve("llm", HOT, hint_sec=gateway.remaining(prio))
+                cb.resolve("llm", HOT, token=ctok, hint_sec=gateway.remaining(prio))
             continue
         pool_attempts[a.caller] = pool_attempts.get(a.caller, 0) + 1
         if shedding:
-            gateway.resolve(prio, HOT)
+            gateway.resolve(prio, HOT, token=gtok)
             if cb is not None:
-                cb.resolve("llm", HOT, hint_sec=gateway.remaining(prio))
+                cb.resolve("llm", HOT, token=ctok, hint_sec=gateway.remaining(prio))
         else:
-            gateway.resolve(prio, None)
+            gateway.resolve(prio, None, token=gtok)
             if cb is not None:
-                cb.resolve("llm", None)
+                cb.resolve("llm", None, token=ctok)
             first_grant.setdefault(a.caller, a.t - clear_at)
     # Backoff-caused delay: first grant minus the caller's first arrival after the clear (the time
     # it would have been served without any backoff).

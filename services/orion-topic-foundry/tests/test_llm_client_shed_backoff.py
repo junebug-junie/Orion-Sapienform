@@ -77,3 +77,22 @@ def test_base_window_without_hint(client):
     clock.t += 1
     _ask(c)
     assert c.calls == 2
+
+
+def test_worker_thread_returning_none_is_a_failed_call_not_a_crash(client):
+    c, clock = client
+    c.reply = None
+    assert _ask(c) is None
+
+
+def test_gateway_deadline_releases_the_probe_without_ending_the_episode(client):
+    c, clock = client
+    c.reply = ChatResultPayload(content="", raw={"error": "gpu_pool_unavailable",
+                                                 "details": {"reason": "shed:cabinet_hot"}})
+    _ask(c)
+    clock.t += BASE_SEC
+    c.reply = ChatResultPayload(content="", raw={"error": "gpu_pool_unavailable", "details": {"reason": "deadline"}})
+    _ask(c)                                       # the probe: neutral
+    assert c._shed_backoff.reason(c._shed_key()) == "shed:cabinet_hot"
+    _ask(c)                                       # released, so the next call probes at once
+    assert c.calls == 3

@@ -266,6 +266,8 @@ async def proxy_on_pool(
             report.finish(POOL_UNAVAILABLE)
             retry_after = getattr(exc, "retry_after_sec", None)
             extra = {"retry_after_sec": round(float(retry_after), 1)} if retry_after is not None else {}
+            if getattr(exc, "local", False):
+                extra["local"] = True
             return JSONResponse(error_body(
                 POOL_UNAVAILABLE, f"GPU pool could not place route '{route_key}': {exc.reason}",
                 reason=exc.reason, route=route_key, work_class=spec.work_class, **extra,

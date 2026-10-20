@@ -14,9 +14,11 @@ gateway) and by callers of the gateway (one key per call path):
 - a shed refusal opens an *episode*. The next attempt is allowed only after a delay that starts at
   ``BASE_SEC`` and doubles on every further shed refusal, up to ``CAP_SEC``, with +-``JITTER``.
 - while the delay runs, ``check`` refuses locally (no RPC) and counts the skip.
-- when the delay is over, exactly ONE attempt (the probe) goes through; others still wait.
-  Probe refused again -> longer delay. Probe answered with anything else -> the episode ends at
-  once, so work resumes on the very next call after the heat clears.
+- when the delay is over, exactly ONE attempt (the probe, identified by a token) goes through;
+  others still wait. Probe refused again -> longer delay. Probe granted (or refused for a reason
+  the pool decided after judging the lease) -> the episode ends at once, so work resumes on the
+  very next call after the heat clears. A neutral outcome (deadline, cancel, pool unreachable)
+  only releases the probe. Only the probe moves the episode; calls already in flight do not.
 - one log line when an episode opens and one when it closes (with the skip count), never one
   per attempt. Skipped work is therefore never silent, but also never a log flood.
 
@@ -39,15 +41,26 @@ SHED_REASON_PREFIX = "shed:"
 BASE_SEC = 30.0
 CAP_SEC = 180.0
 JITTER = 0.2
-# A probe whose caller never reports back (crashed, cancelled without abandon) stops blocking
-# other probes after this long.
-PROBE_STALE_SEC = 120.0
+# A probe whose caller never reports back (crashed) stops blocking other probes after this long.
+# The pool client does not rely on it: a probe the pool QUEUED instead of refusing ends the episode
+# after QUEUED_PROBE_CLEARS_SEC (orion/gpu_pool/client.py).
+PROBE_STALE_SEC = 60.0
+# Outcomes that say nothing about whether the pool is shedding: the probe is released, the episode
+# neither grows nor ends. "deadline": the caller's own deadline ran out (can be shorter than a pool
+# tick); "cancelled"/"dead_lettered": the lease ended for another reason; pool_*: the pool (or the
+# gateway's bus to it) was not reachable.
+NEUTRAL_REASONS = frozenset({"deadline", "cancelled", "dead_lettered", "backlogged"})
+NEUTRAL_PREFIXES = ("pool_", "gpu_pool_")
 
 _log = logging.getLogger("orion.gpu_pool.shed_backoff")
 
 
 def is_shed_reason(reason: Any) -> bool:
     return isinstance(reason, str) and reason.startswith(SHED_REASON_PREFIX)
+
+
+def is_neutral_reason(reason: Any) -> bool:
+    return isinstance(reason, str) and (reason in NEUTRAL_REASONS or reason.startswith(NEUTRAL_PREFIXES))
 
 
 def gateway_shed_refusal(payload: Any) -> tuple[str, float | None] | None:
@@ -73,6 +86,19 @@ def gateway_shed_refusal(payload: Any) -> tuple[str, float | None] | None:
     return str(details["reason"]), (hint_f if hint_f is not None and hint_f > 0 else None)
 
 
+def gateway_error_reason(payload: Any) -> str | None:
+    """The pool refusal reason in a gateway chat result (``raw.details.reason`` when
+    ``raw.error == "gpu_pool_unavailable"``), else None (an answer, or an upstream error after a grant)."""
+    if payload is not None and hasattr(payload, "model_dump"):
+        payload = payload.model_dump(mode="json")
+    raw = payload.get("raw") if isinstance(payload, Mapping) else None
+    if not isinstance(raw, Mapping) or raw.get("error") != "gpu_pool_unavailable":
+        return None
+    details = raw.get("details")
+    reason = details.get("reason") if isinstance(details, Mapping) else None
+    return str(reason) if reason else "gpu_pool_unavailable"
+
+
 @dataclass
 class _Episode:
     reason: str
@@ -81,6 +107,7 @@ class _Episode:
     delay: float
     refusals: int = 1
     skipped: int = 0
+    probe_token: int | None = None
     probing_since: float | None = None
 
 
@@ -98,22 +125,33 @@ class ShedBackoff:
         self._log = log or _log.warning
         self._lock = threading.Lock()
         self._episodes: dict[str, _Episode] = {}
+        self._next_token = 0
 
     # --- the gate ---------------------------------------------------------------------------
-    def check(self, key: str) -> float | None:
-        """None: go ahead (no episode, or this call is the probe). Else the seconds left before the
-        next probe: do not call, the pool would refuse. The skip is counted for the close log."""
+    def admit(self, key: str) -> tuple[float | None, int | None]:
+        """(wait, probe_token).
+
+        - (None, None): no episode, go ahead (an ordinary call).
+        - (None, token): the window is over and this call is THE probe; report its outcome with
+          ``token`` so only the probe moves the episode.
+        - (seconds, None): do not call, the pool would refuse; the skip is counted for the close log.
+        """
         now = self._clock()
         with self._lock:
             ep = self._episodes.get(key)
             if ep is None:
-                return None
-            probing = ep.probing_since is not None and now - ep.probing_since < self.probe_stale_sec
+                return None, None
+            probing = ep.probe_token is not None and now - (ep.probing_since or now) < self.probe_stale_sec
             if now >= ep.not_before and not probing:
-                ep.probing_since = now
-                return None
+                self._next_token += 1
+                ep.probe_token, ep.probing_since = self._next_token, now
+                return None, ep.probe_token
             ep.skipped += 1
-            return max(ep.not_before - now, 1.0)
+            return max(ep.not_before - now, 1.0), None
+
+    def check(self, key: str) -> float | None:
+        """``admit`` without the token, for callers that only need yes/no (tests, eval)."""
+        return self.admit(key)[0]
 
     def reason(self, key: str) -> str | None:
         with self._lock:
@@ -127,47 +165,53 @@ class ShedBackoff:
             return max(0.0, ep.not_before - now) if ep else None
 
     # --- outcomes ---------------------------------------------------------------------------
-    def resolve(self, key: str, reason: str | None, *, hint_sec: float | None = None) -> None:
-        """Report an attempt's outcome. ``reason`` a shed reason -> refused (open or grow the
-        episode); anything else (None = granted/answered, or a non-shed refusal) -> the pool is not
-        shedding this key, so the episode ends now."""
-        if is_shed_reason(reason):
-            self._refused(key, str(reason), hint_sec)
-        else:
-            self._clear(key)
+    def resolve(self, key: str, reason: str | None, *, token: int | None = None,
+                hint_sec: float | None = None) -> None:
+        """Report an attempt's outcome, with the token ``admit`` gave it.
 
-    def abandon(self, key: str) -> None:
+        - a shed reason: no episode -> open one. The probe -> back off further. Any other call (it
+          was already in flight) -> counted, no growth.
+        - a neutral reason (deadline, cancelled, pool unreachable: says nothing about the shed) ->
+          the probe is released so the next call probes; the episode neither grows nor ends.
+        - anything else (None = granted/answered, or a refusal the pool made after judging the lease)
+          from the probe -> the pool is not shedding this key: the episode ends now. From a call that
+          is not the outstanding probe it is ignored (it may predate the episode)."""
+        if is_shed_reason(reason):
+            self._refused(key, str(reason), token, hint_sec)
+        elif is_neutral_reason(reason):
+            self.abandon(key, token=token)
+        else:
+            self._clear(key, token)
+
+    def abandon(self, key: str, *, token: int | None = None) -> None:
         """The probe ended without saying anything about the shed (cancelled, transport error):
         let the next call probe again, without growing or ending the episode."""
         with self._lock:
             ep = self._episodes.get(key)
-            if ep is not None:
-                ep.probing_since = None
+            if ep is not None and token is not None and token == ep.probe_token:
+                ep.probe_token = ep.probing_since = None
 
     def _jittered(self, delay: float) -> float:
         return delay * (1.0 + self.jitter * (2.0 * self._rng() - 1.0))
 
-    def _refused(self, key: str, reason: str, hint_sec: float | None) -> None:
+    def _refused(self, key: str, reason: str, token: int | None, hint_sec: float | None) -> None:
         now = self._clock()
         opened = False
         with self._lock:
             ep = self._episodes.get(key)
             if ep is None:
-                delay = self.base_sec
-                ep = _Episode(reason=reason, started_at=now, not_before=now, delay=delay)
+                ep = _Episode(reason=reason, started_at=now, not_before=now, delay=self.base_sec)
                 self._episodes[key] = ep
                 opened = True
-            elif ep.probing_since is not None or now >= ep.not_before:
-                # A refused probe (or a refusal after the window): back off further.
-                ep.delay = min(self.cap_sec, ep.delay * 2.0)
+            elif token is not None and token == ep.probe_token:
+                ep.delay = min(self.cap_sec, ep.delay * 2.0)   # the probe was refused: back off further
                 ep.refusals += 1
+                ep.probe_token = ep.probing_since = None
             else:
-                # A call that was already in flight when the episode opened: no extra growth.
-                ep.refusals += 1
+                ep.refusals += 1                               # in flight before/while the probe ran
                 ep.reason = reason
                 return
             ep.reason = reason
-            ep.probing_since = None
             wait = self._jittered(ep.delay)
             if hint_sec is not None and hint_sec > 0:
                 wait = max(wait, min(float(hint_sec), self.cap_sec * (1.0 + self.jitter)))
@@ -177,13 +221,15 @@ class ShedBackoff:
                       f"next_try_in_sec={wait:.0f} (later calls are skipped until then; one probe per window, "
                       f"delay doubles to {self.cap_sec:.0f}s)")
 
-    def _clear(self, key: str) -> None:
+    def _clear(self, key: str, token: int | None) -> None:
         now = self._clock()
         with self._lock:
-            ep = self._episodes.pop(key, None)
-        if ep is not None:
-            self._log(f"gpu_shed_backoff_end name={self.name} key={key} reason={ep.reason} "
-                      f"lasted_sec={now - ep.started_at:.0f} refusals={ep.refusals} skipped={ep.skipped}")
+            ep = self._episodes.get(key)
+            if ep is None or token is None or token != ep.probe_token:
+                return
+            self._episodes.pop(key, None)
+        self._log(f"gpu_shed_backoff_end name={self.name} key={key} reason={ep.reason} "
+                  f"lasted_sec={now - ep.started_at:.0f} refusals={ep.refusals} skipped={ep.skipped}")
 
     def reset(self) -> None:
         with self._lock:

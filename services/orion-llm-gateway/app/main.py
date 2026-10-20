@@ -267,14 +267,17 @@ def _result_error(result: Dict[str, Any]) -> Optional[str]:
 
 
 def _pool_unavailable_result(plan: ChatDispatchPlan, reason: str,
-                             retry_after_sec: Optional[float] = None) -> Dict[str, Any]:
+                             retry_after_sec: Optional[float] = None, local: bool = False) -> Dict[str, Any]:
     """Same shape as every early gateway error: empty text, `raw.error` set. Consumers that check
     for empty content treat it as a failed call. ``retry_after_sec`` (shed refusals only): how long
     this gateway will keep refusing that priority without asking the pool
-    (orion/gpu_pool/shed_backoff.py); callers back off at least that long."""
+    (orion/gpu_pool/shed_backoff.py); callers back off at least that long. ``local``: this gateway
+    answered from its backoff without asking the pool (so pool-refusal counts stay honest)."""
     details: Dict[str, Any] = {"reason": reason, "route": plan.route, "work_class": plan.work_class}
     if retry_after_sec is not None:
         details["retry_after_sec"] = round(float(retry_after_sec), 1)
+    if local:
+        details["local"] = True
     return {
         "text": "",
         "content": "",
@@ -477,7 +480,8 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
                 "gpu_pool_unavailable correlation_id=%s route=%s class=%s reason=%s",
                 correlation_id, plan.route, plan.work_class, exc.reason,
             )
-            return _pool_unavailable_result(plan, exc.reason, getattr(exc, "retry_after_sec", None))
+            return _pool_unavailable_result(plan, exc.reason, getattr(exc, "retry_after_sec", None),
+                                            bool(getattr(exc, "local", False)))
     return overflow or _pool_unavailable_result(plan, "overflow_retry_exhausted")
 
 

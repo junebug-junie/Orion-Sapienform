@@ -94,8 +94,9 @@ def create_router(config):
             except Exception: raise HTTPException(503, 'planner_unavailable_or_invalid')
             finally: planning = False
         valid = ((request.method=='GET' and path in ('games','health/ready')) or
+                 (request.method=='GET' and re.fullmatch(r'games/[a-z0-9][a-z0-9-]{0,63}/saves',path)) or
                  (request.method=='POST' and path=='sessions') or
-                 re.fullmatch(r'sessions/[0-9a-f-]{36}'+('(?:/evidence)?' if request.method=='GET' else '/(?:control|pause|resume|stop|scripted|goal)'),path))
+                 re.fullmatch(r'sessions/[0-9a-f-]{36}'+('(?:/evidence)?' if request.method=='GET' else '/(?:control|pause|resume|stop|scripted|goal|save|load)'),path))
         if not valid: raise HTTPException(404)
         try:
             async with client() as c:

@@ -323,3 +323,49 @@ def test_unclosed_turn_stops_counting_after_open_max():
 def test_recent_history_survives_restore_without_open_episode():
     s = AnomalyEpisodeStateV1(recent_flagged=(T0, T0 + 60))
     assert state_from_dict(json.loads(json.dumps(state_to_dict(s)))).recent_flagged == (T0, T0 + 60)
+
+
+
+def test_nominal_open_then_degraded_fires_once_with_the_degraded_band():
+    """Live 10-20: nominal open then degraded one minute later fired twice (4 of 29 in 6h)."""
+    windows = [(T0, True, 1.2, None, False), (T0 + 60, True, 1.8, None, False),
+               (T0 + 120, True, 1.8, None, False)]
+    _, fires = _run(windows)
+    assert fires == [(T0 + 60, "episode_open", "degraded")]
+
+
+def test_without_deferral_the_double_fire_reproduces():
+    windows = [(T0, True, 1.2, None, False), (T0 + 60, True, 1.8, None, False)]
+    _, fires = _run(windows, defer_nominal_open=False)
+    assert [f[1] for f in fires] == ["episode_open", "severity_escalation"]
+
+
+def test_degraded_open_still_fires_on_its_first_window():
+    _, fires = _run([(T0, True, 1.8, None, False)])
+    assert fires == [(T0, "episode_open", "degraded")]
+
+
+def test_lone_nominal_blip_does_not_fire_and_deferral_survives_restart():
+    state, fires = _run([(T0, True, 1.2, None, False)])
+    assert fires == []
+    restored = state_from_dict(json.loads(json.dumps(state_to_dict(state))))
+    d = _flag(restored, T0 + 60, ratio=1.2)
+    assert d.fire and d.reason == "episode_open" and d.severity == "nominal"
+
+
+def test_deferral_counts_from_the_first_window_no_turn_explains():
+    """Review: turn-explained window 1, nominal window 2, degraded window 3 must fire once."""
+    windows = [(T0, True, 1.2, "task_execution", True), (T0 + 60, True, 1.2, None, False),
+               (T0 + 120, True, 1.8, None, False)]
+    _, fires = _run(windows)
+    assert fires == [(T0 + 120, "episode_open", "degraded")]
+
+
+def test_nominal_open_is_not_deferred_under_the_sustained_override():
+    windows = [(T0 + 60 * i, True, 1.2, "task_execution", True) for i in range(3)]
+    _, fires = _run(windows, sustained_windows=3)
+    assert fires == [(T0 + 120, "sustained_past_turn", "nominal")]
+    # A fresh nominal window on an episode whose sustained history already holds fires at once.
+    state, _ = _run([(T0 + 60 * i, True, 1.2, "task_execution", True) for i in range(2)])
+    d = _flag(state, T0 + 120, ratio=1.2, sustained_windows=3)
+    assert d.fire

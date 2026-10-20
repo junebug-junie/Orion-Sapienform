@@ -567,6 +567,19 @@ gap longer than three ticks) is one `arousal_transition` row in
 hand-applied). The latest rest-drive reading (`orion:drive:rest:latest`) is embedded verbatim
 for the trace; arousal never reads it. No dial reads arousal yet (spec order 6).
 
+Strain loop part 1 (2026-10-20, `docs/superpowers/specs/2026-10-20-strain-loop-design.md`): a
+level row is written only when the level changes, so a cause that joins an episode already
+strained (the cabinet going critical mid-episode) was never recorded. While strained, the node
+now also writes one row per strain cause new to the episode (`cause_row`, event id
+`...:strained:at:<observed_at>`, `payload.joined`), one seed row (`payload.seed = true`) when
+the episode has nothing recorded yet (the first step after deploy, a lost onset row), and a
+keepalive (`joined = []`) every `STRAIN_KEEPALIVE_SEC` (1,800 s) so the chronology can close an
+arc whose closing row was lost. A failed write is retried on the next step. Same table, kind and label, so readers of levels still
+read `strained` (`scripts/analysis/measure_arousal_reader_replay.py` filters them out, since they
+would restart a level's age). The causes already recorded and the last row's time ride in the
+checkpoint as `strain_causes_seen` / `strain_row_at`.
+Kill switch: `TEMPORAL_SELF_STRAIN_ARCS_ENABLED=false` (no cause rows, no strain arcs).
+
 Kill switches: `TEMPORAL_SELF_ENABLED=false` (no thread), `ORION_REGULATION_AROUSAL_ENABLED=false`
 (reads `unknown`). Health: `/health` -> `temporal_self`.
 
@@ -710,6 +723,43 @@ keeps running. Kill switch: `PERSONALITY_ENABLED=false` (tables stay).
 
 Tests: `tests/test_personality_loop.py` (fakes), `tests/test_personality_postgres.py` (real
 Postgres, needs `ORION_ADMISSION_TEST_DSN`).
+
+### Orion names their own dispositions (2026-10-20)
+
+Orion is shown one disposition at a time and says what it is: a name, "not me", or "the same as
+this neighbor". This service picks what to show, and applies Orion's answer to the graph.
+
+Spec: `docs/superpowers/specs/2026-10-17-personality-orion-names-dispositions-design.md` (decisions
+2026-10-20). Needs `services/orion-sql-db/manual_migration_personality_naming_v1.sql` applied before
+deploy (new `personality_disposition` columns and the `orion_disposition_naming` table).
+
+- `GET /personality/naming/next` returns the next `DispositionNamingPacketV1` or 204. Due order
+  (`orion/personality/naming.py`, `naming_due`): an active node never shown, strongest first; a node
+  whose last answer was empty or refused, again after 3 days, at most 3 tries; a named or rejected node
+  only when its evidence doubled or a new source now counts toward promotion, never sooner than 14
+  days. Reading the packet marks nothing; the node counts as shown when Orion's answer row is applied.
+- `GET /personality/naming?disposition_id=&limit=50` is the naming log, newest first.
+- `/personality/dispositions` rows add `name`, `name_sentence`, `orion_verdict`, `merged_into`,
+  `name_grounding_rank`, `name_grounding_margin`, `named_at`, `last_shown_at`, `shown_count`.
+- Each tick reads `orion_disposition_naming` after the `naming` cursor (keyset `created_at,
+  naming_id`, same read lag as the sources) and applies it after the fold, in the same transaction
+  (`graph.apply_namings`). NAME sets the name only. REJECT marks the node; it keeps matching and
+  fading, and leaves the frame. MERGE pools B into A only at centroid cosine >= 0.85
+  (`merge_min_cosine`, set from P0 live cosines) and retires B with `merged_into`; otherwise
+  `apply_status=merge_too_far`. No verdict adds a hit. Each applied row logs
+  `personality_naming_applied naming=<id> verdict=<v> grounding_rank=<n> margin=<x> apply_status=<s>`
+  after commit.
+- Grounding: `name + " " + sentence` is embedded and ranked against every non-retired centroid.
+  Recorded only, never a refusal. A failed embed holds the naming cursor for up to 3 ticks, then the
+  name is applied without grounding.
+- Own-name echo: evidence whose text contains the matched node's own current name still counts
+  (`lane_counts`, `evidence_count`) but adds no weight, and is stored with `meta.cites_own_name=true`.
+- Kill switch: `PERSONALITY_NAMING_APPLY_ENABLED=false` (answers wait in the table, the route answers 204).
+- Roll back one merge: `scripts/personality_unmerge.py --disposition <B>` (dry run; `--apply` writes;
+  approximate for A because the merge clamp is not reversible; stop the loop first).
+
+Tests: `orion/personality/tests/test_naming.py`, `tests/test_personality_naming.py`, and the naming test
+in `tests/test_personality_postgres.py`.
 
 ### Situation on every piece of evidence (2026-10-16)
 

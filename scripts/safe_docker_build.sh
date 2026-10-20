@@ -4,7 +4,9 @@
 #
 # Builds and read-only compose commands may run from development worktrees.
 # `up`, however, changes the live runtime and therefore has one canonical
-# source: the primary checkout on `main`, clean and equal to `origin/main`.
+# source: the primary checkout on `main`, clean and equal to `origin/main`
+# (or, when ORION_DEPLOY_PINNED_HEAD is set by a post-pull rebuild run, equal
+# to that pinned commit and behind-or-equal to `origin/main`; see 2.1).
 # This prevents a feature-named or stale worktree from becoming an accidental
 # deployment source while preserving isolated worktrees for development.
 #
@@ -113,7 +115,29 @@ if [ "$IS_DEPLOY" = "1" ]; then
         exit 1
     fi
     LOCAL_HEAD=$(git rev-parse HEAD 2>/dev/null)
-    if [ "$LOCAL_HEAD" != "$ORIGIN_MAIN" ]; then
+    # ORION_DEPLOY_PINNED_HEAD: set by rebuild_services_from_git_diff.sh to the
+    # full commit its run started on. A post-pull run brings services up one by
+    # one over many minutes; a PR merging on GitHub mid-run used to refuse every
+    # remaining service in ~1s (2026-10-20, three runs that day). With a pin,
+    # main must still be exactly that commit, and that commit must be in
+    # origin/main's history: main merely BEHIND is accepted, ahead or diverged
+    # is still refused. Without the pin, main must equal origin/main.
+    PINNED_HEAD="${ORION_DEPLOY_PINNED_HEAD:-}"
+    if [ -n "$PINNED_HEAD" ]; then
+        if [ "$LOCAL_HEAD" != "$PINNED_HEAD" ]; then
+            echo "safe_docker_build.sh: REFUSING live deployment because main moved during this run." >&2
+            echo "main=$LOCAL_HEAD pinned=$PINNED_HEAD (ORION_DEPLOY_PINNED_HEAD)" >&2
+            exit 1
+        fi
+        if ! git merge-base --is-ancestor "$LOCAL_HEAD" "$ORIGIN_MAIN" 2>/dev/null; then
+            echo "safe_docker_build.sh: REFUSING live deployment because main is not synchronized with origin/main." >&2
+            echo "main=$LOCAL_HEAD origin/main=$ORIGIN_MAIN (pinned main is not in origin/main's history)" >&2
+            exit 1
+        fi
+        if [ "$LOCAL_HEAD" != "$ORIGIN_MAIN" ]; then
+            echo "safe_docker_build.sh: deploying pinned main=$LOCAL_HEAD; origin/main advanced to $ORIGIN_MAIN during this run." >&2
+        fi
+    elif [ "$LOCAL_HEAD" != "$ORIGIN_MAIN" ]; then
         echo "safe_docker_build.sh: REFUSING live deployment because main is not synchronized with origin/main." >&2
         echo "main=$LOCAL_HEAD origin/main=$ORIGIN_MAIN" >&2
         exit 1

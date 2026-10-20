@@ -481,3 +481,67 @@ def test_chain_module_never_reads_a_dream():
             mods.append(node.module or "")
     for mod in mods:
         assert "dream" not in mod.lower(), f"chain must not read a dream ({mod!r})"
+
+
+# --- 2026-10-20: a GPU-pool refusal is not a hollow theme --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gpu_pool_refusal_at_step0_does_not_touch_no_coalition_streak():
+    """Hot cabinet: the pool sheds the narration call. That is not the theme failing to
+    ground, so no chain row, no refractory, and the streak loader is never consulted."""
+    from app import chain
+    from app.reverie import ReverieLlmUnavailable
+
+    async def step_shed(chain_id, index, continuity=None):
+        raise ReverieLlmUnavailable("gpu_pool_unavailable:shed:cabinet_hot")
+
+    looked_up: list[str] = []
+    store = chain.InMemoryRefractoryStore()
+    before = chain.CHAIN_SKIP_COUNTS["llm_unavailable"]
+    c = await chain.run_reverie_chain(
+        AsyncMock(), step_fn=step_shed, refractory_store=store,
+        broadcast_reader=_broadcast, publish=False, now_fn=lambda: NOW,
+        no_coalition_max_repeats=3,
+        no_coalition_streak_loader=lambda k: looked_up.append(k) or 2,  # one more would force
+    )
+    assert c is None
+    assert looked_up == []
+    assert store.is_suppressed("ol-1", NOW) is False
+    assert chain.CHAIN_SKIP_COUNTS["llm_unavailable"] == before + 1
+
+
+@pytest.mark.asyncio
+async def test_hollow_step0_still_counts_toward_streak():
+    """Control: a real hollow first step (step returns None) still counts and forces."""
+    from app import chain
+
+    async def step_none(chain_id, index, continuity=None):
+        return None
+
+    store = chain.InMemoryRefractoryStore()
+    c = await chain.run_reverie_chain(
+        AsyncMock(), step_fn=step_none, refractory_store=store,
+        broadcast_reader=_broadcast, publish=False, now_fn=lambda: NOW,
+        no_coalition_max_repeats=3, no_coalition_streak_loader=lambda k: 2,
+    )
+    assert c.terminal_reason == "no_coalition"
+    assert store.is_suppressed("ol-1", NOW) is True
+
+
+@pytest.mark.asyncio
+async def test_gpu_pool_refusal_mid_chain_ends_chain_as_before():
+    from app import chain
+    from app.reverie import ReverieLlmUnavailable
+
+    async def step(chain_id, index, continuity=None):
+        if index == 0:
+            return _thought(0)
+        raise ReverieLlmUnavailable("gpu_pool_unavailable:deadline")
+
+    c = await chain.run_reverie_chain(
+        AsyncMock(), step_fn=step, refractory_store=chain.InMemoryRefractoryStore(),
+        broadcast_reader=_broadcast, max_steps=3, publish=False, now_fn=lambda: NOW,
+    )
+    assert c.terminal_reason == "pressure_discharged"
+    assert c.thought_ids == ["th-0"]

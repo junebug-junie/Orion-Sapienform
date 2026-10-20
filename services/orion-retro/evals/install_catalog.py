@@ -12,6 +12,7 @@ def install(kit, root, env):
     catalog=root/'catalog';catalog.mkdir(exist_ok=True,mode=0o700)
     (root/'evidence').mkdir(exist_ok=True,mode=0o700)
     (root/'ipc').mkdir(exist_ok=True,mode=0o700)
+    (root/'saves').mkdir(exist_ok=True,mode=0o700)
     rows=[]
     for game,title,path,ports in [('pad-lab','Pad Lab',kit,[0,1]),
         ('nova','Nova the Squirrel',kit/'games/nova-the-squirrel-v1.0.6a',[0]),
@@ -38,7 +39,7 @@ def install(kit, root, env):
             fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
             with os.fdopen(fd,'w') as f:f.write(secrets.token_urlsafe(32)+'\n')
     keys=dict(RETRO_HUB_TOKEN_FILE=str(auth/'hub.token'),RETRO_ENABLED='true',RETRO_SOCKET_DIR=str(root/'ipc'),RETRO_UID=str(os.getuid()),RETRO_GID=str(os.getgid()),
-              RETRO_CATALOG_DIR=str(catalog),RETRO_EVIDENCE_DIR=str(root/'evidence'),RETRO_TOKEN_FILE=str(token))
+              RETRO_CATALOG_DIR=str(catalog),RETRO_EVIDENCE_DIR=str(root/'evidence'),RETRO_SAVES_DIR=str(root/'saves'),RETRO_TOKEN_FILE=str(token))
     # Preserve operator overrides; only populate missing/blank configuration.
     existing=env.read_text().splitlines() if env.exists() else []
     seen=set();out=[]

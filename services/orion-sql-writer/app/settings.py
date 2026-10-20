@@ -74,6 +74,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "field_channel_anomaly.score.v1": "FieldChannelAnomalyScoreSQL",
     "chat_stance.belief.write.v1": "ChatStanceBeliefLogSQL",
     "self_concept.history.write.v1": "SelfConceptHistorySQL",
+    "personality.naming.v1": "DispositionNamingSQL",
     "self_sense.eval.write.v1": "SelfSenseEvalLogSQL",
     "journal.entry.index.v1": "JournalEntryIndexSQL",
     "evidence.unit.v1": "EvidenceUnitSQL",
@@ -208,6 +209,7 @@ class Settings(BaseSettings):
             "orion:field_channel:anomaly_score",
             "orion:chat_stance:belief:write",
             "orion:self_concept:history:write",
+            "orion:personality:naming",
             "orion:self_sense:eval:write",
             "orion:journal:index",
             "orion:evidence:index:upsert",
@@ -875,6 +877,11 @@ class Settings(BaseSettings):
         # rather than merges.
         if "orion:self_concept:history:write" not in channels:
             channels.append("orion:self_concept:history:write")
+        # Same guarantee, same reason. personality.naming.v1 (Orion's verdicts
+        # on their own dispositions, Hub self-inquiry naming runs) is a
+        # code-default route with no feature toggle.
+        if "orion:personality:naming" not in channels:
+            channels.append("orion:personality:naming")
         # Same guarantee again, same reason. self_sense.eval.write.v1 is a
         # code-default route with no feature toggle (producer: services/
         # orion-hub/evals/run_self_sense_eval.py); this exact omission made

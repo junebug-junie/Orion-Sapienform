@@ -87,6 +87,16 @@ Known gap: this is plain pub/sub. If the Hub's publish fails or this service is 
 
 Log line to look for: `ask_answered entity_created ask_id=... individual_id=... node_id=entity:vision_individual:...`.
 
+## Bus listener liveness on `/health`
+
+Every bus listener runs through `orion.core.bus.resilience.run_subscription`, which resubscribes after a Redis drop and records its state. `GET /health` reports it:
+
+- `listeners_ok`: false if any listener is not subscribed right now (backing off after a failure, or stopped).
+- `listeners_down`: names of those listeners.
+- `listeners[]`: per listener `channel`, `subscribed`, `messages_total`, `failures_total`, `last_failure`, and `last_subscribed_age_sec` / `last_message_age_sec` / `last_failure_age_sec`. A quiet channel is not down; `last_message_age_sec` only says when traffic last came.
+
+`ok`/`status` are degraded when either the grammar truth or the listeners are. Before 2026-10-20 a listener that died left `/health` unchanged while chat lost finalize appraisal.
+
 ## Health monitoring -> hub pending-attention box
 
 `GET /grammar/truth`'s `degraded`/`degraded_reasons` used to be manual-curl-only. `app/health_monitor.py::HealthMonitor` (mirrors `orion-self-state-runtime`'s pattern) polls it every `SUBSTRATE_RUNTIME_HEALTH_CHECK_INTERVAL_SEC` (default `900.0`) and fires an `orion-notify` attention request -- which surfaces as a card in orion-hub's pending-attention UI -- on a healthy->unhealthy transition only (not every tick), plus a recovery note on the way back. Requires `NOTIFY_BASE_URL` (default `http://orion-athena-notify:7140`) to actually reach `orion-notify`; fails open (logs and retries next tick) if unreachable.

@@ -210,3 +210,47 @@ async def test_run_subscription_propagates_cancellation() -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_subscription_health_reports_down_while_backing_off_and_up_after() -> None:
+    """A listener stuck retrying must read as down, not healthy (2026-10-20)."""
+    import asyncio
+
+    from orion.core.bus import resilience
+    from orion.core.bus.resilience import run_subscription, subscription_health
+
+    resilience._SUBSCRIPTION_STATES.pop("health-t", None)
+    stop = asyncio.Event()
+    gate = asyncio.Event()
+    snapshots: list[dict] = []
+
+    class _GatedPubSub:
+        async def get_message(self, ignore_subscribe_messages=True, timeout=1.0):
+            snapshots.append(subscription_health())
+            if not gate.is_set():
+                gate.set()
+                return _msg(1)
+            stop.set()
+            return None
+
+    bus = _ScriptedBus([ConnectionError("bus down"), _GatedPubSub()])
+    task = asyncio.create_task(
+        run_subscription(bus, "orion:test", lambda m: None, stop_event=stop, name="health-t", max_backoff_sec=0.2)
+    )
+    for _ in range(50):
+        row = next((r for r in subscription_health()["listeners"] if r["name"] == "health-t"), None)
+        if row and row["failures_total"]:
+            break
+        await asyncio.sleep(0.01)
+    during = subscription_health()
+    assert "health-t" in during["down"] and during["ok"] is False
+    assert row["last_failure"].startswith("ConnectionError")
+
+    await asyncio.wait_for(task, timeout=10)
+    up = next(r for r in snapshots[0]["listeners"] if r["name"] == "health-t")
+    assert up["subscribed"] is True and "health-t" not in snapshots[0]["down"]
+    done = next(r for r in subscription_health()["listeners"] if r["name"] == "health-t")
+    assert done["messages_total"] == 1 and done["running"] is False and done["subscribed"] is False
+    assert done["last_message_age_sec"] is not None
+    resilience._SUBSCRIPTION_STATES.pop("health-t", None)

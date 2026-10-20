@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging as _logging
+import time
+from dataclasses import asdict, dataclass
 from typing import Any, Awaitable, Callable
 
 try:
@@ -17,6 +19,45 @@ from orion.core.bus.bus_schemas import BaseEnvelope
 _sub_logger = _logging.getLogger("orion.bus.resilience")
 
 MessageHandler = Callable[[dict[str, Any]], Awaitable[Any] | Any]
+
+
+@dataclass
+class SubscriptionState:
+    """Live state of one run_subscription listener, for a service's /health."""
+
+    name: str
+    channel: str
+    subscribed: bool = False
+    running: bool = True
+    messages_total: int = 0
+    failures_total: int = 0
+    last_subscribed_at: float | None = None
+    last_message_at: float | None = None
+    last_failure_at: float | None = None
+    last_failure: str | None = None
+
+
+# One entry per listener name in this process. A listener that is not subscribed
+# (backing off after a failure, or stopped) reads as down.
+_SUBSCRIPTION_STATES: dict[str, SubscriptionState] = {}
+
+
+def subscription_health(now: float | None = None) -> dict[str, Any]:
+    """Every run_subscription listener in this process: ``ok`` is False when any is down.
+
+    Times are wall-clock epoch seconds; ``*_age_sec`` is how long ago, from ``now``.
+    A quiet channel is not down: ``last_message_age_sec`` only says when traffic last came.
+    """
+    now = time.time() if now is None else now
+    listeners = []
+    for state in sorted(_SUBSCRIPTION_STATES.values(), key=lambda st: st.name):
+        row = asdict(state)
+        for key in ("last_subscribed_at", "last_message_at", "last_failure_at"):
+            at = row[key]
+            row[key.replace("_at", "_age_sec")] = None if at is None else round(now - at, 1)
+        listeners.append(row)
+    down = [row["name"] for row in listeners if not row["subscribed"]]
+    return {"ok": not down, "down": down, "listeners": listeners}
 
 
 async def publish_with_reconnect(
@@ -62,11 +103,15 @@ async def run_subscription(
     is reopened instead of polled forever.
     """
     backoff = min(1.0, max_backoff_sec)
+    state = SubscriptionState(name=name, channel=channel)
+    _SUBSCRIPTION_STATES[name] = state
     try:
         while stop_event is None or not stop_event.is_set():
             _sub_logger.info("%s subscribing channel=%s", name, channel)
             try:
                 async with bus.subscribe(channel) as pubsub:
+                    state.subscribed = True
+                    state.last_subscribed_at = time.time()
                     overruns = 0
                     while stop_event is None or not stop_event.is_set():
                         try:
@@ -85,6 +130,8 @@ async def run_subscription(
                         if not msg or msg.get("type") not in ("message", "pmessage"):
                             continue
                         backoff = min(1.0, max_backoff_sec)
+                        state.messages_total += 1
+                        state.last_message_at = time.time()
                         try:
                             result = handle(msg)
                             if inspect.isawaitable(result):
@@ -93,7 +140,11 @@ async def run_subscription(
                             _sub_logger.exception("%s handle_failed channel=%s", name, channel)
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                state.subscribed = False
+                state.failures_total += 1
+                state.last_failure_at = time.time()
+                state.last_failure = f"{type(exc).__name__}: {exc}"[:200]
                 _sub_logger.exception(
                     "%s subscription_failed channel=%s retry_in=%.0fs", name, channel, backoff
                 )
@@ -106,4 +157,6 @@ async def run_subscription(
                         pass
                 backoff = min(backoff * 2.0, max_backoff_sec)
     finally:
+        state.subscribed = False
+        state.running = False
         _sub_logger.info("%s stopped channel=%s", name, channel)

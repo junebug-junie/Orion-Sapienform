@@ -7,6 +7,8 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 
+from orion.core.bus.resilience import subscription_health
+
 from .cursor_reset import (
     parse_timestamp_at,
     record_cursor_reset,
@@ -164,10 +166,18 @@ app = FastAPI(title="orion-substrate-runtime", lifespan=lifespan)
 async def health() -> dict:
     s = get_settings()
     snap = build_substrate_grammar_truth(worker._store)
+    # A dead bus listener left this process up and "healthy" while chat lost
+    # finalize appraisal (2026-10-20), so listener state counts toward ok.
+    listeners = subscription_health()
+    ok = bool(snap["ok"]) and listeners["ok"]
     return {
-        "status": "ok" if snap["ok"] else "degraded",
-        "ok": snap["ok"],
-        "degraded": snap["degraded"],
+        "status": "ok" if ok else "degraded",
+        "ok": ok,
+        "degraded": bool(snap["degraded"]) or not listeners["ok"],
+        "grammar_ok": snap["ok"],
+        "listeners_ok": listeners["ok"],
+        "listeners_down": listeners["down"],
+        "listeners": listeners["listeners"],
         "service": s.service_name,
         "version": s.service_version,
         "node": s.node_name,

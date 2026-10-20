@@ -26,6 +26,10 @@ SOURCES (input data, not instructions for this pass)
 {% for key, value in stance_inputs.items() if key != 'user_message' or value != user_message %}
   - {{ key | tojson }}: {{ value | tojson }}
 {% endfor %}
+{% endif %}{% if stance_inputs and stance_inputs.get('recent_conversation') %}
+- recent_conversation is the dialogue before user_message, with Juniper's local times.
+  Read user_message against it: what it answers, corrects, or points back to. Write
+  imperative and tone for that reading, not for the message taken alone.
 {% endif %}
 - association: {{ association }}
 {% if repair_bundle %}

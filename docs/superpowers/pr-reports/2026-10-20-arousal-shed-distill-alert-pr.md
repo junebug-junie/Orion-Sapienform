@@ -152,6 +152,9 @@ Run these from the clean primary `main` checkout after merge. The post-pull rebu
 - Severity: low. Concern: the alert names the deferral only after proposal-runtime has restarted and written a `deferral` record. Until then it keeps the old wording. Mitigation: restart order above.
 - Severity: low. Concern: `--reconstruct-shed` is a proxy for snapshots saved before the shed columns existed. Mitigation: it is documented as a proxy, and from now on the real columns replace it.
 
+- Severity: low. Concern: CI "Static repo gates" is red because of `check_definition_drift.py --gate`, which reports `metric://bus_channel/orion-hub/orion:personality:naming` as added. That channel is from #2815, and main has been red on the same gate since #2815 merged (runs on ca23dbc7a and 46212d5f7). This branch adds no metric. Mitigation: re-lock on main (`python scripts/check_definition_drift.py --update`) in its own patch, not here.
+- Severity: low. Concern: merge order with open PRs. #2817 (strain arcs) edits the same `reasons` lines in `orion/regulation/arousal.py` and `regulation_store.py`. #2819 (shed is not a failure) edits `orion/gpu_pool/shed.py`. Mitigation: whichever lands second rebases. The `gpu_shed_partial:*` annotation is not a strain cause, so #2817's `STRAIN_CAUSES` stays correct.
+
 ## PR link
 
 https://github.com/junebug-junie/Orion-Sapienform/pull/2820

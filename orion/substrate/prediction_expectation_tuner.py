@@ -103,6 +103,7 @@ class PredictionExpectationTuner:
                 continue
             proposed = store.latest_proposal_at(surface)
             if proposed is not None and t - proposed < self.min_proposal_spacing:
+                self._last_assessed[domain] = t  # re-check hourly, not every tick
                 continue
             if store.active_surface(surface) is not None or store.has_queued_proposal_for_surface(surface):
                 continue

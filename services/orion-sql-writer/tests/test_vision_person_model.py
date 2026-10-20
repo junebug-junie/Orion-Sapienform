@@ -200,7 +200,7 @@ def test_a_person_juniper_ruled_out_is_never_guessed() -> None:
     bars = {("A", "body"): pm.Bar("A", "body", 0.1, None, 19, 19)}
     album = {"A": {1: _person("a", 0, 2)}}
     cl = [_crop("x", "x", "2026-10-09", _vec(1))]
-    assert pm.attribute({"x": cl}, album, bars, {"x": {"A"}}, CFG) == []
+    assert pm.attribute({"x": cl}, album, bars, {"x": {"a"}}, CFG) == []   # blocks are casefolded
 
 
 def test_face_channel_when_both_sides_have_faces_else_fallback() -> None:
@@ -235,6 +235,22 @@ def test_same_sighting_floor_is_a_low_percentile_of_within_sighting_pairs() -> N
 
 def test_names_differing_only_in_case_are_one_person() -> None:
     assert pm.canonical_names(["Juniper", "juniper", "Juniper", " PersonA "]) == {"juniper": "Juniper", "persona": "PersonA"}
+
+
+def test_a_not_x_written_under_another_casing_still_counts() -> None:
+    crops = {"c1": _crop("c1", "k", "2026-10-01", _vec(1)), "c2": _crop("c2", "k", "2026-10-01", _vec(1))}
+    album = pm.build_album([("Juniper", "c1", 1), ("Juniper", "c2", 1), ("juniper", "c2", -1)], crops)
+    assert list(album) == ["Juniper"]
+    assert [c.crop_id for c in album["Juniper"][1]] == ["c1"] and [c.crop_id for c in album["Juniper"][-1]] == ["c2"]
+
+
+def test_is_this_x_question_counts_in_plain_english() -> None:
+    from app import vision_individuals as vi
+
+    assert vi.person_confirm_question(person="Juniper", sighting_count=1, distinct_days=1).endswith(
+        "I have seen them 1 time over 1 day.")
+    assert vi.person_confirm_question(person="Juniper", sighting_count=4, distinct_days=2).endswith(
+        "I have seen them 4 times over 2 days.")
 
 
 def test_a_crop_marked_not_x_is_never_in_xs_positive_album() -> None:
@@ -451,6 +467,7 @@ def _confirm_world(conn):
     _world(conn)
     pm.run_person_model(conn, NOW, CFG)
     _thumb(conn, "unk-j")
+    conn.execute(text("UPDATE vision_individual SET sighting_count = 2 WHERE individual_id = 'unk-j'"))
     return {r[0]: r[1] for r in conn.execute(text(
         "SELECT individual_id, person_label FROM vision_person_attribution WHERE revoked_at IS NULL"))}
 
@@ -554,3 +571,78 @@ def test_cant_tell_is_a_dismissal_and_that_pair_is_not_asked_again(pg) -> None:
         conn.execute(text("UPDATE orion_ask SET status='dismissed' WHERE ask_id=:a"), {"a": ask["ask_id"]})
         later = vi._open_person_confirm_asks(conn, NOW + timedelta(days=2), ZONE, cfg)
     assert all(a["source_ref"] != "unk-j|Juniper" for a in later)
+
+
+@needs_pg
+def test_someone_seen_once_is_not_asked_about(pg) -> None:
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    with pg.begin() as conn:
+        _confirm_world(conn)
+        conn.execute(text("UPDATE vision_individual SET sighting_count = 1 WHERE individual_id = 'unk-j'"))
+        assert vi._open_person_confirm_asks(conn, NOW, ZONE, vi.IndividualsConfig(ask_face_min_faces=0)) == []
+
+
+@needs_pg
+def test_a_name_given_elsewhere_closes_the_open_is_this_x_card(pg) -> None:
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    cfg = vi.IndividualsConfig(ask_face_min_faces=0)
+    with pg.begin() as conn:
+        _confirm_world(conn)
+        (ask,) = vi._open_person_confirm_asks(conn, NOW, ZONE, cfg)
+        # Juniper names unk-j on another card.
+        conn.execute(text("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, answer, "
+                          "answered_at, created_at) VALUES ('ask-who', 'q', 'vision_individual', 'unk-j', "
+                          "'answered', 'Maeve', :t, :t)"), {"t": NOW})
+        vi._apply_answers(conn, NOW)
+        row = conn.execute(text("SELECT status, answer, applied_at IS NOT NULL FROM orion_ask WHERE ask_id=:a"),
+                           {"a": ask["ask_id"]}).one()
+        assert tuple(row) == ("answered", None, True)
+        assert conn.execute(text("SELECT label FROM vision_individual WHERE individual_id='unk-j'")).scalar() == "Maeve"
+
+
+@needs_pg
+def test_an_open_is_this_x_card_keeps_the_slow_rule_off_that_individual(pg) -> None:
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    cfg = vi.IndividualsConfig(ask_face_min_faces=0, ask_min_sightings=2, ask_min_days=1, ask_daily_cap=3)
+    with pg.begin() as conn:
+        _confirm_world(conn)
+        (ask,) = vi._open_person_confirm_asks(conn, NOW, ZONE, cfg)
+        conn.execute(text("UPDATE vision_individual SET distinct_days = 2 WHERE individual_id = 'unk-j'"))
+        conn.execute(text(
+            "INSERT INTO vision_individual_sighting (sighting_id, individual_id, stream_id, started_at, ended_at, "
+            "dwell_sec, observation_count, thumb_ref) VALUES ('s-unk-j-2', 'unk-j', 'walkway', :t, :t, 0, 1, "
+            "'thumb:' || repeat('e', 64))"), {"t": NOW - timedelta(days=1)})
+        opened = vi._open_sighting_asks(conn, NOW, ZONE, cfg)
+    assert all(a["source_ref"] != "unk-j" for a in opened)
+
+
+@needs_pg
+def test_no_marks_only_the_crops_orion_guessed_on(pg) -> None:
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    cfg = vi.IndividualsConfig(ask_face_min_faces=0)
+    with pg.begin() as conn:
+        _confirm_world(conn)
+        for j in range(3, 30):   # an older history of 27 more crops
+            conn.execute(text(
+                "INSERT INTO vision_crop_observation (crop_id, observation_id, stream_id, observed_at, label, score, "
+                "box_xyxy, embedding, individual_id) SELECT 'unk-j-old' || :j, 'obs', 'walkway', :t, 'person', 0.9, "
+                "'{0,0,1,1}', embedding, 'unk-j' FROM vision_crop_observation WHERE crop_id = 'unk-j-0'"),
+                {"j": j, "t": NOW - timedelta(days=20, minutes=j)})
+        (ask,) = vi._open_person_confirm_asks(conn, NOW, ZONE, cfg)
+        conn.execute(text("UPDATE orion_ask SET status='answered', answer='no', answered_at=:t WHERE ask_id=:a"),
+                     {"t": NOW, "a": ask["ask_id"]})
+        vi._apply_answers(conn, NOW)
+        n = conn.execute(text("SELECT count(*) FROM vision_person_exemplar WHERE source='confirm_no'")).scalar()
+    assert n == pm.ATTRIBUTION_CROPS

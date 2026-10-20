@@ -297,14 +297,14 @@ def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[C
               ) -> List[dict]:
     """One guess per unnamed cluster: its best-scoring person, banded. A
     cluster accepted for two people is downgraded to unsure. ``blocked``:
-    cluster -> persons Juniper said it is not."""
+    cluster -> casefolded names Juniper said it is not."""
     out: List[dict] = []
     persons = sorted(album)
     sides: Dict[Tuple[str, str, int], _Side] = {}
     for cid, crops in sorted(clusters.items()):
         scored = []
         for p in persons:
-            if p in blocked.get(cid, set()):
+            if p.strip().casefold() in blocked.get(cid, set()):
                 continue
             ch = pick_channel(crops, p, bars, album, cfg)
             if ch is None:
@@ -436,8 +436,12 @@ def reconcile_exemplars(conn, rows: List[dict], now: datetime) -> Tuple[int, int
 
 
 def build_album(ex: Sequence[Tuple[str, str, int]], crops: Dict[str, Crop]) -> Dict[str, Dict[int, List[Crop]]]:
-    """(person, crop_id, polarity) rows -> person -> polarity -> crops. A crop
-    that is both +1 and -1 for a person counts as -1; vanished crops drop."""
+    """(person, crop_id, polarity) rows -> person -> polarity -> crops. Names
+    that differ only in casing are one person (rows keep the spelling they were
+    written with). A crop that is both +1 and -1 for a person counts as -1;
+    vanished crops drop."""
+    names = canonical_names(p for p, _, _ in ex)
+    ex = [(names.get(p.strip().casefold(), p), c, pol) for p, c, pol in ex]
     negs = {(p, c) for p, c, pol in ex if pol == -1}
     album: Dict[str, Dict[int, List[Crop]]] = {}
     seen = set()
@@ -511,12 +515,12 @@ def _blocked(conn) -> Dict[str, set]:
     """cluster -> persons Juniper said it is not (a -1 exemplar on one of its crops)."""
     from sqlalchemy import text
 
-    out: Dict[str, set] = {}
+    out: Dict[str, set] = {}   # cluster -> casefolded names
     for iid, person in conn.execute(text(
             "SELECT DISTINCT c.individual_id, e.person_label FROM vision_person_exemplar e "
             "JOIN vision_crop_observation c ON c.crop_id = e.crop_id "
             "WHERE e.polarity = -1 AND e.revoked_at IS NULL AND c.individual_id IS NOT NULL")).fetchall():
-        out.setdefault(iid, set()).add(person)
+        out.setdefault(iid, set()).add(person.strip().casefold())
     return out
 
 

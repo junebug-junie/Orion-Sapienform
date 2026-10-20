@@ -1759,7 +1759,7 @@ def _propagate_label(conn, individual_id: str, label: str, ask_id: str, at: date
 
 
 def _close_who_is_this(conn, individual_ids: Sequence[str], label: str, ask_id: str, now: datetime) -> int:
-    """Close any still-open "who is this?" card for people who just got ``label``
+    """Close any still-open "who is this?" or "Is this <name>?" card for people who just got ``label``
     from a name Juniper typed elsewhere, so she is not asked again. Marked
     applied: the label is already set (a copied one must not become typed)."""
     from sqlalchemy import text
@@ -1771,6 +1771,12 @@ def _close_who_is_this(conn, individual_ids: Sequence[str], label: str, ask_id: 
         "answer_detail=jsonb_build_object('resolved_by', CAST(:a AS text)) "
         "WHERE source_kind=:k AND status='open' AND source_ref = ANY(:ids)"),
         {"l": label, "now": now, "a": ask_id, "k": SOURCE_KIND_INDIVIDUAL, "ids": list(individual_ids)}).rowcount or 0
+    # An open "Is this <name>?" card about them is moot too: they have a name now.
+    n += conn.execute(text(
+        "UPDATE orion_ask SET status='answered', answer=NULL, answered_at=:now, applied_at=:now, "
+        "answer_detail=jsonb_build_object('resolved_by', CAST(:a AS text)) "
+        "WHERE source_kind=:k AND status='open' AND split_part(source_ref, '|', 1) = ANY(:ids)"),
+        {"now": now, "a": ask_id, "k": SOURCE_KIND_PERSON_CONFIRM, "ids": list(individual_ids)}).rowcount or 0
     if n:
         logger.info("[VISION_ASK_CLOSED_BY_NAME] n=%d by_ask_id=%s ids=%s", n, ask_id, ",".join(individual_ids))
     return n
@@ -2184,6 +2190,8 @@ def _open_face_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -
           AND {_NOT_ASKED_SQL.format(kind="'vision_individual'", ref="i.individual_id")}
           AND NOT EXISTS (SELECT 1 FROM orion_ask p WHERE p.source_kind=:same AND p.status='open'
                           AND (p.source_ref LIKE i.individual_id || '|%' OR p.source_ref LIKE '%|' || i.individual_id))
+          AND NOT EXISTS (SELECT 1 FROM orion_ask p WHERE p.source_kind='vision_person_confirm' AND p.status='open'
+                          AND split_part(p.source_ref, '|', 1) = i.individual_id)
         ORDER BY i.face_n DESC, i.individual_id
     """), {"f": cfg.ask_face_min_faces, "k": people, "recent": now - timedelta(days=cfg.candidate_days),
            "cool": cool, "same": SOURCE_KIND_SAME}).fetchall()
@@ -2242,6 +2250,8 @@ def _open_sighting_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfi
         WHERE i.label IS NULL AND NOT i.stationary AND i.sighting_count >= :n AND i.distinct_days >= :d
           AND v.n >= :n AND v.d >= :d
           AND {_NOT_ASKED_SQL.format(kind="'vision_individual'", ref="i.individual_id")}
+          AND NOT EXISTS (SELECT 1 FROM orion_ask p WHERE p.source_kind='vision_person_confirm' AND p.status='open'
+                          AND split_part(p.source_ref, '|', 1) = i.individual_id)
         ORDER BY v.n DESC, i.individual_id
     """), {"n": cfg.ask_min_sightings, "d": cfg.ask_min_days, "tz": str(tz.key),
            "cool": now - timedelta(days=cfg.ask_cooldown_days)}).fetchall()
@@ -2271,8 +2281,18 @@ def _open_sighting_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfi
     return out
 
 
+# "Is this <name>?" only about someone seen at least this often: a one-off
+# passer-by would spend a daily slot on a single crop (review, 2026-10-20).
+PERSON_CONFIRM_MIN_SIGHTINGS = 2
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
 def person_confirm_question(*, person: str, sighting_count: int, distinct_days: int) -> str:
-    seen = f"I have seen them {sighting_count} times over {distinct_days} days." if sighting_count else ""
+    seen = (f"I have seen them {_plural(sighting_count, 'time')} over {_plural(distinct_days, 'day')}."
+            if sighting_count else "")
     return f"Is this {person}? It is my best guess, but I am not sure. {seen}".strip()
 
 
@@ -2295,12 +2315,17 @@ def _open_person_confirm_asks(conn, now: datetime, tz: ZoneInfo, cfg: Individual
         SELECT g.individual_id, g.person_label, i.sighting_count, i.distinct_days
         FROM vision_person_attribution g JOIN vision_individual i USING (individual_id)
         WHERE g.revoked_at IS NULL AND g.band = 'unsure' AND i.label IS NULL AND NOT i.stationary
-          AND {_NOT_ASKED_SQL.format(kind="'vision_person_confirm'", ref="g.individual_id || '|' || g.person_label")}
+          AND i.sighting_count >= :min_s
+          -- Asked before about this individual and this name (any casing): open, answered or
+          -- dismissed for good; expired only for the cooldown.
+          AND NOT EXISTS (SELECT 1 FROM orion_ask a WHERE a.source_kind = 'vision_person_confirm'
+                AND lower(a.source_ref) = lower(g.individual_id || '|' || g.person_label)
+                AND (a.status IN ('open', 'answered', 'dismissed') OR (a.status = 'expired' AND a.created_at > :cool)))
           AND NOT EXISTS (SELECT 1 FROM orion_ask o WHERE o.status = 'open' AND (
                 (o.source_kind = 'vision_individual' AND o.source_ref = g.individual_id) OR
                 (o.source_kind = 'vision_person_confirm' AND o.source_ref LIKE g.individual_id || '|%')))
         ORDER BY g.score DESC, g.individual_id
-    """), {"cool": now - timedelta(days=cfg.ask_cooldown_days)}).fetchall()
+    """), {"cool": now - timedelta(days=cfg.ask_cooldown_days), "min_s": PERSON_CONFIRM_MIN_SIGHTINGS}).fetchall()
     out: List[dict] = []
     for iid, person, sc, dd in cands:
         if len(out) >= budget:
@@ -2324,25 +2349,34 @@ def _open_person_confirm_asks(conn, now: datetime, tz: ZoneInfo, cfg: Individual
 
 def _apply_person_confirm(conn, ask_id: str, ref: str, answer: Optional[str], at: datetime, now: datetime) -> None:
     """yes: name the individual (the album picks it up as a named cluster).
-    no: every crop of the individual becomes a "not <name>" exemplar, which
-    also stops Orion guessing that name for it."""
+    no: its newest crops (the ones guessed on) become "not <name>" exemplars,
+    which also stops Orion guessing that name for it."""
     from sqlalchemy import text
 
-    from app.vision_person_model import exemplar_id, tables_present
+    from app.vision_person_model import ATTRIBUTION_CROPS, exemplar_id, tables_present
 
     iid, _, person = ref.partition(PAIR_SEP)
     verdict = parse_yes_no(answer)
     if not iid or not person or verdict is None:
+        logger.warning("person_confirm_answer_unusable ask_id=%s ref=%r answer=%r", ask_id, ref, answer)
         return
     if verdict:
-        if conn.execute(text("SELECT label IS NULL FROM vision_individual WHERE individual_id=:i"),
-                        {"i": iid}).scalar():
+        unnamed = conn.execute(text("SELECT label IS NULL FROM vision_individual WHERE individual_id=:i"),
+                               {"i": iid}).scalar()
+        if unnamed:
             _apply_typed_name(conn, iid, person, ask_id, at, now)
+        else:
+            logger.info("person_confirm_yes_not_applied ask_id=%s individual_id=%s reason=%s", ask_id, iid,
+                        "gone" if unnamed is None else "already named")
         return
     if not tables_present(conn):
+        logger.warning("person_confirm_no_not_applied ask_id=%s reason=person tables missing", ask_id)
         return
+    # The crops Orion guessed on (the newest ones), not every crop the individual
+    # ever had: an older crop of an impure cluster may really be that person.
     for (crop_id,) in conn.execute(text(
-            "SELECT crop_id FROM vision_crop_observation WHERE individual_id=:i"), {"i": iid}).fetchall():
+            "SELECT crop_id FROM vision_crop_observation WHERE individual_id=:i "
+            "ORDER BY observed_at DESC LIMIT :n"), {"i": iid, "n": ATTRIBUTION_CROPS}).fetchall():
         conn.execute(text(
             "INSERT INTO vision_person_exemplar (exemplar_id, person_label, crop_id, polarity, source, ask_id, added_at) "
             "VALUES (:e, :p, :c, -1, 'confirm_no', :a, :t) ON CONFLICT (exemplar_id) DO NOTHING"),

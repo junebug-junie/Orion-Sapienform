@@ -12,6 +12,7 @@ VisionWindowPayload → evidence_transition (host label delta) → VisionSceneIn
 ```
 
 1. **Intake** — `VisionWindowPayload` arrives on the council intake channel (or via RPC request).
+   **Captions per camera:** only streams in `COUNCIL_CAPTION_STREAMS` (comma list, default `cam0`) keep their captions. For every other stream (the walkway today) the council works on a copy of the window with `summary.captions` emptied and the caption-derived `summary.evidence.soft_labels` / `caption_count` removed. That copy feeds the prompt, the scene-summary fallback, grounding and projection. No soft-hint fallback. Reason: the walkway caption model guesses motion from one still frame, and the council copied its wording into unlabelled rows (spec `docs/superpowers/specs/2026-10-20-walkway-followups-context-spec.md`, item 3). The caption still reaches Orion as its own labelled `camera_caption` row from orion-vision-window. The unresolved percept keeps the full window, because it quotes the caption as "caption model said: ...". Code: `app/caption_policy.py`; startup log line `[COUNCIL] caption_streams=...`.
 2. **Evidence transition gate** — `evidence_transition.py` compares **believed** host labels (`summary.evidence.believed_hard_labels` when present) and person presence per stream. Council runs metacog only on `first_window`, `person_entered`, `person_exited`, `salient_labels_changed`, or `refresh_ttl` (fires every `COUNCIL_TRANSITION_REFRESH_SEC`, default `600`/10min — `0` disables it and means "never force"). Stable scenes otherwise skip LLM and publish nothing.
 
    **Incident, 2026-08-23/25:** this defaulted to `0` and a home-office scene's coarse `hard_labels` (chair/clothing/desk/door/person/table) legitimately never changed turn to turn, so the gate correctly and deterministically read `stable_scene` on every single window for 44+ continuous hours — `orion:vision:events` went completely silent with no error anywhere in the pipeline (vision-host kept running inference the whole time; council kept ticking the whole time). The gate was working exactly as coded; it just had no ceiling. `600` bounds the worst case to comfortably inside the 900s staleness cutoff `orion/situational/context.py` uses to decide "stale" vs "live", well below the ~5.5min average cadence of genuine scene changes.
@@ -51,7 +52,7 @@ Live note (2026-09-24): the last 20 cam0 interpretations all had empty `uncertai
 |-----------|--------|
 | Narrative mentions person/activity; `person` not in `hard_labels` | Drop event candidate |
 | Activity verb without hard `person` | Drop event candidate |
-| Activity claim with hard `person` but caption-only support | Cap confidence at 0.4, tag `caption_inferred` |
+| Activity claim with hard `person` and captions in the window | Cap confidence at 0.4, tag `caption_inferred` (only on streams in `COUNCIL_CAPTION_STREAMS`; other streams have no captions here) |
 | LLM parse fails; `host_person_hits > 0` | Emit `person_presence` fallback (`parse_mode=host_fallback`, tag `host_detect`) |
 
 Choke point: `services/orion-vision-council/app/evidence_grounding.py`, wired via `_finalize_interpretation()` in `main.py`.
@@ -149,6 +150,8 @@ From repo root:
 PYTHONPATH=services/orion-vision-council:. pytest services/orion-vision-council/tests -q
 ```
 
-Key suites: `test_evidence_grounding.py`, `test_main_grounding_wiring.py` (intake/RPC parity via `_finalize_interpretation`).
+Key suites: `test_evidence_grounding.py`, `test_main_grounding_wiring.py` (intake/RPC parity via `_finalize_interpretation`), `test_caption_policy.py` (captions withheld outside `COUNCIL_CAPTION_STREAMS`).
+
+No eval harness exists for this service (`evals/` is absent).
 
 Design spec: `docs/plans/vision/2026-07-02-vision-grounded-pipeline-design.md`

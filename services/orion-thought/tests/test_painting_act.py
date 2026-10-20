@@ -1,7 +1,9 @@
 """A durable painting run is one `make` act (act ledger, rung 2).
 
-prepare opens it; produced closes 1; a terminal or a non-produced abandon closes 0;
-retries publish nothing. The published events are valid act grammar events.
+prepare opens it exactly once, when it first writes the attempt's plan (the open is
+covered against the step store in test_visual_steps.py); produced closes 1; a terminal
+or a non-produced abandon closes 0; retries publish nothing. The published events are
+valid act grammar events.
 """
 from __future__ import annotations
 
@@ -28,8 +30,9 @@ def _res(step: str, status: str, **kw) -> ReverieVisualStepResultV1:
 
 
 @pytest.mark.parametrize("step,result,expected", [
-    ("prepare", _res("prepare", "done"), ("open", None)),
-    ("prepare", _res("prepare", "retry", reason="x"), ("open", None)),
+    # Never "open" from a result: prepare_step opens once, on its first plan write.
+    ("prepare", _res("prepare", "done"), ("none", None)),
+    ("prepare", _res("prepare", "retry", reason="x"), ("none", None)),
     ("prepare", _res("prepare", "terminal", outcome="failed", reason="ineligible"), ("none", None)),
     ("prepare", _res("prepare", "terminal", outcome="already_satisfied", reason="x"), ("none", None)),
     # A replay on an attempt that already produced: terminal/produced must grade 1, not 0.
@@ -67,29 +70,33 @@ async def _drive(monkeypatch, step, result, enabled=True):
 
 
 @pytest.mark.asyncio
-async def test_prepare_opens_with_an_honest_expectation(monkeypatch):
-    events = await _drive(monkeypatch, "prepare", _res("prepare", "done"))
-    assert [e.event_kind for e in events] == ["act_opened"]
-    act = events[0].act
+async def test_open_has_an_honest_expectation_and_close_shares_its_act_id(monkeypatch):
+    bus = _Bus()
+    monkeypatch.setattr(visual_steps.settings, "thought_act_ledger_enabled", True, raising=False)
+    await visual_steps._publish_painting_open(bus, _req("prepare"))
+    opened = [GrammarEventV1.model_validate(env.payload) for ch, env in bus.sent if ch == "orion:grammar:event"]
+    assert [e.event_kind for e in opened] == ["act_opened"]
+    act = opened[0].act
     assert act.verb == "make" and act.actor == "thought.painting" and act.level == "deliberate"
     assert act.expect.signal_id == "artifact_produced"
     assert act.expect.horizon_sec == visual_steps.PAINTING_HORIZON_SEC and "deadline" in act.expect.basis
-    assert events[0].provenance.source_service == "orion-thought"
-
-
-@pytest.mark.asyncio
-async def test_produced_closes_one_and_same_act_id(monkeypatch):
-    opened = await _drive(monkeypatch, "prepare", _res("prepare", "done"))
+    assert opened[0].provenance.source_service == "orion-thought"
     closed = await _drive(monkeypatch, "caption", _res("caption", "done", outcome="produced", reason="ok"))
     assert [e.event_kind for e in closed] == ["act_closed"]
-    assert closed[0].act.act_id == opened[0].act.act_id
+    assert closed[0].act.act_id == act.act_id
     assert closed[0].act.outcome.value == 1.0
 
 
 @pytest.mark.asyncio
 async def test_retry_publishes_nothing_and_flag_off_publishes_nothing(monkeypatch):
     assert await _drive(monkeypatch, "caption", _res("caption", "retry", reason="needs_generate")) == []
-    assert await _drive(monkeypatch, "prepare", _res("prepare", "done"), enabled=False) == []
+    assert await _drive(monkeypatch, "prepare", _res("prepare", "done")) == []
+    assert await _drive(monkeypatch, "caption", _res("caption", "done", outcome="produced", reason="ok"),
+                        enabled=False) == []
+    monkeypatch.setattr(visual_steps.settings, "thought_act_ledger_enabled", False, raising=False)
+    bus = _Bus()
+    await visual_steps._publish_painting_open(bus, _req("prepare"))
+    assert bus.sent == []
 
 
 @pytest.mark.asyncio

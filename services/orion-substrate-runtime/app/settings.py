@@ -429,6 +429,13 @@ class Settings(BaseSettings):
         True,
         alias="ENABLE_ASK_ANSWERED_LISTENER",
     )
+    # Walkway rollups -> "seen on <day>" links for named people (app/walkway_seen_loop.py):
+    # reads complete vision_rollup day rows, links existing entity:vision_individual:* nodes
+    # to one day evidence node. false = no links written.
+    walkway_seen_enabled: bool = Field(True, alias="WALKWAY_SEEN_ENABLED")
+    walkway_seen_interval_sec: float = Field(1800.0, gt=0.0, alias="WALKWAY_SEEN_INTERVAL_SEC")
+    walkway_seen_streams: str = Field("walkway", alias="WALKWAY_SEEN_STREAMS")
+    walkway_seen_lookback_days: int = Field(3, ge=1, alias="WALKWAY_SEEN_LOOKBACK_DAYS")
     # Voluntary attention (ORION_ATTENTION_TOPDOWN_ENABLED) goal-context feed:
     # populates the in-memory active-goal store from GoalProposalV1 events.
     channel_goal_proposal: str = Field(
@@ -612,6 +619,15 @@ class Settings(BaseSettings):
     # "walkway".
     perception_walkway_stream_ids: str = Field(
         "walkway", alias="SUBSTRATE_PERCEPTION_WALKWAY_STREAM_IDS"
+    )
+    # Streams scored and logged (substrate_perception_* log line, per-stream
+    # baseline row) but feeding no node: neither the room node nor the
+    # walkway node (2026-10-17, the Ring doorbell -- event bursts would
+    # overwrite the walkway node's score and warm-up count). Checked before
+    # the walkway list. compose's ${...:-doorbell} turns an empty value back
+    # into "doorbell"; set a name no camera uses (e.g. "none") to disable.
+    perception_log_only_stream_ids: str = Field(
+        "doorbell", alias="SUBSTRATE_PERCEPTION_LOG_ONLY_STREAM_IDS"
     )
 
     # Health monitor -> orion-notify attention alerts. Edge-triggered (fires only

@@ -30,6 +30,11 @@ _VALID_HDBSCAN_METRICS = frozenset(
 
 
 class Settings(BaseSettings):
+    HUB_RETRO_ENABLED: bool = False
+    HUB_RETRO_ORIGIN: str = ""
+    HUB_RETRO_SOCKET: str = "/run/orion-retro/retro.sock"
+    HUB_RETRO_AUTH_DIR: str = "/run/orion-retro-auth"
+
     """Configuration for the Orion Hub service, loaded from environment variables."""
 
     model_config = SettingsConfigDict(
@@ -267,12 +272,20 @@ class Settings(BaseSettings):
         alias="HUB_AGENT_CLAUDE_FILE_READ_MAX_TOKENS",
         description="Passed to claude as CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS to cap single Read payloads.",
     )
+    HUB_AGENT_CLAUDE_MAX_OUTPUT_TOKENS: int = Field(
+        default=16384,
+        alias="HUB_AGENT_CLAUDE_MAX_OUTPUT_TOKENS",
+        description=(
+            "Passed to claude as CLAUDE_CODE_MAX_OUTPUT_TOKENS. The CLI reserves "
+            "min(this, 20000) + 13000 tokens before auto-compacting."
+        ),
+    )
     HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: float = Field(
-        default=70.0,
+        default=90.0,
         alias="HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
         description=(
             "Passed to claude as CLAUDE_AUTOCOMPACT_PCT_OVERRIDE. "
-            "Compact earlier than Claude Code default (~83%%). Set 0 to omit."
+            "CLI compacts at min((window - output cap) * pct, window - output cap - 13000). Set 0 to omit."
         ),
     )
 
@@ -371,7 +384,7 @@ class Settings(BaseSettings):
     # more traffic than this panel has any use for.
     VISION_FRAME_CACHE_ENABLED: bool = Field(default=True, alias="VISION_FRAME_CACHE_ENABLED")
     VISION_FRAME_CACHE_STREAM_IDS: str = Field(
-        default="carbon,walkway",
+        default="carbon,walkway,doorbell",
         alias="VISION_FRAME_CACHE_STREAM_IDS",
         description="Comma-separated stream_ids to cache the latest frame pointer for.",
     )
@@ -405,6 +418,13 @@ class Settings(BaseSettings):
     # days; docker-compose mounts it read-only at the same path.
     HUB_VISION_CROP_THUMB_DIR: str = Field(
         default="/mnt/telemetry/orion-vision-host/crop_thumbs", alias="HUB_VISION_CROP_THUMB_DIR"
+    )
+    # Walkway story pictures of the moment (scripts/motion_story_routes.py GET
+    # /api/vision/motion-stories/{story_id}/strip/{name}). orion-sql-writer
+    # writes up to 4 crops + one boxed full frame per published story here;
+    # docker-compose mounts it read-only at the same path.
+    HUB_VISION_STORY_STRIP_DIR: str = Field(
+        default="/mnt/telemetry/vision/story_strips", alias="HUB_VISION_STORY_STRIP_DIR"
     )
     # Memory confirmation loop (2026-10-06): Confirm / Revise / Reject on "Orion is asking" memory
     # cards (POST /api/asks/{id}/resolve -> attention_loop_outcome + orion:attention:loop_outcome).
@@ -706,7 +726,7 @@ class Settings(BaseSettings):
     # study material, labelled as the street (2026-10-15). Newest 3 distinct
     # captions from the last 6 h. Empty string = off. Never a room camera.
     HUB_CURIOSITY_STREET_STREAM_IDS: str = Field(
-        default="walkway", alias="HUB_CURIOSITY_STREET_STREAM_IDS"
+        default="walkway,doorbell", alias="HUB_CURIOSITY_STREET_STREAM_IDS"
     )
 
     # --- World-pulse Stage 1 concept-read loop ----------------------------
@@ -1038,6 +1058,15 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_ORION_DAY_CORRECTIONS_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_ORION_DAY_CORRECTIONS_ENABLED"
     )
+    # Curiosity focus (orion/curiosity/focus.py): the queue_curiosity_focus introspect tool
+    # (chat turns only) stores one pending question; the regular investigate line, on a
+    # writable graph, takes it once after every gate and shows it first; turn end stamps the
+    # disposition the run wrote (explored / set_aside:<reason>; none = unknown). Off = the tool
+    # refuses and no run takes a focus (outcomes of already-taken ones are still stamped).
+    # Needs services/orion-sql-db/manual_migration_curiosity_focus_request_v1.sql.
+    HUB_CURIOSITY_FOCUS_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_FOCUS_ENABLED"
+    )
 
     # --- Orion's Day: the daily letter (scripts/orion_day_letter.py) --------
     # Hub gathers yesterday (America/Denver), submits an admitted
@@ -1117,6 +1146,12 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED"
     )
+    # Personality graph read-back (spec rev 2, orion/personality/cue.py): what Orion keeps coming
+    # back to, in Orion's own words -- a record, not an instruction. Read from
+    # HUB_CURIOSITY_DURABLE_RUNS_URL /personality/frame into the curiosity kickoff (concurrently
+    # with the today fact, same 1.5 s deadline) and the endogenous outreach prompt (next to the
+    # situation block). No block on any failure or a stale/empty frame. scripts/personality_cue_reader.py.
+    HUB_PERSONALITY_CUE_ENABLED: bool = Field(default=True, alias="HUB_PERSONALITY_CUE_ENABLED")
     # Urgent curiosity runs (docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-runs.md):
     # a seeded investigation from the Hub button or orion:curiosity:urgent:request,
     # admitted at `urgent` GPU priority, bypassing the curiosity gates. Needs
@@ -1783,7 +1818,7 @@ class Settings(BaseSettings):
     )
     # Walkway cameras for the Street line. Empty string disables that line.
     ORION_SITUATION_STREET_STREAM_IDS: str = Field(
-        default="walkway", alias="ORION_SITUATION_STREET_STREAM_IDS"
+        default="doorbell,walkway", alias="ORION_SITUATION_STREET_STREAM_IDS"
     )
 
     @field_validator("ORION_SITUATION_WEATHER_LAT", "ORION_SITUATION_WEATHER_LON", mode="before")

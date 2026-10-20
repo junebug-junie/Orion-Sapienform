@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     COUNCIL_LLM_MAX_TOKENS: int = 1024
     COUNCIL_LLM_TIMEOUT_SEC: float = 90.0
     COUNCIL_STRUCTURED_OUTPUT_METHOD: str = "json_object_schema"
+    # Streams whose window captions may reach the council (comma list). Every
+    # other stream's captions, caption-derived soft_labels and caption_count
+    # are removed before the prompt, scene-summary fallback and grounding see
+    # the window (app/caption_policy.py). Default: room camera only. The
+    # walkway's caption model guesses motion from one still frame; its text
+    # already reaches Orion as its own labelled camera_caption row. Spec:
+    # docs/superpowers/specs/2026-10-20-walkway-followups-context-spec.md item 3.
+    COUNCIL_CAPTION_STREAMS: str = "cam0"
 
     # Foveal probe (docs/superpowers/specs/2026-08-12-perception-frontier-design.md's
     # "Foveal tier" -- rare, event-driven, richer-than-BLIP interpretation of the

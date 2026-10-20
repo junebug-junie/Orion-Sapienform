@@ -150,7 +150,7 @@ class FakeConn:
     def __init__(self, *, fail: set[str] | None = None, github: dict | None = None, chat: dict | None = CHAT_COMPACTOR,
                  corrections: list[dict] | None = None, temporal_day: dict | None = None,
                  read_links: list[dict] | None = None, prior_moves: list[dict] | None = None,
-                 immune: list[dict] | None = None):
+                 immune: list[dict] | None = None, walkway: dict | None = None):
         self.calls: list[tuple[str, tuple]] = []
         self.fail = fail or set()
         self.fetch_map = {
@@ -175,6 +175,7 @@ class FakeConn:
         self.github = github
         self.chat = chat
         self.temporal_day = temporal_day  # a temporal_self_day.day_json, or None (day not closed)
+        self.walkway = walkway  # a vision_rollup day row (stream_id, line, complete), or None
 
     async def fetch(self, sql: str, *args: Any):
         self.calls.append((sql, args))
@@ -193,6 +194,10 @@ class FakeConn:
             if "temporal_day" in self.fail:
                 raise RuntimeError("relation temporal_self_day does not exist")
             return FakeRecord({"day_json": self.temporal_day}) if self.temporal_day is not None else None
+        if sql == gather.WALKWAY_DAY_SQL:
+            if "walkway_day" in self.fail:
+                raise RuntimeError("relation vision_rollup does not exist")
+            return FakeRecord(self.walkway) if self.walkway is not None else None
         if sql == gather.JOURNAL_BY_ID_OR_REF_SQL:
             ref, written_after = args[1], args[2]
             row = self.chat if ref.startswith("chat_history_compactor_pass:") else self.github

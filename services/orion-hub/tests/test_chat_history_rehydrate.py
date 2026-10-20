@@ -68,6 +68,25 @@ def test_prompt_and_response_become_two_messages() -> None:
     ]
 
 
+def test_row_created_at_becomes_ts_on_both_halves() -> None:
+    """chat_history_log.created_at is naive UTC (server_default now(), DB in
+    Etc/UTC). It rides along as an ISO UTC "ts" so the harness can render
+    when each message was said; a row with no created_at gets no "ts"."""
+    from datetime import datetime
+
+    rows = [
+        {"prompt": "night night", "response": "Night night", "created_at": datetime(2026, 10, 16, 7, 47, 38)},
+        {"prompt": "untimed", "response": None},
+    ]
+    assert rows_to_history_messages(rows, max_turns=10) == [
+        {"role": "user", "content": "night night", "ts": "2026-10-16T07:47:38+00:00"},
+        {"role": "assistant", "content": "Night night", "ts": "2026-10-16T07:47:38+00:00"},
+        {"role": "user", "content": "untimed"},
+    ]
+    sql = inspect.getsource(fetch_recent_rows)
+    assert "SELECT prompt, response, created_at FROM chat_history_log" in sql
+
+
 def test_half_rows_contribute_one_message_each() -> None:
     """Hub writes prompt-only and response-only rows separately."""
     rows = [
@@ -307,3 +326,23 @@ def test_restored_history_feeds_continuity_messages(monkeypatch) -> None:
     contents = [m["content"] for m in warm]
     assert "tell me about Muse Glimmer" in contents
     assert "A 30B distill of Muse Spark." in contents
+
+
+def test_unified_turn_call_sites_keep_message_times() -> None:
+    """Source pins for the two Hub wiring points the unit tests cannot drive:
+    the websocket handler and the HTTP orion-mode route must ask
+    build_continuity_messages to keep "ts", and the websocket user append must
+    stamp one. Without these the RECENT CONVERSATION block silently loses its
+    times (live 2026-10-16 incident) while every other test stays green."""
+    import re
+    from pathlib import Path
+
+    scripts_dir = Path(rehydrate_mod.__file__).resolve().parent
+    ws = (scripts_dir / "websocket_handler.py").read_text()
+    unified = ws[ws.index("run_unified_turn(") : ws.index("with_biometrics=_with_biometrics", ws.index("run_unified_turn("))]
+    assert "keep_timestamps=True" in unified
+    assert re.search(r'"role": "user",\s*"content": transcript,\s*"ts": datetime\.now\(timezone\.utc\)', ws)
+
+    api = (scripts_dir / "api_routes.py").read_text()
+    route = api[api.index("continuity_messages = build_continuity_messages(") : api.index("frames = await execute_unified_turn(")]
+    assert "keep_timestamps=True" in route

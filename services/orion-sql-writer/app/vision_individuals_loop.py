@@ -40,6 +40,9 @@ def individuals_config(settings: Settings) -> IndividualsConfig:
         batch_rows=int(settings.vision_individuals_batch_rows),
         lookback_ceiling_sec=float(settings.vision_individuals_lookback_ceiling_sec),
         crop_retention_days=float(settings.vision_crop_retention_days),
+        crop_retention_keep_labels=tuple(
+            lbl.strip() for lbl in str(settings.vision_crop_retention_keep_labels).split(",")
+            if lbl.strip() and lbl.strip() != "0"),
         sighting_retention_days=float(settings.vision_sighting_retention_days),
         patio_present_sec=float(settings.vision_patio_present_sec),
         patio_grace_sec=float(settings.vision_patio_grace_sec),

@@ -275,6 +275,8 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[CuriosityRunState], Awaitable[
             # What recall searches for (the run's standing question). From the
             # checkpointed brief, so it survives a Hub restart.
             retrieval_query=brief.retrieval_query,
+            # The focus this run took, so Hub can hand it to the governor's task anchor.
+            focus=brief.focus,
         )
         result, meta = await timed_turn(deps.run_turn, request)
         if not result.ok or not result.text.strip():

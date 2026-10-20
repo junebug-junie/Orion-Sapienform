@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     # controller keeps refusing with a reason a retry cannot fix (config_unloadable, digest mismatch,
     # ...). /health and the state payload show it regardless; this only gates the card.
     controller_alert_enabled: bool = Field(True, alias="GPU_POOL_CONTROLLER_ALERT_ENABLED")
+    # Card-fault alert (runtime._check_fault_alerts): a card in swap fault longer than AFTER_SEC raises
+    # a CRITICAL card (orion-notify emails it at once), again every REALERT_SEC while still faulted,
+    # and an info card when it clears. 2026-10-16: gpu2 sat faulted 4 days and nobody was told.
+    # Self-repair (discovery's fault clear) acts within a minute, so 30 min means it really is stuck.
+    fault_alert_enabled: bool = Field(True, alias="GPU_POOL_FAULT_ALERT_ENABLED")
+    fault_alert_after_sec: float = Field(1800.0, ge=0, alias="GPU_POOL_FAULT_ALERT_AFTER_SEC")
+    fault_realert_sec: float = Field(21600.0, gt=0, alias="GPU_POOL_FAULT_REALERT_SEC")
     notify_base_url: str = Field("http://orion-athena-notify:7140", alias="NOTIFY_BASE_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
 

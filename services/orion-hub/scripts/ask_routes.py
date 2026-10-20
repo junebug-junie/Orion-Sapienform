@@ -720,7 +720,8 @@ def _read_thumb(path: Path) -> Optional[bytes]:
 @router.get("/api/vision/crop-thumbs/{thumb_id}")
 async def get_crop_thumb(thumb_id: str) -> Response:
     """One crop thumbnail by content hash. 400 for anything that is not a
-    64-char lowercase hex id; 404 when absent or pruned (vision-host keeps them 10 days)."""
+    64-char lowercase hex id; 404 when absent (vision-host keeps them forever by default
+    since 2026-10-20; a positive VISION_CROP_THUMB_RETENTION_DAYS prunes them)."""
     if not _THUMB_ID_RE.fullmatch(thumb_id or ""):
         raise HTTPException(status_code=400, detail="bad_thumb_id")
     path = _crop_thumb_dir() / f"{thumb_id}.jpg"

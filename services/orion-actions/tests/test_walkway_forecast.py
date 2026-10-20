@@ -86,6 +86,9 @@ def test_not_enough_days_is_said_with_real_numbers() -> None:
     assert seed["expectations_below_support"] == 1
     assert "I do not have enough days yet" in seed["lines"][0]
     assert "4 of the last 14 days" in seed["lines"][0]
+    # 2026-10-17: "nothing has come back on at least 5 different days" was composed into
+    # "the walkway has been empty on at least five occasions". The line now says what 5 is.
+    assert "a prediction needs the same thing to come back on at least 5 different days" in seed["lines"][0]
     assert "the black dog" not in json.dumps(seed["lines"])  # no guessing
 
 
@@ -143,22 +146,23 @@ def test_collect_unreadable_table_writes_nothing(monkeypatch) -> None:
     jobs, skips = asyncio.run(collect_walkway_jobs(
         dsn="x", stream_id="walkway", tz_name="America/Denver", now_utc=NOW,
         min_support_days=5, node="athena"))
-    assert jobs == [] and skips == ["expectations_unreadable"]
+    assert jobs == [] and skips == ["rollup_unreadable", "expectations_unreadable"]
 
 
 def test_collect_empty_street_writes_nothing(monkeypatch) -> None:
     monkeypatch.setattr(wf, "fetch_rows", _fake_fetch({
-        "walkway_grade": [], "walkway_forecast": [], "walkway_watch_days": [{"days": 0}],
+        "walkway_rollup_day": [], "walkway_grade": [], "walkway_forecast": [], "walkway_watch_days": [{"days": 0}],
     }))
     jobs, skips = asyncio.run(collect_walkway_jobs(
         dsn="x", stream_id="walkway", tz_name="America/Denver", now_utc=NOW,
         min_support_days=5, node="athena"))
     assert jobs == []
-    assert skips == ["grade_no_expectations_today", "forecast_no_sightings"]
+    assert skips == ["walkway_day_no_rollup", "grade_no_expectations_today", "forecast_no_sightings"]
 
 
 def test_collect_builds_both_with_distinct_dedupe_keys(monkeypatch) -> None:
     monkeypatch.setattr(wf, "fetch_rows", _fake_fetch({
+        "walkway_rollup_day": [],
         "walkway_grade": [_exp("individual:d1", "the black dog", 460, status="met")],
         "walkway_calibration": [],
         "walkway_forecast": [_exp("individual:d1", "the black dog", 460)],
@@ -167,7 +171,7 @@ def test_collect_builds_both_with_distinct_dedupe_keys(monkeypatch) -> None:
     jobs, skips = asyncio.run(collect_walkway_jobs(
         dsn="x", stream_id="walkway", tz_name="America/Denver", now_utc=NOW,
         min_support_days=5, node="athena"))
-    assert skips == []
+    assert skips == ["walkway_day_no_rollup"]
     kinds = [j.trigger.trigger_kind for j in jobs]
     assert kinds == ["walkway_grade", "walkway_forecast"]
     # grade is for local today (Thu 24), forecast for tomorrow (Fri 25)
@@ -240,3 +244,129 @@ def test_tick_collect_exception_is_a_bounded_read_failure() -> None:
         local_date="d", read_attempts={},
     ))
     assert done is False and skips == ["collect_failed"]
+
+
+# --- day / week / month from the rollup (2026-10-18) ------------------------------------------
+
+def _rollup_row(grain: str = "day", passings: int = 185) -> dict:
+    rollup = {
+        "rules_version": 2, "label": "2026-09-24", "grain": grain, "local": {"date": "2026-09-24", "year": 2026},
+        "complete": False, "covered_until": "2026-09-25T04:00:00+00:00",
+        "total": {"passings": passings, "distinct": 93, "sightings": 400},
+        "kinds": {"person": {"passings": 105, "distinct": 50, "sightings": 200}},
+        "named": {"Alex": {"times": ["15:31"], "sightings": 2, "individual_ids": ["secret-id"]}},
+        "individuals": {"secret-id": {"kind": "person"}},
+        "regulars": {"count": 3, "by_kind": {"person": 3}, "ids": ["x"]},
+        "camera": {"up_minutes": 1212, "expected_minutes": 1320, "status": "ok", "down_spans": ["13:00–14:00"]},
+        "captions": [{"at": "14:23", "text": "A dog on a leash.", "detector": ["dog"]}],
+        "stories": {"gate_passed": False, "checked": 8},
+    }
+    return {"grain": grain, "rollup": rollup, "line": f"Walkway Thu 24 Sep 2026: {passings} passings."}
+
+
+def test_day_job_is_built_from_the_rollup_and_hides_ids_and_closed_gate_stories(monkeypatch) -> None:
+    monkeypatch.setattr(wf, "fetch_rows", _fake_fetch({
+        "walkway_rollup_day": [_rollup_row()], "walkway_grade": [], "walkway_forecast": [],
+        "walkway_watch_days": [{"days": 0}],
+    }))
+    jobs, skips = asyncio.run(collect_walkway_jobs(
+        dsn="x", stream_id="walkway", tz_name="America/Denver", now_utc=NOW, min_support_days=5, node="athena"))
+    assert [j.trigger.trigger_kind for j in jobs] == ["walkway_day"]
+    job = jobs[0]
+    assert job.dedupe_key == "actions:journal:walkway_day:walkway:day:2026-09-24:athena"
+    seed = json.loads(job.trigger.prompt_seed)
+    assert seed["lines"] == ["Walkway Thu 24 Sep 2026: 185 passings."]
+    assert "secret-id" not in job.trigger.prompt_seed and "stories" not in seed["facts"]
+    assert seed["facts"]["captions"][0].startswith("camera caption logged 14:23")
+    assert resolve_policy("walkway_day").email_enabled is False
+    assert journal_mode_for_trigger(job.trigger) == "digest"
+
+
+def test_week_on_sunday_and_month_on_the_last_day(monkeypatch) -> None:
+    tables = {"walkway_rollup_day": [_rollup_row()], "walkway_rollup_week": [_rollup_row("week")],
+              "walkway_rollup_month": [_rollup_row("month")], "walkway_grade": [], "walkway_forecast": [],
+              "walkway_watch_days": [{"days": 0}]}
+    monkeypatch.setattr(wf, "fetch_rows", _fake_fetch(tables))
+    sunday_last = datetime(2026, 11, 1, 5, 30, tzinfo=timezone.utc)  # Sat 31 Oct 22:30 MDT -> last day
+    jobs, _ = asyncio.run(collect_walkway_jobs(
+        dsn="x", stream_id="walkway", tz_name="America/Denver", now_utc=sunday_last, min_support_days=5,
+        node="n"))
+    assert [j.trigger.trigger_kind for j in jobs] == ["walkway_day", "walkway_month"]
+    sunday = datetime(2026, 10, 26, 4, 30, tzinfo=timezone.utc)  # Sun 25 Oct 22:30 MDT
+    jobs, _ = asyncio.run(collect_walkway_jobs(
+        dsn="x", stream_id="walkway", tz_name="America/Denver", now_utc=sunday, min_support_days=5, node="n"))
+    assert [j.trigger.trigger_kind for j in jobs] == ["walkway_day", "walkway_week"]
+    assert jobs[1].dedupe_key.endswith(":week:2026-10-19:n")
+
+
+def test_guard_replaces_prose_with_an_invented_number_and_keeps_honest_prose() -> None:
+    from orion.journaler.schemas import JournalEntryDraftV1
+
+    seed = wf.build_rollup_seed("walkway_day", _rollup_row())
+    trigger = wf.build_walkway_trigger("walkway_day", seed, stream_id="walkway")
+    honest = JournalEntryDraftV1(mode="digest", title="The street today",
+                                 body="185 passings today, Alex at 15:31; the camera was down 13:00–14:00.")
+    kept, bad = wf.guard_walkway_draft(honest, trigger)
+    assert bad == [] and kept.body == honest.body
+    invented = JournalEntryDraftV1(mode="digest", title="Five quiet stretches",
+                                   body="The walkway has been empty on at least five occasions.")
+    fixed, bad = wf.guard_walkway_draft(invented, trigger)
+    assert "five" in bad
+    assert fixed.body == "Walkway Thu 24 Sep 2026: 185 passings."
+    assert fixed.title == trigger.summary
+    # Other journal kinds are never touched.
+    other = trigger.model_copy(update={"trigger_kind": "daily_summary"})
+    assert wf.guard_walkway_draft(invented, other) == (invented, [])
+
+
+# A day row as rules_version 1 wrote it (before people became a range, 2026-10-20).
+V1_DAY = {
+    "schema": "vision_rollup.v1", "rules_version": 1, "stream_id": "walkway", "grain": "day",
+    "period_start": "2026-10-16T06:00:00+00:00", "period_end": "2026-10-17T06:00:00+00:00",
+    "label": "2026-10-16", "tz": "America/Denver", "complete": True,
+    "covered_until": "2026-10-17T06:00:00+00:00",
+    "kinds": {"person": {"passings": 137, "distinct": 89, "sightings": 151},
+              "vehicle": {"passings": 40, "distinct": 12, "sightings": 60}},
+    "total": {"passings": 177, "distinct": 101, "sightings": 211}, "peak_at_once": {"person": 5, "vehicle": 3},
+    "camera": {"up_minutes": 1400, "expected_minutes": 1440, "status": "ok", "down_spans": [], "missing_spans": []},
+    "busiest": {"at": "12:00", "passings": 92, "peak_at_once": {"person": 5}}, "quietest": None,
+    "baseline": {"mean_passings": None, "periods": 0},
+}
+V1_LINE = ("Walkway Fri 16 Oct 2026: 177 passings (137 people, 40 vehicles) by 101 distinct; "
+           "busiest 12:00 (92, most at once 5 people).")
+RANGE_TEXT = "people: at least 5, at most 137 (the camera splits one person into several)"
+
+
+def test_rollup_seed_gives_people_only_as_a_range() -> None:
+    from orion.vision.walkway_rollup import bare_people_counts
+
+    seed = wf.build_rollup_seed("walkway_day", {"rollup": json.dumps(V1_DAY), "line": V1_LINE})
+    assert RANGE_TEXT in seed["lines"][0] and bare_people_counts(seed["lines"][0]) == []
+    facts = seed["facts"]
+    assert facts["kinds"]["person"] == {"at_least": 5, "at_most": 137,
+                                        "note": "the camera splits one person into several"}
+    assert facts["kinds"]["vehicle"] == {"passings": 40, "distinct": 12}
+    assert facts["total"] == {"passings_at_most": 177}
+    assert facts["busiest"] == {"at": "12:00", "passings_at_most": 92}
+    dumped = json.dumps(facts)
+    assert "89" not in dumped and "101" not in dumped  # person / total cluster counts never reach the entry
+
+
+def test_guard_refuses_a_bare_people_count_even_when_the_number_is_a_fact() -> None:
+    from orion.journaler.schemas import JournalEntryDraftV1
+
+    seed = wf.build_rollup_seed("walkway_day", {"rollup": json.dumps(V1_DAY), "line": V1_LINE})
+    trigger = wf.build_walkway_trigger("walkway_day", seed, stream_id="walkway")
+    bare = JournalEntryDraftV1(mode="digest", title="The street", body="137 people walked by today.")
+    fixed, bad = wf.guard_walkway_draft(bare, trigger)
+    assert bad == ["137 people"] and fixed.body == seed["lines"][0]
+    ranged = JournalEntryDraftV1(mode="digest", title="The street",
+                                 body="At least 5, at most 137 people walked by; 40 vehicles.")
+    assert wf.guard_walkway_draft(ranged, trigger) == (ranged, [])
+
+
+def test_days_watched_counts_frame_minutes_not_sightings_or_rollup_rows() -> None:
+    sql = " ".join(wf.WATCH_DAYS_SQL.split())
+    assert "FROM vision_scene_inventory" in sql and "vision_individual_sighting" not in sql
+    assert "vision_rollup" not in sql  # independent of how far the rollups were backfilled
+    assert "up_minutes >= %(min_up)s" in sql and wf.WATCHED_MIN_UP_MINUTES == 60

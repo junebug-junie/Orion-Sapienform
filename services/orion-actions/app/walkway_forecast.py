@@ -11,6 +11,19 @@ module turns those rows into two journal triggers a night:
                     unscorable -> unscored), plus a 14-day tally per subject.
   walkway_forecast  what I expect tomorrow and which of those I am least sure
                     about.
+  walkway_day       what the street held today, from the deterministic day
+                    rollup (vision_rollup, orion/vision/walkway_rollup.py).
+  walkway_week      the same for the week, on Sunday night.
+  walkway_month     the same for the month, on its last night.
+
+FACTS ONLY FROM ROWS (2026-10-18). On 10-17 the forecast entry said "the
+walkway has been empty on at least five occasions" with zero expectation rows
+behind it: the LLM turned "nothing has come back on at least 5 different days"
+into a claim about the street. Now every number a walkway entry may use is in
+its seed (the rollup's own counts for day/week/month), and ``guard_walkway_draft``
+replaces any composed entry that states a number the seed does not hold with the
+seed's plain template ``lines``. "Days watched" for the forecast counts days the
+camera actually delivered frames (scene-inventory minutes), not days with sightings.
 
 WHEN NOTHING IS WRITTEN, AND WHY. The journal has no "empty entry" shape, and a
 composed entry about nothing is exactly the empty-shell cognition AGENTS.md
@@ -40,6 +53,14 @@ from typing import Any, Awaitable, Callable, Iterable, Sequence
 from zoneinfo import ZoneInfo
 
 from orion.journaler import JournalTriggerV1
+from orion.vision.walkway_rollup import (
+    RANGE_KINDS,
+    SPLIT_NOTE,
+    bare_people_counts,
+    display_line,
+    person_count_range,
+    unsupported_numbers,
+)
 
 from .vision_pg import fetch_rows
 
@@ -98,12 +119,29 @@ GROUP BY subject_key
 ORDER BY subject_key
 """
 
-# Distinct local days on which the walkway saw anyone at all.
+# Local days in the window on which the camera actually delivered frames for at
+# least WATCHED_MIN_UP_MINUTES: minutes with a vision_scene_inventory row (the same
+# frame heartbeat the rollups' camera minutes use, read directly so the count does
+# not depend on how far the rollups have been backfilled). A day with the camera
+# down is not a day "watched", whatever was or was not seen.
+WATCHED_MIN_UP_MINUTES = 60
 WATCH_DAYS_SQL = """
-SELECT count(DISTINCT (started_at AT TIME ZONE %(tz)s)::date) AS days
-FROM vision_individual_sighting
-WHERE stream_id = %(stream_id)s
-  AND started_at > now() - make_interval(days => %(days)s)
+SELECT count(*) AS days FROM (
+  SELECT (observed_at AT TIME ZONE %(tz)s)::date AS d,
+         count(DISTINCT date_trunc('minute', observed_at)) AS up_minutes
+  FROM vision_scene_inventory
+  WHERE stream_id = %(stream_id)s
+    AND observed_at > now() - make_interval(days => %(days)s)
+  GROUP BY 1
+) per_day
+WHERE up_minutes >= %(min_up)s
+"""
+
+# One rollup row (vision_rollup, written by orion-sql-writer).
+ROLLUP_SQL = """
+SELECT grain, period_start, complete, covered_until, rollup, line
+FROM vision_rollup
+WHERE stream_id = %(stream_id)s AND grain = %(grain)s AND period_start = %(period_start)s
 """
 
 
@@ -204,9 +242,9 @@ def build_forecast_seed(
             "expectations_below_support": below_support,
             "lines": [
                 f"Tomorrow on the walkway I do not have enough days yet to expect "
-                f"anything. I have seen the street on {days_watched} of the last "
-                f"{WATCH_LOOKBACK_DAYS} days, and nothing has come back on at "
-                f"least {min_support_days} different days."
+                f"anything. My camera watched the street on {days_watched} of the last "
+                f"{WATCH_LOOKBACK_DAYS} days, and a prediction needs the same thing "
+                f"to come back on at least {min_support_days} different days."
             ],
         }
 
@@ -328,6 +366,132 @@ def build_grade_seed(
 
 
 # ---------------------------------------------------------------------------
+# Day / week / month (from the deterministic rollup)
+# ---------------------------------------------------------------------------
+
+ROLLUP_KIND_BY_GRAIN = {"day": "walkway_day", "week": "walkway_week", "month": "walkway_month"}
+# Kinds whose composed prose is checked against the seed (guard_walkway_draft).
+WALKWAY_GUARDED_KINDS = frozenset({"walkway_forecast", "walkway_grade", *ROLLUP_KIND_BY_GRAIN.values()})
+
+
+def _point_facts(point: Any) -> dict[str, Any] | None:
+    """Busiest / quietest child: its passings as an upper bound, people as a range."""
+    if not isinstance(point, dict):
+        return None
+    out: dict[str, Any] = {"at": point.get("at"), "passings_at_most": point.get("passings", 0)}
+    if point.get("usual") is not None:
+        out["usual_passings_at_most"] = point["usual"]
+    people = point.get("people")
+    if isinstance(people, dict) and "low" in people and "high" in people:
+        out["people"] = {"at_least": people["low"], "at_most": people["high"]}
+    peaks = {k: v for k, v in (point.get("peak_at_once") or {}).items() if k not in RANGE_KINDS}
+    if peaks:
+        out["most_at_once"] = peaks
+    return out
+
+
+def _baseline_facts(base: Any) -> dict[str, Any] | None:
+    if not isinstance(base, dict):
+        return None
+    return {"mean_passings_at_most": base.get("mean_passings"), "periods": base.get("periods")}
+
+
+def compact_rollup_facts(rollup: dict[str, Any]) -> dict[str, Any]:
+    """The rollup without per-individual maps and ids: what the entry may say."""
+    from orion.situational.street_material import label_camera_caption
+
+    cam = dict(rollup.get("camera") or {})
+    named = {
+        name: {k: v for k, v in (entry or {}).items() if k in ("times", "days", "sightings")}
+        for name, entry in (rollup.get("named") or {}).items()
+    }
+    # People are a range (2026-10-20): at least the most in one frame, at most the clusters.
+    # Their bare passings/distinct (cluster counts) never reach the entry.
+    kinds: dict[str, Any] = {}
+    for k, v in (rollup.get("kinds") or {}).items():
+        if k in RANGE_KINDS:
+            r = person_count_range(rollup, k)
+            if r:
+                kinds[k] = {"at_least": r["low"], "at_most": r["high"], "note": SPLIT_NOTE}
+        else:
+            kinds[k] = {"passings": v.get("passings", 0), "distinct": v.get("distinct", 0)}
+    reg = rollup.get("regulars") or {}
+    facts: dict[str, Any] = {
+        "period": rollup.get("label"),
+        "local": rollup.get("local"),
+        "complete": bool(rollup.get("complete")),
+        "covered_until": rollup.get("covered_until"),
+        # Passings include the people clusters, so the total is only an upper bound.
+        "total": {"passings_at_most": int((rollup.get("total") or {}).get("passings", 0) or 0)},
+        "kinds": kinds,
+        "excluded_not_counted": rollup.get("excluded"),
+        "named": named,
+        "unnamed_regulars": {"count": reg.get("count", 0), "by_kind": reg.get("by_kind", {})},
+        "busiest": _point_facts(rollup.get("busiest")),
+        "quietest": _point_facts(rollup.get("quietest")),
+        "usual_total": _baseline_facts(rollup.get("baseline")),
+        "camera": {k: cam.get(k) for k in ("up_minutes", "expected_minutes", "up_hours", "expected_hours",
+                                            "status", "down_spans", "missing_spans")},
+        "captions": [label_camera_caption(str(c.get("text") or ""), c.get("detector") or [], at=c.get("at"))
+                     for c in (rollup.get("captions") or [])],
+    }
+    stories = rollup.get("stories") or {}
+    if stories.get("gate_passed"):
+        facts["stories"] = {k: stories.get(k) for k in ("count", "by_kind", "sentences") if k in stories}
+    return facts
+
+
+def build_rollup_seed(kind: str, row: dict[str, Any]) -> dict[str, Any] | None:
+    rollup = row.get("rollup")
+    if isinstance(rollup, str):
+        rollup = json.loads(rollup)
+    if not isinstance(rollup, dict):
+        return None
+    # A row from before rules_version 2 stored a bare people count: re-rendered as a range.
+    line = display_line(row.get("line"), rollup)
+    if not line:
+        return None
+    return {
+        "kind": kind,
+        "for_date": str((rollup.get("local") or {}).get("date") or ""),
+        "period": rollup.get("label"),
+        "facts": compact_rollup_facts(rollup),
+        "lines": [line],
+        "rule": ("Every number in the entry must come from facts; hours the camera was down are not "
+                 "'nobody came'. People are a range: say 'at least N, at most M people', never one "
+                 "number of people (the camera splits one person into several)."),
+    }
+
+
+def guard_walkway_draft(draft: Any, trigger: JournalTriggerV1) -> tuple[Any, list[str]]:
+    """Phrase, never invent. For walkway kinds: if the composed title/body states a number the
+    seed does not hold, the body becomes the seed's template ``lines`` (and an offending title the
+    trigger summary). Returns (draft, unsupported numbers found)."""
+    if trigger.trigger_kind not in WALKWAY_GUARDED_KINDS or not trigger.prompt_seed:
+        return draft, []
+    try:
+        seed = json.loads(trigger.prompt_seed)
+    except ValueError:
+        return draft, []
+    lines = [str(x) for x in (seed.get("lines") or []) if str(x).strip()]
+    # Rollup entries: people are a range, so "79 people" is refused even though 79 is a fact
+    # (it is the top of the range, not a head count).
+    people = bare_people_counts if trigger.trigger_kind in ROLLUP_KIND_BY_GRAIN.values() else (lambda _t: [])
+    body_bad = unsupported_numbers(str(draft.body or ""), seed) + people(str(draft.body or ""))
+    title_bad = unsupported_numbers(str(draft.title or ""), seed) + people(str(draft.title or ""))
+    if not body_bad and not title_bad:
+        return draft, []
+    update: dict[str, Any] = {}
+    if body_bad and lines:
+        update["body"] = "\n\n".join(lines)
+    if title_bad:
+        update["title"] = trigger.summary
+    logger.warning("walkway_journal_guard kind=%s replaced=%s unsupported=%s", trigger.trigger_kind,
+                   ",".join(sorted(update)) or "none", ",".join((body_bad + title_bad)[:10]))
+    return (draft.model_copy(update=update) if update else draft), body_bad + title_bad
+
+
+# ---------------------------------------------------------------------------
 # Triggers
 # ---------------------------------------------------------------------------
 
@@ -343,8 +507,11 @@ def build_walkway_trigger(kind: str, seed: dict[str, Any], *, stream_id: str) ->
     for_date = str(seed.get("for_date") or "")
     if kind == "walkway_forecast":
         summary = f"Walkway forecast for {for_date}: what I expect to see on the street tomorrow."
-    else:
+    elif kind == "walkway_grade":
         summary = f"Walkway grade for {for_date}: what I expected today and what happened."
+    else:
+        span = {"walkway_day": "today", "walkway_week": "this week", "walkway_month": "this month"}[kind]
+        summary = f"Walkway {seed.get('period') or for_date}: what my outdoor camera counted on the street {span}."
     return JournalTriggerV1(
         trigger_kind=kind,  # type: ignore[arg-type]
         source_kind="scheduler",
@@ -379,6 +546,41 @@ async def collect_walkway_jobs(
     day_start = datetime.combine(today, time.min, tzinfo=tz)
     day_end = day_start + timedelta(days=1)
 
+    # Day always; week on Sunday night (ISO weeks end Sunday); month on its last night.
+    grains = ["day"]
+    if today.weekday() == 6:
+        grains.append("week")
+    if tomorrow.month != today.month:
+        grains.append("month")
+    for grain in grains:
+        if grain == "day":
+            start_local = today
+        elif grain == "week":
+            start_local = today - timedelta(days=today.weekday())
+        else:
+            start_local = today.replace(day=1)
+        period_start = datetime.combine(start_local, time.min, tzinfo=tz)
+        kind = ROLLUP_KIND_BY_GRAIN[grain]
+        rows = await fetch_rows(
+            dsn, ROLLUP_SQL,
+            {"stream_id": stream_id, "grain": grain, "period_start": period_start},
+            label=f"walkway_rollup_{grain}",
+        )
+        if rows is None:
+            skips.append("rollup_unreadable")
+            continue
+        seed = build_rollup_seed(kind, rows[0]) if rows else None
+        if seed is None:
+            skips.append(f"{kind}_no_rollup")
+            continue
+        jobs.append(
+            WalkwayJournalJob(
+                trigger=build_walkway_trigger(kind, seed, stream_id=stream_id),
+                audit_action=f"journal.{kind}",
+                dedupe_key=_dedupe_key(kind, stream_id, f"{grain}:{period_start.date().isoformat()}", node),
+            )
+        )
+
     grade_rows = await fetch_rows(
         dsn, GRADE_SQL,
         {"stream_id": stream_id, "day_start": day_start, "day_end": day_end},
@@ -386,8 +588,8 @@ async def collect_walkway_jobs(
     )
     if grade_rows is None:
         # Table missing or unreadable. The forecast reads the same table, so
-        # there is nothing more to try tonight.
-        return [], ["expectations_unreadable"]
+        # there is nothing more to try tonight (the rollup jobs above stand).
+        return jobs, skips + ["expectations_unreadable"]
     if grade_rows:
         calibration = await fetch_rows(
             dsn, CALIBRATION_SQL,
@@ -415,7 +617,7 @@ async def collect_walkway_jobs(
     )
     watch = await fetch_rows(
         dsn, WATCH_DAYS_SQL,
-        {"stream_id": stream_id, "tz": tz_name, "days": WATCH_LOOKBACK_DAYS},
+        {"stream_id": stream_id, "tz": tz_name, "days": WATCH_LOOKBACK_DAYS, "min_up": WATCHED_MIN_UP_MINUTES},
         label="walkway_watch_days",
     )
     if forecast_rows is None:
@@ -451,7 +653,8 @@ def jobs_summary(jobs: Sequence[WalkwayJournalJob]) -> str:
 # given up -- bounded, so a missing migration costs ~3 log lines, not a
 # 45-second loop until midnight.
 MAX_READ_ATTEMPTS = 3
-READ_FAILURE_SKIPS = frozenset({"expectations_unreadable", "forecast_unreadable", "collect_failed"})
+READ_FAILURE_SKIPS = frozenset({"expectations_unreadable", "forecast_unreadable", "collect_failed",
+                                "rollup_unreadable"})
 
 
 async def run_walkway_tick(

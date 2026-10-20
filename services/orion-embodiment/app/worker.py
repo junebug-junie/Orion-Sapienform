@@ -17,7 +17,7 @@ from orion.autonomy.fcc_env import expand_env_path, load_fcc_env
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.codec import OrionCodec
-from orion.core.bus.resilience import publish_with_reconnect
+from orion.core.bus.resilience import publish_with_reconnect, run_subscription
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 from orion.embodiment import aitown_client
 from orion.embodiment.arbiter import ArbiterState, decide
@@ -345,21 +345,17 @@ class EmbodimentWorker:
         await self._bus.close()
 
     async def _consume_loop(self) -> None:
-        channel = self._settings.channel_intent
-        async with self._bus.subscribe(channel) as pubsub:
-            while not self._stop.is_set():
-                try:
-                    msg = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0), timeout=1.2
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                if not msg or msg.get("type") not in ("message", "pmessage"):
-                    continue
-                try:
-                    await self._handle(msg)
-                except Exception:
-                    logger.exception("embodiment_handle_failed")
+        # Resubscribes with backoff after a Redis drop instead of ending the loop.
+        await run_subscription(
+            self._bus, self._settings.channel_intent, self._handle_logged,
+            stop_event=self._stop, name="embodiment-intent",
+        )
+
+    async def _handle_logged(self, raw_msg: dict) -> None:
+        try:
+            await self._handle(raw_msg)
+        except Exception:
+            logger.exception("embodiment_handle_failed")
 
     async def _handle(self, raw_msg: dict) -> None:
         decoded = self._bus.codec.decode(raw_msg.get("data"))

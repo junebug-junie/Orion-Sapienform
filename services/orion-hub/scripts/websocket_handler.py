@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -30,6 +31,7 @@ from scripts.chat_history import (
     publish_chat_turn,
     select_reasoning_trace_for_history,
 )
+from scripts.chat_history_rehydrate import append_live_assistant_reply, trim_history_window
 from scripts.social_room import (
     apply_social_memory_summary_to_payload,
     hub_direct_room_identity,
@@ -1363,7 +1365,16 @@ async def websocket_endpoint(websocket: WebSocket):
             turns = int(data.get("context_turns") or getattr(settings, "HUB_CONTEXT_TURNS", 10))
             prompt_with_ctx = transcript
             # IMPORTANT: store the raw user message for next turn
-            history.append({"role": "user", "content": transcript})
+            # "ts" = when Hub received it (UTC). Rendered as a local time in
+            # the harness RECENT CONVERSATION block so Orion can tell order
+            # and elapsed time apart (orion/harness/prefix.py).
+            history.append(
+                {
+                    "role": "user",
+                    "content": transcript,
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                }
+            )
 
 
             trace_id = str(uuid.uuid4())
@@ -1533,6 +1544,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 history=history,
                                 latest_user_prompt=transcript,
                                 turns=turns,
+                                keep_timestamps=True,
                             ),
                             with_biometrics=_with_biometrics,
                             biometrics_cache=biometrics_cache,
@@ -1616,6 +1628,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         session_id=session_id,
                         lane=client_mode,
                     )
+                # Orion's reply joins history (see append_live_assistant_reply).
+                append_live_assistant_reply(history, extract_unified_turn_final_text(orion_turn_frames))
+                trim_history_window(history, turns)
                 continue
 
             # Build outbound chat request through shared builder to keep WS/HTTP identical
@@ -2443,15 +2458,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
 
             if orion_response_text and not workflow_metadata_only:
-                history.append({"role": "assistant", "content": orion_response_text})
+                append_live_assistant_reply(history, orion_response_text)
 
-            # Keep history bounded (system + last 2*turns messages)
-            try:
-                keep_msgs = 1 + (2 * max(0, int(turns)))
-                if len(history) > keep_msgs:
-                    history[:] = history[:1] + history[-(2 * turns):]
-            except Exception:
-                pass
+            # Keep history bounded (system + last 2*turns messages). Shared
+            # with the unified lane above; also fixes the old inline slice,
+            # which for turns=0 re-added the whole list instead of bounding.
+            trim_history_window(history, turns)
             await websocket.send_json(await _with_biometrics({"state": "idle"}, cache=biometrics_cache))
 
     except WebSocketDisconnect:

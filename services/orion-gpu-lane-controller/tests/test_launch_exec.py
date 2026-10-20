@@ -81,8 +81,20 @@ class FakeDocker:
         self.never_start = set()           # `up` exits non-zero
         self.stop_fails = set()            # `stop` exits non-zero
         self.calls: list[dict] = []
+        # GPU memory evidence (`docker top` / `docker exec <id> nvidia-smi`), per compose service.
+        # A service missing from `pids` makes `docker top` fail (unknown).
+        self.pids: dict[str, list[int]] = {}
+        self.gpu_mib: dict[int, float] = {}    # host PID -> MiB, what nvidia-smi lists
+        self.smi_fails = False                 # `nvidia-smi` exits non-zero in every container
+        self.smi_fails_in: set[str] = set()    # ... only in these services' containers
+        self.smi_own_only = False              # PID namespace: each container sees only its own PIDs
+        self.smi_raw: str | None = None        # verbatim nvidia-smi stdout instead of gpu_mib
+        self.on_stop = []                      # callbacks(service) after a successful stop
+        self.reads: list[list[str]] = []
 
     def run(self, command, *, cwd=None, env=None):
+        if command[:2] in (["docker", "top"], ["docker", "exec"]):
+            return self._read(command)
         assert command[:2] == ["docker", "compose"], command
         profile = command[command.index("--profile") + 1] if "--profile" in command else None
         compose = command[command.index("-f") + 1]
@@ -104,6 +116,8 @@ class FakeDocker:
                 return subprocess.CompletedProcess(command, 1, "", "no")
             if service in self.state:
                 self.state[service] = "exited"
+            for callback in self.on_stop:
+                callback(service)
             return subprocess.CompletedProcess(command, 0, "", "")
         if verb == "up":
             if service in self.never_start:
@@ -111,6 +125,28 @@ class FakeDocker:
             self.state[service] = "running"
             return subprocess.CompletedProcess(command, 0, "", "")
         raise AssertionError(f"unexpected compose verb {verb}")
+
+    def _read(self, command):
+        self.reads.append(list(command))
+        service = command[2].removesuffix("-id")
+        if self.state.get(service) != "running":
+            return subprocess.CompletedProcess(command, 1, "", "not running")
+        if command[1] == "top":
+            assert command[3:] == ["-eo", "pid"], command
+            if service not in self.pids:
+                return subprocess.CompletedProcess(command, 1, "", "no such container")
+            return subprocess.CompletedProcess(command, 0, "PID\n" + "".join(f"{p}\n" for p in self.pids[service]), "")
+        assert command[3:] == ["nvidia-smi", "--query-compute-apps=pid,used_memory",
+                               "--format=csv,noheader,nounits"], command
+        if self.smi_fails or service in self.smi_fails_in:
+            return subprocess.CompletedProcess(command, 127, "", "nvidia-smi: not found")
+        if self.smi_raw is not None:
+            return subprocess.CompletedProcess(command, 0, self.smi_raw, "")
+        visible = self.gpu_mib
+        if self.smi_own_only:
+            visible = {p: m for p, m in visible.items() if p in self.pids.get(service, [])}
+        out = "".join(f"{pid}, {mib:.0f}\n" for pid, mib in visible.items()) or "No running processes found\n"
+        return subprocess.CompletedProcess(command, 0, out, "")
 
     def mutations(self):
         return [(c["verb"], c["service"]) for c in self.calls]
@@ -370,8 +406,208 @@ def test_seat_and_evicted_both_running_is_a_failure_not_a_noop(world):
     world.write(example_a(real_config()))
     world.start(running=["atlas-fast2", "atlas-vision4"])
     sink = world.handle(world.payload("vision4", ["gpu4"], profile=VISION_PROFILE))
-    assert sink[-1].reason == "seat_and_evicted_both_running"
+    # No GPU memory evidence (docker top fails) -> refuse, never guess.
+    assert sink[-1].status == "failed"
+    assert sink[-1].reason == "seat_and_evicted_both_running:gpu_memory_unknown"
     assert world.docker.mutations() == []
+
+
+# --- seat and evicted both running: the 2026-10-16 gpu2 incident ---------------------------------
+# A post-pull rebuild restarted diffusion-host beside the running agent-gpu2 seat. llama-server held
+# 23828 MiB of gpu2 (live, 2026-10-20); diffusion's FLUX pipeline "loaded" into CPU RAM (offload) and
+# held ~nothing, its honest /ready saying no (no room on the card). The controller refused every
+# load with seat_and_evicted_both_running and the card stayed faulted 4 days.
+SEAT_PID, DIFF_PID, LLAMA_MIB = 3846941, 26001, 23828.0
+
+
+def incident(world, *, diffusion_mib=310.0, diffusion_ready=False, seat_mib=LLAMA_MIB):
+    world.write(example_b(real_config()))
+    world.start(running=["atlas-agent-burst", "diffusion-host"])
+    d = world.docker
+    d.pids = {"atlas-agent-burst": [3846498, SEAT_PID], "diffusion-host": [DIFF_PID]}
+    d.gpu_mib = {SEAT_PID: seat_mib, DIFF_PID: diffusion_mib, 3932600: 872.0}   # + world-model
+    if not diffusion_ready:
+        world.http.never_ready.add("diffusion-host")
+        # A fresh diffusion-host on a free card is ready again.
+        d.on_stop.append(lambda service: service == "atlas-agent-burst"
+                         and world.http.never_ready.discard("diffusion-host"))
+    return d
+
+
+def test_incident_load_stops_the_empty_diffusion_and_keeps_the_seat(world):
+    d = incident(world)
+    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], profile=DEFAULT_27B))
+    assert sink[-1].status == "succeeded", sink[-1].reason
+    # Only the empty side is stopped; the seat holding the card is never touched, never drained.
+    assert d.mutations() == [("stop", "diffusion-host")]
+    assert not any(post[0] == "atlas-agent-burst" for post in world.http.posts)
+    assert sink[-1].observed["agent-gpu2"] == "running" and sink[-1].observed["diffusion"] == "exited"
+
+
+def test_incident_unload_stops_the_empty_diffusion_then_unloads_as_usual(world):
+    d = incident(world)
+    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], action="unload", reason="owner_reclaim"))
+    assert sink[-1].status == "succeeded", sink[-1].reason
+    # Empty diffusion out, seat stopped by the ordinary (idle-checked) unload, diffusion restarted.
+    assert d.mutations() == [("stop", "diffusion-host"), ("stop", "atlas-agent-burst"), ("up", "diffusion-host")]
+    assert sink[-1].observed["agent-gpu2"] == "exited" and sink[-1].observed["diffusion"] == "running"
+
+
+@pytest.mark.parametrize("action", ["load", "unload"])
+def test_a_role_holding_real_gpu_memory_is_never_stopped(world, action):
+    # diffusion mid-generation (20 GB) beside the seat: both sides hold the card -> refuse, no stop.
+    d = incident(world, diffusion_mib=20480.0)
+    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], action=action, profile=DEFAULT_27B
+                                      if action == "load" else None))
+    assert sink[-1].status == "failed"
+    assert sink[-1].reason == "seat_and_evicted_both_running:both_hold_gpu_memory"
+    assert d.mutations() == []
+
+
+def test_the_seat_is_the_empty_side_only_the_seat_is_stopped(world):
+    # Mirror case: the seat process holds nothing, diffusion holds the card; unload wants diffusion.
+    d = incident(world, diffusion_mib=20480.0, diffusion_ready=True, seat_mib=0.0)
+    world.http.never_ready.add("atlas-agent-burst")
+    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], action="unload"))
+    assert sink[-1].status == "succeeded", sink[-1].reason
+    assert d.mutations() == [("stop", "atlas-agent-burst")]   # diffusion (20 GB) never stopped
+
+
+def test_an_empty_side_that_says_ready_is_not_stopped(world):
+    # Offloaded diffusion idles at ~0 MiB and can be really ready: memory alone is not "empty".
+    d = incident(world, diffusion_ready=True)
+    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], profile=DEFAULT_27B))
+    assert sink[-1].reason == "seat_and_evicted_both_running:empty_side_ready:diffusion"
+    assert d.mutations() == []
+
+
+@pytest.mark.parametrize("setup, reason", [
+    (lambda d: setattr(d, "smi_fails", True), "gpu_memory_unknown"),
+    (lambda d: setattr(d, "smi_raw", f"{SEAT_PID}, [N/A]\n"), "gpu_memory_unknown"),
+    (lambda d: d.pids.pop("diffusion-host"), "gpu_memory_unknown"),
+    # A blind nvidia-smi (sees no processes) must not read as "diffusion is empty".
+    (lambda d: setattr(d, "gpu_mib", {}), "neither_holds_gpu_memory"),
+])
+def test_no_trustworthy_gpu_evidence_refuses(world, setup, reason):
+    d = incident(world)
+    setup(d)
+    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], profile=DEFAULT_27B))
+    assert sink[-1].status == "failed" and sink[-1].reason == f"seat_and_evicted_both_running:{reason}"
+    assert d.mutations() == []
+
+
+def test_each_side_is_judged_by_its_own_containers_view(world):
+    # nvidia-smi limited to its own PID namespace: the seat container cannot see diffusion and
+    # vice versa. Merged views still prove the seat holds and diffusion is empty.
+    d = incident(world)
+    d.smi_own_only = True
+    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], profile=DEFAULT_27B))
+    assert sink[-1].status == "succeeded" and d.mutations() == [("stop", "diffusion-host")]
+    execs = [r[2] for r in d.reads if r[1] == "exec"]
+    assert set(execs) == {"atlas-agent-burst-id", "diffusion-host-id"}
+
+
+def test_a_hidden_holder_is_still_seen_by_its_own_view(world):
+    # diffusion holds 20 GB, but the seat container's nvidia-smi cannot see it. Its own view does:
+    # both hold -> refuse. (One shared listing would have read diffusion as empty.)
+    d = incident(world, diffusion_mib=20480.0)
+    d.smi_own_only = True
+    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], profile=DEFAULT_27B))
+    assert sink[-1].reason == "seat_and_evicted_both_running:both_hold_gpu_memory"
+    assert d.mutations() == []
+
+
+def test_no_nvidia_smi_in_the_empty_sides_container_refuses(world):
+    d = incident(world)
+    d.smi_fails_in.add("diffusion-host")
+    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], profile=DEFAULT_27B))
+    assert sink[-1].reason == "seat_and_evicted_both_running:gpu_memory_unknown"
+    assert d.mutations() == []
+
+
+def test_empty_side_with_work_in_flight_is_not_stopped(world):
+    d = incident(world)
+    world.http.stuck_in_flight.add("diffusion-host")
+    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], profile=DEFAULT_27B))
+    assert sink[-1].reason == "seat_and_evicted_both_running:empty_side_in_flight:diffusion"
+    assert d.mutations() == []
+
+
+def test_mirror_load_stops_the_empty_seat_then_loads_as_usual(world):
+    # load intent, the seat process holds nothing, diffusion holds the card: the empty seat is
+    # stopped by the resolver, then the ordinary load drains + stops diffusion and starts the seat.
+    d = incident(world, diffusion_mib=20480.0, diffusion_ready=True, seat_mib=0.0)
+    world.http.never_ready.add("atlas-agent-burst")
+    d.on_stop.append(lambda service: service == "atlas-agent-burst"
+                     and world.http.never_ready.discard("atlas-agent-burst"))
+    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], profile=DEFAULT_27B))
+    assert sink[-1].status == "succeeded", sink[-1].reason
+    assert d.mutations() == [("stop", "atlas-agent-burst"), ("stop", "diffusion-host"), ("up", "atlas-agent-burst")]
+
+
+def test_mirror_load_failure_rolls_back_to_diffusion_and_names_the_resolver_stop(world):
+    d = incident(world, diffusion_mib=20480.0, diffusion_ready=True, seat_mib=0.0)
+    world.http.never_ready.add("atlas-agent-burst")    # the fresh seat never comes up either
+    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], profile=DEFAULT_27B))
+    assert sink[-1].status == "failed" and sink[-1].restored is True
+    assert sink[-1].reason == "model_readiness_timeout:agent-gpu2:resolved=agent-gpu2"
+    assert d.mutations() == [("stop", "atlas-agent-burst"), ("stop", "diffusion-host"), ("up", "atlas-agent-burst"),
+                             ("stop", "atlas-agent-burst"), ("up", "diffusion-host")]
+
+
+def test_unload_on_a_busy_seat_after_the_resolver_says_so(world):
+    d = incident(world)
+    world.http.busy.add("atlas-agent-burst")
+    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], action="unload"))
+    assert sink[-1].status == "failed"
+    assert sink[-1].reason == "upstream_not_idle:agent-gpu2:resolved=diffusion"
+    assert d.mutations() == [("stop", "diffusion-host")]   # the seat (busy, 24 GB) is never stopped
+
+
+def test_pids_from_every_container_of_a_role_are_summed(world):
+    d = incident(world, seat_mib=0.0)
+    world.http.never_ready.add("atlas-agent-burst")
+    # two diffusion containers (a scaled service): 1.5 GB + 1.5 GB = 3 GB > the 2 GB empty limit
+    d.state["diffusion-host"] = "running"
+    real_run = d.run
+
+    def run(command, *, cwd=None, env=None):
+        if command[:2] == ["docker", "compose"] and "ps" in command and "diffusion-host" in command:
+            out = ('{"ID":"diffusion-host-id","Name":"a","State":"running"}\n'
+                   '{"ID":"diffusion-host-b-id","Name":"b","State":"running"}')
+            return subprocess.CompletedProcess(command, 0, out, "")
+        return real_run(command, cwd=cwd, env=env)
+    d.run = run
+    d.state["diffusion-host-b"] = "running"
+    d.pids["diffusion-host-b"] = [DIFF_PID + 1]
+    d.gpu_mib.update({DIFF_PID: 1536.0, DIFF_PID + 1: 1536.0})
+    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], action="unload"))
+    # diffusion side = 3 GB (holds), seat = 0 -> the seat is the empty side
+    assert sink[-1].status == "succeeded", sink[-1].reason
+    assert d.mutations()[0] == ("stop", "atlas-agent-burst")
+
+
+def test_resolver_off_refuses_as_before(world, monkeypatch):
+    monkeypatch.setattr(settings, "GPU_LANE_RESOLVE_BOTH_RUNNING_ENABLED", False)
+    d = incident(world)
+    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], profile=DEFAULT_27B))
+    assert sink[-1].reason == "seat_and_evicted_both_running"
+    assert d.mutations() == [] and d.reads == []
+
+
+def test_resolver_checks_the_fence_before_it_stops_anything(world):
+    d = incident(world)
+    plan = fence.resolve(world.cfg, role="agent-gpu2", action="load", cards=["gpu2"], digest=None)
+
+    async def stale(intent, require_drained=True):
+        raise RuntimeError("stale_generation")
+
+    async def go():
+        snaps = await lx._observe_all(plan)
+        await lx.resolve_both_running(plan, snaps, {"agent-gpu2", "diffusion"}, lx.Intent("x", 1), stale)
+    with pytest.raises(RuntimeError, match="stale_generation"):
+        asyncio.run(go())
+    assert d.mutations() == []
 
 
 def test_evicted_role_on_another_actuator_is_a_named_refusal(world):

@@ -1,11 +1,11 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 747,
+  "metric_count": 748,
   "_last_change": {
     "change_count": 1,
     "high_severity_count": 1,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-biometrics/orion:grammar:event (all_producers: \u2026me', 'orion-vision-frame\u2026 -> \u2026me', 'orion-thought', 'orion-vision-frame\u2026)"
+      "high   routing_changed metric://bus_channel/orion-vision-council/orion:vision:events (all_producers: ['orion-vision-council'] -> ['orion-vision-council', 'orion-vision-window'])"
     ]
   },
   "definitions": {
@@ -1905,6 +1905,17 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-harness-governor/orion:introspect:queue_curiosity_focus:request": {
+      "schema_id": "IntrospectRequestV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-harness-governor/orion:introspect:record_correction:request": {
       "schema_id": "IntrospectRequestV1",
       "all_producers": [
@@ -3474,7 +3485,8 @@
     "metric://bus_channel/orion-vision-council/orion:vision:events": {
       "schema_id": "VisionEventPayload",
       "all_producers": [
-        "orion-vision-council"
+        "orion-vision-council",
+        "orion-vision-window"
       ],
       "declared_consumers": [
         "orion-vision-scribe"

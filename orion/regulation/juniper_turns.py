@@ -30,6 +30,26 @@ JUNIPER_IDLE_MINUTES_SQL = (
 )
 
 
+# When a Juniper turn STARTED, for readers that ask "did she speak by time T". chat_history_log
+# is written only after Orion finishes answering (live 2026-10-16: 1 to 41 minutes after she sent
+# the turn), and never for a turn that errored, so its created_at is the wrong clock for that
+# question. The hub's unified turn records its start first, before any work that can fail: the
+# cockpit ``ingress`` hop (orion/hub/turn_orchestrator.py -> begin_cockpit_timeline, seq 0),
+# persisted by orion-sql-writer into cockpit_turn_sighting (ts = the hop's own UTC timestamp).
+# Every unified turn has one, Orion's own internal turns too (outreach, reading, curiosity), so
+# Juniper's are the ones a hub client surface sent: only the browser client sets
+# ``surface_context`` on a turn (static/js/app.js typed + spoken, thought-process.js), and the
+# turn orchestrator copies it into the ingress raw only when present. Live 2026-10-16, 10 days:
+# 37 ingress hops carried it and all 37 were Juniper's logged turns; none of the 1,100+
+# internal-turn hops did. Known false positive: scripts/trace_hub_skill_runner_e2e.py sends
+# surface_context over the hub WebSocket, so an operator smoke run reads as Juniper (its logged
+# row already did under JUNIPER_TURN_PREDICATE). SQL fragment over cockpit_turn_sighting
+# (unqualified stage/seq/raw columns).
+JUNIPER_INGRESS_PREDICATE = (
+    "stage = 'ingress' AND seq = 0 AND raw->'surface_context' IS NOT NULL"
+)
+
+
 def is_juniper_turn(payload: Mapping[str, Any] | None) -> bool:
     """The same rule for a ``chat.history.turn`` bus payload (``ChatHistoryTurnV1`` dict)."""
     if not payload:
@@ -42,4 +62,4 @@ def is_juniper_turn(payload: Mapping[str, Any] | None) -> bool:
     return not (unsolicited is True or str(unsolicited).lower() == "true")
 
 
-__all__ = ["JUNIPER_IDLE_MINUTES_SQL", "JUNIPER_TURN_PREDICATE", "is_juniper_turn"]
+__all__ = ["JUNIPER_IDLE_MINUTES_SQL", "JUNIPER_INGRESS_PREDICATE", "JUNIPER_TURN_PREDICATE", "is_juniper_turn"]

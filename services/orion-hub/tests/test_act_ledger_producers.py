@@ -52,7 +52,7 @@ async def test_chat_reply_opens_a_say_act_expecting_juniper():
     act = ev.act
     assert (act.verb, act.actor, act.object_ref) == ("say", "hub.chat_reply", "juniper")
     assert act.expect.signal_id == "juniper_replied" and act.expect.horizon_sec == JUNIPER_REPLY_HORIZON_SEC
-    assert "median gap" in act.expect.basis
+    assert "median time" in act.expect.basis and "turn start" in act.expect.basis
 
 
 @pytest.mark.asyncio
@@ -130,12 +130,23 @@ async def test_read_failure_closes_only_when_no_retry_is_scheduled(monkeypatch):
 
     obj = pipe.WorldPulseReadPipeline.__new__(pipe.WorldPulseReadPipeline)
     obj._bus = _Bus()
+    started = {"work_started": True, "history": [{"event": "run.started", "generated_at": "2026-10-16T15:00:00Z"}]}
+
+    async def open_act():
+        obj._note_read_state("seed-9", started)
+        await obj._open_read_act(_seed())
+
+    await open_act()
     await obj._read_act_failed(_seed(), SimpleNamespace(retry_scheduled=True), "transient")
-    assert obj._bus.events() == [], "a retried seed keeps its act open"
+    assert [e.event_kind for e in obj._bus.events()] == ["act_opened"], "a retried seed keeps its act open"
     await obj._read_act_failed(_seed(), SimpleNamespace(retry_scheduled=False), "no_read_evidence")
+    await open_act()
     await obj._read_act_failed(_seed(), None, "empty_generation")
-    closes = [e.act.outcome.value for e in obj._bus.events()]
+    closes = [e.act.outcome.value for e in obj._bus.events() if e.event_kind == "act_closed"]
     assert closes == [0.0, 0.0]
+    # A close for a read this process never opened (work never started) publishes nothing.
+    await obj._read_act_failed(_seed(), None, "turn_deferred:reading_admission:deadline")
+    assert len(obj._bus.events()) == 4
 
 
 def test_read_act_opens_only_after_refusal_checks():
@@ -144,10 +155,10 @@ def test_read_act_opens_only_after_refusal_checks():
     from scripts import world_pulse_read_pipeline as pipe
 
     src = inspect.getsource(pipe.WorldPulseReadPipeline._read_claimed)
-    opened = src.index("publish_read_opened(")
+    opened = src.index("self._open_read_act(seed)")
     for refusal in ("bad_url", "skipped_index_url", "skipped_reader_blocked"):
         assert src.index(refusal) < opened, refusal
-    assert src.index("publish_read_closed(self._bus, seed, produced=True") > src.index('"stage1_completed"')
+    assert src.index("_close_read_act(seed, produced=True") > src.index('"stage1_completed"')
 
 
 @pytest.mark.asyncio

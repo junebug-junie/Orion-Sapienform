@@ -22,11 +22,13 @@ handed, so a no-embed-zone box structurally cannot get one -- the host writes
 a small JPEG (``THUMB_MAX_SIDE`` px, quality ``THUMB_QUALITY``) named by the
 sha256 of its bytes under ``VISION_CROP_THUMB_DIR`` and returns
 ``thumb_ref="thumb:<sha256>"`` on the object. At most one thumbnail per
-stream per ``VISION_CROP_THUMB_MIN_INTERVAL_SEC`` (``ThumbRateLimiter``), and
-only on the router's triggered tier when the request says which tier it is.
-Retention: a background thread in ``ThumbStore`` (never the detect path)
-deletes thumbnails not written for ``VISION_CROP_THUMB_RETENTION_DAYS``
-(default 10, longer than an ask's 7-day life). The Hub serves them read-only
+stream AND label per ``VISION_CROP_THUMB_MIN_INTERVAL_SEC``
+(``ThumbRateLimiter``; per label since 2026-10-20 so a parked car cannot use
+up a passing person's slot), and only on the router's triggered tier when the
+request says which tier it is. Retention: thumbnails are kept forever by
+default (``VISION_CROP_THUMB_RETENTION_DAYS=0``, Juniper 2026-10-20). A
+positive value makes a background thread in ``ThumbStore`` (never the detect
+path) delete thumbnails not written for that many days. The Hub serves them read-only
 by hash (``/api/vision/crop-thumbs/<sha256>``).
 
 A box whose bottom-center is outside a no-embed zone can still contain its
@@ -99,13 +101,16 @@ ThumbFn = Callable[[Image.Image], Optional[str]]
 THUMB_REF_PREFIX = "thumb:"
 THUMB_MAX_SIDE = 160
 THUMB_QUALITY = 70
-DEFAULT_THUMB_RETENTION_DAYS = 10.0
+DEFAULT_THUMB_RETENTION_DAYS = 0.0  # 0 = keep forever
+# A ``.tmp`` left by a crash mid-write is removed after this, even when photos are kept forever.
+STALE_TMP_SEC = 86400.0
 DEFAULT_THUMB_MIN_INTERVAL_SEC = 10.0
 
 
 class ThumbRateLimiter:
-    """At most one thumbnail per stream per ``min_interval_sec``. A parked car
-    embedded every frame must not write ~30k files a day."""
+    """At most one thumbnail per key per ``min_interval_sec``. A parked car
+    embedded every frame must not write ~30k files a day. The crop-thumbnail
+    caller keys by (stream, label), so each label has its own slot."""
 
     def __init__(self, min_interval_sec: float, clock: Callable[[], float] = time.monotonic) -> None:
         self.min_interval_sec = max(0.0, float(min_interval_sec))
@@ -113,14 +118,21 @@ class ThumbRateLimiter:
         self._last: Dict[str, float] = {}
         self._lock = threading.Lock()
 
-    def take(self, stream_id: str) -> bool:
+    def take(self, key: str) -> bool:
         now = self._clock()
         with self._lock:
-            last = self._last.get(stream_id)
+            last = self._last.get(key)
             if last is not None and now - last < self.min_interval_sec:
                 return False
-            self._last[stream_id] = now
+            self._last[key] = now
             return True
+
+
+def thumb_slot_key(stream_id: str, label: Any) -> str:
+    """The crop-thumbnail limiter key: one slot per stream AND label. Live
+    2026-10-16..20 with one slot per stream: vehicles 32,799 crops -> 197
+    thumbs, people 973 -> 106, and a 27-sighting person had pictures on 4."""
+    return f"{stream_id}\x1f{_norm_label(label)}"
 
 
 def encode_thumb(crop: Image.Image, *, max_side: int = THUMB_MAX_SIDE, quality: int = THUMB_QUALITY) -> bytes:
@@ -132,7 +144,8 @@ def encode_thumb(crop: Image.Image, *, max_side: int = THUMB_MAX_SIDE, quality: 
 
 
 class ThumbStore:
-    """Content-addressed crop thumbnails on local disk, pruned by age.
+    """Content-addressed crop thumbnails on local disk, kept forever unless
+    ``retention_days`` > 0 (then pruned by age).
 
     ``put`` writes ``<root>/<sha256>.jpg`` atomically (temp file + rename) and
     returns ``thumb:<sha256>``. A second put of identical bytes just refreshes
@@ -194,18 +207,25 @@ class ThumbStore:
         now = self._clock() if now is None else now
         if not self.root.is_dir():
             return 0
+        keep_forever = self.retention_sec <= 0
         removed = 0
         for p in self.root.iterdir():
-            if not (p.name.endswith(".jpg") or p.name.endswith(".tmp")):
+            is_tmp = p.name.endswith(".tmp")
+            if not (p.name.endswith(".jpg") or is_tmp):
                 continue
+            if keep_forever and not is_tmp:
+                continue  # retention 0 = photos are never deleted by age
+            limit = STALE_TMP_SEC if keep_forever else self.retention_sec
             try:
-                if now - p.stat().st_mtime > self.retention_sec:
+                if now - p.stat().st_mtime > limit:
                     p.unlink()
                     removed += 1
             except FileNotFoundError:
                 continue
         if removed:
-            logger.info(f"[CROP] pruned {removed} crop thumbnail(s) older than {self.retention_sec / 86400:.0f}d")
+            logger.info(f"[CROP] pruned {removed} crop thumbnail file(s)"
+                        + (" (stale .tmp only; photos kept forever)" if keep_forever
+                           else f" older than {self.retention_sec / 86400:.0f}d"))
         return removed
 
 _ZONES_CACHE: Dict[str, Optional[Dict[str, List[Zone]]]] = {}
@@ -393,7 +413,7 @@ def attach_crop_embeddings(
         # made from. A thumbnail failure costs the picture, not the vector.
         obj["thumb_ref"] = None
         if thumb_fn is not None and thumb_allowed and (
-                thumb_limiter is None or thumb_limiter.take(stream_id)):
+                thumb_limiter is None or thumb_limiter.take(thumb_slot_key(stream_id, obj.get("label")))):
             try:
                 obj["thumb_ref"] = thumb_fn(crops[row])
             except Exception as exc:

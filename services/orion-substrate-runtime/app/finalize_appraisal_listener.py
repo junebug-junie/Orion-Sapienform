@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.harness_finalize import HarnessDraftMoleculeV1, SubstrateFinalizeAppraisalV1
 from orion.substrate.appraisal.finalize_draft_v1 import (
@@ -163,31 +164,13 @@ async def run_finalize_appraisal_listener(
         logger.info("Bus disabled; finalize_appraisal listener not started")
         return
 
-    channel = s.channel_finalize_appraisal_request
-    logger.info("finalize_appraisal listener subscribing channel=%s", channel)
-
-    try:
-        async with bus.subscribe(channel) as pubsub:
-            while True:
-                if stop_event is not None and stop_event.is_set():
-                    break
-                try:
-                    msg = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                        timeout=1.2,
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                if not msg or msg.get("type") not in ("message", "pmessage"):
-                    continue
-                try:
-                    await _handle_bus_message(bus, msg, s)
-                except Exception:
-                    logger.exception("finalize_appraisal unhandled bus worker error")
-    except asyncio.CancelledError:
-        raise
-    finally:
-        logger.info("finalize_appraisal listener stopped channel=%s", channel)
+    await run_subscription(
+        bus,
+        s.channel_finalize_appraisal_request,
+        lambda msg: _handle_bus_message(bus, msg, s),
+        stop_event=stop_event,
+        name="finalize_appraisal listener",
+    )
 
 
 async def start_finalize_appraisal_listener(

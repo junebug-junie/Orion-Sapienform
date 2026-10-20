@@ -22,6 +22,24 @@ class RetinaMetrics:
     # Times an RTSP reader was abandoned and replaced for delivering no frame
     # (RtspFrameSource stall watchdog). Always 0 for other sources.
     source_stall_restarts: int = 0
+    # RTSP session hygiene (RtspFrameSource quiet period + self-heal).
+    # Always 0/None for other sources.
+    source_quiet_wait_remaining_sec: float = 0.0
+    source_last_session_end_ts: float | None = None
+    source_corrupt_frame_rate: float | None = None
+    source_corruption_checks: int = 0
+    source_corrupt_frames: int = 0
+    source_corruption_heals: int = 0
+    source_corruption_heal_suppressed: bool = False
+    # Ring event source (ring_source.py). Always 0/None for other sources.
+    # A doorbell is silent between events, so last_frame_age_sec growing is
+    # normal there; ring_bursts_failed growing is not.
+    ring_events_seen: int = 0
+    ring_events_ignored: int = 0
+    ring_bursts_started: int = 0
+    ring_bursts_failed: int = 0
+    ring_last_event_kind: str | None = None
+    ring_last_event_ts: float | None = None
 
 
 def last_frame_age_sec(metrics: RetinaMetrics, now: float | None = None) -> float | None:
@@ -44,6 +62,7 @@ def make_system_health_envelope(
     fps_target: float,
     storage_dir: str,
     heartbeat_interval_sec: float,
+    capture_stalled: str | None = None,
 ) -> BaseEnvelope:
     # Threaded from the caller's real loop period rather than left at the schema
     # default: orion-equilibrium-service computes grace = interval * 3.0 and marks
@@ -55,7 +74,10 @@ def make_system_health_envelope(
         version=service_version,
         boot_id=BOOT_ID,
         last_seen_ts=datetime.now(timezone.utc),
-        status="ok" if source_ok else "degraded",
+        # capture_stalled: nothing published for RETINA_PUBLISH_STALL_SECONDS
+        # outside an expected quiet state. 2026-10-17 the walkway reported
+        # "ok" with a 10255 s old frame; that is not ok.
+        status="ok" if source_ok and not capture_stalled else "degraded",
         details={
             "camera_id": camera_id,
             "stream_id": stream_id,
@@ -67,7 +89,22 @@ def make_system_health_envelope(
             "fps_observed": metrics.fps_observed,
             "last_frame_ts": metrics.last_frame_ts,
             "last_frame_age_sec": last_frame_age_sec(metrics),
+            "capture_stalled": bool(capture_stalled),
+            "capture_stalled_reason": capture_stalled,
             "source_stall_restarts": metrics.source_stall_restarts,
+            "source_quiet_wait_remaining_sec": metrics.source_quiet_wait_remaining_sec,
+            "source_last_session_end_ts": metrics.source_last_session_end_ts,
+            "source_corrupt_frame_rate": metrics.source_corrupt_frame_rate,
+            "source_corruption_checks": metrics.source_corruption_checks,
+            "source_corrupt_frames": metrics.source_corrupt_frames,
+            "source_corruption_heals": metrics.source_corruption_heals,
+            "source_corruption_heal_suppressed": metrics.source_corruption_heal_suppressed,
+            "ring_events_seen": metrics.ring_events_seen,
+            "ring_events_ignored": metrics.ring_events_ignored,
+            "ring_bursts_started": metrics.ring_bursts_started,
+            "ring_bursts_failed": metrics.ring_bursts_failed,
+            "ring_last_event_kind": metrics.ring_last_event_kind,
+            "ring_last_event_ts": metrics.ring_last_event_ts,
             "last_error": metrics.last_error,
             "storage_dir": storage_dir,
         },

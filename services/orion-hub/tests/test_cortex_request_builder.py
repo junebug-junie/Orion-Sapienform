@@ -1199,3 +1199,24 @@ def test_an_unrecognized_route_still_leaves_the_key_unset() -> None:
 
 def test_the_default_is_still_quick_when_nothing_is_named() -> None:
     assert _route_of(None) == "quick"
+
+
+def test_build_continuity_messages_carries_ts_only_for_the_harness_path() -> None:
+    """The unified harness turn renders per-message times (orion/harness/
+    prefix.py); every CortexChatRequest lane keeps the plain role/content shape."""
+    history = [
+        {"role": "user", "content": "night night", "ts": "2026-10-16T07:47:38+00:00"},
+        {"role": "assistant", "content": "Night night"},
+    ]
+    kept = hub_builder.build_continuity_messages(
+        history=history, latest_user_prompt="x", turns=5, keep_timestamps=True
+    )
+    assert kept == [
+        {"role": "user", "content": "night night", "ts": "2026-10-16T07:47:38+00:00"},
+        {"role": "assistant", "content": "Night night"},
+    ]
+    plain = hub_builder.build_continuity_messages(history=history, latest_user_prompt="x", turns=5)
+    assert plain == [
+        {"role": "user", "content": "night night"},
+        {"role": "assistant", "content": "Night night"},
+    ]

@@ -71,6 +71,7 @@ something worth writing up manufactures significance daily.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 
 import httpx
@@ -85,6 +86,7 @@ from typing import Any, Awaitable, Callable, Mapping, Optional, Tuple
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.resilience import run_subscription
 
 from .endogenous_outreach import in_quiet_hours
 from orion.regulation.arousal_view import (
@@ -96,6 +98,7 @@ from orion.regulation.arousal_view import (
 
 from .arousal_reader import ArousalReader
 from .rest_drive_reader import RestDriveReader
+from .personality_cue_reader import cue_status, read_personality_cue
 from .energy_stakes_gate import (
     HOLD_REASON as ENERGY_HOLD_REASON,
     EnergyHold,
@@ -112,6 +115,7 @@ from .curiosity_offer_decisions import (
     record_run_outcome,
     record_turn_snapshot,
 )
+from orion.harness.task_anchor import split_task_header
 from orion.curiosity.acl import assert_orion_acl, ensure_graph_exists
 from orion.curiosity.investigation_subject import build_investigation_subject
 from orion.curiosity.temporal_fact import curiosity_today_fact, thread_run_ids_from_view
@@ -123,6 +127,15 @@ from orion.curiosity.kickoff_prompt import (
     offered_priors_in_prompt,
 )
 from orion.orion_day.carry_forward import release_carry_forward, take_carry_forward
+from orion.curiosity.focus import (
+    TAKEN as FOCUS_TAKEN,
+    fail_focus,
+    read_disposition,
+    read_for_runs as read_focus_for_runs,
+    release_focus,
+    stamp_focus_outcome,
+    take_focus,
+)
 from orion.orion_day.corrections import (
     MAX_CORRECTIONS_PER_RUN,
     correction_outcome,
@@ -209,6 +222,8 @@ from orion.curiosity.study_material import (
     UNRESOLVED_RECENT_SQL,
     assemble_study_material,
     build_street_caption_cards,
+    build_street_day_card,
+    STREET_DAY_ROLLUP_SQL,
     build_unresolved_cards,
 )
 from orion.curiosity.attention_schema import (
@@ -259,6 +274,8 @@ from orion.schemas.durable_run import (
 )
 from orion.curiosity.urgent_prompt import build_urgent_prompt
 from orion.schemas.curiosity_urgent import CuriosityUrgentSeedV1
+from orion.schemas.curiosity_focus import FOCUS_QUESTION_MAX_CHARS, CuriosityFocusAnchorV1
+from orion.schemas.personality import PersonalityCueV1
 
 # RPC source name on the pool ``status`` reads Hub makes for a carried hold ref (stage 4.4).
 GPU_LEASE_STATUS_SOURCE = "orion-hub"
@@ -778,6 +795,12 @@ def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
     return payload
 
 
+def _with_header_first(preamble: str, prompt: str) -> str:
+    """Preamble after the prompt's task header, which the governor only anchors at byte 0."""
+    header, rest = split_task_header(prompt)
+    return header + preamble + rest
+
+
 class CuriosityInvestigation:
     """Tick loop. Mirrors `EndogenousOutreach`'s lifecycle exactly."""
 
@@ -855,12 +878,23 @@ class CuriosityInvestigation:
         # orion-durable-runs' chronicle at `durable_runs_url`. Off here so bare
         # constructions in tests never touch the network; settings ship it on.
         temporal_self_fact_enabled: bool = False,
+        # --- personality read-back (orion/personality/cue.py, spec rev 2) ---
+        # What Orion keeps coming back to, in Orion's own words, read from
+        # `durable_runs_url` /personality/frame concurrently with the today fact and
+        # under the same deadline. Off here so bare constructions in tests never touch
+        # the network; settings ship it on (HUB_PERSONALITY_CUE_ENABLED).
+        personality_cue_enabled: bool = False,
         # --- Orion's Day corrections (orion/orion_day/corrections.py) ------
         # The regular investigate line, on a writable graph only: claims up to
         # MAX_CORRECTIONS_PER_RUN recorded letter corrections once, shows them
         # with their named priors' current numbers, and stamps at turn end which
         # of those priors the run re-tested.
         orion_day_corrections_enabled: bool = False,
+        # --- Curiosity focus (orion/curiosity/focus.py) --------------------
+        # The regular investigate line, on a writable graph only: takes the one
+        # pending focus Orion queued from chat, shows it first, and stamps the
+        # disposition the run wrote at turn end.
+        focus_enabled: bool = False,
         # --- the self-inquiry line -----------------------------------------
         self_inquiry_enabled: bool = False,
         self_inquiry_daily_cap: int = 3,
@@ -1003,7 +1037,9 @@ class CuriosityInvestigation:
         self.dream_hypotheses_per_run = max(0, int(dream_hypotheses_per_run))
         self.carry_forward_enabled = bool(carry_forward_enabled)
         self.temporal_self_fact_enabled = bool(temporal_self_fact_enabled)
+        self.personality_cue_enabled = bool(personality_cue_enabled)
         self.orion_day_corrections_enabled = bool(orion_day_corrections_enabled)
+        self.focus_enabled = bool(focus_enabled)
         # Other Hub loops that want terminal durable-run states without a second
         # subscription (Orion's Day: scripts/orion_day_letter.py). Each hook gets
         # every DurableRunStateV1 this listener decodes; a failing hook is logged
@@ -1452,6 +1488,15 @@ class CuriosityInvestigation:
                         frame.get("as_of") if isinstance(frame, dict) else None)
         return fact
 
+    async def _read_personality_cue(self, now: datetime) -> PersonalityCueV1:
+        """The kickoff's personality read-back cue. ``text == ""`` (with a skip reason) on
+        any failure -- never a failed or delayed kickoff. Same deadline as the today fact;
+        the kickoff gathers both, so they cost one wait, not two."""
+        return await read_personality_cue(
+            self.durable_runs_url, TEMPORAL_SELF_FACT_TIMEOUT_SEC,
+            now=now, enabled=self.personality_cue_enabled,
+        )
+
     async def _take_carry_forward(self, run_id: str):
         """Claim Orion's Day carry-forward for this run. None when off or nothing fresh.
 
@@ -1520,6 +1565,105 @@ class CuriosityInvestigation:
         except Exception as exc:  # noqa: BLE001
             logger.warning("curiosity_correction_outcome_failed run=%s err=%s", run_id, exc)
 
+    async def _take_focus(self, view: WorldviewSnapshot, run_id: str):
+        """Claim the one pending curiosity focus for this run. None unless Orion could record a
+        disposition for it: the same writable condition the kickoff shows the section on
+        (claiming means "shown to Orion"). Called only from `_investigate`, after every gate."""
+        if not self.focus_enabled or not run_id:
+            return None
+        if not self.graph_enabled or view.is_unavailable:
+            return None
+        return await take_focus(self._pool_provider(), run_id=run_id)
+
+    def _focus_anchor(self, focus, run_id: str) -> Optional[CuriosityFocusAnchorV1]:
+        """The typed focus for the governor's task anchor, or None (no focus, or a row that does
+        not fit the contract -- logged; the kickoff still shows the focus)."""
+        if focus is None:
+            return None
+        graph = str(self.graph_own or "")
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{0,64}", graph):
+            graph = ""  # outside the contract's charset: left out, not fatal
+        try:
+            return CuriosityFocusAnchorV1(
+                focus_id=str(focus.focus_id),
+                run_id=run_id,
+                question=" ".join(str(focus.question or "").split())[:FOCUS_QUESTION_MAX_CHARS],
+                origin=focus.origin,
+                graph=graph,
+            )
+        except Exception as exc:  # noqa: BLE001 -- the anchor is a safety net, never a gate
+            logger.warning("curiosity_focus_anchor_invalid run=%s focus_id=%s err=%s", run_id, focus.focus_id, exc)
+            return None
+
+    async def _stamp_focus(self, run_id: str, *, turn_ok: bool) -> None:
+        """Turn end: the focus this run took becomes `ran` (with the disposition the run wrote on
+        its :TurnOutcome; none = unknown) or `failed`. Read-only on the graph. Never raises.
+        Not gated on the flag: a focus taken while it was on still gets its outcome."""
+        if not run_id:
+            return
+        try:
+            pool = self._pool_provider()
+            if pool is None:
+                return
+            if run_id not in await read_focus_for_runs(pool, [run_id]):
+                return
+            disposition, raw, graph_read = (None, None, False)
+            if self._reader is not None:
+                disposition, raw, graph_read = await asyncio.to_thread(read_disposition, self._reader, run_id)
+            focus_id = await stamp_focus_outcome(
+                pool, run_id=run_id, turn_ok=turn_ok, disposition=disposition, disposition_raw=raw,
+                graph_read=graph_read,
+            )
+            logger.info(
+                "curiosity_focus_outcome run=%s focus_id=%s turn_ok=%s disposition=%s graph_read=%s",
+                run_id, focus_id, turn_ok, disposition or ("unknown:" + raw if raw else "unknown"), graph_read,
+            )
+        except Exception as exc:  # noqa: BLE001 -- the turn's own result stands
+            logger.warning("curiosity_focus_outcome_failed run=%s err=%s", run_id, exc)
+
+    async def _durable_run_started(self, run_id: str) -> Optional[bool]:
+        """Whether durable-runs' history for this run holds its own `run.started` event. None
+        on any doubt (unreachable, unknown run): callers keep claims then."""
+        root = str(self.durable_runs_url or "").strip().rstrip("/")
+        if not root or not run_id:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{root}/runs/{run_id}")
+            if resp.status_code != 200:
+                return None
+            history = resp.json().get("history") or []
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_run_started_check_failed run=%s err=%s", run_id, exc)
+            return None
+        return any(isinstance(e, dict) and e.get("event") == "run.started" for e in history)
+
+    async def _settle_focus_after_run_end(self, run_id: str, *, completed: bool = False) -> None:
+        """A durable investigate run ended while its focus is still `taken` (no turn end stamped
+        it). Completed: stamp it now (the disposition is re-read from the graph). Otherwise:
+        never started, give the focus back; started, Orion may have seen it, so it is `failed`
+        and never re-queued; in doubt, left `taken` (the stale sweep in `take_focus` ends it)."""
+        try:
+            pool = self._pool_provider()
+            if pool is None or not run_id:
+                return
+            row = (await read_focus_for_runs(pool, [run_id])).get(run_id)
+            if row is None or row.status != FOCUS_TAKEN:
+                return
+            if completed:
+                await self._stamp_focus(run_id, turn_ok=True)
+                return
+            started = await self._durable_run_started(run_id)
+            if started is False:
+                status = await release_focus(pool, run_id=run_id)
+                logger.info("curiosity_focus_released_unstarted run=%s focus_id=%s now=%s", run_id, row.focus_id, status)
+            elif started is True:
+                await fail_focus(pool, run_id=run_id)
+                logger.info("curiosity_focus_outcome run=%s focus_id=%s turn_ok=False disposition=unknown "
+                            "reason=run_ended_without_turn_end", run_id, row.focus_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_focus_settle_failed run=%s err=%s", run_id, exc)
+
     async def _release_carry_forward_if_unseen(self, run_id: str) -> None:
         """A durable run that ended before its turn started never showed Orion the
         carry-forward (or the Orion's Day corrections) it claimed at kickoff: give them back.
@@ -1551,8 +1695,11 @@ class CuriosityInvestigation:
 
     async def _release_offers(
         self, run_id: str, *, dream: bool, carry_forward: bool, corrections: bool = False,
+        focus: bool = False,
     ) -> None:
         """Give back what this run claimed but Orion never saw (cancelled before the turn)."""
+        if focus:
+            await release_focus(self._pool_provider(), run_id=run_id)
         if dream:
             await release_hypotheses_for_run(self._pool_provider(), run_id=run_id)
         if carry_forward:
@@ -1928,7 +2075,22 @@ class CuriosityInvestigation:
         material.local_timezone = self.timezone_name
         material.unresolved = await self._read_unresolved_percepts(pool)
         material.street_captions = await self._read_street_captions(pool, now=now)
+        material.street_day = await self._read_street_day(pool)
         return material
+
+    async def _read_street_day(self, pool: Any) -> Any:
+        """The walkway's newest day rollup (2026-10-18, vision_rollup): own read, own
+        failure -- a missing table costs this card only. Empty stream list = off."""
+        ids = [s for s in self.street_stream_ids if s]
+        if not ids:
+            return None
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(STREET_DAY_ROLLUP_SQL, ids)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("curiosity_street_day_unreadable err=%s", type(exc).__name__)
+            return None
+        return build_street_day_card(row)
 
     async def _read_street_captions(self, pool: Any, *, now: datetime) -> list:
         """What the walkway (street) camera said lately (2026-10-15): the newest
@@ -2281,8 +2443,15 @@ class CuriosityInvestigation:
         dream_hypotheses = await self._take_dream_hypotheses(view, run_id)
         carry_forward = await self._take_carry_forward(run_id)
         corrections = await self._take_corrections(view, run_id)
+        focus = await self._take_focus(view, run_id)
+        # Typed copy for the governor's task anchor (survives CLI compaction).
+        focus_anchor = self._focus_anchor(focus, run_id)
         open_lived_questions = await self._read_open_lived_questions(run_id)
-        today_fact = await self._read_today_fact(view, now)
+        # Both durable-runs reads at once: each is bounded by TEMPORAL_SELF_FACT_TIMEOUT_SEC
+        # and neither ever raises, so the kickoff waits for the slower one only.
+        today_fact, personality_cue = await asyncio.gather(
+            self._read_today_fact(view, now), self._read_personality_cue(now)
+        )
         prompt = build_kickoff_prompt(
             material,
             view=view,
@@ -2304,7 +2473,10 @@ class CuriosityInvestigation:
             open_lived_questions=open_lived_questions,
             corrections=corrections,
             today_fact=today_fact,
+            personality_cue=personality_cue.text or None,
+            focus=focus,
         )
+        logger.info("curiosity_personality_cue run=%s %s", run_id, cue_status(personality_cue))
         if today_fact:
             logger.info("curiosity_today_fact_offered run=%s fact=%s", run_id, today_fact)
         if open_lived_questions:
@@ -2323,6 +2495,11 @@ class CuriosityInvestigation:
                 run_id, ",".join(c.correction_id for c in corrections),
                 sum(len(c.prior_ids) for c in corrections),
             )
+        if focus is not None:
+            logger.info(
+                "curiosity_focus_offered run=%s focus_id=%s origin=%s chat_corr=%s",
+                run_id, focus.focus_id, focus.origin, focus.chat_correlation_id,
+            )
         if dream_hypotheses:
             logger.info(
                 "curiosity_dream_hypotheses_offered run=%s ids=%s",
@@ -2335,7 +2512,8 @@ class CuriosityInvestigation:
         # What recall searches for during the turn. Carried on the durable brief
         # (and the in-process turn request), not only in the in-memory dict
         # above, so a Hub restart mid-run does not lose it.
-        retrieval_query = _standing_question_from_view(view)
+        # A focus Orion queued is what it chose to look at: recall searches for it first.
+        retrieval_query = focus.question if focus is not None else _standing_question_from_view(view)
         if peer_briefs:
             # Hub is RO on worldview; peer service MERGEs consumed=true.
             await publish_peer_briefs_consumed(
@@ -2351,6 +2529,7 @@ class CuriosityInvestigation:
                     prompt=prompt,
                     material=material,
                     retrieval_query=retrieval_query,
+                    **({"focus": focus_anchor} if focus_anchor is not None else {}),
                 )
             except asyncio.CancelledError:
                 # Hub going away mid-dispatch (the RPC to cortex-orch can take
@@ -2362,7 +2541,7 @@ class CuriosityInvestigation:
                     await self._refund_investigation(previous_stamp)
                     await self._release_offers(
                         run_id, dream=bool(dream_hypotheses), carry_forward=carry_forward is not None,
-                        corrections=bool(corrections),
+                        corrections=bool(corrections), focus=focus is not None,
                     )
                 raise
             if dispatched:
@@ -2395,6 +2574,7 @@ class CuriosityInvestigation:
                         timeout_sec=float(self.timeout_sec),
                         source_tag=INVESTIGATION_TAG,
                         retrieval_query=retrieval_query,
+                        focus=focus_anchor,
                     ),
                     hold_lock=False,  # tick already holds _run_lock
                 )
@@ -2406,9 +2586,11 @@ class CuriosityInvestigation:
                 text, debug = await self._generate(
                     prompt, correlation_id, parent_run_id=run_id,
                     **({"retrieval_query": retrieval_query} if retrieval_query else {}),
+                    **({"curiosity_focus": focus_anchor} if focus_anchor is not None else {}),
                 )
                 await self._spend_turn_ended(run_id, turn_ok=bool(text))
                 await self._stamp_corrections(run_id)
+                await self._stamp_focus(run_id, turn_ok=bool(text))
         except asyncio.CancelledError:
             # Hub is going away mid-turn. Give the slot back and let the
             # cancellation continue -- swallowing it would leave a task the
@@ -2419,7 +2601,14 @@ class CuriosityInvestigation:
                 # Corrections are released only when Orion cannot have seen them: a correction
                 # re-offered after a started turn could be re-tested twice.
                 corrections=bool(corrections) and not turn_began,
+                # Same rule for the focus: once the turn began, Orion may have seen it.
+                focus=focus is not None and not turn_began,
             )
+            if focus is not None and turn_began:
+                # Hub going away mid-turn: this turn's end will never be stamped, and it is no
+                # durable run, so nothing else will settle it. Best effort; never blocks the cancel.
+                with contextlib.suppress(Exception):
+                    await fail_focus(self._pool_provider(), run_id=run_id)
             raise
         if not text:
             logger.info("curiosity_investigation_no_text run=%s debug=%s", run_id, debug)
@@ -3906,6 +4095,7 @@ class CuriosityInvestigation:
         urgent: bool = False,
         retrieval_query: str | None = None,
         resume_key: str | None = None,
+        curiosity_focus: CuriosityFocusAnchorV1 | None = None,
     ) -> Tuple[str, dict]:
         """Real unified-turn generation. Returns ("", debug) on any failure,
         defer, or degraded run -- same "never fabricate, silence over a false
@@ -3952,6 +4142,10 @@ class CuriosityInvestigation:
         started = time.monotonic()
         turn_timeout = self.timeout_sec if timeout_sec is None else timeout_sec
         payload = _turn_payload(source, fcc_model_label or self._fcc_model_label)
+        if curiosity_focus is not None:
+            # The focus this run took: the governor anchors it in the system prompt
+            # (orion/harness/task_anchor.py::build_focus_anchor).
+            payload["curiosity_focus"] = curiosity_focus.model_dump(mode="json")
         if resume_key:
             # Durable-run retry: the governor resumes this run's killed `claude`
             # session instead of starting over (orion/harness/session_resume.py).
@@ -4382,6 +4576,7 @@ class CuriosityInvestigation:
         urgent: Optional[CuriosityUrgentSeedV1] = None,
         timeout_sec: Optional[float] = None,
         retrieval_query: Optional[str] = None,
+        focus: Optional[CuriosityFocusAnchorV1] = None,
     ) -> CuriosityRunBriefV1:
         # An urgent run is shown no study material: the brief's counts stay zero.
         material_brief = (
@@ -4406,6 +4601,7 @@ class CuriosityInvestigation:
             line=line,
             urgent=urgent,
             retrieval_query=cap_retrieval_query(retrieval_query),
+            focus=focus,
         )
 
     async def _dispatch_via_cortex(
@@ -4487,6 +4683,7 @@ class CuriosityInvestigation:
         urgent: Optional[CuriosityUrgentSeedV1] = None,
         timeout_sec: Optional[float] = None,
         retrieval_query: Optional[str] = None,
+        focus: Optional[CuriosityFocusAnchorV1] = None,
     ) -> bool:
         """Hand the run to cortex. True only when cortex replied `accepted`."""
         if self._bus is None:
@@ -4497,7 +4694,7 @@ class CuriosityInvestigation:
             correlation_id=correlation_id,
             brief=self._run_brief(
                 prompt=prompt, material=material, line=line, urgent=urgent, timeout_sec=timeout_sec,
-                retrieval_query=retrieval_query,
+                retrieval_query=retrieval_query, focus=focus,
             ),
             admission=(ResourceRequirementV1(
                 preferred_lane=self.llm_route or "agent",
@@ -4568,19 +4765,21 @@ class CuriosityInvestigation:
         """
         if self._bus is None:
             return
-        try:
-            async with self._bus.subscribe(CURIOSITY_TURN_REQUEST_CHANNEL) as pubsub:
-                async for msg in self._bus.iter_messages(pubsub):
-                    try:
-                        task = asyncio.create_task(self._serve_turn_request(msg))
-                        self._turn_tasks.add(task)
-                        task.add_done_callback(self._turn_tasks.discard)
-                    except Exception:  # noqa: BLE001
-                        logger.exception("curiosity_turn_request_failed")
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001
-            logger.exception("curiosity_turn_request_loop_failed")
+
+        def _spawn(msg: dict[str, Any]) -> None:
+            # Returns None, not the task: run_subscription awaits what the handler
+            # returns, and awaiting a turn here would serialize the stream.
+            task = asyncio.create_task(self._serve_turn_request(msg))
+            self._turn_tasks.add(task)
+            task.add_done_callback(self._turn_tasks.discard)
+
+        await run_subscription(
+            self._bus,
+            CURIOSITY_TURN_REQUEST_CHANNEL,
+            _spawn,
+            stop_event=self._stop,
+            name="hub.curiosity_turn_request",
+        )
 
     async def _serve_turn_request(self, msg: dict[str, Any]) -> None:
         try:
@@ -4648,7 +4847,7 @@ class CuriosityInvestigation:
         if reader is None:
             return request.prompt
         if request.attempt <= 1:
-            return drift + request.prompt
+            return _with_header_first(drift, request.prompt)
         hops = await asyncio.to_thread(read_hop_notes, reader, request.run_id)
         preamble = build_resume_preamble(hops, run_id=request.run_id)
         if not preamble:
@@ -4656,12 +4855,12 @@ class CuriosityInvestigation:
                 "curiosity_resume_no_prior_hops run=%s attempt=%s",
                 request.run_id, request.attempt,
             )
-            return drift + request.prompt
+            return _with_header_first(drift, request.prompt)
         logger.info(
             "curiosity_resume_preamble run=%s attempt=%s prior_hops=%s next_n=%s",
             request.run_id, request.attempt, len(hops), next_hop_n(hops),
         )
-        return drift + preamble + request.prompt
+        return _with_header_first(drift + preamble, request.prompt)
 
     async def _turn_result_for(
         self, request: CuriosityTurnRequestV1, *, hold_lock: bool
@@ -4736,6 +4935,7 @@ class CuriosityInvestigation:
                     **({"gpu_lease": request.gpu_lease} if request.gpu_lease is not None else {}),
                     **({"urgent": True} if request.urgent is not None else {}),
                     **({"retrieval_query": request.retrieval_query} if request.retrieval_query else {}),
+                    **({"curiosity_focus": request.focus} if request.focus is not None else {}),
                     # Stable across attempts, leases and restarts; the purpose keeps two
                     # different turns of one run from sharing a session.
                     resume_key=f"{request.run_id}:{request.source_tag}",
@@ -4743,6 +4943,7 @@ class CuriosityInvestigation:
                 if measured:
                     await self._spend_turn_ended(request.run_id, turn_ok=bool(text))
                     await self._stamp_corrections(request.run_id)
+                    await self._stamp_focus(request.run_id, turn_ok=bool(text))
                 return CuriosityTurnResultV1(
                     run_id=request.run_id,
                     correlation_id=request.correlation_id,
@@ -4754,6 +4955,9 @@ class CuriosityInvestigation:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
+                if measured:
+                    # A retry may still stamp `ran`; until then the focus reads failed, not taken.
+                    await self._stamp_focus(request.run_id, turn_ok=False)
                 return CuriosityTurnResultV1(
                     run_id=request.run_id, correlation_id=request.correlation_id, ok=False, error=f"{type(exc).__name__}: {exc}"[:300]
                 )
@@ -4785,17 +4989,13 @@ class CuriosityInvestigation:
         out goes through the same second turn and the same gates as before."""
         if self._bus is None:
             return
-        try:
-            async with self._bus.subscribe(DURABLE_RUN_STATE_CHANNEL) as pubsub:
-                async for msg in self._bus.iter_messages(pubsub):
-                    try:
-                        await self._handle_run_state(msg)
-                    except Exception:  # noqa: BLE001
-                        logger.exception("curiosity_run_state_failed")
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001
-            logger.exception("curiosity_run_state_loop_failed")
+        await run_subscription(
+            self._bus,
+            DURABLE_RUN_STATE_CHANNEL,
+            self._handle_run_state,
+            stop_event=self._stop,
+            name="hub.curiosity_run_state",
+        )
 
     async def _enqueue_help_requests_after_run(self, run_id: str) -> int:
         """Enqueue HelpRequests for a finished run at most once.
@@ -4848,8 +5048,11 @@ class CuriosityInvestigation:
             return
         if state.workflow == "curiosity.investigate" and state.status in {"failed", "abandoned", "cancelled"}:
             await self._release_carry_forward_if_unseen(state.run_id)
+            await self._settle_focus_after_run_end(state.run_id)
         if state.workflow != "curiosity.investigate" or state.status != "completed":
             return
+        # Normally the turn end already stamped it; this only catches a stamp that failed.
+        await self._settle_focus_after_run_end(state.run_id, completed=True)
         detail = state.detail or {}
         # Same completion hook as SelfDefinition / outreach: durable admission
         # never reaches the in-process journal enqueue.

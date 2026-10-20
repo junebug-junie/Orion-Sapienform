@@ -3359,6 +3359,9 @@ def test_grounding_summary_reports_each_lane() -> None:
         "embodied_presence": True,
         "priors_count": 1,
         "prior_ids": ["prior-xyz"],
+        "personality_cue": False,
+        "personality_cue_ids": [],
+        "personality_cue_skip": None,
     }
 
 
@@ -3617,6 +3620,9 @@ def test_a_completed_cycle_records_which_lanes_it_saw(monkeypatch) -> None:
         "embodied_presence": False,
         "priors_count": 0,
         "prior_ids": [],
+        "personality_cue": False,
+        "personality_cue_ids": [],
+        "personality_cue_skip": None,
     }
 
 

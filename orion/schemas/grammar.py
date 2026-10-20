@@ -48,8 +48,10 @@ ActLevel = Literal["metabolic", "organ", "faculty", "deliberate"]
 # horizon" event, so a horizon that passes with no evidence is a real 0, not a
 # guess (that is what lets the writer close expired acts honestly).
 #   juniper_replied   -- Juniper sent Orion a chat turn after the act, before
-#                        the horizon. Resolved by orion-sql-writer from
-#                        chat_history_log; producers never self-report it.
+#                        the horizon, by when her turn STARTED. Resolved by
+#                        orion-sql-writer from the hub ingress hop
+#                        (cockpit_turn_sighting; chat_history_log created_at
+#                        fallback); producers never self-report it.
 #   artifact_produced -- the act produced its artifact (an image stored, a
 #                        reading with real content) before the horizon.
 #                        Reported by the producer on close.

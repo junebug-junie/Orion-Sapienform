@@ -36,6 +36,20 @@ Spec: `docs/superpowers/specs/2026-10-15-orion-prediction-service-design.md`.
 A seasonality is used only when training holds 2 full cycles (monthly is refused today). MSTL
 skips cycles longer than a day: STL at the weekly period costs ~26 s per fit vs ~2.3 s.
 
+## Change events
+
+Known moments the world changed under a series, stored in `prediction_change_event`:
+
+| effect | what the forecaster does |
+|---|---|
+| `exclude` (start, end) | masks the window out of training and backtest actuals (e.g. the cabinet door open) |
+| `break` (a moment) | Prophet fits a level shift there at once; after 10 days of data past it, every model trains only on data after it, and the selection reruns immediately |
+
+`POST /change-events` (`scope` = a series id or `*`), `GET /change-events`; `/health` shows each
+series' pending and adopted breaks. Seeded 2026-10-20 with the athena T10 swap (break, 10-15 18:57 UTC)
+and the vision bring-up (cabinet open 10-16 21:30 -> 10-17 00:35 excluded; sensor geometry changed:
+break at 00:35).
+
 ## Cause and effect: three levels, always labelled (`claim_kind`)
 
 | level | endpoint | what it can claim |
@@ -56,7 +70,7 @@ before each ON block. The 34 °C reflex in hardware-watch stays the hard stop.
 - Bus: `orion:prediction:forecast` (`PredictionForecastV1`, `orion/schemas/prediction.py`).
   Consumer: orion-hardware-watch shows the shed probability beside each reflex decision
   (observe-only).
-- Tables: `services/orion-sql-db/manual_migration_prediction_v1.sql`.
+- Tables: `services/orion-sql-db/manual_migration_prediction_v1.sql`, `manual_migration_prediction_change_events_v1.sql`.
 - Series registry: `config/prediction/series.v1.yaml` (baked into the image).
 
 ## Run

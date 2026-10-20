@@ -1,0 +1,121 @@
+name: Retro preflight
+on:
+  pull_request:
+    paths:
+      - 'orion/retro/**'
+      - 'tests/retro/**'
+      - 'services/orion-retro/**'
+      - 'services/orion-hub/scripts/retro_routes.py'
+      - 'services/orion-hub/scripts/retro_gateway.py'
+      - 'services/orion-hub/docker-compose.yml'
+      - 'services/orion-hub/static/js/retro-panel.js'
+      - 'services/orion-hub/static/js/retro-tab.js'
+      - 'services/orion-hub/templates/retro.html'
+      - 'services/orion-hub/tests/retro/**'
+      - 'services/orion-hub/evals/retro_browser*'
+      - 'services/orion-hub/evals/retro_play.mjs'
+      - '.github/workflows/retro-preflight.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'orion/retro/**'
+      - 'tests/retro/**'
+      - 'services/orion-retro/**'
+      - 'services/orion-hub/scripts/retro_routes.py'
+      - 'services/orion-hub/scripts/retro_gateway.py'
+      - 'services/orion-hub/docker-compose.yml'
+      - 'services/orion-hub/static/js/retro-panel.js'
+      - 'services/orion-hub/static/js/retro-tab.js'
+      - 'services/orion-hub/templates/retro.html'
+      - 'services/orion-hub/tests/retro/**'
+      - 'services/orion-hub/evals/retro_browser*'
+      - 'services/orion-hub/evals/retro_play.mjs'
+      - '.github/workflows/retro-preflight.yml'
+permissions:
+  contents: read
+jobs:
+  native-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pytest==9.1.1 PyYAML==6.0.2 httpx==0.28.1 aiohttp==3.12.15 pydantic-settings==2.5.2 -r services/orion-retro/requirements.txt
+      - run: python -m pytest tests/retro services/orion-retro/tests -q
+      - run: python -m pytest services/orion-hub/tests/retro -q
+      - run: python -m orion.retro.preflight --help
+  real-nes-core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/checkout@v4
+        with:
+          repository: libretro/libretro-fceumm
+          ref: ac0d00a7fc01166f84c7bac01d1084ebfd2b865e
+          path: .retro-core-source
+          persist-credentials: false
+      - name: Build pinned core and authored diagnostic
+        run: |
+          make -C .retro-core-source -f Makefile.libretro -j2 > /tmp/retro-build.log 2>&1
+          python -m orion.retro.pad_lab /tmp/orion-pad-lab.nes
+      - name: Verify independent controller effects and nonzero audio
+        run: |
+          CORE_SHA=$(sha256sum .retro-core-source/fceumm_libretro.so | cut -d ' ' -f 1)
+          python -m orion.retro.pad_eval \
+            --core .retro-core-source/fceumm_libretro.so --core-sha256 "$CORE_SHA" \
+            --rom /tmp/orion-pad-lab.nes --output /tmp/retro-pad-eval.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: retro-native-evidence
+          path: |
+            /tmp/retro-pad-eval.json
+            /tmp/retro-build.log
+  service-container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install PyYAML==6.0.2 aiohttp==3.12.15 -r services/orion-retro/requirements.txt
+      - name: Build service through repository wrapper
+        run: |
+          touch .env
+          cp services/orion-retro/.env_example services/orion-retro/.env
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('services/orion-retro/.env')
+          s=p.read_text()
+          for key in ('RETRO_CATALOG_DIR','RETRO_EVIDENCE_DIR','RETRO_SOCKET_DIR','RETRO_TOKEN_FILE'):
+              s=s.replace(key+'=\n',key+'=/tmp/retro-ci-build-placeholder\n')
+          p.write_text(s)
+          PY
+          scripts/safe_docker_build.sh orion-retro build
+      - name: Real service API, lifecycle failures and offline boundary
+        run: PYTHONPATH=. python services/orion-retro/evals/container_smoke.py --output /tmp/retro-service-ci
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci --prefix services/orion-hub
+      - name: Browser controls, real native media, blur and reconnect
+        run: PYTHONPATH=. python services/orion-hub/evals/retro_browser.py --output /tmp/retro-browser-ci
+      - name: Browser input remains live with delayed acknowledgments
+        run: PYTHONPATH=. python services/orion-hub/evals/retro_browser.py --ack-delay-ms 350 --output /tmp/retro-browser-lag-ci
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: retro-service-evidence
+          path: |
+            /tmp/retro-service-ci/result.json
+            /tmp/retro-service-ci/container.json
+            /tmp/retro-browser-ci/browser.json
+            /tmp/retro-browser-ci/browser.png
+            /tmp/retro-browser-lag-ci/browser.json

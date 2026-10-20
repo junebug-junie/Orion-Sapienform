@@ -7,6 +7,8 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 
+from orion.core.bus.resilience import subscription_health
+
 from .cursor_reset import (
     parse_timestamp_at,
     record_cursor_reset,
@@ -56,6 +58,7 @@ _finalize_listener_task = None
 _closure_listener_task = None
 _goal_context_listener_task = None
 _ask_answered_listener_task = None
+_walkway_seen_task = None
 heartbeat_chassis: HeartbeatOnly | None = None
 
 
@@ -81,6 +84,7 @@ def build_heartbeat_chassis() -> HeartbeatOnly:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _finalize_listener_task, _closure_listener_task, _goal_context_listener_task, _ask_answered_listener_task, heartbeat_chassis
+    global _walkway_seen_task
     # Advertise that this process reads the assertion-core graph shapes, so the referent/
     # assertion projectors' readiness gate can open. Background thread; never blocks or raises.
     from orion.substrate.reader_capability import advertise_at_startup
@@ -107,6 +111,19 @@ async def lifespan(app: FastAPI):
             get_store=lambda: worker._get_substrate_graph_store(log_label="ask_answered_store_init_failed"),
             get_engine=worker._get_sql_engine,
         )
+    # Walkway rollups -> "seen on <day>" links for named people (app/walkway_seen_loop.py).
+    # Clocked, no bus: runs whether or not the bus is up.
+    from .walkway_seen_loop import run_walkway_seen_loop
+
+    _walkway_seen_task = asyncio.create_task(
+        run_walkway_seen_loop(
+            get_store=lambda: worker._get_substrate_graph_store(log_label="walkway_seen_store_init_failed"),
+            get_engine=worker._get_sql_engine,
+            settings=get_settings(),
+            stop_event=worker.stop_event,
+        ),
+        name="substrate-walkway-seen",
+    )
     try:
         heartbeat_chassis = build_heartbeat_chassis()
         await heartbeat_chassis.start_background()
@@ -135,6 +152,10 @@ async def lifespan(app: FastAPI):
         _goal_context_listener_task = None
         await stop_ask_answered_listener(_ask_answered_listener_task)
         _ask_answered_listener_task = None
+        if _walkway_seen_task is not None and not _walkway_seen_task.done():
+            _walkway_seen_task.cancel()
+            await asyncio.gather(_walkway_seen_task, return_exceptions=True)
+        _walkway_seen_task = None
         await worker.stop()
 
 
@@ -145,10 +166,18 @@ app = FastAPI(title="orion-substrate-runtime", lifespan=lifespan)
 async def health() -> dict:
     s = get_settings()
     snap = build_substrate_grammar_truth(worker._store)
+    # A dead bus listener left this process up and "healthy" while chat lost
+    # finalize appraisal (2026-10-20), so listener state counts toward ok.
+    listeners = subscription_health()
+    ok = bool(snap["ok"]) and listeners["ok"]
     return {
-        "status": "ok" if snap["ok"] else "degraded",
-        "ok": snap["ok"],
-        "degraded": snap["degraded"],
+        "status": "ok" if ok else "degraded",
+        "ok": ok,
+        "degraded": bool(snap["degraded"]) or not listeners["ok"],
+        "grammar_ok": snap["ok"],
+        "listeners_ok": listeners["ok"],
+        "listeners_down": listeners["down"],
+        "listeners": listeners["listeners"],
         "service": s.service_name,
         "version": s.service_version,
         "node": s.node_name,

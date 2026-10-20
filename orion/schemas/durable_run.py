@@ -36,6 +36,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 from orion.schemas.compactor_digest_run import COMPACTOR_DIGEST_WORKFLOW, CompactorDigestRunBriefV1
+from orion.schemas.curiosity_focus import CuriosityFocusAnchorV1
 from orion.schemas.curiosity_urgent import CuriosityUrgentSeedV1
 from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW, JournalComposeRunBriefV1
 from orion.schemas.memory_episode import MEMORY_EPISODE_DISTILL_WORKFLOW, EpisodeDistillBriefV1
@@ -120,6 +121,18 @@ DurableRunStatusV1 = Literal[
 ]
 
 
+# Additive optional keys an older `forbid` reader would reject even as null.
+_OPTIONAL_ADDITIVE_KEYS = ("retrieval_query", "focus")
+
+
+def _omit_none_keys(data: Any, keys: tuple[str, ...]) -> Any:
+    if isinstance(data, dict):
+        for key in keys:
+            if key in data and data[key] is None:
+                data.pop(key)
+    return data
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -196,6 +209,10 @@ class CuriosityRunBriefV1(BaseModel):
     # runner forwards it on CuriosityTurnRequestV1. ADDITIVE ON A `forbid`
     # MODEL: deploy orion-durable-runs before orion-hub.
     retrieval_query: str | None = Field(default=None, max_length=1000)
+    # Additive, investigate only: the curiosity focus this run took (orion/schemas/curiosity_focus.py),
+    # forwarded on CuriosityTurnRequestV1 so the governor anchors it through compaction. ADDITIVE ON
+    # A `forbid` MODEL: deploy orion-cortex-orch and orion-durable-runs before orion-hub.
+    focus: CuriosityFocusAnchorV1 | None = None
 
     @model_serializer(mode="wrap")
     def _omit_unset_retrieval_query(self, handler):
@@ -203,10 +220,7 @@ class CuriosityRunBriefV1(BaseModel):
         # (same rule as orion/schemas/reading.py's result selectors). Unset, the
         # key is absent from EVERY dump -- wire, stored request_json, checkpoint
         # -- so a new producer stays byte-compatible with an old consumer.
-        data = handler(self)
-        if isinstance(data, dict) and data.get("retrieval_query") is None:
-            data.pop("retrieval_query", None)
-        return data
+        return _omit_none_keys(handler(self), _OPTIONAL_ADDITIVE_KEYS)
 
 
 class DurableRunRequestV1(BaseModel):
@@ -318,17 +332,16 @@ class CuriosityTurnRequestV1(BaseModel):
     # Additive: the brief's retrieval_query (what recall searches for). Omitted
     # on the wire when None, so a runner only sends it once Hub put it on the brief.
     retrieval_query: str | None = Field(default=None, max_length=1000)
+    # Additive: the brief's focus, set only when the run took one. Hub puts it on
+    # HarnessRunRequestV1.curiosity_focus. Omitted on the wire when None. ADDITIVE ON A `forbid`
+    # MODEL: Hub must accept it before a runner sends it; the runner sends it only when a new Hub
+    # put it on the brief, so deploying Hub last is safe.
+    focus: CuriosityFocusAnchorV1 | None = None
 
     @model_serializer(mode="wrap")
     def _omit_unset_retrieval_query(self, handler):
-        # An older reader of this model forbids unknown keys, even null ones
-        # (same rule as orion/schemas/reading.py's result selectors). Unset, the
-        # key is absent from EVERY dump -- wire, stored request_json, checkpoint
-        # -- so a new producer stays byte-compatible with an old consumer.
-        data = handler(self)
-        if isinstance(data, dict) and data.get("retrieval_query") is None:
-            data.pop("retrieval_query", None)
-        return data
+        # Same rule as CuriosityRunBriefV1: unset additive keys are absent from every dump.
+        return _omit_none_keys(handler(self), _OPTIONAL_ADDITIVE_KEYS)
 
 
 class CuriosityTurnResultV1(BaseModel):

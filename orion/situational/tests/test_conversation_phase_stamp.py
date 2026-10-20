@@ -178,3 +178,45 @@ async def test_read_only_stamp_never_writes_the_clock(redis):
     assert stamp["phase_change"] == "next_day"
     assert stamp["source"] == "session_state_read"
     assert redis.writes == 0
+
+
+def test_gap_between_12_and_48_hours_is_classified_not_unknown() -> None:
+    """Live 2026-10-20: Juniper said "Big day later today at Lagoon" at
+    01:40 MDT Sun 10-18 and "hey hey" at 22:52 MDT Mon 10-19 (45 h). The 12-48 h
+    band fell through as "unknown"/continue_directly, and Orion answered "hope
+    Lagoon was magical today"."""
+    last = datetime(2026, 10, 18, 7, 40, 35, tzinfo=timezone.utc)
+    now = datetime(2026, 10, 20, 4, 52, 47, tzinfo=timezone.utc)
+    clock = classify_conversation_phase(last, now, TZ)
+    assert clock["phase_change"] == "next_day"
+    assert clock["continuity_mode"] == "reorient"
+    assert clock["topic_staleness_risk"] == "medium"
+    assert clock["crossed_day"] is True
+
+
+@pytest.mark.parametrize("hours", [12, 15, 24, 36, 47.9])
+def test_every_12_to_48h_gap_reorients(hours: float) -> None:
+    last = datetime(2026, 10, 18, 7, 0, 0, tzinfo=timezone.utc)
+    clock = classify_conversation_phase(last, last + timedelta(hours=hours), TZ)
+    assert clock["phase_change"] in {"long_gap", "next_day"}
+    assert clock["continuity_mode"] == "reorient"
+
+
+def test_same_local_day_12h_gap_is_long_gap() -> None:
+    # 07:00 MDT -> 19:30 MDT, no day boundary crossed.
+    last = datetime(2026, 10, 18, 13, 0, 0, tzinfo=timezone.utc)
+    clock = classify_conversation_phase(last, last + timedelta(hours=12, minutes=30), TZ)
+    assert clock["phase_change"] == "long_gap"
+
+
+def test_48_hours_and_over_is_stale_thread() -> None:
+    last = datetime(2026, 10, 18, 7, 0, 0, tzinfo=timezone.utc)
+    assert classify_conversation_phase(last, last + timedelta(hours=48), TZ)["phase_change"] == "stale_thread"
+
+
+def test_gap_over_two_local_midnights_is_long_gap_not_next_day() -> None:
+    # Sat 22:00 MDT -> Mon 07:00 MDT, 33 h, two days crossed.
+    last = datetime(2026, 10, 18, 4, 0, 0, tzinfo=timezone.utc)
+    clock = classify_conversation_phase(last, last + timedelta(hours=33), TZ)
+    assert clock["phase_change"] == "long_gap"
+    assert clock["crossed_day"] is True

@@ -157,7 +157,7 @@ class ThoughtSettings(BaseSettings):
     # the rhythm reducer's met/missed expectations within the lookback, each
     # with the subject's 14-day hit rate. Empty stream ids switch both off.
     reverie_street_enabled: bool = Field(True, alias="ORION_REVERIE_STREET_ENABLED")
-    reverie_street_stream_ids: str = Field("walkway", alias="ORION_REVERIE_STREET_STREAM_IDS")
+    reverie_street_stream_ids: str = Field("walkway,doorbell", alias="ORION_REVERIE_STREET_STREAM_IDS")
     reverie_street_max_age_sec: float = Field(900.0, alias="ORION_REVERIE_STREET_MAX_AGE_SEC")
     reverie_street_max_events: int = Field(2, alias="ORION_REVERIE_STREET_MAX_EVENTS")
     reverie_street_graded_lookback_hours: float = Field(
@@ -434,6 +434,17 @@ class ThoughtSettings(BaseSettings):
     visual_painting_gap_check_interval_sec: float = Field(
         600.0, alias="ORION_VISUAL_PAINTING_GAP_CHECK_INTERVAL_SEC", gt=0
     )
+    # Failed-attempt streak (2026-10-20, same loop as the gap check): N painting attempts in a
+    # row (reverie_visual_attempt) produced nothing -> CRITICAL card (emailed at once). 6 = one
+    # more than the longest ordinary streak 2026-09-14..10-19; every streak >= 6 was an outage
+    # (35 on 10-16, 16 on 10-09, 9 on 10-08 and 09-25). See evals/test_attempt_streak_replay.py.
+    # Runs inside the painting-gap loop: ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED=false stops it too.
+    visual_attempt_streak_check_enabled: bool = Field(
+        True, alias="ORION_VISUAL_ATTEMPT_STREAK_CHECK_ENABLED"
+    )
+    visual_attempt_failure_streak_threshold: int = Field(
+        6, alias="ORION_VISUAL_ATTEMPT_FAILURE_STREAK_THRESHOLD", ge=1
+    )
     # How often the watchdog re-checks reverie_visual_chain's newest row age.
     # 600s (not field-digester's own 900s precedent -- review finding, fixed:
     # that comment previously named 900s but this field's default was always
@@ -681,6 +692,18 @@ class ThoughtSettings(BaseSettings):
     temporal_self_cue_fetch_timeout_sec: float = Field(
         0.5, gt=0.0, le=5.0, alias="TEMPORAL_SELF_CUE_FETCH_TIMEOUT_SEC"
     )
+
+    # --- Personality graph read-back (app/personality_cue.py; spec 2026-10-16 rev 2) ---
+    # What Orion keeps coming back to, in Orion's own words, rendered by a fixed template
+    # (orion/personality/cue.py, no LLM) from orion-durable-runs' GET /personality/frame. A record,
+    # not an instruction. Shown to stance_react (fetched alongside Mind) and reverie (alongside its
+    # other reads). Missing / stale (> MAX_AGE_SEC) / empty frame or no reply within TIMEOUT_SEC
+    # renders nothing. Kill switch: false = both prompts exactly as before.
+    personality_cue_enabled: bool = Field(True, alias="PERSONALITY_CUE_ENABLED")
+    personality_frame_url: str = Field("http://durable-runs:8121", alias="PERSONALITY_FRAME_URL")
+    personality_cue_timeout_sec: float = Field(0.5, gt=0.0, le=5.0, alias="PERSONALITY_CUE_TIMEOUT_SEC")
+    personality_cue_max_age_sec: float = Field(3600.0, gt=0.0, alias="PERSONALITY_CUE_MAX_AGE_SEC")
+    personality_cue_top_k: int = Field(5, ge=1, le=12, alias="PERSONALITY_CUE_TOP_K")
 
     # --- Self-readings: body signals against their own 7 days (self-calibration spec section C) ---
     # app/self_readings_cue.py -> orion/attention/self_readings.py. A fixed template (no LLM) over

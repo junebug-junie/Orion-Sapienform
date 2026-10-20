@@ -16,6 +16,12 @@ on:
       - "services/orion-thought/app/bus_listener.py"
       - "services/orion-thought/app/settings.py"
       - "services/orion-thought/tests/test_stance_temporal_self_cue.py"
+      - "services/orion-thought/app/personality_cue.py"
+      - "services/orion-thought/app/reverie.py"
+      - "services/orion-thought/tests/test_personality_cue.py"
+      - "orion/personality/**"
+      - "orion/schemas/personality.py"
+      - "orion/cognition/prompts/reverie_narrate.j2"
       - "services/orion-hub/scripts/chat_turn_trace_routes.py"
       - "services/orion-hub/static/js/thought-process.js"
       - "services/orion-hub/scripts/orion_day_introspect.py"
@@ -30,6 +36,7 @@ on:
       - "orion/schemas/temporal_self.py"
       - "orion/thought/**"
       - "services/orion-thought/app/temporal_self_cue.py"
+      - "services/orion-thought/app/personality_cue.py"
       - "services/orion-thought/app/bus_listener.py"
       - "services/orion-hub/scripts/chat_turn_trace_routes.py"
       - "services/orion-hub/static/js/thought-process.js"
@@ -54,7 +61,7 @@ jobs:
       - name: Renderers and gate (pure)
         run: python -m pytest -q -p no:cacheprovider orion/temporal_self/tests orion/thought/tests
       - name: orion-thought cue fetch and stance wiring
-        run: cd services/orion-thought && python -m pytest -q -p no:cacheprovider tests/test_stance_temporal_self_cue.py
+        run: cd services/orion-thought && python -m pytest -q -p no:cacheprovider tests/test_stance_temporal_self_cue.py tests/test_personality_cue.py
       - name: Hub turn trace (route + rendered panel, node) and letter closed-day block
         run: |
           cd services/orion-hub && python -m pytest -q -p no:cacheprovider \

@@ -541,6 +541,9 @@ class Settings(BaseSettings):
     # Match candidates: individuals seen within this many days, plus all labeled ones.
     vision_individuals_candidate_days: float = Field(30.0, alias="VISION_INDIVIDUALS_CANDIDATE_DAYS")
     vision_crop_retention_days: float = Field(7.0, alias="VISION_CROP_RETENTION_DAYS")
+    # Comma list of crop labels the retention prune never deletes (labelled
+    # examples for person learning). "0" or empty = prune every label.
+    vision_crop_retention_keep_labels: str = Field("person", alias="VISION_CROP_RETENTION_KEEP_LABELS")
     vision_sighting_retention_days: float = Field(90.0, alias="VISION_SIGHTING_RETENTION_DAYS")
     # Zone head counts (the patio; config/vision_zones.yaml presence: true):
     # "present" if a non-stationary box was seen in the zone within this many
@@ -555,10 +558,12 @@ class Settings(BaseSettings):
     vision_ask_min_sightings: int = Field(10, alias="VISION_ASK_MIN_SIGHTINGS")
     vision_ask_min_days: int = Field(5, alias="VISION_ASK_MIN_DAYS")
     vision_ask_expiry_days: float = Field(7.0, alias="VISION_ASK_EXPIRY_DAYS")
-    # Same key as orion-vision-host, which prunes crop thumbnails after this
-    # many days. An ask only shows a thumbnail young enough to outlive it; if
-    # this is not longer than VISION_ASK_EXPIRY_DAYS asks carry no picture.
-    vision_crop_thumb_retention_days: float = Field(10.0, alias="VISION_CROP_THUMB_RETENTION_DAYS")
+    # Same key as orion-vision-host. 0 (default, Juniper 2026-10-20) = the host
+    # keeps crop thumbnails forever, so an ask may show any of them. A positive
+    # value = the host prunes after this many days: an ask then only shows a
+    # thumbnail young enough to outlive it, and none if this is not longer
+    # than VISION_ASK_EXPIRY_DAYS.
+    vision_crop_thumb_retention_days: float = Field(0.0, alias="VISION_CROP_THUMB_RETENTION_DAYS")
     # An ask that expired unanswered is not repeated for this long.
     vision_ask_cooldown_days: float = Field(30.0, alias="VISION_ASK_COOLDOWN_DAYS")
     # The walkway camera's daily ask budget: vision_individual asks only (since 2026-10-06; memory
@@ -598,6 +603,67 @@ class Settings(BaseSettings):
     vision_individuals_cannot_link_margin: float = Field(0.10, alias="VISION_INDIVIDUALS_CANNOT_LINK_MARGIN")
     # Local clock for "07:40", distinct days, weekday/weekend, and the ask cap day.
     vision_local_tz: str = Field("America/Denver", alias="VISION_LOCAL_TZ")
+
+    # Walkway motion stories (app/vision_motion.py, app/vision_motion_loop.py;
+    # docs/superpowers/specs/2026-10-16-walkway-motion-stories-proposal.md).
+    # One plain sentence per passing thing, from box maths. HUB ONLY until
+    # Juniper's spot-check passes: nothing in Orion's cognition reads them.
+    # false = the reducer does not run.
+    vision_motion_stories_enabled: bool = Field(True, alias="VISION_MOTION_STORIES_ENABLED")
+    vision_motion_story_interval_sec: float = Field(15.0, alias="VISION_MOTION_STORY_INTERVAL_SEC")
+    # A passage ends after this long with no linked box (detector looks every ~5 s).
+    vision_motion_story_close_gap_sec: float = Field(11.0, gt=0.0, alias="VISION_MOTION_STORY_CLOSE_GAP_SEC")
+    # Fewer detections than this = a glimpse: stored, never published.
+    vision_motion_story_min_detections: int = Field(3, ge=2, alias="VISION_MOTION_STORY_MIN_DETECTIONS")
+    vision_motion_story_streams: str = Field("walkway,doorbell", alias="VISION_MOTION_STORY_STREAMS")
+    vision_motion_story_settle_sec: float = Field(30.0, ge=0.0, alias="VISION_MOTION_STORY_SETTLE_SEC")
+    vision_motion_story_initial_lookback_sec: float = Field(3600.0, ge=0.0, alias="VISION_MOTION_STORY_INITIAL_LOOKBACK_SEC")
+    vision_motion_story_retention_days: float = Field(90.0, alias="VISION_MOTION_STORY_RETENTION_DAYS")
+    # Box pixel space of the stream (walkway retina: 2560x1920). Edge clipping
+    # and zones depend on it.
+    vision_motion_frame_width: float = Field(2560.0, gt=0.0, alias="VISION_MOTION_FRAME_WIDTH")
+    vision_motion_frame_height: float = Field(1920.0, gt=0.0, alias="VISION_MOTION_FRAME_HEIGHT")
+    # Stories starting before this are marked clean=false (RTSP smear before the
+    # stream fix); the Hub tally and the replay eval count clean stories only.
+    vision_motion_clean_since: str = Field("2026-10-16T18:59:00Z", alias="VISION_MOTION_CLEAN_SINCE")
+    # Comma-separated individual ids that are props (never a story). Default:
+    # the patio skeleton, never flagged stationary because its box drifts.
+    vision_motion_prop_individual_ids: str = Field(
+        "fefb24d7e4074e9f827ad711874f6edf", alias="VISION_MOTION_PROP_INDIVIDUAL_IDS")
+
+    # Walkway rollups by hour, day, week and month (app/vision_rollup.py,
+    # app/vision_rollup_loop.py; orion/vision/walkway_rollup.py). Deterministic
+    # counts into vision_rollup; day rows from hour rows, week/month from days.
+    # false = the reducer does not run (readers then see no new rows).
+    vision_rollup_enabled: bool = Field(True, alias="VISION_ROLLUP_ENABLED")
+    vision_rollup_interval_sec: float = Field(300.0, alias="VISION_ROLLUP_INTERVAL_SEC")
+    vision_rollup_streams: str = Field("walkway", alias="VISION_ROLLUP_STREAMS")
+    # A vehicle individual seen in this many different clock hours of the
+    # trailing 24 h is a parked car the stationary rule missed: not a passing.
+    vision_rollup_parked_min_hours: int = Field(4, ge=1, alias="VISION_ROLLUP_PARKED_MIN_HOURS")
+    # Missing hour rows are built back this far each tick (older ones: the
+    # backfill script, scripts/backfill_vision_rollups.py).
+    vision_rollup_catchup_hours: int = Field(48, ge=3, alias="VISION_ROLLUP_CATCHUP_HOURS")
+    # Pictures of the moment for published stories (app/vision_story_strip.py,
+    # 2026-10-17). The motion loop saves a padded crop + small frame per walker
+    # crop while its frame still exists (the shared frames dir keeps ~60 s),
+    # then up to 4 crops + one boxed full frame per published story under
+    # VISION_STORY_STRIP_DIR/<story_id>/. false = no pictures (cards say so).
+    vision_story_strips_enabled: bool = Field(True, alias="VISION_STORY_STRIPS_ENABLED")
+    vision_story_frames_dir: str = Field("/mnt/telemetry/vision/frames", alias="VISION_STORY_FRAMES_DIR")
+    vision_story_strip_dir: str = Field("/mnt/telemetry/vision/story_strips", alias="VISION_STORY_STRIP_DIR")
+    # 0 (default, Juniper 2026-10-20) = strips are kept forever: no age rule
+    # deletes a strip, story retention never deletes a story row that still
+    # has its picture, and the orphan-directory sweep is off. A positive value
+    # = a strip is kept until this long after its story ended AND Juniper has
+    # given it a verdict ("Can't tell" counts); an unchecked story keeps its
+    # picture until story retention deletes the story row itself.
+    vision_story_strip_retention_days: float = Field(0.0, alias="VISION_STORY_STRIP_RETENTION_DAYS")
+    # Pending crops/frames waiting for their story; older ones are deleted.
+    vision_story_strip_pending_sec: float = Field(3600.0, gt=0.0, alias="VISION_STORY_STRIP_PENDING_SEC")
+    # dark = median RMS contrast (std of luma, 0..1) of the strip's crops below
+    # this. Measured live 2026-10-17: night crops 0.012-0.075, day/dusk >= 0.134.
+    vision_story_strip_dark_contrast: float = Field(0.10, ge=0.0, le=1.0, alias="VISION_STORY_STRIP_DARK_CONTRAST")
 
     # Rhythm learner: fits when things usually happen, emits expectations,
     # grades them met / missed / unscorable.
@@ -697,7 +763,7 @@ class Settings(BaseSettings):
     # materialise act_opened/act_closed grammar events into grammar_acts and grade closed acts into
     # substrate_action_outcomes + substrate_action_effect_posterior (orion/grammar/act_ledger.py).
     sql_writer_act_ledger_enabled: bool = Field(True, alias="SQL_WRITER_ACT_LEDGER_ENABLED")
-    # Horizon resolver cadence: closes juniper_replied acts from chat_history_log and expires
+    # Horizon resolver cadence: closes juniper_replied acts from Juniper turn starts and expires
     # producer-reported acts past their horizon. 0 disables (open acts then stay open).
     sql_writer_act_resolver_interval_sec: float = Field(60.0, alias="SQL_WRITER_ACT_RESOLVER_INTERVAL_SEC")
 

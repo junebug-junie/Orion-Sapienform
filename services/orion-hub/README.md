@@ -3655,6 +3655,65 @@ section 4.
     writer's digest, and the email shows a "Corrections from conversations"
     section.
 
+### Introspect responder: `queue_curiosity_focus`
+
+**What it does.** In a conversation, Juniper can tell Orion "it's your choice
+what to focus on; queue it up in your curiosity run", or ask Orion to look into
+something next. Orion calls the orion-introspect `queue_curiosity_focus` tool,
+and this responder saves ONE pending question in `curiosity_focus_request`
+(`orion/curiosity/focus.py`). The next regular investigate run that passes all
+its normal gates is shown it first and decides itself whether to explore it.
+Design:
+[`2026-10-16-orion-queue-curiosity-focus-design.md`](../../docs/superpowers/specs/2026-10-16-orion-queue-curiosity-focus-design.md).
+
+- **Channel.** `orion:introspect:queue_curiosity_focus:request`; reply on
+  `orion:introspect:result:<correlation_id>` only.
+- **What Orion sends.** `question` and `why` (each 1-500 characters) and
+  `origin`: `self` (Orion's own choice, default) or `juniper` (Juniper named it).
+- **One slot.** A new focus replaces the pending one, and the reply names the
+  one it replaced. A pending focus with origin `juniper` cannot be replaced by
+  an origin `self` call: the reply is "not queued: Juniper asked for this focus;
+  it stays until a run takes it or it expires". A `juniper` call may replace
+  anything. A retried identical call (same words, same chat turn) returns the
+  same `focus_id` and writes nothing new.
+- **Refusals (nothing written).** Not a chat turn; the queue switched off
+  (`HUB_CURIOSITY_FOCUS_ENABLED=false`); the Juniper rule above. A database
+  failure is `queue_curiosity_focus_unavailable; answer unknown`.
+- **What the reply says.** `focus_id`, `status`, `replaced`, `expires_at`, and
+  `next_run.words`: when the next run can start, from the Curiosity tab's own
+  schedule read (cooldown stamp, daily counter). It never says "running now".
+- **Expiry.** 48 hours (`orion.curiosity.focus.FOCUS_TTL`). Measured
+  2026-10-16 over the 30 days before: 206 regular investigate runs, the line
+  runs ~7 times right after local midnight (daily cap 7, 30 min cooldown), the
+  longest gap between runs was 21.1 h and no day was skipped. 48 h covers that
+  plus one whole missed day.
+- **Where it goes next.** The investigate kickoff, on a writable graph only,
+  takes the pending focus (`status='taken'`, `offered_run_id`) after every
+  gate, shows it first ("THE FOCUS YOU QUEUED FOR THIS RUN"), and uses it as the
+  recall query. The run is asked to write `focus_disposition` on its
+  `:TurnOutcome`: `"explored"` or `"set_aside: <why>"`. At turn end Hub reads it
+  back (read-only) and stamps `ran` + the disposition; no disposition is
+  `NULL` = unknown, never explored. An empty or failed turn is `failed` and is
+  never re-queued. Only a run cancelled before its turn began gives the focus
+  back (`pending`, or `replaced` if Orion queued a newer one meanwhile).
+  A focus still `taken` 48 h after it was taken with no recorded end (Hub died
+  mid-turn, admission never confirmed) is marked `failed` with `turn_ok` NULL
+  ("end never recorded"); a late turn end can still stamp it `ran`.
+- **Trust note.** `origin` is Orion's own label; the code does not check that
+  Juniper really named the topic. The chat correlation id is stored, and
+  Juniper can always Clear it or queue her own.
+- **Reading it back.** `curiosity` with `kind=focus` lists recent focuses with
+  a one-line story: queued -> taken by run X -> disposition, or expired /
+  replaced / cleared / failed. Run items that took a focus carry `extra.focus`.
+- **Hub tab.** The Curiosity tab shows the pending focus under Today's budget
+  with a Clear button (`DELETE /curiosity/api/focus/{focus_id}`, pending only),
+  and a run chip that took a focus says so.
+- **Trace (one chat correlation id).** `curiosity_focus_queued focus_id=...
+  chat_corr=...` -> `curiosity_focus_offered run=... focus_id=...` ->
+  `curiosity_focus_outcome run=... turn_ok=... disposition=...`.
+- **Needs** `services/orion-sql-db/manual_migration_curiosity_focus_request_v1.sql`
+  (additive; auto-applied by the post-pull rebuild).
+
 ## Curiosity resource admission
 
 `HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=true` is the operator-template default.
@@ -3819,6 +3878,59 @@ The page polls every 60 s only while viewing today and while the Hub panel is vi
 Code: `scripts/temporal_self_routes.py`, `templates/temporal_self.html`, `static/js/temporal_self.js`,
 `static/js/temporal_self_tab.js`.
 
+## Personality tab (what Orion keeps returning to)
+
+The **Personality** tab (`#personality`, standalone at `/personality`) is read-only observability for
+Orion's personality graph (spec `2026-10-16-orion-dynamic-personality-graph-design.md` rev 2,
+section 7). It shows, top to bottom:
+
+- **What Orion sees right now**: the exact cue text chat stance, reverie, curiosity kickoff and
+  outreach are handed. The Hub renders it server-side with `orion.personality.cue.project_personality_cue`
+  (the same pure function the lanes call) at its default max age (3600 s) and top_k (5); the page
+  names those parameters. That matches the lanes while their own knobs (orion-thought
+  `PERSONALITY_CUE_MAX_AGE_SEC`/`_TOP_K`/`_ENABLED`) sit at the defaults; the Hub's 5 s fetch budget
+  is also longer than a lane's, so a lane can still get `fetch_failed` when the panel shows a cue.
+  When the cue is empty the skip reason is named (`stale`, `empty`, `fetch_failed`,
+  `invalid_frame`, `render_failed`). A frame that does not validate reads as unavailable, never as
+  an empty graph.
+- Counts (active / candidate / retired / evidence rows), the curiosity choice-style line, the
+  frame's `generated_at`, and any frame warnings.
+- **Active** nodes: label (Orion's own words), weight with an inline sparkline of its history,
+  evidence count, lanes (`lane: count`), chosen count, first seen, last reinforced. Click a row for
+  its evidence (lane, time, excerpt, similarity, weight delta).
+- A **When** column: the situations the node's evidence happened in, from durable-runs `situation_mix`.
+  Per dimension it shows the most common value and its share of the stamped rows, for example
+  "idle 70% · night 55% · alone 80% (n=20)". Tied values all show, by name ("engaged/idle 50%"). The
+  tooltip has the full counts. A node whose evidence all predates situation stamping (2026-10-16) reads
+  "no situation data yet". This is for watching CAPS if-then signatures form; nothing Orion reads uses it.
+- **Candidates** and **Retired**, collapsed, same columns.
+- An empty graph reads "The graph is empty — it starts from today and grows as Orion writes."; a
+  missing frame reads "durable-runs unavailable: <reason>".
+
+Routes (proxies to orion-durable-runs at `HUB_CURIOSITY_DURABLE_RUNS_URL`, reused; no new key):
+`/api/personality/frame`, `/api/personality/dispositions?status=active|candidate|retired|all&limit=`
+(1-200, default 50), `/api/personality/evidence?disposition_id=&limit=` (1-200, default 50), and
+`/api/personality/cue` (frame + rendered cue + `render_params`; fail-open: always 200, an upstream fault rides in
+`error`/`upstream_status`). Unset URL is a 503; upstream down, timed out, 5xx or non-JSON is a 502
+naming the reason; upstream 404/503 pass through. All upstream text is written with `textContent`
+(excerpts are Orion's raw words); the only `innerHTML` is the numeric sparkline with an escaped title.
+The page polls every 60 s while the Hub panel is visible and no evidence list is open.
+Code: `scripts/personality_routes.py`, `templates/personality.html`, `static/js/personality.js`,
+`static/js/personality_tab.js`.
+
+### Personality read-back in curiosity and outreach
+
+`HUB_PERSONALITY_CUE_ENABLED` (default `true`). The curiosity kickoff and the endogenous outreach prompt each show a short block of "things you keep coming back to".
+
+- **Source.** The shared fixed template `orion.personality.cue.project_personality_cue` renders it from orion-durable-runs `GET /personality/frame`, at the existing `HUB_CURIOSITY_DURABLE_RUNS_URL`.
+- **Content.** Orion's own words, as a record, not an instruction. It adds no tone or style directions.
+- **Curiosity** reads it at the same time as the "today so far" fact, under the same deadline.
+- **Outreach** reads it at the same time as the situation read and places it right after the situation block.
+- **On failure** (an error, a frame over 1 h old, or an empty frame) there is no block, and nothing waits.
+- **The cue alone is never a reason to start an outreach.**
+- **Records.** Outreach `grounding_summary` records `personality_cue`, `personality_cue_ids` and `personality_cue_skip`: node ids only, never the text. Each read writes one log line: `curiosity_personality_cue run=<id> rendered=… ids=… skip=…` or `endogenous_outreach_personality_cue rendered=… ids=… skip=…`.
+- **Code.** `scripts/personality_cue_reader.py`.
+
 ## GPU leases (lend cards in orion-gpu-pool)
 
 The **GPU leases** button in the composer control strip opens a small modal with one switch per
@@ -3944,3 +4056,37 @@ Peer brief offers now carry the investigation run ID; completed investigations
 emit a separate completion receipt. Prompt-authored decisions cite existing Hop
 records. Deploy the updated peer consumer before this Hub producer. See
 [peer ask episodes](../../docs/peer-ask-episodes.md) for contracts and rollout.
+
+### Walkway stories: who is this story about? (2026-10-18)
+
+The "Walkway stories" card (Vision panel, "Walkway (live)") shows one box per
+person in each story: the walker, and anyone it walked with. Each box shows the
+name Orion has for that individual, or "unnamed person (individual <short id>)".
+Juniper can type a name, say "Someone else" (optionally typing who it really
+is), or say "Not sure". Route: `POST /api/vision/motion-stories/{story_id}/people/{individual_id}`
+(`scripts/motion_story_routes.py`).
+
+Nothing new stores identity. Each answer is an `orion_ask` row, written already
+answered, that orion-sql-writer applies on its own clock:
+
+- A name is a `vision_individual` ("who is this?") answer with
+  `answer_detail.story_id`: a typed label, last typed name wins, a same-name
+  link to an individual already given that name, and the usual
+  `orion:ask:answered` event for the substrate entity. It does not count
+  against the "who is this?" opener's daily cap.
+- "Someone else" / "Not sure" is a `vision_story_person` row with one picture
+  verdict per story crop; "someone else" crops go to the split pass (which
+  refuses when they would be most of that individual's pictures).
+
+A correction of the name the story was written with also records the story's
+"Wrong name" verdict, unless the story already has a verdict about something
+else. The sentence shown is re-derived on read: Juniper's latest name or
+"someone else" on that story wins; otherwise the strict naming rule
+(`orion/vision/story_naming.py`) on today's names. The stored sentence is shown
+as "Orion first wrote: ..." when it differs.
+
+## Retro browser play
+
+`/retro` offers native NES viewing/control without an additional access code through a
+private Unix socket. Disabled by default. See [setup and acceptance](../../docs/runbooks/retro-browser.md)
+for exact-origin configuration, credentials, browser checks and known limits.

@@ -197,6 +197,7 @@ class HarnessAttachmentV1(BaseModel):
 
 from orion.schemas.reading import ReadingToolBindingV1
 from orion.schemas.gpu_pool import GpuLeaseRefV1
+from orion.schemas.curiosity_focus import CuriosityFocusAnchorV1
 
 
 class HarnessRunRequestV1(BaseModel):
@@ -241,6 +242,11 @@ class HarnessRunRequestV1(BaseModel):
     # (HARNESS_FCC_CHAT_DISABLE_AUTO_MEMORY). None from an older Hub build
     # means "not a chat reply", i.e. today's behavior.
     utterance_origin: str | None = None
+    # A curiosity run that took a focus (orion/curiosity/focus.py): the governor puts the focus and
+    # the focus_disposition instruction in the system prompt, where CLI compaction cannot reach it
+    # (orion/harness/task_anchor.py::build_focus_anchor). None for every other turn. This model
+    # ignores unknown keys, so an older governor drops it silently; deploy the governor first.
+    curiosity_focus: CuriosityFocusAnchorV1 | None = None
     attachments: list[HarnessAttachmentV1] = Field(
         default_factory=list,
         description=(

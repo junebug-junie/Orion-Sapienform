@@ -63,18 +63,73 @@ cp .env_example .env
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `ORION_BUS_URL` | `redis://100.92.216.81:6379/0` | Redis pub/sub — shared mesh bus (same as sibling vision services) |
-| `RETINA_SOURCE_TYPE` | `folder` | `folder`, `mock`, `rtsp`, `webcam` |
-| `RETINA_SOURCE` | `/mnt/telemetry/vision/intake` | Folder path, RTSP URL, or webcam index |
+| `RETINA_SOURCE_TYPE` | `folder` | `folder`, `mock`, `rtsp`, `webcam`, `ring` |
+| `RETINA_SOURCE` | `/mnt/telemetry/vision/intake` | Folder path, RTSP URL, webcam index, or Ring device name/id |
 | `RETINA_SOURCE_PATH` | — | Legacy alias for `RETINA_SOURCE` |
 | `RETINA_CAMERA_ID` | `retina-cam-01` | Pointer metadata |
 | `RETINA_STREAM_ID` | `retina-stream-01` | Pointer metadata |
 | `RETINA_FPS` | `1.0` | Capture rate |
 | `FRAME_STORAGE_DIR` | `/mnt/telemetry/vision/frames` | JPEG output |
-| `FRAME_RETENTION_SECONDS` | `300` | Cleanup age |
+| `FRAME_RETENTION_SECONDS` | `300` | Cleanup age for this camera/stream's own frames only |
+| `RETINA_PUBLISH_STALL_SECONDS` | `120.0` | Publisher watchdog: degraded health, then exit for restart. `0` disables |
 | `CHANNEL_RETINA_PUB` | `orion:vision:frames` | Publish channel |
 | `RETINA_RTSP_TRANSPORT` | `tcp` | RTSP only: `tcp`, `udp`, `http`. TCP stops UDP packet loss (smeared frames, `RTP: bad cseq`) |
 | `RETINA_RTSP_IO_TIMEOUT_SECONDS` | `5.0` | RTSP only: FFmpeg socket `timeout` + OpenCV read timeout, so a quiet stream cannot block `cap.read()` forever |
 | `RETINA_RTSP_STALL_SECONDS` | `30.0` | RTSP only: no frame this long → WARNING; if the reader thread is also wedged, abandon it and open a fresh capture. `0` disables. Must be > 3×IO timeout + reconnect |
+| `RETINA_RTSP_RECONNECT_QUIET_SECONDS` | `90.0` | RTSP only: no (re)connect until this long after the last camera session (every path, incl. process start). `0` disables |
+| `RETINA_RTSP_SESSION_STATE_DIR` | `/var/lib/orion-vision-retina` | RTSP only: persisted last-session time (`rtsp_session_<stream_id>.json`) so restarts/deploys wait too. Compose mounts host `/mnt/telemetry/vision/retina_state` |
+| `RETINA_RTSP_HEAL_ENABLED` | `true` | RTSP only: live corruption self-heal |
+| `RETINA_RTSP_HEAL_CHECK_EVERY` | `10` | Score every Nth served frame (smear + decoder gray, `app/frame_corruption.py`) |
+| `RETINA_RTSP_HEAL_WINDOW_SECONDS` | `120.0` | Corruption must persist this long before a heal |
+| `RETINA_RTSP_HEAL_MIN_SHARE` | `0.8` | Share of checks in the window that must be corrupt |
+
+### Ring doorbell source (2026-10-17)
+
+`RETINA_SOURCE_TYPE=ring` (`app/ring_source.py`), deployed as
+`orion-vision-retina-doorbell` (no compose profile, stream/camera id
+`doorbell`). The doorbell is battery-powered with no Ring Protect plan, so it
+has no RTSP, no saved recordings, and cannot take a snapshot while it records
+([Ring snapshot limitations](https://github.com/dgreif/ring/wiki/Snapshot-Limitations)).
+The only picture source is a live view. So:
+
+- The source listens for Ring push events (`RETINA_RING_EVENT_KINDS`, default
+  `motion,ding`) for the device named by `RETINA_SOURCE` (Ring app name or
+  device id; empty = first camera on the account).
+- Each event opens one WebRTC live view (`aiortc`) for
+  `RETINA_RING_BURST_SECONDS` (15). `capture_loop` samples the newest frame
+  at `RETINA_FPS`, exactly as for RTSP. Downstream sees the same
+  `vision.frame.pointer` stream as the walkway, only in bursts.
+- **Never continuous.** One live view at a time, none without an event, and
+  `RETINA_RING_COOLDOWN_SECONDS` (30) from the end of one to the next start.
+  Each live view wakes the camera and costs battery.
+- Between events an empty read is not a failure (`waiting_for_event`). A live
+  view that delivers no frame sets `last_error` (health `degraded`) and counts
+  in `ring_bursts_failed`. Health `details` also carry `ring_events_seen`,
+  `ring_events_ignored`, `ring_bursts_started`, `ring_last_event_kind`,
+  `ring_last_event_ts`. `last_frame_age_sec` growing between visits is normal
+  for this camera.
+
+No compose profile: the normal `up` (and the post-pull rebuild) builds and
+starts it. Until the Ring login it waits and reports `ring not authenticated`
+in health. Login, once:
+
+```bash
+docker exec -it orion-vision-retina-doorbell python -m app.ring_login
+```
+
+It asks for the Ring email, password and 2FA code, and stores only the
+refresh token, owner-only, in `/mnt/telemetry/vision/ring_state/` (mounted
+into the doorbell container only),
+next to the FCM push credentials and a stable hardware id (a changing one
+would add a new "authorized device" in the Ring app on every recreate). The
+source checks for the token every 60 s, so no restart is needed after login.
+
+The push link is supervised every 60 s: firebase-messaging stops for good
+after 3 connection errors, and ring_doorbell refreshes its session only once.
+A stopped listener shows as `last_error = "ring push listener stopped"` and is
+rebuilt, and the whole connection is rebuilt every 12 h. Each live view is
+registered with Ring before it starts, so every exit path (no answer, error,
+shutdown) closes it -- an orphaned session keeps a battery camera streaming.
 
 ### RTSP stall watchdog (2026-10-15)
 
@@ -95,6 +150,79 @@ stayed up and logged nothing; only a restart fixed it. Now:
   the post-deploy check below).
 - System health `details` carry `last_frame_age_sec` and `source_stall_restarts`; a stall logs
   `[RETINA] rtsp stalled: ...` at WARNING and `rtsp frames resumed ...` on recovery.
+
+### Capture task supervision + publisher watchdog (2026-10-17)
+
+The walkway published nothing for ~3 h while health said `ok`. The frame
+pruner raced another pruner on the shared frames dir (a file deleted between
+`isfile` and `getmtime`), the exception escaped `capture_loop`, the task
+ended, and nothing logged it. Now:
+
+- Each writer prunes only its own files: this service only
+  `<camera_id>_<stream_id>_<ms>_<hex8>.jpg` (`frame_store.owned_frame_pattern`),
+  the edge only `frame_*`/`still_*`. Walkway frames now live
+  `FRAME_RETENTION_SECONDS`, not the edge's 60 s. A file vanishing mid-sweep is skipped.
+- Cleanup runs inside `capture_loop`'s protective try: housekeeping never stops capture.
+- `capture_loop`, the health loop and the clip consumer must run forever. If one
+  ends any other way than `stop()`, it logs CRITICAL (with the traceback) and the
+  process exits; the container restart policy brings it back (the RTSP quiet
+  period keeps the camera clean on the way up).
+- Nothing published for `RETINA_PUBLISH_STALL_SECONDS` (outside the RTSP quiet
+  wait and a Ring camera between events): health `status` is `degraded`,
+  `details.capture_stalled` is true with `capture_stalled_reason`. If
+  `capture_loop` has not ticked for that long, or the RTSP reader still delivers
+  frames while nothing is published with no save/upload/bus error in that window,
+  the process exits for restart. Before exiting it stops the source (bounded),
+  so an RTSP reader sends TEARDOWN. A camera that is down, or a failure a
+  restart cannot fix (disk full, bus down, upload refused), reads degraded
+  with `last_error` and does not exit. The loop clock is monotonic: an NTP
+  step or a laptop resume is not a hang.
+- Known gaps: a Ring camera whose every publish fails never reads
+  `capture_stalled` (it is "between events" once the frame is taken); its
+  `last_error` and `source_ok` report it. Files in the shared dir that no live
+  writer owns (a retired camera_id/stream_id) are pruned by nobody.
+
+### RTSP reconnect quiet period + corruption self-heal (2026-10-16)
+
+Root cause, proven live: the walkway Reolink keeps a dropped RTSP session
+alive. A client that reconnects inside that window gets the stale session
+muxed into the new one -- ~6,000 `RTP: PT=60/61: bad cseq` lines a minute and
+every frame smeared, for hours (2026-10-15 after a stall + restart, fixed only
+by a camera reboot; 2026-10-16 for 10 h after a deploy restart). `docker stop`,
+wait 180 s, `docker start` gave 0 bad cseq and 20/20 clean frames with no
+camera reboot. Matches https://community.reolink.com/topic/563/.
+
+- **Quiet period.** `RtspSessionGate` blocks every RTSP connect until
+  `RETINA_RTSP_RECONNECT_QUIET_SECONDS` have passed since the last moment a
+  session may have existed (open attempt, decoded frame, release, abandoned
+  wedged reader). One gate in the reader thread covers every path: reader
+  reconnect, watchdog replacement, `pause_device` reopen, heal, process start.
+  It logs `[RETINA] rtsp quiet period: waiting Ns before connecting` (INFO).
+  The stall watchdog ignores the wait.
+- **Restart-proof.** The time is persisted (atomic write, every 5 s while
+  streaming, immediately on release). After a deploy the new container waits
+  out the remainder; if the file is missing it waits one full period. **A
+  ~90 s frame gap after every deploy/restart is expected -- that is the fix.**
+- **Clean teardown.** Every release goes through `cap.release()`, which sends
+  RTSP `TEARDOWN` (verified in the built image, OpenCV 4.10 / FFmpeg 5.1,
+  against a fake server that logs methods). `stop()` waits up to 12 s for a
+  blocked reader to release it itself; compose `stop_grace_period: 30s` gives
+  that time before SIGKILL.
+- **Self-heal.** Every `RETINA_RTSP_HEAL_CHECK_EVERY` served frames are scored
+  off the event loop with the eval's own math. When at least
+  `RETINA_RTSP_HEAL_MIN_SHARE` of the checks over
+  `RETINA_RTSP_HEAL_WINDOW_SECONDS` are corrupt: WARNING, drop the session,
+  wait the quiet period (doubled per consecutive heal, max 8x), reconnect.
+  Never reboots the camera. Dark/flat frames are not corrupt by that math.
+  After 3 heals in a row with no clean window between them it stops
+  dropping sessions (`source_corruption_heal_suppressed=true`, WARNING) and
+  keeps streaming until a clean window resets it -- this caps the blind time
+  if the scorer misreads a scene (fog / infrared night are not yet measured).
+  Settings refuse an RTSP config with < 5 checks per window (silently dead heal).
+- Health `details`: `source_quiet_wait_remaining_sec`,
+  `source_last_session_end_ts`, `source_corrupt_frame_rate`,
+  `source_corruption_checks`, `source_corrupt_frames`, `source_corruption_heals`,
+  `source_corruption_heal_suppressed`.
 
 ### Post-deploy check: corrupted frames (2026-10-15)
 
@@ -315,6 +443,8 @@ PYTHONPATH=. ./venv/bin/python -m pytest tests/test_vision_retina_*.py -v
 |------|------|
 | `app/settings.py` | Env contract |
 | `app/sources.py` | Frame source adapters |
+| `app/ring_source.py` | Ring doorbell: push events -> short WebRTC live view |
+| `app/ring_login.py` | One-time Ring login (token to `RETINA_RING_STATE_DIR`) |
 | `app/frame_store.py` | Save + retention |
 | `app/clip_capture.py` | On-demand video+audio clip capture (AffectGPT, live-verified 2026-08-22) |
 | `app/envelopes.py` | `BaseEnvelope` builder |

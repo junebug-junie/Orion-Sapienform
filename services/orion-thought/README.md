@@ -391,6 +391,23 @@ Logs: `temporal_self_cue corr=... chars=... arcs=... fetch_ms=...`,
 `temporal_self_cue_skipped corr=... reason=stale|wrong_day|fetch_failed|invalid_frame|disabled`,
 `temporal_self_day_citations corr=... label=...`. Kill switch: `TEMPORAL_SELF_STANCE_CUE_ENABLED=false`.
 
+## Personality read-back for stance_react and reverie (personality graph, spec rev 2)
+
+What Orion keeps coming back to, in Orion's own words, read back as a record, not an instruction.
+`app/personality_cue.py` fetches orion-durable-runs `GET /personality/frame` (`PERSONALITY_FRAME_URL`,
+same base as `TEMPORAL_SELF_FRAME_URL`) and renders it with `orion.personality.cue.project_personality_cue`
+(a fixed template, no LLM, <= 600 chars, strongest nodes first). No tone or style instruction is added
+anywhere: the cue only names what recurred, where, and how often.
+
+- Chat: built concurrently with Mind enrichment and the day cue (`PERSONALITY_CUE_TIMEOUT_SEC=0.5`),
+  passed as `personality_cue` and rendered as `WHAT I KEEP COMING BACK TO` in `stance_react.j2`.
+- Reverie: one fetch per step alongside reverie's other reads (`ORION_REVERIE_RECENT_ARCS_FETCH_TIMEOUT_SEC`),
+  rendered as `WHAT YOU KEEP COMING BACK TO` in `reverie_narrate.j2` next to `EARLIER TODAY`.
+
+A frame that is missing, invalid, older than `PERSONALITY_CUE_MAX_AGE_SEC=3600`, or empty renders nothing.
+Log (one per build): `personality_cue corr=... rendered=true|false ids=... skip=disabled|fetch_failed|invalid_frame|stale|empty|render_failed`.
+Kill switch: `PERSONALITY_CUE_ENABLED=false`.
+
 ## Self-readings for stance_react and reverie (self-calibration spec section C)
 
 Orion's body signals, each scored 0-10 against its own last 7 days, shown to the unified turn's
@@ -653,6 +670,8 @@ Flags:
 | `ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED` | `true` | Painting-gap check (2026-10-10), own loop, not gated on `ORION_VISUAL_CHAIN_ENABLED` (off in production, which is why the staleness watchdog never ran during the 27.6 h 2026-10-09/10 outage) |
 | `ORION_VISUAL_PAINTING_GAP_THRESHOLD_HOURS` | `12` | If no real painting (a `reverie_visual_chain` row with a `production_receipt`, timed by its `produced_at`) has landed in this many hours, fire an orion-notify `error` attention request (emails if left unacked). Calibrated in-sample on 2026-09-14..10-10: no gap fell between 7.6 h and 14.7 h |
 | `ORION_VISUAL_PAINTING_GAP_CHECK_INTERVAL_SEC` | `600` | How often the painting-gap loop re-reads the last painting's age |
+| `ORION_VISUAL_ATTEMPT_STREAK_CHECK_ENABLED` | `true` | Failed-attempt streak check (critical card) in the same loop |
+| `ORION_VISUAL_ATTEMPT_FAILURE_STREAK_THRESHOLD` | `6` | Painting attempts in a row with no image before the card |
 | `ORION_VISUAL_CHAIN_WATCHDOG_CHECK_INTERVAL_SEC` | `600` | How often the watchdog re-checks that staleness, independently of the worker's own loop |
 | `ORION_DIFFUSION_HOST_BASE_URL` | `http://100.112.254.99:8014` | circe's diffusion host |
 | `ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC` | `120` | `/generate` HTTP timeout (raised from `30` 2026-08-28 -- tuned for sdxl-turbo's near-instant single step; FLUX.1-schnell's real generation measured 49-56s live, timing out every tick until fixed) |
@@ -790,6 +809,17 @@ treated as no observation, not as recovery. Dream carry pictures
 (`brief.dream_hop`) write no chain row and never count. The threshold is
 calibrated in-sample on 2026-09-14..10-10 (no gap fell between 7.6 h and
 14.7 h); replay: `evals/test_painting_gap_replay.py`.
+
+`visual_attempt_failure_streak` (same loop, 2026-10-20): how many painting
+attempts in a row (`reverie_visual_attempt`) produced nothing. At
+`ORION_VISUAL_ATTEMPT_FAILURE_STREAK_THRESHOLD` (6) it raises a **critical**
+card (emailed at once), and a recovery note once an attempt produces an image.
+2026-10-16 -> 10-20 had 35 in a row while the only alert was one "error" gap
+card. 6 is one more than the longest ordinary streak on 2026-09-14..10-19;
+every streak of 6+ was an outage. Replay: `evals/test_attempt_streak_replay.py`.
+`ORION_VISUAL_ATTEMPT_STREAK_CHECK_ENABLED=false` turns it off (so does
+`ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED=false`: it runs in that loop). Attempts
+still `active`/`unknown` (in progress) never count as failures.
 
 ## Acknowledged visual activity and baseline execution
 

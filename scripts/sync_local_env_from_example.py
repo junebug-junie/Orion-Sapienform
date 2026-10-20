@@ -412,6 +412,10 @@ SYNC_PREFIXES = (
     # Temporal Self rev 4 regulation (orion-durable-runs regulate node, 2026-10-10).
     "TEMPORAL_SELF_",
     "ORION_REGULATION_",
+    # Walkway rollups (2026-10-18): orion-sql-writer reducer and orion-substrate-runtime
+    # "seen on <day>" links. Neither matched an existing prefix.
+    "VISION_ROLLUP_",
+    "WALKWAY_SEEN_",
 )
 
 SYNC_EXACT = frozenset(

@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 
 from . import grammar_emit
 from .dispatcher import FrameDispatcher
@@ -121,50 +122,49 @@ class FrameRouterService:
 
     async def _frames_loop(self) -> None:
         assert self.dispatcher is not None
-        async with self.bus.subscribe(self.settings.CHANNEL_FRAMES_IN) as pubsub:
-            while not self._shutdown.is_set():
-                try:
-                    async for msg in self.bus.iter_messages(pubsub):
-                        if self._shutdown.is_set():
-                            break
-                        data = msg.get("data")
-                        if not data:
-                            continue
-                        decoded = self.bus.codec.decode(data)
-                        if decoded.ok and decoded.envelope:
-                            _spawn(self.dispatcher.handle_frame_envelope(decoded.envelope))
-                        elif not decoded.ok:
-                            self.metrics.decode_errors_total += 1
-                            self.metrics.last_error = f"frame_decode_error: {decoded.error}"
-                            logger.warning(f"[FRAME-ROUTER] frame decode failed: {decoded.error}")
-                except Exception as exc:
-                    if not self._shutdown.is_set():
-                        logger.error(f"[FRAME-ROUTER] frames consumer error: {exc}")
-                        await asyncio.sleep(1)
+        await run_subscription(
+            self.bus,
+            self.settings.CHANNEL_FRAMES_IN,
+            self._handle_frame_msg,
+            stop_event=self._shutdown,
+            name="vision-frame-router.frames",
+        )
+
+    def _handle_frame_msg(self, msg: dict[str, Any]) -> None:
+        # Dispatch runs in its own task so a slow frame does not hold up the stream.
+        data = msg.get("data")
+        if not data:
+            return
+        decoded = self.bus.codec.decode(data)
+        if decoded.ok and decoded.envelope:
+            _spawn(self.dispatcher.handle_frame_envelope(decoded.envelope))
+        elif not decoded.ok:
+            self.metrics.decode_errors_total += 1
+            self.metrics.last_error = f"frame_decode_error: {decoded.error}"
+            logger.warning(f"[FRAME-ROUTER] frame decode failed: {decoded.error}")
 
     async def _reply_loop(self) -> None:
         assert self.dispatcher is not None
-        pattern = f"{self.settings.CHANNEL_REPLY_PREFIX}:*"
-        async with self.bus.subscribe(pattern, patterns=True) as pubsub:
-            while not self._shutdown.is_set():
-                try:
-                    async for msg in self.bus.iter_messages(pubsub):
-                        if self._shutdown.is_set():
-                            break
-                        data = msg.get("data")
-                        if not data:
-                            continue
-                        decoded = self.bus.codec.decode(data)
-                        if decoded.ok and decoded.envelope:
-                            _spawn(self.dispatcher.handle_reply_envelope(decoded.envelope))
-                        elif not decoded.ok:
-                            self.metrics.decode_errors_total += 1
-                            self.metrics.last_error = f"reply_decode_error: {decoded.error}"
-                            logger.warning(f"[FRAME-ROUTER] reply decode failed: {decoded.error}")
-                except Exception as exc:
-                    if not self._shutdown.is_set():
-                        logger.error(f"[FRAME-ROUTER] reply consumer error: {exc}")
-                        await asyncio.sleep(1)
+        await run_subscription(
+            self.bus,
+            f"{self.settings.CHANNEL_REPLY_PREFIX}:*",
+            self._handle_reply_msg,
+            stop_event=self._shutdown,
+            name="vision-frame-router.replies",
+            patterns=True,
+        )
+
+    def _handle_reply_msg(self, msg: dict[str, Any]) -> None:
+        data = msg.get("data")
+        if not data:
+            return
+        decoded = self.bus.codec.decode(data)
+        if decoded.ok and decoded.envelope:
+            _spawn(self.dispatcher.handle_reply_envelope(decoded.envelope))
+        elif not decoded.ok:
+            self.metrics.decode_errors_total += 1
+            self.metrics.last_error = f"reply_decode_error: {decoded.error}"
+            logger.warning(f"[FRAME-ROUTER] reply decode failed: {decoded.error}")
 
     async def _timeout_loop(self) -> None:
         assert self.dispatcher is not None

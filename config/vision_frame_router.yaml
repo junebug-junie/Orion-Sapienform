@@ -203,7 +203,7 @@ streams:
     # triggered-tier detect reply that found at least one of `labels` at
     # >= min_score, the router sends the same frame to
     # CHANNEL_CAPTION_INTAKE (orion-vision-host docker-compose.circe-qwen.yml)
-    # with this prompt. "nothing notable" comes back as no caption. The
+    # with this prompt, cropped to the detector's boxes (2026-10-16). The
     # detections ride along (meta.source_objects) and orion-vision-window
     # drops any walkway caption whose detections are all stationary props or
     # absent (WINDOW_CAPTION_GATE_*). Own lane cap and clock: never takes an
@@ -228,17 +228,83 @@ streams:
       # Equal to orion-vision-window's WINDOW_CAPTION_MAX_AGE_SEC, so a reply
       # the router counts as timed out is also one the window drops as stale.
       timeout_sec: 20
-      # Chosen by evals/walkway_caption_eval.py (2026-10-15, real night
-      # frames): "Describe only ... If there are none, answer exactly:
-      # nothing notable." got "There are no people, animals, or vehicles
-      # visible ..." from Qwen2-VL-2B on 8/8 empty frames (a caption saying
-      # nothing). Asking the question first, then the exact reply, got
-      # "nothing notable" on 2/2.
+      # Crop to the detector's boxes before asking (host app/caption_crop.py).
+      # The frame is 2560x1920; the VLM reads it at ~1 MP, where a person or
+      # car down the street is a few pixels. crop_pad = margin around the
+      # boxes' union, as a fraction of its larger side.
+      crop_to_detections: true
+      crop_pad: 0.5
+      # 2026-10-16 (live, clean frames): the 10-15 prompt -- "Are there any
+      # people, animals or vehicles in this image? If there are none, reply
+      # with only: nothing notable. ..." -- got "nothing notable" on 24 of 24
+      # walkway tasks (10-15: 44 of 50), including frames where the detector
+      # saw a person, a car or the mail truck. Qwen2-VL-2B answers "no" to an
+      # existence question even on a 448 px crop of a plainly visible car,
+      # and describes the same crop correctly when asked to describe it. The
+      # 10-15 eval tested empty frames only. So: no existence question and
+      # no null answer. The router only asks when the detector found a gate
+      # label; orion-vision-window's detector-agreement gate still decides
+      # whether the caption becomes narrative.
       prompt: >-
-        Are there any people, animals or vehicles in this image? If there are
-        none, reply with only: nothing notable. If there are, describe them
-        and what they are doing in one short sentence.
-      null_answers: ["nothing notable"]
+        In one short sentence, describe what is happening in this image.
+
+  doorbell:
+    enabled: true
+    # Ring battery doorbell at the front door (2026-10-17). Captured by its own
+    # orion-vision-retina instance (orion-vision-retina-doorbell,
+    # stream_id=doorbell, RETINA_SOURCE_TYPE=ring): no continuous stream, only
+    # a ~15 s live-view burst at 2 frames/s after each Ring motion/ding event.
+    # Same treatment as the walkway (detection, frame + crop embeddings, crop
+    # faces, Qwen captions on the triggered tier), with changes for a sparse
+    # stream:
+    # - every_n_frames: 1 and shorter spacing, so a 30-frame burst still gets
+    #   several tasks; the walkway's 5 could skip most of a short burst.
+    # - No tiled_detect: its tile band is walkway geometry (far sidewalk), and
+    #   a doorbell sees people up close.
+    # - No identity_dispatch: same as the walkway, Juniper's whole-frame
+    #   identity check stays on cam0/carbon.
+    baseline:
+      task_type: retina_fast
+      every_n_frames: 1
+      min_seconds_between_tasks_per_camera: 2
+      max_inflight_per_camera: 1
+      request:
+        want_caption: false
+        want_embeddings: true
+        want_crop_embeddings: true
+        want_crop_faces: true
+        crop_embedding_labels: [person, dog, bicycle, stroller, vehicle]
+        prompts: [person, dog, bicycle, stroller, vehicle, package, mail truck]
+    triggered:
+      task_type: retina_fast
+      trigger_labels: [person, dog]
+      trigger_ttl_seconds: 8
+      min_seconds_between_tasks_per_camera: 1
+      max_inflight_per_camera: 1
+      request:
+        want_caption: false
+        want_embeddings: true
+        want_crop_embeddings: true
+        want_crop_faces: true
+        crop_embedding_labels: [person, dog, bicycle, stroller, vehicle]
+        prompts: [person, dog, bicycle, stroller, vehicle, package, mail truck]
+    tiled_detect:
+      enabled: false
+    caption_dispatch:
+      enabled: true
+      tiers: [triggered]
+      labels: [person, dog, bicycle, stroller, vehicle, package, mail truck]
+      min_score: 0.25
+      # A burst lasts ~15 s: one caption per 5 s gives about three per event.
+      min_seconds_between_dispatch: 5
+      same_scene_iou: 0.5
+      same_scene_ttl_sec: 300
+      max_inflight: 1
+      timeout_sec: 20
+      crop_to_detections: true
+      crop_pad: 0.5
+      prompt: >-
+        In one short sentence, describe what is happening in this image.
 
 cameras:
   mock-cam-01:

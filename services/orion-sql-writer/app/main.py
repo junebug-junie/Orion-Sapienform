@@ -1085,12 +1085,34 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("vision expect-key refresh DISABLED (VISION_EXPECT_REFRESH_INTERVAL_SEC=0)")
 
+    # Walkway motion stories (app/vision_motion_loop.py). Hub-only until
+    # Juniper's spot-check passes; nothing in Orion's cognition reads them.
+    vision_motion_task: asyncio.Task | None = None
+    if bool(getattr(settings, "vision_motion_stories_enabled", False)) and float(
+            getattr(settings, "vision_motion_story_interval_sec", 0.0) or 0.0) > 0:
+        from app.vision_motion_loop import vision_motion_loop
+
+        vision_motion_task = asyncio.create_task(vision_motion_loop(settings))
+    else:
+        logger.info("vision motion stories DISABLED (VISION_MOTION_STORIES_ENABLED=false or interval 0)")
+
+    # Walkway rollups by hour/day/week/month (app/vision_rollup_loop.py).
+    vision_rollup_task: asyncio.Task | None = None
+    if bool(getattr(settings, "vision_rollup_enabled", False)) and float(
+            getattr(settings, "vision_rollup_interval_sec", 0.0) or 0.0) > 0:
+        from app.vision_rollup_loop import vision_rollup_loop
+
+        vision_rollup_task = asyncio.create_task(vision_rollup_loop(settings))
+    else:
+        logger.info("vision rollups DISABLED (VISION_ROLLUP_ENABLED=false or interval 0)")
+
     try:
         yield
     finally:
         pending = [
             t for t in (task, write_health_task, watch_task, retention_task, drain_task, vision_permanence_task,
-                        vision_individuals_task, vision_rhythm_task, vision_expect_task, act_resolver_task)
+                        vision_individuals_task, vision_rhythm_task, vision_expect_task, act_resolver_task,
+                        vision_motion_task, vision_rollup_task)
             if t is not None
         ]
         for background in pending:

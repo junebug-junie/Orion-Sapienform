@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import os
+import threading
 import time
 from collections import deque
 from collections.abc import Callable
@@ -16,6 +17,7 @@ import requests
 
 from orion.biometrics.node_catalog import NodeCatalog
 from orion.grammar.publish import publish_grammar_event
+from orion.core.bus.resilience import run_subscription
 from orion.core.schemas.drives import DriveStateV1
 from orion.schemas.attention_candidate import PERCEPTION_NODE_ID, PERCEPTION_WALKWAY_NODE_ID
 from orion.schemas.biometrics_projection import (
@@ -364,6 +366,12 @@ def _prediction_error_receipt(
 # Streams whose frame-embedding surprise feeds PERCEPTION_WALKWAY_NODE_ID
 # instead of PERCEPTION_NODE_ID (settings.perception_walkway_stream_ids).
 _DEFAULT_PERCEPTION_WALKWAY_STREAM_IDS = "walkway"
+# Streams whose surprise is scored, logged and kept in their own per-stream
+# baseline, but feeds NO node (settings.perception_log_only_stream_ids). The
+# Ring doorbell (2026-10-17): sharing the walkway node let a doorbell burst
+# overwrite the walkway's score/warm-up count and keep a dead walkway from
+# reading stale; the room node is worse. Its own node needs the metric gate.
+_DEFAULT_PERCEPTION_LOG_ONLY_STREAM_IDS = "doorbell"
 
 
 def _parse_stream_ids(raw: Any, default: str) -> frozenset[str]:
@@ -496,7 +504,28 @@ def _prediction_error_label(node_id: str) -> str:
     return f"{domain[:1].upper()}{domain[1:]} prediction error"
 
 
+def _on_event_loop_thread() -> bool:
+    """True when called from a thread that is running an asyncio event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 class BiometricsSubstrateWorker:
+    # Single-flight build of the shared substrate store (_get_substrate_graph_store).
+    # A Falkor store hydrates the whole graph in its constructor. Before 2026-10-20
+    # six tick threads raced past the None check at boot and each hydrated its own
+    # copy, while a loop-thread caller built one inline and froze the event loop
+    # ~3 min. The build lock is held for the whole hydrate, so the event loop
+    # never waits on it; the warm lock only guards the warming flag. Class-level
+    # defaults so workers built via __new__ (tests) have them; one worker per process.
+    _substrate_graph_store_lock = threading.Lock()
+    _substrate_graph_store_warm_lock = threading.Lock()
+    _substrate_graph_store_warming = False
+    _substrate_graph_store: Any = None
+
     def __init__(self) -> None:
         self._settings = get_settings()
         self._store = BiometricsSubstrateStore(self._settings.postgres_uri)
@@ -633,6 +662,7 @@ class BiometricsSubstrateWorker:
 
     async def start(self) -> None:
         s = self._settings
+        self._start_substrate_graph_store_warm()
         if s.orion_bus_enabled:
             from orion.core.bus.async_service import OrionBusAsync
 
@@ -1331,18 +1361,45 @@ class BiometricsSubstrateWorker:
         need the same durable store and cache it on ``self._substrate_graph_store``
         so repeated ticks don't rebuild it. Fail-open: returns None on init error
         (caller decides whether that means "skip this tick").
-        """
-        try:
-            store = self._substrate_graph_store
-            if store is None:
-                from orion.substrate.graphdb_store import build_substrate_store_from_env
 
-                store = build_substrate_store_from_env()
-                self._substrate_graph_store = store
+        Built once, under a lock. Never built on the event-loop thread: building
+        hydrates the whole graph, so a loop-thread caller that arrives first gets
+        None (it skips, as on an init error) and the build starts in a background
+        thread instead.
+        """
+        store = self._substrate_graph_store
+        if store is not None:
             return store
-        except Exception:
-            logger.exception(log_label)
+        if _on_event_loop_thread():
+            self._start_substrate_graph_store_warm()
+            logger.info("substrate_store_warming caller=%s", log_label)
             return None
+        with self._substrate_graph_store_lock:
+            if self._substrate_graph_store is None:
+                try:
+                    from orion.substrate.graphdb_store import build_substrate_store_from_env
+
+                    self._substrate_graph_store = build_substrate_store_from_env()
+                except Exception:
+                    logger.exception(log_label)
+                    return None
+            return self._substrate_graph_store
+
+    def _start_substrate_graph_store_warm(self) -> None:
+        """Build the shared store in a daemon thread, once; never blocks the caller."""
+        with self._substrate_graph_store_warm_lock:
+            if self._substrate_graph_store is not None or self._substrate_graph_store_warming:
+                return
+            self._substrate_graph_store_warming = True
+
+        def _warm() -> None:
+            try:
+                self._get_substrate_graph_store(log_label="substrate_store_warm_failed")
+            finally:
+                with self._substrate_graph_store_warm_lock:
+                    self._substrate_graph_store_warming = False
+
+        threading.Thread(target=_warm, name="substrate-store-warm", daemon=True).start()
 
     def _get_bus_synaptic_client(self):
         """Return the cached read-only FalkorDB client for the bus synaptic graph
@@ -1388,45 +1445,13 @@ class BiometricsSubstrateWorker:
     async def _rpc_health_listener_loop(self) -> None:
         """Subscribe to orion:rpc_health:snapshot and fold each snapshot into
         the RPC delivery window. Same subscribe shape as the vision listener."""
-        channel = self._settings.rpc_health_snapshot_channel
-        backoff = 1.0
-        while not self._stop.is_set():
-            logger.info("substrate_rpc_health_listener subscribing channel=%s", channel)
-            try:
-                async with self._bus.subscribe(channel) as pubsub:
-                    backoff = 1.0
-                    while not self._stop.is_set():
-                        try:
-                            msg = await asyncio.wait_for(
-                                pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                                timeout=1.2,
-                            )
-                        except asyncio.TimeoutError:
-                            continue
-                        if not msg or msg.get("type") not in ("message", "pmessage"):
-                            continue
-                        try:
-                            self._handle_rpc_health_message(msg)
-                        except Exception:
-                            logger.exception("substrate_rpc_health_handle_failed")
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # A dead subscription must not leave the field holding the last
-                # reading: resubscribe. (Meanwhile the tick finds the window
-                # empty, writes nothing, and the field digester expires the
-                # channel after 120 s -- unmeasured, not calm.)
-                logger.exception(
-                    "substrate_rpc_health_listener_failed channel=%s retry_in=%.0fs",
-                    channel,
-                    backoff,
-                )
-                try:
-                    await asyncio.wait_for(self._stop.wait(), timeout=backoff)
-                except asyncio.TimeoutError:
-                    pass
-                backoff = min(backoff * 2.0, 60.0)
-        logger.info("substrate_rpc_health_listener stopped channel=%s", channel)
+        await run_subscription(
+            self._bus,
+            self._settings.rpc_health_snapshot_channel,
+            self._handle_rpc_health_message,
+            stop_event=self._stop,
+            name="substrate_rpc_health_listener",
+        )
 
     def _handle_rpc_health_message(self, raw_msg: dict[str, Any]) -> bool:
         decoded = self._bus.codec.decode(raw_msg.get("data"))
@@ -1546,34 +1571,13 @@ class BiometricsSubstrateWorker:
         ``start()`` for why folding this into that listener would defeat the
         point of giving this domain its own independent flag.
         """
-        channel = self._settings.vision_artifacts_channel
-        logger.info(
-            "substrate_perception_prediction_error_listener subscribing channel=%s", channel
+        await run_subscription(
+            self._bus,
+            self._settings.vision_artifacts_channel,
+            self._handle_perception_prediction_error_message,
+            stop_event=self._stop,
+            name="substrate_perception_prediction_error_listener",
         )
-        try:
-            async with self._bus.subscribe(channel) as pubsub:
-                while not self._stop.is_set():
-                    try:
-                        msg = await asyncio.wait_for(
-                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                            timeout=1.2,
-                        )
-                    except asyncio.TimeoutError:
-                        continue
-                    except asyncio.CancelledError:
-                        break
-                    if not msg or msg.get("type") not in ("message", "pmessage"):
-                        continue
-                    try:
-                        self._handle_perception_prediction_error_message(msg)
-                    except Exception:
-                        logger.exception("substrate_perception_prediction_error_handle_failed")
-        except asyncio.CancelledError:
-            raise
-        finally:
-            logger.info(
-                "substrate_perception_prediction_error_listener stopped channel=%s", channel
-            )
 
     def _handle_perception_prediction_error_message(self, raw_msg: dict[str, Any]) -> None:
         """Score one real ``orion:vision:artifacts`` message that carries an
@@ -1624,6 +1628,12 @@ class BiometricsSubstrateWorker:
             retention_days=self._settings.perception_baseline_retention_days,
         )
         now = datetime.now(timezone.utc)
+        if stream_id in _parse_stream_ids(
+            getattr(self._settings, "perception_log_only_stream_ids", None),
+            _DEFAULT_PERCEPTION_LOG_ONLY_STREAM_IDS,
+        ):
+            self._log_perception_score(stream_id, result, node_id="none")
+            return
         if stream_id in self._perception_walkway_stream_ids():
             # Walkway group: its own node, its own cache. Nothing below this
             # branch (room score, room vector cache) moves.
@@ -2489,30 +2499,13 @@ class BiometricsSubstrateWorker:
         Mirrors the post-turn-closure decode pattern. Gated at task-creation by
         ``embodiment_c_tick_enabled``; fail-open on decode/validate errors.
         """
-        channel = self._settings.drives_state_channel
-        logger.info("substrate_embodiment_drive_listener subscribing channel=%s", channel)
-        try:
-            async with self._bus.subscribe(channel) as pubsub:
-                while not self._stop.is_set():
-                    try:
-                        msg = await asyncio.wait_for(
-                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                            timeout=1.2,
-                        )
-                    except asyncio.TimeoutError:
-                        continue
-                    except asyncio.CancelledError:
-                        break
-                    if not msg or msg.get("type") not in ("message", "pmessage"):
-                        continue
-                    try:
-                        self._cache_drive_state_message(msg)
-                    except Exception:
-                        logger.exception("substrate_embodiment_drive_state_handle_failed")
-        except asyncio.CancelledError:
-            raise
-        finally:
-            logger.info("substrate_embodiment_drive_listener stopped channel=%s", channel)
+        await run_subscription(
+            self._bus,
+            self._settings.drives_state_channel,
+            self._cache_drive_state_message,
+            stop_event=self._stop,
+            name="substrate_embodiment_drive_listener",
+        )
 
     def _cache_drive_state_message(self, raw_msg: dict[str, Any]) -> None:
         decoded = self._bus.codec.decode(raw_msg.get("data"))
@@ -2538,30 +2531,13 @@ class BiometricsSubstrateWorker:
         lane) -- different model, different inputs (field-channel pressures,
         not domain prediction-error or attention-coalition tracking).
         """
-        channel = self._settings.field_channel_anomaly_score_channel
-        logger.info("substrate_field_channel_anomaly_listener subscribing channel=%s", channel)
-        try:
-            async with self._bus.subscribe(channel) as pubsub:
-                while not self._stop.is_set():
-                    try:
-                        msg = await asyncio.wait_for(
-                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                            timeout=1.2,
-                        )
-                    except asyncio.TimeoutError:
-                        continue
-                    except asyncio.CancelledError:
-                        break
-                    if not msg or msg.get("type") not in ("message", "pmessage"):
-                        continue
-                    try:
-                        self._cache_field_channel_anomaly_message(msg)
-                    except Exception:
-                        logger.exception("substrate_field_channel_anomaly_handle_failed")
-        except asyncio.CancelledError:
-            raise
-        finally:
-            logger.info("substrate_field_channel_anomaly_listener stopped channel=%s", channel)
+        await run_subscription(
+            self._bus,
+            self._settings.field_channel_anomaly_score_channel,
+            self._cache_field_channel_anomaly_message,
+            stop_event=self._stop,
+            name="substrate_field_channel_anomaly_listener",
+        )
 
     def _cache_field_channel_anomaly_message(self, raw_msg: dict[str, Any]) -> None:
         decoded = self._bus.codec.decode(raw_msg.get("data"))
@@ -2578,30 +2554,13 @@ class BiometricsSubstrateWorker:
 
     async def _cabinet_ambient_spike_listener_loop(self) -> None:
         """Subscribe to sustained cabinet ambient audio spikes for cognition."""
-        channel = self._settings.cabinet_ambient_spike_channel
-        logger.info("substrate_cabinet_ambient_spike_listener subscribing channel=%s", channel)
-        try:
-            async with self._bus.subscribe(channel) as pubsub:
-                while not self._stop.is_set():
-                    try:
-                        msg = await asyncio.wait_for(
-                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                            timeout=1.2,
-                        )
-                    except asyncio.TimeoutError:
-                        continue
-                    except asyncio.CancelledError:
-                        break
-                    if not msg or msg.get("type") not in ("message", "pmessage"):
-                        continue
-                    try:
-                        await self._handle_cabinet_ambient_spike_message(msg)
-                    except Exception:
-                        logger.exception("substrate_cabinet_ambient_spike_handle_failed")
-        except asyncio.CancelledError:
-            raise
-        finally:
-            logger.info("substrate_cabinet_ambient_spike_listener stopped channel=%s", channel)
+        await run_subscription(
+            self._bus,
+            self._settings.cabinet_ambient_spike_channel,
+            self._handle_cabinet_ambient_spike_message,
+            stop_event=self._stop,
+            name="substrate_cabinet_ambient_spike_listener",
+        )
 
     async def _handle_cabinet_ambient_spike_message(self, raw_msg: dict[str, Any]) -> None:
         decoded = self._bus.codec.decode(raw_msg.get("data"))
@@ -2677,30 +2636,13 @@ class BiometricsSubstrateWorker:
         graphify access lives in `orion-cocreation-signals`, the producer of
         this channel.
         """
-        channel = self._settings.codebase_delta_channel
-        logger.info("substrate_codebase_delta_listener subscribing channel=%s", channel)
-        try:
-            async with self._bus.subscribe(channel) as pubsub:
-                while not self._stop.is_set():
-                    try:
-                        msg = await asyncio.wait_for(
-                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                            timeout=1.2,
-                        )
-                    except asyncio.TimeoutError:
-                        continue
-                    except asyncio.CancelledError:
-                        break
-                    if not msg or msg.get("type") not in ("message", "pmessage"):
-                        continue
-                    try:
-                        await asyncio.to_thread(self._handle_codebase_delta_message, msg)
-                    except Exception:
-                        logger.exception("substrate_codebase_delta_handle_failed")
-        except asyncio.CancelledError:
-            raise
-        finally:
-            logger.info("substrate_codebase_delta_listener stopped channel=%s", channel)
+        await run_subscription(
+            self._bus,
+            self._settings.codebase_delta_channel,
+            lambda msg: asyncio.to_thread(self._handle_codebase_delta_message, msg),
+            stop_event=self._stop,
+            name="substrate_codebase_delta_listener",
+        )
 
     def _handle_codebase_delta_message(self, raw_msg: dict[str, Any]) -> None:
         decoded = self._bus.codec.decode(raw_msg.get("data"))
@@ -2814,30 +2756,13 @@ class BiometricsSubstrateWorker:
         Gated at task-creation by ``embodiment_perception_substrate_enabled``;
         fail-open on decode/validate/store errors.
         """
-        channel = self._settings.embodiment_channel_perception
-        logger.info("substrate_embodiment_perception_ingest subscribing channel=%s", channel)
-        try:
-            async with self._bus.subscribe(channel) as pubsub:
-                while not self._stop.is_set():
-                    try:
-                        msg = await asyncio.wait_for(
-                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                            timeout=1.2,
-                        )
-                    except asyncio.TimeoutError:
-                        continue
-                    except asyncio.CancelledError:
-                        break
-                    if not msg or msg.get("type") not in ("message", "pmessage"):
-                        continue
-                    try:
-                        await asyncio.to_thread(self._ingest_perception_message, msg)
-                    except Exception:
-                        logger.exception("substrate_embodiment_perception_ingest_handle_failed")
-        except asyncio.CancelledError:
-            raise
-        finally:
-            logger.info("substrate_embodiment_perception_ingest stopped channel=%s", channel)
+        await run_subscription(
+            self._bus,
+            self._settings.embodiment_channel_perception,
+            lambda msg: asyncio.to_thread(self._ingest_perception_message, msg),
+            stop_event=self._stop,
+            name="substrate_embodiment_perception_ingest",
+        )
 
     def _ingest_perception_message(self, raw_msg: dict[str, Any]) -> None:
         # Defense-in-depth gate (the loop is only spawned when enabled, but keep

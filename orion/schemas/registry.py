@@ -107,6 +107,15 @@ from orion.schemas.memory_episode import MEMORY_EPISODE_CLOSED_KIND, MemoryEpiso
 from orion.schemas.situation_state import SITUATION_STATE_KIND, SituationStateV1
 from orion.schemas.drive_reading import DriveReadingV1
 from orion.schemas.regulation import REGULATION_STATE_KIND, RegulationStateV1
+from orion.schemas.personality import (
+    PERSONALITY_CHOICE_KIND,
+    ChoiceOptionV1,
+    ChoiceStyleV1,
+    DispositionV1,
+    PersonalityChoiceV1,
+    PersonalityCueV1,
+    PersonalityFrameV1,
+)
 from orion.schemas.vision_sighting import IDENTITY_SIGHTING_KIND, IdentitySightingV1
 from orion.schemas.context_exec import ContextExecPermissionV1
 from orion.schemas.self_experiments import (
@@ -801,7 +810,7 @@ from orion.schemas.reading import (
 )
 from orion.schemas.introspect import (
     CuriosityArguments, DreamsArguments, IntrospectItemV1, OrionDayArguments, IntrospectRequestV1, IntrospectResultV1, IntrospectToolBindingV1,
-    NodeHistoryArguments, ReadingResultArguments, RecordCorrectionArguments,
+    NodeHistoryArguments, QueueCuriosityFocusArguments, ReadingResultArguments, RecordCorrectionArguments,
 )
 from orion.schemas.reading_resonance import (
     ReadingResonanceCheckV1,
@@ -1536,6 +1545,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "OrionDayArguments": OrionDayArguments,
     "RecordCorrectionArguments": RecordCorrectionArguments,
     "NodeHistoryArguments": NodeHistoryArguments,
+    "QueueCuriosityFocusArguments": QueueCuriosityFocusArguments,
     "WorldPulseReadSeedV1": WorldPulseReadSeedV1,
     "WorldPulseReadHandoffV1": WorldPulseReadHandoffV1,
     "WorldPulseReadStage2ResultV1": WorldPulseReadStage2ResultV1,
@@ -1573,6 +1583,16 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     # Regulation state (Temporal Self rev 4 R3, 2026-10-10). Redis orion:regulation:latest and
     # GET /regulation/state only; no bus channel until a bus consumer exists. Also in SCHEMA_REGISTRY.
     "RegulationStateV1": RegulationStateV1,
+    # Personality choice evidence (PR #2726 P0, 2026-10-16). Read-only reconstruction, no bus
+    # channel yet. PersonalityChoiceV1 is also in SCHEMA_REGISTRY; ChoiceOptionV1 is nested.
+    "PersonalityChoiceV1": PersonalityChoiceV1,
+    "ChoiceOptionV1": ChoiceOptionV1,
+    # Personality graph loop (rev 2): the frame crosses HTTP (durable-runs -> thought, hub), so it
+    # is also in SCHEMA_REGISTRY; the nested node/style models and the local cue live here only.
+    "PersonalityFrameV1": PersonalityFrameV1,
+    "DispositionV1": DispositionV1,
+    "ChoiceStyleV1": ChoiceStyleV1,
+    "PersonalityCueV1": PersonalityCueV1,
     "IdentitySightingV1": IdentitySightingV1,
     "ContextExecPermissionV1": ContextExecPermissionV1,
     "SelfExperimentSpecV1": SelfExperimentSpecV1,
@@ -2075,6 +2095,16 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "RegulationStateV1": SchemaRegistration(
         model=RegulationStateV1,
         kind=REGULATION_STATE_KIND,
+    ),
+    # Personality choice evidence (PR #2726 P0). Also in `_REGISTRY`; the nested
+    # ChoiceOptionV1 lives in `_REGISTRY` alone.
+    "PersonalityChoiceV1": SchemaRegistration(
+        model=PersonalityChoiceV1,
+        kind=PERSONALITY_CHOICE_KIND,
+    ),
+    "PersonalityFrameV1": SchemaRegistration(
+        model=PersonalityFrameV1,
+        kind="personality.frame.v1",
     ),
 }
 

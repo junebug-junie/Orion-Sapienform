@@ -75,3 +75,27 @@ def test_floor_only_touches_eligible_loops() -> None:
     actions, out, deferred = ab.world_first_action_floor(
         [none], selected, [], open_loops=[loop], eligible_scores={ROUTE: 0.9})
     assert actions == [none] and out is selected and deferred == []
+
+
+# --- world-first WORLD winners bind (Juniper's chat is world:chat) --------------------------------
+
+def _projection(node: str):
+    return {"selected_action_type": "watch", "selected_open_loop_id": "open-loop-chat", "generated_at": NOW,
+            "dwell_ticks": 3, "attended_node_ids": [node]}
+
+
+def test_a_world_winner_binds_when_listed() -> None:
+    """Fails on pre-rung-3 code: only node: refs were scanned, so world:chat was node_not_bound."""
+    from orion.autonomy.self_shed import bind_workspace_winner
+
+    winner, why = bind_workspace_winner(_projection("world:chat"), broadcast_log_id="b1",
+                                        binds_to_nodes=("world:chat",), now=NOW)
+    assert why is None and winner.node_id == "world:chat" and winner.open_loop_id == "open-loop-chat"
+
+
+def test_a_world_winner_still_needs_to_be_listed() -> None:
+    from orion.autonomy.self_shed import bind_workspace_winner
+
+    winner, why = bind_workspace_winner(_projection("world:chat"), broadcast_log_id="b1",
+                                        binds_to_nodes=("node:substrate.cabinet",), now=NOW)
+    assert winner is None and why == "winner_unbindable:node_not_bound"

@@ -785,6 +785,11 @@ class Settings(BaseSettings):
     # Horizon resolver cadence: closes juniper_replied acts from Juniper turn starts and expires
     # producer-reported acts past their horizon. 0 disables (open acts then stay open).
     sql_writer_act_resolver_interval_sec: float = Field(60.0, alias="SQL_WRITER_ACT_RESOLVER_INTERVAL_SEC")
+    # Rung 3 (thinking architecture, "bind the winner to action"): stamp an act's workspace_ref with
+    # the world-first winner it answers (orion/grammar/act_ledger.py ACT_ANSWERS_WORKSPACE_REFS) and,
+    # at close, write Orion's own non-final `acted` verdict on that loop (attention_loop_outcome,
+    # actor='orion'). Off: no stamping, no Orion loop verdicts; the ledger itself is unchanged.
+    sql_writer_act_workspace_binding_enabled: bool = Field(True, alias="SQL_WRITER_ACT_WORKSPACE_BINDING_ENABLED")
 
     @property
     def route_map(self) -> dict[str, str]:

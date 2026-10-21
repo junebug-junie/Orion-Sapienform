@@ -114,7 +114,8 @@ def test_real_glossary_rest_ranges_validate_and_round_trip_as_tuples():
     ranges = _real_ranges()
     # 11 of the 12 semantics entries; harness_closure is a placeholder.
     # +1 2026-10-15: node:substrate.perception_walkway (curiosity reads it).
-    assert len(ranges) == 11
+    # +1 2026-10-20: node:substrate.strain (strain news, a trigger).
+    assert len(ranges) == 12
     assert ranges[("node:substrate.perception_walkway", "prediction_error")][1] == (0.0, 0.0)
     for key, (kind, rng) in ranges.items():
         assert isinstance(rng, tuple), key

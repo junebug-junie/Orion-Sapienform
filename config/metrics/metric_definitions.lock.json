@@ -1,12 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 750,
+  "metric_count": 751,
   "_last_change": {
     "change_count": 2,
-    "high_severity_count": 2,
+    "high_severity_count": 1,
     "changes": [
-      "high   semantics_changed metric://field_channel/orion-field-digester/execution_friction (meaning: \u2026g on a node. -> \u2026g on a node. Failed steps over started steps; deliberate GP\u2026)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/failure_pressure (meaning: \u2026y on a node. -> \u2026y on a node. A step the GPU pool shed on purpose (gpu_pool_\u2026)"
+      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026vices.orion-thought.app.\u2026 -> \u2026vices.orion-substrate-runtime.app.worker:BiometricsSubstrat\u2026\u2026)",
+      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error"
     ]
   },
   "definitions": {
@@ -4675,6 +4675,25 @@
       "notes": "category=task_execution level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
+    "metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error": {
+      "meaning": "TRIGGER: strain news -- fires 1.0 when Orion's regulation turns strained (onset), when a new strain cause joins the episode or the cabinet crosses critical 34 C (escalation), and as reminders at 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h while it lasts; at most 8 per local day, 30 min apart. The strain level itself never competes. FalkorDB node only; not in FieldStateV1 node_vectors.",
+      "value_kind": "trigger",
+      "rest": "0.0 = no strain news this tick (not strained, or strained with no event due). The strain level is not the value: a 54 h strain reads 0.0 between its news events.",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "sparsity": "designed_sparse",
+      "absent_means": "only written as 1.0 at a strain news event, then carried unwritten for attention's 300 s orienting window; every other tick with a known regulation reading writes 0.0. An unknown, stale or missing regulation reading writes nothing and the node keeps its last value.",
+      "declared_consumers": [
+        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings"
+      ],
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
     "metric://inner_state/orion-attention-runtime/field_attention_frame.v1": {
       "schema_id": "FieldAttentionFrameV1",
       "notes": "cadence=per_tick composition=composed_into_self_state",
@@ -4799,6 +4818,7 @@
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick_self_inquiry (runs only at idle)",
         "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (strained refuses background outreach)",
         "services.orion-proposal-runtime.app.worker:ProposalRuntimeWorker._baseline_arousal_level -> orion.reverie.baseline:schedule (strained defers a due visual baseline image by retry_sec)",
+        "services.orion-substrate-runtime.app.worker:BiometricsSubstrateWorker._strain_attention_tick -> orion.regulation.strain_news:strain_news (strained -> rare budgeted news events on node:substrate.strain for attention; the level itself never competes)",
         "services.orion-thought.app.chain:_next_chain_sleep_sec (strained doubles the pause between reverie chains)"
       ],
       "notes": "cadence=per_tick composition=shadow_declared_not_composed",

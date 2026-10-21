@@ -642,12 +642,18 @@ render_scene was refused `unmeasurable` on every tick. Unchanged: the 0.02 nats/
 allowance, the harm gate, the cold-start rule and every doer gate downstream. Added: no typed 5 s
 cost fallback for an act (no measured cost -> `no_cost_estimate`), and one in flight per act
 (`act_in_flight`: an open act for the actor or a `pending` dispatch result for the route, 6 h;
-read errors fail closed). The scored numbers ride on the candidate as an
+read errors, including a failed belief read, fail closed; one act-backed candidate per act per tick).
+These guards live in the allocator preview, so they bind only while the allocator decides the send
+(`ORION_DISPATCH_ALLOCATOR_ENFORCE=true`, a motor budget present, not a tripwire probe tick);
+orion-thought's own single-flight lock is the backstop otherwise. The visual-baseline lane is
+not act-scored: it keeps its own schedule, eligibility and old cost path. The scored numbers ride on the candidate as an
 `act_expectation:...` reason. Kill switch: `ORION_DISPATCH_ACT_CANDIDATES_ENABLED=false`.
 
 The per-tick randomized holdback (`ORION_DISPATCH_HOLDBACK_FRACTION`) is ON at 0.2 (attend-to-act
 design D3). It draws only on ticks that can yield a control observation: at least one candidate with a
 declared field signal that is not a world action or a visual baseline (`tick_can_yield_control`).
-Other ticks are re-proposed seconds later, so withholding them would only delay them.
+Other ticks are re-proposed seconds later, so withholding them would only delay them. The rule
+decides only WHETHER a tick is drawn: on a mixed tick that is drawn, every candidate on it is held,
+as the per-tick design always did.
 
 Eval: `python orion/autonomy/evals/run_rung3_replay_eval.py [--live --hours 48]`.

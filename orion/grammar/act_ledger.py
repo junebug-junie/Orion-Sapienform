@@ -517,7 +517,7 @@ def close_act(
             "act_id": act.act_id,
         },
     )
-    if workspace_ref and _WORKSPACE_BINDING_ENABLED:
+    if workspace_ref and _WORKSPACE_BINDING_ENABLED and act.actor in ACT_ANSWERS_WORKSPACE_REFS:
         # Same transaction as the close, in its own savepoint: the act and Orion's verdict on its
         # loop land together, and a failed verdict never loses the close.
         _isolated(conn, "loop_outcome", act.act_id, lambda: write_orion_loop_outcome(

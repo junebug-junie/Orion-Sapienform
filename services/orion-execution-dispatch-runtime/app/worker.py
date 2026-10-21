@@ -670,8 +670,13 @@ class ExecutionDispatchRuntimeWorker:
 
     def _load_effect_posteriors(self) -> dict[TreatedCellKey, EffectPosterior]:
         try:
-            return self._store.load_effect_posteriors()
+            out = self._store.load_effect_posteriors()
+            self._posteriors_read_ok = True
+            return out
         except Exception:
+            # Rung 3: remembered so act-backed candidates fail CLOSED on a failed read -- an empty
+            # map would read as "never graded" and the cold-start rule would admit a 57 s render.
+            self._posteriors_read_ok = False
             logger.warning("execution_dispatch_effect_posterior_load_failed", exc_info=True)
             return {}
 
@@ -697,6 +702,7 @@ class ExecutionDispatchRuntimeWorker:
         act_refs = self._act_refs_by_cortex_verb()
         act_costs: dict[tuple[str, str], float] | None = None
         act_in_flight: set[str] = set()
+        act_seen: set[ActRef] = set()
         self._last_act_reasons = {}
 
         candidates: list[Candidate] = []
@@ -723,9 +729,12 @@ class ExecutionDispatchRuntimeWorker:
                 self._last_act_reasons[item.dispatch_id] = act_expectation_reason(ref, posteriors, act_cost)
                 # One in flight per act: an admitted act whose earlier dispatch or act is still open
                 # would only queue behind it (and, cold, would be re-admitted every tick until its
-                # first close lands).
-                if self._act_in_flight(ref, item):
+                # first close lands). Also one per act per tick, and none when the belief could not
+                # be read (fail closed: unreadable is not cold).
+                if (not getattr(self, "_posteriors_read_ok", True) or ref in act_seen
+                        or self._act_in_flight(ref, item)):
                     act_in_flight.add(item.dispatch_id)
+                act_seen.add(ref)
                 continue
             effect = item.expected_effect
             signal = effect.signal_id if effect is not None else None

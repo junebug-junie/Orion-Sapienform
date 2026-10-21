@@ -239,7 +239,7 @@ Two new signals reach a consumer: the act-backed allocator score for render_scen
 
 ```text
 tests/test_rung3_world_first_action_floor.py           7 passed  (2 fail on pre-fix code, verified)
-tests/test_rung3_act_candidates.py                    17 passed  (holdback test fails on old draw, verified)
+tests/test_rung3_act_candidates.py                    20 passed  (holdback test fails on old draw, verified)
 attention / broadcast / world_first suites            435 passed
 allocator, shed pipeline, world action, holdback, proposal policy/scoring,
   world settlement, action outcome resolution         192 passed
@@ -272,7 +272,40 @@ deploying. Live behaviour after restart: UNVERIFIED.
 
 ## Review findings fixed
 
-(filled from the code-review subagent; see below)
+The review was done by hand in a subagent (no code-review skill is installed). Target: the branch
+diff against origin/main. It found no blocker.
+
+- Finding: the visual-baseline lane was act-scored: 30-day cost, no typed fallback, a direction claim.
+  A quiet month would have refused scheduled paintings forever.
+  - Fix: baseline items keep their old cost path and are never act-scored; their act numbers are
+    still recorded (commit 1d62c1bfc).
+  - Evidence: `test_visual_baseline_lane_is_unchanged_even_with_no_act_cost`.
+- Finding: a failed belief read gave `{}`, which read as cold, so the cold-start rule would admit a
+  render.
+  - Fix: `_posteriors_read_ok`. An act-backed candidate is refused when the read failed.
+  - Evidence: `test_unreadable_belief_fails_closed_not_cold`.
+- Finding: in-flight missed renders whose submit timed out, and two render candidates in one tick.
+  - Fix: count `settlement.state='not_submitted'`, and allow one act per tick.
+  - Evidence: `test_one_act_per_tick`.
+- Finding: in-flight holds only while the allocator decides the send.
+  - Fix: documented in the README. orion-thought's single-flight is the backstop.
+- Finding: an `acted` verdict would be written for any `workspace_ref`, whatever the actor.
+  - Fix: gated on `ACT_ANSWERS_WORKSPACE_REFS`.
+- Finding: the holdback wording read broader than the rule.
+  - Fix: README clarifies that the rule only decides whether a tick is drawn.
+- Disclosed, not changed:
+  - The action floor applies to body winners too. A fading cabinet or biometrics winner now becomes
+    `defer`, which the shed template can bind to; the shed still needs its own eligibility. In the
+    last 48 h, the rescued winners were only chat, codebase, execution and route.
+  - A leading `world:` ref now wins over a later `node:` ref. Live attended lists hold one ref, so
+    this is latent.
+- Finding: the painting belief is an outage. All 29 closes are `abandoned:run_abandoned` or
+  `attempt_missing` (10-16 to 10-18).
+  - Not fixed here; it is recorded in the metric gate and the concerns. Whether
+    infrastructure-abandoned runs should grade the act at all is a rung-2 question.
+  - Note: in this learner, the posterior variance does not depend on the values observed, so 29
+    successes would score the same nats. The refusal is not caused by the outage. The belief can
+    still move, because the baseline lane keeps producing painting closes.
 
 ## Restart required
 
@@ -297,11 +330,20 @@ be delayed a few seconds. Low harm, but restart only after the merge.
   deterministic tension trigger, so a "request" would repeat its own tick. Reading has no arousal gate
   and no daily cap, so making it dispatchable would add uncapped GPU load. Chat replies are reactive.
   None of them were made dispatchable.
-- Severity: low. The painting posterior reflects the GPU-fault period.
+- Severity: medium. The painting belief (n=29, mean 0.017) is made only of outage closes
+  (`abandoned:run_abandoned` / `attempt_missing`, 10-16 to 10-18). It measures the fault, not
+  painting. That fails metric-gate step 4 for the predicted mean. The nats score is unaffected,
+  because variance does not depend on the values. Follow-up: decide whether infrastructure-abandoned
+  runs grade a `make` act (rung 2).
+- Severity: low. The live dispatch-runtime `.env` in the primary checkout already has holdback 0.2.
+  A rebuild of the old image before merge would draw on every acting tick. Mitigation: merge, then
+  restart; or set it back to 0.0 by hand until then.
 - Severity: low. The proposal reader races a fresh broadcast row on about 0.1% of frames. Not fixed.
 
 ## PR link
 
-(filled after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2830
+
+Status: DONE_WITH_CONCERNS (0 admissions at the unchanged floor; the painting belief is an outage).
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -267,3 +267,16 @@ def test_visual_baseline_lane_is_unchanged_even_with_no_act_cost(monkeypatch) ->
     assert [c.dispatch_id for c in allocation.admitted] == [item.dispatch_id]
     assert worker._last_act_reasons[item.dispatch_id].startswith("act_expectation:make:")
     worker._store.act_in_flight.assert_not_called()
+
+
+def test_unreadable_belief_fails_closed_not_cold(monkeypatch) -> None:
+    worker = _worker(monkeypatch, posteriors={})
+    worker._store.load_effect_posteriors.side_effect = RuntimeError("db down")
+    out = worker._log_allocator_preview(_frame(_render()), MOTOR)
+    assert out.admitted == () and out.refusals_by_reason() == {"act_in_flight": 1}
+
+
+def test_one_act_per_tick(monkeypatch) -> None:
+    worker = _worker(monkeypatch, posteriors={})
+    out = worker._log_allocator_preview(_frame(_render("d:1"), _render("d:2")), MOTOR)
+    assert len(out.admitted) == 1 and out.refusals_by_reason() == {"act_in_flight": 1}

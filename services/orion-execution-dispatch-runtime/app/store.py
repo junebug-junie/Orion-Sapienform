@@ -592,7 +592,9 @@ class ExecutionDispatchRuntimeStore:
                         OR EXISTS (
                                SELECT 1 FROM substrate_dispatch_results
                                 WHERE dispatch_kind = :kind AND target_id = :target
-                                  AND status = 'pending'
+                                  AND (status = 'pending'
+                                       -- a render whose submit timed out may still have been admitted
+                                       OR result_json->'settlement'->>'state' = 'not_submitted')
                                   AND created_at > now() - make_interval(hours => :hours))
                     """
                 ),

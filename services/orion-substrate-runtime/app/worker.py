@@ -805,6 +805,21 @@ class BiometricsSubstrateWorker:
                     self._rpc_delivery_tick_loop(), name="substrate-rpc-delivery-tick"
                 )
             )
+        # Street events -> node:substrate.street (spec 2026-10-20 street
+        # continuity, section 6). Listener + tick share one flag; without the
+        # bus there are no events, so the tick does not run either (the node
+        # then ages out and attention reads it absent, never calm).
+        if self._bus is not None and s.street_attention_enabled:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._street_events_listener_loop(), name="substrate-street-events-listener"
+                )
+            )
+            self._tasks.append(
+                asyncio.create_task(
+                    self._street_attention_tick_loop(), name="substrate-street-attention-tick"
+                )
+            )
         if s.enable_cabinet_heat_attention:
             self._tasks.append(
                 asyncio.create_task(
@@ -1618,6 +1633,192 @@ class BiometricsSubstrateWorker:
             except asyncio.CancelledError:
                 break
 
+    # ------------------------------------------------------------------
+    # Street events -> node:substrate.street (orion/substrate/street_attention.py)
+    # ------------------------------------------------------------------
+
+    _STREET_LISTENER_NAME = "substrate_street_events_listener"
+
+    def _street_state(self):
+        # getattr: tests build the worker via __new__ and skip __init__.
+        state = getattr(self, "_street", None)
+        if state is None:
+            from orion.substrate.street_attention import StreetAttentionState
+
+            state = StreetAttentionState()
+            self._street = state
+        return state
+
+    def street_attention_status(self) -> dict[str, Any]:
+        """Counters for /health (``street_attention``)."""
+        s = self._settings
+        status = self._street_state().status(time.time(), float(s.street_attention_hold_sec))
+        status["enabled"] = bool(s.street_attention_enabled)
+        status["max_per_hour"] = int(s.street_attention_max_per_hour)
+        return status
+
+    def _street_camera_stream_ids(self) -> frozenset[str]:
+        return self._perception_walkway_stream_ids() | _parse_stream_ids(
+            getattr(self._settings, "perception_log_only_stream_ids", None),
+            _DEFAULT_PERCEPTION_LOG_ONLY_STREAM_IDS,
+        )
+
+    async def _street_events_listener_loop(self) -> None:
+        await run_subscription(
+            self._bus,
+            self._settings.street_events_channel,
+            self._handle_street_event_message,
+            stop_event=self._stop,
+            name=self._STREET_LISTENER_NAME,
+        )
+
+    async def _handle_street_event_message(self, raw_msg: dict[str, Any]) -> None:
+        decoded = self._bus.codec.decode(raw_msg.get("data"))
+        if not decoded.ok:
+            self._street_state().bump("invalid_total")
+            logger.warning("substrate_street_event_decode_failed: %s", decoded.error)
+            return
+        await asyncio.to_thread(self._process_street_event, decoded.envelope.payload or {})
+
+    def _process_street_event(self, payload: Any, *, now: datetime | None = None) -> None:
+        """Gate one StreetEventV1, log the verdict, record Rung 6, write on pass.
+
+        One ``substrate_street_event`` log line per received event (kind,
+        salience, verdict, reason, correlation_id). Fail-open."""
+        from orion.schemas.vision import StreetEventV1
+        from orion.substrate.prediction_expectation import domain_specs
+        from orion.substrate.street_attention import (
+            STREET_HANDOFF_DOMAIN,
+            STREET_NODE_ID,
+            street_handoff_raw_reading,
+        )
+
+        s = self._settings
+        state = self._street_state()
+        try:
+            event = StreetEventV1.model_validate(payload)
+        except ValueError as exc:
+            state.bump("invalid_total")
+            logger.error("substrate_street_event_invalid err=%s", exc)
+            return
+        now = now or datetime.now(timezone.utc)
+        now_epoch = now.timestamp()
+        verdict = state.judge(
+            event,
+            now_epoch=now_epoch,
+            max_per_hour=int(s.street_attention_max_per_hour),
+            camera_up_max_age_sec=float(s.street_camera_up_max_age_sec),
+        )
+        raw = street_handoff_raw_reading(event)
+        surprise_z: float | None = None
+        if raw is not None:
+            self._record_prediction_raw_reading(STREET_HANDOFF_DOMAIN, raw, event.occurred_at)
+            expectation = self._prediction_expectation(STREET_HANDOFF_DOMAIN) or domain_specs()[
+                STREET_HANDOFF_DOMAIN
+            ].default
+            surprise_z = state.handoff_surprise_z(
+                raw, alpha=expectation.alpha, min_variance=expectation.min_variance
+            )
+        logger.info(
+            "substrate_street_event kind=%s salience=%.3f p_value=%s verdict=%s reason=%r "
+            "correlation_id=%s event_id=%s streams=%s person_guess=%s raw_nats=%s handoff_surprise_z=%s",
+            event.kind,
+            event.salience,
+            "none" if event.p_value is None else f"{event.p_value:.4g}",
+            "pass" if verdict.passed else "block",
+            verdict.reason,
+            event.correlation_id,
+            event.event_id,
+            ",".join(event.stream_ids),
+            event.person_guess or "none",
+            "none" if raw is None else f"{raw:.4f}",
+            "none" if surprise_z is None else f"{surprise_z:.3f}",
+        )
+        if verdict.passed:
+            # Write now, not at the next tick: the event's correlation id rides
+            # on the node (contributing_turn_ids) into the broadcast's
+            # evidence_refs, so a ring is traceable retina -> attention.
+            self._write_street_node(now=now, node_id=STREET_NODE_ID)
+
+    def _write_street_node(self, *, now: datetime, node_id: str) -> None:
+        s = self._settings
+        state = self._street_state()
+        value, held = state.held_reading(now.timestamp(), float(s.street_attention_hold_sec))
+        # Each held event's correlation id was appended when it passed; the
+        # writer dedupes, so re-sending the newest one here is a no-op.
+        last_corr = held[-1].correlation_id if held else None
+        self._write_prediction_error_node(
+            node_id=node_id,
+            error=value,
+            now=now,
+            reducer_key="street_attention",
+            contributing_id=last_corr,
+            evidence_event_ids=[f"street_event:{h.event_id}" for h in held],
+        )
+        state.last_written_value = value
+        state.bump("node_writes_total")
+
+    def _street_attention_tick(self, *, now: datetime | None = None) -> None:
+        """Write node:substrate.street every tick: held salience, else a real 0.0.
+
+        Writes NOTHING when the runtime cannot see the street -- the street
+        listener is not subscribed, or no street camera delivered a frame
+        within SUBSTRATE_STREET_CAMERA_UP_MAX_AGE_SEC -- unless an event is
+        being held (a passed ring is a fact even with the cameras dark). The
+        reading then ages and attention marks the node absent: silence is not
+        calm. Fail-open."""
+        from orion.core.bus.resilience import subscription_health
+        from orion.substrate.street_attention import STREET_NODE_ID
+
+        s = self._settings
+        try:
+            now = now or datetime.now(timezone.utc)
+            now_epoch = now.timestamp()
+            state = self._street_state()
+            value, held = state.held_reading(now_epoch, float(s.street_attention_hold_sec))
+            listener = next(
+                (
+                    row
+                    for row in subscription_health(now_epoch)["listeners"]
+                    if row.get("name") == self._STREET_LISTENER_NAME
+                ),
+                None,
+            )
+            reason = None
+            if listener is None or not listener.get("subscribed"):
+                reason = "street listener not subscribed"
+            elif not state.street_visible(
+                sorted(self._street_camera_stream_ids()),
+                now_epoch,
+                float(s.street_camera_up_max_age_sec),
+            ):
+                reason = "no street camera frame in the last %.0fs" % float(s.street_camera_up_max_age_sec)
+            if reason is not None and not held and state.last_written_value > 0.0:
+                # The hold just ended while the street is unmeasurable: write
+                # one 0.0 so the held value does not keep competing as fresh
+                # for another 180 s, then go silent (absent) from the next tick.
+                logger.info("substrate_street_attention_hold_closed reason=%r", reason)
+            elif reason is not None and not held:
+                state.bump("ticks_unmeasured_total")
+                logger.info("substrate_street_attention_tick_unmeasured reason=%r", reason)
+                return
+            self._write_street_node(now=now, node_id=STREET_NODE_ID)
+            logger.info(
+                "substrate_street_attention_tick_completed value=%.3f held=%d passes_last_hour=%d",
+                value,
+                len(held),
+                state.status(now_epoch, float(s.street_attention_hold_sec))["passes_last_hour"],
+            )
+        except Exception:
+            logger.exception("substrate_street_attention_tick_failed")
+
+    async def _street_attention_tick_loop(self) -> None:
+        interval = float(self._settings.street_attention_tick_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._street_attention_tick)
+            except Exception:
+                logger.exception("substrate_street_attention_tick_loop_failed")
     # Strain news (docs/superpowers/specs/2026-10-20-strain-loop-design.md Part 2). Per-process
     # state; rebuilt from the node's own persisted event rows on the first known reading.
     _strain_news_state: Any = None
@@ -1857,6 +2058,19 @@ class BiometricsSubstrateWorker:
         payload = decoded.envelope.payload or {}
         if not isinstance(payload, dict):
             return
+        # Street camera-up check (street_attention.py): ANY artifact from a
+        # stream, embedding or not, proves that camera is delivering frames.
+        try:
+            frame_inputs = payload.get("inputs")
+            frame_inputs = frame_inputs if isinstance(frame_inputs, dict) else {}
+            seen_at = time.time()
+            street = self._street_state()
+            street.frame_seen(
+                safe_camera_name(frame_inputs.get("camera_id"), frame_inputs.get("stream_id")), seen_at
+            )
+            street.frame_seen(frame_inputs.get("stream_id"), seen_at)
+        except Exception:  # noqa: BLE001 -- never costs the perception score
+            logger.debug("substrate_street_frame_seen_failed", exc_info=True)
         outputs = payload.get("outputs")
         embedding = (outputs or {}).get("embedding") if isinstance(outputs, dict) else None
         vector = embedding.get("vector") if isinstance(embedding, dict) else None
@@ -3259,6 +3473,18 @@ class BiometricsSubstrateWorker:
                 sustain=bool(getattr(s, "attention_sustained_body_enabled", True)),
             )
             projection = broadcast_projection_from_frame(frame)
+            try:
+                from orion.substrate.street_attention import STREET_NODE_ID
+
+                attended = list(getattr(projection, "attended_node_ids", None) or [])
+                if STREET_NODE_ID in attended:
+                    self._street_state().bump("attention_wins_total")
+                    logger.info(
+                        "substrate_street_attention_won loop=%s",
+                        projection.selected_open_loop_id,
+                    )
+            except Exception:  # noqa: BLE001 -- a counter must not cost the broadcast
+                logger.debug("substrate_street_win_count_failed", exc_info=True)
             self._store.save_attention_broadcast(projection)
             try:
                 self._store.save_coalition_dwell(projection)

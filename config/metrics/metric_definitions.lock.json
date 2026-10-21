@@ -1,13 +1,11 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 751,
+  "metric_count": 752,
   "_last_change": {
-    "change_count": 3,
-    "high_severity_count": 3,
+    "change_count": 1,
+    "high_severity_count": 0,
     "changes": [
-      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.perception_walkway.prediction_error (declared_consumers: ['orion.substrate.en\u2026 -> ['orion.attention.world_first:judge_candidate', 'orion.subs\u2026\u2026)",
-      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.perception.prediction_error (absent_means: written as 0.0 every tick rather than dropped; nothing writt\u2026 -> per-tick writer: the graph node and receipt get a 0.0 place\u2026\u2026, meaning: \u2026prising the camera scene is versus that stream's own recent\u2026 -> \u2026prising the room camera's latest frame is versus that strea\u2026, rest: 0.0 = at or below this stream's usual surprise. Also 0.0 wh\u2026 -> 0.0 = the frame is at or below this stream's usual surprise\u2026)",
-      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.perception_walkway.prediction_error (absent_means: written as 0.0 every tick rather than dropped; nothing writ\u2026 -> per-tick writer: the graph node and receipt get a 0.0 place\u2026, meaning: \u2026door) camera scene is versus that stream's own recent norma\u2026\u2026 -> \u2026door) camera's latest frame is versus that stream's own rec\u2026\u2026, rest: 0.0 = at or below the walkway stream's usual surprise. Also\u2026 -> 0.0 = the frame is at or below the walkway stream's usual s\u2026)"
+      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.street.prediction_error"
     ]
   },
   "definitions": {
@@ -4694,6 +4692,22 @@
         "orion.attention.self_readings:render_self_readings"
       ],
       "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-substrate-runtime/node:substrate.street.prediction_error": {
+      "meaning": "TRIGGER: a street event passed the attention gate -- a doorbell ring (always), or a graded cross-camera handoff with p < 0.05 from a camera that is up, under the hourly cap. Value is the event's salience (ring 1.0), held 90 s, then 0.0. The outside world, not Orion's body.",
+      "value_kind": "trigger",
+      "rest": "0.0 = the street listener is up, a street camera delivered a frame recently, and no event passed the gate in the last 90 s. Written as a real 0.0 every tick, never decayed to it.",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "sparsity": "designed_sparse",
+      "absent_means": "written every tick while measurable; the tick writes nothing while the street listener is not subscribed or no street camera (walkway, doorbell) delivered a frame within 600 s, so the reading ages and attention reads it absent after 180 s.",
+      "declared_consumers": [
+        "orion.substrate.attention_broadcast:world_first_signals"
+      ],
+      "notes": "category=self_monitoring level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://inner_state/orion-attention-runtime/field_attention_frame.v1": {

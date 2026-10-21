@@ -657,3 +657,21 @@ decides only WHETHER a tick is drawn: on a mixed tick that is drawn, every candi
 as the per-tick design always did.
 
 Eval: `python orion/autonomy/evals/run_rung3_replay_eval.py [--live --hours 48]`.
+
+### Stage 3 option B: admitting an act proven to help (2026-10-21)
+
+The information path retires an act once it is well measured, so an act that works is refused for
+being known. A second, separate path (`ORION_DISPATCH_PROVEN_EFFECT_ENABLED`, ON) reconsiders an
+act-backed candidate the floor refused. It admits the candidate when the act's own EffectPosterior
+has n >= 20 and a 2-sigma lower bound above a reference rate. The reference is the act's randomized
+control arm once that arm has 20 rows, and the act learner's prior (0.5) before that. Value is
+KL(Bernoulli(LB) || Bernoulli(reference)) nats per measured second. Candidates are admitted best
+first, inside the remaining allowance. There is no floor on this path. The information floor and its
+constants are unchanged.
+
+Every proven admission is held back at `ORION_DISPATCH_HOLDBACK_FRACTION` (stable draw per dispatch).
+Both arms are precommitted to `substrate_act_episodes`
+(`services/orion-sql-db/manual_migration_act_episodes_v1.sql`; also created lazily). A row that
+cannot be written means the act is not sent. A decision of either arm holds the act in flight for its
+`horizon_sec`. A control row of an `artifact_produced` act is 0 by construction. The frame carries
+`admitted:proven_effect:...`, or `proven_effect:<why not>:...`.

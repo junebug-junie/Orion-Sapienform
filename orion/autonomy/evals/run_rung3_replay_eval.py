@@ -45,7 +45,12 @@ from statistics import median
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from orion.autonomy.act_candidates import ActRef, act_allocator_candidate  # noqa: E402
+from orion.autonomy.act_candidates import (  # noqa: E402
+    ActRef,
+    act_allocator_candidate,
+    admit_proven,
+    proven_effect,
+)
 from orion.autonomy.allocator import allocate, expected_information_gain_nats  # noqa: E402
 from orion.autonomy.prediction import (  # noqa: E402
     ACT_BINARY_OBSERVATION_VARIANCE,
@@ -87,6 +92,69 @@ def verdict(ref: ActRef, post: EffectPosterior | None, cost: float | None, floor
     return "admitted" if out.admitted else out.refused[0][1]
 
 
+def decide(ref: ActRef, post: EffectPosterior | None, cost: float | None, floor: float,
+           *, n_control: int = 0, control_successes: int = 0) -> tuple[str, str]:
+    """(path, verdict) through BOTH admission paths, exactly as the worker runs them."""
+    posteriors = {} if post is None or post.n == 0 else {ref.cell: post}
+    cand = act_allocator_candidate(dispatch_id="x", dispatch_kind="k", target_id="t", ref=ref,
+                                   posteriors=posteriors, cost_sec=cost)
+    out = allocate([cand], allowance_sec=1e9, min_nats_per_sec=floor)
+    if out.admitted:
+        return "information", "admitted" + (":cold_start" if cand.cold_start else "")
+    why = out.refused[0][1]
+    if why != "below_information_floor" or post is None:
+        return "none", why
+    v = proven_effect(post, n_control=n_control, control_successes=control_successes)
+    out2, taken = admit_proven(out, {"x": v})
+    return ("proven_effect", "admitted") if taken else ("none", f"floor;proven:{v.reason}")
+
+
+def stable_draw(dispatch_id: str) -> float:
+    """Same draw as the dispatch worker's _stable_draw."""
+    import hashlib
+
+    return int(hashlib.sha256(dispatch_id.encode()).hexdigest()[:13], 16) / float(16 ** 13)
+
+
+def simulate(rows, *, post_at, cost_at, ref: ActRef, floor: float, fraction: float) -> dict:
+    """Replay non-baseline candidates in time order through both paths with the in-flight rule:
+    an admission (either arm) holds the act for its horizon. Outcomes of runs that never happened
+    are not invented (see the loop): only their effect on the belief's spread is replayed.
+    Proven-path admissions need real outcomes; the scheduled-painting lane, which keeps grading
+    the same cell, is not replayed here."""
+    out = {"by_path": {}, "refused": {}, "control": 0, "treated": 0, "in_flight_skips": 0}
+    busy_until = None
+    replayed_closes = 0
+    for r in sorted(rows, key=lambda r: r["generated_at"]):
+        if r["baseline"]:
+            continue
+        t = _aware(r["generated_at"])
+        if busy_until is not None and t < busy_until:
+            out["in_flight_skips"] += 1
+            continue
+        post = post_at(t)
+        # An admitted run closes by its horizon. Its VALUE is unknowable here, but in this
+        # Normal-Normal learner the variance (hence the information score) does not depend on it,
+        # so each replayed admission is folded in as one observation. The mean is then not real:
+        # a proven-path decision that would rest on it is reported, never counted.
+        for _ in range(replayed_closes):
+            post, _, _ = score_act_outcome(post, 1.0)
+        if replayed_closes and post.n >= 20:
+            out["refused"]["unknowable_rests_on_replayed_outcomes"] = out["refused"].get(
+                "unknowable_rests_on_replayed_outcomes", 0) + 1
+            continue
+        path, why = decide(ref, post, cost_at(t), floor)
+        if path == "none":
+            out["refused"][why] = out["refused"].get(why, 0) + 1
+            continue
+        out["by_path"][f"{path}:{why}"] = out["by_path"].get(f"{path}:{why}", 0) + 1
+        if path == "proven_effect":
+            out["control" if fraction > 0 and stable_draw(r["dispatch_id"]) < fraction else "treated"] += 1
+        busy_until = t + timedelta(seconds=float(ref.horizon_sec or 5400.0))
+        replayed_closes += 1
+    return out
+
+
 def cost_ceiling(post: EffectPosterior, floor: float) -> float:
     return expected_information_gain_nats(post.variance, ACT_BINARY_OBSERVATION_VARIANCE) / floor
 
@@ -105,6 +173,9 @@ def fixture_checks() -> list[tuple[str, bool]]:
     checks.append(("cold_act_admitted_once", verdict(PAINT, None, 57.1, floor) == "admitted"))
     checks.append(("no_cost_refused", verdict(PAINT, live_paint, None, floor) == "no_cost_estimate"))
     # One observation in, a binary act clears 0.02 nats/s only if it costs under ~10 s.
+    reliable = EffectPosterior(mean=0.696, variance=0.0021, n=119)  # live reading act
+    checks.append(("reliable_act_proven_path", decide(PAINT, reliable, 615.0, floor) == ("proven_effect", "admitted")))
+    checks.append(("outage_belief_not_proven", decide(PAINT, live_paint, 57.1, floor)[0] == "none"))
     one = rebuild_posterior([1.0])
     checks.append(("one_obs_ceiling_about_10s", 9.0 < cost_ceiling(one, floor) < 11.0))
     return checks
@@ -156,10 +227,15 @@ def live(hours: float) -> dict:
         # 2. act posteriors rebuilt from closes vs the stored table
         cur.execute(
             """
-            SELECT actor, verb, signal_id, outcome_value, closed_at,
-                   extract(epoch FROM closed_at - opened_at) AS work_sec, outcome_source
-              FROM grammar_acts WHERE closed_at IS NOT NULL AND outcome_value IS NOT NULL
-             ORDER BY closed_at
+            SELECT a.actor, a.verb, a.signal_id, a.outcome_value, a.closed_at,
+                   extract(epoch FROM a.closed_at - a.opened_at) AS work_sec, a.outcome_source,
+                   CASE WHEN a.verb = 'make' THEN coalesce((v.stage_json->>'generating_started_at') IS NOT NULL, false)
+                        ELSE true END AS reached_work
+              FROM grammar_acts a
+              LEFT JOIN reverie_visual_attempt v
+                ON a.verb = 'make' AND v.dispatch_id = substr(a.test_before, length('visual_dispatch:') + 1)
+             WHERE a.closed_at IS NOT NULL AND a.outcome_value IS NOT NULL
+             ORDER BY a.closed_at
             """)
         closes = cur.fetchall()
         cur.execute(
@@ -179,8 +255,13 @@ def live(hours: float) -> dict:
             rebuilt_row["match"] = bool(s) and s["posterior_n"] == post.n and abs(float(s["posterior_mean"]) - post.mean) < 1e-6
             report.setdefault("posterior_rebuild", {})["|".join(key)] = rebuilt_row
 
-        def post_at(key, t):
-            return rebuild_posterior([float(r["outcome_value"]) for r in cells.get(key, []) if _aware(r["closed_at"]) <= t])
+        def post_at(key, t, *, grading_rule=False):
+            return rebuild_posterior([float(r["outcome_value"]) for r in cells.get(key, [])
+                                      if _aware(r["closed_at"]) <= t and (r["reached_work"] or not grading_rule)])
+
+        report["grading_rule"] = {
+            "|".join(k): {"closes": len(rows), "reached_work": sum(1 for r in rows if r["reached_work"])}
+            for k, rows in cells.items() if k[0] == "act:make"}
 
         # 3. every render_scene candidate the runtime saw, re-scored as the painting act
         cur.execute(
@@ -210,6 +291,21 @@ def live(hours: float) -> dict:
             old_tally[r["old"] or "not_refused_by_allocator"] = old_tally.get(r["old"] or "not_refused_by_allocator", 0) + 1
         report["render_scene_candidates"] = {"n": len(render), "old_verdicts": old_tally, "new_verdicts": tally}
 
+        def cost_at(t):
+            window = [c for at, c in costs if t - ACT_COST_LOOKBACK < _aware(at) <= t]
+            return median(window) if window else None
+
+        paint = ActRef(verb=PAINT.verb, actor=PAINT.actor, signal_id=PAINT.signal_id, horizon_sec=5400.0)
+        fraction = 0.2
+        report["two_paths"] = {
+            "belief_as_stored": simulate(render, post_at=lambda t: post_at(key, t), cost_at=cost_at,
+                                         ref=paint, floor=floor, fraction=fraction),
+            "belief_under_new_grading_rule": simulate(
+                render, post_at=lambda t: post_at(key, t, grading_rule=True), cost_at=cost_at,
+                ref=paint, floor=floor, fraction=fraction),
+            "holdback_fraction": fraction,
+        }
+
         # 4. cross-doer table at window end (one currency; informational for doers with no dispatch seam)
         dispatchable = {PAINT.actor: "render_scene dispatch (all doer gates kept)"}
         table = []
@@ -228,6 +324,7 @@ def live(hours: float) -> dict:
                 "nats": round(nats, 4), "cost_sec": None if cost is None else round(cost, 1), "cost_source": cost_src,
                 "nats_per_sec": None if not cost else round(nats / cost, 6),
                 "verdict_at_floor": verdict(ref, post, cost, floor),
+                "both_paths": "|".join(decide(ref, post, cost, floor)),
                 "max_cost_to_clear_floor_sec": round(cost_ceiling(post, floor), 2),
                 "dispatch_seam": dispatchable.get(actor, "none (doer self-schedules)"),
             })
@@ -271,7 +368,7 @@ def live(hours: float) -> dict:
         cur.execute("SELECT count(*) AS n FROM attention_loop_outcome WHERE actor = 'orion' AND created_at > %s", (since,))
         report["resolver"] = {"chat_reply_acts_all_time": len(replies), "would_bind": bound,
                               "orion_verdicts_in_window_today": cur.fetchone()["n"]}
-    report["admissions_at_unchanged_floor"] = report["render_scene_candidates"]["new_verdicts"].get("admitted", 0)
+    report["admissions_at_unchanged_floor"] = report["two_paths"]
     return report
 
 

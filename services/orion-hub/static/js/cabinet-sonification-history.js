@@ -1,9 +1,11 @@
 // Pure history adapter: timestamps, fixed scaling and explicit interpolation gaps.
+// Gap policy is a multiple of each series' own median spacing: the API's point budget
+// sets spacing (~window/800), so a fixed-seconds policy silences every real window.
 (function (root) {
   'use strict';
   const WINDOWS = Object.freeze({'24h': 86400, '3d': 259200, '7d': 604800});
   const DURATION_SEC = 60;
-  const GAP_OPTIONS = Object.freeze([90, 300, 900, 1800, 3600]);
+  const GAP_MULTIPLES = Object.freeze([1.5, 2, 4, 10]);
   const KEYS = Object.freeze({magnetic: 'magnetic_ut', lidar: 'lidar_mm'});
   const finite = v => typeof v === 'number' && Number.isFinite(v);
   function parseTime(value) {
@@ -55,15 +57,20 @@
     if (!left || !right || left.v === null || right.v === null || right.t - left.t > gapSec * 1000) return null;
     return {value: left.v + (right.v - left.v) * (at - left.t) / (right.t - left.t), from: left.t, to: right.t};
   }
-  function frame(history, playbackSec, gapSec, preset) {
+  function gapSecFor(history, key, gapMultiple) {
+    const spacing = history?.stats[key]?.medianSpacingSec;
+    return finite(spacing) && finite(gapMultiple) ? spacing * gapMultiple : null;
+  }
+  function frame(history, playbackSec, gapMultiple, preset) {
     const validTime = finite(playbackSec) && history && playbackSec >= 0 && playbackSec <= history.durationSec;
     const at = validTime ? history.start + playbackSec * history.compression * 1000 : null;
     return {version: 1, mode: 'history', sourceTime: at === null ? null : new Date(at).toISOString(),
-      playbackSec, compression: history?.compression ?? null, gapSec,
+      playbackSec, compression: history?.compression ?? null, gapMultiple,
       readings: preset.voices.map(def => {
         const key = KEYS[def.voice];
+        const gapSec = key ? gapSecFor(history, key, gapMultiple) : null;
         const sample = at === null || !key ? null : interpolate(history.series[key], at, gapSec);
-        return {key: def.key, unit: def.unit, value: sample?.value ?? null, status: sample ? 'ok' : 'missing',
+        return {key: def.key, unit: def.unit, value: sample?.value ?? null, status: sample ? 'ok' : 'missing', gapSec,
           sourceId: key ? 'biometrics-summary:' + key : null,
           // Interpolated source position is separate from the actual observation bracket.
           observedAt: sample ? new Date(sample.from).toISOString() : null,
@@ -71,7 +78,7 @@
           reason: !key ? 'aggregated vibration omitted — no reconstructed impacts' : sample ? 'aggregated history level' : 'history gap / unavailable'};
       })};
   }
-  const api = {WINDOWS, DURATION_SEC, GAP_OPTIONS, prepare, interpolate, frame};
+  const api = {WINDOWS, DURATION_SEC, GAP_MULTIPLES, prepare, interpolate, gapSecFor, frame};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.OrionCabinetHistory = api;
 })(typeof window === 'undefined' ? globalThis : window);

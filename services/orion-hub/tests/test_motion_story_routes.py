@@ -643,3 +643,36 @@ def test_a_companion_from_a_story_walked_together_can_be_named_there() -> None:
         assert published[0].source_ref == "ind-friend"
 
     _run(body, published)
+
+
+# --- street continuity line (2026-10-20) ---------------------------------------------------------------
+
+HANDOFF_MIGRATION = REPO_ROOT / "services" / "orion-sql-db" / "manual_migration_vision_handoff_v1.sql"
+
+
+def test_handoff_info_says_which_camera_and_how_long() -> None:
+    row = {"source_story_id": "a", "target_story_id": "b", "source_stream": "doorbell", "target_stream": "walkway",
+           "transit_sec": 38.4, "status": "met"}
+    assert msr.handoff_info("b", row) == {"kind": "from", "camera": "door camera", "seconds": 38}
+    assert msr.handoff_info("a", row) == {"kind": "next", "camera": "walkway camera", "seconds": 38}
+    assert msr.handoff_info("z", row) is None
+    assert msr.handoff_info("b", {**row, "status": "paired", "transit_sec": -2})["kind"] == "same"
+    assert msr.handoff_info("b", {**row, "status": "missed"}) is None
+
+
+@needs_pg
+def test_list_shows_the_handoff_line_and_is_silent_without_the_table() -> None:
+    async def body(pool, client):
+        a = await _story(pool, 1, minute=1)
+        r = await client.get("/api/vision/motion-stories")
+        assert r.status_code == 200 and r.json()["stories"][0]["handoff"] is None   # no table yet: fail-open
+        for st in _statements(HANDOFF_MIGRATION.read_text()):
+            await pool.execute(st)
+        await pool.execute(
+            "INSERT INTO vision_handoff (handoff_id, portal_id, portal_kind, source_stream, target_stream, "
+            "source_story_id, target_story_id, status, transit_sec, scored_at) VALUES ('h1', 'door_to_walkway', "
+            "'gap', 'doorbell', 'walkway', 'door-story', $1, 'met', 38.0, now())", a)
+        r = await client.get("/api/vision/motion-stories")
+        assert r.json()["stories"][0]["handoff"] == {"kind": "from", "camera": "door camera", "seconds": 38}
+
+    _run(body)

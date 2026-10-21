@@ -25,7 +25,7 @@ def test_street_event_channel_cataloged() -> None:
     entry = _channels()[CHANNEL]
     assert entry["schema_id"] == "StreetEventV1"
     assert entry["message_kind"] == "vision.street.event.v1"
-    assert entry["producer_services"] == ["orion-vision-retina"]
+    assert entry["producer_services"] == ["orion-vision-retina", "orion-sql-writer"]
     assert "orion-substrate-runtime" in entry["consumer_services"]
 
 

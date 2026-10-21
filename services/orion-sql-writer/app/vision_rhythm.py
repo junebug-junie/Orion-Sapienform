@@ -295,6 +295,21 @@ def expect_key_ttl(open_windows: Sequence[Tuple[datetime, datetime, bool]], now:
     return max(1, int(math.ceil((max(ends) - now).total_seconds())))
 
 
+def handoff_hold(raw, now: datetime) -> Tuple[Optional[int], dict]:
+    """Seconds an open handoff still needs ``orion:vision:expect:<stream>``
+    (its ``handoff_until``, written by app/vision_handoff_loop.py), and the
+    handoff fields to carry over. (None, {}) when none is open."""
+    try:
+        val = json.loads(raw) if raw else {}
+        until = datetime.fromisoformat(val["handoff_until"]) if isinstance(val, dict) and val.get("handoff_until") else None
+    except (ValueError, TypeError, KeyError):
+        return None, {}
+    if until is None or until <= now:
+        return None, {}
+    return int(math.ceil((until - now).total_seconds())), {"handoff_ids": val.get("handoff_ids") or [],
+                                                           "handoff_until": val["handoff_until"]}
+
+
 def _hhmm(ts: datetime, tz: ZoneInfo) -> str:
     return ts.astimezone(tz).strftime("%H:%M")
 
@@ -632,15 +647,22 @@ def _set_expect_keys(redis_url: Optional[str], per_stream: Dict[str, List[Tuple[
         client = redis.Redis.from_url(redis_url, socket_timeout=3, socket_connect_timeout=3)
         try:
             for stream_id, windows in per_stream.items():
+                key = f"{EXPECT_KEY_PREFIX}{stream_id}"
                 ttl = expect_key_ttl(windows, now)
+                # The handoff loop (app/vision_handoff_loop.py) shares this key:
+                # an open handoff window must not be cut short by a rhythm DEL/SET.
+                hold, handoff_fields = handoff_hold(client.get(key), now)
                 if ttl is None:
-                    # Everything open on this stream has already arrived:
-                    # stop steering attention toward it now, not at the old TTL.
-                    client.delete(f"{EXPECT_KEY_PREFIX}{stream_id}")
+                    if hold:
+                        client.expire(key, hold)
+                    else:
+                        # Everything open on this stream has already arrived:
+                        # stop steering attention toward it now, not at the old TTL.
+                        client.delete(key)
                     continue
-                client.set(f"{EXPECT_KEY_PREFIX}{stream_id}",
-                           json.dumps({"expectation_ids": per_stream_ids.get(stream_id, []),
-                                       "set_at": now.isoformat()}), ex=ttl)
+                client.set(key, json.dumps({"expectation_ids": per_stream_ids.get(stream_id, []),
+                                            "set_at": now.isoformat(), **handoff_fields}),
+                           ex=max(ttl, hold or 0))
                 n += 1
         finally:
             client.close()

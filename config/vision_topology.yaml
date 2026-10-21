@@ -1,0 +1,52 @@
+# Camera topology: the links ("portals") between Orion's street cameras.
+#
+# Design: docs/superpowers/specs/2026-10-20-street-continuity-handoff-design.md,
+# section 2. One consumer: the handoff reducer in orion-sql-writer
+# (app/vision_handoff.py). Loader and validation: orion/vision/topology.py.
+#
+# Juniper (2026-10-20): the two cameras FULLY OVERLAP on the central walkway
+# that runs from the front door out toward the street. A sidewalk walker who
+# leaves the door camera on its right edge later enters the walkway camera on
+# its left edge, and the reverse.
+#
+# Only priors live here. The learned gap (g = transit seconds x exit speed)
+# and the learned bands live in the database (vision_handoff), not in this file.
+version: 1
+portals:
+  # Central walkway: both cameras see it at the same time. Two same-label
+  # stories on both cameras whose times overlap within max_skew_sec are an
+  # overlap pair (a same-person candidate). No expectation is opened.
+  - id: central_walk
+    kind: overlap
+    streams: [doorbell, walkway]
+    max_skew_sec: 3
+  # A walkway person moving toward the house (dir_depth +1) is about to reach
+  # the door: graded against the next doorbell_motion / doorbell_ring vision
+  # event (or a doorbell person story) inside prior_sec after the story ends.
+  - id: approach_door
+    kind: approach
+    from: {stream: walkway, dir_depth: 1}
+    to: {stream: doorbell, event: [doorbell_motion, doorbell_ring]}
+    prior_sec: [3, 30]
+  # Sidewalk, past the edge of the door camera's view.
+  # exclude_dir_depth 1: a doorbell story moving toward the camera is walking up
+  # to the door, not along the sidewalk. Replay 2026-10-20: the only "missed"
+  # door_to_walkway (21:02 UTC, right and toward the door, porch) was a visitor.
+  - id: door_to_walkway
+    kind: gap
+    from: {stream: doorbell, edge: right, exclude_dir_depth: 1}
+    to: {stream: walkway, edge: left}
+    prior_gap_frame_widths: 1.5
+  - id: walkway_to_door
+    kind: gap
+    from: {stream: walkway, edge: left}
+    to: {stream: doorbell, edge: right}
+    prior_gap_frame_widths: 1.5
+
+# Zones whose last foot point "leads somewhere" (into the house, a car, the
+# street): the entered_place hypothesis of a missed handoff. The doorbell's
+# only zone today is the whole-frame "porch", so it lists none until the
+# doorbell geometry is traced (spec section 1).
+place_zones:
+  walkway: [patio]
+  doorbell: []

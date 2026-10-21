@@ -99,6 +99,6 @@ The hub restart pauses a running game; it does not end it (the game lives in ori
 
 ## PR link
 
-<link>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2832
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

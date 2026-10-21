@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS {TABLE} (
 );
 ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS object_ref text;
 ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS void_reason text;
-ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS resolved_at timestamptz
+ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS resolved_at timestamptz;
 CREATE INDEX IF NOT EXISTS {TABLE}_act_idx ON {TABLE} (act_label, arm, decided_at DESC);
 CREATE INDEX IF NOT EXISTS {TABLE}_horizon_idx ON {TABLE} (actor, horizon_at DESC)
 """

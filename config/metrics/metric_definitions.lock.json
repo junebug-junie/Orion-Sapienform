@@ -1,12 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 752,
+  "metric_count": 754,
   "_last_change": {
     "change_count": 2,
-    "high_severity_count": 1,
+    "high_severity_count": 0,
     "changes": [
-      "high   removed metric://bus_channel/orion-vision-retina/orion:vision:street:events",
-      "medium added metric://bus_channel/orion-sql-writer/orion:vision:street:events"
+      "medium added metric://bus_channel/orion-execution-dispatch-runtime/orion:world_pulse_read:pull:request",
+      "medium added metric://bus_channel/orion-hub/orion:world_pulse_read:pull:reply:*"
     ]
   },
   "definitions": {
@@ -1592,6 +1592,17 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-execution-dispatch-runtime/orion:world_pulse_read:pull:request": {
+      "schema_id": "WorldPulseReadPullRequestV1",
+      "all_producers": [
+        "orion-execution-dispatch-runtime"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-feedback-runtime/orion:feedback:frame": {
       "schema_id": "FeedbackFrameV1",
       "all_producers": [
@@ -2430,6 +2441,17 @@
         "orion-whisper-tts"
       ],
       "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:world_pulse_read:pull:reply:*": {
+      "schema_id": "WorldPulseReadPullResultV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-execution-dispatch-runtime"
+      ],
+      "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-juniper-affective-state/orion:affectgpt:assessment": {

@@ -629,3 +629,26 @@ Dependencies: the feedback runtime's `ORION_WORLD_SETTLEMENT_SCORING_ENABLED` mu
 episode stays "in flight" (6 h horizon), so with scoring off the action fires at most once per 6 h.
 The global per-tick `ORION_DISPATCH_HOLDBACK_FRACTION` (live 0.0) still applies after the per-template
 draw and writes no world control row; the real treated rate is 0.5 x (1 - that fraction).
+
+## Rung-2 acts in the allocator (thinking rung 3, 2026-10-21)
+
+A route that really produces a rung-2 act declares it (`act:` in
+`config/execution_dispatch/execution_dispatch_policy.v1.yaml`). Today only `render_scene`, which is
+the `thought.painting` `make` act (its act key is `reverie_visual_run_id(dispatch_id)`). The
+allocator scores that candidate on the act's own EffectPosterior (`act:make`, `thought.painting`,
+`artifact_produced`) with the binary act learner's observation variance (0.25), and on the route's
+measured cost (p50 settled latency over `ORION_DISPATCH_ACT_COST_LOOKBACK_HOURS`, 720 h). Before this,
+render_scene was refused `unmeasurable` on every tick. Unchanged: the 0.02 nats/s floor, the
+allowance, the harm gate, the cold-start rule and every doer gate downstream. Added: no typed 5 s
+cost fallback for an act (no measured cost -> `no_cost_estimate`), and one in flight per act
+(`act_in_flight`: an open act for the actor or a `pending` dispatch result for the route, 6 h;
+read errors fail closed). The scored numbers ride on the candidate as an
+`act_expectation:...` reason. Kill switch: `ORION_DISPATCH_ACT_CANDIDATES_ENABLED=false`.
+
+The per-tick randomized holdback (`ORION_DISPATCH_HOLDBACK_FRACTION`) is ON at 0.2 (attend-to-act
+design D3). It draws only on ticks that can yield a control observation: at least one candidate with a
+declared field signal that is not a world action or a visual baseline (`tick_can_yield_control`).
+Other ticks are re-proposed seconds later, so withholding them would only delay them.
+
+Eval: `python orion/autonomy/evals/run_rung3_replay_eval.py [--live --hours 48]`.
+

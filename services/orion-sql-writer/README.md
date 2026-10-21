@@ -871,6 +871,16 @@ Producers today: orion-thought paintings (`make`), hub chat reply (`say`), hub o
 Kill switch: `SQL_WRITER_ACT_LEDGER_ENABLED=false` (events still land in `grammar_events`).
 Eval: `python evals/act_ledger_calibration.py [--live]`.
 
+**Rung 3: acts bound to the workspace winner (2026-10-21).** At open, an act whose actor answers a
+world-first workspace source is stamped with the winning loop it was opened under
+(`grammar_acts.workspace_ref` = the broadcast's selected open loop id), through the same binding
+rule the proposal layer uses (`orion.autonomy.self_shed.bind_workspace_winner`: action selected,
+<= 90 s old, held >= 2 ticks). Today one pairing: `hub.chat_reply` answers `world:chat` /
+`node:substrate.chat` (`ACT_ANSWERS_WORKSPACE_REFS`). When the act closes, the writer adds Orion's own
+non-final `acted` verdict on that loop to `attention_loop_outcome` (`actor='orion'`, outcome in
+`features_at_close`), in the same transaction under its own savepoint. Never `resolved` or
+`dismissed`. Kill switch: `SQL_WRITER_ACT_WORKSPACE_BINDING_ENABLED=false`.
+
 ## Running & Testing
 
 

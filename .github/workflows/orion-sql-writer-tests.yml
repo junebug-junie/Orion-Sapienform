@@ -154,7 +154,8 @@ jobs:
         run: |
           set -o pipefail
           PYTHONPATH=.:services/orion-sql-writer:services/orion-sql-writer/tests python -m pytest -q -rs -m integration \
-            services/orion-sql-writer/tests/test_act_ledger_integration.py | tee /tmp/act_ledger.log
+            services/orion-sql-writer/tests/test_act_ledger_integration.py \
+            services/orion-sql-writer/tests/test_act_workspace_binding_integration.py | tee /tmp/act_ledger.log
           if grep -q "SKIPPED" /tmp/act_ledger.log; then echo "act ledger integration tests skipped"; exit 1; fi
       # Visual confirmation asks against real Postgres: opener, answers, typed names, picture
       # verdicts, migration backfill. The tests TRUNCATE the walkway tables; this database is throwaway.

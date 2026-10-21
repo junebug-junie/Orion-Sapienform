@@ -854,6 +854,7 @@ from orion.schemas.world_pulse import (
     WorthReadingItemV1,
     WorthWatchingItemV1,
 )
+from orion.schemas.town_sim import TownSimStoredV1, TownSimEventRequestV1, TownSimEventResultV1, TownSimSceneResolvedV1, TownSimPredictionScoreV1
 from orion.schemas.embodiment import (
     EmbodimentIntentV1,
     EmbodimentOutcomeV1,
@@ -1928,6 +1929,11 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "EmbodimentIntentV1": SchemaRegistration(
         model=EmbodimentIntentV1, kind="embodiment.intent.v1"
     ),
+    "TownSimStoredV1": SchemaRegistration(model=TownSimStoredV1, kind="town.sim.stored.v1"),
+    "TownSimEventRequestV1": SchemaRegistration(model=TownSimEventRequestV1, kind="town.sim.event.request.v1"),
+    "TownSimEventResultV1": SchemaRegistration(model=TownSimEventResultV1, kind="town.sim.event.result.v1"),
+    "TownSimSceneResolvedV1": SchemaRegistration(model=TownSimSceneResolvedV1, kind="town.sim.scene.resolved.v1"),
+    "TownSimPredictionScoreV1": SchemaRegistration(model=TownSimPredictionScoreV1, kind="town.sim.prediction.scored.v1"),
     "EmbodimentOutcomeV1": SchemaRegistration(
         model=EmbodimentOutcomeV1, kind="embodiment.outcome.v1"
     ),

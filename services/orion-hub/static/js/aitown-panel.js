@@ -12,6 +12,7 @@
   }
 
   async function refreshStatus() {
+    refreshSimulation();
     const strip = el("aitownStatusStrip");
     if (!strip) return;
     try {
@@ -130,10 +131,55 @@
     }
   }
 
+  let simState = null;
+  let eventId = null;
+  async function refreshSimulation() {
+    const label = el("townSimState");
+    if (!label) return;
+    try {
+      const resp = await fetch(`${API_BASE}/api/aitown/simulation`);
+      if (!resp.ok) throw new Error("Simulation unavailable");
+      const data = await resp.json();
+      simState = data.simulation?.state;
+      if (!simState) throw new Error("Simulation not initialized");
+      label.textContent = `Game minute ${simState.minute} · ${data.simulation.enabled ? "Running" : "Paused"} · workshop parts ${simState.stock["workshop.parts"]}`;
+      const select = el("townEventForm").elements.participants;
+      const selected = new Set(Array.from(select.selectedOptions).map(o => o.value));
+      select.replaceChildren(...Object.entries(simState.agents).map(([id, a]) => {
+        const option = document.createElement("option"); option.value = id; option.textContent = a.name;
+        option.selected = selected.has(id); return option;
+      }));
+      el("townQuestList").textContent = Object.values(simState.quests).map(q => `${q.title}: ${q.status} (deadline ${q.deadline})${q.effect_error ? " — reward/penalty failed" : ""}`).join("\n") || "No quests yet.";
+    } catch (err) { label.textContent = err.message; simState = null; }
+  }
+  const eventForm = el("townEventForm");
+  if (eventForm) eventForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const feedback = el("townEventResult");
+    if (!simState) { feedback.textContent = "Wait for the simulation to connect."; return; }
+    const kind = eventForm.elements.kind.value;
+    const title = eventForm.elements.title.value.trim();
+    const participants = Array.from(eventForm.elements.participants.selectedOptions).map(o => o.value);
+    if (kind === "quest" && participants.length < 2) { feedback.textContent = "Select at least two quest participants."; return; }
+    eventId = eventId || crypto.randomUUID();
+    const body = {kind, title, correlation_id:eventId, effects:kind === "delivery" ? [{op:"stock_delta",target:"workshop.parts",value:3}] : []};
+    if (kind === "quest") body.quest = {id:eventId,title,participants,deadline:simState.minute + Number(eventForm.elements.duration.value),goal:[{target:"fact:generator.fixed",cmp:"eq",value:true}],steps:[],reward:[],penalty:[]};
+    const button = eventForm.querySelector("button"); button.disabled = true;
+    try {
+      const response = await fetch(`${API_BASE}/api/aitown/events`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      const result = await response.json();
+      if (!response.ok) throw new Error(typeof result.detail === "string" ? result.detail : "Invalid event");
+      feedback.textContent = result.accepted ? "Added to the town." : `Refused: ${result.reason}`;
+      if (result.accepted) { eventId = null; await refreshSimulation(); }
+    } catch (err) { feedback.textContent = `${err.message}. Retry uses the same event ID.`; }
+    finally { button.disabled = false; }
+  });
+
   window.OrionAitownPanel = {
     activate() {
       loadIframe();
       startPolling();
+      refreshSimulation();
     },
     deactivate() {
       stopPolling();

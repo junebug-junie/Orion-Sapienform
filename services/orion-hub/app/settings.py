@@ -238,6 +238,7 @@ class Settings(BaseSettings):
         default=True,
         alias="HUB_AITOWN_ENABLED",
     )
+    HUB_AITOWN_EMBODIMENT_URL: str = Field(default="http://100.92.216.81:8130", alias="HUB_AITOWN_EMBODIMENT_URL")
     HUB_AITOWN_UI_URL: str = Field(
         default="http://127.0.0.1:5173",
         alias="HUB_AITOWN_UI_URL",

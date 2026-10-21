@@ -1,8 +1,7 @@
 diff --git a/convex/agent/conversation.ts b/convex/agent/conversation.ts
-index 1111111..2222222 100644
 --- a/convex/agent/conversation.ts
 +++ b/convex/agent/conversation.ts
-@@ -93,6 +93,49 @@
+@@ -238,6 +238,50 @@
    return content;
  }
  
@@ -49,74 +48,29 @@ index 1111111..2222222 100644
 +  return ownLines.some((line) => normalizeTownLine(line) === norm);
 +}
 +
++
  export async function continueConversationMessage(
    ctx: ActionCtx,
    worldId: Id<'worlds'>,
-@@ -131,28 +174,56 @@
-     `Ground your reply in something specific and concrete -- a real object, task, or event -- rather than extended metaphor or abstract imagery. If the conversation is drifting into vague poetic language (light, shadows, glow, echoes, silence, and similar) without a concrete referent, name the actual thing you mean instead of continuing the metaphor.`,
-   );
- 
-+  const priorMessages = await previousMessages(
-+    ctx,
-+    worldId,
-+    player,
-+    otherPlayer,
-+    conversation.id as GameId<'conversations'>,
-+  );
-   const llmMessages: LLMMessage[] = [
-     {
-       role: 'system',
-       content: prompt.join('\n'),
-     },
--    ...(await previousMessages(
--      ctx,
--      worldId,
--      player,
--      otherPlayer,
--      conversation.id as GameId<'conversations'>,
--    )),
-+    ...priorMessages,
-   ];
-   const lastPrompt = `${player.name} to ${otherPlayer.name}:`;
-   llmMessages.push({ role: 'user', content: lastPrompt });
- 
-+  const ownLines = ownPriorLines(priorMessages, player.name);
-   const { content } = await chatCompletion({
-     messages: llmMessages,
+@@ -310,7 +354,17 @@
      max_tokens: 120,
      stop: stopWords(otherPlayer.name, player.name),
    });
--  return clampTownReply(trimContentPrefx(content, lastPrompt));
+-  const response = clampTownReply(trimContentPrefx(content, lastPrompt));
++  const ownLines = ownPriorLines(priorMessages, player.name);
 +  let response = clampTownReply(trimContentPrefx(content, lastPrompt));
 +  if (isSelfRepeat(response, ownLines)) {
-+    // Live 2026-09-15 Sofia↔Juniper: exact line reposted after goodbye.
-+    // One retry, then sentinel so agentGenerateMessage leaves (not a bare
-+    // empty continue — those can happen for other reasons mid-chat).
-+    const firstAttempt = response;
-+    const retryMessages: LLMMessage[] = [
-+      ...llmMessages,
-+      {
-+        role: 'user',
-+        content:
-+          `You already said that. Do not repeat your earlier line. ` +
-+          `Answer their latest message with something new, or say a short goodbye.`,
-+      },
-+      { role: 'user', content: lastPrompt },
-+    ];
 +    const retry = await chatCompletion({
-+      messages: retryMessages,
++      messages: [...llmMessages, {role: 'user', content: 'You already said that. Answer with something new or leave.'}],
 +      max_tokens: 120,
 +      stop: stopWords(otherPlayer.name, player.name),
 +    });
 +    response = clampTownReply(trimContentPrefx(retry.content, lastPrompt));
-+    if (!response.trim() || isSelfRepeat(response, ownLines) || isSelfRepeat(response, [firstAttempt])) {
-+      return SELF_REPEAT_LEAVE_SENTINEL;
-+    }
++    if (!response.trim() || isSelfRepeat(response, ownLines)) return SELF_REPEAT_LEAVE_SENTINEL;
 +  }
-+  return response;
- }
- 
- export async function leaveConversationMessage(
+   void ingestTownTurn({
+     speaker: player.name,
+     other: otherPlayer.name,
 diff --git a/convex/aiTown/agentOperations.ts b/convex/aiTown/agentOperations.ts
 index 3333333..4444444 100644
 --- a/convex/aiTown/agentOperations.ts

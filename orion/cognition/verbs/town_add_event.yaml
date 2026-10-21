@@ -1,0 +1,25 @@
+name: town_add_event
+label: Add town event
+description: Submit a bounded simulation event or quest through the trusted embodiment bridge.
+category: ExecutiveControl
+priority: low
+interruptible: true
+requires_gpu: true
+requires_memory: false
+timeout_ms: 15000
+max_recursion_depth: 0
+services: [LLMGatewayService, TownEventService]
+prompt_template: town_add_event.j2
+plan:
+  - name: propose_event
+    order: 0
+    prompt_template: town_add_event.j2
+    services: [LLMGatewayService]
+    requires_gpu: true
+    requires_memory: false
+  - name: add_event
+    order: 1
+    services: [TownEventService]
+    requires_gpu: false
+    requires_memory: false
+safety_rules: []

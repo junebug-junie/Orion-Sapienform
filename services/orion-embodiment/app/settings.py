@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     rpc_health_publish_interval_sec: float = Field(30.0, gt=0.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
     rpc_health_channel_latency_enabled: bool = Field(True, alias="RPC_HEALTH_CHANNEL_LATENCY_ENABLED")
 
+    town_sim_enabled: bool = Field(True, alias="EMBODIMENT_TOWN_SIM_ENABLED")
+    town_orion_events_per_day: int = Field(5, ge=1, le=100, alias="EMBODIMENT_TOWN_ORION_EVENTS_PER_DAY")
+    town_orion_open_quests_max: int = Field(2, ge=1, le=10, alias="EMBODIMENT_TOWN_ORION_OPEN_QUESTS_MAX")
+    town_mirror_per_day: int = Field(3, ge=1, le=10, alias="EMBODIMENT_TOWN_MIRROR_PER_DAY")
+    town_weather_provider_url: str = Field("", alias="EMBODIMENT_TOWN_WEATHER_PROVIDER_URL")
+    town_weather_region: str = Field("", alias="EMBODIMENT_TOWN_WEATHER_REGION")
+
     enabled: bool = Field(False, alias="ORION_EMBODIMENT_ENABLED")
     fcc_env_path: str = Field("/root/.fcc/.env", alias="EMBODIMENT_FCC_ENV_PATH")
     # Optional override for the Convex URL loaded from ~/.fcc/.env. Needed when the

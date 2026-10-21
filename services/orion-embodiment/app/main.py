@@ -78,3 +78,19 @@ app = FastAPI(title="orion-embodiment", lifespan=lifespan)
 async def health() -> dict[str, str]:
     s = get_settings()
     return {"status": "ok", "service": s.service_name, "enabled": str(s.enabled)}
+
+@app.get('/town/state')
+async def town_state():
+    import asyncio
+    from fastapi import HTTPException
+    from orion.embodiment import aitown_client
+    if not worker._settings.enabled or not worker._settings.town_sim_enabled:
+        raise HTTPException(503, 'Town simulation bridge disabled')
+    worker._refresh_aitown_runtime()
+    if not worker._world_id:
+        raise HTTPException(503, 'Town world not configured')
+    try:
+        result = await asyncio.to_thread(aitown_client.convex_query, 'sim/runtime:snapshot', {'worldId': worker._world_id})
+    except aitown_client.AitownClientError as exc:
+        raise HTTPException(502, 'Town simulation unavailable') from exc
+    return {'world_id': worker._world_id, 'simulation': result}

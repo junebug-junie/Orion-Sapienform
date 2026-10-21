@@ -2043,6 +2043,43 @@ async def _proxy_aitown_request(path: str, request: Request) -> Response:
             raise HTTPException(status_code=502, detail="AI Town proxy request failed") from exc
 
 
+@router.get("/api/aitown/simulation")
+async def aitown_simulation() -> dict[str, Any]:
+    if not settings.HUB_AITOWN_ENABLED:
+        raise HTTPException(status_code=404, detail="AI Town is not enabled")
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as session:
+            async with session.get(settings.HUB_AITOWN_EMBODIMENT_URL.rstrip("/") + "/town/state") as response:
+                if response.status != 200:
+                    raise HTTPException(status_code=503, detail="Town simulation unavailable")
+                return await response.json()
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        raise HTTPException(status_code=503, detail="Town bridge unavailable") from exc
+
+
+@router.post("/api/aitown/events")
+async def aitown_add_event(request: Request) -> dict[str, Any]:
+    from orion.embodiment.town_event_tool import request_town_event
+    if not settings.HUB_AITOWN_ENABLED:
+        raise HTTPException(status_code=404, detail="AI Town is not enabled")
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Event object required")
+    # The operator form always addresses the configured world and trusted source.
+    state = await aitown_simulation()
+    payload["world_id"] = state["world_id"]
+    bus = OrionBusAsync(str(settings.ORION_BUS_URL))
+    await bus.connect()
+    try:
+        return await request_town_event(bus, payload, producer="orion-hub", node=settings.NODE_NAME)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="Town bridge did not answer; retry with the same event ID") from exc
+    finally:
+        await bus.close()
+
+
 @router.get("/api/aitown/status")
 async def aitown_status() -> dict[str, Any]:
     from scripts.aitown_status import fetch_aitown_status

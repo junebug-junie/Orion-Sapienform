@@ -10,6 +10,8 @@ import logging
 logger = logging.getLogger("sql-writer.settings")
 
 DEFAULT_ROUTE_MAP: dict[str, str] = {
+    "town.sim.scene.resolved.v1": "TownSimSceneSQL",
+    "town.sim.prediction.scored.v1": "TownSimPredictionSQL",
     "collapse.mirror": "CollapseMirror",
     "collapse.mirror.entry.v2": "CollapseMirror",
     "metacog.entry.v1": "MetacogEntry",
@@ -795,6 +797,9 @@ class Settings(BaseSettings):
         We keep env as source of truth and simply expose the configured list.
         """
         channels = list(self.sql_writer_subscribe_channels)
+        for channel in ("orion:town:sim:scene:resolved", "orion:town:sim:prediction:scored"):
+            if channel not in channels:
+                channels.append(channel)
         if not self.sql_writer_enable_grammar_channel:
             channels = [c for c in channels if c != "orion:grammar:event"]
         if self.sql_writer_enable_spark_snapshot_channel and "orion:spark:state:snapshot" not in channels:

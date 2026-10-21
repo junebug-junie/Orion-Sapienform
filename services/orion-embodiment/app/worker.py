@@ -96,6 +96,7 @@ class EmbodimentWorker:
     def __init__(self) -> None:
         self._settings = get_settings()
         self._stop = asyncio.Event()
+        self._town_sim = None
         self._bus = OrionBusAsync(
             self._settings.bus_url, enabled=self._settings.bus_enabled, codec=OrionCodec()
         )
@@ -335,12 +336,18 @@ class EmbodimentWorker:
             return
         await self._bus.connect()
         self._rpc_health_publisher.start()
+        if self._settings.town_sim_enabled:
+            from orion.embodiment.town_sim_bridge import TownSimBridge
+            self._town_sim = TownSimBridge(self)
+            self._town_sim.start()
         asyncio.create_task(self._consume_loop(), name="embodiment-consume")
         if self._settings.perception_interval_sec > 0:
             asyncio.create_task(self._perception_loop(), name="embodiment-perception")
 
     async def stop(self) -> None:
         self._stop.set()
+        if self._town_sim:
+            await self._town_sim.stop()
         await self._rpc_health_publisher.stop()
         await self._bus.close()
 

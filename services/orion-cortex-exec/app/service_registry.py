@@ -1,6 +1,7 @@
 # services/orion-cortex-exec/app/service_registry.py
 
 SERVICE_BINDINGS = {
+    "TownEventService": "TownEventService",
     # --- Semantic Aliases ---
     "llm.brain":           "LLMGatewayService",
     "memory.vector":       "VectorMemoryService",

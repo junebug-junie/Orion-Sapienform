@@ -259,7 +259,11 @@ _SPARK_CONTRACT_METRICS = SparkContractMetrics()
 COLLAPSE_STORED_KIND = "collapse.mirror.stored.v1"
 VISION_CROP_OBSERVATION_KIND = "vision.crop.observation.v1"
 SOCIAL_TURN_STORED_KIND = "social.turn.stored.v1"
+from app.models.town_sim import TownSimSceneSQL, TownSimPredictionSQL
+from orion.schemas.town_sim import TownSimSceneResolvedV1, TownSimPredictionScoreV1
+
 INSERT_ONLY_MODELS = {
+    TownSimSceneSQL, TownSimPredictionSQL,
     JournalEntrySQL,
     GpuPoolEventSQL,
     GpuPoolStateSQL,
@@ -491,6 +495,8 @@ def _legacy_action(kind: str, mode: str, legacy_kinds: set[str]) -> str:
 
 # Map: route_key -> (SQLAlchemy model, Pydantic schema model)
 MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
+    "TownSimSceneSQL": (TownSimSceneSQL,TownSimSceneResolvedV1),
+    "TownSimPredictionSQL": (TownSimPredictionSQL,TownSimPredictionScoreV1),
     "CollapseMirror": (CollapseMirror, CollapseMirrorEntry),
     "MetacogEntry": (MetacogEntry, MetacogEntryV1),
     "RepairPressureAppraisalLog": (RepairPressureAppraisalLog, RepairPressureAppraisalV1),
@@ -3060,6 +3066,18 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                 write_ok = await _write(sql_model, CockpitHopV1, data_to_process, {}, kind=env.kind)
             else:
                 write_ok = await _write(sql_model, schema_model, data_to_process, extra_sql_fields, kind=env.kind)
+            if sql_model in (TownSimSceneSQL, TownSimPredictionSQL) and bus is not None:
+                # A duplicate is also durable. Never acknowledge a failed write.
+                def town_row_exists():
+                    with session_factory() as session:
+                        return session.get(sql_model, data_to_process["id"]) is not None
+                if write_ok or await asyncio.to_thread(town_row_exists):
+                    await bus.publish("orion:town:sim:stored", BaseEnvelope(
+                        kind="town.sim.stored.v1", source=ServiceRef(name="orion-sql-writer"),
+                        correlation_id=env.correlation_id,
+                        payload={"world_id":data_to_process["world_id"],
+                                 "event_id":data_to_process.get("scene_id") or data_to_process["target_id"],
+                                 "record_kind":env.kind}))
             if env.kind == JOURNAL_WRITE_KIND and write_ok:
                 try:
                     journal_input, _ = _payload_for_schema_validation(env.payload, JournalEntryWriteV1, kind=env.kind)

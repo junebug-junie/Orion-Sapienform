@@ -2232,6 +2232,8 @@ def _default_llm_route_for_step(*, verb_name: Optional[str], step_name: Optional
     # unstamped caller off the quick lane, whose context a ~70k-token day digest overflows.
     if verb_name in {"orion_day_note_v1", "orion_day_carry_forward_v1"}:
         return "agent"
+    if verb_name in {"town_forecast", "town_add_event"}:
+        return "quick_background"
     if verb_name == "stance_react":
         return "chat"
     if verb_name == "chat_general" and step_name == "synthesize_chat_stance_brief":
@@ -4682,6 +4684,26 @@ async def call_step_services(
                 payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
                 merged_result[service] = payload
                 logs.append("ok <- CouncilService")
+
+            elif service == "TownEventService":
+                from orion.embodiment.town_event_tool import request_town_event
+                candidate = ctx.get("town_event")
+                if not isinstance(candidate, dict):
+                    from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
+                    prior = ctx.get("prior_step_results") or []
+                    for prior_step in reversed(prior):
+                        result = prior_step.get("result") or {}
+                        if "LLMGatewayService" in result:
+                            candidate = json.loads(extract_cortex_payload_text(result["LLMGatewayService"], include_reasoning=False))
+                            break
+                if not isinstance(candidate, dict):
+                    raise ValueError("town_add_event requires an event object")
+                if ctx.get("town_world_id"):
+                    candidate["world_id"] = ctx["town_world_id"]
+                if ctx.get("town_request_id"):
+                    candidate["correlation_id"] = ctx["town_request_id"]
+                merged_result[service] = await request_town_event(bus, candidate, producer="orion-cortex-exec", node=source.node or "unknown")
+                logs.append("ok <- TownEventService (simulation only)")
 
             elif service == "VerbRequestService":
                 candidate = None

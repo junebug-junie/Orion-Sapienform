@@ -20,6 +20,7 @@ PATCHES=(
   "orion-resync-agent-descriptions.patch"
   "orion-npc-no-self-repeat.patch"
   "orion-mechanical-leave.patch"
+  "orion-sim-hooks.patch"
 )
 
 if [[ ! -d "${UPSTREAM}/.git" ]]; then
@@ -27,6 +28,12 @@ if [[ ! -d "${UPSTREAM}/.git" ]]; then
   exit 1
 fi
 
+STACK_STATUS="$(python3 "${ROOT}/scripts/patch_manifest.py" check)"
+if [[ "$STACK_STATUS" == "applied" ]]; then
+  echo "Complete Orion patch stack already applied"
+  cp -R "${ROOT}/overlay/." "${UPSTREAM}/"
+  exit 0
+fi
 cd "${UPSTREAM}"
 for name in "${PATCHES[@]}"; do
   PATCH="${ROOT}/patches/${name}"
@@ -63,3 +70,7 @@ for name in "${PATCHES[@]}"; do
     exit 1
   fi
 done
+
+# Tracked source overlay: copied after the complete patch chain.
+cp -R "${ROOT}/overlay/." "${UPSTREAM}/"
+python3 "${ROOT}/scripts/patch_manifest.py" write

@@ -1,5 +1,13 @@
 characters:
   - id: mara_vale
+    sim:
+      needs: {money: 0.5, rest: 0.3, social: 0.5, purpose: 0.3}
+      home: square
+      work: studio
+      location: square
+      schedule: {start: 9, end: 17}
+      weights: {breeze: 2, ask_favor: 1, trade_news: 2, persuade: 1, deceive: 1, quest_step: 2}
+      lyingRate: 0.1
     name: Mara Vale
     pronouns: she/her
     identity: Transfemme woman
@@ -48,6 +56,14 @@ characters:
       "That is a description of your logs. I asked for a description of you."
 
   - id: nico_sable
+    sim:
+      needs: {money: 0.5, rest: 0.3, social: 0.5, purpose: 0.3}
+      home: square
+      work: workshop
+      location: square
+      schedule: {start: 9, end: 17}
+      weights: {breeze: 2, ask_favor: 1, trade_news: 2, persuade: 1, deceive: 1, quest_step: 2}
+      lyingRate: 0.6
     name: Nico Sable
     pronouns: he/him
     identity: Gay man
@@ -93,6 +109,14 @@ characters:
       "Buy a ticket. The lineup is better than the rumor."
 
   - id: sofia_bell
+    sim:
+      needs: {money: 0.5, rest: 0.3, social: 0.5, purpose: 0.3}
+      home: square
+      work: workshop
+      location: square
+      schedule: {start: 9, end: 17}
+      weights: {breeze: 2, ask_favor: 1, trade_news: 2, persuade: 1, deceive: 1, quest_step: 2}
+      lyingRate: 0.1
     name: Sofia Bell
     pronouns: she/her
     identity: Bisexual woman
@@ -140,6 +164,14 @@ characters:
       "Nico said he was fine, sure. But he ordered decaf and sat where he could watch the door."
 
   - id: cam_lin
+    sim:
+      needs: {money: 0.5, rest: 0.3, social: 0.5, purpose: 0.3}
+      home: square
+      work: workshop
+      location: square
+      schedule: {start: 9, end: 17}
+      weights: {breeze: 2, ask_favor: 1, trade_news: 2, persuade: 1, deceive: 1, quest_step: 2}
+      lyingRate: 0.1
     name: Cam Lin
     pronouns: they/she
     identity: Questioning and label-averse
@@ -190,6 +222,14 @@ characters:
   # Redacted example. The real card (personal details) lives in the gitignored
   # town_cards.local.yaml next to this file; generate_descriptions.py prefers it.
   - id: juniper_feld
+    sim:
+      needs: {money: 0.5, rest: 0.3, social: 0.5, purpose: 0.3}
+      home: square
+      work: workshop
+      location: square
+      schedule: {start: 9, end: 17}
+      weights: {breeze: 2, ask_favor: 1, trade_news: 2, persuade: 1, deceive: 1, quest_step: 2}
+      lyingRate: 0.1
     name: Juniper Feld
     pronouns: she/her
     identity: "[redacted]"
@@ -254,6 +294,14 @@ characters:
       "Do not give me vibes. Tell me what changed, what broke, what you remember, and what you actually know."
 
   - id: orion
+    sim:
+      needs: {money: 0.5, rest: 0.3, social: 0.5, purpose: 0.3}
+      home: square
+      work: workshop
+      location: square
+      schedule: {start: 9, end: 17}
+      weights: {breeze: 2, ask_favor: 1, trade_news: 2, persuade: 1, deceive: 1, quest_step: 2}
+      lyingRate: 0.1
     name: Orion
     pronouns: they/them
     identity: Synthetic cognitive mind in formation

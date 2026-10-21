@@ -1,0 +1,146 @@
+diff --git a/convex/schema.ts b/convex/schema.ts
+--- a/convex/schema.ts
++++ b/convex/schema.ts
+@@ -1,3 +1,4 @@
++import {simTables} from './sim/schema';
+ import { defineSchema, defineTable } from 'convex/server';
+ import { v } from 'convex/values';
+ import { agentTables } from './agent/schema';
+@@ -21,6 +22,7 @@
+     .index('conversationId', ['worldId', 'conversationId'])
+     .index('messageUuid', ['conversationId', 'messageUuid']),
+
++  ...simTables,
+   ...agentTables,
+   ...aiTownTables,
+   ...engineTables,
+diff --git a/convex/crons.ts b/convex/crons.ts
+--- a/convex/crons.ts
++++ b/convex/crons.ts
+@@ -1,3 +1,4 @@
++import {anyApi} from 'convex/server';
+ import { cronJobs } from 'convex/server';
+ import { DELETE_BATCH_SIZE, IDLE_WORLD_TIMEOUT, VACUUM_MAX_AGE } from './constants';
+ import { internal } from './_generated/api';
+@@ -17,6 +18,7 @@
+
+ crons.daily('vacuum old entries', { hourUTC: 4, minuteUTC: 20 }, internal.crons.vacuumOldEntries);
+
++crons.interval('town simulation', {minutes: 5}, (anyApi as any).sim.runtime.advance);
+ export default crons;
+
+ const TablesToVacuum: TableNames[] = [
+diff --git a/convex/aiTown/agentOperations.ts b/convex/aiTown/agentOperations.ts
+--- a/convex/aiTown/agentOperations.ts
++++ b/convex/aiTown/agentOperations.ts
+@@ -1,3 +1,5 @@
++import {townMessage} from '../sim/hooks';
++import {anyApi} from 'convex/server';
+ import { v } from 'convex/values';
+ import { internalAction } from '../_generated/server';
+ import { WorldMap, serializedWorldMap } from './worldMap';
+@@ -25,6 +27,7 @@
+     operationId: v.string(),
+   },
+   handler: async (ctx, args) => {
++    await ctx.runAction((anyApi as any).sim.runtime.resolveLive, {worldId:args.worldId, conversationId:args.conversationId});
+     await rememberConversation(
+       ctx,
+       args.worldId,
+@@ -56,6 +59,12 @@
+     messageUuid: v.string(),
+   },
+   handler: async (ctx, args) => {
++    const sim = await townMessage(ctx, args);
++    if (sim) {
++      await ctx.runMutation(internal.aiTown.agent.agentSendMessage, {worldId:args.worldId, conversationId:args.conversationId, agentId:args.agentId, playerId:args.playerId, operationId:args.operationId, messageUuid:args.messageUuid,
++        text:sim.text, leaveConversation:sim.leave, simIndex:sim.index});
++      return;
++    }
+     let completionFn;
+     switch (args.type) {
+       case 'start':
+diff --git a/convex/aiTown/agent.ts b/convex/aiTown/agent.ts
+--- a/convex/aiTown/agent.ts
++++ b/convex/aiTown/agent.ts
+@@ -1,3 +1,4 @@
++import {recordPosted} from '../sim/runtime';
+ import { ObjectType, v } from 'convex/values';
+ import { GameId, parseGameId } from './ids';
+ import { agentId, conversationId, playerId } from './ids';
+@@ -324,18 +325,22 @@
+     agentId,
+     playerId,
+     text: v.string(),
++    simIndex: v.optional(v.number()),
+     messageUuid: v.string(),
+     leaveConversation: v.boolean(),
+     operationId: v.string(),
+   },
+   handler: async (ctx, args) => {
+-    await ctx.db.insert('messages', {
++    const duplicate = await ctx.db.query('messages').withIndex('messageUuid', q=>q.eq('conversationId',args.conversationId).eq('messageUuid',args.messageUuid)).first();
++    if (duplicate) return;
++    if (args.text.trim()) await ctx.db.insert('messages', {
+       conversationId: args.conversationId,
+       author: args.playerId,
+       text: args.text,
+       messageUuid: args.messageUuid,
+       worldId: args.worldId,
+     });
++    if (args.simIndex !== undefined && args.simIndex >= 0) await recordPosted(ctx, {worldId: args.worldId, conversationId: args.conversationId, index: args.simIndex});
+     await insertInput(ctx, args.worldId, 'agentFinishSendingMessage', {
+       conversationId: args.conversationId,
+       agentId: args.agentId,
+diff --git a/convex/agent/conversation.ts b/convex/agent/conversation.ts
+--- a/convex/agent/conversation.ts
++++ b/convex/agent/conversation.ts
+@@ -1,3 +1,4 @@
++import {echo} from '../sim/core';
+ import { v } from 'convex/values';
+ import { Id } from '../_generated/dataModel';
+ import { ActionCtx, internalQuery } from '../_generated/server';
+@@ -355,15 +356,17 @@
+     stop: stopWords(otherPlayer.name, player.name),
+   });
+   const ownLines = ownPriorLines(priorMessages, player.name);
++  const partnerLines = ownPriorLines(priorMessages, otherPlayer.name);
++  const repeated = (text: string) => isSelfRepeat(text, ownLines) || partnerLines.some(line => echo(text, line));
+   let response = clampTownReply(trimContentPrefx(content, lastPrompt));
+-  if (isSelfRepeat(response, ownLines)) {
++  if (repeated(response)) {
+     const retry = await chatCompletion({
+       messages: [...llmMessages, {role: 'user', content: 'You already said that. Answer with something new or leave.'}],
+       max_tokens: 120,
+       stop: stopWords(otherPlayer.name, player.name),
+     });
+     response = clampTownReply(trimContentPrefx(retry.content, lastPrompt));
+-    if (!response.trim() || isSelfRepeat(response, ownLines)) return SELF_REPEAT_LEAVE_SENTINEL;
++    if (!response.trim() || repeated(response)) return SELF_REPEAT_LEAVE_SENTINEL;
+   }
+   void ingestTownTurn({
+     speaker: player.name,
+@@ -490,7 +493,7 @@
+     const author = message.author === player.id ? player : otherPlayer;
+     const recipient = message.author === player.id ? otherPlayer : player;
+     llmMessages.push({
+-      role: 'user',
++      role: message.author === player.id ? 'assistant' : 'user',
+       content: `${author.name} to ${recipient.name}: ${message.text}`,
+     });
+   }
+diff --git a/convex/aiTown/agentOperations.ts b/convex/aiTown/agentOperations.ts
+--- a/convex/aiTown/agentOperations.ts
++++ b/convex/aiTown/agentOperations.ts
+@@ -126,6 +126,11 @@
+   },
+   handler: async (ctx, args) => {
+     const { player, agent } = args;
++    const simPlan = await ctx.runQuery((anyApi as any).sim.runtime.plan, {worldId:args.worldId,playerId:player.id});
++    if(simPlan){
++      await ctx.runMutation(api.aiTown.main.sendInput,{worldId:args.worldId,name:'finishDoSomething',args:{operationId:args.operationId,agentId:agent.id,...simPlan}});
++      return;
++    }
+     const map = new WorldMap(args.map);
+     const now = Date.now();
+     // Don't try to start a new conversation if we were just in one.

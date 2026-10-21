@@ -3714,6 +3714,51 @@ channels:
     stability: "experimental"
     since: "2026-07-05"
 
+  - name: "orion:town:sim:event:request"
+    kind: "event"
+    schema_id: "TownSimEventRequestV1"
+    message_kind: "town.sim.event.request.v1"
+    producer_services: ["orion-hub", "orion-cortex-exec", "orion-embodiment"]
+    consumer_services: ["orion-embodiment"]
+    stability: "experimental"
+    since: "2026-10-20"
+
+  - name: "orion:town:sim:event:result"
+    kind: "event"
+    schema_id: "TownSimEventResultV1"
+    message_kind: "town.sim.event.result.v1"
+    producer_services: ["orion-embodiment"]
+    consumer_services: ["orion-hub", "orion-cortex-exec"]
+    stability: "experimental"
+    since: "2026-10-20"
+
+  - name: "orion:town:sim:scene:resolved"
+    kind: "event"
+    schema_id: "TownSimSceneResolvedV1"
+    message_kind: "town.sim.scene.resolved.v1"
+    producer_services: ["orion-embodiment"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-10-20"
+
+  - name: "orion:town:sim:prediction:scored"
+    kind: "event"
+    schema_id: "TownSimPredictionScoreV1"
+    message_kind: "town.sim.prediction.scored.v1"
+    producer_services: ["orion-embodiment"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-10-20"
+
+  - name: "orion:town:sim:stored"
+    kind: "event"
+    schema_id: "TownSimStoredV1"
+    message_kind: "town.sim.stored.v1"
+    producer_services: ["orion-sql-writer"]
+    consumer_services: ["orion-embodiment"]
+    stability: "experimental"
+    since: "2026-10-20"
+
   # --- Embodiment (mind-to-sprite bridge, default-off) ---
   - name: "orion:embodiment:intent"
     kind: "event"

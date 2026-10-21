@@ -20,6 +20,7 @@ Idempotent: re-running with unchanged cards produces an unchanged file.
 from __future__ import annotations
 
 import re
+import json
 import sys
 from pathlib import Path
 
@@ -197,11 +198,22 @@ def patch_juniper(cards: dict) -> list[str]:
     return changed
 
 
+def render_sim_seed(cards: dict) -> str:
+    defaults = {"needs": {"money": .5, "rest": .3, "social": .5, "purpose": .3},
+                "home": "square", "work": "workshop", "location": "square",
+                "schedule": {"start": 9, "end": 17}, "weights": {"breeze": 2, "trade_news": 1}, "lyingRate": .1}
+    data = {c["name"]: {**defaults, **c.get("sim", {})} for c in cards["characters"]}
+    return "// Generated from town cards; no biography/private text.\nexport const simCards: Record<string, any> = " + json.dumps(data, indent=2) + ";\n"
+
+
 def main() -> int:
     if sys.argv[1:2] == ["--render-human-patch"]:
         sys.stdout.write(render_human_patch(load_cards()))
         return 0
     cards = load_cards()
+    seed_path = _SERVICE / "upstream/convex/sim/seed.ts"
+    if seed_path.parent.exists():
+        seed_path.write_text(render_sim_seed(cards), encoding="utf-8")
     print(f"cards: {cards_path().relative_to(_SERVICE.parents[1])}")
     src = CHARACTERS_TS.read_text(encoding="utf-8")
 

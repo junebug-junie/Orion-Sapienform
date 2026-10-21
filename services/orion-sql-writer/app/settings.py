@@ -642,6 +642,15 @@ class Settings(BaseSettings):
     # and zones depend on it.
     vision_motion_frame_width: float = Field(2560.0, gt=0.0, alias="VISION_MOTION_FRAME_WIDTH")
     vision_motion_frame_height: float = Field(1920.0, gt=0.0, alias="VISION_MOTION_FRAME_HEIGHT")
+    # Per-stream box pixel space, "stream=WxH,..." (e.g. "doorbell=1920x1440").
+    # Used only for a crop that does not carry the detector's own frame size
+    # (vision_crop_observation.frame_width/height, recorded since 2026-10-20);
+    # a stream with no entry uses the global size above. Empty by default: the
+    # doorbell's real size is not measured yet, and a guess is worse than none.
+    vision_motion_frame_size_by_stream: str = Field("", alias="VISION_MOTION_FRAME_SIZE_BY_STREAM")
+    # A story's first/last box within this share of the frame from an edge
+    # entered/left through that edge (entry_edge/exit_edge); else "inside".
+    vision_motion_edge_zone_frac: float = Field(0.05, ge=0.0, le=0.5, alias="VISION_MOTION_EDGE_ZONE_FRAC")
     # Stories starting before this are marked clean=false (RTSP smear before the
     # stream fix); the Hub tally and the replay eval count clean stories only.
     vision_motion_clean_since: str = Field("2026-10-16T18:59:00Z", alias="VISION_MOTION_CLEAN_SINCE")

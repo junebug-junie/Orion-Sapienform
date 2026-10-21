@@ -623,6 +623,13 @@ class Engine:
 
     async def tick(self, sync) -> None:
         now = self.clock()
+        # The first refresh of a run goes BEFORE the series loop: a selection that runs before any
+        # weather is stored sees an all-empty proxy column and refuses direct_arx on every window
+        # (live 2026-10-21 04:47: 40/40 windows "covariates are 21% gaps"). Later refreshes go after
+        # the loop so a slow weather call never delays issuing. Cost: each process start waits once
+        # (up to ~25 s) for the weather call before its first issue, even when weather is already stored.
+        if self.weather is not None and not self.weather_state and self.weather_due(now):
+            await sync(self.refresh_weather, now)
         for spec in self.registry.targets():
             st = self.state[spec.series_id]
             try:

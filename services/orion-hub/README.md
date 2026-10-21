@@ -2973,6 +2973,18 @@ API: `GET /api/cabinet/ambient/latest`, `GET /api/cabinet/ambient/history?window
 (`scripts/cabinet_ambient_routes.py`, `/static/js/cabinet-sensors.js`). Latest polls ~1s only
 while `#cabinet` is visible; history fetches on tab activation, window toggle, or Refresh.
 
+**Live listen (chat card "Cabinet audio" button).** The host reader keeps one continuous
+`arecord` stream and writes every 0.5s window to a 16-slot ring at `/run/orion-audio/live/`
+(tmpfs, ~8s, overwritten, never persisted; layout in `orion/schemas/telemetry/ambient_audio.py`).
+`GET /api/cabinet/ambient/live` tails that ring and streams raw S16_LE PCM (rate/channels in
+`X-Orion-Sample-Rate` / `X-Orion-Channels`); it returns 503 when the ring is empty and ends the
+stream after 5s with no new chunk. `static/js/cabinet-live-audio.js` plays it through the same
+waveform canvas as Orion's TTS voice (cabinet = teal, voice = violet), ~0.5–1s behind real
+time. Env: `AMBIENT_AUDIO_LIVE_DIR`. Kill switch on the host reader:
+`ORION_AMBIENT_AUDIO_LIVE_ENABLED=0` in `/etc/default/orion-ambient-audio`, then restart
+`orion-ambient-audio`. Plays at full gain: if the cabinet mic can hear the speakers you
+listen on, it will feed back (and inflate the ambient levels) -- use headphones.
+
 ### House electricity (Energy strip)
 
 Below the cooling strip, **House electricity — Rocky Mountain Power** shows what the house
@@ -4122,8 +4134,8 @@ hysteretic sampled-movement onset. **LiDAR and vibration remain disabled pending
 controlled movement calibration**; their proposed 0–4000 mm and 0.10/0.06 g onset /
 re-arm settings are not approved operating ranges. The source inspector shows
 this explicitly. A future reviewed preset patch must attach rest/intervention
-samples before changing either `approved` flag. Existing history loses transient
-detail; history playback and optional voices are separate future patches.
+samples before changing either `approved` flag. History playback uses aggregated levels and omits vibration; optional voices remain
+separate future patches.
 
 Mute and Solo change the mix without restarting it. **Stop**, leaving Cabinet,
 hiding the page, a failed poll, suspended audio, or losing fresh calibrated input
@@ -4166,3 +4178,59 @@ For a blinded replay, shuffle at least ten labeled changes per voice, retain the
 trial order privately, and record the listener's source/direction choices and error
 count before revealing labels. This patch has no completed human listening trial;
 do not interpret the automated audio render as evidence of perceptual usefulness.
+
+
+### Cabinet history playback
+
+Choose **Sound mode → History**, select **24 hours / 3 days / 7 days**, then
+**Listen**. The existing history chart request feeds the player; there is no new
+polling loop. Every window plays in 60 seconds (1440×, 4320×, 10080×). The window
+ends at the frozen browser request-start time, explicitly labeled approximate
+because the existing API omits server query bounds. Its start is exactly the
+selected duration earlier. Sensor timestamps never move those bounds; trailing
+outages remain silent. Browser/server clock skew can shift the estimated window,
+but is never relabeled as a sensor observation timestamp. Source time, playback time, window endpoints, compression, grain,
+returned/raw counts and actual magnetic spacing are shown beside the controls.
+The inspector exposes per-series spacing and original observation brackets.
+
+The fixed 20–60 µT magnetic range is unchanged throughout playback. Interpolation
+uses each series' timestamps independently. There is no extrapolation, zero fill,
+impact reconstruction, or per-window automatic rescaling. Invalid values and
+conflicting duplicate timestamps break interpolation. Aggregated vibration is
+always omitted, even if a later live preset enables percussion. LiDAR retains its
+existing calibration gate.
+
+The default **90 source seconds** gap policy is conservative. The captured real
+24h response had 800 returned points from 2758 source rows, spaced about 94–188
+seconds apart, so the default intentionally leaves those intervals silent. Choose
+**5 source minutes** explicitly to interpolate that capture, or another displayed
+limit appropriate to a different window. This is an interpretation of aggregated
+levels, not recovery of the missing measurements. Wider gaps remain silent while
+the playback clock continues. Changing the gap policy stops playback for review.
+
+**Pause** freezes the cursor and closes audio; **Listen** resumes. **Seek** pauses
+at the selected playback second and clears transient state; press Listen to resume.
+**Replay** starts from zero; **Stop** resets to zero. Natural completion stops at
+60 seconds. Switching Live/History, changing the window, hiding Cabinet/page, or
+suspended audio disarms the instrument; none automatically restart it. A history
+request starts by clearing the old playable window, and an error leaves it empty.
+Live poll errors do not invalidate an already downloaded history window. History
+is a frozen in-memory response, not a stream requiring five-second live freshness.
+
+Trace downloads include history window bounds, aggregation metadata, explicit gap
+policy, source position and actual observation brackets in each recorded frame.
+The 600-record memory cap still applies (at history scheduler cadence this covers
+roughly 15 seconds of playback). Start another capture for another segment. No
+history recordings or audio are uploaded, and no autoplay state is persisted.
+
+Additional deterministic history checks:
+
+```bash
+node --test services/orion-hub/static/js/cabinet-sonification-history.test.js
+```
+
+The existing Cabinet browser eval now also covers real captured history, default
+gap silence, explicit wider-policy audibility in native Web Audio, pause, seek,
+replay, history hide/reopen, mode separation, failed requests, and exactly one
+existing history fetch per changed window. It mocks 3d/7d with partial data to test
+alignment and missingness; it does not claim a live historical headphone audition.

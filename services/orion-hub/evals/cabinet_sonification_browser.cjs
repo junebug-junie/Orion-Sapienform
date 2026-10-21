@@ -4,14 +4,19 @@
 const assert = require('node:assert/strict');
 const puppeteer = require(process.env.PUPPETEER_MODULE || 'puppeteer');
 const recordings = require('./fixtures/cabinet-sonification-live.json');
+const historical = require('./fixtures/cabinet-sonification-history-live.json');
 (async () => {
   const browser = await puppeteer.launch({headless: true, args: ['--no-sandbox']});
   try {
     const page = await browser.newPage();
     await page.setRequestInterception(true);
-    let polls = 0;
+    let polls = 0, historyPolls = 0, historyFailure = false;
     page.on('request', req => {
       const url = new URL(req.url());
+      if (url.pathname === '/api/cabinet/sensors/history') {
+        historyPolls++;
+        return req.respond({status: historyFailure ? 503 : 200, contentType: 'application/json', body: JSON.stringify({...historical, window: url.searchParams.get('window')})});
+      }
       if (url.pathname === '/api/cabinet/sensors/latest') {
         polls++;
         const p = JSON.parse(JSON.stringify(recordings[polls % recordings.length]));
@@ -86,6 +91,53 @@ const recordings = require('./fixtures/cabinet-sonification-live.json');
     await page.waitForFunction(() => window.OrionCabinetSonification.armed);
     await page.evaluate(() => window.OrionCabinetSonification.fail());
     assert.equal(await page.evaluate(() => window.OrionCabinetSonification.armed), false);
-    console.log(JSON.stringify({passed: true, polls, replay, checks: ['real controls and asset', 'explicit gesture', 'mute/solo', 'bounded trace', 'Stop preserves other audio', 'hide/reopen', 'suspended recovery', 'pagehide', 'recorded replay', 'offline finite unclipped mix', 'poll failure']}));
+    await page.waitForFunction(() => window.OrionCabinetSonification.history);
+    await page.select('#cabinetSoundMode', 'history');
+    assert.equal(await page.evaluate(() => OrionCabinetSonification.armed), false);
+    assert.match(await page.$eval('#cabinetSoundHistoryInfo', e => e.textContent), /Wider intervals remain silent/);
+    const seek = seconds => page.$eval('#cabinetSoundSeek', (input, value) => { input.value=value; input.dispatchEvent(new Event('input', {bubbles:true})); }, seconds);
+    await seek(30);
+    assert.equal(await page.evaluate(() => OrionCabinetSonification.frame.playbackSec), 30);
+    await page.click('#cabinetSoundListen');
+    await page.waitForFunction(() => OrionCabinetSonification.armed);
+    await new Promise(r => setTimeout(r, 200));
+    assert.equal(await page.evaluate(() => OrionCabinetSonification.toneGain.gain.value), 0);
+    assert.equal(await page.evaluate(() => OrionCabinetSonification.armed), true, 'gap must not halt clock');
+    await page.select('#cabinetSoundGap', '300');
+    assert.equal(await page.evaluate(() => OrionCabinetSonification.armed), false);
+    await page.click('#cabinetSoundListen');
+    await page.waitForFunction(() => OrionCabinetSonification.armed && OrionCabinetSonification.toneGain.gain.value > 0.1);
+    await page.click('#cabinetSoundPause');
+    const paused = await page.evaluate(() => OrionCabinetSonification.positionSec);
+    await new Promise(r => setTimeout(r, 100));
+    assert.equal(await page.evaluate(() => OrionCabinetSonification.playbackSeconds()), paused);
+    await seek(15);
+    assert.equal(await page.evaluate(() => OrionCabinetSonification.armed), false);
+    await page.click('#cabinetSoundReplay');
+    await page.waitForFunction(() => OrionCabinetSonification.armed);
+    assert.ok(await page.evaluate(() => OrionCabinetSonification.playbackSeconds() < 1));
+    await page.click('#cabinetSoundStop');
+    assert.equal(await page.evaluate(() => OrionCabinetSonification.positionSec), 0);
+    for (const window of ['3d','7d']) {
+      const before = historyPolls;
+      await page.select('#cabinetSoundWindow', window);
+      await page.waitForFunction(w => OrionCabinetSonification.history?.window === w, {}, window);
+      assert.equal(historyPolls, before + 1, 'history uses the existing fetch once per window change');
+      assert.equal(await page.evaluate(() => OrionCabinetSonification.armed), false);
+    }
+    await page.click('#cabinetSoundListen');
+    await page.waitForFunction(() => OrionCabinetSonification.armed);
+    await page.evaluate(() => document.getElementById('cabinet').style.display='none');
+    await page.waitForFunction(() => !OrionCabinetSonification.armed);
+    await page.evaluate(() => document.getElementById('cabinet').style.display='block');
+    assert.equal(await page.evaluate(() => OrionCabinetSonification.armed), false);
+    historyFailure = true;
+    await page.select('#cabinetSoundWindow', '24h');
+    await page.waitForFunction(() => OrionCabinetSonification.historyNote === 'History unavailable');
+    await page.click('#cabinetSoundListen');
+    assert.equal(await page.evaluate(() => OrionCabinetSonification.armed), false);
+    await page.select('#cabinetSoundMode', 'live');
+    assert.equal(await page.evaluate(() => OrionCabinetSonification.armed), false);
+    console.log(JSON.stringify({passed: true, polls, historyPolls, replay, checks: ['history gaps stay silent with clock running', 'explicit gap policy', 'pause freezes clock', 'seek pauses', 'replay', 'Stop resets history', '3d/7d fetch reuse', 'history hide/reopen', 'failed window clears history', 'mode changes disarm', 'real controls and asset', 'explicit gesture', 'mute/solo', 'bounded trace', 'Stop preserves other audio', 'hide/reopen', 'suspended recovery', 'pagehide', 'recorded replay', 'offline finite unclipped mix', 'poll failure']}));
   } finally { await browser.close(); }
 })().catch(e => { console.error(e); process.exitCode = 1; });

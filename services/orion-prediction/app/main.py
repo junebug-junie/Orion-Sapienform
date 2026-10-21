@@ -82,7 +82,11 @@ async def lifespan(app: FastAPI):
                     select_interval_sec=_settings.select_interval_sec, settle_sec=_settings.settle_sec,
                     publish_enabled=_settings.publish_enabled, publish=_bus.publish,
                     source=ServiceRef(name=_settings.service_name, version=_settings.service_version,
-                                      node=_settings.node_name))
+                                      node=_settings.node_name),
+                    weather=({"lat": _settings.weather_lat, "lon": _settings.weather_lon,
+                              "refresh_sec": _settings.weather_refresh_sec}
+                             if _settings.weather_enabled and _settings.weather_lat is not None
+                             and _settings.weather_lon is not None else None))
     effects = Effects(engine)
     logger.info("prediction_ready enabled=%s publish=%s targets=%s", _settings.enabled, _settings.publish_enabled,
                 [s.series_id for s in registry.targets()])
@@ -153,7 +157,10 @@ async def health() -> dict[str, Any]:
             }
     return {"ok": e is not None and _last_tick["ok"] is not False, "service": _settings.service_name,
             "enabled": _settings.enabled, "publish_enabled": _settings.publish_enabled,
-            "last_tick_at": _jsonable(_last_tick["at"]), "last_tick_error": _last_tick["error"], "series": series}
+            "last_tick_at": _jsonable(_last_tick["at"]), "last_tick_error": _last_tick["error"],
+            "weather": _jsonable({k: v for k, v in e.weather_state.items()}) if e and e.weather else
+            {"ok": False, "error": "weather off (PREDICTION_WEATHER_ENABLED or ORION_SITUATION_WEATHER_LAT/LON unset)"},
+            "series": series}
 
 
 @app.get("/series")

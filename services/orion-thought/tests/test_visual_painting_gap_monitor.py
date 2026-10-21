@@ -15,6 +15,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_live_deferral_read(monkeypatch, request):
+    """A gap reads the baseline checkpoint (Postgres) for its cause; tests that want it patch it."""
+    if request.node.name.startswith("test_store_reads_the_checkpoint_deferral"):
+        return
+    monkeypatch.setattr("app.store.visual_baseline_deferral", lambda: None)
+
+
 def _settings():
     from app.settings import ThoughtSettings
 
@@ -421,3 +429,137 @@ async def test_lifespan_starts_and_stops_painting_gap_task(monkeypatch):
         assert not app.state.visual_painting_gap_task.done()
     assert seen["stop"].is_set()
     assert app.state.visual_painting_gap_task.done()
+
+
+# --- 2026-10-20: arousal-strained deferral named as the cause -----------------------------------
+# Live 10-20: no painting since 10-18 12:07; arousal strained (cabinet_hot, gpu_queue_sustained) and
+# every due baseline deferred. The alert's cause list named only the GPU controller / thermal / a
+# wedged worker.
+LIVE_DEFERRAL = {"reason": "arousal_strained", "since": "2026-10-18T12:37:30+00:00",
+                 "last_at": "2026-10-20T18:01:26+00:00"}
+
+
+def test_gap_message_names_arousal_deferral_first_when_recorded():
+    from app.visual_chain_health_monitor import DeferralEvidence, _painting_gap_check
+
+    ev = DeferralEvidence(reason="arousal_strained", since=LIVE_DEFERRAL["since"], last_at=LIVE_DEFERRAL["last_at"],
+                          arousal_reasons=("cabinet_hot", "gpu_queue_sustained"))
+    msg = _painting_gap_check(age_hours=54.0, threshold_hours=12.0, deferral=ev).message
+    assert "arousal reads strained (cabinet_hot, gpu_queue_sustained)" in msg
+    assert "since 2026-10-18T12:37:30+00:00" in msg and "cabinet is hot" in msg
+    assert msg.index("arousal") < msg.index("GPU lane controller")
+    assert "not a broken GPU path" in msg
+
+
+def test_gap_message_without_deferral_keeps_gpu_first_wording():
+    from app.visual_chain_health_monitor import _painting_gap_check
+
+    msg = _painting_gap_check(age_hours=27.6, threshold_hours=12.0, deferral=None).message
+    assert msg.index("GPU lane controller") < msg.index("wedged") and "arousal" not in msg
+
+
+def _fresh_deferral(age_sec=60.0):
+    from datetime import datetime, timedelta, timezone
+
+    last = datetime.now(timezone.utc) - timedelta(seconds=age_sec)
+    return {**LIVE_DEFERRAL, "last_at": last.isoformat()}
+
+
+def _gap_message(deferral, view):
+    with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
+        "app.visual_chain_health_monitor.requests.get", return_value=_pending([])
+    ), patch("app.store.visual_baseline_deferral", lambda: deferral), patch(
+        "orion.regulation.arousal_read.read_arousal_sync", return_value=view
+    ):
+        from app.visual_chain_health_monitor import VisualChainHealthMonitor
+
+        client_cls.return_value.attention_request.return_value = MagicMock(ok=True)
+        VisualChainHealthMonitor(_settings()).record_painting_gap(age_hours=54.0)
+        return client_cls.return_value.attention_request.call_args.kwargs["message"]
+
+
+STRAINED = ("cabinet_hot", "gpu_queue_sustained")
+
+
+def test_monitor_reads_deferral_and_arousal_only_during_a_gap_and_sends_it():
+    from orion.regulation.arousal_view import ArousalView
+
+    reads = []
+
+    def _deferral():
+        reads.append(1)
+        return _fresh_deferral()
+
+    view = ArousalView(level="strained", reason="ok", reasons=STRAINED)
+    with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
+        "app.visual_chain_health_monitor.requests.get", return_value=_pending([])
+    ), patch("app.store.visual_baseline_deferral", _deferral), patch(
+        "orion.regulation.arousal_read.read_arousal_sync", return_value=view
+    ):
+        from app.visual_chain_health_monitor import VisualChainHealthMonitor
+
+        client_cls.return_value.attention_request.return_value = MagicMock(ok=True)
+        mon = VisualChainHealthMonitor(_settings())
+        mon.record_painting_gap(age_hours=2.0)
+        assert reads == []                       # healthy: no evidence read
+        mon.record_painting_gap(age_hours=54.0)
+        msg = client_cls.return_value.attention_request.call_args.kwargs["message"]
+    assert reads == [1]
+    assert "arousal reads strained (cabinet_hot, gpu_queue_sustained)" in msg
+
+
+def test_stale_deferral_record_is_not_named_as_the_cause():
+    """The checkpoint keeps the record on every early return (stale activity, active attempt ...):
+    a deferral older than DEFERRAL_FRESH_SEC means arousal is no longer what holds the painting."""
+    from app.visual_chain_health_monitor import DEFERRAL_FRESH_SEC
+    from orion.regulation.arousal_view import ArousalView
+
+    msg = _gap_message(_fresh_deferral(DEFERRAL_FRESH_SEC + 60),
+                       ArousalView(level="strained", reason="ok", reasons=STRAINED))
+    assert "arousal" not in msg and "GPU lane controller" in msg
+
+
+@pytest.mark.parametrize("level", ["idle", "engaged", "unknown"])
+def test_deferral_is_not_named_when_arousal_is_not_strained_now(level):
+    from orion.regulation.arousal_view import ArousalView
+
+    msg = _gap_message(_fresh_deferral(), ArousalView(level=level, reason="ok"))
+    assert "arousal" not in msg and "GPU lane controller" in msg
+
+
+def test_deferral_read_failure_falls_back_to_the_old_wording():
+    with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
+        "app.visual_chain_health_monitor.requests.get", return_value=_pending([])
+    ), patch("app.store.visual_baseline_deferral", side_effect=RuntimeError("db down")):
+        from app.visual_chain_health_monitor import VisualChainHealthMonitor
+
+        client_cls.return_value.attention_request.return_value = MagicMock(ok=True)
+        VisualChainHealthMonitor(_settings()).record_painting_gap(age_hours=54.0)
+        msg = client_cls.return_value.attention_request.call_args.kwargs["message"]
+    assert "GPU lane controller" in msg and "arousal" not in msg
+
+
+class _DeferralConn(_FakeConn):
+    def execute(self, stmt, params=None):
+        self._executed.append((str(stmt), params))
+        value = self._results.pop(0)
+        return MagicMock(first=lambda: (value,), scalar=lambda: value)
+
+
+def test_store_reads_the_checkpoint_deferral_and_tolerates_absence():
+    executed: list = []
+    engine = MagicMock(connect=lambda: _DeferralConn(["visual_baseline_checkpoint", dict(LIVE_DEFERRAL)], executed))
+    with patch("app.store._get_engine", return_value=engine):
+        from app.store import visual_baseline_deferral
+
+        assert visual_baseline_deferral() == LIVE_DEFERRAL
+    assert "state->'deferral'" in executed[1][0]
+    engine = MagicMock(connect=lambda: _DeferralConn(["visual_baseline_checkpoint", None], []))
+    with patch("app.store._get_engine", return_value=engine):
+        from app.store import visual_baseline_deferral
+
+        assert visual_baseline_deferral() is None     # today's checkpoint: no deferral key yet
+    with patch("app.store._get_engine", side_effect=RuntimeError("db down")):
+        from app.store import visual_baseline_deferral
+
+        assert visual_baseline_deferral() is None

@@ -199,6 +199,17 @@ class Settings(BaseSettings):
     street_camera_up_max_age_sec: float = Field(
         600.0, gt=0.0, alias="SUBSTRATE_STREET_CAMERA_UP_MAX_AGE_SEC"
     )
+    # Strain news -> the workspace competition (docs/superpowers/specs/2026-10-20-strain-loop-design.md
+    # Part 2; orion/regulation/strain_news.py). Reads orion:regulation:latest every tick and writes
+    # node:substrate.strain's prediction_error = 1.0 on a strain news event (onset / escalation /
+    # reminder; <= 8 per local day, >= 30 min apart), held for attention's 300 s orienting window,
+    # else a calm 0.0. An unknown or stale regulation reading writes nothing. ON (ship flags on).
+    enable_strain_attention: bool = Field(True, alias="SUBSTRATE_STRAIN_ATTENTION_ENABLED")
+    strain_attention_tick_interval_sec: float = Field(
+        30.0, ge=5.0, alias="SUBSTRATE_STRAIN_ATTENTION_TICK_INTERVAL_SEC"
+    )
+    # Orion's local day for the strain news daily cap. Same key and default as orion-durable-runs.
+    orion_situation_timezone: str = Field("America/Denver", alias="ORION_SITUATION_TIMEZONE")
     rpc_health_snapshot_channel: str = Field(
         "orion:rpc_health:snapshot", alias="SUBSTRATE_RPC_HEALTH_SNAPSHOT_CHANNEL"
     )

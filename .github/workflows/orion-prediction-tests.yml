@@ -5,6 +5,7 @@ on:
     paths:
       - "services/orion-prediction/**"
       - "orion/schemas/prediction.py"
+      - "orion/weather/**"
       - "config/prediction/**"
       - "services/orion-sql-db/manual_migration_prediction_v1.sql"
       - ".github/workflows/orion-prediction-tests.yml"
@@ -13,6 +14,7 @@ on:
     paths:
       - "services/orion-prediction/**"
       - "orion/schemas/prediction.py"
+      - "orion/weather/**"
       - "config/prediction/**"
       - "services/orion-sql-db/manual_migration_prediction_v1.sql"
       - ".github/workflows/orion-prediction-tests.yml"

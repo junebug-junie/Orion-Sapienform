@@ -51,9 +51,9 @@ PERCEPTION_WALKWAY_NODE_ID = "node:substrate.perception_walkway"
 #
 # The walkway camera node, 2026-10-15: curiosity reads it (Juniper's decision;
 # gate record in docs/superpowers/pr-reports/2026-10-15-walkway-street-into-mind-pr.md).
-# Attention still does not: before it does, decide whether is_world_source_id
-# below should call it world (it is an outdoor camera) and give it the
-# camera-absent check PERCEPTION_NODE_ID gets.
+# It stays fenced from every attention path that does NOT judge bands (the
+# broadcast's salience signals). The world-first contests admit it only under
+# ATTENTION_MIN_BAND_BY_NODE_ID below.
 NO_ATTENTION_CONSUMER_NODE_IDS: frozenset[str] = frozenset({PERCEPTION_WALKWAY_NODE_ID})
 
 # Street EVENTS (doorbell ring, graded cross-camera handoffs), 2026-10-20:
@@ -73,10 +73,37 @@ NO_CURIOSITY_CONSUMER_NODE_IDS: frozenset[str] = frozenset({STREET_NODE_ID})
 # Substrate nodes that measure the outside world, not Orion's body.
 _WORLD_NODE_IDS: frozenset[str] = frozenset({PERCEPTION_NODE_ID, STREET_NODE_ID})
 
+# Per-node band floor for the world-first contests (2026-10-21, Juniper's
+# option D). A node listed here competes as a candidate, but is eligible only at
+# or above this band FOR ITSELF (its own 7-day window, judged on the mid-rank
+# percentile so ceiling ties at 1.0 can reach it). Walkway: only its p99+ tail
+# ("unusual"). Replay of live readings 2026-10-17..21: 35.9% of its p99+
+# readings fell within 2.5 min of a person/dog/bike/stroller motion story,
+# against 7.2% for any reading, while its p90-p99 band was at chance (6.2%).
+# Overrides NO_ATTENTION_CONSUMER_NODE_IDS for those two contests only.
+# Known limit: a 1.0 reading reaches mid-rank p99 only while fewer than ~2% of
+# the window sits at the 1.0 ceiling (live 1.5% on 2026-10-21). If the street
+# saturates more often, the floor stops being reachable -- re-check then.
+# Rollback: delete the entry (the fence above then applies everywhere again).
+# Record: docs/superpowers/pr-reports/2026-10-21-camera-surprise-honest-input-pr.md.
+ATTENTION_MIN_BAND_BY_NODE_ID: dict[str, str] = {PERCEPTION_WALKWAY_NODE_ID: "unusual"}
+
+# Substrate nodes that measure the outside world, not Orion's body. The
+# walkway is an outdoor camera, so it is world (2026-10-21): external sources
+# are absent after 180 s without a reading, and the body-only self-signal
+# gates (equilibrium episodes, hourly outcomes) do not read it.
+_WORLD_NODE_IDS: frozenset[str] = frozenset({PERCEPTION_NODE_ID, PERCEPTION_WALKWAY_NODE_ID})
+
+
+def world_first_fenced(node_id: str) -> bool:
+    """True when the world-first contests must not build a candidate for
+    ``node_id``: fenced from attention and not admitted under a band floor."""
+    return node_id in NO_ATTENTION_CONSUMER_NODE_IDS and node_id not in ATTENTION_MIN_BAND_BY_NODE_ID
+
 
 def is_world_source_id(source_id: str | None) -> bool:
-    """True for an external (world) source id: chat, camera surprise, street
-    events, or any future ``world:*`` source. Everything else is the body."""
+    """True for an external (world) source id: chat, camera surprise (room and
+    walkway), street events, or any future ``world:*`` source. Everything else is the body."""
     sid = str(source_id or "")
     return sid.startswith(WORLD_SOURCE_PREFIX) or sid in _WORLD_NODE_IDS
 

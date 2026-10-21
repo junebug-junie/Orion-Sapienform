@@ -15,7 +15,15 @@ Fails (exit 1) when:
 - a published story carries a name the strict rule does not allow;
 - a published fast-class story (running / riding / driving) has < 3 usable detections;
 - a published story's zone path names a zone no unclipped box stood in;
-- the stepwise replay (what the loop does) and a single-window replay disagree.
+- the stepwise replay (what the loop does) and a single-window replay disagree;
+- a published story has no frame size, an entry/exit edge outside
+  left/right/top/bottom/inside, an exit foot outside 0..1, or a negative exit speed.
+
+Frame size (2026-10-20): crops carry the detector's frame size once
+manual_migration_vision_motion_story_edges_v1.sql is applied; older crops use
+``--frame-size WxH`` (this stream), else VISION_MOTION_FRAME_SIZE_BY_STREAM,
+else the global 2560x1920. The report counts each story's frame source and
+the published stories' entry/exit edges.
 
 Names are never printed: a named story shows ``<named:xxxxxxxx>`` (individual id prefix).
 
@@ -40,9 +48,11 @@ sys.path.insert(0, str(HERE.parents[1]))
 sys.path.insert(0, str(HERE.parents[3]))
 
 from app.vision_motion import (  # noqa: E402
-    MotionConfig, Passage, build_stories, is_edge_clipped, link_passages, name_for,
+    EDGES, FRAME_SOURCES, MotionConfig, Passage, build_stories, is_edge_clipped, link_passages, name_for,
 )
-from app.vision_motion_loop import LoopConfig, close_window, parse_utc, read_context, read_crops  # noqa: E402
+from app.vision_motion_loop import (  # noqa: E402
+    LoopConfig, close_window, parse_frame_sizes, parse_utc, read_context, read_crops,
+)
 
 DEFAULT_CLEAN_SINCE = "2026-10-16T18:59:00Z"
 DEFAULT_PG = "postgresql://postgres:postgres@localhost:55432/conjourney"
@@ -87,7 +97,9 @@ def check(stories, labels, cfg: MotionConfig):
 
             for e in s.evidence:
                 p.crops.append(MotionCrop(e["crop_id"], datetime.fromisoformat(e["t"]), e["label"],
-                                          tuple(e["box"]), individual_id=e["individual_id"]))
+                                          tuple(e["box"]), individual_id=e["individual_id"],
+                                          frame_w=s.frame_w if s.frame_size_source == "detection" else None,
+                                          frame_h=s.frame_h if s.frame_size_source == "detection" else None))
             iid, _label, _why = name_for(p, labels, cfg)
             if iid != s.individual_id:
                 failures.append(f"{s.story_id}: name not allowed by the strict rule")
@@ -97,8 +109,18 @@ def check(stories, labels, cfg: MotionConfig):
         bad = [z for z in s.zone_path if z not in stood]
         if bad:
             failures.append(f"{s.story_id}: zone claim {bad} not backed by an unclipped box")
-        if any(is_edge_clipped(e["box"], cfg) != e["clipped"] for e in s.evidence):
+        frame = (float(s.frame_w), float(s.frame_h)) if s.frame_w and s.frame_h else None
+        if frame is None or s.frame_size_source not in FRAME_SOURCES:
+            failures.append(f"{s.story_id}: no frame size ({s.frame_w}x{s.frame_h}, {s.frame_size_source})")
+        if any(is_edge_clipped(e["box"], cfg, frame) != e["clipped"] for e in s.evidence):
             failures.append(f"{s.story_id}: evidence clip flag disagrees with the box")
+        if s.entry_edge not in EDGES or s.exit_edge not in EDGES:
+            failures.append(f"{s.story_id}: edges {s.entry_edge}/{s.exit_edge} not in {EDGES}")
+        if not (0.0 <= (s.exit_foot_x or 0.0) <= 1.0 and 0.0 <= (s.exit_foot_y or 0.0) <= 1.0) \
+                or s.exit_foot_x is None or s.exit_foot_y is None:
+            failures.append(f"{s.story_id}: exit foot {s.exit_foot_x},{s.exit_foot_y} outside 0..1")
+        if s.exit_speed_fw_per_sec is not None and s.exit_speed_fw_per_sec < 0:
+            failures.append(f"{s.story_id}: negative exit speed")
     return failures
 
 
@@ -112,6 +134,7 @@ def main(argv=None) -> int:
     ap.add_argument("--step-sec", type=float, default=15.0)
     ap.add_argument("--json", default="")
     ap.add_argument("--show", type=int, default=10, help="published clean stories to print")
+    ap.add_argument("--frame-size", default="", help="WxH for this stream's crops that carry no frame size")
     args = ap.parse_args(argv)
 
     clean_since = parse_utc(DEFAULT_CLEAN_SINCE)
@@ -126,7 +149,11 @@ def main(argv=None) -> int:
     from sqlalchemy import create_engine
 
     zones = load_zones().get(args.stream, [])
-    cfg = LoopConfig(clean_since=clean_since, prop_individual_ids=PROP_IDS)
+    sizes = parse_frame_sizes(os.getenv("VISION_MOTION_FRAME_SIZE_BY_STREAM", ""))
+    if args.frame_size:
+        sizes = tuple(x for x in sizes if x[0] != args.stream) + parse_frame_sizes(f"{args.stream}={args.frame_size}")
+    cfg = LoopConfig(clean_since=clean_since, prop_individual_ids=PROP_IDS, frame_size_by_stream=sizes)
+    motion = cfg.motion_for(args.stream)
     engine = create_engine(args.pg, connect_args={"options": "-c default_transaction_read_only=on"})
     try:
         with engine.connect() as conn:
@@ -142,15 +169,15 @@ def main(argv=None) -> int:
     step = stepwise(crops, stream_id=args.stream, since=since, until=until, cfg=cfg, zones=zones,
                     context=context, step_sec=args.step_sec)
     passages = link_passages([c for c in crops if c.t <= until + timedelta(seconds=cfg.motion.link_gap_sec)],
-                             cfg.motion)
+                             motion)
     whole_idx = {i for i, p in enumerate(passages) if since <= p.first.t and p.last.t <= until}
     whole = {s.story_id: s for s in build_stories(
-        passages, stream_id=args.stream, zones=zones, cfg=cfg.motion, labels=labels,
+        passages, stream_id=args.stream, zones=zones, cfg=motion, labels=labels,
         stationary_ids=context[1], prop_ids=set(PROP_IDS), prop_boxes=context[2], clean_since=clean_since,
         emit=whole_idx)}
 
     stories = sorted(step.values(), key=lambda s: s.started_at)
-    failures = check(stories, labels, cfg.motion)
+    failures = check(stories, labels, motion)
     pub_step = {k for k, s in step.items() if s.published and s.ended_at <= until}
     pub_whole = {k for k, s in whole.items() if s.published}
     if pub_step != pub_whole:
@@ -161,6 +188,8 @@ def main(argv=None) -> int:
     gaps = [(b - a).total_seconds() for a, b in zip(times, times[1:])]
     q = (lambda xs, f: round(sorted(xs)[min(len(xs) - 1, int(f * len(xs)))], 2) if xs else None)
     published = [s for s in stories if s.published]
+    speeds = [s.exit_speed_fw_per_sec for s in published if s.exit_speed_fw_per_sec is not None]
+    q4 = (lambda xs, f: round(sorted(xs)[min(len(xs) - 1, int(f * len(xs)))], 4) if xs else None)
     reasons = Counter(s.drop_reason or "published" for s in stories)
     withheld = Counter(s.name_withheld for s in stories if s.name_withheld)
     loose_only = sum(1 for s in stories if s.name_withheld)
@@ -178,6 +207,11 @@ def main(argv=None) -> int:
         "loose_rule_would_have_named": loose_only,
         "detected_frame_interval_sec": {"n": len(gaps), "p10": q(gaps, .1), "p50": q(gaps, .5),
                                         "p90": q(gaps, .9), "p99": q(gaps, .99)},
+        "frame_sizes": dict(Counter(f"{s.frame_w}x{s.frame_h}/{s.frame_size_source}" for s in stories)),
+        "entry_edges_published": dict(Counter(s.entry_edge for s in published)),
+        "exit_edges_published": dict(Counter(s.exit_edge for s in published)),
+        "exit_speed_fw_per_sec_published": {"n": len(speeds), "p10": q4(speeds, .1), "p50": q4(speeds, .5),
+                                            "p90": q4(speeds, .9)},
         "failures": failures,
     }
     print(json.dumps(report, indent=1))
@@ -198,7 +232,11 @@ def main(argv=None) -> int:
         Path(args.json).write_text(json.dumps(
             [dict(story_id=s.story_id, started_at=s.started_at.isoformat(), kind=s.kind, published=s.published,
                   drop_reason=s.drop_reason, speed_class=s.speed_class, sentence=redact(s),
-                  individual_id=(s.individual_id or "")[:8], n=s.detection_count) for s in stories], indent=1))
+                  individual_id=(s.individual_id or "")[:8], n=s.detection_count, dir_lateral=s.dir_lateral,
+                  dir_depth=s.dir_depth, entry_edge=s.entry_edge, exit_edge=s.exit_edge,
+                  exit_foot_x=s.exit_foot_x, exit_foot_y=s.exit_foot_y,
+                  exit_speed_fw_per_sec=s.exit_speed_fw_per_sec, frame_w=s.frame_w, frame_h=s.frame_h,
+                  frame_size_source=s.frame_size_source) for s in stories], indent=1))
     if failures:
         print("\nFAIL:\n" + "\n".join(failures))
         return 1

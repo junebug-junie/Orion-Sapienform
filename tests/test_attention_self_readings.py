@@ -35,7 +35,7 @@ def test_prompt_reaching_nodes_come_from_the_glossary_and_exclude_world_and_plac
     assert nodes == sorted([
         "node:substrate.biometrics", "node:substrate.bus_synaptic", "node:substrate.cabinet",
         "node:substrate.chat", "node:substrate.codebase", "node:substrate.execution",
-        "node:substrate.route",
+        "node:substrate.route", "node:substrate.strain",
     ])
     assert "node:substrate.perception" not in nodes  # the world, not the body
     assert "node:substrate.harness_closure" not in nodes  # placeholder
@@ -266,3 +266,17 @@ def test_the_clause_is_dropped_before_a_reading_would_be() -> None:
     assert len(block.text) <= 600
     assert block.shown == plain.shown  # every reading still shown
     assert block.text == plain.text  # three readings fill the cap: every clause gave way
+
+
+def test_stale_trigger_is_unreadable_not_no_recent_events() -> None:
+    """Strain news writes 0.0 every tick with a known regulation reading. Its last write going
+    stale means regulation was unreadable, not "no events": it must not read as calm."""
+    cut = NOW - timedelta(hours=2)
+    rows = [r for r in fx.busy_body_rows() if not (r[0] == "node:substrate.strain" and r[1] > cut)]
+    block = sr.project_self_readings(_cache(rows), now=NOW)
+    strain = next(r for r in block.readings if r.source_id == "node:substrate.strain")
+    assert strain.state == "stale"
+    assert "strain (stale)" in block.text
+    assert "No recent events: strain" not in block.text
+    calm = [r for r in fx.calm_rows() if not (r[0] == "node:substrate.strain" and r[1] > cut)]
+    assert sr.project_self_readings(_cache(calm), now=NOW).skip_reason == "calm_partial"

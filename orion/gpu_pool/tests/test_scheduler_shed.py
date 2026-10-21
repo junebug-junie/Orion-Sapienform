@@ -265,3 +265,46 @@ def test_precedence_attributes_each_priority_to_the_winning_reason():
 def test_a_reason_may_never_shed_interactive_or_urgent(blocks):
     with pytest.raises(ValueError):
         ShedBoard({"bad": ShedReasonSpec("bad", 5, blocks, "x")})
+
+
+# --- shed_held_queue: what a snapshot reader may call "held by the shed" (2026-10-20) ----------
+
+def test_shed_held_queue_agrees_with_the_scheduler_on_queued_leases():
+    """Arousal (via sql-writer's history row) reads shed_held_queue; it must name exactly the queued
+    leases U4 holds back (Shed or the D3 one-shot Unavailable), never a lease U4 would grant."""
+    from orion.gpu_pool.shed import shed_held_queue
+
+    leases = [
+        lease("memory_distill", priority="system", kind="hold", retryable=True, lease_id="d"),
+        hold("queued", None, priority="background", lease_id="r"),
+        lease("metacog", priority="background", lease_id="m", retryable=True),
+        lease("metacog", priority="interactive", lease_id="i"),
+        lease("fast", priority="system", lease_id="f"),                       # one-shot: refused now
+        hold("granted", "agent", priority="background", lease_id="run",
+             granted_at=T0 - timedelta(seconds=60)),
+        lease("agent", priority="background", lease_id="c", hold_lease_id="run"),   # its own call
+    ]
+    shed = {"background": "cabinet_hot", "system": "cabinet_hot"}
+    d = run(leases, shed=shed)
+    by_scheduler = {x.lease_id for x in of(Shed, d)} | {
+        x.lease_id for x in of(Unavailable, d) if x.reason.startswith("shed:")}
+    held, reason = shed_held_queue([vars(l) for l in leases], shed)
+    queued_wc = {l.lease_id: l.work_class for l in leases}
+    expected: dict[str, int] = {}
+    for lid in by_scheduler:
+        expected[queued_wc[lid]] = expected.get(queued_wc[lid], 0) + 1
+    assert held == expected == {"memory_distill": 1, "agent": 1, "metacog": 1, "fast": 1}
+    assert reason == "cabinet_hot"
+    assert shed_held_queue([vars(l) for l in leases], {}) == ({}, None)
+    assert shed_held_queue(leases, {"background": "orion_self_shed", "system": "cabinet_hot"})[1] \
+        == "cabinet_hot+orion_self_shed"
+
+
+def test_shed_held_queue_reflex_filter_drops_orion_self_shed():
+    """The history row counts only heat-reflex holds: orion_self_shed fires below the reflex, where
+    arousal's cabinet input does not read hot, so its held leases stay load (review 2026-10-20)."""
+    from orion.gpu_pool.shed import REFLEX_REASONS, shed_held_queue
+
+    leases = [vars(lease("agent", priority="background", kind="hold", retryable=True, lease_id="r"))]
+    assert shed_held_queue(leases, {"background": "orion_self_shed"}, reasons=REFLEX_REASONS) == ({}, None)
+    assert shed_held_queue(leases, {"background": "cabinet_hot"}, reasons=REFLEX_REASONS) == ({"agent": 1}, "cabinet_hot")

@@ -31,6 +31,34 @@ experiment dispatcher. Where the build departs from the design below, the build 
   max residual once (n+1)·q ≥ n, so at the default 40 windows the 95 % upper bound is the max
   observed error (conservative); at 14 the 80 % and 95 % ranges coincide.
 
+## Weather + fleet inputs (2026-10-21, follow-up PR)
+
+New covariates for the cabinet target, and the shared weather seam. Metric quality gate:
+
+1. Provenance: `circe.chassis_watts` / `hecate.chassis_watts` = `orion_biometrics_cluster.measurements_by_node`
+   written by orion-biometrics on athena (circe via its PDU outlets, `services/orion-biometrics/app/pdu.py`;
+   hecate via its BMC read remotely, `app/ilo.py`). `athena.central_ac_proxy` = Open-Meteo hourly
+   `temperature_2m` via `orion/weather/openmeteo.py`, stored in `prediction_weather_hourly`.
+2. Independence: circe and hecate are separate machines on separate meters from athena (all three in the
+   cabinet). The proxy is an outdoor sensor, independent of every in-cabinet reading, but NOT of the
+   portable AC: with the central AC off the portable one works harder (845 vs 719 W), so the two overlap
+   by design -- the proxy carries the cause, the AC watts the response.
+3. Theory anchor: cabinet heat balance (electrical draw ~ heat in). For the proxy, the house meter:
+   household + central kWh/h rises +0.33 per F above 75 F outdoor, 3 h earlier (p ~1e-18; 508 h,
+   2026-09-26 -> 10-17), and hours with the central AC likely on run the cabinet ~1.3 C cooler.
+4. Live sanity (2026-10-21, 2 days): circe 700-1100 W (mean 927), hecate ~96 W standby with spikes, no gaps.
+   The proxy is 0 for this whole fall stretch (outside < 75 F since ~10-11): it carries no information until
+   it warms up, and ridge treats the flat column as zero-variance. Kept so spring data trains it; the eval
+   above is the retirement check.
+5. Existing mechanism: none in the forecaster; the situation layer fetched weather live and kept no
+   history -- its HTTP client is now the shared seam.
+6. Reversibility: registry entries; the gate decides whether `direct_arx` serves.
+
+Replay (40 windows ending 2026-10-20, all inside the post-T10 regime): `direct_arx` ~1.0x persistence
+(0.96 at 15 min, p 0.25) -- no significant gain yet; the gate serves the baseline. A 14-window smoke on
+10-19 -> 10-21 showed 0.73-0.89x (too few windows to pass). Weather is not committed to the eval
+fixture: an hourly temperature series from one spot narrows down where it is, and the repo is public.
+
 ## Grading the exceedance + the alert tie (2026-10-20, follow-up PR)
 
 The `shed` probability was shown beside every reflex decision but never stored, so its quality was

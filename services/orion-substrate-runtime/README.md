@@ -1224,16 +1224,34 @@ outdoor walkway camera samples a busy street at 2 frames/s and would have overwr
 cameras' reading. Now streams listed in `SUBSTRATE_PERCEPTION_WALKWAY_STREAM_IDS` (comma-separated,
 default `walkway`) keep their own cache and feed `node:substrate.perception_walkway`; every other
 stream (cam0, carbon-webcam) feeds `node:substrate.perception` exactly as before. The tick writes
-both nodes every tick through `_publish_perception_group` (same staleness -> 0.0, still-warming ->
-0.0, receipt every tick); a failure on one never skips the other. Receipts for the walkway node
+both nodes every tick through `_publish_perception_group` (same missing-input marking, receipt
+every tick); a failure on one never skips the other. Receipts for the walkway node
 carry `reducer_name = substrate.perception_walkway`, which has its own rung in
 `orion/substrate_ladder_liveness.py`. The world-model `vision_embedding` group stays a room
 embedding: walkway frames never touch `_last_perception_embedding_vector`. Since 2026-10-15
 endogenous curiosity reads the walkway node like any other prediction-error node (live-data check
-in `docs/superpowers/pr-reports/2026-10-15-walkway-street-into-mind-pr.md`); the substrate
-attention broadcast and orion-attention-runtime's world-first candidates still skip it via
-`orion/schemas/attention_candidate.py` `NO_ATTENTION_CONSUMER_NODE_IDS`. Set the key to `none`
-to fold the walkway back into the room node.
+in `docs/superpowers/pr-reports/2026-10-15-walkway-street-into-mind-pr.md`). Since 2026-10-21 the
+walkway is a world source in the two world-first contests (substrate broadcast and
+orion-attention-runtime), eligible only at its own p99+ band by mid-rank
+(`orion/schemas/attention_candidate.py` `ATTENTION_MIN_BAND_BY_NODE_ID`); the broadcast's salience
+signals still skip it (`NO_ATTENTION_CONSUMER_NODE_IDS`). Set the key to `none` to fold the
+walkway back into the room node.
+
+**Missing input is missing, not 0.0 (2026-10-21).** Each tick publishes the latest scored frame
+that arrived since the previous tick (taken and cleared, so a frame is never published twice).
+When the input is missing -- embeddings stale (`embedding_staleness` 1.0, no embedding for 60 s),
+baseline still warming, or no new scored frame -- the tick still writes the receipt and the graph
+node (0.0, the field digester's refresh path), but marks the node
+`prediction_error_missing_reason` (`stale` / `warming` / `no_scored_frame_since_last_tick`). A
+marked node is never sampled into `substrate_node_prediction_error_history`, has no magnitude in the
+broadcast (absent), and is omitted by the self-model freshness rule
+(`orion/substrate/prediction_error_freshness.py` `STATUS_MISSING_INPUT`). Before this, 49 h with no
+embeddings (2026-10-18..20) were recorded as calm 0.0 readings and skewed the 7-day percentile
+window every attention contest ranks against. The latest frame, not the window peak: peak-hold
+failed the metric gate (the 1.0 ceiling made the window max saturate in 10% of windows), see
+`docs/superpowers/pr-reports/2026-10-21-camera-surprise-honest-input-pr.md`. A camera that stops
+delivering for 15 min is carded by the ladder watch (`camera_input:cam0` / `camera_input:walkway`
+rungs in `orion/substrate_ladder_liveness.py`, host cron every 10 min).
 
 **Ships shadow-only, default off, no consumer wired.** Deliberately **not** added to
 `ACTIVE_INFERENCE_DOMAINS` or any capability edge in `config/field/orion_field_topology.v1.yaml`
@@ -1609,3 +1627,36 @@ Pure rules: `orion/substrate/street_attention.py`.
 (`orion/autonomy/cabinet_heat.py`: non-zero only while elevated AND rising >= 0.5 C / 15 min, via the
 shared `orion.hardware_watch.rules.cabinet_rise_c`), so the existing dynamics engine admits it to the
 broadcast. Replay: `scripts/analysis/replay_attention_eligibility.py --hours 72`.
+
+
+## Strain news -> workspace attention (strain loop Part 2, 2026-10-20)
+
+Spec: `docs/superpowers/specs/2026-10-20-strain-loop-design.md` Part 2. Pure rule:
+`orion/regulation/strain_news.py`.
+
+`SUBSTRATE_STRAIN_ATTENTION_ENABLED` (ON) runs a tick every
+`SUBSTRATE_STRAIN_ATTENTION_TICK_INTERVAL_SEC` (30 s). It reads Redis `orion:regulation:latest`
+(judged by `orion.regulation.arousal_view`) and writes `node:substrate.strain`'s `prediction_error`:
+
+- **1.0 on a strain news event.** Onset (the level turns strained), escalation (a new strain cause
+  joins the episode, or the cabinet first crosses critical 34 C in the episode), reminder (still
+  strained 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h after the onset was sent). At most 8 per local
+  day (`ORION_SITUATION_TIMEZONE`), at least 30 min apart; reminders may not take the last 2 slots.
+  An escalation blocked by the daily cap is carried to the next local day and sent if it still holds.
+- **Nothing for 300 s after an event**, so the 1.0's age is the event's age. World-first treats the
+  node as event-written (glossary `absent_means` starts "only written"): it fades and stops competing
+  at the 300 s orienting window.
+- **0.0 on every other tick with a known reading.** World-first needs 200 readings in 7 days before
+  it can call any value unusual. A node written only on events (<= 56 a week) would never compete.
+- **Nothing while the reading is unknown or stale.** Unknown is never strain and never relief.
+
+The strain level itself never competes for attention. Each event is also written straight to
+`substrate_node_prediction_error_history`. After a restart the tick rebuilds the budget from those
+rows (`seed_state`), so an onset that was already sent is not sent again. Until the node has 200
+history rows, the tick writes only 0.0 and sends no event (log `substrate_strain_news_tick_warming`).
+
+Logs: `substrate_strain_news_event kind=... episode_since=... causes=... events_today=...`,
+`substrate_strain_news_tick_completed ...`, `substrate_strain_news_tick_unmeasured reason=...`.
+
+Budget replay (exit 1 on any day over 8 events, 3 % of ticks, or 10 % taken from other winners):
+`python scripts/analysis/replay_strain_news.py`.

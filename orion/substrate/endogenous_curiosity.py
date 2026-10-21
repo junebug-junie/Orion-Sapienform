@@ -119,7 +119,9 @@ HARD_BUDGET_CEILING = 8
 # (1.2%); 0 of its first 18 tick writes crossed. The room node over the prior
 # 7 days crossed on 2.7% of ticks. Daytime street traffic is NOT yet measured.
 # Gate record: docs/superpowers/pr-reports/2026-10-15-walkway-street-into-mind-pr.md.
-# Attention still fences it (NO_ATTENTION_CONSUMER_NODE_IDS).
+# World-first attention admits it only at its own p99+ band since 2026-10-21
+# (ATTENTION_MIN_BAND_BY_NODE_ID). A tick whose camera input is missing writes
+# 0.0 (marked prediction_error_missing_reason), which never crosses min_error.
 #
 # Deliberately NOT switched to reading `dynamic_pressure` directly, unlike the
 # sibling fix in `attention_broadcast.py::_node_salience()` (PR #1061):

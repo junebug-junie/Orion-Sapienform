@@ -196,6 +196,11 @@ NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
     # as-is here; that is pre-existing and out of scope for this patch.
     "perception_staleness",
     "perception_yield",
+    # Camera surprise nodes (2026-10-21): the missing-input marker and the
+    # embedding clock must survive the decoded-row cache (falkor_codec
+    # DYNAMICS_METADATA_KEYS).
+    "embedding_staleness",
+    "prediction_error_missing_reason",
     # L6 (2026-10-06): without this the stamp never survives a rehydrate and
     # every tick falls back to observed_at -- i.e. the compounding decay the
     # stamp exists to remove (falkor_codec._decay_stamp_metadata_from_row).

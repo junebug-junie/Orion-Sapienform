@@ -66,6 +66,19 @@ class Rung:
 _TICK = timedelta(minutes=15)
 _CHAIN = timedelta(minutes=45)
 
+# Camera input: how long a 24/7 camera may go without one scored embedding
+# before the watch cards it. Live 2026-10-14..21: cam0 delivers every ~5 s and
+# walkway ~2/s; every gap over 2 min in those 7 days was a real outage (cam0:
+# 49 h on 10-18, 1 h 47 m on 10-15; walkway: also 2 h 54 m, 1 h 29 m, 35 m),
+# and the next-longest gap was 3 m 14 s. 15 min = ~5x that, one cron tick
+# (10 min) of slack.
+CAMERA_INPUT_MAX_AGE = timedelta(minutes=15)
+# Streams expected to deliver around the clock. Not here on purpose: the Ring
+# doorbell (motion-triggered, its embeddings arrive only on events) and the
+# carbon webcam (a capture node that runs on demand, like hecate's
+# expected_online: false). Add a stream only once it runs 24/7.
+CAMERA_INPUT_STREAMS_EXPECTED_ONLINE: tuple[str, ...] = ("cam0", "walkway")
+
 RUNGS: tuple[Rung, ...] = (
     # Raw input lanes (the three grammar lanes the substrate consumes with a
     # dedicated partial index; see idx_grammar_events_*_consume).
@@ -87,6 +100,18 @@ RUNGS: tuple[Rung, ...] = (
     # silence receipt on a clock when the router goes quiet, so it is steady
     # either way. Replaced substrate.vision_channel (tick retired 2026-10-02).
     Rung("receipts:vision_organ_reducer", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "vision_organ_reducer"),
+    # Camera INPUT, not the tick (2026-10-21). The perception receipts above
+    # keep arriving while the cameras are dead -- the tick writes a placeholder
+    # every 30 s -- so they could not see 2026-10-18 04:06 -> 10-20 05:51, when
+    # no embedding arrived for 49 h and nothing alarmed. These rungs read the
+    # per-frame baseline rows the scorer writes for each embedding (index
+    # idx_perception_embedding_baseline_stream_generated). Only cameras
+    # expected online 24/7 (CAMERA_INPUT_STREAMS_EXPECTED_ONLINE).
+    *(
+        Rung(f"camera_input:{stream}", "substrate_perception_embedding_baseline", "generated_at",
+             CAMERA_INPUT_MAX_AGE, "stream_id", stream)
+        for stream in CAMERA_INPUT_STREAMS_EXPECTED_ONLINE
+    ),
     # The ladder proper, bottom to top.
     Rung("field_state", "substrate_field_state", "generated_at", _TICK),
     Rung("attention", "substrate_attention_frames", "generated_at", _TICK),

@@ -18,6 +18,13 @@ Rule, evaluated in this order (spec R3):
    input (``gpu_fault:<kind>:<seat>``), so it can neither strain nor clear. Live 2026-10-09: the
    controller refused every swap for 26 h (``config_unloadable``) and the jammed queue alone would
    have read strained for 20 h and held every optional decision.
+   The same holds for queue entries a heat-reflex shed is holding back (``cabinet_hot``,
+   ``cabinet_unknown``, ``cooling_incident``: ``orion.gpu_pool.shed.REFLEX_REASONS``; sql-writer
+   counts only these): they wait on heat, which S1 already reads, not on GPU load. Orion's own
+   ``orion_self_shed`` is NOT excluded: it fires below the reflex, where S1 does not read hot. Only the queue left after them is load; when they alone put the queue at or above the floor,
+   S2 reads like a stale input (``gpu_shed:<reason>``), and a run of shed-held snapshots never counts
+   toward ``gpu_sustain_sec``. Live 2026-10-18 -> 10-20: the shed held every queued background and
+   system lease for ~26 of 54 h, and arousal read that queue as independent GPU strain.
 4. A Juniper turn within ``engaged_minutes`` (the dream's DREAM_IDLE_MINUTES, 45) -> engaged.
 5. Otherwise idle.
 
@@ -80,39 +87,56 @@ def _utc(dt: Optional[datetime]) -> Optional[datetime]:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def _depth_sum(depth: object) -> Optional[int]:
+    if not isinstance(depth, dict) or any(not isinstance(v, int) or v < 0 for v in depth.values()):
+        return None
+    return sum(depth.values())
+
+
 def gpu_queue_evidence(
-    snapshots: Sequence[Tuple[datetime, dict]],
+    snapshots: Sequence[tuple],
     now: datetime,
     *,
     floor: int = DEFAULT_GPU_QUEUE_FLOOR,
     max_gap_sec: float = GPU_STATE_STALE_SEC,
-) -> tuple[Optional[float], Optional[int], Optional[float]]:
-    """Saved GPU pool snapshots (ascending ``(generated_at, queue_depth)``) -> S2 evidence.
+) -> tuple[Optional[float], Optional[int], Optional[float], int, Optional[str]]:
+    """Saved GPU pool snapshots (ascending) -> S2 evidence.
 
-    Returns ``(age_sec, depth, sustained_sec)``: the newest snapshot's age, its summed queue
-    depth, and how long the depth has held at or above ``floor`` back from the newest snapshot
-    with no gap longer than ``max_gap_sec`` (a gap is missing evidence, so it breaks the run).
-    All None when there is no snapshot. A malformed depth map counts as no snapshot.
+    Each snapshot is ``(generated_at, queue_depth)`` or ``(generated_at, queue_depth,
+    shed_held_depth, shed_reason)`` (``orion.gpu_pool.shed.shed_held_queue``, saved by sql-writer;
+    None = not recorded, read as nothing held -- the reading before the shed columns existed).
+
+    Returns ``(age_sec, depth, sustained_sec, held, shed_reason)``: the newest snapshot's age, its
+    summed queue depth, how long the LOAD depth (queue minus shed-held) has held at or above
+    ``floor`` back from the newest snapshot with no gap longer than ``max_gap_sec`` (a gap is
+    missing evidence, so it breaks the run), and the newest snapshot's shed-held count and reason.
+    All None (held 0) when there is no snapshot. A malformed depth map counts as no snapshot; a
+    malformed held map counts as nothing held, and held never exceeds the queue.
     """
     now = _utc(now)
-    rows: list[tuple[datetime, int]] = []
-    for ts, depth in snapshots:
-        if not isinstance(depth, dict) or any(not isinstance(v, int) or v < 0 for v in depth.values()):
+    rows: list[tuple[datetime, int, int, Optional[str]]] = []
+    for snap in snapshots:
+        ts, depth = snap[0], snap[1]
+        total = _depth_sum(depth)
+        if total is None:
             continue
-        rows.append((_utc(ts), sum(depth.values())))
+        held = _depth_sum(snap[2]) if len(snap) > 2 and snap[2] is not None else None
+        held = min(held or 0, total)
+        reason = (snap[3] if len(snap) > 3 else None) if held else None
+        rows.append((_utc(ts), total, held, reason))
     if not rows:
-        return None, None, None
+        return None, None, None, 0, None
     rows.sort(key=lambda r: r[0])
-    newest_ts, newest_depth = rows[-1]
+    newest_ts, newest_depth, newest_held, newest_reason = rows[-1]
     age = max(0.0, (now - newest_ts).total_seconds())
-    if newest_depth < floor:
-        return age, newest_depth, 0.0
+    if newest_depth - newest_held < floor:
+        return age, newest_depth, 0.0, newest_held, newest_reason
     start = newest_ts
-    for (ts, depth), (later_ts, _) in zip(reversed(rows[:-1]), reversed(rows[1:])):
-        if depth < floor or (later_ts - ts).total_seconds() > max_gap_sec:
+    for (ts, depth, held, _), (later_ts, *_rest) in zip(reversed(rows[:-1]), reversed(rows[1:])):
+        if depth - held < floor or (later_ts - ts).total_seconds() > max_gap_sec:
             break
         start = ts
-    return age, newest_depth, (newest_ts - start).total_seconds()
+    return age, newest_depth, (newest_ts - start).total_seconds(), newest_held, newest_reason
 
 
 def _fault_event(event: str, reason: Optional[str]) -> tuple[bool, Optional[str]]:
@@ -217,11 +241,18 @@ def classify_arousal(
     # A queue at/above the floor while a lane controller refuses to act measures the fault, not
     # load: it can neither strain nor clear. Below the floor nothing is waiting, which stays true.
     s2_faulted = s2_seen and bool(inputs.gpu_fault) and inputs.gpu_queue_depth >= gpu_queue_floor
-    s2_fresh = s2_seen and not s2_faulted
+    # Queue entries a shed (heat) holds back are not load either (S1 already reads the heat). Only
+    # the rest is load; when the held entries alone lift the queue to the floor, S2 is no evidence.
+    held = min(inputs.gpu_queue_shed_held or 0, inputs.gpu_queue_depth or 0) if s2_seen else 0
+    load = (inputs.gpu_queue_depth - held) if s2_seen else None
+    s2_shed = (s2_seen and not s2_faulted and held > 0 and inputs.gpu_queue_depth >= gpu_queue_floor
+               and load < gpu_queue_floor)
+    s2_fresh = s2_seen and not s2_faulted and not s2_shed
     s2_strain = s2_fresh and (inputs.gpu_queue_sustained_sec or 0.0) >= gpu_sustain_sec
-    s2_clear = s2_fresh and inputs.gpu_queue_depth < gpu_queue_floor
+    s2_clear = s2_fresh and load < gpu_queue_floor
     e1_fresh = inputs.juniper_turn_read_ok
-    s2_stale = f"gpu_fault:{inputs.gpu_fault}" if s2_faulted else "stale:gpu_state"
+    s2_stale = (f"gpu_fault:{inputs.gpu_fault}" if s2_faulted
+                else f"gpu_shed:{inputs.gpu_shed_reason or 'unknown'}" if s2_shed else "stale:gpu_state")
     stale = [why for why, ok in (("stale:cabinet", s1_fresh), (s2_stale, s2_fresh),
                                  ("stale:juniper_turns", e1_fresh)) if not ok]
 
@@ -259,6 +290,9 @@ def classify_arousal(
                 level = "idle"
                 reasons.append(f"no_juniper_turn_{engaged_minutes:g}m")
 
+    if held and not s2_shed and not s2_faulted:
+        # Annotate only: part of the queue is shed-held, the rest still counted as load.
+        reasons.append(f"gpu_shed_partial:{inputs.gpu_shed_reason or 'unknown'}:{held}")
     if inputs.gpu_fault and not s2_faulted:
         # Annotate only: the fault is real, but this step did not lean on the queue reading.
         reasons.append(f"gpu_fault:{inputs.gpu_fault}")

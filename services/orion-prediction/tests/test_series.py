@@ -14,7 +14,11 @@ def test_repo_registry_loads_and_declares_the_cabinet_target():
     assert t.role == "target" and t.grain_min == 5
     assert t.threshold("shed").value == 34.0
     assert t.threshold("experiment_guard").max_probability == 0.05
-    assert set(t.covariates) == {"athena.chassis_watts", "athena.cabinet_cooling_watts"}
+    assert set(t.covariates) == {"athena.chassis_watts", "circe.chassis_watts", "hecate.chassis_watts",
+                                 "athena.cabinet_cooling_watts", "athena.central_ac_proxy"}
+    proxy = reg.get("athena.central_ac_proxy")
+    assert proxy.source.kind == "weather" and proxy.lag_min == 180 and proxy.above == 75.0
+    assert reg.get("hecate.chassis_watts").zero_before_first and reg.get("circe.chassis_watts").source.kind == "cluster"
     assert all(s.consumers for s in reg.series.values())
 
 
@@ -46,6 +50,8 @@ def test_duration(value, expected):
     ({"seasonalities": [{"name": "odd", "period": "13min"}]}, "multiple"),
     ({"source": {"kind": "biometrics", "node": "n", "key": "Bad-Key"}}, "key"),
     ({"transform": "logit"}, "transform"),
+    ({"source": {"kind": "weather", "key": "humidity"}}, "temp_f"),
+    ({"source": {"kind": "cluster", "node": "Circe!", "key": "w"}}, "cluster source"),
     ({"thresholds": [{"name": "hot", "value": 31.0, "window": "12h"}]}, "longer than the longest horizon"),
 ])
 def test_bad_registry_refused(over, msg):

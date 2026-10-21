@@ -8,7 +8,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field as _dataclass_field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 from uuid import uuid4
@@ -394,7 +394,8 @@ class _PerceptionGroupState:
     """Latest perceptual prediction-error reading for one published node.
 
     Same four facts the room node keeps in the ``_last_perception_*``
-    attributes, for the walkway node: the last real score, how many surprise
+    attributes, for the walkway node: the latest real score not yet published
+    (``_take_perception_score``; None once the tick has published it), how many surprise
     samples its scalar baseline has seen (still-warming check), when its last
     embedding arrived (staleness clock) and which stream sent it. In-memory
     "how is this lately" cache; the durable state is the per-stream row in
@@ -405,6 +406,14 @@ class _PerceptionGroupState:
     surprise_n: int = 0
     embedding_at: datetime | None = None
     stream_id: str | None = None
+    lock: threading.Lock = _dataclass_field(default_factory=threading.Lock, repr=False, compare=False)
+
+
+# Why a node's published prediction_error is a placeholder, not a reading
+# (orion/substrate/prediction_error_freshness.py PREDICTION_ERROR_MISSING_REASON_KEY).
+PERCEPTION_MISSING_STALE = "stale"
+PERCEPTION_MISSING_WARMING = "warming"
+PERCEPTION_MISSING_NO_FRAME = "no_scored_frame_since_last_tick"
 
 
 @dataclass(frozen=True)
@@ -627,6 +636,10 @@ class BiometricsSubstrateWorker:
         # never touches _last_perception_embedding_vector above either: the
         # world-model vision_embedding group stays a room embedding.
         self._perception_walkway = _PerceptionGroupState()
+        # Guards the room score's take-and-clear: the listener and the tick run
+        # on different threads. Built here, not lazily, so the two first callers
+        # cannot each build their own lock (review 2026-10-21).
+        self._perception_room_score_lock = threading.Lock()
         # World-model publish tick (world_model_features.py): real per-domain
         # prediction-error scalars cached by their own _*_tick() methods
         # below, read by _world_model_publish_tick's execution_context group
@@ -811,6 +824,12 @@ class BiometricsSubstrateWorker:
             self._tasks.append(
                 asyncio.create_task(
                     self._cabinet_heat_tick_loop(), name="substrate-cabinet-heat-tick"
+                )
+            )
+        if s.enable_strain_attention:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._strain_attention_tick_loop(), name="substrate-strain-news-tick"
                 )
             )
         # World-model publish tick: the first real producer for
@@ -1800,6 +1819,185 @@ class BiometricsSubstrateWorker:
                 await asyncio.to_thread(self._street_attention_tick)
             except Exception:
                 logger.exception("substrate_street_attention_tick_loop_failed")
+    # Strain news (docs/superpowers/specs/2026-10-20-strain-loop-design.md Part 2). Per-process
+    # state; rebuilt from the node's own persisted event rows on the first known reading.
+    _strain_news_state: Any = None
+    _strain_history_warm: bool = False
+    _strain_warm_checked_at: Any = None
+    _strain_failed_at: Any = None
+    _strain_pe_off_logged: bool = False
+    _strain_redis: Any = None
+    # A failed tick (DB down) is retried after this, not every 30 s with a traceback each time.
+    _STRAIN_FAILURE_BACKOFF = timedelta(minutes=5)
+    # The 7-day history size is re-counted this often (it can fall back under 200).
+    _STRAIN_WARM_RECHECK = timedelta(minutes=30)
+
+    def _read_regulation_reading(self, now: datetime) -> tuple[Any, Any]:
+        """(ArousalReadingV1 or None, ArousalView). None whenever ``arousal_view`` says unknown
+        (absent, unparseable, stale, future-stamped, producer unknown, Redis error)."""
+        from orion.regulation.arousal_view import ArousalView, arousal_view
+        from orion.schemas.regulation import REGULATION_STATE_REDIS_KEY, parse_regulation_state
+
+        try:
+            client = self._strain_redis
+            if client is None:
+                import redis
+
+                client = redis.Redis.from_url(
+                    self._settings.orion_bus_url, socket_timeout=2.0, socket_connect_timeout=2.0
+                )
+                self._strain_redis = client
+            raw = client.get(REGULATION_STATE_REDIS_KEY)
+        except Exception as exc:  # noqa: BLE001 -- unreadable is unknown, never strained
+            self._strain_redis = None
+            logger.warning("substrate_strain_news_regulation_read_failed err=%s", exc)
+            return None, ArousalView(level="unknown", reason="read_failed")
+        view = arousal_view(raw, now=now)
+        if not view.known:
+            return None, view
+        state = parse_regulation_state(raw)
+        return (state.arousal if state is not None else None), view
+
+    def _strain_attention_tick(self) -> None:
+        """Write node:substrate.strain's prediction_error: 1.0 on a strain news event, else 0.0.
+
+        The strain LEVEL never competes for attention (it would win every tick of a 54 h
+        episode). Only rare news events do (orion/regulation/strain_news.py: onset, escalation,
+        reminders; <= 8 per local day, >= 30 min apart). An event's 1.0 is carried unwritten for
+        attention's orienting window (world-first fades it by its age and stops it at 300 s);
+        every other tick with a known reading writes a calm 0.0, so the node has the history
+        world-first needs to call a 1.0 unusual. An unknown or stale regulation reading writes
+        nothing. Each event is also recorded in substrate_node_prediction_error_history directly,
+        so a restart rebuilds the budget from it and never re-fires an onset. Fail-open.
+        """
+        if not self._settings.enable_strain_attention:
+            return
+        if not _prediction_error_nodes_enabled():
+            # The node can never be written, so its history can never warm: say so once.
+            if not self._strain_pe_off_logged:
+                self._strain_pe_off_logged = True
+                logger.warning(
+                    "substrate_strain_news_skipped prediction_error_nodes_disabled "
+                    "(SUBSTRATE_WRITE_PREDICTION_ERROR_NODES is off)"
+                )
+            return
+        from zoneinfo import ZoneInfo
+
+        from orion.attention.sustained import EVENT_ORIENTING_WINDOW_SEC
+        from orion.regulation.strain_news import (
+            EVENT_VALUE,
+            REST_VALUE,
+            STRAIN_NODE_ID,
+            rest_write_allowed,
+            seed_state,
+            strain_news,
+        )
+        from orion.substrate.prediction_error_magnitude import DEFAULT_MIN_READINGS, WINDOW_7D
+
+        now = datetime.now(timezone.utc)
+        failed_at = self._strain_failed_at
+        if failed_at is not None and now - failed_at < self._STRAIN_FAILURE_BACKOFF:
+            return
+        try:
+            tz = ZoneInfo(str(self._settings.orion_situation_timezone or "UTC"))
+            reading, view = self._read_regulation_reading(now)
+            if reading is None:
+                logger.info(
+                    "substrate_strain_news_tick_unmeasured reason=%s age_sec=%s",
+                    view.reason, view.age_sec,
+                )
+                return
+            if self._strain_news_state is None:
+                local_midnight = now.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+                since = min(local_midnight, reading.since, now - timedelta(hours=1))
+                since = max(since, now - WINDOW_7D)
+                times = self._store.fetch_prediction_error_event_times(
+                    node_id=STRAIN_NODE_ID, since=since
+                )
+                self._strain_news_state = seed_state(times, reading, now, tz)
+                logger.info(
+                    "substrate_strain_news_seeded events_found=%d events_today=%d "
+                    "episode_since=%s last_event_at=%s",
+                    len(times), self._strain_news_state.events_today,
+                    self._strain_news_state.episode_since, self._strain_news_state.last_event_at,
+                )
+            checked = self._strain_warm_checked_at
+            if checked is None or now - checked >= self._STRAIN_WARM_RECHECK:
+                # World-first needs DEFAULT_MIN_READINGS 7-day readings before it can call any
+                # value unusual. Until then an event would be spent where attention cannot see
+                # it: build the calm history first, step the news later. Re-counted every
+                # _STRAIN_WARM_RECHECK (cheap while warming, and history can shrink).
+                n = self._store.count_prediction_error_history(
+                    node_id=STRAIN_NODE_ID, since=now - WINDOW_7D
+                )
+                self._strain_warm_checked_at = now
+                self._strain_history_warm = n >= DEFAULT_MIN_READINGS
+                if not self._strain_history_warm:
+                    logger.info(
+                        "substrate_strain_news_tick_warming history_rows=%d needed=%d level=%s",
+                        n, DEFAULT_MIN_READINGS, reading.arousal_level,
+                    )
+            if not self._strain_history_warm:
+                if rest_write_allowed(self._strain_news_state, now, EVENT_ORIENTING_WINDOW_SEC):
+                    self._write_prediction_error_node(
+                        node_id=STRAIN_NODE_ID, error=REST_VALUE, now=now, reducer_key="strain_news"
+                    )
+                return
+            event, self._strain_news_state = strain_news(
+                self._strain_news_state, reading, now, tz
+            )
+            state = self._strain_news_state
+            if event is not None:
+                self._write_prediction_error_node(
+                    node_id=STRAIN_NODE_ID, error=EVENT_VALUE, now=now, reducer_key="strain_news"
+                )
+                try:
+                    self._store.save_prediction_error_history_samples(
+                        [(STRAIN_NODE_ID, now, EVENT_VALUE)]
+                    )
+                except Exception:
+                    logger.exception("substrate_strain_news_event_record_failed")
+                logger.info(
+                    "substrate_strain_news_event node_id=%s value=%.1f %s",
+                    STRAIN_NODE_ID, EVENT_VALUE, event.as_log_fields(),
+                )
+                return
+            wrote = "none"
+            if rest_write_allowed(state, now, EVENT_ORIENTING_WINDOW_SEC):
+                self._write_prediction_error_node(
+                    node_id=STRAIN_NODE_ID, error=REST_VALUE, now=now, reducer_key="strain_news"
+                )
+                wrote = "0.0"
+            logger.info(
+                "substrate_strain_news_tick_completed level=%s causes=%s cabinet_temp_c=%s "
+                "episode_since=%s events_today=%d last_event_at=%s onset_pending=%s "
+                "escalation_pending=%s reminders_consumed=%d wrote=%s",
+                reading.arousal_level,
+                "+".join(sorted(state.episode_causes)) or "-",
+                reading.cabinet_temp_c,
+                None if state.episode_since is None else state.episode_since.isoformat(),
+                state.events_today,
+                None if state.last_event_at is None else state.last_event_at.isoformat(),
+                state.onset_pending,
+                state.escalation_pending,
+                state.reminders_consumed,
+                wrote,
+            )
+            self._strain_failed_at = None
+        except Exception:
+            if self._strain_failed_at is None:
+                logger.exception("substrate_strain_news_tick_failed")
+            else:
+                logger.warning("substrate_strain_news_tick_failed again; backing off")
+            self._strain_failed_at = now
+
+    async def _strain_attention_tick_loop(self) -> None:
+        interval = float(self._settings.strain_attention_tick_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._strain_attention_tick)
+            except Exception:
+                logger.exception("substrate_strain_news_tick_loop_failed")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:
@@ -1916,7 +2114,8 @@ class BiometricsSubstrateWorker:
             walkway.stream_id = stream_id
             walkway.surprise_n = result.baseline.surprise.n
             if result.score is not None:
-                walkway.score = result.score
+                with walkway.lock:
+                    walkway.score = result.score
             self._log_perception_score(stream_id, result, node_id=PERCEPTION_WALKWAY_NODE_ID)
             return
         self._last_perception_embedding_at = now
@@ -1932,7 +2131,9 @@ class BiometricsSubstrateWorker:
         # return score=None (see this attribute's own comment in __init__).
         self._last_perception_surprise_n = result.baseline.surprise.n
         if result.score is not None:
-            self._last_perception_prediction_error = result.score
+            # Held until the tick publishes it (``_take_perception_score``).
+            with self._perception_room_lock():
+                self._last_perception_prediction_error = result.score
         self._log_perception_score(stream_id, result, node_id=PERCEPTION_NODE_ID)
 
     def _perception_walkway_stream_ids(self) -> frozenset[str]:
@@ -1940,6 +2141,43 @@ class BiometricsSubstrateWorker:
             getattr(self._settings, "perception_walkway_stream_ids", None),
             _DEFAULT_PERCEPTION_WALKWAY_STREAM_IDS,
         )
+
+    def _perception_room_lock(self) -> threading.Lock:
+        # Set in __init__; the getattr fallback is only for tests that build
+        # the worker via __new__ and skip __init__.
+        lock = getattr(self, "_perception_room_score_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._perception_room_score_lock = lock
+        return lock
+
+    def _take_perception_score(self, *, walkway: bool) -> float | None:
+        """Return the latest scored frame not yet published, and clear it.
+
+        None = no scored frame arrived since the last publish; the tick then
+        publishes missing, never a carried-forward copy of an old frame.
+
+        Latest frame, NOT the peak of the window (metric gate, 2026-10-21): the
+        per-frame score saturates at 1.0 for ~1.3% of frames, so the max of a
+        30 s window's ~4 frames sat at 1.0 in 10% of windows. Replayed on
+        2026-10-15..21: exact-zero ticks fell 61% -> 4.5%, curiosity's fixed
+        0.55 threshold fired 7x as often, the room camera's above-chance catch
+        of arrivals vanished (23 vs 14 by chance -> 2 vs 1) and the walkway's
+        p99+ tail disappeared. Record:
+        docs/superpowers/pr-reports/2026-10-21-camera-surprise-honest-input-pr.md.
+
+        Taken before the write: if the receipt or node write then raises, this
+        one frame is lost (fail-open; the next frame is published next tick).
+        """
+        if walkway:
+            state = self._perception_walkway_state()
+            with state.lock:
+                score, state.score = state.score, None
+            return score
+        with self._perception_room_lock():
+            score = self._last_perception_prediction_error
+            self._last_perception_prediction_error = None
+        return score
 
     def _perception_walkway_state(self) -> _PerceptionGroupState:
         # getattr: tests build the worker via __new__ and skip __init__.
@@ -2009,7 +2247,7 @@ class BiometricsSubstrateWorker:
                 node_id=PERCEPTION_NODE_ID,
                 reducer_key="perception",
                 log_prefix="substrate_perception_prediction_error",
-                cached_score=self._last_perception_prediction_error,
+                cached_score=self._take_perception_score(walkway=False),
                 surprise_n=self._last_perception_surprise_n,
                 embedding_at=self._last_perception_embedding_at,
                 stream_id=self._last_perception_stream_id,
@@ -2023,7 +2261,7 @@ class BiometricsSubstrateWorker:
                 node_id=PERCEPTION_WALKWAY_NODE_ID,
                 reducer_key="perception_walkway",
                 log_prefix="substrate_perception_walkway_prediction_error",
-                cached_score=walkway.score,
+                cached_score=self._take_perception_score(walkway=True),
                 surprise_n=walkway.surprise_n,
                 embedding_at=walkway.embedding_at,
                 stream_id=walkway.stream_id,
@@ -2044,9 +2282,16 @@ class BiometricsSubstrateWorker:
         stream_id: str | None,
         now: datetime,
     ) -> None:
-        """One perception node's tick: staleness -> 0.0, still-warming -> 0.0,
-        else the cached real score; receipt + graph node written every call.
-        Raises on failure; the caller isolates each node."""
+        """One perception node's tick. ``cached_score`` is the latest scored
+        frame since the last publish (None = no scored frame in the window).
+
+        A real reading publishes that score. Missing input -- embeddings stale,
+        baseline still warming, or no scored frame in the window -- still
+        writes the receipt and graph node (0.0, see below), but marks the node
+        with ``prediction_error_missing_reason`` so the value is never recorded
+        in substrate_node_prediction_error_history and never read as calm
+        (orion/substrate/prediction_error_freshness.py). Raises on failure; the
+        caller isolates each node."""
         last_at = embedding_at
         if last_at is None:
             # Nothing observed since this process started -- same startup-
@@ -2097,19 +2342,34 @@ class BiometricsSubstrateWorker:
         # state this migration's own comment says it widened the
         # window to include (own test coverage at the time only
         # exercised `surprise_n == 0`, never the real `== 1` case).
+        #
+        # 2026-10-21: the 0.0 written for stale / warming / no-frame is a
+        # placeholder for the field digester's receipt path (below), NOT a
+        # reading. It carries missing_reason, which keeps it out of
+        # substrate_node_prediction_error_history (the percentile window every
+        # attention contest ranks against) and out of the self-model. Before
+        # this, 49 h of stale zeros (2026-10-18..20) made 31% of the room
+        # camera's 7-day window exact 0.0 placeholders: its p90 read 0.137
+        # against 0.205 over live hours only, so ordinary frames ranked "high".
         still_warming = staleness < 1.0 and surprise_n < 2
+        missing_reason: str | None = None
         if staleness >= 1.0:
             score = 0.0
+            missing_reason = PERCEPTION_MISSING_STALE
         elif still_warming:
             score = 0.0
+            missing_reason = PERCEPTION_MISSING_WARMING
             logger.info(
                 "%s_tick_still_warming stream_id=%s surprise_n=%d",
                 log_prefix,
                 stream_id or "none",
                 surprise_n,
             )
+        elif cached_score is None:
+            score = 0.0
+            missing_reason = PERCEPTION_MISSING_NO_FRAME
         else:
-            score = cached_score or 0.0
+            score = cached_score
 
         # Receipt on EVERY tick, unconditionally -- NOT gated on
         # score > 0.0 the way _bus_synaptic_tick's is. This mirrors
@@ -2147,14 +2407,16 @@ class BiometricsSubstrateWorker:
             now=now,
             reducer_key=reducer_key,
             extra_channels={"embedding_staleness": staleness},
+            missing_reason=missing_reason,
         )
         logger.info(
-            "%s_tick_completed age_sec=%.1f staleness=%.3f score=%.3f stream_id=%s",
+            "%s_tick_completed age_sec=%.1f staleness=%.3f score=%.3f stream_id=%s missing=%s",
             log_prefix,
             age_seconds,
             staleness,
             score,
             stream_id or "none",
+            missing_reason or "no",
         )
 
     async def _perception_prediction_error_tick_loop(self) -> None:
@@ -2436,8 +2698,14 @@ class BiometricsSubstrateWorker:
         contributing_id: str | None = None,
         evidence_event_ids: Sequence[str] = (),
         extra_channels: dict[str, float] | None = None,
+        missing_reason: str | None = None,
     ) -> None:
         """Upsert a durable substrate node carrying the surprise (Rung 1 bridge).
+
+        ``missing_reason`` (2026-10-21): set when ``error`` is a placeholder
+        because the producer's input is missing; written to
+        ``metadata[PREDICTION_ERROR_MISSING_REASON_KEY]``. Every write replaces
+        the node's metadata, so a later real reading clears it.
 
         Default-off (env flag), fail-open: never raises out of a tick. When
         enabled it writes a single node under a fixed identity_key so re-writes
@@ -2527,6 +2795,12 @@ class BiometricsSubstrateWorker:
             # one, which is the whole distinction the channel exists to carry.
             for extra_key, extra_value in (extra_channels or {}).items():
                 metadata[extra_key] = round(float(extra_value), 6)
+            if missing_reason:
+                from orion.substrate.prediction_error_freshness import (
+                    PREDICTION_ERROR_MISSING_REASON_KEY,
+                )
+
+                metadata[PREDICTION_ERROR_MISSING_REASON_KEY] = str(missing_reason)
             if evidence_event_ids:
                 metadata["prediction_error_evidence_event_ids"] = list(
                     evidence_event_ids[:_PREDICTION_ERROR_EVIDENCE_CAP]
@@ -3274,7 +3548,15 @@ class BiometricsSubstrateWorker:
 
     @staticmethod
     def _node_prediction_error_reading(node: Any) -> tuple[float, datetime] | None:
-        """(prediction_error, observed_at) for a node, or None if unusable."""
+        """(prediction_error, observed_at) for a node, or None if unusable.
+
+        A placeholder written for missing input (camera stale/warming/no frame,
+        ``prediction_error_missing_reason``) is unusable: it is not recorded in
+        the history and has no magnitude. Missing is a gap, never a 0.0."""
+        from orion.substrate.prediction_error_freshness import missing_input_reason
+
+        if missing_input_reason(node) is not None:
+            return None
         metadata = getattr(node, "metadata", None) or {}
         raw = metadata.get("prediction_error") if isinstance(metadata, dict) else None
         if raw is None or isinstance(raw, bool):

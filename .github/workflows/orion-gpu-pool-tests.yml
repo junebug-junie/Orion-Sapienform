@@ -72,6 +72,7 @@ on:
       # stage 3 loose ends: self-knowledge + fcc hop key follow the granted role
       - "orion/harness/prefix.py"
       - "orion/situational/context.py"
+      - "orion/weather/**"
       - "orion/schemas/situation.py"
       - "orion/harness/tests/test_harness_runner.py"
       - "orion/harness/tests/test_harness_prefix.py"
@@ -129,6 +130,7 @@ on:
       - "services/orion-hub/tests/test_curiosity_gpu_lease.py"
       - "orion/harness/prefix.py"
       - "orion/situational/context.py"
+      - "orion/weather/**"
       - "orion/schemas/situation.py"
 
 jobs:

@@ -70,9 +70,6 @@ STREET_NODE_ID = "node:substrate.street"
 
 NO_CURIOSITY_CONSUMER_NODE_IDS: frozenset[str] = frozenset({STREET_NODE_ID})
 
-# Substrate nodes that measure the outside world, not Orion's body.
-_WORLD_NODE_IDS: frozenset[str] = frozenset({PERCEPTION_NODE_ID, STREET_NODE_ID})
-
 # Per-node band floor for the world-first contests (2026-10-21, Juniper's
 # option D). A node listed here competes as a candidate, but is eligible only at
 # or above this band FOR ITSELF (its own 7-day window, judged on the mid-rank
@@ -91,8 +88,11 @@ ATTENTION_MIN_BAND_BY_NODE_ID: dict[str, str] = {PERCEPTION_WALKWAY_NODE_ID: "un
 # Substrate nodes that measure the outside world, not Orion's body. The
 # walkway is an outdoor camera, so it is world (2026-10-21): external sources
 # are absent after 180 s without a reading, and the body-only self-signal
-# gates (equilibrium episodes, hourly outcomes) do not read it.
-_WORLD_NODE_IDS: frozenset[str] = frozenset({PERCEPTION_NODE_ID, PERCEPTION_WALKWAY_NODE_ID})
+# gates (equilibrium episodes, hourly outcomes) do not read it. The street
+# node (doorbell rings, cross-camera handoffs) is world too.
+_WORLD_NODE_IDS: frozenset[str] = frozenset(
+    {PERCEPTION_NODE_ID, PERCEPTION_WALKWAY_NODE_ID, STREET_NODE_ID}
+)
 
 
 def world_first_fenced(node_id: str) -> bool:

@@ -168,12 +168,22 @@ template_to_cortex:
     allowed_scope: self_reversible
     rpc_timeout_sec: 10
 
+  # 2026-10-21 (thinking rung 3): this dispatch IS the thought.painting `make` act -- the act's
+  # key is reverie_visual_run_id(dispatch_id) and its test_before is visual_dispatch:<dispatch_id>
+  # (services/orion-thought/app/visual_steps.py _painting_act). So the allocator scores the
+  # candidate on that act's own EffectPosterior (orion/autonomy/act_candidates.py) instead of
+  # refusing it `unmeasurable`. Kill switch: ORION_DISPATCH_ACT_CANDIDATES_ENABLED.
   render_scene:
     dispatch_kind: express
     cortex_verb: skills.imagination.render_scene.v1
     cortex_mode: brain
     allowed_scope: express_bounded
     rpc_timeout_sec: 170
+    act:
+      verb: make
+      actor: thought.painting
+      signal_id: artifact_produced
+      horizon_sec: 5400   # PAINTING_HORIZON_SEC, services/orion-thought/app/visual_steps.py
 
   # 2026-08-25: analysis -> self-study journal entry.
   #

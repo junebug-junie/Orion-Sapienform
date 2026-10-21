@@ -570,6 +570,68 @@ class ExecutionDispatchRuntimeStore:
             if r[2] is not None and float(r[2]) > 0
         }
 
+    # Thinking rung 3: how far back an unsettled act-backed dispatch or an unclosed act still counts
+    # as in flight. Longer than the longest act horizon (painting 5400 s) plus durable queue wait;
+    # past it, the act ledger's own resolver has already expired the act.
+    ACT_IN_FLIGHT_WINDOW_HOURS = 6
+
+    def act_in_flight(self, *, actor: str, dispatch_kind: str, target_id: str) -> bool:
+        """True while this act's actor has an open act, or this route has an unsettled dispatch.
+
+        Two sources because they cover different stretches: a render_scene dispatch is ``pending``
+        from send until its durable run settles (including GPU queue wait, before the act opens),
+        and the act is open from the run's first real generation until its close."""
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                               SELECT 1 FROM grammar_acts
+                                WHERE actor = :actor AND closed_at IS NULL
+                                  AND opened_at > now() - make_interval(hours => :hours))
+                        OR EXISTS (
+                               SELECT 1 FROM substrate_dispatch_results
+                                WHERE dispatch_kind = :kind AND target_id = :target
+                                  AND (status = 'pending'
+                                       -- a render whose submit timed out may still have been admitted
+                                       OR result_json->'settlement'->>'state' = 'not_submitted')
+                                  AND created_at > now() - make_interval(hours => :hours))
+                    """
+                ),
+                {"actor": actor, "kind": dispatch_kind, "target": target_id,
+                 "hours": self.ACT_IN_FLIGHT_WINDOW_HOURS},
+            ).scalar()
+        return bool(row)
+
+    def act_episode_in_flight(self, *, actor: str, now: datetime) -> bool:
+        from orion.autonomy import act_episodes
+
+        with self._engine.connect() as conn:
+            return act_episodes.in_flight(conn, actor=actor, now=now)
+
+    def act_control_stats(self, *, act_label: str) -> tuple[int, int]:
+        from orion.autonomy import act_episodes
+
+        with self._engine.connect() as conn:
+            return act_episodes.control_stats(conn, act_label=act_label)
+
+    def act_episode_arm(self, episode_id: str) -> str | None:
+        from orion.autonomy import act_episodes
+
+        with self._engine.connect() as conn:
+            return act_episodes.arm_of(conn, episode_id)
+
+    def insert_act_episode(self, row: dict) -> bool:
+        """Precommit for the proven-effect path. Raises on failure: no row, no action."""
+        from orion.autonomy import act_episodes
+
+        with self._engine.begin() as conn:
+            if not getattr(self, "_act_episodes_ready", False):
+                act_episodes.ensure_table(conn)
+            inserted = act_episodes.insert_decision(conn, row)
+        self._act_episodes_ready = True
+        return inserted
+
     def sum_motor_seconds_for_day(self, day_start, day_end) -> float:
         """Motor-seconds actually spent in a UTC day.
 

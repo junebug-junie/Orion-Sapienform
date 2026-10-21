@@ -15,6 +15,16 @@ from orion.bus.ewma import compute_ewma_update
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.rpc_health import SharedRpcHealthSink
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.autonomy import act_episodes
+from orion.autonomy.act_candidates import (
+    ActRef,
+    act_allocator_candidate,
+    act_expectation_reason,
+    act_posterior,
+    admit_proven,
+    proven_effect,
+    refuse_in_flight,
+)
 from orion.autonomy.allocator import (
     ALLOCATOR_BLOCK_REASON,
     Candidate,
@@ -261,6 +271,21 @@ ACTION_OUTCOME_SUMMARY_MAX_CHARS = 280
 # Established self-subject convention across orion/autonomy/* (reducer.py,
 # substrate_metabolism.py, signal_tension.py all default/use this).
 ACTION_OUTCOME_SUBJECT = "orion"
+
+
+def tick_can_yield_control(to_send) -> bool:
+    """Can withholding this tick produce a control observation? (randomized per-tick holdback)
+
+    Only a candidate that declares a field signal (``expected_effect``) gets a control cell when
+    held back (orion/feedback/outcome_resolution.py). A world action already drew its own arm per
+    template (``_world_action_holdback``), and a visual-baseline or act-backed render carries no field
+    signal; for those a held-back tick is re-proposed on the next proposal tick, seconds later, so
+    withholding it would be a delay wearing the word "control". Rung 3 (2026-10-21) turned the
+    fraction on; this keeps the draw to the ticks it can actually learn from."""
+    return any(
+        c.expected_effect is not None and not c.world_action and c.visual_baseline is None
+        for c in to_send
+    )
 
 
 class ExecutionDispatchRuntimeWorker:
@@ -649,8 +674,13 @@ class ExecutionDispatchRuntimeWorker:
 
     def _load_effect_posteriors(self) -> dict[TreatedCellKey, EffectPosterior]:
         try:
-            return self._store.load_effect_posteriors()
+            out = self._store.load_effect_posteriors()
+            self._posteriors_read_ok = True
+            return out
         except Exception:
+            # Rung 3: remembered so act-backed candidates fail CLOSED on a failed read -- an empty
+            # map would read as "never graded" and the cold-start rule would admit a 57 s render.
+            self._posteriors_read_ok = False
             logger.warning("execution_dispatch_effect_posterior_load_failed", exc_info=True)
             return {}
 
@@ -671,9 +701,49 @@ class ExecutionDispatchRuntimeWorker:
 
         costs = self._store.load_action_cost_estimates()
         posteriors = self._load_effect_posteriors()
+        # Thinking rung 3: routes that produce a rung-2 act are scored on that act's own belief and
+        # measured cost. {} while ORION_DISPATCH_ACT_CANDIDATES_ENABLED is off -> unchanged scoring.
+        act_refs = self._act_refs_by_cortex_verb()
+        act_costs: dict[tuple[str, str], float] | None = None
+        act_in_flight: set[str] = set()
+        act_seen: set[ActRef] = set()
+        act_items: list[tuple[Candidate, ActRef]] = []
+        self._last_act_reasons = {}
+        self._last_proven = {}
+        self._last_proven_reasons = {}
 
         candidates: list[Candidate] = []
         for item in pending:
+            ref = act_refs.get(item.cortex_verb or "")
+            if ref is not None and item.visual_baseline is not None:
+                # The visual-baseline lane is unchanged: it is admitted on its own schedule and
+                # eligibility, never on the floor, and keeps its old cost path. Scoring it as an act
+                # would let a quiet month (no measured render cost) refuse it `no_cost_estimate`
+                # forever. Its act numbers are still recorded on the frame.
+                if act_costs is None:
+                    act_costs = self._load_act_costs()
+                self._last_act_reasons[item.dispatch_id] = act_expectation_reason(
+                    ref, posteriors, act_costs.get((item.dispatch_kind, item.target_id)))
+                ref = None
+            if ref is not None:
+                if act_costs is None:
+                    act_costs = self._load_act_costs()
+                act_cost = act_costs.get((item.dispatch_kind, item.target_id))
+                candidates.append(act_allocator_candidate(
+                    dispatch_id=item.dispatch_id, dispatch_kind=item.dispatch_kind,
+                    target_id=item.target_id, ref=ref, posteriors=posteriors, cost_sec=act_cost,
+                    visual_baseline=item.visual_baseline))
+                act_items.append((candidates[-1], ref))
+                self._last_act_reasons[item.dispatch_id] = act_expectation_reason(ref, posteriors, act_cost)
+                # One in flight per act: an admitted act whose earlier dispatch or act is still open
+                # would only queue behind it (and, cold, would be re-admitted every tick until its
+                # first close lands). Also one per act per tick, and none when the belief could not
+                # be read (fail closed: unreadable is not cold).
+                if (not getattr(self, "_posteriors_read_ok", True) or ref in act_seen
+                        or self._act_in_flight(ref, item)):
+                    act_in_flight.add(item.dispatch_id)
+                act_seen.add(ref)
+                continue
             effect = item.expected_effect
             signal = effect.signal_id if effect is not None else None
             # Per-BIN variances, volume weighted. The next observation lands
@@ -749,10 +819,15 @@ class ExecutionDispatchRuntimeWorker:
             )
 
         allocation = allocate(
-            candidates,
+            [c for c in candidates if c.dispatch_id not in act_in_flight],
             allowance_sec=motor.remaining_sec,
             min_nats_per_sec=self._settings.orion_dispatch_min_nats_per_sec,
         )
+        if act_in_flight:
+            allocation = refuse_in_flight(
+                allocation, [c for c in candidates if c.dispatch_id in act_in_flight])
+        if act_items:
+            allocation = self._admit_proven_acts(allocation, act_items, act_in_flight, posteriors)
         # `agree=` used to be logged here as if it compared the allocator's
         # choice against what actually dispatched. It could not: the admitted
         # set is a SUBSET of pending by construction, so agree == would_admit
@@ -814,6 +889,118 @@ class ExecutionDispatchRuntimeWorker:
                 self._notify_all_refused_cleared(self._all_refused_consecutive_ticks)
             self._all_refused_consecutive_ticks = 0
         return allocation
+
+    def _act_refs_by_cortex_verb(self) -> dict[str, ActRef]:
+        if not getattr(self._settings, "orion_dispatch_act_candidates_enabled", False):
+            return {}
+        return {verb: ActRef(verb=a.verb, actor=a.actor, signal_id=a.signal_id, horizon_sec=a.horizon_sec)
+                for verb, a in self._policy.act_refs_by_cortex_verb().items()}
+
+    def _admit_proven_acts(self, allocation, act_items, act_in_flight, posteriors):
+        """Stage 3 option B: the second admission path (orion/autonomy/act_candidates.py). Every
+        read failure means "not proven" -- this path only ever ADDS admissions on evidence."""
+        if not getattr(self._settings, "orion_dispatch_proven_effect_enabled", False):
+            return allocation
+        if not getattr(self, "_posteriors_read_ok", True):
+            return allocation
+        verdicts = {}
+        refs = {}
+        for cand, ref in act_items:
+            if cand.dispatch_id in act_in_flight or cand.visual_baseline is not None:
+                continue
+            post, cold = act_posterior(posteriors, ref)
+            if cold:
+                continue
+            try:
+                n_control, k_control = self._store.act_control_stats(act_label=ref.label())
+            except Exception:
+                logger.warning("act_control_stats_unreadable act=%s", ref.label(), exc_info=True)
+                continue
+            verdict = proven_effect(post, n_control=n_control, control_successes=k_control)
+            verdicts[cand.dispatch_id] = verdict
+            refs[cand.dispatch_id] = ref
+            self._last_proven_reasons[cand.dispatch_id] = (
+                f"proven_effect:{verdict.reason}:n={post.n}:lb={verdict.lower_bound:.3f}:"
+                f"ref={verdict.reference:.3f}:{verdict.reference_source}:control_n={n_control}")
+        allocation, taken = admit_proven(allocation, verdicts)
+        for dispatch_id, reason in taken.items():
+            self._last_proven[dispatch_id] = (refs[dispatch_id], reason)
+            self._last_proven_reasons[dispatch_id] = reason
+            logger.info("motor_allocator_proven_effect_admitted dispatch_id=%s %s", dispatch_id, reason)
+        return allocation
+
+    ACT_HOLDBACK_REASON = "act_holdback"
+
+    def _proven_act_holdback(self, frame, to_send, *, enforcing: bool = True):
+        """Randomized control arm for proven-effect admissions (ORION_DISPATCH_HOLDBACK_FRACTION),
+        drawn only among decisions that passed every gate. Both arms are precommitted to
+        substrate_act_episodes; a decision whose row cannot be written is not sent."""
+        proven = getattr(self, "_last_proven", None) or {}
+        targets = [c for c in to_send if c.dispatch_id in proven]
+        # Not enforcing: the admission changed nothing (everything sends), so there is no decision
+        # to randomize. A probe tick is a non-random subset: no arm is recorded from it.
+        if not targets or not enforcing or self._tripwire_probe_in_flight:
+            return to_send, frame
+        now = datetime.now(timezone.utc)
+        fraction = float(self._settings.orion_dispatch_holdback_fraction)
+        withheld: list = []
+        for c in targets:
+            ref, why = proven[c.dispatch_id]
+            arm = "control" if fraction > 0.0 and self._stable_draw(c.dispatch_id) < fraction else "treated"
+            row = {
+                "episode_id": c.dispatch_id, "act_label": ref.label(), "verb": ref.verb, "actor": ref.actor,
+                "signal_id": ref.signal_id, "dispatch_kind": c.dispatch_kind, "target_id": c.target_id,
+                "arm": arm, "path": "proven_effect", "decided_at": now,
+                "horizon_at": now + timedelta(seconds=float(ref.horizon_sec)),
+                "dispatch_frame_id": frame.frame_id, "expected": {"admission": why},
+                # A held-back act produced nothing: 0 by construction for a producer-reported signal.
+                "outcome_value": 0.0 if arm == "control" and ref.signal_id in act_episodes.STRUCTURAL_ZERO_SIGNALS else None,
+            }
+            try:
+                if not self._store.insert_act_episode(row):
+                    # A replayed decision keeps its first arm, whatever the fraction is now.
+                    arm = self._store.act_episode_arm(c.dispatch_id) or arm
+            except Exception:
+                logger.warning("act_episode_precommit_failed dispatch_id=%s arm=%s", c.dispatch_id, arm, exc_info=True)
+                withheld.append((c, "act_episode_unrecorded", f"arm:{arm}"))
+                continue
+            logger.info("proven_act_decision dispatch_id=%s arm=%s fraction=%.2f", c.dispatch_id, arm, fraction)
+            if arm == "control":
+                withheld.append((c, self.ACT_HOLDBACK_REASON, f"holdback_fraction:{fraction:.2f}"))
+        if not withheld:
+            return to_send, frame
+        ids = {c.dispatch_id for c, _, _ in withheld}
+        blocked = [c.model_copy(update={"dispatch_status": "blocked", "blocked_by": [reason],
+                                        "reasons": list(c.reasons) + [reason, note]})
+                   for c, reason, note in withheld]
+        frame = frame.model_copy(update={
+            "candidates": [c for c in frame.candidates if c.dispatch_id not in ids],
+            "blocked_candidates": list(frame.blocked_candidates) + blocked,
+            "blocked_count": len(frame.blocked_candidates) + len(blocked),
+        })
+        return [c for c in to_send if c.dispatch_id not in ids], frame
+
+    def _load_act_costs(self) -> dict[tuple[str, str], float]:
+        """Measured cost for act-backed routes. A read failure means NO cost (refused
+        no_cost_estimate), never the typed 5 s fallback: a painting is ~57 s of real work."""
+        try:
+            return self._store.load_action_cost_estimates(
+                lookback_hours=int(self._settings.orion_dispatch_act_cost_lookback_hours))
+        except Exception:
+            logger.warning("act_cost_estimates_unreadable", exc_info=True)
+            return {}
+
+    def _act_in_flight(self, ref: ActRef, item: ExecutionDispatchCandidateV1) -> bool:
+        try:
+            return bool(self._store.act_in_flight(actor=ref.actor, dispatch_kind=item.dispatch_kind,
+                                                  target_id=item.target_id)
+                        # A proven-effect decision (either arm) holds the act for its horizon, so a
+                        # held-back act is not simply re-proposed seconds later.
+                        or self._store.act_episode_in_flight(actor=ref.actor, now=datetime.now(timezone.utc)))
+        except Exception:
+            # Fail closed: a ledger we cannot read must not license a second concurrent act.
+            logger.warning("act_in_flight_unreadable actor=%s", ref.actor, exc_info=True)
+            return True
 
     def _maybe_notify_all_refused(self, *, refusals: dict[str, int], exhausted: bool) -> None:
         """Escalate a total-refusal state, and keep escalating.
@@ -1155,6 +1342,19 @@ class ExecutionDispatchRuntimeWorker:
             # exchange rate is how risk_score happened.
             try:
                 allocation = self._log_allocator_preview(frame, motor)
+                act_reasons = dict(getattr(self, "_last_act_reasons", None) or {})
+                for dispatch_id, extra in (getattr(self, "_last_proven_reasons", None) or {}).items():
+                    act_reasons[dispatch_id] = [act_reasons[dispatch_id], extra] if dispatch_id in act_reasons else [extra]
+                if act_reasons:
+                    # The act-backed expectation the allocator scored on, on every saved copy of
+                    # the candidate (admitted, refused or held back): the frame says what this act
+                    # was expected to teach and cost, before anything was sent.
+                    def _as_list(v):
+                        return v if isinstance(v, list) else [v]
+
+                    frame = frame.model_copy(update={"candidates": [
+                        c.model_copy(update={"reasons": [*c.reasons, *_as_list(act_reasons[c.dispatch_id])]})
+                        if c.dispatch_id in act_reasons else c for c in frame.candidates]})
             except Exception:
                 # A readout must never be able to stall a real dispatch tick.
                 # When the allocator is ENFORCING a failure here means there is
@@ -1343,7 +1543,8 @@ class ExecutionDispatchRuntimeWorker:
             if self._tripwire_probe_in_flight
             else self._settings.orion_dispatch_holdback_fraction
         )
-        if holdback_fraction > 0.0 and random.random() < holdback_fraction:
+        if (holdback_fraction > 0.0 and tick_can_yield_control(to_send)
+                and random.random() < holdback_fraction):
             withheld_ids = {c.dispatch_id for c in to_send}
             withheld = [
                 c.model_copy(
@@ -1371,6 +1572,13 @@ class ExecutionDispatchRuntimeWorker:
                     "blocked_count": len(frame.blocked_candidates) + len(withheld),
                 }
             )
+
+        # Proven-effect act admissions (stage 3 option B): their own control arm, drawn LAST, after
+        # every other gate and the per-tick draw, so a precommitted `treated` row is never written
+        # for an act something else then stopped.
+        to_send, frame = self._proven_act_holdback(frame, to_send, enforcing=allocator_admitted_ids is not None)
+        if not to_send:
+            return self._abandon_tick_without_sending(frame, baseline_fields)
 
         sent_ids = {c.dispatch_id for c in to_send}
         remaining_candidates = [c for c in frame.candidates if c.dispatch_id not in sent_ids]

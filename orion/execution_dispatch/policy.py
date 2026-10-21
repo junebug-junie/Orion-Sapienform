@@ -4,7 +4,9 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from orion.schemas.grammar import ActSignal, ActVerb
 
 
 class DispatchModeConfigV1(BaseModel):
@@ -49,6 +51,22 @@ SHED_EXECUTOR_VERB = "orion.gpu_pool.shed.v1"
 _CONFIG_FORBIDDEN_SKILL_ARGS = frozenset({"mode", "run_mode", "dry_run"})
 
 
+class ActRouteRefV1(BaseModel):
+    """Rung 3: the rung-2 act (orion/schemas/grammar.py ActV1) this route's dispatch really
+    produces. The allocator scores the route's candidates on that act's EffectPosterior
+    (orion/autonomy/act_candidates.py). Declared only where the act is joined to the dispatch in
+    code (render_scene -> thought.painting: test_before=visual_dispatch:<dispatch_id>)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    verb: ActVerb
+    actor: str = Field(min_length=1)
+    signal_id: ActSignal
+    # The act's own horizon (the producer's ActExpectV1.horizon_sec). Bounds how long one decision
+    # of the proven-effect path, treated or held back, keeps the act in flight.
+    horizon_sec: float = Field(gt=0.0)
+
+
 class CortexRouteTemplateV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -56,6 +74,7 @@ class CortexRouteTemplateV1(BaseModel):
     cortex_verb: str
     cortex_mode: str = "brain"
     allowed_scope: str
+    act: ActRouteRefV1 | None = None
     # 2026-08-12: per-route RPC budget, None = use the runtime's global
     # EXECUTION_DISPATCH_RPC_TIMEOUT_SEC. Exists because the two needs are
     # genuinely opposed: a real build-cache prune can run for minutes, while
@@ -166,6 +185,30 @@ class ExecutionDispatchPolicyV1(BaseModel):
     template_to_cortex: dict[str, CortexRouteTemplateV1] = Field(default_factory=dict)
     hard_blocks: list[str] = Field(default_factory=list)
     limits: DispatchLimitsV1 = Field(default_factory=DispatchLimitsV1)
+
+    def act_refs_by_cortex_verb(self) -> dict[str, ActRouteRefV1]:
+        """cortex_verb -> the rung-2 act its dispatch produces (rung 3). A dispatch candidate
+        carries its cortex_verb, so this is how the allocator finds the act without any
+        dispatch-frame schema change."""
+        out: dict[str, ActRouteRefV1] = {}
+        for route in [*self.proposal_kind_to_cortex.values(), *self.template_to_cortex.values()]:
+            if route.act is not None:
+                out[route.cortex_verb] = route.act
+        return out
+
+    @model_validator(mode="after")
+    def _one_act_per_verb(self) -> "ExecutionDispatchPolicyV1":
+        seen: dict[str, ActRouteRefV1] = {}
+        for route in [*self.proposal_kind_to_cortex.values(), *self.template_to_cortex.values()]:
+            if route.act is None:
+                continue
+            prior = seen.setdefault(route.cortex_verb, route.act)
+            if prior != route.act:
+                raise ValueError(
+                    f"routes sharing cortex_verb {route.cortex_verb!r} declare different acts "
+                    f"({prior.model_dump()} vs {route.act.model_dump()}): one dispatch, one act"
+                )
+        return self
 
 
 def load_execution_dispatch_policy(path: str | Path) -> ExecutionDispatchPolicyV1:

@@ -274,7 +274,7 @@ def test_the_actions_half_of_the_strip_wraps_independently() -> None:
     """Presence / Ask Claude / Solo sit in their own wrapping group so a long
     row breaks in a sensible place instead of one ragged line."""
     html = _html()
-    strip = _slice(html, 'for="recallToggle"', 'id="recallModeSelect"')
+    strip = _slice(html, 'for="recallToggle"', 'id="operatorToolsBar"')
     assert strip.count("flex-wrap") >= 1
     assert 'id="presenceStatusChip"' in strip
 

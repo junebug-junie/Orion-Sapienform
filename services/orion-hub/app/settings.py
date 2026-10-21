@@ -479,6 +479,11 @@ class Settings(BaseSettings):
         default=5.0,
         alias="AMBIENT_AUDIO_STALE_AFTER_SEC",
     )
+    # Host reader's live PCM slot ring (tmpfs) for the Cabinet Audio listen button.
+    AMBIENT_AUDIO_LIVE_DIR: str = Field(
+        default="/run/orion-audio/live",
+        alias="AMBIENT_AUDIO_LIVE_DIR",
+    )
     CABINET_AMBIENT_HISTORY_NODE: str = Field(
         default="athena",
         alias="CABINET_AMBIENT_HISTORY_NODE",

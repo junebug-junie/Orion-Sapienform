@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     backtest_windows: int = Field(40, ge=12, le=200, alias="PREDICTION_BACKTEST_WINDOWS")
     backtest_step_min: int = Field(180, ge=5, alias="PREDICTION_BACKTEST_STEP_MIN")
 
+    # --- weather covariates (shared Open-Meteo client, orion/weather/openmeteo.py) ---
+    weather_enabled: bool = Field(True, alias="PREDICTION_WEATHER_ENABLED")
+    weather_refresh_sec: float = Field(3600.0, ge=300, alias="PREDICTION_WEATHER_REFRESH_SEC")
+    # Same keys and values as the situation layer's location (orion-hub's .env); empty = weather off.
+    weather_lat: float | None = Field(None, alias="ORION_SITUATION_WEATHER_LAT")
+    weather_lon: float | None = Field(None, alias="ORION_SITUATION_WEATHER_LON")
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

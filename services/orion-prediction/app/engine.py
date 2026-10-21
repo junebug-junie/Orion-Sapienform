@@ -43,7 +43,7 @@ from app.backtest import (
 )
 from app.events import adopt_after, with_events
 from app.grading import grade
-from app.frame import floor_ts, mask_windows, to_grain, train_ready, training_slice
+from app.frame import covariate_series, floor_ts, mask_windows, to_grain, train_ready, training_slice
 from app.models import build_models, split_seasonalities
 from app.series import Registry, Seasonality, SeriesSpec
 from orion.schemas.prediction import (
@@ -122,8 +122,10 @@ class Engine:
     def __init__(self, registry: Registry, store: Any, *, backtest_windows: int, backtest_step_min: int,
                  select_interval_sec: float, settle_sec: float, publish_enabled: bool,
                  publish: Callable[[str, Any], Awaitable[None]] | None = None, source: Any = None,
-                 clock: Callable[[], datetime] = utcnow):
+                 clock: Callable[[], datetime] = utcnow, weather: dict | None = None):
         self.registry = registry
+        self.weather = weather            # {"lat", "lon", "refresh_sec"} or None (weather off)
+        self.weather_state: dict = {}
         self.store = store
         self.backtest_windows = backtest_windows
         self.backtest_step_min = backtest_step_min
@@ -189,20 +191,38 @@ class Engine:
         return to_grain(pts, spec.grain_min, spec.agg, spec.max_fill_min, start=start, end=end)
 
     def load_covariates(self, spec: SeriesSpec, index: pd.DatetimeIndex) -> pd.DataFrame | None:
-        """spec.covariates on ``index``: real buckets only, gaps stay NaN (app/direct.py fills interior
-        gaps inside each training window and refuses a stale covariate). None when the series
-        declares none or the index is empty."""
+        """spec.covariates on ``index``: real buckets only (weather spreads its hourly values), each
+        covariate's derived rules applied (app.frame.covariate_series), and the target's exclusions
+        (incl. '*' change events) masked. None when the series declares none or the index is empty."""
         if not spec.covariates or len(index) == 0:
             return None
         start = index[0].to_pydatetime()
         end = (index[-1] + pd.Timedelta(minutes=spec.grain_min)).to_pydatetime()
-        cols = {}
-        for cid in spec.covariates:
-            cov = self.registry.get(cid)
-            # The target's exclusions (incl. '*' change events) mask its covariates too.
-            cols[cid] = mask_windows(to_grain(self.store.points(cov, start, end), cov.grain_min, cov.agg, 0,
-                                              start=start, end=end), spec.exclude).reindex(index)
+        cols = {cid: mask_windows(covariate_series(self.store, self.registry.get(cid), start, end, index), spec.exclude)
+                for cid in spec.covariates}
         return pd.DataFrame(cols, index=index)
+
+    # --- weather --------------------------------------------------------------------------
+    def weather_due(self, now: datetime) -> bool:
+        return self.weather is not None and (self.weather_state.get("next_at") is None
+                                             or now >= self.weather_state["next_at"])
+
+    def refresh_weather(self, now: datetime) -> dict:
+        """Hourly: the shared Open-Meteo client -> prediction_weather_hourly. A failure is recorded and
+        retried at the next interval; covariates then run on what is stored (staleness is caught by
+        direct_arx's freshness check, so a dead feed degrades to the baseline, not to stale values)."""
+        from app.weather import refresh
+
+        cfg = self.weather
+        try:
+            backfill = min((s.train_from for s in self.registry.targets() if s.train_from), default=None)
+            self.weather_state = {**refresh(self.store, cfg["lat"], cfg["lon"], now, backfill),
+                                  "next_at": now + timedelta(seconds=cfg["refresh_sec"])}
+        except Exception as exc:  # noqa: BLE001
+            self.weather_state = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300],
+                                  "next_at": now + timedelta(seconds=cfg["refresh_sec"])}
+            logger.warning("prediction_weather_refresh_failed err=%s", self.weather_state["error"])
+        return self.weather_state
 
     # --- select ---------------------------------------------------------------------------
     def restore(self, spec: SeriesSpec) -> bool:
@@ -602,6 +622,8 @@ class Engine:
 
     async def tick(self, sync) -> None:
         now = self.clock()
+        if self.weather_due(now):
+            await sync(self.refresh_weather, now)
         for spec in self.registry.targets():
             st = self.state[spec.series_id]
             try:

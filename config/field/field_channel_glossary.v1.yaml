@@ -533,6 +533,7 @@ channels:
     trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.perception_walkway'"
     consumers:
       - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      - "orion.attention.world_first:judge_candidate"
     semantics:
       value_kind: level
       rest: "0.0 = the frame is at or below the walkway stream's usual surprise (63% of live readings 2026-10-15..21). A 0.0 placeholder written while the input is missing (embeddings stale, baseline warming, or no scored frame in the window) carries prediction_error_missing_reason on the node and is NOT a reading: it is never recorded in the history."

@@ -348,3 +348,14 @@ def test_walkway_floor_uses_mid_rank_so_ceiling_ties_can_reach_p99() -> None:
     )
     verdict = judge_candidate(cand)
     assert not verdict.eligible and "below this source's unusual floor" in verdict.reason
+
+
+def test_walkway_trace_names_the_floor_it_met() -> None:
+    from orion.schemas.attention_candidate import PERCEPTION_WALKWAY_NODE_ID
+
+    history = [0.0] * 9870 + [1.0] * 130
+    cand = node_candidate(
+        node_id=PERCEPTION_WALKWAY_NODE_ID, label="walkway",
+        magnitude=mag(0.987, value=1.0), observed_at=NOW, now=NOW, history_values=history,
+    )
+    assert "mid-rank unusual meets its unusual floor" in judge_candidate(cand).reason

@@ -457,6 +457,11 @@ def judge_candidate(
             candidate, False, f"{floor_band} for itself (mid-rank), below this source's {floor} floor",
             score, band,
         )
+    floor_note = (
+        f", mid-rank {floor_band} meets its {ATTENTION_MIN_BAND_BY_NODE_ID[candidate.source_id]} floor"
+        if candidate.source_id in ATTENTION_MIN_BAND_BY_NODE_ID
+        else ""
+    )
     decay, event_age, suffix = 1.0, None, ""
     window = candidate.event_window_sec
     if window is not None:
@@ -493,7 +498,7 @@ def judge_candidate(
                     score, band, rank_score, decay, event_age, dwell, True,
                 )
             return CandidateVerdict(
-                candidate, True, f"body unusual for itself ({band}){suffix}", score, band,
+                candidate, True, f"body unusual for itself ({band}){floor_note}{suffix}", score, band,
                 rank_score, decay, event_age,
             )
         return CandidateVerdict(
@@ -501,7 +506,7 @@ def judge_candidate(
         )
     if band in EXTERNAL_ELIGIBLE_BANDS:
         return CandidateVerdict(
-            candidate, True, f"world busy for itself ({band}){suffix}", score, band,
+            candidate, True, f"world busy for itself ({band}){floor_note}{suffix}", score, band,
             rank_score, decay, event_age,
         )
     return CandidateVerdict(

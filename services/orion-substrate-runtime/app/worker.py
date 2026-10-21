@@ -636,6 +636,10 @@ class BiometricsSubstrateWorker:
         # never touches _last_perception_embedding_vector above either: the
         # world-model vision_embedding group stays a room embedding.
         self._perception_walkway = _PerceptionGroupState()
+        # Guards the room score's take-and-clear: the listener and the tick run
+        # on different threads. Built here, not lazily, so the two first callers
+        # cannot each build their own lock (review 2026-10-21).
+        self._perception_room_score_lock = threading.Lock()
         # World-model publish tick (world_model_features.py): real per-domain
         # prediction-error scalars cached by their own _*_tick() methods
         # below, read by _world_model_publish_tick's execution_context group
@@ -1925,7 +1929,8 @@ class BiometricsSubstrateWorker:
         )
 
     def _perception_room_lock(self) -> threading.Lock:
-        # getattr: tests build the worker via __new__ and skip __init__.
+        # Set in __init__; the getattr fallback is only for tests that build
+        # the worker via __new__ and skip __init__.
         lock = getattr(self, "_perception_room_score_lock", None)
         if lock is None:
             lock = threading.Lock()
@@ -1946,6 +1951,9 @@ class BiometricsSubstrateWorker:
         of arrivals vanished (23 vs 14 by chance -> 2 vs 1) and the walkway's
         p99+ tail disappeared. Record:
         docs/superpowers/pr-reports/2026-10-21-camera-surprise-honest-input-pr.md.
+
+        Taken before the write: if the receipt or node write then raises, this
+        one frame is lost (fail-open; the next frame is published next tick).
         """
         if walkway:
             state = self._perception_walkway_state()

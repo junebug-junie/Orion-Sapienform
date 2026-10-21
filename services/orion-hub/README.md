@@ -2982,7 +2982,8 @@ stream after 5s with no new chunk. `static/js/cabinet-live-audio.js` plays it th
 waveform canvas as Orion's TTS voice (cabinet = teal, voice = violet), ~0.5–1s behind real
 time. Env: `AMBIENT_AUDIO_LIVE_DIR`. Kill switch on the host reader:
 `ORION_AMBIENT_AUDIO_LIVE_ENABLED=0` in `/etc/default/orion-ambient-audio`, then restart
-`orion-ambient-audio`.
+`orion-ambient-audio`. Plays at full gain: if the cabinet mic can hear the speakers you
+listen on, it will feed back (and inflate the ambient levels) -- use headphones.
 
 ### House electricity (Energy strip)
 

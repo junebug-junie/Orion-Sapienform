@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import struct
 import subprocess
 import sys
@@ -186,6 +187,14 @@ class LiveRing:
         self.directory = directory
         self.slots = slots
         self.seq = 0
+        # seq restarts at 1 with this process, but the run dir survives
+        # restarts (RuntimeDirectoryPreserve): drop the previous run's slots so
+        # their higher seqs cannot shadow the new chunks.
+        for stale in directory.glob("slot-*.pcm"):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
 
     def slot_path(self, seq: int) -> Path:
         return self.directory / f"slot-{seq % self.slots:02d}.pcm"
@@ -330,15 +339,24 @@ def stream_pcm_via_arecord(
     duration_sec: float,
     arecord_bin: str = "arecord",
     popen=subprocess.Popen,
+    wait_readable=None,
 ) -> Iterator[bytes]:
     """Yield fixed windows of raw S16_LE PCM from one continuous arecord stream.
 
-    Raises ``RuntimeError`` (with arecord's stderr) when the stream ends.
+    Raises ``RuntimeError`` (with arecord's stderr) when the stream ends or no
+    audio arrives for 3 windows (hung device), so systemd-level retry happens.
+    stderr goes to a temp file: a long-lived arecord prints an overrun line per
+    xrun, and an undrained pipe would block it forever.
     """
+    if wait_readable is None:
+        def wait_readable(stream, timeout):
+            return bool(select.select([stream], [], [], timeout)[0])
+    stall_sec = max(1.0, 3 * duration_sec)
     frames = int(sample_rate * duration_sec)
     if frames <= 0:
         raise ValueError("capture duration must produce at least one sample")
     chunk_bytes = frames * channels * 2
+    errlog = tempfile.TemporaryFile()
     proc = popen(
         [
             arecord_bin,
@@ -356,21 +374,33 @@ def stream_pcm_via_arecord(
             "-",
         ],
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=errlog,
     )
+
+    def fail(reason: str) -> RuntimeError:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+        errlog.seek(0)
+        tail = errlog.read()[-2000:].decode("utf-8", errors="replace").strip()
+        return RuntimeError(tail or f"{reason} (exit {proc.returncode})")
+
     try:
         while True:
-            chunk = proc.stdout.read(chunk_bytes)
-            if len(chunk) < chunk_bytes:
-                proc.kill()
-                proc.wait()
-                stderr = proc.stderr.read().decode("utf-8", errors="replace").strip()
-                raise RuntimeError(stderr or f"arecord stream ended (exit {proc.returncode})")
+            chunk = b""
+            while len(chunk) < chunk_bytes:
+                if not wait_readable(proc.stdout, stall_sec):
+                    raise fail(f"arecord produced no audio for {stall_sec:.1f}s")
+                part = os.read(proc.stdout.fileno(), chunk_bytes - len(chunk))
+                if not part:
+                    raise fail("arecord stream ended")
+                chunk += part
             yield chunk
     finally:
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+        errlog.close()
 
 
 def run_loop(

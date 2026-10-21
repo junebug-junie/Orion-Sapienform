@@ -472,3 +472,20 @@ def test_live_endpoint_streams_pcm_with_format_headers_and_ends_on_stall(
     assert resp.headers["x-orion-sample-format"] == "s16le"
     # Newest chunk only, then the stream ends because the reader went quiet.
     assert resp.content == b"\x02\x00" * 4
+
+
+def test_next_live_chunks_skips_a_seq_the_reader_failed_to_write() -> None:
+    slots = {5: (16000, 1, b"e"), 7: (16000, 1, b"g"), 8: (16000, 1, b"h")}
+    assert cabinet_ambient_routes.next_live_chunks(slots, 6) == ([b"g", b"h"], 9)
+
+
+def test_live_endpoint_503_when_reader_stopped_but_slots_remain(monkeypatch, tmp_path: Path) -> None:
+    ring = LiveRing(tmp_path)
+    ring.write(b"\x01\x00" * 4, sample_rate=16000, channels=1)
+    old = datetime.now(timezone.utc).timestamp() - 60
+    for path in tmp_path.glob("slot-*.pcm"):
+        os.utime(path, (old, old))
+    client = _live_app(monkeypatch, tmp_path)
+    resp = client.get("/api/cabinet/ambient/live")
+    assert resp.status_code == 503
+    assert "stopped writing" in resp.json()["detail"]

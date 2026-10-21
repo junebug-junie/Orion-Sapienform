@@ -52,7 +52,9 @@ def test_cabinet_audio_button_is_far_left_of_vision_chip_and_copy_chat() -> None
 def test_cabinet_and_orion_voice_share_one_waveform() -> None:
     js = APP_JS.read_text(encoding="utf-8")
     assert "if (cabinetAnalyser) drawAnalyserBars(cabinetAnalyser" in js
-    assert "if (analyser) drawAnalyserBars(analyser" in js
+    assert "if (voiceAnalyser) drawAnalyserBars(voiceAnalyser" in js
+    # A clip released by watchdog/error/interrupt cannot keep the loop alive.
+    assert "const voiceAnalyser = isPlayingAudio ? analyser : null;" in js
     # TTS ending must not blank the canvas while the cabinet mic is still live.
     assert "if (!cabinetAnalyser) {\n            cancelAnimationFrame(animationFrameId);" in js
     assert "box.classList.toggle('hidden', !(visible || cabinetAnalyser));" in js
@@ -61,9 +63,12 @@ def test_cabinet_and_orion_voice_share_one_waveform() -> None:
 _NODE_HARNESS = r"""
 const api = require(process.argv[1]);
 const out = {};
-const r = api.pcm16ToFloat32(Uint8Array.from([0x00, 0x80, 0xff, 0x7f, 0x01]));
+const r = api.pcm16ToFloat32(Uint8Array.from([0x00, 0x80, 0xff, 0x7f, 0x01]), 1);
 out.samples = Array.from(r.samples);
 out.tail = Array.from(r.tail);
+// Stereo: 6 bytes = 1 whole frame + half a frame carried, never a channel swap.
+const st = api.pcm16ToFloat32(Uint8Array.from([0, 0, 0, 0x40, 1, 2]), 2);
+out.stereoSamples = st.samples.length; out.stereoTail = Array.from(st.tail);
 
 function fakeCtx() {
   const ctx = {state: 'running', currentTime: 10, destination: {}, started: [],
@@ -112,6 +117,8 @@ def test_player_decodes_pcm_schedules_gaplessly_and_reports_end_and_errors() -> 
     out = json.loads(result.stdout)
     assert out["samples"] == [-1.0, 32767 / 32768]
     assert out["tail"] == [1]
+    assert out["stereoSamples"] == 2
+    assert out["stereoTail"] == [1, 2]
     # Odd split byte carried over: 4000 + 4000 frames, second starts exactly
     # where the first ends, after the jitter head start.
     assert out["started"] == [10.35, 10.35 + 4000 / 16000]

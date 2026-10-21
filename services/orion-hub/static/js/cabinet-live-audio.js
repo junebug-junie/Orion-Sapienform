@@ -13,10 +13,11 @@
   // jitter between 0.5s chunks does not click into silence.
   const JITTER_SEC = 0.35;
 
-  // Little-endian int16 bytes -> float32 [-1, 1). Returns the unused odd tail
-  // byte so the next network chunk can complete it.
-  function pcm16ToFloat32(bytes) {
-    const usable = bytes.length - (bytes.length % 2);
+  // Little-endian int16 bytes -> float32 [-1, 1), whole frames only. Returns
+  // the unused partial-frame tail so the next network chunk can complete it.
+  function pcm16ToFloat32(bytes, channels) {
+    const frameBytes = 2 * (channels || 1);
+    const usable = bytes.length - (bytes.length % frameBytes);
     const out = new Float32Array(usable / 2);
     const view = new DataView(bytes.buffer, bytes.byteOffset, usable);
     for (let i = 0; i < out.length; i += 1) out[i] = view.getInt16(i * 2, true) / 32768;
@@ -102,7 +103,7 @@
           const { value, done } = await reader.read();
           if (done) break;
           if (run !== current) return;
-          const { samples, tail } = pcm16ToFloat32(concatBytes(carry, value));
+          const { samples, tail } = pcm16ToFloat32(concatBytes(carry, value), channels);
           carry = tail.length ? tail.slice() : null;
           schedule(current, samples, sampleRate, channels);
         }

@@ -113,11 +113,18 @@ def test_failed_capture_without_last_good_is_error():
 
 
 class _FakeProc:
-    def __init__(self, stdout: bytes, stderr: bytes = b"", returncode: int = 1):
-        import io
+    """arecord stand-in: real OS pipe for stdout, writes stderr to the given file."""
 
-        self.stdout = io.BytesIO(stdout)
-        self.stderr = io.BytesIO(stderr)
+    def __init__(self, stdout: bytes, stderr_file, stderr: bytes = b"", returncode: int = 1, close: bool = True):
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, stdout)
+        if close:
+            os.close(write_fd)
+        else:
+            self._write_fd = write_fd
+        self.stdout = os.fdopen(read_fd, "rb", buffering=0)
+        stderr_file.write(stderr)
+        stderr_file.flush()
         self.returncode = None
         self._exit = returncode
         self.killed = False
@@ -140,7 +147,9 @@ def test_arecord_stream_is_one_continuous_process_cut_into_windows():
 
     def fake_popen(argv, *, stdout, stderr):
         seen["argv"] = argv
-        proc = _FakeProc(pcm, stderr=b"arecord: overrun")
+        # stderr must be a file, never a pipe: an undrained pipe blocks arecord.
+        assert stderr is not subprocess.PIPE
+        proc = _FakeProc(pcm, stderr, stderr=b"arecord: overrun")
         seen["proc"] = proc
         return proc
 
@@ -173,6 +182,36 @@ def test_arecord_stream_is_one_continuous_process_cut_into_windows():
         "-q",
         "-",
     ]
+
+
+def test_arecord_stream_raises_when_device_hangs_silently():
+    procs = []
+
+    def fake_popen(argv, *, stdout, stderr):
+        procs.append(_FakeProc(b"\x00\x00" * 100, stderr, close=False))
+        return procs[-1]
+
+    with pytest.raises(RuntimeError, match="no audio for 1.5s"):
+        for _ in stream_pcm_via_arecord(
+            device="dev",
+            sample_rate=16000,
+            channels=1,
+            duration_sec=0.5,
+            popen=fake_popen,
+            wait_readable=lambda stream, timeout: False,
+        ):
+            pass
+    assert procs[0].killed is True
+
+
+def test_live_ring_drops_previous_runs_slots_on_start(tmp_path: Path):
+    old = LiveRing(tmp_path)
+    for _ in range(20):
+        old.write(b"\x00\x00", sample_rate=16000, channels=1)
+    fresh = LiveRing(tmp_path)
+    assert list(tmp_path.glob("slot-*.pcm")) == []
+    fresh.write(b"\x01\x00", sample_rate=16000, channels=1)
+    assert [p.name for p in tmp_path.glob("slot-*.pcm")] == ["slot-01.pcm"]
 
 
 def test_live_ring_slots_carry_seq_and_rate_and_wrap(tmp_path: Path):

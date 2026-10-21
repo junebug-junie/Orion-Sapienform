@@ -388,6 +388,18 @@ _LIVE_POLL_SEC = 0.1
 _LIVE_STALL_SEC = 5.0
 
 
+def _newest_slot_age_sec(directory: Path) -> Optional[float]:
+    mtimes = []
+    for path in directory.glob("slot-*.pcm"):
+        try:
+            mtimes.append(path.stat().st_mtime)
+        except OSError:
+            continue
+    if not mtimes:
+        return None
+    return datetime.now(timezone.utc).timestamp() - max(mtimes)
+
+
 def read_live_slots(directory: Path) -> dict[int, tuple[int, int, bytes]]:
     """Map seq -> (sample_rate, channels, pcm) for every readable ring slot."""
     slots: dict[int, tuple[int, int, bytes]] = {}
@@ -410,13 +422,15 @@ def next_live_chunks(
 
     Starts at the newest chunk (low latency, no backlog). Resyncs to the newest
     chunk when the reader restarted (seq went backwards) or the listener fell
-    a whole ring behind.
+    a whole ring behind, and skips over a seq the reader failed to write.
     """
     if not slots:
         return [], next_seq
     newest = max(slots)
     if next_seq is None or next_seq > newest + 1 or next_seq < min(slots):
         next_seq = newest
+    elif next_seq not in slots and next_seq <= newest:
+        next_seq = min(seq for seq in slots if seq >= next_seq)
     chunks: list[bytes] = []
     while next_seq in slots:
         chunks.append(slots[next_seq][2])
@@ -457,6 +471,12 @@ async def api_cabinet_ambient_live() -> StreamingResponse:
         raise HTTPException(
             status_code=503,
             detail="cabinet live audio unavailable: no chunks in " + str(directory),
+        )
+    age = _newest_slot_age_sec(directory)
+    if age is None or age > _LIVE_STALL_SEC:
+        raise HTTPException(
+            status_code=503,
+            detail="cabinet live audio unavailable: host reader stopped writing",
         )
     rate, channels, _ = slots[max(slots)]
     return StreamingResponse(

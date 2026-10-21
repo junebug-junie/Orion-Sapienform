@@ -12644,10 +12644,17 @@ let chatTurnTimer = null;
   // TTS voice (violet) on top. One animation loop no matter which started it.
   function drawVisualizer() {
     cancelAnimationFrame(animationFrameId);
-    if ((!analyser && !cabinetAnalyser) || !canvasCtx) return;
+    // Watchdog/error/interrupt exits leave `analyser` set; isPlayingAudio is
+    // the flag every exit path clears, so a dead clip can't keep the loop alive.
+    const voiceAnalyser = isPlayingAudio ? analyser : null;
+    if (!canvasCtx) return;
+    if (!voiceAnalyser && !cabinetAnalyser) {
+      canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
+      return;
+    }
     canvasCtx.clearRect(0,0,visualizerCanvas.width, visualizerCanvas.height);
     if (cabinetAnalyser) drawAnalyserBars(cabinetAnalyser, (h) => `rgba(45, ${Math.round(h + 120)}, 170, 0.85)`);
-    if (analyser) drawAnalyserBars(analyser, (h) => `rgb(${h+100}, 100, 200)`);
+    if (voiceAnalyser) drawAnalyserBars(voiceAnalyser, (h) => `rgb(${h+100}, 100, 200)`);
     animationFrameId = requestAnimationFrame(drawVisualizer);
   }
 
@@ -12660,12 +12667,7 @@ let chatTurnTimer = null;
         onAnalyser: (node) => {
           cabinetAnalyser = node;
           setVoiceBoxVisible(voiceBoxVoiceVisible);
-          if (node) {
-            drawVisualizer();
-          } else if (!analyser) {
-            cancelAnimationFrame(animationFrameId);
-            if (canvasCtx) canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
-          }
+          drawVisualizer();
         },
         onStatus: (state, text) => {
           const on = state === 'connecting' || state === 'live';

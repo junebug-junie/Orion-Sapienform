@@ -33,6 +33,21 @@ Spec: `docs/superpowers/specs/2026-10-15-orion-prediction-service-design.md`.
 
 `direct_ar` vs `direct_arx` is a standing ablation: the scoreboard shows what the covariates add.
 
+## Covariates
+
+| series | what | source |
+|---|---|---|
+| `athena.chassis_watts` | athena power (iLO) | biometrics |
+| `circe.chassis_watts` | circe power (PDU, read by athena) | `orion_biometrics_cluster` |
+| `hecate.chassis_watts` | hecate power (BMC, read by athena); 0 before 2026-10-04 | `orion_biometrics_cluster` |
+| `athena.cabinet_cooling_watts` | portable AC power (Shelly plug) | `home_cooling_sample` |
+| `athena.central_ac_proxy` | outdoor F above 75, 3 h earlier: the central AC's switch | `prediction_weather_hourly` |
+
+Weather comes from the shared Open-Meteo client (`orion/weather/openmeteo.py`, also used by the
+situation layer) at the situation layer's location (`ORION_SITUATION_WEATHER_LAT/LON`): refreshed hourly
+(past 7 days + next 48 h), backfilled from the archive on first start, observed values replacing
+forecasts. `evals/run_house_heat_balance_eval.py` re-checks the proxy against the house meter.
+
 A seasonality is used only when training holds 2 full cycles (monthly is refused today). MSTL
 skips cycles longer than a day: STL at the weekly period costs ~26 s per fit vs ~2.3 s.
 

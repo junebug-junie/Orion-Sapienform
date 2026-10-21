@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
 from app.series import SeriesSpec
@@ -29,6 +29,7 @@ TABLES = {
     "prediction_intervention": ("intervention_id", "action", "arm", "experiment_id"),
     "prediction_effect_estimate": ("estimate_id", "claim_kind", "effect", "details"),
     "prediction_change_event": ("event_id", "scope", "effect", "started_at", "ended_at", "retracted_at"),
+    "prediction_weather_hourly": ("hour_ts", "temp_f", "is_forecast", "source", "fetched_at"),
     "prediction_exceedance": ("exceedance_id", "probability", "window_start", "window_end", "hit_raw", "hit_mean"),
 }
 
@@ -81,9 +82,67 @@ class PostgresStore:
             if until is not None:
                 sql += " AND ts < %s"
                 args.append(until)
+        elif src.kind == "cluster":
+            sql = ("SELECT observed_at AS ts, (measurements_by_node->%s->>%s)::float AS v FROM orion_biometrics_cluster "
+                   "WHERE observed_at >= %s AND (measurements_by_node->%s->>%s) IS NOT NULL")
+            args = [src.node, src.key, since, src.node, src.key]
+            if until is not None:
+                sql += " AND observed_at < %s"
+                args.append(until)
+        elif src.kind == "weather":
+            # Observed hours only: a stored forecast must never be read as if it had happened (an outage
+            # would otherwise feed 48 h of forecasts in as history, invisibly).
+            sql = "SELECT hour_ts AS ts, temp_f AS v FROM prediction_weather_hourly WHERE NOT is_forecast AND hour_ts >= %s"
+            args = [since]
+            if until is not None:
+                sql += " AND hour_ts < %s"
+                args.append(until)
         else:
             raise ValueError(f"unknown source kind {src.kind}")
         return [(r["ts"], r["v"]) for r in self._all(sql + " ORDER BY 1", args)]
+
+    def first_reading(self, spec: SeriesSpec) -> datetime | None:
+        """Earliest non-null reading of a cluster covariate (zero_before_first). Cached once found -- it
+        never changes, and the scan costs ~0.7 s on the live fleet table; a None is re-checked hourly."""
+        cache = self.__dict__.setdefault("_first_cache", {})
+        hit = cache.get(spec.series_id)
+        now = datetime.now(timezone.utc)
+        if hit is not None and (hit[0] is not None or now - hit[1] < timedelta(hours=1)):
+            return hit[0]
+        src = spec.source
+        if src.kind != "cluster":
+            raise ValueError("zero_before_first is supported for cluster sources only")
+        rows = self._all("SELECT min(observed_at) AS t FROM orion_biometrics_cluster "
+                         "WHERE (measurements_by_node->%s->>%s) IS NOT NULL", (src.node, src.key))
+        first = rows[0]["t"] if rows else None
+        cache[spec.series_id] = (first, now)
+        return first
+
+    # --- weather ----------------------------------------------------------------------------
+    def upsert_weather(self, rows: list[tuple[datetime, float | None, bool, str]], fetched_at: datetime) -> int:
+        """(hour, temp_f, is_forecast, source). An observed value replaces a forecast; a forecast never
+        replaces an observed value."""
+        sql = ("INSERT INTO prediction_weather_hourly (hour_ts, temp_f, is_forecast, source, fetched_at) "
+               "VALUES (%s,%s,%s,%s,%s) ON CONFLICT (hour_ts) DO UPDATE SET temp_f = EXCLUDED.temp_f, "
+               "is_forecast = EXCLUDED.is_forecast, source = EXCLUDED.source, fetched_at = EXCLUDED.fetched_at "
+               "WHERE prediction_weather_hourly.is_forecast OR NOT EXCLUDED.is_forecast")
+        with self.pool.connection() as conn, conn.transaction():
+            for t, v, fc, src in rows:
+                conn.execute(sql, (t, v, fc, src, fetched_at))
+        return len(rows)
+
+    def weather_span(self) -> tuple[datetime | None, datetime | None]:
+        rows = self._all("SELECT min(hour_ts) AS lo, max(hour_ts) FILTER (WHERE NOT is_forecast) AS hi "
+                         "FROM prediction_weather_hourly")
+        return (rows[0]["lo"], rows[0]["hi"]) if rows else (None, None)
+
+    def missing_weather_hours(self, start: datetime, end: datetime) -> list[datetime]:
+        """Hours in [start, end) with no observed row (head of history and interior holes)."""
+        rows = self._all("SELECT h AS t FROM generate_series(date_trunc('hour', %s::timestamptz), %s::timestamptz "
+                         "- interval '1 hour', interval '1 hour') h WHERE NOT EXISTS (SELECT 1 FROM "
+                         "prediction_weather_hourly w WHERE w.hour_ts = h AND NOT w.is_forecast) ORDER BY 1",
+                         (start, end))
+        return [r["t"] for r in rows]
 
     def event_times(self, source: str, event_type: str, stream_id: str | None, since: datetime, until: datetime,
                     limit: int) -> list[datetime]:

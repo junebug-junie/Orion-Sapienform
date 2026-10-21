@@ -181,9 +181,9 @@ owns any port cannot pause a fresh resume merely by closing.
 
 ## Bounded goal experiment (P3/P4)
 
-Enable `RETRO_COGNITION_ENABLED` and Hub's `HUB_RETRO_COGNITION_ENABLED` only for
-an explicit experiment, then choose **Try Orion goals · 60s** in More. Both gates
-are default-off. Start the game normally and reach the mechanic before handoff.
+`RETRO_COGNITION_ENABLED` and Hub's `HUB_RETRO_COGNITION_ENABLED` default on;
+set either to `false` to disable the experiment. Nothing runs until you choose
+**Try Orion goals · 60s** in More for a live session. Start the game normally and reach the mechanic before handoff.
 The verified Nova v1.0.6a/core pair supplies RAM-assisted position/health facts;
 all other fingerprints are unknown. The motor supports wait, walk left/right,
 and pulsed jump left/right; it does not support general goals like reach_exit.

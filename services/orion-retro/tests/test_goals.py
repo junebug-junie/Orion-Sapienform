@@ -122,3 +122,11 @@ def test_wait_submitted_before_ack_is_not_attributed_to_new_goal():
     event = a.frame(.07)[1][0]
     s.annotate(event)
     assert event['goal_attempt_id'] == data['attempt_id']
+
+
+def test_cognition_gate_ships_on_but_env_can_disable(monkeypatch):
+    from settings import Settings
+    monkeypatch.delenv('RETRO_COGNITION_ENABLED', raising=False)
+    assert Settings.from_env().cognition_enabled
+    monkeypatch.setenv('RETRO_COGNITION_ENABLED', 'false')
+    assert not Settings.from_env().cognition_enabled

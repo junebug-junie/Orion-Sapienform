@@ -119,15 +119,31 @@ WebRTC migration, ROM installation, or replacing an existing user game.
 | No-code page and catalog | Live verified; six games visible |
 | Human start/input/pause/reconnect, synthetic P2 | Isolated native browser eval; live paused game preserved |
 | WebRTC transport | DEVIATION: WebSockets remain; documented in browser runbook |
-| Save/load and strict replay qualification | NOT IMPLEMENTED; Nova strict restore gate remains failed |
+| Save/load and strict replay qualification | Save/load implemented (#2825, hotkeys #2832); strict replay qualification remains failed/UNVERIFIED |
 | Actual-client 30-minute latency/audio drift | UNVERIFIED |
 | Physical gamepad and speaker output | UNVERIFIED |
 | Mario browser/audio qualification | UNVERIFIED; prior native/input evidence is not full qualification |
 | Explicit scripted identity, bounded handoff, takeover | This patch; deterministic tests and native browser eval |
 | P3 independent 30-minute policy run | UNVERIFIED; this slice requires connected sponsor |
-| P3 observation/goal inbox and sparse outcomes | NOT IMPLEMENTED; fixed open-loop script only |
-| Mistake → revised goal → changed action → checked outcome | NOT DEMONSTRATED; proposal above |
+| P3 observation/goal inbox and sparse outcomes | Implemented for Nova v1.0.6a only (#2801): RAM-assisted attempts, native goal ack, five-second outcomes |
+| Mistake → revised goal → changed action → checked outcome | BLOCKED: `cognitive_loop.py` real-planner run refused `gpu_pool_unavailable` on 2026-10-20 and again 2026-10-21 05:17 UTC (cabinet 33.6 °C, `cabinet_hot` shed). Mechanic-only fixture passes |
 | Shared-play social behavior, transfer, independent leisure | NOT IMPLEMENTED |
+
+## Status update 2026-10-21
+
+#2801 implemented the attempt/goal/outcome seam proposed above
+([implementation record](2026-10-20-retro-goal-loop-implementation.md)); #2825
+added save/load. Both cognition gates now default on. A per-session handoff is
+still required. The open cognition gate is the real-planner eval, which waits
+on cabinet temperature. Do not bypass the thermal shed. Rerun when
+`orion:regulation:latest` no longer lists `cabinet_hot`:
+
+```bash
+python services/orion-retro/evals/cognitive_loop.py \
+  --core ~/.local/share/orion/retro/games/nova-the-squirrel-v1.0.6a/cores/fceumm-ac0d00a7.so \
+  --rom ~/.local/share/orion/retro/games/nova-the-squirrel-v1.0.6a/roms/nova.nes \
+  --bus-url "$ORION_BUS_URL" --output /tmp/retro-cognition/real-loop.json
+```
 
 ## Recommended next patch
 

@@ -44,6 +44,10 @@ EXPRESS_SCOPE = "express_bounded"
 # route's cortex_verb is an executor key the dispatch runtime maps to a GPU-pool shed RPC.
 SELF_REVERSIBLE_SCOPE = "self_reversible"
 SHED_EXECUTOR_VERB = "orion.gpu_pool.shed.v1"
+# Thinking rung 3 follow-up (2026-10-21): not a cortex verb either. The executor key the dispatch
+# runtime maps to the reading pull RPC (orion/schemas/world_pulse_read_pull.py), which asks Hub to
+# start one extra world-pulse read. Hub runs every gate; the dispatch runtime only admits or refuses.
+READ_PULL_EXECUTOR_VERB = "orion.world_pulse_read.pull.v1"
 
 # Keys a route's static `skill_args` may never carry, because a real value
 # for them is derived from runtime safety state rather than chosen by an
@@ -62,9 +66,19 @@ class ActRouteRefV1(BaseModel):
     verb: ActVerb
     actor: str = Field(min_length=1)
     signal_id: ActSignal
-    # The act's own horizon (the producer's ActExpectV1.horizon_sec). Bounds how long one decision
-    # of the proven-effect path, treated or held back, keeps the act in flight.
+    # How long one decision of the proven-effect path, treated or held back, keeps the act in flight
+    # and (for a "queue" object) when its outcome is read. For a "dispatch" object it is the
+    # producer's own ActExpectV1.horizon_sec.
     horizon_sec: float = Field(gt=0.0)
+    # Where the act's object comes from (orion/autonomy/act_episodes.py holdback_rule):
+    # - "dispatch": the dispatch mints it (render_scene: the painting run id derives from the
+    #   dispatch id). No control arm (the outcome cannot occur without the act), measured cost is the
+    #   route's settled dispatch latency, and the actor is single-flight (any open act holds it).
+    # - "queue": the dispatch picks an existing object another lane also acts on (a pending reading
+    #   seed). Control arm drawn and resolved by the object's fate, cost is the act's own measured
+    #   open->close time (the dispatch is only an RPC), and the actor's other open acts (the lane's
+    #   own concurrent reads) do not hold it.
+    object_source: Literal["dispatch", "queue"] = "dispatch"
 
 
 class CortexRouteTemplateV1(BaseModel):

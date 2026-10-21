@@ -23,6 +23,7 @@ from orion.autonomy.act_candidates import (
     act_posterior,
     admit_proven,
     proven_effect,
+    refuse_held,
     refuse_in_flight,
 )
 from orion.autonomy.allocator import (
@@ -48,7 +49,14 @@ from orion.execution_dispatch.builder import (
     build_unevaluable_execution_dispatch_frame,
 )
 from orion.execution_dispatch.cortex_client import ExecutionDispatchCortexClient
-from orion.execution_dispatch.policy import SHED_EXECUTOR_VERB, load_execution_dispatch_policy
+from orion.execution_dispatch.policy import READ_PULL_EXECUTOR_VERB, SHED_EXECUTOR_VERB, load_execution_dispatch_policy
+from orion.schemas.world_pulse_read_pull import (
+    WORLD_PULSE_READ_PULL_REPLY_PREFIX,
+    WORLD_PULSE_READ_PULL_REQUEST_CHANNEL,
+    WORLD_PULSE_READ_PULL_REQUEST_KIND,
+    WorldPulseReadPullRequestV1,
+    WorldPulseReadPullResultV1,
+)
 from orion.execution_dispatch.shed_settlement import SHED_PENDING, settle_shed_result
 from orion.schemas.gpu_pool import (
     GPU_POOL_SHED_REPLY_PREFIX, GPU_POOL_SHED_REQUEST_CHANNEL, GPU_POOL_SHED_REQUEST_KIND,
@@ -397,6 +405,10 @@ class ExecutionDispatchRuntimeWorker:
             except Exception:
                 logger.exception("execution_dispatch_shed_settlement_failed")
             try:
+                await asyncio.to_thread(self._resolve_act_episodes)
+            except Exception:
+                logger.exception("execution_dispatch_act_episode_resolution_failed")
+            try:
                 await asyncio.wait_for(
                     self._stop.wait(),
                     timeout=float(self._settings.execution_dispatch_poll_interval_sec),
@@ -706,6 +718,9 @@ class ExecutionDispatchRuntimeWorker:
         act_refs = self._act_refs_by_cortex_verb()
         act_costs: dict[tuple[str, str], float] | None = None
         act_in_flight: set[str] = set()
+        # Refused before the allocator with a named reason: the reading pull's kill switch, or the
+        # doer's last refusal still holding (Hub's retry_after_sec). See _reading_pull_held_reason.
+        act_held: dict[str, str] = {}
         act_seen: set[ActRef] = set()
         act_items: list[tuple[Candidate, ActRef]] = []
         self._last_act_reasons = {}
@@ -728,7 +743,8 @@ class ExecutionDispatchRuntimeWorker:
             if ref is not None:
                 if act_costs is None:
                     act_costs = self._load_act_costs()
-                act_cost = act_costs.get((item.dispatch_kind, item.target_id))
+                act_cost = (self._act_duration_cost(ref) if ref.object_source == "queue"
+                            else act_costs.get((item.dispatch_kind, item.target_id)))
                 candidates.append(act_allocator_candidate(
                     dispatch_id=item.dispatch_id, dispatch_kind=item.dispatch_kind,
                     target_id=item.target_id, ref=ref, posteriors=posteriors, cost_sec=act_cost,
@@ -739,7 +755,10 @@ class ExecutionDispatchRuntimeWorker:
                 # would only queue behind it (and, cold, would be re-admitted every tick until its
                 # first close lands). Also one per act per tick, and none when the belief could not
                 # be read (fail closed: unreadable is not cold).
-                if (not getattr(self, "_posteriors_read_ok", True) or ref in act_seen
+                held = self._reading_pull_held_reason(item)
+                if held is not None:
+                    act_held[item.dispatch_id] = held
+                elif (not getattr(self, "_posteriors_read_ok", True) or ref in act_seen
                         or self._act_in_flight(ref, item)):
                     act_in_flight.add(item.dispatch_id)
                 act_seen.add(ref)
@@ -819,15 +838,18 @@ class ExecutionDispatchRuntimeWorker:
             )
 
         allocation = allocate(
-            [c for c in candidates if c.dispatch_id not in act_in_flight],
+            [c for c in candidates if c.dispatch_id not in act_in_flight and c.dispatch_id not in act_held],
             allowance_sec=motor.remaining_sec,
             min_nats_per_sec=self._settings.orion_dispatch_min_nats_per_sec,
         )
         if act_in_flight:
             allocation = refuse_in_flight(
                 allocation, [c for c in candidates if c.dispatch_id in act_in_flight])
+        if act_held:
+            allocation = refuse_held(
+                allocation, [(c, act_held[c.dispatch_id]) for c in candidates if c.dispatch_id in act_held])
         if act_items:
-            allocation = self._admit_proven_acts(allocation, act_items, act_in_flight, posteriors)
+            allocation = self._admit_proven_acts(allocation, act_items, act_in_flight | set(act_held), posteriors)
         # `agree=` used to be logged here as if it compared the allocator's
         # choice against what actually dispatched. It could not: the admitted
         # set is a SUBSET of pending by construction, so agree == would_admit
@@ -893,7 +915,8 @@ class ExecutionDispatchRuntimeWorker:
     def _act_refs_by_cortex_verb(self) -> dict[str, ActRef]:
         if not getattr(self._settings, "orion_dispatch_act_candidates_enabled", False):
             return {}
-        return {verb: ActRef(verb=a.verb, actor=a.actor, signal_id=a.signal_id, horizon_sec=a.horizon_sec)
+        return {verb: ActRef(verb=a.verb, actor=a.actor, signal_id=a.signal_id, horizon_sec=a.horizon_sec,
+                             object_source=a.object_source)
                 for verb, a in self._policy.act_refs_by_cortex_verb().items()}
 
     def _admit_proven_acts(self, allocation, act_items, act_in_flight, posteriors):
@@ -929,6 +952,192 @@ class ExecutionDispatchRuntimeWorker:
             logger.info("motor_allocator_proven_effect_admitted dispatch_id=%s %s", dispatch_id, reason)
         return allocation
 
+    # --- reading pull (thinking rung 3 follow-up, 2026-10-21) ------------------------------------
+    # The allocator admits or refuses; Hub runs every gate and picks the seed. Order per decision:
+    # check (no side effect) -> precommit the episode with the checked seed -> act (treated starts the
+    # read, control only marks the seed). A doer refusal at check writes no row and holds the route
+    # for the doer's own retry_after_sec, so a strained or hot afternoon is one RPC per hold, not one
+    # per tick.
+
+    READ_PULL_REFUSED_PREFIX = "doer_refused"
+
+    def _reading_pull_held_reason(self, item) -> str | None:
+        if (item.cortex_verb or "") != READ_PULL_EXECUTOR_VERB:
+            return None
+        if not getattr(self._settings, "orion_dispatch_reading_pull_enabled", False):
+            return "reading_pull_disabled"
+        hold = getattr(self, "_reading_pull_hold", None)
+        if hold is not None and datetime.now(timezone.utc) < hold[0]:
+            return f"{self.READ_PULL_REFUSED_PREFIX}:{hold[1]}"
+        return None
+
+    def _act_duration_cost(self, ref: ActRef) -> float | None:
+        try:
+            return self._store.act_duration_p50_sec(
+                actor=ref.actor, verb=ref.verb, signal_id=ref.signal_id,
+                lookback_hours=int(self._settings.orion_dispatch_act_cost_lookback_hours))
+        except Exception:
+            # No typed fallback: an unreadable cost refuses the act `no_cost_estimate`.
+            logger.warning("act_duration_cost_unreadable act=%s", ref.label(), exc_info=True)
+            return None
+
+    async def _read_pull_rpc(self, bus, req: WorldPulseReadPullRequestV1) -> WorldPulseReadPullResultV1:
+        reply_channel = f"{WORLD_PULSE_READ_PULL_REPLY_PREFIX}{uuid4().hex}"
+        env = BaseEnvelope(kind=WORLD_PULSE_READ_PULL_REQUEST_KIND, source=ServiceRef(name=self._settings.service_name),
+                           correlation_id=str(uuid4()), reply_to=reply_channel, payload=req.model_dump(mode="json"))
+        raw = await bus.rpc_request(WORLD_PULSE_READ_PULL_REQUEST_CHANNEL, env, reply_channel=reply_channel,
+                                    timeout_sec=float(self._settings.orion_dispatch_reading_pull_rpc_timeout_sec))
+        decoded = bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
+        if not decoded.ok:
+            raise RuntimeError(f"reading_pull_reply_decode_failed:{decoded.error}")
+        return WorldPulseReadPullResultV1.model_validate(decoded.envelope.payload)
+
+    def _hold_reading_pull(self, result: WorldPulseReadPullResultV1) -> None:
+        wait = float(result.retry_after_sec or 0.0)
+        if wait > 0:
+            self._reading_pull_hold = (datetime.now(timezone.utc) + timedelta(seconds=wait), str(result.refusal))
+
+    async def _reading_pull_preflight(self, frame, to_send):
+        """Check every reading pull about to be decided. Refused -> withheld `doer_refused:<why>`, no
+        episode row. Ready -> the seed's act key is remembered for the precommit."""
+        self._reading_pull_checked = {}
+        pulls = [c for c in to_send if c.cortex_verb == READ_PULL_EXECUTOR_VERB]
+        if not pulls:
+            return to_send, frame
+        withheld: list = []
+        bus = OrionBusAsync(url=self._settings.orion_bus_url, enabled=self._settings.orion_bus_enabled)
+        try:
+            await bus.connect()
+            for c in pulls:
+                if not getattr(self._settings, "orion_dispatch_reading_pull_enabled", False):
+                    withheld.append((c, "reading_pull_disabled", "kill_switch"))
+                    continue
+                try:
+                    out = await self._read_pull_rpc(bus, WorldPulseReadPullRequestV1(op="check", dispatch_id=c.dispatch_id))
+                except Exception as exc:
+                    logger.warning("reading_pull_check_failed dispatch_id=%s", c.dispatch_id, exc_info=True)
+                    withheld.append((c, f"{self.READ_PULL_REFUSED_PREFIX}:check_failed", f"{type(exc).__name__}"[:80]))
+                    continue
+                if out.state != "ready" or not out.object_ref:
+                    self._hold_reading_pull(out)
+                    withheld.append((c, f"{self.READ_PULL_REFUSED_PREFIX}:{out.refusal}",
+                                     f"retry_after_sec:{out.retry_after_sec}"))
+                    logger.info("reading_pull_refused_at_check dispatch_id=%s refusal=%s retry_after=%s gates=%s",
+                                c.dispatch_id, out.refusal, out.retry_after_sec, out.gates)
+                    continue
+                self._reading_pull_checked[c.dispatch_id] = out.object_ref
+        finally:
+            RPC_HEALTH_SINK.absorb_bus(bus)
+            await bus.close()
+        if not withheld:
+            return to_send, frame
+        ids = {c.dispatch_id for c, _, _ in withheld}
+        blocked = [c.model_copy(update={"dispatch_status": "blocked", "blocked_by": [reason],
+                                        "reasons": list(c.reasons) + [reason, note]})
+                   for c, reason, note in withheld]
+        frame = frame.model_copy(update={
+            "candidates": [c for c in frame.candidates if c.dispatch_id not in ids],
+            "blocked_candidates": list(frame.blocked_candidates) + blocked,
+            "blocked_count": len(frame.blocked_candidates) + len(blocked),
+        })
+        return [c for c in to_send if c.dispatch_id not in ids], frame
+
+    def _settle_pull_episode(self, dispatch_id: str, out: WorldPulseReadPullResultV1 | None, error: str | None) -> None:
+        """Record what the doer did with a precommitted decision: the seed it chose, or the refusal."""
+        try:
+            if out is not None and out.state in ("started", "control_recorded") and out.object_ref:
+                self._store.set_act_episode_object(dispatch_id, out.object_ref)
+            elif out is not None and out.state == "refused":
+                self._store.void_act_episode(dispatch_id, f"doer_refused:{out.refusal}")
+            # An RPC error leaves the row as precommitted: the doer may have acted, so it keeps its
+            # hold and its checked object, and is resolved like any other.
+        except Exception:
+            logger.warning("act_episode_settle_failed dispatch_id=%s error=%s", dispatch_id, error, exc_info=True)
+
+    async def _send_control_pulls(self) -> None:
+        pending = list(getattr(self, "_pending_control_pulls", None) or [])
+        self._pending_control_pulls = []
+        if not pending:
+            return
+        bus = OrionBusAsync(url=self._settings.orion_bus_url, enabled=self._settings.orion_bus_enabled)
+        try:
+            await bus.connect()
+            for c in pending:
+                out, error = None, None
+                try:
+                    out = await self._read_pull_rpc(bus, WorldPulseReadPullRequestV1(
+                        op="act", dispatch_id=c.dispatch_id, arm="control",
+                        expected_seed_id=None, correlation={"proposal_id": c.source_proposal_id}))
+                except Exception as exc:
+                    error = f"{type(exc).__name__}: {exc}"[:300]
+                    logger.warning("reading_pull_control_failed dispatch_id=%s", c.dispatch_id, exc_info=True)
+                self._settle_pull_episode(c.dispatch_id, out, error)
+                logger.info("reading_pull_control dispatch_id=%s state=%s seed=%s refusal=%s",
+                            c.dispatch_id, out.state if out else "rpc_error", out.seed_id if out else None,
+                            out.refusal if out else error)
+        finally:
+            RPC_HEALTH_SINK.absorb_bus(bus)
+            await bus.close()
+
+    async def _send_read_pull(self, bus, frame, candidate, *, now: datetime):
+        """Treated arm (or an information-path admission): one act RPC. Idempotent: a replayed tick
+        finds its result row and sends nothing; Hub also answers a repeated act with its first mark.
+        The result row carries no latency on purpose (the RPC is not the work); the allocator's cost
+        for this route is the look act's own measured open->close time."""
+        result_id = f"result:{candidate.dispatch_id}"
+        if not getattr(self._settings, "orion_dispatch_reading_pull_enabled", False):
+            return candidate.model_copy(update={"dispatch_status": "dispatched", "dispatched_at": now,
+                                                "dispatch_error": "reading_pull_disabled"})
+        existing = self._store.load_dispatch_result_by_dispatch_id(candidate.dispatch_id)
+        if existing is not None:
+            self._record_dispatch_status(existing["status"], live=False)
+            return candidate.model_copy(update={"dispatch_status": "dispatched", "dispatched_at": now,
+                                                "result_ref": existing["result_id"]})
+        started = perf_counter()
+        out, error = None, None
+        try:
+            out = await self._read_pull_rpc(bus, WorldPulseReadPullRequestV1(
+                op="act", dispatch_id=candidate.dispatch_id, arm="treated",
+                expected_seed_id=None,
+                correlation={"proposal_id": candidate.source_proposal_id,
+                             "decision_id": candidate.source_decision_id, "dispatch_frame_id": frame.frame_id}))
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"[:500]
+            logger.warning("reading_pull_act_failed dispatch_id=%s error=%s", candidate.dispatch_id, error)
+        rpc_ms = (perf_counter() - started) * 1000.0
+        if candidate.dispatch_id in (getattr(self, "_last_proven", None) or {}):
+            self._settle_pull_episode(candidate.dispatch_id, out, error)
+        if out is not None and out.state == "refused":
+            self._hold_reading_pull(out)
+        settlement = {"state": out.state if out else "rpc_error", "kind": "reading_pull",
+                      "seed_id": out.seed_id if out else None, "object_ref": out.object_ref if out else None,
+                      "refusal": out.refusal if out else None, "rpc_ms": round(rpc_ms, 1),
+                      "pulled_today": out.pulled_today if out else None, "daily_cap": out.daily_cap if out else None}
+        status = "failed" if error else "succeeded"
+        self._store.save_dispatch_result(
+            result_id=result_id, dispatch_id=candidate.dispatch_id, frame_id=frame.frame_id, status=status,
+            result_json={"settlement": settlement, "evidence_refs": [result_id], "latency_ms": None,
+                         **({"error": error} if error else {})},
+            raw_len=0, latency_ms=None, dispatch_kind=candidate.dispatch_kind, target_id=candidate.target_id)
+        self._record_dispatch_status(status)
+        logger.info("reading_pull_sent dispatch_id=%s state=%s seed=%s refusal=%s rpc_ms=%.0f",
+                    candidate.dispatch_id, settlement["state"], settlement["seed_id"], settlement["refusal"], rpc_ms)
+        update = {"dispatch_status": "dispatched", "dispatched_at": now, "result_ref": result_id}
+        if error:
+            update["dispatch_error"] = error
+        elif out is not None and out.state == "refused":
+            update["dispatch_error"] = f"doer_refused:{out.refusal}"
+        return candidate.model_copy(update=update)
+
+    def _resolve_act_episodes(self) -> int:
+        """Resolve due act episodes that name an object (both arms, one rule)."""
+        if not self._settings.enable_execution_dispatch_runtime:
+            return 0
+        rows = self._store.resolve_act_episodes(now=datetime.now(timezone.utc))
+        for episode_id, arm, value in rows:
+            logger.info("act_episode_resolved episode_id=%s arm=%s outcome=%.0f", episode_id, arm, value)
+        return len(rows)
+
     ACT_HOLDBACK_REASON = "act_holdback"
 
     def _proven_act_holdback(self, frame, to_send, *, enforcing: bool = True):
@@ -936,6 +1145,7 @@ class ExecutionDispatchRuntimeWorker:
         drawn only among decisions that passed every gate. Both arms are precommitted to
         substrate_act_episodes; a decision whose row cannot be written is not sent."""
         proven = getattr(self, "_last_proven", None) or {}
+        self._pending_control_pulls = []
         targets = [c for c in to_send if c.dispatch_id in proven]
         # Not enforcing: the admission changed nothing (everything sends), so there is no decision
         # to randomize. A probe tick is a non-random subset: no arm is recorded from it.
@@ -944,17 +1154,26 @@ class ExecutionDispatchRuntimeWorker:
         now = datetime.now(timezone.utc)
         fraction = float(self._settings.orion_dispatch_holdback_fraction)
         withheld: list = []
+        checked = getattr(self, "_reading_pull_checked", None) or {}
         for c in targets:
             ref, why = proven[c.dispatch_id]
-            arm = "control" if fraction > 0.0 and self._stable_draw(c.dispatch_id) < fraction else "treated"
+            # Rung 3 follow-up: held back only when the outcome can occur without the act
+            # (orion/autonomy/act_episodes.py holdback_rule). A painting's object is minted by its
+            # dispatch, so a control row would be 0 by construction: never drawn, reason recorded.
+            draws, holdback_why = act_episodes.holdback_rule(ref.object_source)
+            arm = ("control" if draws and fraction > 0.0 and self._stable_draw(c.dispatch_id) < fraction
+                   else "treated")
             row = {
                 "episode_id": c.dispatch_id, "act_label": ref.label(), "verb": ref.verb, "actor": ref.actor,
                 "signal_id": ref.signal_id, "dispatch_kind": c.dispatch_kind, "target_id": c.target_id,
                 "arm": arm, "path": "proven_effect", "decided_at": now,
                 "horizon_at": now + timedelta(seconds=float(ref.horizon_sec)),
-                "dispatch_frame_id": frame.frame_id, "expected": {"admission": why},
-                # A held-back act produced nothing: 0 by construction for a producer-reported signal.
-                "outcome_value": 0.0 if arm == "control" and ref.signal_id in act_episodes.STRUCTURAL_ZERO_SIGNALS else None,
+                "dispatch_frame_id": frame.frame_id,
+                "expected": {"admission": why, "holdback": holdback_why},
+                # Both arms of a queue object are resolved later, the same way, by the object's fate
+                # (act_episodes.resolve_due); the object is the one the doer's check named.
+                "outcome_value": None,
+                "object_ref": checked.get(c.dispatch_id),
             }
             try:
                 if not self._store.insert_act_episode(row):
@@ -964,9 +1183,14 @@ class ExecutionDispatchRuntimeWorker:
                 logger.warning("act_episode_precommit_failed dispatch_id=%s arm=%s", c.dispatch_id, arm, exc_info=True)
                 withheld.append((c, "act_episode_unrecorded", f"arm:{arm}"))
                 continue
-            logger.info("proven_act_decision dispatch_id=%s arm=%s fraction=%.2f", c.dispatch_id, arm, fraction)
+            logger.info("proven_act_decision dispatch_id=%s arm=%s fraction=%.2f %s",
+                        c.dispatch_id, arm, fraction, holdback_why)
             if arm == "control":
                 withheld.append((c, self.ACT_HOLDBACK_REASON, f"holdback_fraction:{fraction:.2f}"))
+                if c.cortex_verb == READ_PULL_EXECUTOR_VERB:
+                    # The doer marks the seed as this decision's control (no read is started), so a
+                    # later pull cannot pick it and the lane's own fate for it is the control outcome.
+                    self._pending_control_pulls.append(c)
         if not withheld:
             return to_send, frame
         ids = {c.dispatch_id for c, _, _ in withheld}
@@ -993,7 +1217,9 @@ class ExecutionDispatchRuntimeWorker:
     def _act_in_flight(self, ref: ActRef, item: ExecutionDispatchCandidateV1) -> bool:
         try:
             return bool(self._store.act_in_flight(actor=ref.actor, dispatch_kind=item.dispatch_kind,
-                                                  target_id=item.target_id)
+                                                  target_id=item.target_id,
+                                                  # A queue object's actor runs concurrent lane reads.
+                                                  include_open_acts=ref.object_source != "queue")
                         # A proven-effect decision (either arm) holds the act for its horizon, so a
                         # held-back act is not simply re-proposed seconds later.
                         or self._store.act_episode_in_flight(actor=ref.actor, now=datetime.now(timezone.utc)))
@@ -1576,7 +1802,11 @@ class ExecutionDispatchRuntimeWorker:
         # Proven-effect act admissions (stage 3 option B): their own control arm, drawn LAST, after
         # every other gate and the per-tick draw, so a precommitted `treated` row is never written
         # for an act something else then stopped.
+        # Reading pull (rung 3 follow-up): ask Hub whether it would run the read, and which seed,
+        # BEFORE anything is precommitted -- a doer refusal is not an episode in either arm.
+        to_send, frame = await self._reading_pull_preflight(frame, to_send)
         to_send, frame = self._proven_act_holdback(frame, to_send, enforcing=allocator_admitted_ids is not None)
+        await self._send_control_pulls()
         if not to_send:
             return self._abandon_tick_without_sending(frame, baseline_fields)
 
@@ -2019,6 +2249,8 @@ class ExecutionDispatchRuntimeWorker:
         now = datetime.now(timezone.utc)
         if candidate.cortex_verb == SHED_EXECUTOR_VERB:
             return await self._send_shed(bus, frame, candidate, now=now)
+        if candidate.cortex_verb == READ_PULL_EXECUTOR_VERB:
+            return await self._send_read_pull(bus, frame, candidate, now=now)
         if candidate.cortex_verb == "skills.imagination.render_scene.v1":
             candidate = candidate.model_copy(update={"visual_outcome": "unknown"})
         result_id = f"result:{candidate.dispatch_id}"

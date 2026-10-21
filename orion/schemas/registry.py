@@ -680,6 +680,7 @@ from orion.schemas.durable_run import (
     DurableRunReceiptV1,
 )
 from orion.schemas.resource_admission import ResourceEventV1
+from orion.schemas.world_pulse_read_pull import WorldPulseReadPullRequestV1, WorldPulseReadPullResultV1
 from orion.schemas.gpu_pool import (
     GpuActuateResultV1,
     GpuActuateV1,
@@ -1090,6 +1091,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GpuPoolControlReplyV1": GpuPoolControlReplyV1,
     "GpuPoolShedReasonRequestV1": GpuPoolShedReasonRequestV1,
     "GpuPoolShedResultV1": GpuPoolShedResultV1,
+    "WorldPulseReadPullRequestV1": WorldPulseReadPullRequestV1,
+    "WorldPulseReadPullResultV1": WorldPulseReadPullResultV1,
     "GpuActuateV1": GpuActuateV1,
     "GpuActuateResultV1": GpuActuateResultV1,
     "LlmWorkerAnnounceV1": LlmWorkerAnnounceV1,
@@ -2038,6 +2041,9 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "GpuPoolControlReplyV1": SchemaRegistration(model=GpuPoolControlReplyV1, kind="gpu_pool.control.reply.v1"),
     "GpuPoolShedReasonRequestV1": SchemaRegistration(model=GpuPoolShedReasonRequestV1, kind="gpu_pool.shed.request.v1"),
     "GpuPoolShedResultV1": SchemaRegistration(model=GpuPoolShedResultV1, kind="gpu_pool.shed.result.v1"),
+    # Thinking rung 3 follow-up: the allocator's reading pull (orion/schemas/world_pulse_read_pull.py).
+    "WorldPulseReadPullRequestV1": SchemaRegistration(model=WorldPulseReadPullRequestV1, kind="world_pulse_read.pull.request.v1"),
+    "WorldPulseReadPullResultV1": SchemaRegistration(model=WorldPulseReadPullResultV1, kind="world_pulse_read.pull.result.v1"),
     # Stage 4 actuation (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md).
     "GpuActuateV1": SchemaRegistration(model=GpuActuateV1, kind="gpu_pool.actuate.v1"),
     "GpuActuateResultV1": SchemaRegistration(model=GpuActuateResultV1, kind="gpu_pool.actuate.result.v1"),

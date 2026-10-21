@@ -595,3 +595,22 @@ def test_backfill_script_snapshots_then_fills_null_links_and_can_restore(pg, tmp
     with pg.connect() as conn:
         ev = conn.execute(text("SELECT evidence FROM vision_motion_story")).scalar()
     assert [e["individual_id"] for e in ev] == [None] * 4
+
+
+def test_capture_scales_by_the_crops_own_frame_size(tmp_path) -> None:
+    """A doorbell-sized frame (1600x1200): the crop is cut where the box really is, not at box * 1600/2560."""
+    cfg = cfg_for(tmp_path)          # global fallback 2560x1920
+    im = Image.new("RGB", (1600, 1200), (128, 128, 128))
+    ImageDraw.Draw(im).rectangle((1400, 800, 1560, 1150), fill=(255, 0, 0))
+    im.save(Path(cfg.frames_dir) / frame_name(T0, stream="doorbell", cam="doorbell"), "JPEG", quality=95)
+    box = (1400.0, 800.0, 1560.0, 1150.0)
+    own = ss.PendingCrop("own", T0, "person", box, "doorbell", frame_w=1600.0, frame_h=1200.0)
+    old = ss.PendingCrop("old", T0, "person", box, "doorbell")
+    ss.capture_pending([own, old], stream_id="doorbell", cfg=cfg)
+    pending = Path(cfg.strip_dir) / ss.PENDING
+
+    def red_share(cid: str) -> float:
+        px = list(Image.open(pending / f"{ss.crop_key(cid)}.jpg").convert("RGB").getdata())
+        return sum(1 for r, g, b in px if r > 200 and g < 80) / len(px)
+
+    assert red_share("own") > 0.3 and red_share("old") < 0.05      # padding lowers the share

@@ -721,7 +721,26 @@ new identity. Design: `docs/superpowers/specs/2026-10-16-walkway-motion-stories-
   deletes a story Juniper has given a verdict.
 - Kill switch: `VISION_MOTION_STORIES_ENABLED=false`.
 - Replay (read only): `PYTHONPATH=. python services/orion-sql-writer/evals/run_vision_motion_story_replay_eval.py`
-  (clean frames from `VISION_MOTION_CLEAN_SINCE` by default; `--include-corrupt` for earlier).
+  (clean frames from `VISION_MOTION_CLEAN_SINCE` by default; `--include-corrupt` for earlier;
+  `--stream doorbell --frame-size WxH` to replay old crops under a frame size).
+- Frame size and edges (2026-10-20, migration
+  `services/orion-sql-db/manual_migration_vision_motion_story_edges_v1.sql`, auto-applies on pull;
+  for the street-continuity handoff, `docs/superpowers/specs/2026-10-20-street-continuity-handoff-design.md`).
+  The writer now keeps the detector's frame size on each crop
+  (`vision_crop_observation.frame_width/height`). Every box is measured against its own frame:
+  that size, else `VISION_MOTION_FRAME_SIZE_BY_STREAM` (`stream=WxH,...`), else
+  `VISION_MOTION_FRAME_WIDTH/HEIGHT`. Before this, the doorbell was measured as a 2560x1920 frame,
+  so its lateral direction was under-read and its right/bottom clipping never fired.
+  Each story also records (NULL on older rows):
+  - `entry_edge`, `exit_edge`: `left|right|top|bottom|inside`, from the first/last box. Left/right/bottom:
+    the box side within `VISION_MOTION_EDGE_ZONE_FRAC` (0.05) of the frame (nearest wins). Top: only when
+    the foot point is that close to the top (a head cut by the top edge is not an exit). Else `inside`.
+  - `exit_foot_x`, `exit_foot_y`: last box's foot point, 0..1 of its frame.
+  - `exit_speed_fw_per_sec`: lateral foot speed over the last <= 4 unclipped boxes, frame widths per second,
+    unsigned (direction: `exit_edge` / `dir_lateral`); NULL with < 2 unclipped boxes.
+  - `frame_w`, `frame_h`, `frame_size_source` (`detection|stream_setting|default`).
+  `rules_version` stays 1: walkway stories (all verdicts so far) read exactly as before. Without the
+  migration the loop logs `[MOTION_STORY] missing columns ...` each tick and writes the older columns.
 
 ### Walkway story pictures of the moment (2026-10-17)
 

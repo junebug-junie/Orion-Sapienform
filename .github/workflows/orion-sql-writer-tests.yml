@@ -174,7 +174,7 @@ jobs:
           import re
           conn.cursor().execute(pathlib.Path("services/orion-sql-db/manual_migration_vision_osnet_shadow_v1.sql").read_text())
           for f in ("vision_split_v1", "vision_reanchor_v1", "vision_motion_story_v1",
-                    "vision_motion_story_strip_v2"):
+                    "vision_motion_story_strip_v2", "vision_motion_story_edges_v1"):
               body = re.sub(r"--[^\n]*", "", pathlib.Path(f"services/orion-sql-db/manual_migration_{f}.sql").read_text())
               for stmt in body.split(";"):
                   if stmt.strip():

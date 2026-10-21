@@ -570,6 +570,37 @@ class ExecutionDispatchRuntimeStore:
             if r[2] is not None and float(r[2]) > 0
         }
 
+    # Thinking rung 3: how far back an unsettled act-backed dispatch or an unclosed act still counts
+    # as in flight. Longer than the longest act horizon (painting 5400 s) plus durable queue wait;
+    # past it, the act ledger's own resolver has already expired the act.
+    ACT_IN_FLIGHT_WINDOW_HOURS = 6
+
+    def act_in_flight(self, *, actor: str, dispatch_kind: str, target_id: str) -> bool:
+        """True while this act's actor has an open act, or this route has an unsettled dispatch.
+
+        Two sources because they cover different stretches: a render_scene dispatch is ``pending``
+        from send until its durable run settles (including GPU queue wait, before the act opens),
+        and the act is open from the run's first prepare until its close."""
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                               SELECT 1 FROM grammar_acts
+                                WHERE actor = :actor AND closed_at IS NULL
+                                  AND opened_at > now() - make_interval(hours => :hours))
+                        OR EXISTS (
+                               SELECT 1 FROM substrate_dispatch_results
+                                WHERE dispatch_kind = :kind AND target_id = :target
+                                  AND status = 'pending'
+                                  AND created_at > now() - make_interval(hours => :hours))
+                    """
+                ),
+                {"actor": actor, "kind": dispatch_kind, "target": target_id,
+                 "hours": self.ACT_IN_FLIGHT_WINDOW_HOURS},
+            ).scalar()
+        return bool(row)
+
     def sum_motor_seconds_for_day(self, day_start, day_end) -> float:
         """Motor-seconds actually spent in a UTC day.
 

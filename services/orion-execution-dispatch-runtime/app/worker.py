@@ -15,6 +15,12 @@ from orion.bus.ewma import compute_ewma_update
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.rpc_health import SharedRpcHealthSink
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.autonomy.act_candidates import (
+    ActRef,
+    act_allocator_candidate,
+    act_expectation_reason,
+    refuse_in_flight,
+)
 from orion.autonomy.allocator import (
     ALLOCATOR_BLOCK_REASON,
     Candidate,
@@ -261,6 +267,21 @@ ACTION_OUTCOME_SUMMARY_MAX_CHARS = 280
 # Established self-subject convention across orion/autonomy/* (reducer.py,
 # substrate_metabolism.py, signal_tension.py all default/use this).
 ACTION_OUTCOME_SUBJECT = "orion"
+
+
+def tick_can_yield_control(to_send) -> bool:
+    """Can withholding this tick produce a control observation? (randomized per-tick holdback)
+
+    Only a candidate that declares a field signal (``expected_effect``) gets a control cell when
+    held back (orion/feedback/outcome_resolution.py). A world action already drew its own arm per
+    template (``_world_action_holdback``), and a visual-baseline or act-backed render carries no field
+    signal; for those a held-back tick is re-proposed on the next proposal tick, seconds later, so
+    withholding it would be a delay wearing the word "control". Rung 3 (2026-10-21) turned the
+    fraction on; this keeps the draw to the ticks it can actually learn from."""
+    return any(
+        c.expected_effect is not None and not c.world_action and c.visual_baseline is None
+        for c in to_send
+    )
 
 
 class ExecutionDispatchRuntimeWorker:
@@ -671,9 +692,31 @@ class ExecutionDispatchRuntimeWorker:
 
         costs = self._store.load_action_cost_estimates()
         posteriors = self._load_effect_posteriors()
+        # Thinking rung 3: routes that produce a rung-2 act are scored on that act's own belief and
+        # measured cost. {} while ORION_DISPATCH_ACT_CANDIDATES_ENABLED is off -> unchanged scoring.
+        act_refs = self._act_refs_by_cortex_verb()
+        act_costs: dict[tuple[str, str], float] | None = None
+        act_in_flight: set[str] = set()
+        self._last_act_reasons = {}
 
         candidates: list[Candidate] = []
         for item in pending:
+            ref = act_refs.get(item.cortex_verb or "")
+            if ref is not None:
+                if act_costs is None:
+                    act_costs = self._load_act_costs()
+                act_cost = act_costs.get((item.dispatch_kind, item.target_id))
+                candidates.append(act_allocator_candidate(
+                    dispatch_id=item.dispatch_id, dispatch_kind=item.dispatch_kind,
+                    target_id=item.target_id, ref=ref, posteriors=posteriors, cost_sec=act_cost,
+                    visual_baseline=item.visual_baseline))
+                self._last_act_reasons[item.dispatch_id] = act_expectation_reason(ref, posteriors, act_cost)
+                # One in flight per act: an admitted act whose earlier dispatch or act is still open
+                # would only queue behind it (and, cold, would be re-admitted every tick until its
+                # first close lands). The visual-baseline lane keeps its own schedule guard.
+                if item.visual_baseline is None and self._act_in_flight(ref, item):
+                    act_in_flight.add(item.dispatch_id)
+                continue
             effect = item.expected_effect
             signal = effect.signal_id if effect is not None else None
             # Per-BIN variances, volume weighted. The next observation lands
@@ -749,10 +792,13 @@ class ExecutionDispatchRuntimeWorker:
             )
 
         allocation = allocate(
-            candidates,
+            [c for c in candidates if c.dispatch_id not in act_in_flight],
             allowance_sec=motor.remaining_sec,
             min_nats_per_sec=self._settings.orion_dispatch_min_nats_per_sec,
         )
+        if act_in_flight:
+            allocation = refuse_in_flight(
+                allocation, [c for c in candidates if c.dispatch_id in act_in_flight])
         # `agree=` used to be logged here as if it compared the allocator's
         # choice against what actually dispatched. It could not: the admitted
         # set is a SUBSET of pending by construction, so agree == would_admit
@@ -814,6 +860,31 @@ class ExecutionDispatchRuntimeWorker:
                 self._notify_all_refused_cleared(self._all_refused_consecutive_ticks)
             self._all_refused_consecutive_ticks = 0
         return allocation
+
+    def _act_refs_by_cortex_verb(self) -> dict[str, ActRef]:
+        if not getattr(self._settings, "orion_dispatch_act_candidates_enabled", False):
+            return {}
+        return {verb: ActRef(verb=a.verb, actor=a.actor, signal_id=a.signal_id)
+                for verb, a in self._policy.act_refs_by_cortex_verb().items()}
+
+    def _load_act_costs(self) -> dict[tuple[str, str], float]:
+        """Measured cost for act-backed routes. A read failure means NO cost (refused
+        no_cost_estimate), never the typed 5 s fallback: a painting is ~57 s of real work."""
+        try:
+            return self._store.load_action_cost_estimates(
+                lookback_hours=int(self._settings.orion_dispatch_act_cost_lookback_hours))
+        except Exception:
+            logger.warning("act_cost_estimates_unreadable", exc_info=True)
+            return {}
+
+    def _act_in_flight(self, ref: ActRef, item: ExecutionDispatchCandidateV1) -> bool:
+        try:
+            return bool(self._store.act_in_flight(actor=ref.actor, dispatch_kind=item.dispatch_kind,
+                                                  target_id=item.target_id))
+        except Exception:
+            # Fail closed: a ledger we cannot read must not license a second concurrent act.
+            logger.warning("act_in_flight_unreadable actor=%s", ref.actor, exc_info=True)
+            return True
 
     def _maybe_notify_all_refused(self, *, refusals: dict[str, int], exhausted: bool) -> None:
         """Escalate a total-refusal state, and keep escalating.
@@ -1155,6 +1226,14 @@ class ExecutionDispatchRuntimeWorker:
             # exchange rate is how risk_score happened.
             try:
                 allocation = self._log_allocator_preview(frame, motor)
+                act_reasons = getattr(self, "_last_act_reasons", None) or {}
+                if act_reasons:
+                    # The act-backed expectation the allocator scored on, on every saved copy of
+                    # the candidate (admitted, refused or held back): the frame says what this act
+                    # was expected to teach and cost, before anything was sent.
+                    frame = frame.model_copy(update={"candidates": [
+                        c.model_copy(update={"reasons": [*c.reasons, act_reasons[c.dispatch_id]]})
+                        if c.dispatch_id in act_reasons else c for c in frame.candidates]})
             except Exception:
                 # A readout must never be able to stall a real dispatch tick.
                 # When the allocator is ENFORCING a failure here means there is
@@ -1343,7 +1422,8 @@ class ExecutionDispatchRuntimeWorker:
             if self._tripwire_probe_in_flight
             else self._settings.orion_dispatch_holdback_fraction
         )
-        if holdback_fraction > 0.0 and random.random() < holdback_fraction:
+        if (holdback_fraction > 0.0 and tick_can_yield_control(to_send)
+                and random.random() < holdback_fraction):
             withheld_ids = {c.dispatch_id for c in to_send}
             withheld = [
                 c.model_copy(

@@ -459,6 +459,33 @@ channels:
       prompt_sites:
         - "orion.attention.self_readings:render_self_readings"
 
+  # orion/regulation/strain_news.py strain_news(): 1.0 on a strain news event
+  # (onset / escalation / reminder) derived from Redis orion:regulation:latest
+  # (orion/regulation/arousal.py classify_arousal), budgeted <= 8 per local day,
+  # >= 30 min apart. Written by worker.py::_strain_attention_tick every 30 s
+  # (0.0 when no event, nothing while the regulation reading is unknown).
+  # FalkorDB node only. Spec docs/superpowers/specs/2026-10-20-strain-loop-design.md.
+  - node: "node:substrate.strain"
+    producer: orion-substrate-runtime
+    channel: prediction_error
+    level: [node]
+    category: physical_substrate
+    meaning: "TRIGGER: strain news -- fires 1.0 when Orion's regulation turns strained (onset), when a new strain cause joins the episode or the cabinet crosses critical 34 C (escalation), and as reminders at 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h while it lasts; at most 8 per local day, 30 min apart. The strain level itself never competes. FalkorDB node only; not in FieldStateV1 node_vectors."
+    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.strain'"
+    consumers:
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+    semantics:
+      value_kind: trigger
+      rest: "0.0 = no strain news this tick (not strained, or strained with no event due). The strain level is not the value: a 54 h strain reads 0.0 between its news events."
+      # rest_range: by construction (strain_news budget <= 8 events/day of ~2880 ticks, so
+      # >= 99.7% exact 0.0). New node 2026-10-20: no live rows yet; replay
+      # scripts/analysis/replay_strain_news.py over 10-13..10-20 history.
+      rest_range: [0.0, 0.0]
+      sparsity: designed_sparse
+      absent_means: "only written as 1.0 at a strain news event, then carried unwritten for attention's 300 s orienting window; every other tick with a known regulation reading writes 0.0. An unknown, stale or missing regulation reading writes nothing and the node keeps its last value."
+      prompt_sites:
+        - "orion.attention.self_readings:render_self_readings"
+
   # orion/substrate/prediction_error.py:1354 -- stage 1: 1 - cos(embedding,
   # stream EWMA) (:1451); stage 2: z of that vs its own EWMA, negatives
   # clipped (:290), score = min(1, z/3) (:1478). worker.py:1683-1694 writes

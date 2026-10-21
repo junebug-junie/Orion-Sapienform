@@ -82,6 +82,7 @@ _WORDS: dict[str, tuple[str, str]] = {
     "node:substrate.route": ("how much my routing decisions are changing", "share of 4 decisions changed"),
     "node:substrate.codebase": ("how unusual the latest change to my own code was", "clipped z / 3"),
     "node:substrate.cabinet": ("my cabinet's warming alarm", "firings in the last hour"),
+    "node:substrate.strain": ("news that I am under strain (heat or a GPU backlog)", "news events in the last hour"),
 }
 
 _STATE_WORDS = {
@@ -97,6 +98,13 @@ def _event_written(node_id: str) -> bool:
     from orion.attention.world_first import node_prediction_error_event_written
 
     return node_prediction_error_event_written(node_id)
+
+
+def _quiet_event_signal(reading) -> bool:
+    """A stale event-written LEVEL signal had no event to measure (chat with no turns). A stale
+    rate (trigger/binary) signal did not: its freshness is its last write, and a trigger that
+    writes 0.0 every tick (strain news, cabinet) goes stale only when its source is unreadable."""
+    return reading.rate_window_sec is None and _event_written(reading.source_id)
 
 
 def short_name(node_id: str) -> str:
@@ -363,12 +371,12 @@ def render_self_readings(
         # "all_calm" only when every signal was actually read (an event signal with no recent
         # event counts as read): the skip log must not call a mostly-unread body calm.
         unread = [r for r in readings if r.state != "live"
-                  and not (r.state == "stale" and _event_written(r.source_id))]
+                  and not (r.state == "stale" and _quiet_event_signal(r))]
         reason = "no_history" if not live else ("calm_partial" if unread else "all_calm")
         return SelfReadingsBlockV1(rendered_at=now, readings=readings, skip_reason=reason)
     # An event-written signal past the staleness horizon had no event to measure (chat with no
     # turns): say so, not "can't read". A per-tick signal gone stale really is unread.
-    quiet_events = [r for r in readings if r.state == "stale" and _event_written(r.source_id)]
+    quiet_events = [r for r in readings if r.state == "stale" and _quiet_event_signal(r)]
     # A trigger with too little history has simply not gone off often enough to judge: left out
     # of both lists (never called calm, not "unreadable" either).
     unreadable = [r for r in readings if r.state != "live" and r not in quiet_events

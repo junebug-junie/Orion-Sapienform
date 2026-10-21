@@ -33,6 +33,14 @@ model, no embeddings, no new identity. Pure functions only (no clock, no DB);
    crops, no other named individual appears, and no crop touches the frame
    edge. Otherwise "a person".
 7. **Sentence.**
+8. **Frame and edges** (2026-10-20, for the street-continuity handoff:
+   docs/superpowers/specs/2026-10-20-street-continuity-handoff-design.md,
+   section 1). Every box is measured against ITS OWN frame size: the size the
+   detector saw (``vision_crop_observation.frame_width/height``), else the
+   stream's ``VISION_MOTION_FRAME_SIZE_BY_STREAM`` entry, else the global
+   ``VISION_MOTION_FRAME_WIDTH/HEIGHT``. A story records where it came in and
+   went out (``entry_edge`` / ``exit_edge``), the last foot point, and the
+   exit speed in frame widths per second (see ``edge_of`` / ``exit_speed``).
 """
 
 from __future__ import annotations
@@ -50,8 +58,15 @@ from orion.vision.story_naming import name_from_crops
 from orion.vision.zones import Zone, zone_for_box
 
 # Bump when a rule below changes meaning: Juniper's spot-check tally counts one
-# version at a time, so old verdicts never vouch for new rules.
+# version at a time, so old verdicts never vouch for new rules. Not bumped for
+# the per-camera frame size and edges (2026-10-20): on the walkway (the only
+# stream with verdicts) every frame is the old global 2560x1920, so no story
+# reads differently; the new columns are additive facts the tally never reads.
 RULES_VERSION = 1
+
+EDGES = ("left", "right", "top", "bottom", "inside")
+# Where a story's frame size came from (vision_motion_story.frame_size_source).
+FRAME_SOURCES = ("detection", "stream_setting", "default")
 
 KINDS = ("person", "dog", "bicycle", "stroller", "vehicle")
 OUTSIDE = "outside the zones"
@@ -107,6 +122,15 @@ class MotionConfig:
     together_min_shared: int = 2
     together_cos: float = 0.7
     together_min_travel_bh: float = 1.0
+    # Where frame_w/frame_h came from: "default" (the global setting) or
+    # "stream_setting" (VISION_MOTION_FRAME_SIZE_BY_STREAM). A box's own
+    # detector frame size always wins over both (see frame_of).
+    frame_source: str = "default"
+    # A first/last box within this share of the frame from an edge entered or
+    # left through that edge; farther in, it is "inside".
+    edge_zone_frac: float = 0.05
+    # Exit speed uses at most this many of the last unclipped boxes.
+    exit_speed_boxes: int = 4
 
 
 @dataclass(frozen=True)
@@ -118,6 +142,9 @@ class MotionCrop:
     score: float = 0.0
     individual_id: Optional[str] = None
     thumb_ref: Optional[str] = None
+    # The frame the detector saw this box in (None: not recorded).
+    frame_w: Optional[float] = None
+    frame_h: Optional[float] = None
 
     @property
     def h(self) -> float:
@@ -184,6 +211,15 @@ class Story:
     crop_ids: List[str]
     evidence: List[dict]
     rules_version: int = RULES_VERSION
+    # Frame and edges (manual_migration_vision_motion_story_edges_v1.sql).
+    entry_edge: Optional[str] = None
+    exit_edge: Optional[str] = None
+    exit_foot_x: Optional[float] = None
+    exit_foot_y: Optional[float] = None
+    exit_speed_fw_per_sec: Optional[float] = None
+    frame_w: Optional[int] = None
+    frame_h: Optional[int] = None
+    frame_size_source: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -191,13 +227,85 @@ class Story:
 # ---------------------------------------------------------------------------
 
 
-def is_edge_clipped(box: Sequence[float], cfg: MotionConfig) -> bool:
+Frame = Tuple[float, float]
+
+
+def frame_of(c: MotionCrop, cfg: MotionConfig) -> Frame:
+    """The frame size this box was seen in: its own, else the configured one."""
+    if c.frame_w and c.frame_h and c.frame_w > 0 and c.frame_h > 0:
+        return float(c.frame_w), float(c.frame_h)
+    return cfg.frame_w, cfg.frame_h
+
+
+def is_edge_clipped(box: Sequence[float], cfg: MotionConfig, frame: Optional[Frame] = None) -> bool:
     """Touches the left, right or bottom edge: the foot point is the frame
     edge, not a foot (sample S10: y2 = 1914-1916 of 1920). The top edge does
-    not move the foot point."""
+    not move the foot point. ``frame`` is the box's own frame size (default:
+    the configured one)."""
     x1, _y1, x2, y2 = (float(v) for v in box)
+    fw, fh = frame or (cfg.frame_w, cfg.frame_h)
     m = cfg.edge_margin_px
-    return x1 <= m or x2 >= cfg.frame_w - m or y2 >= cfg.frame_h - m
+    return x1 <= m or x2 >= fw - m or y2 >= fh - m
+
+
+def crop_clipped(c: MotionCrop, cfg: MotionConfig) -> bool:
+    return is_edge_clipped(c.box, cfg, frame_of(c, cfg))
+
+
+def passage_frame(p: "Passage", cfg: MotionConfig) -> Tuple[float, float, str]:
+    """(w, h, source) for a story: the commonest detector frame size among its
+    boxes, else the configured size and where that came from."""
+    real = [frame_of(c, cfg) for c in p.crops if c.frame_w and c.frame_h and c.frame_w > 0 and c.frame_h > 0]
+    if real:
+        w, h = max(sorted(set(real)), key=real.count)
+        return w, h, "detection"
+    return cfg.frame_w, cfg.frame_h, cfg.frame_source
+
+
+def edge_of(c: MotionCrop, cfg: MotionConfig) -> str:
+    """Which frame edge this box sits on, else "inside".
+
+    left / right / bottom: the box's side is within ``edge_zone_frac`` of that
+    edge (a clipped box is at distance ~0); the nearest one wins, ties in the
+    order left, right, bottom. top: only when none of those, and the FOOT
+    point (not the head) is within the margin of the top: a near person's head
+    is often cut by the top edge while they walk across the frame, and that is
+    not leaving through the top."""
+    fw, fh = frame_of(c, cfg)
+    x1, _y1, x2, y2 = (float(v) for v in c.box)
+    f = cfg.edge_zone_frac
+    cands = [(x1 / fw, 0, "left"), ((fw - x2) / fw, 1, "right"), ((fh - y2) / fh, 2, "bottom")]
+    near = [cd for cd in cands if cd[0] <= f]
+    if near:
+        return min(near)[2]
+    if y2 / fh <= f:
+        return "top"
+    return "inside"
+
+
+def exit_foot(c: MotionCrop, cfg: MotionConfig) -> Tuple[float, float]:
+    """The last box's foot point (bottom centre) as a share of its frame,
+    clamped to 0..1. On a clipped box this is on the frame edge."""
+    fw, fh = frame_of(c, cfg)
+    x, y = c.foot
+    return min(1.0, max(0.0, x / fw)), min(1.0, max(0.0, y / fh))
+
+
+def exit_speed(usable: Sequence[MotionCrop], cfg: MotionConfig) -> Optional[float]:
+    """Lateral foot speed over the last ``exit_speed_boxes`` unclipped boxes, in
+    frame widths per second, UNSIGNED (the way out is ``exit_edge``; the
+    lateral sense is ``dir_lateral``). Frame widths, not box heights: a
+    cross-camera clock needs a speed that does not depend on distance. None
+    with fewer than two unclipped boxes or no elapsed time. Clipped boxes are
+    left out: their visible centre lags the real one."""
+    tail = list(usable)[-max(2, cfg.exit_speed_boxes):]
+    if len(tail) < 2:
+        return None
+    dt = (tail[-1].t - tail[0].t).total_seconds()
+    if dt <= 0:
+        return None
+    (w0, _), (w1, _) = frame_of(tail[0], cfg), frame_of(tail[-1], cfg)
+    return abs(tail[-1].foot[0] / w1 - tail[0].foot[0] / w0) / dt
 
 
 def story_id_for(stream_id: str, first_crop_id: str) -> str:
@@ -281,7 +389,7 @@ def link_passages(crops: Iterable[MotionCrop], cfg: MotionConfig) -> List[Passag
 
 
 def usable_crops(p: Passage, cfg: MotionConfig) -> List[MotionCrop]:
-    return [c for c in p.crops if not is_edge_clipped(c.box, cfg)]
+    return [c for c in p.crops if not crop_clipped(c, cfg)]
 
 
 def kinematics(crops: Sequence[MotionCrop], cfg: MotionConfig) -> Optional[Kinematics]:
@@ -296,9 +404,13 @@ def kinematics(crops: Sequence[MotionCrop], cfg: MotionConfig) -> Optional[Kinem
     for a, b in zip(crops, crops[1:]):
         path_bh += math.dist(a.foot, b.foot) / ((a.h + b.h) / 2.0)
     speed = net_bh / dur if dur > 0 else 0.0
+    # Each end in its own frame (a share of the frame), so a 1600 px doorbell
+    # frame is not read as 0.6 of a 2560 px walkway frame.
+    (w0, h0), (w1, h1) = frame_of(crops[0], cfg), frame_of(crops[-1], cfg)
+    dx = (x1 - x0) / w0 if w0 == w1 else x1 / w1 - x0 / w0
+    dy = (y1 - y0) / h0 if h0 == h1 else y1 / h1 - y0 / h0
     return Kinematics(used=len(crops), dur=dur, hmed=hmed, net_bh=net_bh, path_bh=path_bh, speed=speed,
-                      dx=(x1 - x0) / cfg.frame_w, dy=(y1 - y0) / cfg.frame_h,
-                      dlogh=math.log(crops[-1].h / crops[0].h))
+                      dx=dx, dy=dy, dlogh=math.log(crops[-1].h / crops[0].h))
 
 
 def speed_class(kind: str, k: Kinematics, cfg: MotionConfig) -> str:
@@ -352,7 +464,8 @@ def zone_path(crops: Sequence[MotionCrop], zones: Sequence[Zone], cfg: MotionCon
     majority zone."""
     raw = []
     for c in crops:
-        z = zone_for_box(zones, c.box, cfg.frame_w, cfg.frame_h)
+        fw, fh = frame_of(c, cfg)
+        z = zone_for_box(zones, c.box, fw, fh)
         raw.append(z.name if z else OUTSIDE)
     if not raw:
         return []
@@ -425,7 +538,7 @@ def name_for(p: Passage, labels: Dict[str, str], cfg: MotionConfig
     Crops with no id at all do not block a name. The returned id is the one
     on most crops. The rule itself is orion.vision.story_naming.name_from_crops,
     shared with the Hub's read-time re-derivation."""
-    return name_from_crops([(c.individual_id, is_edge_clipped(c.box, cfg)) for c in p.crops], labels,
+    return name_from_crops([(c.individual_id, crop_clipped(c, cfg)) for c in p.crops], labels,
                            cfg.name_share)
 
 
@@ -569,13 +682,17 @@ def build_stories(
                                 companions=companions, people_together=people)
         evidence = []
         for c in p.crops:
-            z = None if is_edge_clipped(c.box, cfg) else zone_for_box(zones, c.box, cfg.frame_w, cfg.frame_h)
+            clip = crop_clipped(c, cfg)
+            z = None if clip else zone_for_box(zones, c.box, *frame_of(c, cfg))
             evidence.append({
                 "crop_id": c.crop_id, "t": c.t.isoformat(), "label": c.label, "score": round(float(c.score), 3),
                 "box": [round(float(v), 1) for v in c.box], "zone": z.name if z else None,
-                "clipped": is_edge_clipped(c.box, cfg), "individual_id": c.individual_id,
+                "clipped": clip, "individual_id": c.individual_id,
                 "thumb": _thumb_hex(c.thumb_ref),
             })
+        fw, fh, fsrc = passage_frame(p, cfg)
+        fx, fy = exit_foot(p.last, cfg)
+        xs = exit_speed(usable[i], cfg)
         out.append(Story(
             story_id=sids[i], stream_id=stream_id, kind=p.kind, started_at=p.first.t, ended_at=p.last.t,
             detection_count=n, used_detections=len(usable[i]), edge_clipped_count=clipped,
@@ -586,5 +703,9 @@ def build_stories(
             published=reason is None, drop_reason=reason,
             clean=bool(clean_since is None or p.first.t >= clean_since),
             sentence=sentence, crop_ids=[c.crop_id for c in p.crops], evidence=evidence,
+            entry_edge=edge_of(p.first, cfg), exit_edge=edge_of(p.last, cfg),
+            exit_foot_x=round(fx, 4), exit_foot_y=round(fy, 4),
+            exit_speed_fw_per_sec=round(xs, 5) if xs is not None else None,
+            frame_w=int(round(fw)), frame_h=int(round(fh)), frame_size_source=fsrc,
         ))
     return out

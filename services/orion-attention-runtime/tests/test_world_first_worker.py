@@ -129,14 +129,33 @@ def test_event_decay_setting_reaches_the_candidates() -> None:
         assert cands["node:substrate.biometrics"].event_window_sec is None
 
 
-def test_walkway_perception_node_is_never_a_candidate() -> None:
-    """node:substrate.perception_walkway is recorded every tick (history + field
-    vector) but has no cognition consumer until its live-data check runs, so a
-    loud walkway reading must not bid, from either the history or the field."""
+def test_walkway_bids_as_world_and_wins_only_in_its_own_p99_band() -> None:
+    """node:substrate.perception_walkway bids from the history (2026-10-21) as
+    an outdoor (world) source, eligible only at its own p99+ band."""
+    from orion.attention.world_first import judge_candidate
+
     walkway = "node:substrate.perception_walkway"
-    rows = _history(walkway, 0.0, 1.0) + _history("node:substrate.execution", 0.0, 0.9)
     field = _field()
     field = field.model_copy(update={"node_vectors": {**field.node_vectors, walkway: {"prediction_error": 1.0}}})
-    cands = _by_id(_worker(pe_rows=rows)._world_first_candidates(field, NOW))
-    assert walkway not in cands
-    assert "node:substrate.execution" in cands
+    rows = _history(walkway, 0.0, 1.0) + _history("node:substrate.execution", 0.0, 0.9)
+    cand = _by_id(_worker(pe_rows=rows)._world_first_candidates(field, NOW))[walkway]
+    assert cand.source_kind == "external" and not cand.absent
+    verdict = judge_candidate(cand)
+    assert verdict.band == "unusual" and verdict.eligible
+
+    # A high-but-not-p99 reading: 2% of its history above the current value.
+    rows = [(walkway, NOW - timedelta(minutes=10 * (400 - i)), 1.0 if i < 8 else 0.0) for i in range(400)]
+    rows.append((walkway, NOW - timedelta(seconds=20), 0.5))
+    cand = _by_id(_worker(pe_rows=rows)._world_first_candidates(field, NOW))[walkway]
+    verdict = judge_candidate(cand)
+    assert verdict.band == "high" and not verdict.eligible
+
+
+def test_walkway_with_no_recent_history_row_is_absent() -> None:
+    """Missing input writes no history row, so the newest stored reading ages
+    and the walkway reads absent after 180 s -- never calm."""
+    walkway = "node:substrate.perception_walkway"
+    rows = [(walkway, NOW - timedelta(minutes=10 * (400 - i)), 0.0) for i in range(400)]
+    rows.append((walkway, NOW - timedelta(minutes=20), 1.0))
+    cand = _by_id(_worker(pe_rows=rows)._world_first_candidates(_field(), NOW))[walkway]
+    assert cand.absent and "old" in (cand.absent_reason or "")

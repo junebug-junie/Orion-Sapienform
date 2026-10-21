@@ -262,3 +262,21 @@ def test_poll_task_is_once_per_process(monkeypatch):
         await first
 
     asyncio.run(_go())
+
+
+def test_tracked_signal_that_became_a_world_source_is_observed_absent() -> None:
+    """The walkway camera became a world source on 2026-10-21. A body episode
+    tracked for it before then must still be observed (as absent), so it can
+    close went_silent instead of hanging open unobserved."""
+    walkway = "node:substrate.perception_walkway"
+    now = T0
+    obs = observe_signals(
+        _mags(now, **{walkway: HOT, BUS: CALM}), now=now, known_signal_ids=[walkway]
+    )
+    by_id = {o.signal_id: o for o in obs}
+    assert walkway in by_id
+    assert by_id[walkway].kind == "unknown"
+    assert "no longer a body signal" in by_id[walkway].reason
+    # Not tracked -> a world source is not a body signal at all.
+    obs = observe_signals(_mags(now, **{walkway: HOT, BUS: CALM}), now=now)
+    assert walkway not in {o.signal_id for o in obs}

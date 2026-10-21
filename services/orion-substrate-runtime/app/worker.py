@@ -8,7 +8,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field as _dataclass_field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 from uuid import uuid4
@@ -394,7 +394,8 @@ class _PerceptionGroupState:
     """Latest perceptual prediction-error reading for one published node.
 
     Same four facts the room node keeps in the ``_last_perception_*``
-    attributes, for the walkway node: the last real score, how many surprise
+    attributes, for the walkway node: the PEAK real score since the last tick
+    publish (peak-hold, see ``_take_perception_peak``), how many surprise
     samples its scalar baseline has seen (still-warming check), when its last
     embedding arrived (staleness clock) and which stream sent it. In-memory
     "how is this lately" cache; the durable state is the per-stream row in
@@ -405,6 +406,19 @@ class _PerceptionGroupState:
     surprise_n: int = 0
     embedding_at: datetime | None = None
     stream_id: str | None = None
+    lock: threading.Lock = _dataclass_field(default_factory=threading.Lock, repr=False, compare=False)
+
+
+def _hold_peak(previous: float | None, score: float) -> float:
+    """Peak-hold: the larger of the held score and a new frame's score."""
+    return score if previous is None else max(previous, score)
+
+
+# Why a node's published prediction_error is a placeholder, not a reading
+# (orion/substrate/prediction_error_freshness.py PREDICTION_ERROR_MISSING_REASON_KEY).
+PERCEPTION_MISSING_STALE = "stale"
+PERCEPTION_MISSING_WARMING = "warming"
+PERCEPTION_MISSING_NO_FRAME = "no_scored_frame_since_last_tick"
 
 
 @dataclass(frozen=True)
@@ -1695,7 +1709,9 @@ class BiometricsSubstrateWorker:
             walkway.stream_id = stream_id
             walkway.surprise_n = result.baseline.surprise.n
             if result.score is not None:
-                walkway.score = result.score
+                # Peak-hold until the tick publishes (``_take_perception_peak``).
+                with walkway.lock:
+                    walkway.score = _hold_peak(walkway.score, result.score)
             self._log_perception_score(stream_id, result, node_id=PERCEPTION_WALKWAY_NODE_ID)
             return
         self._last_perception_embedding_at = now
@@ -1711,7 +1727,13 @@ class BiometricsSubstrateWorker:
         # return score=None (see this attribute's own comment in __init__).
         self._last_perception_surprise_n = result.baseline.surprise.n
         if result.score is not None:
-            self._last_perception_prediction_error = result.score
+            # Peak-hold until the tick publishes (``_take_perception_peak``):
+            # frames arrive every ~5 s, the tick every 30 s, and publishing only
+            # the latest frame dropped 88% of the 1.0 frames (2026-10-20).
+            with self._perception_room_lock():
+                self._last_perception_prediction_error = _hold_peak(
+                    self._last_perception_prediction_error, result.score
+                )
         self._log_perception_score(stream_id, result, node_id=PERCEPTION_NODE_ID)
 
     def _perception_walkway_stream_ids(self) -> frozenset[str]:
@@ -1719,6 +1741,31 @@ class BiometricsSubstrateWorker:
             getattr(self._settings, "perception_walkway_stream_ids", None),
             _DEFAULT_PERCEPTION_WALKWAY_STREAM_IDS,
         )
+
+    def _perception_room_lock(self) -> threading.Lock:
+        # getattr: tests build the worker via __new__ and skip __init__.
+        lock = getattr(self, "_perception_room_peak_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._perception_room_peak_lock = lock
+        return lock
+
+    def _take_perception_peak(self, *, walkway: bool) -> float | None:
+        """Return the peak score held since the last publish and reset it.
+
+        The published value of a perception node is the PEAK per-frame score
+        in the last tick window, not the latest frame's. None = no scored frame
+        arrived in the window, which the tick publishes as missing, not 0.0.
+        """
+        if walkway:
+            state = self._perception_walkway_state()
+            with state.lock:
+                peak, state.score = state.score, None
+            return peak
+        with self._perception_room_lock():
+            peak = self._last_perception_prediction_error
+            self._last_perception_prediction_error = None
+        return peak
 
     def _perception_walkway_state(self) -> _PerceptionGroupState:
         # getattr: tests build the worker via __new__ and skip __init__.
@@ -1788,7 +1835,7 @@ class BiometricsSubstrateWorker:
                 node_id=PERCEPTION_NODE_ID,
                 reducer_key="perception",
                 log_prefix="substrate_perception_prediction_error",
-                cached_score=self._last_perception_prediction_error,
+                cached_score=self._take_perception_peak(walkway=False),
                 surprise_n=self._last_perception_surprise_n,
                 embedding_at=self._last_perception_embedding_at,
                 stream_id=self._last_perception_stream_id,
@@ -1802,7 +1849,7 @@ class BiometricsSubstrateWorker:
                 node_id=PERCEPTION_WALKWAY_NODE_ID,
                 reducer_key="perception_walkway",
                 log_prefix="substrate_perception_walkway_prediction_error",
-                cached_score=walkway.score,
+                cached_score=self._take_perception_peak(walkway=True),
                 surprise_n=walkway.surprise_n,
                 embedding_at=walkway.embedding_at,
                 stream_id=walkway.stream_id,
@@ -1823,9 +1870,16 @@ class BiometricsSubstrateWorker:
         stream_id: str | None,
         now: datetime,
     ) -> None:
-        """One perception node's tick: staleness -> 0.0, still-warming -> 0.0,
-        else the cached real score; receipt + graph node written every call.
-        Raises on failure; the caller isolates each node."""
+        """One perception node's tick. ``cached_score`` is the PEAK per-frame
+        score since the last publish (None = no scored frame in the window).
+
+        A real reading publishes that peak. Missing input -- embeddings stale,
+        baseline still warming, or no scored frame in the window -- still
+        writes the receipt and graph node (0.0, see below), but marks the node
+        with ``prediction_error_missing_reason`` so the value is never recorded
+        in substrate_node_prediction_error_history and never read as calm
+        (orion/substrate/prediction_error_freshness.py). Raises on failure; the
+        caller isolates each node."""
         last_at = embedding_at
         if last_at is None:
             # Nothing observed since this process started -- same startup-
@@ -1876,19 +1930,34 @@ class BiometricsSubstrateWorker:
         # state this migration's own comment says it widened the
         # window to include (own test coverage at the time only
         # exercised `surprise_n == 0`, never the real `== 1` case).
+        #
+        # 2026-10-21: the 0.0 written for stale / warming / no-frame is a
+        # placeholder for the field digester's receipt path (below), NOT a
+        # reading. It carries missing_reason, which keeps it out of
+        # substrate_node_prediction_error_history (the percentile window every
+        # attention contest ranks against) and out of the self-model. Before
+        # this, 49 h of stale zeros (2026-10-18..20) dragged the room camera's
+        # 7-day p90 from 0.227 to 0.022, and 221 of 234 camera attention wins
+        # were then ordinary frames ranked "high" against that collapsed window.
         still_warming = staleness < 1.0 and surprise_n < 2
+        missing_reason: str | None = None
         if staleness >= 1.0:
             score = 0.0
+            missing_reason = PERCEPTION_MISSING_STALE
         elif still_warming:
             score = 0.0
+            missing_reason = PERCEPTION_MISSING_WARMING
             logger.info(
                 "%s_tick_still_warming stream_id=%s surprise_n=%d",
                 log_prefix,
                 stream_id or "none",
                 surprise_n,
             )
+        elif cached_score is None:
+            score = 0.0
+            missing_reason = PERCEPTION_MISSING_NO_FRAME
         else:
-            score = cached_score or 0.0
+            score = cached_score
 
         # Receipt on EVERY tick, unconditionally -- NOT gated on
         # score > 0.0 the way _bus_synaptic_tick's is. This mirrors
@@ -1926,14 +1995,16 @@ class BiometricsSubstrateWorker:
             now=now,
             reducer_key=reducer_key,
             extra_channels={"embedding_staleness": staleness},
+            missing_reason=missing_reason,
         )
         logger.info(
-            "%s_tick_completed age_sec=%.1f staleness=%.3f score=%.3f stream_id=%s",
+            "%s_tick_completed age_sec=%.1f staleness=%.3f score=%.3f stream_id=%s missing=%s",
             log_prefix,
             age_seconds,
             staleness,
             score,
             stream_id or "none",
+            missing_reason or "no",
         )
 
     async def _perception_prediction_error_tick_loop(self) -> None:
@@ -2215,8 +2286,14 @@ class BiometricsSubstrateWorker:
         contributing_id: str | None = None,
         evidence_event_ids: Sequence[str] = (),
         extra_channels: dict[str, float] | None = None,
+        missing_reason: str | None = None,
     ) -> None:
         """Upsert a durable substrate node carrying the surprise (Rung 1 bridge).
+
+        ``missing_reason`` (2026-10-21): set when ``error`` is a placeholder
+        because the producer's input is missing; written to
+        ``metadata[PREDICTION_ERROR_MISSING_REASON_KEY]``. Every write replaces
+        the node's metadata, so a later real reading clears it.
 
         Default-off (env flag), fail-open: never raises out of a tick. When
         enabled it writes a single node under a fixed identity_key so re-writes
@@ -2306,6 +2383,12 @@ class BiometricsSubstrateWorker:
             # one, which is the whole distinction the channel exists to carry.
             for extra_key, extra_value in (extra_channels or {}).items():
                 metadata[extra_key] = round(float(extra_value), 6)
+            if missing_reason:
+                from orion.substrate.prediction_error_freshness import (
+                    PREDICTION_ERROR_MISSING_REASON_KEY,
+                )
+
+                metadata[PREDICTION_ERROR_MISSING_REASON_KEY] = str(missing_reason)
             if evidence_event_ids:
                 metadata["prediction_error_evidence_event_ids"] = list(
                     evidence_event_ids[:_PREDICTION_ERROR_EVIDENCE_CAP]
@@ -3041,7 +3124,15 @@ class BiometricsSubstrateWorker:
 
     @staticmethod
     def _node_prediction_error_reading(node: Any) -> tuple[float, datetime] | None:
-        """(prediction_error, observed_at) for a node, or None if unusable."""
+        """(prediction_error, observed_at) for a node, or None if unusable.
+
+        A placeholder written for missing input (camera stale/warming/no frame,
+        ``prediction_error_missing_reason``) is unusable: it is not recorded in
+        the history and has no magnitude. Missing is a gap, never a 0.0."""
+        from orion.substrate.prediction_error_freshness import missing_input_reason
+
+        if missing_input_reason(node) is not None:
+            return None
         metadata = getattr(node, "metadata", None) or {}
         raw = metadata.get("prediction_error") if isinstance(metadata, dict) else None
         if raw is None or isinstance(raw, bool):

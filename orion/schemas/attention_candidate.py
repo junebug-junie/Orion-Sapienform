@@ -51,18 +51,40 @@ PERCEPTION_WALKWAY_NODE_ID = "node:substrate.perception_walkway"
 #
 # The walkway camera node, 2026-10-15: curiosity reads it (Juniper's decision;
 # gate record in docs/superpowers/pr-reports/2026-10-15-walkway-street-into-mind-pr.md).
-# Attention still does not: before it does, decide whether is_world_source_id
-# below should call it world (it is an outdoor camera) and give it the
-# camera-absent check PERCEPTION_NODE_ID gets.
+# It stays fenced from every attention path that does NOT judge bands (the
+# broadcast's salience signals). The world-first contests admit it only under
+# ATTENTION_MIN_BAND_BY_NODE_ID below.
 NO_ATTENTION_CONSUMER_NODE_IDS: frozenset[str] = frozenset({PERCEPTION_WALKWAY_NODE_ID})
 NO_CURIOSITY_CONSUMER_NODE_IDS: frozenset[str] = frozenset()
 
+# Per-node band floor for the world-first contests (2026-10-21, Juniper's
+# option D). A node listed here competes as a candidate, but is eligible only at
+# or above this band FOR ITSELF (its own 7-day window). Walkway: only its p99+
+# tail ("unusual") -- replay 2026-10-14..20 found its p99+ ticks 6x enriched for
+# a pedestrian/dog/bike event (20% vs 3.3% base) while its p90-p99 band was at
+# chance. Overrides NO_ATTENTION_CONSUMER_NODE_IDS for those two contests only.
+# Rollback: delete the entry (the fence above then applies everywhere again).
+# Record: docs/superpowers/pr-reports/2026-10-21-camera-surprise-honest-input-pr.md.
+ATTENTION_MIN_BAND_BY_NODE_ID: dict[str, str] = {PERCEPTION_WALKWAY_NODE_ID: "unusual"}
+
+# Substrate nodes that measure the outside world, not Orion's body. The
+# walkway is an outdoor camera, so it is world (2026-10-21): external sources
+# are absent after 180 s without a reading, and the body-only self-signal
+# gates (equilibrium episodes, hourly outcomes) do not read it.
+_WORLD_NODE_IDS: frozenset[str] = frozenset({PERCEPTION_NODE_ID, PERCEPTION_WALKWAY_NODE_ID})
+
+
+def world_first_fenced(node_id: str) -> bool:
+    """True when the world-first contests must not build a candidate for
+    ``node_id``: fenced from attention and not admitted under a band floor."""
+    return node_id in NO_ATTENTION_CONSUMER_NODE_IDS and node_id not in ATTENTION_MIN_BAND_BY_NODE_ID
+
 
 def is_world_source_id(source_id: str | None) -> bool:
-    """True for an external (world) source id: chat, camera surprise, or any
-    future ``world:*`` source. Everything else is the body."""
+    """True for an external (world) source id: chat, camera surprise (room and
+    walkway), or any future ``world:*`` source. Everything else is the body."""
     sid = str(source_id or "")
-    return sid.startswith(WORLD_SOURCE_PREFIX) or sid == PERCEPTION_NODE_ID
+    return sid.startswith(WORLD_SOURCE_PREFIX) or sid in _WORLD_NODE_IDS
 
 
 # Polarity comes from the semantic layer (orion.metrics.semantics.

@@ -85,6 +85,7 @@ from orion.attention.sustained import (
     is_sustained,
 )
 from orion.schemas.attention_candidate import (
+    ATTENTION_MIN_BAND_BY_NODE_ID,
     PERCEPTION_NODE_ID,
     WORLD_CHAT_SOURCE_ID,
     AttentionCandidateV1,
@@ -225,7 +226,7 @@ _EVENT_SPARSITY = "event_gated"
 # write cadence then goes in absent_means (the precedence rule stated with
 # SPARSITIES in orion/metrics/semantics.py). Every such entry that is written
 # per event says so as "only written ..." (execution, chat, codebase, route);
-# per-tick writers say "written as 0.0 every tick" (perception) or describe a
+# per-tick writers say "per-tick writer" (perception) or describe a
 # skipped tick (cabinet). "carried forward" alone is NOT the test: per-tick
 # biometrics and bus_synaptic are carried forward between ticks too.
 _EVENT_CADENCE_PREFIX = "only written"
@@ -336,6 +337,19 @@ def bad_direction_percentile(
     return None
 
 
+# Bands from calm to busy, for comparing a band against a per-node floor.
+_BAND_ORDER: tuple[str, ...] = ("quiet", "usual", "high", "unusual")
+
+
+def below_band_floor(source_id: str, band: str) -> str | None:
+    """The node's band floor when ``band`` is under it, else None
+    (``ATTENTION_MIN_BAND_BY_NODE_ID``; an unknown band or floor never blocks)."""
+    floor = ATTENTION_MIN_BAND_BY_NODE_ID.get(str(source_id or ""))
+    if floor is None or floor not in _BAND_ORDER or band not in _BAND_ORDER:
+        return None
+    return floor if _BAND_ORDER.index(band) < _BAND_ORDER.index(floor) else None
+
+
 def _band_for(pct: float, cuts: tuple[float, float, float]) -> str:
     quiet_cut, usual_cut, high_cut = cuts
     if pct < quiet_cut:
@@ -431,6 +445,12 @@ def judge_candidate(
             candidate, False, "no declared polarity in the semantic layer", None, mag.band
         )
     band = _band_for(score, band_cuts)
+    floor = below_band_floor(candidate.source_id, band)
+    if floor is not None:
+        # A node admitted only for its own tail (walkway camera: p99+).
+        return CandidateVerdict(
+            candidate, False, f"{band} for itself, below this source's {floor} floor", score, band
+        )
     rank_score = bad_direction_percentile(candidate, for_ranking=True)
     decay, event_age, suffix = 1.0, None, ""
     window = candidate.event_window_sec
@@ -571,8 +591,9 @@ def perception_absent_reason(
 ) -> str | None:
     """ONE definition of "the camera cannot see right now", shared by both
     contests (review 2026-10-10: they used different signals and could
-    disagree). Perception writes 0.0 while stale or warming (glossary), so
-    absence must come from staleness, never from the value. Each contest
+    disagree). Perception writes a 0.0 placeholder while stale or warming
+    (marked ``prediction_error_missing_reason``, never recorded in history),
+    so absence must come from staleness, never from the value. Each contest
     passes what it can see: the broadcast has the perception node's own
     ``embedding_staleness`` (and the vision organ node when present); the
     field contest has the vision organ's ``vision_frame_staleness``
@@ -793,9 +814,11 @@ def node_candidate(
     mid-rank ``rank_percentile`` for ranking ceiling ties.
 
     ``absent_reason`` is the caller's evidence that the source cannot measure
-    right now (perception: camera/embedding staleness). For perception the
-    stored value is written as 0.0 while stale or warming (glossary), so
-    absence must come from staleness, never from the value.
+    right now (perception: camera/embedding staleness, or the node's own
+    ``prediction_error_missing_reason``). The perception nodes write a 0.0
+    placeholder while stale or warming, marked missing and never recorded in
+    the history, so absence must come from that marker or staleness, never
+    from the value.
 
     ``sustain`` (``ATTENTION_SUSTAINED_BODY_ENABLED``, default on) with
     ``pe_history`` (the node's 7-day ``(observed_at, value)`` readings): when

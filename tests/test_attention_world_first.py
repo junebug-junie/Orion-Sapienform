@@ -302,3 +302,27 @@ def test_trace_lists_absent_sources_so_failure_is_not_calm() -> None:
     r = rank_candidates([chat_candidate(None, now=NOW), body("node:substrate.route", 0.1)])
     assert r.no_winner and r.trace()["absent_sources"] == [WORLD_CHAT_SOURCE_ID]
 
+
+
+# --- Per-node band floor (2026-10-21, walkway camera) -----------------------
+
+
+def test_walkway_is_world_and_needs_its_own_p99_band() -> None:
+    from orion.attention.world_first import below_band_floor, source_kind_for_node
+    from orion.schemas.attention_candidate import (
+        PERCEPTION_WALKWAY_NODE_ID,
+        is_world_source_id,
+        world_first_fenced,
+    )
+
+    assert is_world_source_id(PERCEPTION_WALKWAY_NODE_ID)
+    assert source_kind_for_node(PERCEPTION_WALKWAY_NODE_ID) == "external"
+    assert not world_first_fenced(PERCEPTION_WALKWAY_NODE_ID)
+    for pct, band, eligible in ((0.995, "unusual", True), (0.95, "high", False), (0.6, "usual", False)):
+        verdict = judge_candidate(body(PERCEPTION_WALKWAY_NODE_ID, pct))
+        assert (verdict.band, verdict.eligible) == (band, eligible), pct
+    assert below_band_floor(PERCEPTION_WALKWAY_NODE_ID, "high") == "unusual"
+    assert below_band_floor(PERCEPTION_WALKWAY_NODE_ID, "unusual") is None
+    # The room camera has no floor: its "high" band still competes.
+    assert below_band_floor(PERCEPTION_NODE_ID, "high") is None
+    assert judge_candidate(body(PERCEPTION_NODE_ID, 0.95)).eligible

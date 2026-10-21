@@ -14,6 +14,18 @@ Missing/unparseable ``observed_at`` -> OMITTED with age ``None`` (status
 fresh (curiosity's choice) or zero would hide exactly the failure this rule
 exists to expose. Real nodes always carry ``temporal``; this only fires on
 corrupt/foreign nodes, and it is traced in the omitted map.
+
+Missing input (2026-10-21). A producer that writes on a clock (the camera
+surprise nodes) still writes a 0.0 placeholder when its own input is missing
+-- camera embeddings stale, baseline still warming, or no scored frame since
+the last write -- because the field digester's receipt path needs a write every
+tick (worker.py ``_publish_perception_group``). That 0.0 is not a reading. The
+producer says so in ``metadata[PREDICTION_ERROR_MISSING_REASON_KEY]``, and
+``classify_reading`` then returns ``STATUS_MISSING_INPUT`` however fresh
+``observed_at`` is, so every caller that omits non-fresh readings omits it too.
+Seen live 2026-10-18 04:06 -> 10-20 05:51: no embeddings for 49 h, the room
+camera node wrote 0.0 every 30 s, and those zeros pulled its 7-day p90 from
+0.227 to 0.022.
 """
 
 from __future__ import annotations
@@ -28,6 +40,24 @@ PE_STALENESS_HORIZON_SEC: float = float(PressureConfig().prediction_error_decay_
 STATUS_FRESH = "fresh"
 STATUS_STALE = "stale"
 STATUS_UNKNOWN_AGE = "unknown_age"
+STATUS_MISSING_INPUT = "missing_input"
+
+# Node metadata key: a non-empty string means "the prediction_error on this
+# node is a placeholder, its input is missing", and says why. Absent/empty =
+# a real reading.
+PREDICTION_ERROR_MISSING_REASON_KEY = "prediction_error_missing_reason"
+
+
+def missing_input_reason(node: Any) -> str | None:
+    """The producer's own "this value is a placeholder" reason, or None."""
+    metadata = getattr(node, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    reason = metadata.get(PREDICTION_ERROR_MISSING_REASON_KEY)
+    if reason is None:
+        return None
+    reason = str(reason).strip()
+    return reason or None
 
 
 def _as_dt(value: Any) -> datetime | None:
@@ -52,8 +82,11 @@ def reading_age_sec(node: Any, *, now: datetime) -> float | None:
 def classify_reading(
     node: Any, *, now: datetime, horizon_sec: float = PE_STALENESS_HORIZON_SEC
 ) -> tuple[str, float | None]:
-    """Return ``(status, age_sec)``. Age exactly at the horizon is still fresh."""
+    """Return ``(status, age_sec)``. Age exactly at the horizon is still fresh.
+    A placeholder written for missing input is ``STATUS_MISSING_INPUT``."""
     age = reading_age_sec(node, now=now)
+    if missing_input_reason(node) is not None:
+        return STATUS_MISSING_INPUT, age
     if age is None:
         return STATUS_UNKNOWN_AGE, None
     if age > horizon_sec:

@@ -673,5 +673,32 @@ Every proven admission is held back at `ORION_DISPATCH_HOLDBACK_FRACTION` (stabl
 Both arms are precommitted to `substrate_act_episodes`
 (`services/orion-sql-db/manual_migration_act_episodes_v1.sql`; also created lazily). A row that
 cannot be written means the act is not sent. A decision of either arm holds the act in flight for its
-`horizon_sec`. A control row of an `artifact_produced` act is 0 by construction. The frame carries
-`admitted:proven_effect:...`, or `proven_effect:<why not>:...`.
+`horizon_sec`. The frame carries `admitted:proven_effect:...`, or `proven_effect:<why not>:...`.
+
+**Which acts are held back (2026-10-21 follow-up).** A control arm is drawn only when the act's
+outcome can occur without the act. The route says where the act's object comes from
+(`act.object_source`, `orion/autonomy/act_episodes.py` `holdback_rule`):
+
+- `dispatch`: the dispatch makes the object (a painting run id derives from the dispatch id). Without
+  the dispatch there is nothing to observe, so a control row would be 0 by construction. Never held
+  back. The treated row says `holdback_exempt:outcome_requires_act:object_minted_by_dispatch`.
+- `queue`: the dispatch picks an object that already exists and that another lane can also act on.
+  Held back. Both arms record the object (`object_ref`) and are resolved the same way after the
+  horizon: 1 if a graded act with that key closed with outcome 1 inside the window, else 0.
+
+### Reading pull (2026-10-21 follow-up)
+
+Route `read_world_pulse` (template of the same name, kind `observe`, `inspect_only`). Its executor key
+`orion.world_pulse_read.pull.v1` is one bus RPC to Hub (`orion:world_pulse_read:pull:request`). The
+dispatch is one extra `hub.world_pulse_read` `look` act on the seed Hub's own lane would claim next.
+
+- Cost: the look act's own median open->close time over 30 days (679 s live). The RPC is not the
+  work, so the result row carries no latency.
+- In flight: an episode of either arm, for 12000 s. The lane's own open reads do not count.
+- Order per decision: `check` (Hub gates and seed, no side effect) -> precommit with that seed ->
+  `act` (treated starts the read; control only marks the seed, so a later pull cannot take it).
+- A refusal at `check` writes no row. The candidate is blocked `doer_refused:<why>`, and the route is
+  held for Hub's `retry_after_sec` (arousal 360 s, thermal 300 s, cap until UTC midnight).
+- Kill switch: `ORION_DISPATCH_READING_PULL_ENABLED` (ON). Hub has its own
+  (`HUB_WORLD_PULSE_READ_PULL_ENABLED`) and runs every gate.
+- Replay: `orion/autonomy/evals/run_rung3_reading_replay_eval.py [--live --hours 48]`.

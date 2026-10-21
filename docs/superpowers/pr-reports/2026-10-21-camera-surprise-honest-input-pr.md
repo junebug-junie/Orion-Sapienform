@@ -33,6 +33,7 @@
 
 ## Files changed
 
+- `orion/substrate/falkor_codec.py`, `orion/substrate/falkor_store.py`: persist `embedding_staleness` and `prediction_error_missing_reason` (review blocker).
 - `services/orion-substrate-runtime/app/worker.py`: take-and-clear latest score under a lock (listener thread vs tick thread); missing reasons; node metadata marker; sampler skips marked nodes.
 - `orion/substrate/prediction_error_freshness.py`: `PREDICTION_ERROR_MISSING_REASON_KEY`, `missing_input_reason`, `STATUS_MISSING_INPUT` in `classify_reading`.
 - `orion/schemas/attention_candidate.py`: walkway is world; `ATTENTION_MIN_BAND_BY_NODE_ID`; `world_first_fenced`.
@@ -44,12 +45,15 @@
 - `config/field/field_channel_glossary.v1.yaml`, `config/metrics/metric_definitions.lock.json`: meaning/rest/absent_means for both camera nodes; re-locked after merging main.
 - `services/orion-substrate-runtime/README.md`, `orion/substrate/endogenous_curiosity.py` (comment): describe the new behaviour.
 - `services/orion-substrate-runtime/evals/run_camera_surprise_input_eval.py` (+ test): read-only gate eval.
-- Tests: `services/orion-substrate-runtime/tests/test_worker_perception_honest_input.py` (new), `test_worker_perception_walkway_split.py`, `orion/substrate/tests/test_attention_broadcast_world_first.py`, `services/orion-attention-runtime/tests/test_world_first_worker.py`, `services/orion-equilibrium-service/tests/test_self_signal_episode_gate.py`, `tests/test_attention_world_first.py`, `tests/scripts/test_substrate_ladder_liveness.py`.
+- Tests: `services/orion-substrate-runtime/tests/test_worker_perception_honest_input.py` (new), `test_worker_perception_missing_marker_roundtrip.py` (new), `orion/substrate/tests/test_falkor_codec_camera_missing_input.py` (new), `orion/substrate/tests/test_falkor_codec.py`, `test_worker_perception_walkway_split.py`, `orion/substrate/tests/test_attention_broadcast_world_first.py`, `services/orion-attention-runtime/tests/test_world_first_worker.py`, `services/orion-equilibrium-service/tests/test_self_signal_episode_gate.py`, `tests/test_attention_world_first.py`, `tests/scripts/test_substrate_ladder_liveness.py`.
 - `.github/workflows/substrate-neighborhood.yml`: runs the new worker tests and the eval test.
 
 ## Schema / bus / API changes
 
-- Added: node metadata key `prediction_error_missing_reason` (string, in-process; not in the Falkor `DYNAMICS_METADATA_KEYS` allowlist, see Risks). Ladder rungs `camera_input:cam0`, `camera_input:walkway`.
+- Added:
+  - Node metadata key `prediction_error_missing_reason` (string).
+  - `embedding_staleness` and the new key are now persisted as native Falkor node properties (`falkor_codec.DYNAMICS_METADATA_KEYS`, `NATIVE_NODE_RETURN_FIELDS`). Every concept node upsert sends them as null when absent, the same as `perception_staleness`.
+  - Ladder rungs `camera_input:cam0` and `camera_input:walkway`.
 - Removed: none.
 - Renamed: none.
 - Behavior changed:
@@ -151,9 +155,12 @@ Script: scratchpad `replay_honest.py`. The committed eval reproduces the gate nu
 ## Tests run
 
 ```text
-services/orion-substrate-runtime: tests/test_worker_perception_honest_input.py tests/test_worker_perception_prediction_error.py tests/test_worker_perception_walkway_split.py tests/test_worker_pe_history.py -> 52 passed
-services/orion-substrate-runtime full tests (minus 2 files needing a local Postgres) -> 474 passed, 14 failed, 9 errors; the same 14 failed / 9 errors on a clean origin/main worktree (pre-existing: cursor reset/quarantine/reducer health)
-mutation checks: latest-frame take-and-clear removed -> republish test fails; sampler marker check removed -> 2 history tests fail
+services/orion-substrate-runtime: perception tests (honest_input, missing_marker_roundtrip, prediction_error, walkway_split) -> 40 passed
+services/orion-substrate-runtime full tests (minus 2 files needing a local Postgres) -> 475 passed, 14 failed, 9 errors; the same 14 failed / 9 errors on a clean origin/main worktree (pre-existing: cursor reset/quarantine/reducer health)
+orion/substrate/tests + tests/test_attention*.py + tests/test_metric*.py + ladder -> 1847 passed, 4 failed (test_felt_state_*: same 4 fail on origin/main)
+orion/substrate/tests/test_falkor_codec*.py test_falkor_store*.py test_dynamics*.py -> 151 passed, 3 skipped
+services/orion-hub tests -k "substrate or perception or attention_organ or falkor" -> 285 passed, 6 failed (same 6 on origin/main)
+mutation checks: take-and-clear removed -> republish test fails; sampler marker check removed -> 2 history tests fail; codec return fields removed -> store round-trip test fails
 tests/test_attention_world_first.py tests/scripts/test_substrate_ladder_liveness.py tests/test_metric_definition_drift.py tests/test_metric_rest_range.py orion/substrate/tests/test_attention_broadcast_world_first.py services/orion-attention-runtime/tests -> 271 passed, 5 skipped
 orion/metacog/tests/test_self_signal_episode.py tests/test_attention*.py orion/substrate/tests/test_attention_broadcast*.py test_attention_self_model*.py test_endogenous_curiosity*.py ... -> 592 passed
 services/orion-equilibrium-service: test_self_signal_episode_gate.py evals/test_self_signal_episode_replay_eval.py test_self_signal_outcome_rollup.py -> 38 passed
@@ -180,7 +187,36 @@ Ladder rungs verified live, read-only (camera_input:cam0/walkway ok).
 
 ## Review findings fixed
 
-(filled in after the review subagent)
+The code review ran in a subagent on `git diff origin/main...HEAD`.
+
+- Finding (blocker): the missing-input marker never reached any reader live.
+  - `FalkorSubstrateStore.upsert_node` caches the decoded durable row (since 2026-10-12).
+  - `falkor_codec.DYNAMICS_METADATA_KEYS` is a closed allowlist that held neither `prediction_error_missing_reason` nor `embedding_staleness`. The sampler would have kept recording placeholder 0.0 rows.
+  - This also means the existing broadcast check "perception absent when `embedding_staleness` >= 1" has never fired live, since the key never survived the store. That is a pre-existing dead path, and it is now live.
+  - Fix:
+    - Allowlist both keys in the encode/decode, `NATIVE_NODE_RETURN_FIELDS` and `EXTERNALLY_OWNED_METADATA_KEYS`.
+    - The reason encodes as null when absent, so `ON MATCH SET` clears it on the next real reading.
+  - Evidence:
+    - `services/orion-substrate-runtime/tests/test_worker_perception_missing_marker_roundtrip.py` drives the real writer -> real store/codec (fake graph applying the generated SET clauses) -> real sampler. It fails with the allowlist entries removed and passes with them.
+    - `orion/substrate/tests/test_falkor_codec_camera_missing_input.py` covers the codec on its own.
+- Finding: the tests passed for the wrong reason (mocked writer, hand-built metadata).
+  - Fix: the round-trip test above.
+- Finding: the room-score lock was built lazily, so two first callers could each build one.
+  - Fix: the lock is built in `__init__`.
+  - Evidence: same tests pass.
+- Finding: the trace contradicted the floor. A walkway win at mid-rank p99 reported band "high".
+  - Fix: the reason now says `mid-rank unusual meets its unusual floor`.
+  - Evidence: `test_walkway_trace_names_the_floor_it_met`.
+- Finding: the floor becomes unreachable if more than ~2% of the window sits at the 1.0 ceiling.
+  - Fix: limit documented on `ATTENTION_MIN_BAND_BY_NODE_ID` (live 1.5%).
+- Finding: a taken score is lost if the write raises.
+  - Fix: documented as fail-open (one frame).
+- Finding: the glossary consumer list was stale.
+  - Fix: the walkway declares `orion.attention.world_first:judge_candidate`, and the lock is re-locked (`routing_changed`, deliberate).
+- Not fixed, accepted (attention-runtime): the walkway reads absent only once its newest stored reading is older than 180 s (`PERCEPTION_MAX_AGE_SEC`). So the last real reading before a camera dies can keep competing for up to ~3 min.
+  - The broadcast contest marks it absent at once (marker and `embedding_staleness`).
+  - A shorter horizon in attention-runtime would misfire on late history commits, which run up to 355 s behind (`pe_history_cache.py`).
+- Not fixed, listed in Risks: the field digester receipt still carries 0.0 while the input is missing.
 
 ## Restart required
 
@@ -206,8 +242,11 @@ docker exec orion-athena-sql-db psql -U postgres -d conjourney -c "DELETE FROM s
   - Concern: the field digester still receives 0.0 for a camera whose input is missing (receipt path), and so do `node_vectors` readers.
   - Mitigation: the audit found none of them ranks perception from the field value. attention-runtime uses the field only to list node ids. `collect_field_channel_pressures` max-merges, and `prediction_error` has no dimension mapping. A true "unmeasured" for that channel needs field-digester expiry support (follow-up).
 - Severity: low.
-  - Concern: `prediction_error_missing_reason` is not in the Falkor durable allowlist (`DYNAMICS_METADATA_KEYS`). Every reader that acts on it (sampler, broadcast, self-model) runs in substrate-runtime against the in-process cache. After a restart, the next tick (30 s) rewrites it.
-  - Mitigation: none needed today. Promote it if a reader in another process ever needs it.
+  - Concern: the walkway node can carry its last real reading in attention-runtime for up to 180 s after its camera dies (see review findings). It can win in that window only if that last reading was itself p99+.
+  - Mitigation: accepted; the broadcast contest is immediate.
+- Severity: low.
+  - Concern: the broadcast's room-camera absence check on `embedding_staleness` has never worked live (the key was dropped by the store). After deploy it starts working, so the room camera reads absent, not quiet, while its embeddings are stale.
+  - Mitigation: intended; a quiet camera could never win anyway.
 - Severity: low.
   - Concern: the walkway changes from body to world. Any walkway self-signal episode open at deploy is observed absent and closes `went_silent` after the gate's silence window.
   - Mitigation: covered by a test.

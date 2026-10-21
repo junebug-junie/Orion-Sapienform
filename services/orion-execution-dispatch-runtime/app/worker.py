@@ -931,16 +931,18 @@ class ExecutionDispatchRuntimeWorker:
 
     ACT_HOLDBACK_REASON = "act_holdback"
 
-    def _proven_act_holdback(self, frame, to_send):
+    def _proven_act_holdback(self, frame, to_send, *, enforcing: bool = True):
         """Randomized control arm for proven-effect admissions (ORION_DISPATCH_HOLDBACK_FRACTION),
         drawn only among decisions that passed every gate. Both arms are precommitted to
         substrate_act_episodes; a decision whose row cannot be written is not sent."""
         proven = getattr(self, "_last_proven", None) or {}
         targets = [c for c in to_send if c.dispatch_id in proven]
-        if not targets:
+        # Not enforcing: the admission changed nothing (everything sends), so there is no decision
+        # to randomize. A probe tick is a non-random subset: no arm is recorded from it.
+        if not targets or not enforcing or self._tripwire_probe_in_flight:
             return to_send, frame
         now = datetime.now(timezone.utc)
-        fraction = 0.0 if self._tripwire_probe_in_flight else float(self._settings.orion_dispatch_holdback_fraction)
+        fraction = float(self._settings.orion_dispatch_holdback_fraction)
         withheld: list = []
         for c in targets:
             ref, why = proven[c.dispatch_id]
@@ -949,13 +951,15 @@ class ExecutionDispatchRuntimeWorker:
                 "episode_id": c.dispatch_id, "act_label": ref.label(), "verb": ref.verb, "actor": ref.actor,
                 "signal_id": ref.signal_id, "dispatch_kind": c.dispatch_kind, "target_id": c.target_id,
                 "arm": arm, "path": "proven_effect", "decided_at": now,
-                "horizon_at": now + timedelta(seconds=float(ref.horizon_sec or 6 * 3600.0)),
+                "horizon_at": now + timedelta(seconds=float(ref.horizon_sec)),
                 "dispatch_frame_id": frame.frame_id, "expected": {"admission": why},
                 # A held-back act produced nothing: 0 by construction for a producer-reported signal.
                 "outcome_value": 0.0 if arm == "control" and ref.signal_id in act_episodes.STRUCTURAL_ZERO_SIGNALS else None,
             }
             try:
-                self._store.insert_act_episode(row)
+                if not self._store.insert_act_episode(row):
+                    # A replayed decision keeps its first arm, whatever the fraction is now.
+                    arm = self._store.act_episode_arm(c.dispatch_id) or arm
             except Exception:
                 logger.warning("act_episode_precommit_failed dispatch_id=%s arm=%s", c.dispatch_id, arm, exc_info=True)
                 withheld.append((c, "act_episode_unrecorded", f"arm:{arm}"))
@@ -1510,8 +1514,6 @@ class ExecutionDispatchRuntimeWorker:
         # WORLD ACTIONS (attend-to-act loop): eligibility freshness, then the per-template randomized
         # holdback -- drawn ONLY here, among decisions that already passed every gate (eligibility,
         # policy, allocator, risk budget), so treated and control rows come from one population.
-        # Proven-effect act admissions (stage 3 option B): their own control arm, same draw rule.
-        to_send, frame = self._proven_act_holdback(frame, to_send)
         to_send, frame = self._world_action_holdback(frame, to_send)
 
         if not to_send:
@@ -1570,6 +1572,13 @@ class ExecutionDispatchRuntimeWorker:
                     "blocked_count": len(frame.blocked_candidates) + len(withheld),
                 }
             )
+
+        # Proven-effect act admissions (stage 3 option B): their own control arm, drawn LAST, after
+        # every other gate and the per-tick draw, so a precommitted `treated` row is never written
+        # for an act something else then stopped.
+        to_send, frame = self._proven_act_holdback(frame, to_send, enforcing=allocator_admitted_ids is not None)
+        if not to_send:
+            return self._abandon_tick_without_sending(frame, baseline_fields)
 
         sent_ids = {c.dispatch_id for c in to_send}
         remaining_candidates = [c for c in frame.candidates if c.dispatch_id not in sent_ids]

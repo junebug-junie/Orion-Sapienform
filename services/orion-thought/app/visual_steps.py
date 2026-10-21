@@ -381,9 +381,10 @@ def _generate_task_done(task: asyncio.Task) -> None:
                      exc_info=task.exception())
 
 
-def _mark_generating(observed: dict, started_at: datetime):
+def _mark_generating(observed: dict, started_at: datetime, opened: list | None = None):
     """Compare-and-set from the stage the step decided on. A concurrent generate,
-    caption reset or abandon in between leaves the row unchanged."""
+    caption reset or abandon in between leaves the row unchanged. ``opened`` (if given) gets
+    True appended when THIS write set the act marker."""
     def mutate(current: dict, row: dict) -> dict | None:
         if (row["outcome"] not in _OPEN_OUTCOMES or current.get("abandoned_at")
                 or current.get("stage") != observed.get("stage")
@@ -396,6 +397,8 @@ def _mark_generating(observed: dict, started_at: datetime):
         # generate finds the marker and never opens again (per attempt; first open wins).
         if not current.get("act_opened_at"):
             current["act_opened_at"] = started_at.isoformat()
+            if opened is not None:
+                opened.append(True)
         current.pop("artifact", None)
         current.pop("caption", None)
         return current
@@ -411,12 +414,13 @@ async def _generate_work(attempt_id: str, plan: vc.VisualPlan, observed: dict, h
             await _record_deferral(attempt_id, "generate", "deferred_busy", now_fn())
             return "retry", "deferred_busy", None
         started_at = now_fn()
+        opened: list = []
         marked = await asyncio.to_thread(store.update_visual_stage, attempt_id,
-                                         _mark_generating(observed, started_at))
+                                         _mark_generating(observed, started_at, opened))
         if (marked is None or marked["stage_json"].get("stage") != "generating"
                 or marked["stage_json"].get("generating_started_at") != started_at.isoformat()):
             return "retry", "stage_changed", None
-        if on_act_open is not None and marked["stage_json"].get("act_opened_at") == started_at.isoformat():
+        if on_act_open is not None and opened:
             await on_act_open()
         work_started = time.monotonic()
         try:
@@ -803,9 +807,9 @@ def painting_act_transition(req: ReverieVisualStepRequestV1,
     """What this step result means for the run's ``make`` act.
 
     Returns (action, produced, note): action is "close" or "none". The open is not
-    decided here: prepare_step publishes it once, when it first writes the attempt's
-    plan (see ``act_opened_at``), because a step result alone cannot tell a first
-    prepare from a replayed or retried one.
+    decided here: the first real generation publishes it once (``_mark_generating`` sets
+    ``act_opened_at``), because a step result alone cannot tell a first generate from a
+    replayed or retried one. A non-produced close is published only for an opened act.
 
     - Any result naming outcome "produced" closes at 1, whatever its status: a
       replayed step on an attempt that already produced reports terminal/produced
@@ -838,7 +842,7 @@ def _act_ledger_on(bus) -> bool:
 
 
 async def _publish_painting_open(bus, req: ReverieVisualStepRequestV1) -> None:
-    """Publish the run's act_opened. Called once per attempt, by prepare_step."""
+    """Publish the run's act_opened. Called once per attempt, at its first real generation."""
     if not _act_ledger_on(bus):
         return
     try:
@@ -854,8 +858,7 @@ async def _publish_painting_open(bus, req: ReverieVisualStepRequestV1) -> None:
 
 
 async def _act_was_opened(req: ReverieVisualStepRequestV1, result: ReverieVisualStepResultV1) -> bool:
-    """Did this run's attempt open its `make` act (reach generation)? Unknown reads as no: an
-    opened act left unclosed is expired at 0 by the writer, the same grade this close would give."""
+    """Did this run's attempt open its `make` act (reach generation)? Unknown reads as yes."""
     try:
         attempt_id = getattr(result, "attempt_id", None) or req.attempt_id
         if attempt_id:
@@ -864,8 +867,10 @@ async def _act_was_opened(req: ReverieVisualStepRequestV1, result: ReverieVisual
             row = await asyncio.to_thread(store.load_visual_attempt_for_dispatch, req.visual_request)
         return bool(row and (row.get("stage_json") or {}).get("act_opened_at"))
     except Exception as exc:  # noqa: BLE001
+        # Unknown -> publish the 0 close: a really-opened act left open would block its actor in the
+        # dispatch in-flight rule until expiry, and an unopened one gets the same 0 the expiry gives.
         logger.warning("painting_act_open_lookup_failed run=%s error=%s", req.run_id, exc)
-        return False
+        return True
 
 
 async def _mirror_painting_act(bus, req: ReverieVisualStepRequestV1,

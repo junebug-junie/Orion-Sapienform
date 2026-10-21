@@ -6,6 +6,13 @@ randomized control arm: a share of those admissions (ORION_DISPATCH_HOLDBACK_FRA
 and recorded here as ``control``; the rest are recorded as ``treated`` BEFORE the dispatch is sent
 (precommit). The control arm's rate becomes the bar the act must beat once it has enough rows.
 
+What this is NOT: a randomized treated-vs-control contrast. Treated rows are not resolved here; the
+act's rate comes from its EffectPosterior, which pools every graded close of the act (allocator
+dispatches and the scheduled-painting lane, and only runs that reached work). The control arm is
+"dispatch withheld". The check is therefore "posterior lower bound vs the better of the act prior
+and the control arm's rate" -- it can revoke a claim when not acting turns out as good as acting,
+but for a producer-reported signal (control 0 by construction) the arm carries no information.
+
 Separate from substrate_world_action_episodes on purpose: that ledger's scorer
 (orion-feedback-runtime) scores every due row as a cabinet shed, so an act row there would be
 mis-scored as one.
@@ -84,6 +91,15 @@ def insert_decision(conn, row: dict[str, Any]) -> bool:
     return res is not None
 
 
+def arm_of(conn, episode_id: str) -> str | None:
+    from sqlalchemy import text
+
+    if not table_exists(conn):
+        return None
+    value = conn.execute(text(f"SELECT arm FROM {TABLE} WHERE episode_id = :e"), {"e": episode_id}).scalar()
+    return None if value is None else str(value)
+
+
 def control_stats(conn, *, act_label: str) -> tuple[int, int]:
     """(resolved control rows, of which succeeded). (0, 0) while the table does not exist."""
     from sqlalchemy import text
@@ -109,5 +125,5 @@ def in_flight(conn, *, actor: str, now: datetime) -> bool:
         {"a": actor, "now": now}).scalar())
 
 
-__all__ = ["ARMS", "DDL", "STRUCTURAL_ZERO_SIGNALS", "TABLE", "control_stats", "ensure_table", "in_flight",
+__all__ = ["ARMS", "DDL", "arm_of", "STRUCTURAL_ZERO_SIGNALS", "TABLE", "control_stats", "ensure_table", "in_flight",
            "insert_decision", "table_exists"]

@@ -1118,3 +1118,56 @@ def test_waking_step_reply_omits_dream_only_fields():
     assert "caption" not in payload
     assert payload["execution_receipt"] == {"gate_reason": "max_steps", "detail": None}  # nested Nones kept
     assert ReverieVisualStepResultV1.model_validate(payload) == result
+
+
+@pytest.mark.asyncio
+async def test_a_retried_generation_after_a_failure_opens_once(env, monkeypatch):
+    monkeypatch.setattr(env.steps.settings, "thought_act_ledger_enabled", True, raising=False)
+    bus = _GrammarBus()
+    first = await _run_on(env, bus, _req("prepare"))
+    real = env.vc.call_diffusion_generate
+
+    def broken(*a, **kw):
+        raise env.vc.DiffusionGenerationError("HTTP 500")
+
+    monkeypatch.setattr(env.vc, "call_diffusion_generate", broken)
+    assert (await _run_on(env, bus, _req("generate", attempt_id=first.attempt_id))).status == "retry"
+    monkeypatch.setattr(env.vc, "call_diffusion_generate", real)
+    out = await _run_on(env, bus, _req("generate", attempt_id=first.attempt_id, correlation_id="corr-2"))
+    assert out.status == "done"
+    assert bus.act_kinds() == ["act_opened"]
+
+
+@pytest.mark.asyncio
+async def test_an_act_opened_at_prepare_by_the_old_code_is_not_reopened_and_still_closes(env, monkeypatch):
+    monkeypatch.setattr(env.steps.settings, "thought_act_ledger_enabled", True, raising=False)
+    _fake_abandon(env, monkeypatch)
+    bus = _GrammarBus()
+    first = await _run_on(env, bus, _req("prepare"))
+    env.store.rows[first.attempt_id]["stage_json"]["act_opened_at"] = "2026-10-20T00:00:00+00:00"
+    await _run_on(env, bus, _req("generate", attempt_id=first.attempt_id))
+    assert bus.act_kinds() == []
+    await _run_on(env, bus, _req("abandon", attempt_id=first.attempt_id))
+    assert bus.act_kinds() == ["act_closed"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_open_state_still_publishes_the_zero_close(env, monkeypatch):
+    """A really-opened act left open would block its actor in dispatch's in-flight rule."""
+    from app import store as store_mod
+
+    monkeypatch.setattr(env.steps.settings, "thought_act_ledger_enabled", True, raising=False)
+    _fake_abandon(env, monkeypatch)
+    bus = _GrammarBus()
+    first = await _run_on(env, bus, _req("prepare"))
+
+    def down(*a, **kw):
+        raise RuntimeError("db down")
+
+    real_abandon = store_mod.abandon_visual_attempt
+    out = await _run_on(env, bus, _req("abandon", attempt_id=first.attempt_id))
+    assert out.status == "done" and bus.act_kinds() == []
+    monkeypatch.setattr(store_mod, "load_visual_attempt", down)
+    monkeypatch.setattr(store_mod, "abandon_visual_attempt", real_abandon)
+    await env.steps._mirror_painting_act(bus, _req("abandon", attempt_id=first.attempt_id), out)
+    assert bus.act_kinds() == ["act_closed"]

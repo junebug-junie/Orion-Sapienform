@@ -296,8 +296,25 @@ RELIABLE = EffectPosterior(mean=0.696, variance=0.0021, n=119)
 
 def test_reference_is_the_act_prior_until_the_control_arm_has_20_rows() -> None:
     assert reference_rate(19, 0) == (0.5, "act_prior")
-    ref, src = reference_rate(20, 0)
-    assert src == "control_arm" and ref == pytest.approx(0.5 / 21)
+    ref, src = reference_rate(20, 15)
+    assert src == "control_arm" and ref == pytest.approx(15.5 / 21)
+
+
+def test_a_structural_zero_control_arm_never_lowers_the_bar() -> None:
+    """Review 2026-10-21: a held-back painting is 0 by construction; that arm must not cut the bar
+    from 0.5 to 0.024 (it would have made the 'check' admit 3x more easily)."""
+    assert reference_rate(20, 0) == (0.5, "act_prior_above_control")
+    weak = EffectPosterior(mean=0.4, variance=0.004, n=60)
+    assert proven_effect(weak, n_control=40, control_successes=0).proven is False
+
+
+def test_policy_horizon_matches_the_painting_producer() -> None:
+    import re
+
+    text = (REPO / "services/orion-thought/app/visual_steps.py").read_text()
+    producer = float(re.search(r"^PAINTING_HORIZON_SEC = ([0-9.]+)", text, re.M).group(1))
+    policy = load_execution_dispatch_policy(REPO / "config/execution_dispatch/execution_dispatch_policy.v1.yaml")
+    assert policy.act_refs_by_cortex_verb()[RENDER_VERB].horizon_sec == producer
 
 
 def test_proven_needs_20_observations_and_a_2_sigma_lower_bound_above_the_reference() -> None:
@@ -385,3 +402,52 @@ async def test_unrecorded_precommit_never_sends(monkeypatch) -> None:
     out = await worker._send_prepared_candidates(_frame(_render("d:x")))
     assert out.dispatched_candidates == []
     assert [c.blocked_by for c in out.blocked_candidates] == [["act_episode_unrecorded"]]
+
+
+
+def _proven_send_worker(monkeypatch):
+    worker = _send_ready_worker(monkeypatch, 0.2)
+    worker._store.load_effect_posteriors.return_value = {PAINT_CELL: RELIABLE}
+    worker._derive_motor_budget = MagicMock(return_value=SimpleNamespace(
+        remaining_sec=1e6, mode="enforcing", exhausted=False, spent_sec=0.0, allowance_sec=1e6, pace=1.0,
+        projected_day_sec=0.0))
+    monkeypatch.setattr(worker._settings, "orion_dispatch_allocator_enforce", True, raising=False)
+    monkeypatch.setattr(worker._policy.limits, "max_dispatches_per_tick", 5, raising=False)
+    return worker
+
+
+@pytest.mark.asyncio
+async def test_no_treated_row_for_an_act_the_tick_holdback_then_stopped(monkeypatch) -> None:
+    """Review 2026-10-21: the proven draw runs LAST. Fails when it ran before the per-tick draw."""
+    worker = _proven_send_worker(monkeypatch)
+    worker._store.load_action_cost_estimates.side_effect = lambda lookback_hours=24: (
+        {("express", "host:circe_gpu"): LIVE_COST, ("maintain", "host:docker_images"): 1.0})
+    worker._store.load_effect_posteriors.return_value = {
+        PAINT_CELL: RELIABLE, ("maintain", "host:docker_images", "resource_pressure", 0): EffectPosterior.cold()}
+    rows = []
+    worker._store.insert_act_episode.side_effect = lambda row: rows.append(row) or True
+    monkeypatch.setattr(worker, "_stable_draw", lambda dispatch_id: 0.9)
+    monkeypatch.setattr(worker_mod.random, "random", lambda: 0.0)     # per-tick draw withholds
+    out = await worker._send_prepared_candidates(_frame(_render("d:r"), _field_candidate("d:f")))
+    assert out.dispatched_candidates == [] and rows == []
+
+
+@pytest.mark.asyncio
+async def test_not_enforcing_records_no_arm(monkeypatch) -> None:
+    worker = _proven_send_worker(monkeypatch)
+    monkeypatch.setattr(worker._settings, "orion_dispatch_allocator_enforce", False, raising=False)
+    monkeypatch.setattr(worker, "_stable_draw", lambda dispatch_id: 0.0)
+    out = await worker._send_prepared_candidates(_frame(_render("d:n")))
+    worker._store.insert_act_episode.assert_not_called()
+    assert [c.dispatch_id for c in out.dispatched_candidates] == ["d:n"]
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_decision_keeps_its_first_arm(monkeypatch) -> None:
+    worker = _proven_send_worker(monkeypatch)
+    worker._store.insert_act_episode.return_value = False          # already recorded
+    worker._store.act_episode_arm.return_value = "control"
+    monkeypatch.setattr(worker, "_stable_draw", lambda dispatch_id: 0.9)   # would be treated now
+    out = await worker._send_prepared_candidates(_frame(_render("d:replay")))
+    assert out.dispatched_candidates == []
+    assert [c.blocked_by for c in out.blocked_candidates] == [["act_holdback"]]

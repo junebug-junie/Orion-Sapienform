@@ -127,11 +127,11 @@ def refuse_in_flight(allocation: Allocation, in_flight: list[Candidate]) -> Allo
 #   fixes for fitting any action's value (2026-09-29 spec, D3: n_per_arm >= max(20, ...));
 # - a credible lower bound: LB = mean - HARM_CONFIDENCE_SIGMAS * sd, the allocator's own 2-sigma
 #   confidence used by the harm gate, mirrored (stage 3 b in the attend-to-act design);
-# - above a reference rate: what happens WITHOUT the act. Once the act's randomized control arm has
-#   >= PROVEN_MIN_N resolved rows, the reference is that arm's rate (Jeffreys mean (k+0.5)/(n+1), so a
-#   structural all-zero arm is small but not 0). Before that it is the act learner's own cold prior
-#   mean (ACT_BINARY_PRIOR_MEAN, 0.5): "succeeds more often than the learner assumed before any
-#   evidence". The control arm then replaces it, and the claim is re-checked every tick.
+# - above a reference rate: the act learner's own cold prior mean (ACT_BINARY_PRIOR_MEAN, 0.5,
+#   "succeeds more often than the learner assumed before any evidence"), raised to the act's
+#   randomized control-arm rate (Jeffreys mean (k+0.5)/(n+1)) once that arm has >= PROVEN_MIN_N
+#   resolved rows and reads higher. Re-checked every tick. This is a posterior-vs-reference check,
+#   not a randomized contrast (see orion/autonomy/act_episodes.py).
 # Value, in the allocator's currency: KL(Bernoulli(LB) || Bernoulli(reference)) nats -- how far the
 # act moves its outcome from what happens without it, taken at the conservative LB -- per measured
 # motor-second. Admitted greedily by that rate inside the remaining allowance. No floor on this path:
@@ -145,8 +145,15 @@ PROVEN_REASON = "admitted:proven_effect"
 def reference_rate(n_control: int, successes: int) -> tuple[float, str]:
     from orion.autonomy.prediction import ACT_BINARY_PRIOR_MEAN
 
+    # The bar is never LOWER than the act prior: a control arm may raise it (revoking a claim when
+    # not acting does as well as acting), never cut it. Review 2026-10-21: with a structural-zero
+    # control (artifact_produced) the Jeffreys rate is ~0.024, which would have made the "check"
+    # admit acts 3x more easily than with no arm at all.
     if n_control >= PROVEN_MIN_N:
-        return (successes + 0.5) / (n_control + 1.0), "control_arm"
+        control = (successes + 0.5) / (n_control + 1.0)
+        if control > ACT_BINARY_PRIOR_MEAN:
+            return control, "control_arm"
+        return ACT_BINARY_PRIOR_MEAN, "act_prior_above_control"
     return ACT_BINARY_PRIOR_MEAN, "act_prior"
 
 

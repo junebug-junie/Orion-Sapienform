@@ -580,7 +580,7 @@ class ExecutionDispatchRuntimeStore:
 
         Two sources because they cover different stretches: a render_scene dispatch is ``pending``
         from send until its durable run settles (including GPU queue wait, before the act opens),
-        and the act is open from the run's first prepare until its close."""
+        and the act is open from the run's first real generation until its close."""
         with self._engine.connect() as conn:
             row = conn.execute(
                 text(
@@ -614,6 +614,12 @@ class ExecutionDispatchRuntimeStore:
 
         with self._engine.connect() as conn:
             return act_episodes.control_stats(conn, act_label=act_label)
+
+    def act_episode_arm(self, episode_id: str) -> str | None:
+        from orion.autonomy import act_episodes
+
+        with self._engine.connect() as conn:
+            return act_episodes.arm_of(conn, episode_id)
 
     def insert_act_episode(self, row: dict) -> bool:
         """Precommit for the proven-effect path. Raises on failure: no row, no action."""

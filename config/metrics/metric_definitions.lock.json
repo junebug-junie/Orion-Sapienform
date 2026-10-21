@@ -2,9 +2,10 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 751,
   "_last_change": {
-    "change_count": 2,
-    "high_severity_count": 2,
+    "change_count": 3,
+    "high_severity_count": 3,
     "changes": [
+      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.perception_walkway.prediction_error (declared_consumers: ['orion.substrate.en\u2026 -> ['orion.attention.world_first:judge_candidate', 'orion.subs\u2026\u2026)",
       "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.perception.prediction_error (absent_means: written as 0.0 every tick rather than dropped; nothing writt\u2026 -> per-tick writer: the graph node and receipt get a 0.0 place\u2026\u2026, meaning: \u2026prising the camera scene is versus that stream's own recent\u2026 -> \u2026prising the room camera's latest frame is versus that strea\u2026, rest: 0.0 = at or below this stream's usual surprise. Also 0.0 wh\u2026 -> 0.0 = the frame is at or below this stream's usual surprise\u2026)",
       "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.perception_walkway.prediction_error (absent_means: written as 0.0 every tick rather than dropped; nothing writ\u2026 -> per-tick writer: the graph node and receipt get a 0.0 place\u2026, meaning: \u2026door) camera scene is versus that stream's own recent norma\u2026\u2026 -> \u2026door) camera's latest frame is versus that stream's own rec\u2026\u2026, rest: 0.0 = at or below the walkway stream's usual surprise. Also\u2026 -> 0.0 = the frame is at or below the walkway stream's usual s\u2026)"
     ]
@@ -4649,6 +4650,7 @@
       "absent_means": "per-tick writer: the graph node and receipt get a 0.0 placeholder every tick while the input is missing, marked prediction_error_missing_reason (embedding_staleness 1.0 when stale); substrate_node_prediction_error_history gets no row then (a gap = missing, not calm). Nothing written until 15 s after process start.",
       "polarity": "higher_is_worse",
       "declared_consumers": [
+        "orion.attention.world_first:judge_candidate",
         "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
       ],
       "notes": "category=self_monitoring level=node",

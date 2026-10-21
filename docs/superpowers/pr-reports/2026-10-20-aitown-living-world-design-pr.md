@@ -66,6 +66,28 @@ Not applicable: documentation only. Live simulation behavior remains UNVERIFIED.
   - Fix: typed source references, immutable weather snapshots, public-provider acquisition and explicit town-region configuration.
   - Evidence: spec §5, schema/API section and A9; independent review returned no findings after revision.
 
+## Implementation handoff (2026-10-21)
+
+Another agent started building this design, then stopped before it committed anything. The work is now saved on branch `feat/aitown-living-world-implementation` (commit `27edb72e7`, pushed, no PR). It is a draft. Nobody has reviewed it, and it is not deployed.
+
+What the draft contains (44 files, about 1,560 lines):
+
+- The simulation core as Convex overlay files (`services/orion-ai-town/overlay/convex/sim/`), hook patch `orion-sim-hooks.patch`, and `scripts/test_sim.sh`.
+- The bus contract: five `orion:town:sim:*` channels and `orion/schemas/town_sim.py` (registered). This adds `TownSimStoredV1`, which this spec does not name.
+- The embodiment bridge and mirror (`orion/embodiment/town_sim_bridge.py`, `town_mirror.py`), the cortex verbs `town_forecast` and `town_add_event`, the hub form, the sql-writer consumer, and `manual_migration_town_sim_v1.sql`.
+
+Evidence on 2026-10-21: `scripts/test_sim.sh` passed 14/14. The pytest run on `services/orion-ai-town/tests` and `services/orion-embodiment/tests/test_town_sim_bridge.py` passed 148. Live behavior is UNVERIFIED.
+
+The draft does not follow the build order above:
+
+1. PR 1 is missing. There is no `orion-live-turn-roles.patch`, no partner-echo check, and no `c:578946` fixture. The draft also rewrites `orion-npc-no-self-repeat.patch`, and its retry prompt is shorter than the reviewed version. Check that rewrite before you keep it.
+2. All five PRs are in one branch. Split it in the order PR 1 → PR 5. Use the draft as source material, not as one merge.
+3. There is no A5 scene-writer eval.
+4. `services/orion-embodiment/.env_example` and `services/orion-hub/.env_example` changed. Run `python scripts/sync_local_env_from_example.py` when each slice lands.
+5. Excluded on purpose: the `services/orion-hub/node_modules/` changes (a local jsdom install, not part of this work). They stay uncommitted in that worktree.
+
+Next action: start PR 1 from `main` in a fresh worktree. Take only the echo/role pieces from the draft branch.
+
 ## Restart required
 
 No restart required.

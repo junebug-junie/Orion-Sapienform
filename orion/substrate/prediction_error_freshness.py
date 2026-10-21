@@ -24,8 +24,8 @@ producer says so in ``metadata[PREDICTION_ERROR_MISSING_REASON_KEY]``, and
 ``classify_reading`` then returns ``STATUS_MISSING_INPUT`` however fresh
 ``observed_at`` is, so every caller that omits non-fresh readings omits it too.
 Seen live 2026-10-18 04:06 -> 10-20 05:51: no embeddings for 49 h, the room
-camera node wrote 0.0 every 30 s, and those zeros pulled its 7-day p90 from
-0.227 to 0.022.
+camera node wrote 0.0 every 30 s, and those zeros (31% of its 7-day window)
+pulled its p90 to 0.137 against 0.205 over live hours only.
 """
 
 from __future__ import annotations

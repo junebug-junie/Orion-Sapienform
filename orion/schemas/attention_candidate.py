@@ -59,10 +59,12 @@ NO_CURIOSITY_CONSUMER_NODE_IDS: frozenset[str] = frozenset()
 
 # Per-node band floor for the world-first contests (2026-10-21, Juniper's
 # option D). A node listed here competes as a candidate, but is eligible only at
-# or above this band FOR ITSELF (its own 7-day window). Walkway: only its p99+
-# tail ("unusual") -- replay 2026-10-14..20 found its p99+ ticks 6x enriched for
-# a pedestrian/dog/bike event (20% vs 3.3% base) while its p90-p99 band was at
-# chance. Overrides NO_ATTENTION_CONSUMER_NODE_IDS for those two contests only.
+# or above this band FOR ITSELF (its own 7-day window, judged on the mid-rank
+# percentile so ceiling ties at 1.0 can reach it). Walkway: only its p99+ tail
+# ("unusual"). Replay of live readings 2026-10-17..21: 35.9% of its p99+
+# readings fell within 2.5 min of a person/dog/bike/stroller motion story,
+# against 7.2% for any reading, while its p90-p99 band was at chance (6.2%).
+# Overrides NO_ATTENTION_CONSUMER_NODE_IDS for those two contests only.
 # Rollback: delete the entry (the fence above then applies everywhere again).
 # Record: docs/superpowers/pr-reports/2026-10-21-camera-surprise-honest-input-pr.md.
 ATTENTION_MIN_BAND_BY_NODE_ID: dict[str, str] = {PERCEPTION_WALKWAY_NODE_ID: "unusual"}

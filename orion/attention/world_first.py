@@ -445,13 +445,18 @@ def judge_candidate(
             candidate, False, "no declared polarity in the semantic layer", None, mag.band
         )
     band = _band_for(score, band_cuts)
-    floor = below_band_floor(candidate.source_id, band)
-    if floor is not None:
-        # A node admitted only for its own tail (walkway camera: p99+).
-        return CandidateVerdict(
-            candidate, False, f"{band} for itself, below this source's {floor} floor", score, band
-        )
     rank_score = bad_direction_percentile(candidate, for_ranking=True)
+    # A node admitted only for its own tail (walkway camera: p99+). Judged on
+    # the mid-rank percentile: the camera score saturates at 1.0 for ~1.3% of
+    # readings, so strict-below puts every 1.0 at ~p98.7 and "p99+" would be
+    # unreachable however rare the moment is.
+    floor_band = _band_for(rank_score, band_cuts) if rank_score is not None else band
+    floor = below_band_floor(candidate.source_id, floor_band)
+    if floor is not None:
+        return CandidateVerdict(
+            candidate, False, f"{floor_band} for itself (mid-rank), below this source's {floor} floor",
+            score, band,
+        )
     decay, event_age, suffix = 1.0, None, ""
     window = candidate.event_window_sec
     if window is not None:

@@ -394,8 +394,8 @@ class _PerceptionGroupState:
     """Latest perceptual prediction-error reading for one published node.
 
     Same four facts the room node keeps in the ``_last_perception_*``
-    attributes, for the walkway node: the PEAK real score since the last tick
-    publish (peak-hold, see ``_take_perception_peak``), how many surprise
+    attributes, for the walkway node: the latest real score not yet published
+    (``_take_perception_score``; None once the tick has published it), how many surprise
     samples its scalar baseline has seen (still-warming check), when its last
     embedding arrived (staleness clock) and which stream sent it. In-memory
     "how is this lately" cache; the durable state is the per-stream row in
@@ -407,11 +407,6 @@ class _PerceptionGroupState:
     embedding_at: datetime | None = None
     stream_id: str | None = None
     lock: threading.Lock = _dataclass_field(default_factory=threading.Lock, repr=False, compare=False)
-
-
-def _hold_peak(previous: float | None, score: float) -> float:
-    """Peak-hold: the larger of the held score and a new frame's score."""
-    return score if previous is None else max(previous, score)
 
 
 # Why a node's published prediction_error is a placeholder, not a reading
@@ -1709,9 +1704,8 @@ class BiometricsSubstrateWorker:
             walkway.stream_id = stream_id
             walkway.surprise_n = result.baseline.surprise.n
             if result.score is not None:
-                # Peak-hold until the tick publishes (``_take_perception_peak``).
                 with walkway.lock:
-                    walkway.score = _hold_peak(walkway.score, result.score)
+                    walkway.score = result.score
             self._log_perception_score(stream_id, result, node_id=PERCEPTION_WALKWAY_NODE_ID)
             return
         self._last_perception_embedding_at = now
@@ -1727,13 +1721,9 @@ class BiometricsSubstrateWorker:
         # return score=None (see this attribute's own comment in __init__).
         self._last_perception_surprise_n = result.baseline.surprise.n
         if result.score is not None:
-            # Peak-hold until the tick publishes (``_take_perception_peak``):
-            # frames arrive every ~5 s, the tick every 30 s, and publishing only
-            # the latest frame dropped 88% of the 1.0 frames (2026-10-20).
+            # Held until the tick publishes it (``_take_perception_score``).
             with self._perception_room_lock():
-                self._last_perception_prediction_error = _hold_peak(
-                    self._last_perception_prediction_error, result.score
-                )
+                self._last_perception_prediction_error = result.score
         self._log_perception_score(stream_id, result, node_id=PERCEPTION_NODE_ID)
 
     def _perception_walkway_stream_ids(self) -> frozenset[str]:
@@ -1744,28 +1734,36 @@ class BiometricsSubstrateWorker:
 
     def _perception_room_lock(self) -> threading.Lock:
         # getattr: tests build the worker via __new__ and skip __init__.
-        lock = getattr(self, "_perception_room_peak_lock", None)
+        lock = getattr(self, "_perception_room_score_lock", None)
         if lock is None:
             lock = threading.Lock()
-            self._perception_room_peak_lock = lock
+            self._perception_room_score_lock = lock
         return lock
 
-    def _take_perception_peak(self, *, walkway: bool) -> float | None:
-        """Return the peak score held since the last publish and reset it.
+    def _take_perception_score(self, *, walkway: bool) -> float | None:
+        """Return the latest scored frame not yet published, and clear it.
 
-        The published value of a perception node is the PEAK per-frame score
-        in the last tick window, not the latest frame's. None = no scored frame
-        arrived in the window, which the tick publishes as missing, not 0.0.
+        None = no scored frame arrived since the last publish; the tick then
+        publishes missing, never a carried-forward copy of an old frame.
+
+        Latest frame, NOT the peak of the window (metric gate, 2026-10-21): the
+        per-frame score saturates at 1.0 for ~1.3% of frames, so the max of a
+        30 s window's ~4 frames sat at 1.0 in 10% of windows. Replayed on
+        2026-10-15..21: exact-zero ticks fell 61% -> 4.5%, curiosity's fixed
+        0.55 threshold fired 7x as often, the room camera's above-chance catch
+        of arrivals vanished (23 vs 14 by chance -> 2 vs 1) and the walkway's
+        p99+ tail disappeared. Record:
+        docs/superpowers/pr-reports/2026-10-21-camera-surprise-honest-input-pr.md.
         """
         if walkway:
             state = self._perception_walkway_state()
             with state.lock:
-                peak, state.score = state.score, None
-            return peak
+                score, state.score = state.score, None
+            return score
         with self._perception_room_lock():
-            peak = self._last_perception_prediction_error
+            score = self._last_perception_prediction_error
             self._last_perception_prediction_error = None
-        return peak
+        return score
 
     def _perception_walkway_state(self) -> _PerceptionGroupState:
         # getattr: tests build the worker via __new__ and skip __init__.
@@ -1835,7 +1833,7 @@ class BiometricsSubstrateWorker:
                 node_id=PERCEPTION_NODE_ID,
                 reducer_key="perception",
                 log_prefix="substrate_perception_prediction_error",
-                cached_score=self._take_perception_peak(walkway=False),
+                cached_score=self._take_perception_score(walkway=False),
                 surprise_n=self._last_perception_surprise_n,
                 embedding_at=self._last_perception_embedding_at,
                 stream_id=self._last_perception_stream_id,
@@ -1849,7 +1847,7 @@ class BiometricsSubstrateWorker:
                 node_id=PERCEPTION_WALKWAY_NODE_ID,
                 reducer_key="perception_walkway",
                 log_prefix="substrate_perception_walkway_prediction_error",
-                cached_score=self._take_perception_peak(walkway=True),
+                cached_score=self._take_perception_score(walkway=True),
                 surprise_n=walkway.surprise_n,
                 embedding_at=walkway.embedding_at,
                 stream_id=walkway.stream_id,
@@ -1870,10 +1868,10 @@ class BiometricsSubstrateWorker:
         stream_id: str | None,
         now: datetime,
     ) -> None:
-        """One perception node's tick. ``cached_score`` is the PEAK per-frame
-        score since the last publish (None = no scored frame in the window).
+        """One perception node's tick. ``cached_score`` is the latest scored
+        frame since the last publish (None = no scored frame in the window).
 
-        A real reading publishes that peak. Missing input -- embeddings stale,
+        A real reading publishes that score. Missing input -- embeddings stale,
         baseline still warming, or no scored frame in the window -- still
         writes the receipt and graph node (0.0, see below), but marks the node
         with ``prediction_error_missing_reason`` so the value is never recorded
@@ -1936,9 +1934,9 @@ class BiometricsSubstrateWorker:
         # reading. It carries missing_reason, which keeps it out of
         # substrate_node_prediction_error_history (the percentile window every
         # attention contest ranks against) and out of the self-model. Before
-        # this, 49 h of stale zeros (2026-10-18..20) dragged the room camera's
-        # 7-day p90 from 0.227 to 0.022, and 221 of 234 camera attention wins
-        # were then ordinary frames ranked "high" against that collapsed window.
+        # this, 49 h of stale zeros (2026-10-18..20) made 31% of the room
+        # camera's 7-day window exact 0.0 placeholders: its p90 read 0.137
+        # against 0.205 over live hours only, so ordinary frames ranked "high".
         still_warming = staleness < 1.0 and surprise_n < 2
         missing_reason: str | None = None
         if staleness >= 1.0:

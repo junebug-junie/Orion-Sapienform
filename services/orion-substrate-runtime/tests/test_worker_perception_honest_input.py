@@ -2,10 +2,10 @@
 
 Two live failures on node:substrate.perception / perception_walkway:
 
-1. The 30 s tick published only the LATEST frame's score. Frames arrive every
-   ~5 s (cam0) or ~2/s (walkway), so a 1.0 frame mid-window was overwritten by
-   the next frame: of 160 per-frame 1.0 scores, only 12% reached the history.
-   Fix: peak-hold since the last publish.
+1. Peak-hold (publish the window's max) was proposed and REJECTED by the
+   metric gate: the score saturates at 1.0, so the window max sat at 1.0 in 10%
+   of windows (exact-zero ticks 61% -> 4.5%, curiosity crossings 7x). The tick
+   publishes the latest frame not yet published; no new frame = missing.
 2. Missing input (49 h with no embeddings, 2026-10-18..20) was written as 0.0
    every tick and recorded in substrate_node_prediction_error_history, which
    pulled the 7-day p90 from 0.227 to 0.022. Fix: the placeholder is marked
@@ -101,27 +101,29 @@ def _write(worker, node_id: str) -> dict:
     return calls[-1]
 
 
-def test_tick_publishes_the_peak_frame_not_the_latest(monkeypatch) -> None:
-    # Regression: the old tick published 0.0 here (the last frame).
-    worker = _worker(monkeypatch, [0.2, 1.0, 0.0])
+def test_tick_publishes_the_latest_frame_not_the_window_peak(monkeypatch) -> None:
+    # Pins the metric-gate decision: the window max saturates (see docstring).
+    worker = _worker(monkeypatch, [0.2, 1.0, 0.1])
     for _ in range(3):
         worker._handle_perception_prediction_error_message(_message("cam0"))
     worker._perception_prediction_error_tick()
     room = _write(worker, ROOM)
-    assert room["error"] == 1.0
+    assert room["error"] == 0.1
     assert room["missing_reason"] is None
 
 
-def test_walkway_tick_publishes_its_own_peak(monkeypatch) -> None:
-    worker = _worker(monkeypatch, [0.3, 0.9, 0.1, 0.0])
-    for _ in range(4):
+def test_walkway_tick_publishes_its_own_latest_frame(monkeypatch) -> None:
+    worker = _worker(monkeypatch, [0.3, 0.9, 0.4])
+    for _ in range(3):
         worker._handle_perception_prediction_error_message(_message("walkway"))
     worker._perception_prediction_error_tick()
-    assert _write(worker, WALKWAY)["error"] == 0.9
+    assert _write(worker, WALKWAY)["error"] == 0.4
     assert _write(worker, WALKWAY)["missing_reason"] is None
 
 
-def test_peak_resets_after_publish_and_an_empty_window_is_missing(monkeypatch) -> None:
+def test_published_frame_is_never_republished_and_an_empty_window_is_missing(monkeypatch) -> None:
+    # Regression: the old tick re-published the last frame's score while the
+    # input was < 60 s old, a copy recorded as a new reading.
     worker = _worker(monkeypatch, [0.8])
     worker._handle_perception_prediction_error_message(_message("cam0"))
     worker._perception_prediction_error_tick()

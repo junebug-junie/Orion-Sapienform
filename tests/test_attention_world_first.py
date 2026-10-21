@@ -326,3 +326,25 @@ def test_walkway_is_world_and_needs_its_own_p99_band() -> None:
     # The room camera has no floor: its "high" band still competes.
     assert below_band_floor(PERCEPTION_NODE_ID, "high") is None
     assert judge_candidate(body(PERCEPTION_NODE_ID, 0.95)).eligible
+
+
+def test_walkway_floor_uses_mid_rank_so_ceiling_ties_can_reach_p99() -> None:
+    """The camera score saturates at 1.0 for ~1.3% of readings: strict-below
+    puts every 1.0 at ~p98.7 ("high"), which would make the p99+ floor
+    unreachable. The floor reads the mid-rank (ceiling ties counted half)."""
+    from orion.schemas.attention_candidate import PERCEPTION_WALKWAY_NODE_ID
+
+    history = [0.0] * 9870 + [1.0] * 130  # 1.3% at the ceiling
+    cand = node_candidate(
+        node_id=PERCEPTION_WALKWAY_NODE_ID, label="walkway",
+        magnitude=mag(0.987, value=1.0), observed_at=NOW, now=NOW, history_values=history,
+    )
+    verdict = judge_candidate(cand)
+    assert verdict.band == "high" and verdict.eligible  # mid-rank 0.9935 >= 0.99
+    # A 0.5 reading below the ties: mid-rank 0.987, under the floor.
+    cand = node_candidate(
+        node_id=PERCEPTION_WALKWAY_NODE_ID, label="walkway",
+        magnitude=mag(0.987, value=0.5), observed_at=NOW, now=NOW, history_values=history,
+    )
+    verdict = judge_candidate(cand)
+    assert not verdict.eligible and "below this source's unusual floor" in verdict.reason

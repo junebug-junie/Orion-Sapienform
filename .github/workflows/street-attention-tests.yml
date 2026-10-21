@@ -1,0 +1,52 @@
+name: street-attention-tests
+
+# node:substrate.street: street events -> gate -> attention, Rung 6 street_handoff
+# (docs/superpowers/specs/2026-10-20-street-continuity-handoff-design.md section 6).
+on:
+  pull_request:
+    paths:
+      - "orion/substrate/street_attention.py"
+      - "orion/substrate/prediction_expectation.py"
+      - "orion/substrate/tests/test_street_attention.py"
+      - "orion/schemas/attention_candidate.py"
+      - "orion/schemas/vision.py"
+      - "orion/attention/world_first.py"
+      - "orion/substrate/attention_broadcast.py"
+      - "config/field/field_channel_glossary.v1.yaml"
+      - "services/orion-substrate-runtime/**"
+      - ".github/workflows/street-attention-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/substrate/street_attention.py"
+      - "orion/substrate/prediction_expectation.py"
+      - "orion/schemas/attention_candidate.py"
+      - "services/orion-substrate-runtime/**"
+      - ".github/workflows/street-attention-tests.yml"
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-substrate-runtime/requirements.txt
+          python -m pip install -r requirements-dev.txt
+          python -m pip install pytest-asyncio httpx
+      - name: Gate, node, Rung 6 (pure)
+        run: python -m pytest -q -p no:cacheprovider orion/substrate/tests/test_street_attention.py orion/substrate/tests/test_prediction_expectation.py
+      - name: Runtime wiring + eval
+        env:
+          POSTGRES_URI: postgresql://unused/unused
+        run: |
+          PYTHONPATH=.:services/orion-substrate-runtime python -m pytest -q -p no:cacheprovider \
+            services/orion-substrate-runtime/tests/test_worker_street_attention.py \
+            services/orion-substrate-runtime/tests/test_worker_prediction_expectation.py \
+            services/orion-substrate-runtime/evals/test_street_attention_eval.py
+      - name: Gate mutation check (every rule has a test)
+        run: python services/orion-substrate-runtime/evals/run_street_gate_mutation_check.py

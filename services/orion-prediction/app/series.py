@@ -52,7 +52,7 @@ class Threshold:
 
 @dataclass(frozen=True)
 class Source:
-    kind: str  # biometrics | cooling
+    kind: str  # biometrics | cooling | cluster (orion_biometrics_cluster per-node) | weather (prediction_weather_hourly)
     node: str | None = None
     key: str | None = None
     role: str | None = None
@@ -78,6 +78,12 @@ class SeriesSpec:
     covariates: tuple[str, ...] = ()
     # Pending change-event breaks (app/events.py): Prophet fits a level shift at each one.
     breaks: tuple[datetime, ...] = ()
+    # Derived inputs (applied by app.frame.load_points): value at t is the source at t - lag_min,
+    # then max(value - above, 0) when above is set; zero_before_first fills the time before the
+    # source's first-ever reading with 0 (a machine that was not running yet).
+    lag_min: int = 0
+    above: float | None = None
+    zero_before_first: bool = False
 
     @property
     def max_horizon_steps(self) -> int:
@@ -120,6 +126,15 @@ def _source(raw: dict, sid: str) -> Source:
         if not raw.get("role"):
             raise SeriesConfigError(f"{sid}: cooling source needs role")
         return Source(kind="cooling", role=str(raw["role"]))
+    if kind == "cluster":
+        node, key = raw.get("node"), raw.get("key")
+        if not node or not _KEY.match(str(node)) or not key or not _KEY.match(str(key)):
+            raise SeriesConfigError(f"{sid}: cluster source needs a [a-z0-9_] node and key")
+        return Source(kind="cluster", node=str(node), key=str(key))
+    if kind == "weather":
+        if raw.get("key") != "temp_f":
+            raise SeriesConfigError(f"{sid}: weather source supports key temp_f")
+        return Source(kind="weather", key="temp_f")
     raise SeriesConfigError(f"{sid}: unknown source kind {kind!r}")
 
 
@@ -177,6 +192,9 @@ def _spec(raw: dict) -> SeriesSpec:
         train_window_min=duration_min(raw.get("train_window", "21d")),
         seasonalities=tuple(seas), exclude=tuple(exclude), horizons_min=horizons,
         thresholds=tuple(thresholds), covariates=tuple(str(c) for c in raw.get("covariates") or ()),
+        lag_min=duration_min(raw["lag"]) if raw.get("lag") else 0,
+        above=float(raw["above"]) if raw.get("above") is not None else None,
+        zero_before_first=bool(raw.get("zero_before_first", False)),
     )
 
 

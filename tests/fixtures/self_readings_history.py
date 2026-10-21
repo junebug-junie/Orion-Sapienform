@@ -3,7 +3,7 @@
 Live shapes (substrate_node_prediction_error_history, 7 days to 2026-10-14 03:26 UTC):
 biometrics 0% zeros, p50 0.022, p90 0.077; bus_synaptic p50 0.032, p90 0.065; execution 73%
 zeros, p90 0.53; chat 70% zeros; route 87% zeros, values in quarters; codebase 89% zeros;
-cabinet 98.4% zeros (a trigger); harness_closure a constant 0.65 placeholder. Steps are coarser
+cabinet 98.4% zeros (a trigger); strain news one 1.0 row per event (a trigger); harness_closure a constant 0.65 placeholder. Steps are coarser
 than live so the tests stay fast; every node still clears the 200-reading history floor.
 """
 
@@ -22,6 +22,8 @@ def _series(node: str, step_min: float, fn, *, now: datetime = NOW, days: float 
 
 # Six historical warming episodes (onsets) in the week, each 30 minutes of "on" rows.
 _CABINET_BURSTS = (300, 600, 900, 1200, 1500, 1800)
+# Eight historical strain news events in the week (one 1.0 row each).
+_STRAIN_EVENTS = (150, 400, 650, 900, 1150, 1400, 1650, 1900)
 
 
 def calm_rows(now: datetime = NOW) -> list[Row]:
@@ -36,6 +38,8 @@ def calm_rows(now: datetime = NOW) -> list[Row]:
     # cabinet: a trigger. A few historical bursts (k in a 12-reading run), zero otherwise.
     rows += _series("node:substrate.cabinet", 5, lambda k: 0.7 if any(b <= k < b + 6 for b in _CABINET_BURSTS) else 0.0, now=now)
     rows += _series("node:substrate.harness_closure", 60, lambda k: 0.65, now=now)
+    # strain news: a trigger. A 0.0 every tick, one 1.0 row per news event (budgeted, rare).
+    rows += _series("node:substrate.strain", 5, lambda k: 1.0 if k in _STRAIN_EVENTS else 0.0, now=now)
     # perception is the world, not the body: never a self-reading.
     rows += _series("node:substrate.perception", 5, lambda k: 0.0 if k % 2 else 0.9, now=now)
     return rows

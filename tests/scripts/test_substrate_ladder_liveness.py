@@ -831,3 +831,46 @@ def test_the_watch_keeps_a_carded_migration_red_past_the_window(tmp_path, monkey
     cli.check_migrations(None, args, ll.LadderReport())
     assert seen["sticky_keys"] == [f"migration:{_HW}"]
     assert cli._delivered_migration_keys(str(tmp_path / "absent.json")) == []
+
+
+# --- Camera input rungs (2026-10-21) ----------------------------------------
+# Timestamps from live substrate_perception_embedding_baseline: the newest cam0
+# embedding before the 2026-10-18 outage and the first one after it. Receipts
+# kept arriving through all 49 h (the tick writes a placeholder), so only an
+# input rung can see it.
+_CAM0_LAST_BEFORE_GAP = datetime(2026, 10, 18, 4, 6, 45, 132976, tzinfo=timezone.utc)
+_CAM0_FIRST_AFTER_GAP = datetime(2026, 10, 20, 5, 51, 28, 892306, tzinfo=timezone.utc)
+
+
+def _camera_rung(stream: str) -> "ll.Rung":
+    (rung,) = [r for r in ll.RUNGS if r.name == f"camera_input:{stream}"]
+    return rung
+
+
+def test_camera_input_rungs_cover_the_24_7_cameras_only() -> None:
+    assert set(ll.CAMERA_INPUT_STREAMS_EXPECTED_ONLINE) == {"cam0", "walkway"}
+    for stream in ll.CAMERA_INPUT_STREAMS_EXPECTED_ONLINE:
+        rung = _camera_rung(stream)
+        assert (rung.table, rung.ts_column, rung.lane_column, rung.lane_value) == (
+            "substrate_perception_embedding_baseline", "generated_at", "stream_id", stream,
+        )
+        assert rung.max_age == timedelta(minutes=15)
+    assert not [r for r in ll.RUNGS if r.lane_value in ("doorbell", "carbon-webcam")]
+
+
+def test_camera_input_rung_fires_within_one_cron_tick_of_the_2026_10_18_outage() -> None:
+    rung = _camera_rung("cam0")
+    # Cron runs every 10 min: the first run past 15 min of silence is red.
+    first_red = None
+    t = _CAM0_LAST_BEFORE_GAP
+    while t < _CAM0_FIRST_AFTER_GAP:
+        if ll.evaluate_rung(rung, _CAM0_LAST_BEFORE_GAP, t).red:
+            first_red = t
+            break
+        t += timedelta(minutes=10)
+    assert first_red is not None
+    assert first_red - _CAM0_LAST_BEFORE_GAP <= timedelta(minutes=25)
+    # Healthy cadence (a frame ~5 s ago) is green; recovery clears it.
+    assert not ll.evaluate_rung(rung, _CAM0_FIRST_AFTER_GAP, _CAM0_FIRST_AFTER_GAP + timedelta(seconds=5)).red
+    # The 3-day lookback returning no row at all is red, never "fine".
+    assert ll.evaluate_rung(rung, None, _CAM0_FIRST_AFTER_GAP).red

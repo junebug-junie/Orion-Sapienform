@@ -31,7 +31,12 @@ from orion.schemas.attention_frame import (
     PredictionErrorMagnitudeV1,
     VoluntaryOverrideAbsentReasonV1,
 )
-from orion.schemas.attention_candidate import NO_ATTENTION_CONSUMER_NODE_IDS
+from orion.schemas.attention_candidate import (
+    NO_ATTENTION_CONSUMER_NODE_IDS,
+    PERCEPTION_WALKWAY_NODE_ID,
+    world_first_fenced,
+)
+from orion.substrate.prediction_error_freshness import missing_input_reason
 from orion.substrate.attention.common import compact, stable_id
 from orion.substrate.attention.policy import select_actions
 from orion.substrate.attention.scoring import build_open_loops, merge_signals
@@ -322,9 +327,12 @@ def world_first_signals(
     """World-first candidates -> eligible workspace signals, plus the trace.
 
     Candidates: every cognitive ``node:substrate.*`` node carrying a
-    prediction error (magnitude from the stored history; perception is
-    external and absent while its embeddings are stale -- it writes 0.0 then,
-    so absence comes from ``embedding_staleness``, never from the value) and
+    prediction error (magnitude from the stored history; the camera nodes are
+    external and absent while their input is missing -- they write a 0.0
+    placeholder marked ``prediction_error_missing_reason`` then, so absence
+    comes from that marker and ``embedding_staleness``, never from the value;
+    the walkway node is admitted only for its own p99+ band,
+    ``ATTENTION_MIN_BAND_BY_NODE_ID``) and
     the caller's ``external_candidates`` (chat). Any other graph node with
     pressure has no calibrated unusualness against its own history, so it
     cannot interrupt: listed in the trace as ``uncalibrated``, not ranked
@@ -358,7 +366,7 @@ def world_first_signals(
             if not is_cognitive_node(node):
                 continue
             node_id = str(getattr(node, "node_id", "") or "")
-            if node_id in NO_ATTENTION_CONSUMER_NODE_IDS:
+            if world_first_fenced(node_id):
                 continue
             metadata = dict(getattr(node, "metadata", None) or {})
             if node_id.startswith(SUBSTRATE_NODE_PREFIX) and metadata.get("prediction_error") is not None:
@@ -368,6 +376,15 @@ def world_first_signals(
                         embedding_staleness=metadata.get("embedding_staleness"),
                         vision_frame_staleness=vision_organ_md.get("vision_frame_staleness"),
                     )
+                elif node_id == PERCEPTION_WALKWAY_NODE_ID:
+                    # The vision organ's frame staleness is the room cameras';
+                    # the walkway has only its own embedding clock.
+                    absent = perception_absent_reason(
+                        embedding_staleness=metadata.get("embedding_staleness"),
+                    )
+                missing = missing_input_reason(node)
+                if absent is None and missing is not None:
+                    absent = f"input missing ({missing})"
                 observed_at = getattr(getattr(node, "temporal", None), "observed_at", None)
                 label = compact(str(getattr(node, "label", "") or node_id), 120)
                 candidates.append(

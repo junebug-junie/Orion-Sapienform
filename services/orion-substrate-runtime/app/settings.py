@@ -165,6 +165,51 @@ class Settings(BaseSettings):
     cabinet_heat_rise_threshold_c: float = Field(
         0.5, ge=0.0, alias="SUBSTRATE_CABINET_HEAT_RISE_THRESHOLD_C"
     )
+    # Street events -> the workspace competition (spec 2026-10-20 street
+    # continuity, section 6; gate in orion/substrate/street_attention.py).
+    # Subscribes to orion:vision:street:events, gates each StreetEventV1 (ring
+    # always; others p < 0.05, camera up, under the hourly cap) and writes
+    # node:substrate.street's prediction_error every tick: the held salience
+    # of a passed event, else 0.0. Also records the street_handoff Rung 6
+    # reading. Needs SUBSTRATE_WRITE_PREDICTION_ERROR_NODES. false = kill
+    # switch (no listener, no node writes).
+    street_attention_enabled: bool = Field(True, alias="SUBSTRATE_STREET_ATTENTION_ENABLED")
+    street_events_channel: str = Field(
+        "orion:vision:street:events", alias="SUBSTRATE_STREET_EVENTS_CHANNEL"
+    )
+    # Gate passes allowed in any trailing hour (rings count toward it but are
+    # never refused). The cap on how often the street can take the top slot.
+    street_attention_max_per_hour: int = Field(
+        4, ge=0, alias="SUBSTRATE_STREET_ATTENTION_MAX_PER_HOUR"
+    )
+    # How long one passed event holds the node up. >= 2 broadcast intervals
+    # (30 s) so at least two attention cycles see it; at the cap that is 4 x
+    # 90 s = 10% of an hour, the top-decile edge, so a street at its cap all
+    # week habituates out of the "high" band on its own.
+    street_attention_hold_sec: float = Field(
+        90.0, gt=0.0, alias="SUBSTRATE_STREET_ATTENTION_HOLD_SEC"
+    )
+    street_attention_tick_interval_sec: float = Field(
+        30.0, gt=0.0, alias="SUBSTRATE_STREET_ATTENTION_TICK_INTERVAL_SEC"
+    )
+    # A camera is "up" when the runtime saw a frame from it on
+    # orion:vision:artifacts within this many seconds (the perception
+    # listener records it; with that listener off every non-ring event reads
+    # camera_unseen and is refused).
+    street_camera_up_max_age_sec: float = Field(
+        600.0, gt=0.0, alias="SUBSTRATE_STREET_CAMERA_UP_MAX_AGE_SEC"
+    )
+    # Strain news -> the workspace competition (docs/superpowers/specs/2026-10-20-strain-loop-design.md
+    # Part 2; orion/regulation/strain_news.py). Reads orion:regulation:latest every tick and writes
+    # node:substrate.strain's prediction_error = 1.0 on a strain news event (onset / escalation /
+    # reminder; <= 8 per local day, >= 30 min apart), held for attention's 300 s orienting window,
+    # else a calm 0.0. An unknown or stale regulation reading writes nothing. ON (ship flags on).
+    enable_strain_attention: bool = Field(True, alias="SUBSTRATE_STRAIN_ATTENTION_ENABLED")
+    strain_attention_tick_interval_sec: float = Field(
+        30.0, ge=5.0, alias="SUBSTRATE_STRAIN_ATTENTION_TICK_INTERVAL_SEC"
+    )
+    # Orion's local day for the strain news daily cap. Same key and default as orion-durable-runs.
+    orion_situation_timezone: str = Field("America/Denver", alias="ORION_SITUATION_TIMEZONE")
     rpc_health_snapshot_channel: str = Field(
         "orion:rpc_health:snapshot", alias="SUBSTRATE_RPC_HEALTH_SNAPSHOT_CHANNEL"
     )

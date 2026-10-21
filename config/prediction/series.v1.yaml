@@ -31,7 +31,9 @@ series:
       - {name: shed, value: 34.0, window: 30min}
       # Switchback experiments may start only while this probability is under max_probability.
       - {name: experiment_guard, value: 32.0, window: 30min, max_probability: 0.05}
-    covariates: [athena.chassis_watts, athena.cabinet_cooling_watts]
+    # The three machines in the cabinet, the portable AC, and the central-AC proxy (metric gate in the spec).
+    covariates: [athena.chassis_watts, circe.chassis_watts, hecate.chassis_watts, athena.cabinet_cooling_watts,
+                 athena.central_ac_proxy]
     # hardware-watch shows the "shed" exceedance beside each reflex decision (observe-only). Exceedance
     # is on the 5-min MEAN, so it understates a single raw reading crossing 34 C.
     consumers: [hardware-watch, prediction-scoreboard, causal-effects]
@@ -52,4 +54,37 @@ series:
     grain: 5min
     agg: mean
     max_fill: 15min
+    consumers: [scenario, causal-effects]
+
+  - series_id: circe.chassis_watts
+    role: covariate
+    source: {kind: cluster, node: circe, key: chassis_watts}   # circe has no BMC: PDU proxy via athena
+    unit: W
+    grain: 5min
+    agg: mean
+    max_fill: 15min
+    consumers: [scenario, causal-effects]
+
+  - series_id: hecate.chassis_watts
+    role: covariate
+    source: {kind: cluster, node: hecate, key: chassis_watts}  # hecate's BMC, read remotely from athena
+    unit: W
+    grain: 5min
+    agg: mean
+    max_fill: 15min
+    zero_before_first: true   # first reading 2026-10-04: before that hecate was not running
+    consumers: [scenario, causal-effects]
+
+  # The central AC runs when it is warm outside (house meter, 2026-10-20: household + central load
+  # +0.33 kWh/h per F above 75 F, 3 h earlier; p ~1e-18), and while it runs the cabinet is ~1.3 C cooler.
+  # Hourly from the shared Open-Meteo client, spread over 5-min buckets.
+  - series_id: athena.central_ac_proxy
+    role: covariate
+    source: {kind: weather, key: temp_f}
+    unit: F above 75
+    grain: 5min
+    agg: mean
+    max_fill: 60min
+    lag: 3h
+    above: 75
     consumers: [scenario, causal-effects]

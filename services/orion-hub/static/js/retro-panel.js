@@ -266,7 +266,16 @@
   // the game. In fullscreen, mapped keys reach the game even if focus slipped off it.
   const stage=el('stage'), SCROLL_KEYS=new Set(['PageUp','PageDown','Home','End','Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight']);
   const field=t=>t instanceof HTMLInputElement || t instanceof HTMLSelectElement || t instanceof HTMLTextAreaElement;
+  // F7 saves and F10 loads the newest save, anywhere on the page except while typing in
+  // a field. Both keys have browser defaults (caret browsing, the menu bar), so swallow them.
+  const HOTKEYS={F7:()=>el('save'),F10:()=>{el('saves').selectedIndex=0;return el('load');}};
   document.addEventListener('keydown',e=>{
+    if(HOTKEYS[e.code] && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)){
+      e.preventDefault();
+      const button=!e.repeat && !el('saveBar').hidden && HOTKEYS[e.code]();
+      if(button && !button.disabled)button.click();
+      return;
+    }
     if(document.activeElement!==screen && (document.fullscreenElement!==stage || field(e.target)))return;
     if(bits[e.code] || SCROLL_KEYS.has(e.code))e.preventDefault();
     if(bits[e.code] && !keys.has(e.code)){keys.add(e.code);send();}

@@ -150,3 +150,35 @@ def test_the_newest_weather_hour_covers_the_rest_of_that_hour():
     idx = pd.date_range(T0 + timedelta(hours=10), end, freq="5min", tz="UTC", inclusive="left")
     s = covariate_series(st, reg.get("x.proxy"), idx[0].to_pydatetime(), end, idx)
     assert s.notna().all() and np.allclose(s, 10.0)
+
+
+
+def test_first_weather_refresh_runs_before_the_selection_later_ones_after(monkeypatch):
+    import asyncio
+    import app.engine as engine_mod
+    from app.engine import Engine
+    from tests.test_engine import Clock, FakeStore, _setup, _sync
+
+    reg, spec, s, store, end = _setup()
+    order = []
+    eng = Engine(reg, store, backtest_windows=14, backtest_step_min=180, select_interval_sec=21600, settle_sec=60,
+                 publish_enabled=False, clock=Clock(end + timedelta(seconds=90)),
+                 weather={"lat": 0.0, "lon": 0.0, "refresh_sec": 3600})
+
+    def fake_refresh(now):
+        order.append("weather")
+        eng.weather_state = {"ok": True, "next_at": now + timedelta(hours=1)}
+        return eng.weather_state
+    eng.refresh_weather = fake_refresh
+    real_select = eng.select
+    eng.select = lambda sp, now: (order.append("select"), real_select(sp, now))[1]
+    monkeypatch.setattr(engine_mod, "build_models", lambda sp, u: {k: v for k, v in
+                        __import__("app.models", fromlist=["build_models"]).build_models(sp, u).items()
+                        if k in ("naive", "seasonal_naive")})
+    asyncio.run(eng.tick(_sync))
+    assert order[:2] == ["weather", "select"]
+    eng.clock.t += timedelta(hours=1, minutes=1)
+    eng.state["test.temp"].next_select_at = eng.clock.t          # both due on the same tick
+    order.clear()
+    asyncio.run(eng.tick(_sync))
+    assert order == ["select", "weather"]

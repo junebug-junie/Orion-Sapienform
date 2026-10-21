@@ -210,8 +210,8 @@ unchanged. The new path only reconsiders act-backed candidates that the floor re
    - Weak spots, stated plainly:
      - Before 20 controls, the bar is the learner's prior (0.5): "better than the coin flip it started
        from". This is not an effect against a control.
-     - For artifact acts, the control rate is 0 by construction. After 20 controls, the bar falls to
-       about 0.024, which is a weak claim.
+     - For artifact acts, the control rate is 0 by construction, so the arm never moves the bar.
+       (Before the review fix it would have cut the bar to about 0.024.)
      - The Normal approximation is poor near 0 and 1.
 4. **Live sanity.**
    - Reading reads proven: n=119, LB 0.604.
@@ -430,6 +430,40 @@ diff against origin/main. It found no blocker.
   - Note: in this learner, the posterior variance does not depend on the values observed, so 29
     successes would score the same nats. The refusal is not caused by the outage. The belief can
     still move, because the baseline lane keeps producing painting closes.
+
+### Second review (option B + grading), findings fixed
+
+No blocker.
+
+- **Structural-zero control cut the bar.** With a control that is 0 by construction, the reference
+  became 0.024, which made admission about 3x easier.
+  - Fix: reference = max(act prior, control rate).
+  - Evidence: `test_a_structural_zero_control_arm_never_lowers_the_bar`.
+- **A treated row was written before later gates.** The precommit ran before the per-tick holdback
+  and the send.
+  - Fix: the proven draw now runs last.
+  - Evidence: `test_no_treated_row_for_an_act_the_tick_holdback_then_stopped`.
+- **Docs claimed a randomized contrast.**
+  - Fix: docs now say "posterior vs reference" plainly (act_episodes, act_candidates, this report).
+- **An unknown open state dropped a real close**, which could leave the actor blocked in flight.
+  - Fix: the 0 close is published.
+  - Evidence: `test_unknown_open_state_still_publishes_the_zero_close`.
+- **A retried generation reopened the act.** This was found by the new test the review asked for.
+  The marker was compared by timestamp.
+  - Fix: an explicit "this write opened it" flag.
+  - Evidence: `test_a_retried_generation_after_a_failure_opens_once`.
+- **Nits fixed:**
+  - Stale comments.
+  - A horizon parity test against `PAINTING_HORIZON_SEC`.
+  - The dead 6 h fallback is removed.
+  - No arm is recorded when the allocator is not enforcing, or on a probe tick.
+  - A replayed decision keeps its stored arm.
+  - Test for an act opened at prepare under the old code.
+- **Not fixed, disclosed:**
+  - The live painting belief stays poisoned until the reset SQL above is run (Juniper's call).
+  - Even after a reset, the proven path needs 20 real painting closes. These can only come from the
+    scheduled-painting lane, so whether option B can ever fire for painting is UNVERIFIED.
+  - The eval's attempt join assumes 1 attempt per dispatch (true live: 402/402).
 
 ## Restart required
 

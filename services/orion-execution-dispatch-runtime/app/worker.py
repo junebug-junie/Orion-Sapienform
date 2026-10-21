@@ -702,6 +702,16 @@ class ExecutionDispatchRuntimeWorker:
         candidates: list[Candidate] = []
         for item in pending:
             ref = act_refs.get(item.cortex_verb or "")
+            if ref is not None and item.visual_baseline is not None:
+                # The visual-baseline lane is unchanged: it is admitted on its own schedule and
+                # eligibility, never on the floor, and keeps its old cost path. Scoring it as an act
+                # would let a quiet month (no measured render cost) refuse it `no_cost_estimate`
+                # forever. Its act numbers are still recorded on the frame.
+                if act_costs is None:
+                    act_costs = self._load_act_costs()
+                self._last_act_reasons[item.dispatch_id] = act_expectation_reason(
+                    ref, posteriors, act_costs.get((item.dispatch_kind, item.target_id)))
+                ref = None
             if ref is not None:
                 if act_costs is None:
                     act_costs = self._load_act_costs()
@@ -713,8 +723,8 @@ class ExecutionDispatchRuntimeWorker:
                 self._last_act_reasons[item.dispatch_id] = act_expectation_reason(ref, posteriors, act_cost)
                 # One in flight per act: an admitted act whose earlier dispatch or act is still open
                 # would only queue behind it (and, cold, would be re-admitted every tick until its
-                # first close lands). The visual-baseline lane keeps its own schedule guard.
-                if item.visual_baseline is None and self._act_in_flight(ref, item):
+                # first close lands).
+                if self._act_in_flight(ref, item):
                     act_in_flight.add(item.dispatch_id)
                 continue
             effect = item.expected_effect

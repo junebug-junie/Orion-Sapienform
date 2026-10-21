@@ -251,3 +251,19 @@ async def test_a_tick_with_nothing_to_learn_is_never_held_back(monkeypatch) -> N
     out = await worker._send_prepared_candidates(_frame(_render()))
     assert [c.dispatch_id for c in out.dispatched_candidates] == ["dispatch:proposal:render_scene:t1"]
     assert not any(HOLDBACK_BLOCK_REASON in c.blocked_by for c in out.blocked_candidates)
+
+
+def test_visual_baseline_lane_is_unchanged_even_with_no_act_cost(monkeypatch) -> None:
+    """A scheduled baseline painting keeps its old cost path: a quiet month with no measured render
+    cost must never refuse it no_cost_estimate. Its act numbers are still recorded."""
+    from orion.schemas.reverie_visual import VisualBaselineEligibilityV1
+
+    worker = _worker(monkeypatch, cost=None)
+    baseline = VisualBaselineEligibilityV1(need_id="visual_baseline", observed_at=NOW, due_at=NOW,
+                                           policy_id="visual_baseline.v1")
+    item = ExecutionDispatchCandidateV1.model_validate({**_render().model_dump(), "visual_baseline": baseline.model_dump()})
+    monkeypatch.setattr("orion.reverie.baseline.validate_eligibility", lambda *a, **k: None)
+    allocation = worker._log_allocator_preview(_frame(item), MOTOR)
+    assert [c.dispatch_id for c in allocation.admitted] == [item.dispatch_id]
+    assert worker._last_act_reasons[item.dispatch_id].startswith("act_expectation:make:")
+    worker._store.act_in_flight.assert_not_called()

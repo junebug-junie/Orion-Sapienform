@@ -110,11 +110,12 @@ def test_walkway_embedding_never_changes_the_room_node() -> None:
     assert walkway.stream_id == "walkway"
     assert walkway.score is not None and walkway.score > 0.0
     assert walkway.surprise_n >= 2
+    walkway_peak = walkway.score
 
     worker._perception_prediction_error_tick()
     writes = _writes(worker)
     assert writes[ROOM]["error"] == 0.11
-    assert writes[WALKWAY]["error"] == walkway.score
+    assert writes[WALKWAY]["error"] == walkway_peak
 
 
 def test_room_embedding_never_changes_the_walkway_node() -> None:
@@ -133,11 +134,12 @@ def test_room_embedding_never_changes_the_walkway_node() -> None:
     assert worker._last_perception_stream_id == "cam0"
     assert worker._last_perception_embedding_vector == [0.0, 1.0]
     assert worker._last_perception_prediction_error is not None
+    room_peak = worker._last_perception_prediction_error
 
     worker._perception_prediction_error_tick()
     writes = _writes(worker)
     assert writes[WALKWAY]["error"] == 0.33
-    assert writes[ROOM]["error"] == worker._last_perception_prediction_error
+    assert writes[ROOM]["error"] == room_peak
 
 
 def test_both_nodes_written_every_tick_with_receipts() -> None:

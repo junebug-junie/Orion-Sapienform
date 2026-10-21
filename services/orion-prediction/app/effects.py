@@ -23,7 +23,7 @@ from app.causal import (
 from app.engine import Engine, InputStale
 from app.event_pair import EventPairRefused, event_pair_effect
 from app.events import breaks_between
-from app.frame import mask_windows, to_grain, training_slice
+from app.frame import covariate_series, mask_windows, to_grain, training_slice
 from app.models import build_models, split_seasonalities
 from app.series import SeriesSpec
 
@@ -65,7 +65,9 @@ class Effects:
         if spec.train_from and start < spec.train_from:
             start = spec.train_from
         y = training_slice(self._series(spec, start, end.to_pydatetime()), spec)
-        x = self._series(cov, start, end.to_pydatetime()).reindex(y.index)
+        # The same covariate view training uses (real buckets, derived rules, exclusions); scenario's own
+        # gap checks then refuse a covariate that is mostly missing instead of interpolating it.
+        x = mask_windows(covariate_series(self.store, cov, start, end.to_pydatetime(), y.index), spec.exclude)
         res = scenario(y, x, covariate_id, path, spec.grain_min)
         return {**res.__dict__, "series_id": series_id, "unit": spec.unit, "covariate_unit": cov.unit}
 

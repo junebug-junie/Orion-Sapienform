@@ -10,8 +10,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, Optional
-from urllib.parse import urlencode
-from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
 from .identity_ask_cooldown import try_claim_identity_ask
@@ -48,6 +46,7 @@ from orion.telemetry.cabinet_snapshot_merge import (
     device_label_from_sources,
     load_merged_cabinet_sensors,
 )
+from orion.weather import openmeteo
 from orion.schemas.situation import (
     AffectContextV1,
     AgendaContextV1,
@@ -1237,20 +1236,12 @@ def _fetch_weather(cfg: SituationSettings) -> EnvironmentContextV1:
         return EnvironmentContextV1(available=False, source=provider)
     if provider != "openmeteo" or cfg.weather_lat is None or cfg.weather_lon is None:
         return EnvironmentContextV1(available=False, source="misconfigured")
-    params = urlencode(
-        {
-            "latitude": cfg.weather_lat,
-            "longitude": cfg.weather_lon,
-            "current": "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_gusts_10m",
-            "hourly": "precipitation_probability,temperature_2m,wind_speed_10m",
-            "forecast_days": 2,
-            "temperature_unit": "fahrenheit",
-            "wind_speed_unit": "mph",
-            "timezone": "auto",
-        }
+    payload = openmeteo.forecast(
+        cfg.weather_lat, cfg.weather_lon,
+        current=("temperature_2m", "apparent_temperature", "weather_code", "wind_speed_10m", "wind_gusts_10m"),
+        hourly=("precipitation_probability", "temperature_2m", "wind_speed_10m"),
+        forecast_days=2, tz="auto", timeout=4,
     )
-    with urlopen(f"https://api.open-meteo.com/v1/forecast?{params}", timeout=4) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
     current = payload.get("current") or {}
     hourly = payload.get("hourly") or {}
     probs = hourly.get("precipitation_probability") or []

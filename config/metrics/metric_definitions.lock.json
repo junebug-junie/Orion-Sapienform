@@ -1,12 +1,11 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 751,
+  "metric_count": 752,
   "_last_change": {
-    "change_count": 2,
-    "high_severity_count": 1,
+    "change_count": 1,
+    "high_severity_count": 0,
     "changes": [
-      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026vices.orion-thought.app.\u2026 -> \u2026vices.orion-substrate-runtime.app.worker:BiometricsSubstrat\u2026\u2026)",
-      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error"
+      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.street.prediction_error"
     ]
   },
   "definitions": {
@@ -4621,15 +4620,15 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-substrate-runtime/node:substrate.perception.prediction_error": {
-      "meaning": "How surprising the camera scene is versus that stream's own recent normal: embedding distance from its running average, z-scored against its own history, negatives clipped, 3 sigma = 1.0.",
+      "meaning": "How surprising the room camera's latest frame is versus that stream's own recent normal: embedding distance from its running average, z-scored against its own history, negatives clipped, 3 sigma = 1.0. One reading per tick (~30 s), from a frame that arrived since the previous reading.",
       "value_kind": "level",
-      "rest": "0.0 = at or below this stream's usual surprise. Also 0.0 while the baseline is still warming (fewer than 2 surprise samples) and when the frame is stale -- so 0 here does NOT prove the camera is working; node:substrate.vision_organ's vision_frame_staleness carries that.",
+      "rest": "0.0 = the frame is at or below this stream's usual surprise. Reachable: 61% of live readings 2026-10-14..21 were exact 0.0 (replay of stored per-frame baselines). A 0.0 placeholder written while the input is missing (embeddings stale, baseline warming, or no scored frame in the window) carries prediction_error_missing_reason on the node and is NOT a reading: it is never recorded in the history and the self-model omits it.",
       "rest_range": [
         0.0,
         0.0
       ],
       "sparsity": "designed_sparse",
-      "absent_means": "written as 0.0 every tick rather than dropped; nothing written until 15 s after process start before the first embedding arrives.",
+      "absent_means": "per-tick writer: the graph node and receipt get a 0.0 placeholder every tick while the input is missing, marked prediction_error_missing_reason; substrate_node_prediction_error_history gets no row then (a gap = missing, not calm). Nothing written until 15 s after process start before the first embedding arrives.",
       "polarity": "higher_is_worse",
       "declared_consumers": [
         "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
@@ -4638,17 +4637,18 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-substrate-runtime/node:substrate.perception_walkway.prediction_error": {
-      "meaning": "How surprising the walkway (outdoor) camera scene is versus that stream's own recent normal: embedding distance from its running average, z-scored against its own history, negatives clipped, 3 sigma = 1.0. Kept apart from node:substrate.perception so the street does not overwrite the room cameras.",
+      "meaning": "How surprising the walkway (outdoor) camera's latest frame is versus that stream's own recent normal: embedding distance from its running average, z-scored against its own history, negatives clipped, 3 sigma = 1.0. One reading per tick (~30 s), from a frame that arrived since the previous reading. Kept apart from node:substrate.perception so the street does not overwrite the room cameras.",
       "value_kind": "level",
-      "rest": "0.0 = at or below the walkway stream's usual surprise. Also 0.0 while its baseline is still warming (fewer than 2 surprise samples) and when its frames are stale -- so 0 here does NOT prove the walkway camera is working; embedding_staleness on the same node carries that.",
+      "rest": "0.0 = the frame is at or below the walkway stream's usual surprise (63% of live readings 2026-10-15..21). A 0.0 placeholder written while the input is missing (embeddings stale, baseline warming, or no scored frame in the window) carries prediction_error_missing_reason on the node and is NOT a reading: it is never recorded in the history.",
       "rest_range": [
         0.0,
         0.0
       ],
       "sparsity": "designed_sparse",
-      "absent_means": "written as 0.0 every tick rather than dropped; nothing written until 15 s after process start, then 0.0 with embedding_staleness 1.0 until the first walkway embedding arrives.",
+      "absent_means": "per-tick writer: the graph node and receipt get a 0.0 placeholder every tick while the input is missing, marked prediction_error_missing_reason (embedding_staleness 1.0 when stale); substrate_node_prediction_error_history gets no row then (a gap = missing, not calm). Nothing written until 15 s after process start.",
       "polarity": "higher_is_worse",
       "declared_consumers": [
+        "orion.attention.world_first:judge_candidate",
         "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
       ],
       "notes": "category=self_monitoring level=node",
@@ -4692,6 +4692,22 @@
         "orion.attention.self_readings:render_self_readings"
       ],
       "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-substrate-runtime/node:substrate.street.prediction_error": {
+      "meaning": "TRIGGER: a street event passed the attention gate -- a doorbell ring (always), or a graded cross-camera handoff with p < 0.05 from a camera that is up, under the hourly cap. Value is the event's salience (ring 1.0), held 90 s, then 0.0. The outside world, not Orion's body.",
+      "value_kind": "trigger",
+      "rest": "0.0 = the street listener is up, a street camera delivered a frame recently, and no event passed the gate in the last 90 s. Written as a real 0.0 every tick, never decayed to it.",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "sparsity": "designed_sparse",
+      "absent_means": "written every tick while measurable; the tick writes nothing while the street listener is not subscribed or no street camera (walkway, doorbell) delivered a frame within 600 s, so the reading ages and attention reads it absent after 180 s.",
+      "declared_consumers": [
+        "orion.substrate.attention_broadcast:world_first_signals"
+      ],
+      "notes": "category=self_monitoring level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://inner_state/orion-attention-runtime/field_attention_frame.v1": {

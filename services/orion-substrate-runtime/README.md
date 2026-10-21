@@ -1224,16 +1224,34 @@ outdoor walkway camera samples a busy street at 2 frames/s and would have overwr
 cameras' reading. Now streams listed in `SUBSTRATE_PERCEPTION_WALKWAY_STREAM_IDS` (comma-separated,
 default `walkway`) keep their own cache and feed `node:substrate.perception_walkway`; every other
 stream (cam0, carbon-webcam) feeds `node:substrate.perception` exactly as before. The tick writes
-both nodes every tick through `_publish_perception_group` (same staleness -> 0.0, still-warming ->
-0.0, receipt every tick); a failure on one never skips the other. Receipts for the walkway node
+both nodes every tick through `_publish_perception_group` (same missing-input marking, receipt
+every tick); a failure on one never skips the other. Receipts for the walkway node
 carry `reducer_name = substrate.perception_walkway`, which has its own rung in
 `orion/substrate_ladder_liveness.py`. The world-model `vision_embedding` group stays a room
 embedding: walkway frames never touch `_last_perception_embedding_vector`. Since 2026-10-15
 endogenous curiosity reads the walkway node like any other prediction-error node (live-data check
-in `docs/superpowers/pr-reports/2026-10-15-walkway-street-into-mind-pr.md`); the substrate
-attention broadcast and orion-attention-runtime's world-first candidates still skip it via
-`orion/schemas/attention_candidate.py` `NO_ATTENTION_CONSUMER_NODE_IDS`. Set the key to `none`
-to fold the walkway back into the room node.
+in `docs/superpowers/pr-reports/2026-10-15-walkway-street-into-mind-pr.md`). Since 2026-10-21 the
+walkway is a world source in the two world-first contests (substrate broadcast and
+orion-attention-runtime), eligible only at its own p99+ band by mid-rank
+(`orion/schemas/attention_candidate.py` `ATTENTION_MIN_BAND_BY_NODE_ID`); the broadcast's salience
+signals still skip it (`NO_ATTENTION_CONSUMER_NODE_IDS`). Set the key to `none` to fold the
+walkway back into the room node.
+
+**Missing input is missing, not 0.0 (2026-10-21).** Each tick publishes the latest scored frame
+that arrived since the previous tick (taken and cleared, so a frame is never published twice).
+When the input is missing -- embeddings stale (`embedding_staleness` 1.0, no embedding for 60 s),
+baseline still warming, or no new scored frame -- the tick still writes the receipt and the graph
+node (0.0, the field digester's refresh path), but marks the node
+`prediction_error_missing_reason` (`stale` / `warming` / `no_scored_frame_since_last_tick`). A
+marked node is never sampled into `substrate_node_prediction_error_history`, has no magnitude in the
+broadcast (absent), and is omitted by the self-model freshness rule
+(`orion/substrate/prediction_error_freshness.py` `STATUS_MISSING_INPUT`). Before this, 49 h with no
+embeddings (2026-10-18..20) were recorded as calm 0.0 readings and skewed the 7-day percentile
+window every attention contest ranks against. The latest frame, not the window peak: peak-hold
+failed the metric gate (the 1.0 ceiling made the window max saturate in 10% of windows), see
+`docs/superpowers/pr-reports/2026-10-21-camera-surprise-honest-input-pr.md`. A camera that stops
+delivering for 15 min is carded by the ladder watch (`camera_input:cam0` / `camera_input:walkway`
+rungs in `orion/substrate_ladder_liveness.py`, host cron every 10 min).
 
 **Ships shadow-only, default off, no consumer wired.** Deliberately **not** added to
 `ACTIVE_INFERENCE_DOMAINS` or any capability edge in `config/field/orion_field_topology.v1.yaml`
@@ -1569,6 +1587,38 @@ deleted.
   `scripts/analysis/replay_route_chat_prediction_error_definitions.py`; numbers in
   `docs/superpowers/pr-reports/2026-09-25-route-pe-touched-runs-and-topic-coherence-pr.md`.
 
+
+## Street events -> workspace attention (`node:substrate.street`, 2026-10-20)
+
+Spec: `docs/superpowers/specs/2026-10-20-street-continuity-handoff-design.md` section 6.
+Pure rules: `orion/substrate/street_attention.py`.
+
+- **Listener:** `SUBSTRATE_STREET_EVENTS_CHANNEL` (`orion:vision:street:events`,
+  `StreetEventV1`) via `run_subscription` (resubscribes after a drop; shown in `/health`
+  `listeners` as `substrate_street_events_listener`).
+- **Gate:** `doorbell_ring` always passes (it still uses up the hourly budget). Every other
+  kind needs `p_value < 0.05`, every camera in `stream_ids` up (a frame seen on
+  `orion:vision:artifacts` within `SUBSTRATE_STREET_CAMERA_UP_MAX_AGE_SEC`, 600 s; recorded by
+  the perception listener, so with `SUBSTRATE_PERCEPTION_PREDICTION_ERROR_TICK_ENABLED=false`
+  every non-ring event is refused as `camera_unseen`), and fewer than
+  `SUBSTRATE_STREET_ATTENTION_MAX_PER_HOUR` (4) passes in the trailing hour. No event-level
+  "unusual for the hour" reading exists yet, so the event's own `p_value` stands in for it.
+- **Node:** every `SUBSTRATE_STREET_ATTENTION_TICK_INTERVAL_SEC` (30 s) and on every pass,
+  `prediction_error` = the strongest passed salience inside `SUBSTRATE_STREET_ATTENTION_HOLD_SEC`
+  (90 s), else a real 0.0. Nothing is written while the listener is down or no street camera
+  (walkway, doorbell) sent a frame recently (after one closing 0.0 if a hold just ended), so
+  attention reads the node absent, not calm. The
+  node is an outside-world source (`is_world_source_id`) and is fenced from endogenous curiosity.
+- **Trace:** one `substrate_street_event kind=... salience=... verdict=pass|block reason=...
+  correlation_id=...` line per event; `substrate_street_attention_won` when the broadcast's
+  coalition contains the node; counters under `/health` -> `street_attention`. A passed event's
+  correlation id rides on the node (`contributing_turn_ids`) into the broadcast's
+  `attended_node_ids`.
+- **Rung 6 `street_handoff`:** one raw reading per `handoff_met|late|missed`: `-ln(p_value)` nats
+  (p floored at 1e-6). Calibrated rest point: mean 1 nat, variance 1 (`-ln U` is Exponential(1)).
+  Recorded under `SUBSTRATE_PREDICTION_RAW_READINGS_ENABLED`; no per-domain flag.
+- **Kill switch:** `SUBSTRATE_STREET_ATTENTION_ENABLED=false` (no listener, no writes), or add
+  the id to `NO_ATTENTION_CONSUMER_NODE_IDS`.
 
 ## Cabinet warming -> workspace attention (attend-to-act loop, 2026-10-01)
 

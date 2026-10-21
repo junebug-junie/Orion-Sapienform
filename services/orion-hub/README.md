@@ -2973,6 +2973,17 @@ API: `GET /api/cabinet/ambient/latest`, `GET /api/cabinet/ambient/history?window
 (`scripts/cabinet_ambient_routes.py`, `/static/js/cabinet-sensors.js`). Latest polls ~1s only
 while `#cabinet` is visible; history fetches on tab activation, window toggle, or Refresh.
 
+**Live listen (chat card "Cabinet audio" button).** The host reader keeps one continuous
+`arecord` stream and writes every 0.5s window to a 16-slot ring at `/run/orion-audio/live/`
+(tmpfs, ~8s, overwritten, never persisted; layout in `orion/schemas/telemetry/ambient_audio.py`).
+`GET /api/cabinet/ambient/live` tails that ring and streams raw S16_LE PCM (rate/channels in
+`X-Orion-Sample-Rate` / `X-Orion-Channels`); it returns 503 when the ring is empty and ends the
+stream after 5s with no new chunk. `static/js/cabinet-live-audio.js` plays it through the same
+waveform canvas as Orion's TTS voice (cabinet = teal, voice = violet), ~0.5–1s behind real
+time. Env: `AMBIENT_AUDIO_LIVE_DIR`. Kill switch on the host reader:
+`ORION_AMBIENT_AUDIO_LIVE_ENABLED=0` in `/etc/default/orion-ambient-audio`, then restart
+`orion-ambient-audio`.
+
 ### House electricity (Energy strip)
 
 Below the cooling strip, **House electricity — Rocky Mountain Power** shows what the house

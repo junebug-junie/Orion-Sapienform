@@ -1,21 +1,26 @@
-"""Hub read APIs for cabinet ambient-audio latest state and history."""
+"""Hub read APIs for cabinet ambient-audio latest state, history, and live listen."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterable, Mapping, Optional, Sequence
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, Optional, Sequence
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
 from orion.schemas.telemetry.ambient_audio import (
+    AMBIENT_AUDIO_LIVE_RING_SLOTS,
+    AMBIENT_AUDIO_LIVE_SLOT_HEADER,
     AMBIENT_AUDIO_SCHEMA_V1,
     AmbientAudioSnapshotV1,
+    ambient_audio_live_slot_name,
 )
 
 from .settings import settings
@@ -373,3 +378,94 @@ async def api_cabinet_ambient_spikes(
         "spikes": spikes,
         "n": len(spikes),
     }
+
+
+# --- Live listen: tail the host reader's PCM slot ring -----------------------
+
+_LIVE_POLL_SEC = 0.1
+# The reader writes a slot every 0.5s; this long with nothing new means it is
+# down, so end the stream and let the browser say so instead of hanging.
+_LIVE_STALL_SEC = 5.0
+
+
+def read_live_slots(directory: Path) -> dict[int, tuple[int, int, bytes]]:
+    """Map seq -> (sample_rate, channels, pcm) for every readable ring slot."""
+    slots: dict[int, tuple[int, int, bytes]] = {}
+    for index in range(AMBIENT_AUDIO_LIVE_RING_SLOTS):
+        try:
+            raw = (directory / ambient_audio_live_slot_name(index)).read_bytes()
+        except OSError:
+            continue
+        if len(raw) <= AMBIENT_AUDIO_LIVE_SLOT_HEADER.size:
+            continue
+        seq, rate, channels, _ = AMBIENT_AUDIO_LIVE_SLOT_HEADER.unpack_from(raw)
+        slots[seq] = (rate, channels, raw[AMBIENT_AUDIO_LIVE_SLOT_HEADER.size:])
+    return slots
+
+
+def next_live_chunks(
+    slots: Mapping[int, tuple[int, int, bytes]], next_seq: Optional[int]
+) -> tuple[list[bytes], Optional[int]]:
+    """Chunks to send after ``next_seq - 1``, and the new ``next_seq``.
+
+    Starts at the newest chunk (low latency, no backlog). Resyncs to the newest
+    chunk when the reader restarted (seq went backwards) or the listener fell
+    a whole ring behind.
+    """
+    if not slots:
+        return [], next_seq
+    newest = max(slots)
+    if next_seq is None or next_seq > newest + 1 or next_seq < min(slots):
+        next_seq = newest
+    chunks: list[bytes] = []
+    while next_seq in slots:
+        chunks.append(slots[next_seq][2])
+        next_seq += 1
+    return chunks, next_seq
+
+
+async def _live_pcm_stream(
+    directory: Path,
+    first: Mapping[int, tuple[int, int, bytes]],
+    *,
+    poll_sec: float = _LIVE_POLL_SEC,
+    stall_sec: float = _LIVE_STALL_SEC,
+) -> AsyncIterator[bytes]:
+    loop = asyncio.get_running_loop()
+    slots: Mapping[int, tuple[int, int, bytes]] = first
+    next_seq: Optional[int] = None
+    last_progress = loop.time()
+    while True:
+        chunks, next_seq = next_live_chunks(slots, next_seq)
+        if chunks:
+            last_progress = loop.time()
+            for chunk in chunks:
+                yield chunk
+        elif loop.time() - last_progress > stall_sec:
+            logger.info("Cabinet live audio stalled for %.1fs; ending stream", stall_sec)
+            return
+        await asyncio.sleep(poll_sec)
+        slots = read_live_slots(directory)
+
+
+@router.get("/live")
+async def api_cabinet_ambient_live() -> StreamingResponse:
+    """Stream the cabinet mic as raw S16_LE PCM (rate/channels in headers)."""
+    directory = Path(str(settings.AMBIENT_AUDIO_LIVE_DIR))
+    slots = read_live_slots(directory)
+    if not slots:
+        raise HTTPException(
+            status_code=503,
+            detail="cabinet live audio unavailable: no chunks in " + str(directory),
+        )
+    rate, channels, _ = slots[max(slots)]
+    return StreamingResponse(
+        _live_pcm_stream(directory, slots),
+        media_type="application/octet-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Orion-Sample-Rate": str(rate),
+            "X-Orion-Channels": str(channels),
+            "X-Orion-Sample-Format": "s16le",
+        },
+    )

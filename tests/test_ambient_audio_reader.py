@@ -10,15 +10,18 @@ from pathlib import Path
 import pytest
 
 from orion.schemas.telemetry.ambient_audio import (
+    AMBIENT_AUDIO_LIVE_SLOT_HEADER as LIVE_SLOT_HEADER,
     AMBIENT_AUDIO_SCHEMA_V1,
     AmbientAudioSnapshotV1,
 )
 from scripts.orion_ambient_audio_reader import (
+    LiveRing,
     SnapshotState,
     atomic_write_json,
     build_snapshot,
-    capture_pcm_via_arecord,
     compute_levels_from_pcm,
+    run_loop,
+    stream_pcm_via_arecord,
     write_snapshot_if_changed,
 )
 
@@ -109,25 +112,52 @@ def test_failed_capture_without_last_good_is_error():
     assert snap["error"] == "device not found"
 
 
-def test_arecord_capture_requests_raw_pcm_and_exact_sample_count(monkeypatch):
+class _FakeProc:
+    def __init__(self, stdout: bytes, stderr: bytes = b"", returncode: int = 1):
+        import io
+
+        self.stdout = io.BytesIO(stdout)
+        self.stderr = io.BytesIO(stderr)
+        self.returncode = None
+        self._exit = returncode
+        self.killed = False
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = self._exit
+
+    def wait(self):
+        return self.returncode
+
+
+def test_arecord_stream_is_one_continuous_process_cut_into_windows():
     seen: dict[str, object] = {}
+    # 2.5 windows of 0.5s @ 16 kHz mono: two full chunks then a short tail.
+    pcm = _pcm_from_samples(list(range(8000)) * 2 + [7] * 4000)
 
-    def fake_run(argv, *, capture_output, check):
+    def fake_popen(argv, *, stdout, stderr):
         seen["argv"] = argv
-        assert capture_output is True
-        assert check is False
-        return subprocess.CompletedProcess(argv, 0, stdout=b"\x00\x00", stderr=b"")
+        proc = _FakeProc(pcm, stderr=b"arecord: overrun")
+        seen["proc"] = proc
+        return proc
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    chunks = []
+    with pytest.raises(RuntimeError, match="overrun"):
+        for chunk in stream_pcm_via_arecord(
+            device="plughw:CARD=CMTECK,DEV=0",
+            sample_rate=16000,
+            channels=1,
+            duration_sec=0.5,
+            popen=fake_popen,
+        ):
+            chunks.append(chunk)
 
-    pcm = capture_pcm_via_arecord(
-        device="plughw:CARD=CMTECK,DEV=0",
-        sample_rate=16000,
-        channels=1,
-        duration_sec=0.5,
-    )
-
-    assert pcm == b"\x00\x00"
+    assert [len(c) for c in chunks] == [16000, 16000]
+    assert seen["proc"].killed is True
+    # No --samples: one stream, not a fresh device open per window.
     assert seen["argv"] == [
         "arecord",
         "-D",
@@ -140,11 +170,76 @@ def test_arecord_capture_requests_raw_pcm_and_exact_sample_count(monkeypatch):
         "1",
         "-t",
         "raw",
-        "--samples",
-        "8000",
         "-q",
         "-",
     ]
+
+
+def test_live_ring_slots_carry_seq_and_rate_and_wrap(tmp_path: Path):
+    ring = LiveRing(tmp_path / "live", slots=4)
+    for i in range(6):
+        ring.write(_pcm_from_samples([i] * 4), sample_rate=16000, channels=1)
+
+    files = sorted(p.name for p in (tmp_path / "live").iterdir())
+    assert files == ["slot-00.pcm", "slot-01.pcm", "slot-02.pcm", "slot-03.pcm"]
+    raw = ring.slot_path(6).read_bytes()
+    seq, rate, channels, _ = LIVE_SLOT_HEADER.unpack_from(raw)
+    assert (seq, rate, channels) == (6, 16000, 1)
+    assert raw[LIVE_SLOT_HEADER.size:] == _pcm_from_samples([5] * 4)
+    assert oct(ring.slot_path(6).stat().st_mode & 0o777) == "0o644"
+
+
+def test_run_loop_writes_levels_and_live_chunks_then_retries_after_failure(tmp_path: Path):
+    calls = {"n": 0}
+    sleeps: list[float] = []
+
+    def fake_stream(**_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            yield _pcm_from_samples([1000] * 8)
+            yield _pcm_from_samples([2000] * 8)
+            raise RuntimeError("arecord died")
+        yield _pcm_from_samples([3000] * 8)
+
+    out = tmp_path / "latest.json"
+    ring = LiveRing(tmp_path / "live")
+    run_loop(
+        output=out,
+        state=SnapshotState(stale_after_sec=60.0),
+        device="dev",
+        window=0.5,
+        rate=16000,
+        channels=1,
+        loop_sec=1.5,
+        live=ring,
+        sleep_fn=sleeps.append,
+        stream_fn=fake_stream,
+        max_windows=4,
+    )
+    assert calls["n"] == 2
+    assert sleeps == [1.5]
+    assert ring.seq == 3
+    snap = json.loads(out.read_text())
+    assert snap["status"] == "ok"
+    assert snap["peak"] == 3000
+
+
+def test_run_loop_without_live_ring_writes_no_audio(tmp_path: Path):
+    def fake_stream(**_kwargs):
+        yield _pcm_from_samples([500] * 8)
+
+    run_loop(
+        output=tmp_path / "latest.json",
+        state=SnapshotState(),
+        device="dev",
+        window=0.5,
+        rate=16000,
+        channels=1,
+        live=None,
+        stream_fn=fake_stream,
+        max_windows=1,
+    )
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["latest.json"]
 
 
 def test_stale_status_when_last_good_aged_out():
@@ -221,3 +316,11 @@ def test_write_snapshot_does_not_clobber_on_invalid_payload(tmp_path: Path):
     assert after["rms"] == before["rms"]
     assert after["peak"] == before["peak"]
     assert after["status"] == "error"
+
+
+def test_live_ring_default_layout_is_the_shared_contract_hub_reads(tmp_path: Path):
+    from orion.schemas.telemetry.ambient_audio import ambient_audio_live_slot_name
+
+    ring = LiveRing(tmp_path)
+    for seq in (1, 16, 17, 40):
+        assert ring.slot_path(seq).name == ambient_audio_live_slot_name(seq)

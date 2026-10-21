@@ -355,11 +355,21 @@
           id="visualizerContainer"
           class="hidden w-full h-28 shrink-0 min-h-0 flex flex-col bg-gray-800/50 rounded-lg border border-gray-800 px-3 py-2"
         >
-          <span class="shrink-0 text-xs text-gray-400">Oríon’s Voice</span>
+          <span id="visualizerLabel" class="shrink-0 text-xs text-gray-400">Oríon’s Voice</span>
           <canvas id="visualizer" class="block w-full flex-1 min-h-0"></canvas>
         </div>
 
         <div class="flex items-center justify-end gap-2 -mb-1">
+          <!-- Live cabinet mic (host reader PCM ring -> GET /api/cabinet/ambient/live),
+               drawn on the same waveform as Orion's voice. static/js/cabinet-live-audio.js -->
+          <button
+            id="cabinetAudioButton"
+            type="button"
+            class="mr-auto rounded-md border border-gray-700 bg-gray-900/70 px-2 py-1 text-[10px] font-semibold text-gray-300 hover:text-white hover:border-gray-500"
+            title="Listen to the cabinet mic live"
+            aria-pressed="false"
+          >Cabinet audio</button>
+          <span id="cabinetAudioStatus" class="text-[10px] text-gray-500" aria-live="polite"></span>
           <span id="visionStatusChip" class="hidden rounded-full border px-2 py-0.5 text-[10px] font-semibold"></span>
           <button
             id="copyTranscriptButton"
@@ -508,32 +518,6 @@
             <span id="askClaudeStatusChip" class="hidden rounded-full border border-amber-600/50 bg-amber-700/20 px-2 py-0.5 text-[10px] text-amber-200">thinking…</span>
             <span id="presenceStatusChip" class="rounded-full border border-gray-600 bg-gray-700/40 px-2 py-0.5 text-[10px] text-gray-200">Solo</span>
             </div>
-          </div>
-        </div>
-
-        <div class="flex flex-wrap items-center gap-2 bg-gray-800/60 border border-gray-700 rounded-lg p-2 text-xs">
-          <div class="flex items-center gap-2">
-            <label for="recallModeSelect" class="text-gray-400">Recall Mode</label>
-            <select id="recallModeSelect" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-              <option value="auto" selected>Auto</option>
-              <option value="blend">Blend</option>
-            </select>
-          </div>
-          <div class="flex items-center gap-2">
-            <label for="recallProfileSelect" class="text-gray-400">Recall Profile</label>
-            <select
-              id="recallProfileSelect"
-              class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Auto-set by Mode: Orion mode leaves this unset (backend default); any other mode forces assist.light.v1. Manual picks below override until Mode changes again."
-            >
-              <option value="assist.light.v1" selected>assist.light.v1</option>
-              <option value="recall.v1">recall.v1</option>
-              <option value="chat.general.v1">chat.general.v1</option>
-              <option value="self.factual.v1">self.factual.v1</option>
-              <option value="reflect.v1">reflect.v1</option>
-              <option value="reflect.anchor.v1">reflect.anchor.v1</option>
-              <option value="recall_v2_shadow_default">recall_v2_shadow_default (optional canary)</option>
-            </select>
           </div>
         </div>
 
@@ -3473,6 +3457,56 @@
       </div>
       <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           <div id="runtimeDebugPanelBody" class="space-y-2 text-xs text-gray-300">
+            <!-- Recall Mode: the live recall selects every chat send reads. One set
+                 of controls; openRecallModeModal() moves #recallModeControls into
+                 the modal and closeRecallModeModal() moves it back. -->
+            <div id="recallModePanel" class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
+              <div class="flex items-center justify-between gap-2">
+                <button
+                  id="recallModeToggle"
+                  class="flex-1 flex items-center justify-between text-xs text-gray-300 hover:text-white"
+                  type="button"
+                >
+                  <span class="uppercase tracking-wide">Recall Mode</span>
+                  <span id="recallModeCaret" class="text-gray-500">▾</span>
+                </button>
+                <button
+                  id="recallModeOpenModal"
+                  class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
+                  type="button"
+                >
+                  Modal
+                </button>
+              </div>
+              <div id="recallModeBody" class="hidden">
+                <div id="recallModeControls" class="flex flex-wrap items-center gap-2 text-xs">
+                  <div class="flex items-center gap-2">
+                    <label for="recallModeSelect" class="text-gray-400">Recall Mode</label>
+                    <select id="recallModeSelect" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                      <option value="auto" selected>Auto</option>
+                      <option value="blend">Blend</option>
+                    </select>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <label for="recallProfileSelect" class="text-gray-400">Recall Profile</label>
+                    <select
+                      id="recallProfileSelect"
+                      class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Auto-set by Mode: Orion mode leaves this unset (backend default); any other mode forces assist.light.v1. Manual picks below override until Mode changes again."
+                    >
+                      <option value="assist.light.v1" selected>assist.light.v1</option>
+                      <option value="recall.v1">recall.v1</option>
+                      <option value="chat.general.v1">chat.general.v1</option>
+                      <option value="self.factual.v1">self.factual.v1</option>
+                      <option value="reflect.v1">reflect.v1</option>
+                      <option value="reflect.anchor.v1">reflect.anchor.v1</option>
+                      <option value="recall_v2_shadow_default">recall_v2_shadow_default (optional canary)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
               <div class="flex items-center justify-between gap-2">
                 <button
@@ -3800,6 +3834,33 @@
           </div>
         </div>
           </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="recallModeModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
+    <div id="recallModeModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
+    <div id="recallModeModalDialog" class="fixed left-1/2 top-1/2 z-[121] flex w-[min(40rem,92vw)] max-h-[75vh] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+      <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-gray-300">Recall Mode</div>
+          <div class="mt-1 text-[11px] text-gray-400">How each chat turn pulls memory. Applies to your next message.</div>
+        </div>
+        <button
+          id="recallModeModalClose"
+          class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-800"
+          type="button"
+        >
+          Close
+        </button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-4 text-xs text-gray-300">
+        <div id="recallModeModalBody"></div>
+        <dl class="space-y-2 text-[11px] text-gray-400">
+          <div><dt class="inline font-semibold text-gray-200">Auto</dt> <dd class="inline">— sends no recall mode; the backend default decides.</dd></div>
+          <div><dt class="inline font-semibold text-gray-200">Blend</dt> <dd class="inline">— sends <code>recall.mode = "blend"</code> with each turn.</dd></div>
+          <div><dt class="inline font-semibold text-gray-200">Recall Profile</dt> <dd class="inline">— set automatically by the chat Mode; a manual pick holds until Mode changes again.</dd></div>
+        </dl>
       </div>
     </div>
   </div>
@@ -4501,6 +4562,7 @@
   <script src="/static/js/hub-tab-launcher.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/gpu_pool_leases.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/presence-form.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/cabinet-live-audio.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
 </body>
 </html>

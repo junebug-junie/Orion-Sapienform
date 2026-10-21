@@ -269,6 +269,18 @@ let chatTurnTimer = null;
   const presenceClearButton = document.getElementById('presenceClearButton');
   const recallModeSelect = document.getElementById('recallModeSelect');
   const recallProfileSelect = document.getElementById('recallProfileSelect');
+  const recallModeToggle = document.getElementById('recallModeToggle');
+  const recallModeCaret = document.getElementById('recallModeCaret');
+  const recallModeBody = document.getElementById('recallModeBody');
+  const recallModeControls = document.getElementById('recallModeControls');
+  const recallModeOpenModal = document.getElementById('recallModeOpenModal');
+  const recallModeModalRoot = document.getElementById('recallModeModalRoot');
+  const recallModeModalBackdrop = document.getElementById('recallModeModalBackdrop');
+  const recallModeModalDialog = document.getElementById('recallModeModalDialog');
+  const recallModeModalClose = document.getElementById('recallModeModalClose');
+  const recallModeModalBody = document.getElementById('recallModeModalBody');
+  const cabinetAudioButton = document.getElementById('cabinetAudioButton');
+  const cabinetAudioStatus = document.getElementById('cabinetAudioStatus');
   const debugPanelOpenModal = document.getElementById('debugPanelOpenModal');
   const debugPanelModalRoot = document.getElementById('debugPanelModalRoot');
   const debugPanelModalBackdrop = document.getElementById('debugPanelModalBackdrop');
@@ -667,12 +679,22 @@ let chatTurnTimer = null;
   // Visualizers
   const visualizerCanvas = document.getElementById('visualizer');
   const canvasCtx = visualizerCanvas ? visualizerCanvas.getContext('2d') : null;
-  // The voice box is collapsed unless Orion's voice is actually playing, so the
-  // transcript gets the vertical space. The canvas's ResizeObserver re-sizes it
-  // when it reappears.
+  const visualizerLabel = document.getElementById('visualizerLabel');
+  // Live cabinet mic analyser (cabinet-live-audio.js); drawn under Orion's voice.
+  let cabinetAnalyser = null;
+  let voiceBoxVoiceVisible = false;
+  // The voice box is collapsed unless Orion's voice or the cabinet mic is
+  // actually playing, so the transcript gets the vertical space. The canvas's
+  // ResizeObserver re-sizes it when it reappears.
   function setVoiceBoxVisible(visible) {
+    voiceBoxVoiceVisible = visible;
     const box = visualizerCanvas && visualizerCanvas.parentElement;
-    if (box) box.classList.toggle('hidden', !visible);
+    if (box) box.classList.toggle('hidden', !(visible || cabinetAnalyser));
+    if (visualizerLabel) {
+      visualizerLabel.textContent = cabinetAnalyser
+        ? (visible ? 'Cabinet + Oríon’s Voice' : 'Cabinet')
+        : 'Oríon’s Voice';
+    }
   }
   
   // NOTE: stateVisualizer was replaced by an iframe in the HTML. 
@@ -3521,6 +3543,7 @@ let chatTurnTimer = null;
       || isModalVisible(autonomyConstitutionModalRoot)
       || isModalVisible(autonomyReadinessModalRoot)
       || isModalVisible(debugPanelModalRoot)
+      || isModalVisible(recallModeModalRoot)
       || isModalVisible(biometricsModalRoot)
       || isModalVisible(agentTraceModal)
       || isModalVisible(cockpitHudRoot);
@@ -4306,6 +4329,33 @@ let chatTurnTimer = null;
     }
     debugPanelModalRoot.classList.remove('hidden');
     debugPanelModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+  }
+
+  function toggleRecallModePanel() {
+    if (!recallModeBody) return;
+    const nextHidden = !recallModeBody.classList.contains('hidden');
+    recallModeBody.classList.toggle('hidden', nextHidden);
+    if (recallModeCaret) recallModeCaret.textContent = nextHidden ? '▾' : '▴';
+  }
+
+  // The selects are the live inputs every chat send reads, so there is exactly
+  // one copy: the modal borrows #recallModeControls and gives it back on close.
+  function openRecallModeModal() {
+    if (!recallModeModalRoot) return;
+    if (recallModeModalRoot.parentElement !== document.body) document.body.appendChild(recallModeModalRoot);
+    if (recallModeControls && recallModeModalBody) recallModeModalBody.appendChild(recallModeControls);
+    recallModeModalRoot.classList.remove('hidden');
+    recallModeModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+    if (recallModeSelect) recallModeSelect.focus();
+  }
+
+  function closeRecallModeModal() {
+    if (!recallModeModalRoot) return;
+    if (recallModeControls && recallModeBody) recallModeBody.appendChild(recallModeControls);
+    recallModeModalRoot.classList.add('hidden');
+    recallModeModalRoot.setAttribute('aria-hidden', 'true');
     syncDebugModalScrollLock();
   }
 
@@ -10618,6 +10668,17 @@ let chatTurnTimer = null;
   if (memoryDebugModalDialog) {
     memoryDebugModalDialog.addEventListener('click', (event) => event.stopPropagation());
   }
+  if (recallModeToggle) recallModeToggle.addEventListener('click', toggleRecallModePanel);
+  if (recallModeOpenModal) {
+    recallModeOpenModal.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openRecallModeModal();
+    });
+  }
+  if (recallModeModalClose) recallModeModalClose.addEventListener('click', closeRecallModeModal);
+  if (recallModeModalBackdrop) recallModeModalBackdrop.addEventListener('click', closeRecallModeModal);
+  if (recallModeModalDialog) recallModeModalDialog.addEventListener('click', (event) => event.stopPropagation());
   ensureDebugPanelModalRootOnBody();
   if (debugPanelOpenModal) {
     debugPanelOpenModal.addEventListener('click', (event) => {
@@ -11152,6 +11213,10 @@ let chatTurnTimer = null;
     });
   }
   document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && recallModeModalRoot && !recallModeModalRoot.classList.contains('hidden')) {
+      closeRecallModeModal();
+      return;
+    }
     if (event.key === 'Escape' && memoryGraphBridgeModal && !memoryGraphBridgeModal.classList.contains('hidden')) {
       closeMemoryGraphBridgeModal();
       return;
@@ -12543,8 +12608,11 @@ let chatTurnTimer = null;
           console.info('[tts] playback ended');
           clearAudioWatchdog();
           isPlayingAudio = false;
-          cancelAnimationFrame(animationFrameId);
-          if (canvasCtx) canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
+          analyser = null;
+          if (!cabinetAnalyser) {
+            cancelAnimationFrame(animationFrameId);
+            if (canvasCtx) canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
+          }
           setVoiceBoxVisible(false);
           processAudioQueue();
         };
@@ -12558,21 +12626,69 @@ let chatTurnTimer = null;
     }
   }
 
-  function drawVisualizer() {
-    if (!analyser || !canvasCtx) return;
-    const bufLen = analyser.frequencyBinCount;
+  function drawAnalyserBars(source, color) {
+    const bufLen = source.frequencyBinCount;
     const data = new Uint8Array(bufLen);
-    analyser.getByteFrequencyData(data);
-    canvasCtx.clearRect(0,0,visualizerCanvas.width, visualizerCanvas.height);
+    source.getByteFrequencyData(data);
     const barW = (visualizerCanvas.width / bufLen) * 2.5;
     let x = 0;
     for(let i=0; i<bufLen; i++) {
       const h = (data[i] / 255) * visualizerCanvas.height;
-      canvasCtx.fillStyle = `rgb(${h+100}, 100, 200)`;
+      canvasCtx.fillStyle = color(h);
       canvasCtx.fillRect(x, visualizerCanvas.height - h, barW, h);
       x += barW + 1;
     }
+  }
+
+  // One waveform for every live sound: cabinet mic (teal) underneath, Orion's
+  // TTS voice (violet) on top. One animation loop no matter which started it.
+  function drawVisualizer() {
+    cancelAnimationFrame(animationFrameId);
+    if ((!analyser && !cabinetAnalyser) || !canvasCtx) return;
+    canvasCtx.clearRect(0,0,visualizerCanvas.width, visualizerCanvas.height);
+    if (cabinetAnalyser) drawAnalyserBars(cabinetAnalyser, (h) => `rgba(45, ${Math.round(h + 120)}, 170, 0.85)`);
+    if (analyser) drawAnalyserBars(analyser, (h) => `rgb(${h+100}, 100, 200)`);
     animationFrameId = requestAnimationFrame(drawVisualizer);
+  }
+
+  const cabinetLiveAudio = window.OrionCabinetLiveAudio
+    ? window.OrionCabinetLiveAudio.createCabinetLiveAudio({
+        getContext: () => {
+          if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          return audioContext;
+        },
+        onAnalyser: (node) => {
+          cabinetAnalyser = node;
+          setVoiceBoxVisible(voiceBoxVoiceVisible);
+          if (node) {
+            drawVisualizer();
+          } else if (!analyser) {
+            cancelAnimationFrame(animationFrameId);
+            if (canvasCtx) canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
+          }
+        },
+        onStatus: (state, text) => {
+          const on = state === 'connecting' || state === 'live';
+          if (cabinetAudioButton) {
+            cabinetAudioButton.setAttribute('aria-pressed', on ? 'true' : 'false');
+            cabinetAudioButton.textContent = on ? 'Stop cabinet audio' : 'Cabinet audio';
+            cabinetAudioButton.classList.toggle('border-teal-500', on);
+            cabinetAudioButton.classList.toggle('text-teal-200', on);
+          }
+          if (cabinetAudioStatus) {
+            cabinetAudioStatus.textContent = text;
+            cabinetAudioStatus.classList.toggle('text-red-300', state === 'error');
+          }
+        },
+      })
+    : null;
+  if (cabinetAudioButton) {
+    cabinetAudioButton.disabled = !cabinetLiveAudio;
+    cabinetAudioButton.addEventListener('click', () => {
+      if (!cabinetLiveAudio) return;
+      if (cabinetLiveAudio.isActive()) cabinetLiveAudio.stop();
+      else cabinetLiveAudio.start();
+    });
   }
 
   // --- Session & Init ---

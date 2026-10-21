@@ -158,14 +158,53 @@
     if(screen.width!==h.width || screen.height!==h.height){screen.width=h.width;screen.height=h.height;}
     ctx.putImageData(image,0,0);screen.dataset.frame=h.frame;
   }
-  async function load(){const games=await api('games');el('game').replaceChildren(...games.map(g=>{const o=document.createElement('option');o.value=g.game_id;o.textContent=g.title;o.dataset.ports=JSON.stringify(g.ports);return o;}));el('game').value=games.some(g=>g.game_id==='spacegulls')?'spacegulls':games[0]?.game_id;const state=await api('health/ready');sid=state.session?.session_id;
+  async function load(){const games=await api('games');el('game').replaceChildren(...games.map(g=>{const o=document.createElement('option');o.value=g.game_id;o.textContent=g.title;o.dataset.ports=JSON.stringify(g.ports);o.dataset.save=String(g.save_enabled===true);return o;}));el('game').value=games.some(g=>g.game_id==='spacegulls')?'spacegulls':games[0]?.game_id;const state=await api('health/ready');sid=state.session?.session_id;
     el('player').hidden=false;
-    if(state.session && ['running','paused','starting'].includes(state.session.state)){el('game').value=state.session.game_id;report('Game '+state.session.state+'. Click the game to play.');}else report('Choose a game and press New game.');}
+    if(state.session && ['running','paused','starting'].includes(state.session.state)){el('game').value=state.session.game_id;report('Game '+state.session.state+'. Click the game to play.');}
+    else if(state.session?.reason==='service_restart'){el('game').value=state.session.game_id;report('The game service restarted. Choose a save and press Load to continue.');}
+    else report('Choose a game and press New game.');
+    await listSaves();}
+  // Save states live on the server, keyed to this game's ROM and core. Saves from
+  // another ROM/core build are hidden here and refused by the server anyway.
+  const played = f => { const t=Math.floor(f/60); return `${Math.floor(t/3600)}:${String(Math.floor(t/60)%60).padStart(2,'0')}:${String(t%60).padStart(2,'0')}`; };
+  async function listSaves(){
+    const game=el('game').value, enabled=el('game').selectedOptions[0]?.dataset.save==='true';
+    el('saveBar').hidden=!enabled; if(!enabled)return;
+    const rows=(await api(`games/${game}/saves`)).filter(s=>s.compatible);
+    if(game!==el('game').value)return;
+    el('saves').replaceChildren(...rows.map(s=>{const o=document.createElement('option');o.value=s.save_id;
+      o.textContent=`${new Date(s.created_utc).toLocaleString()} · played ${played(s.played_frames)} · frame ${s.frame}`;return o;}));
+    if(!rows.length){const o=document.createElement('option');o.value='';o.textContent='No saves yet';el('saves').append(o);}
+  }
+  el('game').onchange=()=>{void listSaves().catch(err=>report(err.message));};
   const action = (id, fn) => el(id).onclick=async()=>{el(id).disabled=true;try{await fn();}catch(err){report(err.message);}finally{el(id).disabled=false;}};
-  action('new',async()=>{++intent;wanted=false;
+  async function newGame(save_id){++intent;wanted=false;
     // One game exists at a time: New game ends the current one instead of failing with session_active.
     if(sid){closeConnections();try{await api(`sessions/${sid}/stop`,{});}catch(err){if(err.message!=='unknown_session')throw err;}sid=null;}
-    const epoch=transportEpoch;await sound();if(epoch!==transportEpoch || document.hidden)return;const s=await api('sessions',{game_id:el('game').value,idempotency_key:Array.from(crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,"0")).join("")});sid=s.session_id;if(epoch===transportEpoch && !document.hidden)await connect();});
+    const epoch=transportEpoch;await sound();if(epoch!==transportEpoch || document.hidden)return false;
+    const body={game_id:el('game').value,idempotency_key:Array.from(crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,"0")).join("")};
+    if(save_id)body.save_id=save_id;
+    const s=await api('sessions',body);sid=s.session_id;if(epoch!==transportEpoch || document.hidden)return false;
+    await connect();return true;}
+  action('new',()=>newGame());
+  action('save',async()=>{
+    if(!sid)throw Error('Start or load a game first.');
+    const r=await api(`sessions/${sid}/save`,{});
+    await listSaves();
+    report(`Saved · played ${played(r.saved.played_frames)} · frame ${r.saved.frame}.`);
+    if(lease)screen.focus();
+  });
+  action('load',async()=>{
+    const save_id=el('saves').value;if(!save_id)throw Error('No save to load.');
+    let current=null;
+    if(sid){try{current=await api(`sessions/${sid}`);}catch(_){current=null;}}
+    if(current && current.game_id===el('game').value && ['running','paused'].includes(current.state)){
+      // Restore in place; the worker swaps the whole game state between two frames.
+      await api(`sessions/${sid}/load`,{save_id});
+      if(lease && current.state==='running'){screen.focus();report('Save loaded. Playing.');}
+      else report('Save loaded (paused; the picture updates when play resumes). Click the game to keep playing.');
+    } else if(await newGame(save_id)) report('Save loaded. Playing.');
+  });
   action('join',connect);
   action('pause',async()=>{++intent;wanted=false;try{if(sid)await api(`sessions/${sid}/pause`,{});}finally{neutral();}report('Paused. Click the game to keep playing.');});
   action('stop',async()=>{++intent;wanted=false;try{if(sid)await api(`sessions/${sid}/stop`,{});}finally{neutral();}sid=null;report('Game stopped.');});
@@ -221,7 +260,25 @@
   action('start',async()=>{screen.focus();keys.add('Enter');send();setTimeout(()=>keys.delete('Enter'),150);});
   el('mute').onchange=()=>{if(gain)gain.gain.value=el('mute').checked?0:1;};
   el('port').onchange=neutral;
-  screen.addEventListener('keydown',e=>{if(bits[e.code]){e.preventDefault();if(!keys.has(e.code)){keys.add(e.code);send();}}});
+  // While the game has the keyboard, keys that scroll a page do nothing else. Before
+  // this, unmapped PageUp/PageDown/Home/End/Space fell through to the browser and
+  // scrolled the Hub page (the Retro frame is taller than the window) out from under
+  // the game. In fullscreen, mapped keys reach the game even if focus slipped off it.
+  const stage=el('stage'), SCROLL_KEYS=new Set(['PageUp','PageDown','Home','End','Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight']);
+  const field=t=>t instanceof HTMLInputElement || t instanceof HTMLSelectElement || t instanceof HTMLTextAreaElement;
+  document.addEventListener('keydown',e=>{
+    if(document.activeElement!==screen && (document.fullscreenElement!==stage || field(e.target)))return;
+    if(bits[e.code] || SCROLL_KEYS.has(e.code))e.preventDefault();
+    if(bits[e.code] && !keys.has(e.code)){keys.add(e.code);send();}
+  },{capture:true});
+  action('fullscreen',async()=>{
+    if(document.fullscreenElement){await document.exitFullscreen();return;}
+    if(!stage.requestFullscreen || !document.fullscreenEnabled)throw Error('Fullscreen is blocked here. Open /retro directly.');
+    await stage.requestFullscreen({navigationUI:'hide'});
+  });
+  el('exitFullscreen').onclick=()=>{if(document.fullscreenElement)void document.exitFullscreen().catch(()=>{});};
+  document.addEventListener('fullscreenchange',()=>{
+    el('fullscreen').textContent=document.fullscreenElement?'Exit fullscreen':'Fullscreen';screen.focus();});
   window.addEventListener('keyup',e=>{keys.delete(e.code);send();});
   window.addEventListener('blur',()=>{away=true;neutral();});window.addEventListener('pagehide',neutral);window.addEventListener('gamepaddisconnected',neutral);
   document.addEventListener('visibilitychange',()=>{if(document.hidden){away=true;neutral();}else{away=false;heal();}});

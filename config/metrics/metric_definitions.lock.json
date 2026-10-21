@@ -2,10 +2,12 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 751,
   "_last_change": {
-    "change_count": 3,
-    "high_severity_count": 1,
+    "change_count": 5,
+    "high_severity_count": 3,
     "changes": [
-      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026vices.orion-thought.app.\u2026 -> \u2026vices.orion-substrate-runtime.app.worker:BiometricsSubstrat\u2026\u2026)",
+      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026vices.orion-hub.scripts.api_routes:_mutation_arousal_level \u2026\u2026 -> \u2026vices.orion-durable-runs.app.temporal_self_chronicle:Chroni\u2026\u2026)",
+      "high   semantics_changed metric://field_channel/orion-field-digester/execution_friction (meaning: \u2026g on a node. -> \u2026g on a node. Failed steps over started steps; deliberate GP\u2026)",
+      "high   semantics_changed metric://field_channel/orion-field-digester/failure_pressure (meaning: \u2026y on a node. -> \u2026y on a node. A step the GPU pool shed on purpose (gpu_pool_\u2026)",
       "medium added metric://bus_channel/orion-hub/orion:personality:naming",
       "medium added metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error"
     ]
@@ -4276,7 +4278,7 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/execution_friction": {
-      "meaning": "How much resistance (retries/backoff) execution is encountering on a node.",
+      "meaning": "How much resistance (retries/backoff) execution is encountering on a node. Failed steps over started steps; deliberate GPU-pool sheds (gpu_pool_unavailable:shed:*) are excluded from the failed count since 2026-10-20.",
       "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "reliability_pressure"
@@ -4299,7 +4301,7 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/failure_pressure": {
-      "meaning": "Recent execution failure rate/severity on a node.",
+      "meaning": "Recent execution failure rate/severity on a node. A step the GPU pool shed on purpose (gpu_pool_unavailable:shed:*, e.g. cabinet_hot) is not a failure and does not raise it (since 2026-10-20); pool deadline/outage refusals and every other error still do.",
       "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "reliability_pressure"
@@ -4813,6 +4815,7 @@
       "absent_means": "Redis orion:regulation:latest expired (TTL 360 s, three ticks) or arousal_level unknown (a stale input, or ORION_REGULATION_AROUSAL_ENABLED=false): arousal unavailable, and every reader keeps its pre-arousal behaviour. Never read as idle.",
       "declared_consumers": [
         "services.orion-dream.app.cycle:run_cycle_once (a due sleep is held while engaged or strained)",
+        "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> orion.temporal_self.arcs:_fold_strain (strain loop part 1: one `strain` arc per episode from the arousal_transition rows; read by the chat stance cue, the Day letter and the reverie arc block)",
         "services.orion-hub.scripts.api_routes:_mutation_arousal_level -> orion.substrate.mutation_pressure:PressureAccumulator.ready_for_proposal (no self-modification proposal while strained)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (strained holds; engaged doubles the cooldown)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick_self_inquiry (runs only at idle)",

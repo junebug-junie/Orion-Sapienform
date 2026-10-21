@@ -49,8 +49,8 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import Iterable, Literal, Optional, Tuple
 
-from orion.autonomy.cabinet_heat import REFLEX_CABINET_HOT
 from orion.autonomy.thermal_gate import DEFAULT_CRITICAL_C, DEFAULT_CRITICAL_REARM_C
+from orion.regulation.arousal import STRAIN_CAUSES
 from orion.regulation.arousal_view import DEFAULT_MAX_AGE_SEC, MAX_FUTURE_SKEW_SEC
 from orion.schemas.regulation import ArousalReadingV1
 
@@ -71,10 +71,11 @@ FIRST_REMINDERS = (
 )
 REMINDER_PERIOD = timedelta(hours=8)
 
-# The strain causes classify_arousal names on a strained reading (orion/regulation/arousal.py:220).
-# Other reasons on a strained reading (strain_holding, strain_clearing, prev_dropped:gap,
-# gpu_fault:...) describe the latch or the inputs, not a new cause.
-STRAIN_CAUSE_REASONS: frozenset[str] = frozenset({REFLEX_CABINET_HOT, "gpu_queue_sustained"})
+# The strain causes classify_arousal names on a strained reading: one owner,
+# ``orion.regulation.arousal.STRAIN_CAUSES`` (the strain arcs read the same list). Other reasons on
+# a strained reading (strain_holding, strain_clearing, prev_dropped:gap, gpu_fault:...) describe the
+# latch or the inputs, not a new cause.
+STRAIN_CAUSE_REASONS: frozenset[str] = frozenset(STRAIN_CAUSES)
 
 EventKind = Literal["onset", "escalation", "reminder"]
 

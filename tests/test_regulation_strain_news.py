@@ -319,15 +319,12 @@ def test_rest_write_is_held_inside_the_orienting_window():
     assert rest_write_allowed(StrainNewsState(), T0, EVENT_ORIENTING_WINDOW_SEC)
 
 
-def test_strain_causes_match_what_classify_arousal_writes():
-    """The local cause set must name the strings arousal.py writes on a strained reading."""
-    import inspect
-
+def test_strain_causes_are_the_ones_classify_arousal_writes():
+    """One owner: the news rule reads arousal.STRAIN_CAUSES, which classify_arousal writes from."""
     from orion.regulation import arousal
 
-    src = inspect.getsource(arousal.classify_arousal)
-    for cause in sn.STRAIN_CAUSE_REASONS:
-        assert f'"{cause}"' in src or cause == arousal.REFLEX_CABINET_HOT
+    assert sn.STRAIN_CAUSE_REASONS == frozenset(arousal.STRAIN_CAUSES)
+    assert arousal.REFLEX_CABINET_HOT in sn.STRAIN_CAUSE_REASONS
 
 
 # ---- glossary: the node is event-written, a trigger, prompt-reaching, not continuous ----

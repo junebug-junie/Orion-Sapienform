@@ -15,6 +15,11 @@ class Settings:
     hub_token_file: Path = Path('/run/secrets/retro_hub')
     session_bytes: int = 268435456
     total_bytes: int = 2147483648
+    # Host bind mount (RETRO_SAVES_DIR, required by compose). If /saves is absent or
+    # read-only (e.g. a bare `docker run`), save_enabled is false and save/load refuse.
+    saves: Path = Path('/saves')
+    save_max_per_game: int = 20
+    save_max_bytes: int = 4194304
 
     @classmethod
     def from_env(cls):

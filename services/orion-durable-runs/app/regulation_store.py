@@ -9,6 +9,9 @@ Reads (read-only, bounded):
   ``orion:gpu_pool:state`` in ~10 ms) for the sustain window plus a margin, and the pool's own
   controller refusals/answers (``gpu_pool_events``, last ``GPU_FAULT_LOOKBACK_SEC``) so a queue
   jammed by a broken lane controller is not read as load. Either read failing makes S2 stale.
+  Each snapshot also carries what an active shed (heat) is holding back (``shed_held_depth``,
+  ``shed_reason``; manual_migration_regulation_gpu_shed_held_v1.sql), so a queue the heat
+  shed holds is not read as GPU load either.
 
 Each read fails on its own: a failed read makes only that input stale (-> ``unknown``), never 0.
 
@@ -46,7 +49,7 @@ CABINET_POINTS_PG = (CABINET_POINTS_SQL.replace(":node", "%(node)s").replace(":s
                      .replace(":until", "%(until)s"))
 
 GPU_SNAPSHOTS_SQL = (
-    "SELECT host, generated_at, queue_depth FROM gpu_pool_state_history "
+    "SELECT host, generated_at, queue_depth, shed_held_depth, shed_reason FROM gpu_pool_state_history "
     "WHERE generated_at >= %(since)s ORDER BY host, generated_at"
 )
 
@@ -98,6 +101,16 @@ async def _cabinet(pool: Any, now: datetime, prev: Optional[ArousalInputsV1]) ->
             "cabinet_temp_c": verdict.temp_c}
 
 
+def _json_field(value: Any) -> Any:
+    """A psycopg ``json`` column arrives decoded; a text one (or a test double) as a string."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return None
+    return value
+
+
 async def _gpu(pool: Any, now: datetime, *, floor: int, sustain_sec: float) -> dict:
     try:
         async with pool.connection() as conn:
@@ -114,28 +127,26 @@ async def _gpu(pool: Any, now: datetime, *, floor: int, sustain_sec: float) -> d
         ((r["generated_at"], r["event"], r["reason"], r["role"]) for r in events), now)
     by_host: dict[str, list] = {}
     for r in rows:
-        depth = r["queue_depth"]
-        if isinstance(depth, str):
-            try:
-                depth = json.loads(depth)
-            except ValueError:
-                continue
-        by_host.setdefault(r["host"], []).append((r["generated_at"], depth))
+        depth = _json_field(r["queue_depth"])
+        if depth is None:
+            continue
+        by_host.setdefault(r["host"], []).append(
+            (r["generated_at"], depth, _json_field(r.get("shed_held_depth")), r.get("shed_reason")))
     # One evidence run per pool host; the most strained FRESH host speaks for the fleet. A host
     # that stopped publishing must not outrank a fresh one and turn S2 stale (review finding).
     best: Optional[tuple] = None
     for snaps in by_host.values():
-        age, depth, sustained = gpu_queue_evidence(snaps, now, floor=floor)
+        age, depth, sustained, held, shed_reason = gpu_queue_evidence(snaps, now, floor=floor)
         if age is None:
             continue
         key = (age <= GPU_STATE_STALE_SEC, sustained or 0.0, -age)
         if best is None or key > best[0]:
-            best = (key, age, depth, sustained)
+            best = (key, age, depth, sustained, held, shed_reason)
     if best is None:
         return {}
-    _, age, depth, sustained = best
+    _, age, depth, sustained, held, shed_reason = best
     return {"gpu_state_age_sec": age, "gpu_queue_depth": depth, "gpu_queue_sustained_sec": sustained,
-            "gpu_fault": fault}
+            "gpu_fault": fault, "gpu_queue_shed_held": held, "gpu_shed_reason": shed_reason}
 
 
 async def read_arousal_inputs(
@@ -170,6 +181,24 @@ def transition_row(prev: Optional[ArousalReadingV1], new: ArousalReadingV1, day_
         "label": new.arousal_level,
         "payload": json.dumps({"from": prev.arousal_level if prev is not None else None,
                                "to": new.arousal_level, "reading": new.model_dump(mode="json")}),
+    }
+
+
+def cause_row(new: ArousalReadingV1, day_id: str, joined: list[str], seed: bool) -> dict:
+    """Strain loop part 1: a row for a strain episode whose level did not change. ``joined``: the
+    causes new to the episode (empty for a keepalive); ``seed``: nothing was recorded for this
+    episode yet (the chronology has no onset row for it). Same table, kind and label as a level row, so every reader of levels
+    (personality situation) still reads ``strained`` at that time. Time: when it was observed."""
+    since = new.since.astimezone(timezone.utc)
+    observed = new.observed_at.astimezone(timezone.utc)
+    return {
+        "event_id": f"arousal_transition:{since.isoformat()}:{new.arousal_level}:at:{observed.isoformat()}",
+        "day_id": day_id,
+        "occurred_at": observed,
+        "source_ref": f"regulation.state.v1:{observed.isoformat()}",
+        "label": new.arousal_level,
+        "payload": json.dumps({"from": new.arousal_level, "to": new.arousal_level, "joined": list(joined),
+                               "seed": bool(seed), "reading": new.model_dump(mode="json")}),
     }
 
 

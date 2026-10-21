@@ -32,6 +32,7 @@ from .recall_utils import (
 )
 from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionRequest, PlanExecutionResult, StepExecutionResult
 from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
+from orion.gpu_pool.shed import shed_reason_from_error
 from .supervisor import Supervisor
 from .settings import settings
 from .grammar_emit import (
@@ -1162,6 +1163,7 @@ class PlanRunner:
                         order=0,
                         step_name=recall_step.step_name or "pcr_continuity_recall",
                         error_kind=short_error_kind(recall_step.error),
+                        shed_reason=shed_reason_from_error(recall_step.error),
                     )
             memory_used = recall_step is not None and recall_step.status == "success"
             recall_count = 0
@@ -1212,6 +1214,7 @@ class PlanRunner:
                     order=0,
                     step_name=recall_step.step_name or "pre_recall",
                     error_kind=short_error_kind(recall_step.error),
+                    shed_reason=shed_reason_from_error(recall_step.error),
                 )
             memory_used = recall_step.status == "success"
             recall_count = 0
@@ -1271,6 +1274,7 @@ class PlanRunner:
                         final_text_present=False,
                         reasoning_present=False,
                         thinking_source="none",
+                        shed_reason=shed_reason_from_error(recall_step.error),
                     )
                     return PlanExecutionResult(
                         verb_name=plan.verb_name,
@@ -1365,6 +1369,7 @@ class PlanRunner:
                     order=step.order,
                     step_name=step.step_name,
                     error_kind=short_error_kind(step_res.error),
+                    shed_reason=shed_reason_from_error(step_res.error),
                 )
             if isinstance(step_res.result, dict) and "RecallService" in step_res.result:
                 recall_debug = step_res.result.get("RecallService", {})
@@ -1410,6 +1415,7 @@ class PlanRunner:
                             order=step.order,
                             step_name=phase3_recall_step.step_name or "pcr_belief_recall",
                             error_kind=short_error_kind(phase3_recall_step.error),
+                            shed_reason=shed_reason_from_error(phase3_recall_step.error),
                         )
                     memory_used = phase3_recall_step.status == "success"
                 if isinstance(phase3_debug, dict) and isinstance(recall_debug, dict):
@@ -1640,6 +1646,13 @@ class PlanRunner:
         record_assembled_grammar(
             ctx,
             status=overall_status,
+            # Same error the PlanExecutionResult below returns: a plan that failed because
+            # its last step was shed reads as shed, not as a failure (2026-10-20).
+            shed_reason=(
+                None
+                if overall_status == "success" or not step_results
+                else shed_reason_from_error(step_results[-1].error)
+            ),
             final_text_present=bool((final_text or "").strip()),
             reasoning_present=bool(reasoning_content or reasoning_trace or metacog_traces),
             thinking_source=str(thinking_source or "none"),

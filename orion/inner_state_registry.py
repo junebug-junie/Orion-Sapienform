@@ -1501,6 +1501,10 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "BiometricsSubstrateWorker._strain_attention_tick -> orion.regulation.strain_news:strain_news "
             "(strained -> rare budgeted news events on node:substrate.strain for attention; "
             "the level itself never competes)",
+            "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> "
+            "orion.temporal_self.arcs:_fold_strain (strain loop part 1: one `strain` arc per "
+            "episode from the arousal_transition rows; read by the chat stance cue, the Day "
+            "letter and the reverie arc block)",
         ),
         notes=(
             "Temporal Self rev 4 (PR #2369) R3. Inputs: E1 Juniper turns "

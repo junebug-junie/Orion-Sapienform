@@ -117,10 +117,17 @@ def test_not_a_departure(kw) -> None:
 
 
 def test_inside_is_never_read_as_entering_a_door() -> None:
-    # A story that ends "inside" but is not moving toward a portal edge opens nothing
-    # (it is not a departure; and nothing here treats "inside" as a door).
+    # An "inside" exit moving toward the house, last zone not a place: it is not a
+    # departure through a gap, and a miss from it is never "entered_place".
+    walker = facts(dir_lateral=0, dir_depth=1, exit_edge="inside", zone_path=("walkway",))
     for portal in TOPO.of_kind("gap"):
-        assert vh.gap_departure(facts(dir_lateral=0, exit_edge="inside"), portal, CFG) is None
+        assert vh.gap_departure(walker, portal, CFG) is None
+    base = {"detector_miss": "false", "late": "open", "turned_back": "open", "entered_place": "open",
+            "unexplained": "open"}
+    out = vh.settle_final(base, last_zone=walker.zone_path[-1], place_zones=TOPO.place_zones["walkway"])
+    assert out["entered_place"] == "false" and out["unexplained"] == "true"
+    # Only a zone that leads somewhere can be "entered".
+    assert vh.settle_final(base, last_zone="patio", place_zones=TOPO.place_zones["walkway"])["entered_place"] == "true"
 
 
 def test_derived_edges_from_evidence_when_columns_are_missing() -> None:
@@ -436,6 +443,54 @@ def test_handoff_code_never_writes_a_label_or_merges_individuals(name: str) -> N
     banned = [r"UPDATE\s+vision_individual\b", r"INSERT\s+INTO\s+vision_individual\b",
               r"INSERT\s+INTO\s+vision_individual_pair_verdict", r"_propagate_label", r"_apply_typed_name",
               r"_apply_pair_answer", r"UPDATE\s+vision_crop_observation", r"INSERT\s+INTO\s+vision_person_exemplar",
-              r"\bSET\s[^\"]*\blabel\b"]
+              r"\bSET\s+(?:\w+\s*=\s*[^,\n]*,\s*)*label(?:_copied)?\s*="]
     for pat in banned:
-        assert not re.search(pat, src, re.IGNORECASE), f"{name} matches {pat}"
+        assert not re.search(pat, src, re.IGNORECASE if "SET" not in pat else 0), f"{name} matches {pat}"
+    # The SQL-shaped pattern really catches a label write.
+    assert re.search(banned[-1], "UPDATE vision_individual SET label = :l")
+    assert re.search(banned[-1], "UPDATE x SET status='a', label = :l")
+
+
+
+# --- review fixes and the Rung 6 reading ------------------------------------------------------------
+
+
+def test_a_prior_band_arrival_can_never_open_the_attention_gate() -> None:
+    # Review #2: a hand-set x0.4..x3 guess must not call a 1 s transit surprising.
+    band = vh.choose_band("person", {}, {}, APPROACH, CFG)
+    floor = vh.prior_p_floor(CFG.min_met)
+    for g in (0.0, 0.1, 1.0, 1000.0):
+        p = vh.p_value_arrival(g, band, prior_floor=floor)
+        assert p >= floor > CFG.attention_p
+        assert not vh.attention_gate(p, known_person=True, unusual_hour=True, cfg=CFG)
+
+
+def test_arrival_log_score_is_highest_at_the_mode_and_in_nats_per_second() -> None:
+    band = vh.choose_band("person", {}, {}, W2D, CFG)
+    mu, sigma = vh._lognormal_of(band)
+    mode = math.exp(mu - sigma ** 2)
+    best = vh.arrival_log_score(mode, band, 0.05, "gap")
+    assert best > vh.arrival_log_score(band.hi * 2, band, 0.05, "gap")
+    assert best > vh.arrival_log_score(band.lo / 2, band, 0.05, "gap")
+    # The time density is the g density times dg/dt = speed.
+    assert vh.arrival_log_score(mode, band, 0.1, "gap") - best == pytest.approx(math.log(2))
+    # Integrates to ~1 over time (a proper density), approach portal, seconds.
+    ab = vh.choose_band("person", {}, {}, APPROACH, CFG)
+    total = sum(math.exp(vh.arrival_log_score(0.05 * i, ab, 1.0, "approach")) * 0.05 for i in range(1, 40000))
+    assert total == pytest.approx(1.0, abs=0.01)
+
+
+def test_street_event_carries_the_log_score_only_on_met_and_late() -> None:
+    base = dict(hid="h1", portal_id="walkway_to_door", stream_ids=["walkway", "doorbell"], occurred_at=T0,
+                subject="person", p_value=0.5, arrival_log_score=-3.2)
+    met = vh.street_event(vh.StreetFacts(kind="handoff_met", **base))
+    late = vh.street_event(vh.StreetFacts(kind="handoff_late", **base))
+    missed = vh.street_event(vh.StreetFacts(kind="handoff_missed", **base))
+    assert met["arrival_log_score"] == -3.2 and late["arrival_log_score"] == -3.2
+    # Absent (not null) elsewhere: an old consumer that does not know the field still validates it.
+    assert "arrival_log_score" not in missed
+
+
+def test_departure_and_arrival_story_filters() -> None:
+    assert "companion" in vh.NOT_A_DEPARTURE and "companion" in vh.NOT_AN_ARRIVAL
+    assert "glimpse" not in vh.NOT_AN_ARRIVAL and "glimpse" not in vh.NOT_A_DEPARTURE

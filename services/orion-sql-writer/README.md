@@ -648,12 +648,16 @@ metric gate.
 I/O, every `VISION_HANDOFF_INTERVAL_SEC`, default 15 s; design:
 `docs/superpowers/specs/2026-10-20-street-continuity-handoff-design.md`). One passage
 across the door and walkway cameras. Portals live in `config/vision_topology.yaml`
-(override `VISION_TOPOLOGY_PATH`; loader `orion/vision/topology.py`): `central_walk`
+(override with env `VISION_TOPOLOGY_PATH`, read by the loader `orion/vision/topology.py`, not Settings): `central_walk`
 (overlap, the cameras see the central walkway together), `approach_door` (a walkway
 person moving toward the house expects a Ring motion / ring event or a doorbell story
 3-30 s later), `door_to_walkway` / `walkway_to_door` (the sidewalk gap). Tables:
 `manual_migration_vision_handoff_v1.sql` (`vision_handoff`, `vision_handoff_hypothesis`,
-`vision_handoff_cursor`); without it the loop backs off with a log line.
+`vision_handoff_street_outbox`, `vision_handoff_cursor`); without it the loop backs off with a log line.
+Each row is processed in its own savepoint: a row that raises is rolled back alone,
+counted (`row_failed_<step>`), and settled (`unscorable`, or its open hypotheses `false`).
+Companion / standing / parked / out-of-scope / prop stories never depart; props and
+companions are never arrival candidates.
 
 - **Open** from new motion stories (cursor on `created_at`). Most walkway stories end
   `inside` (the detector looks every ~5 s), so a departure is projected: moving toward
@@ -677,11 +681,17 @@ person moving toward the house expects a Ring motion / ring event or a doorbell 
   from data by deadline; `unexplained` writes a `vision_unresolved` row (reason
   `handoff_missed`, the curiosity seam) and the `handoff_missed` street event. A ring
   with no approach seen first is an `unannounced` row (walkway `detector_miss` or
-  `out_of_view`).
+  `out_of_view`); every ring gets a row (`announced` / `unannounced` / `unscorable` when
+  the walkway was not looking). Hypotheses whose stories never caught up settle `false`
+  with `never_caught_up`, never `unexplained`.
 - **Street events** (`StreetEventV1` on `orion:vision:street:events`, outbox columns on
   `vision_handoff`, `VISION_HANDOFF_STREET_EVENTS_ENABLED`): `approach_door`,
-  `handoff_met` for a person-model accept guess, `handoff_missed` once unexplained,
-  `overlap_pair` (low salience). Salience = who x what x surprise (`SALIENCE_*` in
+  `handoff_met` / `handoff_late` for every arrival (with `arrival_log_score`, nats/s of the
+  arrival time under the predicted distribution, for the Rung 6 `street_handoff` domain),
+  `handoff_missed` once unexplained, `overlap_pair` (low salience). One outbox row per
+  event; facts older than 1 h (approach: 5 min) are recorded but not published. The prior
+  band's p is floored at `2/(VISION_HANDOFF_MIN_MET+1)`, so a hand-set prior never opens
+  the attention gate. Salience = who x what x surprise (`SALIENCE_*` in
   `vision_handoff.py`). p-value calm state and the conformal floor `2/(n+1)` are
   documented in the module.
 - **Asks**: a strong met / overlap pair opens a `vision_same_individual` ask

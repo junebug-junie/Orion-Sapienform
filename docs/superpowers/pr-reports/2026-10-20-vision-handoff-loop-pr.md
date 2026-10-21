@@ -1,7 +1,15 @@
 # Street continuity: one passage across the door and walkway cameras (handoff loop)
 
 **Merge order: this PR must merge AFTER #2822 (`fix/motion-story-frame-edges`) and #2816
-(`fix/doorbell-ring-tracking`).** Both are merged into this branch; it reads their
+(`fix/doorbell-ring-tracking`, already on main).**
+
+**Deploy order (schema change, consumer first):** `StreetEventV1` gains
+`arrival_log_score` (extra=forbid). Rebuild `orion-substrate-runtime` with #2826
+(`feat/street-attention-node`) plus this schema BEFORE `orion-sql-writer` starts sending the
+field, or an old consumer rejects those events. The sql-writer omits the key when it is None
+(only `handoff_met` / `handoff_late` carry it). A retina rebuilt with this schema sends
+`"arrival_log_score": null` on rings; nothing subscribes to the channel today, but the same
+order applies to it. Both are merged into this branch; it reads their
 motion-story edge columns, `StreetEventV1`, the `doorbell_ring` / `doorbell_motion` events
 and the retina's `orion:vision:look:doorbell` self-look key.
 
@@ -91,6 +99,14 @@ sections 2, 3, 4, the Hub line from section 8, the asks, and the metric-gate rep
   loop's `arrived_as_expected`; no scribe or type filter sits on that path); producer
   `orion-sql-writer` on `orion:vision:street:events`; `VisionUnresolvedV1.reason`
   value `handoff_missed`; Hub JSON field `handoff` on each story.
+- Added (2026-10-21, for PR #2826's Rung 6 `street_handoff` domain):
+  `StreetEventV1.arrival_log_score: float | None` (log density in nats/s of the actual arrival
+  time under the predicted log-normal window; set on `handoff_met` / `handoff_late` only);
+  table `vision_handoff_street_outbox`; `vision_handoff.arrival_log_score`.
+- Behavior changed vs the first push: every met / late arrival is now a street event (not only
+  a known person's), so Rung 6 gets a reading per graded arrival; salience still ranks an
+  unknown on-time walker near 0. `early` arrivals have no StreetEventV1 kind yet and are not
+  published.
 - Removed / renamed: none. The metric lock entry for the street channel is re-keyed from
   `orion-vision-retina/...` to `orion-sql-writer/...` because the drift tool keys a
   channel by its first producer alphabetically; `all_producers` lists both, and nothing
@@ -123,8 +139,8 @@ sections 2, 3, 4, the Hub line from section 8, the asks, and the metric-gate rep
 ## Tests run
 
 ```text
-pytest tests/test_vision_handoff.py                      56 passed (pure rules)
-pytest tests/test_vision_handoff_pg.py                   10 passed (real Postgres 16, all migrations)
+pytest tests/test_vision_handoff.py                      60 passed (pure rules)
+pytest tests/test_vision_handoff_pg.py                   16 passed (real Postgres 16, all migrations)
 pytest tests/test_vision_expect_refresh.py tests/test_vision_rhythm.py ...  129 passed (sql-writer unit list)
 pytest services/orion-hub/tests/test_motion_story_routes.py   25 passed (real Postgres)
 pytest services/orion-hub/tests/test_walkway_stories_js.py    4 passed (node)
@@ -132,9 +148,10 @@ static gates (orion-static-gates.yml list)               388 passed; metric line
                                                           migration REQUIRED-BY, env parity: PASS
 orion-vision-retina tests                                146 passed, 2 failed locally only (the local
                                                           venv lacks ring_doorbell; untouched by this PR)
-Mutation check (11 mutants of the key rules)             11 killed, 0 survived:
+Mutation check (15 mutants of the key rules)             15 killed, 0 survived:
   coverage->missed, band switch at 10, projection cap, overlap skew, unexplained always,
-  lone candidate, approach depth, departure direction, prior p two-sided, missed p, priors start at 1
+  lone candidate, approach depth, departure direction, prior p two-sided, prior p floor, early margin,
+  log-score Jacobian, companion departs, missed p, priors start at 1
 ```
 
 ## Evals run
@@ -161,28 +178,31 @@ python evals/run_vision_handoff_replay_eval.py --since 2026-10-16T00:00:00Z   (l
    are uniform under exchangeability); on the prior band, a log-normal whose 10%/90%
    quantiles are the band ends. A miss's p is the Laplace-smoothed counted chance of no
    arrival.
-4. **Live sanity.** Replay over 2026-10-16 .. 2026-10-20 (all stored stories: walkway
-   187 person / 34 dog / 32 stroller / 20 bicycle; doorbell 5 person; 95 doorbell census
-   spans; 1 doorbell_motion event; 0 rings):
-   - Outcomes: approach_door 25 unscorable; walkway_to_door 21 unscorable;
-     door_to_walkway 0 after the fix below. **0 met, 0 missed.**
-   - Overlap pairs: 0 paired, 1 ambiguous (16:24 UTC, 3 walkway candidates, best body
-     centroid cosine 0.74), 4 unpaired.
+4. **Live sanity.** Replay over 2026-10-16 .. 2026-10-21 03:09 UTC, final rules (walkway
+   197 person / 34 dog / 32 stroller / 24 bicycle; doorbell 12 person / 1 bicycle;
+   11 doorbell_motion events, 1 ring):
+   - Outcomes: approach_door 23 unscorable; walkway_to_door 16 unscorable;
+     door_to_walkway 0. **0 met, 0 missed.** None of the 11 Ring motion events fell inside
+     an approach window.
+   - Overlap pairs: **1 paired** (2026-10-20 23:50 UTC, body centroid cosine 0.943, above the
+     0.92 bar: a real cross-camera same-person candidate), 2 ambiguous (one is 16:24 UTC,
+     3 walkway candidates, best body cosine 0.74), 4 unpaired. 1 ring unannounced.
    - Learned g per portal: none (no met handoff).
    - p-value uniformity on met: no met p-values (n = 0).
    - Rest state: 17 of 17 hours with handoffs were quiet; 0 attention-gate passes, even
      with "known person" and "unusual hour" forced true. **This is zero because nothing
      was graded met or missed, not because calm p-values were observed.**
-   - 80% rule: every doorbell-target window (46) was unscorable; 0 doorbell misses.
-   - Steering: 21 of 46 windows were still ahead when the story landed (stories land a
+   - 80% rule: every doorbell-target window (39) was unscorable; 0 doorbell misses.
+   - Steering: 16 of 39 windows were still ahead when the story landed (stories land a
      median 48.6 s after the walker left), so Redis steering can help about half the time.
    - **Verdict: TOO THIN FOR A VERDICT.** 0 met handoffs (< 10): no learned band, no
      uniformity test. The doorbell sees only during Ring bursts (95 census spans in 5 days),
      so walkway -> door is unscorable unless the self-look fires in time. The gate must be
      re-run after the self-look has been live for a week and #2822's edges are applied.
    - Structural limit found: with `n` calibration values the conformal p cannot go below
-     `2/(n+1)`; under n = 39 no arrival can pass p < 0.05. Documented in the module and
-     pinned by a test. Until then only misses can reach the gate.
+     `2/(n+1)`; under n = 39 no arrival can pass p < 0.05. The prior band now gets the same
+     floor (`2/(min_met+1)` = 0.18), after review found it could produce p near 0 for a
+     normal 1 s transit. Until then only misses can reach the gate.
 5. **Existing mechanism.** None for cross-camera handoff (searched handoff, transit,
    cross-camera, markov, kalman, scenario). Reused: rhythm's grading rule and
    `coverage_fraction`, the expect key, `vision_unresolved` (table + ORM model), the person
@@ -214,12 +234,49 @@ Live loop: UNVERIFIED (not deployed; the migration is not applied live).
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+Code review ran in a subagent on `d42b7bfcf..185591397`. Material findings, all fixed in the
+follow-up commit:
+
+- Finding: one `street_event` column per handoff; a later `handoff_met` overwrote an unpublished
+  `approach_door`, and an unexplained approach miss was never published.
+  - Fix: `vision_handoff_street_outbox`, one row per event_id, `published_at` set after publish.
+  - Evidence: `test_approach_door_met_by_ring_motion_and_an_unannounced_ring` (outbox holds
+    approach_door AND handoff_met), `test_approach_miss_settles_unexplained_and_still_publishes`.
+- Finding: the log-normal prior band gave arbitrarily small p (a 1 s approach transit -> 0.012),
+  so a hand-set guess could open the attention gate on day one.
+  - Fix: prior p floored at `2/(min_met+1)`. Evidence: `test_a_prior_band_arrival_can_never_open_the_attention_gate`;
+    mutant "prior floor" killed.
+- Finding: a poison row (or a `step_open` error) failed the whole step every tick.
+  - Fix: every row in its own savepoint (`_each`), counted `row_failed_<step>`, and settled
+    (`unscorable` / hypotheses false). Evidence: `test_a_poison_row_is_isolated_and_settled`.
+- Finding: hypotheses settled after `stuck_after_sec` with no data could become `unexplained`
+  and write `vision_unresolved`.
+  - Fix: never-caught-up hypotheses settle `false` with `never_caught_up`; no unresolved row.
+    Evidence: `test_stuck_stories_settle_false_and_never_write_unresolved`.
+- Finding: companion / standing / parked stories opened handoffs and created ambiguous matches.
+  - Fix: `NOT_A_DEPARTURE` / `NOT_AN_ARRIVAL` in the pure module, used by the loop and the
+    replay. Evidence: `test_companion_story_opens_nothing`; mutant "companion departs" killed.
+- Finding: announced rings had no row and were re-scanned for 6 h, starving newer rings.
+  - Fix: every ring gets a row (`announced` / `unannounced` / `unscorable`); a walkway story
+    still running at ring time counts as announced; a blind walkway gives `unscorable`, not
+    a claim. Evidence: `test_announced_and_blind_rings_get_rows_so_they_are_examined_once`.
+
+Minor findings fixed: the "inside is never a door" test now exercises the rule (it passed
+for the wrong reason); a removed portal settles its hypotheses; `VISION_TOPOLOGY_PATH`
+documented in the README; the contradictory p-floor docstring reworded.
+
+Minor findings not fixed (recorded): rhythm and handoff both GET-then-SET the expect key
+without WATCH (a sub-millisecond lost-update window; every SET carries a TTL, so the key can
+never become permanent); the replay eval re-implements orchestration rather than driving the
+loop's steps on an in-memory facade, and uses `unusual_hour=False`.
+
+Mutation check after the fixes: 15 mutants of the key rules, 15 killed.
 
 ## Restart required
 
 ```bash
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_vision_handoff_v1.sql
+scripts/safe_docker_build.sh orion-substrate-runtime up -d --build   # first, after #2826 is merged
 scripts/safe_docker_build.sh orion-sql-writer up -d --build
 scripts/safe_docker_build.sh orion-hub up -d --build
 ```
@@ -233,9 +290,11 @@ post-pull applier may already have applied the migration; it is additive-DDL onl
 - Severity: medium. Concern: the metric gate has no verdict (0 met handoffs). Mitigation:
   nothing reads `p_value` for decisions yet; `orion-substrate-runtime` does not subscribe to
   street events. Re-run the replay after a week live.
-- Severity: medium. Concern: cross-camera body similarity looks low (0.74 on the one
-  same-moment pair) against a 0.92 bar, so "same person?" asks from handoffs may almost
-  never fire. Mitigation: bars are env keys; the replay prints pair scores; the cap stays.
+- Severity: low. Concern: cross-camera body similarity varies (0.74 on one ambiguous
+  same-moment case, 0.943 on the one clean pair), so the 0.92 bar may let few asks through.
+  Mitigation: bars are env keys; the replay prints pair scores; the cap stays.
+- Severity: medium. Concern: deploy order. An old `orion-substrate-runtime` rejects a
+  `StreetEventV1` that carries `arrival_log_score`. Mitigation: deploy order above.
 - Severity: low. Concern: the handoff "same person?" asks also count against the face-ask
   budget (`VISION_CONFIRM_ASK_DAILY_CAP`, it counts every `vision_same_individual` ask).
   Mitigation: both caps are small and explicit.

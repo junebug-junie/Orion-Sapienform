@@ -31,14 +31,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import statistics
 import subprocess
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 HERE = Path(__file__).resolve()
@@ -156,7 +155,7 @@ def replay(stories, census, rings, known, vecs, topology, cfg: vh.HandoffConfig,
         else:
             cands = []
             for c in by_stream[portal.to_stream]:
-                if c.kind != src.kind or not (early <= c.started_at <= h["lu"]) or c.drop_reason == "prop":
+                if c.kind != src.kind or not (early <= c.started_at <= h["lu"]) or c.drop_reason in vh.NOT_AN_ARRIVAL:
                     continue
                 if not vh.arrival_consistent(c, portal, cfg):
                     continue
@@ -173,7 +172,8 @@ def replay(stories, census, rings, known, vecs, topology, cfg: vh.HandoffConfig,
             g = vh.observed_g(transit, h["dist"], h["speed"], portal.kind)
             calib_kind = "person" if h["band"].source == "learned_person_widened" else src.kind
             band = vh.Band(h["band"].lo, h["band"].hi, h["band"].source, tuple(learned[portal.id][calib_kind]))
-            p = vh.p_value_arrival(g, band)
+            p = vh.p_value_arrival(g, band, prior_floor=vh.prior_p_floor(cfg.min_met))
+            rec["log_score"] = vh.arrival_log_score(g, band, h["speed"], portal.kind)
             learned[portal.id][src.kind].append(g)
             if status == "met":
                 met_n[portal.id][src.kind] += 1
@@ -197,6 +197,8 @@ def replay(stories, census, rings, known, vecs, topology, cfg: vh.HandoffConfig,
         for h in [h for h in open_ if h["lu"] < s.ended_at]:
             grade(h)
             open_.remove(h)
+        if s.drop_reason in vh.NOT_A_DEPARTURE:
+            continue
         for portal in topology.of_kind("gap") + topology.of_kind("approach"):
             if portal.kind == "gap":
                 dep = vh.gap_departure(s, portal, cfg)
@@ -217,9 +219,9 @@ def replay(stories, census, rings, known, vecs, topology, cfg: vh.HandoffConfig,
     for portal in topology.of_kind("overlap"):
         a_stream, b_stream = portal.streams
         for d in by_stream[a_stream]:
-            if d.kind not in cfg.kinds or d.drop_reason == "prop":
+            if d.kind not in cfg.kinds or d.drop_reason in vh.NOT_A_DEPARTURE:
                 continue
-            others = [o for o in by_stream[b_stream] if o.kind == d.kind and o.drop_reason != "prop"
+            others = [o for o in by_stream[b_stream] if o.kind == d.kind and o.drop_reason not in vh.NOT_AN_ARRIVAL
                       and vh.overlapping(d, o, portal.max_skew_sec)]
             others.sort(key=lambda o: -vh.overlap_seconds(d, o))
             cands = []

@@ -30,8 +30,8 @@ Every ``VISION_HANDOFF_INTERVAL_SEC`` (default 15 s), under advisory lock
    asks. Never a label, never a merge.
 7. **Prune** with the motion-story retention.
 
-The ``StreetEventV1`` outbox (``vision_handoff.street_event`` with
-``street_published_at`` NULL) is published by the async loop on
+The ``StreetEventV1`` outbox (``vision_handoff_street_outbox``, one row per
+event, ``published_at`` NULL until sent) is published by the async loop on
 ``orion:vision:street:events`` and marked; a failed publish is retried next
 tick.
 
@@ -57,7 +57,7 @@ from app.vision_handoff import (
     approach_departure, arrival_consistent, attention_gate, choose_band, decide_match, decide_overlap, early_from,
     facts_from_row, gap_departure, grade_unmatched, handoff_id, hypothesis_deadlines, hypothesis_priors,
     merged_expect_value, narrative, observed_g, overlap_seconds, p_value_arrival, p_value_missed,
-    salience, same_person_question, settle_final, street_event, strong_appearance, ttl_seconds, turned_back,
+    NOT_A_DEPARTURE, NOT_AN_ARRIVAL, arrival_log_score, prior_p_floor, salience, same_person_question, settle_final, street_event, strong_appearance, ttl_seconds, turned_back,
     unusual_for_hour, window_for,
 )
 from app.vision_individuals import MigrationMissing, is_missing_relation
@@ -67,7 +67,7 @@ from app.vision_rhythm import EXPECT_KEY_PREFIX, coverage_fraction
 logger = logging.getLogger("sql-writer.vision_handoff_loop")
 
 HANDOFF_MIGRATION = "services/orion-sql-db/manual_migration_vision_handoff_v1.sql"
-REQUIRED_TABLES = ("vision_handoff", "vision_handoff_hypothesis", "vision_handoff_cursor", "vision_motion_story",
+REQUIRED_TABLES = ("vision_handoff", "vision_handoff_hypothesis", "vision_handoff_cursor", "vision_handoff_street_outbox", "vision_motion_story",
                    "vision_motion_story_cursor", "vision_events", "vision_scene_inventory", "vision_crop_observation")
 CURSOR_OVERLAP_SEC = 10.0
 # Overlap pairs and rings are decided once both cameras' stories have landed;
@@ -258,8 +258,8 @@ def _insert_handoff(conn, row: Mapping[str, Any]) -> bool:
     from sqlalchemy import text
 
     cols = list(row)
-    vals = ", ".join(f"CAST(:{c} AS jsonb)" if c == "street_event" else f":{c}" for c in cols)
-    params = {c: (json.dumps(row[c]) if c == "street_event" and row[c] is not None else row[c]) for c in cols}
+    vals = ", ".join(f":{c}" for c in cols)
+    params = dict(row)
     res = conn.execute(text(f"INSERT INTO vision_handoff ({', '.join(cols)}) VALUES ({vals}) "
                             "ON CONFLICT (handoff_id) DO NOTHING"), params)
     return bool(res.rowcount)
@@ -268,10 +268,24 @@ def _insert_handoff(conn, row: Mapping[str, Any]) -> bool:
 def _update_handoff(conn, hid: str, **fields: Any) -> None:
     from sqlalchemy import text
 
-    sets = ", ".join(f"{c} = CAST(:{c} AS jsonb)" if c == "street_event" else f"{c} = :{c}" for c in fields)
-    params = {c: (json.dumps(v) if c == "street_event" and v is not None else v) for c, v in fields.items()}
+    sets = ", ".join(f"{c} = :{c}" for c in fields)
+    params = dict(fields)
     params["hid"] = hid
     conn.execute(text(f"UPDATE vision_handoff SET {sets} WHERE handoff_id = :hid"), params)
+
+
+def _outbox(ctx: "Ctx", hid: str, ev: Optional[dict]) -> None:
+    """One outbox row per street event (event_id is its key): a later event on
+    the same handoff never overwrites or hides an earlier one."""
+    from sqlalchemy import text
+
+    if ev is None:
+        return
+    ctx.conn.execute(text(
+        "INSERT INTO vision_handoff_street_outbox (event_id, handoff_id, kind, event, created_at) "
+        "VALUES (:e, :h, :k, CAST(:ev AS jsonb), :t) ON CONFLICT (event_id) DO NOTHING"),
+        {"e": ev["event_id"], "h": hid, "k": ev["kind"], "ev": json.dumps(ev), "t": ctx.now})
+    ctx.bump("street_queued")
 
 
 def _vision_event(conn, *, event_id: str, event_type: str, narrative_text: str, stream_id: Optional[str],
@@ -375,6 +389,49 @@ class Ctx:
         self.summary[key] = self.summary.get(key, 0) + n
 
 
+def _each(ctx: "Ctx", step: str, items, fn, on_fail=None) -> None:
+    """One savepoint per row: a row that raises is rolled back alone, counted,
+    and (``on_fail``) settled so it cannot fail first on every tick."""
+    for it in items:
+        try:
+            with ctx.conn.begin_nested():
+                fn(ctx, it)
+        except Exception as exc:
+            if is_missing_relation(exc):
+                raise
+            ctx.bump(f"row_failed_{step}")
+            logger.warning("handoff_row_failed step=%s row=%s error=%s", step,
+                           (it.get("handoff_id") if isinstance(it, Mapping) else getattr(it, "story_id", None)), exc)
+            if on_fail is not None:
+                try:
+                    with ctx.conn.begin_nested():
+                        on_fail(ctx, it, str(exc)[:200])
+                except Exception as exc2:
+                    logger.warning("handoff_row_fail_settle_failed step=%s error=%s", step, exc2)
+
+
+def _fail_unscorable(ctx: "Ctx", r, reason: str) -> None:
+    _update_handoff(ctx.conn, r["handoff_id"], status="unscorable", scored_at=ctx.now)
+    logger.error("[HANDOFF] %s could not be graded (%s) -> unscorable", r["handoff_id"], reason)
+
+
+def _fail_hypotheses(ctx: "Ctx", r, reason: str) -> None:
+    _settle_open_false(ctx, r["handoff_id"], {"data": "error", "error": reason})
+
+
+def _settle_open_false(ctx: "Ctx", hid: str, evidence: dict) -> None:
+    """Close every open hypothesis with no data behind it: false, never a
+    data-free "unexplained" (the hypothesis-level twin of "not looking =>
+    unscorable")."""
+    from sqlalchemy import text
+
+    n = ctx.conn.execute(text(
+        "UPDATE vision_handoff_hypothesis SET status='false', settled_by='data', settled_at=:t, "
+        "evidence = evidence || CAST(:e AS jsonb) WHERE handoff_id=:h AND status='open'"),
+        {"t": ctx.now, "e": json.dumps(evidence), "h": hid}).rowcount or 0
+    ctx.bump("hyp_unsettleable", int(n))
+
+
 def _street(ctx: Ctx, f: StreetFacts) -> Optional[dict]:
     if not ctx.cfg.street_events_enabled:
         return None
@@ -390,51 +447,56 @@ def _street(ctx: Ctx, f: StreetFacts) -> Optional[dict]:
 
 
 def step_open(ctx: Ctx, stories: Sequence[StoryFacts]) -> None:
+    _each(ctx, "open", stories, _open_one)
+
+
+def _open_one(ctx: Ctx, f) -> None:
     rules = ctx.cfg.rules
-    for f in stories:
-        for portal in ctx.topology.of_kind("gap") + ctx.topology.of_kind("approach"):
-            if portal.kind == "gap":
-                dep = gap_departure(f, portal, rules)
-                if dep is None:
-                    continue
-                dist, speed = dep
-            elif approach_departure(f, portal, rules):
-                dist, speed = 0.0, 1.0
-            else:
+    if f.drop_reason in NOT_A_DEPARTURE:
+        return
+    for portal in ctx.topology.of_kind("gap") + ctx.topology.of_kind("approach"):
+        if portal.kind == "gap":
+            dep = gap_departure(f, portal, rules)
+            if dep is None:
                 continue
-            learned, met, _ = ctx.learned(portal.id)
-            band = choose_band(f.kind, learned, met, portal, rules)
-            ws, we, lu = window_for(f.ended_at, dist, speed, band, rules)
-            hid = handoff_id(portal.id, f.story_id)
-            guess = person_guess(ctx.conn, [f.individual_id], ctx.have_attr)
-            row = {"handoff_id": hid, "portal_id": portal.id, "portal_kind": portal.kind,
-                   "source_stream": f.stream_id, "target_stream": portal.to_stream, "source_story_id": f.story_id,
-                   "subject_kind": f.kind, "individual_id": f.individual_id, "person_guess": guess,
-                   "departed_at": f.ended_at, "opened_at": ctx.now, "window_start": ws, "window_end": we,
-                   "late_until": lu, "exit_speed": None if portal.kind == "approach" else speed,
-                   "exit_dist": None if portal.kind == "approach" else dist, "band_source": band.source,
-                   "band_lo": band.lo, "band_hi": band.hi, "model_version": MODEL_VERSION, "status": "open"}
-            if portal.kind == "approach":
-                row["street_event"] = _street(ctx, StreetFacts(
-                    kind="approach_door", hid=hid, portal_id=portal.id, stream_ids=[f.stream_id, portal.to_stream],
-                    occurred_at=f.ended_at, subject=f.kind, individual_id=f.individual_id, person_guess=guess,
-                    refs=[f"story:{f.story_id}"]))
-            if not _insert_handoff(ctx.conn, row):
-                continue
-            ctx.bump(f"opened_{portal.kind}")
-            steered: List[str] = []
-            if we <= ctx.now:
-                ctx.bump("steer_too_late")
-            else:
-                if ctx.cfg.steer_enabled and portal.to_stream != "doorbell" and \
-                        ctx.steer.expect(portal.to_stream, hid, we, ctx.now):
-                    steered.append(f"{EXPECT_KEY_PREFIX}{portal.to_stream}")
-                if ctx.cfg.self_look_enabled and portal.to_stream == "doorbell" and f.kind in rules.look_kinds \
-                        and ctx.steer.look(hid, we, ctx.now):
-                    steered.append(LOOK_KEY)
-            if steered:
-                ctx.bump("steered")
-                _update_handoff(ctx.conn, hid, steered=steered)
+            dist, speed = dep
+        elif approach_departure(f, portal, rules):
+            dist, speed = 0.0, 1.0
+        else:
+            continue
+        learned, met, _ = ctx.learned(portal.id)
+        band = choose_band(f.kind, learned, met, portal, rules)
+        ws, we, lu = window_for(f.ended_at, dist, speed, band, rules)
+        hid = handoff_id(portal.id, f.story_id)
+        guess = person_guess(ctx.conn, [f.individual_id], ctx.have_attr)
+        row = {"handoff_id": hid, "portal_id": portal.id, "portal_kind": portal.kind,
+               "source_stream": f.stream_id, "target_stream": portal.to_stream, "source_story_id": f.story_id,
+               "subject_kind": f.kind, "individual_id": f.individual_id, "person_guess": guess,
+               "departed_at": f.ended_at, "opened_at": ctx.now, "window_start": ws, "window_end": we,
+               "late_until": lu, "exit_speed": None if portal.kind == "approach" else speed,
+               "exit_dist": None if portal.kind == "approach" else dist, "band_source": band.source,
+               "band_lo": band.lo, "band_hi": band.hi, "model_version": MODEL_VERSION, "status": "open"}
+        if not _insert_handoff(ctx.conn, row):
+            continue
+        if portal.kind == "approach":
+            _outbox(ctx, hid, _street(ctx, StreetFacts(
+                kind="approach_door", hid=hid, portal_id=portal.id, stream_ids=[f.stream_id, portal.to_stream],
+                occurred_at=f.ended_at, subject=f.kind, individual_id=f.individual_id, person_guess=guess,
+                refs=[f"story:{f.story_id}"])))
+        ctx.bump(f"opened_{portal.kind}")
+        steered: List[str] = []
+        if we <= ctx.now:
+            ctx.bump("steer_too_late")
+        else:
+            if ctx.cfg.steer_enabled and portal.to_stream != "doorbell" and \
+                    ctx.steer.expect(portal.to_stream, hid, we, ctx.now):
+                steered.append(f"{EXPECT_KEY_PREFIX}{portal.to_stream}")
+            if ctx.cfg.self_look_enabled and portal.to_stream == "doorbell" and f.kind in rules.look_kinds \
+                    and ctx.steer.look(hid, we, ctx.now):
+                steered.append(LOOK_KEY)
+        if steered:
+            ctx.bump("steered")
+            _update_handoff(ctx.conn, hid, steered=steered)
 
 
 def _hour_unusual(ctx: Ctx, portal_id: str, t: datetime) -> bool:
@@ -469,7 +531,7 @@ def _gap_candidates(ctx: Ctx, portal, kind: str, a: datetime, b: datetime, src_v
     out = []
     for s in read_stories(ctx.conn, "s.stream_id = :s AND s.kind = :k AND s.started_at >= :a AND s.started_at <= :b",
                           {"s": portal.to_stream, "k": kind, "a": a, "b": b}, edges=ctx.edges, cfg=ctx.cfg, limit=50):
-        if s.drop_reason == "prop" or not arrival_consistent(s, portal, ctx.cfg.rules):
+        if s.drop_reason in NOT_AN_ARRIVAL or not arrival_consistent(s, portal, ctx.cfg.rules):
             continue
         score, ch = appearance(src_vecs, vectors(ctx.conn, s.crop_ids, ctx.tz)) if src_vecs else (None, None)
         out.append(Candidate(s, score, ch))
@@ -490,102 +552,111 @@ def step_grade(ctx: Ctx) -> None:
     due = ctx.conn.execute(text(
         "SELECT * FROM vision_handoff WHERE status='open' AND late_until <= :t ORDER BY late_until LIMIT 200"),
         {"t": ctx.now - timedelta(seconds=rules.grade_lag_sec)}).mappings().fetchall()
-    for r in due:
-        portal = ctx.topology.by_id(r["portal_id"])
-        if portal is None:
-            _update_handoff(ctx.conn, r["handoff_id"], status="unscorable", scored_at=ctx.now)
-            ctx.bump("unscorable")
-            continue
-        if not stories_caught_up(ctx.conn, r["target_stream"], r["late_until"]):
-            if ctx.now - r["late_until"] < timedelta(seconds=rules.stuck_after_sec):
-                ctx.bump("grade_deferred")
-                continue
-            _update_handoff(ctx.conn, r["handoff_id"], status="unscorable", scored_at=ctx.now)
-            ctx.bump("unscorable")
-            logger.warning("[HANDOFF] %s target stories never caught up -> unscorable", r["handoff_id"])
-            continue
-        src = _source(ctx, r["source_story_id"])
-        upd: Dict[str, Any] = {"scored_at": ctx.now}
-        target_t: Optional[datetime] = None
-        status: str
-        early = early_from(r["departed_at"], r["window_start"], r["window_end"])
-        if portal.kind == "approach":
-            hits = _approach_hits(ctx, portal, early, r["late_until"])
-            if hits:
-                target_t, ev_id, story_id = hits[0]
-                status = ("early" if target_t < r["window_start"] else "met" if target_t <= r["window_end"]
-                          else "late")
-                upd.update(target_event_id=ev_id, target_story_id=story_id)
-            else:
-                status = "none"
+    _each(ctx, "grade", due, _grade_one, on_fail=_fail_unscorable)
+
+
+def _grade_one(ctx: Ctx, r) -> None:
+    rules = ctx.cfg.rules
+    portal = ctx.topology.by_id(r["portal_id"])
+    if portal is None:
+        _update_handoff(ctx.conn, r["handoff_id"], status="unscorable", scored_at=ctx.now)
+        ctx.bump("unscorable")
+        return
+    if not stories_caught_up(ctx.conn, r["target_stream"], r["late_until"]):
+        if ctx.now - r["late_until"] < timedelta(seconds=rules.stuck_after_sec):
+            ctx.bump("grade_deferred")
+            return
+        _update_handoff(ctx.conn, r["handoff_id"], status="unscorable", scored_at=ctx.now)
+        ctx.bump("unscorable")
+        logger.warning("[HANDOFF] %s target stories never caught up -> unscorable", r["handoff_id"])
+        return
+    src = _source(ctx, r["source_story_id"])
+    upd: Dict[str, Any] = {"scored_at": ctx.now}
+    target_t: Optional[datetime] = None
+    status: str
+    early = early_from(r["departed_at"], r["window_start"], r["window_end"])
+    if portal.kind == "approach":
+        hits = _approach_hits(ctx, portal, early, r["late_until"])
+        if hits:
+            target_t, ev_id, story_id = hits[0]
+            status = ("early" if target_t < r["window_start"] else "met" if target_t <= r["window_end"]
+                      else "late")
+            upd.update(target_event_id=ev_id, target_story_id=story_id)
         else:
-            src_vecs = vectors(ctx.conn, src.crop_ids, ctx.tz) if src else []
-            cands = _gap_candidates(ctx, portal, r["subject_kind"], early, r["late_until"], src_vecs)
-            d = decide_match(cands, window_start=r["window_start"], window_end=r["window_end"],
-                             late_until=r["late_until"], cfg=rules, early=early)
-            status = d.status
-            if d.chosen is not None:
-                c = d.chosen
-                target_t = c.story.started_at
-                upd.update(target_story_id=c.story.story_id, target_individual_id=c.story.individual_id,
-                           appearance_score=c.score, appearance_channel=c.channel)
-        if status in ARRIVED or status == "ambiguous":
-            transit = (target_t - r["departed_at"]).total_seconds()
-            upd["transit_sec"] = transit
-        if status in ARRIVED:
-            g = observed_g(upd["transit_sec"], r["exit_dist"] or 0.0, r["exit_speed"] or 1.0, portal.kind)
-            learned, _met, _ = ctx.learned(portal.id)
-            calib_kind = "person" if r["band_source"] == "learned_person_widened" else r["subject_kind"]
-            band = Band(r["band_lo"], r["band_hi"], r["band_source"], tuple(learned.get(calib_kind) or ()))
-            p = p_value_arrival(g, band)
-            guess = r["person_guess"] or person_guess(ctx.conn, [r["individual_id"], upd.get("target_individual_id")],
-                                                      ctx.have_attr)
-            gate = attention_gate(p, known_person=bool(guess), unusual_hour=_hour_unusual(ctx, portal.id, r["departed_at"]),
-                                  cfg=rules)
-            upd.update(g=g, p_value=p, attention_gate=gate, person_guess=guess, status=status)
-            et = f"handoff_{status}"
-            upd["salience"] = salience(et, r["subject_kind"], known_person=bool(guess), p=p)
-            _vision_event(ctx.conn, event_id=f"{et}-{r['handoff_id']}", event_type=et,
-                          narrative_text=narrative(status, kind=r["subject_kind"], source_stream=r["source_stream"],
-                                                   target_stream=r["target_stream"], transit_sec=upd["transit_sec"]),
+            status = "none"
+    else:
+        src_vecs = vectors(ctx.conn, src.crop_ids, ctx.tz) if src else []
+        cands = _gap_candidates(ctx, portal, r["subject_kind"], early, r["late_until"], src_vecs)
+        d = decide_match(cands, window_start=r["window_start"], window_end=r["window_end"],
+                         late_until=r["late_until"], cfg=rules, early=early)
+        status = d.status
+        if d.chosen is not None:
+            c = d.chosen
+            target_t = c.story.started_at
+            upd.update(target_story_id=c.story.story_id, target_individual_id=c.story.individual_id,
+                       appearance_score=c.score, appearance_channel=c.channel)
+    if status in ARRIVED or status == "ambiguous":
+        transit = (target_t - r["departed_at"]).total_seconds()
+        upd["transit_sec"] = transit
+    if status in ARRIVED:
+        g = observed_g(upd["transit_sec"], r["exit_dist"] or 0.0, r["exit_speed"] or 1.0, portal.kind)
+        learned, _met, _ = ctx.learned(portal.id)
+        calib_kind = "person" if r["band_source"] == "learned_person_widened" else r["subject_kind"]
+        band = Band(r["band_lo"], r["band_hi"], r["band_source"], tuple(learned.get(calib_kind) or ()))
+        p = p_value_arrival(g, band, prior_floor=prior_p_floor(rules.min_met))
+        log_score = arrival_log_score(g, band, r["exit_speed"] or 1.0, portal.kind)
+        guess = r["person_guess"] or person_guess(ctx.conn, [r["individual_id"], upd.get("target_individual_id")],
+                                                  ctx.have_attr)
+        gate = attention_gate(p, known_person=bool(guess), unusual_hour=_hour_unusual(ctx, portal.id, r["departed_at"]),
+                              cfg=rules)
+        upd.update(g=g, p_value=p, attention_gate=gate, person_guess=guess, status=status, arrival_log_score=log_score)
+        et = f"handoff_{status}"
+        upd["salience"] = salience(et, r["subject_kind"], known_person=bool(guess), p=p)
+        _vision_event(ctx.conn, event_id=f"{et}-{r['handoff_id']}", event_type=et,
+                      narrative_text=narrative(status, kind=r["subject_kind"], source_stream=r["source_stream"],
+                                               target_stream=r["target_stream"], transit_sec=upd["transit_sec"]),
+                      stream_id=r["target_stream"], salience_v=upd["salience"], tags=[portal.id, "handoff"],
+                      refs=[f"handoff:{r['handoff_id']}", f"story:{r['source_story_id']}"]
+                      + ([f"story:{upd['target_story_id']}"] if upd.get("target_story_id") else [])
+                      + ([f"event:{upd['target_event_id']}"] if upd.get("target_event_id") else []))
+        # Every met / late arrival is a street event (salience still ranks it: an
+        # unknown walker on time scores near 0); its arrival_log_score feeds the
+        # Rung 6 street_handoff domain. "early" has no StreetEventV1 kind yet.
+        if status in ("met", "late"):
+            _outbox(ctx, r["handoff_id"], _street(ctx, StreetFacts(
+                kind=f"handoff_{status}", hid=r["handoff_id"], portal_id=portal.id,
+                stream_ids=[r["source_stream"], r["target_stream"]], occurred_at=target_t, subject=r["subject_kind"],
+                individual_id=r["individual_id"], person_guess=guess, p_value=p, gate=gate,
+                arrival_log_score=log_score,
+                refs=[f"story:{r['source_story_id']}"]
+                + ([f"story:{upd['target_story_id']}"] if upd.get("target_story_id") else []))))
+        ctx._learned.pop(portal.id, None)
+    elif status == "ambiguous":
+        upd["status"] = "ambiguous"
+    else:
+        cov = coverage(ctx.conn, r["target_stream"], r["window_start"], r["window_end"], rules.census_gap_sec)
+        status = grade_unmatched(cov, rules)
+        upd.update(status=status, coverage=cov)
+        if status == "missed":
+            _learned, met_c, missed_c = ctx.learned(portal.id)
+            arrived = len(_learned.get(r["subject_kind"]) or [])  # met + late of this kind
+            p = p_value_missed(missed_c.get(r["subject_kind"], 0), arrived)
+            upd.update(p_value=p, salience=salience("handoff_missed", r["subject_kind"], known_person=bool(
+                r["person_guess"]), p=p))
+            _vision_event(ctx.conn, event_id=f"handoff_missed-{r['handoff_id']}", event_type="handoff_missed",
+                          narrative_text=narrative("missed", kind=r["subject_kind"],
+                                                   source_stream=r["source_stream"],
+                                                   target_stream=r["target_stream"]),
                           stream_id=r["target_stream"], salience_v=upd["salience"], tags=[portal.id, "handoff"],
-                          refs=[f"handoff:{r['handoff_id']}", f"story:{r['source_story_id']}"]
-                          + ([f"story:{upd['target_story_id']}"] if upd.get("target_story_id") else [])
-                          + ([f"event:{upd['target_event_id']}"] if upd.get("target_event_id") else []))
-            if status == "met" and guess:
-                upd["street_event"] = _street(ctx, StreetFacts(
-                    kind="handoff_met", hid=r["handoff_id"], portal_id=portal.id,
-                    stream_ids=[r["source_stream"], r["target_stream"]], occurred_at=target_t, subject=r["subject_kind"],
-                    individual_id=r["individual_id"], person_guess=guess, p_value=p, gate=gate,
-                    refs=[f"story:{r['source_story_id']}"]
-                    + ([f"story:{upd['target_story_id']}"] if upd.get("target_story_id") else [])))
+                          refs=[f"handoff:{r['handoff_id']}", f"story:{r['source_story_id']}",
+                                f"coverage:{cov:.2f}"])
+            _open_hypotheses(ctx, r, portal)
             ctx._learned.pop(portal.id, None)
-        elif status == "ambiguous":
-            upd["status"] = "ambiguous"
-        else:
-            cov = coverage(ctx.conn, r["target_stream"], r["window_start"], r["window_end"], rules.census_gap_sec)
-            status = grade_unmatched(cov, rules)
-            upd.update(status=status, coverage=cov)
-            if status == "missed":
-                _learned, met_c, missed_c = ctx.learned(portal.id)
-                arrived = len(_learned.get(r["subject_kind"]) or [])  # met + late of this kind
-                p = p_value_missed(missed_c.get(r["subject_kind"], 0), arrived)
-                upd.update(p_value=p, salience=salience("handoff_missed", r["subject_kind"], known_person=bool(
-                    r["person_guess"]), p=p))
-                _vision_event(ctx.conn, event_id=f"handoff_missed-{r['handoff_id']}", event_type="handoff_missed",
-                              narrative_text=narrative("missed", kind=r["subject_kind"],
-                                                       source_stream=r["source_stream"],
-                                                       target_stream=r["target_stream"]),
-                              stream_id=r["target_stream"], salience_v=upd["salience"], tags=[portal.id, "handoff"],
-                              refs=[f"handoff:{r['handoff_id']}", f"story:{r['source_story_id']}",
-                                    f"coverage:{cov:.2f}"])
-                _open_hypotheses(ctx, r, portal)
-                ctx._learned.pop(portal.id, None)
-        ctx.bump(upd["status"])
-        _update_handoff(ctx.conn, r["handoff_id"], **upd)
-        logger.info("[HANDOFF] graded id=%s portal=%s kind=%s status=%s transit=%s g=%s p=%s coverage=%s",
-                    r["handoff_id"], portal.id, r["subject_kind"], upd["status"], upd.get("transit_sec"),
-                    upd.get("g"), upd.get("p_value"), upd.get("coverage"))
+    ctx.bump(upd["status"])
+    _update_handoff(ctx.conn, r["handoff_id"], **upd)
+    logger.info("[HANDOFF] graded id=%s portal=%s kind=%s status=%s transit=%s g=%s p=%s coverage=%s",
+                r["handoff_id"], portal.id, r["subject_kind"], upd["status"], upd.get("transit_sec"),
+                upd.get("g"), upd.get("p_value"), upd.get("coverage"))
 
 
 def _true_counts(ctx: Ctx, portal_id: str) -> Dict[str, int]:
@@ -646,53 +717,60 @@ def step_hypotheses(ctx: Ctx) -> None:
     rows = ctx.conn.execute(text(
         "SELECT DISTINCT o.* FROM vision_handoff o JOIN vision_handoff_hypothesis h ON h.handoff_id = o.handoff_id "
         "WHERE h.status = 'open' AND o.status = 'missed' ORDER BY o.late_until LIMIT 200")).mappings().fetchall()
-    for r in rows:
-        portal = ctx.topology.by_id(r["portal_id"])
-        if portal is None:
-            continue
-        hid = r["handoff_id"]
-        hyps = {k: (s, d) for k, s, d in ctx.conn.execute(text(
-            "SELECT kind, status, deadline FROM vision_handoff_hypothesis WHERE handoff_id=:h"), {"h": hid}).fetchall()}
-        src = _source(ctx, r["source_story_id"])
-        late_dl = hyps.get("late", ("", ctx.now))[1]
-        if hyps.get("late", ("",))[0] == "open":
-            if portal.kind == "approach":
-                hit = next((h for h in _approach_hits(ctx, portal, r["late_until"], min(ctx.now, late_dl))
-                            if h[0] > r["late_until"]), None)
-                if hit:
-                    _set_hypothesis(ctx, hid, "late", "true", {"at": hit[0].isoformat(), "event_id": hit[1],
-                                                               "story_id": hit[2]})
-            else:
-                c = next((c for c in _gap_candidates(ctx, portal, r["subject_kind"], r["late_until"],
-                                                     min(ctx.now, late_dl), [])
-                          if c.story.started_at > r["late_until"]), None)
-                if c:
-                    _set_hypothesis(ctx, hid, "late", "true", {"story_id": c.story.story_id,
-                                                               "at": c.story.started_at.isoformat()})
-        tb_dl = hyps.get("turned_back", ("", ctx.now))[1]
-        if hyps.get("turned_back", ("",))[0] == "open" and src is not None:
-            later = read_stories(ctx.conn, "s.stream_id = :s AND s.kind = :k AND s.started_at > :a AND s.started_at <= :b",
-                                 {"s": src.stream_id, "k": src.kind, "a": src.ended_at, "b": min(ctx.now, tb_dl)},
-                                 edges=ctx.edges, cfg=ctx.cfg, limit=50)
-            back = next((s for s in later if turned_back(src, s, portal)), None)
-            if back:
-                _set_hypothesis(ctx, hid, "turned_back", "true", {"story_id": back.story_id})
-        deadline = max(d for _s, d in hyps.values())
-        if ctx.now < deadline:
-            continue
-        if not (stories_caught_up(ctx.conn, r["target_stream"], deadline)
-                and stories_caught_up(ctx.conn, r["source_stream"], deadline)) \
-                and ctx.now - deadline < timedelta(seconds=ctx.cfg.rules.stuck_after_sec):
-            continue
-        current = {k: s for k, s, _d in ctx.conn.execute(text(
-            "SELECT kind, status, deadline FROM vision_handoff_hypothesis WHERE handoff_id=:h"), {"h": hid}).fetchall()}
-        last_zone = src.zone_path[-1] if src and src.zone_path else None
-        final = settle_final(current, last_zone=last_zone, place_zones=ctx.topology.place_zones.get(r["source_stream"], ()))
-        for k, s in final.items():
-            if current.get(k) == "open":
-                _set_hypothesis(ctx, hid, k, s, {"last_zone": last_zone} if k == "entered_place" else None)
-        if final.get("unexplained") == "true":
-            _unexplained(ctx, r, portal)
+    _each(ctx, "hypotheses", rows, _hypotheses_one, on_fail=_fail_hypotheses)
+
+
+def _hypotheses_one(ctx: Ctx, r) -> None:
+    from sqlalchemy import text
+
+    portal = ctx.topology.by_id(r["portal_id"])
+    if portal is None:
+        _settle_open_false(ctx, r["handoff_id"], {"data": "portal_removed"})
+        return
+    hid = r["handoff_id"]
+    hyps = {k: (s, d) for k, s, d in ctx.conn.execute(text(
+        "SELECT kind, status, deadline FROM vision_handoff_hypothesis WHERE handoff_id=:h"), {"h": hid}).fetchall()}
+    src = _source(ctx, r["source_story_id"])
+    late_dl = hyps.get("late", ("", ctx.now))[1]
+    if hyps.get("late", ("",))[0] == "open":
+        if portal.kind == "approach":
+            hit = next((h for h in _approach_hits(ctx, portal, r["late_until"], min(ctx.now, late_dl))
+                        if h[0] > r["late_until"]), None)
+            if hit:
+                _set_hypothesis(ctx, hid, "late", "true", {"at": hit[0].isoformat(), "event_id": hit[1],
+                                                           "story_id": hit[2]})
+        else:
+            c = next((c for c in _gap_candidates(ctx, portal, r["subject_kind"], r["late_until"],
+                                                 min(ctx.now, late_dl), [])
+                      if c.story.started_at > r["late_until"]), None)
+            if c:
+                _set_hypothesis(ctx, hid, "late", "true", {"story_id": c.story.story_id,
+                                                           "at": c.story.started_at.isoformat()})
+    tb_dl = hyps.get("turned_back", ("", ctx.now))[1]
+    if hyps.get("turned_back", ("",))[0] == "open" and src is not None:
+        later = read_stories(ctx.conn, "s.stream_id = :s AND s.kind = :k AND s.started_at > :a AND s.started_at <= :b",
+                             {"s": src.stream_id, "k": src.kind, "a": src.ended_at, "b": min(ctx.now, tb_dl)},
+                             edges=ctx.edges, cfg=ctx.cfg, limit=50)
+        back = next((s for s in later if turned_back(src, s, portal)), None)
+        if back:
+            _set_hypothesis(ctx, hid, "turned_back", "true", {"story_id": back.story_id})
+    deadline = max(d for _s, d in hyps.values())
+    if ctx.now < deadline:
+        return
+    if not (stories_caught_up(ctx.conn, r["target_stream"], deadline)
+            and stories_caught_up(ctx.conn, r["source_stream"], deadline)):
+        if ctx.now - deadline >= timedelta(seconds=ctx.cfg.rules.stuck_after_sec):
+            _settle_open_false(ctx, hid, {"data": "never_caught_up"})
+        return
+    current = {k: s for k, s, _d in ctx.conn.execute(text(
+        "SELECT kind, status, deadline FROM vision_handoff_hypothesis WHERE handoff_id=:h"), {"h": hid}).fetchall()}
+    last_zone = src.zone_path[-1] if src and src.zone_path else None
+    final = settle_final(current, last_zone=last_zone, place_zones=ctx.topology.place_zones.get(r["source_stream"], ()))
+    for k, s in final.items():
+        if current.get(k) == "open":
+            _set_hypothesis(ctx, hid, k, s, {"last_zone": last_zone} if k == "entered_place" else None)
+    if final.get("unexplained") == "true":
+        _unexplained(ctx, r, portal)
 
 
 def _unexplained(ctx: Ctx, r: Mapping[str, Any], portal) -> None:
@@ -716,75 +794,80 @@ def _unexplained(ctx: Ctx, r: Mapping[str, Any], portal) -> None:
         ctx.conn.execute(insert(VisionUnresolvedSQL.__table__).values(
             **item.model_dump(exclude={"schema_version"})).on_conflict_do_nothing())
         ctx.bump("unresolved_written")
-    if r["street_event"] is None:
-        ev = _street(ctx, StreetFacts(
-            kind="handoff_missed", hid=hid, portal_id=portal.id, stream_ids=[r["source_stream"], r["target_stream"]],
-            occurred_at=r["late_until"], subject=r["subject_kind"], individual_id=r["individual_id"],
-            person_guess=r["person_guess"], p_value=r["p_value"],
-            gate=attention_gate(r["p_value"], known_person=bool(r["person_guess"]),
-                                unusual_hour=_hour_unusual(ctx, portal.id, r["departed_at"]), cfg=ctx.cfg.rules),
-            refs=[f"story:{r['source_story_id']}", "hypothesis:unexplained"]))
-        if ev is not None:
-            _update_handoff(ctx.conn, hid, street_event=ev)
+    ev = _street(ctx, StreetFacts(
+        kind="handoff_missed", hid=hid, portal_id=portal.id, stream_ids=[r["source_stream"], r["target_stream"]],
+        occurred_at=r["late_until"], subject=r["subject_kind"], individual_id=r["individual_id"],
+        person_guess=r["person_guess"], p_value=r["p_value"],
+        gate=attention_gate(r["p_value"], known_person=bool(r["person_guess"]),
+                            unusual_hour=_hour_unusual(ctx, portal.id, r["departed_at"]), cfg=ctx.cfg.rules),
+        refs=[f"story:{r['source_story_id']}", "hypothesis:unexplained"]))
+    _outbox(ctx, hid, ev)
 
 
 def step_overlap(ctx: Ctx) -> None:
-    from sqlalchemy import text
-
     rules = ctx.cfg.rules
     for portal in ctx.topology.of_kind("overlap"):
         a_stream, b_stream = portal.streams
         pending = read_stories(
             ctx.conn,
-            "s.stream_id = :s AND s.kind = ANY(:k) AND s.ended_at > :since AND coalesce(s.drop_reason, '') <> 'prop' "
+            "s.stream_id = :s AND s.kind = ANY(:k) AND s.ended_at > :since "
+            "AND NOT (coalesce(s.drop_reason, '') = ANY(:nd)) "
             "AND NOT EXISTS (SELECT 1 FROM vision_handoff h WHERE h.portal_id = :p AND h.source_story_id = s.story_id)",
             {"s": a_stream, "k": list(rules.kinds), "since": ctx.now - timedelta(seconds=PENDING_LOOKBACK_SEC),
-             "p": portal.id}, edges=ctx.edges, cfg=ctx.cfg, limit=100)
-        for d in pending:
-            skew = timedelta(seconds=portal.max_skew_sec)
-            if not stories_caught_up(ctx.conn, b_stream, d.ended_at + skew):
-                ctx.bump("overlap_deferred")
-                continue
-            others = read_stories(
-                ctx.conn, "s.stream_id = :s AND s.kind = :k AND s.started_at <= :b AND s.ended_at >= :a "
-                "AND coalesce(s.drop_reason, '') <> 'prop'",
-                {"s": b_stream, "k": d.kind, "a": d.started_at - skew, "b": d.ended_at + skew},
-                edges=ctx.edges, cfg=ctx.cfg, limit=20)
-            others.sort(key=lambda o: -overlap_seconds(d, o))
-            src_vecs = vectors(ctx.conn, d.crop_ids, ctx.tz)
-            cands = []
-            for o in others:
-                score, ch = appearance(src_vecs, vectors(ctx.conn, o.crop_ids, ctx.tz)) if src_vecs else (None, None)
-                cands.append(Candidate(o, score, ch))
-            dec = decide_overlap(cands, rules)
-            c = dec.chosen
-            hid = handoff_id(portal.id, d.story_id)
-            row = {"handoff_id": hid, "portal_id": portal.id, "portal_kind": "overlap", "source_stream": a_stream,
-                   "target_stream": b_stream, "source_story_id": d.story_id, "subject_kind": d.kind,
-                   "individual_id": d.individual_id, "departed_at": d.ended_at, "opened_at": ctx.now,
-                   "window_start": d.started_at - skew, "window_end": d.ended_at + skew,
-                   "model_version": MODEL_VERSION, "status": dec.status, "scored_at": ctx.now}
-            if c is not None:
-                guess = person_guess(ctx.conn, [d.individual_id, c.story.individual_id], ctx.have_attr)
-                row.update(target_story_id=c.story.story_id, target_individual_id=c.story.individual_id,
-                           appearance_score=c.score, appearance_channel=c.channel, person_guess=guess,
-                           transit_sec=(c.story.started_at - d.started_at).total_seconds())
-                if dec.status == "paired":
-                    row["salience"] = salience("overlap_pair", d.kind, known_person=bool(guess), p=None)
-                    row["street_event"] = _street(ctx, StreetFacts(
-                        kind="overlap_pair", hid=hid, portal_id=portal.id, stream_ids=[a_stream, b_stream],
-                        occurred_at=max(d.started_at, c.story.started_at), subject=d.kind,
-                        individual_id=c.story.individual_id or d.individual_id, person_guess=guess,
-                        refs=[f"story:{d.story_id}", f"story:{c.story.story_id}"]))
-            if not _insert_handoff(ctx.conn, row):
-                continue
-            ctx.bump(f"overlap_{dec.status}")
-            if dec.status == "paired":
-                _vision_event(ctx.conn, event_id=f"overlap_pair-{hid}", event_type="overlap_pair",
-                              narrative_text=narrative("paired", kind=d.kind, source_stream=a_stream,
-                                                       target_stream=b_stream),
-                              stream_id=b_stream, salience_v=row.get("salience") or 0.0, tags=[portal.id, "handoff"],
-                              refs=[f"handoff:{hid}", f"story:{d.story_id}", f"story:{c.story.story_id}"])
+             "p": portal.id, "nd": list(NOT_A_DEPARTURE)}, edges=ctx.edges, cfg=ctx.cfg, limit=100)
+        _each(ctx, "overlap", [(portal, d) for d in pending], _overlap_one)
+
+
+def _overlap_one(ctx: Ctx, item) -> None:
+    portal, d = item
+    rules = ctx.cfg.rules
+    a_stream, b_stream = portal.streams
+    skew = timedelta(seconds=portal.max_skew_sec)
+    if not stories_caught_up(ctx.conn, b_stream, d.ended_at + skew):
+        ctx.bump("overlap_deferred")
+        return
+    others = read_stories(
+        ctx.conn, "s.stream_id = :s AND s.kind = :k AND s.started_at <= :b AND s.ended_at >= :a "
+        "AND NOT (coalesce(s.drop_reason, '') = ANY(:na))",
+        {"s": b_stream, "k": d.kind, "a": d.started_at - skew, "b": d.ended_at + skew, "na": list(NOT_AN_ARRIVAL)},
+        edges=ctx.edges, cfg=ctx.cfg, limit=20)
+    others.sort(key=lambda o: -overlap_seconds(d, o))
+    src_vecs = vectors(ctx.conn, d.crop_ids, ctx.tz)
+    cands = []
+    for o in others:
+        score, ch = appearance(src_vecs, vectors(ctx.conn, o.crop_ids, ctx.tz)) if src_vecs else (None, None)
+        cands.append(Candidate(o, score, ch))
+    dec = decide_overlap(cands, rules)
+    c = dec.chosen
+    street = None
+    hid = handoff_id(portal.id, d.story_id)
+    row = {"handoff_id": hid, "portal_id": portal.id, "portal_kind": "overlap", "source_stream": a_stream,
+           "target_stream": b_stream, "source_story_id": d.story_id, "subject_kind": d.kind,
+           "individual_id": d.individual_id, "departed_at": d.ended_at, "opened_at": ctx.now,
+           "window_start": d.started_at - skew, "window_end": d.ended_at + skew,
+           "model_version": MODEL_VERSION, "status": dec.status, "scored_at": ctx.now}
+    if c is not None:
+        guess = person_guess(ctx.conn, [d.individual_id, c.story.individual_id], ctx.have_attr)
+        row.update(target_story_id=c.story.story_id, target_individual_id=c.story.individual_id,
+                   appearance_score=c.score, appearance_channel=c.channel, person_guess=guess,
+                   transit_sec=(c.story.started_at - d.started_at).total_seconds())
+        if dec.status == "paired":
+            row["salience"] = salience("overlap_pair", d.kind, known_person=bool(guess), p=None)
+            street = _street(ctx, StreetFacts(
+                kind="overlap_pair", hid=hid, portal_id=portal.id, stream_ids=[a_stream, b_stream],
+                occurred_at=max(d.started_at, c.story.started_at), subject=d.kind,
+                individual_id=c.story.individual_id or d.individual_id, person_guess=guess,
+                refs=[f"story:{d.story_id}", f"story:{c.story.story_id}"]))
+    if not _insert_handoff(ctx.conn, row):
+        return
+    ctx.bump(f"overlap_{dec.status}")
+    if dec.status == "paired":
+        _outbox(ctx, hid, street)
+        _vision_event(ctx.conn, event_id=f"overlap_pair-{hid}", event_type="overlap_pair",
+                      narrative_text=narrative("paired", kind=d.kind, source_stream=a_stream,
+                                               target_stream=b_stream),
+                      stream_id=b_stream, salience_v=row.get("salience") or 0.0, tags=[portal.id, "handoff"],
+                      refs=[f"handoff:{hid}", f"story:{d.story_id}", f"story:{c.story.story_id}"])
 
 
 def step_rings(ctx: Ctx) -> None:
@@ -805,21 +888,26 @@ def step_rings(ctx: Ctx) -> None:
             if not stories_caught_up(ctx.conn, portal.from_stream, t + timedelta(seconds=30)):
                 ctx.bump("ring_deferred")
                 continue
+            # Announced: an approach departure shortly before, or a walkway person
+            # story still running at ring time (its end is after the ring).
             announced = ctx.conn.execute(text(
                 "SELECT 1 FROM vision_handoff WHERE portal_id = :p AND source_story_id IS NOT NULL "
-                "AND departed_at >= :a AND departed_at <= :b LIMIT 1"), {"p": portal.id, "a": look_from, "b": t}).fetchone()
-            if announced:
-                continue
+                "AND departed_at >= :a AND departed_at <= :b "
+                "UNION ALL SELECT 1 FROM vision_motion_story WHERE stream_id = :w AND kind = 'person' "
+                "AND started_at <= :b AND ended_at >= :b LIMIT 1"),
+                {"p": portal.id, "a": look_from, "b": t, "w": portal.from_stream}).fetchone()
             cov = coverage(ctx.conn, portal.from_stream, look_from, t, rules.census_gap_sec)
+            status = "announced" if announced else ("unannounced" if cov >= rules.min_coverage else "unscorable")
             hid = handoff_id(portal.id, "ring", ev_id)
+            # A row in every case, so the ring is never re-examined (and never starves newer rings).
             if not _insert_handoff(ctx.conn, {
                     "handoff_id": hid, "portal_id": portal.id, "portal_kind": "approach",
                     "source_stream": portal.from_stream, "target_stream": portal.to_stream, "target_event_id": ev_id,
                     "subject_kind": "person", "opened_at": ctx.now, "window_start": look_from, "window_end": t,
-                    "model_version": MODEL_VERSION, "status": "unannounced", "coverage": cov, "scored_at": ctx.now}):
+                    "model_version": MODEL_VERSION, "status": status, "coverage": cov, "scored_at": ctx.now}):
                 continue
-            ctx.bump("ring_unannounced")
-            if cov >= rules.min_coverage:
+            ctx.bump(f"ring_{status}")
+            if status == "unannounced":
                 n = _detector_crops(ctx, portal.from_stream, "person", look_from, t)
                 priors = hypothesis_priors(_true_counts(ctx, portal.id), RING_HYPOTHESES)
                 _write_hypothesis(ctx, hid, "detector_miss", priors["detector_miss"], ctx.now,
@@ -907,6 +995,8 @@ def step_prune(ctx: Ctx) -> None:
     cut = ctx.now - timedelta(days=ctx.cfg.retention_days)
     n = ctx.conn.execute(text("DELETE FROM vision_handoff WHERE created_at < :c"), {"c": cut}).rowcount or 0
     if n:
+        ctx.conn.execute(text("DELETE FROM vision_handoff_street_outbox x WHERE published_at IS NOT NULL AND NOT EXISTS "
+                              "(SELECT 1 FROM vision_handoff o WHERE o.handoff_id = x.handoff_id)"))
         ctx.conn.execute(text("DELETE FROM vision_handoff_hypothesis h WHERE NOT EXISTS "
                               "(SELECT 1 FROM vision_handoff o WHERE o.handoff_id = h.handoff_id)"))
     ctx.summary["pruned"] = n
@@ -994,8 +1084,8 @@ def fetch_outbox(engine, limit: int = 50) -> List[Tuple[str, dict]]:
 
     with engine.connect() as conn:
         rows = conn.execute(text(
-            "SELECT handoff_id, street_event FROM vision_handoff WHERE street_event IS NOT NULL "
-            "AND street_published_at IS NULL ORDER BY created_at LIMIT :n"), {"n": limit}).fetchall()
+            "SELECT event_id, event FROM vision_handoff_street_outbox WHERE published_at IS NULL "
+            "ORDER BY created_at, event_id LIMIT :n"), {"n": limit}).fetchall()
     return [(r[0], r[1] if isinstance(r[1], dict) else json.loads(r[1])) for r in rows]
 
 
@@ -1004,7 +1094,7 @@ def mark_published(engine, hids: Sequence[str], at: datetime) -> None:
 
     if hids:
         with engine.begin() as conn:
-            conn.execute(text("UPDATE vision_handoff SET street_published_at = :t WHERE handoff_id = ANY(:h)"),
+            conn.execute(text("UPDATE vision_handoff_street_outbox SET published_at = :t WHERE event_id = ANY(:h)"),
                          {"t": at, "h": list(hids)})
 
 

@@ -44,10 +44,15 @@ outcome at least this unlikely under the model:
   ``(missed + 1) / (missed + arrived + 2)``.
 
 Calm state: on ordinary days p-values of met handoffs are spread evenly over
-0..1, so about 5% fall below 0.05 by chance. The conformal p has a floor of
-``2 / (n + 1)`` with ``n`` calibration values: below n = 39 no arrival can
-pass p < 0.05 (too little history to call anything surprising). There is no floor: an on-time
-arrival in the middle of the band has ``p`` near 1. The attention gate is
+0..1, so about 5% fall below 0.05 by chance. The rest state is reachable: an
+on-time arrival in the middle of the band has ``p`` near 1.
+
+Smallest p (granularity, not a rest-state floor): the conformal p cannot go
+below ``2 / (n + 1)`` with ``n`` calibration values, so under n = 39 no
+arrival can pass p < 0.05. The prior band gets the same floor as a
+``min_met``-value calibration set (``2 / (min_met + 1)``): a hand-set x0.4..x3
+guess must never call anything surprising, however short the transit (short
+transits are normal on the overlapping central walk). The attention gate is
 ``p < attention_p`` AND (a known person OR unusual for the hour); the replay
 eval checks uniformity and that a quiet hour yields zero gate passes.
 
@@ -85,6 +90,13 @@ LOOK_KEY = "orion:vision:look:doorbell"
 STREET_CHANNEL = "orion:vision:street:events"
 SOURCE_KIND_SAME = "vision_same_individual"
 HANDOFF_RULE_REF = "rule:handoff"
+
+# Stories that cannot depart or be a same-moment source: props, a companion of
+# a walker already in its own story (one passage, two stories), someone standing
+# or a parked thing, anything out of scope. Arrival candidates exclude props and
+# companions only: an arrival at a frame edge is often a short "glimpse".
+NOT_A_DEPARTURE = ("prop", "companion", "standing", "parked", "out_of_scope")
+NOT_AN_ARRIVAL = ("prop", "companion")
 
 GRADED = ("met", "early", "late", "missed", "ambiguous", "unscorable")
 # Arrivals: they train the gap. "early" = before the band, inside the early
@@ -354,7 +366,30 @@ def _phi(z: float) -> float:
     return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
 
 
-def p_value_arrival(g: float, band: Band) -> float:
+def prior_p_floor(min_met: int) -> float:
+    return 2.0 / (int(min_met) + 1)
+
+
+def _lognormal_of(band: Band) -> Tuple[float, float]:
+    lo, hi = max(band.lo, 1e-6), max(band.hi, 2e-6)
+    return (math.log(lo) + math.log(hi)) / 2.0, max((math.log(hi) - math.log(lo)) / (2.0 * Z90), 1e-6)
+
+
+def arrival_log_score(g: float, band: Band, speed: float, portal_kind: str) -> float:
+    """Log density, in nats per second, of the actual arrival time under the
+    predicted arrival distribution: the log-normal over ``g`` whose 10% / 90%
+    quantiles are the band ends (prior or learned), carried to time by the
+    Jacobian ``dg/dt = speed`` (approach: 1). Higher is a better prediction.
+    g <= 0 (arrived before the projection allows) is clamped to 1/1000 of
+    the band's low end, which scores very low."""
+    mu, sigma = _lognormal_of(band)
+    gg = max(float(g), max(band.lo, 1e-6) * 1e-3)
+    log_pdf_g = -math.log(gg * sigma * math.sqrt(2.0 * math.pi)) - (math.log(gg) - mu) ** 2 / (2.0 * sigma ** 2)
+    v = 1.0 if portal_kind == "approach" else max(float(speed), 1e-6)
+    return float(log_pdf_g + math.log(v))
+
+
+def p_value_arrival(g: float, band: Band, *, prior_floor: float = 0.0) -> float:
     """Two-sided p of an arrival with gap ``g``. Learned band: conformal rank
     among the calibration values. Prior band: log-normal tails with the band
     ends as its 10% / 90% quantiles."""
@@ -364,11 +399,9 @@ def p_value_arrival(g: float, band: Band) -> float:
         lo = (1 + sum(1 for x in c if x <= g)) / (n + 1)
         hi = (1 + sum(1 for x in c if x >= g)) / (n + 1)
         return float(min(1.0, 2.0 * min(lo, hi)))
-    lo, hi = max(band.lo, 1e-6), max(band.hi, 2e-6)
-    mu = (math.log(lo) + math.log(hi)) / 2.0
-    sigma = max((math.log(hi) - math.log(lo)) / (2.0 * Z90), 1e-6)
-    z = (math.log(max(g, lo * 1e-3)) - mu) / sigma
-    return float(min(1.0, 2.0 * min(_phi(z), 1.0 - _phi(z))))
+    mu, sigma = _lognormal_of(band)
+    z = (math.log(max(g, max(band.lo, 1e-6) * 1e-3)) - mu) / sigma
+    return float(max(prior_floor, min(1.0, 2.0 * min(_phi(z), 1.0 - _phi(z)))))
 
 
 def p_value_missed(n_missed: int, n_arrived: int) -> float:
@@ -637,6 +670,7 @@ class StreetFacts:
     person_guess: Optional[str] = None
     p_value: Optional[float] = None
     gate: Optional[bool] = None
+    arrival_log_score: Optional[float] = None
     refs: List[str] = field(default_factory=list)
 
 
@@ -653,8 +687,13 @@ def street_event(f: StreetFacts) -> dict:
         occurred_at=f.occurred_at, subject_kind=subject_kind(f.subject), individual_id=f.individual_id,
         person_guess=f.person_guess, salience=sal,
         p_value=None if f.p_value is None else min(1.0, max(0.0, float(f.p_value))),
+        arrival_log_score=f.arrival_log_score if f.kind in ("handoff_met", "handoff_late") else None,
         evidence_refs=refs, correlation_id=correlation_for(f.hid))
-    return ev.model_dump(mode="json")
+    out = ev.model_dump(mode="json")
+    if out.get("arrival_log_score") is None:
+        # Keep payloads without the score byte-identical to the pre-field shape.
+        out.pop("arrival_log_score", None)
+    return out
 
 
 # ---------------------------------------------------------------------------

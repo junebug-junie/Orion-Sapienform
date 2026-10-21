@@ -2,14 +2,10 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 750,
   "_last_change": {
-    "change_count": 6,
-    "high_severity_count": 4,
+    "change_count": 2,
+    "high_severity_count": 1,
     "changes": [
       "high   removed metric://bus_channel/orion-vision-retina/orion:vision:street:events",
-      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026vices.orion-hub.scripts.\u2026 -> \u2026vices.orion-durable-runs.app.temporal_self_chronicle:Chroni\u2026\u2026)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/execution_friction (meaning: \u2026g on a node. -> \u2026g on a node. Failed steps over started steps; deliberate GP\u2026)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/failure_pressure (meaning: \u2026y on a node. -> \u2026y on a node. A step the GPU pool shed on purpose (gpu_pool_\u2026)",
-      "medium added metric://bus_channel/orion-hub/orion:personality:naming",
       "medium added metric://bus_channel/orion-sql-writer/orion:vision:street:events"
     ]
   },

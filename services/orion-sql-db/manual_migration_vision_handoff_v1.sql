@@ -8,19 +8,19 @@
 --    or doorbell ring nobody was seen approaching. status:
 --      open | met | early | late | missed | ambiguous | unscorable  (expectations)
 --      paired | ambiguous | unpaired                            (overlap pairs)
---      unannounced                                          (a ring with no approach seen)
+--      unannounced | announced | unscorable                 (doorbell rings)
 --    g = transit_sec x exit_speed - exit_dist (frame widths) is the learned gap; met, early
---    and late rows train the next band. street_event / street_published_at are the outbox
---    for the StreetEventV1 publish on orion:vision:street:events.
+--    and late rows train the next band.
 -- 2. vision_handoff_hypothesis: up to five explanations of a missed handoff (and two of an
 --    unannounced ring), each settled true/false from data by its deadline.
--- 3. vision_handoff_cursor: landing-time cursors (motion stories, ring events).
+-- 3. vision_handoff_street_outbox: StreetEventV1 outbox for orion:vision:street:events.
+-- 4. vision_handoff_cursor: landing-time cursors (motion stories).
 --
 -- Safe for the post-pull auto-apply: CREATE TABLE / CREATE INDEX IF NOT EXISTS only.
 -- The writer backs off with a clear log line while this file is not applied.
 --
 -- Apply: docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_vision_handoff_v1.sql
--- Rollback (additive): DROP TABLE vision_handoff_hypothesis, vision_handoff_cursor, vision_handoff;
+-- Rollback (additive): DROP TABLE vision_handoff_street_outbox, vision_handoff_hypothesis, vision_handoff_cursor, vision_handoff;
 
 CREATE TABLE IF NOT EXISTS vision_handoff (
     handoff_id            TEXT PRIMARY KEY,           -- uuid5(portal | source story [| target story])
@@ -57,8 +57,7 @@ CREATE TABLE IF NOT EXISTS vision_handoff (
     salience              REAL,
     steered               TEXT[],                     -- redis keys set for this handoff
     ask_id                TEXT,
-    street_event          JSONB,
-    street_published_at   TIMESTAMPTZ,
+    arrival_log_score     REAL,                       -- nats/s of the arrival time under the predicted window
     scored_at             TIMESTAMPTZ,
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -66,8 +65,6 @@ CREATE INDEX IF NOT EXISTS vision_handoff_open_idx ON vision_handoff (status, la
 CREATE INDEX IF NOT EXISTS vision_handoff_source_idx ON vision_handoff (source_story_id);
 CREATE INDEX IF NOT EXISTS vision_handoff_target_idx ON vision_handoff (target_story_id);
 CREATE INDEX IF NOT EXISTS vision_handoff_portal_idx ON vision_handoff (portal_id, status, scored_at);
-CREATE INDEX IF NOT EXISTS vision_handoff_outbox_idx ON vision_handoff (created_at)
-    WHERE street_event IS NOT NULL AND street_published_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS vision_handoff_hypothesis (
     handoff_id   TEXT NOT NULL,
@@ -83,6 +80,19 @@ CREATE TABLE IF NOT EXISTS vision_handoff_hypothesis (
     PRIMARY KEY (handoff_id, kind)
 );
 CREATE INDEX IF NOT EXISTS vision_handoff_hypothesis_open_idx ON vision_handoff_hypothesis (status, deadline);
+
+-- One row per StreetEventV1 (outbox): a later event on the same handoff never
+-- overwrites an earlier one; published_at is set only after a successful publish.
+CREATE TABLE IF NOT EXISTS vision_handoff_street_outbox (
+    event_id      TEXT PRIMARY KEY,
+    handoff_id    TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    event         JSONB NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    published_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS vision_handoff_street_outbox_pending_idx
+    ON vision_handoff_street_outbox (created_at) WHERE published_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS vision_handoff_cursor (
     name             TEXT PRIMARY KEY,                -- stories | ring_events

@@ -42,7 +42,7 @@ CFG = hl.HandoffLoopConfig()
 W, H = 2560.0, 1920.0
 VEC_A = [1.0, 0.1, 0.0, 0.0, 0.2, 0.0, 0.0, 0.1]
 VEC_B = [0.0, 0.0, 1.0, 0.3, 0.0, 0.0, 0.5, 0.0]
-TABLES = ("vision_handoff", "vision_handoff_hypothesis", "vision_handoff_cursor", "vision_motion_story",
+TABLES = ("vision_handoff", "vision_handoff_hypothesis", "vision_handoff_cursor", "vision_handoff_street_outbox", "vision_motion_story",
           "vision_motion_story_cursor", "vision_crop_observation", "vision_scene_inventory", "vision_individual",
           "vision_individual_sighting", "vision_individual_pair_verdict", "orion_ask", "vision_unresolved",
           "vision_person_attribution", "vision_events")
@@ -162,6 +162,9 @@ def test_gap_handoff_met_trains_the_gap_and_opens_a_capped_ask_without_writing_a
     assert h["band_source"] == "prior" and h["steered"] is None
     ev = _rows(pg, "SELECT event_type, stream_id FROM vision_events")
     assert ev == [{"event_type": "handoff_met", "stream_id": "doorbell"}]
+    (street,) = [e for _i, e in hl.fetch_outbox(pg)]
+    assert street["kind"] == "handoff_met" and street["arrival_log_score"] == pytest.approx(h["arrival_log_score"], rel=1e-5)
+    assert h["p_value"] >= vh.prior_p_floor(10) and h["attention_gate"] is False   # prior band: never surprising
     (ask,) = _rows(pg, "SELECT * FROM orion_ask")
     assert ask["source_kind"] == "vision_same_individual" and ask["source_ref"] == "ind-door|ind-walk"
     assert vh.HANDOFF_RULE_REF in ask["evidence_refs"] and len(ask["image_refs"]) == 2
@@ -221,7 +224,7 @@ def test_watched_miss_settles_unexplained_into_vision_unresolved_and_the_outbox(
     (u,) = _rows(pg, "SELECT * FROM vision_unresolved")
     assert u["reason"] == "handoff_missed" and u["stream_id"] == "doorbell"
     out = hl.fetch_outbox(pg)
-    assert len(out) == 1 and out[0][1]["kind"] == "handoff_missed"
+    assert len(out) == 1 and out[0][1]["kind"] == "handoff_missed" and "arrival_log_score" not in out[0][1]
 
 
 def test_detector_miss_and_turned_back_settle_from_data(pg) -> None:
@@ -254,7 +257,8 @@ def test_overlap_pair_on_the_central_walk(pg) -> None:
     assert out["overlap_paired"] == 1, out
     (h,) = _rows(pg, "SELECT * FROM vision_handoff WHERE portal_id='central_walk'")
     assert h["source_story_id"] == "d_porch" and h["target_story_id"] == "w_patio" and h["status"] == "paired"
-    assert h["street_event"]["kind"] == "overlap_pair" and h["street_event"]["salience"] <= 0.1
+    (ev,) = [e for _i, e in hl.fetch_outbox(pg)]
+    assert ev["kind"] == "overlap_pair" and ev["salience"] <= 0.1
     assert [e["event_type"] for e in _rows(pg, "SELECT event_type FROM vision_events")] == ["overlap_pair"]
 
 
@@ -270,11 +274,16 @@ def test_approach_door_met_by_ring_motion_and_an_unannounced_ring(pg) -> None:
         _census(conn, "walkway", T0 + timedelta(seconds=3400), T0 + timedelta(seconds=3700))
     first = _cycle(pg, T0 + timedelta(seconds=100))
     assert first["opened_approach"] == 1, first
-    out = _cycle(pg, T0 + timedelta(seconds=3800))
+    out = _cycle(pg, T0 + timedelta(seconds=200))
     assert out["met"] == 1, out
+    _cycle(pg, T0 + timedelta(seconds=3800))
     (a,) = _rows(pg, "SELECT * FROM vision_handoff WHERE source_story_id='w_toward'")
     assert a["status"] == "met" and a["target_event_id"] == "ring-motion-1" and a["transit_sec"] == pytest.approx(12)
-    assert a["street_event"]["kind"] == "approach_door"
+    kinds = sorted(e["kind"] for _i, e in hl.fetch_outbox(pg))
+    # One outbox row per event: the met grade does not overwrite the approach heads-up.
+    assert kinds == ["approach_door", "handoff_met"]
+    met = next(e for _i, e in hl.fetch_outbox(pg) if e["kind"] == "handoff_met")
+    assert met["arrival_log_score"] == pytest.approx(a["arrival_log_score"], rel=1e-5)
     (r,) = _rows(pg, "SELECT * FROM vision_handoff WHERE status='unannounced'")
     assert r["target_event_id"] == "ring-ding-2" and r["coverage"] >= 0.8
     hyps = {h["kind"]: h["status"] for h in _rows(pg, "SELECT kind, status FROM vision_handoff_hypothesis")}
@@ -369,5 +378,85 @@ def test_stale_facts_are_recorded_but_not_published(pg) -> None:
     with pg.begin() as conn:
         _story(conn, "w_toward", "walkway", T0 - timedelta(seconds=10), T0, dir_depth=1, landed=T0 + timedelta(seconds=60))
     out = _cycle(pg, T0 + timedelta(seconds=1800))
-    (a,) = _rows(pg, "SELECT street_event FROM vision_handoff WHERE source_story_id='w_toward'")
-    assert a["street_event"] is None and out["street_stale_skipped"] == 1
+    assert hl.fetch_outbox(pg) == [] and out["street_stale_skipped"] >= 1
+
+
+def test_approach_miss_settles_unexplained_and_still_publishes(pg) -> None:
+    # Review #1: the approach heads-up in the outbox must not hide the later miss.
+    with pg.begin() as conn:
+        _story(conn, "w_toward", "walkway", T0 - timedelta(seconds=10), T0, dir_depth=1)
+        _census(conn, "doorbell", T0, T0 + timedelta(seconds=120))
+        _census(conn, "walkway", T0, T0 + timedelta(seconds=1800))
+    _cycle(pg, T0 + timedelta(seconds=100))
+    _cycle(pg, T0 + timedelta(seconds=200))
+    (h,) = _rows(pg, "SELECT status, late_until FROM vision_handoff WHERE source_story_id='w_toward'")
+    assert h["status"] == "missed"
+    _cycle(pg, h["late_until"] + timedelta(seconds=700))
+    kinds = sorted(e["kind"] for _i, e in hl.fetch_outbox(pg))
+    assert kinds == ["approach_door", "handoff_missed"]
+
+
+def test_stuck_stories_settle_false_and_never_write_unresolved(pg) -> None:
+    # Review #4: no data behind it means no "unexplained".
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _walker_left(conn)
+        _census(conn, "doorbell", T0, T0 + timedelta(seconds=300))
+    _cycle(pg, T0 + timedelta(seconds=400))
+    (h,) = _rows(pg, "SELECT late_until FROM vision_handoff WHERE portal_id='walkway_to_door'")
+    with pg.begin() as conn:   # the target camera's stories stop catching up
+        conn.execute(text("UPDATE vision_motion_story_cursor SET processed_until = :t WHERE stream_id='doorbell'"),
+                     {"t": T0 + timedelta(seconds=300)})
+    _cycle(pg, h["late_until"] + timedelta(seconds=700 + 3700))
+    hyps = {r["kind"]: (r["status"], r["evidence"]) for r in _rows(pg, "SELECT kind, status, evidence FROM vision_handoff_hypothesis")}
+    assert hyps["unexplained"][0] == "false" and hyps["unexplained"][1].get("data") == "never_caught_up"
+    assert _rows(pg, "SELECT * FROM vision_unresolved") == [] and hl.fetch_outbox(pg) == []
+
+
+def test_companion_story_opens_nothing(pg) -> None:
+    # Review #5: a companion duplicates a walker already in its own story.
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _walker_left(conn)
+        conn.execute(text("UPDATE vision_motion_story SET drop_reason='companion'"))
+    out = _cycle(pg, T0 + timedelta(seconds=400))
+    assert "opened_gap" not in out and _rows(pg, "SELECT * FROM vision_handoff") == []
+
+
+def test_announced_and_blind_rings_get_rows_so_they_are_examined_once(pg) -> None:
+    # Review #6 / #8.
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _story(conn, "w_still", "walkway", T0 - timedelta(seconds=30), T0 + timedelta(seconds=20))   # still there at ring
+        conn.execute(text("INSERT INTO vision_events (event_id, event_type, stream_id, created_at) VALUES "
+                          "('ding-a', 'doorbell_ring', 'doorbell', :t), ('ding-b', 'doorbell_ring', 'doorbell', :t2)"),
+                     {"t": T0 + timedelta(seconds=5), "t2": T0 + timedelta(seconds=900)})
+    out = _cycle(pg, T0 + timedelta(seconds=1000))
+    rows = {r["target_event_id"]: r["status"] for r in _rows(pg, "SELECT target_event_id, status FROM vision_handoff "
+                                                                  "WHERE target_event_id IS NOT NULL")}
+    assert rows == {"ding-a": "announced", "ding-b": "unscorable"}, (rows, out)
+    assert _rows(pg, "SELECT * FROM vision_handoff_hypothesis") == []
+
+
+def test_a_poison_row_is_isolated_and_settled(pg, monkeypatch) -> None:
+    # Review #3: one bad row must not stop the step (or the next tick) for the others.
+    with pg.begin() as conn:
+        _walker_left(conn)
+        _story(conn, "s_walk2", "walkway", T0 + timedelta(seconds=100), T0 + timedelta(seconds=120), dir_lateral=-1,
+               exit_foot_x=0.3, exit_speed=0.05, first_x=0.8)
+    _cycle(pg, T0 + timedelta(seconds=200))
+    real = hl._source
+
+    def boom(ctx, story_id):
+        if story_id == "s_walk":
+            raise RuntimeError("poison")
+        return real(ctx, story_id)
+
+    monkeypatch.setattr(hl, "_source", boom)
+    out = _cycle(pg, T0 + timedelta(seconds=600))
+    st = {r["source_story_id"]: r["status"] for r in _rows(pg, "SELECT source_story_id, status FROM vision_handoff "
+                                                                "WHERE portal_id='walkway_to_door'")}
+    assert out["row_failed_grade"] == 1 and st == {"s_walk": "unscorable", "s_walk2": "unscorable"}

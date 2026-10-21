@@ -671,5 +671,12 @@ class StreetEventV1(BaseModel):
     person_guess: Optional[str] = None
     salience: float = Field(ge=0.0, le=1.0)
     p_value: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    # Log density, in nats per second, of the actual arrival time under the
+    # handoff's predicted arrival distribution (orion-sql-writer
+    # app/vision_handoff.py arrival_log_score). Set on handoff_met /
+    # handoff_late only; None for misses, unscorable and every other kind.
+    # Read by orion-substrate-runtime's Rung 6 street_handoff domain.
+    # Consumer-first: rebuild the consumer before a producer sends it.
+    arrival_log_score: Optional[float] = None
     evidence_refs: List[str] = Field(default_factory=list)
     correlation_id: str

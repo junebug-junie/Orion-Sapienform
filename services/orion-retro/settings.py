@@ -24,7 +24,7 @@ class Settings:
     @classmethod
     def from_env(cls):
         return cls(enabled=os.getenv('RETRO_ENABLED', 'false').lower() == 'true',
-                   cognition_enabled=os.getenv('RETRO_COGNITION_ENABLED', 'false').lower() == 'true')
+                   cognition_enabled=os.getenv('RETRO_COGNITION_ENABLED', 'true').lower() == 'true')
 
     def token(self):
         value = self.token_file.read_text().strip()

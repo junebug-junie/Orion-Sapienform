@@ -30,7 +30,7 @@ _VALID_HDBSCAN_METRICS = frozenset(
 
 
 class Settings(BaseSettings):
-    HUB_RETRO_COGNITION_ENABLED: bool = Field(default=False, alias="HUB_RETRO_COGNITION_ENABLED")
+    HUB_RETRO_COGNITION_ENABLED: bool = Field(default=True, alias="HUB_RETRO_COGNITION_ENABLED")
     HUB_RETRO_ENABLED: bool = False
     HUB_RETRO_ORIGIN: str = ""
     HUB_RETRO_SOCKET: str = "/run/orion-retro/retro.sock"

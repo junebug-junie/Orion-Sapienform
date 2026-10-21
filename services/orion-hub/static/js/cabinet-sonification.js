@@ -2,6 +2,7 @@
 (function (root) {
   'use strict';
   const HOLD_MS = 5000;
+  const History = typeof module !== 'undefined' && module.exports ? require('./cabinet-sonification-history') : root.OrionCabinetHistory;
   const PRESET = Object.freeze({version: 'cabinet-live-1', smoothingSec: 0.15, deadband: 0,
     historyGapSec: 90, voices: Object.freeze([
       Object.freeze({voice: 'magnetic', key: 'cabinet_magnetic_ut', channel: 'magnetic', unit: 'µT', lo: 20, hi: 60, soundLo: 110, soundHi: 440, gain: 0.12, approved: true}),
@@ -46,7 +47,7 @@
   function mapFrame(frame, preset = PRESET) {
     return preset.voices.map(def => {
       const r = frame.readings.find(r => r.key === def.key);
-      const target = {voice: def.voice, enabled: false, gain: 0, reason: r?.status || 'missing', normalized: null, clipped: false};
+      const target = {voice: def.voice, enabled: false, gain: 0, reason: r?.reason || r?.status || 'missing', normalized: null, clipped: false};
       if (![def.lo, def.hi, def.gain].every(finite) || def.hi <= def.lo || def.gain < 0 || def.gain > 0.2) return {...target, reason: 'invalid preset'};
       if (!r || r.status !== 'ok' || !finite(r.value)) return target;
       if (r.unit !== def.unit) return {...target, reason: 'invalid unit'};
@@ -85,14 +86,53 @@
       this.now = now; this.preset = preset; this.onChange = onChange; this.context = null;
       this.armed = false; this.generation = 0; this.lastPoll = null; this.payload = null;
       this.muted = new Set(); this.solo = null; this.onset = new Onset(); this.nodes = new Set();
+      this.mode = 'live'; this.history = null; this.historyWindow = '24h'; this.historyNote = 'History not loaded';
+      this.positionSec = 0; this.historyAnchor = 0; this.gapSec = preset.historyGapSec; this.rampTargets = new WeakMap();
       this.targets = []; this.trace = null; this.nextPulse = 0; this.reason = 'Stopped';
     }
     receive(payload) {
-      this.payload = payload; this.lastPoll = this.now(); this.update();
+      this.payload = payload; this.lastPoll = this.now(); if (this.mode === 'live') this.update();
     }
-    fail() { this.payload = null; this.stop('Poll failed — press Listen to retry'); }
+    fail() { this.payload = null; if (this.mode === 'live') this.stop('Poll failed — press Listen to retry'); }
+    setMode(mode) {
+      if (!['live', 'history'].includes(mode) || mode === this.mode) return;
+      this.stop('Mode changed — press Listen'); this.mode = mode; this.update();
+    }
+    historyLoading(window) {
+      if (this.mode === 'history') this.stop('History loading');
+      this.history = null; this.historyWindow = window; this.positionSec = 0;
+      this.historyNote = 'Loading ' + window + ' history';
+      if (this.mode === 'history') this.update(); else this.onChange();
+    }
+    receiveHistory(payload, requestStartedAt = this.now()) {
+      if (this.mode === 'history') this.stop('History loaded — press Listen');
+      this.history = History.prepare(payload, requestStartedAt); this.positionSec = 0;
+      this.historyWindow = payload?.window || this.historyWindow;
+      this.historyNote = this.history ? 'History ready' : 'History unavailable / empty';
+      if (this.mode === 'history') this.update(); else this.onChange();
+    }
+    historyFailed() {
+      if (this.mode === 'history') this.stop('History unavailable');
+      this.history = null; this.positionSec = 0; this.historyNote = 'History unavailable';
+      if (this.mode === 'history') this.update(); else this.onChange();
+    }
+    playbackSeconds() {
+      return Math.min(History.DURATION_SEC, this.positionSec + (this.mode === 'history' && this.armed && this.context ? Math.max(0, this.context.currentTime - this.historyAnchor) : 0));
+    }
+    pause() { if (this.mode === 'history') this.stop('Paused — Listen resumes'); }
+    seek(seconds) {
+      if (this.mode !== 'history' || !finite(seconds)) return;
+      this.stop('Seek paused — Listen resumes');
+      this.positionSec = Math.max(0, Math.min(History.DURATION_SEC, seconds)); this.update();
+    }
+    replay() { if (this.mode === 'history') { this.seek(0); return this.listen(); } }
+    setGap(seconds) {
+      if (!History.GAP_OPTIONS.includes(seconds)) return;
+      if (this.mode === 'history') this.stop('Gap policy changed — press Listen');
+      this.gapSec = seconds; this.update();
+    }
     update() {
-      const frame = frameFromPayload(this.payload, this.now(), this.preset);
+      const frame = this.mode === 'history' ? History.frame(this.history, this.playbackSeconds(), this.gapSec, this.preset) : frameFromPayload(this.payload, this.now(), this.preset);
       this.frame = frame;
       this.targets = mapFrame(frame, this.preset).map(t => this.muted.has(t.voice) || (this.solo && this.solo !== t.voice) ? {...t, enabled: false, gain: 0, reason: 'muted / solo'} : t);
       const def = this.preset.voices.find(v => v.voice === 'vibration');
@@ -112,12 +152,16 @@
       this.onChange();
     }
     ramp(param, value, at) {
+      if (this.rampTargets.get(param) === value) return;
+      this.rampTargets.set(param, value);
       if (param.cancelAndHoldAtTime) param.cancelAndHoldAtTime(at);
       else { param.cancelScheduledValues(at); param.setValueAtTime(param.value, at); }
       param.linearRampToValueAtTime(value, at + this.preset.smoothingSec);
     }
     async listen() {
       if (this.armed || this.starting) return;
+      if (this.mode === 'history' && (!this.history || !this.preset.voices.some(v => v.approved && v.voice !== 'vibration' && this.history.stats[v.key.replace('cabinet_', '')]?.valid))) { this.reason = 'No calibrated history available'; this.onChange(); return; }
+      if (this.mode === 'history' && this.positionSec >= History.DURATION_SEC) this.positionSec = 0;
       this.starting = true;
       const generation = ++this.generation;
       let context;
@@ -129,7 +173,7 @@
         this.master = context.createGain(); this.master.gain.value = 0; this.master.connect(context.destination);
         this.tone = context.createOscillator(); this.toneGain = context.createGain(); this.toneGain.gain.value = 0;
         this.tone.connect(this.toneGain); this.toneGain.connect(this.master); this.tone.start();
-        this.onset.reset(); this.armed = true; this.reason = 'Listening'; this.nextPulse = context.currentTime;
+        this.onset.reset(); this.historyAnchor = context.currentTime; this.armed = true; this.reason = 'Listening'; this.nextPulse = context.currentTime;
         this.ramp(this.master.gain, 0.35, context.currentTime);
         this.update(); this.timer = setInterval(() => this.tick(), 25);
         this.tick();
@@ -139,11 +183,15 @@
     }
     tick() {
       if (!this.armed) return;
-      if (this.lastPoll === null || this.now() - this.lastPoll >= HOLD_MS) { this.stop('Fresh poll timed out'); return; }
+      if (this.mode === 'live' && (this.lastPoll === null || this.now() - this.lastPoll >= HOLD_MS)) { this.stop('Fresh poll timed out'); return; }
       if (this.context.state !== 'running') { this.stop('Audio suspended — press Listen to retry'); return; }
-      // Enforce each source's own timestamp between polls, not only fetch age.
-      if (this.frame.readings.some(r => r.status === 'ok' && this.now() - timestamp(r.observedAt) > HOLD_MS)) this.update();
-      if (!mapFrame(this.frame, this.preset).some(t => t.enabled)) { this.stop('No fresh calibrated voices'); return; }
+      if (this.mode === 'history') {
+        this.update();
+        if (this.playbackSeconds() >= History.DURATION_SEC) { this.stop('History complete — Replay to restart'); return; }
+      }
+      // Live freshness only; historical silence does not stop the playback clock.
+      if (this.mode === 'live' && this.frame.readings.some(r => r.status === 'ok' && this.now() - timestamp(r.observedAt) > HOLD_MS)) this.update();
+      if (this.mode === 'live' && !mapFrame(this.frame, this.preset).some(t => t.enabled)) { this.stop('No fresh calibrated voices'); return; }
       const lidar = this.targets.find(t => t.voice === 'lidar');
       const t = this.context.currentTime;
       if (lidar?.enabled && this.nextPulse <= t + 0.05) {
@@ -162,6 +210,7 @@
       oscillator.start(at); oscillator.stop(at + duration + 0.01);
     }
     stop(reason = 'Stopped') {
+      if (this.mode === 'history') this.positionSec = reason === 'Stopped' ? 0 : this.playbackSeconds();
       ++this.generation; this.starting = false; this.armed = false; this.reason = reason;
       clearInterval(this.timer); this.timer = null; this.onset.reset();
       const context = this.context, master = this.master, tone = this.tone;
@@ -174,24 +223,42 @@
         this.nodes.clear();
         setTimeout(() => { if (master) master.disconnect(); context.close().catch(() => {}); }, 220);
       }
-      this.onChange();
+      if (this.mode === 'history') this.update(); else this.onChange();
     }
     mute(voice, muted) { muted ? this.muted.add(voice) : this.muted.delete(voice); this.update(); }
     setSolo(voice) { this.solo = this.solo === voice ? null : voice; this.update(); }
     startTrace() { this.trace = []; this.update(); }
-    takeTrace() { const data = {preset: this.preset, records: this.trace || []}; this.trace = null; return data; }
+    takeTrace() { const data = {preset: this.preset, history: this.history ? {window: this.history.window, boundsSource: this.history.boundsSource, start: this.history.start, end: this.history.end, grainSec: this.history.grainSec, stats: this.history.stats, gapSec: this.gapSec, durationSec: History.DURATION_SEC} : null, records: this.trace || []}; this.trace = null; return data; }
   }
   function mount() {
     const host = document.getElementById('cabinetSonification');
     if (!host) return;
     const status = document.getElementById('cabinetSoundStatus'), debug = document.getElementById('cabinetSoundDebug');
     const instrument = new Instrument({onChange: () => {
-      status.textContent = instrument.reason + (instrument.trace ? ` · recording ${instrument.trace.length}/600 frames` : '');
+      document.getElementById('cabinetSoundMode').value = instrument.mode;
+      document.getElementById('cabinetSoundWindow').value = instrument.historyWindow;
+      document.getElementById('cabinetSoundGap').value = String(instrument.gapSec);
+      document.getElementById('cabinetSoundSeek').value = instrument.playbackSeconds();
+      for (const id of ['cabinetSoundPause', 'cabinetSoundReplay', 'cabinetSoundSeek']) document.getElementById(id).disabled = instrument.mode !== 'history' || !instrument.history;
+      const history = instrument.history;
+      const stats = history?.stats.magnetic_ut;
+      const spacing = stats?.maxSpacingSec;
+      document.getElementById('cabinetSoundTimeline').textContent = history ?
+        `${instrument.playbackSeconds().toFixed(1)} / 60 s · ${history.compression}× compression · source ${instrument.mode === 'history' ? instrument.frame?.sourceTime || '—' : 'history paused'} · window ${new Date(history.start).toISOString()} → ${new Date(history.end).toISOString()} (${history.boundsSource})` : instrument.historyNote;
+      document.getElementById('cabinetSoundHistoryInfo').textContent = history ?
+        `Aggregated at ${history.grainSec ?? 'unknown'} source seconds; magnetic ${stats.returned} returned / ${stats.nRaw ?? 'unknown'} raw points; downsampled: ${stats.downsampled === null ? 'unknown' : stats.downsampled ? 'yes' : 'no'}. Magnetic spacing ${stats.minSpacingSec?.toFixed(1) ?? '—'}–${spacing?.toFixed(1) ?? '—'} s. Gap policy: ${instrument.gapSec} s.${spacing > instrument.gapSec ? ' Wider intervals remain silent; choose a wider policy explicitly if appropriate.' : ''} Aggregated vibration is omitted.` : 'No historical sound is available until the selected window loads.';
+      status.textContent = instrument.mode + ' · ' + instrument.reason + (instrument.trace ? ` · recording ${instrument.trace.length}/600 frames` : '');
       debug.textContent = JSON.stringify({mappingVersion: PRESET.version, readings: instrument.frame?.readings,
-        bounds: PRESET.voices, targets: instrument.targets}, null, 2);
+        bounds: PRESET.voices, targets: instrument.targets, historyStats: instrument.history?.stats, sourceTime: instrument.frame?.sourceTime, gapSec: instrument.gapSec}, null, 2);
       host.querySelectorAll('[data-sound-solo]').forEach(b => b.setAttribute('aria-pressed', String(instrument.solo === b.dataset.soundSolo)));
     }});
     root.OrionCabinetSonification = instrument;
+    document.getElementById('cabinetSoundMode').onchange = e => instrument.setMode(e.target.value);
+    document.getElementById('cabinetSoundWindow').onchange = e => root.OrionCabinetSensors.setHistoryWindow(e.target.value);
+    document.getElementById('cabinetSoundGap').onchange = e => instrument.setGap(Number(e.target.value));
+    document.getElementById('cabinetSoundPause').onclick = () => instrument.pause();
+    document.getElementById('cabinetSoundReplay').onclick = () => instrument.replay();
+    document.getElementById('cabinetSoundSeek').oninput = e => instrument.seek(Number(e.target.value));
     document.getElementById('cabinetSoundListen').onclick = () => instrument.listen();
     document.getElementById('cabinetSoundStop').onclick = () => instrument.stop();
     document.getElementById('cabinetSoundRecord').onclick = () => instrument.startTrace();

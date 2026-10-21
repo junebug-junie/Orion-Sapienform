@@ -8,7 +8,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(extra="ignore", populate_by_name=True)
+    # env_ignore_empty: an empty ORION_SITUATION_WEATHER_LAT= (the template default) means "unset",
+    # not a float that fails to parse and stops the service at boot.
+    model_config = SettingsConfigDict(extra="ignore", populate_by_name=True, env_ignore_empty=True)
 
     service_name: str = Field("orion-prediction", alias="SERVICE_NAME")
     service_version: str = Field("0.1.0", alias="SERVICE_VERSION")

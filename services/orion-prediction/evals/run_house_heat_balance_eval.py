@@ -9,7 +9,8 @@ known loads -- the cabinet machines (orion_biometrics_cluster per node) and the 
 
 Not a CI gate: it needs the live database and changes with the season. It is the check behind the
 `athena.central_ac_proxy` covariate (config/prediction/series.v1.yaml); a coefficient that collapses to
-~0 in summer data would retire it. 2026-10-20 result: +0.33 kWh/h per F above 75 F (p ~1e-18).
+~0 in summer data would retire it. 2026-10-20 result (ERA5 archive temperatures): +0.33 kWh/h per F above 75 F (p ~1e-18); re-run once the
+service has backfilled prediction_weather_hourly from the live models (they read 2-4 F warmer).
 """
 from __future__ import annotations
 
@@ -17,7 +18,6 @@ import argparse
 import io
 import subprocess
 
-import numpy as np
 import pandas as pd
 
 SQL = """COPY (

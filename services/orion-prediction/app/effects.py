@@ -65,6 +65,8 @@ class Effects:
         if spec.train_from and start < spec.train_from:
             start = spec.train_from
         y = training_slice(self._series(spec, start, end.to_pydatetime()), spec)
+        # The same covariate view training uses (real buckets, derived rules, exclusions); scenario's own
+        # gap checks then refuse a covariate that is mostly missing instead of interpolating it.
         x = mask_windows(covariate_series(self.store, cov, start, end.to_pydatetime(), y.index), spec.exclude)
         res = scenario(y, x, covariate_id, path, spec.grain_min)
         return {**res.__dict__, "series_id": series_id, "unit": spec.unit, "covariate_unit": cov.unit}

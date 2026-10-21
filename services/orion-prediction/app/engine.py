@@ -209,8 +209,9 @@ class Engine:
 
     def refresh_weather(self, now: datetime) -> dict:
         """Hourly: the shared Open-Meteo client -> prediction_weather_hourly. A failure is recorded and
-        retried at the next interval; covariates then run on what is stored (staleness is caught by
-        direct_arx's freshness check, so a dead feed degrades to the baseline, not to stale values)."""
+        retried at the next interval. Only observed hours are read as covariates, so a dead feed leaves
+        the proxy without new values: once its newest hour is older than the hold + lag, direct_arx's
+        freshness check refuses and those horizons fall back to the baseline."""
         from app.weather import refresh
 
         cfg = self.weather
@@ -622,8 +623,6 @@ class Engine:
 
     async def tick(self, sync) -> None:
         now = self.clock()
-        if self.weather_due(now):
-            await sync(self.refresh_weather, now)
         for spec in self.registry.targets():
             st = self.state[spec.series_id]
             try:
@@ -636,6 +635,9 @@ class Engine:
                 await self.monitor(spec, now, sync)
             except Exception:  # noqa: BLE001
                 logger.exception("prediction_monitor_failed series=%s", spec.series_id)
+        # After the series loop: a slow weather call (up to ~25 s) must not delay issuing or scoring.
+        if self.weather_due(now):
+            await sync(self.refresh_weather, now)
 
 
 def _check_not_degenerate(point: np.ndarray, qs: dict[str, np.ndarray], spec: SeriesSpec) -> None:

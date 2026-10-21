@@ -5,7 +5,9 @@ and orion-prediction (hourly history + the next 48 h as forecast covariates). No
 the caller's (``ORION_SITUATION_WEATHER_LAT/LON``).
 
 - ``forecast``: current conditions plus hourly values, optionally including the last ``past_days``.
-- ``archive``: observed hourly history for a date range (the reanalysis archive; ~2 days behind).
+- ``historical_forecast``: hourly history for a date range from the SAME forecast models the live feed
+  uses. Not the ERA5 archive: on 2026-10-10 that read 2-4 F lower than the live feed for the same hours,
+  a level jump that a 75 F hinge would read as a regime change.
 - ``hourly_series``: one hourly field as ``[(utc datetime, value | None)]`` -- requires the request to
   have been made with ``timezone="UTC"`` (the default here).
 """
@@ -18,7 +20,7 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
-ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
+HISTORICAL_FORECAST_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
 
 
 def _get(url: str, params: dict[str, Any], timeout: float) -> dict:
@@ -41,9 +43,9 @@ def forecast(lat: float, lon: float, *, hourly: Iterable[str] = (), current: Ite
     return _get(FORECAST_URL, params, timeout)
 
 
-def archive(lat: float, lon: float, start: date, end: date, *, hourly: Iterable[str],
-            timeout: float = 15.0, temperature_unit: str = "fahrenheit") -> dict:
-    return _get(ARCHIVE_URL, {"latitude": lat, "longitude": lon, "start_date": start.isoformat(),
+def historical_forecast(lat: float, lon: float, start: date, end: date, *, hourly: Iterable[str],
+                        timeout: float = 15.0, temperature_unit: str = "fahrenheit") -> dict:
+    return _get(HISTORICAL_FORECAST_URL, {"latitude": lat, "longitude": lon, "start_date": start.isoformat(),
                               "end_date": end.isoformat(), "hourly": ",".join(hourly),
                               "temperature_unit": temperature_unit, "timezone": "UTC"}, timeout)
 

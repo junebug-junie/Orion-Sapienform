@@ -23,6 +23,14 @@ class Store:
         pts = [t for t, v in self.p.get(spec.series_id, []) if v is not None]
         return min(pts) if pts else None
 
+    def missing_weather_hours(self, start, end):
+        out, t = [], start.replace(minute=0, second=0, microsecond=0)
+        while t < end:
+            if t not in self.weather or self.weather[t][1]:
+                out.append(t)
+            t += timedelta(hours=1)
+        return out
+
     def weather_span(self):
         if not self.weather:
             return None, None
@@ -78,31 +86,60 @@ def test_zero_before_first_reading_but_later_gaps_stay_gaps():
     assert s[(s.index >= first + timedelta(minutes=30)) & (s.index < first + timedelta(minutes=50))].isna().all()
 
 
-def test_weather_refresh_backfills_once_and_marks_future_hours_as_forecast(monkeypatch):
+def _fake_weather(monkeypatch, now, hist_fails=False):
     from app import weather
-
-    now = datetime(2026, 10, 20, 12, 30, tzinfo=timezone.utc)
     calls = []
 
-    def fake_archive(lat, lon, start, end, hourly):
-        calls.append(("archive", start, end))
-        hrs = pd.date_range(start, end + timedelta(days=1), freq="1h", inclusive="left")
-        return {"timezone": "UTC", "hourly": {"time": [h.strftime("%Y-%m-%dT%H:%M") for h in hrs], "temperature_2m": [60.0] * len(hrs)}}
+    def hours(a, b):
+        return pd.date_range(a, b, freq="1h", inclusive="left")
+
+    def fake_hist(lat, lon, start, end, hourly):
+        calls.append("history")
+        if hist_fails:
+            raise TimeoutError("historical-forecast-api down")
+        h = hours(pd.Timestamp(start, tz="UTC"), pd.Timestamp(end, tz="UTC") + pd.Timedelta(days=1))
+        return {"timezone": "UTC", "hourly": {"time": [x.strftime("%Y-%m-%dT%H:%M") for x in h], "temperature_2m": [60.0] * len(h)}}
 
     def fake_forecast(lat, lon, **kw):
-        calls.append(("forecast", kw["past_days"], kw["forecast_days"]))
-        hrs = pd.date_range(now - timedelta(days=7), now + timedelta(days=2), freq="1h").floor("1h")
-        return {"timezone": "UTC", "hourly": {"time": [h.strftime("%Y-%m-%dT%H:%M") for h in hrs], "temperature_2m": [65.0] * len(hrs)}}
-    monkeypatch.setattr(weather.openmeteo, "archive", fake_archive)
+        calls.append("forecast")
+        h = hours(pd.Timestamp(now).floor("1h") - pd.Timedelta(days=7), pd.Timestamp(now).floor("1h") + pd.Timedelta(days=2))
+        return {"timezone": "UTC", "hourly": {"time": [x.strftime("%Y-%m-%dT%H:%M") for x in h], "temperature_2m": [65.0] * len(h)}}
+    monkeypatch.setattr(weather.openmeteo, "historical_forecast", fake_hist)
     monkeypatch.setattr(weather.openmeteo, "forecast", fake_forecast)
+    return weather, calls
+
+
+def test_weather_refresh_backfills_holes_once_and_marks_future_hours_as_forecast(monkeypatch):
+    now = datetime(2026, 10, 20, 12, 30, tzinfo=timezone.utc)
+    weather, calls = _fake_weather(monkeypatch, now)
     st = Store({})
-    out = weather.refresh(st, 40.0, -111.0, now, datetime(2026, 9, 26, tzinfo=timezone.utc))
-    assert out["backfilled_from"] and [c[0] for c in calls] == ["archive", "forecast"]
+    out = weather.refresh(st, 0.0, 0.0, now, datetime(2026, 9, 26, tzinfo=timezone.utc))
+    assert calls == ["forecast", "history"] and out["backfilled"]["hours"] == 420   # 09-26 00:00 -> 10-13 12:00
     assert st.weather[datetime(2026, 10, 21, 0, tzinfo=timezone.utc)][1] is True       # future hour = forecast
     assert st.weather[datetime(2026, 10, 19, 0, tzinfo=timezone.utc)][1] is False      # past hour = observed
     calls.clear()
-    weather.refresh(st, 40.0, -111.0, now + timedelta(hours=1), datetime(2026, 9, 26, tzinfo=timezone.utc))
-    assert [c[0] for c in calls] == ["forecast"]                                         # no second backfill
+    weather.refresh(st, 0.0, 0.0, now + timedelta(hours=1), datetime(2026, 9, 26, tzinfo=timezone.utc))
+    assert calls == ["forecast"]                                                         # nothing missing now
+    del st.weather[datetime(2026, 10, 1, 6, tzinfo=timezone.utc)]                         # an interior hole
+    calls.clear()
+    weather.refresh(st, 0.0, 0.0, now + timedelta(hours=2), datetime(2026, 9, 26, tzinfo=timezone.utc))
+    assert calls == ["forecast", "history"]
+
+
+def test_a_failed_backfill_still_stores_the_forecast(monkeypatch):
+    now = datetime(2026, 10, 20, 12, 30, tzinfo=timezone.utc)
+    weather, calls = _fake_weather(monkeypatch, now, hist_fails=True)
+    st = Store({})
+    out = weather.refresh(st, 0.0, 0.0, now, datetime(2026, 9, 26, tzinfo=timezone.utc))
+    assert out["ok"] and "down" in out["backfill_error"] and len(st.weather) > 200
+
+
+def test_empty_weather_location_means_off_not_a_boot_crash(monkeypatch):
+    from app.settings import Settings
+    monkeypatch.setenv("ORION_SITUATION_WEATHER_LAT", "")
+    monkeypatch.setenv("ORION_SITUATION_WEATHER_LON", "")
+    s = Settings()
+    assert s.weather_lat is None and s.weather_lon is None
 
 
 def test_the_newest_weather_hour_covers_the_rest_of_that_hour():

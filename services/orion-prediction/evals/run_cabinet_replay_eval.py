@@ -67,7 +67,10 @@ def main() -> int:
                                for cid in spec.covariates if cid in cov_cols}, index=y.index)
     if "hecate.chassis_watts" in covariates:          # zero_before_first, as covariate_series does live
         first = covariates["hecate.chassis_watts"].first_valid_index()
-        covariates.loc[covariates.index < first, "hecate.chassis_watts"] = 0.0
+        if first is None:
+            covariates["hecate.chassis_watts"] = 0.0
+        else:
+            covariates.loc[covariates.index < first, "hecate.chassis_watts"] = 0.0
     print("covariates in fixture:", list(covariates.columns), "| not in fixture (live only):", skipped)
     train = training_slice(y, spec)
     usable, refused = split_seasonalities(spec, len(train))

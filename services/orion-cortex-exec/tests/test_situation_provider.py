@@ -332,7 +332,7 @@ async def test_weather_context_reports_live_conditions_when_openmeteo_configured
             }
         )
 
-    monkeypatch.setattr(situation, "urlopen", _urlopen)
+    monkeypatch.setattr(situation.openmeteo, "urlopen", _urlopen)
     cfg = situation.settings_from_runtime(
         _settings(
             orion_situation_weather_enabled=True,
@@ -363,7 +363,7 @@ async def test_weather_context_caches_within_ttl(monkeypatch):
             }
         )
 
-    monkeypatch.setattr(situation, "urlopen", _urlopen)
+    monkeypatch.setattr(situation.openmeteo, "urlopen", _urlopen)
     cfg = situation.settings_from_runtime(
         _settings(
             orion_situation_weather_enabled=True,
@@ -605,7 +605,7 @@ async def test_runtime_context_reads_pool_state_not_the_gateway(monkeypatch):
     def _no_http(url, timeout=None):
         raise AssertionError(f"no HTTP read expected, got {url}")
 
-    monkeypatch.setattr(situation, "urlopen", _no_http)
+    monkeypatch.setattr(situation.openmeteo, "urlopen", _no_http)
     monkeypatch.setattr(store, "_BUS", _Bus())
     cfg = situation.settings_from_runtime(_settings(orion_situation_runtime_enabled=True))
     runtime = await situation._build_runtime_context(cfg, situation.SituationDiagnosticsV1())

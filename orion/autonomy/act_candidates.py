@@ -50,6 +50,7 @@ class ActRef:
     verb: str
     actor: str
     signal_id: str
+    horizon_sec: float | None = None
 
     @property
     def cell(self) -> CellKey:
@@ -112,3 +113,91 @@ def refuse_in_flight(allocation: Allocation, in_flight: list[Candidate]) -> Allo
         spent_sec=allocation.spent_sec,
         allowance_sec=allocation.allowance_sec,
     )
+
+
+# --- stage 3 option B: admit an act proven to help (Juniper 2026-10-21) ---------------------------
+#
+# The information path above retires an act once it is well measured, so an act that WORKS is
+# refused for being known. This second, separate path admits a measured act whose own belief says it
+# helps. It never touches the information floor or its constants; it only reconsiders candidates the
+# information path refused `below_information_floor` (measured, costed, not harmful).
+#
+# "Proven to help", every number from existing code or data, none picked here:
+# - enough observations: n >= PROVEN_MIN_N = 20, the per-arm floor the attend-to-act design already
+#   fixes for fitting any action's value (2026-09-29 spec, D3: n_per_arm >= max(20, ...));
+# - a credible lower bound: LB = mean - HARM_CONFIDENCE_SIGMAS * sd, the allocator's own 2-sigma
+#   confidence used by the harm gate, mirrored (stage 3 b in the attend-to-act design);
+# - above a reference rate: what happens WITHOUT the act. Once the act's randomized control arm has
+#   >= PROVEN_MIN_N resolved rows, the reference is that arm's rate (Jeffreys mean (k+0.5)/(n+1), so a
+#   structural all-zero arm is small but not 0). Before that it is the act learner's own cold prior
+#   mean (ACT_BINARY_PRIOR_MEAN, 0.5): "succeeds more often than the learner assumed before any
+#   evidence". The control arm then replaces it, and the claim is re-checked every tick.
+# Value, in the allocator's currency: KL(Bernoulli(LB) || Bernoulli(reference)) nats -- how far the
+# act moves its outcome from what happens without it, taken at the conservative LB -- per measured
+# motor-second. Admitted greedily by that rate inside the remaining allowance. No floor on this path:
+# the information floor exists to retire acts we have learned nothing more from, which is exactly
+# what a proven act is; the allowance, holdback, in-flight rule and every doer gate still bound it.
+
+PROVEN_MIN_N = 20
+PROVEN_REASON = "admitted:proven_effect"
+
+
+def reference_rate(n_control: int, successes: int) -> tuple[float, str]:
+    from orion.autonomy.prediction import ACT_BINARY_PRIOR_MEAN
+
+    if n_control >= PROVEN_MIN_N:
+        return (successes + 0.5) / (n_control + 1.0), "control_arm"
+    return ACT_BINARY_PRIOR_MEAN, "act_prior"
+
+
+def kl_bernoulli(p: float, q: float) -> float:
+    eps = 1e-9
+    p = min(max(p, eps), 1 - eps)
+    q = min(max(q, eps), 1 - eps)
+    return p * math.log(p / q) + (1 - p) * math.log((1 - p) / (1 - q))
+
+
+@dataclass(frozen=True)
+class ProvenVerdict:
+    proven: bool
+    lower_bound: float
+    reference: float
+    reference_source: str
+    value_nats: float
+    reason: str
+
+
+def proven_effect(post: EffectPosterior, *, n_control: int, control_successes: int) -> ProvenVerdict:
+    from orion.autonomy.allocator import HARM_CONFIDENCE_SIGMAS
+
+    ref, src = reference_rate(n_control, control_successes)
+    lb = post.mean - HARM_CONFIDENCE_SIGMAS * math.sqrt(max(post.variance, 0.0))
+    if post.n < PROVEN_MIN_N:
+        return ProvenVerdict(False, lb, ref, src, 0.0, f"too_few:{post.n}<{PROVEN_MIN_N}")
+    if lb <= ref:
+        return ProvenVerdict(False, lb, ref, src, 0.0, f"not_above_reference:lb={lb:.3f}<={ref:.3f}")
+    return ProvenVerdict(True, lb, ref, src, kl_bernoulli(min(lb, 1.0), ref), "proven")
+
+
+def admit_proven(allocation: Allocation, verdicts: Mapping[str, ProvenVerdict]) -> tuple[Allocation, dict[str, str]]:
+    """Second pass: re-admit `below_information_floor` refusals whose act is proven to help, best
+    value-per-second first, inside the allowance the information path left. Returns the new
+    allocation and dispatch_id -> admission reason for every admitted act."""
+    pool = [(c, verdicts[c.dispatch_id]) for c, why in allocation.refused
+            if why == "below_information_floor" and c.dispatch_id in verdicts
+            and verdicts[c.dispatch_id].proven and c.cost_sec]
+    pool.sort(key=lambda cv: (-(cv[1].value_nats / cv[0].cost_sec), cv[0].dispatch_id))
+    spent = allocation.spent_sec
+    admitted = list(allocation.admitted)
+    taken: dict[str, str] = {}
+    for cand, v in pool:
+        if spent + cand.cost_sec > allocation.allowance_sec:
+            continue
+        admitted.append(cand)
+        spent += cand.cost_sec
+        taken[cand.dispatch_id] = (
+            f"{PROVEN_REASON}:lb={v.lower_bound:.3f}:ref={v.reference:.3f}:{v.reference_source}:"
+            f"nats={v.value_nats:.4f}:nats_per_sec={v.value_nats / cand.cost_sec:.6f}")
+    refused = tuple((c, why) for c, why in allocation.refused if c.dispatch_id not in taken)
+    return Allocation(admitted=tuple(admitted), refused=refused, spent_sec=spent,
+                      allowance_sec=allocation.allowance_sec), taken

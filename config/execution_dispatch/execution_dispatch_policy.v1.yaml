@@ -183,6 +183,7 @@ template_to_cortex:
       verb: make
       actor: thought.painting
       signal_id: artifact_produced
+      horizon_sec: 5400   # PAINTING_HORIZON_SEC, services/orion-thought/app/visual_steps.py
 
   # 2026-08-25: analysis -> self-study journal entry.
   #

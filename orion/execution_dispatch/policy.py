@@ -62,6 +62,9 @@ class ActRouteRefV1(BaseModel):
     verb: ActVerb
     actor: str = Field(min_length=1)
     signal_id: ActSignal
+    # The act's own horizon (the producer's ActExpectV1.horizon_sec). Bounds how long one decision
+    # of the proven-effect path, treated or held back, keeps the act in flight.
+    horizon_sec: float = Field(gt=0.0)
 
 
 class CortexRouteTemplateV1(BaseModel):

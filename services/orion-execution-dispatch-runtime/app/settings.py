@@ -241,6 +241,13 @@ class Settings(BaseSettings):
     # Cost window for act-backed candidates: p50 of the route's own settled dispatch latency over
     # this many hours. Longer than the 24 h template window on purpose: a painting runs a few times a
     # day at most, and with a 24 h window a quiet day leaves it with no measured cost at all.
+    # Stage 3 option B (Juniper 2026-10-21): a second, separate admission path for an act-backed
+    # candidate the information floor refused but whose own belief proves it helps
+    # (orion/autonomy/act_candidates.py proven_effect: n >= 20, 2-sigma lower bound above the
+    # control arm's rate or, before 20 controls, the act prior). Its admissions are held back at
+    # ORION_DISPATCH_HOLDBACK_FRACTION into substrate_act_episodes (control vs treated). false -> the
+    # path is off; the information path is untouched either way. Shipped ON.
+    orion_dispatch_proven_effect_enabled: bool = Field(True, alias="ORION_DISPATCH_PROVEN_EFFECT_ENABLED")
     orion_dispatch_act_cost_lookback_hours: int = Field(
         720, ge=24, le=2160, alias="ORION_DISPATCH_ACT_COST_LOOKBACK_HOURS"
     )

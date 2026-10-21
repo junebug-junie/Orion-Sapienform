@@ -603,6 +603,29 @@ class ExecutionDispatchRuntimeStore:
             ).scalar()
         return bool(row)
 
+    def act_episode_in_flight(self, *, actor: str, now: datetime) -> bool:
+        from orion.autonomy import act_episodes
+
+        with self._engine.connect() as conn:
+            return act_episodes.in_flight(conn, actor=actor, now=now)
+
+    def act_control_stats(self, *, act_label: str) -> tuple[int, int]:
+        from orion.autonomy import act_episodes
+
+        with self._engine.connect() as conn:
+            return act_episodes.control_stats(conn, act_label=act_label)
+
+    def insert_act_episode(self, row: dict) -> bool:
+        """Precommit for the proven-effect path. Raises on failure: no row, no action."""
+        from orion.autonomy import act_episodes
+
+        with self._engine.begin() as conn:
+            if not getattr(self, "_act_episodes_ready", False):
+                act_episodes.ensure_table(conn)
+            inserted = act_episodes.insert_decision(conn, row)
+        self._act_episodes_ready = True
+        return inserted
+
     def sum_motor_seconds_for_day(self, day_start, day_end) -> float:
         """Motor-seconds actually spent in a UTC day.
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -111,8 +111,8 @@ def test_one_dispatch_one_act() -> None:
     route = {"dispatch_kind": "express", "cortex_verb": RENDER_VERB, "allowed_scope": "express_bounded"}
     with pytest.raises(ValueError, match="one dispatch, one act"):
         ExecutionDispatchPolicyV1.model_validate({
-            "proposal_kind_to_cortex": {"express": {**route, "act": {"verb": "make", "actor": "a", "signal_id": "artifact_produced"}}},
-            "template_to_cortex": {"render_scene": {**route, "act": {"verb": "make", "actor": "b", "signal_id": "artifact_produced"}}},
+            "proposal_kind_to_cortex": {"express": {**route, "act": {"verb": "make", "actor": "a", "signal_id": "artifact_produced", "horizon_sec": 60}}},
+            "template_to_cortex": {"render_scene": {**route, "act": {"verb": "make", "actor": "b", "signal_id": "artifact_produced", "horizon_sec": 60}}},
         })
 
 
@@ -120,7 +120,7 @@ def test_an_act_signal_outside_the_grammar_is_refused_at_load() -> None:
     with pytest.raises(ValueError):
         ExecutionDispatchPolicyV1.model_validate({"template_to_cortex": {"x": {
             "dispatch_kind": "express", "cortex_verb": "v", "allowed_scope": "express_bounded",
-            "act": {"verb": "make", "actor": "a", "signal_id": "cabinet_heat_pressure"}}}})
+            "act": {"verb": "make", "actor": "a", "signal_id": "cabinet_heat_pressure", "horizon_sec": 60}}}})
 
 
 # --- worker: the preview the enforcing allocator acts on ----------------------------------------
@@ -139,6 +139,8 @@ def _worker(monkeypatch, *, enabled: bool = True, in_flight: bool = False, cost:
         {("express", "host:circe_gpu"): cost} if lookback_hours > 24 and cost is not None else {})
     store.load_effect_posteriors.return_value = {PAINT_CELL: LIVE_PAINT} if posteriors is None else posteriors
     store.act_in_flight.return_value = in_flight
+    store.act_episode_in_flight.return_value = False
+    store.act_control_stats.return_value = (0, 0)
     worker._store = store
     return worker
 
@@ -280,3 +282,106 @@ def test_one_act_per_tick(monkeypatch) -> None:
     worker = _worker(monkeypatch, posteriors={})
     out = worker._log_allocator_preview(_frame(_render("d:1"), _render("d:2")), MOTOR)
     assert len(out.admitted) == 1 and out.refusals_by_reason() == {"act_in_flight": 1}
+
+
+
+# --- stage 3 option B: proven-effect admission (Juniper 2026-10-21) ------------------------------
+
+from orion.autonomy.act_candidates import (  # noqa: E402
+    PROVEN_MIN_N, admit_proven, kl_bernoulli, proven_effect, reference_rate)
+
+# Live 2026-10-21: the reading act -- 119 closes, mean 0.696, variance 0.0021 (the only act proven).
+RELIABLE = EffectPosterior(mean=0.696, variance=0.0021, n=119)
+
+
+def test_reference_is_the_act_prior_until_the_control_arm_has_20_rows() -> None:
+    assert reference_rate(19, 0) == (0.5, "act_prior")
+    ref, src = reference_rate(20, 0)
+    assert src == "control_arm" and ref == pytest.approx(0.5 / 21)
+
+
+def test_proven_needs_20_observations_and_a_2_sigma_lower_bound_above_the_reference() -> None:
+    assert proven_effect(EffectPosterior(mean=0.9, variance=0.001, n=PROVEN_MIN_N - 1),
+                         n_control=0, control_successes=0).proven is False
+    assert proven_effect(LIVE_PAINT, n_control=0, control_successes=0).proven is False
+    v = proven_effect(RELIABLE, n_control=0, control_successes=0)
+    assert v.proven and v.lower_bound == pytest.approx(0.696 - 2 * math.sqrt(0.0021))
+    assert v.value_nats == pytest.approx(kl_bernoulli(v.lower_bound, 0.5))
+
+
+def test_the_control_arm_can_revoke_the_claim() -> None:
+    """If acting barely beats not acting, the act stops being 'proven'."""
+    assert proven_effect(RELIABLE, n_control=40, control_successes=30).proven is False
+
+
+def test_proven_path_reconsiders_only_floor_refusals_and_respects_the_allowance() -> None:
+    c = act_allocator_candidate(dispatch_id="d", dispatch_kind="express", target_id="host:circe_gpu",
+                                ref=PAINT, posteriors={PAINT_CELL: RELIABLE}, cost_sec=LIVE_COST)
+    base = allocate([c], allowance_sec=1e6, min_nats_per_sec=FLOOR)
+    assert base.refusals_by_reason() == {"below_information_floor": 1}   # floor unchanged
+    v = proven_effect(RELIABLE, n_control=0, control_successes=0)
+    out, taken = admit_proven(base, {"d": v})
+    assert [a.dispatch_id for a in out.admitted] == ["d"] and taken["d"].startswith("admitted:proven_effect:")
+    tight = allocate([c], allowance_sec=10.0, min_nats_per_sec=FLOOR)
+    assert admit_proven(tight, {"d": v})[0].admitted == ()
+
+
+def test_worker_admits_a_proven_act_and_kill_switch_stops_it(monkeypatch) -> None:
+    """Fails on pre-option-B code: the floor refusal was final."""
+    worker = _worker(monkeypatch, posteriors={PAINT_CELL: RELIABLE})
+    out = worker._log_allocator_preview(_frame(_render()), MOTOR)
+    assert [c.dispatch_id for c in out.admitted] == ["dispatch:proposal:render_scene:t1"]
+    assert worker._last_proven_reasons["dispatch:proposal:render_scene:t1"].startswith("admitted:proven_effect")
+    off = _worker(monkeypatch, posteriors={PAINT_CELL: RELIABLE})
+    monkeypatch.setattr(off._settings, "orion_dispatch_proven_effect_enabled", False, raising=False)
+    assert off._log_allocator_preview(_frame(_render()), MOTOR).admitted == ()
+
+
+def test_unreadable_control_arm_is_not_proven(monkeypatch) -> None:
+    worker = _worker(monkeypatch, posteriors={PAINT_CELL: RELIABLE})
+    worker._store.act_control_stats.side_effect = RuntimeError("db down")
+    assert worker._log_allocator_preview(_frame(_render()), MOTOR).admitted == ()
+
+
+def test_a_proven_decision_holds_the_act_for_its_horizon(monkeypatch) -> None:
+    worker = _worker(monkeypatch, posteriors={PAINT_CELL: RELIABLE})
+    worker._store.act_episode_in_flight.return_value = True
+    assert worker._log_allocator_preview(_frame(_render()), MOTOR).refusals_by_reason() == {"act_in_flight": 1}
+
+
+@pytest.mark.asyncio
+async def test_proven_admissions_record_both_arms(monkeypatch) -> None:
+    """Holdback 0.2 on this path: a control row (outcome 0 by construction) and the act withheld,
+    or a treated row precommitted before the send."""
+    worker = _send_ready_worker(monkeypatch, 0.2)
+    worker._store.load_effect_posteriors.return_value = {PAINT_CELL: RELIABLE}
+    worker._derive_motor_budget = MagicMock(return_value=SimpleNamespace(
+        remaining_sec=1e6, mode="enforcing", exhausted=False, spent_sec=0.0, allowance_sec=1e6, pace=1.0,
+        projected_day_sec=0.0))
+    monkeypatch.setattr(worker._settings, "orion_dispatch_allocator_enforce", True, raising=False)
+    rows = []
+    worker._store.insert_act_episode.side_effect = lambda row: rows.append(row) or True
+    draws = {"d:control": 0.1, "d:treated": 0.9}
+    monkeypatch.setattr(worker, "_stable_draw", lambda dispatch_id: draws[dispatch_id])
+    control = await worker._send_prepared_candidates(_frame(_render("d:control")))
+    treated = await worker._send_prepared_candidates(_frame(_render("d:treated")))
+    assert [r["arm"] for r in rows] == ["control", "treated"]
+    assert rows[0]["outcome_value"] == 0.0 and rows[1]["outcome_value"] is None
+    assert rows[0]["horizon_at"] - rows[0]["decided_at"] == timedelta(seconds=5400)
+    assert [c.blocked_by for c in control.blocked_candidates if c.dispatch_id == "d:control"] == [["act_holdback"]]
+    assert [c.dispatch_id for c in treated.dispatched_candidates] == ["d:treated"]
+
+
+@pytest.mark.asyncio
+async def test_unrecorded_precommit_never_sends(monkeypatch) -> None:
+    worker = _send_ready_worker(monkeypatch, 0.2)
+    worker._store.load_effect_posteriors.return_value = {PAINT_CELL: RELIABLE}
+    worker._derive_motor_budget = MagicMock(return_value=SimpleNamespace(
+        remaining_sec=1e6, mode="enforcing", exhausted=False, spent_sec=0.0, allowance_sec=1e6, pace=1.0,
+        projected_day_sec=0.0))
+    monkeypatch.setattr(worker._settings, "orion_dispatch_allocator_enforce", True, raising=False)
+    worker._store.insert_act_episode.side_effect = RuntimeError("db down")
+    monkeypatch.setattr(worker, "_stable_draw", lambda dispatch_id: 0.9)
+    out = await worker._send_prepared_candidates(_frame(_render("d:x")))
+    assert out.dispatched_candidates == []
+    assert [c.blocked_by for c in out.blocked_candidates] == [["act_episode_unrecorded"]]

@@ -14,8 +14,6 @@ on:
       - 'tests/test_post_pull_apply_migrations.py'
       - 'tests/test_post_pull_apply_migrations_postgres.py'
       - 'tests/scripts/test_rebuild_services_from_git_diff.py'
-      - 'scripts/check_retro_session_live.py'
-      - 'tests/scripts/test_rebuild_retro_session_guard.py'
       - '.github/workflows/post-pull-migrations.yml'
   workflow_dispatch:
 permissions:
@@ -52,6 +50,6 @@ jobs:
       - name: psql client
         run: command -v psql || (sudo apt-get update && sudo apt-get install -y postgresql-client)
       - name: Safety filter, ordering, stop-on-failure, kill switch, host gate
-        run: python -m pytest -q tests/test_post_pull_apply_migrations.py tests/scripts/test_rebuild_services_from_git_diff.py tests/scripts/test_rebuild_retro_session_guard.py
+        run: python -m pytest -q tests/test_post_pull_apply_migrations.py tests/scripts/test_rebuild_services_from_git_diff.py
       - name: Apply-then-rebuild against real Postgres
         run: python -m pytest -q -rs tests/test_post_pull_apply_migrations_postgres.py

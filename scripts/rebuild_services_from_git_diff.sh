@@ -323,80 +323,13 @@ if [ "$DRY_RUN" != "1" ]; then
     rebuild_log "RUN base=${BASE_REF:-default} services=$(printf '%s ' $SERVICES)recreate=$(printf '%s ' $RECREATE)"
 fi
 
-# A retro game lives only in orion-retro's worker memory; recreating
-# orion-retro or orion-hub (its retro gateway) loses it. 2026-10-20 22:13Z: a
-# post-pull rebuild did that mid-game. scripts/check_retro_session_live.py
-# reads status.json AND requires the retro container to be running (a dead
-# container's stale "running" file is not a game). Live or unknown = skip the
-# stack, count it DEFERRED (not failed), and name the command to run later.
-# Override: ORION_REBUILD_IGNORE_LIVE_RETRO=1. A missing helper (never true
-# after a real pull, which brings both files) warns and does not block.
-RETRO_GUARDED="orion-retro orion-hub"
-DEFERRED=""
-# retro_guard_skips <service> <recreate-flag>: exit 0 = skip this stack.
-retro_guard_skips() {
-    local svc="$1" flag="$2" out guard_rc reason
-    case " $RETRO_GUARDED " in *" $svc "*) ;; *) return 1 ;; esac
-    if [ "${ORION_REBUILD_IGNORE_LIVE_RETRO:-0}" = "1" ]; then
-        echo "rebuild_services_from_git_diff.sh: ORION_REBUILD_IGNORE_LIVE_RETRO=1 -- rebuilding $svc without checking for a live retro game" >&2
-        [ "$DRY_RUN" = "1" ] || rebuild_log "RETRO-GUARD-OVERRIDE $svc"
-        return 1
-    fi
-    local guard="$REPO_ROOT/scripts/check_retro_session_live.py"
-    if [ ! -f "$guard" ]; then
-        echo "rebuild_services_from_git_diff.sh: WARNING $guard missing; cannot check for a live retro game before rebuilding $svc" >&2
-        return 1
-    fi
-    set +e
-    out=$(python3 "$guard" </dev/null 2>&1)
-    guard_rc=$?
-    set -e
-    # One log record per line: collapse a traceback or multi-line docker error.
-    out=$(printf '%s' "$out" | tr '\n\t' '  ' | cut -c1-400)
-    case "$guard_rc" in
-        0) return 1 ;;
-        3) reason=retro_session_live ;;
-        *) reason=retro_session_unknown ;;
-    esac
-    DEFERRED="$DEFERRED $svc"
-    if [ "$DRY_RUN" = "1" ]; then
-        echo "[dry-run] would skip: $svc reason=$reason ($out)"
-        return 0
-    fi
-    rebuild_log "SKIPPED $svc reason=$reason $out"
-    echo "rebuild_services_from_git_diff.sh: SKIPPED $svc reason=$reason -- $out" >&2
-    echo "rebuild_services_from_git_diff.sh:   not recreating it mid-game. After the game ends, run from the primary main checkout:" >&2
-    echo "rebuild_services_from_git_diff.sh:   scripts/safe_docker_build.sh $svc up -d --build${flag:+ $flag}" >&2
-    return 0
-}
-
 # rebuild_one <service>: the full rebuild of one stack; adds it to FAILED,
-# DEFERRED (live retro game), or counts it in REBUILT.
+# or counts it in REBUILT.
 rebuild_one() {
     local svc="$1"
     RECREATE_FLAG=""
     if printf '%s\n' $RECREATE | grep -qx "$svc" 2>/dev/null; then
         RECREATE_FLAG="--force-recreate"
-    fi
-    if retro_guard_skips "$svc" "$RECREATE_FLAG"; then
-        return 0
-    fi
-    # A game can start during a multi-minute build. For a guarded stack, build
-    # first, check again, and only then recreate (the up below hits the cache).
-    if [ "$DRY_RUN" != "1" ] && [ "${ORION_REBUILD_IGNORE_LIVE_RETRO:-0}" != "1" ] &&
-        [ -f "$REPO_ROOT/scripts/check_retro_session_live.py" ] &&
-        case " $RETRO_GUARDED " in *" $svc "*) true ;; *) false ;; esac; then
-        echo ""
-        echo "=== rebuild_services_from_git_diff: $svc (build, then re-check for a live retro game) ==="
-        run_safe_build "$svc" build
-        if [ "$rc" -ne 0 ]; then
-            echo "rebuild_services_from_git_diff.sh: FAILED $svc build (exit $rc)" >&2
-            FAILED="$FAILED $svc"
-            return 0
-        fi
-        if retro_guard_skips "$svc" "$RECREATE_FLAG"; then
-            return 0
-        fi
     fi
 
     # Profile-gated compose services of this stack that are RUNNING on this
@@ -588,11 +521,8 @@ fi
 
 echo ""
 echo "rebuild_services_from_git_diff.sh: rebuilt $REBUILT service(s)"
-if [ -n "${DEFERRED// }" ]; then
-    echo "rebuild_services_from_git_diff.sh: deferred (retro game live or unknown; not failed):$DEFERRED" >&2
-fi
 if [ "$DRY_RUN" != "1" ]; then
-    rebuild_log "DONE rebuilt=$REBUILT failed=${FAILED# }${DEFERRED:+ deferred=${DEFERRED# }}"
+    rebuild_log "DONE rebuilt=$REBUILT failed=${FAILED# }"
     echo "rebuild_services_from_git_diff.sh: run log: $REBUILD_LOG"
 fi
 

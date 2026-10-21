@@ -102,6 +102,128 @@ episodes.**
   to help (`confidently_helpful`). Without (b), the allocator only buys information, and every
   well-measured act is refused for being well-measured. That decision is out of scope here.
 
+## Second pass: Juniper's decisions of 2026-10-21
+
+### 1. Stage 3 option B: admit an act proven to help
+
+This is a second, separate admission path. The information floor (0.02 nats/s) and its constants are
+unchanged. The new path only reconsiders act-backed candidates that the floor refused
+(`below_information_floor`): they are measured, have a cost and are not harmful.
+
+- **Proven.** Every bar comes from code or data that already existed:
+  - Enough observations: n >= 20. This is the per-arm minimum in the attend-to-act design, D3.
+  - A credible lower bound: LB = mean - 2 sd. The 2-sigma figure is the allocator's existing
+    `HARM_CONFIDENCE_SIGMAS`, mirrored.
+  - LB must be above a reference rate. Once the act's own randomized control arm has 20 resolved
+    rows, the reference is that arm's rate, using the Jeffreys mean (k+0.5)/(n+1). Before that, it
+    is the act learner's own prior mean (0.5).
+- **Value, in the allocator's currency.** The value is KL(Bernoulli(LB) || Bernoulli(reference)) in
+  nats, divided by the measured motor-seconds. In words: how far the act moves its outcome away from
+  what happens without it, read at the conservative bound. Candidates are admitted best value first,
+  inside the motor allowance that is left.
+- **No floor on this path.** The information floor exists to retire acts that have nothing more to
+  teach. A proven act is exactly that kind of act, so the floor would refuse it by design. This path
+  is still bounded by:
+  - the allowance;
+  - the in-flight rule: a decision in either arm holds the act for its horizon, 5400 s for a painting;
+  - the holdback;
+  - every gate in the doer's own path.
+- **Holdback 0.2 on this path.** The draw is stable per dispatch. Both arms are precommitted to the
+  new table `substrate_act_episodes`, via an additive migration
+  (`manual_migration_act_episodes_v1.sql`, `-- ORION-MIGRATION-REQUIRED-BY:
+  orion-execution-dispatch-runtime`); the table is also created lazily. If the row cannot be written,
+  the act is not sent. For a producer-reported signal, a control row is 0 by construction, because a
+  held-back act produced nothing.
+  - This needs its own table: the feedback runtime scores every due world-episode row as a cabinet
+    shed, so act rows in that table would be scored wrongly.
+- **Reason strings.** Admitted candidates carry `admitted:proven_effect:lb=..:ref=..:<source>:nats=..:nats_per_sec=..`.
+  Refused ones carry `proven_effect:<why not>:...`.
+- **Kill switch.** `ORION_DISPATCH_PROVEN_EFFECT_ENABLED=true`, set in `.env_example`, settings and
+  compose. The local `.env` is synced.
+
+### 2. Painting grading: a run that never reached the GPU is not an act
+
+- The `make` act now opens at the first real generation, for both painting and dream hop. That is the
+  moment the single-flight lock is held and the stage is marked `generating`. Before, it opened when
+  the plan was frozen.
+- A close that did not produce an image is published only when the act was opened. Runs refused or
+  abandoned before any work record no outcome. A run that started work and then failed keeps its 0.
+- Reading (#2733) already works this way: it opens on `run.started`, and closes only if it opened.
+  No change was needed there.
+- **The existing beliefs are pure outage.** All 44 existing `make` closes (29 painting, 15 dream hop)
+  belong to attempts that never reached the GPU: no `generating_started_at` on their
+  `reverie_visual_attempt` row. Under the new rule, none of them would have been graded.
+- **No production rows were changed.** If Juniper wants the two beliefs reset to cold, this is the one
+  line (Postgres, `conjourney`). The grammar_acts and outcome history stays.
+  ```sql
+  DELETE FROM substrate_action_effect_posterior WHERE dispatch_kind = 'act:make' AND target_id IN ('thought.painting', 'thought.dream_hop') AND signal_id = 'artifact_produced' AND baseline_bin = 0;
+  ```
+  - Recommendation: reset. The current belief (mean 0.017 from 29 runs that never ran) blocks the
+    proven path for painting until at least 20 real closes outvote it. It also wrongly tells the
+    information path that paintings are well understood.
+
+### 48 h replay, both paths, unchanged floor
+
+- **Render candidates seen: 10,726** (non-baseline, in time order, with the in-flight rule).
+- **Belief as stored:** 0 admissions on either path.
+  - Information path: below the floor.
+  - Proven path: `not_above_reference`. The lower bound is -0.166; the reference is 0.5.
+  - Held back: 0.
+- **Belief under the new grading rule** (outage closes excluded, so the cell is cold):
+  - 1 admission on the information path, through the existing cold-start rule.
+  - The act is then in flight for 452 candidates.
+  - After that, the proven path refuses with `too_few:1<20`: one replayed close is not enough.
+  - Proven-path admissions: 0. Held back: 0.
+  - The scheduled-painting lane, which keeps grading the same belief, is not replayed. In this learner
+    the variance does not depend on the value observed, so replayed closes are folded in as spread
+    only. Any decision that would rest on an invented mean is reported, never counted.
+- **By act, across doers** (one currency; only painting has a dispatch seam):
+
+| Act | Both paths at the unchanged floor |
+|---|---|
+| look, world_pulse_read (n=119, mean 0.696) | **proven_effect: admitted** (LB 0.604 > 0.5, 0.022 nats / 615 s); no dispatch seam, so informational only |
+| make, thought.painting | refused: not proven (outage belief) |
+| make, thought.dream_hop | refused: too_few 15 < 20 |
+| say/ask, outreach; say, chat_reply | no measured cost |
+
+- **Which would be held back:** at 0.2, a share of the proven-path admissions. In this window there
+  were none. Live control and treated rows on the new path: UNVERIFIED (0 expected until the painting
+  belief is real or another doer gets a seam).
+
+### Metric quality gate: the "proven effect" signal
+
+1. **Provenance.**
+   - The mean, variance and n come from the act's `substrate_action_effect_posterior` cell, written by
+     `close_act` in `orion/grammar/act_ledger.py`.
+   - The control rate comes from `substrate_act_episodes` control rows, written by
+     `_proven_act_holdback` in the dispatch worker.
+   - The cost is the route's settled latency.
+2. **Independence.**
+   - The lower bound reads the same posterior as the information score. The information score reads
+     only the variance; this path also reads the mean. So it is a second reading of one belief, not
+     new evidence. That is the intent: exploit versus explore on one belief.
+   - The reference rate comes from a randomized arm, which is independent by construction.
+3. **Theory anchor.**
+   - A one-sided 2-sigma credible bound on a Normal approximation of the posterior.
+   - KL divergence between the outcome with the act and the outcome without it. That is the expected
+     log-likelihood ratio per run, in nats.
+   - Weak spots, stated plainly:
+     - Before 20 controls, the bar is the learner's prior (0.5): "better than the coin flip it started
+       from". This is not an effect against a control.
+     - For artifact acts, the control rate is 0 by construction. After 20 controls, the bar falls to
+       about 0.024, which is a weak claim.
+     - The Normal approximation is poor near 0 and 1.
+4. **Live sanity.**
+   - Reading reads proven: n=119, LB 0.604.
+   - The painting and dream-hop inputs were degenerate: every close was an outage. That is fixed going
+     forward by the grading rule, and the reset is Juniper's call.
+   - The signal has a real rest state: "not proven", value 0. It is not saturated: 1 of 6 cells is
+     proven.
+5. **Existing mechanism.** `HARM_CONFIDENCE_SIGMAS`, the D3 n >= 20 rule, and the world-episode
+   precommit and stable-draw pattern. `orion.autonomy.contrast` is for field-signal cells and has no
+   act arm, so it was not reused.
+6. **Reversibility.** The kill switch, and one additive table. The rows can be dropped.
+
 ## Current architecture (before)
 
 - Workspace: `orion-substrate-runtime` broadcast (world-first gate) -> `select_actions` ladder ->
@@ -150,11 +272,13 @@ episodes.**
 - Behavior changed: the `attention_loop_outcome` table now receives `acted` rows with
   `actor='orion'` from sql-writer (shape and verdict already in use by the shed path). Frame candidates
   carry one more `act_expectation:...` string in `reasons`.
-- Compatibility: no bus payload, no registry entry, no table or column changed. No migration.
+- Added table: `substrate_act_episodes` (additive migration `services/orion-sql-db/manual_migration_act_episodes_v1.sql`, REQUIRED-BY orion-execution-dispatch-runtime; fits the post-pull additive allowlist; also created lazily).
+- Config model: `ActRouteRefV1.horizon_sec` (required; render_scene 5400).
+- Compatibility: no bus payload or registry entry changed. The painting act now opens at generation, not prepare (same event shapes).
 
 ## Env/config changes
 
-- Added: `ORION_DISPATCH_ACT_CANDIDATES_ENABLED=true`, `ORION_DISPATCH_ACT_COST_LOOKBACK_HOURS=720`
+- Added: `ORION_DISPATCH_ACT_CANDIDATES_ENABLED=true`, `ORION_DISPATCH_PROVEN_EFFECT_ENABLED=true`, `ORION_DISPATCH_ACT_COST_LOOKBACK_HOURS=720`
   (execution-dispatch-runtime); `SQL_WRITER_ACT_WORKSPACE_BINDING_ENABLED=true` (sql-writer).
 - Changed: `ORION_DISPATCH_HOLDBACK_FRACTION` 0.0 -> 0.2 (`.env_example`, settings default, compose).
 - `.env_example` updated: yes, both services.
@@ -314,9 +438,10 @@ diff against origin/main. It found no blocker.
 ./scripts/safe_docker_build.sh orion-sql-writer up -d --build
 ./scripts/safe_docker_build.sh orion-substrate-runtime up -d --build
 ./scripts/safe_docker_build.sh orion-proposal-runtime up -d --build
+./scripts/safe_docker_build.sh orion-thought up -d --build
 ```
 
-Run from the clean primary `main` checkout after merge. Note: the live dispatch-runtime `.env` already
+Run from the clean primary `main` checkout after merge. The post-pull hook applies `manual_migration_act_episodes_v1.sql` (additive). If it has not, the wrapper refuses the dispatch-runtime `up` and prints the apply command. Note: the live dispatch-runtime `.env` already
 says `ORION_DISPATCH_HOLDBACK_FRACTION=0.2`. A restart of the old image before this merges would
 draw on every acting tick without the new rule. Today that means baseline paintings and sheds would
 be delayed a few seconds. Low harm, but restart only after the merge.
@@ -344,6 +469,6 @@ be delayed a few seconds. Low harm, but restart only after the merge.
 
 https://github.com/junebug-junie/Orion-Sapienform/pull/2830
 
-Status: DONE_WITH_CONCERNS (0 admissions at the unchanged floor; the painting belief is an outage).
+Status: DONE_WITH_CONCERNS. Both paths admit 0 in the 48 h replay with the belief as stored. The painting belief is pure outage; the reset is Juniper's call. Only painting has a dispatch seam.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

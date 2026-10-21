@@ -6,6 +6,7 @@
   const WINDOWS = Object.freeze({'24h': 86400, '3d': 259200, '7d': 604800});
   const DURATION_SEC = 60;
   const GAP_MULTIPLES = Object.freeze([1.5, 2, 4, 10]);
+  const MIN_GAPS = 3;
   const KEYS = Object.freeze({magnetic: 'magnetic_ut', lidar: 'lidar_mm'});
   const finite = v => typeof v === 'number' && Number.isFinite(v);
   function parseTime(value) {
@@ -38,7 +39,9 @@
       stats[key] = Object.freeze({returned: raw.length, valid: points.filter(p => p.v !== null).length, invalid,
         nRaw: Number.isInteger(rawCount) && rawCount >= 0 ? rawCount : null,
         downsampled: Number.isInteger(rawCount) ? rawCount > raw.length : null,
-        minSpacingSec: gaps[0] ?? null, medianSpacingSec: gaps[Math.floor(gaps.length / 2)] ?? null,
+        minSpacingSec: gaps[0] ?? null,
+        // Too few gaps to know the normal rhythm: one gap would just be its own median.
+        medianSpacingSec: gaps.length >= MIN_GAPS ? gaps[Math.floor(gaps.length / 2)] : null,
         maxSpacingSec: gaps[gaps.length - 1] ?? null});
     }
     if (!count) return null;

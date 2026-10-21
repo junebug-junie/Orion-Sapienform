@@ -5,8 +5,8 @@ const {Instrument, PRESET, mapFrame} = require('./cabinet-sonification');
 const end = Date.parse('2026-10-20T18:00:00Z');
 const point = (seconds, v) => ({t: new Date(end + seconds * 1000).toISOString(), v});
 function history(window = '24h') {
-  return {ok: true, window, grain_sec: 30, series: {magnetic_ut: [point(-60, 20), point(0, 60)],
-    lidar_mm: [point(-45, 0), point(-15, 100)], vibration_g: [point(-60, .04), point(0, 1)]}, stats: {magnetic_ut: {n_raw: 3}}};
+  return {ok: true, window, grain_sec: 30, series: {magnetic_ut: [point(-180, 20), point(-120, 20), point(-60, 20), point(0, 60)],
+    lidar_mm: [point(-105, 0), point(-75, 0), point(-45, 0), point(-15, 100)], vibration_g: [point(-60, .04), point(0, 1)]}, stats: {magnetic_ut: {n_raw: 5}}};
 }
 function context() {
   const param = () => ({value: 0, ramps: [], cancelScheduledValues() {}, setValueAtTime(v) {this.value = v;}, linearRampToValueAtTime(v, t) {this.value = v; this.ramps.push({v, t});}});
@@ -104,8 +104,14 @@ test('gap mute ramps are not perpetually extended; Stop resets cursor and trace 
   instrument.stop(); assert.equal(instrument.positionSec,0); assert.equal(instrument.nodes.size,0);
 });
 
+test('a series too sparse to show its normal spacing never bridges its one gap', () => {
+  const p = history(); p.series = {magnetic_ut: [point(-79000,20),point(-100,40)]};
+  const h = History.prepare(p, end);
+  assert.equal(h.stats.magnetic_ut.medianSpacingSec, null);
+  assert.equal(History.frame(h, 30, 10, PRESET).readings[0].value, null);
+});
 test('request bounds retain trailing outages and cannot shift with partial channels', () => {
-  const p = history(); p.series = {magnetic_ut: [point(-7*3600,20),point(-6*3600,40)]};
+  const p = history(); p.series = {magnetic_ut: [point(-9*3600,20),point(-8*3600,20),point(-7*3600,20),point(-6*3600,40)]};
   const h = History.prepare(p, end);
   assert.equal(h.start,end-86400000); assert.equal(h.end,end);
   assert.equal(History.frame(h,59,1,PRESET).readings[0].value,null);

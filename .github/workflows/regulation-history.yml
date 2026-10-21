@@ -5,6 +5,7 @@ on:
       - 'services/orion-dream/**'
       - 'services/orion-sql-writer/**'
       - 'services/orion-sql-db/manual_migration_regulation_history.sql'
+      - 'services/orion-sql-db/manual_migration_regulation_gpu_shed_held_v1.sql'
       - 'services/orion-sql-db/manual_migration_curiosity_compaction.sql'
       - 'orion/schemas/dream_cycle.py'
       - 'orion/schemas/curiosity_compaction.py'

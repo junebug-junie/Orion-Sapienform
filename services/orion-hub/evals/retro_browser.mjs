@@ -72,13 +72,29 @@ try{
   const fsActions=await page.evaluate(async()=>{const s=(await (await fetch('/api/retro/health/ready')).json()).session;
     return (await (await fetch(`/api/retro/sessions/${s.session_id}/evidence`)).json()).applied;});
   assert(fsActions.slice(-12).some(a=>!a.policy_id && a.mask===64),'arrow key in fullscreen never applied');
+  // F7 saves from inside fullscreen without leaving it.
+  await page.evaluate(()=>{document.querySelector('#status').textContent='';});
+  await page.keyboard.press('F7');
+  await page.waitForFunction(()=>document.querySelector('#status').textContent.startsWith('Saved'));
+  const hotkeySaveId=await page.$eval('#saves',s=>s.options[0].value);
+  assert(hotkeySaveId!==saveId && /^[0-9a-f]{32}$/.test(hotkeySaveId),'F7 did not create a new save');
+  assert.equal(await page.evaluate(()=>document.fullscreenElement?.id),'stage','F7 left fullscreen');
+  const toast=await page.$eval('#toast',t=>({text:t.textContent,shown:getComputedStyle(t).display!=='none',inStage:t.closest('#stage')===document.fullscreenElement}));
+  assert(toast.text.startsWith('Saved') && toast.shown && toast.inStage,'F7 result not visible in fullscreen: '+JSON.stringify(toast));
   await page.click('#exitFullscreen');
   await page.waitForFunction(()=>!document.fullscreenElement);
-  // Load restores in place, into the running session.
+  // The Load button restores the chosen save in place, into the running session.
+  await page.select('#saves',saveId);
   await page.click('#load');
   await page.waitForFunction(()=>document.querySelector('#status').textContent.startsWith('Save loaded'));
   const afterLoad=await page.evaluate(async()=>(await (await fetch('/api/retro/health/ready')).json()).session);
   assert.equal(afterLoad.loaded_save,saveId);assert.equal(afterLoad.state,'running');
+  // F10 loads the newest save even when an older one is selected.
+  await page.evaluate(()=>{document.querySelector('#status').textContent='';});
+  await page.keyboard.press('F10');
+  await page.waitForFunction(()=>document.querySelector('#status').textContent.startsWith('Save loaded'));
+  const afterHotkeyLoad=await page.evaluate(async()=>(await (await fetch('/api/retro/health/ready')).json()).session);
+  assert.equal(afterHotkeyLoad.loaded_save,hotkeySaveId);
   await page.click('#join');await pause(500);
   // Verify gamepad mapping through the actual authority's applied-action journal.
   await page.evaluate(()=>{
@@ -197,7 +213,12 @@ try{
   assert.equal(await page.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'paused');
   await page.click('#stop');await pause(150);
   assert.equal(await page.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'stopped');
+  // F10 never starts a game: with nothing running it refuses and leaves the game stopped.
+  await page.keyboard.press('F10');
+  await page.waitForFunction(()=>document.querySelector('#status').textContent.startsWith('F10 loads into the game that is running'));
+  assert.equal(await page.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'stopped');
   // After the game ends (as after a service restart), Load starts a fresh game from the save.
+  await page.select('#saves',saveId);
   await page.click('#load');
   await page.waitForFunction(()=>document.querySelector('#status').textContent.startsWith('Save loaded'));
   const fromSave=await page.evaluate(async()=>(await (await fetch('/api/retro/health/ready')).json()).session);

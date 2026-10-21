@@ -45,7 +45,7 @@ def test_network_boundary_without_access_code(tmp_path):
         for control in ('id="save"','id="saves"','id="load"','id="fullscreen"','id="stage"','id="exitFullscreen"'):
             assert control in html
         js=(Path(__file__).resolve().parents[2]/'static/js/retro-panel.js').read_text()
-        for wired in ("el('stage')","action('save'","action('load'","action('fullscreen'","'PageUp'","'PageDown'"):
+        for wired in ("el('stage')","action('save'","action('load'","action('fullscreen'","'PageUp'","'PageDown'","F7:","F10:"):
             assert wired in js
         index=(Path(__file__).resolve().parents[2]/'templates/index.html').read_text()
         assert 'allow="autoplay; gamepad; fullscreen" allowfullscreen' in index  # iframe may go fullscreen

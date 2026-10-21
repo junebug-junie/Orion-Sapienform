@@ -7,7 +7,11 @@
   let audio, gain, audioEnd = 0, lastSample = null, decoding = false, pendingPacket = null, transportEpoch = 0;
   const keys = new Set(), sources = new Set();
   const bits = {ArrowUp:16, ArrowDown:32, ArrowLeft:64, ArrowRight:128, KeyZ:256, KeyX:1, Enter:8, ShiftLeft:4, ShiftRight:4};
-  const report = text => { el('status').textContent = text; };
+  // #status sits outside the fullscreen stage, so mirror each message into a toast
+  // shown only in fullscreen; otherwise F7/F10 results would be invisible there.
+  let toastTimer=null;
+  const report = text => { el('status').textContent = text; el('toast').textContent = text;
+    clearTimeout(toastTimer); toastTimer=setTimeout(()=>{el('toast').textContent='';},3000); };
   // wanted: the player chose to play, so a lost transport heals itself instead of
   // asking for Connect / resume. intent changes on every New/Pause/Stop/connect, so
   // an older connect or pending heal can never override a newer choice.
@@ -194,7 +198,9 @@
     report(`Saved · played ${played(r.saved.played_frames)} · frame ${r.saved.frame}.`);
     if(lease)screen.focus();
   });
+  let hotkeyLoad=false;  // F10 only restores in place; it never ends one game to start another
   action('load',async()=>{
+    const inPlaceOnly=hotkeyLoad;hotkeyLoad=false;
     const save_id=el('saves').value;if(!save_id)throw Error('No save to load.');
     let current=null;
     if(sid){try{current=await api(`sessions/${sid}`);}catch(_){current=null;}}
@@ -203,7 +209,8 @@
       await api(`sessions/${sid}/load`,{save_id});
       if(lease && current.state==='running'){screen.focus();report('Save loaded. Playing.');}
       else report('Save loaded (paused; the picture updates when play resumes). Click the game to keep playing.');
-    } else if(await newGame(save_id)) report('Save loaded. Playing.');
+    } else if(inPlaceOnly) throw Error('F10 loads into the game that is running. To start a game from a save, choose it and press Load.');
+    else if(await newGame(save_id)) report('Save loaded. Playing.');
   });
   action('join',connect);
   action('pause',async()=>{++intent;wanted=false;try{if(sid)await api(`sessions/${sid}/pause`,{});}finally{neutral();}report('Paused. Click the game to keep playing.');});
@@ -266,7 +273,19 @@
   // the game. In fullscreen, mapped keys reach the game even if focus slipped off it.
   const stage=el('stage'), SCROLL_KEYS=new Set(['PageUp','PageDown','Home','End','Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight']);
   const field=t=>t instanceof HTMLInputElement || t instanceof HTMLSelectElement || t instanceof HTMLTextAreaElement;
+  // F7 saves and F10 loads the newest save into the running game, anywhere on the page
+  // except while typing. Both keys have browser defaults (caret browsing, the menu bar),
+  // so swallow them; with a modifier (Shift+F10 is the context menu) leave them alone.
+  const typing=t=>t instanceof HTMLTextAreaElement || t?.isContentEditable ||
+    (t instanceof HTMLInputElement && !['checkbox','radio','button','submit','reset','range','color','file'].includes(t.type));
+  const HOTKEYS={F7:()=>el('save').click(),F10:()=>{el('saves').selectedIndex=0;hotkeyLoad=true;el('load').click();}};
   document.addEventListener('keydown',e=>{
+    if(HOTKEYS[e.code] && !typing(e.target) && !(e.shiftKey || e.ctrlKey || e.altKey || e.metaKey)){
+      e.preventDefault();
+      // Wait out a save or load in flight, so F10 never loads the save F7 is replacing.
+      if(!e.repeat && !el('saveBar').hidden && !el('save').disabled && !el('load').disabled)HOTKEYS[e.code]();
+      return;
+    }
     if(document.activeElement!==screen && (document.fullscreenElement!==stage || field(e.target)))return;
     if(bits[e.code] || SCROLL_KEYS.has(e.code))e.preventDefault();
     if(bits[e.code] && !keys.has(e.code)){keys.add(e.code);send();}

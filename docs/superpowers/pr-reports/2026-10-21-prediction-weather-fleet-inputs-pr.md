@@ -162,6 +162,6 @@ python3 services/orion-prediction/evals/run_house_heat_balance_eval.py
 
 ## PR link
 
-<link>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2829
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -418,12 +418,14 @@ def test_sonification_controls_and_asset_are_inside_cabinet() -> None:
     parser.feed(rendered)
     ids = [attrs.get('id') for _, attrs in parser.tags]
     assert ids.index('cabinet') < ids.index('cabinetSonification') < ids.index('cabinetSensorGrid')
-    for control in ('Listen', 'Stop', 'Record', 'Download'):
+    for control in ('Listen', 'Stop', 'Record', 'Download', 'Mode', 'Window', 'Gap', 'Pause', 'Replay', 'Seek', 'Timeline', 'HistoryInfo'):
         assert 'cabinetSound' + control in ids
     assert sum('data-sound-mute' in attrs for _, attrs in parser.tags) == 3
     assert sum('data-sound-solo' in attrs for _, attrs in parser.tags) == 3
     assets = [attrs.get('src', '') for tag, attrs in parser.tags if tag == 'script']
     sound = next(a for a in assets if '/cabinet-sonification.js?' in a)
     sensors = next(a for a in assets if '/cabinet-sensors.js?' in a)
-    assert assets.index(sound) < assets.index(sensors)
+    history = next(a for a in assets if '/cabinet-sonification-history.js?' in a)
+    assert assets.index(history) < assets.index(sound) < assets.index(sensors)
+    assert (HUB_ROOT / history.split('?')[0].lstrip('/')).is_file()
     assert (HUB_ROOT / sound.split('?')[0].lstrip('/')).is_file()

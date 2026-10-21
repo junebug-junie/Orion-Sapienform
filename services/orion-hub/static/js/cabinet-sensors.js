@@ -1153,6 +1153,8 @@
   async function fetchSensorHistory() {
     var requestId = ++state.sensorHistoryRequest;
     var requestedWindow = state.sensorWindow;
+    var requestStartedAt = Date.now();
+    if (window.OrionCabinetSonification) window.OrionCabinetSonification.historyLoading(requestedWindow);
     state.sensorHistoryNote = "Loading " + requestedWindow + " sensor history…";
     renderSensorHistoryStatus();
     try {
@@ -1167,6 +1169,7 @@
       }
       if (requestId !== state.sensorHistoryRequest) return;
       state.sensorHistory = payload;
+      if (state.active && window.OrionCabinetSonification) window.OrionCabinetSonification.receiveHistory(payload, requestStartedAt);
       renderSensorHistory(payload);
       var stats = payload.stats || {};
       var tempStats = stats.temp_c || {};
@@ -1183,6 +1186,7 @@
       state.sensorHistoryNote = note;
     } catch (err) {
       if (requestId !== state.sensorHistoryRequest) return;
+      if (window.OrionCabinetSonification) window.OrionCabinetSonification.historyFailed();
       state.sensorHistoryNote =
         "history error — " +
         (state.sensorHistory ? "keeping last good charts" : "no chart data yet") +
@@ -1295,6 +1299,12 @@
   var api = {
     activate: activate,
     deactivate: deactivate,
+    setHistoryWindow: function (nextWindow) {
+      if (["24h", "3d", "7d"].indexOf(nextWindow) < 0 || nextWindow === state.sensorWindow) return;
+      state.sensorWindow = nextWindow;
+      renderSensorWindowButtons();
+      fetchSensorHistory();
+    },
     refresh: function () {
       poll();
       pollAmbientLatest();

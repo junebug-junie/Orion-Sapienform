@@ -28,6 +28,7 @@ def fast_zoo(monkeypatch):
 
 class FakeStore:
     def __init__(self, points):
+        self.shadow = []
         self.exceedances = []
         self.raw = sorted(points)
         self.runs: list[dict] = []
@@ -85,12 +86,32 @@ class FakeStore:
 
     fail_next_issue = False
 
-    def insert_issue(self, forecast_rows, exceedance_rows):
+    def insert_issue(self, forecast_rows, exceedance_rows, shadow_rows=None):
         if self.fail_next_issue:          # all-or-nothing, like the real transaction
             self.fail_next_issue = False
             raise ConnectionError("pg hiccup")
         self.insert_forecasts(forecast_rows)
         self.insert_exceedances(exceedance_rows)
+        have = {(r["model"], r["origin_ts"], r["horizon_min"]) for r in self.shadow}
+        for r in shadow_rows or ():
+            if (r["model"], r["origin_ts"], r["horizon_min"]) not in have:
+                self.shadow.append({**r, "shadow_id": next(self._ids), "scored_at": None, "abs_error": None})
+
+    def due_shadow(self, sid, before, limit=5000):
+        return [r for r in self.shadow if r["scored_at"] is None and r["target_ts"] < before][:limit]
+
+    def write_shadow_scores(self, rows):
+        by = {r["shadow_id"]: r for r in self.shadow}
+        for r in rows:
+            by[r["shadow_id"]].update(r)
+
+    def shadow_pairs(self, sid, since):
+        base = {(f["origin_ts"], f["horizon_min"]): f["abs_error"] for f in self.forecasts
+                if f["role"] == "baseline" and f.get("score_status") == "scored"}
+        return [{"model": r["model"], "horizon_min": r["horizon_min"], "origin_ts": r["origin_ts"],
+                 "shadow_err": r["abs_error"], "base_err": base[(r["origin_ts"], r["horizon_min"])]}
+                for r in self.shadow if r["abs_error"] is not None and r["target_ts"] >= since
+                and (r["origin_ts"], r["horizon_min"]) in base]
 
     def insert_exceedances(self, rows):
         have = {(e["origin_ts"], e["name"]) for e in self.exceedances}
@@ -442,25 +463,6 @@ def _live_pairs(store, end, n, champ_err, base_err, same_point=False, rng=None):
                                     "in_95": True, "score_status": "scored", "scored_at": end})
 
 
-def test_worse_than_baseline_ignores_ties_and_fires_on_a_significant_loss():
-    reg, spec, s, store, end = _setup()
-    eng = _engine(reg, store, Clock(end), [])
-    asyncio.run(eng.tick(_sync))
-    store.forecasts = []
-    _live_pairs(store, end, 200, 0.3, 0.3, same_point=True)       # baseline served: identical forecasts
-    live = eng.live_metrics(spec, end)
-    assert live["horizons"]["5"]["n_differing"] == 0 and "worse_than_baseline" not in eng.alerts_for(spec, end, live, end)
-    store.forecasts = []
-    _live_pairs(store, end, 200, 0.45, 0.3)                       # champion clearly worse where it differs
-    live = eng.live_metrics(spec, end)
-    assert live["horizons"]["5"]["n_independent"] == 200 and live["horizons"]["5"]["p_baseline_better"] < 0.05
-    assert live["losing_horizons"] == [5] and "5 min" in eng.alerts_for(spec, end, live, end)["worse_than_baseline"]
-    store.forecasts = []
-    _live_pairs(store, end, 200, 0.30, 0.30)                      # differing but a coin flip: no alert
-    live = eng.live_metrics(spec, end)
-    assert "worse_than_baseline" not in eng.alerts_for(spec, end, live, end)
-
-
 def test_each_issue_stores_its_threshold_probabilities_and_they_get_an_outcome():
     reg, spec, s, store, end = _setup()
     clock = Clock(end + timedelta(seconds=90))
@@ -478,23 +480,6 @@ def test_each_issue_stores_its_threshold_probabilities_and_they_get_an_outcome()
     assert eng.score_exceedances(spec, clock.t) == 1
     assert e["hit_raw"] is True and e["hit_mean"] is False and e["max_raw"] == 31.6
 
-
-
-def test_a_long_horizon_is_not_judged_until_it_has_enough_independent_forecasts():
-    reg, spec, s, store, end = _setup()
-    eng = _engine(reg, store, Clock(end), [])
-    store.forecasts = []
-    rng = np.random.default_rng(1)
-    for i in range(400):                                   # 400 overlapping 6 h forecasts, 5 min apart
-        o = end - timedelta(days=2) + timedelta(minutes=5 * i)
-        for role, err, pt in (("champion", 1.5 + rng.normal(0, .05), 28.0), ("baseline", 1.0, 28.4)):
-            store.forecasts.append({"series_id": "test.temp", "role": role, "origin_ts": o, "horizon_min": 360,
-                                    "point": pt, "target_ts": o + timedelta(hours=6), "abs_error": err,
-                                    "in_80": True, "in_95": True, "score_status": "scored", "scored_at": end})
-    live = eng.live_metrics(spec, end)
-    h = live["horizons"]["360"]
-    assert h["n_differing"] == 400 and h["n_independent"] == 6 and h["p_baseline_better"] is None
-    assert live["losing_horizons"] == []
 
 
 def test_a_failed_issue_write_leaves_nothing_and_the_bucket_is_reissued():
@@ -519,3 +504,40 @@ def test_a_partly_observed_window_is_unknown_unless_a_crossing_was_seen():
     clock.t = end + timedelta(minutes=40)
     eng.score_exceedances(spec, clock.t)
     assert e["hit_raw"] is None and e["hit_mean"] is None and e["n_buckets_observed"] == 1
+
+
+
+def test_contenders_get_shadow_forecasts_which_get_scored(monkeypatch):
+    monkeypatch.setattr(engine_mod, "build_models",
+                        lambda spec, usable: {k: v for k, v in real_build_models(spec, usable).items() if k in FAST})
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.temp"]
+    st.served = __import__("dataclasses").replace(st.served, shadow=("window_average_1h",))
+    store.raw += [(end + timedelta(seconds=k), 28.0) for k in range(0, 300, 30)]
+    clock.t = end + timedelta(minutes=5, seconds=90)
+    asyncio.run(eng.tick(_sync))
+    rows = [r for r in store.shadow if r["model"] == "window_average_1h"]
+    assert {r["horizon_min"] for r in rows} == {5, 60, 360}
+    store.raw += [(end + timedelta(minutes=5, seconds=k), 28.1) for k in range(0, 300, 30)]
+    clock.t = end + timedelta(minutes=12)
+    assert eng.score_shadow(spec, clock.t) >= 1
+    assert any(r["abs_error"] is not None for r in rows if r["horizon_min"] == 5)
+
+
+def test_worse_than_baseline_judges_the_model_that_serves_on_its_live_record():
+    from app.backtest import Selection
+    reg, spec, s, store, end = _setup()
+    eng = _engine(reg, store, Clock(end), [])
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.temp"]
+    st.served = __import__("dataclasses").replace(
+        st.served, selection=Selection({5: "window_average_1h", 60: "naive", 360: "naive"},
+                                       {5: "naive", 60: "naive", 360: "naive"}, False, {}))
+    worse = {"verdict": "worse", "rel_mae": 1.3, "n_independent": 40, "p_worse": 0.001}
+    live = {"shadow": {"window_average_1h@5": worse}}
+    assert "5 min window_average_1h" in eng.alerts_for(spec, end, live, end)["worse_than_baseline"]
+    live = {"shadow": {"window_average_1h@60": worse}}          # losing where it does NOT serve: no alert
+    assert "worse_than_baseline" not in eng.alerts_for(spec, end, live, end)

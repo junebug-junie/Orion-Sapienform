@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     backtest_windows: int = Field(40, ge=12, le=200, alias="PREDICTION_BACKTEST_WINDOWS")
     backtest_step_min: int = Field(180, ge=5, alias="PREDICTION_BACKTEST_STEP_MIN")
 
+    # Forecast every contender model in the shadow and grade it live; the gate uses the live verdicts.
+    shadow_enabled: bool = Field(True, alias="PREDICTION_SHADOW_ENABLED")
+
     # --- weather covariates (shared Open-Meteo client, orion/weather/openmeteo.py) ---
     weather_enabled: bool = Field(True, alias="PREDICTION_WEATHER_ENABLED")
     weather_refresh_sec: float = Field(3600.0, ge=300, alias="PREDICTION_WEATHER_REFRESH_SEC")

@@ -37,8 +37,10 @@ COVERAGE_BAND = (0.72, 0.88)
 # (window_average_1h @1 h, 1.57x; mstl_arima @15 min, 2.0x) had backtest p = 0.21 and 0.31 -- lower
 # averages by noise. No family correction across candidates; documented trade-off.
 GATE_ALPHA = 0.05
+# An incumbent keeps its horizon while its backtest win stays under this (hysteresis band 0.05..0.10).
+STAY_ALPHA = 0.10
 # Bumped when the gate rule changes; a stored selection from another gate version is not restored.
-GATE_VERSION = 2
+GATE_VERSION = 3   # 3: live verdicts from shadow forecasts + incumbent hysteresis
 MAX_FILLED_SHARE = 0.10
 MIN_TRAIN_STEPS_DAYS = 2
 MIN_PATHS = 10
@@ -259,7 +261,18 @@ def stitch(paths: dict[str, np.ndarray], owners: list[str], axis: int = -1) -> n
     return np.concatenate(cols, axis=axis)
 
 
-def select_champion(results: dict[str, BacktestResult], spec: SeriesSpec, step_min: int | None = None) -> Selection:
+def select_champion(results: dict[str, BacktestResult], spec: SeriesSpec, step_min: int | None = None,
+                    live: dict | None = None, incumbent: dict[int, str] | None = None) -> Selection:
+    """Per horizon, a candidate serves when (in order):
+
+    - its LIVE verdict (app/live.py, shadow forecasts vs the baseline) is ``worse``: never;
+    - its live verdict is ``better``: yes, whatever the backtest says;
+    - otherwise the backtest decides: rel_mae < 1, enough windows, and a paired win at p < GATE_ALPHA --
+      or p < STAY_ALPHA if it already serves this horizon (hysteresis: a p hovering at 0.05 must not
+      flip the served model every selection; live 2026-10-21/22: direct_arx @15 min p 0.041..0.070).
+    """
+    live = live or {}
+    incumbent = incumbent or {}
     missing = [b for b in BASELINES if b not in results]
     if missing:
         raise ValueError(f"baselines must be backtested: {missing}")
@@ -291,11 +304,22 @@ def select_champion(results: dict[str, BacktestResult], spec: SeriesSpec, step_m
                 m["passed"] = name == best_base
                 continue
             m["p_win"], _ = paired_win_p(col, ref_col, overlap_lag(hm, step_min))
-            m["passed"] = bool(m["rel_mae"] is not None and m["rel_mae"] < 1.0
-                               and m["p_win"] is not None and m["p_win"] < GATE_ALPHA
+            lv = live.get((name, hm))
+            m["live"] = lv
+            alpha = STAY_ALPHA if incumbent.get(hm) == name else GATE_ALPHA
+            backtest_ok = bool(m["rel_mae"] is not None and m["rel_mae"] < 1.0
+                               and m["p_win"] is not None and m["p_win"] < alpha
                                and m["n_paired"] >= max(MIN_PATHS + 1, math.ceil(MIN_WINDOW_SHARE * ref_n)))
+            verdict = lv["verdict"] if lv else "pending"
+            if verdict == "worse":
+                m["passed"], m["passed_by"] = False, None
+            elif verdict == "better":
+                m["passed"], m["passed_by"] = True, "live"
+            else:
+                m["passed"], m["passed_by"] = backtest_ok, ("backtest" if backtest_ok else None)
             if m["passed"]:
-                winners[name] = m["rel_mae"]
+                # Rank by live error where live has spoken, else by the backtest.
+                winners[name] = lv["rel_mae"] if verdict == "better" and lv.get("rel_mae") else m["rel_mae"]
         assignment[hm] = min(winners, key=lambda n: (winners[n], n)) if winners else best_base
     served_baseline = all(v in BASELINES for v in assignment.values())
     return Selection(assignment, baseline_assignment, served_baseline, metrics)

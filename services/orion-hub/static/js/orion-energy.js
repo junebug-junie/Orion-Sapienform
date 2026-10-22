@@ -92,7 +92,9 @@
     var delta = deltaPoint(b);
     rows.push({
       name: "Rest of the house", value: delta ? fmtKwh(delta.rest) : "unknown",
-      note: delta ? "house " + fmtKwh(delta.house) + " − Orion " + fmtKwh(delta.orion) + ", same " + b.overlap_hours + " h" : "",
+      note: !delta ? "" : delta.rest < 0
+        ? "Orion read above the house: RMP rounds each hour to whole kWh"
+        : "house " + fmtKwh(delta.house) + " − Orion " + fmtKwh(delta.orion) + ", same " + b.overlap_hours + " h",
     });
     rows.push({
       name: "Orion cost", value: fmtUsd(b.orion_usd),
@@ -235,7 +237,8 @@
     var plotH = H - M.top - M.bottom;
     var band = (W - M.left - M.right) / Math.max(buckets.length, 1);
     var points = buckets.map(deltaPoint);
-    var yMax = niceMax(Math.max.apply(null, points.map(function (p) { return p ? p.house : 0; }).concat([0])));
+    // Orion can read above the house in an hour (RMP rounds to whole kWh), so scale to both.
+    var yMax = niceMax(Math.max.apply(null, points.map(function (p) { return p ? Math.max(p.house, p.orion) : 0; }).concat([0])));
     var y = function (v) { return M.top + plotH * (1 - Math.max(v, 0) / yMax); };
     var xAt = function (i) { return M.left + band * (i + 0.5); };
     var svg = axisAndGrid(W, H, yMax, function (v) { return v >= 100 ? Math.round(v) : +v.toFixed(1); }, 4);
@@ -249,11 +252,12 @@
     runs.forEach(function (r) {
       if (r.length === 1) {
         var i0 = r[0];
-        gap += '<line x1="' + xAt(i0) + '" x2="' + xAt(i0) + '" y1="' + y(points[i0].house) + '" y2="' + y(points[i0].orion) +
+        gap += '<line x1="' + xAt(i0) + '" x2="' + xAt(i0) + '" y1="' + y(points[i0].house) + '" y2="' + y(Math.min(points[i0].orion, points[i0].house)) +
           '" stroke="var(--rest-fill)" stroke-width="10"/>';
       } else {
         var top = r.map(function (i) { return xAt(i) + "," + y(points[i].house); });
-        var bottom = r.slice().reverse().map(function (i) { return xAt(i) + "," + y(points[i].orion); });
+        // Never shade a negative "rest": where Orion reads above the house the fill closes to zero.
+        var bottom = r.slice().reverse().map(function (i) { return xAt(i) + "," + y(Math.min(points[i].orion, points[i].house)); });
         gap += '<polygon points="' + top.concat(bottom).join(" ") + '" fill="var(--rest-fill)"/>';
       }
       ["house", "orion"].forEach(function (key) {
@@ -385,12 +389,12 @@
     renderTiles(doc, data.buckets);
     doc.getElementById("oeHourNote").classList.toggle("hidden", data.grain !== "hour");
     renderLegend(doc.getElementById("oeLegend"), data.sources);
-    var kwh = doc.getElementById("oeKwhChart"), share = doc.getElementById("oeDeltaChart");
+    var kwh = doc.getElementById("oeKwhChart"), delta = doc.getElementById("oeDeltaChart");
     renderKwhChart(kwh, data);
-    renderDeltaChart(share, data);
+    renderDeltaChart(delta, data);
     renderDeltaLegend(doc.getElementById("oeDeltaLegend"));
     renderTable(doc.getElementById("oeTable"), data);
-    wireHover(doc, [kwh, share], data);
+    wireHover(doc, [kwh, delta], data);
   }
 
   function load(doc, grain) {

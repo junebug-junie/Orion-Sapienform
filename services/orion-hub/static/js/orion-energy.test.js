@@ -100,3 +100,10 @@ test("delta point and tooltip: the rest of the house is house minus Orion over t
   assert.equal(rest.value, "48.0 kWh");
   assert.equal(rest.note, "house 102 kWh − Orion 54.0 kWh, same 24 h");
 });
+
+test("Orion above the house (whole-kWh rounding) is explained, not shown as a bare negative", () => {
+  const b = bucket({ hours_elapsed: 1, overlap_hours: 1, orion_kwh_overlap: 1.4, house_kwh_overlap: 1, orion_share: 1.4 });
+  assert.equal(tab.deltaPoint(b).rest < 0, true);
+  const rest = tab.tooltipRows(b, []).find((r) => r.name === "Rest of the house");
+  assert.equal(rest.note, "Orion read above the house: RMP rounds each hour to whole kWh");
+});

@@ -141,6 +141,15 @@ class EnergyPipeline:
     def replay_bills(self, bills: Iterable[Bill]) -> None:
         for bill in bills:
             self._store_bill(bill)
+        self._apply_read_dates(now=datetime.now(timezone.utc))
+
+    def _apply_read_dates(self, *, now: datetime) -> list[EnergyCostAccruedV1]:
+        """Move cycle bounds to the bills' meter-read dates and re-accrue every cycle that moved."""
+        reads = {d for bill in self._actuals.values() for d in (bill.billing_period_start, bill.billing_period_end)}
+        rows: list[EnergyCostAccruedV1] = []
+        for point, cycle_start in self._ledger.add_read_dates(reads):
+            rows.extend(self._accrue_cycle(point, cycle_start, computed_at=now))
+        return rows
 
     def ingest_bills(self, bills: Iterable[Bill], *, now: datetime) -> list[Outbound]:
         out: list[Outbound] = []
@@ -154,6 +163,8 @@ class EnergyPipeline:
             rec = self._reconcile(bill, now=now)
             if rec is not None:
                 out.append(rec)
+        for accrued in self._apply_read_dates(now=now):
+            out.append(Outbound(self._channels.accrued, ENERGY_ACCRUED_KIND, accrued))
         return out
 
     def _reconcile(self, bill: Bill, *, now: datetime) -> Optional[Outbound]:

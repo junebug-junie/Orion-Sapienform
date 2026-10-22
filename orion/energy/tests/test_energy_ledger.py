@@ -339,3 +339,31 @@ def test_latest_interval_end() -> None:
     for iv in hourly(_S, 5, skip=frozenset({2})):
         led.upsert(iv)
     assert led.latest_interval_end("UP1") == _S + timedelta(hours=5)
+
+
+def test_bill_read_dates_replace_the_scheduled_cycle_start() -> None:
+    """2026-10-20 bill: read Sep 18 -> Oct 19 while ENERGY_BILLING_CYCLE_START_DAY=18 said Oct 18."""
+    led = _ledger(day=18)
+    oct_18_noon = datetime(2026, 10, 18, 12, tzinfo=DENVER)
+    assert led.cycle_bounds(oct_18_noon) == (datetime(2026, 10, 18, tzinfo=DENVER), datetime(2026, 11, 18, tzinfo=DENVER))
+    led.upsert(_iv(oct_18_noon, 1.0))
+    moved = led.add_read_dates([date(2026, 9, 18), date(2026, 10, 19)])
+    assert moved == [("UP123", datetime(2026, 9, 18, tzinfo=DENVER))]
+    assert led.cycle_bounds(oct_18_noon) == (datetime(2026, 9, 18, tzinfo=DENVER), datetime(2026, 10, 19, tzinfo=DENVER))
+    assert led.cycle_bounds(datetime(2026, 10, 19, 0, 30, tzinfo=DENVER)) == (
+        datetime(2026, 10, 19, tzinfo=DENVER), datetime(2026, 11, 18, tzinfo=DENVER),
+    )
+    # Far from any read, the scheduled day still rules.
+    assert led.cycle_bounds(datetime(2027, 1, 5, tzinfo=DENVER))[0] == datetime(2026, 12, 18, tzinfo=DENVER)
+    assert led.add_read_dates([date(2026, 10, 19)]) == []
+
+
+def test_read_date_across_a_month_boundary_still_brackets() -> None:
+    led = _ledger(day=1)
+    led.add_read_dates([date(2026, 1, 30)])  # replaces the scheduled Feb 1
+    assert led.cycle_bounds(datetime(2026, 1, 31, tzinfo=DENVER)) == (
+        datetime(2026, 1, 30, tzinfo=DENVER), datetime(2026, 3, 1, tzinfo=DENVER),
+    )
+    assert led.cycle_bounds(datetime(2026, 1, 29, tzinfo=DENVER)) == (
+        datetime(2026, 1, 1, tzinfo=DENVER), datetime(2026, 1, 30, tzinfo=DENVER),
+    )

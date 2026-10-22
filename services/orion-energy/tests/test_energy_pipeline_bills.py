@@ -107,3 +107,22 @@ def test_stale_forecast_redelivery_is_ignored() -> None:
     # Newer retrieval of the same key wins and republishes.
     newer = p.ingest_bills([_forecast(retrieved=NOW + timedelta(hours=1), total=90.0)], now=NOW)
     assert newer[0].payload.projected_total_usd == 90.0
+
+
+def test_actual_bill_moves_the_cycle_to_its_read_dates_and_reaccrues() -> None:
+    """Usage the scheduled day put in a new cycle is re-accrued into the bill's period."""
+    p = EnergyPipeline(
+        ledger=make_test_ledger(cycle_start_day=18), channels=EnergyChannels("u", "a", "r"), usage_point_id="UP1",
+    )
+    p.ingest_intervals(hourly(datetime(2026, 9, 18, tzinfo=timezone.utc), 24 * 33), now=NOW)  # Sep 18 - Oct 20
+    bill = EnergyBillActualV1(
+        source="file_drop", billing_period_start=date(2026, 9, 18), billing_period_end=date(2026, 10, 19),
+        kwh_billed=3106, current_charges=427.39, retrieved_at=NOW,
+    )
+    out = p.ingest_bills([bill], now=NOW)
+    accrued = [o.payload for o in out if o.channel == "a"]
+    by_hour = {a.interval_start: a.cycle_start for a in accrued}
+    assert by_hour[datetime(2026, 10, 18, 12, tzinfo=timezone.utc)] == date(2026, 9, 18)
+    assert by_hour[datetime(2026, 10, 19, 12, tzinfo=timezone.utc)] == date(2026, 10, 19)
+    assert p.ingest_bills([bill.model_copy(update={"retrieved_at": NOW + timedelta(hours=1)})], now=NOW)[-1].kind \
+        == ENERGY_RECONCILE_KIND  # same reads again: nothing re-accrues

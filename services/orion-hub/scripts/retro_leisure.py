@@ -503,6 +503,11 @@ async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int,
     transport_failures = 0
     try:
         while True:
+            # Python 3.11's asyncio.wait_for (used by every store call) can swallow a cancel that
+            # lands as its inner call completes. Honour a pending cancel explicitly.
+            me = asyncio.current_task()
+            if me is not None and getattr(me, 'cancelling', lambda: 0)():
+                raise asyncio.CancelledError()
             now = deps.clock()
             elapsed = now - run.started_at
             if elapsed >= s['session_max_sec']:

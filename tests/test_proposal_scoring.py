@@ -502,7 +502,10 @@ _EMPTY_DIMENSION_TEMPLATES_ALLOWED = frozenset(
      # measures "worth reading", so a dimension weight would be a hand-typed float. Its pacing is
      # elsewhere and measured: the allocator scores it on the look act's own belief and cost, a
      # decision holds it 12000 s, and Hub gates it (cap 8/day, arousal, thermal, the lane's window).
-     "read_world_pulse"}
+     "read_world_pulse",
+     # 2026-10-22 (Orion plays Zelda, leisure): same reason as read_world_pulse. Paced by Hub's runner
+     # (1 per 3 h, 90 min/day) and a 2400 s act hold, scored on the play act's own belief and cost.
+     "retro_leisure_session"}
 )
 
 

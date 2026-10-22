@@ -26,8 +26,10 @@ GrammarEventKind = Literal[
 
 # Closed, versioned verb vocabulary (design section 3.2). The same at every
 # level. Producers as of rung 2: make (orion-thought paintings), say (hub chat
-# reply, outreach), ask (outreach), look (reading). The others are reserved by
-# the design and have no producer yet; a new producer must ship with a test.
+# reply, outreach), ask (outreach), look (reading), play (hub retro leisure
+# session, 2026-10-22: docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md
+# section E). The others are reserved by the design and have no producer yet; a
+# new producer must ship with a test.
 ActVerb = Literal[
     "sense",
     "look",
@@ -40,6 +42,7 @@ ActVerb = Literal[
     "make",
     "maintain",
     "regulate",
+    "play",
 ]
 
 ActLevel = Literal["metabolic", "organ", "faculty", "deliberate"]

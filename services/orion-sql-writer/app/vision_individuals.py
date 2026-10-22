@@ -1235,11 +1235,13 @@ def _check_tables(conn) -> None:
 
 def run_one_individuals_cycle(
     *, postgres_uri: str, cfg: IndividualsConfig, zones_by_stream: Dict[str, List[Zone]],
-    now: Optional[datetime] = None, person_cfg: Any = None,
+    now: Optional[datetime] = None, person_cfg: Any = None, person_record_cfg: Any = None,
 ) -> Tuple[dict, List[dict]]:
     """One full tick. Returns (summary, opened_asks as OrionAskV1 dicts to publish).
     ``person_cfg`` (a vision_person_model.PersonModelConfig): also run one person
-    model cycle (albums, bars, guesses) under the same lock, after answers apply."""
+    model cycle (albums, bars, guesses) under the same lock, after answers apply.
+    ``person_record_cfg`` (app.person_record.PersonRecordConfig): keep the person
+    record and its questions current from the names, same lock."""
     from sqlalchemy import create_engine, text
 
     ts = now or datetime.now(timezone.utc)
@@ -1306,6 +1308,18 @@ def run_one_individuals_cycle(
         with engine.begin() as conn:
             opened = _open_asks(conn, ts, tz, cfg)
             summary["asks_opened"] = len(opened)
+        if person_record_cfg is not None:
+            from app.person_record import run_person_record
+
+            # Its own transaction, after names were applied this tick: a failure never blocks the prune.
+            try:
+                with engine.begin() as conn:
+                    record_summary, record_opened = run_person_record(conn, ts, person_record_cfg, cfg)
+                summary.update(record_summary)
+                opened.extend(record_opened)
+            except Exception as exc:
+                summary["person_record_error"] = str(exc)[:200]
+                logger.warning("person_record_failed error=%s", exc)
         with engine.begin() as conn:
             _prune(conn, ts, cfg, summary)
     except Exception as exc:

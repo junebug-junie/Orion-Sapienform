@@ -17,5 +17,8 @@ COPY orion /app/orion
 COPY config/vision_zones.yaml /app/config/vision_zones.yaml
 # Camera portals for the handoff reducer (orion/vision/topology.py).
 COPY config/vision_topology.yaml /app/config/vision_topology.yaml
+# People Orion knows by name and stated pronouns (app/person_record.py,
+# orion/person_model/person.py resolves it as /app/config/person_model/people.yaml).
+COPY config/person_model/people.yaml /app/config/person_model/people.yaml
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8220"]

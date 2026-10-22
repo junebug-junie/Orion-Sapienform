@@ -322,3 +322,7 @@ navigator and atlas (Lane A) to be deployed; until then the Hub code is idle.
   `python services/orion-hub/evals/retro_play_panel.py --output /tmp/retro-play-panel`
   (set `RETRO_PUPPETEER_PACKAGE` to a `package.json` with puppeteer installed if
   the local `node_modules` is incomplete).
+- **Session end** (`scripts/retro_session_end.py`). Leisure returns a `RetroSessionEnded`.
+  Co-play sends one to `app.state.retro_session_end_sink` (none registered means nothing is
+  written). It carries Retro's atlas record (`rooms_new`, `deaths`, `controller_frames`), and a
+  field stays None when Retro did not report it.

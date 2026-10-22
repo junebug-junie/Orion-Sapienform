@@ -37,6 +37,27 @@ is unchanged. The shapes were checked against Lane A's PR #2851 (`feat/zelda-ret
 - **Session-end data** (`scripts/retro_session_end.py`, `RetroSessionEnded`). This is the data
   contract for Lane C's summary and memory card. It has no default writer and no no-op hook.
 
+## Follow-up for Lane C (#2854)
+
+- `RetroSessionEnded` adds `rooms_new`, `deaths` and `controller_frames`. They are read from
+  Retro's `zelda.atlas.session` (`retro_session_end.atlas_session_fields`). A value Retro did
+  not report stays None, never 0. `leisure_id` is now Optional.
+- `controller_frames` is copied verbatim from Retro's key `controller_frames`. A frame counts as
+  human when its tag starts with `human`. Both names are PROVISIONAL until Lane A publishes its
+  controller tags. They live in one place: `CONTROLLER_FRAMES_KEY` and `HUMAN_TAG_PREFIX`.
+- Co-play session end: the relay watches every browser cognition handoff on a Zelda session
+  (`watch_coplay`, 2 s polls) until Retro ends it. The causes are stop, takeover, expiry,
+  disconnect, or the session ending. It then calls `app.state.retro_session_end_sink(ended)`,
+  which may be sync or async.
+  - The record has `leisure_id=None` and `controller='co_play'`.
+  - `human_may_be_in_control` is True unless Retro's counts show zero human frames.
+  - When no sink is registered, nothing is written.
+  - A sink error is logged and never touches play.
+- Leisure end records also carry the atlas fields. Human frames in the record count as "a human
+  may be in control", so the runner does not save over or stop that game.
+- The planner's room map now uses Retro's `attempt.observation.terrain` (#/./x/C), with Link,
+  enemies and drops drawn on top. The terrain is not repeated in the observation JSON.
+
 ## Outcome moved
 
 Before: Retro play could only run with a browser sponsoring it, one Nova goal every 5 s.
@@ -119,8 +140,8 @@ journaled whenever the allocator admits `play` and the cabinet is cool.
 ## Tests run
 
 ```text
-python -m pytest services/orion-hub/tests/retro -q                     82 passed (py3.12)
-uv run --python 3.11 (CI's native-boundary deps) pytest .../tests/retro  82 passed
+python -m pytest services/orion-hub/tests/retro -q                     88 passed (py3.12)
+uv run --python 3.11 (CI's native-boundary deps) pytest .../tests/retro  88 passed
 python -m pytest services/orion-hub/tests/test_regulation_must_not_readers.py \
   services/orion-hub/tests/test_regulation_arousal_readers.py -q        77 passed
 python -m pytest tests/test_no_personal_terms.py -q                     7 passed
@@ -234,12 +255,9 @@ Run this from the clean primary main checkout, after Lane A's PR and this PR are
 
 ## Risks / concerns
 
-- Severity: should-fix (cross-lane).
-  - Concern: Lane A strips `walls` from the offered observation
-    (`observe.summary`). The planner's room map then shows Link, enemies, drops, caves and
-    blocked tiles on unknown terrain (`?`), and says so in the prompt.
-  - Mitigation: the Hub renders walls as soon as they appear in `attempt.observation`. Ask
-    Lane A to keep `walls` in the offer, or to add a text map.
+- Severity: low.
+  - Concern: the controller-count key names are provisional (see the follow-up section). Until
+    they match, `controller_frames` stays None and co-play reads as "maybe human".
 - Severity: medium.
   - Concern: acceptance check 4 (a real ≥10-minute local-GPU session: sword, 8 new rooms,
     verdicts, BLOCKED while hot) is UNVERIFIED. It needs Lane A deployed and the cabinet below

@@ -17,6 +17,7 @@ on:
       - 'services/orion-hub/templates/retro.html'
       - 'services/orion-hub/tests/retro/**'
       - 'services/orion-hub/evals/retro_browser*'
+      - 'services/orion-hub/evals/retro_play_panel*'
       - 'services/orion-hub/evals/retro_play.mjs'
       - '.github/workflows/retro-preflight.yml'
   push:
@@ -37,6 +38,7 @@ on:
       - 'services/orion-hub/templates/retro.html'
       - 'services/orion-hub/tests/retro/**'
       - 'services/orion-hub/evals/retro_browser*'
+      - 'services/orion-hub/evals/retro_play_panel*'
       - 'services/orion-hub/evals/retro_play.mjs'
       - '.github/workflows/retro-preflight.yml'
 permissions:

@@ -24,6 +24,8 @@
       --series-6:  #008300;
       --series-7:  #9085e9;
       --series-8:  #e66767;
+      --orion-total: #9085e9; /* slot 7 (violet) dark step: Orion's sum, not any one source */
+      --rest-fill:   rgba(255, 255, 255, 0.10); /* gap between the house and Orion lines */
     }
     body { font-family: Inter, system-ui, sans-serif; }
     #oeTooltip {
@@ -82,10 +84,11 @@
     </section>
 
     <section class="rounded-xl border border-gray-800 p-3" style="background:var(--surface)">
-      <h3 class="text-sm font-semibold text-gray-100">Orion's share of the house</h3>
-      <p class="text-[11px] text-gray-500 mt-0.5">Counted only over hours where both Orion's meters and the RMP meter have data.</p>
+      <h3 class="text-sm font-semibold text-gray-100">Orion against the whole house</h3>
+      <p class="text-[11px] text-gray-500 mt-0.5">Both lines cover the same hours: only hours where Orion's meters and the RMP meter both have data. The shaded gap is the rest of the house. Hover for Orion's share.</p>
       <p id="oeHourNote" class="hidden text-[11px] text-amber-400 mt-0.5">RMP rounds every hour to a whole kWh, so one hour's share can be off by 20 points or more. Use Day or longer for a real comparison.</p>
-      <div id="oeShareChart" class="mt-2 w-full"></div>
+      <div id="oeDeltaLegend" class="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[11px] text-gray-300"></div>
+      <div id="oeDeltaChart" class="mt-2 w-full"></div>
     </section>
 
     <details class="rounded-xl border border-gray-800 bg-gray-900/40 p-3">

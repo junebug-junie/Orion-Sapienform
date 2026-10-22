@@ -27,7 +27,8 @@ TOGETHER = ("Played The Legend of Zelda together for 40 min (a human drove 64% o
 
 def row(session_id: str, start, minutes: float, summary: str, **kw) -> dict:
     base = {"session_id": session_id, "lineage_id": "lin-1", "game_id": "zelda-prg0",
-            "game_title": "The Legend of Zelda", "kind": "leisure",
+            "game_title": "The Legend of Zelda", "kind": "leisure", "control_basis": "leisure_sponsor",
+            "predictions_unknown": 0,
             "started_at": start, "ended_at": start + timedelta(minutes=minutes), "summary": summary,
             "played_together": False, "human_share": 0.0, "decisions": 31, "predictions_met": 14,
             "rooms_new": 9, "deaths": 2, "memory_card_id": UUID("00000000-0000-4000-8000-000000000001")}
@@ -69,9 +70,13 @@ def test_one_session_is_one_closed_play_arc_labelled_with_its_summary() -> None:
 
 def test_label_says_who_played_from_the_control_share() -> None:
     assert S.retro_play_label(row("a", at(0), 1, TOGETHER, kind="co_play", played_together=True, decisions=9,
-                                  predictions_met=5)) == "The Legend of Zelda together, 5 of 9 predictions met"
-    assert S.retro_play_label(row("b", at(0), 1, SOLO, kind="co_play")) == (
+                                  predictions_met=5, control_basis="frames")) == "The Legend of Zelda together, 5 of 9 predictions met"
+    assert S.retro_play_label(row("b", at(0), 1, SOLO, kind="co_play", control_basis="unknown")) == (
         "The Legend of Zelda with a human, 14 of 31 predictions met")
+    # A leisure session a human may have taken over is never "solo".
+    assert S.retro_play_label(row("d", at(0), 1, SOLO, control_basis="unknown", predictions_unknown=5)) == (
+        "The Legend of Zelda with a human, 14 of 31 predictions met, 5 unknown")
+    assert S.retro_play_label(row("e", at(0), 1, SOLO, decisions=None)) == "The Legend of Zelda solo"
     assert S.retro_play_label(row("c", at(0), 1, SOLO, decisions=0)) == "The Legend of Zelda solo, no planner decisions"
 
 
@@ -79,7 +84,7 @@ def test_stance_cue_names_todays_latest_session() -> None:
     now = at(90)
     cue = project_stance_cue(_frame([row("sess-1", at(0), 22, SOLO),
                                      row("sess-2", at(30), 40, TOGETHER, kind="co_play", played_together=True,
-                                         decisions=9, predictions_met=5)], now), now)
+                                         control_basis="frames", decisions=9, predictions_met=5)], now), now)
     (arc_id,) = [i for i in cue.arc_ids]
     label = "The Legend of Zelda together, 5 of 9 predictions met"
     assert f"Played {label} (09:30 to 10:10) [arc:{arc_id}]." in cue.text

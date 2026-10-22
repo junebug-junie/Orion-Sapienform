@@ -211,6 +211,20 @@ async def test_no_answer_holds_the_route_five_minutes(monkeypatch) -> None:
     assert worker._store.save_dispatch_result.call_args.kwargs["status"] == "failed"
 
 
+def test_no_answer_still_names_the_proven_episode_object(monkeypatch) -> None:
+    """Hub may have started the session: the deterministic object lets the act's close resolve it."""
+    worker = _worker(monkeypatch)
+    worker._settle_retro_leisure_episode(DISPATCH, None)
+    worker._store.set_act_episode_object.assert_called_once_with(DISPATCH, retro_leisure_object_ref(DISPATCH))
+    worker._store.void_act_episode.assert_not_called()
+
+
+def test_a_started_session_holds_the_route_before_its_act_is_stored(monkeypatch) -> None:
+    worker = _worker(monkeypatch)
+    worker._log_allocator_preview(_frame(_cand()), MOTOR)
+    assert worker._store.act_in_flight.call_args.kwargs["started_within_sec"] == 2400.0
+
+
 def test_a_proven_decision_is_named_or_voided_by_the_doer(monkeypatch) -> None:
     worker = _worker(monkeypatch)
     ref = retro_leisure_object_ref(DISPATCH)

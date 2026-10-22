@@ -746,9 +746,10 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin):
             if ref is not None:
                 if act_costs is None:
                     act_costs = self._load_act_costs()
-                if (item.cortex_verb or "") == RETRO_LEISURE_EXECUTOR_VERB:
-                    # Orion plays Zelda: a session's own wall time, or the session cap while cold.
-                    act_cost = self._retro_leisure_cost(ref)
+                if ref.cost_source == "act_duration":
+                    # The act's own measured open->close time, or the route's declared ceiling while
+                    # the act has never closed (retro_leisure_session: the session cap).
+                    act_cost = self._act_duration_or_ceiling_cost(ref)
                 else:
                     act_cost = (self._act_duration_cost(ref) if ref.object_source == "queue"
                                 else act_costs.get((item.dispatch_kind, item.target_id)))
@@ -1257,11 +1258,15 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin):
                                                   target_id=item.target_id,
                                                   # A queue object's actor runs concurrent lane reads.
                                                   include_open_acts=ref.object_source != "queue",
+                                                  # A started act-duration route (retro leisure) is
+                                                  # held too, before its open act is stored.
                                                   # ...so a started pull holds the route for its
                                                   # horizon instead, on every path (information,
                                                   # probe), not only the proven one.
                                                   started_within_sec=(float(ref.horizon_sec)
-                                                                      if ref.object_source == "queue" else None))
+                                                                      if ref.object_source == "queue"
+                                                                      or ref.cost_source == "act_duration"
+                                                                      else None))
                         # A proven-effect decision (either arm) holds the act for its horizon, so a
                         # held-back act is not simply re-proposed seconds later.
                         or self._store.act_episode_in_flight(actor=ref.actor, now=datetime.now(timezone.utc)))

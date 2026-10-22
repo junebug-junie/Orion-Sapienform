@@ -50,6 +50,7 @@ class _Ended:
     act_id: str | None = DISPATCH
     decisions_planned: int = 31
     verdicts: dict = field(default_factory=lambda: {"met": 14, "refuted": 12, "unknown": 3})
+    human_may_be_in_control: bool = False
 
     def as_dict(self):
         from dataclasses import asdict
@@ -107,9 +108,10 @@ def exported(monkeypatch):
 
     calls = []
 
-    async def fake_export(*, pool, bus, ended, enabled=None):
+    async def fake_export(*, pool, bus, ended, dispatch_id=None, enabled=None):
+        assert dispatch_id == ended.act_id
         calls.append(ended)
-        await act_emit.publish_play_closed(bus, dispatch_id=ended.act_id, session_id=ended.session_id,
+        await act_emit.publish_play_closed(bus, dispatch_id=dispatch_id, session_id=ended.session_id,
                                            produced=True, note="exported")
         return rx.ExportResult("exported", ended.session_id, card_id="c1")
 

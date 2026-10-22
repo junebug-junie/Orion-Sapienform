@@ -164,8 +164,8 @@ class RetroLeisureListener:
         try:
             outcome = await session
         except asyncio.CancelledError:
-            await publish_play_closed(self.bus, dispatch_id=dispatch_id, session_id=None, produced=False,
-                                      note="hub_stopped")
+            # Hub is stopping (often a deliberate rebuild mid-game). Not graded here: the act is left
+            # open and the writer expires it at its horizon (a known confound, recorded in the PR).
             raise
         except Exception:  # noqa: BLE001
             logger.warning("retro_leisure_run_failed dispatch_id=%s", dispatch_id, exc_info=True)
@@ -177,7 +177,8 @@ class RetroLeisureListener:
             await publish_play_closed(self.bus, dispatch_id=dispatch_id, session_id=None, produced=False,
                                       note=f"no_session:{getattr(outcome, 'refusal', None)}"[:200])
             return
-        result = await export_leisure_outcome(pool=self.pool_provider(), bus=self.bus, ended=ended)
+        result = await export_leisure_outcome(pool=self.pool_provider(), bus=self.bus, ended=ended,
+                                              dispatch_id=dispatch_id)
         logger.info("retro_leisure_exported dispatch_id=%s session_id=%s state=%s card_id=%s",
                     dispatch_id, result.session_id, result.state, result.card_id)
 

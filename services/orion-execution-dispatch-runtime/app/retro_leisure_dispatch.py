@@ -8,9 +8,12 @@ allocator admits or refuses; Hub's leisure runner runs every gate and plays. Mix
   kill switch (``retro_leisure_disabled``) or the doer's last refusal still holding
   (``doer_refused:<why>``, for Hub's own ``retry_after_sec``). The worker records it as
   ``allocator:<reason>`` on the dispatch frame like every other refusal.
-- ``_retro_leisure_cost(ref)``: the play act's own measured open->close seconds (a session's wall
-  time), or the route's ``cold_cost_ceiling_sec`` (the runner's session cap) while no session has
-  closed yet. A cost that cannot be read is None (refused ``no_cost_estimate``), never the ceiling.
+- ``_act_duration_or_ceiling_cost(ref)`` (any route with ``cost_source: act_duration``): the act's
+  own measured open->close seconds (for play, a session's wall time), or the route's
+  ``cold_cost_ceiling_sec`` (the runner's session cap) while the act has never closed. This is the
+  one exception to "no typed fallback": the ceiling is the doer's enforced maximum, used only when no
+  close exists, so a cold act is charged its worst case. A cost that cannot be read is None (refused
+  ``no_cost_estimate``), never the ceiling.
 - ``_send_retro_leisure(bus, frame, candidate, now=)``: one start RPC. The session's object is minted
   by the dispatch, so there is no control arm and no side-effect-free check first.
 """
@@ -30,6 +33,7 @@ from orion.schemas.retro_leisure import (
     RETRO_LEISURE_START_REQUEST_KIND,
     RetroLeisureStartRequestV1,
     RetroLeisureStartResultV1,
+    retro_leisure_object_ref,
 )
 
 logger = logging.getLogger("execution-dispatch-runtime.retro_leisure")
@@ -61,13 +65,13 @@ class RetroLeisureDispatchMixin:
         wait = float(retry_after_sec or 0.0) or FAILURE_HOLD_SEC
         self._retro_leisure_hold = (datetime.now(timezone.utc) + timedelta(seconds=wait), why)
 
-    def _retro_leisure_cost(self, ref) -> float | None:
+    def _act_duration_or_ceiling_cost(self, ref) -> float | None:
         try:
             measured = self._store.act_duration_p50_sec(
                 actor=ref.actor, verb=ref.verb, signal_id=ref.signal_id,
                 lookback_hours=int(self._settings.orion_dispatch_act_cost_lookback_hours))
         except Exception:
-            logger.warning("retro_leisure_cost_unreadable act=%s", ref.label(), exc_info=True)
+            logger.warning("act_duration_cost_unreadable act=%s", ref.label(), exc_info=True)
             return None
         if measured is not None:
             return measured
@@ -86,13 +90,14 @@ class RetroLeisureDispatchMixin:
 
     def _settle_retro_leisure_episode(self, dispatch_id: str, out: RetroLeisureStartResultV1 | None) -> None:
         """A proven-path decision was precommitted before the RPC: name its object (the play act's
-        key, resolved by the act's own close) or void it (the doer refused)."""
+        key, resolved by the act's own close) or void it (the doer refused). With no answer, Hub may
+        still have started the session: the object is named anyway (it is deterministic), so the
+        act's own close, or its expiry, resolves the episode."""
         try:
-            if out is not None and out.state == "started" and out.object_ref:
-                self._store.set_act_episode_object(dispatch_id, out.object_ref)
-            elif out is not None and out.state == "refused":
+            if out is not None and out.state == "refused":
                 self._store.void_act_episode(dispatch_id, f"{DOER_REFUSED_PREFIX}:{out.refusal}")
-            # An RPC error leaves the row as precommitted: Hub may have started the session.
+            else:
+                self._store.set_act_episode_object(dispatch_id, retro_leisure_object_ref(dispatch_id))
         except Exception:
             logger.warning("retro_leisure_episode_settle_failed dispatch_id=%s", dispatch_id, exc_info=True)
 

@@ -428,22 +428,27 @@ def arousal_transition(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEvent
 
 def retro_play_label(row: Row) -> str:
     """A short, deterministic phrase for one session, from the row's own fields: the game, who played
-    (``solo`` for a leisure session, ``together`` when a human drove more than half of the frames, else
-    ``with a human``) and the prediction count. The full summary stays on the row and the memory card;
+    (``solo`` only for a leisure session with a recorded human share of 0, ``together`` when a human
+    drove more than half of the frames, else ``with a human``) and the prediction count. The full summary stays on the row and the memory card;
     the stance cue has room for this phrase only (STANCE_CUE_MAX_CHARS)."""
     title = str(row.get("game_title") or row.get("game_id") or "a game")
     if row.get("played_together"):
         who = "together"
-    elif row.get("kind") == "leisure":
+    elif row.get("kind") == "leisure" and row.get("control_basis") in ("leisure_sponsor", "frames") \
+            and row.get("human_share") in (0, 0.0):
         who = "solo"
     else:
         who = "with a human"
-    decisions = int(row.get("decisions") or 0)
+    decisions = row.get("decisions")
     if decisions:
-        done = f"{int(row.get('predictions_met') or 0)} of {decisions} predictions met"
+        met = int(row.get("predictions_met") or 0)
+        unknown = int(row.get("predictions_unknown") or 0)
+        done = f", {met} of {int(decisions)} predictions met" + (f", {unknown} unknown" if unknown else "")
+    elif decisions == 0:
+        done = ", no planner decisions"
     else:
-        done = "no planner decisions"
-    return clip(f"{title} {who}, {done}")
+        done = ""
+    return clip(f"{title} {who}{done}")
 
 
 def retro_play(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:

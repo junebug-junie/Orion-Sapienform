@@ -8,7 +8,7 @@
    "kind": "leisure",
    "started_at": "2026-10-11T16:02:00+00:00",
    "ended_at": "2026-10-11T16:24:00+00:00",
-   "summary": "Played The Legend of Zelda solo for 22 min, 9 new rooms (3 caves), got the wooden sword, died twice, 14 of 31 predictions met.",
+   "summary": "Played The Legend of Zelda solo for 22 min, 9 new rooms (3 caves), got the wooden sword, died twice, 14 of 31 predictions met, 5 unknown.",
    "played_together": false,
    "human_share": 0.0,
    "decisions": 31,
@@ -16,7 +16,9 @@
    "rooms_new": 9,
    "deaths": 2,
    "memory_card_id": null,
-   "game_title": "The Legend of Zelda"
+   "game_title": "The Legend of Zelda",
+   "control_basis": "leisure_sponsor",
+   "predictions_unknown": 5
   },
   {
    "session_id": "fx-together",
@@ -25,7 +27,7 @@
    "kind": "co_play",
    "started_at": "2026-10-11T16:30:00+00:00",
    "ended_at": "2026-10-11T17:10:00+00:00",
-   "summary": "Played The Legend of Zelda together for 40 min (a human drove 64% of frames), 3 new rooms, 5 of 9 predictions met.",
+   "summary": "Played The Legend of Zelda together for 40 min (a human drove 64% of frames), 3 new rooms, 5 of 9 predictions met, 1 unknown.",
    "played_together": true,
    "human_share": 0.64,
    "decisions": 9,
@@ -33,7 +35,9 @@
    "rooms_new": 3,
    "deaths": 0,
    "memory_card_id": null,
-   "game_title": "The Legend of Zelda"
+   "game_title": "The Legend of Zelda",
+   "control_basis": "frames",
+   "predictions_unknown": 1
   },
   {
    "session_id": "fx-empty",
@@ -44,13 +48,15 @@
    "ended_at": "2026-10-11T17:13:00+00:00",
    "summary": "Played The Legend of Zelda solo for 1 min, 0 new rooms, no planner decisions.",
    "played_together": false,
-   "human_share": null,
+   "human_share": 0.0,
    "decisions": 0,
    "predictions_met": 0,
    "rooms_new": 0,
    "deaths": 0,
    "memory_card_id": null,
-   "game_title": "The Legend of Zelda"
+   "game_title": "The Legend of Zelda",
+   "control_basis": "leisure_sponsor",
+   "predictions_unknown": 0
   }
  ]
 }

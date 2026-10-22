@@ -85,6 +85,8 @@ class ActRouteRefV1(BaseModel):
     # Where the act's measured cost comes from. None keeps the object_source rule above. "act_duration":
     # the act's own measured open->close time (grammar_acts), for a route whose dispatch is only an
     # RPC that starts the work (retro_leisure_session: a session runs minutes after the RPC answers).
+    # Such a route is also held in flight for horizon_sec after Hub answers `started`, before its open
+    # act is stored (the worker's _act_in_flight).
     cost_source: Literal["act_duration"] | None = None
     # Charged only while the act has no measured cost yet (never graded). Must be the doer's own
     # enforced ceiling for one act, so a cold act is charged its worst case, never a typical guess:

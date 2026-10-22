@@ -314,7 +314,6 @@ def project_stance_cue(
             woke = last_sleep.ended_at or last_sleep.last_seen_at or last_sleep.began_at
             clauses.append((f"Last slept {_ago(now, woke)} ago {_ref(last_sleep)}.", [last_sleep]))
 
-
     kept = list(clauses)
     thread_limit = MAX_THREAD_REFS
     while kept and len(" ".join([head] + [c for c, _ in kept])) > max_chars:

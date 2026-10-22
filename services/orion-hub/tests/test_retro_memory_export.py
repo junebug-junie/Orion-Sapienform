@@ -57,7 +57,7 @@ def _summary(**kw):
 def test_summary_is_facts_and_counts_like_the_spec_example() -> None:
     s = _summary()
     assert s.summary == ("Played The Legend of Zelda solo for 22 min, 9 new rooms (3 caves), got the wooden sword, "
-                         "died twice, 14 of 31 predictions met.")
+                         "died twice, 14 of 31 predictions met, 5 unknown.")
     assert (s.rooms_new, s.caves_new, s.deaths, s.death_rooms) == (9, 3, 2, ["0:79"])
     assert (s.decisions, s.predictions_met, s.predictions_refuted, s.predictions_unknown) == (31, 14, 12, 5)
     assert s.human_share == 0.0 and not s.played_together and s.control_basis == "frames"
@@ -100,7 +100,7 @@ def test_no_frame_lines_leisure_is_orions_by_the_sponsor_rule_co_play_is_unknown
 def test_unrecorded_atlas_counts_are_left_out_never_zero() -> None:
     s = _summary(delta={})
     assert (s.rooms_new, s.caves_new, s.deaths) == (None, None, None)
-    assert s.summary == "Played The Legend of Zelda solo for 22 min, 14 of 31 predictions met."
+    assert s.summary == "Played The Legend of Zelda solo for 22 min, 14 of 31 predictions met, 5 unknown."
 
 
 def test_verdict_counts_stand_in_when_the_journal_has_no_goal_lines() -> None:
@@ -108,7 +108,7 @@ def test_verdict_counts_stand_in_when_the_journal_has_no_goal_lines() -> None:
     s = rx.build_session_summary("s", journal, {"rooms_new": 4, "deaths": 1}, kind="leisure", game_id="zelda",
                                  verdict_counts={"met": 5, "refuted": 2, "unknown": 1}, decisions=9)
     assert (s.decisions, s.predictions_met, s.predictions_refuted, s.predictions_unknown) == (9, 5, 2, 2)
-    assert s.summary.endswith("4 new rooms, died once, 5 of 9 predictions met.")
+    assert s.summary.endswith("4 new rooms, died once, 5 of 9 predictions met, 2 unknown.")
 
 
 def test_lane_b_session_end_maps_onto_the_builder() -> None:
@@ -120,11 +120,24 @@ def test_lane_b_session_end_maps_onto_the_builder() -> None:
     assert (kw["kind"], kw["dispatch_id"], kw["atlas_delta"]) == ("leisure", "d:1", {"rooms_new": 9, "deaths": 2})
     s = rx.build_session_summary(**kw)
     assert s.summary == ("Played The Legend of Zelda solo for 22 min, 9 new rooms, died twice, "
-                         "14 of 31 predictions met.")
+                         "14 of 31 predictions met, 5 unknown.")
     assert (s.started_at.isoformat(), s.end_reason) == ("2026-10-22T20:02:00+00:00", "session_cap")
     # Without Lane A's atlas record: the room and death counts are simply not claimed.
     bare = rx.build_session_summary(**rx.leisure_inputs({k: v for k, v in ended.items() if k != "atlas_session"}))
-    assert bare.summary == "Played The Legend of Zelda solo for 22 min, 14 of 31 predictions met."
+    assert bare.summary == "Played The Legend of Zelda solo for 22 min, 14 of 31 predictions met, 5 unknown."
+    # Lane B's flag: a human may have been in control -> never "solo", no share claimed.
+    held = rx.build_session_summary(**rx.leisure_inputs(dict(ended, human_may_be_in_control=True)))
+    assert (held.control_basis, held.human_share, held.played_together) == ("unknown", None, False)
+    assert held.summary.startswith("Played The Legend of Zelda with a human for 22 min (control share not recorded)")
+    # Frame attribution, when the runner sends it, replaces the sponsor rule.
+    framed = rx.build_session_summary(**rx.leisure_inputs(dict(
+        ended, control=[{"port": 0, "human_frames": 700, "orion_frames": 300}])))
+    assert (framed.control_basis, framed.played_together) == ("frames", True)
+    assert framed.summary.startswith("Played The Legend of Zelda together for 22 min (a human drove 70% of frames)")
+    # No decision count recorded at all: not claimed as "no planner decisions".
+    none = rx.build_session_summary(**rx.leisure_inputs(
+        {k: v for k, v in ended.items() if k not in ("decisions_planned", "verdicts", "atlas_session")}))
+    assert none.decisions is None and none.summary == "Played The Legend of Zelda solo for 22 min."
 
 
 def test_game_title_by_id_segment() -> None:
@@ -146,20 +159,26 @@ def test_unbounded_journal_is_not_summarized() -> None:
 
 def test_no_decisions_and_unknown_game_render_plainly() -> None:
     s = rx.build_session_summary("s", _journal(met=0, refuted=0, unknown=0, minutes=0), {}, kind="leisure",
-                                 game_id="nova-1")
+                                 game_id="nova-1", decisions=0)
     assert s.summary == "Played nova-1 solo for under a minute, no planner decisions."
+    unrecorded = rx.build_session_summary("s", _journal(met=0, refuted=0, unknown=0, minutes=0), {},
+                                          kind="leisure", game_id="nova-1")
+    assert unrecorded.decisions is None and unrecorded.summary == "Played nova-1 solo for under a minute."
 
 
 def test_card_is_an_active_retro_play_memory_linked_to_session_and_lineage() -> None:
     card = rx.memory_card_for(_summary())
     assert (card.provenance, card.trust_source, card.status, card.confidence) == (
         "retro_play", "retro_play", "active", "certain")
+    assert rx.memory_card_for(_summary(human=0, orion=0)).confidence == "likely"  # share inferred, not counted
     assert card.anchors == ["retro_session:sess-1", "retro_lineage:lin-1"]
     assert card.title == "Played The Legend of Zelda on 2026-10-22"
-    assert card.summary == _summary().summary and card.slug == "retro-play-sess-1"
+    assert card.summary == _summary().summary and re.fullmatch(r"retro-play-sess-1-[0-9a-f]{8}", card.slug)
     assert card.subschema["retro_play"]["human_share"] == 0.0
     weird = rx.memory_card_for(rx.build_session_summary("A/B c:1", _journal(), DELTA, kind="leisure", game_id="zelda"))
-    assert weird.slug == "retro-play-a-b-c-1"
+    assert weird.slug.startswith("retro-play-a-b-c-1-")
+    twin = rx.memory_card_for(rx.build_session_summary("a b/c 1", _journal(), DELTA, kind="leisure", game_id="zelda"))
+    assert twin.slug != weird.slug  # different ids never share a slug
 
 
 def test_lazy_ddl_and_migration_declare_the_same_columns() -> None:
@@ -283,13 +302,15 @@ async def test_export_claims_the_row_writes_one_card_links_it_and_closes_the_act
     assert ev.act.outcome.value == 1.0 and ev.act.test_before == "retro_leisure_dispatch:dispatch:proposal:retro_leisure_session:t1"
     # A replayed session end: no second card, no second close.
     again = await _export(pool, bus)
-    assert again.state == "duplicate" and len(cards) == 1 and len(bus.events()) == 1
+    assert again.state == "duplicate" and len(cards) == 1
+    # The close is repeated with the same act id (the first may not have been delivered).
+    assert [e.act.act_id for e in bus.events()] == [ev.act.act_id] * 2
 
 
 @pytest.mark.asyncio
 async def test_a_session_with_no_planner_decision_closes_its_act_at_zero(cards) -> None:
     bus = _Bus()
-    out = await _export(_Pool(), bus, journal=_journal(met=0, refuted=0, unknown=0))
+    out = await _export(_Pool(), bus, journal=_journal(met=0, refuted=0, unknown=0), decisions=0)
     assert out.state == "exported" and len(cards) == 1
     (ev,) = bus.events()
     assert ev.act.outcome.value == 0.0 and ev.act.outcome.note == "no_planner_decisions"

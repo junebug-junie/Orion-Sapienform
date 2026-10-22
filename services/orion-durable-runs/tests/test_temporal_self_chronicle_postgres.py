@@ -336,6 +336,7 @@ def test_retro_play_rows_fold_into_one_play_arc_and_a_missing_table_reads_nothin
             "session_id": "sess-1", "lineage_id": "lin-1", "game_id": "zelda-prg0", "game_title": "The Legend of Zelda",
             "kind": "leisure", "dispatch_id": "d:1", "started_at": start, "ended_at": start + timedelta(minutes=22),
             "duration_sec": 1320.0, "end_reason": "budget", "control": [{"port": 0, "human_frames": 0, "orion_frames": 79200}],
+            "control_basis": "frames",
             "human_frames": 0, "orion_frames": 79200, "human_share": 0.0, "played_together": False, "rooms_new": 9,
             "caves_new": 3, "items_gained": ["wooden sword"], "deaths": 2, "death_rooms": ["0:79"], "decisions": 31,
             "predictions_met": 14, "predictions_refuted": 12, "predictions_unknown": 5, "human_interventions": 0,
@@ -345,7 +346,7 @@ def test_retro_play_rows_fold_into_one_play_arc_and_a_missing_table_reads_nothin
         lo, hi = T0 - timedelta(minutes=5), T0 + timedelta(minutes=50)
         _, events = await SourceReader(pool, TZ).read(lo, hi, ticks=False, kinds=["retro_play"])
         assert [e.event_id for e in events] == ["retro_play:sess-1"]
-        assert events[0].label.endswith("14 of 31 predictions met")
+        assert events[0].label == "The Legend of Zelda solo, 14 of 31 predictions met, 5 unknown"
         (arc,) = [canon(a) for a in await ChronicleStore(pool).arcs("2026-10-10") if a["kind"] == "play"]
         assert arc["status"] == "closed" and arc["subject_ref"] == "retro_session:sess-1"
         _, off = await SourceReader(pool, TZ, exclude_kinds=("retro_play",)).read(lo, hi, ticks=False)

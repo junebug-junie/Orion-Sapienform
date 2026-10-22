@@ -134,10 +134,11 @@ class RetroPlaySessionSummaryV1(BaseModel):
     items_gained: list[str] = Field(default_factory=list)
     deaths: int | None = Field(None, ge=0)
     death_rooms: list[str] = Field(default_factory=list)
-    decisions: int = Field(ge=0)
+    # None: no lane recorded a decision count (not claimed as 0).
+    decisions: int | None = Field(None, ge=0)
     predictions_met: int = Field(ge=0)
     predictions_refuted: int = Field(ge=0)
-    predictions_unknown: int = Field(ge=0)
+    predictions_unknown: int | None = Field(None, ge=0)
     human_interventions: int = Field(ge=0)
     summary: str = Field(min_length=1, max_length=SUMMARY_MAX)
 

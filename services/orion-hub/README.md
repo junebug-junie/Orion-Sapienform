@@ -3023,7 +3023,9 @@ per interval in `energy_cost_accrued`. Buckets follow `HUB_ENERGY_TIMEZONE` (wee
 Monday). Rules:
 
 - The share counts only hours where both Orion's meters and the RMP meter have data, so RMP's
-  ~24 h lag never reads as Orion using the whole house.
+  ~24 h lag never reads as Orion using the whole house -- and only hours where every reporting
+  source was measured for 90% of the hour (`partial_hours` counts the ones left out). The two
+  kWh tiles cover those same hours.
 - Orion cost prices each Orion hour at that hour's next-kWh rate -- what Orion adds to the
   bill under block pricing. Pre-tax. `orion_priced_kwh` says how much of Orion's kWh had a price.
 - Unknown is null: no rows means `orion_kwh: null`, never 0.

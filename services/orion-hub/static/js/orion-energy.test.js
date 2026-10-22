@@ -58,8 +58,32 @@ test("window totals weight the share by kWh, not by averaging bucket shares", ()
     bucket({}),
   ]);
   assert.equal(t.orion_kwh, 20);
+  assert.equal(t.orion_kwh_overlap, 20);
   assert.equal(t.house_kwh_overlap, 100);
   assert.equal(t.overlap_hours, 48);
   assert.equal(t.orion_share, 0.2);
   assert.equal(t.orion_usd, null);
+});
+
+test("tooltip says how many partly measured hours the share left out", () => {
+  const rows = tab.tooltipRows(bucket({ overlap_hours: 20, partial_hours: 2, orion_share: 0.5 }), []);
+  assert.equal(rows.find((r) => r.name === "Orion share").note, "over 20 h both meters have; 2 partly measured h left out");
+});
+
+test("a failed load blanks the previous numbers instead of leaving them up", () => {
+  const els = {};
+  const doc = { getElementById: (id) => (els[id] = els[id] || { innerHTML: "old", textContent: "old" }) };
+  tab.clearView(doc);
+  assert.equal(els.oeKwhChart.innerHTML, "");
+  assert.equal(els.oeTable.innerHTML, "");
+  assert.equal(els.oeShare.textContent, "unknown");
+  assert.equal(els.oeOrionUsd.textContent, "unknown");
+});
+
+test("an empty bucket blames the missing meter, not RMP", () => {
+  const rows = tab.tooltipRows(bucket({ house_kwh: 323, house_hours: 146 }), ["athena"]);
+  assert.equal(rows.find((r) => r.name === "Orion share").note, "no Orion data");
+  assert.equal(rows.find((r) => r.name === "Orion cost").note, "no Orion data");
+  const noHouse = tab.tooltipRows(bucket({ orion_kwh: 5, kwh_by_source: { athena: 5 } }), ["athena"]);
+  assert.equal(noHouse.find((r) => r.name === "Orion share").note, "needs RMP data");
 });

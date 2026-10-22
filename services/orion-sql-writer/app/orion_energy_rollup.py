@@ -1,9 +1,14 @@
 """Hourly kWh per Orion power source, kept after the raw watts are pruned.
 
-Every ORION_ENERGY_ROLLUP_INTERVAL_SEC this recomputes the last few hours of
+Every ORION_ENERGY_ROLLUP_INTERVAL_SEC this recomputes the last RECOMPUTE_HOURS hours of
 ``orion_energy_hourly`` from ``orion_biometrics_cluster`` (per-node wall watts) and
 ``home_cooling_sample`` (the cabinet AC plug). An empty table backfills from every raw row
-still on disk. The Hub's Orion energy tab reads it (orion-hub/scripts/energy_routes.py).
+still on disk. Rows that arrive later than that window (a long bus backlog replay) are not
+integrated. The Hub's Orion energy tab reads it (orion-hub/scripts/energy_routes.py).
+
+A sample's hold is credited to the hour the sample is in, so the last sample of an hour
+carries up to one hold into it: covered_sec can read slightly over 3600 (3609 seen live),
+and the first seconds of an hour count for the hour before. Under 0.5% at 15 s spacing.
 """
 
 from __future__ import annotations
@@ -31,7 +36,10 @@ COOLING_MAX_HOLD_SEC = 30
 ROLLUP_SQL = text(
     """
 WITH since AS (
-  SELECT COALESCE(MAX(hour_start), '-infinity'::timestamptz) - make_interval(hours => :recompute_hours) AS t
+  -- Clamped to now: one future-stamped sample (a skewed node clock) must not push the
+  -- window past real time and freeze the rollup until the clock catches up.
+  SELECT LEAST(COALESCE(MAX(hour_start), '-infinity'::timestamptz), date_trunc('hour', now()))
+         - make_interval(hours => :recompute_hours) AS t
   FROM orion_energy_hourly
 ), s AS (
   SELECT n.key AS source, n.key AS series, c.observed_at AS t,

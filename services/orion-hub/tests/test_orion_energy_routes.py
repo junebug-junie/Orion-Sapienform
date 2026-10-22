@@ -67,6 +67,27 @@ def test_share_uses_only_hours_where_both_exist() -> None:
     assert out["sources"] == ["athena", "cooling"]
 
 
+def test_partly_measured_hour_is_left_out_of_the_share_and_counted() -> None:
+    h1, h2 = utc(2026, 10, 22, 14), utc(2026, 10, 22, 15)
+    out = agg(
+        orion_rows=[orion(h1, "athena", 0.5), orion(h1, "circe", 0.9),
+                    orion(h2, "athena", 0.5), orion(h2, "circe", 0.15, covered=600.0)],  # circe feed dropped
+        house_rows=[{"hour_start": h1, "kwh": 4.0}, {"hour_start": h2, "kwh": 4.0}],
+        periods=1,
+    )
+    b = out["buckets"][0]
+    assert b["overlap_hours"] == 1 and b["partial_hours"] == 1
+    assert b["orion_share"] == pytest.approx(1.4 / 4.0)
+    assert b["orion_kwh"] == pytest.approx(2.05)  # the bars still show what was measured
+
+
+def test_priced_hours_with_zero_kwh_cost_zero_not_unknown() -> None:
+    h1 = utc(2026, 10, 22, 14)
+    out = agg(orion_rows=[orion(h1, "hecate", 0.0)],
+              price_rows=[{"hour_start": h1, "usd": 0.3, "marginal_usd_per_kwh": 0.16}], periods=1)
+    assert out["buckets"][0]["orion_usd"] == 0.0
+
+
 def test_unknown_is_null_not_zero() -> None:
     out = agg(periods=2)
     for b in out["buckets"]:

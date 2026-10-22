@@ -129,6 +129,22 @@ def test_empty_table_backfills_old_hours_then_recomputes_recent_only(pg):
     assert hourly(pg) == pytest.approx(before)
 
 
+def test_future_stamped_sample_does_not_freeze_the_rollup(pg):
+    from datetime import datetime as dt
+
+    from app.orion_energy_rollup import run_one_rollup
+
+    # One sample from a node with a clock a day ahead.
+    future = dt.now(timezone.utc).replace(minute=0, second=0, microsecond=0) + timedelta(days=1)
+    nodes(pg, future, future + timedelta(seconds=30), {"athena": 400.0})
+    run_one_rollup(pg)
+    # Real samples arrive afterwards for the last two hours and must still be rolled up.
+    now_hour = dt.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    nodes(pg, now_hour - timedelta(hours=2), now_hour - timedelta(hours=1), {"circe": 900.0})
+    run_one_rollup(pg)
+    assert (now_hour - timedelta(hours=2), "circe") in hourly(pg)
+
+
 def test_pruned_raw_never_overwrites_a_better_row(pg):
     from sqlalchemy import text
 

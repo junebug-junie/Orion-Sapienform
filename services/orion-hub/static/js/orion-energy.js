@@ -85,11 +85,13 @@
     });
     rows.push({
       name: "Orion share", value: fmtPct(b.orion_share),
-      note: b.overlap_hours ? "over " + b.overlap_hours + " h both meters have" : "needs RMP data",
+      note: (b.overlap_hours ? "over " + b.overlap_hours + " h both meters have"
+        : b.orion_kwh === null ? "no Orion data" : b.house_kwh === null ? "needs RMP data" : "no hour both meters have") +
+        (b.partial_hours ? "; " + b.partial_hours + " partly measured h left out" : ""),
     });
     rows.push({
       name: "Orion cost", value: fmtUsd(b.orion_usd),
-      note: b.orion_usd === null ? "no price for these hours"
+      note: b.orion_kwh === null ? "no Orion data" : b.orion_usd === null ? "no price for these hours"
         : "priced " + fmtKwh(b.orion_priced_kwh) + " at the next-kWh rate",
     });
     rows.push({ name: "House cost", value: fmtUsd(b.house_usd), note: "pre-tax" });
@@ -110,7 +112,8 @@
     });
     return {
       orion_kwh: t.hasO ? t.orion : null,
-      // House kWh over only the hours Orion was also measured, so the two tiles compare.
+      // Both kWh tiles show the same hours (the share's hours), so they compare directly.
+      orion_kwh_overlap: t.hasOv ? t.ovO : null,
       house_kwh_overlap: t.hasOv ? t.ovH : null,
       overlap_hours: t.ovHours,
       house_hours: t.houseHours,
@@ -242,7 +245,9 @@
 
   function renderTiles(doc, buckets) {
     var t = windowTotals(buckets);
-    doc.getElementById("oeOrionKwh").textContent = fmtKwh(t.orion_kwh);
+    doc.getElementById("oeOrionKwh").textContent = fmtKwh(t.orion_kwh_overlap);
+    doc.getElementById("oeOrionKwhNote").textContent = t.orion_kwh === null ? ""
+      : fmtKwh(t.orion_kwh) + " incl. hours RMP hasn't sent";
     doc.getElementById("oeHouseKwh").textContent = fmtKwh(t.house_kwh_overlap);
     doc.getElementById("oeHouseKwhNote").textContent = "same " + t.overlap_hours + " h as the share";
     doc.getElementById("oeShare").textContent = fmtPct(t.orion_share);
@@ -300,17 +305,28 @@
       };
       el.onmouseleave = function () {
         tip.classList.add("hidden");
-        el.querySelectorAll(".hit").forEach(function (h) { h.setAttribute("fill", "transparent"); });
+        chartEls.forEach(function (other) {
+          other.querySelectorAll(".hit").forEach(function (h) { h.setAttribute("fill", "transparent"); });
+        });
       };
     });
   }
 
-  var state = { grain: "day", data: null };
+  var state = { grain: "day", data: null, seq: 0 };
+
+  // A failed load must not leave the previous grain's numbers looking current.
+  function clearView(doc) {
+    ["oeKwhChart", "oeShareChart", "oeTable", "oeLegend", "oeOrionKwhNote", "oeHouseKwhNote", "oeHouseUsdNote"]
+      .forEach(function (id) { doc.getElementById(id).innerHTML = ""; });
+    ["oeOrionKwh", "oeHouseKwh", "oeShare", "oeOrionUsd", "oeHouseUsd"]
+      .forEach(function (id) { doc.getElementById(id).textContent = "unknown"; });
+  }
 
   function render(doc) {
     var data = state.data;
     var status = doc.getElementById("oeStatus");
     if (!data || !data.ok) {
+      clearView(doc);
       status.textContent = "Orion energy is unavailable right now (database not reachable).";
       return;
     }
@@ -327,6 +343,7 @@
 
   function load(doc, grain) {
     state.grain = grain;
+    var seq = ++state.seq;
     doc.querySelectorAll("[data-grain]").forEach(function (b) {
       b.setAttribute("aria-pressed", b.getAttribute("data-grain") === grain ? "true" : "false");
     });
@@ -334,7 +351,7 @@
       .then(function (r) { return r.json(); })
       .catch(function () { return { ok: false }; })
       .then(function (data) {
-        if (state.grain !== grain) return; // a newer click won
+        if (seq !== state.seq) return; // a newer click won
         state.data = data;
         render(doc);
       });
@@ -355,7 +372,7 @@
   var api = {
     GRAINS: GRAINS, colorFor: colorFor, sourceName: sourceName, fmtKwh: fmtKwh, fmtUsd: fmtUsd,
     fmtPct: fmtPct, niceMax: niceMax, labelEvery: labelEvery, housePartial: housePartial,
-    tooltipRows: tooltipRows, windowTotals: windowTotals, init: init,
+    tooltipRows: tooltipRows, windowTotals: windowTotals, clearView: clearView, init: init,
   };
   if (typeof window !== "undefined") {
     window.OrionEnergyTab = api;

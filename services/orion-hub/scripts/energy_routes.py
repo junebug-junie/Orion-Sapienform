@@ -167,6 +167,9 @@ _MAX_PERIODS = {"hour": 744, "day": 366, "week": 104, "month": 60, "quarter": 20
 # Fixed display order; any other node that reports watts sorts after these, cooling last.
 _SOURCE_ORDER = ("athena", "circe", "hecate")
 _COOLING = "cooling"
+# An hour joins the share only when every source reporting in it was measured for at least
+# this much of it; a feed dropping mid-hour would otherwise pull the share down silently.
+_SHARE_MIN_COVERED_SEC = 0.9 * 3600
 
 _ORION_HOURLY_SQL = """
 SELECT hour_start, source, kwh, covered_sec FROM orion_energy_hourly
@@ -271,7 +274,8 @@ def aggregate_orion_energy(
     """Bucket hourly Orion and house rows. Pure: every input is passed in.
 
     Unknown stays null: a bucket with no Orion rows has orion_kwh null (not 0), a bucket with
-    no RMP hours has house_kwh null, and orion_share needs at least one hour with both.
+    no RMP hours has house_kwh null, and orion_share needs at least one hour with both where
+    every reporting source was measured for 90% of the hour (partial_hours counts the rest).
     orion_usd prices each Orion hour at that hour's next-kWh rate (what Orion adds to the
     bill under block pricing); orion_priced_kwh says how much of orion_kwh had a price.
     """
@@ -302,8 +306,8 @@ def aggregate_orion_energy(
     sources = sorted({s for per in orion_by_hour.values() for s in per}, key=_source_sort_key)
     buckets = [
         {"kwh": {}, "covered": {}, "house_kwh": 0.0, "house_hours": 0, "overlap_hours": 0,
-         "orion_overlap": 0.0, "house_overlap": 0.0, "orion_usd": 0.0, "orion_priced_kwh": 0.0,
-         "house_usd": 0.0, "house_priced_hours": 0}
+         "orion_overlap": 0.0, "house_overlap": 0.0, "partial_hours": 0, "orion_usd": 0.0,
+         "orion_priced_kwh": 0.0, "orion_priced_hours": 0, "house_usd": 0.0, "house_priced_hours": 0}
         for _ in starts
     ]
 
@@ -317,7 +321,9 @@ def aggregate_orion_energy(
             b["kwh"][source] = b["kwh"].get(source, 0.0) + kwh
             b["covered"][source] = b["covered"].get(source, 0.0) + covered
             orion_kwh += kwh
-        if hour in house_by_hour:
+        if min(covered for _, covered in per.values()) < _SHARE_MIN_COVERED_SEC:
+            b["partial_hours"] += 1
+        elif hour in house_by_hour:
             b["overlap_hours"] += 1
             b["orion_overlap"] += orion_kwh
             b["house_overlap"] += house_by_hour[hour]
@@ -325,6 +331,7 @@ def aggregate_orion_energy(
         if marginal is not None:
             b["orion_usd"] += orion_kwh * marginal
             b["orion_priced_kwh"] += orion_kwh
+            b["orion_priced_hours"] += 1
 
     for hour, kwh in house_by_hour.items():
         i = index_of(hour)
@@ -354,11 +361,12 @@ def aggregate_orion_energy(
             "house_kwh": _round(b["house_kwh"]) if b["house_hours"] else None,
             "house_hours": b["house_hours"],
             "overlap_hours": b["overlap_hours"],
+            "partial_hours": b["partial_hours"],
             "orion_kwh_overlap": _round(b["orion_overlap"]) if b["overlap_hours"] else None,
             "house_kwh_overlap": _round(b["house_overlap"]) if b["overlap_hours"] else None,
             "orion_share": (_round(b["orion_overlap"] / b["house_overlap"], 4)
                             if b["overlap_hours"] and b["house_overlap"] > 0 else None),
-            "orion_usd": _round(b["orion_usd"], 2) if b["orion_priced_kwh"] else None,
+            "orion_usd": _round(b["orion_usd"], 2) if b["orion_priced_hours"] else None,
             "orion_priced_kwh": _round(b["orion_priced_kwh"]),
             "house_usd": _round(b["house_usd"], 2) if b["house_priced_hours"] else None,
             "house_priced_hours": b["house_priced_hours"],

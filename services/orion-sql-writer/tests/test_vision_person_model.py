@@ -522,7 +522,7 @@ def test_is_this_x_stops_at_its_own_daily_cap(pg) -> None:
         _confirm_world(conn)
         conn.execute(text(
             "INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, created_at) "
-            "VALUES ('ask-done', 'q', 'vision_person_confirm', 'other|Emerald', 'answered', :t)"), {"t": NOW})
+            "VALUES ('ask-done', 'q', 'vision_person_confirm', 'other|Someone', 'answered', :t)"), {"t": NOW})
         assert vi._open_person_confirm_asks(conn, NOW, ZONE, cfg) == []
         assert len(vi._open_person_confirm_asks(conn, NOW + timedelta(days=1), ZONE, cfg)) == 1
 

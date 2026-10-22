@@ -7,7 +7,7 @@
 
 ## Outcome moved
 
-Juniper's yes/no answers are the fastest way to grow each person's picture album, which is how Orion learns to recognize people. Live replay: 0 questions a day before, 6 would open today after (Addy, Emerald, Maeve, all with pictures).
+Juniper's yes/no answers are the fastest way to grow each person's picture album, which is how Orion learns to recognize people. Live replay: 0 questions a day before, 6 would open today after (about 3 different people, every one with pictures).
 
 ## Current architecture
 

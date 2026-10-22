@@ -4146,7 +4146,8 @@ as "Orion first wrote: ..." when it differs.
 
 `/retro` offers native NES viewing/control without an additional access code through a
 private Unix socket. Disabled by default. See [setup and acceptance](../../docs/runbooks/retro-browser.md)
-for exact-origin configuration, credentials, browser checks and known limits.
+for exact-origin configuration, credentials, browser checks and known limits, and for
+Zelda play (planner v2, the play panel and solo leisure, `scripts/retro_leisure.py`).
 
 ### Cabinet sonification (live instrument)
 

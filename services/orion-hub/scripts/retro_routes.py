@@ -9,6 +9,9 @@ from fastapi import APIRouter, Request, WebSocket, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 
 
+COPLAY_POLL_SEC = 2.0
+
+
 def create_router(config, presence=None):
     """``presence``: a scripts.retro_presence.PresenceStore (tests/evals); default is the
     process's Redis store from ORION_BUS_URL, or none (human play never depends on it)."""
@@ -64,6 +67,23 @@ def create_router(config, presence=None):
         return FileResponse(Path(__file__).resolve().parents[1]/'templates/retro.html',
                             headers={'Cache-Control':'no-store', 'Referrer-Policy':'no-referrer'})
 
+    def handoff(app, sid, raw, result):
+        # A browser handed its port to Orion's goal motor: watch that grant to its end.
+        import json
+        try: data = json.loads(raw)
+        except ValueError: return
+        if not (isinstance(data, dict) and data.get('action') == 'start' and data.get('cognition') is True
+                and data.get('connection_id')): return
+        policy = next((p for p in (result or {}).get('scripted') or []
+                       if isinstance(p, dict) and p.get('port') == data.get('port')), None)
+        if not policy or not isinstance(policy.get('epoch'), int): return
+        key = (sid, policy['port'], policy['epoch'])
+        if key in watching: return
+        watching.add(key)
+        coplay_counts[key] = {}
+        task = asyncio.create_task(watch_coplay(app, sid, policy['port'], policy['epoch'], time.time()))
+        background.add(task); task.add_done_callback(background.discard)
+
     @router.get('/api/retro/leisure')
     async def leisure():
         enabled()
@@ -82,6 +102,82 @@ def create_router(config, presence=None):
         return JSONResponse(dict(status, journal=journal or []), headers={'Cache-Control': 'no-store'})
 
     histories = {}  # session id -> last goal_finished rows (Retro shows only the newest)
+    coplay_counts = {}  # session id -> {'sheds': n, 'rejections': n} from plan_v2
+    watching = set()    # (sid, port, epoch) co-play handoffs being watched to their end
+
+    async def emit_session_end(app, ended):
+        sink = getattr(getattr(app, 'state', None), 'retro_session_end_sink', None)
+        if sink is None:
+            return  # no exporter registered: nothing is written (integration seam, not a fallback)
+        try:
+            result = sink(ended)
+            if asyncio.iscoroutine(result): await result
+        except Exception:
+            import logging
+            logging.getLogger('orion-hub.retro').warning('retro_session_end_sink_failed', exc_info=True)
+
+    async def watch_coplay(app, sid, port, epoch, started_at):
+        """Follow one browser cognition handoff until Retro ends it (stop, takeover, expiry,
+        disconnect), then hand a RetroSessionEnded to the registered sink. Zelda only."""
+        from scripts import retro_planner
+        from scripts.retro_session_end import (RetroSessionEnded, atlas_session_fields, human_held_frames,
+                                               record_delta)
+        key = (sid, port, epoch)
+        history, goals, last, first, failures, reason = [], set(), None, None, 0, 'policy_ended'
+        try:
+          try:
+            while True:
+                await asyncio.sleep(COPLAY_POLL_SEC)
+                try:
+                    async with client() as c:
+                        async with c.get('http://retro/sessions/'+sid, headers=credentials()) as r:
+                            status, state = r.status, await r.json()
+                except Exception:
+                    failures += 1
+                    if failures * COPLAY_POLL_SEC >= 30: reason = 'retro_unreachable'; break
+                    continue
+                failures = 0
+                if status != 200 or not isinstance(state, dict) or state.get('state') not in ('running', 'paused'):
+                    reason = 'session_ended'; break
+                last = state
+                if first is None: first = atlas_session_fields(state)   # Retro's record at handoff
+                policy = next((p for p in state.get('scripted') or []
+                               if isinstance(p, dict) and p.get('port') == port and p.get('epoch') == epoch), None)
+                if policy is None:
+                    done = history[-1].get('outcome', '') if history else ''
+                    reason = done[len('stopped:'):] if done.startswith('stopped:') else 'policy_ended'
+                    break
+                cognition = policy.get('cognition') or {}
+                if not retro_planner.is_zelda_cognition(cognition):
+                    return  # Nova goal experiment: no session record in this arc
+                retro_planner.remember_finished(history, cognition)
+                if isinstance(cognition.get('goal'), dict) and cognition['goal'].get('decision_id'):
+                    goals.add(cognition['goal']['decision_id'])
+            if last is None:
+                return  # never saw a Zelda cognition policy: nothing observed, nothing to record
+            # Retro's counts are session-wide; report only what happened during this handoff.
+            record = record_delta(first, atlas_session_fields(last))
+            held = human_held_frames(record['controller_frames'])
+            verdicts = {'met': 0, 'refuted': 0, 'unknown': 0}
+            for h in history:
+                v = h.get('verdict'); verdicts[v if v in verdicts else 'unknown'] += 1
+            counts = coplay_counts.get(key, {})
+            atlas = ((last.get('zelda') or {}).get('atlas') or {}) if isinstance(last.get('zelda'), dict) else {}
+            ended = RetroSessionEnded(
+                session_id=sid, lineage_id=atlas.get('lineage_id') if isinstance(atlas, dict) else None,
+                leisure_id=None, game_id=str(last.get('game_id') or ''), started_at=started_at,
+                ended_at=time.time(), end_reason=reason, controller='co_play',
+                loaded_save_id=last.get('loaded_save'), decisions_planned=len(goals),
+                planner_rejections=counts.get('rejections', 0), sheds=counts.get('sheds', 0),
+                # A human handed off and can take back at any time: unknown counts mean "maybe".
+                human_may_be_in_control=held is not False, verdicts=verdicts, **record)
+            await emit_session_end(app, ended)
+          except Exception:   # never die silently: an unretrieved task exception logs nothing
+            import logging
+            logging.getLogger('orion-hub.retro').warning('retro_coplay_watch_failed sid=%s', sid, exc_info=True)
+        finally:
+            watching.discard(key)
+            coplay_counts.pop(key, None)
 
     async def plan_v2(path, data, state, policy, c):
         """Zelda co-play decision (spec D). No goal on any failure; Retro's motor holds still."""
@@ -89,6 +185,11 @@ def create_router(config, presence=None):
         from scripts import retro_planner
         cognition = policy['cognition']
         sid = path.rsplit('/', 1)[0]
+        handoff_key = (sid.rsplit('/', 1)[-1], data['port'], data['expected_epoch'])
+        def bump(name):
+            # Only for a handoff being watched; keyed per grant so a newer handoff never mixes in.
+            if handoff_key in coplay_counts:
+                coplay_counts[handoff_key][name] = coplay_counts[handoff_key].get(name, 0) + 1
         if sid not in histories:
             histories.clear()  # one game at a time: keep only the current session's history
             histories[sid] = deque(maxlen=retro_planner.HISTORY_LIMIT)
@@ -103,11 +204,14 @@ def create_router(config, presence=None):
         try:
             goal = await retro_planner.plan_zelda(config, decision, atlas, list(history))
         except retro_planner.PlannerShed as exc:
+            bump('sheds')
             return JSONResponse(exc.public(), status_code=503,
                                 headers={'Retry-After': str(int(max(1, exc.details.get('retry_after_sec') or 30)))})
         except retro_planner.PlannerBusy as exc:
             return JSONResponse(exc.public(), status_code=429)
         except retro_planner.PlannerRejected as exc:
+            if exc.reason not in ('decision_pending', 'observation_unknown'):
+                bump('rejections')
             return JSONResponse(exc.public(), status_code=409 if exc.reason in ('decision_pending', 'observation_unknown') else 422)
         except retro_planner.PlannerError as exc:
             return JSONResponse(exc.public(), status_code=503)
@@ -171,10 +275,13 @@ def create_router(config, presence=None):
                  (request.method=='POST' and path=='sessions') or
                  re.fullmatch(r'sessions/[0-9a-f-]{36}'+('(?:/evidence|/atlas)?' if request.method=='GET' else '/(?:control|pause|resume|stop|scripted|goal|save|load)'),path))
         if not valid: raise HTTPException(404)
+        raw = await body(request)
         try:
             async with client() as c:
-                async with c.request(request.method,'http://retro/'+path,headers=credentials(),data=await body(request)) as r:
+                async with c.request(request.method,'http://retro/'+path,headers=credentials(),data=raw) as r:
                     result=await r.json()
+                    if request.method=='POST' and r.status==200 and path.endswith('/scripted'):
+                        handoff(request.app, path.split('/')[1], raw, result)
                     return JSONResponse(result,status_code=r.status,headers={'Cache-Control':'no-store'})
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError): raise HTTPException(503, 'retro_unavailable')
 

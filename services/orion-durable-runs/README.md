@@ -580,6 +580,13 @@ would restart a level's age). The causes already recorded and the last row's tim
 checkpoint as `strain_causes_seen` / `strain_row_at`.
 Kill switch: `TEMPORAL_SELF_STRAIN_ARCS_ENABLED=false` (no cause rows, no strain arcs).
 
+**Retro play source (2026-10-22, Orion plays Zelda section F).** The chronicle reads orion-hub's
+`retro_play_sessions` (migration `services/orion-sql-db/manual_migration_retro_play_sessions_v1.sql`,
+REQUIRED-BY this service and orion-hub) as source `retro_play`: one `play` arc per finished Retro
+session, shown in the chat stance cue. The query is skipped while the table does not exist
+(`to_regclass`), so the source can never fail the whole read. Kill switch:
+`TEMPORAL_SELF_RETRO_PLAY_ENABLED` (ON).
+
 Kill switches: `TEMPORAL_SELF_ENABLED=false` (no thread), `ORION_REGULATION_AROUSAL_ENABLED=false`
 (reads `unknown`). Health: `/health` -> `temporal_self`.
 

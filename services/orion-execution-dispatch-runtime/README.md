@@ -702,3 +702,21 @@ dispatch is one extra `hub.world_pulse_read` `look` act on the seed Hub's own la
 - Kill switch: `ORION_DISPATCH_READING_PULL_ENABLED` (ON). Hub has its own
   (`HUB_WORLD_PULSE_READ_PULL_ENABLED`) and runs every gate.
 - Replay: `orion/autonomy/evals/run_rung3_reading_replay_eval.py [--live --hours 48]`.
+
+### Retro leisure session (2026-10-22, Orion plays Zelda section E)
+
+Route `retro_leisure_session` (template of the same name, kind `express`, `express_bounded`). Its
+executor key `orion.retro_leisure.start.v1` is one bus RPC to Hub (`orion:retro_leisure:start:request`,
+`app/retro_leisure_dispatch.py`). The dispatch is one `hub.retro_leisure` `play` act: Hub opens it when
+the session starts (key `retro_leisure_dispatch:<dispatch_id>`) and closes it at session end
+(`artifact_produced` = a session summary with at least one real planner decision).
+
+- Cost: the play act's own median open->close time (a session's wall time). Until the first session
+  closes, the route's `cold_cost_ceiling_sec` (1800 s, the runner's session cap): the worst case, not a
+  typical guess. An unreadable cost is still refused `no_cost_estimate`.
+- In flight: any open play act or proven-path episode holds the route (one session at a time).
+- Object minted by the dispatch: no control arm. A proven-path row is voided when Hub refuses.
+- A Hub refusal blocks the candidate `doer_refused:<why>` and holds the route for Hub's
+  `retry_after_sec` (300 s when none is given or Hub did not answer). On the frame: `allocator:<reason>`.
+- Kill switch: `ORION_DISPATCH_RETRO_LEISURE_ENABLED` (ON). Hub has its own (`RETRO_LEISURE_ENABLED`)
+  and runs every gate.

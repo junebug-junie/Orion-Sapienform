@@ -209,6 +209,14 @@ def _grid(observation: dict) -> Optional[list]:
     return None
 
 
+def _terrain(observation: dict) -> Optional[list]:
+    t = observation.get('terrain')
+    if (isinstance(t, list) and len(t) == MAP_ROWS
+            and all(isinstance(r, str) and len(r) == MAP_COLS and set(r) <= set('#.xC') for r in t)):
+        return t
+    return None
+
+
 def _tile_xy(tile: Any) -> Optional[tuple[int, int]]:
     if isinstance(tile, dict) and isinstance(tile.get('x'), int) and isinstance(tile.get('y'), int):
         return tile['x'], tile['y']
@@ -242,20 +250,23 @@ def _room_caves(atlas: Optional[dict], level: Any, room: Any) -> list:
 def render_room_map(observation: dict, atlas: Optional[dict] = None) -> str:
     """The room as 22 text rows of 32 tiles (8 px): # wall, . floor, ? terrain not sent,
     x learned-blocked, C known cave, d item drop, 1-9/a/b enemy slot, L Link."""
-    grid = _grid(observation)
-    if grid is None and observation.get('mode') not in ('play', 'cave'):
+    terrain = _terrain(observation)
+    grid = None if terrain else _grid(observation)
+    if terrain is None and grid is None and observation.get('mode') not in ('play', 'cave'):
         return f'room map unavailable in mode {observation.get("mode", "unknown")}'
-    rows = ([['#' if cell else '.' for cell in row] for row in grid] if grid
+    # Retro's own terrain (#/./x/C, navigate.py terrain()) wins; a raw wall grid is drawn here.
+    rows = ([list(r) for r in terrain] if terrain else
+            [['#' if cell else '.' for cell in row] for row in grid] if grid
             else [['?'] * MAP_COLS for _ in range(MAP_ROWS)])
     def put(xy, ch):
         if xy and 0 <= xy[0] < MAP_COLS and 0 <= xy[1] < MAP_ROWS:
             rows[xy[1]][xy[0]] = ch
     current = (atlas or {}).get('current') if isinstance(atlas, dict) else None
     same_room = isinstance(atlas, dict) and atlas.get('room') == observation.get('room')
-    if same_room and isinstance(current, dict):
+    if not terrain and same_room and isinstance(current, dict):
         for t in current.get('learned_blocked') or []:
             put(_tile_xy(t), 'x')
-    for cave in _room_caves(atlas, observation.get('level'), observation.get('room')):
+    for cave in ([] if terrain else _room_caves(atlas, observation.get('level'), observation.get('room'))):
         put(_tile_xy(cave.get('tile')), 'C')
     for drop in observation.get('drops') or []:
         if isinstance(drop, dict): put(tile_of(drop), 'd')
@@ -264,7 +275,7 @@ def render_room_map(observation: dict, atlas: Optional[dict] = None) -> str:
     if isinstance(observation.get('link'), dict):
         put(tile_of(observation['link']), 'L')
     header = '   ' + ''.join(str(c % 10) for c in range(MAP_COLS))
-    note = [] if grid else ['(walls not included in this observation; ? = terrain unknown to the planner)']
+    note = [] if (terrain or grid) else ['(walls not included in this observation; ? = terrain unknown to the planner)']
     return '\n'.join(note + [header] + [f'{r:2d} ' + ''.join(row) for r, row in enumerate(rows)])
 
 
@@ -323,7 +334,7 @@ def history_lines(history: Any) -> str:
 
 def observation_facts(observation: dict) -> dict:
     """The observation without the wall grid (the map carries it)."""
-    return {k: v for k, v in observation.items() if k != 'walls'}
+    return {k: v for k, v in observation.items() if k not in ('walls', 'terrain')}
 
 
 def build_zelda_prompt(decision: dict, atlas: Optional[dict], history: Any) -> str:
@@ -338,7 +349,9 @@ def build_zelda_prompt(decision: dict, atlas: Optional[dict], history: Any) -> s
         'You are Orion, playing The Legend of Zelda (NES) through a navigator that turns one goal into input.',
         'Choose ONE goal for the next 3-30 seconds from the observed facts only. Do not use outside knowledge of the game map.',
         f'Why a decision now: {why}.',
-        'Room map (22 rows x 32 tiles of 8 px):',
+        'Room map (22 rows x 32 tiles of 8 px, row 0 = top of the play area; tile x = column, y = row): '
+        '# blocked, . walkable, x blocked (Link bumped into it here before), C a cave you entered, '
+        '? terrain not known, L Link, 1-9/a/b enemy slot, d item drop.',
         render_room_map(obs, atlas),
         'Observation (zelda-1-ram-v1): ' + json.dumps(observation_facts(obs), separators=(',', ':')),
         'Atlas (only what you observed before):',

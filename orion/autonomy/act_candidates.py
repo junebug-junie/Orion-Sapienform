@@ -54,6 +54,11 @@ class ActRef:
     # orion/execution_dispatch/policy.py ActRouteRefV1.object_source: "dispatch" (the dispatch mints
     # the act's object, e.g. a painting run) or "queue" (it picks an existing one, e.g. a reading seed).
     object_source: str = "dispatch"
+    # ActRouteRefV1.cost_source / cold_cost_ceiling_sec: "act_duration" scores the act on its own
+    # measured open->close time; the ceiling is the doer's enforced maximum, charged while no close
+    # is on record (orion/execution_dispatch/policy.py).
+    cost_source: str | None = None
+    cold_cost_ceiling_sec: float | None = None
 
     @property
     def cell(self) -> CellKey:

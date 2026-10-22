@@ -74,6 +74,19 @@ or "Was strained 09:00 to 09:40 (...)"), Day letter ("Strained: ..."), reverie b
 truth (`strained since` / `was strained`, matched against `episode_began_at` too). Kill switch:
 `TEMPORAL_SELF_STRAIN_ARCS_ENABLED` (orion-durable-runs).
 
+### Play arcs (Orion plays Zelda, 2026-10-22)
+
+Spec: `docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md` section F. Source `retro_play`:
+orion-hub's `retro_play_sessions` (one row per finished co-play or leisure session, written by
+`services/orion-hub/scripts/retro_memory_export.py`). One closed `play` process arc per session,
+`started_at` to `ended_at`, subject `retro_session:<id>`, label `sources.retro_play_label` ("The Legend
+of Zelda solo, 14 of 31 predictions met"; `together` when a human drove more than half of the frames,
+`with a human` otherwise for co-play). `build_frame` keeps today's latest play arc in `arcs_today`
+even past `ARCS_IN_FRAME_CAP`. Stance cue: "Played <label> (10:02 to 10:24) [arc:]", ranked above the
+thread and sleep clauses (as the last clause it was dropped on both real 10-11 frames). Recent arcs:
+"played <label>". Day letter: counted as `play`. Eval: `evals/run_play_cue_eval.py`. Kill switch:
+`TEMPORAL_SELF_RETRO_PLAY_ENABLED` (orion-durable-runs); a database without the table skips the source.
+
 ### Thread arc ids and the truth eval (2026-10-12)
 
 `OpenThreadV1.arc_id` names the concern arc a thread is, so the cue cites every open thread

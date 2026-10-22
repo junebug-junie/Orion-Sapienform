@@ -860,6 +860,13 @@ class Settings(BaseSettings):
     HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED: bool = Field(
         default=True, alias="HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED"
     )
+    # Orion plays Zelda (2026-10-22, spec section F; scripts/retro_memory_export.py): one
+    # deterministic summary per finished Retro session -> one memory_cards row (provenance
+    # retro_play) + one retro_play_sessions row (Temporal Self source retro_play). Shipped ON;
+    # false writes nothing (a leisure session's play act still closes, at 0).
+    HUB_RETRO_MEMORY_EXPORT_ENABLED: bool = Field(
+        default=True, alias="HUB_RETRO_MEMORY_EXPORT_ENABLED"
+    )
     # Pending digest_item seeds older than this many days are marked
     # skipped/stale_digest_item on every Stage 1 tick. 0 disables.
     # See orion/world_pulse_read/queue.py skip_stale_digest_items.

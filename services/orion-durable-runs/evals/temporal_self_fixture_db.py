@@ -36,6 +36,8 @@ MIGRATIONS = (
     REPO / "services/orion-sql-db/manual_migration_temporal_self_v1.sql",
     # Seam S1's source table is new (not in the live-typed source DDL export): its own migration.
     REPO / "services/orion-sql-db/manual_migration_vision_presence_transition_v1.sql",
+    # Orion plays Zelda (section F): retro_play_sessions is new too.
+    REPO / "services/orion-sql-db/manual_migration_retro_play_sessions_v1.sql",
 )
 
 
@@ -143,6 +145,8 @@ def table_rows(rows: dict[str, list[dict]]) -> dict[str, list[dict]]:
             "source_kind": "arousal_transition", "source_table": "regulation",
             "source_ref": r.get("source_ref") or r["event_id"], "subject_ref": "orion:arousal",
             "label": payload.get("to"), "payload_json": payload})
+    # Orion plays Zelda (section F): the export emits whole retro_play_sessions rows.
+    out["retro_play_sessions"].extend(dict(r) for r in rows.get("retro_play", []))
     for r in rows.get("memory_episode", []):
         out["episode_memory"].append(dict(r, created_at=r.get("occurred_at")))
     out["orion_biometrics_cluster"].extend(dict(r) for r in rows.get("body_cluster", []))

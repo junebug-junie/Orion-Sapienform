@@ -359,7 +359,8 @@ def _build_chronicle():
         day_retention_days=s.temporal_self_day_retention_days)
     return Chronicler(store=ChronicleStore(_checkpointer_cm), reader=SourceReader(
         _checkpointer_cm, reducer.tz_name,
-        exclude_kinds=() if s.temporal_self_strain_arcs_enabled else ("arousal_transition",)),
+        exclude_kinds=tuple(k for k, on in (("arousal_transition", s.temporal_self_strain_arcs_enabled),
+                                            ("retro_play", s.temporal_self_retro_play_enabled)) if not on)),
                       cfg=cfg, now=lambda: datetime.now(timezone.utc))
 
 

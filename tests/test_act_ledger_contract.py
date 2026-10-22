@@ -41,7 +41,7 @@ def _act(**kw):
 
 def test_verb_vocabulary_is_the_closed_design_set():
     assert set(get_args(ActVerb)) == {
-        "sense", "look", "recall", "infer", "predict", "say", "ask", "wait", "make", "maintain", "regulate"}
+        "sense", "look", "recall", "infer", "predict", "say", "ask", "wait", "make", "maintain", "regulate", "play"}
     with pytest.raises(ValidationError):
         ActV1(act_id="a", level="faculty", actor="x", verb="ponder")  # type: ignore[arg-type]
 

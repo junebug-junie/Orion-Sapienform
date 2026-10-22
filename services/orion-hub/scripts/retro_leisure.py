@@ -43,7 +43,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from scripts import retro_planner
 from scripts.retro_planner import PlannerBusy, PlannerRejected, PlannerShed
-from scripts.retro_session_end import RetroSessionEnded
+from scripts.retro_session_end import RetroSessionEnded, atlas_session_fields, human_held_frames
 
 logger = logging.getLogger('orion-hub.retro.leisure')
 
@@ -678,9 +678,16 @@ async def _finish(deps: LeisureDeps, run: _Run, reason: str, *, mode: str,
                   ledger: Optional[list], started: bool = True) -> RetroSessionEnded:
     save_id = save_error = None
     human = False
+    record = atlas_session_fields(None)
     if run.session_id:
+        # Retro's atlas session record (rooms_new, deaths, per-controller frames), read before
+        # anything is stopped. Absent values stay None.
+        status, session = await _call(deps, 'final_status', 'GET', f'sessions/{run.session_id}')
+        if status == 200:
+            record = atlas_session_fields(session)
         ok, since = await deps.store.seconds_since_human()
-        human = (not ok) or (since is not None and since <= deps.clock() - run.started_at)
+        human = (not ok) or (since is not None and since <= deps.clock() - run.started_at) \
+            or human_held_frames(record['controller_frames']) is True
         if mode in (NORMAL, RELEASE) and run.epoch is not None:
             await _call(deps, 'policy_stop', 'POST', f'sessions/{run.session_id}/scripted', {
                 'leisure_id': run.leisure_id, 'generation': run.generation, 'port': run.port,
@@ -717,7 +724,7 @@ async def _finish(deps: LeisureDeps, run: _Run, reason: str, *, mode: str,
         game_id=run.game_id, started_at=run.started_at, ended_at=ended_at, end_reason=reason,
         act_id=run.act_id, loaded_save_id=run.loaded_save_id, end_save_id=save_id,
         end_save_error=save_error, decisions_planned=run.planned, planner_rejections=run.rejections,
-        sheds=run.sheds, verdicts=dict(run.verdicts), human_may_be_in_control=human)
+        sheds=run.sheds, verdicts=dict(run.verdicts), human_may_be_in_control=human, **record)
     await _journal(deps, 'ended' if started else 'refused', reason=reason, mode=mode, **{
         k: v for k, v in ended.as_dict().items() if k not in ('end_reason',)})
     await _status(deps, run, 'ended', end_reason=reason, end_save_id=save_id)

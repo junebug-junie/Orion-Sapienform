@@ -1,12 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 754,
+  "metric_count": 756,
   "_last_change": {
     "change_count": 2,
     "high_severity_count": 0,
     "changes": [
-      "medium added metric://bus_channel/orion-execution-dispatch-runtime/orion:world_pulse_read:pull:request",
-      "medium added metric://bus_channel/orion-hub/orion:world_pulse_read:pull:reply:*"
+      "medium added metric://bus_channel/orion-execution-dispatch-runtime/orion:retro_leisure:start:request",
+      "medium added metric://bus_channel/orion-hub/orion:retro_leisure:start:reply:*"
     ]
   },
   "definitions": {
@@ -1592,6 +1592,17 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-execution-dispatch-runtime/orion:retro_leisure:start:request": {
+      "schema_id": "RetroLeisureStartRequestV1",
+      "all_producers": [
+        "orion-execution-dispatch-runtime"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-execution-dispatch-runtime/orion:world_pulse_read:pull:request": {
       "schema_id": "WorldPulseReadPullRequestV1",
       "all_producers": [
@@ -2386,6 +2397,17 @@
         "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:retro_leisure:start:reply:*": {
+      "schema_id": "RetroLeisureStartResultV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-execution-dispatch-runtime"
+      ],
+      "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-hub/orion:room:claude:request": {

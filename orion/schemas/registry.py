@@ -681,6 +681,7 @@ from orion.schemas.durable_run import (
 )
 from orion.schemas.resource_admission import ResourceEventV1
 from orion.schemas.world_pulse_read_pull import WorldPulseReadPullRequestV1, WorldPulseReadPullResultV1
+from orion.schemas.retro_leisure import RetroLeisureStartRequestV1, RetroLeisureStartResultV1
 from orion.schemas.gpu_pool import (
     GpuActuateResultV1,
     GpuActuateV1,
@@ -1093,6 +1094,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GpuPoolShedResultV1": GpuPoolShedResultV1,
     "WorldPulseReadPullRequestV1": WorldPulseReadPullRequestV1,
     "WorldPulseReadPullResultV1": WorldPulseReadPullResultV1,
+    "RetroLeisureStartRequestV1": RetroLeisureStartRequestV1,
+    "RetroLeisureStartResultV1": RetroLeisureStartResultV1,
     "GpuActuateV1": GpuActuateV1,
     "GpuActuateResultV1": GpuActuateResultV1,
     "LlmWorkerAnnounceV1": LlmWorkerAnnounceV1,
@@ -2044,6 +2047,9 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     # Thinking rung 3 follow-up: the allocator's reading pull (orion/schemas/world_pulse_read_pull.py).
     "WorldPulseReadPullRequestV1": SchemaRegistration(model=WorldPulseReadPullRequestV1, kind="world_pulse_read.pull.request.v1"),
     "WorldPulseReadPullResultV1": SchemaRegistration(model=WorldPulseReadPullResultV1, kind="world_pulse_read.pull.result.v1"),
+    # Orion plays Zelda (section E): the allocator's retro leisure start (orion/schemas/retro_leisure.py).
+    "RetroLeisureStartRequestV1": SchemaRegistration(model=RetroLeisureStartRequestV1, kind="retro_leisure.start.request.v1"),
+    "RetroLeisureStartResultV1": SchemaRegistration(model=RetroLeisureStartResultV1, kind="retro_leisure.start.result.v1"),
     # Stage 4 actuation (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md).
     "GpuActuateV1": SchemaRegistration(model=GpuActuateV1, kind="gpu_pool.actuate.v1"),
     "GpuActuateResultV1": SchemaRegistration(model=GpuActuateResultV1, kind="gpu_pool.actuate.result.v1"),

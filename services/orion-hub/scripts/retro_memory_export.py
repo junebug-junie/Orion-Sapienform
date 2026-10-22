@@ -97,6 +97,8 @@ def build_session_summary(
     verdict_counts: Mapping[str, int] | None = None,
     decisions: int | None = None,
     human_may_be_in_control: bool = False,
+    controller_frames: Mapping[str, int] | None = None,
+    retro_session_id: str | None = None,
 ) -> RetroPlaySessionSummaryV1:
     """Pure and deterministic: the same inputs give the same summary.
 
@@ -105,7 +107,9 @@ def build_session_summary(
     (goals the planner produced and Retro accepted; a goal still running at the end has no verdict
     and counts as unknown). None when neither is recorded: no decision count is claimed.
     ``human_may_be_in_control`` (Lane B: a human acted after the start, or presence was unreadable)
-    drops a leisure session's sponsor rule: its share is unknown, never "solo". Raises ValueError when the journal has no ``session_started`` or
+    drops a leisure session's sponsor rule: with no counts the session is "played together", never
+    Orion's alone. ``controller_frames`` is Retro's ``frames_by_controller`` ({human, script, leisure,
+    none}): share = human / (human + script + leisure); ``none`` frames drove nobody. Raises ValueError when the journal has no ``session_started`` or
     ``session_ended`` time: a session with no observed bounds is not summarized (no empty-shell
     memory)."""
     entries = [e if isinstance(e, RetroJournalEntryV1) else RetroJournalEntryV1.model_validate(e) for e in journal]
@@ -128,6 +132,9 @@ def build_session_summary(
     control = [RetroPortControlV1(port=p, human_frames=h, orion_frames=o) for p, (h, o) in sorted(ports.items())]
     human = sum(c.human_frames for c in control)
     orion = sum(c.orion_frames for c in control)
+    if not (human + orion) and isinstance(controller_frames, Mapping):
+        cf = {str(k): max(0, int(v or 0)) for k, v in controller_frames.items()}
+        human, orion = cf.get("human", 0), cf.get("script", 0) + cf.get("leisure", 0)
     total = human + orion
     if total:
         basis, share = "frames", human / total
@@ -136,7 +143,9 @@ def build_session_summary(
         basis, share = "leisure_sponsor", 0.0
     else:
         basis, share = "unknown", None
-    together = share is not None and share > 0.5
+    # More than half of the frames by a human, or a human may have been in control and nothing
+    # counted the frames: never recorded as Orion's achievement (#2751 section 7.4).
+    together = (share is not None and share > 0.5) or (share is None and human_may_be_in_control)
 
     goals: dict[str, RetroJournalEntryV1] = {}
     for i, e in enumerate(entries):
@@ -164,7 +173,9 @@ def build_session_summary(
     duration = (ended_at - started_at).total_seconds()
 
     title = game_title(game_id)
-    if together:
+    if together and share is None:
+        lead = f"Played {title} together for {span_words(duration)} (control share not recorded)"
+    elif together:
         lead = f"Played {title} together for {span_words(duration)} (a human drove {round(100 * share)}% of frames)"
     elif kind == "leisure" and (basis == "leisure_sponsor" or (basis == "frames" and human == 0)):
         lead = f"Played {title} solo for {span_words(duration)}"
@@ -188,7 +199,8 @@ def build_session_summary(
     summary = _clip(", ".join(parts) + ".")
 
     return RetroPlaySessionSummaryV1(
-        session_id=session_id, lineage_id=lineage_id, game_id=game_id, game_title=title, kind=kind,
+        session_id=session_id, retro_session_id=retro_session_id, lineage_id=lineage_id, game_id=game_id,
+        game_title=title, kind=kind,
         dispatch_id=dispatch_id, started_at=started_at, ended_at=ended_at, duration_sec=duration,
         end_reason=(end.reason[:200] if end.reason else None), control=control, control_basis=basis,
         human_frames=human, orion_frames=orion, human_share=share, played_together=together,
@@ -206,31 +218,31 @@ def _epoch(value: Any) -> str | None:
     return str(value) if value else None
 
 
-def leisure_inputs(ended: Any) -> dict[str, Any]:
-    """Lane B's ``scripts.retro_session_end.RetroSessionEnded`` (or its ``as_dict()``) -> the
-    builder's keyword arguments. Reads: session_id, lineage_id, game_id, started_at/ended_at (epoch
-    seconds), end_reason, act_id (the dispatch id), decisions_planned, verdicts,
-    human_may_be_in_control, the optional ``control`` frame attribution, and the optional ``atlas_session`` (Lane A's ``zelda.atlas.session``
-    record: rooms_new, deaths). Lane B does not send ``atlas_session`` yet, so leisure summaries
-    carry no room or death counts until it does; they are left out, never written as 0."""
+def session_end_inputs(ended: Any) -> dict[str, Any]:
+    """Lane B's ``scripts.retro_session_end.RetroSessionEnded`` (or its ``as_dict()``) -> the builder's
+    keyword arguments. Both call sites hand the same record: leisure (``controller='orion_leisure'``,
+    from the listener) and co-play (``controller='co_play'``, ``leisure_id=None``, from
+    ``app.state.retro_session_end_sink``).
+
+    Reads: session_id, controller, lineage_id, game_id, started_at/ended_at (epoch seconds),
+    end_reason, act_id, decisions_planned, verdicts, human_may_be_in_control, rooms_new and deaths
+    (None when Retro did not report them: left out, never 0), controller_frames.
+
+    Key: a leisure session is one Retro session. A co-play record is one cognition handoff, and one
+    Retro session can hold several, so its row key is ``<retro session id>:<handoff start epoch>``."""
     d = ended.as_dict() if hasattr(ended, "as_dict") else dict(ended)
+    co_play = d.get("controller") == "co_play"
+    sid = str(d.get("session_id") or "")
+    key = f"{sid}:{int(float(d.get('started_at') or 0))}" if co_play and sid else sid
     journal = [{"kind": "session_started", "at": _epoch(d.get("started_at"))},
                {"kind": "session_ended", "at": _epoch(d.get("ended_at")), "reason": d.get("end_reason")}]
-    # Optional per-port frame attribution ([{port, human_frames, orion_frames}]), when the runner
-    # computes it from Retro's applied-input journal. Not sent today: the sponsor rule applies.
-    for c in d.get("control") or []:
-        if isinstance(c, dict) and c.get("port") is not None:
-            journal.append({"kind": "control", "port": c["port"], "controller": "human",
-                            "frames": int(c.get("human_frames") or 0)})
-            journal.append({"kind": "control", "port": c["port"], "controller": "orion",
-                            "frames": int(c.get("orion_frames") or 0)})
-    atlas = d.get("atlas_session") if isinstance(d.get("atlas_session"), dict) else {}
-    return dict(session_id=str(d.get("session_id") or ""), journal=[j for j in journal if j["kind"] == "control" or j["at"]],
-                atlas_delta={k: atlas.get(k) for k in ("rooms_new", "deaths") if atlas.get(k) is not None},
-                kind="leisure", game_id=str(d.get("game_id") or ""), lineage_id=d.get("lineage_id"),
-                dispatch_id=d.get("act_id"), verdict_counts=d.get("verdicts") or {},
-                decisions=d.get("decisions_planned"),
-                human_may_be_in_control=bool(d.get("human_may_be_in_control")))
+    return dict(session_id=key, retro_session_id=sid or None, journal=[j for j in journal if j["at"]],
+                atlas_delta={k: d.get(k) for k in ("rooms_new", "deaths") if d.get(k) is not None},
+                kind="co_play" if co_play else "leisure", game_id=str(d.get("game_id") or ""),
+                lineage_id=d.get("lineage_id"), dispatch_id=None if co_play else d.get("act_id"),
+                verdict_counts=d.get("verdicts") or {}, decisions=d.get("decisions_planned"),
+                human_may_be_in_control=bool(d.get("human_may_be_in_control")),
+                controller_frames=d.get("controller_frames") if isinstance(d.get("controller_frames"), dict) else None)
 
 
 def memory_card_for(s: RetroPlaySessionSummaryV1) -> MemoryCardCreateV1:
@@ -256,7 +268,7 @@ def memory_card_for(s: RetroPlaySessionSummaryV1) -> MemoryCardCreateV1:
         project="retro",
         title=f"Played {s.game_title} on {day}",
         summary=s.summary,
-        anchors=[f"retro_session:{s.session_id}"] + ([f"retro_lineage:{s.lineage_id}"] if s.lineage_id else []),
+        anchors=[f"retro_session:{s.retro_session_id or s.session_id}"] + ([f"retro_lineage:{s.lineage_id}"] if s.lineage_id else []),
         tags=tags,
         evidence=[EvidenceItemV1(source=f"{TABLE}:{s.session_id}", excerpt=s.summary, ts=s.ended_at.isoformat())],
         subschema={"retro_play": {
@@ -270,7 +282,7 @@ def memory_card_for(s: RetroPlaySessionSummaryV1) -> MemoryCardCreateV1:
 
 DDL = f"""
 CREATE TABLE IF NOT EXISTS {TABLE} (
-    session_id text PRIMARY KEY, lineage_id text, game_id text NOT NULL, game_title text NOT NULL,
+    session_id text PRIMARY KEY, retro_session_id text, lineage_id text, game_id text NOT NULL, game_title text NOT NULL,
     kind text NOT NULL, dispatch_id text, started_at timestamptz NOT NULL, ended_at timestamptz NOT NULL,
     duration_sec double precision NOT NULL, end_reason text, control jsonb NOT NULL DEFAULT '[]'::jsonb,
     control_basis text NOT NULL, human_frames integer NOT NULL, orion_frames integer NOT NULL,
@@ -284,7 +296,7 @@ CREATE TABLE IF NOT EXISTS {TABLE} (
 CREATE INDEX IF NOT EXISTS {TABLE}_ended_idx ON {TABLE} (ended_at DESC)
 """
 
-_COLUMNS = ("session_id", "lineage_id", "game_id", "game_title", "kind", "dispatch_id", "started_at", "ended_at",
+_COLUMNS = ("session_id", "retro_session_id", "lineage_id", "game_id", "game_title", "kind", "dispatch_id", "started_at", "ended_at",
             "duration_sec", "end_reason", "control", "control_basis", "human_frames", "orion_frames", "human_share",
             "played_together", "rooms_new", "caves_new", "items_gained", "deaths", "death_rooms", "decisions",
             "predictions_met", "predictions_refuted", "predictions_unknown", "human_interventions", "summary")
@@ -361,6 +373,8 @@ async def export_session(
     verdict_counts: Mapping[str, int] | None = None,
     decisions: int | None = None,
     human_may_be_in_control: bool = False,
+    controller_frames: Mapping[str, int] | None = None,
+    retro_session_id: str | None = None,
     enabled: bool | None = None,
 ) -> ExportResult:
     """Build, store and (for a leisure dispatch) close the act. Never raises: a failed export is
@@ -376,7 +390,8 @@ async def export_session(
         s = build_session_summary(session_id, journal, atlas_delta, kind=kind, game_id=game_id,
                                   lineage_id=lineage_id, dispatch_id=dispatch_id,
                                   verdict_counts=verdict_counts, decisions=decisions,
-                                  human_may_be_in_control=human_may_be_in_control)
+                                  human_may_be_in_control=human_may_be_in_control,
+                                  controller_frames=controller_frames, retro_session_id=retro_session_id)
     except ValueError as exc:
         await _close_play(bus, dispatch_id, session_id, produced=False, note=str(exc)[:200])
         logger.warning("retro_memory_export_skipped session_id=%s reason=%s", session_id, exc)
@@ -425,15 +440,27 @@ async def export_session(
                         reason=card_error, summary=s)
 
 
-async def export_leisure_outcome(*, pool: Any, bus: Any, ended: Any, dispatch_id: str | None = None,
-                                 enabled: bool | None = None) -> ExportResult:
-    """The leisure path: Lane B's ``RetroSessionEnded`` (``LeisureOutcome.ended``) -> export_session.
-    ``dispatch_id`` (the admitted dispatch) wins over the runner's echoed ``act_id``."""
-    kw = leisure_inputs(ended)
+async def export_session_end(*, pool: Any, bus: Any, ended: Any, dispatch_id: str | None = None,
+                             enabled: bool | None = None) -> ExportResult:
+    """Lane B's ``RetroSessionEnded`` -> export_session, for both call sites. ``dispatch_id`` (the
+    admitted leisure dispatch) wins over the runner's echoed ``act_id``."""
+    kw = session_end_inputs(ended)
     if dispatch_id:
         kw["dispatch_id"] = dispatch_id
     return await export_session(pool=pool, bus=bus, enabled=enabled, **kw)
 
 
-__all__ = ["CARD_SOURCE", "export_leisure_outcome", "leisure_inputs", "DDL", "ExportResult", "INSERT_SQL", "TABLE", "build_session_summary", "export_session",
+# The leisure listener's name for the same path.
+export_leisure_outcome = export_session_end
+
+
+def make_session_end_sink(*, pool_provider, bus_provider):
+    """``app.state.retro_session_end_sink``: Lane B calls it with every co-play RetroSessionEnded."""
+    async def sink(ended: Any) -> ExportResult:
+        return await export_session_end(pool=pool_provider(), bus=bus_provider(), ended=ended)
+    return sink
+
+
+__all__ = ["CARD_SOURCE", "export_leisure_outcome", "export_session_end", "make_session_end_sink",
+           "session_end_inputs", "DDL", "ExportResult", "INSERT_SQL", "TABLE", "build_session_summary", "export_session",
            "game_title", "item_words", "memory_card_for"]

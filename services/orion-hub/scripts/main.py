@@ -872,6 +872,13 @@ async def startup_event():
                 pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
             )
             await retro_leisure_listener.begin(bus)
+            # Co-play session ends (Lane B scripts/retro_routes.py emit_session_end) -> section F export.
+            from scripts.retro_memory_export import make_session_end_sink
+
+            app.state.retro_session_end_sink = make_session_end_sink(
+                pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+                bus_provider=lambda: bus,
+            )
             # orion-introspect `curiosity` tool: the Curiosity tab's own run
             # join, same pool and the same graph reader the routes build.
             curiosity_introspect_listener = CuriosityIntrospectListener(

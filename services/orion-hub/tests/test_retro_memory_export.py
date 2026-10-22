@@ -111,33 +111,69 @@ def test_verdict_counts_stand_in_when_the_journal_has_no_goal_lines() -> None:
     assert s.summary.endswith("4 new rooms, died once, 5 of 9 predictions met, 2 unknown.")
 
 
-def test_lane_b_session_end_maps_onto_the_builder() -> None:
-    ended = {"session_id": "retro-1", "lineage_id": "lin-1", "leisure_id": "l1", "game_id": "the-legend-of-zelda",
-             "started_at": 1792699320.0, "ended_at": 1792700640.0, "end_reason": "session_cap",
-             "act_id": "d:1", "decisions_planned": 31, "verdicts": {"met": 14, "refuted": 12, "unknown": 3},
-             "atlas_session": {"session_id": "retro-1", "rooms_new": 9, "deaths": 2, "decisions": 31}}
-    kw = rx.leisure_inputs(ended)
-    assert (kw["kind"], kw["dispatch_id"], kw["atlas_delta"]) == ("leisure", "d:1", {"rooms_new": 9, "deaths": 2})
+def _ended(**kw):
+    """Lane B's real record (scripts/retro_session_end.py)."""
+    from scripts.retro_session_end import RetroSessionEnded
+
+    base = dict(session_id="retro-1", lineage_id="lin-1", leisure_id="l1", game_id="the-legend-of-zelda",
+                started_at=1792699320.0, ended_at=1792700640.0, end_reason="session_cap", act_id="d:1",
+                decisions_planned=31, verdicts={"met": 14, "refuted": 12, "unknown": 3}, rooms_new=9, deaths=2,
+                controller_frames={"human": 0, "script": 0, "leisure": 79200, "none": 300})
+    base.update(kw)
+    return RetroSessionEnded(**base)
+
+
+def test_a_leisure_session_end_maps_onto_the_builder() -> None:
+    kw = rx.session_end_inputs(_ended())
+    assert (kw["kind"], kw["session_id"], kw["dispatch_id"], kw["atlas_delta"]) == (
+        "leisure", "retro-1", "d:1", {"rooms_new": 9, "deaths": 2})
     s = rx.build_session_summary(**kw)
     assert s.summary == ("Played The Legend of Zelda solo for 22 min, 9 new rooms, died twice, "
                          "14 of 31 predictions met, 5 unknown.")
+    assert (s.control_basis, s.human_share, s.orion_frames) == ("frames", 0.0, 79200)  # 'none' drove nobody
     assert (s.started_at.isoformat(), s.end_reason) == ("2026-10-22T20:02:00+00:00", "session_cap")
-    # Without Lane A's atlas record: the room and death counts are simply not claimed.
-    bare = rx.build_session_summary(**rx.leisure_inputs({k: v for k, v in ended.items() if k != "atlas_session"}))
-    assert bare.summary == "Played The Legend of Zelda solo for 22 min, 14 of 31 predictions met, 5 unknown."
-    # Lane B's flag: a human may have been in control -> never "solo", no share claimed.
-    held = rx.build_session_summary(**rx.leisure_inputs(dict(ended, human_may_be_in_control=True)))
-    assert (held.control_basis, held.human_share, held.played_together) == ("unknown", None, False)
-    assert held.summary.startswith("Played The Legend of Zelda with a human for 22 min (control share not recorded)")
-    # Frame attribution, when the runner sends it, replaces the sponsor rule.
-    framed = rx.build_session_summary(**rx.leisure_inputs(dict(
-        ended, control=[{"port": 0, "human_frames": 700, "orion_frames": 300}])))
-    assert (framed.control_basis, framed.played_together) == ("frames", True)
-    assert framed.summary.startswith("Played The Legend of Zelda together for 22 min (a human drove 70% of frames)")
-    # No decision count recorded at all: not claimed as "no planner decisions".
-    none = rx.build_session_summary(**rx.leisure_inputs(
-        {k: v for k, v in ended.items() if k not in ("decisions_planned", "verdicts", "atlas_session")}))
+    # Unknown counts are left out, never 0.
+    bare = rx.build_session_summary(**rx.session_end_inputs(_ended(rooms_new=None, deaths=None)))
+    assert bare.rooms_new is None and "rooms" not in bare.summary and "died" not in bare.summary
+
+
+def test_a_human_who_may_have_played_is_never_orions_alone() -> None:
+    held = rx.build_session_summary(**rx.session_end_inputs(_ended(human_may_be_in_control=True,
+                                                                   controller_frames=None)))
+    assert (held.control_basis, held.human_share, held.played_together) == ("unknown", None, True)
+    assert held.summary.startswith("Played The Legend of Zelda together for 22 min (control share not recorded)")
+    # Counted frames decide when Retro sent them, flag or not.
+    counted = rx.build_session_summary(**rx.session_end_inputs(_ended(
+        human_may_be_in_control=True, controller_frames={"human": 700, "script": 200, "leisure": 100, "none": 50})))
+    assert (counted.human_share, counted.played_together) == (0.7, True)
+    assert counted.summary.startswith("Played The Legend of Zelda together for 22 min (a human drove 70% of frames)")
+
+
+def test_a_co_play_handoff_is_its_own_row_and_closes_no_act() -> None:
+    e = _ended(controller="co_play", leisure_id=None, act_id=None,
+               controller_frames={"human": 300, "script": 700, "leisure": 0, "none": 0})
+    kw = rx.session_end_inputs(e)
+    assert (kw["kind"], kw["session_id"], kw["retro_session_id"], kw["dispatch_id"]) == (
+        "co_play", "retro-1:1792699320", "retro-1", None)
+    s = rx.build_session_summary(**kw)
+    assert s.summary.startswith("Played The Legend of Zelda for 22 min (Orion drove 70% of frames)")
+    card = rx.memory_card_for(s)
+    assert card.anchors[0] == "retro_session:retro-1"
+
+
+def test_no_decision_count_is_not_claimed() -> None:
+    none = rx.build_session_summary(**rx.session_end_inputs({
+        "session_id": "x", "game_id": "zelda", "started_at": 1792699320.0, "ended_at": 1792700640.0,
+        "end_reason": "stop"}))
     assert none.decisions is None and none.summary == "Played The Legend of Zelda solo for 22 min."
+
+
+@pytest.mark.asyncio
+async def test_the_co_play_sink_exports(cards) -> None:
+    pool, bus = _Pool(), _Bus()
+    sink = rx.make_session_end_sink(pool_provider=lambda: pool, bus_provider=lambda: bus)
+    out = await sink(_ended(controller="co_play", leisure_id=None, act_id=None))
+    assert out.state == "exported" and list(pool.rows) == ["retro-1:1792699320"] and bus.events() == []
 
 
 def test_game_title_by_id_segment() -> None:
@@ -195,7 +231,7 @@ def test_lazy_ddl_and_migration_declare_the_same_columns() -> None:
     migration = "\n".join(l for l in MIGRATION.read_text().splitlines() if not l.startswith("--"))
     mig_cols = columns(migration)
     ddl_cols = columns(rx.DDL.split("CREATE INDEX")[0])
-    assert len(mig_cols) == 30 and mig_cols[0] == "session_id" and mig_cols[-1] == "created_at"
+    assert len(mig_cols) == 31 and mig_cols[0] == "session_id" and mig_cols[-1] == "created_at"
     assert mig_cols == ddl_cols
     assert list(rx._COLUMNS) == [c for c in mig_cols if c not in ("memory_card_id", "card_error", "created_at")]
     assert "-- ORION-MIGRATION-REQUIRED-BY: orion-hub, orion-durable-runs" in MIGRATION.read_text()

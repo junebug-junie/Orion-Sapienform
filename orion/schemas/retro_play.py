@@ -109,7 +109,10 @@ class RetroPlaySessionSummaryV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal["retro_play_session.v1"] = "retro_play_session.v1"
+    # The row key: the Retro session id for leisure, "<retro session id>:<handoff start>" for a
+    # co-play handoff (one Retro session can hold several).
     session_id: str = Field(min_length=1, max_length=256)
+    retro_session_id: str | None = Field(None, max_length=256)
     lineage_id: str | None = Field(None, max_length=256)
     game_id: str = Field(min_length=1, max_length=64)
     game_title: str = Field(min_length=1, max_length=120)

@@ -8,6 +8,7 @@
 -- Additive only: one new table and one index. Rollback: DROP TABLE retro_play_sessions.
 CREATE TABLE IF NOT EXISTS retro_play_sessions (
     session_id          text PRIMARY KEY,
+    retro_session_id    text,
     lineage_id          text,
     game_id             text NOT NULL,
     game_title          text NOT NULL,

@@ -2,17 +2,34 @@
 import asyncio
 from pathlib import Path
 import time
+import uuid
 
 import aiohttp
 from fastapi import APIRouter, Request, WebSocket, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 
 
-def create_router(config):
+def create_router(config, presence=None):
+    """``presence``: a scripts.retro_presence.PresenceStore (tests/evals); default is the
+    process's Redis store from ORION_BUS_URL, or none (human play never depends on it)."""
     router = APIRouter()
     sockets = set()
     planning = False
     last_plan = float("-inf")
+    background = set()
+
+    def store():
+        if presence is not None: return presence
+        from scripts.retro_presence import store_for
+        try: return store_for(config)
+        except Exception: return None
+
+    def soon(coro_fn, *args):
+        # Presence writes ride beside human play, never in front of it.
+        s = store()
+        if s is None: return
+        task = asyncio.create_task(getattr(s, coro_fn)(*args))
+        background.add(task); task.add_done_callback(background.discard)
 
     def enabled():
         if not config.HUB_RETRO_ENABLED: raise HTTPException(503, 'retro_disabled')
@@ -47,11 +64,52 @@ def create_router(config):
         return FileResponse(Path(__file__).resolve().parents[1]/'templates/retro.html',
                             headers={'Cache-Control':'no-store', 'Referrer-Policy':'no-referrer'})
 
+    @router.get('/api/retro/leisure')
+    async def leisure():
+        enabled()
+        s = store()
+        status = await s.status() if s is not None else None
+        journal = await s.journal(10) if s is not None else None
+        if status is None:
+            return JSONResponse({'state': 'unknown', 'reason': 'presence_store_unavailable', 'journal': []},
+                                headers={'Cache-Control': 'no-store'})
+        return JSONResponse(dict(status or {'state': 'idle'}, journal=journal or []),
+                            headers={'Cache-Control': 'no-store'})
+
+    async def plan_v2(path, data, state, policy, c):
+        """Zelda co-play decision (spec D). No goal on any failure; Retro's motor holds wait."""
+        from scripts import retro_planner
+        cognition = policy['cognition']
+        decision = cognition.get('decision')
+        accepted = cognition.get('goal')
+        if isinstance(decision, dict) and isinstance(accepted, dict) and accepted.get('decision_id') == decision.get('decision_id'):
+            return JSONResponse(accepted)
+        sid = path.rsplit('/', 1)[0]
+        atlas = None
+        async with c.get('http://retro/'+sid+'/atlas', headers=credentials()) as r:
+            if r.status == 200: atlas = await r.json()
+        try:
+            goal = await retro_planner.plan_zelda(config, decision, atlas, cognition.get('history'))
+        except retro_planner.PlannerShed as exc:
+            return JSONResponse(exc.public(), status_code=503,
+                                headers={'Retry-After': str(int(max(1, exc.details.get('retry_after_sec') or 30)))})
+        except retro_planner.PlannerBusy as exc:
+            return JSONResponse(exc.public(), status_code=429)
+        except retro_planner.PlannerRejected as exc:
+            return JSONResponse(exc.public(), status_code=409 if exc.reason in ('decision_pending', 'observation_unknown') else 422)
+        except retro_planner.PlannerError as exc:
+            return JSONResponse(exc.public(), status_code=503)
+        body = data | goal
+        async with c.post('http://retro/'+sid+'/goal', headers=credentials(), json=body) as r:
+            return JSONResponse(await r.json(), status_code=r.status)
+
     @router.api_route('/api/retro/{path:path}', methods=['GET','POST'])
     async def proxy(path: str, request: Request):
         nonlocal planning, last_plan
         import re
         await authorize(request)
+        # Every proxied POST is a human action (the leisure runner talks to Retro directly).
+        if request.method == 'POST': soon('mark_human')
         if request.method == 'POST' and re.fullmatch(r'sessions/[0-9a-f-]{36}/plan', path):
             if not getattr(config, 'HUB_RETRO_COGNITION_ENABLED', False):
                 raise HTTPException(503, 'retro_cognition_disabled')
@@ -77,6 +135,8 @@ def create_router(config):
                                    and p['epoch'] == data['expected_epoch'] and p.get('cognition')), None)
                     if not policy or state['generation'] != data['generation']:
                         raise HTTPException(409, 'stale_controller')
+                    if 'decision' in policy['cognition']:
+                        return await plan_v2(path, data, state, policy, c)
                     attempt = policy['cognition']['attempt']
                     if not attempt: raise HTTPException(409, 'observation_pending')
                     accepted = policy['cognition'].get('goal')
@@ -96,7 +156,7 @@ def create_router(config):
         valid = ((request.method=='GET' and path in ('games','health/ready')) or
                  (request.method=='GET' and re.fullmatch(r'games/[a-z0-9][a-z0-9-]{0,63}/saves',path)) or
                  (request.method=='POST' and path=='sessions') or
-                 re.fullmatch(r'sessions/[0-9a-f-]{36}'+('(?:/evidence)?' if request.method=='GET' else '/(?:control|pause|resume|stop|scripted|goal|save|load)'),path))
+                 re.fullmatch(r'sessions/[0-9a-f-]{36}'+('(?:/evidence|/atlas)?' if request.method=='GET' else '/(?:control|pause|resume|stop|scripted|goal|save|load)'),path))
         if not valid: raise HTTPException(404)
         try:
             async with client() as c:
@@ -113,6 +173,7 @@ def create_router(config):
             await ws.close(code=1008);return
         sockets.add(ws)
         tasks=[]
+        socket_id=str(uuid.uuid4())
         try:
             async with client() as c:
                 async with c.ws_connect('http://retro/sessions/'+sid+'/'+channel,headers=credentials(),max_msg_size=1200000) as upstream:
@@ -135,11 +196,24 @@ def create_router(config):
                             elif msg.type==aiohttp.WSMsgType.TEXT:
                                 await asyncio.wait_for(ws.send_text(msg.data),.25)
                             else: return
+                    if channel=='input': soon('mark_human')
+                    async def beat():
+                        # Presence heartbeat for the leisure gate; never ends the relay.
+                        while True:
+                            s=store()
+                            if s is not None:
+                                try: await s.beat_browser(socket_id)
+                                except Exception: pass
+                            await asyncio.sleep(5)
                     tasks=[asyncio.create_task(receive()),asyncio.create_task(send())]
-                    await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
+                    beating=asyncio.create_task(beat())
+                    try: await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
+                    finally:
+                        beating.cancel();await asyncio.gather(beating,return_exceptions=True)
         except (aiohttp.ClientError, OSError, asyncio.TimeoutError, RuntimeError): pass
         finally:
             sockets.discard(ws)
+            soon('drop_browser',socket_id)
             for task in tasks: task.cancel()
             if tasks: await asyncio.gather(*tasks,return_exceptions=True)
             try: await ws.close()

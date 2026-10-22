@@ -155,6 +155,6 @@ SELECT question FROM orion_ask WHERE source_kind='person_fact';   -- expect rows
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2852
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

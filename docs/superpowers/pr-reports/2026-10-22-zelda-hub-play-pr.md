@@ -3,7 +3,7 @@
 Spec: [Orion plays The Legend of Zelda](../specs/2026-10-22-orion-plays-zelda-design.md) (PR #2846),
 sections D and E, the Hub view, and acceptance checks 4 and 5.
 
-**Merge order: this PR depends on Lane A (`feat/zelda-retro-core`) merging first.** The Hub reads
+**Merge order: this PR depends on Lane A (#2851, `feat/zelda-retro-core`) merging first.** The Hub reads
 Lane A's Retro contracts: GoalV2, the `zelda-1-ram-v1` observation, `GET /sessions/{id}/atlas`, and
 the `leisure_id` sponsor. Before Lane A is deployed, the Zelda paths here stay idle. Nova co-play
 is unchanged. The shapes were checked against Lane A's PR #2851 (`feat/zelda-retro-core` at

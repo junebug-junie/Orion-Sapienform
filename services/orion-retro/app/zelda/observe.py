@@ -46,7 +46,11 @@ VERDICTS = {
     # 15-room farming probe, and no dungeon was entered, so those stay unknown.
     'rupees': 'CONFIRMED', 'paused': 'CONFIRMED', 'drops': 'CONFIRMED',
     'keys': 'UNSETTLED', 'bombs': 'UNSETTLED', 'candle': 'UNSETTLED', 'raft': 'UNSETTLED',
+    # Continue/Save/Retry screen (mode 8): the selection is GameSubmode $13 & 3
+    # (0 Continue, 1 Save, 2 Retry), $80 = START accepted (Z_05 UpdateMode8ContinueQuestion_Full).
+    'continue_menu': 'CONFIRMED',
 }
+CONTINUE_CHOICES = ('continue', 'save', 'retry')
 ITEM_ADDR = {'sword': 0x657, 'bombs': 0x658, 'candle': 0x65B, 'raft': 0x660,
              'rupees': 0x66D, 'keys': 0x66E}
 ENEMY_SLOTS = range(1, 12)  # object slots 1..11; slot 0 is Link
@@ -160,7 +164,10 @@ def decode(ram, save, frame=None, include_walls=True):
                          facing=FACING.get(ram[0x98], 'unknown'), invincible_frames=ram[0x4F0],
                          controllable=mode in MAP_MODES and not frozen),
                hearts=hearts(ram), items=items, enemies=enemies(ram),
-               drops=drops(ram) if mode in MAP_MODES else [])
+               drops=drops(ram) if mode in MAP_MODES else [],
+               menu=(dict(kind='continue', cursor=CONTINUE_CHOICES[ram[0x13] & 3] if ram[0x13] & 3 < 3 else 'unknown',
+                          activated=bool(ram[0x13] & 0x80))
+                     if code == 8 and _settled('continue_menu') else None))
     if mode in MAP_MODES:
         grid = walls(ram, save)
         out['walls_hash'] = walls_hash(grid)

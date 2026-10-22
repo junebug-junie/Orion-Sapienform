@@ -234,11 +234,13 @@ learned-blocked tiles. A press that leaves Link's position unchanged for 8 frame
 a bump: the tile is marked learned-blocked in the atlas and the path is replanned.
 The combat reflex (face, swing when aligned, back off after a hit) runs only inside
 `fight`/`retreat`. A goal ends at the first of: prediction met, prediction refuted
-(another room, death), `interrupted:hit` (not for fight/retreat), `interrupted:stuck`
+(another room), `death` (always refuted), `interrupted:hit` (not for fight/retreat), `interrupted:stuck`
 (2 s), `budget_expired`, goal completed, or `stopped:<reason>` (takeover, pause,
 sponsor loss, load). Each end writes one `goal_finished` journal row: decision_id,
 start/end digests, outcome, verdict (`met|refuted|unknown`), applied frames, bumps,
 `human_intervention`. Status shows it as `cognition.last_finished`.
+
+**Death recovery.** This happens only while a script grant is active; human play is never touched. A death ends any active goal with outcome `death` and verdict `refuted`. On the Continue/Save/Retry screen (mode 8), the motor reads the cursor from `GameSubmode $13` (low two bits: 0 Continue, 1 Save, 2 Retry; `$80` = START accepted). It never counts presses. It taps SELECT until the cursor is on Continue, then taps START. When play returns it writes a `death_recovered` row (`decision_id` or null, death `room`/`level`, `death_frame`, `room_after`; the journal stamps `frame`) and offers a new decision. The reader exposes the screen as `observation.menu = {kind: 'continue', cursor, activated}`.
 
 **GoalV2 body.** `connection_id` **or** `leisure_id` (exactly one), `generation`,
 `port`, `expected_epoch`, `decision_id`, `goal` (discriminated by `kind`),
@@ -268,7 +270,8 @@ deaths, and a compact map of the level). Delete the file to forget it.
 
 **Evals.** `evals/zelda_play.py --core <so> --rom <zelda.nes>` (no LLM, ~4 s,
 simulated clock): boot from power-on with real input, pause, enter the cave, bump the
-cave barrier, take the sword, exit S, exit E, kill an Octorok, then a second session
+cave barrier, take the sword, exit S, exit E, kill an Octorok, die standing among the
+Octoroks and recover through Continue, then a second session
 on the same lineage from the save state. `evals/zelda_http_smoke.py --core <so>
 --catalog <catalog.json>` drives the real HTTP app and a spawned worker at real time,
 including the leisure preemption check. Both write evidence under `/tmp/zelda-play/`.

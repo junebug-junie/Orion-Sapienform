@@ -198,8 +198,25 @@ def _run(args, out, journals):
         g = h.goal({'kind': 'collect', 'tile': {'x': min(d['tile'][0], 30), 'y': max(1, min(d['tile'][1], 21))}},
                    {'kind': 'item_gained'}, budget=8)
         evidence_drops.append(dict(drop=d, before=before_items, after=dict(h.obs['items']), finished=g))
-    # Leave the fight for the known start room before saving the lineage.
-    r = h.goal({'kind': 'exit', 'dir': 'W'}, {'kind': 'reach_room', 'value': 0x77}); seq.append(r)
+    # Forced death: stand still among the Octoroks until Link dies, then the motor's own
+    # death recovery must pick Continue on the menu (cursor read from $13) and play resumes.
+    died = None
+    for _ in range(8):
+        if h.obs['mode'] != 'play': break
+        r = h.goal({'kind': 'wait'}, {'kind': 'survive'}, budget=30); seq.append(r)
+        if r['outcome'] == 'death': died = r; break
+    menus = []
+    for _ in range(1500):
+        h.tick()
+        if h.obs.get('menu'): menus.append(h.obs['menu'])
+        if any(x['kind'] == 'death_recovered' for x in h.rows) and h.goals.attempt: break
+    recovered = [x for x in h.rows if x['kind'] == 'death_recovered']
+    check(results, 'forced death -> Continue (cursor $13) -> back in play with a new decision',
+          died and died['verdict'] == 'refuted' and recovered and recovered[0]['decision_id'] == died['decision_id']
+          and menus and menus[0]['cursor'] == 'continue' and h.obs['mode'] == 'play' and h.obs['room'] == 0x77
+          and h.goals.attempt is not None and h.obs['hearts']['current'] == 3,
+          death=died, recovered=recovered, menu_first=menus[:1], menu_last=menus[-1:], room=h.obs['room'],
+          hearts=h.obs['hearts'], new_decision=(h.goals.attempt or {}).get('decision_id'))
     h.scripted.stop(0, 'eval_end')
     state = h.core.snapshot()
     facts1 = h.facts()

@@ -6,6 +6,7 @@ Lane A (Retro core) of [Orion plays Zelda](../specs/2026-10-22-orion-plays-zelda
 - Orion can be given a goal like "leave east", "enter that cave", "pick that up" or "fight that Octorok", and a fast local motor turns it into button presses frame by frame. It finds a path round walls, learns from bumping into things, and records whether its prediction came true. (`app/zelda/navigate.py`, `GoalV2`)
 - Orion keeps its own map of Hyrule across sessions, built only from what it saw. (`app/zelda/atlas.py`, `zelda-atlas-v1`, `GET /sessions/{id}/atlas`)
 - A server-side "leisure" sponsor can now hold the controller with no browser, but any human who grabs the controller takes it back at once. (Contract and arbiter hook only; Lane B builds the runner.)
+- If Orion dies during its own play, it now picks Continue on the death menu by itself and keeps playing. It finds Continue by reading where the menu cursor is, not by counting button presses. Human play is never touched. (`death_recovered` journal row)
 - Nova and every other game keep the old path unchanged.
 
 ## Outcome moved
@@ -45,8 +46,9 @@ Before: Orion could choose one of five moves every five seconds in one platforme
   `goal` is one of `{kind:'exit'|'explore', dir:'N'|'S'|'E'|'W'}`, `{kind:'enter'|'collect', tile:{x:0..31, y:0..21}}`, `{kind:'fight', target:'nearest'|1..11}`, `{kind:'retreat'}`, `{kind:'wait'}`.
   `prediction` is `{kind: reach_room|enter_cave|item_gained|enemies_cleared|survive|unknown, value}`; `value` is the room id for `reach_room` and must be null otherwise.
   `decision_id` echoes `status.scripted[].cognition.attempt.decision_id`; the worker offers one when Link is controllable and no goal is active, and it expires after 30 s.
-- Added: `status.scripted[].cognition = {attempt, goal, last_finished, policy_id}` for Zelda; `last_finished` is the `goal_finished` record: `decision_id, goal, prediction, planner_id, outcome, verdict (met|refuted|unknown), start_digest, end_digest, start_frame, end_frame, applied_frames, human_intervention, bumps`. Outcomes: `prediction_met | prediction_refuted | completed | died | interrupted:hit | interrupted:stuck | budget_expired | stopped:<reason>`.
+- Added: `status.scripted[].cognition = {attempt, goal, last_finished, policy_id}` for Zelda; `last_finished` is the `goal_finished` record: `decision_id, goal, prediction, planner_id, outcome, verdict (met|refuted|unknown), start_digest, end_digest, start_frame, end_frame, applied_frames, human_intervention, bumps`. Outcomes: `prediction_met | prediction_refuted | completed | death (always refuted) | interrupted:hit | interrupted:stuck | budget_expired | stopped:<reason>`.
 - Added: `status.zelda = {observation, atlas: {lineage_id, rooms_known, session, disabled}}`, `status.game_profile`.
+- Added: journal row `death_recovered {decision_id | null, room, level, death_frame, room_after, frame}` and `observation.menu = {kind: 'continue', cursor: continue|save|retry, activated}` (mode 8 only).
 - Added: `GET /sessions/{id}/atlas` -> `{lineage_id, level, room, current, adjacent{N,S,E,W:{room, known, seen_exit}}, rooms_known, rooms_with_unexplored_exits, caves, deaths, map}`; 404 `no_atlas` / `atlas_not_written_yet`.
 - Added: `POST /control` and `/scripted` accept `leisure_id` instead of `connection_id` (Zelda sessions only; `leisure_requires_zelda` otherwise). Leisure control actions: `acquire`, `release`.
 - Added: save metadata `lineage_id` (optional; only Zelda saves).
@@ -75,7 +77,7 @@ Before: Orion could choose one of five moves every five seconds in one platforme
 
 ```text
 /tmp/orion-retro-service-venv/bin/python -m pytest services/orion-retro/tests tests/retro -q
-148 passed (35 new tests in tests/test_zelda.py, some parametrized)
+150 passed (35 new tests in tests/test_zelda.py, some parametrized)
 git diff --check                                   clean
 python -m pytest tests/test_no_personal_terms.py tests/test_no_private_eval_artifacts.py tests/test_gitignore_no_bare_catchall.py -q
 13 passed
@@ -88,12 +90,16 @@ Mutation spot-checks: removing the fight/retreat hit exemption, the leisure pree
 ## Evals run
 
 ```text
-python services/orion-retro/evals/zelda_play.py --core <fceumm ac0d00a7> --rom <PRG0>   OK 11/11 (~4 s)
-python services/orion-retro/evals/zelda_play.py --core <fceumm ac0d00a7> --rom <PRG1>   OK 11/11
+python services/orion-retro/evals/zelda_play.py --core <fceumm ac0d00a7> --rom <PRG0>   OK 12/12 (~5 s)
+python services/orion-retro/evals/zelda_play.py --core <fceumm ac0d00a7> --rom <PRG1>   OK 12/12
   boot reaches play at room $77; SELECT pause reads $E0 and freezes control;
   enter cave (met); bump at the cave barrier marks learned-blocked tiles;
   collect sword ($657 0->1, met); exit S to $77 (met); exit E to $78 (met);
-  fight kills an Octorok (slot gone); atlas session 1 records $77, $78, the cave and its sword;
+  fight kills an Octorok (slot gone);
+  forced death: Link stands among Octoroks, dies in $78 at frame 5715 (wait goal: outcome death,
+  verdict refuted); menu cursor ($13) reads continue -> START -> activated; play resumes in $77 at
+  frame 6222 with 3 hearts; death_recovered names the dead goal's decision_id; a new decision is offered;
+  atlas session 1 records $77, $78, the cave and its sword;
   save-state continuity (sword=1, room $77); session 2 on the same lineage: $77/$78 not new, $68 new.
 python services/orion-retro/evals/zelda_http_smoke.py --core <so> --catalog <catalog.json>  OK
   real HTTP app + spawned worker at real time: enter/sword/exit S all met, idempotent retry 200,
@@ -173,7 +179,8 @@ Run from the clean primary `main` checkout after merge. Not deployed by this PR.
 ## Risks / concerns
 
 - Severity: medium. Concern: combat is crude. In the eval Link sometimes loses hearts or dies fighting several Octoroks with three hearts. Mitigation: the eval targets one Octorok slot; `fight` ends on death with `refuted`; Lane B's planner chooses `retreat`. Tuning is follow-up work, not a contract change.
-- Severity: medium. Concern: after a death the game shows a Continue/Save menu, and no GoalV2 goal can press START. A leisure session would stall there. Mitigation: Lane B needs a menu action or the runner ends the session on death; flagged for Lane B.
+- Severity: low. Concern: death recovery always chooses Continue. Save and Retry are never chosen. The live run went straight to Continue; the SELECT path (cursor on Save or Retry) is covered only by a deterministic test. Mitigation: the cursor is read from `$13` every frame, so a wrong count cannot misselect.
+- Severity: low. Concern: the coordinator's follow-up named `$16` as the cursor. The disassembly shows `$16` is the file-select slot; the Continue menu uses `GameSubmode $13` (`Z_05.asm` `UpdateMode8ContinueQuestion_Full`), and the live run confirmed it.
 - Severity: low. Concern: the observation has no list of cave items (the cave sword is not an object). The planner needs the tile for `collect`. Mitigation: `drops` covers enemy drops; cave contents stay UNSETTLED.
 - Severity: low. Concern: bombs, keys, candle, raft and dungeon level read `unknown` until a live probe settles them.
 

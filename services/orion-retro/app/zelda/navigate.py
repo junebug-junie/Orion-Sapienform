@@ -20,6 +20,7 @@ INTERVAL = 0  # send on every worker tick: one decision per native frame (60.098
 GOALS = ('exit', 'enter', 'fight', 'retreat', 'collect', 'explore', 'wait')
 PREDICTIONS = ('reach_room', 'enter_cave', 'item_gained', 'enemies_cleared', 'survive', 'unknown')
 UP, DOWN, LEFT, RIGHT, A = 16, 32, 64, 128, 256
+SELECT, START = 4, 8
 DIRS = {'N': (0, -1, UP), 'S': (0, 1, DOWN), 'W': (-1, 0, LEFT), 'E': (1, 0, RIGHT)}
 BUMP_FRAMES = 8          # spec: unchanged position for 8+ frames while moving = bump
 STUCK_FRAMES = 120       # 2 s at 60 fps
@@ -157,6 +158,7 @@ class ZeldaGoals:
         self.until = 0  # read by Scripted.tick for applied-row attribution
         self.idle_offers = 0  # consecutive offers that expired with no goal
         self.human_intervention = False
+        self.recovering = None  # set by an observed death; cleared when play returns
         self._reset_motor()
 
     # ---- worker/Scripted surface -------------------------------------------------
@@ -164,7 +166,7 @@ class ZeldaGoals:
         return self.accepted is not None
 
     def mask(self, now, seq):
-        return self.current_mask if self.accepted else 0
+        return self.current_mask if self.accepted or self.recovering else 0
 
     def public(self):
         return dict(attempt=self.attempt, goal=self.accepted, last_finished=self.last_finished,
@@ -211,6 +213,29 @@ class ZeldaGoals:
         self.record('goal_committed', **data)
         return self._public_goal()
 
+    def _recover(self, obs, frame):
+        """Death recovery, only while this script grant is active: on the Continue screen,
+        move the cursor (read from $13, never counted) to Continue and tap START. Each
+        button is a one-frame tap, because the game acts on new presses only."""
+        if obs.get('status') != 'observed': return bool(self.recovering)
+        if obs['mode'] == 'death' and not self.recovering:
+            self.recovering = dict(decision_id=(self.last_finished or {}).get('decision_id')
+                                   if (self.last_finished or {}).get('outcome') == 'death' else None,
+                                   room=obs['room'], level=obs['level'], frame=frame, last=0)
+            self.attempt = None
+        r = self.recovering
+        if not r: return False
+        menu = obs.get('menu')
+        if menu and menu['kind'] == 'continue' and not menu['activated'] and r['last'] == 0:
+            self.current_mask = START if menu['cursor'] == 'continue' else SELECT
+        r['last'] = self.current_mask
+        if obs['mode'] == 'play' and obs['link']['controllable']:
+            self.record('death_recovered', decision_id=r['decision_id'], room=r['room'], level=r['level'],
+                        death_frame=r['frame'], room_after=obs['room'])  # the journal stamps frame
+            self.recovering = None; self.current_mask = 0
+            return False  # fall through: offer a fresh decision this frame
+        return True
+
     def note_applied(self, decision_id, mask):
         """Count only inputs the arbiter really applied for this goal (not computed masks)."""
         if self.accepted and decision_id == self.accepted['decision_id'] and mask:
@@ -240,6 +265,7 @@ class ZeldaGoals:
                 self.current_mask = self._drive(obs) if obs.get('status') == 'observed' else 0
                 return
         self.current_mask = 0
+        if self._recover(obs, frame): return
         stable = obs.get('status') == 'observed' and obs['link']['controllable']
         if stable and (self.attempt is None or now - self.offered_at > OFFER_TTL):
             if self.attempt is not None: self.idle_offers += 1
@@ -251,7 +277,7 @@ class ZeldaGoals:
         verdict = judge(g['prediction'], start, obs)
         if verdict == 'met': return self._finish('prediction_met', 'met', obs)
         if obs.get('status') == 'observed' and obs['mode'] == 'death':
-            return self._finish('died', 'unknown' if g['prediction']['kind'] == 'unknown' else 'refuted', obs)
+            return self._finish('death', 'refuted', obs)
         if verdict == 'refuted': return self._finish('prediction_refuted', 'refuted', obs)
         if self._completed(obs):
             return self._finish('completed', self._closing_verdict(), obs)

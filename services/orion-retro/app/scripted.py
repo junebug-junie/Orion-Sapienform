@@ -77,7 +77,7 @@ class Scripted:
                 s['goal_attempt_id'] = (goals.accepted['attempt_id']
                     if goals and goals.accepted_current() and now < goals.until else None)
                 if (s['interval'] == 0 and mask == 0 and s.get('last_mask') == 0
-                        and not (goals and goals.accepted_current())):
+                        and not (goals and (goals.accepted_current() or getattr(goals, 'recovering', None)))):
                     # GoalV2 idle: the held neutral mask is enough. Refresh the hold
                     # without a new input row (60 rows/s would fill the journal).
                     lease['expires'] = now+HOLD_TTL

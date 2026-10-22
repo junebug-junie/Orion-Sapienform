@@ -197,7 +197,7 @@ def test_hit_interrupts_navigation_but_not_combat():
 def test_death_refutes_and_budget_closes_predictions():
     die = lambda f, w: w.kw.update(mode=0x11) if f == 3 else None
     row, _, _ = run_goal({'kind': 'wait'}, {'kind': 'survive'}, setup=die)
-    assert row['outcome'] == 'died' and row['verdict'] == 'refuted'
+    assert row['outcome'] == 'death' and row['verdict'] == 'refuted'
     row, _, _ = run_goal({'kind': 'wait'}, {'kind': 'survive'}, budget=3, frames=400)
     assert row['outcome'] == 'budget_expired' and row['verdict'] == 'met'
     row, _, _ = run_goal({'kind': 'wait'}, {'kind': 'enemies_cleared'}, World(enemies=[(3, 7, 40, 60, 16)]), budget=3, frames=400)
@@ -557,3 +557,44 @@ def test_atlas_never_invents_exits_lineages_or_places(tmp_path):
     bad = path_for(tmp_path, a.lineage_id); doc = json.loads(bad.read_text())
     doc['rooms']['0:119'].pop('damage_taken'); bad.write_text(json.dumps(doc))
     assert load(tmp_path, a.lineage_id) is None  # a malformed shape is refused, not trusted
+
+
+def test_death_recovery_selects_continue_by_cursor_and_offers_again():
+    from app.zelda.navigate import SELECT, START
+    rows = []
+    g = ZeldaGoals(lambda kind, **f: rows.append(dict(kind=kind, **f)))
+    g.observe_frame(0, 2, 1, obs(room=0x78), 0)
+    g.accept(dict(port=0, expected_epoch=2, decision_id=g.attempt['decision_id'], goal={'kind': 'wait'},
+                  prediction={'kind': 'unknown', 'value': None}, rationale='t', planner_id='t', budget_seconds=30), 0)
+    g.observe_frame(0, 2, 2, obs(room=0x78), .1)
+    g.observe_frame(0, 2, 3, obs(room=0x78, mode=0x11), .2)
+    end = [r for r in rows if r['kind'] == 'goal_finished'][-1]
+    assert end['outcome'] == 'death' and end['verdict'] == 'refuted'  # even an 'unknown' prediction
+    assert g.attempt is None and g.mask(0, 0) == 0
+    masks = []
+    for f, snap in enumerate([dict(mode=8, sub=1), dict(mode=8, sub=1), dict(mode=8, sub=2), dict(mode=8, sub=2),
+                              dict(mode=8, sub=0), dict(mode=8, sub=0x80), dict(mode=3)]):
+        g.observe_frame(0, 2, 10 + f, obs(room=0x78, **snap), 1 + f / 60)
+        masks.append(g.mask(0, f))
+    # Cursor read from $13: Save -> SELECT, release, Retry -> SELECT, release, Continue -> START, then hands off.
+    assert masks == [SELECT, 0, SELECT, 0, START, 0, 0]
+    assert obs(mode=8, sub=0x81)['menu'] == dict(kind='continue', cursor='save', activated=True)
+    g.observe_frame(0, 2, 20, obs(room=0x77), 2)
+    rec = [r for r in rows if r['kind'] == 'death_recovered']
+    assert rec == [dict(kind='death_recovered', decision_id=end['decision_id'], room=0x78, level=0,
+                        death_frame=3, room_after=0x77)]
+    assert g.attempt and g.mask(0, 0) == 0  # a fresh decision once play returns
+
+
+def test_death_without_a_goal_recovers_with_null_decision_and_humans_are_untouched():
+    rows = []
+    g = ZeldaGoals(lambda kind, **f: rows.append(dict(kind=kind, **f)))
+    for f, snap in enumerate([dict(), dict(mode=0x11), dict(mode=8, sub=0), dict(mode=8, sub=0x80), dict()]):
+        g.observe_frame(0, 2, f, obs(**snap), f)
+    assert [r for r in rows if r['kind'] == 'death_recovered'][0]['decision_id'] is None
+    # Human play has no script grant, so no motor exists to press anything: the arbiter
+    # applies only the human's own mask on the Continue screen.
+    a = Arbiter([0]); grant = a.control('human', 0, 'acquire', 0)
+    a.submit('human', dict(port=0, lease=grant['lease'], epoch=grant['epoch'], seq=1, mask=0), 0)
+    a.frame(0)
+    assert a.frame(.01)[0] == [0, 0]

@@ -73,7 +73,7 @@ class Atlas:
     def __init__(self, root, lineage_id, identity, session_id, now=time.monotonic, record=None):
         self.root = Path(root); self.identity = identity; self.session_id = session_id
         self.now = now; self.record = record or (lambda *a, **k: None)
-        self.dirty = False; self.flushed_at = 0; self.disabled = None
+        self.dirty = False; self.flushed_at = float('-inf'); self.disabled = None
         self.open(lineage_id)
 
     @staticmethod

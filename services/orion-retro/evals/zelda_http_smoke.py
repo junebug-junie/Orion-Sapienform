@@ -1,23 +1,31 @@
-"""Live smoke: real HTTP app + spawned native worker + real Zelda core. Real input only."""
-import json, secrets, sys, tempfile, time
+"""Live smoke: real HTTP app + spawned native worker + real Zelda core, at real time.
+
+Boots with real controller input over the input WebSocket, hands off to the GoalV2
+motor, runs enter -> collect sword -> exit S over POST /goal (with an idempotent retry),
+reads GET /atlas, saves (the save must carry the atlas lineage), then checks that a
+human acquire preempts a leisure grant at once. Temp dirs only; no live session touched.
+
+Run: python services/orion-retro/evals/zelda_http_smoke.py --core <so> --catalog <catalog.json>
+"""
+import argparse, json, secrets, sys, tempfile, time
 from pathlib import Path
-ROOT = Path('/mnt/scripts/Orion-Sapienform-zelda-retro-core')
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT/'services/orion-retro'))
 from fastapi.testclient import TestClient
 from settings import Settings
 from app.main import create_app
-def main():
+def main(args):
     tmp = Path(tempfile.mkdtemp(prefix='zelda-http-'))
     token = secrets.token_hex(24); (tmp/'tok').write_text(token)
     (tmp/'saves').mkdir()
     st = Settings(enabled=True, cognition_enabled=True,
-                  catalog=Path('/home/athena/.local/share/orion/retro/service/catalog/catalog.json'),
-                  artifacts=tmp/'evidence', core=Path('/home/athena/.local/share/orion/retro/games/nova-the-squirrel-v1.0.6a/cores/fceumm-ac0d00a7.so'),
+                  catalog=Path(args.catalog),
+                  artifacts=tmp/'evidence', core=Path(args.core),
                   token_file=tmp/'tok', hub_token_file=tmp/'none', saves=tmp/'saves')
     H = {'authorization': 'Bearer '+token}
     out = {}
     with TestClient(create_app(st)) as c:
-        sid = c.post('/sessions', json={'game_id': 'the-legend-of-zelda', 'idempotency_key': 'smoke'}, headers=H).json()['session_id']
+        sid = c.post('/sessions', json={'game_id': args.game_id, 'idempotency_key': 'smoke'}, headers=H).json()['session_id']
         with c.websocket_connect(f'/sessions/{sid}/input', headers=H) as ws:
             hello = ws.receive_json(); conn, gen = hello['connection_id'], hello['generation']
             g = c.post(f'/sessions/{sid}/control', json={'connection_id': conn, 'port': 0}, headers=H).json()
@@ -36,7 +44,7 @@ def main():
             out['profile'] = s.get('game_profile'); out['obs_at_boot'] = s['zelda']['observation']
             assert s['zelda']['observation']['mode'] == 'play', s['zelda']['observation']
             r = c.post(f'/sessions/{sid}/scripted', json=dict(cognition=True, connection_id=conn, generation=gen, port=0, action='start', duration_seconds=120, expected_epoch=g['epoch']), headers=H)
-            out['scripted_start'] = r.status_code; print('SCRIPTED', r.status_code, r.text[:300], c.get(f'/sessions/{sid}', headers=H).json().get('state'))
+            out['scripted_start'] = r.status_code
             def decision():
                 for _ in range(200):
                     sc = c.get(f'/sessions/{sid}', headers=H).json()['scripted']
@@ -69,7 +77,6 @@ def main():
             out['state_after_stop'] = c.get(f'/sessions/{sid}', headers=H).json()['state']
             c.post(f'/sessions/{sid}/resume', headers=H)
             lz = c.post(f'/sessions/{sid}/control', json={'leisure_id': 'smoke-1', 'port': 0}, headers=H)
-            print('LEISURE', lz.status_code, lz.text[:200])
             out['leisure_acquire'] = (lz.status_code, {k: v for k, v in lz.json().items() if k != 'lease'})
             ls = c.post(f'/sessions/{sid}/scripted', json=dict(leisure_id='smoke-1', generation=gen, port=0, action='start', duration_seconds=60, expected_epoch=lz.json()['epoch']), headers=H)
             out['leisure_script'] = ls.status_code
@@ -84,8 +91,20 @@ def main():
     kinds = [json.loads(l)['kind'] for l in ev]
     out['journal_kinds'] = {k: kinds.count(k) for k in set(kinds)}
     out['stops'] = [json.loads(l) for l in ev if json.loads(l)['kind'] in ('policy_stopped', 'goal_finished') and 'stopped' in json.dumps(json.loads(l))][-3:]
-    Path('/tmp/zelda-play/http_smoke.json').write_text(json.dumps(out, indent=1, default=str))
-    print(json.dumps({k: (v if k not in ('atlas', 'obs_at_boot') else '...') for k, v in out.items()}, indent=1, default=str)[:5000])
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True); Path(args.output).write_text(json.dumps(out, indent=1, default=str))
+    ok = (out['profile'] == 'zelda-1-ram-v1' and all(out[k]['verdict'] == 'met' and out[k]['retry_status'] == 200
+          for k in ('enter', 'sword', 'exit_s')) and out['bad_goal'] == 422 and out['atlas'][0] == 200
+          and out['save_lineage'] == out['atlas_lineage'] and out['leisure_acquire'][0] == 200
+          and out['human_acquire_over_leisure'][1].get('preempted_leisure') is True and not out['scripted_after_human'])
+    print(json.dumps({k: out[k] for k in ('profile', 'bad_goal', 'save_lineage', 'leisure_acquire',
+                      'human_acquire_over_leisure')}, default=str))
+    print('OK' if ok else 'FAILED', args.output)
+    sys.exit(0 if ok else 1)
 
 if __name__ == '__main__':
-    main()
+    p = argparse.ArgumentParser()
+    p.add_argument('--core', required=True)
+    p.add_argument('--catalog', required=True, help='catalog.json listing the Zelda ROM')
+    p.add_argument('--game-id', default='the-legend-of-zelda')
+    p.add_argument('--output', default='/tmp/zelda-play/http_smoke.json')
+    main(p.parse_args())

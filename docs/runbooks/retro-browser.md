@@ -290,8 +290,10 @@ navigator and atlas (Lane A) to be deployed; until then the Hub code is idle.
 - **Planner v2** (`scripts/retro_planner.py`, `plan_zelda`). One request per Retro
   decision (room entry, goal finished, death, stuck), at most one in flight per
   process, local GPU route `metacog_background` only. The prompt holds a 22x32
-  text map of the room, the atlas neighbourhood and the last 5 decisions with
-  their verdicts. A parse failure, an unsupported goal or an unknown observation
+  text map of the room (Link, enemies, drops, caves, learned-blocked tiles; walls
+  only when Retro includes the grid in its offer, otherwise the map says so), the
+  atlas neighbourhood and the last 5 decisions with their verdicts (the Hub keeps
+  them from Retro's `last_finished`). A parse failure, an unsupported goal or an unknown observation
   produces no goal; Retro's motor holds `wait`. A heat shed returns
   `503 {"detail":"gpu_pool_unavailable","reason":"shed:cabinet_hot","retry_after_sec":N}`
   and the shared `orion/gpu_pool/shed_backoff.py` rule spaces the retries.
@@ -309,7 +311,8 @@ navigator and atlas (Lane A) to be deployed; until then the Hub code is idle.
   game already running, one start per 3 h, 90 min per rolling 24 h, 30 min per
   session, `RETRO_LEISURE_ENABLED=true` (the rollback lever). Ends after 3
   consecutive sheds. Loads the newest compatible save or starts fresh, and saves
-  at the end. A human preempt saves but never stops the human's game.
+  at the end. When a human may be in control (they acted, or presence cannot be
+  read), it never saves over or stops their game: it only releases its port.
 - **Shared state** (`scripts/retro_presence.py`, Redis on `ORION_BUS_URL`):
   `orion:retro:presence:human_at`, `orion:retro:presence:browser:<id>` (15 s TTL),
   `orion:retro:leisure:{status,ledger,journal,lock}`. Read the journal with

@@ -188,8 +188,8 @@ WHERE source_kind = 'arousal_transition' AND source_table = 'regulation'
     # Orion plays Zelda (section F): one finished Retro session per row (orion-hub writes it at
     # session end). Available at ended_at, so the window is on ended_at and needs no slack.
     SourceQuery("retro_play", """
-SELECT session_id, lineage_id, game_id, game_title, kind, started_at, ended_at, summary, control_basis,
-  played_together, human_share, decisions, predictions_met, predictions_unknown, rooms_new, deaths, memory_card_id
+SELECT session_id, retro_session_id, lineage_id, game_id, game_title, kind, started_at, ended_at, summary,
+  control_basis, human_may_be_in_control, played_together, human_share, decisions, predictions_met, predictions_unknown, rooms_new, deaths, memory_card_id
 FROM retro_play_sessions WHERE ended_at >= %(lo)s AND ended_at < %(hi)s
 """, optional_table="retro_play_sessions"),
 )

@@ -434,8 +434,8 @@ def retro_play_label(row: Row) -> str:
     title = str(row.get("game_title") or row.get("game_id") or "a game")
     if row.get("played_together"):
         who = "together"
-    elif row.get("kind") == "leisure" and row.get("control_basis") in ("leisure_sponsor", "frames") \
-            and row.get("human_share") in (0, 0.0):
+    elif row.get("kind") == "leisure" and not row.get("human_may_be_in_control") \
+            and row.get("control_basis") in ("leisure_sponsor", "frames") and row.get("human_share") in (0, 0.0):
         who = "solo"
     else:
         who = "with a human"
@@ -462,7 +462,9 @@ def retro_play(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | Non
         return None
     return _event(
         kind="retro_play", table="retro_play_sessions", ref=session_id, at=row.get("started_at"),
-        ended=row.get("ended_at"), tz_name=tz_name, subject_ref=f"retro_session:{session_id}",
+        ended=row.get("ended_at"), tz_name=tz_name,
+        # The Retro session (a co-play row key is per handoff): the same ref the memory card anchors.
+        subject_ref=f"retro_session:{row.get('retro_session_id') or session_id}",
         label=retro_play_label(row),
         payload={
             "game_id": row.get("game_id"), "kind": row.get("kind"), "lineage_id": row.get("lineage_id"),

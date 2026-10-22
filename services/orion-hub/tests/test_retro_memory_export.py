@@ -149,12 +149,26 @@ def test_a_human_who_may_have_played_is_never_orions_alone() -> None:
     assert counted.summary.startswith("Played The Legend of Zelda together for 22 min (a human drove 70% of frames)")
 
 
+def test_flagged_leisure_with_zero_counted_human_frames_is_never_solo() -> None:
+    """Lane B sets the flag when a human acted or presence was unreadable; Retro can still count 0."""
+    s = rx.build_session_summary(**rx.session_end_inputs(_ended(human_may_be_in_control=True)))
+    assert "solo" not in s.summary and s.human_may_be_in_control is True
+    assert s.summary.startswith("Played The Legend of Zelda for 22 min (Orion drove 100% of frames)")
+
+
+def test_a_few_human_frames_never_read_as_orion_100_percent() -> None:
+    s = rx.build_session_summary(**rx.session_end_inputs(_ended(
+        controller="co_play", leisure_id=None, act_id=None,
+        controller_frames={"human": 3, "script": 997, "leisure": 0, "none": 0})))
+    assert "(Orion drove 99% of frames)" in s.summary
+
+
 def test_a_co_play_handoff_is_its_own_row_and_closes_no_act() -> None:
     e = _ended(controller="co_play", leisure_id=None, act_id=None,
                controller_frames={"human": 300, "script": 700, "leisure": 0, "none": 0})
     kw = rx.session_end_inputs(e)
     assert (kw["kind"], kw["session_id"], kw["retro_session_id"], kw["dispatch_id"]) == (
-        "co_play", "retro-1:1792699320", "retro-1", None)
+        "co_play", "retro-1:1792699320.000", "retro-1", None)
     s = rx.build_session_summary(**kw)
     assert s.summary.startswith("Played The Legend of Zelda for 22 min (Orion drove 70% of frames)")
     card = rx.memory_card_for(s)
@@ -173,7 +187,7 @@ async def test_the_co_play_sink_exports(cards) -> None:
     pool, bus = _Pool(), _Bus()
     sink = rx.make_session_end_sink(pool_provider=lambda: pool, bus_provider=lambda: bus)
     out = await sink(_ended(controller="co_play", leisure_id=None, act_id=None))
-    assert out.state == "exported" and list(pool.rows) == ["retro-1:1792699320"] and bus.events() == []
+    assert out.state == "exported" and list(pool.rows) == ["retro-1:1792699320.000"] and bus.events() == []
 
 
 def test_game_title_by_id_segment() -> None:
@@ -231,7 +245,7 @@ def test_lazy_ddl_and_migration_declare_the_same_columns() -> None:
     migration = "\n".join(l for l in MIGRATION.read_text().splitlines() if not l.startswith("--"))
     mig_cols = columns(migration)
     ddl_cols = columns(rx.DDL.split("CREATE INDEX")[0])
-    assert len(mig_cols) == 31 and mig_cols[0] == "session_id" and mig_cols[-1] == "created_at"
+    assert len(mig_cols) == 32 and mig_cols[0] == "session_id" and mig_cols[-1] == "created_at"
     assert mig_cols == ddl_cols
     assert list(rx._COLUMNS) == [c for c in mig_cols if c not in ("memory_card_id", "card_error", "created_at")]
     assert "-- ORION-MIGRATION-REQUIRED-BY: orion-hub, orion-durable-runs" in MIGRATION.read_text()

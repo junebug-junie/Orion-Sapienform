@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS retro_play_sessions (
     end_reason          text,
     control             jsonb NOT NULL DEFAULT '[]'::jsonb,
     control_basis       text NOT NULL,
+    human_may_be_in_control boolean NOT NULL DEFAULT false,
     human_frames        integer NOT NULL,
     orion_frames        integer NOT NULL,
     human_share         double precision,

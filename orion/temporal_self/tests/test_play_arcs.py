@@ -77,6 +77,11 @@ def test_label_says_who_played_from_the_control_share() -> None:
     assert S.retro_play_label(row("d", at(0), 1, SOLO, control_basis="unknown", predictions_unknown=5)) == (
         "The Legend of Zelda with a human, 14 of 31 predictions met, 5 unknown")
     assert S.retro_play_label(row("e", at(0), 1, SOLO, decisions=None)) == "The Legend of Zelda solo"
+    assert S.retro_play_label(row("f", at(0), 1, SOLO, human_may_be_in_control=True, decisions=None)) == (
+        "The Legend of Zelda with a human")
+    # A co-play handoff's arc names the Retro session, the same ref its memory card anchors.
+    e = S.retro_play(row("sid-9:1792699320.000", at(0), 5, SOLO, retro_session_id="sid-9", kind="co_play"))
+    assert e.subject_ref == "retro_session:sid-9"
     assert S.retro_play_label(row("c", at(0), 1, SOLO, decisions=0)) == "The Legend of Zelda solo, no planner decisions"
 
 

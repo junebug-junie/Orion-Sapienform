@@ -12,7 +12,8 @@ Lane C of "Orion plays Zelda" (spec `docs/superpowers/specs/2026-10-22-orion-pla
 - The same day, the Temporal Self chronicle reads that row as source `retro_play`, as one `play` arc. The chat stance cue then says "Played The Legend of Zelda solo, 14 of 31 predictions met (10:02 to 10:24) [arc:...]".
 - Every switch ships ON.
 
-**Dependency order: A (#2851) merges first, then B (#2850), then C (this PR).** Without Lane B's `scripts/retro_leisure.py`, every start is refused `runner_unavailable`. A fake session is never made.
+**Dependency order: A (#2851) merges first, then B (#2850), then C (this PR).** This PR is stacked on `feat/zelda-hub-play` (base retargeted), which already contains Lane A's contract. Without Lane B's `scripts/retro_leisure.py`, every start is refused `runner_unavailable`. A fake session is never made.
+- Co-play sessions are exported too. Hub registers `app.state.retro_session_end_sink`, and Lane B calls it at every co-play handoff end. Each handoff is its own row (`<retro session id>:<handoff start>`), and a Retro session can hold several.
 
 ## Outcome moved
 
@@ -62,6 +63,7 @@ Lane C of "Orion plays Zelda" (spec `docs/superpowers/specs/2026-10-22-orion-pla
 - `services/orion-durable-runs/app/{temporal_self_sources,settings,main}.py`, `.env_example`, `docker-compose.yml`, `README.md`, `evals/temporal_self_fixture_db.py`.
 - `orion/temporal_self/evals/{run_play_cue_eval.py,fixtures/retro_play_sessions.json,export_fixture_day.sql}`.
 - `services/orion-sql-db/manual_migration_retro_play_sessions_v1.sql`.
+- `services/orion-hub/scripts/main.py` also registers `app.state.retro_session_end_sink` (`make_session_end_sink`).
 - Tests: `tests/test_rung3_retro_leisure.py`, `services/orion-hub/tests/test_retro_{memory_export,memory_export_pg,leisure_listener}.py`, `orion/temporal_self/tests/test_play_arcs.py`, plus one case added to `services/orion-durable-runs/tests/test_temporal_self_chronicle_postgres.py`.
 - CI:
   - `.github/workflows/retro-memory-tests.yml` (new, with real Postgres).
@@ -105,6 +107,9 @@ Lane C of "Orion plays Zelda" (spec `docs/superpowers/specs/2026-10-22-orion-pla
 ## Tests run
 
 ```text
+(after merging origin/feat/zelda-hub-play, i.e. Lanes A+B)
+pytest orion/temporal_self/tests + dispatch/allocator/catalog suites   369 passed
+services/orion-hub: tests/test_retro_*.py tests/test_act_ledger_producers.py tests/retro (Lane B's)  145 passed
 pytest orion/temporal_self/tests                                   213 passed
 pytest tests/test_rung3_retro_leisure.py tests/test_rung3_reading_pull.py tests/test_rung3_act_candidates.py \
   tests/test_motor_allocator.py tests/test_act_ledger_contract.py tests/test_proposal_scoring.py \
@@ -174,6 +179,23 @@ Review: orion-repo-agent, review-only, target `origin/main...HEAD`.
 - **Finding (NIT):**
   - **Fixes:** the dispatch id is passed explicitly to the export, card slugs carry a hash, an inferred share gives card confidence `likely`, and a stray blank line was removed.
 
+### Second review (on top of Lane B)
+
+- **Finding:** a flagged leisure session with 0 counted human frames was still called "solo".
+  - **Fix:** "solo" now requires `human_may_be_in_control` to be false. The flag is stored as a column, and the Temporal Self label reads it.
+  - **Evidence:** `test_flagged_leisure_with_zero_counted_human_frames_is_never_solo`.
+- **Finding:** for co-play, the arc subject and the card anchor named different things.
+  - **Fix:** both now use `retro_session:<retro session id>`.
+  - **Evidence:** `test_label_says_who_played_from_the_control_share`.
+- **Finding:** two handoffs that start within the same second shared one row key.
+  - **Fix:** the key uses the start time to the millisecond. A cleaner key needs Lane B to add the port and epoch to the record.
+- **Finding:** "Orion drove 100%" was rounded up from 99.7%.
+  - **Fix:** the share is now floored.
+- **Finding:** the co-play sink was registered only when the bus was enabled.
+  - **Fix:** it is now registered whatever the bus state.
+- **Finding:** the docstring was stale.
+  - **Fix:** updated.
+
 ## Restart required
 
 Build and deploy from the clean primary main after A, B and then C merge, in consumer-first order. The post-pull rebuild applies the migration before the Hub and durable-runs rebuilds.
@@ -189,13 +211,12 @@ scripts/safe_docker_build.sh orion-durable-runs up -d --build
 
 ## Risks / concerns
 
-- **Severity: medium.**
-  - **Concern:** Lane B's `RetroSessionEnded` carries no atlas session counts and no per-frame control attribution.
-  - **What happens now:** leisure summaries omit room and death counts. They are left out, never written as 0. The control share comes from the sponsor rule: any human acquire preempts the leisure grant and ends the session, and `human_may_be_in_control` overrides this.
-  - **Mitigation:** the builder already reads optional `atlas_session` (Lane A's `zelda.atlas.session` from `GET /sessions/{id}`) and `control` fields. Follow-up for Lane B: capture both before stopping the session. Lane A's applied-input journal has no controller field per row, so frame attribution needs Lane A and Lane B work.
-- **Severity: medium.**
-  - **Concern:** the co-play session-end call site (`export_session(kind="co_play", ...)`) is not wired. It lives in Lane B's files.
-  - **Mitigation:** follow-up for Lane B.
+- **Severity: low.**
+  - **How the control share is read:** it uses Retro's `frames_by_controller`, as `human / (human + script + leisure)`. Frames tagged `none` drove nobody.
+  - **When those counts are missing:**
+    - A leisure session falls back to the sponsor rule.
+    - A session where a human may have been in control is recorded as "played together (control share not recorded)", never as Orion's alone.
+  - **Concern:** these rules are unit-tested against Lane B's real `RetroSessionEnded`, but nothing live has exercised them.
 - **Severity: low.**
   - **Concern:** `cold_cost_ceiling_sec` (1800 s) is the one exception to "no typed fallback".
   - **Mitigation:** it is used only when the act has never closed, never on a read error. It equals the doer's enforced session cap, so a cold act is charged its worst case.

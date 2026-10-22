@@ -5,9 +5,11 @@ finished session:
 
 - leisure: scripts/retro_leisure_listener.py, with Lane B's ``LeisureOutcome.ended``
   (``export_leisure_outcome``);
-- co-play: the co-play session close (Lane B, not wired in this patch) with its journal and atlas
-  delta (``export_session(pool=, bus=, session_id=, journal=[...], atlas_delta={...}, kind="co_play",
-  game_id=, lineage_id=)``).
+- co-play: ``app.state.retro_session_end_sink`` (``make_session_end_sink``), which Lane B's
+  scripts/retro_routes.py calls with a ``RetroSessionEnded`` at every co-play handoff end.
+
+Both pass Lane B's record through ``session_end_inputs``. The per-port ``control`` column stays
+``[]`` on these paths: Retro reports frames per controller, not per port.
 
 What it writes, in order:
 
@@ -29,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import logging
 import re
 from dataclasses import dataclass
@@ -177,10 +180,12 @@ def build_session_summary(
         lead = f"Played {title} together for {span_words(duration)} (control share not recorded)"
     elif together:
         lead = f"Played {title} together for {span_words(duration)} (a human drove {round(100 * share)}% of frames)"
-    elif kind == "leisure" and (basis == "leisure_sponsor" or (basis == "frames" and human == 0)):
+    elif kind == "leisure" and not human_may_be_in_control and (
+            basis == "leisure_sponsor" or (basis == "frames" and human == 0)):
         lead = f"Played {title} solo for {span_words(duration)}"
     elif basis == "frames":
-        lead = f"Played {title} for {span_words(duration)} (Orion drove {round(100 * (1 - share))}% of frames)"
+        # Floored, so a human's few frames never read as "Orion drove 100%".
+        lead = f"Played {title} for {span_words(duration)} (Orion drove {math.floor(100 * (1 - share))}% of frames)"
     else:
         lead = f"Played {title} with a human for {span_words(duration)} (control share not recorded)"
     parts = [lead]
@@ -204,6 +209,7 @@ def build_session_summary(
         dispatch_id=dispatch_id, started_at=started_at, ended_at=ended_at, duration_sec=duration,
         end_reason=(end.reason[:200] if end.reason else None), control=control, control_basis=basis,
         human_frames=human, orion_frames=orion, human_share=share, played_together=together,
+        human_may_be_in_control=human_may_be_in_control,
         rooms_new=delta.rooms_new, caves_new=delta.caves_new, items_gained=items, deaths=delta.deaths,
         death_rooms=sorted(set(delta.death_rooms)), decisions=n_decisions, predictions_met=met,
         predictions_refuted=refuted,
@@ -233,7 +239,7 @@ def session_end_inputs(ended: Any) -> dict[str, Any]:
     d = ended.as_dict() if hasattr(ended, "as_dict") else dict(ended)
     co_play = d.get("controller") == "co_play"
     sid = str(d.get("session_id") or "")
-    key = f"{sid}:{int(float(d.get('started_at') or 0))}" if co_play and sid else sid
+    key = f"{sid}:{float(d.get('started_at') or 0):.3f}" if co_play and sid else sid
     journal = [{"kind": "session_started", "at": _epoch(d.get("started_at"))},
                {"kind": "session_ended", "at": _epoch(d.get("ended_at")), "reason": d.get("end_reason")}]
     return dict(session_id=key, retro_session_id=sid or None, journal=[j for j in journal if j["at"]],
@@ -285,7 +291,8 @@ CREATE TABLE IF NOT EXISTS {TABLE} (
     session_id text PRIMARY KEY, retro_session_id text, lineage_id text, game_id text NOT NULL, game_title text NOT NULL,
     kind text NOT NULL, dispatch_id text, started_at timestamptz NOT NULL, ended_at timestamptz NOT NULL,
     duration_sec double precision NOT NULL, end_reason text, control jsonb NOT NULL DEFAULT '[]'::jsonb,
-    control_basis text NOT NULL, human_frames integer NOT NULL, orion_frames integer NOT NULL,
+    control_basis text NOT NULL, human_may_be_in_control boolean NOT NULL DEFAULT false,
+    human_frames integer NOT NULL, orion_frames integer NOT NULL,
     human_share double precision, played_together boolean NOT NULL, rooms_new integer, caves_new integer,
     items_gained jsonb NOT NULL DEFAULT '[]'::jsonb, deaths integer,
     death_rooms jsonb NOT NULL DEFAULT '[]'::jsonb, decisions integer,
@@ -297,7 +304,7 @@ CREATE INDEX IF NOT EXISTS {TABLE}_ended_idx ON {TABLE} (ended_at DESC)
 """
 
 _COLUMNS = ("session_id", "retro_session_id", "lineage_id", "game_id", "game_title", "kind", "dispatch_id", "started_at", "ended_at",
-            "duration_sec", "end_reason", "control", "control_basis", "human_frames", "orion_frames", "human_share",
+            "duration_sec", "end_reason", "control", "control_basis", "human_may_be_in_control", "human_frames", "orion_frames", "human_share",
             "played_together", "rooms_new", "caves_new", "items_gained", "deaths", "death_rooms", "decisions",
             "predictions_met", "predictions_refuted", "predictions_unknown", "human_interventions", "summary")
 _JSON_COLUMNS = {"control", "items_gained", "death_rooms"}

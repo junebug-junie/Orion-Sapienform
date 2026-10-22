@@ -125,6 +125,8 @@ class RetroPlaySessionSummaryV1(BaseModel):
     end_reason: str | None = Field(None, max_length=200)
     control: list[RetroPortControlV1] = Field(default_factory=list)
     control_basis: ControlBasis
+    # Lane B's flag: a human acted during the session, or presence was unreadable.
+    human_may_be_in_control: bool = False
     human_frames: int = Field(ge=0)
     orion_frames: int = Field(ge=0)
     # None when no controlled frame was recorded: no share can be claimed either way.

@@ -17,6 +17,8 @@ on:
       - 'orion/autonomy/evals/run_rung3_reading_replay_eval.py'
       - 'orion/world_pulse_read/pull.py'
       - 'orion/schemas/world_pulse_read_pull.py'
+      - 'orion/schemas/retro_leisure.py'
+      - 'orion/schemas/grammar.py'
       - 'services/orion-hub/scripts/world_pulse_read_pipeline.py'
       - 'services/orion-hub/scripts/world_pulse_read_pull_listener.py'
       - 'services/orion-sql-db/manual_migration_reading_pull_v1.sql'
@@ -58,6 +60,8 @@ jobs:
         run: python -m pytest -q tests/test_rung3_world_first_action_floor.py tests/test_rung3_act_candidates.py tests/test_motor_allocator.py
       - name: Reading pull + holdback rule
         run: python -m pytest -q tests/test_rung3_reading_pull.py
+      - name: Retro leisure route (Orion plays Zelda, section E)
+        run: python -m pytest -q tests/test_rung3_retro_leisure.py
       - name: Reading pull against Postgres (must not skip)
         env:
           ORION_TEST_PG_URI: postgresql://postgres:postgres@localhost:5432/scratch

@@ -60,27 +60,36 @@ async def choose(config, attempt):
 
 # --- Zelda planner v2 (docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md section D) ---
 #
-# One decision per Retro offer. Retro (Lane A) offers a decision on room entry, goal finished,
-# death or stuck; the Hub plans each decision_id at most once at a time, with at most one
-# request in flight per process. The planner uses the local GPU route ``metacog_background``
-# only. A heat shed, a parse failure, an unsupported goal or an unknown observation produces
-# NO goal: Retro's motor holds ``wait``. There is no fallback planner and no fallback goal.
+# One decision per Retro offer. Retro's navigator (services/orion-retro/app/zelda/navigate.py,
+# Lane A) offers a decision slot whenever Link is controllable and no goal is active: at
+# session start, on room entry and after every goal_finished (met, refuted, hit, stuck,
+# budget, death). The Hub plans each decision_id at most once at a time, with at most one
+# request in flight per process. Local GPU route ``metacog_background`` only. A heat shed, a
+# parse failure, an unsupported goal or an unknown observation produces NO goal: Retro's
+# motor holds still. There is no fallback planner and no fallback goal.
 #
-# Retro contract this reads (session status ``scripted[].cognition``, Lane A):
-#   decision: {decision_id, trigger, observation (zelda-1-ram-v1), supported_goals}
-#   goal:     the accepted GoalV2 (or None)
-#   history:  goal_finished records [{decision_id, goal, prediction, outcome, verdict, ...}]
-# and GET /sessions/{id}/atlas (zelda-atlas-v1). Unknown extra fields are ignored.
+# Retro contract read here (session status ``scripted[].cognition``, policy_id
+# ``zelda-navigator-v1``):
+#   attempt:       {decision_id, port, expected_epoch, observation (zelda-1-ram-v1 without the
+#                   wall grid unless Retro includes it), supported_goals, supported_predictions,
+#                   previous (the last goal_finished row)}
+#   goal:          the accepted GoalV2, or None
+#   last_finished: the newest goal_finished row {decision_id, goal, prediction, outcome, verdict}
+# GET /sessions/{id}/atlas: the neighbourhood view {lineage_id, level, room, current,
+#   adjacent{N..W: {room, known, seen_exit}}, rooms_known, rooms_with_unexplored_exits,
+#   caves[{room, tile, entered}], deaths[{room, deaths}], map{"level:room": {visits, exits,
+#   caves, deaths}}}. Callers keep the last-5 history themselves (``remember_finished``).
+# Unknown extra fields are ignored everywhere.
+
+from collections import deque
 
 from orion.gpu_pool.shed_backoff import ShedBackoff, gateway_error_reason, gateway_shed_refusal
 
-ZELDA_OBSERVATION_SCHEMA = 'zelda-1-ram-v1'
+ZELDA_POLICY_ID = 'zelda-navigator-v1'
 ZELDA_ROUTE = 'metacog_background'
 ZELDA_GOALS = ('exit', 'enter', 'fight', 'retreat', 'collect', 'explore', 'wait')
 PREDICTION_KINDS = ('reach_room', 'enter_cave', 'item_gained', 'enemies_cleared', 'survive', 'unknown')
 HISTORY_LIMIT = 5
-# Overworld and dungeon rooms are both laid out 16 wide in RAM ($EB = row*16 + col).
-ROOM_COLS, OVERWORLD_ROWS = 16, 8
 MAP_ROWS, MAP_COLS, HUD_PX, TILE_PX = 22, 32, 64, 8
 
 # One shared backoff per process for this call path (orion/gpu_pool/shed_backoff.py).
@@ -178,6 +187,19 @@ class ZeldaChoice(_Strict):
     budget_seconds: int = Field(ge=3, le=30)
 
 
+def is_zelda_cognition(cognition: Any) -> bool:
+    return isinstance(cognition, dict) and cognition.get('policy_id') == ZELDA_POLICY_ID
+
+
+def remember_finished(history: deque, cognition: Any) -> deque:
+    """Append Retro's newest goal_finished row once (by decision_id). Retro only shows the last one."""
+    row = cognition.get('last_finished') if isinstance(cognition, dict) else None
+    if isinstance(row, dict) and row.get('decision_id') and not any(
+            h.get('decision_id') == row['decision_id'] for h in history):
+        history.append(row)
+    return history
+
+
 def _grid(observation: dict) -> Optional[list]:
     walls = observation.get('walls')
     grid = walls.get('grid') if isinstance(walls, dict) else walls
@@ -195,81 +217,85 @@ def _tile_xy(tile: Any) -> Optional[tuple[int, int]]:
     return None
 
 
-def _slot_char(slot: int) -> str:
-    return '0123456789ab'[slot] if 0 <= slot < 12 else '?'
+def tile_of(thing: dict) -> Optional[tuple[int, int]]:
+    """Retro's own ``tile`` when present, else its convention: the game's collision hotspot
+    (column (x+4)//8, row (y+11-64+4)//8; services/orion-retro/app/zelda/observe.py)."""
+    xy = _tile_xy(thing.get('tile'))
+    if xy:
+        return xy
+    if isinstance(thing.get('x'), int) and isinstance(thing.get('y'), int):
+        return (thing['x'] + 4) // TILE_PX, (thing['y'] + 11 - HUD_PX + 4) // TILE_PX
+    return None
 
 
-def render_room_map(observation: dict, room: Optional[dict] = None) -> str:
-    """The room as 22 text rows of 32 tiles (8 px each): # wall, . floor, L Link, 1-9/a/b enemy
-    slot, C known cave. ``unavailable`` when the reader sent no wall grid (scroll, menu, death)."""
+def _slot_char(slot: Any) -> str:
+    return '0123456789ab'[slot] if isinstance(slot, int) and 0 <= slot < 12 else '?'
+
+
+def _room_caves(atlas: Optional[dict], level: Any, room: Any) -> list:
+    if not isinstance(atlas, dict):
+        return []
+    key = f'{level}:{room}'
+    return [c for c in atlas.get('caves') or [] if isinstance(c, dict) and c.get('room') == key]
+
+
+def render_room_map(observation: dict, atlas: Optional[dict] = None) -> str:
+    """The room as 22 text rows of 32 tiles (8 px): # wall, . floor, ? terrain not sent,
+    x learned-blocked, C known cave, d item drop, 1-9/a/b enemy slot, L Link."""
     grid = _grid(observation)
-    if grid is None:
-        return 'room map unavailable in this mode'
-    rows = [['#' if cell else '.' for cell in row] for row in grid]
-    for cave in (room or {}).get('caves') or []:
-        xy = _tile_xy(cave.get('tile') if isinstance(cave, dict) else None)
+    if grid is None and observation.get('mode') not in ('play', 'cave'):
+        return f'room map unavailable in mode {observation.get("mode", "unknown")}'
+    rows = ([['#' if cell else '.' for cell in row] for row in grid] if grid
+            else [['?'] * MAP_COLS for _ in range(MAP_ROWS)])
+    def put(xy, ch):
         if xy and 0 <= xy[0] < MAP_COLS and 0 <= xy[1] < MAP_ROWS:
-            rows[xy[1]][xy[0]] = 'C'
-    def mark(x, y, ch):
-        col, row = int(x) // TILE_PX, (int(y) - HUD_PX) // TILE_PX
-        if 0 <= col < MAP_COLS and 0 <= row < MAP_ROWS:
-            rows[row][col] = ch
+            rows[xy[1]][xy[0]] = ch
+    current = (atlas or {}).get('current') if isinstance(atlas, dict) else None
+    same_room = isinstance(atlas, dict) and atlas.get('room') == observation.get('room')
+    if same_room and isinstance(current, dict):
+        for t in current.get('learned_blocked') or []:
+            put(_tile_xy(t), 'x')
+    for cave in _room_caves(atlas, observation.get('level'), observation.get('room')):
+        put(_tile_xy(cave.get('tile')), 'C')
+    for drop in observation.get('drops') or []:
+        if isinstance(drop, dict): put(tile_of(drop), 'd')
     for enemy in observation.get('enemies') or []:
-        if isinstance(enemy, dict) and isinstance(enemy.get('x'), int) and isinstance(enemy.get('y'), int):
-            mark(enemy['x'], enemy['y'], _slot_char(int(enemy.get('slot', -1))))
-    link = observation.get('link') or {}
-    if isinstance(link.get('x'), int) and isinstance(link.get('y'), int):
-        mark(link['x'], link['y'], 'L')
+        if isinstance(enemy, dict): put(tile_of(enemy), _slot_char(enemy.get('slot')))
+    if isinstance(observation.get('link'), dict):
+        put(tile_of(observation['link']), 'L')
     header = '   ' + ''.join(str(c % 10) for c in range(MAP_COLS))
-    return '\n'.join([header] + [f'{r:2d} ' + ''.join(row) for r, row in enumerate(rows)])
+    note = [] if grid else ['(walls not included in this observation; ? = terrain unknown to the planner)']
+    return '\n'.join(note + [header] + [f'{r:2d} ' + ''.join(row) for r, row in enumerate(rows)])
 
 
-def room_key(level: Any, room: Any) -> str:
-    return f'{level}:{room}'
-
-
-def neighbours(level: int, room: int) -> dict[str, int]:
-    """Adjacent room ids by direction. Rooms are 16 wide; the overworld is 8 rows tall."""
-    row, col = divmod(room, ROOM_COLS)
-    out = {}
-    if row > 0: out['N'] = room - ROOM_COLS
-    if row < OVERWORLD_ROWS - 1: out['S'] = room + ROOM_COLS
-    if col < ROOM_COLS - 1: out['E'] = room + 1
-    if col > 0: out['W'] = room - 1
-    return out
-
-
-def atlas_neighbourhood(atlas: Optional[dict], level: Any, room: Any) -> str:
-    """This room, its neighbours, unexplored exits, known caves and death sites, from the atlas only."""
-    if not isinstance(atlas, dict) or not isinstance(level, int) or not isinstance(room, int):
+def atlas_neighbourhood(atlas: Optional[dict]) -> str:
+    """This room, its neighbours, unexplored exits, caves and deaths, from Orion's atlas only."""
+    if not isinstance(atlas, dict):
         return 'atlas unavailable'
-    rooms = atlas.get('rooms') if isinstance(atlas.get('rooms'), dict) else {}
-    here = rooms.get(room_key(level, room))
+    level, room = atlas.get('level'), atlas.get('room')
+    here = atlas.get('current')
     lines = []
-    if not here:
-        lines.append(f'this room {room_key(level, room)}: first visit (not in atlas yet)')
+    if not isinstance(here, dict):
+        lines.append(f'this room {level}:{room}: first visit (not in the atlas yet)')
     else:
         exits = here.get('exits_seen') or {}
         seen = ' '.join(f'{d}={exits[d]}' for d in 'NSEW' if exits.get(d) is not None) or 'none'
         unexplored = ','.join(d for d in 'NSEW' if exits.get(d) is None) or 'none'
-        caves = []
-        for cave in here.get('caves') or []:
-            xy = _tile_xy(cave.get('tile')) if isinstance(cave, dict) else None
-            if xy:
-                caves.append(f'({xy[0]},{xy[1]}) {"entered" if cave.get("entered") else "not entered"}')
-        lines.append(f'this room {room_key(level, room)}: visits {here.get("visits", 0)}, deaths {here.get("deaths", 0)}, '
-                     f'exits seen {seen}, unexplored exits {unexplored}, caves {"; ".join(caves) or "none"}, '
+        caves = [f'({xy[0]},{xy[1]}) {"entered" if c.get("entered") else "not entered"}'
+                 for c in here.get('caves') or [] if isinstance(c, dict) and (xy := _tile_xy(c.get('tile')))]
+        lines.append(f'this room {level}:{room}: visits {here.get("visits", 0)}, deaths {here.get("deaths", 0)}, '
+                     f'exits used {seen}, unexplored exits {unexplored}, caves {"; ".join(caves) or "none"}, '
                      f'learned-blocked tiles {len(here.get("learned_blocked") or [])}')
-    for d, other in neighbours(level, room).items():
-        r = rooms.get(room_key(level, other))
-        lines.append(f'{d} {room_key(level, other)}: ' + (
-            f'visited {r.get("visits", 0)}x, deaths {r.get("deaths", 0)}' if r else 'never visited'))
-    deaths = sorted(((k, v.get('deaths', 0)) for k, v in rooms.items() if isinstance(v, dict) and v.get('deaths')),
-                    key=lambda kv: -kv[1])[:8]
-    lines.append('death sites: ' + (', '.join(f'{k} ({n})' for k, n in deaths) or 'none'))
-    items = [f'{i.get("item")} at {i.get("room")}' for i in (atlas.get('items_gained') or []) if isinstance(i, dict)]
-    lines.append('items gained: ' + (', '.join(items[-8:]) or 'none'))
-    lines.append(f'rooms known: {len(rooms)}')
+    for d in 'NSEW':
+        a = (atlas.get('adjacent') or {}).get(d)
+        if isinstance(a, dict):
+            lines.append(f'{d} {level}:{a.get("room")}: ' + ('known' if a.get('known') else 'never visited')
+                         + (f', reached from here before' if a.get('seen_exit') is not None else ''))
+    deaths = [f'{x.get("room")} ({x.get("deaths")})' for x in atlas.get('deaths') or [] if isinstance(x, dict)]
+    lines.append('death sites: ' + (', '.join(deaths[:8]) or 'none'))
+    frontier = [k for k in atlas.get('rooms_with_unexplored_exits') or [] if isinstance(k, str)]
+    lines.append(f'rooms known on this level: {atlas.get("rooms_known", 0)}; with unexplored exits: '
+                 + (', '.join(frontier[:12]) or 'none'))
     return '\n'.join(lines)
 
 
@@ -296,38 +322,40 @@ def history_lines(history: Any) -> str:
 
 def observation_facts(observation: dict) -> dict:
     """The observation without the wall grid (the map carries it)."""
-    return {k: v for k, v in observation.items() if k not in ('walls',)}
+    return {k: v for k, v in observation.items() if k != 'walls'}
 
 
 def build_zelda_prompt(decision: dict, atlas: Optional[dict], history: Any) -> str:
     obs = decision['observation']
-    here = None
-    if isinstance(atlas, dict) and isinstance(atlas.get('rooms'), dict):
-        here = atlas['rooms'].get(room_key(obs.get('level'), obs.get('room')))
+    previous = decision.get('previous')
+    why = (f'the previous goal ended: {_goal_text(previous.get("goal"))} -> {previous.get("outcome", "unknown")}'
+           if isinstance(previous, dict) else 'first decision of this session')
     return '\n'.join([
         'You are Orion, playing The Legend of Zelda (NES) through a navigator that turns one goal into input.',
         'Choose ONE goal for the next 3-30 seconds from the observed facts only. Do not use outside knowledge of the game map.',
-        f'Trigger for this decision: {decision.get("trigger", "unknown")}.',
-        'Room map (22 rows x 32 tiles, 8 px tiles; # wall, . floor, L Link, 1-9/a/b enemy slot, C known cave):',
-        render_room_map(obs, here),
+        f'Why a decision now: {why}.',
+        'Room map (22 rows x 32 tiles of 8 px):',
+        render_room_map(obs, atlas),
         'Observation (zelda-1-ram-v1): ' + json.dumps(observation_facts(obs), separators=(',', ':')),
         'Atlas (only what you observed before):',
-        atlas_neighbourhood(atlas, obs.get('level'), obs.get('room')),
+        atlas_neighbourhood(atlas),
         'Last decisions and verdicts (oldest first):',
         history_lines(history),
         'Supported goals: ' + ', '.join(decision['supported_goals']) + '.',
         'Goal JSON shapes: {"kind":"exit","dir":"N|S|E|W"} {"kind":"enter","tile":{"x":0-31,"y":0-21}} '
         '{"kind":"fight","target":"nearest" or enemy slot 1-11} {"kind":"retreat"} '
         '{"kind":"collect","tile":{"x":0-31,"y":0-21}} {"kind":"explore","dir":"N|S|E|W"} {"kind":"wait"}.',
-        'Prediction kinds: reach_room (value = room id), enter_cave, item_gained, enemies_cleared, survive, unknown.',
-        'Make the prediction checkable: it will be graded met/refuted from RAM.',
-        'Reply only JSON: {"goal":{...},"prediction":{"kind":"...","value":int or null},'
+        'Prediction kinds: reach_room (value = the room id you expect to reach; required), '
+        'enter_cave, item_gained, enemies_cleared, survive, unknown (no value for these).',
+        'Make the prediction checkable: Retro grades it met/refuted from RAM.',
+        'Reply only JSON: {"goal":{...},"prediction":{"kind":"..."[, "value":int]},'
         '"rationale":"brief, grounded in the facts above","budget_seconds":3-30}',
     ])
 
 
 def validate_zelda_choice(raw: Any, decision: dict) -> ZeldaChoice:
-    """Parse and check the model's answer against what this decision allows. Raises PlannerRejected."""
+    """Parse and check the model's answer against what this decision allows. Raises PlannerRejected.
+    Mirrors Retro's own GoalV2 checks so a doomed goal is never posted."""
     from pydantic import ValidationError
     try:
         choice = ZeldaChoice.model_validate(raw)
@@ -335,12 +363,18 @@ def validate_zelda_choice(raw: Any, decision: dict) -> ZeldaChoice:
         raise PlannerRejected('planner_invalid_goal', error=str(exc.errors()[0].get('msg', ''))[:200])
     if choice.goal.kind not in decision['supported_goals']:
         raise PlannerRejected('planner_unsupported_goal', goal=choice.goal.kind)
+    predictions = decision.get('supported_predictions') or PREDICTION_KINDS
+    if choice.prediction.kind not in predictions:
+        raise PlannerRejected('planner_unsupported_prediction', prediction=choice.prediction.kind)
+    if (choice.prediction.kind == 'reach_room') != (choice.prediction.value is not None):
+        raise PlannerRejected('planner_prediction_value_mismatch')
+    obs = decision['observation']
+    if choice.goal.kind != 'wait' and not (obs.get('link') or {}).get('controllable', True):
+        raise PlannerRejected('observation_unknown', observation_reason='link_not_controllable')
     if isinstance(choice.goal, FightGoal) and choice.goal.target != 'nearest':
-        alive = {e.get('slot') for e in decision['observation'].get('enemies') or [] if isinstance(e, dict)}
+        alive = {e.get('slot') for e in obs.get('enemies') or [] if isinstance(e, dict)}
         if choice.goal.target not in alive:
             raise PlannerRejected('planner_unknown_target', target=choice.goal.target)
-    if choice.prediction.kind == 'reach_room' and choice.prediction.value is None:
-        raise PlannerRejected('planner_unchecked_prediction')
     return choice
 
 

@@ -32,27 +32,33 @@ GEN = '9e9e9e9e-0000-4000-8000-000000000001'
 
 
 def zelda_session():
-    grid = [[r in (0, 21) or c in (0, 31) for c in range(32)] for r in range(22)]
-    decision = dict(decision_id='d-7', trigger='room_entry', supported_goals=['exit', 'fight', 'wait'],
-                    observation=dict(status='observed', mode='play', level=0, room=119, link=dict(x=120, y=141),
-                                     enemies=[], walls=dict(grid=grid, hash='h')))
-    history = [dict(decision_id=f'd-{i}', goal=dict(kind='exit', dir='E'), prediction=dict(kind='reach_room', value=120),
-                    outcome='room_changed', verdict='met' if i % 2 else 'refuted') for i in range(6)]
-    goal = dict(decision_id='d-6', goal=dict(kind='exit', dir='N'), prediction=dict(kind='reach_room', value=103),
+    attempt = dict(decision_id='3:7', port=0, expected_epoch=3, supported_goals=['exit', 'fight', 'wait'],
+                   supported_predictions=['reach_room', 'survive'],
+                   observation=dict(status='observed', profile='zelda-1-ram-v1', mode='play', level=0, room=119,
+                                    link=dict(x=120, y=141, tile=[15, 11], controllable=True), enemies=[], walls_hash='h'))
+    goal = dict(decision_id='3:7', goal=dict(kind='exit', dir='N'), prediction=dict(kind='reach_room', value=103),
                 rationale='North of the start is unexplored and no enemy blocks it.', budget_seconds=12,
                 planner_id='llm-gateway:metacog_background:fixture')
     return dict(session_id=SID, generation=GEN, state='running', game_id='the-legend-of-zelda', frame=4000,
-                owner='hub', save_enabled=False, loaded_save=None,
-                scripted=[dict(port=0, policy_id='zelda-goal-v2', epoch=3, duration_seconds=1800, started_frame=10,
-                               leisure_id='1e15e1e1-0000-4000-8000-000000000002',
-                               cognition=dict(decision=decision, goal=goal, history=history))])
+                owner='hub', save_enabled=False, loaded_save=None, game_profile='zelda-1-ram-v1',
+                scripted=[dict(port=0, policy_id='zelda-navigator-v1', epoch=3, duration_seconds=1800, started_frame=10,
+                               cognition=dict(policy_id='zelda-navigator-v1', attempt=attempt, goal=goal,
+                                              last_finished=None))])
 
 
-ATLAS = dict(lineage_id='lineage-fixture', rooms={
-    '0:119': dict(visits=3, deaths=0, exits_seen=dict(N=103, E=120, S=None, W=None), caves=[dict(tile=dict(x=8, y=2), entered=True)]),
-    '0:120': dict(visits=1, deaths=2, exits_seen=dict(W=119)),
-    '0:103': dict(visits=1, deaths=0, exits_seen=dict(S=119)),
-})
+def finished_row(i):
+    return dict(decision_id=f'3:{i}', goal=dict(kind='exit', dir='E'), prediction=dict(kind='reach_room', value=120),
+                planner_id='fixture', outcome='prediction_met' if i % 2 else 'prediction_refuted',
+                verdict='met' if i % 2 else 'refuted')
+
+
+# Shape of Retro's GET /sessions/{id}/atlas (services/orion-retro/app/zelda/atlas.py neighbourhood()).
+ATLAS = dict(lineage_id='lineage-fixture', level=0, room=119, rooms_known=3,
+             current=dict(visits=3, deaths=0, exits_seen=dict(N=103, E=120, S=None, W=None)),
+             caves=[dict(room='0:119', tile=[8, 2], entered=True)], deaths=[dict(room='0:120', deaths=2)],
+             map={'0:119': dict(visits=3, exits=dict(N=103, E=120, S=None, W=None), caves=1, deaths=0),
+                  '0:120': dict(visits=1, exits=dict(W=119, N=None, S=None, E=None), caves=0, deaths=2),
+                  '0:103': dict(visits=1, exits=dict(S=119, N=None, E=None, W=None), caves=0, deaths=0)})
 
 
 async def fake_retro(path, log):
@@ -61,7 +67,12 @@ async def fake_retro(path, log):
     session = zelda_session()
     async def ready(_): return web.json_response({'status': 'ready', 'session': session})
     async def games(_): return web.json_response([dict(game_id='the-legend-of-zelda', title='The Legend of Zelda', ports=[0, 1], save_enabled=False)])
-    async def status(_): return web.json_response(session)
+    finished = iter(range(1, 7))
+    async def status(_):
+        # Retro shows only the newest goal_finished row; advance one per poll so the page must keep history.
+        i = next(finished, None)
+        if i is not None: session['scripted'][0]['cognition']['last_finished'] = finished_row(i)
+        return web.json_response(session)
     async def atlas(_): return web.json_response(ATLAS)
     async def op(request):
         body = await request.text()
@@ -90,7 +101,7 @@ class MemoryStore:
     async def mark_human(self): self.human += 1
     async def beat_browser(self, sid): self.browsers.add(sid)
     async def drop_browser(self, sid): self.browsers.discard(sid)
-    async def status(self): return self.value
+    async def status(self): return dict(self.value, updated_at=__import__('time').time())
     async def journal(self, n): return []
 
 

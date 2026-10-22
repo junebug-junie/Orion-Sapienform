@@ -139,14 +139,18 @@ class PresenceStore:
         return bool(await self._op(self.redis.set(LOCK_KEY, owner, nx=True, ex=ttl_sec)))
 
     async def refresh_lock(self, owner: str, ttl_sec: int) -> bool:
-        if _text(await self._op(self.redis.get(LOCK_KEY))) != owner:
-            return False
-        await self._op(self.redis.expire(LOCK_KEY, ttl_sec))
-        return True
+        # Compare-and-expire in one step: never extend another runner's lock.
+        return bool(await self._op(self.redis.eval(_REFRESH_LUA, 1, LOCK_KEY, owner, int(ttl_sec))))
 
     async def release_lock(self, owner: str) -> None:
-        if _text(await self._op(self.redis.get(LOCK_KEY))) == owner:
-            await self._op(self.redis.delete(LOCK_KEY))
+        # Compare-and-delete in one step: never delete another runner's lock.
+        await self._op(self.redis.eval(_RELEASE_LUA, 1, LOCK_KEY, owner))
+
+
+_REFRESH_LUA = ("if redis.call('get', KEYS[1]) == ARGV[1] then "
+                "return redis.call('expire', KEYS[1], ARGV[2]) else return 0 end")
+_RELEASE_LUA = ("if redis.call('get', KEYS[1]) == ARGV[1] then "
+                "return redis.call('del', KEYS[1]) else return 0 end")
 
 
 _stores: dict[tuple[int, str], PresenceStore] = {}

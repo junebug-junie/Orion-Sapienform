@@ -416,9 +416,18 @@ async def _start_game(deps: LeisureDeps, run: _Run) -> Optional[str]:
         if deps.clock() >= deadline or (status == 200 and session.get('state') in ('failed', 'stopped')):
             return 'retro_start_timeout'
         await deps.sleep(0.25)
+    # A session paused for no_controller must be resumed before a leisure acquire (Retro README).
+    await deps.retro.call('POST', f'sessions/{run.session_id}/resume', {})
+    # The leisure grant: a preemptible controller lease (2 s TTL), handed straight to the script.
+    status, lease = await deps.retro.call('POST', f'sessions/{run.session_id}/control', {
+        'leisure_id': run.leisure_id, 'port': run.port, 'action': 'acquire'})
+    if status != 200 or not isinstance(lease, dict) or not isinstance(lease.get('epoch'), int):
+        detail = lease.get('detail') if isinstance(lease, dict) else status
+        return f'leisure_grant_refused:{detail}'
     status, grant = await deps.retro.call('POST', f'sessions/{run.session_id}/scripted', {
         'leisure_id': run.leisure_id, 'generation': run.generation, 'port': run.port,
-        'action': 'start', 'duration_seconds': int(min(1800, run.session_max_sec)), 'cognition': True})
+        'action': 'start', 'duration_seconds': int(min(1800, run.session_max_sec)), 'cognition': True,
+        'expected_epoch': lease['epoch']})
     if status != 200:
         detail = grant.get('detail') if isinstance(grant, dict) else status
         return f'leisure_grant_refused:{detail}'
@@ -433,6 +442,22 @@ async def _start_game(deps: LeisureDeps, run: _Run) -> Optional[str]:
     return None
 
 
+# How a session ends, from Retro's side:
+#   NORMAL       Orion ended it (caps, heat, sheds, ...): release the policy, save, close the game.
+#   RELEASE      a human acted but the policy still holds the port (e.g. they pressed Pause):
+#                release the policy, leave their game running.
+#   POLICY_GONE  Retro already dropped the policy (a human acquire/takeover, or Retro's own stop):
+#                never stop the game; the human may be playing it.
+# In every mode, a human action since start -- or an UNREADABLE presence -- means "a human may be
+# in control": no end-save on their game and no session stop. Fail safe, never fail open.
+NORMAL, RELEASE, POLICY_GONE = 'normal', 'release', 'policy_gone'
+MAX_TRANSPORT_FAILURES = 5
+# Retro refusing a goal because the decision moved on (room change during a long call) is play,
+# not a planner failure (services/orion-retro/app/zelda/navigate.py accept()).
+STALE_GOAL_REFUSALS = ('stale_decision', 'expired_decision', 'goal_active', 'stale_script_epoch',
+                       'session_generation_mismatch')
+
+
 async def _run(config, deps: LeisureDeps, s: dict, run: _Run, ledger: list, lock_ttl: int) -> LeisureOutcome:
     await _journal(deps, 'starting', leisure_id=run.leisure_id, act_id=run.act_id, game_id=run.game_id)
     await _status(deps, run, 'starting')
@@ -441,8 +466,7 @@ async def _run(config, deps: LeisureDeps, s: dict, run: _Run, ledger: list, lock
     except Exception as exc:  # noqa: BLE001
         refusal = f'retro_unavailable:{type(exc).__name__}'
     if refusal:
-        await _finish(deps, run, refusal, stop_session=run.session_id is not None, preempted=False,
-                      ledger=None, started=False)
+        await asyncio.shield(_finish(deps, run, refusal, mode=NORMAL, ledger=None, started=False))
         return LeisureOutcome(started=False, refusal=refusal)
     ledger = [r for r in ledger if isinstance(r, dict)] + [dict(
         leisure_id=run.leisure_id, session_id=run.session_id, started_at=run.started_at,
@@ -450,108 +474,87 @@ async def _run(config, deps: LeisureDeps, s: dict, run: _Run, ledger: list, lock
     try:
         await deps.store.write_ledger(ledger)
     except Exception:  # noqa: BLE001 -- an unrecorded session must not run: the caps depend on it
-        await _finish(deps, run, 'ledger_unwritable', stop_session=True, preempted=False, ledger=None)
+        await asyncio.shield(_finish(deps, run, 'ledger_unwritable', mode=NORMAL, ledger=None))
         return LeisureOutcome(started=False, refusal='ledger_unwritable')
     await _journal(deps, 'started', leisure_id=run.leisure_id, session_id=run.session_id,
                    lineage_id=run.lineage_id, loaded_save_id=run.loaded_save_id)
-    end_reason, preempted = await _loop(config, deps, s, run, lock_ttl)
-    ended = await _finish(deps, run, end_reason, stop_session=not preempted, preempted=preempted, ledger=ledger)
+    used_before = _used_sec(LeisureGateInputs(
+        now=run.started_at, enabled=True, retro_enabled=True, game_id=run.game_id, allowed_games=(),
+        session_max_sec=s['session_max_sec'], daily_max_sec=s['daily_max_sec'], min_gap_sec=0,
+        ledger=ledger, own_leisure_id=run.leisure_id))
+    try:
+        end_reason, mode = await _loop(config, deps, s, run, lock_ttl, used_before)
+    except asyncio.CancelledError:
+        # The caller (dispatch consumer) was cancelled: still release the port and close out.
+        await asyncio.shield(_finish(deps, run, 'cancelled', mode=NORMAL, ledger=ledger))
+        raise
+    except Exception as exc:  # noqa: BLE001 -- never leave a policy driving with nobody watching
+        logger.exception('retro_leisure_loop_failed')
+        end_reason, mode = f'runner_error:{type(exc).__name__}', NORMAL
+    ended = await asyncio.shield(_finish(deps, run, end_reason, mode=mode, ledger=ledger))
     return LeisureOutcome(started=True, ended=ended)
 
 
-async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int) -> tuple[str, bool]:
+async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int,
+                used_before: float) -> tuple[str, str]:
     plan_task: Optional[asyncio.Task] = None
     plan_decision: Optional[str] = None
     next_check = run.started_at + RECHECK_SEC
+    transport_failures = 0
     try:
         while True:
             now = deps.clock()
             elapsed = now - run.started_at
             if elapsed >= s['session_max_sec']:
-                return 'session_cap', False
-            status, session = await deps.retro.call('GET', f'sessions/{run.session_id}')
+                return 'session_cap', NORMAL
+            if used_before + elapsed >= s['daily_max_sec']:   # pure arithmetic: every poll
+                return 'daily_cap', NORMAL
+            try:
+                status, session = await deps.retro.call('GET', f'sessions/{run.session_id}')
+            except Exception:  # noqa: BLE001 -- transport error / timeout: retry a few polls
+                transport_failures += 1
+                if transport_failures >= MAX_TRANSPORT_FAILURES:
+                    return 'retro_unreachable', NORMAL
+                await deps.sleep(POLL_SEC)
+                continue
+            transport_failures = 0
             if (status != 200 or not isinstance(session, dict) or session.get('session_id') != run.session_id
                     or session.get('state') not in ('running', 'paused')):
-                return 'retro_session_ended', False
+                return 'retro_session_ended', POLICY_GONE
             policy = _policy(session, run)
             if policy is None:
                 ok, since = await deps.store.seconds_since_human()
-                human = ok and since is not None and since <= deps.clock() - run.started_at
-                return ('human_preempted' if human else 'policy_ended_by_retro'), human
+                if not ok:
+                    return 'policy_ended_presence_unknown', POLICY_GONE
+                human = since is not None and since <= deps.clock() - run.started_at
+                return ('human_preempted' if human else 'policy_ended_by_retro'), POLICY_GONE
             cognition = policy.get('cognition') or {}
-            run.history = [h for h in cognition.get('history') or [] if isinstance(h, dict)]
+            if not retro_planner.is_zelda_cognition(cognition):
+                return 'not_a_zelda_session', NORMAL
+            retro_planner.remember_finished(run.history, cognition)
             run.verdicts = _count_verdicts(run.history)
             if now >= next_check:
                 next_check = now + RECHECK_SEC
                 inputs = await gather_gate_inputs(config, deps, own_leisure_id=run.leisure_id, elapsed_sec=elapsed)
                 reason = leisure_block_reason(inputs)
                 if reason:
-                    return reason, reason == 'human_present'
+                    return reason, (RELEASE if reason in ('human_present', 'presence_unknown') else NORMAL)
                 try:
                     if not await deps.store.refresh_lock(run.leisure_id, lock_ttl):
-                        return 'leisure_lock_lost', False
+                        return 'leisure_lock_lost', NORMAL
                 except Exception:  # noqa: BLE001
-                    return 'leisure_lock_lost', False
+                    return 'leisure_lock_lost', NORMAL
             if plan_task is not None and plan_task.done():
                 task, plan_task = plan_task, None
-                decision_id = plan_decision
-                try:
-                    goal = task.result()
-                except PlannerShed as exc:
-                    run.sheds += 1
-                    run.consecutive_sheds += 1
-                    retry = float(exc.details.get('retry_after_sec') or 30.0)
-                    run.waiting = dict(reason=exc.details.get('reason'), retry_after_sec=retry)
-                    run.next_plan_at = deps.clock() + retry
-                    await _journal(deps, 'planner_shed', session_id=run.session_id, decision_id=decision_id,
-                                   reason=exc.details.get('reason'), retry_after_sec=retry,
-                                   consecutive=run.consecutive_sheds)
-                    if run.consecutive_sheds >= MAX_CONSECUTIVE_SHEDS:
-                        return 'shed_x3', False
-                except PlannerBusy:
-                    run.next_plan_at = deps.clock() + POLL_SEC
-                except PlannerRejected as exc:
-                    if exc.reason in ('observation_unknown', 'decision_pending'):
-                        run.next_plan_at = deps.clock() + POLL_SEC   # nothing to answer yet; no model call
-                    else:
-                        run.rejections += 1
-                        run.consecutive_failures += 1
-                        run.next_plan_at = deps.clock() + FAILURE_RETRY_SEC
-                        await _journal(deps, 'planner_rejected', session_id=run.session_id,
-                                       decision_id=decision_id, reason=exc.reason, **exc.details)
-                except Exception as exc:  # noqa: BLE001 -- PlannerUnavailable and transport errors
-                    run.rejections += 1
-                    run.consecutive_failures += 1
-                    run.next_plan_at = deps.clock() + FAILURE_RETRY_SEC
-                    await _journal(deps, 'planner_failed', session_id=run.session_id, decision_id=decision_id,
-                                   reason=getattr(exc, 'reason', type(exc).__name__))
-                else:
-                    run.consecutive_sheds = 0
-                    run.waiting = None
-                    body = dict(goal, leisure_id=run.leisure_id, generation=run.generation,
-                                port=run.port, expected_epoch=run.epoch)
-                    status, accepted = await deps.retro.call('POST', f'sessions/{run.session_id}/goal', body)
-                    if status == 200:
-                        run.planned += 1
-                        run.consecutive_failures = 0
-                        run.planned_decision = decision_id
-                        run.last_goal = {k: goal.get(k) for k in ('decision_id', 'goal', 'prediction', 'rationale',
-                                                                  'budget_seconds', 'planner_id')}
-                        await _journal(deps, 'goal_accepted', session_id=run.session_id, **run.last_goal)
-                    else:
-                        run.rejections += 1
-                        run.consecutive_failures += 1
-                        run.next_plan_at = deps.clock() + FAILURE_RETRY_SEC
-                        await _journal(deps, 'goal_refused_by_retro', session_id=run.session_id,
-                                       decision_id=decision_id, status=status,
-                                       detail=(accepted or {}).get('detail') if isinstance(accepted, dict) else None)
-                if run.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    return 'planner_failed_x3', False
-            decision = cognition.get('decision')
+                ended = await _settle_plan(deps, run, task, plan_decision)
+                if ended:
+                    return ended, NORMAL
+            decision = cognition.get('attempt')
             decision_id = decision.get('decision_id') if isinstance(decision, dict) else None
             if (plan_task is None and decision_id and decision_id != run.planned_decision
                     and deps.clock() >= run.next_plan_at):
-                plan_task = asyncio.ensure_future(deps.plan(decision, await _atlas(deps, run), run.history))
+                plan_task = asyncio.ensure_future(deps.plan(decision, await _atlas(deps, run),
+                                                            run.history[-retro_planner.HISTORY_LIMIT:]))
                 plan_decision = decision_id
             await _status(deps, run, 'waiting' if run.waiting else 'playing',
                           ends_by=run.started_at + s['session_max_sec'])
@@ -562,6 +565,66 @@ async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int) ->
             await asyncio.gather(plan_task, return_exceptions=True)
 
 
+async def _settle_plan(deps: LeisureDeps, run: _Run, task: asyncio.Task, decision_id: Optional[str]) -> Optional[str]:
+    """Act on one finished planner call. Returns an end reason, or None to keep playing."""
+    try:
+        goal = task.result()
+    except PlannerShed as exc:
+        run.sheds += 1
+        run.consecutive_sheds += 1
+        retry = float(exc.details.get('retry_after_sec') or 30.0)
+        run.waiting = dict(reason=exc.details.get('reason'), retry_after_sec=retry)
+        run.next_plan_at = deps.clock() + retry
+        await _journal(deps, 'planner_shed', session_id=run.session_id, decision_id=decision_id,
+                       reason=exc.details.get('reason'), retry_after_sec=retry, consecutive=run.consecutive_sheds)
+        return 'shed_x3' if run.consecutive_sheds >= MAX_CONSECUTIVE_SHEDS else None
+    except PlannerBusy:
+        run.next_plan_at = deps.clock() + POLL_SEC
+        return None
+    except PlannerRejected as exc:
+        if exc.reason in ('observation_unknown', 'decision_pending'):
+            run.next_plan_at = deps.clock() + POLL_SEC   # nothing to answer yet; no model call
+            return None
+        run.rejections += 1
+        run.consecutive_failures += 1
+        run.next_plan_at = deps.clock() + FAILURE_RETRY_SEC
+        await _journal(deps, 'planner_rejected', session_id=run.session_id,
+                       decision_id=decision_id, reason=exc.reason, **exc.details)
+    except Exception as exc:  # noqa: BLE001 -- PlannerUnavailable and transport errors
+        run.rejections += 1
+        run.consecutive_failures += 1
+        run.next_plan_at = deps.clock() + FAILURE_RETRY_SEC
+        await _journal(deps, 'planner_failed', session_id=run.session_id, decision_id=decision_id,
+                       reason=getattr(exc, 'reason', type(exc).__name__))
+    else:
+        run.consecutive_sheds = 0
+        run.waiting = None
+        body = dict(goal, leisure_id=run.leisure_id, generation=run.generation,
+                    port=run.port, expected_epoch=run.epoch)
+        try:
+            status, accepted = await deps.retro.call('POST', f'sessions/{run.session_id}/goal', body)
+        except Exception as exc:  # noqa: BLE001
+            status, accepted = 0, {'detail': type(exc).__name__}
+        detail = accepted.get('detail') if isinstance(accepted, dict) else None
+        if status == 200:
+            run.planned += 1
+            run.consecutive_failures = 0
+            run.planned_decision = decision_id
+            run.last_goal = {k: goal.get(k) for k in ('decision_id', 'goal', 'prediction', 'rationale',
+                                                      'budget_seconds', 'planner_id')}
+            await _journal(deps, 'goal_accepted', session_id=run.session_id, **run.last_goal)
+        elif detail in STALE_GOAL_REFUSALS:
+            run.planned_decision = decision_id   # that slot is gone; wait for Retro's next offer
+            await _journal(deps, 'goal_stale', session_id=run.session_id, decision_id=decision_id, detail=detail)
+        else:
+            run.rejections += 1
+            run.consecutive_failures += 1
+            run.next_plan_at = deps.clock() + FAILURE_RETRY_SEC
+            await _journal(deps, 'goal_refused_by_retro', session_id=run.session_id,
+                           decision_id=decision_id, status=status, detail=detail)
+    return 'planner_failed_x3' if run.consecutive_failures >= MAX_CONSECUTIVE_FAILURES else None
+
+
 async def _atlas(deps: LeisureDeps, run: _Run) -> Optional[dict]:
     try:
         status, atlas = await deps.retro.call('GET', f'sessions/{run.session_id}/atlas')
@@ -570,31 +633,36 @@ async def _atlas(deps: LeisureDeps, run: _Run) -> Optional[dict]:
     return atlas if status == 200 and isinstance(atlas, dict) else None
 
 
-async def _finish(deps: LeisureDeps, run: _Run, reason: str, *, stop_session: bool, preempted: bool,
+async def _call(deps: LeisureDeps, what: str, method: str, path: str, body: Optional[dict] = None):
+    try:
+        return await deps.retro.call(method, path, body)
+    except Exception as exc:  # noqa: BLE001 -- best effort at the end; the journal names it
+        logger.warning('retro_leisure_%s_failed', what, exc_info=True)
+        return 0, {'detail': type(exc).__name__}
+
+
+async def _finish(deps: LeisureDeps, run: _Run, reason: str, *, mode: str,
                   ledger: Optional[list], started: bool = True) -> RetroSessionEnded:
     save_id = save_error = None
+    human = False
     if run.session_id:
-        if not preempted and run.epoch is not None:
-            try:
-                await deps.retro.call('POST', f'sessions/{run.session_id}/scripted', {
-                    'leisure_id': run.leisure_id, 'generation': run.generation, 'port': run.port,
-                    'action': 'stop', 'duration_seconds': 5, 'cognition': True})
-            except Exception:  # noqa: BLE001
-                logger.warning('retro_leisure_policy_stop_failed', exc_info=True)
+        ok, since = await deps.store.seconds_since_human()
+        human = (not ok) or (since is not None and since <= deps.clock() - run.started_at)
+        if mode in (NORMAL, RELEASE) and run.epoch is not None:
+            await _call(deps, 'policy_stop', 'POST', f'sessions/{run.session_id}/scripted', {
+                'leisure_id': run.leisure_id, 'generation': run.generation, 'port': run.port,
+                'action': 'stop', 'duration_seconds': 5, 'cognition': True, 'expected_epoch': run.epoch})
         if started and run.epoch is not None:
-            try:
-                status, saved = await deps.retro.call('POST', f'sessions/{run.session_id}/save', {})
+            if human:
+                save_error = 'skipped:human_may_be_in_control'
+            elif reason != 'retro_session_ended':
+                status, saved = await _call(deps, 'save', 'POST', f'sessions/{run.session_id}/save', {})
                 if status == 200 and isinstance(saved, dict):
                     save_id = (saved.get('saved') or {}).get('save_id')
                 else:
                     save_error = str((saved or {}).get('detail') if isinstance(saved, dict) else status)
-            except Exception as exc:  # noqa: BLE001
-                save_error = type(exc).__name__
-        if stop_session:
-            try:
-                await deps.retro.call('POST', f'sessions/{run.session_id}/stop', {})
-            except Exception:  # noqa: BLE001
-                logger.warning('retro_leisure_session_stop_failed', exc_info=True)
+        if mode == NORMAL and not human:
+            await _call(deps, 'session_stop', 'POST', f'sessions/{run.session_id}/stop', {})
     ended_at = deps.clock()
     if ledger is not None:
         rows = [dict(r, ended_at=ended_at, seconds=round(ended_at - run.started_at, 1))
@@ -608,8 +676,8 @@ async def _finish(deps: LeisureDeps, run: _Run, reason: str, *, stop_session: bo
         game_id=run.game_id, started_at=run.started_at, ended_at=ended_at, end_reason=reason,
         act_id=run.act_id, loaded_save_id=run.loaded_save_id, end_save_id=save_id,
         end_save_error=save_error, decisions_planned=run.planned, planner_rejections=run.rejections,
-        sheds=run.sheds, verdicts=dict(run.verdicts))
-    await _journal(deps, 'ended' if started else 'refused', reason=reason, **{
+        sheds=run.sheds, verdicts=dict(run.verdicts), human_may_be_in_control=human)
+    await _journal(deps, 'ended' if started else 'refused', reason=reason, mode=mode, **{
         k: v for k, v in ended.as_dict().items() if k not in ('end_reason',)})
     await _status(deps, run, 'ended', end_reason=reason, end_save_id=save_id)
     return ended

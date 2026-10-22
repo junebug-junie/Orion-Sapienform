@@ -73,23 +73,35 @@ def create_router(config, presence=None):
         if status is None:
             return JSONResponse({'state': 'unknown', 'reason': 'presence_store_unavailable', 'journal': []},
                                 headers={'Cache-Control': 'no-store'})
-        return JSONResponse(dict(status or {'state': 'idle'}, journal=journal or []),
-                            headers={'Cache-Control': 'no-store'})
+        status = dict(status or {'state': 'idle'})
+        # The runner rewrites its status every poll (1 s). A live state that stopped updating
+        # is a crashed or hung runner, not a session to watch.
+        if status.get('state') in ('starting', 'playing', 'waiting') and \
+                time.time() - float(status.get('updated_at') or 0) > 15:
+            status = dict(status, state='stale', stale_state=status.get('state'))
+        return JSONResponse(dict(status, journal=journal or []), headers={'Cache-Control': 'no-store'})
+
+    histories = {}  # session id -> last goal_finished rows (Retro shows only the newest)
 
     async def plan_v2(path, data, state, policy, c):
-        """Zelda co-play decision (spec D). No goal on any failure; Retro's motor holds wait."""
+        """Zelda co-play decision (spec D). No goal on any failure; Retro's motor holds still."""
+        from collections import deque
         from scripts import retro_planner
         cognition = policy['cognition']
-        decision = cognition.get('decision')
+        sid = path.rsplit('/', 1)[0]
+        if sid not in histories:
+            histories.clear()  # one game at a time: keep only the current session's history
+            histories[sid] = deque(maxlen=retro_planner.HISTORY_LIMIT)
+        history = retro_planner.remember_finished(histories[sid], cognition)
+        decision = cognition.get('attempt')
         accepted = cognition.get('goal')
         if isinstance(decision, dict) and isinstance(accepted, dict) and accepted.get('decision_id') == decision.get('decision_id'):
             return JSONResponse(accepted)
-        sid = path.rsplit('/', 1)[0]
         atlas = None
         async with c.get('http://retro/'+sid+'/atlas', headers=credentials()) as r:
             if r.status == 200: atlas = await r.json()
         try:
-            goal = await retro_planner.plan_zelda(config, decision, atlas, cognition.get('history'))
+            goal = await retro_planner.plan_zelda(config, decision, atlas, list(history))
         except retro_planner.PlannerShed as exc:
             return JSONResponse(exc.public(), status_code=503,
                                 headers={'Retry-After': str(int(max(1, exc.details.get('retry_after_sec') or 30)))})
@@ -135,7 +147,8 @@ def create_router(config, presence=None):
                                    and p['epoch'] == data['expected_epoch'] and p.get('cognition')), None)
                     if not policy or state['generation'] != data['generation']:
                         raise HTTPException(409, 'stale_controller')
-                    if 'decision' in policy['cognition']:
+                    from scripts.retro_planner import is_zelda_cognition
+                    if is_zelda_cognition(policy['cognition']):
                         return await plan_v2(path, data, state, policy, c)
                     attempt = policy['cognition']['attempt']
                     if not attempt: raise HTTPException(409, 'observation_pending')

@@ -35,6 +35,9 @@ class RetroSessionEnded:
     decisions_planned: int = 0         # goals the model produced and Retro accepted
     planner_rejections: int = 0
     sheds: int = 0
+    # True when a human acted after the start, or presence could not be read: the runner then
+    # did not save over or stop the game. The summary must not credit those frames to Orion.
+    human_may_be_in_control: bool = False
     verdicts: dict = field(default_factory=lambda: {'met': 0, 'refuted': 0, 'unknown': 0})
 
     @property

@@ -34,6 +34,11 @@ class FakeRedis:
     async def lpush(self, k, v): self._check(); self.lists.setdefault(k, []).insert(0, v)
     async def ltrim(self, k, a, b): self._check(); self.lists[k] = self.lists.get(k, [])[a:b + 1]
     async def lrange(self, k, a, b): self._check(); return self.lists.get(k, [])[a:b + 1]
+    async def eval(self, script, numkeys, key, owner, *args):
+        self._check()
+        if self.kv.get(key) != owner: return 0
+        if "'del'" in script: self.kv.pop(key, None)
+        return 1
 
 
 class Clock:
@@ -43,16 +48,21 @@ class Clock:
 
 
 def zelda_decision(n):
-    return dict(decision_id=f'd{n}', trigger='goal_finished' if n else 'room_entry',
-                observation=dict(status='observed', level=0, room=119), supported_goals=['exit', 'wait'])
+    # Shape of Retro's scripted[].cognition.attempt (services/orion-retro/app/zelda/navigate.py offer()).
+    return dict(decision_id=f'5:{n}', port=0, expected_epoch=5, supported_goals=['exit', 'wait'],
+                supported_predictions=['reach_room', 'survive'],
+                observation=dict(status='observed', level=0, room=119, link=dict(controllable=True)))
 
 
 class FakeRetro:
     def __init__(self, clock, saves=()):
         self.clock = clock; self.session = None; self.saves = list(saves); self.calls = []; self.goals = []
-        self.on_tick = None; self.n = 0
+        self.on_tick = None; self.n = 0; self.goal_status = None; self.fail_gets = 0
     async def call(self, method, path, body=None):
         self.calls.append((method, path, body))
+        if self.fail_gets and method == 'GET' and path.startswith('sessions/') and path.count('/') == 1:
+            self.fail_gets -= 1
+            raise TimeoutError('retro slow')
         if path == 'health/ready': return 200, {'session': self.session}
         if path.startswith('games/'): return 200, self.saves
         if method == 'POST' and path == 'sessions':
@@ -65,22 +75,31 @@ class FakeRetro:
             if self.on_tick: self.on_tick(self)
             return 200, dict(self.session)
         if op == 'atlas': return 200, {'lineage_id': 'lin-9', 'rooms': {}}
+        if op == 'resume': return 200, {'state': 'running'}
+        if op == 'control':
+            assert body == {'leisure_id': body['leisure_id'], 'port': 0, 'action': 'acquire'}
+            self.lease_epoch = 4
+            return 200, {'port': 0, 'lease': 'l' * 40, 'epoch': 4, 'leisure': True}
         if op == 'scripted':
+            assert body['leisure_id'] and body['cognition'] is True and 'connection_id' not in body
             if body['action'] == 'start':
-                assert body['leisure_id'] and body['cognition'] is True and 'connection_id' not in body
-                self.session['scripted'] = [dict(port=body['port'], epoch=5, policy_id='zelda-goal-v2',
-                                                 leisure_id=body['leisure_id'],
-                                                 cognition=dict(decision=zelda_decision(0), goal=None, history=[]))]
+                assert body['expected_epoch'] == self.lease_epoch
+                self.session['scripted'] = [dict(port=body['port'], epoch=5, policy_id='zelda-navigator-v1',
+                                                 cognition=dict(policy_id='zelda-navigator-v1', attempt=zelda_decision(0),
+                                                                goal=None, last_finished=None))]
             else:
+                assert body['expected_epoch'] == 5
                 self.session['scripted'] = []
             return 200, {}
         if op == 'goal':
+            if self.goal_status:
+                return self.goal_status
             self.goals.append(body)
             policy = self.session['scripted'][0]
-            policy['cognition']['history'].append(dict(decision_id=body['decision_id'], goal=body['goal'],
-                                                       verdict='met' if self.n % 2 == 0 else 'refuted'))
+            policy['cognition']['last_finished'] = dict(decision_id=body['decision_id'], goal=body['goal'],
+                                                        verdict='met' if self.n % 2 == 0 else 'refuted')
             self.n += 1
-            policy['cognition']['decision'] = zelda_decision(self.n)
+            policy['cognition']['attempt'] = zelda_decision(self.n)
             return 200, body
         if op == 'save': return 200, {'saved': {'save_id': 'f' * 32}}
         if op == 'stop': self.session['state'] = 'stopped'; return 200, self.session
@@ -251,6 +270,7 @@ def test_session_plays_loads_latest_save_and_ends_at_the_cap(world):
                                      and 'connection_id' not in g for g in world.retro.goals)
     assert len(set(world.plans)) == len(world.plans)        # each decision planned once
     ops = [p.rsplit('/', 1)[-1] for m, p, _ in world.retro.calls if m == 'POST']
+    assert ops[:4] == ['sessions', 'resume', 'control', 'scripted']   # leisure acquire, then hand to script
     assert ops[-3:] == ['scripted', 'save', 'stop']          # policy stop, save, close the game
     e = out.ended
     assert (e.session_id, e.lineage_id, e.act_id, e.loaded_save_id, e.end_save_id) == \
@@ -280,7 +300,8 @@ def test_human_takeover_preempts_without_stopping_their_game(world):
     out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
     assert out.ended.end_reason == 'human_preempted'
     ops = [p.rsplit('/', 1)[-1] for m, p, _ in world.retro.calls if m == 'POST']
-    assert 'stop' not in ops and ops[-1] == 'save' and ops.count('scripted') == 1
+    assert 'stop' not in ops and 'save' not in ops and ops.count('scripted') == 1   # their game: hands off
+    assert out.ended.human_may_be_in_control and out.ended.end_save_error == 'skipped:human_may_be_in_control'
     assert world.clock.t - 1_000_000 < 25                   # seen on the next 1 s poll
 
 
@@ -288,6 +309,70 @@ def test_policy_gone_without_a_human_is_not_called_preemption(world):
     world.retro.on_tick = lambda r: r.session.__setitem__('scripted', []) if world.clock.t > 1_000_010 else None
     out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
     assert out.ended.end_reason == 'policy_ended_by_retro'
+    ops = [p.rsplit('/', 1)[-1] for m, p, _ in world.retro.calls if m == 'POST']
+    assert 'stop' not in ops and ops[-1] == 'save'           # never stops a game it no longer drives
+
+
+def test_policy_gone_with_unreadable_presence_fails_safe(world):
+    # The human's mark has not landed (or Redis is down) when the policy disappears.
+    def drop(retro):
+        if world.clock.t > 1_000_010 and retro.session['scripted']:
+            retro.session['scripted'] = []; world.redis.fail = True
+    world.retro.on_tick = drop
+    async def reg(): return ('idle', 'idle', None)
+    world.deps.regulation = reg
+    out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
+    assert out.ended.end_reason == 'policy_ended_presence_unknown' and out.ended.human_may_be_in_control
+    ops = [p.rsplit('/', 1)[-1] for m, p, _ in world.retro.calls if m == 'POST']
+    assert 'stop' not in ops and 'save' not in ops
+
+
+def test_human_action_without_takeover_releases_the_port_but_keeps_their_game(world):
+    # e.g. the human pressed Pause or Save: the relay marks a human, the policy still holds the port.
+    def press(retro):
+        if world.clock.t > 1_000_005: world.redis.kv[HUMAN_AT_KEY] = str(world.clock.t)
+    world.retro.on_tick = press
+    out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
+    assert out.ended.end_reason == 'human_present'
+    ops = [p.rsplit('/', 1)[-1] for m, p, _ in world.retro.calls if m == 'POST']
+    assert ops.count('scripted') == 2 and 'stop' not in ops and 'save' not in ops   # released, nothing else
+
+
+def test_retro_transport_errors_retry_then_close_out(world):
+    world.retro.on_tick = lambda r: setattr(r, 'fail_gets', 10) if world.clock.t > 1_000_003 and not r.fail_gets else None
+    out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
+    assert out.ended.end_reason == 'retro_unreachable'
+    assert journal(world)[0]['event'] == 'ended' and LOCK_KEY not in world.redis.kv
+
+
+def test_cancellation_still_releases_the_port_and_journals(world):
+    async def go():
+        task = asyncio.create_task(L.run_leisure_session(config(), deps=world.deps))
+        for _ in range(200):
+            await asyncio.sleep(0)
+            if world.retro.goals: break
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    asyncio.run(go())
+    ops = [p.rsplit('/', 1)[-1] for m, p, _ in world.retro.calls if m == 'POST']
+    assert ops[-3:] == ['scripted', 'save', 'stop'] and journal(world)[0]['reason'] == 'cancelled'
+    assert LOCK_KEY not in world.redis.kv
+
+
+def test_stale_decision_refusal_is_play_not_failure(world):
+    world.retro.goal_status = (409, {'detail': 'stale_decision'})
+    out = asyncio.run(L.run_leisure_session(config(RETRO_LEISURE_SESSION_MAX_SEC=60), deps=world.deps))
+    assert out.ended.end_reason == 'session_cap' and out.ended.planner_rejections == 0
+    assert any(r['event'] == 'goal_stale' for r in journal(world))
+
+
+def test_daily_cap_is_enforced_every_poll(world):
+    import json
+    world.redis.kv[LEDGER_KEY] = json.dumps([dict(leisure_id='o', started_at=world.clock.t - 50000, ended_at=1,
+                                                  seconds=5400 - 10)])
+    out = asyncio.run(L.run_leisure_session(config(RETRO_LEISURE_MIN_GAP_SEC=0), deps=world.deps))
+    assert out.ended.end_reason == 'daily_cap' and out.ended.duration_sec <= 12
 
 
 def test_heat_appearing_mid_session_ends_it_at_the_30s_recheck(world):

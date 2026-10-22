@@ -15,7 +15,7 @@ def test_template_has_play_panel_and_current_asset():
 def test_asset_reads_leisure_atlas_and_shed_and_watches_without_a_controller():
     js = (HUB / 'static/js/retro-panel.js').read_text()
     for marker in ("api('leisure')", '/atlas`', "'gpu_pool_unavailable'", 'retry_after_sec',
-                   'function watch()', "'Orion is waiting: '"):
+                   'function watch()', "'Orion is waiting: '", "'zelda-navigator-v1'", 'last_finished'):
         assert marker in js, marker
     watch = js[js.index('function watch()'):js.index('let atlasAt')]
     assert '/input' not in watch and 'grant(' not in watch   # watching never takes a controller

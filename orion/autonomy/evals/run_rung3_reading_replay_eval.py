@@ -43,6 +43,7 @@ from orion.autonomy.act_candidates import ActRef  # noqa: E402
 from orion.autonomy.evals.run_rung3_replay_eval import (  # noqa: E402
     _aware,
     decide,
+    verdict,
     rebuild_posterior,
     settings_floor,
     stable_draw,
@@ -91,7 +92,7 @@ def fixture_checks() -> list[tuple[str, bool]]:
         ("reading_pull_held_back", act_episodes.holdback_rule("queue")[0] is True),
         ("live_look_admitted_on_proven_path", (path, why) == ("proven_effect", "admitted")),
         ("live_look_below_info_floor",
-         decide(ref, live_look, 679.3, floor, n_control=0)[0] != "information"),
+         verdict(ref, live_look, 679.3, floor) == "below_information_floor"),
     ]
 
 

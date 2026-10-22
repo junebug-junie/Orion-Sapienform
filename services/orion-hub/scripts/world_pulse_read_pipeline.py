@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, NamedTuple, Optional
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -388,6 +388,13 @@ class WorldPulseReadPipeline:
                 seconds_until_retry=retry_wait,
             )
         )
+        if reason == "outside_window" and local_hour is not None:
+            # Seconds until the window opens, so a refused pull is held until then.
+            local = now.astimezone(self._tz)
+            opens = local.replace(hour=self.window_start_hour, minute=0, second=0, microsecond=0)
+            if opens <= local:
+                opens += timedelta(days=1)
+            retry_wait = (opens - local).total_seconds()
         return reason, retry_wait
 
     async def _tick_unlocked(self, *, force: bool = False) -> str | None:
@@ -419,7 +426,12 @@ class WorldPulseReadPipeline:
         # Admission gates must not strand an already-submitted durable result.
         handled: list[str] = []
         first: str | None = None
-        while len(handled) < self.max_in_flight:
+        # A treated reading pull is ONE EXTRA read (orion/world_pulse_read/pull.py): it does not take
+        # one of the lane's max_in_flight slots. In-process record; after a restart a pulled read
+        # still in flight counts as a lane read until it finishes (disclosed).
+        pulled = getattr(self, "_pulled_in_flight", None) or set()
+        lane = 0
+        while lane < self.max_in_flight:
             exclude = tuple(handled)
             seed = await self._with_conn(
                 lambda conn: claim_next_seed(
@@ -429,8 +441,11 @@ class WorldPulseReadPipeline:
             if seed is None:
                 break
             handled.append(seed.seed_id)
+            if seed.seed_id not in pulled:
+                lane += 1
             outcome = await self._read_claimed(seed, redis)
-            if reason is None and not force and redis is not None and len(handled) < self.max_in_flight:
+            self._forget_pulled(seed.seed_id, outcome)
+            if reason is None and not force and redis is not None and lane < self.max_in_flight:
                 # A turn refused before work this tick set the refund backoff: start no new
                 # turn behind it (in-flight ones are still polled), as the next tick would.
                 wait = await read_wallet_a_retry_wait(redis, now=datetime.now(timezone.utc))
@@ -438,6 +453,17 @@ class WorldPulseReadPipeline:
                     reason = "refund_backoff"
             if len(handled) == 1:
                 first = outcome
+        # Poll every other submitted turn too (never starts one): with a pull in flight there can be
+        # max_in_flight + 1 turns, and an unpolled one would finish late and miss its horizon.
+        while True:
+            exclude = tuple(handled)
+            seed = await self._with_conn(
+                lambda conn: claim_next_seed(conn, active_only=True, exclude=exclude))
+            if seed is None:
+                break
+            handled.append(seed.seed_id)
+            outcome = await self._read_claimed(seed, redis)
+            self._forget_pulled(seed.seed_id, outcome)
         if not handled:
             if reason is not None:
                 logger.info("world_pulse_read_blocked reason=%s", reason)
@@ -582,7 +608,8 @@ class WorldPulseReadPipeline:
         if getattr(self, "_pull_columns_ready", False):
             return
         present = await conn.fetchval(
-            "SELECT count(*) FROM information_schema.columns WHERE table_name = 'world_pulse_read_seed' "
+            "SELECT count(*) FROM information_schema.columns WHERE table_schema = current_schema() "
+            "AND table_name = 'world_pulse_read_seed' "
             "AND column_name IN ('pull_dispatch_id', 'pull_arm', 'pulled_at')")
         if int(present or 0) < 3:
             async with conn.transaction():
@@ -609,23 +636,26 @@ class WorldPulseReadPipeline:
             self._pull_thermal_state = verdict.state
         return verdict
 
-    async def _pull_gates(self, conn: Any, now: datetime) -> tuple[Any, dict]:
+    async def _pull_signals(self, now: datetime) -> dict:
+        """Every gate input that is not in Postgres, read before a connection is taken."""
         wallet_reason, wallet_retry = await self._wallet_gate(self._redis(), now)
-        start, end = reading_pull.utc_day_bounds(now)
-        pulled_today = int(await conn.fetchval(reading_pull.COUNT_STARTED_PULLS_SQL, start, end) or 0)
         arousal = None
         reader = getattr(self, "_pull_arousal_reader", None)
         if reader is not None:
             await reader.refresh(self._bus, now)
             arousal = reader.level(now)
-        thermal = await self._pull_thermal()
+        return {"wallet": (wallet_reason, wallet_retry), "arousal": arousal, "thermal": await self._pull_thermal()}
+
+    def _pull_verdict(self, sig: dict, pulled_today: int, now: datetime) -> tuple[Any, dict]:
+        thermal = sig["thermal"]
         verdict = reading_pull.pull_block_reason(reading_pull.PullGateInputs(
             enabled=bool(getattr(self, "pull_enabled", False)) and self.enabled,
-            wallet_reason=wallet_reason, wallet_retry_sec=wallet_retry,
+            wallet_reason=sig["wallet"][0], wallet_retry_sec=sig["wallet"][1],
             pulled_today=pulled_today, daily_cap=int(getattr(self, "pull_daily_cap", 0)),
-            arousal_level=arousal, thermal=thermal, now=now))
-        gates = {"wallet": wallet_reason, "pulled_today": pulled_today,
-                 "daily_cap": int(getattr(self, "pull_daily_cap", 0)), "arousal": arousal,
+            arousal_level=sig["arousal"], thermal=thermal, now=now,
+            default_retry_sec=float(self.tick_interval_sec)))
+        gates = {"wallet": sig["wallet"][0], "pulled_today": pulled_today,
+                 "daily_cap": int(getattr(self, "pull_daily_cap", 0)), "arousal": sig["arousal"],
                  "thermal": None if thermal is None else {"state": thermal.state, "temp_c": thermal.temp_c,
                                                           "reason": thermal.reason}}
         return verdict, gates
@@ -633,35 +663,51 @@ class WorldPulseReadPipeline:
     async def pull(self, req: WorldPulseReadPullRequestV1) -> WorldPulseReadPullResultV1:
         """One pull request (orion/schemas/world_pulse_read_pull.py). Never raises."""
         now = datetime.now(timezone.utc)
+        retry = float(self.tick_interval_sec)
         base = {"op": req.op, "dispatch_id": req.dispatch_id, "arm": req.arm,
                 "daily_cap": int(getattr(self, "pull_daily_cap", 0))}
+        if not getattr(self, "_startup_reclaim_done", False):
+            # The first tick frees every claimed row; a seed claimed for a pull before it would be
+            # reset under the pull and read twice.
+            return WorldPulseReadPullResultV1(**base, state="refused", refusal="lane_starting",
+                                              retry_after_sec=retry)
+        try:
+            sig = await self._pull_signals(now)
+        except Exception:  # noqa: BLE001
+            logger.warning("reading_pull_signals_failed dispatch_id=%s", req.dispatch_id, exc_info=True)
+            return WorldPulseReadPullResultV1(**base, state="refused", refusal="queue_unavailable",
+                                              retry_after_sec=retry)
 
         async def run(conn):
             await self._ensure_pull_columns(conn)
-            verdict, gates = await self._pull_gates(conn, now)
+            start, end = reading_pull.utc_day_bounds(now)
+            pulled_today = int(await conn.fetchval(reading_pull.COUNT_STARTED_PULLS_SQL, start, end) or 0)
+            if req.op == "act":
+                # A replayed act for the same decision finds its own mark and reports it, before any
+                # gate: the decision was already taken (and may have used the cap's last slot).
+                prior = await conn.fetchrow(
+                    "SELECT seed_id, pull_arm FROM world_pulse_read_seed WHERE pull_dispatch_id = $1",
+                    req.dispatch_id)
+                if prior is not None:
+                    state = "started" if prior["pull_arm"] == "treated" else "control_recorded"
+                    return WorldPulseReadPullResultV1(**{**base, "arm": prior["pull_arm"]}, state=state,
+                                                      seed_id=prior["seed_id"],
+                                                      object_ref=reading_pull.read_act_key(prior["seed_id"]),
+                                                      pulled_today=pulled_today)
+            verdict, gates = self._pull_verdict(sig, pulled_today, now)
             if not verdict.open:
                 return WorldPulseReadPullResultV1(**base, state="refused", refusal=verdict.refusal,
                                                   retry_after_sec=verdict.retry_after_sec,
-                                                  pulled_today=gates["pulled_today"], gates=gates)
+                                                  pulled_today=pulled_today, gates=gates)
             if req.op == "check":
                 row = await conn.fetchrow(reading_pull.SELECT_PULL_CANDIDATE_SQL)
                 if row is None:
                     return WorldPulseReadPullResultV1(**base, state="refused", refusal="no_candidate",
-                                                      retry_after_sec=self.tick_interval_sec,
-                                                      pulled_today=gates["pulled_today"], gates=gates)
+                                                      retry_after_sec=retry, pulled_today=pulled_today, gates=gates)
                 return WorldPulseReadPullResultV1(**base, state="ready", seed_id=row["seed_id"],
                                                   object_ref=reading_pull.read_act_key(row["seed_id"]),
-                                                  pulled_today=gates["pulled_today"], gates=gates)
+                                                  pulled_today=pulled_today, gates=gates)
             row = None
-            # A replayed act for the same decision finds its own mark and reports it, never a second seed.
-            prior = await conn.fetchrow(
-                "SELECT seed_id, pull_arm FROM world_pulse_read_seed WHERE pull_dispatch_id = $1", req.dispatch_id)
-            if prior is not None:
-                state = "started" if prior["pull_arm"] == "treated" else "control_recorded"
-                return WorldPulseReadPullResultV1(**{**base, "arm": prior["pull_arm"]}, state=state,
-                                                  seed_id=prior["seed_id"],
-                                                  object_ref=reading_pull.read_act_key(prior["seed_id"]),
-                                                  pulled_today=gates["pulled_today"], gates=gates)
             for _ in range(3):  # the lane may claim the head between select and mark
                 head = await conn.fetchrow(reading_pull.SELECT_PULL_CANDIDATE_SQL)
                 if head is None:
@@ -671,8 +717,7 @@ class WorldPulseReadPipeline:
                     break
             if row is None:
                 return WorldPulseReadPullResultV1(**base, state="refused", refusal="no_candidate",
-                                                  retry_after_sec=self.tick_interval_sec,
-                                                  pulled_today=gates["pulled_today"], gates=gates)
+                                                  retry_after_sec=retry, pulled_today=pulled_today, gates=gates)
             return row, gates
 
         try:
@@ -680,9 +725,10 @@ class WorldPulseReadPipeline:
         except Exception as exc:  # noqa: BLE001
             logger.warning("reading_pull_failed dispatch_id=%s op=%s", req.dispatch_id, req.op, exc_info=True)
             return WorldPulseReadPullResultV1(**base, state="refused", refusal="queue_unavailable",
-                                              gates={"error": f"{type(exc).__name__}"[:80]})
+                                              retry_after_sec=retry, gates={"error": f"{type(exc).__name__}"[:80]})
         if out is None:
-            return WorldPulseReadPullResultV1(**base, state="refused", refusal="queue_unavailable")
+            return WorldPulseReadPullResultV1(**base, state="refused", refusal="queue_unavailable",
+                                              retry_after_sec=retry)
         if isinstance(out, WorldPulseReadPullResultV1):
             logger.info("reading_pull op=%s dispatch_id=%s state=%s refusal=%s seed=%s",
                         req.op, req.dispatch_id, out.state, out.refusal, out.seed_id)
@@ -691,6 +737,10 @@ class WorldPulseReadPipeline:
         seed_id = row["seed_id"]
         if req.arm == "treated":
             seed = _seed_from_pull_row(row)
+            pulled = getattr(self, "_pulled_in_flight", None)
+            if pulled is None:
+                pulled = self._pulled_in_flight = set()
+            pulled.add(seed_id)
             task = asyncio.create_task(self._start_pulled(seed))
             pending = getattr(self, "_pull_tasks", None)
             if pending is None:
@@ -705,12 +755,19 @@ class WorldPulseReadPipeline:
                                           pulled_today=gates["pulled_today"] + (1 if req.arm == "treated" else 0),
                                           gates=gates)
 
+    def _forget_pulled(self, seed_id: str, outcome: Any) -> None:
+        """A pulled read stops being the extra read once it is no longer waiting on its turn."""
+        pulled = getattr(self, "_pulled_in_flight", None)
+        if pulled and seed_id in pulled and outcome not in ("waiting_resource",):
+            pulled.discard(seed_id)
+
     async def _start_pulled(self, seed: WorldPulseReadSeedV1) -> None:
         """Start the pulled read under the lane lock, then leave it to the lane: once submitted it is
         a pending seed with a durable turn, which CLAIM_SQL polls first on every later tick."""
         try:
             async with self._lane_lock():
                 outcome = await self._read_claimed(seed, self._redis())
+                self._forget_pulled(seed.seed_id, outcome)
             logger.info("reading_pull_started seed=%s outcome=%s", seed.seed_id, outcome)
         except Exception:  # noqa: BLE001
             logger.warning("reading_pull_start_failed seed=%s", seed.seed_id, exc_info=True)

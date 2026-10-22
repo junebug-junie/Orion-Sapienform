@@ -576,7 +576,7 @@ class ExecutionDispatchRuntimeStore:
     ACT_IN_FLIGHT_WINDOW_HOURS = 6
 
     def act_in_flight(self, *, actor: str, dispatch_kind: str, target_id: str,
-                      include_open_acts: bool = True) -> bool:
+                      include_open_acts: bool = True, started_within_sec: float | None = None) -> bool:
         """True while this act's actor has an open act, or this route has an unsettled dispatch.
 
         Two sources because they cover different stretches: a render_scene dispatch is ``pending``
@@ -601,10 +601,17 @@ class ExecutionDispatchRuntimeStore:
                                        -- a render whose submit timed out may still have been admitted
                                        OR result_json->'settlement'->>'state' = 'not_submitted')
                                   AND created_at > now() - make_interval(hours => :hours))
+                        OR (CAST(:started_sec AS double precision) IS NOT NULL AND EXISTS (
+                               -- a reading pull Hub started, on any admission path
+                               SELECT 1 FROM substrate_dispatch_results
+                                WHERE dispatch_kind = :kind AND target_id = :target
+                                  AND result_json->'settlement'->>'state' = 'started'
+                                  AND created_at > now() - make_interval(secs => CAST(:started_sec AS double precision))))
                     """
                 ),
                 {"actor": actor, "kind": dispatch_kind, "target": target_id,
-                 "hours": self.ACT_IN_FLIGHT_WINDOW_HOURS, "open_acts": bool(include_open_acts)},
+                 "hours": self.ACT_IN_FLIGHT_WINDOW_HOURS, "open_acts": bool(include_open_acts),
+                 "started_sec": started_within_sec},
             ).scalar()
         return bool(row)
 
@@ -662,6 +669,12 @@ class ExecutionDispatchRuntimeStore:
 
         with self._engine.connect() as conn:
             return act_episodes.in_flight(conn, actor=actor, now=now)
+
+    def act_arm_stats(self, *, act_label: str, arm: str) -> tuple[int, int]:
+        from orion.autonomy import act_episodes
+
+        with self._engine.connect() as conn:
+            return act_episodes.arm_stats(conn, act_label=act_label, arm=arm)
 
     def act_control_stats(self, *, act_label: str) -> tuple[int, int]:
         from orion.autonomy import act_episodes

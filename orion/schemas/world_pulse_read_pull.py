@@ -34,15 +34,14 @@ class WorldPulseReadPullRequestV1(BaseModel):
     dispatch_id: str = Field(..., min_length=1, max_length=256)
     # Required for ``act``; ignored for ``check``.
     arm: Literal["treated", "control"] | None = None
-    # The seed the ``check`` returned. ``act`` re-selects; a different seed is reported, not hidden.
-    expected_seed_id: str | None = Field(None, max_length=512)
     correlation: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorldPulseReadPullResultV1(BaseModel):
     """``refusal`` is set only for ``state=refused``: ``disabled`` | ``daily_cap`` |
     ``arousal_strained`` | ``thermal_hot`` | a reading-pipeline gate (``outside_window`` |
-    ``refund_backoff``) | ``no_candidate`` | ``already_pulled`` | ``queue_unavailable``.
+    ``refund_backoff``) | ``no_candidate`` | ``lane_starting`` | ``queue_unavailable``.
+    ``act`` re-selects the seed; the reply names the one actually marked.
     ``retry_after_sec`` is how long the same refusal will hold, from the gate's own clock."""
 
     model_config = ConfigDict(extra="forbid")

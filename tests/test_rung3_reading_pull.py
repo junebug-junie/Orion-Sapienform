@@ -154,6 +154,7 @@ def _pipeline(conn, *, arousal=None, temp=None):
     p.window_start_hour = p.window_end_hour = 0
     p._tz_loaded, p._tz, p.tick_interval_sec = True, timezone.utc, 300.0
     p._bus = None
+    p._startup_reclaim_done = True
     p._pull_arousal_reader = None if arousal is None else SimpleNamespace(
         refresh=AsyncMock(), level=lambda now=None: arousal)
     p._pull_thermal_reader = None if temp is None else (lambda: (temp, 1.0))
@@ -264,6 +265,7 @@ def _worker(monkeypatch, *, posteriors=None, enabled=True):
     store.act_in_flight.return_value = False
     store.act_episode_in_flight.return_value = False
     store.act_control_stats.return_value = (0, 0)
+    store.act_arm_stats.return_value = (0, 0)
     store.load_dispatch_result_by_dispatch_id.return_value = None
     worker._store = store
     return worker
@@ -349,7 +351,9 @@ async def test_treated_pull_precommits_the_checked_seed_then_acts(monkeypatch) -
     monkeypatch.setattr(worker, "_stable_draw", lambda dispatch_id: 0.9)
     out = await worker._send_prepared_candidates(_frame(_read("d:t")))
     assert [(c.op, c.arm) for c in calls] == [("check", None), ("act", "treated")]
-    assert [(r["arm"], r["object_ref"], r["outcome_value"]) for r in rows] == [("treated", "read_seed:s1", None)]
+    # Precommitted with the checked seed in `expected`, object_ref only from the confirmed reply.
+    assert [(r["arm"], r["object_ref"], r["outcome_value"]) for r in rows] == [("treated", None, None)]
+    assert rows[0]["expected"]["checked_object"] == "read_seed:s1"
     assert rows[0]["expected"]["holdback"] == "holdback_drawn:outcome_observable_without_act:object_preexists"
     assert rows[0]["horizon_at"] - rows[0]["decided_at"] == timedelta(seconds=12000)
     worker._store.set_act_episode_object.assert_called_once_with("d:t", "read_seed:s1")
@@ -380,3 +384,171 @@ async def test_a_refusal_at_act_voids_the_decision(monkeypatch) -> None:
     monkeypatch.setattr(worker, "_stable_draw", lambda dispatch_id: 0.9)
     await worker._send_prepared_candidates(_frame(_read("d:v")))
     worker._store.void_act_episode.assert_called_once_with("d:v", "doer_refused:no_candidate")
+
+
+# --- review findings (2026-10-22) ----------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_replayed_act_is_answered_before_the_gates() -> None:
+    """Finding 3: a treated pull that used the cap's last slot, redelivered, must report `started`,
+    not `daily_cap` (which would void a real episode). Fails when gates ran first."""
+    conn = _Conn(head=SEED, prior={"seed_id": "earlier", "pull_arm": "treated"}, pulled_today=8)
+    out = await _pipeline(conn, arousal="strained").pull(_req("act", "treated", "d:r"))
+    assert (out.state, out.seed_id) == ("started", "earlier")
+
+
+@pytest.mark.asyncio
+async def test_no_pull_before_the_lane_startup_reclaim() -> None:
+    """Finding 8: the first tick frees every claimed row; a pull claimed before it would be read twice."""
+    p = _pipeline(_Conn(head=SEED))
+    p._startup_reclaim_done = False
+    out = await p.pull(_req("check"))
+    assert (out.state, out.refusal, out.retry_after_sec) == ("refused", "lane_starting", 300.0)
+
+
+def test_every_refusal_carries_a_hold() -> None:
+    """Finding 4: a refusal with no retry hint cost one RPC per tick."""
+    assert _gates(enabled=False).retry_after_sec == 300.0
+    assert _gates(wallet_reason="outside_window", wallet_retry_sec=None).retry_after_sec == 300.0
+
+
+@pytest.mark.asyncio
+async def test_outside_window_holds_until_the_window_opens() -> None:
+    p = _pipeline(_Conn(head=SEED))
+    p.window_start_hour, p.window_end_hour = 8, 20
+    import scripts.world_pulse_read_pipeline as mod
+
+    async def no_retry(redis, now):
+        return None
+    mod_orig = mod.read_wallet_a_retry_wait
+    mod.read_wallet_a_retry_wait = no_retry
+    try:
+        reason, wait = await p._wallet_gate(None, datetime(2026, 10, 21, 3, 0, tzinfo=timezone.utc))
+    finally:
+        mod.read_wallet_a_retry_wait = mod_orig
+    assert (reason, wait) == ("outside_window", 5 * 3600.0)
+
+
+def test_a_failed_check_holds_the_route(monkeypatch) -> None:
+    worker = _worker(monkeypatch)
+    worker._hold_reading_pull_failure("check_failed")
+    assert worker._log_allocator_preview(_frame(_read()), MOTOR).refusals_by_reason() == {
+        "doer_refused:check_failed": 1}
+
+
+def test_a_started_pull_holds_the_route_on_every_path(monkeypatch) -> None:
+    """Finding 5: information-path and probe pulls write no episode; a started result must hold."""
+    worker = _worker(monkeypatch)
+    worker._log_allocator_preview(_frame(_read()), MOTOR)
+    assert worker._store.act_in_flight.call_args.kwargs["started_within_sec"] == 12000.0
+
+
+def test_queue_act_is_judged_on_its_treated_arm_once_it_has_enough_rows(monkeypatch) -> None:
+    """Finding 1: both arms on one rule. 25 treated episodes at 13 reads, 25 controls at 12: the
+    lane-wide posterior (LB 0.604) would still say proven; the arms say not."""
+    worker = _worker(monkeypatch)
+    worker._store.act_arm_stats.return_value = (25, 13)
+    worker._store.act_control_stats.return_value = (25, 12)
+    out = worker._log_allocator_preview(_frame(_read()), MOTOR)
+    assert out.admitted == ()
+    reason = worker._last_proven_reasons["dispatch:proposal:read_world_pulse:t1"]
+    assert reason.startswith("proven_effect:not_above_reference") and reason.endswith("belief=treated_arm")
+
+
+@pytest.mark.asyncio
+async def test_a_control_rpc_error_leaves_the_row_unconfirmed(monkeypatch) -> None:
+    """Finding 2: no confirmed reply -> object_ref never set, so the row cannot resolve."""
+    worker, calls, rows = _send_worker(monkeypatch, {("check", None): READY})
+
+    async def rpc(bus, req):
+        calls.append(req)
+        if req.op == "check":
+            return READY
+        raise TimeoutError("hub gone")
+
+    worker._read_pull_rpc = rpc
+    monkeypatch.setattr(worker, "_stable_draw", lambda dispatch_id: 0.1)
+    await worker._send_prepared_candidates(_frame(_read("d:e")))
+    assert [r["object_ref"] for r in rows] == [None]
+    worker._store.set_act_episode_object.assert_not_called()
+    worker._store.void_act_episode.assert_not_called()
+    assert worker._reading_pull_hold[1] == "control_failed"
+
+
+# --- the lane: a pulled read is one EXTRA read and every turn is polled ---------------------------
+
+def _lane(seeds_with_turns, pending_new, pulled=()):
+    """A pipeline whose claim_next_seed hands out in-flight seeds first, then new ones."""
+    import scripts.world_pulse_read_pipeline as mod
+
+    p = object.__new__(mod.WorldPulseReadPipeline)
+    p.enabled, p.max_in_flight, p.tick_interval_sec = True, 3, 300.0
+    p.window_start_hour = p.window_end_hour = 0
+    p._tz_loaded, p._tz, p._bus = True, timezone.utc, None
+    p._startup_reclaim_done = True
+    p._pulled_in_flight = set(pulled)
+    order = list(seeds_with_turns) + list(pending_new)
+    started: list[str] = []
+
+    async def claim(conn, *, active_only=False, exclude=()):
+        for sid in order:
+            if sid in exclude:
+                continue
+            if active_only and sid not in seeds_with_turns:
+                continue
+            return SimpleNamespace(seed_id=sid)
+        return None
+
+    async def with_conn(fn):
+        return await fn(None)
+
+    async def read_claimed(seed, redis):
+        started.append(seed.seed_id)
+        return "waiting_resource"
+
+    p._with_conn, p._read_claimed = with_conn, read_claimed
+    for name in ("_reclaim_stale_claimed", "_maybe_enqueue_recent", "_skip_stale_digest_items", "_skip_already_read"):
+        setattr(p, name, AsyncMock())
+    return p, claim, started
+
+
+@pytest.mark.asyncio
+async def test_a_pulled_read_does_not_take_a_lane_slot_and_is_polled(monkeypatch) -> None:
+    """Finding 6. Lane at 3 + 1 pull: all 4 are polled, nothing new starts. Lane at 2 + 1 pull: the
+    lane still starts its 3rd read. Fails on the old loop (max_in_flight claims, pull counted)."""
+    import scripts.world_pulse_read_pipeline as mod
+
+    p, claim, started = _lane(["a", "b", "c", "pulled"], ["new1"], pulled=["pulled"])
+    monkeypatch.setattr(mod, "claim_next_seed", claim)
+    await p.tick()
+    assert sorted(started) == ["a", "b", "c", "pulled"]
+    p, claim, started = _lane(["pulled", "a", "b"], ["new1", "new2"], pulled=["pulled"])
+    monkeypatch.setattr(mod, "claim_next_seed", claim)
+    await p.tick()
+    assert started == ["pulled", "a", "b", "new1"]
+
+
+@pytest.mark.asyncio
+async def test_the_lane_lock_keeps_a_pull_start_and_a_tick_apart() -> None:
+    """Finding 7: _read_claimed keeps per-read state on the instance; two must never interleave."""
+    import asyncio
+    import scripts.world_pulse_read_pipeline as mod
+
+    p = object.__new__(mod.WorldPulseReadPipeline)
+    p._bus = None
+    trace: list[str] = []
+
+    async def body(*, force=False):
+        trace.append("tick:in")
+        await asyncio.sleep(0.01)
+        trace.append("tick:out")
+
+    async def read_claimed(seed, redis):
+        trace.append("pull:in")
+        await asyncio.sleep(0.01)
+        trace.append("pull:out")
+        return "waiting_resource"
+
+    p._tick_unlocked, p._read_claimed = body, read_claimed
+    await asyncio.gather(p.tick(), p._start_pulled(SimpleNamespace(seed_id="s")))
+    assert trace in (["tick:in", "tick:out", "pull:in", "pull:out"], ["pull:in", "pull:out", "tick:in", "tick:out"])

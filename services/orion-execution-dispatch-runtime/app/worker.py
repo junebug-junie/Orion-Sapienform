@@ -21,7 +21,9 @@ from orion.autonomy.act_candidates import (
     act_allocator_candidate,
     act_expectation_reason,
     act_posterior,
+    PROVEN_MIN_N,
     admit_proven,
+    episode_posterior,
     proven_effect,
     refuse_held,
     refuse_in_flight,
@@ -939,12 +941,26 @@ class ExecutionDispatchRuntimeWorker:
             except Exception:
                 logger.warning("act_control_stats_unreadable act=%s", ref.label(), exc_info=True)
                 continue
+            belief_source = "posterior"
+            if ref.object_source == "queue":
+                # Both arms on one rule: once the treated arm has PROVEN_MIN_N resolved rows, the act
+                # is judged on its episode outcomes (resolve_due), not on the lane-wide posterior,
+                # which counts only reads that started work and so is biased high against a control
+                # whose skipped seeds read 0.
+                try:
+                    n_treated, k_treated = self._store.act_arm_stats(act_label=ref.label(), arm="treated")
+                except Exception:
+                    logger.warning("act_treated_stats_unreadable act=%s", ref.label(), exc_info=True)
+                    continue
+                if n_treated >= PROVEN_MIN_N:
+                    post = episode_posterior(n_treated, k_treated)
+                    belief_source = "treated_arm"
             verdict = proven_effect(post, n_control=n_control, control_successes=k_control)
             verdicts[cand.dispatch_id] = verdict
             refs[cand.dispatch_id] = ref
             self._last_proven_reasons[cand.dispatch_id] = (
                 f"proven_effect:{verdict.reason}:n={post.n}:lb={verdict.lower_bound:.3f}:"
-                f"ref={verdict.reference:.3f}:{verdict.reference_source}:control_n={n_control}")
+                f"ref={verdict.reference:.3f}:{verdict.reference_source}:control_n={n_control}:belief={belief_source}")
         allocation, taken = admit_proven(allocation, verdicts)
         for dispatch_id, reason in taken.items():
             self._last_proven[dispatch_id] = (refs[dispatch_id], reason)
@@ -992,10 +1008,17 @@ class ExecutionDispatchRuntimeWorker:
             raise RuntimeError(f"reading_pull_reply_decode_failed:{decoded.error}")
         return WorldPulseReadPullResultV1.model_validate(decoded.envelope.payload)
 
+    # Hold after an RPC that got no answer (Hub down or old): Hub's reading tick, so a dead Hub
+    # costs one timed-out RPC per lane tick, not one per proposal tick.
+    READ_PULL_FAILURE_HOLD_SEC = 300.0
+
     def _hold_reading_pull(self, result: WorldPulseReadPullResultV1) -> None:
-        wait = float(result.retry_after_sec or 0.0)
-        if wait > 0:
-            self._reading_pull_hold = (datetime.now(timezone.utc) + timedelta(seconds=wait), str(result.refusal))
+        wait = float(result.retry_after_sec or 0.0) or self.READ_PULL_FAILURE_HOLD_SEC
+        self._reading_pull_hold = (datetime.now(timezone.utc) + timedelta(seconds=wait), str(result.refusal))
+
+    def _hold_reading_pull_failure(self, why: str) -> None:
+        self._reading_pull_hold = (
+            datetime.now(timezone.utc) + timedelta(seconds=self.READ_PULL_FAILURE_HOLD_SEC), why)
 
     async def _reading_pull_preflight(self, frame, to_send):
         """Check every reading pull about to be decided. Refused -> withheld `doer_refused:<why>`, no
@@ -1017,6 +1040,7 @@ class ExecutionDispatchRuntimeWorker:
                 except Exception as exc:
                     logger.warning("reading_pull_check_failed dispatch_id=%s", c.dispatch_id, exc_info=True)
                     withheld.append((c, f"{self.READ_PULL_REFUSED_PREFIX}:check_failed", f"{type(exc).__name__}"[:80]))
+                    self._hold_reading_pull_failure("check_failed")
                     continue
                 if out.state != "ready" or not out.object_ref:
                     self._hold_reading_pull(out)
@@ -1067,11 +1091,15 @@ class ExecutionDispatchRuntimeWorker:
                 try:
                     out = await self._read_pull_rpc(bus, WorldPulseReadPullRequestV1(
                         op="act", dispatch_id=c.dispatch_id, arm="control",
-                        expected_seed_id=None, correlation={"proposal_id": c.source_proposal_id}))
+                        correlation={"proposal_id": c.source_proposal_id}))
                 except Exception as exc:
                     error = f"{type(exc).__name__}: {exc}"[:300]
                     logger.warning("reading_pull_control_failed dispatch_id=%s", c.dispatch_id, exc_info=True)
                 self._settle_pull_episode(c.dispatch_id, out, error)
+                if out is not None and out.state == "refused":
+                    self._hold_reading_pull(out)
+                elif error:
+                    self._hold_reading_pull_failure("control_failed")
                 logger.info("reading_pull_control dispatch_id=%s state=%s seed=%s refusal=%s",
                             c.dispatch_id, out.state if out else "rpc_error", out.seed_id if out else None,
                             out.refusal if out else error)
@@ -1098,7 +1126,6 @@ class ExecutionDispatchRuntimeWorker:
         try:
             out = await self._read_pull_rpc(bus, WorldPulseReadPullRequestV1(
                 op="act", dispatch_id=candidate.dispatch_id, arm="treated",
-                expected_seed_id=None,
                 correlation={"proposal_id": candidate.source_proposal_id,
                              "decision_id": candidate.source_decision_id, "dispatch_frame_id": frame.frame_id}))
         except Exception as exc:
@@ -1109,6 +1136,8 @@ class ExecutionDispatchRuntimeWorker:
             self._settle_pull_episode(candidate.dispatch_id, out, error)
         if out is not None and out.state == "refused":
             self._hold_reading_pull(out)
+        elif error:
+            self._hold_reading_pull_failure("act_failed")
         settlement = {"state": out.state if out else "rpc_error", "kind": "reading_pull",
                       "seed_id": out.seed_id if out else None, "object_ref": out.object_ref if out else None,
                       "refusal": out.refusal if out else None, "rpc_ms": round(rpc_ms, 1),
@@ -1169,11 +1198,13 @@ class ExecutionDispatchRuntimeWorker:
                 "arm": arm, "path": "proven_effect", "decided_at": now,
                 "horizon_at": now + timedelta(seconds=float(ref.horizon_sec)),
                 "dispatch_frame_id": frame.frame_id,
-                "expected": {"admission": why, "holdback": holdback_why},
+                "expected": {"admission": why, "holdback": holdback_why,
+                             **({"checked_object": checked[c.dispatch_id]} if c.dispatch_id in checked else {})},
                 # Both arms of a queue object are resolved later, the same way, by the object's fate
-                # (act_episodes.resolve_due); the object is the one the doer's check named.
+                # (act_episodes.resolve_due). object_ref is set only from the doer's CONFIRMED reply
+                # (_settle_pull_episode): a lost send or an unmarked control never resolves.
                 "outcome_value": None,
-                "object_ref": checked.get(c.dispatch_id),
+                "object_ref": None,
             }
             try:
                 if not self._store.insert_act_episode(row):
@@ -1219,7 +1250,12 @@ class ExecutionDispatchRuntimeWorker:
             return bool(self._store.act_in_flight(actor=ref.actor, dispatch_kind=item.dispatch_kind,
                                                   target_id=item.target_id,
                                                   # A queue object's actor runs concurrent lane reads.
-                                                  include_open_acts=ref.object_source != "queue")
+                                                  include_open_acts=ref.object_source != "queue",
+                                                  # ...so a started pull holds the route for its
+                                                  # horizon instead, on every path (information,
+                                                  # probe), not only the proven one.
+                                                  started_within_sec=(float(ref.horizon_sec)
+                                                                      if ref.object_source == "queue" else None))
                         # A proven-effect decision (either arm) holds the act for its horizon, so a
                         # held-back act is not simply re-proposed seconds later.
                         or self._store.act_episode_in_flight(actor=ref.actor, now=datetime.now(timezone.utc)))

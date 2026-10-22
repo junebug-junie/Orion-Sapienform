@@ -171,6 +171,13 @@ def reference_rate(n_control: int, successes: int) -> tuple[float, str]:
     return ACT_BINARY_PRIOR_MEAN, "act_prior"
 
 
+def episode_posterior(n: int, successes: int) -> EffectPosterior:
+    """The act's rate from its own resolved episodes (Jeffreys mean, Beta variance): the same
+    estimator reference_rate applies to the control arm, so both arms are read alike."""
+    mean = (successes + 0.5) / (n + 1.0)
+    return EffectPosterior(mean=mean, variance=mean * (1.0 - mean) / (n + 2.0), n=int(n))
+
+
 def kl_bernoulli(p: float, q: float) -> float:
     eps = 1e-9
     p = min(max(p, eps), 1 - eps)

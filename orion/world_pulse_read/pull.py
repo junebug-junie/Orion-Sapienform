@@ -121,6 +121,8 @@ class PullGateInputs:
     arousal_level: Optional[str]
     thermal: Optional[ThermalVerdict]
     now: datetime
+    # Hold for a refusal whose gate has no clock of its own (kill switch): the lane's tick.
+    default_retry_sec: float = 300.0
 
 
 @dataclass(frozen=True)
@@ -137,9 +139,10 @@ def pull_block_reason(inp: PullGateInputs) -> PullGateVerdict:
     """The first closed gate, or open. Unknown arousal / thermal changes nothing (both readers'
     documented rule: unknown is never strained, a dead sensor does not silently remove a capability)."""
     if not inp.enabled:
-        return PullGateVerdict("disabled", None)
+        return PullGateVerdict("disabled", inp.default_retry_sec)
     if inp.wallet_reason is not None:
-        return PullGateVerdict(inp.wallet_reason, inp.wallet_retry_sec)
+        wait = inp.wallet_retry_sec if inp.wallet_retry_sec and inp.wallet_retry_sec > 0 else inp.default_retry_sec
+        return PullGateVerdict(inp.wallet_reason, wait)
     if inp.pulled_today >= max(0, int(inp.daily_cap)):
         _, end = utc_day_bounds(inp.now)
         return PullGateVerdict("daily_cap", max(0.0, (end - inp.now).total_seconds()))

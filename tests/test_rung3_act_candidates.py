@@ -141,6 +141,7 @@ def _worker(monkeypatch, *, enabled: bool = True, in_flight: bool = False, cost:
     store.act_in_flight.return_value = in_flight
     store.act_episode_in_flight.return_value = False
     store.act_control_stats.return_value = (0, 0)
+    store.act_arm_stats.return_value = (0, 0)
     worker._store = store
     return worker
 

@@ -60,12 +60,13 @@ def engine():
     eng.dispose()
 
 
-def _row(eid, arm, obj, decided=T0, horizon_sec=12000):
+def _row(eid, arm, obj, decided=T0, horizon_sec=12000, checked=None):
     return {"episode_id": eid, "act_label": "look:hub.world_pulse_read:artifact_produced", "verb": "look",
             "actor": "hub.world_pulse_read", "signal_id": "artifact_produced", "dispatch_kind": "observe",
             "target_id": "queue:world_pulse_read", "arm": arm, "path": "proven_effect", "decided_at": decided,
             "horizon_at": decided + timedelta(seconds=horizon_sec), "dispatch_frame_id": "f",
-            "expected": {}, "outcome_value": None, "object_ref": obj}
+            "expected": {} if checked is None else {"checked_object": checked},
+            "outcome_value": None, "object_ref": obj}
 
 
 def _act(c, act_id, seed, closed, value, opened=None):
@@ -161,3 +162,46 @@ async def _hub_sql() -> None:
 
 def test_hub_pull_sql_follows_the_lane_order_and_marks_once() -> None:
     asyncio.run(_hub_sql())
+
+
+def test_an_unconfirmed_decision_is_voided_and_old_painting_controls_never_count(engine) -> None:
+    """Review 2026-10-22: a row the doer never confirmed (RPC error) must not resolve as an episode,
+    and #2830's no-object painting control rows (0 by construction) must not enter the control rate."""
+    with engine.begin() as c:
+        act_episodes.ensure_table(c)
+        act_episodes.insert_decision(c, _row("lost", "control", None, checked="read_seed:q"))
+        act_episodes.insert_decision(c, _row("ok", "control", "read_seed:r"))
+        _act(c, "q1", "q", T0 + timedelta(hours=1), 1.0)   # the lane read the unmarked seed anyway
+        paint = {**_row("paint-old", "control", None), "act_label": "make:thought.painting:artifact_produced",
+                 "verb": "make", "actor": "thought.painting", "outcome_value": 0.0}
+        act_episodes.insert_decision(c, paint)
+        got = act_episodes.resolve_due(c, now=T0 + timedelta(seconds=12001))
+        assert [(e, v) for e, _, v in got] == [("ok", 0.0)]
+        lost = c.execute(text("SELECT void_reason, outcome_value FROM substrate_act_episodes "
+                              "WHERE episode_id = 'lost'")).one()
+        assert tuple(lost) == ("unconfirmed_by_doer", None)
+        assert act_episodes.control_stats(c, act_label="make:thought.painting:artifact_produced") == (0, 0)
+        assert act_episodes.arm_stats(c, act_label="look:hub.world_pulse_read:artifact_produced",
+                                      arm="control") == (1, 0)
+
+
+def test_a_started_pull_holds_the_route_in_sql(engine) -> None:
+    """Review 2026-10-22: the store's in-flight SQL sees a started pull on any path."""
+    sys.path.insert(0, str(REPO / "services" / "orion-execution-dispatch-runtime"))
+    from app.store import ExecutionDispatchRuntimeStore
+
+    with engine.begin() as c:
+        c.execute(text("DROP TABLE IF EXISTS substrate_dispatch_results"))
+        c.execute(text("CREATE TABLE substrate_dispatch_results (dispatch_kind text, target_id text, "
+                       "status text, result_json jsonb, created_at timestamptz DEFAULT now())"))
+        c.execute(text("INSERT INTO substrate_dispatch_results VALUES ('observe', 'queue:world_pulse_read', "
+                       "'succeeded', '{\"settlement\": {\"state\": \"started\"}}'::jsonb, now())"))
+    store = ExecutionDispatchRuntimeStore(URI.replace("postgresql://", "postgresql+psycopg2://", 1))
+    kw = dict(actor="hub.world_pulse_read", dispatch_kind="observe", target_id="queue:world_pulse_read",
+              include_open_acts=False)
+    try:
+        assert store.act_in_flight(**kw, started_within_sec=12000.0) is True
+        assert store.act_in_flight(**kw, started_within_sec=None) is False
+    finally:
+        with engine.begin() as c:
+            c.execute(text("DROP TABLE IF EXISTS substrate_dispatch_results"))

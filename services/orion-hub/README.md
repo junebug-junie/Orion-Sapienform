@@ -4202,13 +4202,16 @@ conflicting duplicate timestamps break interpolation. Aggregated vibration is
 always omitted, even if a later live preset enables percussion. LiDAR retains its
 existing calibration gate.
 
-The default **90 source seconds** gap policy is conservative. The captured real
-24h response had 800 returned points from 2758 source rows, spaced about 94–188
-seconds apart, so the default intentionally leaves those intervals silent. Choose
-**5 source minutes** explicitly to interpolate that capture, or another displayed
-limit appropriate to a different window. This is an interpretation of aggregated
-levels, not recovery of the missing measurements. Wider gaps remain silent while
-the playback clock continues. Changing the gap policy stops playback for review.
+The gap policy is a multiple of each series' own **median point spacing**, default
+**2×**. The history API thins every window to about 800 points, so spacing grows
+with the window: live data measured 2026-10-21 was about 94 s (24h), 313 s (3d)
+and 750 s (7d) apart. An earlier fixed 90-second default was shorter than all three
+and left every real window silent. At 2× the normal jitter plays (24h spacing reached
+about 1.7× the median), while a real outage stays silent (the 24h LiDAR series had a
+312-second hole, 3.3×). Choose 1.5×, 4× or 10× explicitly; the info line shows the
+resulting seconds. Interpolation is an interpretation of aggregated levels, not
+recovery of the missing measurements. Wider gaps remain silent while the playback
+clock continues. Changing the gap policy stops playback for review.
 
 **Pause** freezes the cursor and closes audio; **Listen** resumes. **Seek** pauses
 at the selected playback second and clears transient state; press Listen to resume.
@@ -4231,8 +4234,8 @@ Additional deterministic history checks:
 node --test services/orion-hub/static/js/cabinet-sonification-history.test.js
 ```
 
-The existing Cabinet browser eval now also covers real captured history, default
-gap silence, explicit wider-policy audibility in native Web Audio, pause, seek,
+The existing Cabinet browser eval now also covers real captured history, default-policy
+audibility, explicit wider-policy audibility in native Web Audio, pause, seek,
 replay, history hide/reopen, mode separation, failed requests, and exactly one
 existing history fetch per changed window. It mocks 3d/7d with partial data to test
 alignment and missingness; it does not claim a live historical headphone audition.

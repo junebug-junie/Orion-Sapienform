@@ -4,7 +4,7 @@
   const HOLD_MS = 5000;
   const History = typeof module !== 'undefined' && module.exports ? require('./cabinet-sonification-history') : root.OrionCabinetHistory;
   const PRESET = Object.freeze({version: 'cabinet-live-1', smoothingSec: 0.15, deadband: 0,
-    historyGapSec: 90, voices: Object.freeze([
+    historyGapMultiple: 2, voices: Object.freeze([
       Object.freeze({voice: 'magnetic', key: 'cabinet_magnetic_ut', channel: 'magnetic', unit: 'µT', lo: 20, hi: 60, soundLo: 110, soundHi: 440, gain: 0.12, approved: true}),
       Object.freeze({voice: 'lidar', key: 'cabinet_lidar_mm', channel: 'lidar', unit: 'mm', lo: 0, hi: 4000, soundLo: 0.5, soundHi: 4, gain: 0.10, approved: false}),
       Object.freeze({voice: 'vibration', key: 'cabinet_vibration_g', channel: 'imu', unit: '|g−1|', lo: 0, hi: 0.2, onset: 0.10, rearm: 0.06, gain: 0.10, approved: false})
@@ -87,7 +87,7 @@
       this.armed = false; this.generation = 0; this.lastPoll = null; this.payload = null;
       this.muted = new Set(); this.solo = null; this.onset = new Onset(); this.nodes = new Set();
       this.mode = 'live'; this.history = null; this.historyWindow = '24h'; this.historyNote = 'History not loaded';
-      this.positionSec = 0; this.historyAnchor = 0; this.gapSec = preset.historyGapSec; this.rampTargets = new WeakMap();
+      this.positionSec = 0; this.historyAnchor = 0; this.gapMultiple = preset.historyGapMultiple; this.rampTargets = new WeakMap();
       this.targets = []; this.trace = null; this.nextPulse = 0; this.reason = 'Stopped';
     }
     receive(payload) {
@@ -126,13 +126,13 @@
       this.positionSec = Math.max(0, Math.min(History.DURATION_SEC, seconds)); this.update();
     }
     replay() { if (this.mode === 'history') { this.seek(0); return this.listen(); } }
-    setGap(seconds) {
-      if (!History.GAP_OPTIONS.includes(seconds)) return;
+    setGap(multiple) {
+      if (!History.GAP_MULTIPLES.includes(multiple)) return;
       if (this.mode === 'history') this.stop('Gap policy changed — press Listen');
-      this.gapSec = seconds; this.update();
+      this.gapMultiple = multiple; this.update();
     }
     update() {
-      const frame = this.mode === 'history' ? History.frame(this.history, this.playbackSeconds(), this.gapSec, this.preset) : frameFromPayload(this.payload, this.now(), this.preset);
+      const frame = this.mode === 'history' ? History.frame(this.history, this.playbackSeconds(), this.gapMultiple, this.preset) : frameFromPayload(this.payload, this.now(), this.preset);
       this.frame = frame;
       this.targets = mapFrame(frame, this.preset).map(t => this.muted.has(t.voice) || (this.solo && this.solo !== t.voice) ? {...t, enabled: false, gain: 0, reason: 'muted / solo'} : t);
       const def = this.preset.voices.find(v => v.voice === 'vibration');
@@ -228,7 +228,7 @@
     mute(voice, muted) { muted ? this.muted.add(voice) : this.muted.delete(voice); this.update(); }
     setSolo(voice) { this.solo = this.solo === voice ? null : voice; this.update(); }
     startTrace() { this.trace = []; this.update(); }
-    takeTrace() { const data = {preset: this.preset, history: this.history ? {window: this.history.window, boundsSource: this.history.boundsSource, start: this.history.start, end: this.history.end, grainSec: this.history.grainSec, stats: this.history.stats, gapSec: this.gapSec, durationSec: History.DURATION_SEC} : null, records: this.trace || []}; this.trace = null; return data; }
+    takeTrace() { const data = {preset: this.preset, history: this.history ? {window: this.history.window, boundsSource: this.history.boundsSource, start: this.history.start, end: this.history.end, grainSec: this.history.grainSec, stats: this.history.stats, gapMultiple: this.gapMultiple, durationSec: History.DURATION_SEC} : null, records: this.trace || []}; this.trace = null; return data; }
   }
   function mount() {
     const host = document.getElementById('cabinetSonification');
@@ -237,7 +237,7 @@
     const instrument = new Instrument({onChange: () => {
       document.getElementById('cabinetSoundMode').value = instrument.mode;
       document.getElementById('cabinetSoundWindow').value = instrument.historyWindow;
-      document.getElementById('cabinetSoundGap').value = String(instrument.gapSec);
+      document.getElementById('cabinetSoundGap').value = String(instrument.gapMultiple);
       document.getElementById('cabinetSoundSeek').value = instrument.playbackSeconds();
       for (const id of ['cabinetSoundPause', 'cabinetSoundReplay', 'cabinetSoundSeek']) document.getElementById(id).disabled = instrument.mode !== 'history' || !instrument.history;
       const history = instrument.history;
@@ -246,10 +246,10 @@
       document.getElementById('cabinetSoundTimeline').textContent = history ?
         `${instrument.playbackSeconds().toFixed(1)} / 60 s · ${history.compression}× compression · source ${instrument.mode === 'history' ? instrument.frame?.sourceTime || '—' : 'history paused'} · window ${new Date(history.start).toISOString()} → ${new Date(history.end).toISOString()} (${history.boundsSource})` : instrument.historyNote;
       document.getElementById('cabinetSoundHistoryInfo').textContent = history ?
-        `Aggregated at ${history.grainSec ?? 'unknown'} source seconds; magnetic ${stats.returned} returned / ${stats.nRaw ?? 'unknown'} raw points; downsampled: ${stats.downsampled === null ? 'unknown' : stats.downsampled ? 'yes' : 'no'}. Magnetic spacing ${stats.minSpacingSec?.toFixed(1) ?? '—'}–${spacing?.toFixed(1) ?? '—'} s. Gap policy: ${instrument.gapSec} s.${spacing > instrument.gapSec ? ' Wider intervals remain silent; choose a wider policy explicitly if appropriate.' : ''} Aggregated vibration is omitted.` : 'No historical sound is available until the selected window loads.';
+        `Aggregated at ${history.grainSec ?? 'unknown'} source seconds; magnetic ${stats.returned} returned / ${stats.nRaw ?? 'unknown'} raw points; downsampled: ${stats.downsampled === null ? 'unknown' : stats.downsampled ? 'yes' : 'no'}. Magnetic spacing ${stats.minSpacingSec?.toFixed(1) ?? '—'}–${spacing?.toFixed(1) ?? '—'} s. Gap policy: ${instrument.gapMultiple}× median spacing (${History.gapSecFor(history, 'magnetic_ut', instrument.gapMultiple)?.toFixed(0) ?? '—'} s).${spacing > History.gapSecFor(history, 'magnetic_ut', instrument.gapMultiple) ? ' Wider intervals remain silent; choose a wider policy explicitly if appropriate.' : ''} Aggregated vibration is omitted.` : 'No historical sound is available until the selected window loads.';
       status.textContent = instrument.mode + ' · ' + instrument.reason + (instrument.trace ? ` · recording ${instrument.trace.length}/600 frames` : '');
       debug.textContent = JSON.stringify({mappingVersion: PRESET.version, readings: instrument.frame?.readings,
-        bounds: PRESET.voices, targets: instrument.targets, historyStats: instrument.history?.stats, sourceTime: instrument.frame?.sourceTime, gapSec: instrument.gapSec}, null, 2);
+        bounds: PRESET.voices, targets: instrument.targets, historyStats: instrument.history?.stats, sourceTime: instrument.frame?.sourceTime, gapMultiple: instrument.gapMultiple}, null, 2);
       host.querySelectorAll('[data-sound-solo]').forEach(b => b.setAttribute('aria-pressed', String(instrument.solo === b.dataset.soundSolo)));
     }});
     root.OrionCabinetSonification = instrument;

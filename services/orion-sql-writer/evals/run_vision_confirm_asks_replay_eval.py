@@ -158,7 +158,10 @@ def run(live_dsn: str, scratch_dsn: str, now: datetime) -> dict:
         live.execute(text("SET TRANSACTION READ ONLY"))
         vi._check_tables(scratch)  # the scratch db must have every walkway migration, incl. vision_split_v1
         scratch.execute(text("TRUNCATE orion_ask, vision_individual_pair_verdict, vision_individual_sighting, "
-                             "vision_individual, vision_person_attribution CASCADE"))
+                             "vision_individual CASCADE"))
+        scratch_has_guesses = scratch.execute(text("SELECT to_regclass('vision_person_attribution')")).scalar()
+        if scratch_has_guesses:
+            scratch.execute(text("TRUNCATE vision_person_attribution"))
         copied = {
             "vision_individual": _copy(live, scratch, "vision_individual", IND_COLS),
             "vision_individual_sighting": _copy(live, scratch, "vision_individual_sighting", SIGHT_COLS),
@@ -170,7 +173,7 @@ def run(live_dsn: str, scratch_dsn: str, now: datetime) -> dict:
                 live, scratch, "vision_individual_pair_verdict",
                 "individual_a, individual_b, verdict, face_cosine, ask_id, decided_at")
         # Orion's unsure person guesses, so "Is this <name>?" replays too (2026-10-22).
-        if live.execute(text("SELECT to_regclass('vision_person_attribution')")).scalar():
+        if scratch_has_guesses and live.execute(text("SELECT to_regclass('vision_person_attribution')")).scalar():
             copied["vision_person_attribution"] = _copy(
                 live, scratch, "vision_person_attribution",
                 "individual_id, person_label, channel, score, band, model_version, decided_at, revoked_at")

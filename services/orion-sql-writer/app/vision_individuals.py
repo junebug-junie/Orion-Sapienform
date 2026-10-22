@@ -2120,7 +2120,8 @@ def _images(srows, now: datetime, cfg: IndividualsConfig, *, limit: int = 3, fac
 
 
 def _open_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> List[dict]:
-    """Face asks first (their own cap), then the slow 10-sightings rule (its cap)."""
+    """Face asks first (their own cap), then the slow 10-sightings rule (its cap),
+    then "Is this <name>?" (its own cap)."""
     out = _open_face_asks(conn, now, tz, cfg)
     out.extend(_open_sighting_asks(conn, now, tz, cfg))
     out.extend(_open_person_confirm_asks(conn, now, tz, cfg))

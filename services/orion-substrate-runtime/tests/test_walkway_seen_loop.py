@@ -1,7 +1,7 @@
 """Walkway rollups -> "seen on <day>" substrate links for named people (2026-10-18).
 
 Pinned: only existing entity nodes are linked (never created); a copied label links to the
-typed individual it was copied from (same ask), never to everyone with the same name; one day evidence node per (stream, date); re-running adds nothing;
+typed individual of its "same person" group, never to everyone with the same name; one day evidence node per (stream, date); re-running adds nothing;
 no named person = no record. The SQL is also run against a throwaway Postgres.
 
 The store here is the production FalkorSubstrateStore (on a recording client, or a throwaway
@@ -90,7 +90,7 @@ class _Conn:
         sql = str(stmt)
         if "FROM vision_rollup" in sql:
             return _Result(self.days)
-        assert "label_ask_id" in sql, "a copied label resolves through its ask, never the name alone"
+        assert "pair_verdict" in sql, "a copied label resolves through its same-person group, never the name alone"
         return _Result([(c, t) for c, t in self.copied if c in params["ids"]])
 
 
@@ -291,10 +291,16 @@ def test_sql_runs_against_postgres():
     engine = create_engine(f"{PG}{'&' if '?' in PG else '?'}options=-csearch_path%3D{schema}")
     with engine.begin() as conn:
         conn.execute(text("CREATE TABLE vision_individual (individual_id TEXT PRIMARY KEY, stream_id TEXT, "
-                          "label TEXT, label_copied BOOLEAN NOT NULL DEFAULT false, label_ask_id TEXT)"))
-        # a second typed "Sam" (a different person, a different ask) must not be linked
-        conn.execute(text("INSERT INTO vision_individual VALUES ('ind-sam','walkway','Sam',false,'ask-1'), "
-                          "('ind-sam-copy','walkway','Sam',true,'ask-1'), ('ind-sam-2','walkway','Sam',false,'ask-2')"))
+                          "label TEXT, label_copied BOOLEAN NOT NULL DEFAULT false)"))
+        conn.execute(text("CREATE TABLE vision_individual_pair_verdict (individual_a TEXT, individual_b TEXT, "
+                          "verdict TEXT)"))
+        # The copy got its name from a "same person" answer with no name typed (the writer stamps the
+        # verdict's ask, not the typed row's). A second typed "Sam" outside the group is not linked.
+        conn.execute(text("INSERT INTO vision_individual VALUES ('ind-sam','walkway','Sam',false), "
+                          "('ind-mid','walkway',NULL,false), ('ind-sam-copy','walkway','Sam',true), "
+                          "('ind-sam-2','walkway','Sam',false)"))
+        conn.execute(text("INSERT INTO vision_individual_pair_verdict VALUES ('ind-mid','ind-sam','same'), "
+                          "('ind-sam-copy','ind-mid','same'), ('ind-sam-copy','ind-sam-2','different')"))
     sql = (Path(__file__).resolve().parents[3] / "services/orion-sql-db/manual_migration_vision_rollup_v1.sql").read_text()
     with engine.begin() as conn:
         conn.execute(text(sql))

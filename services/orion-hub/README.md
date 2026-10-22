@@ -3008,6 +3008,28 @@ sql-writer (Hub's `DATABASE_URL`). Spec:
 | `HUB_ENERGY_TIMEZONE` | `America/Denver` | Local day boundary for the daily kWh bars (Postgres `AT TIME ZONE` name). |
 | `ORION_ENERGY_STAKES_MAX_AGE_SEC` | `1800` | Snapshot age past which the strip reads stale (and curiosity never holds -- section 4.2.4). |
 
+### Orion Energy tab
+
+`#orion-energy` (iframe: `static/orion-energy.html` + `static/js/orion-energy.js`) shows what
+Orion itself draws -- athena, circe, hecate and the cabinet AC's Shelly plug -- stacked per
+hour / day / week / month / quarter / year, with the RMP house meter as a line on the same
+kWh axis and Orion's share of the house in a second chart. Hovering a period lists each
+source's kWh and how much of the period it was measured, the house kWh and how many RMP
+hours have arrived, the share, and the dollars.
+
+API: `GET /api/energy/orion?grain=day&periods=31` (`scripts/energy_routes.py`). Reads
+`orion_energy_hourly` (sql-writer's rollup), `energy_usage_interval` and the newest pricing
+per interval in `energy_cost_accrued`. Buckets follow `HUB_ENERGY_TIMEZONE` (weeks start
+Monday). Rules:
+
+- The share counts only hours where both Orion's meters and the RMP meter have data, so RMP's
+  ~24 h lag never reads as Orion using the whole house.
+- Orion cost prices each Orion hour at that hour's next-kWh rate -- what Orion adds to the
+  bill under block pricing. Pre-tax. `orion_priced_kwh` says how much of Orion's kWh had a price.
+- Unknown is null: no rows means `orion_kwh: null`, never 0.
+- RMP reports whole kWh per hour, so the hourly share is rough (the tab says so).
+- Not measured: prometheus, the network switch, UPS losses. Per-node history starts 2026-09-22.
+
 API: `GET /api/energy/latest` (stakes, importer, reconcile, `stale`, `as_of`,
 `covered_through`), `GET /api/energy/usage/daily?days=1..90` (`scripts/energy_routes.py`,
 `/static/js/energy-strip.js`). Polls every 60s while `#cabinet` is visible. Needs

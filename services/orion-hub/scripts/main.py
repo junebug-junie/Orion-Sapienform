@@ -76,6 +76,7 @@ from orion.world_pulse_read.concept_search import (
 )
 from scripts.reading_listener import ReadingListener
 from scripts.world_pulse_read_pull_listener import WorldPulseReadPullListener
+from scripts.retro_leisure_listener import RetroLeisureListener
 from scripts.curiosity_introspect_listener import CuriosityIntrospectListener
 from scripts.orion_day_introspect_listener import SEARCH_COLLECTION as ORION_DAY_SEARCH_COLLECTION, OrionDayIntrospectListener
 from scripts.node_history_introspect_listener import NodeHistoryIntrospectListener
@@ -353,6 +354,7 @@ collapse_mirror_chat_reply_handler = None
 curiosity_investigation: Optional[CuriosityInvestigation] = None
 reading_listener = None
 world_pulse_read_pull_listener = None
+retro_leisure_listener = None
 
 
 def _cabinet_temp_reading() -> tuple[float | None, float | None]:
@@ -482,7 +484,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global reading_turn_listener, reading_listener, world_pulse_read_pull_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, world_pulse_read_pull_listener, retro_leisure_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -861,6 +863,14 @@ async def startup_event():
                 world_pulse_read_pipeline, world_pulse_read_pipeline._source_ref,
             )
             await world_pulse_read_pull_listener.start(bus)
+            # Orion plays Zelda (section E): the motor allocator's leisure start. The runner is Lane
+            # B's scripts/retro_leisure.py object on app.state; until it exists every start is
+            # refused `runner_unavailable` (never a fake session).
+            retro_leisure_listener = RetroLeisureListener(
+                lambda: getattr(app.state, "retro_leisure_runner", None),
+                world_pulse_read_pipeline._source_ref,
+            )
+            await retro_leisure_listener.begin(bus)
             # orion-introspect `curiosity` tool: the Curiosity tab's own run
             # join, same pool and the same graph reader the routes build.
             curiosity_introspect_listener = CuriosityIntrospectListener(
@@ -1696,7 +1706,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global reading_turn_listener, reading_listener, world_pulse_read_pull_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, world_pulse_read_pull_listener, retro_leisure_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -1777,6 +1787,9 @@ async def shutdown_event() -> None:
     if world_pulse_read_pull_listener is not None:
         await world_pulse_read_pull_listener.stop()
         world_pulse_read_pull_listener = None
+    if retro_leisure_listener is not None:
+        await retro_leisure_listener.stop()
+        retro_leisure_listener = None
     if curiosity_introspect_listener is not None:
         await curiosity_introspect_listener.stop()
         curiosity_introspect_listener = None

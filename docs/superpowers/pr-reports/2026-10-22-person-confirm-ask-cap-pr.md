@@ -71,7 +71,13 @@ None. The change is Python logic and one env key, with no new dependencies. The 
 
 ## Review findings fixed
 
-See the PR conversation.
+- Finding: the eval emptied the person-guess table on the scratch database without checking that it exists, so a scratch database without that migration would crash.
+  - Fix: empty and copy the table only when it exists on scratch.
+  - Evidence: eval rerun on live data: OK, 6 asks would open.
+- Finding: the `_open_asks` docstring did not mention the third question type.
+  - Fix: updated the docstring.
+  - Evidence: commit 2.
+- Review found no correctness bugs.
 
 ## Restart required
 
@@ -89,6 +95,6 @@ After the deploy, check the live path: `SELECT count(*) FROM orion_ask WHERE sou
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2841
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

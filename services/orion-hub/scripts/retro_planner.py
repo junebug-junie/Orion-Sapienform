@@ -349,7 +349,9 @@ def build_zelda_prompt(decision: dict, atlas: Optional[dict], history: Any) -> s
         'You are Orion, playing The Legend of Zelda (NES) through a navigator that turns one goal into input.',
         'Choose ONE goal for the next 3-30 seconds from the observed facts only. Do not use outside knowledge of the game map.',
         f'Why a decision now: {why}.',
-        'Room map (22 rows x 32 tiles of 8 px):',
+        'Room map (22 rows x 32 tiles of 8 px, row 0 = top of the play area; tile x = column, y = row): '
+        '# blocked, . walkable, x blocked (Link bumped into it here before), C a cave you entered, '
+        '? terrain not known, L Link, 1-9/a/b enemy slot, d item drop.',
         render_room_map(obs, atlas),
         'Observation (zelda-1-ram-v1): ' + json.dumps(observation_facts(obs), separators=(',', ':')),
         'Atlas (only what you observed before):',

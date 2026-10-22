@@ -481,8 +481,9 @@ def test_session_end_carries_retro_atlas_record_and_none_for_absent(world):
 
 
 def test_human_frames_in_the_record_mark_the_session_and_spare_the_game(world):
-    world.retro.atlas_record = dict(rooms_new=1, deaths=0, controller_frames={'human:0': 40, 'orion:0': 3000})
+    world.retro.atlas_record = dict(rooms_new=1, deaths=0,
+                                    frames_by_controller=dict(human=40, script=0, leisure=3000, none=0))
     out = asyncio.run(L.run_leisure_session(config(RETRO_LEISURE_SESSION_MAX_SEC=60), deps=world.deps))
-    assert out.ended.human_may_be_in_control is True and out.ended.controller_frames['human:0'] == 40
+    assert out.ended.human_may_be_in_control is True and out.ended.controller_frames['human'] == 40
     ops = [p.rsplit('/', 1)[-1] for m, p, _ in world.retro.calls if m == 'POST']
     assert 'stop' not in ops and 'save' not in ops

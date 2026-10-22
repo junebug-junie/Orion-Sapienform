@@ -46,7 +46,7 @@ class RetroSessionEnded:
     # not report the value -- never 0 -- so the summary cannot claim "0 new rooms" it never saw.
     rooms_new: Optional[int] = None
     deaths: Optional[int] = None
-    controller_frames: Optional[dict] = None   # {controller tag: frames}, verbatim from Retro
+    controller_frames: Optional[dict] = None   # Retro's frames_by_controller {human, script, leisure, none}
 
     @property
     def duration_sec(self) -> float:
@@ -56,10 +56,11 @@ class RetroSessionEnded:
         return asdict(self) | {'duration_sec': round(self.duration_sec, 1)}
 
 
-# Retro's per-controller frame counts inside the atlas session record. PROVISIONAL: Lane A is
-# adding the tags now; this key and HUMAN_TAG_PREFIX change in one place when it lands.
-CONTROLLER_FRAMES_KEY = 'controller_frames'
-HUMAN_TAG_PREFIX = 'human'
+# Retro's per-controller frame counts inside the atlas session record
+# (services/orion-retro/app/zelda/atlas.py count_frame: human | script | leisure | none).
+CONTROLLER_FRAMES_KEY = 'frames_by_controller'
+HUMAN_TAG = 'human'
+RECORD_COUNTS = ('rooms_new', 'deaths')
 
 
 def atlas_session_fields(session_status: object) -> dict:
@@ -81,4 +82,20 @@ def human_held_frames(controller_frames: Optional[dict]) -> Optional[bool]:
     """True/False from Retro's counts; None when Retro sent none (callers treat None as 'maybe')."""
     if controller_frames is None:
         return None
-    return any(v > 0 for k, v in controller_frames.items() if k.startswith(HUMAN_TAG_PREFIX))
+    return controller_frames.get(HUMAN_TAG, 0) > 0
+
+
+def record_delta(start: dict, end: dict) -> dict:
+    """What happened between two atlas records of the SAME Retro session (a co-play handoff
+    starts mid-session; Retro's counts are session-wide). A field missing at either end, or one
+    that went down (a save load resets Retro's record), is None: unknown, never 0."""
+    def diff(a, b):
+        return b - a if isinstance(a, int) and isinstance(b, int) and b >= a else None
+    out = {k: diff(start.get(k), end.get(k)) for k in RECORD_COUNTS}
+    fa, fb = start.get('controller_frames'), end.get('controller_frames')
+    if isinstance(fa, dict) and isinstance(fb, dict):
+        frames = {k: diff(fa.get(k, 0), v) for k, v in fb.items()}
+        out['controller_frames'] = None if any(v is None for v in frames.values()) else frames
+    else:
+        out['controller_frames'] = None
+    return out

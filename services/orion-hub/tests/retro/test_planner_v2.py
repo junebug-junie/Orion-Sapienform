@@ -325,6 +325,7 @@ def test_retro_terrain_is_the_map_and_entities_overlay_it(planner):
     assert rows[0][3:] == '#' * 32 and rows[2][3 + 8] == 'C' and rows[3][3 + 4] == 'x'
     assert rows[11][3 + 15] == 'L' and rows[5][3 + 6] == '2' and 'walls not included' not in prompt
     assert '"terrain"' not in prompt                           # sent once, as the map
+    assert '# blocked, . walkable, x blocked' in prompt and 'C a cave you entered' in prompt
     obs['terrain'] = ['bad']
     assert 'walls not included' in planner.render_room_map(obs, None)   # malformed: say unknown
 
@@ -347,8 +348,9 @@ def _coplay_app(tmp_path, monkeypatch, frames, sink=True):
             goal=dict(decision_id=f'7:{world.polls}', goal=dict(kind='exit', dir='N')),
             last_finished=dict(decision_id=f'7:{world.polls - 1}', verdict='met' if world.polls % 2 else 'refuted',
                                outcome='prediction_met')))
-        rec = dict(rooms_new=4, deaths=1)
-        if frames is not None: rec['controller_frames'] = frames
+        # Retro's record is session-wide and grows each poll: the handoff must report the delta.
+        rec = dict(rooms_new=10 + 2 * world.polls, deaths=world.polls // 3)
+        if frames is not None: rec['frames_by_controller'] = frames(world.polls)
         return dict(session_id='a' * 36, state='running', game_id='the-legend-of-zelda', loaded_save=None,
                     scripted=[policy] if world.polls < 4 else [],
                     zelda=dict(atlas=dict(lineage_id='lin-c', session=rec)))
@@ -385,13 +387,17 @@ def _wait(cond):
 
 
 def test_coplay_end_reaches_the_sink_with_atlas_record(tmp_path, monkeypatch):
-    app, world = _coplay_app(tmp_path, monkeypatch, frames={'human:0': 120, 'orion:0': 3000})
+    # The human played 500 frames before the handoff and 40 more during it.
+    app, world = _coplay_app(tmp_path, monkeypatch, frames=lambda n: dict(
+        human=500 + (40 if n >= 3 else 0), script=100 * n, leisure=0, none=0))
     with TestClient(app) as c:
         assert c.post('/api/retro/sessions/' + 'a' * 36 + '/scripted', json=HANDOFF, headers=H).status_code == 200
         assert _wait(lambda: world.ended)
     e = world.ended[0]
     assert (e.session_id, e.leisure_id, e.controller, e.lineage_id) == ('a' * 36, None, 'co_play', 'lin-c')
-    assert e.rooms_new == 4 and e.deaths == 1 and e.controller_frames == {'human:0': 120, 'orion:0': 3000}
+    # First poll: rooms 12, deaths 0; last poll (policy gone, poll 4): rooms 18, deaths 1.
+    assert e.rooms_new == 6 and e.deaths == 1
+    assert e.controller_frames == {'human': 40, 'script': 300, 'leisure': 0, 'none': 0}
     assert e.human_may_be_in_control is True and e.decisions_planned == 3 and sum(e.verdicts.values()) == 3
 
 
@@ -405,7 +411,8 @@ def test_coplay_unknown_counts_are_none_and_read_as_maybe_human(tmp_path, monkey
 
 
 def test_coplay_orion_only_frames_and_no_sink(tmp_path, monkeypatch):
-    app, world = _coplay_app(tmp_path, monkeypatch, frames={'human:0': 0, 'orion:0': 900})
+    # 500 human frames BEFORE the handoff do not make this handoff "human".
+    app, world = _coplay_app(tmp_path, monkeypatch, frames=lambda n: dict(human=500, script=100 * n, leisure=0, none=0))
     with TestClient(app) as c:
         c.post('/api/retro/sessions/' + 'a' * 36 + '/scripted', json=HANDOFF, headers=H)
         assert _wait(lambda: world.ended)
@@ -421,3 +428,13 @@ def test_coplay_orion_only_frames_and_no_sink(tmp_path, monkeypatch):
         c.post('/api/retro/sessions/' + 'a' * 36 + '/scripted', json=dict(HANDOFF, cognition=False), headers=H)
         import time as _t; _t.sleep(0.1)
     assert world3.polls == 0
+
+
+
+def test_record_delta_is_none_when_retro_reset_or_did_not_report():
+    from scripts.retro_session_end import record_delta
+    a = dict(rooms_new=5, deaths=1, controller_frames=dict(human=10, script=0))
+    b = dict(rooms_new=2, deaths=1, controller_frames=dict(human=5, script=9))   # a save load reset
+    d = record_delta(a, b)
+    assert d['rooms_new'] is None and d['deaths'] == 0 and d['controller_frames'] is None
+    assert record_delta(dict(rooms_new=None), dict(rooms_new=3))['rooms_new'] is None

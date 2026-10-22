@@ -80,7 +80,7 @@ def create_router(config, presence=None):
         key = (sid, policy['port'], policy['epoch'])
         if key in watching: return
         watching.add(key)
-        coplay_counts.pop(sid, None)   # counts are per handoff
+        coplay_counts[key] = {}
         task = asyncio.create_task(watch_coplay(app, sid, policy['port'], policy['epoch'], time.time()))
         background.add(task); task.add_done_callback(background.discard)
 
@@ -120,10 +120,12 @@ def create_router(config, presence=None):
         """Follow one browser cognition handoff until Retro ends it (stop, takeover, expiry,
         disconnect), then hand a RetroSessionEnded to the registered sink. Zelda only."""
         from scripts import retro_planner
-        from scripts.retro_session_end import RetroSessionEnded, atlas_session_fields, human_held_frames
+        from scripts.retro_session_end import (RetroSessionEnded, atlas_session_fields, human_held_frames,
+                                               record_delta)
         key = (sid, port, epoch)
-        history, goals, last, failures, reason = [], set(), None, 0, 'policy_ended'
+        history, goals, last, first, failures, reason = [], set(), None, None, 0, 'policy_ended'
         try:
+          try:
             while True:
                 await asyncio.sleep(COPLAY_POLL_SEC)
                 try:
@@ -138,7 +140,9 @@ def create_router(config, presence=None):
                 if status != 200 or not isinstance(state, dict) or state.get('state') not in ('running', 'paused'):
                     reason = 'session_ended'; break
                 last = state
-                policy = next((p for p in state.get('scripted') or [] if p.get('port') == port and p.get('epoch') == epoch), None)
+                if first is None: first = atlas_session_fields(state)   # Retro's record at handoff
+                policy = next((p for p in state.get('scripted') or []
+                               if isinstance(p, dict) and p.get('port') == port and p.get('epoch') == epoch), None)
                 if policy is None:
                     done = history[-1].get('outcome', '') if history else ''
                     reason = done[len('stopped:'):] if done.startswith('stopped:') else 'policy_ended'
@@ -151,12 +155,13 @@ def create_router(config, presence=None):
                     goals.add(cognition['goal']['decision_id'])
             if last is None:
                 return  # never saw a Zelda cognition policy: nothing observed, nothing to record
-            record = atlas_session_fields(last)
+            # Retro's counts are session-wide; report only what happened during this handoff.
+            record = record_delta(first, atlas_session_fields(last))
             held = human_held_frames(record['controller_frames'])
             verdicts = {'met': 0, 'refuted': 0, 'unknown': 0}
             for h in history:
                 v = h.get('verdict'); verdicts[v if v in verdicts else 'unknown'] += 1
-            counts = coplay_counts.get(sid, {})
+            counts = coplay_counts.get(key, {})
             atlas = ((last.get('zelda') or {}).get('atlas') or {}) if isinstance(last.get('zelda'), dict) else {}
             ended = RetroSessionEnded(
                 session_id=sid, lineage_id=atlas.get('lineage_id') if isinstance(atlas, dict) else None,
@@ -167,9 +172,12 @@ def create_router(config, presence=None):
                 # A human handed off and can take back at any time: unknown counts mean "maybe".
                 human_may_be_in_control=held is not False, verdicts=verdicts, **record)
             await emit_session_end(app, ended)
+          except Exception:   # never die silently: an unretrieved task exception logs nothing
+            import logging
+            logging.getLogger('orion-hub.retro').warning('retro_coplay_watch_failed sid=%s', sid, exc_info=True)
         finally:
             watching.discard(key)
-            coplay_counts.pop(sid, None)
+            coplay_counts.pop(key, None)
 
     async def plan_v2(path, data, state, policy, c):
         """Zelda co-play decision (spec D). No goal on any failure; Retro's motor holds still."""
@@ -177,6 +185,11 @@ def create_router(config, presence=None):
         from scripts import retro_planner
         cognition = policy['cognition']
         sid = path.rsplit('/', 1)[0]
+        handoff_key = (sid.rsplit('/', 1)[-1], data['port'], data['expected_epoch'])
+        def bump(name):
+            # Only for a handoff being watched; keyed per grant so a newer handoff never mixes in.
+            if handoff_key in coplay_counts:
+                coplay_counts[handoff_key][name] = coplay_counts[handoff_key].get(name, 0) + 1
         if sid not in histories:
             histories.clear()  # one game at a time: keep only the current session's history
             histories[sid] = deque(maxlen=retro_planner.HISTORY_LIMIT)
@@ -191,14 +204,14 @@ def create_router(config, presence=None):
         try:
             goal = await retro_planner.plan_zelda(config, decision, atlas, list(history))
         except retro_planner.PlannerShed as exc:
-            coplay_counts.setdefault(sid.rsplit('/', 1)[-1], {}).update(sheds=coplay_counts.get(sid.rsplit('/', 1)[-1], {}).get('sheds', 0) + 1)
+            bump('sheds')
             return JSONResponse(exc.public(), status_code=503,
                                 headers={'Retry-After': str(int(max(1, exc.details.get('retry_after_sec') or 30)))})
         except retro_planner.PlannerBusy as exc:
             return JSONResponse(exc.public(), status_code=429)
         except retro_planner.PlannerRejected as exc:
             if exc.reason not in ('decision_pending', 'observation_unknown'):
-                coplay_counts.setdefault(sid.rsplit('/', 1)[-1], {}).update(rejections=coplay_counts.get(sid.rsplit('/', 1)[-1], {}).get('rejections', 0) + 1)
+                bump('rejections')
             return JSONResponse(exc.public(), status_code=409 if exc.reason in ('decision_pending', 'observation_unknown') else 422)
         except retro_planner.PlannerError as exc:
             return JSONResponse(exc.public(), status_code=503)

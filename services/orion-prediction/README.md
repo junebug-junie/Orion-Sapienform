@@ -56,16 +56,22 @@ skips cycles longer than a day: STL at the weekly period costs ~26 s per fit vs 
 Every model that beat the baseline somewhere in the backtest (plus whatever serves) also forecasts at
 every issue, unserved, into `prediction_shadow_forecast`; the reducer scores those rows like the served
 ones. Per model and horizon, `app/live.py` pairs them with the baseline forecast for the same origin,
-keeps only origins one horizon apart (independent), and with >= 20 of them gives a verdict: `better`,
-`worse` (p < 0.05 either way), `unclear`, or `pending`. The gate then:
+keeps one origin per horizon-long time block (independent, anchored to the clock), and with >= 20 of
+them gives a verdict: `better` (Holm-adjusted p < 0.05 across every model x horizon tested), `worse`
+(p < 0.05), `unclear`, or `pending`. Each horizon looks back long enough to collect 20 (25 horizons,
+at least 7 days: 24 h -> 25 days); shadow rows are kept 35 days. The gate then:
 
 - never serves a model that is live-`worse`;
-- serves a live-`better` model even on a borderline backtest;
-- otherwise uses the backtest: p < 0.05 to start serving, p < 0.10 to keep serving (no flicker).
+- serves a live-`better` model that also beats the baseline in the backtest, even on a borderline p;
+- otherwise uses the backtest: p < 0.05 to start serving, p < 0.10 to keep serving (no flicker);
+- ranks live winners before backtest-only winners.
+
+Shadow models are fitted after the served forecast is stored and saved in their own transaction, so
+they never delay or cost it; failures show in `/health` (`shadow_failed`).
 
 `worse_than_baseline` alerts on the SERVING model's own live verdict. `/live` lists every verdict.
 Cost: ~13 s of CPU per 5-minute issue with four contenders (measured 2026-10-22). Rollback lever:
-`PREDICTION_SHADOW_ENABLED=false`.
+`PREDICTION_SHADOW_ENABLED=false` -- which also turns off `worse_than_baseline` (it reads live verdicts).
 
 ## Grading the overheat warning
 

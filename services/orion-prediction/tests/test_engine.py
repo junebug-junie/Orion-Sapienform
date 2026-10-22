@@ -92,10 +92,21 @@ class FakeStore:
             raise ConnectionError("pg hiccup")
         self.insert_forecasts(forecast_rows)
         self.insert_exceedances(exceedance_rows)
+
+    fail_shadow = False
+
+    def insert_shadow(self, rows):
+        if self.fail_shadow:
+            raise ConnectionError("shadow table missing")
         have = {(r["model"], r["origin_ts"], r["horizon_min"]) for r in self.shadow}
-        for r in shadow_rows or ():
+        for r in rows:
             if (r["model"], r["origin_ts"], r["horizon_min"]) not in have:
                 self.shadow.append({**r, "shadow_id": next(self._ids), "scored_at": None, "abs_error": None})
+
+    def prune_shadow(self, sid, before):
+        n = len(self.shadow)
+        self.shadow = [r for r in self.shadow if r["target_ts"] >= before]
+        return n - len(self.shadow)
 
     def due_shadow(self, sid, before, limit=5000):
         return [r for r in self.shadow if r["scored_at"] is None and r["target_ts"] < before][:limit]
@@ -541,3 +552,32 @@ def test_worse_than_baseline_judges_the_model_that_serves_on_its_live_record():
     assert "5 min window_average_1h" in eng.alerts_for(spec, end, live, end)["worse_than_baseline"]
     live = {"shadow": {"window_average_1h@60": worse}}          # losing where it does NOT serve: no alert
     assert "worse_than_baseline" not in eng.alerts_for(spec, end, live, end)
+
+
+
+def test_a_shadow_store_failure_never_costs_the_served_forecast():
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.temp"]
+    st.served = __import__("dataclasses").replace(st.served, shadow=("window_average_1h",))
+    store.fail_shadow = True
+    store.raw += [(end + timedelta(seconds=k), 28.0) for k in range(0, 300, 30)]
+    n = len(store.forecasts)
+    clock.t = end + timedelta(minutes=5, seconds=90)
+    asyncio.run(eng.tick(_sync))
+    assert len(store.forecasts) > n and "*" in st.shadow_failed
+
+
+def test_alert_formats_a_worse_verdict_without_a_ratio():
+    from app.backtest import Selection
+    reg, spec, s, store, end = _setup()
+    eng = _engine(reg, store, Clock(end), [])
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.temp"]
+    st.served = __import__("dataclasses").replace(
+        st.served, selection=Selection({5: "window_average_1h", 60: "naive", 360: "naive"},
+                                       {5: "naive", 60: "naive", 360: "naive"}, False, {}))
+    v = {"verdict": "worse", "rel_mae": None, "n_independent": 30, "p_worse": 0.001}
+    assert "worse than the baseline" in eng.alerts_for(spec, end, {"shadow": {"window_average_1h@5": v}}, end)["worse_than_baseline"]

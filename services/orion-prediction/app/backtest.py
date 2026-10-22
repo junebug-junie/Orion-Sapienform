@@ -266,7 +266,8 @@ def select_champion(results: dict[str, BacktestResult], spec: SeriesSpec, step_m
     """Per horizon, a candidate serves when (in order):
 
     - its LIVE verdict (app/live.py, shadow forecasts vs the baseline) is ``worse``: never;
-    - its live verdict is ``better``: yes, whatever the backtest says;
+    - its live verdict is ``better`` (Holm-adjusted) AND it beats the baseline in the backtest
+      (rel_mae < 1): yes, even on a borderline backtest p -- live can promote, not overrule a loss;
     - otherwise the backtest decides: rel_mae < 1, enough windows, and a paired win at p < GATE_ALPHA --
       or p < STAY_ALPHA if it already serves this horizon (hysteresis: a p hovering at 0.05 must not
       flip the served model every selection; live 2026-10-21/22: direct_arx @15 min p 0.041..0.070).
@@ -311,15 +312,18 @@ def select_champion(results: dict[str, BacktestResult], spec: SeriesSpec, step_m
                                and m["p_win"] is not None and m["p_win"] < alpha
                                and m["n_paired"] >= max(MIN_PATHS + 1, math.ceil(MIN_WINDOW_SHARE * ref_n)))
             verdict = lv["verdict"] if lv else "pending"
+            live_win = (verdict == "better" and m["rel_mae"] is not None and m["rel_mae"] < 1.0
+                        and lv.get("rel_mae") is not None)
             if verdict == "worse":
                 m["passed"], m["passed_by"] = False, None
-            elif verdict == "better":
+            elif live_win:
                 m["passed"], m["passed_by"] = True, "live"
             else:
                 m["passed"], m["passed_by"] = backtest_ok, ("backtest" if backtest_ok else None)
             if m["passed"]:
-                # Rank by live error where live has spoken, else by the backtest.
-                winners[name] = lv["rel_mae"] if verdict == "better" and lv.get("rel_mae") else m["rel_mae"]
-        assignment[hm] = min(winners, key=lambda n: (winners[n], n)) if winners else best_base
+                # One ordering, two tiers: proven-live winners first (by live error), then backtest-only
+                # winners (by backtest error) -- a backtest-only model can never unseat a live winner.
+                winners[name] = (0, lv["rel_mae"]) if live_win else (1, m["rel_mae"])
+        assignment[hm] = min(winners, key=lambda n: (*winners[n], n)) if winners else best_base
     served_baseline = all(v in BASELINES for v in assignment.values())
     return Selection(assignment, baseline_assignment, served_baseline, metrics)

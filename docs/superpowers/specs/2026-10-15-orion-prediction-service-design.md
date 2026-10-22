@@ -38,8 +38,11 @@ live (0.922x over 213 scored forecasts), then flickered off at p 0.054-0.070. Tw
 p cut-off on a noisy number, and no live record for anything not served. Contenders (beat the baseline
 somewhere in the backtest, or serving) now forecast in the shadow every issue; `app/live.py` turns the
 scored shadow rows into per-horizon live verdicts (time-thinned to independent pairs, >= 20, overlap-
-aware paired test both ways). Gate: live-worse never serves, live-better serves, else backtest with
-hysteresis (enter p < 0.05, stay p < 0.10). GATE_VERSION 3 forces a reselect on deploy. The
+aware paired test both ways; "better" Holm-corrected across the contender x horizon family, since an
+uncorrected 0.05 promoted a null model in ~1/3 of selections). Gate: live-worse never serves, live-better
+serves only if it also beats the baseline in the backtest, else backtest with hysteresis (enter
+p < 0.05, stay p < 0.10); live winners rank first. Per-horizon look-back = max(7 d, 25 horizons) so the
+24 h horizon can reach a verdict; shadow rows kept 35 days. GATE_VERSION 3 forces a reselect on deploy. The
 worse_than_baseline alert now judges the serving model's own live record instead of 7 days of champion
 rows (which kept alerting on a pick already dropped).
 

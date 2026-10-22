@@ -155,6 +155,7 @@ async def health() -> dict[str, Any]:
                 "last_input_ts": st.last_input_ts.isoformat() if st.last_input_ts else None,
                 "alerts": st.alerts,
                 "change_events": st.events,
+                "shadow": list(sv.shadow) if sv else [], "shadow_failed": st.shadow_failed,
             }
     return {"ok": e is not None and _last_tick["ok"] is not False, "service": _settings.service_name,
             "enabled": _settings.enabled, "publish_enabled": _settings.publish_enabled,

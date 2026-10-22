@@ -43,7 +43,7 @@ from app.backtest import (
 )
 from app.events import adopt_after, with_events
 from app.grading import grade
-from app.live import verdicts as live_verdicts
+from app.live import RETENTION as SHADOW_RETENTION, verdicts as live_verdicts, window_for
 from app.frame import covariate_series, floor_ts, mask_windows, to_grain, train_ready, training_slice
 from app.models import BASELINES, build_models, split_seasonalities
 from app.series import Registry, Seasonality, SeriesSpec
@@ -116,6 +116,7 @@ class SeriesState:
     last_tick_error: str | None = None
     last_input_ts: datetime | None = None
     events: dict = field(default_factory=dict)   # with_events summary, for /health
+    shadow_failed: dict = field(default_factory=dict)   # contender -> last error (last issue)
 
 
 class Engine:
@@ -278,6 +279,8 @@ class Engine:
         results = {name: run_backtest(series, spec, name, lambda u, n=name: build_models(spec, u)[n],
                                       self.backtest_windows, step, actuals=actuals, covariates=covariates)
                    for name in names}
+        if self.shadow_enabled and hasattr(self.store, "prune_shadow"):
+            self.store.prune_shadow(spec.series_id, now - SHADOW_RETENTION)
         live = self.live_verdicts(spec, now) if self.shadow_enabled else {}
         incumbent = st.served.selection.assignment if st.served is not None else {}
         sel = select_champion(results, spec, self.backtest_step_min, live=live, incumbent=incumbent)
@@ -347,7 +350,14 @@ class Engine:
         return tuple(sorted(out))
 
     def live_verdicts(self, spec: SeriesSpec, now: datetime) -> dict:
-        return live_verdicts(self.store.shadow_pairs(spec.series_id, now - LIVE_WINDOW))
+        """Cached per series per grain bucket: inputs only change when a bucket is scored."""
+        key = (spec.series_id, self.latest_complete_bucket(spec, now))
+        cache = self.__dict__.setdefault("_live_cache", {})
+        if key not in cache:
+            since = now - max(window_for(hm) for hm in spec.horizons_min)
+            cache.clear()
+            cache[key] = live_verdicts(self.store.shadow_pairs(spec.series_id, since), now=now)
+        return cache[key]
 
     def score_shadow(self, spec: SeriesSpec, now: datetime) -> int:
         cutoff = self.latest_complete_bucket(spec, now) + pd.Timedelta(minutes=spec.grain_min)
@@ -366,6 +376,31 @@ class Engine:
         self.store.write_shadow_scores(out)
         return len(out)
 
+    def build_shadow(self, spec: SeriesSpec, built: dict, origin: pd.Timestamp, now: datetime) -> tuple[list, dict]:
+        """Shadow rows for every contender, AFTER the served forecast is stored: reuse served paths,
+        fit the rest; a failing or non-finite model is reported, never stored, never served."""
+        served = self.state[spec.series_id].served
+        zoo = build_models(spec, list(served.usable))
+        rows, failed = [], {}
+        for name in served.shadow:
+            path = built["paths"].get(name)
+            if path is None:
+                try:
+                    path = zoo[name].forecast(built["y"], spec.max_horizon_steps, built["train"].index, built["X"])
+                except Exception as exc:  # noqa: BLE001
+                    failed[name] = f"{type(exc).__name__}: {exc}"[:200]
+                    continue
+            for hm in spec.horizons_min:
+                v = float(path[spec.steps(hm) - 1])
+                if not np.isfinite(v):
+                    failed[name] = "non-finite forecast"
+                    continue
+                rows.append({"series_id": spec.series_id, "model": name, "issued_at": now,
+                             "origin_ts": origin.to_pydatetime(),
+                             "target_ts": (origin + pd.Timedelta(minutes=hm)).to_pydatetime(),
+                             "horizon_min": hm, "point": v})
+        return rows, failed
+
     # --- issue ----------------------------------------------------------------------------
     def build_forecast(self, spec: SeriesSpec, series: pd.Series, origin: pd.Timestamp, now: datetime) -> dict:
         """Champion + baseline rows and the publishable payload. Refuses stale input outright: a
@@ -383,7 +418,7 @@ class Engine:
             raise RuntimeError(f"training view is {filled:.0%} gaps")
         h = spec.max_horizon_steps
         zoo = build_models(spec, list(served.usable))
-        needed = sel.models_needed() | set(served.shadow)
+        needed = sel.models_needed()
         X = None
         if any(zoo[n].uses_covariates for n in needed):
             cov = self.load_covariates(spec, train.index)
@@ -438,14 +473,9 @@ class Engine:
                     model="+".join(f"{m}@{hm}" for hm, m in served_by.items()),
                     served_baseline=sel.served_baseline, run_id=served.run_ids[role], issued_at=now,
                     origin_ts=origin.to_pydatetime(), grain_min=spec.grain_min, steps=steps, exceedance=exceed)
-        out["failed_models"] = {k: v for k, v in failed.items() if k in sel.models_needed()}
+        out["failed_models"] = failed
         out["fallback_steps"] = fallback_steps
-        # Shadow: every contender's own path (served or not), points at the served horizons.
-        out["shadow_rows"] = [{"series_id": spec.series_id, "model": name, "issued_at": now,
-                               "origin_ts": origin.to_pydatetime(),
-                               "target_ts": (origin + pd.Timedelta(minutes=hm)).to_pydatetime(),
-                               "horizon_min": hm, "point": float(paths[name][spec.steps(hm) - 1])}
-                              for name in served.shadow if name in paths for hm in spec.horizons_min]
+        out["paths"], out["X"], out["train"], out["y"] = paths, X, train, y
         return out
 
     async def issue(self, spec: SeriesSpec, now: datetime, series: pd.Series, sync) -> bool:
@@ -473,7 +503,7 @@ class Engine:
                      "window_end": p.origin_ts + timedelta(minutes=spec.grain_min + e.window_min),
                      "probability": e.probability, "n_paths": e.n_paths, "served_baseline": p.served_baseline}
                     for e in p.exceedance]
-        await sync(self.store.insert_issue, built["rows"], exc_rows, built["shadow_rows"])
+        await sync(self.store.insert_issue, built["rows"], exc_rows)
         st.last_issue_error = None
         if built["failed_models"]:
             st.last_issue_error = ("model_fallback", f"{built['fallback_steps']} step(s) served by the baseline; "
@@ -487,6 +517,16 @@ class Engine:
                     kind=PREDICTION_FORECAST_KIND, source=self.source, payload=built["payload"].model_dump(mode="json")))
             except Exception as exc:  # noqa: BLE001 -- the stored row is the record; next bucket re-publishes
                 logger.error("prediction_publish_failed series=%s err=%s", spec.series_id, exc)
+        if self.shadow_enabled and st.served.shadow:
+            try:
+                rows, failed = await sync(self.build_shadow, spec, built, origin, now)
+                await sync(self.store.insert_shadow, rows)
+                st.shadow_failed = failed
+                if failed:
+                    logger.warning("prediction_shadow_failed series=%s %s", spec.series_id, failed)
+            except Exception as exc:  # noqa: BLE001 -- shadow never costs the served forecast
+                st.shadow_failed = {"*": f"{type(exc).__name__}: {exc}"[:200]}
+                logger.warning("prediction_shadow_store_failed series=%s err=%s", spec.series_id, exc)
         return True
 
     # --- score ----------------------------------------------------------------------------
@@ -634,7 +674,8 @@ class Engine:
             for hm, model in sorted(st.served.selection.assignment.items()):
                 v = (live.get("shadow") or {}).get(f"{model}@{hm}")
                 if model not in BASELINES and v and v["verdict"] == "worse":
-                    losing.append(f"{hm} min {model}: {v['rel_mae']:.2f}x the baseline over "
+                    rel = f"{v['rel_mae']:.2f}x" if v.get("rel_mae") is not None else "worse than"
+                    losing.append(f"{hm} min {model}: {rel} the baseline over "
                                   f"{v['n_independent']} independent forecasts (p={v['p_worse']:.3f})")
         if losing:
             alerts["worse_than_baseline"] = "; ".join(losing)

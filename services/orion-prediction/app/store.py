@@ -220,6 +220,23 @@ class PostgresStore:
             (series_id, since))
 
     # --- shadow forecasts ---------------------------------------------------------------------
+    def insert_shadow(self, rows: list[dict]) -> None:
+        """Shadow rows in their OWN transaction, after the served issue committed: a shadow failure
+        (or a missing table) never costs the served forecast."""
+        with self.pool.connection() as conn, conn.transaction():
+            for r in rows:
+                conn.execute("INSERT INTO prediction_shadow_forecast (series_id, model, issued_at, origin_ts, target_ts, "
+                             "horizon_min, point) VALUES (%s,%s,%s,%s,%s,%s,%s) "
+                             "ON CONFLICT (series_id, model, origin_ts, horizon_min) DO NOTHING",
+                             (r["series_id"], r["model"], r["issued_at"], r["origin_ts"], r["target_ts"],
+                              r["horizon_min"], r["point"]))
+
+    def prune_shadow(self, series_id: str, before: datetime) -> int:
+        """Retention for this service's own shadow table (verdicts look back at most ~25 days)."""
+        rows = self._all("DELETE FROM prediction_shadow_forecast WHERE series_id = %s AND target_ts < %s "
+                         "RETURNING 1", (series_id, before))
+        return len(rows)
+
     def due_shadow(self, series_id: str, before: datetime, limit: int = 5000) -> list[dict]:
         return self._all("SELECT shadow_id, target_ts, point FROM prediction_shadow_forecast "
                          "WHERE series_id = %s AND scored_at IS NULL AND target_ts < %s ORDER BY target_ts LIMIT %s",
@@ -238,14 +255,14 @@ class PostgresStore:
             "SELECT s.model, s.horizon_min, s.origin_ts, s.abs_error AS shadow_err, b.abs_error AS base_err "
             "FROM prediction_shadow_forecast s JOIN prediction_forecast b ON b.series_id = s.series_id "
             "AND b.role = 'baseline' AND b.origin_ts = s.origin_ts AND b.horizon_min = s.horizon_min "
-            "WHERE s.series_id = %s AND s.abs_error IS NOT NULL AND b.score_status = 'scored' AND s.target_ts >= %s "
+            "WHERE s.series_id = %s AND s.scored_at IS NOT NULL AND s.abs_error IS NOT NULL "
+            "AND b.score_status = 'scored' AND s.target_ts >= %s "
             "ORDER BY s.model, s.horizon_min, s.origin_ts", (series_id, since))
 
     # --- exceedance probabilities + outcomes ----------------------------------------------
-    def insert_issue(self, forecast_rows: list[dict], exceedance_rows: list[dict],
-                     shadow_rows: list[dict] | None = None) -> None:
-        """One issue's forecast rows, threshold probabilities and shadow forecasts in ONE transaction: a
-        failure leaves none of them, so the next tick re-issues the bucket instead of skipping it half-written."""
+    def insert_issue(self, forecast_rows: list[dict], exceedance_rows: list[dict]) -> None:
+        """One issue's forecast rows and threshold probabilities in ONE transaction: a failure leaves
+        neither, so the next tick re-issues the bucket instead of skipping it half-written."""
         f_sql = ("INSERT INTO prediction_forecast (run_id, series_id, model, role, issued_at, origin_ts, target_ts, "
                  "horizon_min, point, quantiles) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb) "
                  "ON CONFLICT (series_id, role, origin_ts, horizon_min) DO NOTHING")
@@ -260,12 +277,6 @@ class PostgresStore:
                 conn.execute(e_sql, (r["series_id"], r["origin_ts"], r["issued_at"], r["name"], r["threshold"],
                                      r["window_start"], r["window_end"], r["probability"], r["n_paths"],
                                      r["served_baseline"]))
-            for r in shadow_rows or ():
-                conn.execute("INSERT INTO prediction_shadow_forecast (series_id, model, issued_at, origin_ts, target_ts, "
-                             "horizon_min, point) VALUES (%s,%s,%s,%s,%s,%s,%s) "
-                             "ON CONFLICT (series_id, model, origin_ts, horizon_min) DO NOTHING",
-                             (r["series_id"], r["model"], r["issued_at"], r["origin_ts"], r["target_ts"],
-                              r["horizon_min"], r["point"]))
 
     def due_exceedances(self, series_id: str, before: datetime, limit: int = 2000) -> list[dict]:
         return self._all("SELECT exceedance_id, threshold, window_start, window_end FROM prediction_exceedance "

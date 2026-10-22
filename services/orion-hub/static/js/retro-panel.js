@@ -17,6 +17,8 @@
   // an older connect or pending heal can never override a newer choice.
   let wanted = false, away = false, connecting = 0, intent = 0, healPending = false, heals = 0, healWindow = 0;
   let scriptedMode = false, cognitivePort = null, planning = false, plannedAttempt = null;
+  // Zelda (planner v2): one plan per Retro decision; a heat shed waits out retry_after_sec.
+  let plannedDecision = null, planRetryAt = 0, watching = false;
   function heal() {
     if (!wanted || away || !sid || connecting || lease || healPending || document.hidden || !document.hasFocus()) return;
     const now = performance.now(); if (now-healWindow > 10000) { heals = 0; healWindow = now; }
@@ -36,7 +38,9 @@
   }
   async function api(path, data) {
     const r = await fetch('/api/retro/'+path, {method:data === undefined?'GET':'POST', headers:{'Content-Type':'application/json'}, body:data === undefined?undefined:JSON.stringify(data)});
-    const value = await r.json(); if (!r.ok) throw Error(typeof value.detail==='string'?value.detail:'Request failed'); return value;
+    const value = await r.json();
+    if (!r.ok) { const e=Error(typeof value.detail==='string'?value.detail:'Request failed'); e.status=r.status; e.body=value; throw e; }
+    return value;
   }
   function flushAudio() { for (const s of sources) { try { s.stop(); } catch (_) {} } sources.clear(); audioEnd=0; lastSample=null; }
   async function sound() {
@@ -44,7 +48,7 @@
     gain.gain.value=el('mute').checked?0:1; await audio.resume();
   }
   function closeConnections() {
-    scriptedMode=false;cognitivePort=null;
+    scriptedMode=false;cognitivePort=null;watching=false;
     transportEpoch++; clearInterval(timer); keys.clear(); lease=null; outstanding.clear();
     if (input) { input.onclose=null; input.close(); } if (media) { media.onclose=null; media.close(); }
     input=null;media=null; pendingPacket=null; flushAudio();
@@ -229,7 +233,7 @@
       await api(`sessions/${sid}/scripted`,{connection_id:connection,generation,port,expected_epoch,action:'start',duration_seconds:60,cognition});
     }catch(err){scriptedMode=false;cognitivePort=null;throw Error(`Handoff failed: ${err.message}. Use Take this controller to return.`);}
     if(epoch!==transportEpoch)return;
-    cognitivePort=cognition?port:null;plannedAttempt=null;
+    cognitivePort=cognition?port:null;plannedAttempt=null;plannedDecision=null;planRetryAt=0;
     report(cognition?'Orion goal experiment — 60 seconds. Take this controller to interrupt.':'Scripted right/jump baseline — 60 seconds. Take this controller to interrupt.');
     await showPolicy();
   }
@@ -243,8 +247,10 @@
     el('policy').textContent=(state.scripted||[]).length
       ? state.scripted.map(p=>`Player ${p.port+1}: ${p.policy_id} (${p.cognition?'goal experiment':'scripted'}, ${p.duration_seconds}s limit)`).join(' · ')
       : 'No scripted controller active.';
+    showDecisions(state);
     const policy=(state.scripted||[]).find(p=>p.port===cognitivePort && p.cognition);
     if(!policy)return;
+    if(isZelda(policy.cognition)){planDecision(current,policy);return;}
     const facts=policy.cognition, attempt=facts.attempt;
     el('goal').textContent=`${facts.goal?.goal||'wait'}: ${facts.goal?.rationale||'Waiting for an observed attempt.'} Outcome: ${attempt?.outcome||'unknown'}`;
     if(!attempt || planning || plannedAttempt===attempt.attempt_id)return;
@@ -264,6 +270,104 @@
   setInterval(async()=>{if(document.hidden || pollingPolicy)return;pollingPolicy=true;
     try{await showPolicy();}catch(_){el('policy').textContent='Controller status unavailable.';}
     finally{pollingPolicy=false;}},1000);
+  // --- Orion's play: Zelda goals, atlas and solo leisure (spec 2026-10-22, D/E) ------------------
+  const waitingText = reason => 'Orion is waiting: '+String(reason||'GPU busy').replace(/^shed:/,'').replace(/_/g,' ');
+  const goalText = g => !g ? 'wait' : g.kind+(g.dir?' '+g.dir:'')+(g.tile?` (${g.tile.x},${g.tile.y})`:'')+(g.target!==undefined?' '+g.target:'');
+  const predictionText = p => !p ? 'none' : p.kind+(p.value!==undefined && p.value!==null?' '+p.value:'');
+  // Co-play: the browser asks the Hub planner once per decision. No goal on failure; the motor waits.
+  function planDecision(current,policy){
+    const d=policy.cognition.attempt;
+    if(!d || planning || plannedDecision===d.decision_id || performance.now()<planRetryAt)return;
+    planning=true;const decisionId=d.decision_id, epoch=transportEpoch, currentConnection=connection;
+    void api(`sessions/${current}/plan`,{connection_id:connection,generation,port:policy.port,expected_epoch:policy.epoch})
+      .then(()=>{plannedDecision=decisionId;planRetryAt=0;})
+      .catch(err=>{
+        if(epoch!==transportEpoch || connection!==currentConnection)return;
+        const b=err.body||{};
+        if(b.detail==='gpu_pool_unavailable' && b.retry_after_sec){
+          planRetryAt=performance.now()+b.retry_after_sec*1000;
+          el('zgoal').textContent=`${waitingText(b.reason)}. Orion holds still and asks again in ${Math.round(b.retry_after_sec)} s. Take this controller any time.`;
+        } else if(b.detail==='observation_unknown' || b.detail==='decision_pending'){planRetryAt=performance.now()+1000;}
+        else {planRetryAt=performance.now()+5000;el('zgoal').textContent=`No goal: ${err.message}. Orion holds still; takeover remains available.`;}
+      }).finally(()=>{planning=false;});
+  }
+  // Retro shows only the newest goal_finished row; the page keeps the last 5 per session.
+  const ZELDA_POLICY='zelda-navigator-v1', ZELDA_PROFILE='zelda-1-ram-v1';
+  const isZelda=c=>c?.policy_id===ZELDA_POLICY;
+  let lastZelda=null, zeldaSession=false, finished=[], finishedSid=null;
+  function showDecisions(state){
+    zeldaSession=state.game_profile===ZELDA_PROFILE;
+    if(finishedSid!==state.session_id){finished=[];finishedSid=state.session_id;}
+    const p=(state.scripted||[]).find(x=>isZelda(x.cognition));
+    if(!p){lastZelda=null;if(zeldaSession)el('play').hidden=false;return;}
+    lastZelda=p.cognition;el('play').hidden=false;
+    const g=p.cognition.goal, done=p.cognition.last_finished;
+    if(done?.decision_id && !finished.some(h=>h.decision_id===done.decision_id)){finished.push(done);finished=finished.slice(-5);}
+    if(g){el('zgoal').textContent=`Goal: ${goalText(g.goal)}. Why: ${g.rationale}`;
+      el('zprediction').textContent=`Prediction: ${predictionText(g.prediction)} · budget ${g.budget_seconds} s`;}
+    const rows=finished;
+    el('verdicts').replaceChildren(...rows.map(h=>{const li=document.createElement('li');li.className=h.verdict||'unknown';
+      li.textContent=`${goalText(h.goal)} → predicted ${predictionText(h.prediction)}: ${h.verdict||'unknown'}${h.outcome?' ('+h.outcome+')':''}`;return li;}));
+  }
+  function renderAtlas(atlas){
+    // Retro's GET /sessions/{id}/atlas: {level, room, map{"level:room": {visits, exits, caves, deaths}}, ...}
+    const level=Number.isInteger(atlas?.level)?atlas.level:0, here=Number.isInteger(atlas?.room)?atlas.room:null;
+    const rooms=atlas?.map||{}, cells=[];
+    for(let id=0;id<128;id++){
+      const r=rooms[`${level}:${id}`], c=document.createElement('div');c.className='room';c.dataset.room=String(id);
+      if(r){c.classList.add('known');const x=r.exits||{};for(const d of 'NSEW')if(x[d]!==null && x[d]!==undefined)c.classList.add('x'+d);
+        const caves=Number(r.caves)||0, deaths=r.deaths||0;
+        if(deaths)c.classList.add('death');
+        c.textContent=(caves?'c':'')+(deaths?'×'+(deaths>1?deaths:''):'');
+        c.title=`${level}:${id} · visits ${r.visits||0} · deaths ${deaths} · caves ${caves}`;}
+      if(here===id){c.classList.add('current');c.setAttribute('aria-current','location');}
+      cells.push(c);
+    }
+    el('atlas').replaceChildren(...cells);
+    const known=Number.isInteger(atlas?.rooms_known)?atlas.rooms_known:Object.keys(rooms).length;
+    el('atlasInfo').textContent=`${known} rooms known${level?` (showing level ${level})`:''}. Built only from what Orion saw. Bright edge: exit used. c: cave. ×: deaths. Outlined: current room.`;
+  }
+  // Watching never takes a controller: media only. Clicking the game or Take this controller
+  // acquires one, which preempts Orion's leisure session at Retro's arbiter.
+  function watch(){
+    // Never race a human's own connect: it would bump the transport epoch under it.
+    if(watching || input || media || !sid || document.hidden || connecting || wanted || healPending)return;
+    watching=true;const epoch=++transportEpoch;
+    media=new WebSocket(wsURL(`sessions/${sid}/media`));media.binaryType='arraybuffer';
+    media.onclose=()=>{if(epoch===transportEpoch){media=null;watching=false;}};
+    media.onmessage=e=>{pendingPacket={data:e.data,epoch};void drain();};
+  }
+  let atlasAt=0, pollingPlay=false;
+  async function pollPlay(){
+    const l=await api('leisure');
+    const live=['starting','playing','waiting'].includes(l.state);
+    el('leisure').classList.toggle('waiting',l.state==='waiting');
+    if(live){
+      el('play').hidden=false;
+      const mins=Math.max(0,Math.round((Date.now()/1000-(l.started_at||Date.now()/1000))/60));
+      el('leisure').textContent=l.state==='waiting'
+        ? `${waitingText(l.waiting?.reason)} (retry in ${Math.round(l.waiting?.retry_after_sec||0)} s). Solo play, ${mins} min in.`
+        : `Orion is playing alone (solo leisure), ${mins} min in, ${l.decisions||0} goals so far. Click the game or Take this controller to play; that ends Orion's session.`;
+      if(l.session_id && l.session_id!==sid && !lease){sid=l.session_id;}
+      if(l.session_id===sid && !lease && !input)watch();
+      if(l.last_goal && !lastZelda){el('zgoal').textContent=`Goal: ${goalText(l.last_goal.goal)}. Why: ${l.last_goal.rationale}`;
+        el('zprediction').textContent=`Prediction: ${predictionText(l.last_goal.prediction)}`;}
+    } else if(l.state==='stale'){
+      el('leisure').textContent='Orion\'s solo session stopped reporting; it is not running.';
+    } else if(l.state==='ended' && l.end_reason){
+      el('leisure').textContent=`Orion's last solo session ended: ${String(l.end_reason).replace(/_/g,' ')}.`;
+    } else if(l.state==='refused' && l.reason){
+      el('leisure').textContent=`Orion did not start solo play: ${String(l.reason).replace(/_/g,' ')}.`;
+    }
+    if(sid && (live || lastZelda || zeldaSession) && performance.now()-atlasAt>5000){
+      atlasAt=performance.now();
+      try{renderAtlas(await api(`sessions/${sid}/atlas`));el('play').hidden=false;}
+      catch(err){el('atlasInfo').textContent='Atlas unavailable: '+err.message.replace(/_/g,' ')+'.';}
+    }
+  }
+  setInterval(async()=>{if(document.hidden || pollingPlay)return;pollingPlay=true;
+    try{await pollPlay();}catch(_){/* status is optional; play never depends on it */}
+    finally{pollingPlay=false;}},2000);
   action('start',async()=>{screen.focus();keys.add('Enter');send();setTimeout(()=>keys.delete('Enter'),150);});
   el('mute').onchange=()=>{if(gain)gain.gain.value=el('mute').checked?0:1;};
   el('port').onchange=neutral;

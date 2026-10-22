@@ -59,6 +59,7 @@ class FakeRetro:
         self.clock = clock; self.session = None; self.saves = list(saves); self.calls = []; self.goals = []
         self.on_tick = None; self.n = 0; self.goal_status = None; self.fail_gets = 0; self.get_status = None
         self.offered_at = None; self.control_gate = None
+        self.atlas_record = dict(rooms_new=2, deaths=0)   # no controller counts yet
     async def call(self, method, path, body=None):
         self.calls.append((method, path, body))
         if self.fail_gets and method == 'GET' and path.startswith('sessions/') and path.count('/') == 1:
@@ -68,7 +69,8 @@ class FakeRetro:
         if path.startswith('games/'): return 200, self.saves
         if method == 'POST' and path == 'sessions':
             self.session = dict(session_id='s' * 36, generation='g' * 36, state='running', game_id=body['game_id'],
-                                scripted=[], loaded_save=body.get('save_id'))
+                                scripted=[], loaded_save=body.get('save_id'),
+                                zelda=dict(atlas=dict(lineage_id='lin-9', session=self.atlas_record)))
             return 200, dict(self.session)
         sid, _, op = path[len('sessions/'):].partition('/')
         if not self.session or sid != self.session['session_id']: return 409, {'detail': 'unknown_session'}
@@ -468,3 +470,19 @@ def test_one_session_per_process(world):
     finally:
         L._running_here = False
     assert out.refusal == 'leisure_already_running'
+
+
+
+def test_session_end_carries_retro_atlas_record_and_none_for_absent(world):
+    out = asyncio.run(L.run_leisure_session(config(RETRO_LEISURE_SESSION_MAX_SEC=60), deps=world.deps))
+    e = out.ended
+    assert e.rooms_new == 2 and e.deaths == 0 and e.controller_frames is None   # absent stays None
+    assert e.human_may_be_in_control is False and e.as_dict()['rooms_new'] == 2
+
+
+def test_human_frames_in_the_record_mark_the_session_and_spare_the_game(world):
+    world.retro.atlas_record = dict(rooms_new=1, deaths=0, controller_frames={'human:0': 40, 'orion:0': 3000})
+    out = asyncio.run(L.run_leisure_session(config(RETRO_LEISURE_SESSION_MAX_SEC=60), deps=world.deps))
+    assert out.ended.human_may_be_in_control is True and out.ended.controller_frames['human:0'] == 40
+    ops = [p.rsplit('/', 1)[-1] for m, p, _ in world.retro.calls if m == 'POST']
+    assert 'stop' not in ops and 'save' not in ops

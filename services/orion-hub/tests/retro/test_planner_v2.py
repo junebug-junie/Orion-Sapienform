@@ -313,3 +313,111 @@ def test_death_is_only_a_trigger(planner):
     prompt = planner.build_zelda_prompt(d, ATLAS, [])
     assert 'fight nearest -> death' in prompt and 'Retro already chose Continue' in prompt
     assert 'Retro already chose Continue' not in planner.build_zelda_prompt(decision(), ATLAS, [])
+
+
+def test_retro_terrain_is_the_map_and_entities_overlay_it(planner):
+    d = decision(); obs = d['observation']; obs.pop('walls')
+    terrain = ['#' * 32] + ['#' + '.' * 30 + '#' for _ in range(20)] + ['#' * 32]
+    terrain[2] = terrain[2][:8] + 'C' + terrain[2][9:]; terrain[3] = terrain[3][:4] + 'x' + terrain[3][5:]
+    obs['terrain'] = terrain
+    prompt = planner.build_zelda_prompt(d, None, [])
+    rows = [r for r in prompt.split('\n') if r[:3].strip().isdigit() and len(r) == 35]
+    assert rows[0][3:] == '#' * 32 and rows[2][3 + 8] == 'C' and rows[3][3 + 4] == 'x'
+    assert rows[11][3 + 15] == 'L' and rows[5][3 + 6] == '2' and 'walls not included' not in prompt
+    assert '"terrain"' not in prompt                           # sent once, as the map
+    obs['terrain'] = ['bad']
+    assert 'walls not included' in planner.render_room_map(obs, None)   # malformed: say unknown
+
+
+
+# --- co-play session end -> app.state.retro_session_end_sink ----------------------------------
+
+def _coplay_app(tmp_path, monkeypatch, frames, sink=True):
+    import time as _t
+    routes = _routes()
+    monkeypatch.setattr(routes, 'COPLAY_POLL_SEC', 0.01)
+    (tmp_path / 'hub.token').write_text('x' * 48)
+    cfg = SimpleNamespace(HUB_RETRO_ENABLED=True, HUB_RETRO_COGNITION_ENABLED=True,
+        HUB_RETRO_ORIGIN='http://testserver', HUB_RETRO_AUTH_DIR=str(tmp_path), HUB_RETRO_SOCKET='/unused')
+    world = SimpleNamespace(polls=0, ended=[])
+    def status():
+        world.polls += 1
+        policy = dict(port=0, epoch=7, policy_id='zelda-navigator-v1', cognition=dict(
+            policy_id='zelda-navigator-v1', attempt=None,
+            goal=dict(decision_id=f'7:{world.polls}', goal=dict(kind='exit', dir='N')),
+            last_finished=dict(decision_id=f'7:{world.polls - 1}', verdict='met' if world.polls % 2 else 'refuted',
+                               outcome='prediction_met')))
+        rec = dict(rooms_new=4, deaths=1)
+        if frames is not None: rec['controller_frames'] = frames
+        return dict(session_id='a' * 36, state='running', game_id='the-legend-of-zelda', loaded_save=None,
+                    scripted=[policy] if world.polls < 4 else [],
+                    zelda=dict(atlas=dict(lineage_id='lin-c', session=rec)))
+    class Response:
+        def __init__(self, data, status=200): self.data = data; self.status = status
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+        async def json(self): return self.data
+    class Client:
+        def __init__(self, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+        def get(self, url, **kw): return Response(status())
+        def request(self, method, url, **kw):
+            return Response({'scripted': [dict(port=0, epoch=7, policy_id='zelda-navigator-v1')]})
+    monkeypatch.setattr(routes.aiohttp, 'ClientSession', Client)
+    app = FastAPI(); app.include_router(routes.create_router(cfg, presence=FakeStore()))
+    if sink:
+        async def collect(ended): world.ended.append(ended)
+        app.state.retro_session_end_sink = collect
+    return app, world
+
+
+HANDOFF = dict(connection_id='c' * 36, generation='g' * 36, port=0, expected_epoch=6, action='start',
+               duration_seconds=60, cognition=True)
+
+
+def _wait(cond):
+    import time as _t
+    for _ in range(300):
+        if cond(): return True
+        _t.sleep(0.01)
+    return False
+
+
+def test_coplay_end_reaches_the_sink_with_atlas_record(tmp_path, monkeypatch):
+    app, world = _coplay_app(tmp_path, monkeypatch, frames={'human:0': 120, 'orion:0': 3000})
+    with TestClient(app) as c:
+        assert c.post('/api/retro/sessions/' + 'a' * 36 + '/scripted', json=HANDOFF, headers=H).status_code == 200
+        assert _wait(lambda: world.ended)
+    e = world.ended[0]
+    assert (e.session_id, e.leisure_id, e.controller, e.lineage_id) == ('a' * 36, None, 'co_play', 'lin-c')
+    assert e.rooms_new == 4 and e.deaths == 1 and e.controller_frames == {'human:0': 120, 'orion:0': 3000}
+    assert e.human_may_be_in_control is True and e.decisions_planned == 3 and sum(e.verdicts.values()) == 3
+
+
+def test_coplay_unknown_counts_are_none_and_read_as_maybe_human(tmp_path, monkeypatch):
+    app, world = _coplay_app(tmp_path, monkeypatch, frames=None)
+    with TestClient(app) as c:
+        c.post('/api/retro/sessions/' + 'a' * 36 + '/scripted', json=HANDOFF, headers=H)
+        assert _wait(lambda: world.ended)
+    e = world.ended[0]
+    assert e.controller_frames is None and e.human_may_be_in_control is True
+
+
+def test_coplay_orion_only_frames_and_no_sink(tmp_path, monkeypatch):
+    app, world = _coplay_app(tmp_path, monkeypatch, frames={'human:0': 0, 'orion:0': 900})
+    with TestClient(app) as c:
+        c.post('/api/retro/sessions/' + 'a' * 36 + '/scripted', json=HANDOFF, headers=H)
+        assert _wait(lambda: world.ended)
+    assert world.ended[0].human_may_be_in_control is False
+    app2, world2 = _coplay_app(tmp_path, monkeypatch, frames=None, sink=False)
+    with TestClient(app2) as c:
+        c.post('/api/retro/sessions/' + 'a' * 36 + '/scripted', json=HANDOFF, headers=H)
+        assert _wait(lambda: world2.polls >= 4)   # watched to the end; no sink -> nothing written
+    assert world2.ended == []
+    # A non-cognition (scripted baseline) handoff is not watched at all.
+    app3, world3 = _coplay_app(tmp_path, monkeypatch, frames=None)
+    with TestClient(app3) as c:
+        c.post('/api/retro/sessions/' + 'a' * 36 + '/scripted', json=dict(HANDOFF, cognition=False), headers=H)
+        import time as _t; _t.sleep(0.1)
+    assert world3.polls == 0

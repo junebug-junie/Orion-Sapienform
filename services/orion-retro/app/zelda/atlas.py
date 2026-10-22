@@ -217,6 +217,9 @@ class Atlas:
         return {(t[0], t[1]) for t in self.doc['rooms'].get(key, {}).get('learned_blocked', [])
                 if len(t) == 3 and t[2] == walls_hash}
 
+    def caves(self, level, room):
+        return [tuple(c['tile']) for c in self.doc['rooms'].get(room_key(level, room), {}).get('caves', [])]
+
     def decision(self, verdict):
         self.session['decisions'] += 1
         if verdict in ('met', 'refuted'): self.session[verdict] += 1

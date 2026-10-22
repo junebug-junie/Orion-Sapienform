@@ -98,6 +98,19 @@ def on_screen_edge(tile, direction):
     return {'N': r == MIN_ROW, 'S': r == MAX_ROW, 'W': c == 0, 'E': c == MAX_COL}[direction]
 
 
+def terrain(obs, learned=(), caves=()):
+    """Planner map: 22 rows x 32 chars (~770 bytes). '#' blocked, '.' walkable, 'x' learned
+    blocked by a bump on this layout, 'C' a cave this lineage has entered. Same tile grid as
+    `tile`; row 0 is the top of the play area."""
+    if 'walls' not in obs: return None
+    rows = [['#' if b else '.' for b in row] for row in obs['walls']]
+    for c, r in learned:
+        if 0 <= r < ROWS and 0 <= c < COLS: rows[r][c] = 'x'
+    for c, r in caves:
+        if 0 <= r < ROWS and 0 <= c < COLS: rows[r][c] = 'C'
+    return [''.join(row) for row in rows]
+
+
 def items_value(obs):
     return {k: v for k, v in obs['items'].items() if isinstance(v, int)}
 
@@ -174,8 +187,14 @@ class ZeldaGoals:
 
     def offer(self, port, epoch, frame, observation, now):
         self.counter += 1
+        view = summary(observation)
+        if observation.get('status') == 'observed':
+            # Only the offered decision carries terrain; status.zelda.observation stays grid-free.
+            view['terrain'] = terrain(observation, self._blocked(observation),
+                                      self.atlas.caves(observation['level'], observation['room'])
+                                      if self.atlas and observation['mode'] == 'play' else ())
         self.attempt = dict(decision_id=f'{epoch}:{self.counter}', port=port, expected_epoch=epoch,
-                            observation_frame=frame, observation=summary(observation),
+                            observation_frame=frame, observation=view,
                             supported_goals=list(GOALS), supported_predictions=list(PREDICTIONS),
                             previous=self.last_finished)
         self.offered_at = now

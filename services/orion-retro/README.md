@@ -227,7 +227,8 @@ Tile convention (shared by motor, atlas and the planner's text map): column
 one decision per frame. When a script starts with `cognition: true` on a Zelda
 session, the worker offers a decision slot in status
 (`scripted[].cognition.attempt.decision_id`) whenever Link is controllable and no
-goal is active. `POST /sessions/{id}/goal` takes a `GoalV2` (below) that echoes it.
+goal is active. The offered decision's observation carries the room map as
+`attempt.observation.terrain`: a list of 22 strings, 32 characters each. Row 0 is the top of the play area, and column/row use the same tile grid as `tile`. The characters are `#` blocked, `.` walkable, `x` a learned-blocked tile (a bump recorded on this exact room layout, matched by `walls_hash`), and `C` a cave this lineage has entered (overworld only). It is about 790 bytes as JSON. Only the offered decision carries it; `status.zelda.observation` stays grid-free. `POST /sessions/{id}/goal` takes a `GoalV2` (below) that echoes it.
 Goals: `exit{dir}`, `explore{dir}`, `enter{tile}`, `collect{tile}`,
 `fight{target: slot|nearest}`, `retreat`, `wait`. A* runs on the wall grid plus
 learned-blocked tiles. A press that leaves Link's position unchanged for 8 frames is

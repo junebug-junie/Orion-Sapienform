@@ -598,3 +598,20 @@ def test_death_without_a_goal_recovers_with_null_decision_and_humans_are_untouch
     a.submit('human', dict(port=0, lease=grant['lease'], epoch=grant['epoch'], seq=1, mask=0), 0)
     a.frame(0)
     assert a.frame(.01)[0] == [0, 0]
+
+
+def test_offered_decision_carries_bounded_terrain_but_status_does_not(tmp_path):
+    from app.zelda.runtime import ZeldaRuntime
+    a = Atlas(tmp_path, Atlas.new_lineage(), IDENTITY, 's1', now=lambda: 0)
+    walk(a, [obs(), obs(x=64, y=77), obs(mode=0x10, x=64, y=77)])        # cave at tile (8, 2)
+    here = obs(blocked={(c, r) for c in range(32) for r in range(18, 22)} | {(8, 2)})
+    a.mark_blocked(0, 0x77, (20, 11), 'play', here['walls_hash'])
+    a.mark_blocked(0, 0x77, (21, 11), 'play', 'old-layout')               # other layout: ignored
+    g = ZeldaGoals(lambda *x, **y: None, a)
+    g.observe_frame(0, 2, 1, here, 0)
+    t = g.attempt['observation']['terrain']
+    assert len(t) == 22 and all(len(row) == 32 and set(row) <= set('#.xC') for row in t)
+    assert t[2][8] == 'C' and t[11][20] == 'x' and t[11][21] == '.' and t[18][0] == '#' and t[0][0] == '.'
+    assert len(json.dumps(t)) <= 800 and 'walls' not in g.attempt['observation']
+    rt = ZeldaRuntime.__new__(ZeldaRuntime); rt.latest = obs(); rt.atlas = None
+    assert 'terrain' not in rt.status()['observation'] and 'walls' not in rt.status()['observation']

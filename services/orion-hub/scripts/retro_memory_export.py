@@ -225,7 +225,7 @@ def leisure_inputs(ended: Any) -> dict[str, Any]:
             journal.append({"kind": "control", "port": c["port"], "controller": "orion",
                             "frames": int(c.get("orion_frames") or 0)})
     atlas = d.get("atlas_session") if isinstance(d.get("atlas_session"), dict) else {}
-    return dict(session_id=str(d.get("session_id") or ""), journal=[j for j in journal if j["at"]],
+    return dict(session_id=str(d.get("session_id") or ""), journal=[j for j in journal if j["kind"] == "control" or j["at"]],
                 atlas_delta={k: atlas.get(k) for k in ("rooms_new", "deaths") if atlas.get(k) is not None},
                 kind="leisure", game_id=str(d.get("game_id") or ""), lineage_id=d.get("lineage_id"),
                 dispatch_id=d.get("act_id"), verdict_counts=d.get("verdicts") or {},

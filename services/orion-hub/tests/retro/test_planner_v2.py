@@ -36,9 +36,10 @@ def decision(**over):
 ATLAS = dict(lineage_id='lin-1', level=0, room=119,
              current=dict(visits=2, deaths=1, exits_seen=dict(N=103, S=None, E=120, W=None),
                           caves=[dict(tile=[8, 2], entered=True, contents_seen=[])], learned_blocked=[[1, 1]]),
-             adjacent=dict(N=dict(room=103, known=True, seen_exit=103), S=None,
+             # Room 119 is on the bottom row: Retro leaves the off-grid S side out.
+             adjacent=dict(N=dict(room=103, known=True, seen_exit=103),
                            E=dict(room=120, known=True, seen_exit=120), W=dict(room=118, known=False, seen_exit=None)),
-             rooms_known=3, rooms_with_unexplored_exits=['0:119', '0:120'],
+             rooms_known=3, rooms_with_unvisited_sides=['0:119', '0:120'],
              caves=[dict(room='0:119', tile=[8, 2], entered=True)], deaths=[dict(room='0:119', deaths=1)],
              map={'0:119': dict(visits=2, exits=dict(N=103, E=120), caves=1, deaths=1)})
 HISTORY = [dict(decision_id=f'd{i}', goal=dict(kind='exit', dir='E'), prediction=dict(kind='reach_room', value=120),
@@ -78,7 +79,8 @@ def test_prompt_has_room_map_atlas_neighbourhood_history_and_no_raw_grid(planner
     assert map_rows[(150 + 11 - 64 + 4) // 8][3 + (200 + 4) // 8] == 'd'   # drop, Retro's tile convention
     assert map_rows[2][3 + 8] == 'C' and map_rows[1][3 + 1] == 'x'          # cave + learned-blocked
     assert '"walls"' not in prompt and 'true,false' not in prompt
-    assert 'unexplored exits S,W' in prompt and 'N 0:103: known, reached from here before' in prompt
+    assert 'sides never crossed (may be walls) S,W' in prompt and 'N 0:103: known, reached from here before' in prompt
+    assert 'with sides never crossed: 0:119, 0:120' in prompt and 'S 0:' not in prompt
     assert 'W 0:118: never visited' in prompt and 'death sites: 0:119 (1)' in prompt
     assert prompt.count('verdict met') == 5                    # last 5 decisions only
     assert 'Why a decision now: first decision of this session' in prompt
@@ -108,13 +110,17 @@ def test_history_keeps_each_finished_goal_once(planner):
     (dict(GOOD, budget_seconds=90), 'planner_invalid_goal'),
     (dict(GOOD, rationale=''), 'planner_invalid_goal'),
     (dict(GOOD, goal=dict(kind='fight', target=5)), 'planner_unknown_target'),
+    (dict(GOOD, goal=dict(kind='fight', target='nearest'), prediction=dict(kind='enemies_cleared')), None),
     (dict(GOOD, prediction=dict(kind='reach_room')), 'planner_prediction_value_mismatch'),
     (dict(GOOD, prediction=dict(kind='survive', value=3)), 'planner_prediction_value_mismatch'),
 ])
 def test_bad_answers_are_rejected_and_never_become_a_goal(planner, raw, reason):
     chat = reply(dict(content=raw if isinstance(raw, str) else json.dumps(raw)))
+    d = decision()
+    if reason is None:   # fight with no enemy in the room (Retro: no_enemies_present)
+        d['observation']['enemies'] = []; reason = 'planner_no_enemies'
     with pytest.raises(planner.PlannerRejected) as exc:
-        asyncio.run(planner.plan_zelda(None, decision(), ATLAS, HISTORY, chat=chat))
+        asyncio.run(planner.plan_zelda(None, d, ATLAS, HISTORY, chat=chat))
     assert exc.value.reason == reason
 
 

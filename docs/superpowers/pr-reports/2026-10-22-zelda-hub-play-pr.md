@@ -6,7 +6,8 @@ sections D and E, the Hub view, and acceptance checks 4 and 5.
 **Merge order: this PR depends on Lane A (`feat/zelda-retro-core`) merging first.** The Hub reads
 Lane A's Retro contracts: GoalV2, the `zelda-1-ram-v1` observation, `GET /sessions/{id}/atlas`, and
 the `leisure_id` sponsor. Before Lane A is deployed, the Zelda paths here stay idle. Nova co-play
-is unchanged. The shapes were checked against Lane A's branch HEAD `8f27adf47`.
+is unchanged. The shapes were checked against Lane A's PR #2851 (`feat/zelda-retro-core` at
+`f20bb00d2`).
 
 ## Summary
 
@@ -106,17 +107,20 @@ journaled whenever the allocator admits `play` and the cabinet is cool.
 
 - Added keys: `RETRO_LEISURE_ENABLED=true`, `RETRO_LEISURE_GAME_IDS=the-legend-of-zelda`,
   `RETRO_LEISURE_SESSION_MAX_SEC=1800`, `RETRO_LEISURE_DAILY_MAX_SEC=5400`,
-  `RETRO_LEISURE_MIN_GAP_SEC=10800`, `RETRO_LEISURE_PORT=0`. They ship on.
+  `RETRO_LEISURE_MIN_GAP_SEC=10800`. They ship on. There is no port key: Lane A's Zelda motor
+  reads controller 1 only, so leisure always uses port 0.
 - Removed / renamed: none.
 - `.env_example` updated: yes (`services/orion-hub/.env_example`).
-- Local `.env` synced with `python scripts/sync_local_env_from_example.py`: run. The six keys were
-  also appended to the live main checkout's `services/orion-hub/.env`.
+- Local `.env` synced with `python scripts/sync_local_env_from_example.py`: run. The five keys were
+  also appended to the live main checkout's `services/orion-hub/.env`. An earlier
+  `RETRO_LEISURE_PORT` line was removed from that file again.
 - Skipped keys requiring operator action: none.
 
 ## Tests run
 
 ```text
-python -m pytest services/orion-hub/tests/retro -q                     75 passed
+python -m pytest services/orion-hub/tests/retro -q                     79 passed (py3.12)
+uv run --python 3.11 (CI's native-boundary deps) pytest .../tests/retro  79 passed
 python -m pytest services/orion-hub/tests/test_regulation_must_not_readers.py \
   services/orion-hub/tests/test_regulation_arousal_readers.py -q        77 passed
 python -m pytest tests/test_no_personal_terms.py -q                     7 passed
@@ -188,11 +192,31 @@ origin/main.
 - Finding: an end-save on a preempted game can push out the human's oldest save.
   - Fix: the save is skipped when a human may be in control, with
     `end_save_error=skipped:human_may_be_in_control`.
+- Second review (subagent, review-only, target = fix commit 90558aa04): no blockers. Fixed:
+  - Retro drops a leisure policy after 60 s with no goal, so a long heat shed ends before the
+    third shed. The game is then left paused with nobody in it, and that blocked every later
+    start. Fix: the end reason is `shed_wait_policy_lost`. When no human acted, the runner closes
+    the game, but only in the orphan state (paused, no script). Evidence:
+    `test_long_shed_lets_retro_drop_the_policy_and_the_orphan_game_is_closed`.
+  - A cancel during start or the ledger write skipped `_finish`. Evidence:
+    `test_cancellation_during_start_still_closes_out`.
+  - A non-200 status read (5xx, 401) counted as "game ended". It is now a transport failure
+    (5 polls), unless Retro says `unknown_session`. Evidence:
+    `test_non_200_status_is_a_transport_problem_not_a_finished_game`.
+  - Retro's `observation_unknown` on a goal (Link not controllable during a long call) now counts
+    as stale, not as a failure. `fight` with no enemy is rejected Hub-side (`planner_no_enemies`).
+  - The script epoch is read from the scripted reply. The start loop resumes a paused session.
+    `lineage_id` refreshes on every atlas read.
+  - Fakes now match real Retro (60 s drop, neighbourhood atlas, off-grid sides absent).
+- CI (Python 3.11): `asyncio.wait_for` can swallow a cancel. The loop now honours
+  `Task.cancelling()`. It was reproduced and verified with `uv run --python 3.11`.
 - Alignment to Lane A's real contract, found while the review ran:
   - Field names: `attempt` instead of `decision`, and `last_finished` instead of a history list.
   - The atlas endpoint returns a neighbourhood view.
   - Leisure acquires first (`control`), then starts the script with `expected_epoch`.
   - A prediction has a value only for `reach_room`.
+  - The atlas field is `rooms_with_unvisited_sides`. GoalV2 uses port 0 only.
+  - Cave items are not observed, so the prompt says that `collect` needs a tile the planner gives.
   - The Hub uses Retro's tile convention.
 
 ## Restart required
@@ -220,6 +244,10 @@ Run this from the clean primary main checkout, after Lane A's PR and this PR are
   - Concern: the live preemption half of check 5 ("within one frame") belongs to Lane A's
     arbiter. It is UNVERIFIED from the Hub side. The browser eval only shows that the takeover
     sends the acquire.
+- Severity: low.
+  - Concern: a long heat shed ends a leisure session after about 60 s (`shed_wait_policy_lost`).
+    This is Retro's sponsor-loss rule, not "3 consecutive sheds". The spec's 3-shed end applies
+    only while shed windows are shorter than Retro's 60 s.
 - Severity: low.
   - Concern: the leisure path is idle until Lane C wires the dispatch consumer to `should_start`
     and `run_leisure_session`.

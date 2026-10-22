@@ -56,6 +56,7 @@ FAILURE_RETRY_SEC = 5.0
 DAY_SEC = 86400.0
 START_TIMEOUT_SEC = 10.0
 ACTIVE_STATES = ('starting', 'running', 'paused')
+ZELDA_PORT = 0   # Retro's Zelda reader and motor use controller 1 only (navigate.py accept()).
 
 
 # --- the gate (pure, deterministic) -----------------------------------------------------------
@@ -226,7 +227,7 @@ def _settings(config) -> dict:
                 session_max_sec=float(getattr(config, 'RETRO_LEISURE_SESSION_MAX_SEC', 1800)),
                 daily_max_sec=float(getattr(config, 'RETRO_LEISURE_DAILY_MAX_SEC', 5400)),
                 min_gap_sec=float(getattr(config, 'RETRO_LEISURE_MIN_GAP_SEC', 10800)),
-                port=int(getattr(config, 'RETRO_LEISURE_PORT', 0)))
+                port=ZELDA_PORT)
 
 
 async def gather_gate_inputs(config, deps: LeisureDeps, *, own_leisure_id=None, elapsed_sec=0.0) -> LeisureGateInputs:
@@ -410,11 +411,14 @@ async def _start_game(deps: LeisureDeps, run: _Run) -> Optional[str]:
     deadline = deps.clock() + START_TIMEOUT_SEC
     while True:
         status, session = await deps.retro.call('GET', f'sessions/{run.session_id}')
-        if status == 200 and isinstance(session, dict) and session.get('state') == 'running':
+        state = session.get('state') if status == 200 and isinstance(session, dict) else None
+        if state == 'running':
             run.generation = session.get('generation', run.generation)
             break
-        if deps.clock() >= deadline or (status == 200 and session.get('state') in ('failed', 'stopped')):
+        if deps.clock() >= deadline or state in ('failed', 'stopped'):
             return 'retro_start_timeout'
+        if state == 'paused':   # Retro's no-controller grace already paused it
+            await deps.retro.call('POST', f'sessions/{run.session_id}/resume', {})
         await deps.sleep(0.25)
     # A session paused for no_controller must be resumed before a leisure acquire (Retro README).
     await deps.retro.call('POST', f'sessions/{run.session_id}/resume', {})
@@ -431,14 +435,15 @@ async def _start_game(deps: LeisureDeps, run: _Run) -> Optional[str]:
     if status != 200:
         detail = grant.get('detail') if isinstance(grant, dict) else status
         return f'leisure_grant_refused:{detail}'
-    status, session = await deps.retro.call('GET', f'sessions/{run.session_id}')
-    policy = _policy(session, run) if status == 200 and isinstance(session, dict) else None
+    # The script runs on its own grant (epoch = acquire epoch + 1): read it from the reply.
+    policy = _policy({'scripted': grant.get('scripted')} if isinstance(grant, dict) else {}, run)
+    if not policy or not isinstance(policy.get('epoch'), int):
+        status, session = await deps.retro.call('GET', f'sessions/{run.session_id}')
+        policy = _policy(session, run) if status == 200 and isinstance(session, dict) else None
     if not policy or not isinstance(policy.get('epoch'), int):
         return 'leisure_grant_not_visible'
     run.epoch = policy['epoch']
-    status, atlas = await deps.retro.call('GET', f'sessions/{run.session_id}/atlas')
-    if status == 200 and isinstance(atlas, dict):
-        run.lineage_id = atlas.get('lineage_id')
+    await _atlas(deps, run)
     return None
 
 
@@ -455,7 +460,9 @@ MAX_TRANSPORT_FAILURES = 5
 # Retro refusing a goal because the decision moved on (room change during a long call) is play,
 # not a planner failure (services/orion-retro/app/zelda/navigate.py accept()).
 STALE_GOAL_REFUSALS = ('stale_decision', 'expired_decision', 'goal_active', 'stale_script_epoch',
-                       'session_generation_mismatch')
+                       'session_generation_mismatch', 'observation_unknown')
+# Retro answers these when the session itself is gone; any other non-200 is a transport problem.
+ENDED_DETAILS = ('unknown_session',)
 
 
 async def _run(config, deps: LeisureDeps, s: dict, run: _Run, ledger: list, lock_ttl: int) -> LeisureOutcome:
@@ -463,6 +470,9 @@ async def _run(config, deps: LeisureDeps, s: dict, run: _Run, ledger: list, lock
     await _status(deps, run, 'starting')
     try:
         refusal = await _start_game(deps, run)
+    except asyncio.CancelledError:
+        await asyncio.shield(_finish(deps, run, 'cancelled', mode=NORMAL, ledger=None, started=False))
+        raise
     except Exception as exc:  # noqa: BLE001
         refusal = f'retro_unavailable:{type(exc).__name__}'
     if refusal:
@@ -473,6 +483,9 @@ async def _run(config, deps: LeisureDeps, s: dict, run: _Run, ledger: list, lock
         ended_at=None, seconds=0, act_id=run.act_id)]
     try:
         await deps.store.write_ledger(ledger)
+    except asyncio.CancelledError:
+        await asyncio.shield(_finish(deps, run, 'cancelled', mode=NORMAL, ledger=None))
+        raise
     except Exception:  # noqa: BLE001 -- an unrecorded session must not run: the caps depend on it
         await asyncio.shield(_finish(deps, run, 'ledger_unwritable', mode=NORMAL, ledger=None))
         return LeisureOutcome(started=False, refusal='ledger_unwritable')
@@ -522,8 +535,16 @@ async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int,
                     return 'retro_unreachable', NORMAL
                 await deps.sleep(POLL_SEC)
                 continue
+            detail = session.get('detail') if isinstance(session, dict) else None
+            if status != 200 and detail not in ENDED_DETAILS:
+                # 5xx, 401 after a token rotation, a proxy error: not proof the game is gone.
+                transport_failures += 1
+                if transport_failures >= MAX_TRANSPORT_FAILURES:
+                    return f'retro_unreachable:{status}', NORMAL
+                await deps.sleep(POLL_SEC)
+                continue
             transport_failures = 0
-            if (status != 200 or not isinstance(session, dict) or session.get('session_id') != run.session_id
+            if (status != 200 or session.get('session_id') != run.session_id
                     or session.get('state') not in ('running', 'paused')):
                 return 'retro_session_ended', POLICY_GONE
             policy = _policy(session, run)
@@ -532,7 +553,11 @@ async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int,
                 if not ok:
                     return 'policy_ended_presence_unknown', POLICY_GONE
                 human = since is not None and since <= deps.clock() - run.started_at
-                return ('human_preempted' if human else 'policy_ended_by_retro'), POLICY_GONE
+                if human:
+                    return 'human_preempted', POLICY_GONE
+                # Retro drops a leisure policy after 60 s with no goal (scripted.py
+                # leisure_sponsor_lost): during a heat shed that comes before the third shed.
+                return ('shed_wait_policy_lost' if run.waiting else 'policy_ended_by_retro'), POLICY_GONE
             cognition = policy.get('cognition') or {}
             if not retro_planner.is_zelda_cognition(cognition):
                 return 'not_a_zelda_session', NORMAL
@@ -635,7 +660,10 @@ async def _atlas(deps: LeisureDeps, run: _Run) -> Optional[dict]:
         status, atlas = await deps.retro.call('GET', f'sessions/{run.session_id}/atlas')
     except Exception:  # noqa: BLE001
         return None
-    return atlas if status == 200 and isinstance(atlas, dict) else None
+    if status != 200 or not isinstance(atlas, dict):
+        return None   # e.g. atlas_not_written_yet early in a fresh game
+    run.lineage_id = atlas.get('lineage_id') or run.lineage_id
+    return atlas
 
 
 async def _call(deps: LeisureDeps, what: str, method: str, path: str, body: Optional[dict] = None):
@@ -668,6 +696,14 @@ async def _finish(deps: LeisureDeps, run: _Run, reason: str, *, mode: str,
                     save_error = str((saved or {}).get('detail') if isinstance(saved, dict) else status)
         if mode == NORMAL and not human:
             await _call(deps, 'session_stop', 'POST', f'sessions/{run.session_id}/stop', {})
+        elif mode == POLICY_GONE and not human and reason != 'retro_session_ended':
+            # Retro dropped the policy and no human acted: the game is left paused with nobody in
+            # it (no_controller), which would refuse every later leisure start. Close it only in
+            # exactly that state -- paused, no script -- which a human player never leaves it in.
+            status, session = await _call(deps, 'orphan_check', 'GET', f'sessions/{run.session_id}')
+            if (status == 200 and isinstance(session, dict) and session.get('state') == 'paused'
+                    and not session.get('scripted')):
+                await _call(deps, 'orphan_stop', 'POST', f'sessions/{run.session_id}/stop', {})
     ended_at = deps.clock()
     if ledger is not None:
         rows = [dict(r, ended_at=ended_at, seconds=round(ended_at - run.started_at, 1))

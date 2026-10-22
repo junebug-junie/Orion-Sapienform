@@ -42,7 +42,6 @@ class Settings(BaseSettings):
     RETRO_LEISURE_SESSION_MAX_SEC: float = Field(default=1800.0, ge=60.0, le=1800.0, alias="RETRO_LEISURE_SESSION_MAX_SEC")
     RETRO_LEISURE_DAILY_MAX_SEC: float = Field(default=5400.0, ge=0.0, le=86400.0, alias="RETRO_LEISURE_DAILY_MAX_SEC")
     RETRO_LEISURE_MIN_GAP_SEC: float = Field(default=10800.0, ge=0.0, alias="RETRO_LEISURE_MIN_GAP_SEC")
-    RETRO_LEISURE_PORT: int = Field(default=0, ge=0, le=1, alias="RETRO_LEISURE_PORT")
 
     """Configuration for the Orion Hub service, loaded from environment variables."""
 

@@ -76,7 +76,7 @@ async def choose(config, attempt):
 #   goal:          the accepted GoalV2, or None
 #   last_finished: the newest goal_finished row {decision_id, goal, prediction, outcome, verdict}
 # GET /sessions/{id}/atlas: the neighbourhood view {lineage_id, level, room, current,
-#   adjacent{N..W: {room, known, seen_exit}}, rooms_known, rooms_with_unexplored_exits,
+#   adjacent{N..W: {room, known, seen_exit}} (off-grid sides absent), rooms_known, rooms_with_unvisited_sides,
 #   caves[{room, tile, entered}], deaths[{room, deaths}], map{"level:room": {visits, exits,
 #   caves, deaths}}}. Callers keep the last-5 history themselves (``remember_finished``).
 # Unknown extra fields are ignored everywhere.
@@ -280,11 +280,12 @@ def atlas_neighbourhood(atlas: Optional[dict]) -> str:
     else:
         exits = here.get('exits_seen') or {}
         seen = ' '.join(f'{d}={exits[d]}' for d in 'NSEW' if exits.get(d) is not None) or 'none'
-        unexplored = ','.join(d for d in 'NSEW' if exits.get(d) is None) or 'none'
+        unvisited = ','.join(d for d in 'NSEW' if exits.get(d) is None) or 'none'
         caves = [f'({xy[0]},{xy[1]}) {"entered" if c.get("entered") else "not entered"}'
                  for c in here.get('caves') or [] if isinstance(c, dict) and (xy := _tile_xy(c.get('tile')))]
         lines.append(f'this room {level}:{room}: visits {here.get("visits", 0)}, deaths {here.get("deaths", 0)}, '
-                     f'exits used {seen}, unexplored exits {unexplored}, caves {"; ".join(caves) or "none"}, '
+                     f'sides crossed {seen}, sides never crossed (may be walls) {unvisited}, '
+                     f'caves {"; ".join(caves) or "none"}, '
                      f'learned-blocked tiles {len(here.get("learned_blocked") or [])}')
     for d in 'NSEW':
         a = (atlas.get('adjacent') or {}).get(d)
@@ -293,8 +294,8 @@ def atlas_neighbourhood(atlas: Optional[dict]) -> str:
                          + (f', reached from here before' if a.get('seen_exit') is not None else ''))
     deaths = [f'{x.get("room")} ({x.get("deaths")})' for x in atlas.get('deaths') or [] if isinstance(x, dict)]
     lines.append('death sites: ' + (', '.join(deaths[:8]) or 'none'))
-    frontier = [k for k in atlas.get('rooms_with_unexplored_exits') or [] if isinstance(k, str)]
-    lines.append(f'rooms known on this level: {atlas.get("rooms_known", 0)}; with unexplored exits: '
+    frontier = [k for k in atlas.get('rooms_with_unvisited_sides') or [] if isinstance(k, str)]
+    lines.append(f'rooms known on this level: {atlas.get("rooms_known", 0)}; with sides never crossed: '
                  + (', '.join(frontier[:12]) or 'none'))
     return '\n'.join(lines)
 
@@ -348,6 +349,8 @@ def build_zelda_prompt(decision: dict, atlas: Optional[dict], history: Any) -> s
         'Prediction kinds: reach_room (value = the room id you expect to reach; required), '
         'enter_cave, item_gained, enemies_cleared, survive, unknown (no value for these).',
         'Make the prediction checkable: Retro grades it met/refuted from RAM.',
+        'Items inside caves are not in the observation: to collect one, give the tile yourself.',
+        'fight needs at least one enemy in the observation.',
         'Reply only JSON: {"goal":{...},"prediction":{"kind":"..."[, "value":int]},'
         '"rationale":"brief, grounded in the facts above","budget_seconds":3-30}',
     ])
@@ -371,9 +374,11 @@ def validate_zelda_choice(raw: Any, decision: dict) -> ZeldaChoice:
     obs = decision['observation']
     if choice.goal.kind != 'wait' and not (obs.get('link') or {}).get('controllable', True):
         raise PlannerRejected('observation_unknown', observation_reason='link_not_controllable')
-    if isinstance(choice.goal, FightGoal) and choice.goal.target != 'nearest':
+    if isinstance(choice.goal, FightGoal):
         alive = {e.get('slot') for e in obs.get('enemies') or [] if isinstance(e, dict)}
-        if choice.goal.target not in alive:
+        if not alive:
+            raise PlannerRejected('planner_no_enemies')   # Retro: no_enemies_present
+        if choice.goal.target != 'nearest' and choice.goal.target not in alive:
             raise PlannerRejected('planner_unknown_target', target=choice.goal.target)
     return choice
 

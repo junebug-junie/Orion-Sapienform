@@ -57,7 +57,8 @@ def zelda_decision(n):
 class FakeRetro:
     def __init__(self, clock, saves=()):
         self.clock = clock; self.session = None; self.saves = list(saves); self.calls = []; self.goals = []
-        self.on_tick = None; self.n = 0; self.goal_status = None; self.fail_gets = 0
+        self.on_tick = None; self.n = 0; self.goal_status = None; self.fail_gets = 0; self.get_status = None
+        self.offered_at = None; self.control_gate = None
     async def call(self, method, path, body=None):
         self.calls.append((method, path, body))
         if self.fail_gets and method == 'GET' and path.startswith('sessions/') and path.count('/') == 1:
@@ -73,11 +74,20 @@ class FakeRetro:
         if not self.session or sid != self.session['session_id']: return 409, {'detail': 'unknown_session'}
         if method == 'GET' and not op:
             if self.on_tick: self.on_tick(self)
+            if self.get_status: return self.get_status
+            # Real Retro drops a leisure policy after two unanswered 30 s offers and the game
+            # pauses for no_controller (services/orion-retro/app/scripted.py leisure_sponsor_lost).
+            if (self.session['scripted'] and self.offered_at is not None
+                    and self.clock.t - self.offered_at >= 60):
+                self.session['scripted'] = []; self.session['state'] = 'paused'
             return 200, dict(self.session)
-        if op == 'atlas': return 200, {'lineage_id': 'lin-9', 'rooms': {}}
+        if op == 'atlas':   # Retro's neighbourhood() view
+            return 200, {'lineage_id': 'lin-9', 'level': 0, 'room': 119, 'current': None, 'adjacent': {},
+                         'rooms_known': 0, 'rooms_with_unvisited_sides': [], 'caves': [], 'deaths': [], 'map': {}}
         if op == 'resume': return 200, {'state': 'running'}
         if op == 'control':
             assert body == {'leisure_id': body['leisure_id'], 'port': 0, 'action': 'acquire'}
+            if self.control_gate: await self.control_gate.wait()
             self.lease_epoch = 4
             return 200, {'port': 0, 'lease': 'l' * 40, 'epoch': 4, 'leisure': True}
         if op == 'scripted':
@@ -87,10 +97,11 @@ class FakeRetro:
                 self.session['scripted'] = [dict(port=body['port'], epoch=5, policy_id='zelda-navigator-v1',
                                                  cognition=dict(policy_id='zelda-navigator-v1', attempt=zelda_decision(0),
                                                                 goal=None, last_finished=None))]
-            else:
-                assert body['expected_epoch'] == 5
-                self.session['scripted'] = []
-            return 200, {}
+                self.offered_at = self.clock.t
+                return 200, {'scripted': [dict(p) for p in self.session['scripted']]}
+            assert body['expected_epoch'] == 5
+            self.session['scripted'] = []
+            return 200, {'scripted': []}
         if op == 'goal':
             if self.goal_status:
                 return self.goal_status
@@ -100,6 +111,7 @@ class FakeRetro:
                                                         verdict='met' if self.n % 2 == 0 else 'refuted')
             self.n += 1
             policy['cognition']['attempt'] = zelda_decision(self.n)
+            self.offered_at = self.clock.t
             return 200, body
         if op == 'save': return 200, {'saved': {'save_id': 'f' * 32}}
         if op == 'stop': self.session['state'] = 'stopped'; return 200, self.session
@@ -113,7 +125,7 @@ GOAL = dict(goal=dict(kind='exit', dir='N'), prediction=dict(kind='reach_room', 
 def config(**over):
     base = dict(RETRO_LEISURE_ENABLED=True, HUB_RETRO_ENABLED=True, RETRO_LEISURE_GAME_IDS='the-legend-of-zelda',
                 RETRO_LEISURE_SESSION_MAX_SEC=1800, RETRO_LEISURE_DAILY_MAX_SEC=5400,
-                RETRO_LEISURE_MIN_GAP_SEC=10800, RETRO_LEISURE_PORT=0)
+                RETRO_LEISURE_MIN_GAP_SEC=10800)
     base.update(over)
     return SimpleNamespace(**base)
 
@@ -385,7 +397,8 @@ def test_heat_appearing_mid_session_ends_it_at_the_30s_recheck(world):
 
 
 def test_three_consecutive_sheds_end_the_session_and_post_no_goal(world):
-    world.plan_error = P.PlannerShed('gpu_pool_unavailable', reason='shed:cabinet_hot', retry_after_sec=30.0)
+    # Short shed windows: three sheds land before Retro's 60 s no-goal drop.
+    world.plan_error = P.PlannerShed('gpu_pool_unavailable', reason='shed:cabinet_hot', retry_after_sec=15.0)
     seen = []
     orig = world.deps.store.write_status
     async def spy(status): seen.append(status); await orig(status)
@@ -393,10 +406,46 @@ def test_three_consecutive_sheds_end_the_session_and_post_no_goal(world):
     out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
     assert out.ended.end_reason == 'shed_x3' and out.ended.sheds == 3 and world.retro.goals == []
     waiting = [s for s in seen if s['state'] == 'waiting']
-    assert waiting and waiting[0]['waiting'] == {'reason': 'shed:cabinet_hot', 'retry_after_sec': 30.0}
+    assert waiting and waiting[0]['waiting'] == {'reason': 'shed:cabinet_hot', 'retry_after_sec': 15.0}
     sheds = [r for r in journal(world) if r['event'] == 'planner_shed']
     assert len(sheds) == 3 and sheds[0]['reason'] == 'shed:cabinet_hot'
     assert len(world.plans) == 3                              # one probe per retry window, no hammering
+    ops = [p.rsplit('/', 1)[-1] for m, p, _ in world.retro.calls if m == 'POST']
+    assert ops[-3:] == ['scripted', 'save', 'stop']
+
+
+def test_long_shed_lets_retro_drop_the_policy_and_the_orphan_game_is_closed(world):
+    # The shared backoff waits 30 s, then 60 s: Retro drops the policy at 60 s with no goal.
+    world.plan_error = P.PlannerShed('gpu_pool_unavailable', reason='shed:cabinet_hot', retry_after_sec=30.0)
+    out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
+    assert out.ended.end_reason == 'shed_wait_policy_lost' and world.retro.goals == []
+    ops = [p.rsplit('/', 1)[-1] for m, p, _ in world.retro.calls if m == 'POST']
+    assert ops[-2:] == ['save', 'stop'] and ops.count('scripted') == 1   # paused orphan, no human: closed
+    assert world.retro.session['state'] == 'stopped'
+
+
+def test_non_200_status_is_a_transport_problem_not_a_finished_game(world):
+    world.retro.on_tick = lambda r: setattr(r, 'get_status', (503, {'detail': 'retro_unavailable'})) \
+        if world.clock.t > 1_000_003 else None
+    out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
+    assert out.ended.end_reason == 'retro_unreachable:503'
+    ops = [p.rsplit('/', 1)[-1] for m, p, _ in world.retro.calls if m == 'POST']
+    assert ops[-3:] == ['scripted', 'save', 'stop']            # still releases the port
+
+
+def test_cancellation_during_start_still_closes_out(world):
+    async def go():
+        world.retro.control_gate = asyncio.Event()
+        task = asyncio.create_task(L.run_leisure_session(config(), deps=world.deps))
+        for _ in range(50):
+            await asyncio.sleep(0)
+        task.cancel()
+        world.retro.control_gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    asyncio.run(go())
+    assert journal(world)[0]['reason'] == 'cancelled' and LOCK_KEY not in world.redis.kv
+    assert world.retro.session['state'] == 'stopped'           # the game it started is closed
 
 
 def test_invalid_planner_answers_never_become_goals(world):

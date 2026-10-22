@@ -310,7 +310,8 @@ navigator and atlas (Lane A) to be deployed; until then the Hub code is idle.
   no `cabinet_hot`, no relay socket open and no human Retro action in 10 min, no
   game already running, one start per 3 h, 90 min per rolling 24 h, 30 min per
   session, `RETRO_LEISURE_ENABLED=true` (the rollback lever). Ends after 3
-  consecutive sheds. Loads the newest compatible save or starts fresh, and saves
+  consecutive sheds, or earlier (`shed_wait_policy_lost`) when Retro drops the
+  policy after 60 s with no goal; the paused orphan game is then closed. Loads the newest compatible save or starts fresh, and saves
   at the end. When a human may be in control (they acted, or presence cannot be
   read), it never saves over or stops their game: it only releases its port.
 - **Shared state** (`scripts/retro_presence.py`, Redis on `ORION_BUS_URL`):

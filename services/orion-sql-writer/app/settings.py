@@ -830,6 +830,9 @@ class Settings(BaseSettings):
     # Horizon resolver cadence: closes juniper_replied acts from Juniper turn starts and expires
     # producer-reported acts past their horizon. 0 disables (open acts then stay open).
     sql_writer_act_resolver_interval_sec: float = Field(60.0, alias="SQL_WRITER_ACT_RESOLVER_INTERVAL_SEC")
+    # Hourly kWh per Orion power source (app/orion_energy_rollup.py), kept after raw watts are
+    # pruned. 0 disables, and months of Orion energy history are then lost after 30 days.
+    orion_energy_rollup_interval_sec: float = Field(600.0, alias="ORION_ENERGY_ROLLUP_INTERVAL_SEC")
     # Rung 3 (thinking architecture, "bind the winner to action"): stamp an act's workspace_ref with
     # the world-first winner it answers (orion/grammar/act_ledger.py ACT_ANSWERS_WORKSPACE_REFS) and,
     # at close, write Orion's own non-final `acted` verdict on that loop (attention_loop_outcome,

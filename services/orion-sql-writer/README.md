@@ -925,6 +925,28 @@ and never touches the write path. substrate-runtime's storage_write reducer turn
 Flag: `SQL_WRITER_WRITE_HEALTH_ENABLED` (off in code, on in `.env_example`). Replay real history
 through the emitter and reducer: `python services/orion-sql-writer/evals/storage_write_replay.py --live`.
 
+## Orion energy hourly rollup (2026-10-22)
+
+`orion_energy_hourly` holds Orion's own kWh per UTC hour per source, written only by
+`app/orion_energy_rollup.py` and read by the Hub Orion Energy tab. Raw cluster watts are pruned
+after `ORION_BIOMETRICS_CLUSTER_RETENTION_DAYS` (30); this table has no retention, so months and
+years survive.
+
+- Sources: every node in `orion_biometrics_cluster.measurements_by_node` with `chassis_watts`
+  (BMC or PDU wall draw), plus `cooling` from `home_cooling_sample` (non-stale, device online).
+- kWh = each sample's watts held until the next sample, capped at 60 s (nodes) / 30 s (cooling),
+  so a gap is left uncovered rather than filled in. `covered_sec` says how much of the hour was
+  measured. No samples, no row.
+- Every `ORION_ENERGY_ROLLUP_INTERVAL_SEC` (600) it recomputes the last 6 hours; an empty table
+  backfills from every raw row still on disk (~3 s for 30 days). An upsert never lowers
+  `covered_sec`, so a half-pruned hour cannot overwrite a complete one.
+- Log: `[ORION_ENERGY_ROLLUP] tick_complete rows_upserted=N`.
+
+```sql
+SELECT source, date_trunc('day', hour_start) d, round(sum(kwh)::numeric, 1) kwh
+FROM orion_energy_hourly GROUP BY 1, 2 ORDER BY 2 DESC, 1 LIMIT 12;
+```
+
 ## Act ledger (rung 2, 2026-10-16)
 
 "Doing on one track" from `docs/superpowers/specs/2026-10-14-orion-thinking-architecture-design.md`.

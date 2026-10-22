@@ -16,7 +16,7 @@ import heapq
 from .observe import COLS, ROWS, HUD, summary, digest, tile_of
 
 POLICY_ID = 'zelda-navigator-v1'
-INTERVAL = 1 / 60  # one decision per native frame
+INTERVAL = 0  # send on every worker tick: one decision per native frame (60.0988 fps > 1/60 s)
 GOALS = ('exit', 'enter', 'fight', 'retreat', 'collect', 'explore', 'wait')
 PREDICTIONS = ('reach_room', 'enter_cave', 'item_gained', 'enemies_cleared', 'survive', 'unknown')
 UP, DOWN, LEFT, RIGHT, A = 16, 32, 64, 128, 256
@@ -121,7 +121,9 @@ def judge(prediction, start, obs):
     settled_play = obs['mode'] == 'play'
     if kind == 'reach_room':
         if settled_play and changed_place(start, obs):
-            return 'met' if obs['room'] == prediction['value'] else 'refuted'
+            # Dungeon and overworld room ids overlap: a level change never meets it.
+            same_level = obs['level'] == start['level']
+            return 'met' if same_level and obs['room'] == prediction['value'] else 'refuted'
     elif kind == 'enter_cave':
         if obs['mode'] in ('cave', 'stairs') or (obs['level'] != start['level'] and obs['level'] != 0):
             return 'met'
@@ -153,6 +155,7 @@ class ZeldaGoals:
         self.current_mask = 0
         self.latest = None
         self.until = 0  # read by Scripted.tick for applied-row attribution
+        self.idle_offers = 0  # consecutive offers that expired with no goal
         self.human_intervention = False
         self._reset_motor()
 
@@ -185,6 +188,7 @@ class ZeldaGoals:
         if not a or any(data[k] != a[k] for k in ('decision_id', 'port', 'expected_epoch')):
             raise ValueError('stale_decision')
         if self.accepted: raise ValueError('goal_active')
+        if data['port'] != 0: raise ValueError('unsupported_port')  # Zelda reads controller 1 only
         if now - self.offered_at > OFFER_TTL: raise ValueError('expired_decision')
         obs = self.latest or {}
         goal, prediction = data['goal'], data['prediction']
@@ -194,16 +198,23 @@ class ZeldaGoals:
             raise ValueError('prediction_value_mismatch')
         if goal['kind'] != 'wait' and (obs.get('status') != 'observed' or not obs['link']['controllable']):
             raise ValueError('observation_unknown')
+        if (goal['kind'] == 'fight' or prediction['kind'] == 'enemies_cleared') and not obs.get('enemies'):
+            raise ValueError('no_enemies_present')  # never a trivially met fight
         if goal['kind'] == 'fight' and goal['target'] != 'nearest' and not any(
                 e['slot'] == goal['target'] for e in obs.get('enemies', [])):
             raise ValueError('target_not_present')
         self.accepted = dict(data, attempt_id=data['decision_id'])
         self.deadline = self.until = now + data['budget_seconds']
-        self.start_obs = None
-        self.applied = 0
+        self.start_obs = None; self.start_frame = None
+        self.applied = 0; self.idle_offers = 0
         self._reset_motor()
         self.record('goal_committed', **data)
         return self._public_goal()
+
+    def note_applied(self, decision_id, mask):
+        """Count only inputs the arbiter really applied for this goal (not computed masks)."""
+        if self.accepted and decision_id == self.accepted['decision_id'] and mask:
+            self.applied += 1
 
     def abort(self, reason):
         """Policy stopped (takeover, pause, sponsor loss, deadline miss, load)."""
@@ -217,12 +228,13 @@ class ZeldaGoals:
         self.latest = obs; self.frame = frame
         if self.accepted:
             if self.start_obs is None:
+                if now >= self.deadline:  # never hang on a run of unknown observations
+                    return self._finish('budget_expired', 'unknown', obs)
                 if obs.get('status') != 'observed': self.current_mask = 0; return
                 self.start_obs = obs; self.start_frame = frame
                 self.prev_hearts = obs['hearts']['current']
                 self.record('goal_action_started', decision_id=self.accepted['decision_id'],
                             observation_frame=frame, observation_digest=digest(obs))
-            if self.current_mask: self.applied += 1
             self._evaluate(obs, now)
             if self.accepted:
                 self.current_mask = self._drive(obs) if obs.get('status') == 'observed' else 0
@@ -230,6 +242,7 @@ class ZeldaGoals:
         self.current_mask = 0
         stable = obs.get('status') == 'observed' and obs['link']['controllable']
         if stable and (self.attempt is None or now - self.offered_at > OFFER_TTL):
+            if self.attempt is not None: self.idle_offers += 1
             self.offer(port, epoch, frame, obs, now)
 
     # ---- end conditions ----------------------------------------------------------
@@ -301,7 +314,8 @@ class ZeldaGoals:
         self.prev_invincible = 0; self.backoff = 0
 
     def _blocked(self, obs):
-        learned = self.atlas.blocked(obs['level'], obs['room'], obs['mode']) if self.atlas else set()
+        learned = (self.atlas.blocked(obs['level'], obs['room'], obs['mode'], obs.get('walls_hash'))
+                   if self.atlas else set())
         return learned | self.blocked
 
     def _drive(self, obs):
@@ -331,7 +345,7 @@ class ZeldaGoals:
         if target is None: return
         self.bumps += 1
         self.blocked.add(target)
-        if self.atlas: self.atlas.mark_blocked(obs['level'], obs['room'], target, obs['mode'])
+        if self.atlas: self.atlas.mark_blocked(obs['level'], obs['room'], target, obs['mode'], obs.get('walls_hash'))
         self.record('bump', decision_id=self.accepted['decision_id'], room=obs['room'],
                     level=obs['level'], mode=obs['mode'], tile=list(target), link=[obs['link']['x'], obs['link']['y']])
         self.path = None  # replan around it

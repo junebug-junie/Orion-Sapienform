@@ -16,10 +16,10 @@ ROM, CORE = next(iter(ROMS)), next(iter(CORES))
 IDENTITY = dict(rom_sha256=ROM, core_sha256=CORE)
 
 
-def snapshot(mode=5, sub=0, room=0x77, x=120, y=141, facing=8, hv=0x22, partial=0xFF, sword=0,
+def snapshot(mode=5, sub=0, room=0x77, next_room=0, x=120, y=141, facing=8, hv=0x22, partial=0xFF, sword=0,
              rupees=0, enemies=(), blocked=None, ad=0, lift=0, paused=0, level=0, inv=0, drops=()):
     ram, save = bytearray(2048), bytearray(8192)
-    for addr, value in {0x12: mode, 0x13: sub, 0xEB: room, 0x70: x, 0x84: y, 0x98: facing,
+    for addr, value in {0x12: mode, 0x13: sub, 0xEB: room, 0xEC: next_room, 0x70: x, 0x84: y, 0x98: facing,
                         0x66F: hv, 0x670: partial, 0x657: sword, 0x66D: rupees, 0x34A: 0x89,
                         0xAD: ad, 0x506: lift, 0xE0: paused, 0x10: level, 0x4F0: inv}.items():
         ram[addr] = value
@@ -133,7 +133,9 @@ def run_goal(goal, prediction, world=None, frames=900, atlas=None, budget=30, se
     g.accept(data, 0)
     for f in range(frames):
         if setup: setup(f, world)
-        world.step(g.mask(0, f))
+        mask = g.mask(0, f)
+        if g.accepted: g.note_applied(g.accepted['decision_id'], mask)  # the arbiter applied it
+        world.step(mask)
         g.observe_frame(0, 2, f + 2, world.obs(), (f + 2) / 60)
         done = [r for r in rows if r['kind'] == 'goal_finished']
         if done: return done[-1], rows, g
@@ -168,7 +170,9 @@ def test_bump_marks_learned_blocked_tile_and_motor_replans(tmp_path):
                             World(hidden=hidden), atlas=atlas, frames=3000)
     bumps = [r for r in rows if r['kind'] == 'bump']
     assert bumps and row['bumps'] == len(bumps)
-    assert atlas.blocked(0, 0x77) and atlas.blocked(0, 0x77) <= {tuple(b['tile']) for b in bumps}
+    learned = atlas.blocked(0, 0x77, 'play', obs()['walls_hash'])
+    assert learned and learned <= {tuple(b['tile']) for b in bumps}
+    assert atlas.blocked(0, 0x77, 'play', 'another-layout') == set()  # never inherited by a new layout
     assert row['verdict'] == 'met'  # it found a way round
 
 
@@ -265,7 +269,7 @@ def test_atlas_records_only_observed_transitions_items_and_deaths(tmp_path):
     lineage = Atlas.new_lineage()
     a = Atlas(tmp_path, lineage, IDENTITY, 's1', now=lambda: 0)
     walk(a, [obs(), obs(x=64, y=77), obs(mode=0x10, x=64, y=77), obs(mode=0x0B, ad=2), obs(mode=0x0B, ad=2, sword=1),
-             obs(), obs(mode=7, room=0x77), obs(room=0x78), obs(room=0x78, partial=0x7F), obs(room=0x78, mode=0x11)])
+             obs(), obs(mode=7, room=0x77, next_room=0x78), obs(room=0x78), obs(room=0x78, partial=0x7F), obs(room=0x78, mode=0x11)])
     assert a.flush(force=True)
     doc = load(tmp_path, lineage)
     r119, r120 = doc['rooms']['0:119'], doc['rooms']['0:120']
@@ -281,7 +285,7 @@ def test_atlas_records_only_observed_transitions_items_and_deaths(tmp_path):
 def test_atlas_second_session_does_not_count_known_rooms(tmp_path):
     lineage = Atlas.new_lineage()
     a = Atlas(tmp_path, lineage, IDENTITY, 's1', now=lambda: 0)
-    walk(a, [obs(), obs(room=0x78)]); a.end_session(); a.flush(force=True)
+    walk(a, [obs(), obs(mode=7, next_room=0x78), obs(room=0x78)]); a.end_session(); a.flush(force=True)
     b = Atlas(tmp_path, lineage, IDENTITY, 's2', now=lambda: 0)
     walk(b, [obs(room=0x78), obs(), obs(room=0x67)]); b.flush(force=True)
     doc = load(tmp_path, lineage)
@@ -293,7 +297,7 @@ def test_atlas_identity_mismatch_bounds_and_io(tmp_path):
     lineage = Atlas.new_lineage()
     a = Atlas(tmp_path, lineage, IDENTITY, 's1', now=lambda: 0); walk(a, [obs()]); a.flush(force=True)
     other = Atlas(tmp_path, lineage, dict(rom_sha256='1' * 64, core_sha256=CORE), 's2', now=lambda: 0)
-    assert other.doc['rooms'] == {}  # never mixes a different ROM's map
+    assert other.doc['rooms'] == {} and other.lineage_id != lineage  # never mixes a different ROM's map
     with pytest.raises(ValueError): path_for(tmp_path, '../etc')
     empty = Atlas(tmp_path, Atlas.new_lineage(), IDENTITY, 's3', now=lambda: 0)
     assert empty.flush(force=True) is False  # nothing observed: no file
@@ -350,7 +354,7 @@ def test_leisure_script_grant_stays_preemptible_and_stops_on_human():
     g = a.control('leisure:run', 0, 'acquire', 0, leisure=True)
     s.start('leisure:run', 0, 60, 0, 0, g['epoch'], True)
     assert a.leases[0]['leisure'] and s.active[0]['policy_id'] == 'zelda-navigator-v1'
-    assert s.active[0]['interval'] == 1 / 60
+    assert s.active[0]['interval'] == 0
     a.control('browser', 0, 'acquire', .05)
     s.tick(.06)
     assert not s.active and rows[-1]['reason'] == 'human_takeover'
@@ -469,10 +473,87 @@ def test_nova_rejects_goalv2_and_leisure(tmp_path):
 
 def test_atlas_endpoint_returns_neighbourhood(tmp_path):
     lineage = Atlas.new_lineage()
-    a = Atlas(tmp_path, lineage, IDENTITY, 's1', now=lambda: 0); walk(a, [obs(), obs(room=0x78)]); a.flush(force=True)
+    a = Atlas(tmp_path, lineage, IDENTITY, 's1', now=lambda: 0); walk(a, [obs(), obs(mode=7, next_room=0x78), obs(room=0x78)]); a.flush(force=True)
     status = dict(observation=observe.summary(obs(room=0x78)), atlas=dict(lineage_id=lineage))
     client, app, m, _, h = api(tmp_path, 'zelda-1-ram-v1', status)
     with client as c:
         app.state.manager = m
         hood = c.get('/sessions/' + 's' * 36 + '/atlas', headers=h).json()
     assert hood['room'] == 0x78 and hood['adjacent']['W']['known'] and set(hood['map']) == {'0:119', '0:120'}
+
+
+# ---- review regressions (2026-10-22) -----------------------------------------------------
+def test_motor_sends_every_native_frame_and_counts_only_applied_inputs():
+    # Review: a 1/60 s interval against 60.0988 fps sent every other frame and dropped swings.
+    a = Arbiter([0]); g = a.control('h', 0, 'acquire', 0)
+    s = Scripted(a, lambda *x, **y: None, goals_factory=lambda: ZeldaGoals(lambda *x, **y: None))
+    s.start('h', 0, 60, 0, 0, g['epoch'], True)
+    goals = s.active[0]['goals']
+    goals.observe_frame(0, 2, 0, obs(), 0)
+    goals.accept(dict(port=0, expected_epoch=2, decision_id=goals.attempt['decision_id'], goal={'kind': 'exit', 'dir': 'E'},
+                      prediction={'kind': 'unknown', 'value': None}, rationale='t', planner_id='t', budget_seconds=30), 0)
+    w = World(); sends = frames = 0
+    for f in range(600):
+        now = f / 60.0988
+        seq = s.active[0]['seq']; s.tick(now); sends += s.active[0]['seq'] > seq; frames += 1
+        masks, applied, _ = a.frame(now)
+        w.step(masks[0])
+        goals.observe_frame(0, 2, f + 1, w.obs(), now)
+        for e in applied: s.annotate(e)
+        if not goals.accepted: break
+    assert sends == frames  # one send per frame while the goal runs
+    assert 0 < goals.last_finished['applied_frames'] <= sends
+
+
+def test_idle_motor_sends_no_rows_and_leisure_without_goals_stops():
+    a = Arbiter([0]); g = a.control('leisure:run', 0, 'acquire', 0, leisure=True); rows = []
+    s = Scripted(a, lambda kind, **f: rows.append(dict(kind=kind, **f)), goals_factory=lambda: ZeldaGoals(lambda *x, **y: None))
+    s.start('leisure:run', 0, 600, 0, 0, g['epoch'], True)
+    goals = s.active[0]['goals']
+    s.tick(0); a.frame(0); first = s.active[0]['seq']
+    for f in range(1, 100): s.tick(f / 60); a.frame(f / 60)
+    assert s.active[0]['seq'] == first  # idle and neutral: hold refreshed, no new input rows
+    for t in (1, 32, 63, 94):
+        goals.observe_frame(0, g['epoch'], t, obs(), t)
+        if s.active: s.active[0]['until'] = 1e9; a.leases[0]['expires'] = t + 1
+        s.tick(t)
+    assert not s.active and rows[-1]['reason'] == 'leisure_sponsor_lost'
+
+
+def test_reach_room_across_a_level_change_is_refuted_not_met():
+    assert judge({'kind': 'reach_room', 'value': 0x77}, obs(room=0x10), obs(room=0x77)) == 'met'
+    observe.VERDICTS['level_dungeon'] = 'CONFIRMED'
+    try:
+        assert judge({'kind': 'reach_room', 'value': 0x77}, obs(), obs(room=0x77, level=1)) == 'refuted'
+    finally:
+        observe.VERDICTS['level_dungeon'] = 'UNSETTLED'
+
+
+def test_fight_or_enemies_cleared_refused_on_an_empty_room_and_unknown_cannot_hang():
+    g = ZeldaGoals(lambda *x, **y: None)
+    g.observe_frame(0, 2, 1, obs(), 0)
+    base = dict(port=0, expected_epoch=2, decision_id=g.attempt['decision_id'], goal={'kind': 'fight', 'target': 'nearest'},
+                prediction={'kind': 'survive', 'value': None}, rationale='t', planner_id='t', budget_seconds=3)
+    with pytest.raises(ValueError, match='no_enemies_present'): g.accept(base, 0)
+    with pytest.raises(ValueError, match='no_enemies_present'):
+        g.accept(base | {'goal': {'kind': 'wait'}, 'prediction': {'kind': 'enemies_cleared', 'value': None}}, 0)
+    with pytest.raises(ValueError, match='stale_decision|unsupported_port'): g.accept(base | {'port': 1}, 0)
+    g.accept(base | {'goal': {'kind': 'wait'}}, 0)
+    for t in range(1, 5): g.observe_frame(0, 2, t, {'status': 'unknown'}, t)
+    assert g.last_finished['outcome'] == 'budget_expired' and g.last_finished['verdict'] == 'unknown'
+
+
+def test_atlas_never_invents_exits_lineages_or_places(tmp_path):
+    a = Atlas(tmp_path, 'not-a-lineage', IDENTITY, 's1', now=lambda: 0)
+    assert len(a.lineage_id) == 32  # a damaged save field gets a fresh lineage
+    walk(a, [obs(room=0x76), obs(mode=0x11, room=0x76), obs(room=0x77)])  # died, respawned next door
+    assert a.doc['rooms']['0:118']['exits_seen']['E'] is None
+    a.flush(force=True)
+    hood = neighbourhood(a.doc, 'unknown', 5)
+    assert hood['level'] == 'unknown' and hood['current'] is None and hood['adjacent'] == {}
+    assert neighbourhood(a.doc, 0, None)['adjacent'] == {}
+    mismatch = Atlas(tmp_path, a.lineage_id, dict(rom_sha256='1' * 64, core_sha256=CORE), 's2', now=lambda: 0)
+    assert mismatch.lineage_id != a.lineage_id  # never overwrites another build's file
+    bad = path_for(tmp_path, a.lineage_id); doc = json.loads(bad.read_text())
+    doc['rooms']['0:119'].pop('damage_taken'); bad.write_text(json.dumps(doc))
+    assert load(tmp_path, a.lineage_id) is None  # a malformed shape is refused, not trusted

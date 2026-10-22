@@ -39,17 +39,41 @@ def path_for(root, lineage_id):
     return Path(root) / 'atlas' / f'{lineage_id}.json'
 
 
+ROOM_KEYS = {'first_seen', 'first_session', 'visits', 'exits_seen', 'caves', 'learned_blocked',
+             'enemy_types_seen', 'deaths', 'damage_taken', 'last_visit'}
+
+
+def valid(doc):
+    """Shape check, so a damaged file can never raise inside the worker frame loop."""
+    try:
+        return (doc.get('profile') == PROFILE and isinstance(doc.get('game'), dict)
+                and LINEAGE.match(doc['lineage_id']) and isinstance(doc['items_gained'], list)
+                and isinstance(doc['sessions'], list) and isinstance(doc['rooms'], dict)
+                and all(isinstance(r, dict) and ROOM_KEYS <= set(r) and isinstance(r['exits_seen'], dict)
+                        and set('NSEW') <= set(r['exits_seen']) and isinstance(r['caves'], list)
+                        and isinstance(r['learned_blocked'], list) for r in doc['rooms'].values())
+                and all(isinstance(s, dict) for s in doc['sessions']))
+    except (AttributeError, KeyError, TypeError):
+        return False
+
+
 def load(root, lineage_id):
-    path = path_for(root, lineage_id)
-    if not path.is_file() or path.stat().st_size > MAX_BYTES: return None
-    try: doc = json.loads(path.read_text())
-    except (OSError, ValueError): return None
-    return doc if isinstance(doc, dict) and doc.get('profile') == PROFILE else None
+    try:
+        path = path_for(root, lineage_id)
+        if not path.is_file() or path.stat().st_size > MAX_BYTES: return None
+        doc = json.loads(path.read_text())
+    except (OSError, ValueError, RecursionError): return None
+    return doc if isinstance(doc, dict) and valid(doc) else None
 
 
 def neighbourhood(doc, level, room):
-    """Planner/Hub view: this room, its 4 neighbours, unexplored exits, caves, deaths."""
+    """Planner/Hub view: this room, its 4 neighbours, unvisited sides, caves, deaths.
+    An unknown level or room is reported as unknown, never substituted."""
     rooms = {k: v for k, v in doc.get('rooms', {}).items() if not k.endswith(':cave')}
+    if not isinstance(level, int) or not isinstance(room, int) or not 0 <= room <= 127:
+        return dict(lineage_id=doc['lineage_id'], level='unknown' if not isinstance(level, int) else level,
+                    room=room if isinstance(room, int) else None, current=None, adjacent={},
+                    rooms_known=len(rooms), rooms_with_unvisited_sides=[], caves=[], deaths=[], map={})
     here = rooms.get(room_key(level, room))
     near = {}
     for delta, d in DELTA.items():
@@ -57,13 +81,15 @@ def neighbourhood(doc, level, room):
         if 0 <= other <= 127 and not (d in 'EW' and other // 16 != room // 16):  # 8x16 grid
             near[d] = dict(room=other, known=room_key(level, other) in rooms,
                            seen_exit=(here or {}).get('exits_seen', {}).get(d))
+    # A side with no recorded crossing. It may be a wall; the atlas has no way to know.
     unexplored = sorted(k for k, v in rooms.items() if k.startswith(f'{level}:')
                         for d in 'NSEW' if v['exits_seen'].get(d) is None)
     return dict(lineage_id=doc['lineage_id'], level=level, room=room, current=here, adjacent=near,
                 rooms_known=sum(1 for k in rooms if k.startswith(f'{level}:')),
-                rooms_with_unexplored_exits=sorted(set(unexplored)),
-                caves=[dict(room=k, **c) for k, v in rooms.items() for c in v['caves']],
-                deaths=[dict(room=k, deaths=v['deaths']) for k, v in rooms.items() if v['deaths']],
+                rooms_with_unvisited_sides=sorted(set(unexplored)),
+                caves=[dict(room=k, **c) for k, v in rooms.items() if k.startswith(f'{level}:') for c in v['caves']],
+                deaths=[dict(room=k, deaths=v['deaths']) for k, v in rooms.items()
+                        if v['deaths'] and k.startswith(f'{level}:')],
                 map={k: dict(visits=v['visits'], exits=v['exits_seen'],
                              caves=len(v['caves']), deaths=v['deaths'])
                      for k, v in rooms.items() if k.startswith(f'{level}:')})
@@ -83,10 +109,14 @@ class Atlas:
     def open(self, lineage_id):
         """Switch lineage (session start or a save load). Never mixes two lineages."""
         if getattr(self, 'doc', None): self.end_session(); self.flush(force=True)
-        self.lineage_id = lineage_id
+        if not isinstance(lineage_id, str) or not LINEAGE.match(lineage_id):
+            lineage_id = self.new_lineage()  # a damaged save field never reaches path_for
         doc = load(self.root, lineage_id)
         if doc and doc['game'] != {k: self.identity[k] for k in ('rom_sha256', 'core_sha256')}:
-            doc = None; self.record('atlas_identity_mismatch', lineage_id=lineage_id)
+            # Never overwrite another build's atlas: start a new lineage instead.
+            self.record('atlas_identity_mismatch', lineage_id=lineage_id)
+            doc = None; lineage_id = self.new_lineage()
+        self.lineage_id = lineage_id
         self.doc = doc or dict(profile=PROFILE, lineage_id=lineage_id,
                                game={k: self.identity[k] for k in ('rom_sha256', 'core_sha256')},
                                updated_at=utc(), rooms={}, items_gained=[], sessions=[])
@@ -94,7 +124,7 @@ class Atlas:
                             deaths=0, decisions=0, met=0, refuted=0)
         self.doc['sessions'].append(self.session)
         del self.doc['sessions'][:-MAX_SESSIONS]
-        self.prev = None; self.place = None
+        self.prev = None; self.place = None; self.scroll_to = None
         self.dirty = True
 
     # ---- observed-only writers ---------------------------------------------------
@@ -102,6 +132,7 @@ class Atlas:
         if obs.get('status') != 'observed' or obs['level'] == 'unknown': return
         prev = self.prev; self.prev = obs
         mode = obs['mode']
+        if mode == 'scroll': self.scroll_to = (obs['level'], obs['next_room'])
         if mode in ('play', 'cave'):
             place = (obs['level'], obs['room'], mode)
             if place != self.place:
@@ -140,7 +171,10 @@ class Atlas:
         room = self._room(obs)
         room['visits'] += 1; room['last_visit'] = utc(); self.dirty = True
         old = self.place
-        if (old and old[2] == 'play' and obs['mode'] == 'play' and old[0] == obs['level']
+        scrolled = getattr(self, 'scroll_to', None) == (obs['level'], obs['room'])
+        self.scroll_to = None
+        # An exit is only a seen scroll ($EC) into this room, never a respawn or a load.
+        if (scrolled and old and old[2] == 'play' and obs['mode'] == 'play' and old[0] == obs['level']
                 and old[1] != obs['room'] and obs['room'] - old[1] in DELTA):
             d = DELTA[obs['room'] - old[1]]
             self.doc['rooms'][room_key(old[0], old[1])]['exits_seen'][d] = obs['room']
@@ -167,18 +201,21 @@ class Atlas:
                 if item not in c['contents_seen']: c['contents_seen'].append(item)
         self.dirty = True
 
-    def mark_blocked(self, level, room, tile, mode='play'):
+    def mark_blocked(self, level, room, tile, mode='play', walls_hash=None):
+        """A bump, keyed to the room layout it happened on: a changed layout (a bombed
+        wall, an opened door) never inherits it."""
         if level == 'unknown': return
         key = room_key(level, room) + (':cave' if mode == 'cave' else '')
         r = self.doc['rooms'].get(key)
         if r is None: return
-        tile = list(tile)
-        if tile not in r['learned_blocked'] and len(r['learned_blocked']) < MAX_BLOCKED:
-            r['learned_blocked'].append(tile); self.dirty = True
+        entry = [tile[0], tile[1], walls_hash]
+        if entry not in r['learned_blocked'] and len(r['learned_blocked']) < MAX_BLOCKED:
+            r['learned_blocked'].append(entry); self.dirty = True
 
-    def blocked(self, level, room, mode='play'):
+    def blocked(self, level, room, mode='play', walls_hash=None):
         key = room_key(level, room) + (':cave' if mode == 'cave' else '')
-        return {tuple(t) for t in self.doc['rooms'].get(key, {}).get('learned_blocked', [])}
+        return {(t[0], t[1]) for t in self.doc['rooms'].get(key, {}).get('learned_blocked', [])
+                if len(t) == 3 and t[2] == walls_hash}
 
     def decision(self, verdict):
         self.session['decisions'] += 1
@@ -192,12 +229,18 @@ class Atlas:
     def flush(self, force=False):
         if not self.dirty or self.disabled: return False
         if not force and self.now() - self.flushed_at < FLUSH_SECONDS: return False
-        path = path_for(self.root, self.lineage_id)
-        if not self.doc['rooms'] and not path.exists(): return False  # nothing observed yet
+        try:
+            path = path_for(self.root, self.lineage_id)
+            if not self.doc['rooms'] and not path.exists(): return False  # nothing observed yet
+        except (OSError, ValueError) as exc:
+            self.disabled = 'atlas_io_failed'; self.record('atlas_io_failed', error=type(exc).__name__)
+            return False
         self.doc['updated_at'] = utc()
         data = json.dumps(self.doc, separators=(',', ':'))
         while len(data) > MAX_BYTES and len(self.doc['sessions']) > 1:
-            del self.doc['sessions'][0]; data = json.dumps(self.doc, separators=(',', ':'))
+            # Drop the older half per pass: a bounded number of re-dumps in the frame loop.
+            del self.doc['sessions'][:max(1, (len(self.doc['sessions']) - 1) // 2)]
+            data = json.dumps(self.doc, separators=(',', ':'))
         if len(data) > MAX_BYTES:
             self.disabled = 'atlas_full'; self.record('atlas_full', lineage_id=self.lineage_id); return False
         try:

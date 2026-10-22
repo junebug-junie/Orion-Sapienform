@@ -65,7 +65,10 @@ class Scripted:
                 self.stop(port, 'budget_expired')
             elif now >= lease['expires']:
                 self.stop(port, 'policy_deadline_missed')
-            elif now >= s['next']:
+            elif (s['goals'] is not None and s['sponsor'].startswith('leisure:')
+                    and getattr(s['goals'], 'idle_offers', 0) >= 2):
+                self.stop(port, 'leisure_sponsor_lost')  # no goal for two offer windows (60 s)
+            elif now >= s['next'] or s['interval'] == 0:
                 # Four decisions jumping right, eleven walking right. A fixed
                 # diagnostic sequence, independent of pixels, RAM, or outcomes.
                 mask = (s['goals'].mask(now, s['seq']) if s['goals'] else
@@ -73,7 +76,13 @@ class Scripted:
                 goals = s['goals']
                 s['goal_attempt_id'] = (goals.accepted['attempt_id']
                     if goals and goals.accepted_current() and now < goals.until else None)
-                s['seq'] += 1
+                if (s['interval'] == 0 and mask == 0 and s.get('last_mask') == 0
+                        and not (goals and goals.accepted_current())):
+                    # GoalV2 idle: the held neutral mask is enough. Refresh the hold
+                    # without a new input row (60 rows/s would fill the journal).
+                    lease['expires'] = now+HOLD_TTL
+                    continue
+                s['seq'] += 1; s['last_mask'] = mask
                 self.authority.submit(s['connection'],
                     dict(s['grant'], seq=s['seq'], mask=mask), now)
                 lease['expires'] = now+HOLD_TTL
@@ -85,6 +94,8 @@ class Scripted:
             event['policy_id'] = s['policy_id']
             if s['goal_attempt_id'] and event['seq'] == s['seq']:
                 event['goal_attempt_id'] = s['goal_attempt_id']
+                if hasattr(s['goals'], 'note_applied'):
+                    s['goals'].note_applied(s['goal_attempt_id'], event['mask'])
 
     def goal(self, sponsor, data, now):
         s = self.active.get(data['port'])

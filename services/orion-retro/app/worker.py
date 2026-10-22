@@ -114,6 +114,9 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
                             active = scripted.active.get(port)
                             if active and active['grant']['epoch'] != data['expected_epoch']:
                                 raise ValueError('stale_script_epoch')
+                            if (active and cmd['connection'].startswith('leisure:')
+                                    and active['sponsor'] != cmd['connection']):
+                                raise ValueError('not_script_sponsor')
                             scripted.stop(port, 'operator_stop')
                         result = {'scripted': scripted.public()}
                     elif op == 'goal':
@@ -131,9 +134,10 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
                         result = {'saved': meta}
                     elif op == 'load':
                         if state not in ('running', 'paused'): raise ValueError(not_running())
-                        meta = load(data.get('save_id'))
-                        # Scripted/goal observations describe the replaced game; stop them.
+                        # Scripted/goal observations describe the replaced game; stop them
+                        # first, so a goal never drives (or is counted in) the loaded state.
                         scripted.cancel('load')
+                        meta = load(data.get('save_id'))
                         deadline = time.monotonic()
                         result = {'loaded': meta}
                     elif op in ('pause', 'resume', 'disconnect'):

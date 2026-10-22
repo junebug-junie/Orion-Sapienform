@@ -93,9 +93,10 @@ class Harness:
 
     def tick(self):
         self.scripted.tick(self.now)
-        masks, _, _ = self.authority.frame(self.now)
+        masks, applied, _ = self.authority.frame(self.now)
         self.core.step(*masks); self.frame += 1
         self.obs = self.runtime.after_frame(self.frame, self.now, self.scripted.active)
+        for event in applied: self.scripted.annotate(event)  # same order as the worker
 
     def goal(self, goal, prediction, budget=20, rationale='native eval fixture sequence', retries=3):
         """Commit one goal and run it to its end; re-issue it after an interruption (a hit)."""
@@ -166,7 +167,7 @@ def _run(args, out, journals):
     # The cave's invisible barrier: the room map is open above the item row, the game is not.
     r = h.goal({'kind': 'collect', 'tile': {'x': 15, 'y': 6}}, {'kind': 'unknown'}, budget=8); seq.append(r)
     bumps = [x for x in h.rows if x['kind'] == 'bump']
-    blocked = h.runtime.atlas.blocked(0, 0x77, 'cave')
+    blocked = h.runtime.atlas.blocked(0, 0x77, 'cave', h.obs['walls_hash'])
     check(results, 'bump marks a learned-blocked tile', bumps and blocked, bumps=bumps[:3], blocked=sorted(blocked))
     r = h.goal({'kind': 'collect', 'tile': {'x': 15, 'y': 12}}, {'kind': 'item_gained'}); seq.append(r)
     check(results, 'collect sword (RAM $657 = 1)', r['verdict'] == 'met' and h.obs['items']['sword'] == 1,

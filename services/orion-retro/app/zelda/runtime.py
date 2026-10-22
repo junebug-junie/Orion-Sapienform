@@ -2,7 +2,7 @@
 import time
 from .observe import ZeldaObserver, summary
 from .navigate import ZeldaGoals
-from .atlas import Atlas
+from .atlas import Atlas, LINEAGE
 from ..saves import available
 
 
@@ -37,6 +37,7 @@ class ZeldaRuntime:
 
     def on_load(self, lineage_id, initial=False):
         if not self.atlas: return
+        if not (isinstance(lineage_id, str) and LINEAGE.match(lineage_id)): lineage_id = None
         if lineage_id and lineage_id != self.atlas.lineage_id or (not lineage_id and not initial):
             self.atlas.open(lineage_id or Atlas.new_lineage())
             self.record('atlas_opened', lineage_id=self.atlas.lineage_id)

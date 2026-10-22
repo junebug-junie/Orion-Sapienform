@@ -104,11 +104,12 @@ def create_app(settings=None):
         z = m.session.get('zelda') or {}
         lineage = (z.get('atlas') or {}).get('lineage_id'); obs = z.get('observation') or {}
         if not lineage: raise HTTPException(404, 'no_atlas')
-        doc = zelda_atlas.load(settings.saves, lineage)
+        doc = await asyncio.to_thread(zelda_atlas.load, settings.saves, lineage)
         if doc is None: raise HTTPException(404, 'atlas_not_written_yet')
-        level = obs.get('level') if obs.get('status') == 'observed' and obs.get('level') != 'unknown' else 0
-        room = obs.get('room') if obs.get('status') == 'observed' else None
-        return zelda_atlas.neighbourhood(doc, level, room if room is not None else -1)
+        observed = obs.get('status') == 'observed'
+        # Unknown stays unknown: no level 0 or room -1 stand-ins.
+        return zelda_atlas.neighbourhood(doc, obs.get('level') if observed else 'unknown',
+                                         obs.get('room') if observed else None)
 
     @app.post('/sessions/{sid}/{operation}')
     async def lifecycle(sid: str, operation: str, request: Request):
@@ -122,8 +123,9 @@ def create_app(settings=None):
                                    body.model_dump(exclude={'connection_id', 'leisure_id', 'generation'}))
         if operation in ('scripted', 'control'):
             raw = await request.body()
-            try: leisure = isinstance(json.loads(raw), dict) and 'leisure_id' in json.loads(raw)
-            except ValueError: leisure = False
+            try: parsed = json.loads(raw)
+            except (ValueError, RecursionError): parsed = None
+            leisure = isinstance(parsed, dict) and parsed.get('leisure_id') is not None
             if leisure:
                 model = LeisureScriptControl if operation == 'scripted' else LeisureControl
                 try: body = model.model_validate_json(raw)
@@ -134,7 +136,7 @@ def create_app(settings=None):
                     return await m.command('scripted', sponsor_live(m, body),
                                            body.model_dump(exclude={'connection_id', 'leisure_id', 'generation'}))
                 return await m.command('control', sponsor_live(m, body),
-                                       dict(port=body.port, action=body.action, leisure=True))
+                                       dict(port=body.port, action=body.action, leisure=body.leisure_id is not None))
         if operation == 'goal':
             if not settings.cognition_enabled: raise HTTPException(503, 'retro_cognition_disabled')
             try: body = Goal.model_validate_json(await request.body())

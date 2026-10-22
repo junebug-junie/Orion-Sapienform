@@ -43,7 +43,8 @@ DELTA = {
     "rooms_new": [f"0:{r}" for r in (0x77, 0x78, 0x79, 0x67, 0x68, 0x69, 0x57, 0x58, 0x59)],
     "caves_new": ["0:77:c1", "0:67:c1", "0:59:c1"],
     "items_gained": [{"item": "sword", "value": 1, "room": "0:77"}],
-    "deaths": [{"room": "0:79"}, {"room": "0:79"}],
+    "deaths": 2,
+    "death_rooms": ["0:79"],
 }
 
 
@@ -59,7 +60,7 @@ def test_summary_is_facts_and_counts_like_the_spec_example() -> None:
                          "died twice, 14 of 31 predictions met.")
     assert (s.rooms_new, s.caves_new, s.deaths, s.death_rooms) == (9, 3, 2, ["0:79"])
     assert (s.decisions, s.predictions_met, s.predictions_refuted, s.predictions_unknown) == (31, 14, 12, 5)
-    assert s.human_share == 0.0 and not s.played_together
+    assert s.human_share == 0.0 and not s.played_together and s.control_basis == "frames"
     assert _summary() == s  # deterministic
 
 
@@ -88,9 +89,47 @@ def test_control_share_is_per_port_and_summed() -> None:
     assert s.human_share == pytest.approx(350 / 450) and s.played_together
 
 
-def test_no_controlled_frames_claims_no_share() -> None:
+def test_no_frame_lines_leisure_is_orions_by_the_sponsor_rule_co_play_is_unknown() -> None:
     s = _summary(human=0, orion=0)
-    assert s.human_share is None and not s.played_together
+    assert (s.control_basis, s.human_share, s.played_together) == ("leisure_sponsor", 0.0, False)
+    c = _summary(human=0, orion=0, kind="co_play")
+    assert (c.control_basis, c.human_share, c.played_together) == ("unknown", None, False)
+    assert c.summary.startswith("Played The Legend of Zelda with a human for 22 min (control share not recorded)")
+
+
+def test_unrecorded_atlas_counts_are_left_out_never_zero() -> None:
+    s = _summary(delta={})
+    assert (s.rooms_new, s.caves_new, s.deaths) == (None, None, None)
+    assert s.summary == "Played The Legend of Zelda solo for 22 min, 14 of 31 predictions met."
+
+
+def test_verdict_counts_stand_in_when_the_journal_has_no_goal_lines() -> None:
+    journal = [e for e in _journal() if e["kind"] != "goal_finished"]
+    s = rx.build_session_summary("s", journal, {"rooms_new": 4, "deaths": 1}, kind="leisure", game_id="zelda",
+                                 verdict_counts={"met": 5, "refuted": 2, "unknown": 1}, decisions=9)
+    assert (s.decisions, s.predictions_met, s.predictions_refuted, s.predictions_unknown) == (9, 5, 2, 2)
+    assert s.summary.endswith("4 new rooms, died once, 5 of 9 predictions met.")
+
+
+def test_lane_b_session_end_maps_onto_the_builder() -> None:
+    ended = {"session_id": "retro-1", "lineage_id": "lin-1", "leisure_id": "l1", "game_id": "the-legend-of-zelda",
+             "started_at": 1792699320.0, "ended_at": 1792700640.0, "end_reason": "session_cap",
+             "act_id": "d:1", "decisions_planned": 31, "verdicts": {"met": 14, "refuted": 12, "unknown": 3},
+             "atlas_session": {"session_id": "retro-1", "rooms_new": 9, "deaths": 2, "decisions": 31}}
+    kw = rx.leisure_inputs(ended)
+    assert (kw["kind"], kw["dispatch_id"], kw["atlas_delta"]) == ("leisure", "d:1", {"rooms_new": 9, "deaths": 2})
+    s = rx.build_session_summary(**kw)
+    assert s.summary == ("Played The Legend of Zelda solo for 22 min, 9 new rooms, died twice, "
+                         "14 of 31 predictions met.")
+    assert (s.started_at.isoformat(), s.end_reason) == ("2026-10-22T20:02:00+00:00", "session_cap")
+    # Without Lane A's atlas record: the room and death counts are simply not claimed.
+    bare = rx.build_session_summary(**rx.leisure_inputs({k: v for k, v in ended.items() if k != "atlas_session"}))
+    assert bare.summary == "Played The Legend of Zelda solo for 22 min, 14 of 31 predictions met."
+
+
+def test_game_title_by_id_segment() -> None:
+    assert rx.game_title("the-legend-of-zelda") == rx.game_title("zelda-prg0") == "The Legend of Zelda"
+    assert rx.game_title("nova-1") == "nova-1"
 
 
 def test_a_replayed_goal_line_counts_once() -> None:
@@ -108,7 +147,7 @@ def test_unbounded_journal_is_not_summarized() -> None:
 def test_no_decisions_and_unknown_game_render_plainly() -> None:
     s = rx.build_session_summary("s", _journal(met=0, refuted=0, unknown=0, minutes=0), {}, kind="leisure",
                                  game_id="nova-1")
-    assert s.summary == "Played nova-1 solo for under a minute, 0 new rooms, no planner decisions."
+    assert s.summary == "Played nova-1 solo for under a minute, no planner decisions."
 
 
 def test_card_is_an_active_retro_play_memory_linked_to_session_and_lineage() -> None:
@@ -137,7 +176,7 @@ def test_lazy_ddl_and_migration_declare_the_same_columns() -> None:
     migration = "\n".join(l for l in MIGRATION.read_text().splitlines() if not l.startswith("--"))
     mig_cols = columns(migration)
     ddl_cols = columns(rx.DDL.split("CREATE INDEX")[0])
-    assert len(mig_cols) == 29 and mig_cols[0] == "session_id" and mig_cols[-1] == "created_at"
+    assert len(mig_cols) == 30 and mig_cols[0] == "session_id" and mig_cols[-1] == "created_at"
     assert mig_cols == ddl_cols
     assert list(rx._COLUMNS) == [c for c in mig_cols if c not in ("memory_card_id", "card_error", "created_at")]
     assert "-- ORION-MIGRATION-REQUIRED-BY: orion-hub, orion-durable-runs" in MIGRATION.read_text()

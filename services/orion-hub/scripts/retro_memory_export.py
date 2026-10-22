@@ -1,12 +1,13 @@
 """Retro memory export: one deterministic summary per finished Retro session (Orion plays Zelda, F).
 
-Spec: docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md section F. Called once at session
-end (co-play or leisure) by the session's owner (Lane B: scripts/retro_leisure.py and the co-play
-session close) with the session journal and the atlas delta:
+Spec: docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md section F. Called once per
+finished session:
 
-    await export_session(pool=app.state.memory_pg_pool, bus=bus, session_id=..., journal=[...],
-                         atlas_delta={...}, kind="leisure", game_id="zelda-prg0", lineage_id=...,
-                         dispatch_id=...)
+- leisure: scripts/retro_leisure_listener.py, with Lane B's ``LeisureOutcome.ended``
+  (``export_leisure_outcome``);
+- co-play: the co-play session close (Lane B, not wired in this patch) with its journal and atlas
+  delta (``export_session(pool=, bus=, session_id=, journal=[...], atlas_delta={...}, kind="co_play",
+  game_id=, lineage_id=)``).
 
 What it writes, in order:
 
@@ -30,7 +31,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterable, Literal, Mapping
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -59,8 +60,10 @@ ITEM_WORDS = {("sword", 1): "wooden sword", ("sword", 2): "white sword", ("sword
 
 
 def game_title(game_id: str) -> str:
-    for prefix, title in GAME_TITLES.items():
-        if game_id == prefix or game_id.startswith(prefix + "-"):
+    """By id segment ("zelda-prg0", "the-legend-of-zelda" -> The Legend of Zelda); else the id."""
+    segments = set(game_id.lower().split("-"))
+    for key, title in GAME_TITLES.items():
+        if key in segments:
             return title
     return game_id
 
@@ -90,10 +93,17 @@ def build_session_summary(
     game_id: str,
     lineage_id: str | None = None,
     dispatch_id: str | None = None,
+    verdict_counts: Mapping[str, int] | None = None,
+    decisions: int | None = None,
 ) -> RetroPlaySessionSummaryV1:
-    """Pure and deterministic: the same journal and delta give the same summary. Raises ValueError
-    when the journal has no ``session_started`` or ``session_ended`` time: a session with no
-    observed bounds is not summarized (no empty-shell memory)."""
+    """Pure and deterministic: the same inputs give the same summary.
+
+    Decisions and verdicts come from ``goal_finished`` journal lines (distinct ``decision_id``), or,
+    when the journal has none, from ``verdict_counts`` ({met, refuted, unknown}) and ``decisions``
+    (goals the planner produced and Retro accepted; a goal still running at the end has no verdict
+    and counts as unknown). Raises ValueError when the journal has no ``session_started`` or
+    ``session_ended`` time: a session with no observed bounds is not summarized (no empty-shell
+    memory)."""
     entries = [e if isinstance(e, RetroJournalEntryV1) else RetroJournalEntryV1.model_validate(e) for e in journal]
     delta = (atlas_delta if isinstance(atlas_delta, RetroAtlasDeltaV1)
              else RetroAtlasDeltaV1.model_validate(atlas_delta or {}))
@@ -115,55 +125,88 @@ def build_session_summary(
     human = sum(c.human_frames for c in control)
     orion = sum(c.orion_frames for c in control)
     total = human + orion
-    share = (human / total) if total else None
+    if total:
+        basis, share = "frames", human / total
+    elif kind == "leisure":
+        # Any human acquire preempts the leisure grant and ends the session: every frame was Orion's.
+        basis, share = "leisure_sponsor", 0.0
+    else:
+        basis, share = "unknown", None
     together = share is not None and share > 0.5
 
     goals: dict[str, RetroJournalEntryV1] = {}
     for i, e in enumerate(entries):
         if e.kind == "goal_finished":
             goals.setdefault(e.decision_id or f"line:{i}", e)
-    verdicts = [g.verdict or "unknown" for g in goals.values()]
-    met, refuted = verdicts.count("met"), verdicts.count("refuted")
+    if goals:
+        verdicts = [g.verdict or "unknown" for g in goals.values()]
+        n_decisions, met, refuted = len(goals), verdicts.count("met"), verdicts.count("refuted")
+        interventions = sum(1 for g in goals.values() if g.human_intervention)
+    else:
+        counts = {k: max(0, int(v or 0)) for k, v in dict(verdict_counts or {}).items()}
+        met, refuted = counts.get("met", 0), counts.get("refuted", 0)
+        n_decisions = max(int(decisions or 0), met + refuted + counts.get("unknown", 0))
+        interventions = 0
 
     items: list[str] = []
     for it in delta.items_gained:
         words = item_words(it.item, it.value)
         if words not in items:
             items.append(words)
-    rooms = len(set(delta.rooms_new))
-    caves = len(set(delta.caves_new))
-    death_rooms = sorted({d.room for d in delta.deaths if d.room})
-    deaths = len(delta.deaths)
     duration = (ended_at - started_at).total_seconds()
 
     title = game_title(game_id)
     if together:
         lead = f"Played {title} together for {span_words(duration)} (a human drove {round(100 * share)}% of frames)"
-    elif kind == "co_play" and human:
+    elif basis == "frames" and kind == "co_play":
         lead = f"Played {title} for {span_words(duration)} (Orion drove {round(100 * (1 - share))}% of frames)"
     elif kind == "leisure":
         lead = f"Played {title} solo for {span_words(duration)}"
     else:
-        lead = f"Played {title} for {span_words(duration)}"
-    parts = [lead, _plural(rooms, "new room") + (f" ({_plural(caves, 'cave')})" if caves else "")]
+        lead = f"Played {title} with a human for {span_words(duration)} (control share not recorded)"
+    parts = [lead]
+    if delta.rooms_new is not None:
+        parts.append(_plural(delta.rooms_new, "new room") + (f" ({_plural(delta.caves_new, 'cave')})"
+                                                             if delta.caves_new else ""))
     if items:
         parts.append("got the " + ", the ".join(items))
-    if deaths:
-        parts.append(f"died {_times(deaths)}")
-    parts.append(f"{met} of {len(goals)} predictions met" if goals else "no planner decisions")
+    if delta.deaths:
+        parts.append(f"died {_times(delta.deaths)}")
+    parts.append(f"{met} of {n_decisions} predictions met" if n_decisions else "no planner decisions")
     summary = _clip(", ".join(parts) + ".")
 
     return RetroPlaySessionSummaryV1(
         session_id=session_id, lineage_id=lineage_id, game_id=game_id, game_title=title, kind=kind,
         dispatch_id=dispatch_id, started_at=started_at, ended_at=ended_at, duration_sec=duration,
-        end_reason=(end.reason or None) and end.reason[:200], control=control,
+        end_reason=(end.reason[:200] if end.reason else None), control=control, control_basis=basis,
         human_frames=human, orion_frames=orion, human_share=share, played_together=together,
-        rooms_new=rooms, caves_new=caves, items_gained=items, deaths=deaths, death_rooms=death_rooms,
-        decisions=len(goals), predictions_met=met, predictions_refuted=refuted,
-        predictions_unknown=len(goals) - met - refuted,
-        human_interventions=sum(1 for g in goals.values() if g.human_intervention),
-        summary=summary,
+        rooms_new=delta.rooms_new, caves_new=delta.caves_new, items_gained=items, deaths=delta.deaths,
+        death_rooms=sorted(set(delta.death_rooms)), decisions=n_decisions, predictions_met=met,
+        predictions_refuted=refuted, predictions_unknown=n_decisions - met - refuted,
+        human_interventions=interventions, summary=summary,
     )
+
+
+def _epoch(value: Any) -> str | None:
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+    return str(value) if value else None
+
+
+def leisure_inputs(ended: Any) -> dict[str, Any]:
+    """Lane B's ``scripts.retro_session_end.RetroSessionEnded`` (or its ``as_dict()``) -> the
+    builder's keyword arguments. Reads: session_id, lineage_id, game_id, started_at/ended_at (epoch
+    seconds), end_reason, act_id (the dispatch id), decisions_planned, verdicts, and the optional
+    ``atlas_session`` (Lane A's ``zelda.atlas.session`` record: rooms_new, deaths)."""
+    d = ended.as_dict() if hasattr(ended, "as_dict") else dict(ended)
+    journal = [{"kind": "session_started", "at": _epoch(d.get("started_at"))},
+               {"kind": "session_ended", "at": _epoch(d.get("ended_at")), "reason": d.get("end_reason")}]
+    atlas = d.get("atlas_session") if isinstance(d.get("atlas_session"), dict) else {}
+    return dict(session_id=str(d.get("session_id") or ""), journal=[j for j in journal if j["at"]],
+                atlas_delta={k: atlas.get(k) for k in ("rooms_new", "deaths") if atlas.get(k) is not None},
+                kind="leisure", game_id=str(d.get("game_id") or ""), lineage_id=d.get("lineage_id"),
+                dispatch_id=d.get("act_id"), verdict_counts=d.get("verdicts") or {},
+                decisions=d.get("decisions_planned"))
 
 
 def memory_card_for(s: RetroPlaySessionSummaryV1) -> MemoryCardCreateV1:
@@ -192,7 +235,8 @@ def memory_card_for(s: RetroPlaySessionSummaryV1) -> MemoryCardCreateV1:
         subschema={"retro_play": {
             "session_id": s.session_id, "lineage_id": s.lineage_id, "game_id": s.game_id, "kind": s.kind,
             "dispatch_id": s.dispatch_id, "human_share": s.human_share, "played_together": s.played_together,
-            "control": [c.model_dump() for c in s.control], "decisions": s.decisions,
+            "control": [c.model_dump() for c in s.control], "control_basis": s.control_basis,
+            "decisions": s.decisions,
             "predictions_met": s.predictions_met}},
     )
 
@@ -202,9 +246,9 @@ CREATE TABLE IF NOT EXISTS {TABLE} (
     session_id text PRIMARY KEY, lineage_id text, game_id text NOT NULL, game_title text NOT NULL,
     kind text NOT NULL, dispatch_id text, started_at timestamptz NOT NULL, ended_at timestamptz NOT NULL,
     duration_sec double precision NOT NULL, end_reason text, control jsonb NOT NULL DEFAULT '[]'::jsonb,
-    human_frames integer NOT NULL, orion_frames integer NOT NULL, human_share double precision,
-    played_together boolean NOT NULL, rooms_new integer NOT NULL, caves_new integer NOT NULL,
-    items_gained jsonb NOT NULL DEFAULT '[]'::jsonb, deaths integer NOT NULL,
+    control_basis text NOT NULL, human_frames integer NOT NULL, orion_frames integer NOT NULL,
+    human_share double precision, played_together boolean NOT NULL, rooms_new integer, caves_new integer,
+    items_gained jsonb NOT NULL DEFAULT '[]'::jsonb, deaths integer,
     death_rooms jsonb NOT NULL DEFAULT '[]'::jsonb, decisions integer NOT NULL,
     predictions_met integer NOT NULL, predictions_refuted integer NOT NULL,
     predictions_unknown integer NOT NULL, human_interventions integer NOT NULL, summary text NOT NULL,
@@ -214,7 +258,7 @@ CREATE INDEX IF NOT EXISTS {TABLE}_ended_idx ON {TABLE} (ended_at DESC)
 """
 
 _COLUMNS = ("session_id", "lineage_id", "game_id", "game_title", "kind", "dispatch_id", "started_at", "ended_at",
-            "duration_sec", "end_reason", "control", "human_frames", "orion_frames", "human_share",
+            "duration_sec", "end_reason", "control", "control_basis", "human_frames", "orion_frames", "human_share",
             "played_together", "rooms_new", "caves_new", "items_gained", "deaths", "death_rooms", "decisions",
             "predictions_met", "predictions_refuted", "predictions_unknown", "human_interventions", "summary")
 _JSON_COLUMNS = {"control", "items_gained", "death_rooms"}
@@ -281,6 +325,8 @@ async def export_session(
     game_id: str,
     lineage_id: str | None = None,
     dispatch_id: str | None = None,
+    verdict_counts: Mapping[str, int] | None = None,
+    decisions: int | None = None,
     enabled: bool | None = None,
 ) -> ExportResult:
     """Build, store and (for a leisure dispatch) close the act. Never raises: a failed export is
@@ -291,8 +337,11 @@ async def export_session(
         logger.info("retro_memory_export_disabled session_id=%s", session_id)
         return ExportResult("disabled", session_id, reason="HUB_RETRO_MEMORY_EXPORT_ENABLED=false")
     try:
+        if not session_id:
+            raise ValueError("no_session_id: the session never started in Retro")
         s = build_session_summary(session_id, journal, atlas_delta, kind=kind, game_id=game_id,
-                                  lineage_id=lineage_id, dispatch_id=dispatch_id)
+                                  lineage_id=lineage_id, dispatch_id=dispatch_id,
+                                  verdict_counts=verdict_counts, decisions=decisions)
     except ValueError as exc:
         await _close_play(bus, dispatch_id, session_id, produced=False, note=str(exc)[:200])
         logger.warning("retro_memory_export_skipped session_id=%s reason=%s", session_id, exc)
@@ -340,5 +389,10 @@ async def export_session(
                         reason=card_error, summary=s)
 
 
-__all__ = ["CARD_SOURCE", "DDL", "ExportResult", "INSERT_SQL", "TABLE", "build_session_summary", "export_session",
+async def export_leisure_outcome(*, pool: Any, bus: Any, ended: Any, enabled: bool | None = None) -> ExportResult:
+    """The leisure path: Lane B's ``RetroSessionEnded`` (``LeisureOutcome.ended``) -> export_session."""
+    return await export_session(pool=pool, bus=bus, enabled=enabled, **leisure_inputs(ended))
+
+
+__all__ = ["CARD_SOURCE", "export_leisure_outcome", "leisure_inputs", "DDL", "ExportResult", "INSERT_SQL", "TABLE", "build_session_summary", "export_session",
            "game_title", "item_words", "memory_card_for"]

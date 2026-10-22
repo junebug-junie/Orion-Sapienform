@@ -9,20 +9,29 @@ The summary is facts and counts only, built deterministically from the session j
 atlas delta. No model writes it. Not exported: frames, RAM, ROM, raw journals. It feeds no phi,
 arousal, reward or training signal.
 
-Inputs (``RetroJournalEntryV1``, ``RetroAtlasDeltaV1``) are written by the Retro lanes (A: atlas,
-goal_finished; B: the session runner). They ignore fields this module does not read, so a lane
-adding a field does not break the export; every field read here is listed on the model.
+Inputs (``RetroJournalEntryV1``, ``RetroAtlasDeltaV1``) come from the Retro lanes (A: the atlas
+session record ``zelda.atlas.session`` on ``GET /sessions/{id}``; B: the leisure runner's
+``RetroSessionEnded``). They ignore fields this module does not read, so a lane adding a field does
+not break the export; every field read here is listed on the model. A count the lanes did not
+record is None and is left out of the summary, never written as 0.
 """
 
 from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 SUMMARY_MAX = 300  # orion/schemas/temporal_self.py LABEL_MAX: the summary is the arc label.
 
 SessionKind = Literal["co_play", "leisure"]
+# Where the control share comes from:
+#   frames          -- per-port frame counts from ``control`` journal lines;
+#   leisure_sponsor -- a leisure session with no frame lines: Retro's arbiter lets any human acquire
+#                      or takeover preempt the leisure grant and the runner then ends the session
+#                      (``human_preempted``), so every frame it ran was Orion's (human share 0);
+#   unknown         -- a co-play session with no frame lines: no share is claimed either way.
+ControlBasis = Literal["frames", "leisure_sponsor", "unknown"]
 Controller = Literal["human", "orion"]
 Verdict = Literal["met", "refuted", "unknown"]
 
@@ -67,15 +76,25 @@ class RetroAtlasDeathV1(BaseModel):
 
 
 class RetroAtlasDeltaV1(BaseModel):
-    """What this session added to the lineage's atlas (spec section C), observed only. ``rooms_new``
-    and ``caves_new`` are room/cave keys first seen in this session (``level:room``)."""
+    """What this session added to the lineage's atlas (spec section C), observed only. Accepts Lane A's
+    atlas session record as is (``rooms_new``, ``deaths`` counts; its other keys are ignored). A list
+    of room/cave keys is also accepted for ``rooms_new``/``caves_new`` and counted (distinct keys).
+    None = not recorded."""
 
     model_config = ConfigDict(extra="ignore")
 
-    rooms_new: list[str] = Field(default_factory=list)
-    caves_new: list[str] = Field(default_factory=list)
+    rooms_new: int | None = Field(None, ge=0)
+    caves_new: int | None = Field(None, ge=0)
+    deaths: int | None = Field(None, ge=0)
     items_gained: list[RetroAtlasItemV1] = Field(default_factory=list)
-    deaths: list[RetroAtlasDeathV1] = Field(default_factory=list)
+    death_rooms: list[str] = Field(default_factory=list)
+
+    @field_validator("rooms_new", "caves_new", mode="before")
+    @classmethod
+    def _count_keys(cls, value):
+        if isinstance(value, (list, tuple, set)):
+            return len({str(v) for v in value})
+        return value
 
 
 class RetroPortControlV1(BaseModel):
@@ -102,6 +121,7 @@ class RetroPlaySessionSummaryV1(BaseModel):
     duration_sec: float = Field(ge=0.0)
     end_reason: str | None = Field(None, max_length=200)
     control: list[RetroPortControlV1] = Field(default_factory=list)
+    control_basis: ControlBasis
     human_frames: int = Field(ge=0)
     orion_frames: int = Field(ge=0)
     # None when no controlled frame was recorded: no share can be claimed either way.
@@ -109,10 +129,10 @@ class RetroPlaySessionSummaryV1(BaseModel):
     # Spec section F (#2751 section 7.4): a human drove more than half of the frames. Never
     # recorded as Orion's achievement.
     played_together: bool
-    rooms_new: int = Field(ge=0)
-    caves_new: int = Field(ge=0)
+    rooms_new: int | None = Field(None, ge=0)
+    caves_new: int | None = Field(None, ge=0)
     items_gained: list[str] = Field(default_factory=list)
-    deaths: int = Field(ge=0)
+    deaths: int | None = Field(None, ge=0)
     death_rooms: list[str] = Field(default_factory=list)
     decisions: int = Field(ge=0)
     predictions_met: int = Field(ge=0)
@@ -123,6 +143,7 @@ class RetroPlaySessionSummaryV1(BaseModel):
 
 
 __all__ = [
+    "ControlBasis",
     "Controller",
     "RetroAtlasDeathV1",
     "RetroAtlasDeltaV1",

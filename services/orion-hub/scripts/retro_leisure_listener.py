@@ -1,27 +1,37 @@
-"""Bus RPC adapter for the retro leisure start (orion/schemas/retro_leisure.py).
+"""Bus RPC consumer for the retro leisure start (orion/schemas/retro_leisure.py).
 
 Orion plays Zelda, section E. The motor allocator (orion-execution-dispatch-runtime, route
-``retro_leisure_session``) asks; the leisure runner decides and plays. This class validates the
-envelope, asks the runner's own gate, starts the session, opens the ``play`` act, and answers. Same
+``retro_leisure_session``) asks; Lane B's leisure runner (``scripts/retro_leisure.py``) decides and
+plays. This is the "retro_leisure_session dispatch consumer" that module's docstring names. Same
 trusted internal bus boundary and reply-subject rule as ``scripts/world_pulse_read_pull_listener.py``.
 
-The runner is Lane B's ``scripts/retro_leisure.py`` object, found through ``runner_provider`` (Hub
-main: ``app.state.retro_leisure_runner``). The interface read here, and nothing else:
+The runner interface read here, and nothing else:
 
-- ``should_start()`` (sync or async) -> the gate verdict, as any of: a bool; a tuple
-  ``(ok, reason[, retry_after_sec])``; or an object/dict with ``ok`` (or ``allowed``), ``reason`` and
-  ``retry_after_sec``. A refusal must carry a named reason; an unnamed one is ``unnamed_refusal``.
-- ``start(dispatch_id=..., correlation=...)`` (sync or async) -> the session id, as a str or an
-  object/dict with ``session_id``. It raises when the session cannot start.
+- ``should_start(config)`` (async) -> None when a session may start, else the gate's named reason
+  (``disabled``, ``cabinet_hot``, ``arousal_strained``, ``browser_connected``, ``human_recent``,
+  ``cooldown``, ``daily_cap``, ...).
+- ``run_leisure_session(config, act_id=)`` (async) -> ``LeisureOutcome(started, refusal, ended)``.
+  It re-checks the gate itself and runs the whole session (up to its 1800 s cap). ``ended`` is a
+  ``scripts.retro_session_end.RetroSessionEnded``.
 
-No runner (Hub booted without it) -> ``runner_unavailable`` with a 300 s hold, so a missing Lane B
-costs the allocator one refused RPC per hold, never a fake session.
+Per admitted dispatch:
+
+1. no runner importable -> refused ``runner_unavailable`` (the dispatch runtime holds 300 s), never a
+   fake session; a session already running here -> refused ``leisure_already_running``;
+2. ``should_start`` says no -> refused with its reason;
+3. otherwise start ``run_leisure_session(act_id=<dispatch_id>)`` and wait up to START_GRACE_SEC: a
+   refusal from its own re-check in that time is answered as a refusal (no act opened);
+4. still running (or finished) -> open the ``play`` act and answer ``started``; when the session ends,
+   ``scripts.retro_memory_export.export_leisure_outcome`` writes the memory and closes the act.
+
+Gate refusals carry no retry clock (the runner does not report one), so the dispatch runtime holds
+the route for its own 300 s default: one RPC per five minutes while Orion may not play.
 """
 
 from __future__ import annotations
 
 import asyncio
-import inspect
+import importlib
 import logging
 from collections import OrderedDict
 from contextlib import suppress
@@ -41,52 +51,54 @@ from orion.schemas.retro_leisure import (
 logger = logging.getLogger("orion-hub.retro_leisure_listener")
 
 UNAVAILABLE_HOLD_SEC = 300.0
+# How long to wait for the runner's own start re-check before answering. Its refusals (gate,
+# lock, save read, Retro start) all return before the first planner call; under the dispatch
+# runtime's 15 s RPC timeout.
+START_GRACE_SEC = 5.0
 # A replayed dispatch id is answered with its first result, never a second session.
 REPLAY_CACHE = 256
 
 
-async def _maybe_await(value: Any) -> Any:
-    return await value if inspect.isawaitable(value) else value
+def import_runner() -> Any:
+    """Lane B's module, or None when it is not deployed in this Hub (an older image)."""
+    try:
+        return importlib.import_module("scripts.retro_leisure")
+    except ImportError:
+        logger.warning("retro_leisure_runner_missing", exc_info=True)
+        return None
 
 
-def _field(obj: Any, *names: str) -> Any:
-    for name in names:
-        if isinstance(obj, dict) and name in obj:
-            return obj[name]
-        if hasattr(obj, name):
-            return getattr(obj, name)
-    return None
-
-
-def gate_verdict(raw: Any) -> tuple[bool, str | None, float | None]:
-    """Normalise the runner's ``should_start()`` answer to (ok, reason, retry_after_sec)."""
-    if isinstance(raw, bool):
-        ok, reason, retry = raw, None, None
-    elif isinstance(raw, tuple):
-        ok = bool(raw[0])
-        reason = raw[1] if len(raw) > 1 else None
-        retry = raw[2] if len(raw) > 2 else None
-    else:
-        ok_value = _field(raw, "ok", "allowed")
-        ok = bool(ok_value)
-        reason = _field(raw, "reason", "refusal")
-        retry = _field(raw, "retry_after_sec")
-    retry_f = float(retry) if isinstance(retry, (int, float)) and retry >= 0 else None
-    if ok:
-        return True, None, None
-    return False, (str(reason)[:200] if reason else "unnamed_refusal"), retry_f
+def gate_verdict(raw: Any) -> tuple[bool, str | None]:
+    """``should_start``'s answer: None (or True) = may start; a string (or False) = refused."""
+    if raw is None or raw is True:
+        return True, None
+    if raw is False or not str(raw).strip():
+        return False, "unnamed_refusal"
+    return False, str(raw)[:200]
 
 
 class RetroLeisureListener:
-    def __init__(self, runner_provider: Callable[[], Any], source_ref: Any) -> None:
-        self.runner_provider = runner_provider
+    def __init__(
+        self,
+        source_ref: Any,
+        *,
+        config_provider: Callable[[], Any],
+        pool_provider: Callable[[], Any],
+        runner_provider: Callable[[], Any] = import_runner,
+    ) -> None:
         self.source_ref = source_ref
+        self.config_provider = config_provider
+        self.pool_provider = pool_provider
+        self.runner_provider = runner_provider
         self.bus: Any = None
         self.task: asyncio.Task | None = None
+        self.session_task: asyncio.Task | None = None
+        self._followers: set[asyncio.Task] = set()
         self._seen: OrderedDict[str, RetroLeisureStartResultV1] = OrderedDict()
         self._lock = asyncio.Lock()
 
-    def _refused(self, req: RetroLeisureStartRequestV1, reason: str, retry: float | None,
+    @staticmethod
+    def _refused(req: RetroLeisureStartRequestV1, reason: str, retry: float | None = None,
                  gates: dict | None = None) -> RetroLeisureStartResultV1:
         return RetroLeisureStartResultV1(dispatch_id=req.dispatch_id, state="refused", refusal=reason,
                                          retry_after_sec=retry, gates=gates or {})
@@ -105,31 +117,69 @@ class RetroLeisureListener:
 
     async def _start(self, req: RetroLeisureStartRequestV1) -> RetroLeisureStartResultV1:
         runner = self.runner_provider()
-        if runner is None or not hasattr(runner, "should_start") or not hasattr(runner, "start"):
+        if runner is None or not hasattr(runner, "should_start") or not hasattr(runner, "run_leisure_session"):
             return self._refused(req, "runner_unavailable", UNAVAILABLE_HOLD_SEC)
+        if self.session_task is not None and not self.session_task.done():
+            return self._refused(req, "leisure_already_running")
+        config = self.config_provider()
         try:
-            ok, reason, retry = gate_verdict(await _maybe_await(runner.should_start()))
+            ok, reason = gate_verdict(await runner.should_start(config))
         except Exception as exc:  # noqa: BLE001
             logger.warning("retro_leisure_gate_failed dispatch_id=%s", req.dispatch_id, exc_info=True)
             return self._refused(req, "gate_failed", UNAVAILABLE_HOLD_SEC, {"error": type(exc).__name__})
         if not ok:
-            logger.info("retro_leisure_refused dispatch_id=%s refusal=%s retry_after=%s",
-                        req.dispatch_id, reason, retry)
-            return self._refused(req, reason or "unnamed_refusal", retry)
-        try:
-            started = await _maybe_await(runner.start(dispatch_id=req.dispatch_id, correlation=dict(req.correlation)))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("retro_leisure_start_failed dispatch_id=%s", req.dispatch_id, exc_info=True)
-            return self._refused(req, "start_failed", UNAVAILABLE_HOLD_SEC, {"error": type(exc).__name__})
-        session_id = started if isinstance(started, str) else _field(started, "session_id")
-        if not session_id:
-            return self._refused(req, "start_failed", UNAVAILABLE_HOLD_SEC, {"error": "no_session_id"})
+            logger.info("retro_leisure_refused dispatch_id=%s refusal=%s", req.dispatch_id, reason)
+            return self._refused(req, reason or "unnamed_refusal")
+
+        session = asyncio.create_task(runner.run_leisure_session(config, act_id=req.dispatch_id))
+        done, _ = await asyncio.wait({session}, timeout=START_GRACE_SEC)
+        if session in done:
+            try:
+                outcome = session.result()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("retro_leisure_run_failed dispatch_id=%s", req.dispatch_id, exc_info=True)
+                return self._refused(req, "start_failed", UNAVAILABLE_HOLD_SEC, {"error": type(exc).__name__})
+            if not getattr(outcome, "started", False):
+                reason = getattr(outcome, "refusal", None) or "unnamed_refusal"
+                logger.info("retro_leisure_refused dispatch_id=%s refusal=%s at=runner", req.dispatch_id, reason)
+                return self._refused(req, str(reason)[:200])
+        self.session_task = session
+        ended = getattr(session.result(), "ended", None) if session in done else None
+        session_id = getattr(ended, "session_id", None) or None
         from scripts.act_emit import publish_play_opened
 
-        await publish_play_opened(self.bus, dispatch_id=req.dispatch_id, session_id=str(session_id))
+        await publish_play_opened(self.bus, dispatch_id=req.dispatch_id, session_id=session_id)
+        follower = asyncio.create_task(self._follow(req.dispatch_id, session))
+        self._followers.add(follower)
+        follower.add_done_callback(self._followers.discard)
         logger.info("retro_leisure_started dispatch_id=%s session_id=%s", req.dispatch_id, session_id)
-        return RetroLeisureStartResultV1(dispatch_id=req.dispatch_id, state="started", session_id=str(session_id),
+        return RetroLeisureStartResultV1(dispatch_id=req.dispatch_id, state="started", session_id=session_id,
                                          object_ref=retro_leisure_object_ref(req.dispatch_id))
+
+    async def _follow(self, dispatch_id: str, session: asyncio.Task) -> None:
+        """Wait for the session to end, then export it (which closes the play act)."""
+        from scripts.act_emit import publish_play_closed
+        from scripts.retro_memory_export import export_leisure_outcome
+
+        try:
+            outcome = await session
+        except asyncio.CancelledError:
+            await publish_play_closed(self.bus, dispatch_id=dispatch_id, session_id=None, produced=False,
+                                      note="hub_stopped")
+            raise
+        except Exception:  # noqa: BLE001
+            logger.warning("retro_leisure_run_failed dispatch_id=%s", dispatch_id, exc_info=True)
+            await publish_play_closed(self.bus, dispatch_id=dispatch_id, session_id=None, produced=False,
+                                      note="runner_failed")
+            return
+        ended = getattr(outcome, "ended", None)
+        if ended is None:
+            await publish_play_closed(self.bus, dispatch_id=dispatch_id, session_id=None, produced=False,
+                                      note=f"no_session:{getattr(outcome, 'refusal', None)}"[:200])
+            return
+        result = await export_leisure_outcome(pool=self.pool_provider(), bus=self.bus, ended=ended)
+        logger.info("retro_leisure_exported dispatch_id=%s session_id=%s state=%s card_id=%s",
+                    dispatch_id, result.session_id, result.state, result.card_id)
 
     async def handle(self, envelope: BaseEnvelope) -> None:
         reply = str(envelope.reply_to or "")
@@ -154,7 +204,11 @@ class RetroLeisureListener:
                         try:
                             decoded = self.bus.codec.decode(raw.get("data"))
                             if decoded.ok:
-                                await self.handle(decoded.envelope)
+                                # Its own task: a start waits up to START_GRACE_SEC, and the
+                                # subscription must keep reading meanwhile.
+                                t = asyncio.create_task(self.handle(decoded.envelope))
+                                self._followers.add(t)
+                                t.add_done_callback(self._followers.discard)
                         except Exception:  # noqa: BLE001
                             logger.warning("retro_leisure_message_failed", exc_info=True)
             except asyncio.CancelledError:
@@ -168,11 +222,13 @@ class RetroLeisureListener:
         self.task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
-        if self.task is not None:
-            self.task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self.task
-            self.task = None
+        tasks = [t for t in (self.task, self.session_task, *self._followers) if t is not None]
+        for t in tasks:
+            t.cancel()
+        for t in tasks:
+            with suppress(asyncio.CancelledError, Exception):
+                await t
+        self.task = self.session_task = None
 
 
-__all__ = ["RetroLeisureListener", "UNAVAILABLE_HOLD_SEC", "gate_verdict"]
+__all__ = ["RetroLeisureListener", "START_GRACE_SEC", "UNAVAILABLE_HOLD_SEC", "gate_verdict", "import_runner"]

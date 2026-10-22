@@ -863,12 +863,13 @@ async def startup_event():
                 world_pulse_read_pipeline, world_pulse_read_pipeline._source_ref,
             )
             await world_pulse_read_pull_listener.start(bus)
-            # Orion plays Zelda (section E): the motor allocator's leisure start. The runner is Lane
-            # B's scripts/retro_leisure.py object on app.state; until it exists every start is
-            # refused `runner_unavailable` (never a fake session).
+            # Orion plays Zelda (section E): the motor allocator's leisure start. The runner is
+            # scripts/retro_leisure.py (imported per request; missing -> `runner_unavailable`, never
+            # a fake session). Session end -> scripts/retro_memory_export.py (section F).
             retro_leisure_listener = RetroLeisureListener(
-                lambda: getattr(app.state, "retro_leisure_runner", None),
                 world_pulse_read_pipeline._source_ref,
+                config_provider=lambda: settings,
+                pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
             )
             await retro_leisure_listener.begin(bus)
             # orion-introspect `curiosity` tool: the Curiosity tab's own run

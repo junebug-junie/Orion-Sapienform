@@ -4,7 +4,7 @@
 -- (services/orion-hub/scripts/retro_memory_export.py, which also creates it lazily with a short
 -- lock_timeout); the Temporal Self chronicle reads it as source `retro_play`
 -- (services/orion-durable-runs/app/temporal_self_sources.py).
--- Facts and counts only: no frames, RAM, ROM or raw journal.
+-- Facts and counts only: no frames, RAM, ROM or raw journal. A count no lane recorded is NULL.
 -- Additive only: one new table and one index. Rollback: DROP TABLE retro_play_sessions.
 CREATE TABLE IF NOT EXISTS retro_play_sessions (
     session_id          text PRIMARY KEY,
@@ -18,14 +18,15 @@ CREATE TABLE IF NOT EXISTS retro_play_sessions (
     duration_sec        double precision NOT NULL,
     end_reason          text,
     control             jsonb NOT NULL DEFAULT '[]'::jsonb,
+    control_basis       text NOT NULL,
     human_frames        integer NOT NULL,
     orion_frames        integer NOT NULL,
     human_share         double precision,
     played_together     boolean NOT NULL,
-    rooms_new           integer NOT NULL,
-    caves_new           integer NOT NULL,
+    rooms_new           integer,
+    caves_new           integer,
     items_gained        jsonb NOT NULL DEFAULT '[]'::jsonb,
-    deaths              integer NOT NULL,
+    deaths              integer,
     death_rooms         jsonb NOT NULL DEFAULT '[]'::jsonb,
     decisions           integer NOT NULL,
     predictions_met     integer NOT NULL,

@@ -39,8 +39,17 @@
     return String(f.label || f.category || "") + ": " + String(f.value || "");
   }
 
-  function renderPerson(doc, p, categories, onAction) {
+  function renderPerson(doc, p, categories, onActionRaw) {
     const active = p.status === "active";
+    const buttons = [];
+    // Every button in the card is locked while a request is in flight: a double
+    // tap cannot save the same fact twice.
+    function onAction(personId, action, data) {
+      buttons.forEach(function (b) { b.disabled = true; });
+      return Promise.resolve(onActionRaw(personId, action, data)).finally(function () {
+        buttons.forEach(function (b) { b.disabled = false; });
+      });
+    }
     const card = el(doc, "div", "rounded-lg border border-gray-700 bg-gray-800/60 p-3 space-y-2" + (active ? "" : " opacity-60"));
     card.setAttribute("data-person-id", String(p.person_id || ""));
     const head = el(doc, "div", "flex items-center gap-3");
@@ -65,6 +74,7 @@
       const rm = el(doc, "button", "text-[11px] text-gray-400 hover:text-red-300", "Remove");
       rm.setAttribute("type", "button");
       rm.setAttribute("data-person-action", "remove-fact");
+      buttons.push(rm);
       rm.setAttribute("aria-label", "Remove " + factLine(f));
       rm.addEventListener("click", function () { onAction(p.person_id, "remove-fact", { fact_id: f.fact_id }); });
       li.appendChild(rm);
@@ -97,6 +107,7 @@
       const save = el(doc, "button", "text-xs bg-sky-700 hover:bg-sky-600 text-white rounded px-3 py-1", "Save");
       save.setAttribute("type", "button");
       save.setAttribute("data-person-action", "add-fact");
+      buttons.push(save);
       save.addEventListener("click", function () {
         onAction(p.person_id, "add-fact", { category: select.value, value: input.value });
       });
@@ -108,6 +119,7 @@
       active ? "Not a person" : "This is a person");
     toggle.setAttribute("type", "button");
     toggle.setAttribute("data-person-action", "status");
+    buttons.push(toggle);
     toggle.addEventListener("click", function () {
       onAction(p.person_id, "status", { status: active ? "not_a_person" : "active" });
     });
@@ -131,6 +143,12 @@
     let typing = false;
     listEl.addEventListener("focusin", function () { typing = true; });
     listEl.addEventListener("focusout", function () { typing = false; });
+    // Text typed but not saved yet: a poll must not wipe it.
+    function hasUnsaved() {
+      const inputs = listEl.querySelectorAll('[data-person-field="value"]');
+      for (let i = 0; i < inputs.length; i++) if (String(inputs[i].value || "").trim()) return true;
+      return false;
+    }
 
     async function refresh() {
       try {
@@ -151,17 +169,33 @@
       const req = request(action, personId, data || {});
       if (!req) return;
       if (action === "add-fact" && !req.body.value) return;
-      typing = false;
+      let ok = false;
       try {
-        await fetchFn(req.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req.body) });
-      } finally {
-        await refresh();
+        const resp = await fetchFn(req.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req.body) });
+        ok = !!(resp && resp.ok);
+      } catch (_e) {
+        ok = false;
       }
+      if (!ok) {
+        // Keep what she typed on screen and say it did not save.
+        status.textContent = "That did not save. Please try again.";
+        return;
+      }
+      if (action === "add-fact") {
+        const input = listEl.querySelector('[data-person-id="' + cssEscape(personId) + '"] [data-person-field="value"]');
+        if (input) input.value = "";
+      }
+      typing = false;
+      if (!hasUnsaved()) await refresh();
+    }
+
+    function cssEscape(value) {
+      return global.CSS && global.CSS.escape ? global.CSS.escape(String(value)) : String(value).replace(/["\\]/g, "\\$&");
     }
 
     refresh();
     const timer = global.setInterval(function () {
-      if (!doc.hidden && !typing) refresh();
+      if (!doc.hidden && !typing && !hasUnsaved()) refresh();
     }, POLL_MS);
     return { refresh: refresh, onAction: onAction, stop: function () { global.clearInterval(timer); } };
   }

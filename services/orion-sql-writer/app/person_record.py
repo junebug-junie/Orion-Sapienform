@@ -159,10 +159,11 @@ WHERE p.status = 'active' AND p.role <> 'self'
 ORDER BY asked, days DESC, p.person_id
 """
 
-# A category is done for a person when she answered it (a live fact), or a question
-# about it is open, answered, dismissed, or expired within the cooldown.
+# A category is done for a person when there is any fact about it (one she removed
+# in the Hub too: removing is a correction, not a request to be asked again), or a
+# question about it is open, answered, dismissed, or expired within the cooldown.
 _DONE_SQL = """
-SELECT category FROM person_fact WHERE person_id = :p AND removed_at IS NULL
+SELECT category FROM person_fact WHERE person_id = :p
 UNION
 SELECT split_part(a.source_ref, '|', 2) FROM orion_ask a
 WHERE a.source_kind = :k AND split_part(a.source_ref, '|', 1) = :p

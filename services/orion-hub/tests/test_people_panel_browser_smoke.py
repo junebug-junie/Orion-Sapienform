@@ -53,6 +53,9 @@ def test_people_panel_browser_smoke() -> None:
                 content_type="application/json")
         if route.request.method == "POST":
             body = json.loads(route.request.post_data or "{}")
+            if body.get("value") == "server down":
+                return route.fulfill(status=503, body=json.dumps({"detail": "ask_store_unavailable"}),
+                                     content_type="application/json")
             posted.append((url.split("hub.test")[1], body))
             if url.endswith("/facts"):
                 state["facts"] = state["facts"] + [{"fact_id": "f2", "category": body["category"], "label": "Age",
@@ -77,6 +80,12 @@ def test_people_panel_browser_smoke() -> None:
         card = page.inner_text('[data-person-id="p-sam"]')
         assert "Seen on camera on 3 days" in card and "Orion is asking: What pronouns should I use for Sam?" in card
         assert "<img src=x" in card and page.evaluate("window.__pwned") is None   # database text is inert
+        # A failed save says so and keeps what she typed.
+        page.fill('[data-person-id="p-sam"] [data-person-field="value"]', "server down")
+        page.click('[data-person-id="p-sam"] [data-person-action="add-fact"]')
+        page.wait_for_function("document.getElementById('peopleStatus').innerText.includes('did not save')")
+        assert page.input_value('[data-person-id="p-sam"] [data-person-field="value"]') == "server down"
+        posted.clear()
         page.select_option('[data-person-id="p-sam"] [data-person-field="category"]', "age")
         page.fill('[data-person-id="p-sam"] [data-person-field="value"]', "about ten")
         page.click('[data-person-id="p-sam"] [data-person-action="add-fact"]')

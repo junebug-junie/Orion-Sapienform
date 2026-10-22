@@ -193,3 +193,20 @@ def test_a_corrected_typo_leaves_no_person_to_ask_about(pg) -> None:
         conn.execute(text("UPDATE vision_individual SET label='John' WHERE individual_id='a'"))
     _, opened = _run(pg, NOW + timedelta(days=1), cap=5)
     assert sorted(a["question"] for a in opened) == ["What is your gender, in your own words?", "Who is John to you?"]
+
+
+@needs_pg
+def test_a_removed_fact_is_not_asked_about_again(pg) -> None:
+    """Hub review 2026-10-22: removing a fact that had no question behind it (people.yaml, Hub edit)
+    made the category askable again."""
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _cluster(conn, "sam-1", "Sam")
+    _run(pg, cap=0)
+    with pg.begin() as conn:
+        pid = conn.execute(text("SELECT person_id FROM person WHERE display_name='Sam'")).scalar()
+        conn.execute(text("INSERT INTO person_fact (fact_id, person_id, category, value_text, voice, removed_at) "
+                          "VALUES ('f-x', :p, 'relationship', 'wrong', 'hub_edit', now())"), {"p": pid})
+    refs = [a["source_ref"] for a in _run(pg, cap=5)[1]]
+    assert f"{pid}|relationship" not in refs and f"{pid}|pronouns" in refs

@@ -119,8 +119,8 @@ journaled whenever the allocator admits `play` and the cabinet is cool.
 ## Tests run
 
 ```text
-python -m pytest services/orion-hub/tests/retro -q                     79 passed (py3.12)
-uv run --python 3.11 (CI's native-boundary deps) pytest .../tests/retro  79 passed
+python -m pytest services/orion-hub/tests/retro -q                     82 passed (py3.12)
+uv run --python 3.11 (CI's native-boundary deps) pytest .../tests/retro  82 passed
 python -m pytest services/orion-hub/tests/test_regulation_must_not_readers.py \
   services/orion-hub/tests/test_regulation_arousal_readers.py -q        77 passed
 python -m pytest tests/test_no_personal_terms.py -q                     7 passed
@@ -217,6 +217,11 @@ origin/main.
   - A prediction has a value only for `reach_room`.
   - The atlas field is `rooms_with_unvisited_sides`. GoalV2 uses port 0 only.
   - Cave items are not observed, so the prompt says that `collect` needs a tile the planner gives.
+  - Death recovery is native in Lane A. The planner never answers while `observation.menu` is set
+    or the mode is `death`/`menu`, and it makes no model call then. An outcome of `death` is only
+    the reason for the next decision.
+    Evidence: `test_unknown_observation_never_calls_the_model[menu/death]` and
+    `test_death_is_only_a_trigger`.
   - The Hub uses Retro's tile convention.
 
 ## Restart required

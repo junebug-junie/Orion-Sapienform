@@ -331,6 +331,9 @@ def build_zelda_prompt(decision: dict, atlas: Optional[dict], history: Any) -> s
     previous = decision.get('previous')
     why = (f'the previous goal ended: {_goal_text(previous.get("goal"))} -> {previous.get("outcome", "unknown")}'
            if isinstance(previous, dict) else 'first decision of this session')
+    if isinstance(previous, dict) and previous.get('outcome') == 'death':
+        # Retro recovers through the Continue screen itself; death is only why we decide again.
+        why += ' (Link died; Retro already chose Continue and play has resumed)'
     return '\n'.join([
         'You are Orion, playing The Legend of Zelda (NES) through a navigator that turns one goal into input.',
         'Choose ONE goal for the next 3-30 seconds from the observed facts only. Do not use outside knowledge of the game map.',
@@ -391,6 +394,10 @@ def check_decision(decision: Any) -> dict:
     if not isinstance(obs, dict) or obs.get('status') != 'observed':
         raise PlannerRejected('observation_unknown',
                               observation_reason=str((obs or {}).get('reason', 'unknown'))[:120])
+    if obs.get('menu') or obs.get('mode') in ('death', 'menu'):
+        # The Continue screen (observation.menu) belongs to Retro's own death recovery. The
+        # planner never steers through a menu; a new decision is offered once play resumes.
+        raise PlannerRejected('observation_unknown', observation_reason='menu')
     goals = decision.get('supported_goals')
     if not isinstance(goals, list) or not goals or any(g not in ZELDA_GOALS for g in goals):
         raise PlannerRejected('decision_supported_goals_invalid')

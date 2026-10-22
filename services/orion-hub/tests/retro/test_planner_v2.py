@@ -136,6 +136,9 @@ def test_unsupported_goal_for_this_decision_is_rejected(planner):
     (dict(decision_id='d', observation=dict(status='unknown', reason='fingerprint'), supported_goals=['wait']),
      'observation_unknown'),
     (dict(decision(), supported_goals=['jump_right']), 'decision_supported_goals_invalid'),
+    (dict(decision(), observation=dict(decision()['observation'], mode='menu',
+                                       menu=dict(kind='continue', cursor=0, activated=False))), 'observation_unknown'),
+    (dict(decision(), observation=dict(decision()['observation'], mode='death')), 'observation_unknown'),
 ])
 def test_unknown_observation_never_calls_the_model(planner, d, reason):
     chat = reply(dict(content=json.dumps(GOOD)))
@@ -302,3 +305,11 @@ def test_route_serves_atlas_and_leisure_status(tmp_path, monkeypatch, planner):
         store.status_value['updated_at'] = time.time() - 60       # a runner that stopped reporting
         assert c.get('/api/retro/leisure').json()['state'] == 'stale'
         assert c.post('/api/retro/sessions/' + 'a' * 36 + '/atlas', headers=H).status_code == 404
+
+
+def test_death_is_only_a_trigger(planner):
+    d = decision(previous=dict(decision_id='3:0', goal=dict(kind='fight', target='nearest'),
+                               outcome='death', verdict='refuted'))
+    prompt = planner.build_zelda_prompt(d, ATLAS, [])
+    assert 'fight nearest -> death' in prompt and 'Retro already chose Continue' in prompt
+    assert 'Retro already chose Continue' not in planner.build_zelda_prompt(decision(), ATLAS, [])

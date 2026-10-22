@@ -200,3 +200,75 @@ The real-planner eval is `evals/cognitive_loop.py --core <pinned-core> --rom <no
 --bus-url <tailscale-Redis-URL> --output <private-report.json>`; use
 `--mechanic-only` only for a separately labeled fixture test. GPU admission
 refusals fail the real-planner gate; they are never replaced with scripted replies.
+
+
+## The Legend of Zelda: reader, navigator, atlas (Lane A)
+
+Design: [Orion plays Zelda](../../docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md).
+A Zelda session uses its own reader, motor and atlas only when the ROM+core
+fingerprint matches (PRG0 `8f72dc2e…`, PRG1 `89232edf…`, pinned FCEUmm `ac0d00a7`)
+**and** `RETRO_COGNITION_ENABLED=true`. Every other game, and Zelda with the gate
+off, keeps the Nova v1 path unchanged. No new env keys.
+
+**Reader (`app/zelda/observe.py`, `zelda-1-ram-v1`).** One RAM + save-RAM read per
+frame through `retro_get_memory_data`; nothing is written. Fields: `mode`
+(play/scroll/cave/stairs/death/menu/transition/other), `level`, `room`, `next_room`,
+`paused`, `link` (x, y, `tile`, facing, invincible_frames, `controllable`), `hearts`
+(current in 0.5 steps, containers), `items` (sword, rupees; bombs/keys/candle/raft
+read `unknown` until a live probe settles them), `enemies` (alive slots with type,
+x, y, tile, hp), `drops` (type-$60 item objects), `walls` (22x32, True = blocked; play
+and cave only) and `walls_hash`. `level` 1-9 also reads `unknown` (no dungeon probe
+yet). `VERDICTS` in the module is the live-settlement table. `controllable` is false
+during transitions, cave text (`$AD` 0/1/3/7), an item lift (`$506`) and pause.
+Tile convention (shared by motor, atlas and the planner's text map): column
+`(x+4)//8`, row `(y+11-64+4)//8`, i.e. the game's own collision hotspot.
+
+**Motor (`app/zelda/navigate.py`, `zelda-navigator-v1`).** Runs inside the worker at
+one decision per frame. When a script starts with `cognition: true` on a Zelda
+session, the worker offers a decision slot in status
+(`scripted[].cognition.attempt.decision_id`) whenever Link is controllable and no
+goal is active. `POST /sessions/{id}/goal` takes a `GoalV2` (below) that echoes it.
+Goals: `exit{dir}`, `explore{dir}`, `enter{tile}`, `collect{tile}`,
+`fight{target: slot|nearest}`, `retreat`, `wait`. A* runs on the wall grid plus
+learned-blocked tiles. A press that leaves Link's position unchanged for 8 frames is
+a bump: the tile is marked learned-blocked in the atlas and the path is replanned.
+The combat reflex (face, swing when aligned, back off after a hit) runs only inside
+`fight`/`retreat`. A goal ends at the first of: prediction met, prediction refuted
+(another room, death), `interrupted:hit` (not for fight/retreat), `interrupted:stuck`
+(2 s), `budget_expired`, goal completed, or `stopped:<reason>` (takeover, pause,
+sponsor loss, load). Each end writes one `goal_finished` journal row: decision_id,
+start/end digests, outcome, verdict (`met|refuted|unknown`), applied frames, bumps,
+`human_intervention`. Status shows it as `cognition.last_finished`.
+
+**GoalV2 body.** `connection_id` **or** `leisure_id` (exactly one), `generation`,
+`port`, `expected_epoch`, `decision_id`, `goal` (discriminated by `kind`),
+`prediction{kind: reach_room|enter_cave|item_gained|enemies_cleared|survive|unknown,
+value: room id for reach_room only}`, `rationale` (≤512), `planner_id`,
+`budget_seconds` (3-30). A retry with the same decision_id is idempotent and never
+extends the budget; any change is `goal_idempotency_conflict`.
+
+**Leisure sponsor (contract + arbiter hook only; Hub builds the runner).**
+`POST /control` and `/scripted` also accept `leisure_id` instead of `connection_id`,
+on Zelda sessions only. A leisure grant is preemptible: any human `acquire` or
+`takeover` replaces it at once (the reply carries `preempted_leisure: true` and the
+script stops with `human_takeover`). A leisure sponsor can never take a port from a
+human. A session paused for `no_controller` must be resumed before a leisure acquire.
+
+**Atlas (`app/zelda/atlas.py`, `zelda-atlas-v1`).** One JSON file per save lineage at
+`RETRO_SAVES_DIR/atlas/<lineage_id>.json`, bounded at 1 MiB, written at most every 2 s
+and on save/stop. It records only observed room changes (exits seen both ways),
+caves entered and what was gained inside, item deltas, deaths, heart loss, enemy
+types, bumps, and one session row (rooms_new, deaths, decisions, met, refuted). It is
+never seeded. A save made in a Zelda session carries `lineage_id`; loading it
+continues that lineage. A fresh game, or a pre-atlas save loaded mid-session, starts
+a new one. A ROM/core mismatch never reuses another build's atlas. Atlas I/O faults
+disable the atlas for the session; the game keeps running. `GET /sessions/{id}/atlas`
+returns the current room's neighbourhood (adjacent rooms, unexplored exits, caves,
+deaths, and a compact map of the level). Delete the file to forget it.
+
+**Evals.** `evals/zelda_play.py --core <so> --rom <zelda.nes>` (no LLM, ~4 s,
+simulated clock): boot from power-on with real input, pause, enter the cave, bump the
+cave barrier, take the sword, exit S, exit E, kill an Octorok, then a second session
+on the same lineage from the save state. `evals/zelda_http_smoke.py --core <so>
+--catalog <catalog.json>` drives the real HTTP app and a spawned worker at real time,
+including the leisure preemption check. Both write evidence under `/tmp/zelda-play/`.

@@ -3439,6 +3439,26 @@ channels:
     since: "2026-10-01"
     description: "Per-request reply to orion:gpu_pool:shed:request (orion.schemas.gpu_pool.GPU_POOL_SHED_REPLY_PREFIX): the shed record (state active|expired|cancelled|preempted_by_reflex|refused, refusal, TTL, drained_at, grants_withheld, delayed_grant_sec)."
 
+  - name: "orion:world_pulse_read:pull:request"
+    kind: "request"
+    schema_id: "WorldPulseReadPullRequestV1"
+    message_kind: "world_pulse_read.pull.request.v1"
+    producer_services: ["orion-execution-dispatch-runtime"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-10-21"
+    description: "Thinking rung 3 follow-up: the motor allocator's reading pull (route read_world_pulse). op=check runs Hub's gates (HUB_WORLD_PULSE_READ_PULL_ENABLED, daily cap, arousal strained, thermal hot, the reading pipeline's own window/refund backoff) and picks the next seed in the queue's own claim order, with no side effect; op=act re-runs them, then arm=treated starts that read as one extra in-flight read and arm=control only marks the seed as the decision's control. Reply WorldPulseReadPullResultV1 on orion:world_pulse_read:pull:reply:*."
+
+  - name: "orion:world_pulse_read:pull:reply:*"
+    kind: "result"
+    schema_id: "WorldPulseReadPullResultV1"
+    message_kind: "world_pulse_read.pull.result.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-execution-dispatch-runtime"]
+    stability: "experimental"
+    since: "2026-10-21"
+    description: "Per-request reply to orion:world_pulse_read:pull:request (orion.schemas.world_pulse_read_pull.WORLD_PULSE_READ_PULL_REPLY_PREFIX): state ready|started|control_recorded|refused, the seed and its act-ledger key (read_seed:<seed_id>), refusal and retry_after_sec, pulls today and the cap."
+
   - name: "orion:gpu_pool:actuate:request"
     kind: "request"
     schema_id: "GpuActuateV1"

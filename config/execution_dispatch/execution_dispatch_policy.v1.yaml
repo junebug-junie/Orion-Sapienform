@@ -184,6 +184,34 @@ template_to_cortex:
       actor: thought.painting
       signal_id: artifact_produced
       horizon_sec: 5400   # PAINTING_HORIZON_SEC, services/orion-thought/app/visual_steps.py
+      object_source: dispatch   # the painting run id derives from the dispatch id: no control arm
+
+  # 2026-10-21 (thinking rung 3 follow-up): the reading pull. This dispatch IS one extra
+  # hub.world_pulse_read `look` act on the seed the self-scheduled lane would claim next (Hub picks
+  # it with CLAIM_SQL's own order and answers with read_seed:<seed_id>, the act's ledger key).
+  # Not a cortex verb: orion.world_pulse_read.pull.v1 is the executor key the dispatch runtime maps
+  # to one orion:world_pulse_read:pull:request RPC (check, precommit, act). Hub runs every gate:
+  # HUB_WORLD_PULSE_READ_PULL_ENABLED, the lane's own window/refund backoff, the daily cap (derived:
+  # 8), arousal strained, thermal hot. inspect_only: it reads the world and writes nothing outside
+  # Orion's own reading queue.
+  # horizon_sec 12000: derived, not picked -- p90 of (Stage 1 durable turn submitted -> look act
+  # closed) over the 83 successful reads with both on record (live 2026-10-21: p50 4205 s, p90
+  # 11992 s; most of it is the GPU queue). A pulled read that has not closed by then counts 0, the
+  # same for a held-back decision whose seed the lane did not read.
+  # object_source queue: the seed exists without the dispatch, so the control arm is informative.
+  # Dispatch-side kill switch: ORION_DISPATCH_READING_PULL_ENABLED.
+  read_world_pulse:
+    dispatch_kind: observe
+    cortex_verb: orion.world_pulse_read.pull.v1
+    cortex_mode: brain
+    allowed_scope: inspect_only
+    rpc_timeout_sec: 15
+    act:
+      verb: look
+      actor: hub.world_pulse_read
+      signal_id: artifact_produced
+      horizon_sec: 12000
+      object_source: queue
 
   # 2026-08-25: analysis -> self-study journal entry.
   #

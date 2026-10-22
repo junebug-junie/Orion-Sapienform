@@ -575,20 +575,25 @@ class ExecutionDispatchRuntimeStore:
     # past it, the act ledger's own resolver has already expired the act.
     ACT_IN_FLIGHT_WINDOW_HOURS = 6
 
-    def act_in_flight(self, *, actor: str, dispatch_kind: str, target_id: str) -> bool:
+    def act_in_flight(self, *, actor: str, dispatch_kind: str, target_id: str,
+                      include_open_acts: bool = True, started_within_sec: float | None = None) -> bool:
         """True while this act's actor has an open act, or this route has an unsettled dispatch.
 
         Two sources because they cover different stretches: a render_scene dispatch is ``pending``
         from send until its durable run settles (including GPU queue wait, before the act opens),
-        and the act is open from the run's first real generation until its close."""
+        and the act is open from the run's first real generation until its close.
+
+        ``include_open_acts=False`` for an act whose object comes from a queue another lane also
+        drains (the reading pull): that lane's own concurrent reads are open acts of the same actor
+        and must not hold the route (ActRouteRefV1.object_source)."""
         with self._engine.connect() as conn:
             row = conn.execute(
                 text(
                     """
-                    SELECT EXISTS (
+                    SELECT (CAST(:open_acts AS boolean) AND EXISTS (
                                SELECT 1 FROM grammar_acts
                                 WHERE actor = :actor AND closed_at IS NULL
-                                  AND opened_at > now() - make_interval(hours => :hours))
+                                  AND opened_at > now() - make_interval(hours => :hours)))
                         OR EXISTS (
                                SELECT 1 FROM substrate_dispatch_results
                                 WHERE dispatch_kind = :kind AND target_id = :target
@@ -596,18 +601,80 @@ class ExecutionDispatchRuntimeStore:
                                        -- a render whose submit timed out may still have been admitted
                                        OR result_json->'settlement'->>'state' = 'not_submitted')
                                   AND created_at > now() - make_interval(hours => :hours))
+                        OR (CAST(:started_sec AS double precision) IS NOT NULL AND EXISTS (
+                               -- a reading pull Hub started, on any admission path
+                               SELECT 1 FROM substrate_dispatch_results
+                                WHERE dispatch_kind = :kind AND target_id = :target
+                                  AND result_json->'settlement'->>'state' = 'started'
+                                  AND created_at > now() - make_interval(secs => CAST(:started_sec AS double precision))))
                     """
                 ),
                 {"actor": actor, "kind": dispatch_kind, "target": target_id,
-                 "hours": self.ACT_IN_FLIGHT_WINDOW_HOURS},
+                 "hours": self.ACT_IN_FLIGHT_WINDOW_HOURS, "open_acts": bool(include_open_acts),
+                 "started_sec": started_within_sec},
             ).scalar()
         return bool(row)
+
+    def act_duration_p50_sec(self, *, actor: str, verb: str, signal_id: str, lookback_hours: int) -> float | None:
+        """Median open->close seconds of this act's graded closes (grammar_acts). The measured cost of
+        an act whose dispatch is only an RPC (the reading pull): the act opens when the read's work
+        starts and closes when it ends, so this is the work, not the queue."""
+        with self._engine.connect() as conn:
+            value = conn.execute(text(
+                """
+                SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM closed_at - opened_at))
+                  FROM grammar_acts
+                 WHERE actor = :actor AND verb = :verb AND signal_id = :signal
+                   AND opened_at IS NOT NULL AND closed_at IS NOT NULL AND closed_at > opened_at
+                   AND closed_at > now() - make_interval(hours => :hours)
+                """), {"actor": actor, "verb": verb, "signal": signal_id, "hours": lookback_hours}).scalar()
+        return None if value is None or float(value) <= 0 else float(value)
+
+    def _act_episodes_conn_ready(self, conn) -> None:
+        from orion.autonomy import act_episodes
+
+        # The caller marks the table ready only after its transaction commits.
+        if not getattr(self, "_act_episodes_ready", False):
+            act_episodes.ensure_table(conn)
+
+    def set_act_episode_object(self, episode_id: str, object_ref: str) -> None:
+        from orion.autonomy import act_episodes
+
+        with self._engine.begin() as conn:
+            self._act_episodes_conn_ready(conn)
+            act_episodes.set_object(conn, episode_id, object_ref)
+        self._act_episodes_ready = True
+
+    def void_act_episode(self, episode_id: str, reason: str) -> None:
+        from orion.autonomy import act_episodes
+
+        with self._engine.begin() as conn:
+            self._act_episodes_conn_ready(conn)
+            act_episodes.void_decision(conn, episode_id, reason)
+        self._act_episodes_ready = True
+
+    def resolve_act_episodes(self, *, now: datetime) -> list[tuple[str, str, float]]:
+        from orion.autonomy import act_episodes
+
+        with self._engine.begin() as conn:
+            if not act_episodes.table_exists(conn):
+                return []
+            self._act_episodes_conn_ready(conn)
+            out = act_episodes.resolve_due(conn, now=now)
+        self._act_episodes_ready = True
+        return out
 
     def act_episode_in_flight(self, *, actor: str, now: datetime) -> bool:
         from orion.autonomy import act_episodes
 
         with self._engine.connect() as conn:
             return act_episodes.in_flight(conn, actor=actor, now=now)
+
+    def act_arm_stats(self, *, act_label: str, arm: str) -> tuple[int, int]:
+        from orion.autonomy import act_episodes
+
+        with self._engine.connect() as conn:
+            return act_episodes.arm_stats(conn, act_label=act_label, arm=arm)
 
     def act_control_stats(self, *, act_label: str) -> tuple[int, int]:
         from orion.autonomy import act_episodes
@@ -626,8 +693,7 @@ class ExecutionDispatchRuntimeStore:
         from orion.autonomy import act_episodes
 
         with self._engine.begin() as conn:
-            if not getattr(self, "_act_episodes_ready", False):
-                act_episodes.ensure_table(conn)
+            self._act_episodes_conn_ready(conn)
             inserted = act_episodes.insert_decision(conn, row)
         self._act_episodes_ready = True
         return inserted

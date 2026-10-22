@@ -51,6 +51,9 @@ class ActRef:
     actor: str
     signal_id: str
     horizon_sec: float | None = None
+    # orion/execution_dispatch/policy.py ActRouteRefV1.object_source: "dispatch" (the dispatch mints
+    # the act's object, e.g. a painting run) or "queue" (it picks an existing one, e.g. a reading seed).
+    object_source: str = "dispatch"
 
     @property
     def cell(self) -> CellKey:
@@ -115,6 +118,17 @@ def refuse_in_flight(allocation: Allocation, in_flight: list[Candidate]) -> Allo
     )
 
 
+def refuse_held(allocation: Allocation, held: list[tuple[Candidate, str]]) -> Allocation:
+    """Record act-backed candidates refused before allocate() with their own named reason (the
+    route's kill switch, or the doer's last refusal still holding)."""
+    return Allocation(
+        admitted=allocation.admitted,
+        refused=(*allocation.refused, *held),
+        spent_sec=allocation.spent_sec,
+        allowance_sec=allocation.allowance_sec,
+    )
+
+
 # --- stage 3 option B: admit an act proven to help (Juniper 2026-10-21) ---------------------------
 #
 # The information path above retires an act once it is well measured, so an act that WORKS is
@@ -155,6 +169,13 @@ def reference_rate(n_control: int, successes: int) -> tuple[float, str]:
             return control, "control_arm"
         return ACT_BINARY_PRIOR_MEAN, "act_prior_above_control"
     return ACT_BINARY_PRIOR_MEAN, "act_prior"
+
+
+def episode_posterior(n: int, successes: int) -> EffectPosterior:
+    """The act's rate from its own resolved episodes (Jeffreys mean, Beta variance): the same
+    estimator reference_rate applies to the control arm, so both arms are read alike."""
+    mean = (successes + 0.5) / (n + 1.0)
+    return EffectPosterior(mean=mean, variance=mean * (1.0 - mean) / (n + 2.0), n=int(n))
 
 
 def kl_bernoulli(p: float, q: float) -> float:

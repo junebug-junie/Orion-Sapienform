@@ -141,6 +141,7 @@ def _worker(monkeypatch, *, enabled: bool = True, in_flight: bool = False, cost:
     store.act_in_flight.return_value = in_flight
     store.act_episode_in_flight.return_value = False
     store.act_control_stats.return_value = (0, 0)
+    store.act_arm_stats.return_value = (0, 0)
     worker._store = store
     return worker
 
@@ -367,9 +368,10 @@ def test_a_proven_decision_holds_the_act_for_its_horizon(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_proven_admissions_record_both_arms(monkeypatch) -> None:
-    """Holdback 0.2 on this path: a control row (outcome 0 by construction) and the act withheld,
-    or a treated row precommitted before the send."""
+async def test_a_proven_painting_is_never_held_back_and_says_why(monkeypatch) -> None:
+    """Rung 3 follow-up: a painting's object is minted by its dispatch, so a control row would be 0
+    by construction. Every decision is treated, with the reason on the row. Fails on #2830 code,
+    which drew a control (outcome 0.0) at 0.2."""
     worker = _send_ready_worker(monkeypatch, 0.2)
     worker._store.load_effect_posteriors.return_value = {PAINT_CELL: RELIABLE}
     worker._derive_motor_budget = MagicMock(return_value=SimpleNamespace(
@@ -378,15 +380,13 @@ async def test_proven_admissions_record_both_arms(monkeypatch) -> None:
     monkeypatch.setattr(worker._settings, "orion_dispatch_allocator_enforce", True, raising=False)
     rows = []
     worker._store.insert_act_episode.side_effect = lambda row: rows.append(row) or True
-    draws = {"d:control": 0.1, "d:treated": 0.9}
-    monkeypatch.setattr(worker, "_stable_draw", lambda dispatch_id: draws[dispatch_id])
-    control = await worker._send_prepared_candidates(_frame(_render("d:control")))
-    treated = await worker._send_prepared_candidates(_frame(_render("d:treated")))
-    assert [r["arm"] for r in rows] == ["control", "treated"]
-    assert rows[0]["outcome_value"] == 0.0 and rows[1]["outcome_value"] is None
+    monkeypatch.setattr(worker, "_stable_draw", lambda dispatch_id: 0.0)   # would always be control
+    out = await worker._send_prepared_candidates(_frame(_render("d:paint")))
+    assert [r["arm"] for r in rows] == ["treated"]
+    assert rows[0]["outcome_value"] is None and rows[0]["object_ref"] is None
+    assert rows[0]["expected"]["holdback"] == "holdback_exempt:outcome_requires_act:object_minted_by_dispatch"
     assert rows[0]["horizon_at"] - rows[0]["decided_at"] == timedelta(seconds=5400)
-    assert [c.blocked_by for c in control.blocked_candidates if c.dispatch_id == "d:control"] == [["act_holdback"]]
-    assert [c.dispatch_id for c in treated.dispatched_candidates] == ["d:treated"]
+    assert [c.dispatch_id for c in out.dispatched_candidates] == ["d:paint"]
 
 
 @pytest.mark.asyncio

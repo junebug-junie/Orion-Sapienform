@@ -251,6 +251,14 @@ class Settings(BaseSettings):
     orion_dispatch_act_cost_lookback_hours: int = Field(
         720, ge=24, le=2160, alias="ORION_DISPATCH_ACT_COST_LOOKBACK_HOURS"
     )
+    # Thinking rung 3 follow-up (2026-10-21): the reading pull route (read_world_pulse ->
+    # orion.world_pulse_read.pull.v1, one bus RPC to Hub). false -> its candidates are refused
+    # `reading_pull_disabled` and no RPC is sent. Hub has its own kill switch and every reading gate.
+    # Shipped ON.
+    orion_dispatch_reading_pull_enabled: bool = Field(True, alias="ORION_DISPATCH_READING_PULL_ENABLED")
+    orion_dispatch_reading_pull_rpc_timeout_sec: float = Field(
+        15.0, gt=0.0, le=120.0, alias="ORION_DISPATCH_READING_PULL_RPC_TIMEOUT_SEC"
+    )
     # 2026-10-01 -- attend-to-act loop (docs/superpowers/specs/2026-09-29-attend-to-act-loop-design.md
     # D5). The MASTER switch for world actions (SELF_REVERSIBLE_SCOPE routes, today only
     # shed_background_gpu). false -> every such candidate is blocked `world_actions_disabled`, visibly.

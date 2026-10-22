@@ -91,9 +91,9 @@ _in_flight = False
 class PlannerError(Exception):
     """A decision that produced no goal. ``reason`` is the stable code shown to the operator."""
 
-    def __init__(self, reason: str, **details: Any):
-        super().__init__(reason)
-        self.reason = reason
+    def __init__(self, code: str, /, **details: Any):
+        super().__init__(code)
+        self.reason = code          # the stable code; ``details['reason']`` is the pool's own reason
         self.details = details
 
     def public(self) -> dict:

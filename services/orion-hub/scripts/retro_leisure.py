@@ -41,6 +41,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
+from scripts import retro_planner
+from scripts.retro_planner import PlannerBusy, PlannerRejected, PlannerShed
 from scripts.retro_session_end import RetroSessionEnded
 
 logger = logging.getLogger('orion-hub.retro.leisure')
@@ -205,7 +207,6 @@ class LeisureDeps:
 
 
 def default_deps(config) -> LeisureDeps:
-    from scripts import retro_planner
     from scripts.retro_presence import store_for
     store = store_for(config)
     if store is None:
@@ -459,7 +460,6 @@ async def _run(config, deps: LeisureDeps, s: dict, run: _Run, ledger: list, lock
 
 
 async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int) -> tuple[str, bool]:
-    from scripts.retro_planner import PlannerBusy, PlannerRejected, PlannerShed
     plan_task: Optional[asyncio.Task] = None
     plan_decision: Optional[str] = None
     next_check = run.started_at + RECHECK_SEC

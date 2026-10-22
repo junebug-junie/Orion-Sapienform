@@ -25,6 +25,11 @@ Strain loop part 1 (2026-10-20, docs/superpowers/specs/2026-10-20-strain-loop-de
 ``arousal_transition`` / arc kind ``strain`` and ``episode_began_at``: the regulation step's own
 level-change and cause rows (already in ``temporal_self_event``) become one arc per strain
 episode. Same consumer-first rollout: orion-thought and orion-hub before orion-durable-runs.
+
+Orion plays Zelda (2026-10-22, docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md
+section F) added ``retro_play`` / arc kind ``play``: one finished Retro session
+(``retro_play_sessions``, written by orion-hub) is one process arc, labelled with its deterministic
+summary. Same consumer-first rollout: orion-thought and orion-hub before orion-durable-runs.
 """
 
 from __future__ import annotations
@@ -63,6 +68,8 @@ TemporalSourceKind = Literal[
     "presence_transition",
     # the regulation step's strain level changes and cause rows (strain loop part 1)
     "arousal_transition",
+    # one finished Retro (game) session, orion-hub's retro_play_sessions (Orion plays Zelda, F)
+    "retro_play",
 ]
 
 ArcKind = Literal[
@@ -76,6 +83,7 @@ ArcKind = Literal[
     "sleep",
     "company",
     "strain",
+    "play",
 ]
 
 ArcStatus = Literal["open", "suspended", "closed"]

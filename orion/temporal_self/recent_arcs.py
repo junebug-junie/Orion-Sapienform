@@ -58,6 +58,8 @@ def _what(arc: ArcSummaryV1) -> str:
         return _KIND_WORDS[arc.kind]
     if arc.kind == "attention":
         return f"attention on {label}"
+    if arc.kind == "play":
+        return f"played {label}"
     if arc.kind == "strain":
         causes = strain_cause_text(arc.subject_label)
         return f"strained ({causes})" if causes else "strained"

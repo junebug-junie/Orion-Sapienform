@@ -178,6 +178,10 @@ class Settings(BaseSettings):
     # arousal_transition rows into one `strain` arc per episode (chat stance cue, Day letter,
     # reverie). Off: no cause rows, no strain arcs; level rows and arousal are unchanged.
     temporal_self_strain_arcs_enabled: bool = Field(True, alias="TEMPORAL_SELF_STRAIN_ARCS_ENABLED")
+    # Orion plays Zelda (docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md section F): the
+    # chronicle reads orion-hub's retro_play_sessions as source `retro_play`, one `play` arc per
+    # finished Retro session (chat stance cue, recent arcs, Day letter count). Off: not read.
+    temporal_self_retro_play_enabled: bool = Field(True, alias="TEMPORAL_SELF_RETRO_PLAY_ENABLED")
     # K: consecutive broadcast ticks that open or resume an attention arc (~110 s live). PR #2597 sweep.
     temporal_self_arc_min_ticks: int = Field(3, ge=1, alias="TEMPORAL_SELF_ARC_MIN_TICKS")
     # R: a suspended arc may return within this window, else it closes (PR #2597 sweep: 30, not 180).

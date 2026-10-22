@@ -59,6 +59,9 @@ class SourceQuery:
     # How far before ``lo`` the natural column may sit while the event is still available
     # inside the window (a process that started earlier, a joined timestamp that precedes it).
     slack: timedelta = timedelta(0)
+    # A table that may not exist yet (its migration lands with the producer): checked with
+    # to_regclass first, and skipped while missing, so one new source can never fail the whole read.
+    optional_table: str | None = None
 
 
 # %(lo)s / %(hi)s are the superset bounds (already widened by ``slack``); timestamptz params.
@@ -182,7 +185,16 @@ SELECT event_id, occurred_at, payload_json FROM temporal_self_event
 WHERE source_kind = 'arousal_transition' AND source_table = 'regulation'
   AND occurred_at >= %(lo)s AND occurred_at < %(hi)s
 """),
+    # Orion plays Zelda (section F): one finished Retro session per row (orion-hub writes it at
+    # session end). Available at ended_at, so the window is on ended_at and needs no slack.
+    SourceQuery("retro_play", """
+SELECT session_id, lineage_id, game_id, game_title, kind, started_at, ended_at, summary, played_together, human_share,
+  decisions, predictions_met, rooms_new, deaths, memory_card_id
+FROM retro_play_sessions WHERE ended_at >= %(lo)s AND ended_at < %(hi)s
+""", optional_table="retro_play_sessions"),
 )
+
+TABLE_EXISTS_SQL = "SELECT to_regclass(%(t)s) IS NOT NULL AS present"
 
 REVERIE_CHAINS_SQL = """
 SELECT chain_id, created_at, theme_key, terminal_reason FROM substrate_reverie_chain
@@ -253,6 +265,10 @@ class SourceReader:
                 for q in QUERIES:
                     if (want is not None and q.kind not in want) or q.kind in self._exclude:
                         continue
+                    if q.optional_table is not None:
+                        present = await _fetch(conn, TABLE_EXISTS_SQL, {"t": q.optional_table})
+                        if not present or not present[0]["present"]:
+                            continue
                     qlo = lo - q.slack
                     rows = await _fetch(conn, q.sql, {"lo": qlo, "hi": hi, "in_flight": list(VISUAL_IN_FLIGHT),
                                                       "lo_key": _text_key(qlo - timedelta(days=1))})

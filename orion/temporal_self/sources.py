@@ -426,6 +426,49 @@ def arousal_transition(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEvent
     )
 
 
+def retro_play_label(row: Row) -> str:
+    """A short, deterministic phrase for one session, from the row's own fields: the game, who played
+    (``solo`` for a leisure session, ``together`` when a human drove more than half of the frames, else
+    ``with a human``) and the prediction count. The full summary stays on the row and the memory card;
+    the stance cue has room for this phrase only (STANCE_CUE_MAX_CHARS)."""
+    title = str(row.get("game_title") or row.get("game_id") or "a game")
+    if row.get("played_together"):
+        who = "together"
+    elif row.get("kind") == "leisure":
+        who = "solo"
+    else:
+        who = "with a human"
+    decisions = int(row.get("decisions") or 0)
+    if decisions:
+        done = f"{int(row.get('predictions_met') or 0)} of {decisions} predictions met"
+    else:
+        done = "no planner decisions"
+    return clip(f"{title} {who}, {done}")
+
+
+def retro_play(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """retro_play_sessions (orion-hub scripts/retro_memory_export.py): one finished Retro session.
+    Time: started_at to ended_at (available at ended_at, when the row is written). Subject:
+    ``retro_session:<session_id>``. Label: ``retro_play_label`` ("The Legend of Zelda solo, 14 of 31
+    predictions met"). A row with no summary is dropped: Hub writes one for every exported session,
+    so a row without it was not written by the exporter."""
+    session_id = row.get("session_id")
+    if not session_id or not str(row.get("summary") or "").strip():
+        return None
+    return _event(
+        kind="retro_play", table="retro_play_sessions", ref=session_id, at=row.get("started_at"),
+        ended=row.get("ended_at"), tz_name=tz_name, subject_ref=f"retro_session:{session_id}",
+        label=retro_play_label(row),
+        payload={
+            "game_id": row.get("game_id"), "kind": row.get("kind"), "lineage_id": row.get("lineage_id"),
+            "played_together": bool(row.get("played_together")), "human_share": row.get("human_share"),
+            "decisions": row.get("decisions"), "predictions_met": row.get("predictions_met"),
+            "rooms_new": row.get("rooms_new"), "deaths": row.get("deaths"),
+            "memory_card_id": str(row["memory_card_id"]) if row.get("memory_card_id") else None,
+        },
+    )
+
+
 def _iso(value: Any) -> str | None:
     dt = as_utc(value)
     return dt.isoformat() if dt else None
@@ -452,6 +495,7 @@ ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
     "memory_episode": memory_episode,
     "presence_transition": presence_transition,
     "arousal_transition": arousal_transition,
+    "retro_play": retro_play,
 }
 
 

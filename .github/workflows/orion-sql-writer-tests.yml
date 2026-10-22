@@ -201,3 +201,16 @@ jobs:
             echo "visual confirmation Postgres tests skipped -- ORION_TEST_PG_URI wiring is broken" >&2
             exit 1
           fi
+      # Orion energy hourly rollup: integrates per-node and cabinet-cooling watts into kWh.
+      # The test drops and recreates the raw watt tables; this database is throwaway.
+      - name: Run Orion energy rollup Postgres tests (must not skip)
+        env:
+          ORION_TEST_PG_URI: postgresql://postgres:postgres@localhost:5432/conjourney
+        run: |
+          set -o pipefail
+          PYTHONPATH=.:services/orion-sql-writer python -m pytest -q -rs \
+            services/orion-sql-writer/tests/test_orion_energy_rollup_pg.py | tee energy_rollup_pg.out
+          if grep -q "SKIPPED" energy_rollup_pg.out; then
+            echo "Orion energy rollup Postgres tests skipped -- ORION_TEST_PG_URI wiring is broken" >&2
+            exit 1
+          fi

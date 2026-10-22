@@ -601,6 +601,9 @@ class Settings(BaseSettings):
     # since local midnight. Separate from ORION_ASK_DAILY_CAP (the slow
     # 10-sightings rule) and from the memory confirmation caps.
     vision_confirm_ask_daily_cap: int = Field(6, alias="VISION_CONFIRM_ASK_DAILY_CAP")
+    # Daily cap for "Is this <name>?" asks (vision_person_confirm), since local
+    # midnight. Separate from ORION_ASK_DAILY_CAP, which the slow rule uses up first.
+    vision_person_confirm_ask_daily_cap: int = Field(6, alias="VISION_PERSON_CONFIRM_ASK_DAILY_CAP")
     # Splitting individuals from Juniper's picture answers (2026-10-16,
     # docs/superpowers/specs/2026-10-16-vision-individual-split-proposal.md).
     # A picture she marks "someone else" moves out of the asked individual into

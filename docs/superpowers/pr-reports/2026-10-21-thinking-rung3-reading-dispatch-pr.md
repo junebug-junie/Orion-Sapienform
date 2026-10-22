@@ -323,6 +323,9 @@ never answers a pull, so every `check` would time out and be withheld `doer_refu
   when calm.
 - Severity: medium. The pull takes the seed the lane would read next, so the measured effect may be
   near zero. That is a real answer, not a bug: the control arm will revoke the claim if so.
+- Severity: low. `read_world_pulse` is added to `tests/test_proposal_scoring.py`'s allowlist of
+  empty-dimension templates (the ratchet says adding is a decision). It is a timer by design: its
+  pacing is the allocator's score, the 12000 s in-flight hold, and Hub's gates. Caught by CI.
 - Severity: low. A pulled seed that is a section index or a blocked publisher is skipped by the lane's
   own checks and resolves 0 in either arm. Not filtered at selection.
 - Severity: low. The verdict still compares a conditional posterior to an unconditional control rate
@@ -330,8 +333,8 @@ never answers a pull, so every `check` would time out and be withheld `doer_refu
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2840
 
-Status: STATUS_PLACEHOLDER
+Status: DONE_WITH_CONCERNS. The path is built, reviewed and tested; no live pull can run while arousal stays `strained`, so the live trace is UNVERIFIED.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

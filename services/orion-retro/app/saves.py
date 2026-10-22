@@ -45,7 +45,7 @@ class SaveStore:
         try: return self._write(game_id, identity, state, **fields)
         except OSError: raise ValueError('save_io_failed')
 
-    def _write(self, game_id, identity, state, *, frame, played_frames, session_id):
+    def _write(self, game_id, identity, state, *, frame, played_frames, session_id, lineage_id=None):
         if not available(self.root): raise ValueError('saves_unavailable')
         if not 0 < len(state) <= self.max_bytes: raise ValueError('save_too_large')
         directory = self._dir(game_id)
@@ -56,6 +56,7 @@ class SaveStore:
                     created_ns=now,
                     created_utc=datetime.fromtimestamp(now / 1e9, timezone.utc).isoformat(timespec='seconds'),
                     bytes=len(state), state_sha256=hashlib.sha256(state).hexdigest(), session_id=session_id)
+        if lineage_id: meta['lineage_id'] = lineage_id  # Zelda atlas lineage this save continues
         try:
             for suffix, data in (('.state', state), ('.json', (json.dumps(meta) + '\n').encode())):
                 tmp = directory / f'.{save_id}{suffix}.tmp'

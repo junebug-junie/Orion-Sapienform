@@ -102,7 +102,7 @@ class Sessions:
         sid = str(uuid.uuid4())
         self.session = dict(session_id=sid, generation=self.generation, state='starting',
                             game_id=game_id, frame=0, owner=owner, save_enabled=self.save_enabled(),
-                            loaded_save=None, scripted=[])
+                            loaded_save=None, scripted=[], game_profile=None)
         self.starting_save = save_id
         self.persist(); self.history.clear()
         self.process = ctx.Process(target=run, args=(self.commands,self.urgent,self.replies,self.stop_event,
@@ -141,7 +141,7 @@ class Sessions:
                         if 'frame' in row.get('result', {}): self.history.append(row['result'])
                     elif kind == 'ready':
                         # The worker loads a start save before it reports ready.
-                        ready = True; self.ready.set(); self.session.update(state='running', identity=row['identity'], runtime_sha256=row['runtime_sha256'], fps=row['fps'], loaded_save=self.starting_save)
+                        ready = True; self.ready.set(); self.session.update(state='running', identity=row['identity'], runtime_sha256=row['runtime_sha256'], fps=row['fps'], loaded_save=self.starting_save, game_profile=row.get('game_profile'))
                         self.persist()
                     elif kind == 'status':
                         self.session.update({k:v for k,v in row.items() if k!='kind'})

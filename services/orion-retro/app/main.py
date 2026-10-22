@@ -8,8 +8,11 @@ import uuid
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 from settings import Settings
-from .contracts import Start, Control, Input, ScriptControl, Goal, LoadSave
+from .contracts import (Start, Control, Input, ScriptControl, Goal, LoadSave, GoalV2,
+                        LeisureControl, LeisureScriptControl)
 from .session import Sessions
+from .zelda.observe import PROFILE as ZELDA_PROFILE
+from .zelda import atlas as zelda_atlas
 
 
 def create_app(settings=None):
@@ -83,9 +86,55 @@ def create_app(settings=None):
     async def status(sid: str, request: Request):
         return owned(sid, request.headers).session
 
+    def zelda(m):
+        return m.session.get('game_profile') == ZELDA_PROFILE
+
+    def sponsor_live(m, body):
+        # A browser sponsor must hold a live input socket. A leisure sponsor (server-side,
+        # no browser) is only accepted on a Zelda session, and the arbiter lets any human
+        # acquire or takeover preempt it at once.
+        if body.connection_id is not None:
+            if body.connection_id not in m.connections: raise ValueError('connection_not_live')
+        elif not zelda(m): raise ValueError('leisure_requires_zelda')
+        return body.sponsor()
+
+    @app.get('/sessions/{sid}/atlas')
+    async def atlas(sid: str, request: Request):
+        m = owned(sid, request.headers)
+        z = m.session.get('zelda') or {}
+        lineage = (z.get('atlas') or {}).get('lineage_id'); obs = z.get('observation') or {}
+        if not lineage: raise HTTPException(404, 'no_atlas')
+        doc = zelda_atlas.load(settings.saves, lineage)
+        if doc is None: raise HTTPException(404, 'atlas_not_written_yet')
+        level = obs.get('level') if obs.get('status') == 'observed' and obs.get('level') != 'unknown' else 0
+        room = obs.get('room') if obs.get('status') == 'observed' else None
+        return zelda_atlas.neighbourhood(doc, level, room if room is not None else -1)
+
     @app.post('/sessions/{sid}/{operation}')
     async def lifecycle(sid: str, operation: str, request: Request):
         m = owned(sid, request.headers)
+        if operation == 'goal' and zelda(m):
+            if not settings.cognition_enabled: raise HTTPException(503, 'retro_cognition_disabled')
+            try: body = GoalV2.model_validate_json(await request.body())
+            except ValidationError: raise HTTPException(422, 'invalid_goal')
+            if body.generation != m.generation: raise ValueError('session_generation_mismatch')
+            return await m.command('goal', sponsor_live(m, body),
+                                   body.model_dump(exclude={'connection_id', 'leisure_id', 'generation'}))
+        if operation in ('scripted', 'control'):
+            raw = await request.body()
+            try: leisure = isinstance(json.loads(raw), dict) and 'leisure_id' in json.loads(raw)
+            except ValueError: leisure = False
+            if leisure:
+                model = LeisureScriptControl if operation == 'scripted' else LeisureControl
+                try: body = model.model_validate_json(raw)
+                except ValidationError: raise HTTPException(422, 'invalid_'+('script_control' if operation == 'scripted' else 'control'))
+                if operation == 'scripted':
+                    if not settings.cognition_enabled: raise HTTPException(503, 'retro_cognition_disabled')
+                    if body.generation != m.generation: raise ValueError('session_generation_mismatch')
+                    return await m.command('scripted', sponsor_live(m, body),
+                                           body.model_dump(exclude={'connection_id', 'leisure_id', 'generation'}))
+                return await m.command('control', sponsor_live(m, body),
+                                       dict(port=body.port, action=body.action, leisure=True))
         if operation == 'goal':
             if not settings.cognition_enabled: raise HTTPException(503, 'retro_cognition_disabled')
             try: body = Goal.model_validate_json(await request.body())

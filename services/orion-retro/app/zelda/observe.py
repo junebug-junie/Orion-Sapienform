@@ -41,8 +41,11 @@ VERDICTS = {
     'room': 'CONFIRMED', 'next_room': 'CONFIRMED', 'link': 'CONFIRMED',
     'hearts': 'CONFIRMED', 'invincible_frames': 'CONFIRMED', 'sword': 'CONFIRMED',
     'enemies': 'CONFIRMED', 'walls': 'CONFIRMED',
-    'rupees': 'UNSETTLED', 'keys': 'UNSETTLED', 'bombs': 'UNSETTLED',
-    'candle': 'UNSETTLED', 'raft': 'UNSETTLED', 'paused': 'UNSETTLED',
+    # 2026-10-22 live: a type-$60 drop picked up in room $78 moved $66D 0 -> 1 and
+    # stayed; SELECT in play moved $E0 0 -> 1 -> 0. No bomb/key drop was seen in a
+    # 15-room farming probe, and no dungeon was entered, so those stay unknown.
+    'rupees': 'CONFIRMED', 'paused': 'CONFIRMED', 'drops': 'CONFIRMED',
+    'keys': 'UNSETTLED', 'bombs': 'UNSETTLED', 'candle': 'UNSETTLED', 'raft': 'UNSETTLED',
 }
 ITEM_ADDR = {'sword': 0x657, 'bombs': 0x658, 'candle': 0x65B, 'raft': 0x660,
              'rupees': 0x66D, 'keys': 0x66E}
@@ -119,6 +122,16 @@ def enemies(ram):
     return rows
 
 
+def drops(ram):
+    """Item-drop objects (type $60). Walking onto one collects it; contents unknown."""
+    rows = []
+    for i in ENEMY_SLOTS:
+        if ram[0x34F + i] == 0x60:
+            x, y = ram[0x70 + i], ram[0x84 + i]
+            rows.append(dict(slot=i, x=x, y=y, tile=list(tile_of(x, y))))
+    return rows
+
+
 def decode(ram, save, frame=None, include_walls=True):
     if len(ram) != RAM_SIZE or len(save) != SAVE_SIZE:
         return {'status': 'unknown', 'reason': 'ram_unavailable'}
@@ -137,7 +150,8 @@ def decode(ram, save, frame=None, include_walls=True):
     # (ObjState+1 $AD = 0 price transfer, 1 textbox, 3 item cue, 7 textbox; Link moved
     # 1 px in 15 frames of state 0) and while an item is held up
     # (ItemLiftTimer $506 counts 127 -> 0). Overworld $AD is an enemy's state, unused here.
-    frozen = ram[0x506] != 0 or (mode == 'cave' and ram[0xAD] in (0, 1, 3, 7))
+    frozen = (ram[0x506] != 0 or (mode == 'cave' and ram[0xAD] in (0, 1, 3, 7))
+              or (_settled('paused') and ram[0xE0] != 0))
     out = dict(status='observed', profile=PROFILE, frame=frame, mode=mode, mode_code=code,
                submode=ram[0x13],
                level=level_value, room=ram[0xEB], next_room=ram[0xEC],
@@ -145,7 +159,8 @@ def decode(ram, save, frame=None, include_walls=True):
                link=dict(x=ram[0x70], y=ram[0x84], tile=list(tile_of(ram[0x70], ram[0x84])),
                          facing=FACING.get(ram[0x98], 'unknown'), invincible_frames=ram[0x4F0],
                          controllable=mode in MAP_MODES and not frozen),
-               hearts=hearts(ram), items=items, enemies=enemies(ram))
+               hearts=hearts(ram), items=items, enemies=enemies(ram),
+               drops=drops(ram) if mode in MAP_MODES else [])
     if mode in MAP_MODES:
         grid = walls(ram, save)
         out['walls_hash'] = walls_hash(grid)

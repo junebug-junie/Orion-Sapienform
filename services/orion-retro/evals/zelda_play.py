@@ -145,7 +145,7 @@ def run(args):
 
 def _run(args, out, journals):
     saves = Path(args.saves or tempfile.mkdtemp(prefix='zelda-atlas-'))
-    results = []
+    results = []; evidence_drops = []
     h = Harness(args.core, args.rom, saves, 'eval-session-1')
     journals['session_1'] = h.rows
     lineage = h.runtime.lineage_id()
@@ -153,6 +153,12 @@ def _run(args, out, journals):
     start = h.facts()
     check(results, 'reader: boot reaches play at start room $77', start['mode'] == 'play' and start['room'] == 0x77,
           facts=start)
+    h.press(SEL, 10)
+    paused = h.facts() | {'paused': h.obs['paused']}
+    h.press(SEL, 10)
+    check(results, 'reader: SELECT pause reads $E0 and freezes control',
+          paused['paused'] is True and not paused['link']['controllable'] and h.obs['paused'] is False
+          and h.obs['link']['controllable'], paused=paused['paused'], after=h.obs['paused'])
     h.hand_off()
     seq = []
     r = h.goal({'kind': 'enter', 'tile': {'x': 8, 'y': 2}}, {'kind': 'enter_cave'}); seq.append(r)
@@ -185,6 +191,12 @@ def _run(args, out, journals):
             kills.append(target)
     check(results, 'fight kills an Octorok (slot hp>0 -> gone)', kills and kills[0]['type'] in (7, 8),
           killed=kills, after=h.obs['enemies'], finished=r)
+    # Evidence only (drops are random): collect any drop and record the inventory delta.
+    for d in list(h.obs['drops'])[:2]:
+        before_items = dict(h.obs['items'])
+        g = h.goal({'kind': 'collect', 'tile': {'x': min(d['tile'][0], 30), 'y': max(1, min(d['tile'][1], 21))}},
+                   {'kind': 'item_gained'}, budget=8)
+        evidence_drops.append(dict(drop=d, before=before_items, after=dict(h.obs['items']), finished=g))
     # Leave the fight for the known start room before saving the lineage.
     r = h.goal({'kind': 'exit', 'dir': 'W'}, {'kind': 'reach_room', 'value': 0x77}); seq.append(r)
     h.scripted.stop(0, 'eval_end')
@@ -224,7 +236,7 @@ def _run(args, out, journals):
           session2=s2, new_in_session_2=new_in_2, finished=seq2)
     hood = neighbourhood(atlas2, 0, 0x68)
     report = dict(results=results, ok=all(r['ok'] for r in results), lineage_id=lineage,
-                  goals_session_1=seq, goals_session_2=seq2, neighbourhood=hood,
+                  drop_pickups=evidence_drops, goals_session_1=seq, goals_session_2=seq2, neighbourhood=hood,
                   atlas_bytes=len(json.dumps(atlas2)), identity=h2.core.identity)
     (out / 'report.json').write_text(json.dumps(report, indent=1, default=str))
     (out / 'atlas.json').write_text(json.dumps(atlas2, indent=1))

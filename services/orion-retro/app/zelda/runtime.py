@@ -35,10 +35,13 @@ class ZeldaRuntime:
     def lineage_id(self):
         return self.atlas.lineage_id if self.atlas else None
 
-    def switch_lineage(self, lineage_id):
-        if self.atlas:
+    def on_load(self, lineage_id, initial=False):
+        if not self.atlas: return
+        if lineage_id and lineage_id != self.atlas.lineage_id or (not lineage_id and not initial):
             self.atlas.open(lineage_id or Atlas.new_lineage())
             self.record('atlas_opened', lineage_id=self.atlas.lineage_id)
+        else:
+            self.atlas.prev = None; self.atlas.place = None  # never link rooms across a load
 
     def status(self):
         return dict(observation=summary(self.latest), atlas=self.atlas.public() if self.atlas else None)

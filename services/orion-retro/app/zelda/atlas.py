@@ -54,7 +54,7 @@ def neighbourhood(doc, level, room):
     near = {}
     for delta, d in DELTA.items():
         other = room + delta
-        if 0 <= other <= 255 and not (d in 'EW' and other // 16 != room // 16):
+        if 0 <= other <= 127 and not (d in 'EW' and other // 16 != room // 16):  # 8x16 grid
             near[d] = dict(room=other, known=room_key(level, other) in rooms,
                            seen_exit=(here or {}).get('exits_seen', {}).get(d))
     unexplored = sorted(k for k, v in rooms.items() if k.startswith(f'{level}:')
@@ -192,13 +192,14 @@ class Atlas:
     def flush(self, force=False):
         if not self.dirty or self.disabled: return False
         if not force and self.now() - self.flushed_at < FLUSH_SECONDS: return False
+        path = path_for(self.root, self.lineage_id)
+        if not self.doc['rooms'] and not path.exists(): return False  # nothing observed yet
         self.doc['updated_at'] = utc()
         data = json.dumps(self.doc, separators=(',', ':'))
         while len(data) > MAX_BYTES and len(self.doc['sessions']) > 1:
             del self.doc['sessions'][0]; data = json.dumps(self.doc, separators=(',', ':'))
         if len(data) > MAX_BYTES:
             self.disabled = 'atlas_full'; self.record('atlas_full', lineage_id=self.lineage_id); return False
-        path = path_for(self.root, self.lineage_id)
         try:
             path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             tmp = path.with_suffix('.tmp')

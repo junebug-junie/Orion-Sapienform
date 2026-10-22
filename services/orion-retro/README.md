@@ -257,6 +257,8 @@ on Zelda sessions only. A leisure grant is preemptible: any human `acquire` or
 script stops with `human_takeover`). A leisure sponsor can never take a port from a
 human. A session paused for `no_controller` must be resumed before a leisure acquire.
 
+**Controller attribution.** Each `applied` journal row carries `controller: human|script|leisure`. It names the owner of that input's grant epoch: `script` is a browser-sponsored policy, and `leisure` is a leisure sponsor's policy or lease. `zelda.atlas.session.frames_by_controller = {human, script, leisure, none}` counts native frames by who held port 0 on that frame. `none` means no live lease. The atlas session row stores the same counts, next to `rooms_new` and `deaths`. Lane C derives the control share from these counts ("played together" when human/total > 0.5).
+
 **Atlas (`app/zelda/atlas.py`, `zelda-atlas-v1`).** One JSON file per save lineage at
 `RETRO_SAVES_DIR/atlas/<lineage_id>.json`, bounded at 1 MiB, written at most every 2 s
 and on save/stop. It records only observed room changes (exits seen both ways),

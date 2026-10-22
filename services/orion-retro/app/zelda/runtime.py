@@ -20,10 +20,11 @@ class ZeldaRuntime:
     def goals(self):
         return ZeldaGoals(self.record, self.atlas)
 
-    def after_frame(self, frame, now, active):
+    def after_frame(self, frame, now, active, controller=None):
         obs = self.observer.read(frame)
         self.latest = obs
         if self.atlas:
+            if controller: self.atlas.count_frame(controller)
             self.atlas.observe(obs, frame)
             self.atlas.flush()
         for port, policy in active.items():

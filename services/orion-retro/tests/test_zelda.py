@@ -412,6 +412,11 @@ def test_zelda_session_dispatches_reader_motor_atlas_and_lineage(monkeypatch, tm
     assert status['zelda']['observation']['mode'] == 'play' and 'walls' not in status['zelda']['observation']
     lineage = status['zelda']['atlas']['lineage_id']
     assert status['scripted'][0]['policy_id'] == 'zelda-navigator-v1'
+    counts = status['zelda']['atlas']['session']['frames_by_controller']
+    assert counts['script'] > 0 and set(counts) == {'human', 'script', 'leisure', 'none'}
+    evidence = [json.loads(l) for l in (root / 'ev' / 'sess.jsonl').read_text().splitlines()]
+    assert {r['controller'] for r in evidence if r['kind'] == 'applied'} <= {'human', 'script', 'leisure'}
+    assert any(r['kind'] == 'applied' for r in evidence)
     assert status['scripted'][0]['cognition']['attempt']['decision_id']
     saved = next(r for r in rows if r.get('id') == 'sv')['result']['saved']
     assert saved['lineage_id'] == lineage and load(root / 'saves', lineage)['rooms']
@@ -615,3 +620,34 @@ def test_offered_decision_carries_bounded_terrain_but_status_does_not(tmp_path):
     assert len(json.dumps(t)) <= 800 and 'walls' not in g.attempt['observation']
     rt = ZeldaRuntime.__new__(ZeldaRuntime); rt.latest = obs(); rt.atlas = None
     assert 'terrain' not in rt.status()['observation'] and 'walls' not in rt.status()['observation']
+
+
+def test_applied_rows_and_frames_are_attributed_to_their_controller(tmp_path):
+    a = Arbiter([0]); s = Scripted(a, lambda *x, **y: None, goals_factory=lambda: ZeldaGoals(lambda *x, **y: None))
+    atlas = Atlas(tmp_path, Atlas.new_lineage(), IDENTITY, 's1', now=lambda: 0)
+    assert s.controller(0) == 'none'
+    def first(now):  # the first frame after an acquire/takeover is a neutral barrier
+        for dt in (0, .001):
+            got = a.frame(now + dt)[1]
+            if got: return got[0]
+    h = a.control('browser', 0, 'acquire', 0)
+    a.submit('browser', dict(port=0, lease=h['lease'], epoch=h['epoch'], seq=1, mask=128), 0)
+    event = first(0); s.annotate(event)
+    assert event['controller'] == 'human' and s.controller(0) == 'human'
+    atlas.count_frame(s.controller(0))
+    s.start('browser', 0, 60, 0, 0, h['epoch'], True)
+    assert s.controller(0) == 'script'
+    s.tick(.01); event = first(.01); s.annotate(event)
+    assert event['controller'] == 'script'
+    atlas.count_frame(s.controller(0)); atlas.count_frame(s.controller(0))
+    s.stop(0, 'test')
+    lz = a.control('leisure:run', 0, 'acquire', 1, leisure=True)
+    assert s.controller(0) == 'leisure'
+    s.start('leisure:run', 0, 60, 1, 0, lz['epoch'], True)
+    s.active[0]['goals'].recovering = {'last': 0}  # force one non-idle send
+    s.active[0]['goals'].current_mask = 8
+    s.tick(1.01); event = first(1.01); s.annotate(event)
+    assert event['controller'] == 'leisure' and s.controller(0) == 'leisure'
+    atlas.count_frame(s.controller(0)); atlas.count_frame('bogus')
+    assert atlas.session['frames_by_controller'] == dict(human=1, script=2, leisure=1, none=1)
+    assert atlas.public()['session']['frames_by_controller']['script'] == 2

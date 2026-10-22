@@ -48,6 +48,8 @@ Before: Orion could choose one of five moves every five seconds in one platforme
   `decision_id` echoes `status.scripted[].cognition.attempt.decision_id`; the worker offers one when Link is controllable and no goal is active, and it expires after 30 s.
 - Added: `status.scripted[].cognition = {attempt, goal, last_finished, policy_id}` for Zelda; `last_finished` is the `goal_finished` record: `decision_id, goal, prediction, planner_id, outcome, verdict (met|refuted|unknown), start_digest, end_digest, start_frame, end_frame, applied_frames, human_intervention, bumps`. Outcomes: `prediction_met | prediction_refuted | completed | death (always refuted) | interrupted:hit | interrupted:stuck | budget_expired | stopped:<reason>`.
 - Added: `status.zelda = {observation, atlas: {lineage_id, rooms_known, session, disabled}}`, `status.game_profile`.
+- Added: `attempt.observation.terrain`: a list of 22 strings, 32 characters each. Row 0 is the top of the play area, and column/row use the same tile grid as `tile`. The characters are `#` blocked, `.` walkable, `x` a learned-blocked tile (a bump recorded on this exact room layout, matched by `walls_hash`), and `C` a cave this lineage has entered (overworld only). It is about 790 bytes as JSON. Only the offered decision carries it; `status.zelda.observation` stays grid-free.
+- Added: Each `applied` journal row carries `controller: human|script|leisure`. It names the owner of that input's grant epoch: `script` is a browser-sponsored policy, and `leisure` is a leisure sponsor's policy or lease. `zelda.atlas.session.frames_by_controller = {human, script, leisure, none}` counts native frames by who held port 0 on that frame. `none` means no live lease. The atlas session row stores the same counts, next to `rooms_new` and `deaths`. Lane C derives the control share from these counts ("played together" when human/total > 0.5).
 - Added: journal row `death_recovered {decision_id | null, room, level, death_frame, room_after, frame}` and `observation.menu = {kind: 'continue', cursor: continue|save|retry, activated}` (mode 8 only).
 - Added: `GET /sessions/{id}/atlas` -> `{lineage_id, level, room, current, adjacent{N,S,E,W:{room, known, seen_exit}}, rooms_known, rooms_with_unexplored_exits, caves, deaths, map}`; 404 `no_atlas` / `atlas_not_written_yet`.
 - Added: `POST /control` and `/scripted` accept `leisure_id` instead of `connection_id` (Zelda sessions only; `leisure_requires_zelda` otherwise). Leisure control actions: `acquire`, `release`.
@@ -77,7 +79,7 @@ Before: Orion could choose one of five moves every five seconds in one platforme
 
 ```text
 /tmp/orion-retro-service-venv/bin/python -m pytest services/orion-retro/tests tests/retro -q
-150 passed (35 new tests in tests/test_zelda.py, some parametrized)
+152 passed (38 new tests in tests/test_zelda.py, some parametrized)
 git diff --check                                   clean
 python -m pytest tests/test_no_personal_terms.py tests/test_no_private_eval_artifacts.py tests/test_gitignore_no_bare_catchall.py -q
 13 passed
@@ -90,8 +92,11 @@ Mutation spot-checks: removing the fight/retreat hit exemption, the leisure pree
 ## Evals run
 
 ```text
-python services/orion-retro/evals/zelda_play.py --core <fceumm ac0d00a7> --rom <PRG0>   OK 12/12 (~5 s)
-python services/orion-retro/evals/zelda_play.py --core <fceumm ac0d00a7> --rom <PRG1>   OK 12/12
+python services/orion-retro/evals/zelda_play.py --core <fceumm ac0d00a7> --rom <PRG0>   OK 13/13 (~5 s)
+python services/orion-retro/evals/zelda_play.py --core <fceumm ac0d00a7> --rom <PRG1>   OK 13/13
+  control share: every applied row tagged script; frames_by_controller
+  {human 0, script 5732, leisure 0, none 490} sums to the 6222 frames played (none = boot, before hand-off)
+  live terrain: start room shows the entered cave as C at (8,2); in the cave the bumped barrier row is x
   boot reaches play at room $77; SELECT pause reads $E0 and freezes control;
   enter cave (met); bump at the cave barrier marks learned-blocked tiles;
   collect sword ($657 0->1, met); exit S to $77 (met); exit E to $78 (met);

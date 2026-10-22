@@ -57,7 +57,7 @@ class Harness:
     def step(self, mask=0, n=1):
         for _ in range(n):
             self.core.step(mask); self.frame += 1
-            self.obs = self.runtime.after_frame(self.frame, self.now, {})
+            self.obs = self.runtime.after_frame(self.frame, self.now, {}, self.scripted.controller(0))
 
     def wait_mode(self, code, limit):
         start = self.frame
@@ -95,8 +95,10 @@ class Harness:
         self.scripted.tick(self.now)
         masks, applied, _ = self.authority.frame(self.now)
         self.core.step(*masks); self.frame += 1
-        self.obs = self.runtime.after_frame(self.frame, self.now, self.scripted.active)
-        for event in applied: self.scripted.annotate(event)  # same order as the worker
+        self.obs = self.runtime.after_frame(self.frame, self.now, self.scripted.active, self.scripted.controller(0))
+        for event in applied:
+            self.scripted.annotate(event)  # same order as the worker
+            self.rows.append(dict(kind='applied', frame=self.frame, **event))
 
     def goal(self, goal, prediction, budget=20, rationale='native eval fixture sequence', retries=3):
         """Commit one goal and run it to its end; re-issue it after an interruption (a hit)."""
@@ -228,6 +230,11 @@ def _run(args, out, journals):
           and atlas1['rooms']['0:119']['caves'] and 'sword' in atlas1['rooms']['0:119']['caves'][0]['contents_seen']
           and s1['rooms_new'] == 2 and any(i['item'] == 'sword' for i in atlas1['items_gained']),
           session=s1, rooms=sorted(atlas1['rooms']), caves=atlas1['rooms']['0:119']['caves'])
+
+    counts = s1['frames_by_controller']; tags = {x.get('controller') for x in h.rows if x['kind'] == 'applied'}
+    check(results, 'control share: applied rows tagged, frames counted per controller',
+          tags == {'script'} and counts['script'] > 0 and counts['human'] == 0 and counts['none'] > 0
+          and sum(counts.values()) == h.frame, frames_by_controller=counts, applied_tags=sorted(tags), frames=h.frame)
 
     # Session 2: same lineage, restored from the session-1 save state.
     h2 = Harness(args.core, args.rom, saves, 'eval-session-2', lineage)

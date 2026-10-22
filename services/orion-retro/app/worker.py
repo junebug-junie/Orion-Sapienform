@@ -177,7 +177,8 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
                             and policy['goal_attempt_id'] == goals.accepted['attempt_id']):
                         goals.applied_start(frame+1, observer.read())
                 core.step(*masks); frame += 1
-                if zelda: zelda.after_frame(frame, time.monotonic(), scripted.active)
+                # Port 0 is Zelda's only controller; Lane C derives the control share from this.
+                if zelda: zelda.after_frame(frame, time.monotonic(), scripted.active, scripted.controller(0))
                 for port, policy in scripted.active.items():
                     goals = policy['goals']
                     if not goals or hasattr(goals, 'observe_frame'): continue  # GoalV2 runs above

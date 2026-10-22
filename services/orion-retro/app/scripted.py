@@ -88,7 +88,20 @@ class Scripted:
                 lease['expires'] = now+HOLD_TTL
                 s['next'] = now+s['interval']  # no catch-up burst after a stall
 
+    def controller(self, port, epoch=None):
+        """Who drives this port: 'script' (browser-sponsored policy), 'leisure' (a leisure
+        sponsor's policy or lease), 'human', or 'none' (no live lease). With an epoch, it
+        names the owner of that applied input's grant rather than the current lease."""
+        s = self.active.get(port); lease = self.authority.leases.get(port)
+        if s and (s['grant']['epoch'] == epoch if epoch is not None
+                  else lease is not None and lease['connection'] == s['connection']):
+            return 'leisure' if s['sponsor'].startswith('leisure:') else 'script'
+        if lease is None or (epoch is not None and lease['epoch'] != epoch):
+            return 'human' if epoch is not None else 'none'
+        return 'leisure' if lease.get('leisure') else 'human'
+
     def annotate(self, event):
+        event['controller'] = self.controller(event['port'], event['epoch'])
         s = self.active.get(event['port'])
         if s and event['epoch'] == s['grant']['epoch']:
             event['policy_id'] = s['policy_id']

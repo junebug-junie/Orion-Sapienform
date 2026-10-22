@@ -121,7 +121,8 @@ class Atlas:
                                game={k: self.identity[k] for k in ('rom_sha256', 'core_sha256')},
                                updated_at=utc(), rooms={}, items_gained=[], sessions=[])
         self.session = dict(session_id=self.session_id, start=utc(), end=None, rooms_new=0,
-                            deaths=0, decisions=0, met=0, refuted=0)
+                            deaths=0, decisions=0, met=0, refuted=0,
+                            frames_by_controller=dict(human=0, script=0, leisure=0, none=0))
         self.doc['sessions'].append(self.session)
         del self.doc['sessions'][:-MAX_SESSIONS]
         self.prev = None; self.place = None; self.scroll_to = None
@@ -219,6 +220,12 @@ class Atlas:
 
     def caves(self, level, room):
         return [tuple(c['tile']) for c in self.doc['rooms'].get(room_key(level, room), {}).get('caves', [])]
+
+    def count_frame(self, controller):
+        """One native frame played under this controller (human|script|leisure|none)."""
+        counts = self.session['frames_by_controller']
+        counts[controller if controller in counts else 'none'] += 1
+        self.dirty = True
 
     def decision(self, verdict):
         self.session['decisions'] += 1

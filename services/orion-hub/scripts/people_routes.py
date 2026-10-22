@@ -55,6 +55,9 @@ LEFT JOIN person_link l ON l.person_id = p.person_id AND l.revoked_at IS NULL
 LEFT JOIN vision_individual i ON i.individual_id = l.source_ref
 WHERE p.role <> 'self'
 GROUP BY p.person_id
+-- A name left with no link and nothing said about it (a corrected typo) is not shown.
+HAVING p.role = 'interlocutor' OR count(l.link_id) > 0
+    OR EXISTS (SELECT 1 FROM person_fact f WHERE f.person_id = p.person_id AND f.removed_at IS NULL)
 ORDER BY (p.status = 'active') DESC, days DESC, lower(p.display_name), p.person_id
 LIMIT $1
 """

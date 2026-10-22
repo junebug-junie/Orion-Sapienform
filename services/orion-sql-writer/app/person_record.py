@@ -39,7 +39,9 @@ PERSON_TABLES = ("person", "person_link", "person_fact")
 @dataclass(frozen=True)
 class PersonRecordConfig:
     ask_daily_cap: int = 3
-    ask_cooldown_days: float = 7.0
+    # Measured from created_at, so it must be longer than the expiry, or an
+    # expired question would come straight back (production passes VISION_ASK_COOLDOWN_DAYS).
+    ask_cooldown_days: float = 30.0
     ask_expiry_days: float = 7.0
     local_tz: str = "America/Denver"
 
@@ -121,12 +123,16 @@ def apply_fact_answers(conn, now: datetime) -> int:
         value = pf.answer_value(answer)
         if parsed and value:
             person_id, category = parsed
-            applied += conn.execute(text(
+            n = conn.execute(text(
                 "INSERT INTO person_fact (fact_id, person_id, category, value_text, voice, source_ref) "
                 "SELECT :f, :p, :c, :v, :voice, :src WHERE EXISTS (SELECT 1 FROM person WHERE person_id = :p) "
                 "ON CONFLICT DO NOTHING"),
                 {"f": ask_id, "p": person_id, "c": category, "v": value, "voice": pf.VOICE_ASK_ANSWER,
                  "src": f"ask:{ask_id}"}).rowcount or 0
+            applied += n
+            if not n:
+                logger.warning("person_fact_answer_not_stored ask_id=%s person_id=%s (no such person, or stored already)",
+                               ask_id, person_id)
         else:
             logger.warning("person_fact_answer_unusable ask_id=%s ref=%s", ask_id, ref)
         conn.execute(text("UPDATE orion_ask SET applied_at = :t WHERE ask_id = :a"), {"t": now, "a": ask_id})
@@ -144,6 +150,10 @@ SELECT p.person_id, p.display_name, p.role,
           AND split_part(a.source_ref, '|', 1) = p.person_id) AS asked
 FROM person p
 WHERE p.status = 'active' AND p.role <> 'self'
+  -- Someone Orion actually meets: a live camera link, or the interlocutor. A name
+  -- left with no link (a typo that was corrected) is not asked about.
+  AND (p.role = 'interlocutor' OR EXISTS (SELECT 1 FROM person_link l WHERE l.person_id = p.person_id
+                                         AND l.revoked_at IS NULL))
   AND NOT EXISTS (SELECT 1 FROM orion_ask o WHERE o.source_kind = :k AND o.status = 'open'
                   AND split_part(o.source_ref, '|', 1) = p.person_id)
 ORDER BY asked, days DESC, p.person_id
@@ -235,6 +245,13 @@ def run_person_record(conn, now: datetime, cfg: PersonRecordConfig,
     _plan, summary = sync_links(conn, people)
     summary["facts_seeded"] = seed_stated_facts(conn, people)
     summary["facts_applied"] = apply_fact_answers(conn, now)
-    opened = open_fact_asks(conn, now, cfg, individuals_cfg)
+    # A savepoint: a failing question never rolls back the links and answers above.
+    try:
+        with conn.begin_nested():
+            opened = open_fact_asks(conn, now, cfg, individuals_cfg)
+    except Exception as exc:
+        logger.warning("person_fact_asks_failed error=%s", exc)
+        summary["person_asks_error"] = str(exc)[:200]
+        opened = []
     summary["person_asks_opened"] = len(opened)
     return summary, opened

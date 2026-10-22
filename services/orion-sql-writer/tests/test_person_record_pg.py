@@ -179,3 +179,17 @@ def test_migration_missing_is_a_quiet_skip(pg, monkeypatch) -> None:
 
     monkeypatch.setattr(rec, "tables_present", lambda conn: False)
     assert _run(pg) == ({"person_record": "migration_missing"}, [])
+
+
+@needs_pg
+def test_a_corrected_typo_leaves_no_person_to_ask_about(pg) -> None:
+    """Review 2026-10-22: after a rename the old name kept being asked about."""
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _cluster(conn, "a", "Jhon")
+    _run(pg, cap=0)
+    with pg.begin() as conn:
+        conn.execute(text("UPDATE vision_individual SET label='John' WHERE individual_id='a'"))
+    _, opened = _run(pg, NOW + timedelta(days=1), cap=5)
+    assert sorted(a["question"] for a in opened) == ["What is your gender, in your own words?", "Who is John to you?"]

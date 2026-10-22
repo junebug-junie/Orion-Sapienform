@@ -79,3 +79,17 @@ def test_a_vehicle_name_never_mints_a_person() -> None:
 
 def test_minted_ids_are_stable() -> None:
     assert pr.minted_person_id("sam") == pr.minted_person_id("sam") != pr.minted_person_id("alex")
+
+
+def test_a_people_yaml_row_added_later_takes_over_a_camera_minted_person() -> None:
+    """Review 2026-10-22: a yaml row for a name the camera had already minted split the person,
+    left new clusters in conflict forever, and revoked the bike."""
+    minted = pr.Person(pr.minted_person_id("sam"), "Sam")
+    links = {(pr.SOURCE_INDIVIDUAL, "a"): minted.person_id, (pr.SOURCE_BELONGING, "bike"): minted.person_id}
+    sam_ref = PersonRefV1(node_id="referent-sam", display_name="Sam")
+    plan = run([c("a", "Sam"), c("b", "Sam"), c("bike", "Sam", kind="bicycle")], persons=[minted], links=links,
+               people=(YOU, SELF, sam_ref))
+    assert plan.conflicts == []
+    assert sorted(plan.revoke) == [(pr.SOURCE_BELONGING, "bike"), (pr.SOURCE_INDIVIDUAL, "a")]
+    assert sorted((l.source_ref, l.person_id) for l in plan.add_links) == [
+        ("a", "referent-sam"), ("b", "referent-sam"), ("bike", "referent-sam")]

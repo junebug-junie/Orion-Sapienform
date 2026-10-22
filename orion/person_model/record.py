@@ -117,9 +117,17 @@ def plan(
             p = Person(ref.node_id, ref.display_name, ref.role)
             by_id[p.person_id] = p
             out.new_persons.append(p)
+    # A people.yaml person owns its name: a camera-minted row with the same name
+    # (minted before the yaml row existed) stops being a candidate, so the name
+    # does not split into two people and its links move to the referent.
+    yaml_ids = {ref.node_id for ref in people}
     by_key: Dict[str, List[str]] = {}
     for p in sorted(by_id.values(), key=lambda p: p.person_id):
         by_key.setdefault(name_key(p.display_name), []).append(p.person_id)
+    for key, ids in by_key.items():
+        preferred = [i for i in ids if i in yaml_ids]
+        if preferred:
+            by_key[key] = preferred
 
     different: Dict[str, Set[str]] = {}
     for a, b in different_pairs:
@@ -151,10 +159,10 @@ def plan(
         key = name_key(c.label)
         current = links.get((SOURCE_INDIVIDUAL, c.individual_id))
         clash = different.get(c.individual_id, set())
-        if (current is not None and name_key(by_id[current].display_name) == key
+        candidates = list(by_key.get(key, []))
+        if (current is not None and current in candidates
                 and not (clash & clusters_of.get(current, set()))):
             continue
-        candidates = list(by_key.get(key, []))
         allowed = [pid for pid in candidates if not (clash & clusters_of.get(pid, set()))]
         if current is not None:
             unlink(SOURCE_INDIVIDUAL, c.individual_id)

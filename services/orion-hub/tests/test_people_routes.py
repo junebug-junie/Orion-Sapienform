@@ -121,7 +121,7 @@ def _run(body, published=None):
 
 async def _world(pool) -> None:
     await pool.execute("INSERT INTO person (person_id, display_name, role) VALUES "
-                       "('p-sam', 'Sam', 'other'), ('p-ups', 'Parcel van', 'other'), "
+                       "('p-sam', 'Sam', 'other'), ('p-ups', 'Parcel van', 'other'), ('p-typo', 'Smа', 'other'), "
                        "('r-you', 'Alex', 'interlocutor'), ('r-self', 'Orion', 'self')")
     for iid, days in (("sam-1", 4), ("sam-2", 2), ("you-1", 1)):
         await pool.execute(
@@ -132,6 +132,8 @@ async def _world(pool) -> None:
         "INSERT INTO vision_individual_sighting (sighting_id, individual_id, stream_id, started_at, ended_at, "
         "dwell_sec, observation_count, thumb_ref) VALUES ('s1', 'sam-1', 'walkway', now(), now(), 0, 1, $1)",
         f"thumb:{THUMB}")
+    await pool.execute("INSERT INTO person_link (link_id, person_id, source_kind, source_ref, decided_by) "
+                       "VALUES ('l5', 'p-ups', 'vision_individual', 'ups-1', 'camera_name')")
     for lid, pid, kind, ref in (("l1", "p-sam", "vision_individual", "sam-1"), ("l2", "p-sam", "vision_individual", "sam-2"),
                                 ("l3", "p-sam", "vision_belonging", "bike"), ("l4", "r-you", "vision_individual", "you-1")):
         await pool.execute("INSERT INTO person_link (link_id, person_id, source_kind, source_ref, decided_by) "

@@ -287,6 +287,16 @@
         <div id="visionAsksStatus" class="text-xs text-gray-400">Loading Orion's questions…</div>
         <div id="visionAsksList" class="space-y-2 overflow-y-auto pr-1"></div>
       </div>
+      <!-- People Orion knows (2026-10-22, docs/superpowers/specs/2026-10-22-people-one-record-design.md):
+           one card per person from GET /api/people (scripts/people_routes.py). Juniper adds what
+           she knows, removes a fact, or marks a name as not a person. Wired by static/js/people.js. -->
+      <details id="peopleCard" class="w-full bg-gray-900 rounded-2xl shadow-lg p-5 space-y-2">
+        <summary class="flex items-center justify-between cursor-pointer">
+          <h2 class="text-xl font-bold text-white inline">People Orion knows</h2>
+          <span id="peopleStatus" class="text-[11px] text-gray-400">Loading…</span>
+        </summary>
+        <div id="peopleList" class="mt-2 space-y-2 max-h-[32rem] overflow-y-auto pr-1"></div>
+      </details>
       <div class="w-full flex flex-col md:flex-row gap-6 items-stretch">
       
       <!-- Cognitive EKG is a drawer: open by default (as before); collapsing it pans it
@@ -4517,6 +4527,7 @@
   <script src="/static/js/walkway-stories.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/walkway-history.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/vision-asks.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/people.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/thought-process.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <script src="/static/js/organ-signals-graph-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>

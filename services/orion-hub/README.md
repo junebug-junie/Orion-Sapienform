@@ -4006,6 +4006,17 @@ The Vision panel's camera dropdown has polled "live" views: **Carbon (live)** (e
 - Changing the mount needs a Hub recreate, not just a restart.
 - Tests: `tests/test_vision_live_frame.py`, `tests/test_vision_frame_cache.py`, `tests/test_vision_affect_capture_api.py`.
 
+## People Orion knows
+
+One card per person (`#peopleCard`, under "Orion is asking"; `static/js/people.js`, routes in `scripts/people_routes.py`, spec `docs/superpowers/specs/2026-10-22-people-one-record-design.md`). Reads the person record orion-sql-writer keeps from the camera names (`person`, `person_link`, `person_fact`):
+
+- `GET /api/people`: everyone but Orion, most-seen first: picture, days seen on camera, what Juniper said about them, and Orion's open question about them.
+- `POST /api/people/{id}/facts` `{category, value}`: add what she knows (`hub_edit`). Categories come from `orion/person_model/categories.yaml`.
+- `POST /api/people/{id}/facts/{fact_id}/remove`: the fact stops counting (`removed_at`, never deleted).
+- `POST /api/people/{id}/status` `{status: not_a_person|active}`: for a name that is not one person (a delivery company, two people named together). Orion stops asking about it; its open question is dismissed.
+
+Orion's questions about people (`source_kind=person_fact`) appear in "Orion is asking" as ordinary free-text cards. Camera links are corrected where they come from: rename the person on a camera card. Needs `services/orion-sql-db/manual_migration_person_record_v1.sql`; without it the routes return 503 `ask_schema_missing`. Tests: `tests/test_people_routes.py` (real Postgres), `tests/test_people_panel_browser_smoke.py` (Chromium, 360 px).
+
 ## Orion is asking (open questions to Juniper)
 
 Walkway camera idea 3 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`). The "Orion is asking" panel (`#visionAsksCard`, `static/js/vision-asks.js`; since 2026-10-06 the first card on the Hub home, no longer inside Vision) lists Orion's open questions and lets Juniper answer or dismiss them. Routes in `scripts/ask_routes.py`, on the Hub's asyncpg pool (`RECALL_PG_DSN`, `conjourney`):

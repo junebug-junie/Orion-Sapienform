@@ -29,25 +29,34 @@ class Arbiter:
         self.neutral.update(released)
         return released
 
-    def control(self, connection, port, action, now):
+    def control(self, connection, port, action, now, leisure=False):
+        """leisure=True marks a server-side leisure grant (no browser). Any human
+        acquire or takeover preempts a live leisure lease at once; a leisure sponsor
+        can never take a port from a human."""
         if port not in self.ports:
             raise ValueError('unsupported_port')
         old = self.leases.get(port)
+        live = old is not None and old['expires'] > now
+        if leisure and action == 'takeover' and live and not old.get('leisure'):
+            raise ValueError('leisure_cannot_preempt_human')
         if action == 'release':
             if old and old['connection'] != connection:
                 raise ValueError('not_owner')
             self.leases.pop(port, None)
             self.neutral.add(port)
             return {'port': port, 'released': True}
-        if action == 'acquire' and old and old['expires'] > now:
+        if action == 'acquire' and live and (leisure or not old.get('leisure')):
             raise ValueError('port_owned')
         self.epochs[port] += 1
         self.neutral.add(port)
         item = dict(connection=connection, epoch=self.epochs[port],
                     token=secrets.token_urlsafe(32), expires=now+LEASE_TTL,
-                    seq=-1, mask=0, latch=0, pending=None)
+                    seq=-1, mask=0, latch=0, pending=None, leisure=bool(leisure))
         self.leases[port] = item
-        return {'port': port, 'lease': item['token'], 'epoch': item['epoch']}
+        result = {'port': port, 'lease': item['token'], 'epoch': item['epoch']}
+        if live and old.get('leisure') and not leisure: result['preempted_leisure'] = True
+        if leisure: result['leisure'] = True
+        return result
 
     def submit(self, connection, data, now):
         p = data['port']; item = self.leases.get(p)

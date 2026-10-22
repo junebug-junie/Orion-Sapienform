@@ -1131,6 +1131,8 @@ class IndividualsConfig:
     # Daily cap for these face asks together (both kinds). The 10-sightings
     # rule keeps its own cap (ask_daily_cap); memory confirmation has its own.
     confirm_ask_daily_cap: int = 6
+    # Daily cap for "Is this <name>?" asks, separate from the slow rule's cap.
+    person_confirm_ask_daily_cap: int = 6
     # Splits on "someone else" picture answers (app/vision_split.py) and the
     # matcher's cannot-link rule. False: verdicts are recorded only.
     split_on_verdict_enabled: bool = True
@@ -2062,12 +2064,17 @@ def _apply_pair_answer(conn, ask_id: str, ref: str, answer: Optional[str], at: d
 # confirmation loop also opens cards there under its own cap (5 open), and
 # face asks (FACE_RULE_REF, vision_same_individual) have confirm_ask_daily_cap.
 ASKED_TODAY_SQL = (
-    # "Is this <name>?" asks share this budget (ORION_ASK_DAILY_CAP) with the slow rule.
-    "SELECT count(*) FROM orion_ask WHERE source_kind IN ('vision_individual', 'vision_person_confirm') "
+    "SELECT count(*) FROM orion_ask WHERE source_kind = 'vision_individual' "
     "AND created_at >= :d "
     "AND NOT (evidence_refs @> CAST(:face AS jsonb)) "
     # A name Juniper typed on a walkway story card is not a question Orion asked (2026-10-18).
     "AND NOT coalesce(answer_detail ? 'story_id', false)"
+)
+# "Is this <name>?" asks have their own cap (person_confirm_ask_daily_cap). Until
+# 2026-10-22 they shared ask_daily_cap with the slow rule, which opens first and
+# used both slots every day: 0 were ever asked.
+PERSON_CONFIRM_ASKED_TODAY_SQL = (
+    "SELECT count(*) FROM orion_ask WHERE source_kind = 'vision_person_confirm' AND created_at >= :d"
 )
 CONFIRM_ASKED_TODAY_SQL = (
     "SELECT count(*) FROM orion_ask WHERE created_at >= :d AND (source_kind = :same "
@@ -2297,8 +2304,8 @@ def person_confirm_question(*, person: str, sighting_count: int, distinct_days: 
 
 
 def _open_person_confirm_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> List[dict]:
-    """"Is this <name>?" for unsure guesses, most likely first, from whatever is
-    left of the slow rule's daily budget. Same rules as the other openers: no
+    """"Is this <name>?" for unsure guesses, most likely first, under their own
+    daily cap (person_confirm_ask_daily_cap). Same rules as the other openers: no
     picture, no ask; a skipped candidate never uses up a slot."""
     from sqlalchemy import text
 
@@ -2306,9 +2313,8 @@ def _open_person_confirm_asks(conn, now: datetime, tz: ZoneInfo, cfg: Individual
 
     if conn.execute(text("SELECT to_regclass('vision_person_attribution')")).scalar() is None:
         return []
-    asked_today = conn.execute(text(ASKED_TODAY_SQL), {"d": local_day_start(now, tz),
-                                                       "face": json.dumps([FACE_RULE_REF])}).scalar() or 0
-    budget = remaining_ask_budget(daily_cap=cfg.ask_daily_cap, asked_today=int(asked_today))
+    asked_today = conn.execute(text(PERSON_CONFIRM_ASKED_TODAY_SQL), {"d": local_day_start(now, tz)}).scalar() or 0
+    budget = remaining_ask_budget(daily_cap=cfg.person_confirm_ask_daily_cap, asked_today=int(asked_today))
     if budget <= 0:
         return []
     cands = conn.execute(text(f"""

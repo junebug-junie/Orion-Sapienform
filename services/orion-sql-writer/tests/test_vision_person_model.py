@@ -488,22 +488,43 @@ def test_is_this_x_opens_for_the_best_unsure_guess_with_a_picture(pg) -> None:
     assert opened[0]["image_refs"] and opened[0]["question"].startswith("Is this Juniper?")
     with pg.begin() as conn:
         assert vi._open_person_confirm_asks(conn, NOW + timedelta(minutes=1), ZONE, cfg) == []   # already open
-        n = conn.execute(text(vi.ASKED_TODAY_SQL), {"d": vi.local_day_start(NOW, ZONE),
-                                                    "face": '["rule:face"]'}).scalar()
-    assert n == 1   # counted against ORION_ASK_DAILY_CAP with the slow rule
+        day = vi.local_day_start(NOW, ZONE)
+        slow = conn.execute(text(vi.ASKED_TODAY_SQL), {"d": day, "face": '["rule:face"]'}).scalar()
+        own = conn.execute(text(vi.PERSON_CONFIRM_ASKED_TODAY_SQL), {"d": day}).scalar()
+    assert (slow, own) == (0, 1)   # its own cap, not ORION_ASK_DAILY_CAP
 
 
 @needs_pg
-def test_is_this_x_waits_when_the_slow_rule_used_the_day(pg) -> None:
+def test_is_this_x_still_asks_when_the_slow_rule_used_the_day(pg) -> None:
+    """Regression 2026-10-22: the slow rule opens first and used the shared cap of 2
+    every day, so "Is this <name>?" was never asked."""
+    from sqlalchemy import text
+
     from app import vision_individuals as vi
 
-    cfg = vi.IndividualsConfig(ask_daily_cap=1, ask_face_min_faces=0)
+    cfg = vi.IndividualsConfig(ask_daily_cap=1, person_confirm_ask_daily_cap=1, ask_face_min_faces=0)
     with pg.begin() as conn:
         _confirm_world(conn)
-        conn.execute(__import__("sqlalchemy").text(
+        conn.execute(text(
             "INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, created_at) "
             "VALUES ('ask-slow', 'q', 'vision_individual', 'someone', :t)"), {"t": NOW})
+        assert [a["source_ref"] for a in vi._open_person_confirm_asks(conn, NOW, ZONE, cfg)] == ["unk-j|Juniper"]
+
+
+@needs_pg
+def test_is_this_x_stops_at_its_own_daily_cap(pg) -> None:
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    cfg = vi.IndividualsConfig(person_confirm_ask_daily_cap=1, ask_face_min_faces=0)
+    with pg.begin() as conn:
+        _confirm_world(conn)
+        conn.execute(text(
+            "INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, created_at) "
+            "VALUES ('ask-done', 'q', 'vision_person_confirm', 'other|Emerald', 'answered', :t)"), {"t": NOW})
         assert vi._open_person_confirm_asks(conn, NOW, ZONE, cfg) == []
+        assert len(vi._open_person_confirm_asks(conn, NOW + timedelta(days=1), ZONE, cfg)) == 1
 
 
 @needs_pg

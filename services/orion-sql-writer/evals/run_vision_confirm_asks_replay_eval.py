@@ -158,7 +158,7 @@ def run(live_dsn: str, scratch_dsn: str, now: datetime) -> dict:
         live.execute(text("SET TRANSACTION READ ONLY"))
         vi._check_tables(scratch)  # the scratch db must have every walkway migration, incl. vision_split_v1
         scratch.execute(text("TRUNCATE orion_ask, vision_individual_pair_verdict, vision_individual_sighting, "
-                             "vision_individual CASCADE"))
+                             "vision_individual, vision_person_attribution CASCADE"))
         copied = {
             "vision_individual": _copy(live, scratch, "vision_individual", IND_COLS),
             "vision_individual_sighting": _copy(live, scratch, "vision_individual_sighting", SIGHT_COLS),
@@ -169,6 +169,11 @@ def run(live_dsn: str, scratch_dsn: str, now: datetime) -> dict:
             copied["vision_individual_pair_verdict"] = _copy(
                 live, scratch, "vision_individual_pair_verdict",
                 "individual_a, individual_b, verdict, face_cosine, ask_id, decided_at")
+        # Orion's unsure person guesses, so "Is this <name>?" replays too (2026-10-22).
+        if live.execute(text("SELECT to_regclass('vision_person_attribution')")).scalar():
+            copied["vision_person_attribution"] = _copy(
+                live, scratch, "vision_person_attribution",
+                "individual_id, person_label, channel, score, band, model_version, decided_at, revoked_at")
         faces = face_distribution(live)
         opened = vi._open_asks(scratch, now, tz, cfg)
         band = faces["same_track_likely_same"].get("p10")
@@ -193,13 +198,15 @@ def run(live_dsn: str, scratch_dsn: str, now: datetime) -> dict:
                      "face_n": [face_n.get(i) for i in ids], "face_cosine": cos,
                      "images": len(a["image_refs"]),
                      "rule": "face" if vi.FACE_RULE_REF in a["evidence_refs"] else
-                             ("pair" if a["source_kind"] == vi.SOURCE_KIND_SAME else "sightings"),
+                             ("pair" if a["source_kind"] == vi.SOURCE_KIND_SAME else
+                              "person_guess" if a["source_kind"] == vi.SOURCE_KIND_PERSON_CONFIRM else "sightings"),
                      "question": a["question"]})
     return {"now": now.isoformat(), "copied_rows": copied, "asks_that_would_open": asks,
             "count_by_kind": dict(Counter(a["kind"] for a in asks)),
             "config": {"ask_face_min_faces": cfg.ask_face_min_faces,
                        "same_ask_min_face_cosine": cfg.same_ask_min_face_cosine,
                        "confirm_ask_daily_cap": cfg.confirm_ask_daily_cap,
+                       "person_confirm_ask_daily_cap": cfg.person_confirm_ask_daily_cap,
                        "face_match_threshold": cfg.face_match_threshold},
             "face_similarity": faces,
             "who_is_this_picture_purity": purity,

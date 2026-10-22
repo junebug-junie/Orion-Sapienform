@@ -71,7 +71,7 @@ Not built. Pure-Python change in an existing loop. UNVERIFIED live until deploy;
 | day | name | cluster | edge_id |
 |---|---|---|---|
 | 2026-10-21 | Maeve | 62cb5fcc | sub-edge-walkway-seen-16d62f3be564c849169bfd4d |
-| 2026-10-19 | Juniper (was Teddy) | f5242d40 | sub-edge-walkway-seen-7e2773010f74047fa8631464 |
+| 2026-10-19 | Juniper (renamed 10-21) | f5242d40 | sub-edge-walkway-seen-7e2773010f74047fa8631464 |
 | 2026-10-19 | Adeline | f5694d84 | sub-edge-walkway-seen-edd5842eec0d9f661e60749c |
 | 2026-10-15 | Esme | 4f88265e | sub-edge-walkway-seen-83f3ce6fec9dba9289657b2f |
 

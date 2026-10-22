@@ -347,7 +347,7 @@ def test_bill_read_dates_replace_the_scheduled_cycle_start() -> None:
     oct_18_noon = datetime(2026, 10, 18, 12, tzinfo=DENVER)
     assert led.cycle_bounds(oct_18_noon) == (datetime(2026, 10, 18, tzinfo=DENVER), datetime(2026, 11, 18, tzinfo=DENVER))
     led.upsert(_iv(oct_18_noon, 1.0))
-    moved = led.add_read_dates([date(2026, 9, 18), date(2026, 10, 19)])
+    moved = led.set_read_dates([date(2026, 9, 18), date(2026, 10, 19)])
     assert moved == [("UP123", datetime(2026, 9, 18, tzinfo=DENVER))]
     assert led.cycle_bounds(oct_18_noon) == (datetime(2026, 9, 18, tzinfo=DENVER), datetime(2026, 10, 19, tzinfo=DENVER))
     assert led.cycle_bounds(datetime(2026, 10, 19, 0, 30, tzinfo=DENVER)) == (
@@ -355,12 +355,12 @@ def test_bill_read_dates_replace_the_scheduled_cycle_start() -> None:
     )
     # Far from any read, the scheduled day still rules.
     assert led.cycle_bounds(datetime(2027, 1, 5, tzinfo=DENVER))[0] == datetime(2026, 12, 18, tzinfo=DENVER)
-    assert led.add_read_dates([date(2026, 10, 19)]) == []
+    assert led.set_read_dates([date(2026, 10, 19), date(2026, 9, 18)]) == []
 
 
 def test_read_date_across_a_month_boundary_still_brackets() -> None:
     led = _ledger(day=1)
-    led.add_read_dates([date(2026, 1, 30)])  # replaces the scheduled Feb 1
+    led.set_read_dates([date(2026, 1, 30)])  # replaces the scheduled Feb 1
     assert led.cycle_bounds(datetime(2026, 1, 31, tzinfo=DENVER)) == (
         datetime(2026, 1, 30, tzinfo=DENVER), datetime(2026, 3, 1, tzinfo=DENVER),
     )

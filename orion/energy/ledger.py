@@ -78,9 +78,9 @@ class UsageLedger:
         start = min(near, key=lambda r: abs((r - scheduled).days)) if near else scheduled
         return datetime(start.year, start.month, start.day, tzinfo=self._tz)
 
-    def add_read_dates(self, days: Iterable[date]) -> list[tuple[str, datetime]]:
-        """Record meter-read dates; return the (usage point, cycle start) pairs whose bounds moved."""
-        merged = sorted(set(self._read_dates) | set(days))
+    def set_read_dates(self, days: Iterable[date]) -> list[tuple[str, datetime]]:
+        """Replace the known meter-read dates; return the (usage point, cycle start) pairs whose bounds moved."""
+        merged = sorted(set(days))
         if merged == self._read_dates:
             return []
         before = {key: self.cycle_bounds(key[1]) for key in self.all_cycles()}
@@ -89,8 +89,10 @@ class UsageLedger:
         live = {self._cycle_key(point, start) for point, start in after}
         for key in set(self._accrued) - live:
             del self._accrued[key]
-        self._dirty_cycles &= live
-        return sorted(key for key in after if before.get(key) != self.cycle_bounds(key[1]))
+        moved = sorted(key for key in after if before.get(key) != self.cycle_bounds(key[1]))
+        # Their cached costs were priced with the old bounds: unknown until re-accrued.
+        self._dirty_cycles = (self._dirty_cycles & live) | {self._cycle_key(point, start) for point, start in moved}
+        return moved
 
     def period_days(self, start: datetime, end: datetime) -> int:
         """Calendar days in [start, end) as the bill counts them (local dates, DST-proof)."""

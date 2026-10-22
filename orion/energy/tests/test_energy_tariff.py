@@ -299,3 +299,9 @@ def test_dated_rider_rate_on_and_hourly_latest_rate() -> None:
     assert rider.rate_on(date(2026, 9, 24)) == (date(2026, 8, 10), 1.17)
     assert rider.rate_on(date(2026, 9, 25)) == (date(2026, 9, 25), 1.78)
     assert rider.pct == 1.78  # hourly multipliers use the latest rate (documented known gap)
+
+
+def test_r3_near_zero_kwh_across_a_season_change_does_not_overdraw() -> None:
+    """29/31 x 0.6 kWh rounds up to 1 whole kWh; the winter remainder must not go negative."""
+    est = load_tariff(R3).itemize(0.6, start=date(2026, 9, 1), end=date(2026, 10, 2))
+    assert est.energy_charge == pytest.approx(0.06, abs=0.01)

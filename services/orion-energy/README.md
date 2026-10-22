@@ -58,8 +58,11 @@ Evidence: `orion/energy/tests/test_energy_tariff.py` (both bills line-exact) and
 
 `ENERGY_BILLING_CYCLE_START_DAY` is the usual read day (18 here). Every actual bill's start
 and end dates are real meter reads, and a read within 10 days of a scheduled start replaces
-it, so the cycle after the 2026-10-20 bill is Oct 19 -> Nov 18, not Oct 18 -> Nov 18. A new
-bill re-accrues every cycle whose bounds moved. Changing the bill's *due date* with RMP does
+it, so the cycle after the 2026-10-20 bill is Oct 19 -> Nov 18, not Oct 18 -> Nov 18. A newly
+dropped bill re-accrues and publishes every cycle whose bounds moved; at boot the replayed
+bills move the bounds in memory only (boot never publishes), so drop a bill through the inbox
+rather than copying it into `processed/`. A re-issued bill with the same start replaces the
+older one. Changing the bill's *due date* with RMP does
 not move the read date.
 
 ## Feeding it (Plan 1: file drop)

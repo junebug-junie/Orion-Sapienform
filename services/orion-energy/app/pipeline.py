@@ -129,6 +129,13 @@ class EnergyPipeline:
             old = self._actuals.get(key)
             if old is not None and old.retrieved_at > bill.retrieved_at:
                 return False
+            # A re-issued bill (same start, corrected end read) replaces the older one, so its
+            # stale end date stops acting as a meter read.
+            for other_key, other in list(self._actuals.items()):
+                if other_key != key and other.billing_period_start == bill.billing_period_start:
+                    if other.retrieved_at > bill.retrieved_at:
+                        return False
+                    del self._actuals[other_key]
             self._actuals[key] = bill
             return True
         fkey = (bill.billing_period_start, bill.as_of)
@@ -147,7 +154,7 @@ class EnergyPipeline:
         """Move cycle bounds to the bills' meter-read dates and re-accrue every cycle that moved."""
         reads = {d for bill in self._actuals.values() for d in (bill.billing_period_start, bill.billing_period_end)}
         rows: list[EnergyCostAccruedV1] = []
-        for point, cycle_start in self._ledger.add_read_dates(reads):
+        for point, cycle_start in self._ledger.set_read_dates(reads):
             rows.extend(self._accrue_cycle(point, cycle_start, computed_at=now))
         return rows
 

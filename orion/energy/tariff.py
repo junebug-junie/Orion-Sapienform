@@ -248,7 +248,8 @@ class Tariff:
             else:
                 season_kwh = kwh * share
                 if self.round_block_kwh:
-                    season_kwh = float(_whole(season_kwh))
+                    # Rounding up must not overdraw the total (0.6 kWh x 29/31 rounds to 1).
+                    season_kwh = min(float(_whole(season_kwh)), left)
             left -= season_kwh
             bounds = self._bounds(seasons[name], float(scale) * share)
             slices = self._split_season(season_kwh, cycle_kwh_before=0.0, season=seasons[name], bounds=bounds)

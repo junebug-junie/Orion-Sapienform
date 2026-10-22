@@ -126,3 +126,21 @@ def test_actual_bill_moves_the_cycle_to_its_read_dates_and_reaccrues() -> None:
     assert by_hour[datetime(2026, 10, 19, 12, tzinfo=timezone.utc)] == date(2026, 10, 19)
     assert p.ingest_bills([bill.model_copy(update={"retrieved_at": NOW + timedelta(hours=1)})], now=NOW)[-1].kind \
         == ENERGY_RECONCILE_KIND  # same reads again: nothing re-accrues
+
+
+def test_reissued_bill_replaces_the_older_read() -> None:
+    p = EnergyPipeline(
+        ledger=make_test_ledger(cycle_start_day=18), channels=EnergyChannels("u", "a", "r"), usage_point_id="UP1",
+    )
+    estimated = EnergyBillActualV1(
+        source="file_drop", billing_period_start=date(2026, 9, 18), billing_period_end=date(2026, 10, 18),
+        kwh_billed=3000, current_charges=400.0, retrieved_at=NOW,
+    )
+    corrected = estimated.model_copy(update={
+        "billing_period_end": date(2026, 10, 19), "retrieved_at": NOW + timedelta(hours=1),
+    })
+    p.ingest_bills([estimated], now=NOW)
+    p.ingest_bills([corrected], now=NOW)
+    assert p._ledger.cycle_bounds(datetime(2026, 10, 18, 12, tzinfo=timezone.utc))[1] == datetime(
+        2026, 10, 19, tzinfo=timezone.utc
+    )

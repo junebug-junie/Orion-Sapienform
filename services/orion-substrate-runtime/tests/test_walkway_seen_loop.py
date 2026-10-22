@@ -1,7 +1,7 @@
 """Walkway rollups -> "seen on <day>" substrate links for named people (2026-10-18).
 
 Pinned: only existing entity nodes are linked (never created); a copied label links to the
-typed individual's node; one day evidence node per (stream, date); re-running adds nothing;
+typed individual it was copied from (same ask), never to everyone with the same name; one day evidence node per (stream, date); re-running adds nothing;
 no named person = no record. The SQL is also run against a throwaway Postgres.
 
 The store here is the production FalkorSubstrateStore (on a recording client, or a throwaway
@@ -77,8 +77,8 @@ class _Result:
 
 
 class _Conn:
-    def __init__(self, days, typed):
-        self.days, self.typed = days, typed
+    def __init__(self, days, copied):
+        self.days, self.copied = days, copied
 
     def __enter__(self):
         return self
@@ -90,15 +90,16 @@ class _Conn:
         sql = str(stmt)
         if "FROM vision_rollup" in sql:
             return _Result(self.days)
-        return _Result([(i,) for i in self.typed.get(params["l"], [])])
+        assert "label_ask_id" in sql, "a copied label resolves through its ask, never the name alone"
+        return _Result([(c, t) for c, t in self.copied if c in params["ids"]])
 
 
 class _Engine:
-    def __init__(self, days, typed=None):
-        self.days, self.typed = days, typed or {}
+    def __init__(self, days, copied=()):
+        self.days, self.copied = days, list(copied)
 
     def connect(self):
-        return _Conn(self.days, self.typed)
+        return _Conn(self.days, self.copied)
 
 
 def _day_row(named):
@@ -112,7 +113,7 @@ def test_links_existing_named_entities_to_one_day_node_and_is_idempotent():
              # a copied-label individual has no entity node; its typed twin does
              "Sam": {"times": ["11:56"], "individual_ids": ["ind-sam-copy"]},
              "Nobody Named Yet": {"times": ["09:00"], "individual_ids": ["ind-unanswered"]}}
-    engine = _Engine([_day_row(named)], typed={"Sam": ["ind-sam"]})
+    engine = _Engine([_day_row(named)], copied=[("ind-sam-copy", "ind-sam")])
     done: dict = {}
     out = wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done=done)
     assert out == [{"day": "2026-10-16", "stream": "walkway", "people": ["Robin", "Sam"], "edges": 2,
@@ -134,6 +135,24 @@ def test_links_existing_named_entities_to_one_day_node_and_is_idempotent():
                                                  stream_id="walkway"))
     later = wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done=done)
     assert later and later[0]["people"] == ["Nobody Named Yet", "Robin", "Sam"] and later[0]["edges_created"] == 1
+
+
+def test_regression_two_people_with_one_name_each_keep_only_their_own_days():
+    """Live 2026-10-22: both Adeline nodes carried 10-19, though the rollup saw only one of them
+    that day, because the loop added every individual Juniper typed the same name for."""
+    store = _store_with(("ind-adeline-a", "Adeline"), ("ind-adeline-b", "Adeline"))
+    engine = _Engine([_day_row({"Adeline": {"times": ["11:49"], "individual_ids": ["ind-adeline-a"]}})])
+    out = wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done={})
+    assert out[0]["edges"] == out[0]["edges_created"] == 1
+
+    def edge_id(iid):
+        (edge,) = map_walkway_day_seen_to_substrate(
+            stream_id="walkway", day=DAY, line=LINE, seen=[(entity_node_id_for_individual(iid), "Adeline", None)],
+            observed_at=START).edges
+        return edge.edge_id
+
+    assert store.get_edge_by_id(edge_id("ind-adeline-a")) is not None
+    assert store.get_edge_by_id(edge_id("ind-adeline-b")) is None
 
 
 # A day row as rules_version 1 wrote it (before people became a range, 2026-10-20).
@@ -272,9 +291,10 @@ def test_sql_runs_against_postgres():
     engine = create_engine(f"{PG}{'&' if '?' in PG else '?'}options=-csearch_path%3D{schema}")
     with engine.begin() as conn:
         conn.execute(text("CREATE TABLE vision_individual (individual_id TEXT PRIMARY KEY, stream_id TEXT, "
-                          "label TEXT, label_copied BOOLEAN NOT NULL DEFAULT false)"))
-        conn.execute(text("INSERT INTO vision_individual VALUES ('ind-sam','walkway','Sam',false), "
-                          "('ind-sam-copy','walkway','Sam',true)"))
+                          "label TEXT, label_copied BOOLEAN NOT NULL DEFAULT false, label_ask_id TEXT)"))
+        # a second typed "Sam" (a different person, a different ask) must not be linked
+        conn.execute(text("INSERT INTO vision_individual VALUES ('ind-sam','walkway','Sam',false,'ask-1'), "
+                          "('ind-sam-copy','walkway','Sam',true,'ask-1'), ('ind-sam-2','walkway','Sam',false,'ask-2')"))
     sql = (Path(__file__).resolve().parents[3] / "services/orion-sql-db/manual_migration_vision_rollup_v1.sql").read_text()
     with engine.begin() as conn:
         conn.execute(text(sql))
@@ -284,7 +304,7 @@ def test_sql_runs_against_postgres():
             "('walkway','day',:s2,:e2,'2026-10-17',false,'{}','partial')"),
             {"s": START, "e": START.replace(day=17), "s2": START.replace(day=17), "e2": START.replace(day=18),
              "j": json.dumps({"rules_version": 2, "named": {"Sam": {"times": ["11:56"], "individual_ids": ["ind-sam-copy"]}}}), "l": LINE})
-    store = _store_with(("ind-sam", "Sam"))
+    store = _store_with(("ind-sam", "Sam"), ("ind-sam-2", "Sam"))
     out = wsl.link_recent_days(engine=engine, store=store, streams=("walkway",), lookback_days=3, done={},
                                now=datetime(2026, 10, 18, 3, 0, tzinfo=timezone.utc))
     # only the complete day; the copied-label sighting links to the typed individual's node

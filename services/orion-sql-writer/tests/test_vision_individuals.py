@@ -234,12 +234,13 @@ def test_ask_budget_comes_from_the_db_count() -> None:
 
 def test_ask_budget_counts_only_vision_asks() -> None:
     """Memory confirmation cards share orion_ask but have their own cap; they must not use up the
-    walkway camera's daily budget. "Is this <name>?" asks (2026-10-20) share it with the slow rule."""
-    from app.vision_individuals import ASKED_TODAY_SQL
+    walkway camera's daily budget. "Is this <name>?" asks have their own cap (2026-10-22)."""
+    from app.vision_individuals import ASKED_TODAY_SQL, PERSON_CONFIRM_ASKED_TODAY_SQL
 
     norm = " ".join(ASKED_TODAY_SQL.split())
-    assert ("FROM orion_ask WHERE source_kind IN ('vision_individual', 'vision_person_confirm') "
-            "AND created_at >= :d") in norm
+    assert "FROM orion_ask WHERE source_kind = 'vision_individual' AND created_at >= :d" in norm
+    assert "vision_person_confirm" not in norm
+    assert "source_kind = 'vision_person_confirm'" in PERSON_CONFIRM_ASKED_TODAY_SQL
 
 
 def test_ask_day_starts_at_local_midnight() -> None:

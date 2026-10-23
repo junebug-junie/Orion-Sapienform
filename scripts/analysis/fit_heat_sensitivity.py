@@ -108,6 +108,7 @@ def build_frame(extract: dict, hosts: tuple[str, ...]) -> dict:
     excluded = np.array([any(a <= t < b for a, b in events["exclude"]) for t in times])
     return {"times": times, "cab": cab, "watts": watts, "compute": compute, "fan": fan,
             "outdoor": outdoor, "ac": ac, "hod": hod, "proxy": proxy, "proxy_spec": proxy_spec, "house_rest": house_rest,
+            "house_hourly": extract.get("house_hourly") or (),
             "breaks": events["breaks"], "excludes": events["exclude"], "excluded": excluded}
 
 
@@ -145,23 +146,17 @@ def central_ac_proxy(times: list[datetime], weather_hourly: list[dict], *, lag_m
     return out
 
 
-HOUSE_REST_HOURS = 4  # trailing mean over this hour and the 3 before (the proxy's 3 h lag)
+HOUSE_REST_HOURS = 4  # trailing mean over the current meter hour and the 3 before it
 
 
 def house_rest_kwh(times: list[datetime], house_hourly, watts: dict, ac: np.ndarray) -> np.ndarray:
     """Household + central-AC kWh per hour: the house meter minus the cabinet machines' chassis watts
-    and the portable AC -- the same subtraction as orion-prediction's run_house_heat_balance_eval.py
-    (hecate counts 0 before its first reading, like its zero_before_first). Trailing
-    HOUSE_REST_HOURS-hour mean, held for the hour. NaN where the meter has no reading."""
-    house = {_ts(r["t"]): r["kwh"] for r in house_hourly if r.get("kwh") is not None}
-    by_hour: dict[datetime, list[float]] = {}
-    for i, t in enumerate(times):
-        parts = [watts[h][i] for h in ("athena", "circe")] + [ac[i]]
-        hec = watts.get("hecate")
-        hv = 0.0 if hec is None or not np.isfinite(hec[i]) else hec[i]
-        if all(np.isfinite(p) for p in parts):
-            by_hour.setdefault(t.replace(minute=0, second=0, microsecond=0), []).append(sum(parts) + hv)
-    rest = {h: house[h] - np.mean(v) / 1000.0 for h, v in by_hour.items() if h in house and len(v) >= 2}
+    and the portable AC -- the same subtraction as orion-prediction's run_house_heat_balance_eval.py:
+    hourly means of each source, hecate averaged over the bins where it has a reading and 0 only when
+    the whole hour has none (the eval's ``coalesce(avg(hecate), 0)``). Trailing HOUSE_REST_HOURS-hour
+    mean of the current meter hour and the ones before it (the current hour includes energy after
+    the bin: fine for a control). NaN where the meter has no reading."""
+    rest = house_rest_hourly(times, house_hourly, watts, ac)
     out = np.full(len(times), np.nan)
     for i, t in enumerate(times):
         h0 = t.replace(minute=0, second=0, microsecond=0)
@@ -169,6 +164,22 @@ def house_rest_kwh(times: list[datetime], house_hourly, watts: dict, ac: np.ndar
         if all(v is not None for v in vals):
             out[i] = float(np.mean(vals))
     return out
+
+
+def house_rest_hourly(times: list[datetime], house_hourly, watts: dict, ac: np.ndarray) -> dict:
+    house = {_ts(r["t"]): r["kwh"] for r in house_hourly if r.get("kwh") is not None}
+    acc: dict[datetime, dict[str, list[float]]] = {}
+    for i, t in enumerate(times):
+        h = acc.setdefault(t.replace(minute=0, second=0, microsecond=0), {"athena": [], "circe": [], "ac": [], "hecate": []})
+        for k, arr in (("athena", watts["athena"]), ("circe", watts["circe"]), ("ac", ac), ("hecate", watts.get("hecate"))):
+            if arr is not None and np.isfinite(arr[i]):
+                h[k].append(float(arr[i]))
+    rest = {}
+    for h, v in acc.items():
+        if h in house and v["athena"] and v["circe"] and v["ac"]:
+            hec = np.mean(v["hecate"]) if v["hecate"] else 0.0
+            rest[h] = house[h] - (np.mean(v["athena"]) + np.mean(v["circe"]) + np.mean(v["ac"]) + hec) / 1000.0
+    return rest
 
 
 def parse_events(rows) -> dict:
@@ -263,6 +274,10 @@ def design(frame: dict, regs: dict[str, np.ndarray], *, outdoor: bool = False, p
     ok = np.isfinite(y) & np.all(np.isfinite(X), axis=1) & ~frame["excluded"]
     rows = np.nonzero(ok)[0]
     X, y, day = X[ok], y[ok], day[ok]
+    # A column with no variation left after filtering (e.g. a break step outside a restricted
+    # window) is not identified: drop it rather than carry a meaningless coefficient.
+    keep = [j for j, nm in enumerate(names) if nm == "const" or nm.startswith("day_") or np.ptp(X[:, j]) > 0]
+    X, names = X[:, keep], [names[j] for j in keep]
     if day_fe:
         # Drop dummies that ended up empty after filtering, then drop the first remaining one so the
         # reference day is a day that actually has rows (otherwise dummies + const are collinear).
@@ -405,6 +420,8 @@ def first_difference_hourly(frame: dict, spec: dict[str, str], *, reps: int, see
     y = d(cab)
     ok = np.isfinite(y) & np.all(np.isfinite(X), axis=1) & ~(excl > 0) & ~(_lag(excl, 1) > 0)
     X, y = X[ok], y[ok]
+    keep = [j for j, nm in enumerate(names) if nm == "const" or np.ptp(X[:, j]) > 0]
+    X, names = X[:, keep], [names[j] for j in keep]
     day = np.array([h.date().toordinal() for h in hours])[ok]
     beta, resid = ols(X, y)
     contrasts = {h: np.array([1.0 if nm.startswith(f"w_{h}_lag") else 0.0 for nm in names]) for h in hosts}
@@ -497,7 +514,16 @@ def daily_levels(frame: dict) -> dict:
             if np.isfinite(x[i]):
                 row[k].append(float(x[i]))
     table = {d: {k: (float(np.mean(v)) if len(v) >= 48 else None) for k, v in row.items()} for d, row in days.items()}
-    full = [r for r in table.values() if all(v is not None for v in r.values())]
+    # House meter: household + central-AC kWh/h per day, all hours and local afternoon (12-20 MDT).
+    rest = house_rest_hourly(frame["times"], frame.get("house_hourly") or (), frame["watts"], frame["ac"])
+    for d in table:
+        allh = [v for h, v in rest.items() if h.date().isoformat() == d]
+        aft = [v for h, v in rest.items() if (h - timedelta(hours=6)).date().isoformat() == d
+               and 12 <= (h - timedelta(hours=6)).hour <= 20]
+        table[d]["house_rest_kwh"] = float(np.mean(allh)) if len(allh) >= 20 else None
+        table[d]["house_rest_afternoon_kwh"] = float(np.mean(aft)) if len(aft) >= 8 else None
+    core = ("cabinet_c", "outdoor_c", "central_ac_proxy_f", "ac_w", "circe_compute_w", "athena_compute_w")
+    full = [r for r in table.values() if all(r.get(k) is not None for k in core)]
     corr = {}
     if len(full) >= 5:
         cab = np.array([r["cabinet_c"] for r in full])
@@ -585,11 +611,13 @@ def render_md(result: dict) -> str:
         L += ["", f"## Daily levels (n={dl['n_days']} full days)", ""]
         for k, v in dl["daily_corr"].items():
             L.append(f"- {k}: r = {v:+.2f}")
-        L += ["", "| day | cabinet C | outdoor C | central-AC proxy F | portable AC W | circe compute W | athena compute W |", "|---|---|---|---|---|---|---|"]
+        L += ["", "| day | cabinet C | outdoor C | central-AC proxy F | portable AC W | circe compute W | athena compute W | house rest kWh/h | house rest afternoon (12-20 MDT) |", "|---|---|---|---|---|---|---|---|---|"]
         fmt = lambda v: "" if v is None else f"{v:.1f}"  # noqa: E731
+        fmt2 = lambda v: "" if v is None else f"{v:.2f}"  # noqa: E731
         for d, r in sorted(dl["table"].items()):
             L.append(f"| {d} | {fmt(r['cabinet_c'])} | {fmt(r['outdoor_c'])} | {fmt(r['central_ac_proxy_f'])} | {fmt(r['ac_w'])} | "
-                     f"{fmt(r['circe_compute_w'])} | {fmt(r['athena_compute_w'])} |")
+                     f"{fmt(r['circe_compute_w'])} | {fmt(r['athena_compute_w'])} | "
+                     f"{fmt2(r.get('house_rest_kwh'))} | {fmt2(r.get('house_rest_afternoon_kwh'))} |")
     L += ["", "## Host diagnostics", "", "```json", json.dumps(result["diagnostics"], indent=1), "```"]
     if result.get("correlation_audit"):
         L += ["", "## Correlation audit (design Fact 2)", ""]
@@ -623,6 +651,7 @@ def decompose(model: dict, frame: dict, *, base: tuple[datetime, datetime], targ
             after = np.array([t >= b["at"] for t in times], dtype=float)
             fixed["fixed_offset:" + b["title"]] = off * float(after[in_t].mean() - after[in_b].mean())
     dy = float(y[in_t].mean() - y[in_b].mean()) + sum(fixed.values())
+    raw = frame["cab"][rows]
 
     def group(nm: str) -> str:
         if nm.startswith("w_"):
@@ -651,7 +680,9 @@ def decompose(model: dict, frame: dict, *, base: tuple[datetime, datetime], targ
     explained = sum(v["degC"] for v in contrib.values())
     return {"status": "ok", "base": [base[0].isoformat(), base[1].isoformat()],
             "target": [target[0].isoformat(), target[1].isoformat()],
-            "base_mean_c": float(y[in_b].mean()), "target_mean_c": float(y[in_b].mean()) + dy, "rise_c": dy,
+            "base_mean_c": float(raw[in_b].mean()), "target_mean_c": float(raw[in_t].mean()), "rise_c": dy,
+            "rows": {"base": int(in_b.sum()), "target": int(in_t.sum())},
+            "ci_note": "intervals cover coefficient uncertainty only; the input mean changes are held fixed",
             "contributions": contrib, "residual_c": dy - explained,
             "mean_change_of_inputs": {nm: float(dx[j]) for j, nm in enumerate(names) if not nm.startswith(("hod_", "day_"))}}
 
@@ -705,6 +736,8 @@ def run(extract: dict, *, reps: int, seed: int, with_corr: bool) -> dict:
     diag = host_diagnostics(frame3, comp3)
     daily = daily_levels(frame3)
     diag["_chassis"] = host_diagnostics(frame3, chas2)
+    hec = frame3["watts"]["hecate"]
+    diag["hecate"]["awake_hours_over_150w"] = float(np.sum(np.isfinite(hec) & (hec > 150)) / 4.0)
     result = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "window": extract["window"],

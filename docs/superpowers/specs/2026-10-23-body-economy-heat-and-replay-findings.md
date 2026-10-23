@@ -11,38 +11,50 @@ orion-prediction had already worked out both:
 - Weather acts on the cabinet through the house's central AC. That is the `athena.central_ac_proxy` covariate (#2829), checked against the house meter.
 - The 10-17 00:35 event is a recorded change in the sensor's position, not heat. It is change event #2780: "cabinet sensor geometry changed … cabinet reads ~2 C higher after". The vision bring-up with the cabinet open (10-16 21:30 → 10-17 00:35) is an exclusion window.
 
-This version reuses those definitions, rows and windows exactly.
+**What this version reuses, and what it decides itself.**
+- **Reused exactly:** the proxy definition and the change-event rows and exclusion windows.
+- **Our modelling choice:** treating the sensor break as a **fixed 2 °C offset**, taken from #2780's note. orion-prediction's own engine treats a pending break as a free level step, and that variant is reported too (`sensor_step_estimated`).
 
 ## The headline in plain words
 
-**The cabinet reading rose 4.2 °C, from 29.1 °C (09-26..10-10) to 33.3 °C (10-18..10-22). About half the rise is the sensor reading higher, not heat. Most of the rest is real warming that began mid-October, in the same days the house's central AC went quiet. Orion's own load explains only about 0.1–0.4 °C.**
-
-How the 4.2 °C splits (primary model):
+**The cabinet reading rose 4.2 °C, from 29.1 °C (09-26..10-10) to 33.3 °C (10-18..10-22).**
+- **About half (2.0 °C) is the sensor reading higher** after it was moved on 10-17. That is a measurement offset, not heat.
+- **The central AC going quiet explains about 0.4 °C of the average rise.** It explains more on warm afternoons.
+- **Orion's measured load explains 0.1–0.4 °C.**
+- **The remaining 1.5–2 °C is real warming that began on 10-14/15.** This data cannot say what caused it.
 
 | what | °C of the 4.2 °C rise | how sure |
 |---|---|---|
-| **Sensor reads higher** after it was moved on 10-17 (a measurement offset, not heat) | **+2.0** | Taken from #2780's recorded ~2 °C, not estimated here. If the fit estimates it freely, it takes 3.3–3.7 °C, because it also absorbs the warming that began two days earlier. |
-| **Warming from mid-October that no continuous signal explains** | **+1.5 to +2.1** | Real heat. In the fit it lands on the 10-15 T10-swap step (+2.09, CI +1.03..+2.93). Without that step, +1.54 stays unexplained. |
-| …of which the T10 card's own extra power can explain | at most about **+0.9** | The swap raised athena's chassis draw by 44 W. Even at the fan-inflated chassis sensitivity, that is ≤0.9 °C. At the compute sensitivity it is about 0.1. |
-| …the rest, about **+1 to +2 °C**: the house's central AC going quiet | best-supported reading, **by timing** | The house meter shows the house's afternoon load outside the cabinet falling from 2.6–5.6 kWh/h (through 10-10) to 1.2–1.6 kWh/h from 10-16. |
-| **Orion's own load** (athena + circe) | **+0.13** (up to +0.46 if the T10 step is removed) | athena's compute draw rose 23 W and circe's 16 W. |
-| **Portable cabinet AC** | +0.14 | It draws more when the cabinet is hot. This is a mirror of the heat, not a cause. |
+| **Sensor reads higher** after it was moved on 10-17 | **+2.0** | Taken from #2780's recorded ~2 °C, not estimated here. A free step takes 3.3–3.7 °C, because it also soaks up warming that began two days earlier. |
+| **The house's central AC no longer running** | **+0.4** (CI +0.2..+0.6) | In the models where the proxy has the expected sign (proxy + linear outdoor term, or proxy + day dummies), a running central AC cools the cabinet by **0.23 °C per °F above 75 °F** (CI 0.14..0.35), measured 3 h earlier. That is about 2 °C on a 10 °F-over afternoon. Over the warm early-October period, though, the proxy averaged only about 1.5 °F, so the loss accounts for about 0.4 °C of the mean. In the primary model, without an outdoor term, the proxy comes out about 0 (+0.02, CI −0.15..+0.17). |
+| **Orion's measured load** (athena + circe compute watts) | **+0.1 to +0.4** | athena rose 23 W and circe 15 W between the periods. |
+| **Portable cabinet AC** | +0.1 | It draws more when the cabinet is hot. This is a mirror of the heat, not a cause. |
+| **Warming that began 10-14/15, cause unresolved** | **+1.5 to +2.1** | See below. |
 
-**Where this confirms Juniper's correction, and where the data stops short.**
+**What the unresolved 1.5–2 °C could be.** The fit puts it on the step at the 10-15 T10 swap (+2.09, CI +1.03..+2.93). Without that step, +1.54 stays unexplained. Four things changed in the same 2–3 days, and this data cannot separate them:
+- **The T10 swap itself.** Its change event says "more heat into the cabinet". Its chassis watts rose 44 W, which at our sensitivity is ≤0.9 °C. A change in fans or airflow would not show up in watts.
+- **circe's load rose on 10-14,** from 345 W to 538 W compute. The fit credits only about 0.04 °C of this to circe over a day, but its 2-hour step response is real.
+- **The house warmed with the AC off.** Outdoor temperature went from 9 °C (10-13) to 13–17 °C (10-17..22), and the cabinet bottomed out on the cold days 10-12/13, when the AC was already off.
+- **House heating,** or anything else in the room. It is not measured.
 
-- **It confirms:** the extra heat is not Orion's load, and it is not a linear effect of outdoor temperature. The remaining real warming starts exactly when the central AC stops running in the afternoons.
-- **It stops short:** neither central-AC signal explains the warming when it is fitted directly.
-  - The `central_ac_proxy` coefficient is +0.02 °C per °F (CI −0.15..+0.17).
-  - The house-meter AC load contributes +0.01..+0.02 °C.
-- **Why it cannot.** The proxy reads 0 from 10-11 01:00Z onward. It cannot see a change on 10-15..17. The house meter counts only whole kWh, carries all other household load, and lags about 3 days. The AC stopping, the T10 swap (10-15 18:57) and the sensor move (10-17 00:35) all fall within the same ~2 days.
-- **So:** "weather through the central AC" is the leading explanation for the remaining 1–2 °C, but on this data it rests on timing. It is not a fitted effect. A controlled check would settle it: run the central AC for a few warm-ish afternoons with Orion's load held steady.
+The central AC alone does **not** fit the timing:
+- The proxy has read 0 since 10-11, and the cabinet was at its coolest on 10-12/13.
+- The house meter's afternoon load outside the cabinet (daily table in the script output) has no clean step either. It was 1.5–5.6 kWh/h across 09-26..10-11, 1.5–2.2 on 10-11..14, 3.10 on 10-15, and 1.2–1.6 from 10-16.
 
-**Is the daily outdoor correlation of +0.05 a contradiction?** No. The corrected model expects it. On warm days the central AC runs and cools the house. On mild days it is off and the house warms. On cold days the house is cool. Daily cabinet temperature therefore does not track outdoor temperature in a straight line.
+**How this squares with Juniper's correction.**
+- **What it confirms:**
+  - Weather reaches the cabinet through the central AC, not as a straight line. The proxy has the expected cooling effect once outdoor temperature is also in the model.
+  - The 10-17 jump is partly a sensor artefact.
+  - Orion's measured load is not the driver.
+- **What it does not show:** that weather through the central AC is the *main* driver of the 10-18..22 rise. On this data it explains about 0.4 °C of the 4.2 °C. The largest single piece is the sensor offset, and 1.5–2 °C remains unresolved.
+- **How to settle it:** run the central AC for a few mild afternoons with Orion's load held steady, and log the room temperature outside the cabinet.
 
-**Does this overturn the design's Fact 2?**
-- "Heat is mostly weather" **stands**, with a mechanism: weather acts through the central AC, not directly. Add a caveat: about 2 °C of the "hot spell" is the sensor reading higher.
-- "Orion's biggest GPU host is weakly tied" **stands**.
-- The doc's explanation of the circe 0.10 vs 0.22 discrepancy is **wrong**. The discrepancy comes from the window, not from the watts source (see below).
+**Is the daily outdoor correlation of +0.05 a contradiction?** No. On warm days the central AC runs and cools the house. On mild days it is off and the house warms. On cold days the house is cool. So the daily cabinet temperature does not track outdoor temperature in a straight line.
+
+**Effect on the design's Fact 2.**
+- "Heat is mostly weather" is **only partly supported.** Weather through the central AC is real but explains about 0.4 °C of this rise. About 2 °C is the sensor reading higher, and 1.5–2 °C is unresolved.
+- "Orion's biggest GPU host is weakly tied" **stands** at the day level. circe's 2-hour step response is real.
+- The design's explanation of the circe 0.10 vs 0.22 discrepancy is **wrong**: the discrepancy comes from the window (see below).
 
 ## How much Orion's load moves the cabinet, per host
 
@@ -63,7 +75,8 @@ The sensitivity is the sum of the lag coefficients, in °C per 100 W held steady
 | **primary** | **+0.40** (−1.04..+1.47) | **+0.28** (−0.08..+0.67) | 0.38 |
 | sensor break size estimated (free step) | +0.48 (−1.04..+1.53) | +0.31 (−0.06..+0.70) | 0.60 |
 | + linear outdoor term | +0.52 (−1.03..+1.51) | +0.43 (+0.10..+0.74) | 0.54 |
-| house-meter AC load instead of the proxy | +0.29 (−1.25..+1.29) | +0.32 (−0.09..+0.69) | 0.34 |
+| house-meter AC load instead of the proxy (free sensor step) | +0.39 | +0.34 | 0.54 |
+| house-meter AC load, sensor offset fixed | +0.29 (−1.25..+1.29) | +0.32 (−0.09..+0.69) | 0.34 |
 | one dummy per day | +0.50 (−0.16..+1.01) | +0.24 (−0.01..+0.48) | 0.87 |
 | before the sensor break only | +0.43 (−0.96..+1.42) | +0.37 (−0.01..+0.76) | 0.27 |
 | + hecate (from 10-04) | +0.13 (−1.78..+1.36) | +0.15 (−0.30..+0.69) | 0.35, hecate +0.55 (−0.03..+1.67) |
@@ -79,7 +92,11 @@ The sensitivity is the sum of the lag coefficients, in °C per 100 W held steady
 - The 2-hour response is the robust number. It removes slow drift by construction, and its interval clears 0 for both hosts.
 - The day-level numbers have wide intervals. The residual still drifts slowly (lag-1 r = 0.98).
 
-**hecate** was awake for only about 23 hours, so its estimate is a hint, not a number.
+**hecate** was awake (chassis draw > 150 W) for only 23.5 hours, so its estimate is a hint, not a number. The script reports this count in `diagnostics.hecate.awake_hours_over_150w`.
+
+**Notes on the decomposition.**
+- The intervals cover coefficient uncertainty only; the changes in input means are held fixed.
+- The house-meter variants end around 10-20, because the meter lags about 3 days. They therefore decompose a 4.03 °C rise over fewer target rows, not 4.23 °C.
 
 ### The correlation discrepancy (circe 0.10 vs 0.22)
 

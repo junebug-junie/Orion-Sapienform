@@ -48,7 +48,7 @@ def test_block_present_and_after_the_slice_when_flag_on() -> None:
         assert key in out
     # A top-level field, not wedged inside the stance_harness_slice list.
     assert out.index("companion_closing_move:") < out.index("- self_prediction:")
-    assert "nobody is shown it" in out
+    assert "never sees it" in out
 
 
 def test_context_sets_flag_from_settings(monkeypatch) -> None:

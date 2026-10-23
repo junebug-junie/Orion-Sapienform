@@ -98,14 +98,14 @@ def _coerce_and_clamp_str(
 def _finite_number(value: Any) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
-    if isinstance(value, (int, float)):
-        number = float(value)
-    elif isinstance(value, str):
-        try:
+    try:
+        if isinstance(value, (int, float)):
+            number = float(value)  # a huge JSON int raises OverflowError, not ValueError
+        elif isinstance(value, str):
             number = float(value.strip())
-        except ValueError:
+        else:
             return None
-    else:
+    except (ValueError, OverflowError):
         return None
     return number if math.isfinite(number) else None
 
@@ -177,7 +177,12 @@ def normalize_stance_react_raw(raw: dict[str, Any]) -> dict[str, Any]:
     sl["response_priorities"] = _coerce_str_list(sl.get("response_priorities"))
     sl["response_hazards"] = _coerce_str_list(sl.get("response_hazards"))
     data["stance_harness_slice"] = sl
-    data["self_prediction"] = normalize_self_prediction(data.get("self_prediction"))
+    try:
+        data["self_prediction"] = normalize_self_prediction(data.get("self_prediction"))
+    except Exception:
+        # The bet is optional: a malformed one must never fail or defer the stance turn.
+        logger.warning("stance_self_prediction_dropped corr=%s", correlation_id, exc_info=True)
+        data["self_prediction"] = None
     return data
 
 

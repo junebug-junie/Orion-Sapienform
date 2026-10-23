@@ -114,3 +114,22 @@ def test_one_bad_pair_keeps_the_good_ones() -> None:
 @pytest.mark.parametrize("raw", [None, "0.7", [], {}, {"notes": "x"}])
 def test_nothing_usable_is_none(raw: object) -> None:
     assert normalize_self_prediction(raw) is None
+
+
+def test_huge_json_int_is_dropped_not_raised() -> None:
+    # Review finding: float() on a 400-digit int raises OverflowError, which used to fail the turn.
+    huge = 10**400
+    assert normalize_self_prediction({"steps_lo": huge, "steps_hi": huge}) is None
+    assert normalize_self_prediction({"asks_question_p": huge}) is None
+
+
+def test_any_bet_error_still_parses_the_turn(monkeypatch) -> None:
+    from orion.thought import stance_react
+
+    def boom(_value: object) -> None:
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(stance_react, "normalize_self_prediction", boom)
+    thought = parse_stance_react_payload(_payload(self_prediction=dict(FULL)), correlation_id="c-1")
+    assert thought.self_prediction is None
+    assert thought.imperative.startswith("Stay present")

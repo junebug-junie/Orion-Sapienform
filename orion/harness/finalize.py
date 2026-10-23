@@ -444,7 +444,9 @@ def build_finalize_reflect_context(
     )
     return {
         "draft_text": draft_text,
-        "thought_event": thought.model_dump(mode="json"),
+        # self_prediction is stance's private bet about this turn; the judge grading against it
+        # would turn the bet into an order (TurnSelfPredictionV1).
+        "thought_event": thought.model_dump(mode="json", exclude={"self_prediction"}),
         "substrate_appraisal": substrate_appraisal.model_dump(mode="json"),
         "grammar_receipts": grammar_receipt_summaries(grammar_receipts),
         "tool_execution": format_tool_execution_digest(grammar_receipts),

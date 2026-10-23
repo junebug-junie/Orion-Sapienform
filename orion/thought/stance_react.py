@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Any, Literal, cast
 from uuid import uuid4
@@ -23,6 +24,11 @@ logger = logging.getLogger(__name__)
 
 IMPERATIVE_MAX_LEN = 400
 TONE_MAX_LEN = 200
+# A stated 0 or 1 is never calibrated; clamp so one surprise cannot score infinite loss.
+SELF_PREDICTION_P_MIN = 0.02
+SELF_PREDICTION_P_MAX = 0.98
+_SELF_PREDICTION_P_KEYS = ("asks_question_p", "fetches_outside_p")
+_SELF_PREDICTION_RANGE_KEYS = (("steps_lo", "steps_hi"), ("reply_chars_lo", "reply_chars_hi"))
 
 
 def _coerce_optional_str(value: Any) -> str | None:
@@ -89,6 +95,46 @@ def _coerce_and_clamp_str(
     return text
 
 
+def _finite_number(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            number = float(value)  # a huge JSON int raises OverflowError, not ValueError
+        elif isinstance(value, str):
+            number = float(value.strip())
+        else:
+            return None
+    except (ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def normalize_self_prediction(value: Any) -> dict[str, Any] | None:
+    """Clean the stance LLM's self-prediction bet. Drops what it cannot trust, never fills in.
+
+    A probability outside [0, 1] is dropped (not rescaled: "70" could mean 70% or nonsense),
+    one inside is clamped to [SELF_PREDICTION_P_MIN, SELF_PREDICTION_P_MAX]. A range needs
+    both ends, whole and non-negative, with lo <= hi; otherwise both ends are dropped. Model-
+    supplied coverage is ignored (the prompt fixes it). Nothing usable -> None.
+    """
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, Any] = {}
+    for key in _SELF_PREDICTION_P_KEYS:
+        p = _finite_number(value.get(key))
+        if p is not None and 0.0 <= p <= 1.0:
+            out[key] = min(max(p, SELF_PREDICTION_P_MIN), SELF_PREDICTION_P_MAX)
+    for lo_key, hi_key in _SELF_PREDICTION_RANGE_KEYS:
+        lo = _finite_number(value.get(lo_key))
+        hi = _finite_number(value.get(hi_key))
+        if lo is None or hi is None or lo < 0 or hi < lo or not lo.is_integer() or not hi.is_integer():
+            continue
+        out[lo_key] = int(lo)
+        out[hi_key] = int(hi)
+    return out or None
+
+
 def normalize_stance_react_raw(raw: dict[str, Any]) -> dict[str, Any]:
     """Coerce common LLM JSON mistakes before ThoughtEventV1 validation."""
     data = dict(raw)
@@ -131,6 +177,12 @@ def normalize_stance_react_raw(raw: dict[str, Any]) -> dict[str, Any]:
     sl["response_priorities"] = _coerce_str_list(sl.get("response_priorities"))
     sl["response_hazards"] = _coerce_str_list(sl.get("response_hazards"))
     data["stance_harness_slice"] = sl
+    try:
+        data["self_prediction"] = normalize_self_prediction(data.get("self_prediction"))
+    except Exception:
+        # The bet is optional: a malformed one must never fail or defer the stance turn.
+        logger.warning("stance_self_prediction_dropped corr=%s", correlation_id, exc_info=True)
+        data["self_prediction"] = None
     return data
 
 

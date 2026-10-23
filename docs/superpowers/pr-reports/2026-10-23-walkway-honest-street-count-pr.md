@@ -171,6 +171,6 @@ The post-pull rebuild covers the other importers. Only cortex-exec and hub build
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2875 (spec: #2763, builds on #2781)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

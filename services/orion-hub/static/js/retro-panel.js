@@ -403,8 +403,12 @@
   document.addEventListener('fullscreenchange',()=>{
     el('fullscreen').textContent=document.fullscreenElement?'Exit fullscreen':'Fullscreen';screen.focus();});
   window.addEventListener('keyup',e=>{keys.delete(e.code);send();});
-  window.addEventListener('blur',()=>{away=true;neutral();});window.addEventListener('pagehide',neutral);window.addEventListener('gamepaddisconnected',neutral);
-  document.addEventListener('visibilitychange',()=>{if(document.hidden){away=true;neutral();}else{away=false;heal();}});
+  // Leaving the page releases a human's held keys. A handoff holds no keys, and closing its
+  // socket would end Orion's turn (Retro cancels a grant whose sponsor disconnects).
+  const stepAway=()=>{away=true;if(scriptedMode){keys.clear();return;}neutral();};
+  window.addEventListener('blur',stepAway);window.addEventListener('pagehide',neutral);
+  window.addEventListener('gamepaddisconnected',()=>{if(!scriptedMode)neutral();});
+  document.addEventListener('visibilitychange',()=>{if(document.hidden)stepAway();else{away=false;heal();}});
   window.addEventListener('focus',()=>{away=false;heal();});
   screen.addEventListener('pointerdown',()=>{away=false;if(scriptedMode)return;if(sid)wanted=true;heals=0;heal();});
   void load().catch(err=>{el('player').hidden=false;report(err.message);});

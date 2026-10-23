@@ -87,6 +87,7 @@ async def fake_retro(path, log):
             await sock.send_json({'connection_id': 'c0c0c0c0-0000-4000-8000-000000000003', 'generation': GEN})
         async for msg in sock:
             if msg.type != WSMsgType.TEXT: break
+        log.append(dict(op='ws_closed', channel=request.match_info['channel']))
         return sock
     app.add_routes([web.get('/health/ready', ready), web.get('/games', games), web.get(f'/sessions/{SID}', status),
                     web.get(f'/sessions/{SID}/atlas', atlas), web.post(f'/sessions/{SID}/{{op}}', op),

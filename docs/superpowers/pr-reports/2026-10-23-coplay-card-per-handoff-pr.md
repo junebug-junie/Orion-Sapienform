@@ -56,7 +56,13 @@ Not run. The change is pure Hub logic.
 
 ## Review findings fixed
 
-- No review subagent was run. This is a 4-file filter change with a regression test, and it follows two full reviews of the same code today.
+The code review subagent ran and found nothing material. It checked:
+
+- both start times are epoch seconds (leisure `deps.clock = time.time`; `watch_coplay` `time.time()` at the handoff);
+- `placed_at` (pydantic `AwareDatetime`, ending `Z`) parses;
+- no caller or test fake is broken.
+
+One note, kept as a follow-up: `GET /action-bets?session_id=` caps at 500 bets, oldest first. A session over 500 would give later handoffs no lines. The fix then is a server-side `since` filter. The largest live session today has 25 bets.
 
 ## Restart required
 

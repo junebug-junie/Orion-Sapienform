@@ -649,6 +649,49 @@ def test_gateway_registers_the_coplay_exporter():
     assert not hasattr(bare.state, 'retro_session_end_sink') and bare.state.memory_pg_pool is None
 
 
+def test_gateway_opens_a_bus_for_the_coplay_play_act():
+    # Regression (2026-10-23): the gateway passed bus_provider=lambda: None, so co-play acts could
+    # never be published from the process that runs co-play.
+    from scripts import retro_gateway as G
+    app = SimpleNamespace(state=SimpleNamespace())
+    gate = asyncio.Event()
+    class Bus:
+        async def connect(self): await gate.wait()   # a slow Redis
+    async def run():
+        task = G.register_session_start_sink(app, SimpleNamespace(ORION_BUS_URL='redis://x:6379/0',
+                                                                  ORION_BUS_ENABLED=True),
+                                             bus_factory=lambda url: Bus())
+        # The opener exists before the bus connects: the relay never waits for Redis.
+        assert callable(app.state.retro_session_start_sink) and app.state.retro_act_bus is None
+        gate.set(); await task
+        assert isinstance(app.state.retro_act_bus, Bus)
+    asyncio.run(run())
+    off = SimpleNamespace(state=SimpleNamespace())
+    assert G.register_session_start_sink(off, SimpleNamespace(ORION_BUS_URL='', ORION_BUS_ENABLED=True)) is None
+    assert off.state.retro_act_bus is None
+
+
+def test_gateway_act_bus_retries_and_closes_a_failed_client(monkeypatch):
+    # Review finding: one failed connect at boot left the gateway without play acts for life, and
+    # the half-built client leaked.
+    from scripts import retro_gateway as G
+    monkeypatch.setattr(G, 'BUS_RETRY_FIRST_SEC', 0.0)
+    app = SimpleNamespace(state=SimpleNamespace())
+    made = []
+    class Bus:
+        def __init__(self): self.closed = False; made.append(self)
+        async def connect(self):
+            if len(made) < 3: raise ConnectionError('redis down')
+        async def close(self): self.closed = True
+    async def run():
+        await G.register_session_start_sink(app, SimpleNamespace(ORION_BUS_URL='redis://x:6379/0',
+                                                                 ORION_BUS_ENABLED=True),
+                                            bus_factory=lambda url: Bus())
+    asyncio.run(run())
+    assert len(made) == 3 and app.state.retro_act_bus is made[2]
+    assert [b.closed for b in made] == [True, True, False]
+
+
 def test_each_handoff_card_counts_only_its_own_bets():
     from scripts.retro_memory_export import bets_since, learned_lines_from
     old = [dict(_bet(f'zelda:0:1{i}:W', 'success', side='open_unvisited'), placed_at='2026-10-23T19:00:00+00:00')

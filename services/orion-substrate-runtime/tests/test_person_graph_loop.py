@@ -303,12 +303,14 @@ def test_a_linked_cluster_the_ask_listener_missed_gets_its_node_and_claim():
     assert _sync(store, journal, projector, [PersonRow(SAM, "Sam")], links).clusters_written == 0
 
 
-def test_no_cluster_node_for_a_not_a_person_row_or_an_unnamed_cluster():
+def test_no_cluster_node_for_a_not_a_person_row_an_unnamed_or_a_copied_cluster():
     from app.person_graph_loop import LinkRow, PersonRow
 
     store, journal, projector = _world()
     report = _sync(store, journal, projector, [PersonRow(SAM, "Sam", "not_a_person"), PersonRow(ROBIN, "Robin")],
-                   [LinkRow("l1", SAM, "c7", label="Sam", kind="person"), LinkRow("l2", ROBIN, "c8")])
-    assert report.clusters_written == 0
+                   [LinkRow("l1", SAM, "c7", label="Sam", kind="person"), LinkRow("l2", ROBIN, "c8"),
+                    LinkRow("l3", ROBIN, "c9", label="Robin", kind="person", label_copied=True)])
+    assert report.clusters_written == 0 and report.waiting == 2
+    assert store.get_node_by_id(entity_node_id_for_individual("c9")) is None
     assert store.get_node_by_id(entity_node_id_for_individual("c7")) is None
     assert store.get_node_by_id(entity_node_id_for_individual("c8")) is None

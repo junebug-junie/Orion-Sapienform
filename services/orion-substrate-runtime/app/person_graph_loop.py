@@ -26,7 +26,9 @@ endpoint. A cluster normally gets its node when the interlocutor names it
 (app/ask_answered_listener.py, from the bus). That event is not replayed: 7 linked clusters
 named 10-15..10-21 never got a node (the listener was not hearing at the time). So a linked
 cluster with no node gets one here, built from its ``vision_individual`` row with the same
-adapter the listener uses. An existing cluster node is never touched.
+adapter the listener uses. An existing cluster node is never touched, and a cluster whose
+name was copied along a "same person" group (``label_copied``) never gets one: the
+interlocutor did not name it, and walkway_seen_loop.py relies on copied clusters having none.
 
 Trace: ``person_graph synced persons=... nodes_written=... nodes_retired=... clusters_written=... claims=...
 retired=... waiting=... replayed=... stuck=... applied=... held=... failed=...``. Fail-open: an error is logged; the loop keeps going.
@@ -53,7 +55,7 @@ _NAMESPACE = uuid.UUID("2d8f5f0e-7c4b-5a39-9e61-4b3a8c1d7e25")
 PERSONS_SQL = "SELECT person_id, display_name, status, created_at FROM person"
 LINKS_SQL = (
     "SELECT l.link_id, l.person_id, l.source_ref, l.evidence_ref, l.decided_by, "
-    "v.label, v.kind, v.label_ask_id, v.stream_id, o.answered_at "
+    "v.label, v.kind, v.label_ask_id, v.stream_id, v.label_copied, o.answered_at "
     "FROM person_link l LEFT JOIN vision_individual v ON v.individual_id = l.source_ref "
     "LEFT JOIN orion_ask o ON o.ask_id = v.label_ask_id "
     "WHERE l.source_kind = 'vision_individual' AND l.revoked_at IS NULL"
@@ -81,6 +83,7 @@ class LinkRow:
     label_ask_id: Optional[str] = None
     stream_id: Optional[str] = None
     answered_at: Optional[datetime] = None
+    label_copied: bool = False
 
 
 @dataclass
@@ -243,7 +246,7 @@ async def _ensure_cluster_nodes(persons: list[PersonRow], links: list[LinkRow], 
     live = {p.person_id for p in persons if p.status != "not_a_person"}
     written = 0
     for link in links:
-        if link.person_id not in live or not link.label.strip():
+        if link.person_id not in live or link.label_copied or not link.label.strip():
             continue
         if await asyncio.to_thread(store.get_node_by_id, entity_node_id_for_individual(link.individual_id)):
             continue
@@ -253,7 +256,12 @@ async def _ensure_cluster_nodes(persons: list[PersonRow], links: list[LinkRow], 
             answered_at=link.answered_at or now, stream_id=link.stream_id)
         if record is None:
             continue
-        await asyncio.to_thread(materializer.apply_record, record)
+        try:
+            await asyncio.to_thread(materializer.apply_record, record)
+        except Exception as exc:  # noqa: BLE001 -- one cluster must not stop every claim this pass
+            logger.warning("person_graph cluster_node_failed individual=%s err=%s", link.individual_id,
+                           type(exc).__name__)
+            continue
         written += 1
     return written
 
@@ -285,7 +293,8 @@ async def read_rows(pool: Any) -> tuple[list[PersonRow], list[LinkRow]]:
         persons = [PersonRow(r["person_id"], r["display_name"], r["status"], r["created_at"])
                    for r in await conn.fetch(PERSONS_SQL)]
         links = [LinkRow(r["link_id"], r["person_id"], r["source_ref"], r["evidence_ref"], r["decided_by"],
-                         r["label"] or "", r["kind"], r["label_ask_id"], r["stream_id"], r["answered_at"])
+                         r["label"] or "", r["kind"], r["label_ask_id"], r["stream_id"], r["answered_at"],
+                         bool(r["label_copied"]))
                  for r in await conn.fetch(LINKS_SQL)]
     return persons, links
 

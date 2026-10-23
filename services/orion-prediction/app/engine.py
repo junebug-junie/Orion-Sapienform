@@ -43,8 +43,9 @@ from app.backtest import (
 )
 from app.events import adopt_after, with_events
 from app.grading import grade
+from app.live import RETENTION as SHADOW_RETENTION, verdicts as live_verdicts, window_for
 from app.frame import covariate_series, floor_ts, mask_windows, to_grain, train_ready, training_slice
-from app.models import build_models, split_seasonalities
+from app.models import BASELINES, build_models, split_seasonalities
 from app.series import Registry, Seasonality, SeriesSpec
 from orion.schemas.prediction import (
     PREDICTION_FORECAST_CHANNEL,
@@ -59,8 +60,6 @@ logger = logging.getLogger("orion-prediction.engine")
 LIVE_WINDOW = timedelta(days=7)
 MIN_LIVE_COVERAGE_N = 200
 MIN_INDEPENDENT = 20   # non-overlapping live forecasts a horizon needs before it can be judged
-# A live loss counts only if the champion is this much worse AND the loss is significant.
-WORSE_MARGIN = 1.05
 STALE_GRAINS = 3
 
 
@@ -102,6 +101,7 @@ class Served:
     refused: tuple[str, ...]
     train_from: datetime | None = None  # the effective training start this selection was built on
     events_key: str | None = None       # fingerprint of the change events it was built with
+    shadow: tuple[str, ...] = ()        # contender models forecast in the shadow at every issue
 
 
 @dataclass
@@ -116,15 +116,18 @@ class SeriesState:
     last_tick_error: str | None = None
     last_input_ts: datetime | None = None
     events: dict = field(default_factory=dict)   # with_events summary, for /health
+    shadow_failed: dict = field(default_factory=dict)   # contender -> last error (last issue)
 
 
 class Engine:
     def __init__(self, registry: Registry, store: Any, *, backtest_windows: int, backtest_step_min: int,
                  select_interval_sec: float, settle_sec: float, publish_enabled: bool,
                  publish: Callable[[str, Any], Awaitable[None]] | None = None, source: Any = None,
-                 clock: Callable[[], datetime] = utcnow, weather: dict | None = None):
+                 clock: Callable[[], datetime] = utcnow, weather: dict | None = None,
+                 shadow_enabled: bool = True):
         self.registry = registry
         self.weather = weather            # {"lat", "lon", "refresh_sec"} or None (weather off)
+        self.shadow_enabled = shadow_enabled
         self.weather_state: dict = {}
         self.store = store
         self.backtest_windows = backtest_windows
@@ -256,7 +259,8 @@ class Engine:
             run_ids={"champion": str(champ["run_id"]), "baseline": str(base["run_id"])},
             residuals=residuals, usable=usable, refused=tuple(champ["refused_seasonalities"]),
             train_from=_parse_ts((champ.get("metrics") or {}).get("train_from")),
-            events_key=(champ.get("metrics") or {}).get("events_key"))
+            events_key=(champ.get("metrics") or {}).get("events_key"),
+            shadow=tuple(m for m in (champ.get("metrics") or {}).get("shadow", []) if m in zoo))
         st.next_select_at = champ["fitted_at"] + self.select_interval
         return True
 
@@ -275,7 +279,12 @@ class Engine:
         results = {name: run_backtest(series, spec, name, lambda u, n=name: build_models(spec, u)[n],
                                       self.backtest_windows, step, actuals=actuals, covariates=covariates)
                    for name in names}
-        sel = select_champion(results, spec, self.backtest_step_min)
+        if self.shadow_enabled and hasattr(self.store, "prune_shadow"):
+            self.store.prune_shadow(spec.series_id, now - SHADOW_RETENTION)
+        live = self.live_verdicts(spec, now) if self.shadow_enabled else {}
+        incumbent = st.served.selection.assignment if st.served is not None else {}
+        sel = select_champion(results, spec, self.backtest_step_min, live=live, incumbent=incumbent)
+        shadow = self.contenders(sel) if self.shadow_enabled else ()
         h = spec.max_horizon_steps
         res = {n: r.residuals for n, r in results.items()}
         champ_res = stitch(res, step_owner(sel.assignment, spec.grain_min, h))
@@ -299,7 +308,7 @@ class Engine:
                          "n_windows": int(np.any(np.isfinite(paths), axis=1).sum()),
                          "metrics": {"covariates": list(spec.covariates), "gate_version": GATE_VERSION,
                                      "train_from": spec.train_from.isoformat() if spec.train_from else None,
-                                     "events_key": st.events.get("fingerprint")},
+                                     "events_key": st.events.get("fingerprint"), "shadow": list(shadow)},
                          "assignment": {str(k): v for k, v in assignment.items()},
                          "served_baseline": served_baseline, "backtest_seconds": blend_s,
                          "residual_paths": _clean(paths), "errors": []})
@@ -308,7 +317,7 @@ class Engine:
                            run_ids={"champion": champ_id, "baseline": base_id},
                            residuals={"champion": champ_res, "baseline": base_res},
                            usable=tuple(usable), refused=tuple(refused), train_from=spec.train_from,
-                           events_key=st.events.get("fingerprint"))
+                           events_key=st.events.get("fingerprint"), shadow=shadow)
         st.next_select_at = now + self.select_interval
         st.last_select_seconds = time.monotonic() - t0
         st.last_select_error = None
@@ -326,6 +335,71 @@ class Engine:
         if stale and not backing_off:
             return True
         return st.next_select_at is None or now >= st.next_select_at
+
+    # --- shadow ---------------------------------------------------------------------------
+    @staticmethod
+    def contenders(sel: Selection) -> tuple[str, ...]:
+        """Models worth a live record: any non-baseline that beat the better baseline somewhere in the
+        backtest, plus whatever serves. Losers everywhere are not forecast live (CPU, not evidence)."""
+        out = {m for m in sel.assignment.values() if m not in BASELINES}
+        for name, per_h in sel.metrics.items():
+            if name in BASELINES:
+                continue
+            if any((v.get("rel_mae") is not None and v["rel_mae"] < 1.0) for v in per_h.values()):
+                out.add(name)
+        return tuple(sorted(out))
+
+    def live_verdicts(self, spec: SeriesSpec, now: datetime) -> dict:
+        """Cached per series per grain bucket: inputs only change when a bucket is scored."""
+        key = (spec.series_id, self.latest_complete_bucket(spec, now))
+        cache = self.__dict__.setdefault("_live_cache", {})
+        if key not in cache:
+            since = now - max(window_for(hm) for hm in spec.horizons_min)
+            cache.clear()
+            cache[key] = live_verdicts(self.store.shadow_pairs(spec.series_id, since), now=now)
+        return cache[key]
+
+    def score_shadow(self, spec: SeriesSpec, now: datetime) -> int:
+        cutoff = self.latest_complete_bucket(spec, now) + pd.Timedelta(minutes=spec.grain_min)
+        due = self.store.due_shadow(spec.series_id, cutoff.to_pydatetime())
+        if not due:
+            return 0
+        lo = min(r["target_ts"] for r in due)
+        pts = self.store.points(spec, lo, cutoff.to_pydatetime())
+        actual = to_grain(pts, spec.grain_min, spec.agg, 0, start=lo, end=cutoff.to_pydatetime())
+        out = []
+        for r in due:
+            v = actual.get(pd.Timestamp(r["target_ts"]))
+            ok = v is not None and np.isfinite(v)
+            out.append({"shadow_id": r["shadow_id"], "scored_at": now, "actual": float(v) if ok else None,
+                        "abs_error": abs(float(v) - r["point"]) if ok else None})
+        self.store.write_shadow_scores(out)
+        return len(out)
+
+    def build_shadow(self, spec: SeriesSpec, built: dict, origin: pd.Timestamp, now: datetime) -> tuple[list, dict]:
+        """Shadow rows for every contender, AFTER the served forecast is stored: reuse served paths,
+        fit the rest; a failing or non-finite model is reported, never stored, never served."""
+        served = self.state[spec.series_id].served
+        zoo = build_models(spec, list(served.usable))
+        rows, failed = [], {}
+        for name in served.shadow:
+            path = built["paths"].get(name)
+            if path is None:
+                try:
+                    path = zoo[name].forecast(built["y"], spec.max_horizon_steps, built["train"].index, built["X"])
+                except Exception as exc:  # noqa: BLE001
+                    failed[name] = f"{type(exc).__name__}: {exc}"[:200]
+                    continue
+            for hm in spec.horizons_min:
+                v = float(path[spec.steps(hm) - 1])
+                if not np.isfinite(v):
+                    failed[name] = "non-finite forecast"
+                    continue
+                rows.append({"series_id": spec.series_id, "model": name, "issued_at": now,
+                             "origin_ts": origin.to_pydatetime(),
+                             "target_ts": (origin + pd.Timedelta(minutes=hm)).to_pydatetime(),
+                             "horizon_min": hm, "point": v})
+        return rows, failed
 
     # --- issue ----------------------------------------------------------------------------
     def build_forecast(self, spec: SeriesSpec, series: pd.Series, origin: pd.Timestamp, now: datetime) -> dict:
@@ -401,6 +475,7 @@ class Engine:
                     origin_ts=origin.to_pydatetime(), grain_min=spec.grain_min, steps=steps, exceedance=exceed)
         out["failed_models"] = failed
         out["fallback_steps"] = fallback_steps
+        out["paths"], out["X"], out["train"], out["y"] = paths, X, train, y
         return out
 
     async def issue(self, spec: SeriesSpec, now: datetime, series: pd.Series, sync) -> bool:
@@ -442,6 +517,16 @@ class Engine:
                     kind=PREDICTION_FORECAST_KIND, source=self.source, payload=built["payload"].model_dump(mode="json")))
             except Exception as exc:  # noqa: BLE001 -- the stored row is the record; next bucket re-publishes
                 logger.error("prediction_publish_failed series=%s err=%s", spec.series_id, exc)
+        if self.shadow_enabled and st.served.shadow:
+            try:
+                rows, failed = await sync(self.build_shadow, spec, built, origin, now)
+                await sync(self.store.insert_shadow, rows)
+                st.shadow_failed = failed
+                if failed:
+                    logger.warning("prediction_shadow_failed series=%s %s", spec.series_id, failed)
+            except Exception as exc:  # noqa: BLE001 -- shadow never costs the served forecast
+                st.shadow_failed = {"*": f"{type(exc).__name__}: {exc}"[:200]}
+                logger.warning("prediction_shadow_store_failed series=%s err=%s", spec.series_id, exc)
         return True
 
     # --- score ----------------------------------------------------------------------------
@@ -548,7 +633,8 @@ class Engine:
         # steps, so only every k-th origin (k = h/grain) is an independent sample; rows arrive ordered
         # by (horizon, origin). A horizon is judged only with >= MIN_INDEPENDENT such samples.
         base_pt = {(r["origin_ts"], r["horizon_min"]): r["point"] for r in rows if r["role"] == "baseline"}
-        out["losing_horizons"] = []
+        out["shadow"] = ({f"{m}@{hm}": v for (m, hm), v in self.live_verdicts(spec, now).items()}
+                         if self.shadow_enabled else {})
         for hm in spec.horizons_min:
             diff = [(r["abs_error"], base[k]) for r in champ if r["horizon_min"] == hm
                     and (k := (r["origin_ts"], hm)) in base and abs(r["point"] - base_pt[k]) > 1e-9]
@@ -560,8 +646,6 @@ class Engine:
             if len(thin) >= MIN_INDEPENDENT:
                 c_err = np.array([a for a, _ in thin]); b_err = np.array([b for _, b in thin])
                 h["p_baseline_better"], _ = paired_win_p(b_err, c_err, lag=1)
-                if (h["rel_mae_differing"] or 0) >= WORSE_MARGIN and h["p_baseline_better"] < 0.05:
-                    out["losing_horizons"].append(hm)
         return out
 
     def alerts_for(self, spec: SeriesSpec, now: datetime, live: dict, last_issued: datetime | None) -> dict[str, str]:
@@ -583,12 +667,18 @@ class Engine:
         c = live.get("coverage80")
         if c is not None and live.get("n", 0) >= MIN_LIVE_COVERAGE_N and not (COVERAGE_BAND[0] <= c <= COVERAGE_BAND[1]):
             alerts["coverage_out_of_band"] = f"live 80% coverage {c:.2f} over {live['n']} scores"
-        losing = live.get("losing_horizons") or []
+        # The model SERVING each horizon, judged on its own live record (shadow forecasts, 7 days) --
+        # not last week's champion rows, which kept alerting on a pick that had already been dropped.
+        losing = []
+        if st.served is not None:
+            for hm, model in sorted(st.served.selection.assignment.items()):
+                v = (live.get("shadow") or {}).get(f"{model}@{hm}")
+                if model not in BASELINES and v and v["verdict"] == "worse":
+                    rel = f"{v['rel_mae']:.2f}x" if v.get("rel_mae") is not None else "worse than"
+                    losing.append(f"{hm} min {model}: {rel} the baseline over "
+                                  f"{v['n_independent']} independent forecasts (p={v['p_worse']:.3f})")
         if losing:
-            alerts["worse_than_baseline"] = "; ".join(
-                f"{hm} min: {live['horizons'][str(hm)]['rel_mae_differing']:.2f}x the baseline over "
-                f"{live['horizons'][str(hm)]['n_independent']} independent forecasts "
-                f"(p={live['horizons'][str(hm)]['p_baseline_better']:.3f})" for hm in losing)
+            alerts["worse_than_baseline"] = "; ".join(losing)
         return alerts
 
     async def monitor(self, spec: SeriesSpec, now: datetime, sync) -> dict[str, str]:
@@ -620,6 +710,8 @@ class Engine:
             await self.issue(spec, now, series, sync)
         await sync(self.score, spec, now)
         await sync(self.score_exceedances, spec, now)
+        if self.shadow_enabled:
+            await sync(self.score_shadow, spec, now)
 
     async def tick(self, sync) -> None:
         now = self.clock()

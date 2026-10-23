@@ -31,6 +31,21 @@ experiment dispatcher. Where the build departs from the design below, the build 
   max residual once (n+1)·q ≥ n, so at the default 40 windows the 95 % upper bound is the max
   observed error (conservative); at 14 the 80 % and 95 % ranges coincide.
 
+## Shadow scoring (2026-10-22, follow-up PR)
+
+Live 2026-10-21/22: direct_arx served 15 min for 18 h (backtest p 0.041-0.049) and beat the baseline
+live (0.922x over 213 scored forecasts), then flickered off at p 0.054-0.070. Two problems: a hard
+p cut-off on a noisy number, and no live record for anything not served. Contenders (beat the baseline
+somewhere in the backtest, or serving) now forecast in the shadow every issue; `app/live.py` turns the
+scored shadow rows into per-horizon live verdicts (time-thinned to independent pairs, >= 20, overlap-
+aware paired test both ways; "better" Holm-corrected across the contender x horizon family, since an
+uncorrected 0.05 promoted a null model in ~1/3 of selections). Gate: live-worse never serves, live-better
+serves only if it also beats the baseline in the backtest, else backtest with hysteresis (enter
+p < 0.05, stay p < 0.10); live winners rank first. Per-horizon look-back = max(7 d, 25 horizons) so the
+24 h horizon can reach a verdict; shadow rows kept 35 days. GATE_VERSION 3 forces a reselect on deploy. The
+worse_than_baseline alert now judges the serving model's own live record instead of 7 days of champion
+rows (which kept alerting on a pick already dropped).
+
 ## Weather + fleet inputs (2026-10-21, follow-up PR)
 
 New covariates for the cabinet target, and the shared weather seam. Metric quality gate:

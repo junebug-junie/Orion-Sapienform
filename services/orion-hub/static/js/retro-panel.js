@@ -17,6 +17,8 @@
   // an older connect or pending heal can never override a newer choice.
   let wanted = false, away = false, connecting = 0, intent = 0, healPending = false, heals = 0, healWindow = 0;
   let scriptedMode = false, cognitivePort = null, planning = false, plannedAttempt = null;
+  // The grant this page handed off ({port, epoch}); epoch latches on the first status that shows it.
+  let handoffGrant = null;
   // Zelda (planner v2): one plan per Retro decision; a heat shed waits out retry_after_sec.
   let plannedDecision = null, planRetryAt = 0, watching = false;
   function heal() {
@@ -48,7 +50,7 @@
     gain.gain.value=el('mute').checked?0:1; await audio.resume();
   }
   function closeConnections() {
-    scriptedMode=false;cognitivePort=null;watching=false;
+    scriptedMode=false;cognitivePort=null;handoffGrant=null;watching=false;
     transportEpoch++; clearInterval(timer); keys.clear(); lease=null; outstanding.clear();
     if (input) { input.onclose=null; input.close(); } if (media) { media.onclose=null; media.close(); }
     input=null;media=null; pendingPacket=null; flushAudio();
@@ -79,12 +81,12 @@
     const result=await api(`sessions/${sid}/control`,{connection_id:connection,port:Number(el('port').value),action});
     if(epoch!==transportEpoch || document.hidden)return;
     lease=result;
-    scriptedMode=false;cognitivePort=null;
+    scriptedMode=false;cognitivePort=null;handoffGrant=null;
     seq=0; outstanding.clear();clearInterval(timer);timer=setInterval(send,50);send();screen.focus();
   }
   const wsURL = path => `${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/retro/${path}`;
   async function connect() {
-    scriptedMode=false;cognitivePort=null;
+    scriptedMode=false;cognitivePort=null;handoffGrant=null;
     const mine = ++intent; connecting = mine; away = false;
     try { await connectNow(); if (mine === intent) wanted = true; }
     finally { if (connecting === mine) connecting = 0; }
@@ -228,12 +230,12 @@
   async function handoff(cognition=false){
     if(!lease || input?.readyState!==WebSocket.OPEN)throw Error('Connect to this player before handing it to the script.');
     const port=lease.port, expected_epoch=lease.epoch, epoch=transportEpoch;
-    ++intent;wanted=false;scriptedMode=true;lease=null;keys.clear();outstanding.clear();clearInterval(timer);
+    ++intent;wanted=false;scriptedMode=true;handoffGrant=null;lease=null;keys.clear();outstanding.clear();clearInterval(timer);
     try{
       await api(`sessions/${sid}/scripted`,{connection_id:connection,generation,port,expected_epoch,action:'start',duration_seconds:60,cognition});
     }catch(err){scriptedMode=false;cognitivePort=null;throw Error(`Handoff failed: ${err.message}. Use Take this controller to return.`);}
     if(epoch!==transportEpoch)return;
-    cognitivePort=cognition?port:null;plannedAttempt=null;plannedDecision=null;planRetryAt=0;
+    cognitivePort=cognition?port:null;handoffGrant={port,epoch:null};plannedAttempt=null;plannedDecision=null;planRetryAt=0;
     report(cognition?'Orion goal experiment — 60 seconds. Take this controller to interrupt.':'Scripted right/jump baseline — 60 seconds. Take this controller to interrupt.');
     await showPolicy();
   }
@@ -243,7 +245,14 @@
     if(!sid)return;
     const current=sid, state=await api(`sessions/${sid}`);
     if(current!==sid)return;
-    if(state.state==='paused' && !(state.scripted||[]).length){scriptedMode=false;cognitivePort=null;}
+    if(state.state==='paused' && !(state.scripted||[]).length){scriptedMode=false;cognitivePort=null;handoffGrant=null;}
+    // Our grant ended (budget, Retro pause, or another controller such as leisure took the port):
+    // leave handoff mode so blur releases the sockets and a click takes the game back.
+    if(scriptedMode && handoffGrant){
+      const mine=(state.scripted||[]).find(p=>p.port===handoffGrant.port);
+      if(mine && handoffGrant.epoch===null)handoffGrant.epoch=mine.epoch;
+      else if(!mine || mine.epoch!==handoffGrant.epoch){scriptedMode=false;cognitivePort=null;handoffGrant=null;}
+    }
     el('policy').textContent=(state.scripted||[]).length
       ? state.scripted.map(p=>`Player ${p.port+1}: ${p.policy_id} (${p.cognition?'goal experiment':'scripted'}, ${p.duration_seconds}s limit)`).join(' · ')
       : 'No scripted controller active.';
@@ -267,7 +276,7 @@
   }
   // Read-only ownership display also tells a second window which port is scripted.
   let pollingPolicy=false;
-  setInterval(async()=>{if(document.hidden || pollingPolicy)return;pollingPolicy=true;
+  setInterval(async()=>{if((document.hidden && !scriptedMode) || pollingPolicy)return;pollingPolicy=true;
     try{await showPolicy();}catch(_){el('policy').textContent='Controller status unavailable.';}
     finally{pollingPolicy=false;}},1000);
   // --- Orion's play: Zelda goals, atlas and solo leisure (spec 2026-10-22, D/E) ------------------

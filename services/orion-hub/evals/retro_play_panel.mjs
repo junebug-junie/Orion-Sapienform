@@ -65,12 +65,13 @@ try{
   await new Promise(r=>setTimeout(r,1500));
   log=await fixture();
   assert.equal(closed(log),before,'a blur during a handoff closed the sponsor socket and would end Orion\'s turn');
-  // A human's controller still releases on blur (held keys must not stick).
-  await page.click('#takeover');
-  for(let i=0;i<50;i++){log=await fixture();if(log.retro.filter(r=>r.op==='control').length>=2)break;await new Promise(r=>setTimeout(r,100));}
+  // Once that grant ends while the game runs on, the page leaves handoff mode: a blur releases the socket.
+  await fetch(url+'/__fixture/end_grant',{method:'POST'});
+  await page.waitForFunction(()=>document.querySelector('#policy').textContent==='No scripted controller active.',{timeout:5000});
+  await new Promise(r=>setTimeout(r,300));
   await page.evaluate(()=>window.dispatchEvent(new Event('blur')));
   for(let i=0;i<50;i++){log=await fixture();if(closed(log)>before)break;await new Promise(r=>setTimeout(r,100));}
-  assert(closed(log)>before,'a blur with a human controller must release the socket');
+  assert(closed(log)>before,'after the handoff ended, a blur must release the socket (page stuck in handoff mode)');
   assert.deepEqual(errors,[]);
   fs.writeFileSync(out+'/play-panel.json',JSON.stringify({atlas,goal,retro:log.retro.map(r=>r.op+(r.channel?':'+r.channel:'')),human:log.human},null,2));
 }finally{await browser.close();}

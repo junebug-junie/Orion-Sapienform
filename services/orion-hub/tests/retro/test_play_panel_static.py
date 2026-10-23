@@ -29,3 +29,6 @@ def test_leaving_the_page_never_closes_a_handoff_sponsor_socket():
     assert 'if(scriptedMode){keys.clear();return;}' in step
     assert "addEventListener('blur',stepAway)" in step and 'stepAway()' in step
     assert "addEventListener('blur',()=>{away=true;neutral();})" not in js
+    # The handoff keeps planning in a hidden tab, and leaves handoff mode once its grant is gone.
+    assert '(document.hidden && !scriptedMode) || pollingPolicy' in js
+    assert '!mine || mine.epoch!==handoffGrant.epoch' in js

@@ -17,8 +17,8 @@ each step's inputs exactly as ``services/orion-durable-runs/app/regulation_store
   (``shed_held_depth``, 2026-10-20; ``--reconstruct-shed`` proxies it for older snapshots from the
   pool's ``shed:*`` events, ``--no-gpu-shed`` turns the exclusion off); and each snapshot's
   deferrable self-work (``deferrable_depth``, 2026-10-23: queued background holds, hunger not
-  load; ``--reconstruct-deferrable`` proxies it for older snapshots from ``gpu_pool_leases``
-  queued intervals, ``--no-gpu-deferrable`` turns the exclusion off). ``--no-gpu-fault`` replays
+  load; ``--reconstruct-deferrable`` proxies it for older snapshots from the pool's own queue
+  events for background holds, ``--no-gpu-deferrable`` turns the exclusion off). ``--no-gpu-fault`` replays
   the reducer as it was before the fault input existed, for a before/after on the same rows.
 
 Reports minutes per level per UTC day, level transitions per day, and strained exits per day
@@ -63,6 +63,13 @@ from orion.schemas.regulation import ArousalInputsV1  # noqa: E402
 LEVELS = ("engaged", "idle", "strained", "unknown")
 CABINET_LOOKBACK = timedelta(hours=1)
 GPU_MARGIN_SEC = 60.0
+# --reconstruct-deferrable: how far back to read a background hold's queue/grant events, so a hold
+# queued long before the window still counts (live 10-22/23: holds waited up to 7 h).
+DEFERRABLE_EVENT_LOOKBACK = timedelta(hours=48)
+# A hold's events that put it in the queue, and those that take it out (orion-gpu-pool events).
+DEFERRABLE_OPEN_EVENTS = frozenset({"admitted", "queued"})
+DEFERRABLE_CLOSE_EVENTS = frozenset({"granted", "backlogged", "released", "cancelled", "unavailable",
+                                     "expired", "aborted"})
 
 
 def utc(value) -> datetime:
@@ -110,15 +117,11 @@ SELECT row_to_json(r) FROM (
  GROUP BY 2
 ) r;
 SELECT row_to_json(r) FROM (
- SELECT 'deferrable_lease' AS kind, work_class, COALESCE(queued_since, created_at) AS queued_from,
-        CASE WHEN status = 'queued' THEN NULL
-             WHEN granted_at IS NOT NULL AND granted_at >= COALESCE(queued_since, created_at) THEN granted_at
-             ELSE updated_at END AS queued_until
- FROM gpu_pool_leases
- WHERE priority = 'background' AND kind = 'hold' AND hold_lease_id IS NULL
- AND COALESCE(queued_since, created_at) < '{hi}'::timestamptz
- AND (status = 'queued' OR updated_at >= '{lo}'::timestamptz)
- AND (queued_since IS NOT NULL OR status = 'queued')
+ SELECT 'deferrable_event' AS kind, e.generated_at AS at, e.event, e.lease_id, l.work_class
+ FROM gpu_pool_events e JOIN gpu_pool_leases l ON l.lease_id = e.lease_id
+ WHERE l.priority = 'background' AND l.kind = 'hold' AND l.hold_lease_id IS NULL
+ AND e.generated_at >= '{(warm - DEFERRABLE_EVENT_LOOKBACK).isoformat()}'::timestamptz
+ AND e.generated_at < '{hi}'::timestamptz ORDER BY e.generated_at, e.event_id
 ) r;
 SELECT row_to_json(r) FROM (
  SELECT 'gpu_event' AS kind, generated_at AS at, event, reason, role FROM gpu_pool_events
@@ -148,17 +151,17 @@ def replay_readings(rows, start, end, *, tick_sec=120.0, engaged_minutes=DEFAULT
     ``gpu_deferrable=False`` replays the reducer as it was before deferrable self-work was left out
     of the queue (2026-10-23). ``reconstruct_deferrable``: for snapshots saved before the
     ``deferrable_depth`` column (NULL) and with nothing shed-held, count the background holds
-    (no parent hold) whose ``gpu_pool_leases`` queued interval covers the snapshot, capped per
-    work class at the snapshot's queue -- a PROXY: a re-queued lease keeps only its last
-    ``queued_since``, so an earlier wait of the same lease is missed (under-counts, never over)."""
+    (no parent hold, per ``gpu_pool_leases``) that the pool's own events put in the queue
+    (``admitted``/``queued``) and had not yet taken out (granted, backlogged, released, ...) at the
+    snapshot, capped per work class at the snapshot's queue -- a PROXY: the pool's events, not its
+    lease table, and an ``admitted`` that is granted in the same tick counts for those ms."""
     start, end = utc(start), utc(end)
     turns = sorted(utc(r["at"]) for r in rows if r["kind"] == "turn")
     heat = sorted((utc(r["at"]), float(r["temp_c"])) for r in rows
                   if r["kind"] == "heat" and r.get("temp_c") is not None)
     heat_ts = [h[0] for h in heat]
     shed_minutes = {utc(r["at"]): r.get("shed_reason") for r in rows if r["kind"] == "shed_minute"}
-    waits = [(r["work_class"], utc(r["queued_from"]), None if r.get("queued_until") is None
-              else utc(r["queued_until"])) for r in rows if r["kind"] == "deferrable_lease"]
+    waits = deferrable_waits(r for r in rows if r["kind"] == "deferrable_event")
     gpu: dict[str, list] = defaultdict(list)
     for r in rows:
         if r["kind"] == "gpu_state":
@@ -231,8 +234,24 @@ def replay_readings(rows, start, end, *, tick_sec=120.0, engaged_minutes=DEFAULT
     return readings
 
 
+def deferrable_waits(events):
+    """Per background hold, its queued intervals from the pool's events: ``[(work_class, since,
+    until)]``, ``until`` None while still queued at the end of the export."""
+    open_at: dict[str, tuple[str, datetime]] = {}
+    out = []
+    for e in sorted(events, key=lambda e: utc(e["at"])):
+        at, lid = utc(e["at"]), e["lease_id"]
+        if e["event"] in DEFERRABLE_OPEN_EVENTS:
+            open_at.setdefault(lid, (e["work_class"], at))
+        elif e["event"] in DEFERRABLE_CLOSE_EVENTS and lid in open_at:
+            wc, since = open_at.pop(lid)
+            out.append((wc, since, at))
+    out += [(wc, since, None) for wc, since in open_at.values()]
+    return out
+
+
 def reconstruct_deferrable_depth(waits, at, queue_depth):
-    """Background holds whose saved queued interval covers ``at``, per work class, capped at the
+    """Background holds whose queued interval covers ``at``, per work class, capped at the
     snapshot's own queue for that class (see ``replay_readings``: a proxy)."""
     out: dict[str, int] = {}
     for work_class, since, until in waits:
@@ -309,7 +328,7 @@ def main():
     p.add_argument("--no-gpu-deferrable", action="store_true",
                    help="replay without the deferrable self-work exclusion (before 2026-10-23)")
     p.add_argument("--reconstruct-deferrable", action="store_true",
-                   help="for snapshots saved before deferrable_depth: proxy it from gpu_pool_leases")
+                   help="for snapshots saved before deferrable_depth: proxy it from the pool's hold events")
     p.add_argument("--reconstruct-shed", action="store_true",
                    help="for snapshots saved before the shed columns: whole queue held in shed minutes (proxy)")
     args = p.parse_args()

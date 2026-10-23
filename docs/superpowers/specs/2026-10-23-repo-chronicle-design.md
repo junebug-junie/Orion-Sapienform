@@ -40,6 +40,7 @@ until she opens the gate.
 9. **Runtime:** a durable run (or a similar graph), because of the many hops. Intensive, so
    **one episode per day**.
 10. **Orion needs skills and tools** to do the dig.
+11. **The dig kit is for curiosity and chat, not MCP, and it must not eat the context window.**
 
 ## Current architecture (verified live 2026-10-23)
 
@@ -80,6 +81,23 @@ until she opens the gate.
   the GitHub MCP. **No durable run dispatches a harness turn today** (only
   `services/orion-durable-runs/tests/acceptance_turn.py` builds one). That is the newest seam in
   this design.
+
+**How Orion gets tools in chat and curiosity today:**
+
+- **Both run through the same motor.** The harness FCC motor (`orion/harness/fcc_motor.py`) is a
+  `claude -p` subprocess. A chat turn and a curiosity run use the same argv, except
+  `reading_only` source models.
+- **Context is tight.** The window is 64k tokens. Every MCP server's tool schemas sit in every
+  turn's context. Skills are switched off with `--disable-slash-commands`: the CLI's skill list
+  cost about 6k chars, and Orion made 0 Skill calls in 5,056 transcripts.
+- **Orion already has unrestricted Bash** in chat and curiosity turns (`bypassPermissions`, no
+  deny rules; `orion/fcc/claude_spawn.py`).
+- **The container already has everything a command needs.** Verified live in
+  `orion-athena-harness-governor`: `git` and `python3` are present, `orion` is importable from
+  `/app`, `/mnt/orion-fcc` is mounted, and the sandbox has 11,837 commits.
+
+So a plain command run through Bash costs no schema context at all. Its only cost is what it
+prints.
 
 **Rev 1 findings that still stand:**
 
@@ -124,40 +142,66 @@ Rules:
 These two are not needed for the first episodes (the tools below give then-vs-now directly). They
 make the timeline continuous later.
 
-### Tools: Orion's dig kit
+### Tools: Orion's dig kit (one command, not MCP)
 
-All tools are read-only. They are new tools on `orion-introspect`, except where an existing MCP
-tool is enough. A short skill brief (like `orion/introspect/brief.py`) tells Orion how to dig.
+The dig kit is one read-only command, `python -m orion.dig <subcommand>`, which Orion runs
+through Bash in any chat turn or curiosity run. It adds no MCP server, no tool schema, and no
+skill list.
 
-| Tool | What it does | Built on |
+**Context rules, enforced in code, not left to the model:**
+
+1. **The always-on cost is one line.** The harness brief gets one line of at most 300 chars:
+   "To dig into your own history, run `python -m orion.dig help`." Nothing else sits in the
+   context until Orion asks.
+2. **Help is loaded on demand.** `help` prints the subcommands and the source-label rules
+   (≤ 2,500 chars). Orion pays for it only in turns that dig.
+3. **Every printout has a cap.** Each subcommand prints at most 40 lines and 4,000 chars: a
+   summary, counts, and the path of a full-result file. The full result goes to
+   `/mnt/orion-fcc/dig/<dig_id>/<subcommand>-<n>.{json,md}`. Orion reads only the part it needs,
+   with normal file reads or `grep`. Every cut is stated, for example "showing 40 of 312; full
+   list: <path>". Nothing is cut silently.
+4. **No big blobs in a printout.** PR bodies and file contents are never printed in full. A
+   printout gives a reference and the first lines; the file holds the full text.
+
+| Subcommand | What it does | Built on |
 |---|---|---|
-| `past_checkout(date)` | Makes a worktree of the sandbox clone at the last `main` commit on or before `date`, under `/mnt/orion-fcc/past/<date>`. Returns the path and the commit. One at a time. Never touches `/mnt/orion-fcc/repo`'s own checkout (session sync hard-resets that one). | `git worktree add --detach` |
-| `inventory(path)` | The self-study scanners run on any checkout: services, modules, channels, verbs, schemas, env keys. | `self_study.py` scanners, with `REPO_ROOT` made a parameter |
-| `compare_inventory(then, now)` | Added, removed, and renamed (by heuristic, labelled as such) items between the two inventories. Code computes the diff. | pure diff |
-| `history(start, end)` | Merged PRs (title, body, number) and, before Dec 2025, commits, for the window. | GitHub search by merge time; `git log` in the sandbox |
-| `self_now()` | F1 projection. | F1 |
-| `my_days(start, end)` | Lived records in the window: journals (from 07-23), Temporal Self days (from 10-09). Returns `none` with the reason when the window has no records. | existing tables |
-| `episode_notes(read / append)` | The episode's own shared notes, so the hops can read each other. | reminiscence store |
+| `open <date>` | Exports the last `main` commit on or before `<date>` to `/mnt/orion-fcc/past/<date>/` as plain files (`git archive \| tar -x`). This is a snapshot with no git link, so it cannot change the sandbox repo or its branches. Prints the commit, its date, and the path. At most 2 snapshots at a time; snapshots older than 24 h are swept. | `git archive` in `/mnt/orion-fcc/repo` |
+| `close <date>` | Deletes that snapshot. | |
+| `inventory <path\|now>` | Runs the self-study scanners on a snapshot or on today's main: services, modules, channels, verbs, schemas, env keys. | `self_study.py` scanners, moved to `orion/self_inventory.py` with a `root` parameter |
+| `compare <date>` | Added and removed items between the snapshot and now, by category. Renames are a heuristic and are labelled as such. Code computes the diff. | pure diff |
+| `history <start> <end>` | Merged PRs (number, title, first 3 lines) and, before Dec 2025, commits. Full bodies go to the result file. | `gh` search by merge time (authenticated in the container); `git log` |
+| `now` | The F1 self-now projection, summarized; the full row goes to the file. | F1 |
+| `days <start> <end>` | Lived records in the window: journals (from 07-23) and Temporal Self days (from 10-09). Prints `none: <reason>` when the window has no records. | existing tables, read-only |
+| `notes <dig_id> [append <text>]` | Shared notes for one dig, so the hops of an episode (or the turns of a chat) can read each other. | a file in the dig dir |
 
-Orion can also read files in the past checkout with the harness's normal file tools. The worktree
-is read-only by convention, and the cleanup node deletes it.
+**One kit, three users:**
 
-**Source labels (from the skill brief, checked by code where possible).** Every claim carries one
-label:
+- **Chat:** Juniper asks "what were you like in March?", and Orion digs inside that turn.
+- **Curiosity:** a run may dig while it investigates.
+- **The daily episode** (below): each hop is a harness turn that uses the same kit.
 
-- `code_then`: seen in the past checkout. A primary source.
+There is one code path, and it has no separate tool surface to drift.
+
+**Source labels.** `help` teaches them, and the episode checks them in code. Every claim carries
+one label:
+
+- `code_then`: seen in the snapshot. A primary source.
 - `pr_text`: a builder's words. A secondary source.
 - `lived_record`: Orion's own record from that time.
-- `now`: must cite `self_now()`.
+- `now`: must cite the `now` result file.
 - `reflection`: Orion's own interpretation. It may wonder and wax philosophical. It is never
   stored as a fact.
+
+The labels are required in the episode. In chat and curiosity they are taught but not enforced
+yet, because chat and curiosity output goes through those paths' own gates. The episode is the
+battle test.
 
 ### The episode: durable run `reminiscence.episode`
 
 The episode is an admitted durable workflow in orion-durable-runs, shaped like `orion_day.letter`.
 
 ```text
-resource_request -> resource_wait -> pick_period -> open_past (past_checkout)
+resource_request -> resource_wait -> pick_period -> open_past (orion.dig open)
   -> hop:what_it_was      (code_then, pr_text: inventory + compare + history)
   -> hop:what_it_was_like (lived_record, or an honest "I have no lived record of this" + pr_text)
   -> hop:where_i_am_now   (self_now: what of then survives, changed, or is gone)
@@ -212,19 +256,21 @@ resource_request -> resource_wait -> pick_period -> open_past (past_checkout)
 - Migration: `self_now_projection` (or reuse `temporal_self_projection` if its row shape fits:
   check first) and `reminiscence_episode`. Additive DDL only, with header
   `-- ORION-MIGRATION-REQUIRED-BY: orion-durable-runs, orion-hub`.
-- New `orion-introspect` tools: listed above.
-- `self_study.py` scanners: add a `root` parameter, defaulting to `REPO_ROOT` (no behavior
-  change).
+- New command `python -m orion.dig` (no MCP, no new channel). Its result files are an internal
+  format under `/mnt/orion-fcc/dig/`, not a bus contract.
+- Self-study scanners move to `orion/self_inventory.py` with a `root` parameter. `self_study.py`
+  calls them with `REPO_ROOT` (no behavior change).
 
 ## Files likely to touch
 
-- `services/orion-cortex-exec/app/self_study.py`, or better, move the scanners to a shared
-  `orion/self_inventory.py` so that orion-hub (the introspect host) can call them without
-  reaching into cortex-exec.
+- `services/orion-cortex-exec/app/self_study.py`: move the scanners to a shared
+  `orion/self_inventory.py`, so the dig command (which runs in the harness container) can call
+  them without reaching into cortex-exec.
+- `orion/dig/` (the command, output caps, snapshot sweep), plus one brief line where the harness
+  builds its prompt.
 - `orion/self_now/` (projection, pure), `services/orion-durable-runs/app/self_now_driver.py`.
 - `services/orion-durable-runs/app/reminiscence_graph.py`, `admission_runtime.py`, `settings.py`,
   `.env_example`.
-- The introspect tool host (orion-hub `scripts/`) plus `orion/fcc/mcp_names.py` and the brief.
 - `orion/temporal_self/` (F2 and F3, later patches).
 - Hub review page, the CI gate test, and `orion/reminiscence/evals/`.
 
@@ -271,7 +317,14 @@ resource_request -> resource_wait -> pick_period -> open_past (past_checkout)
 3. Live: one `self_now_projection` row. Juniper spot-checks five organ statuses.
 4. Live: one full episode for 2025-06-24..06-30. Juniper reads it on the Hub page. Every
    `code_then` claim points at a file in that commit.
-5. Eval `run_reminiscence_source_truth_eval.py`: sample claims per label. A `code_then` claim must
+5. Context cost tests:
+   - the brief line is ≤ 300 chars;
+   - every subcommand's printout is ≤ 40 lines and 4,000 chars on the largest real input (the
+     busiest week, 10-20: 58 PRs);
+   - every cut prints the full-result path.
+
+   Live: one chat turn that digs ends with the context-pressure step below its threshold.
+6. Eval `run_reminiscence_source_truth_eval.py`: sample claims per label. A `code_then` claim must
    resolve to a path in the cited commit, a `pr_text` claim to the cited PR, and a `now` claim to
    the projection row. Report the match rate per label.
 
@@ -283,8 +336,10 @@ be.
 
 Then:
 
-- **Patch 2:** shared self-inventory scanners with a `root` parameter, plus `past_checkout`,
-  `inventory`, and `compare_inventory`. Curiosity can use them too.
+- **Patch 2:** shared self-inventory scanners with a `root` parameter, plus `python -m orion.dig`
+  (`open`, `close`, `inventory`, `compare`, `history`, `now`, `days`, `notes`) and the one brief
+  line. From then on chat and curiosity can dig. This is the first place Juniper can try it by
+  hand.
 - **Patch 3:** the durable-run-to-harness dispatch seam, on its own, with a smoke test.
 - **Patch 4:** `reminiscence.episode`, the partition gate, and the Hub review page. Then the first
   live episode.

@@ -34,6 +34,7 @@ that cannot be decided gets nothing.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -46,6 +47,8 @@ from orion.situational.street_material import (
     CAPTION_MOTION_SUPPORTED_TAG,
 )
 from orion.vision.stationary import box_iou
+
+logger = logging.getLogger("sql-writer.vision_caption_motion")
 
 Box = Tuple[float, float, float, float]
 
@@ -201,21 +204,30 @@ class ClaimCheck:
 
 def check_claim(claim: MotionClaim, matched: Sequence[FrameCrop], story_class: Mapping[str, Optional[str]],
                 *, settled: bool) -> ClaimCheck:
-    """``story_class``: crop_id -> speed_class of the story that holds it
-    (None = a story with no speed, e.g. a glimpse). A crop absent from it has
-    no story yet. ``settled``: no story can still close for this frame, so a
-    storyless crop will stay storyless."""
+    """``story_class``: crop_id -> usable speed_class of the story that holds
+    it (None = a story with no usable speed: a glimpse, a too-long or
+    edge-clipped passage; see `usable_speed`). A crop absent from it has no
+    story. ``settled``: no story can still close for this frame, so a
+    storyless crop will stay storyless.
+
+    Supported: any matched crop of the claimed kind is in a moving story.
+    Contradicted: matched crops are in still stories and NONE of them is in a
+    story with no usable speed -- a glimpse is how a passing car usually
+    looks, so it may be the very car the caption saw driving. Storyless crops
+    carry no evidence either way."""
     relevant = [c for c in matched if c.label in claim.kinds]
     if not relevant:
         return ClaimCheck(claim, "undecided")
     if not settled and any(c.crop_id not in story_class for c in relevant):
         return ClaimCheck(claim, "pending")
-    classed = [(c.label, story_class.get(c.crop_id)) for c in relevant if story_class.get(c.crop_id)]
-    moving = [(k, s) for k, s in classed if s not in STILL_CLASSES]
+    storied = [(c.label, story_class[c.crop_id]) for c in relevant if c.crop_id in story_class]
+    moving = [(k, s) for k, s in storied if s and s not in STILL_CLASSES]
     if moving:
         return ClaimCheck(claim, "supported", kind=moving[0][0], speed_class=moving[0][1])
-    if classed:
-        return ClaimCheck(claim, "contradicted", kind=classed[0][0], speed_class=classed[0][1])
+    if any(s is None for _, s in storied):
+        return ClaimCheck(claim, "undecided")
+    if storied:
+        return ClaimCheck(claim, "contradicted", kind=storied[0][0], speed_class=storied[0][1])
     return ClaimCheck(claim, "undecided")
 
 
@@ -263,13 +275,25 @@ CAPTION_CANDIDATES_SQL = (
     "WHERE stream_id = :s AND event_type = 'camera_caption' AND created_at >= :since AND created_at <= :until "
     "AND jsonb_typeof(evidence_refs) = 'array' "
     "AND NOT (COALESCE(tags, '[]'::jsonb) ?| CAST(:verdicts AS text[])) "
-    "ORDER BY created_at LIMIT :n")
+    "AND event_id <> ALL(CAST(:skip AS text[])) "
+    "ORDER BY created_at DESC LIMIT :n")
 FRAME_CROPS_SQL = (
     "SELECT crop_id, label, box_xyxy FROM vision_crop_observation "
     "WHERE stream_id = :s AND observed_at BETWEEN :a AND :b")
 FRAME_STORIES_SQL = (
-    "SELECT crop_ids, speed_class FROM vision_motion_story "
-    "WHERE stream_id = :s AND ended_at >= :a AND started_at <= :b")
+    "SELECT crop_ids, speed_class, drop_reason FROM vision_motion_story "
+    "WHERE stream_id = :s AND ended_at >= :a AND started_at <= :b ORDER BY ended_at, story_id")
+# Stories whose speed class says little about the moment of the frame: a
+# glimpse has too few boxes, a too-long passage is cut at the window start,
+# an edge-clipped one has its boxes cut by the frame edge.
+UNUSABLE_DROP_REASONS = frozenset({"glimpse", "too_long", "edge_clipped"})
+
+
+def usable_speed(speed_class: Optional[str], drop_reason: Optional[str]) -> Optional[str]:
+    """The story's speed class when it can vouch for the frame, else None."""
+    if not speed_class or (drop_reason or "") in UNUSABLE_DROP_REASONS:
+        return None
+    return speed_class
 # Append only, and only to a row that has no verdict yet (a re-run is a no-op).
 ADD_TAGS_SQL = (
     "UPDATE vision_events SET tags = COALESCE(tags, '[]'::jsonb) || CAST(:add AS jsonb) "
@@ -286,7 +310,7 @@ def _refs(raw: Any) -> List[str]:
 
 
 def read_frame(conn, stream_id: str, frame_ts: datetime) -> Tuple[List[FrameCrop], Dict[str, Optional[str]]]:
-    """(crops of the caption's frame, crop_id -> speed_class of its story)."""
+    """(crops of the caption's frame, crop_id -> usable speed class of its story)."""
     from sqlalchemy import text
 
     a, b = frame_ts - timedelta(seconds=FRAME_MATCH_SEC), frame_ts + timedelta(seconds=FRAME_MATCH_SEC)
@@ -296,10 +320,10 @@ def read_frame(conn, stream_id: str, frame_ts: datetime) -> Tuple[List[FrameCrop
     story_class: Dict[str, Optional[str]] = {}
     if crops:
         ids = {c.crop_id for c in crops}
-        for crop_ids, speed in conn.execute(text(FRAME_STORIES_SQL), {"s": stream_id, "a": a, "b": b}).fetchall():
+        for crop_ids, speed, drop in conn.execute(text(FRAME_STORIES_SQL), {"s": stream_id, "a": a, "b": b}).fetchall():
             for cid in crop_ids or ():
                 if cid in ids:
-                    story_class[cid] = speed
+                    story_class[cid] = usable_speed(speed, drop)
     return crops, story_class
 
 
@@ -343,12 +367,17 @@ def caption_motion_step(engine, stream_id: str, ts: datetime, *, lookback_sec: f
         cursor = conn.execute(text(
             "SELECT processed_until FROM vision_motion_story_cursor WHERE stream_id = :s"),
             {"s": stream_id}).scalar()
+        if cursor is None:
+            return counts  # no story was ever built for this stream: nothing can be decided
+        # Final rows are skipped in SQL, before the LIMIT, and the newest rows
+        # come first, so old undecidable rows can never crowd out new ones.
         rows = conn.execute(text(CAPTION_CANDIDATES_SQL), {
             "s": stream_id, "since": since, "until": ts, "verdicts": list(VERDICT_TAGS),
-            "n": CAPTION_ROWS_PER_TICK}).fetchall()
+            "skip": sorted(_final_rows), "n": CAPTION_ROWS_PER_TICK}).fetchall()
+        if len(rows) >= CAPTION_ROWS_PER_TICK:
+            logger.warning("[CAPTION_MOTION] stream=%s read the per-tick cap of %d rows; older rows wait",
+                           stream_id, CAPTION_ROWS_PER_TICK)
         for event_id, narrative, raw_refs in rows:
-            if event_id in _final_rows:
-                continue
             v = check_caption(conn, stream_id, str(narrative or ""), _refs(raw_refs), cursor=cursor,
                               settle_sec=settle_sec, min_iou=min_iou)
             counts["checked"] += 1

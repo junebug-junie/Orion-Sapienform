@@ -61,7 +61,7 @@
   "story_class": {
    "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:1": "parked",
    "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:2": "walking",
-   "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:3": "walking"
+   "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:3": null
   },
   "stream_id": "walkway"
  },
@@ -288,7 +288,7 @@
   "narrative": "A car is driving down a residential street, passing by a house and a tree.",
   "story_class": {
    "cropobs:0cd19108-c7cd-4bff-bf62-071d1e78b20d:1": "parked",
-   "cropobs:0cd19108-c7cd-4bff-bf62-071d1e78b20d:2": "walking"
+   "cropobs:0cd19108-c7cd-4bff-bf62-071d1e78b20d:2": null
   },
   "stream_id": "walkway"
  },
@@ -341,7 +341,7 @@
   "narrative": "A car is driving down a street in a residential area with houses and a fence in the background.",
   "story_class": {
    "cropobs:baae0a9c-f646-4416-914e-777a5bb76f56:1": "parked",
-   "cropobs:baae0a9c-f646-4416-914e-777a5bb76f56:2": "standing"
+   "cropobs:baae0a9c-f646-4416-914e-777a5bb76f56:2": null
   },
   "stream_id": "walkway"
  },

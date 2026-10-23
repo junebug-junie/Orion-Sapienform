@@ -854,7 +854,14 @@ after its caption is written).
   every crop in the frame.
 - Verdict per claim: a moving story of the claimed kind -> supported; only
   `parked`/`standing` stories -> contradicted; no story or no speed -> nothing.
-  One contradicted claim makes the row contradicted.
+  A glimpse, too-long or edge-clipped story counts as "no speed", and any such
+  story among the matched crops blocks a contradiction (a passing car is
+  usually a glimpse). One contradicted claim makes the row contradicted.
+- Known limits: the story's speed class is the average over its whole passage,
+  not the motion at the frame (a car that drives in and parks reads `parked`).
+  Negations ("not driving") still count as claims; "moving", "drove", "rode"
+  are not checked. A caption row re-written with the same event_id (redelivery,
+  `worker.py` `sess.merge`) loses its tags; inside the lookback the step tags it again.
 - Writes tags only (no column): `motion_contradicted` or `motion_supported`, plus
   `motion_check:<kind>:<word>:<speed_class>`. Readers
   (`orion/situational/street_material.py` `label_camera_caption`: chat brief,

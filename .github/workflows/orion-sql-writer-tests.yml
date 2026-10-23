@@ -198,6 +198,7 @@ jobs:
             services/orion-sql-writer/tests/test_vision_reanchor.py \
             services/orion-sql-writer/tests/test_vision_motion.py \
             services/orion-sql-writer/tests/test_vision_caption_motion.py \
+            services/orion-sql-writer/tests/test_vision_caption_motion_pg.py \
             services/orion-sql-writer/tests/test_vision_story_strip.py \
             services/orion-sql-writer/tests/test_vision_rollup.py \
             services/orion-sql-writer/tests/test_vision_handoff_pg.py | tee vision_pg.out

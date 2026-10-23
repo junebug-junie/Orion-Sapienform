@@ -137,6 +137,32 @@ def test_storyless_crop_is_pending_then_undecided() -> None:
     assert decide_caption("A car is driving.", [car], {"v": None}, settled=True).tags == ()
 
 
+def test_a_glimpse_of_the_claimed_kind_blocks_contradiction() -> None:
+    """Review finding: a parked car plus a passing car seen as a glimpse (no
+    usable speed) in the caption's boxes -- the glimpse may be the car that
+    was driving, so the row is undecided, not contradicted."""
+    parked = FrameCrop("v1", "vehicle", (0.0, 0.0, 10.0, 10.0))
+    passing = FrameCrop("v2", "vehicle", (50.0, 0.0, 60.0, 10.0))
+    v = decide_caption("A car is driving.", [parked, passing], {"v1": "parked", "v2": None}, settled=True)
+    assert v.status == "undecided" and v.tags == ()
+    # A storyless second crop carries no evidence: still contradicted.
+    v2 = decide_caption("A car is driving.", [parked, passing], {"v1": "parked"}, settled=True)
+    assert v2.status == "contradicted"
+
+
+@pytest.mark.parametrize("speed,drop,want", [
+    ("parked", "prop", "parked"),
+    ("parked", "parked", "parked"),
+    ("walking", None, "walking"),
+    ("parked", "glimpse", None),
+    ("walking", "too_long", None),
+    ("standing", "edge_clipped", None),
+    (None, None, None),
+])
+def test_usable_speed_drops_stories_that_cannot_vouch_for_the_frame(speed, drop, want) -> None:
+    assert cm.usable_speed(speed, drop) == want
+
+
 def test_no_motion_claim_gets_no_tag() -> None:
     car = FrameCrop("v", "vehicle", (0.0, 0.0, 10.0, 10.0))
     v = decide_caption("A car is parked on the street.", [car], {"v": "parked"}, settled=True)
@@ -178,6 +204,7 @@ class _FakeDB:
     def __init__(self, captions, crops, stories, cursor):
         self.captions, self.crops, self.stories, self.cursor = captions, crops, stories, cursor
         self.updates: list[dict] = []
+        self.skips: list[list] = []
         self.reads = 0
 
     def execute(self, stmt, params=None):
@@ -185,7 +212,9 @@ class _FakeDB:
         if "vision_motion_story_cursor" in sql:
             return _Result(scalar=self.cursor)
         if sql.startswith("SELECT event_id"):
-            return _Result(rows=[c for c in self.captions if c[0] not in {u["id"] for u in self.updates}])
+            self.skips.append(list(params["skip"]))
+            tagged = {u["id"] for u in self.updates}  # stands in for the ?| verdict filter (see the _pg test)
+            return _Result(rows=[c for c in self.captions if c[0] not in tagged and c[0] not in params["skip"]])
         if "FROM vision_crop_observation" in sql:
             self.reads += 1
             return _Result(rows=self.crops)
@@ -216,7 +245,7 @@ def test_caption_motion_step_tags_once_and_skips_final_rows() -> None:
     captions = [("e-drive", "A car is driving.", json.dumps(refs)),
                 ("e-still", "A car is parked.", json.dumps(refs)),
                 ("e-walk", "A person is walking.", json.dumps(refs))]
-    db = _FakeDB(captions, crops=[("v", "vehicle", [0, 0, 10, 10])], stories=[(["v"], "parked")], cursor=T0)
+    db = _FakeDB(captions, crops=[("v", "vehicle", [0, 0, 10, 10])], stories=[(["v"], "parked", "prop")], cursor=T0)
     counts = cm.caption_motion_step(db, "walkway", T0, lookback_sec=21600, settle_sec=911, min_iou=0.5)
     assert counts["tagged"] == 1 and counts["contradicted"] == 1
     assert counts["no_claim"] == 1 and counts["undecided"] == 1
@@ -225,6 +254,7 @@ def test_caption_motion_step_tags_once_and_skips_final_rows() -> None:
     reads = db.reads
     again = cm.caption_motion_step(db, "walkway", T0, lookback_sec=21600, settle_sec=911, min_iou=0.5)
     assert again["checked"] == 0 and db.reads == reads  # final rows are not re-read
+    assert db.skips[-1] == ["e-still", "e-walk"]  # ... and are skipped in SQL, before the LIMIT
     cm._final_rows.clear()
 
 
@@ -244,3 +274,10 @@ def test_loop_config_reads_the_settings() -> None:
     cfg = loop_config(Settings())
     assert cfg.caption_check is True
     assert cfg.caption_lookback_sec == 21600.0 and cfg.caption_min_iou == 0.5
+
+
+def test_stream_without_a_story_cursor_reads_nothing() -> None:
+    cm._final_rows.clear()
+    db = _FakeDB([("e", "A car is driving.", [])], crops=[], stories=[], cursor=None)
+    counts = cm.caption_motion_step(db, "walkway", T0, lookback_sec=21600, settle_sec=911, min_iou=0.5)
+    assert counts["checked"] == 0 and db.skips == []

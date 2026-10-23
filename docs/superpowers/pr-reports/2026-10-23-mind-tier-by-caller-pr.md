@@ -114,7 +114,7 @@ To: the session that wrote `docs/superpowers/specs/2026-10-23-unified-turn-self-
 - A brain-mode chat with the Mind toggle lands interactive. Verify only if Juniper uses that mode. It is rare (19 runs in 60 days).
 - Shed Mind runs read as "no reading" in the self-prediction design. Verify with a fixture in your eval.
 
-**7. References.** This PR (link below). #2855 body-economy design, Organ 3b (tiers attach to callers). #2869 unified-turn self-prediction design. Board item `a83a796f-b09e-4cc8-808b-42160a30d6fb` (left open, pointer added: the timeout cause is reported, not fixed).
+**7. References.** This PR (https://github.com/junebug-junie/Orion-Sapienform/pull/2879). #2855 body-economy design, Organ 3b (tiers attach to callers). #2869 unified-turn self-prediction design. Board item `a83a796f-b09e-4cc8-808b-42160a30d6fb` (left open, pointer added: the timeout cause is reported, not fixed).
 
 ## Proposal-mode notes
 
@@ -217,4 +217,4 @@ scripts/safe_docker_build.sh orion-mind up -d --build
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2879

@@ -88,7 +88,12 @@ def test_perception_lease_is_granted_while_heat_sheds_system_and_background(kind
 
 
 def test_interactive_is_served_before_perception_when_one_slot_is_left():
-    order = sorted([lease("metacog", priority="perception", lease_id="p"),
-                    lease("metacog", priority="interactive", lease_id="i")],
-                   key=lambda l: CFG.priority_rank(l.priority))
-    assert [l.lease_id for l in order] == ["i", "p"]
+    """Run the scheduler with one free metacog slot: the turn wins it, perception waits."""
+    from orion.gpu_pool.tests.test_scheduler import RoleLive, live
+    # metacog spills to fast/agent/chat seats; take those away so exactly one slot exists.
+    down = {r: RoleLive(r, False, 0) for r in CFG.classes["metacog"].roles if r != "metacog"}
+    one_slot = live(metacog=RoleLive("metacog", True, 1, 4096, False), **down)
+    p = lease("metacog", priority="perception", lease_id="p", age=10)   # older, still loses
+    i = lease("metacog", priority="interactive", lease_id="i")
+    d = run([p, i], roles=one_slot, shed=None)
+    assert grants(d) == {"i": "metacog"}

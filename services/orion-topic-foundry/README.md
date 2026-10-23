@@ -229,11 +229,11 @@ Each `_run_training` call publishes one `maintain` act (actor `topic_foundry.run
 
 - Opens when the run starts work. Closes once: 1 on `status=complete`, 0 on failure (including
   "No documents available for training"), any exception, or anything that escapes (`finally`).
-- Act key = the run id. A restart mid-run leaves the act open; the writer expires it at 0 at its
-  horizon (3600 s: p90 of complete runs over 30 days, rounded up to the hour).
-- While the run executes, its LLM calls (labelling, enrichment) carry one correlation id derived
-  from the run id, so the GPU pool's leases join the act and the ledger charges the run for them.
-  Calls outside a training run keep their own per-call ids.
+- Act key = the run id. A restart mid-run (a deploy) leaves the act open; the writer expires it
+  at 0 at its horizon (3600 s: p90 of complete runs over 30 days, rounded up to the hour).
+- GPU cost: not joined yet. The act's correlation id is derived from the run id, but each LLM call
+  keeps its own envelope id (sharing one across a run's ~200 calls would make orion-bus-mirror
+  record fake causal hops). Follow-up: the gateway forwards an explicit turn id to the GPU pool.
 - Cost `seconds` = wall time from open to close.
 
 ## LLM over bus

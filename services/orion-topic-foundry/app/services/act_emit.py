@@ -6,16 +6,20 @@ One ``_run_training`` call (app/services/training.py) is one ``maintain`` act, a
 (including "No documents available for training", 37 of 38 failures over 7 days to 2026-10-23) or
 raises anything at all.
 
-Act key = the run id, so the act id is stable for the run. A process restart mid-run leaves the act
-open; app/services/run_recovery.py reaps the run row at startup, and orion-sql-writer expires the
-act at 0 at its horizon.
+Act key = the run id, so the act id is stable for the run. A process restart mid-run (e.g. every
+post-pull rebuild of this service) leaves the act open; app/services/run_recovery.py reaps the run
+row at startup (possibly as `complete`, if it has segments), and orion-sql-writer expires the act at
+0 at its horizon. Deploy-interrupted runs grade 0 on purpose: the run did not finish in one go.
 
-GPU cost join: while the run executes, every LLM call it makes through
-app/services/llm_client.py (topic labelling, enrichment) carries one correlation id derived from
-the run id, which the gateway passes to the GPU pool as the lease's ``turn_correlation_id``. The act
-carries the same id, so the act ledger's close-time cost fill finds the run's leases. Before this,
-each call minted its own random id (live 10-16..23: 17,449 orion-topic-foundry leases, 17,449
-distinct ids). Calls made outside a training run (enrichment-only passes, previews) are unchanged.
+GPU cost join: NOT POSSIBLE YET. The act carries a correlation id derived from the run id, but the
+run's LLM calls each keep their own per-call envelope id (live 10-16..23: 17,449 orion-topic-foundry
+leases, 17,449 distinct ids), and orion-llm-gateway leases under the envelope id. Sharing one
+envelope id across a run's ~200 sequential calls was tried and rejected in review: orion-bus-mirror
+would read each gateway reply -> next request as a cross-organ causal hop with think time as its
+latency, for up to an hour per run, polluting bus_synaptic_prediction_error's hop baselines.
+Follow-up: the gateway forwards an explicit turn id (e.g. options.turn_correlation_id) to the pool
+as the lease's turn_correlation_id, with the envelope id still fresh per call; then pass the run's
+correlation there.
 
 The event is built here, not with orion.grammar.acts.act_opened_event: that helper only knows the
 hub and thought producer identities. ``build_act`` is reused as is. Gated by
@@ -25,7 +29,6 @@ TOPIC_FOUNDRY_ACT_EMIT_ENABLED. Every publish is best-effort: losing the trace n
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
@@ -43,25 +46,18 @@ PUBLISH_TIMEOUT_SEC = 5.0
 # Measured 2026-10-23 over 30 days of topic_foundry_runs, status=complete, started_at -> completed_at
 # (n=256): p50 221 s, p90 2335 s, p99 3143 s, max 3640 s. The horizon is the p90 rounded up to the
 # hour, the same rule as the hub's reading act ("finishes in the time Orion's own runs usually
-# take"). The run has no deadline of its own to cite.
+# take"). The run has no deadline of its own to cite. The longest observed runs (max 3640 s) exceed
+# it and grade 0 (late) by design.
 RUN_HORIZON_SEC = 3600.0
 RUN_BASIS = (
     "artifact_produced (the run reaches status=complete: segments written, topics labelled, artifacts "
     "recorded) by 3600s after the run starts: p90 of complete runs started->completed over 30d is "
-    "2335s (n=256, measured 2026-10-23), rounded up to the hour; the run has no deadline of its own"
+    "2335s (n=256, measured 2026-10-23), rounded up to the hour (max 3640s exceeds it: the longest "
+    "runs grade late); the run has no deadline of its own"
 )
-
-_LEASE_CORRELATION: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
-    "topic_foundry_run_lease_correlation", default=None
-)
-
-
-def current_lease_correlation() -> Optional[str]:
-    return _LEASE_CORRELATION.get()
-
 
 def run_correlation_id(run_id: Any) -> str:
-    """A UUID (bus envelopes need one) derived only from the run id."""
+    """A UUID derived only from the run id (the act's correlation; no lease carries it yet)."""
     return str(uuid5(NAMESPACE_URL, f"orion:topic_foundry.run:{run_id}"))
 
 
@@ -113,8 +109,7 @@ def _bus_publish(event: GrammarEventV1) -> None:
 class RunActTrace:
     """One training run's act: opened once, closed once. Never raises.
 
-    Synchronous: ``_run_training`` runs in a FastAPI BackgroundTasks worker thread. While open, the
-    run's LLM calls carry the act's correlation id (``bind``/``unbind``)."""
+    Synchronous: ``_run_training`` runs in a FastAPI BackgroundTasks worker thread."""
 
     def __init__(self, run_id: Any, *, publish: Optional[Callable[[GrammarEventV1], None]],
                  model_ref: Optional[str] = None) -> None:
@@ -124,7 +119,6 @@ class RunActTrace:
         self.correlation_id = run_correlation_id(run_id)
         self.opened_at: Optional[datetime] = None
         self.closed = False
-        self._token: Optional[contextvars.Token] = None
 
     def _send(self, event: GrammarEventV1, what: str) -> None:
         try:
@@ -136,13 +130,9 @@ class RunActTrace:
         if self._publish is None or self.opened_at is not None:
             return
         self.opened_at = datetime.now(timezone.utc)
-        self._token = _LEASE_CORRELATION.set(self.correlation_id)
         self._send(_event("act_opened", self.act, correlation_id=self.correlation_id, at=self.opened_at), "open")
 
     def close(self, produced: bool, note: str) -> None:
-        if self._token is not None:
-            _LEASE_CORRELATION.reset(self._token)
-            self._token = None
         if self._publish is None or self.closed or self.opened_at is None:
             return
         self.closed = True
@@ -153,6 +143,26 @@ class RunActTrace:
             "cost": ActCostV1(seconds=round(max(0.0, (at - self.opened_at).total_seconds()), 3)),
         })
         self._send(_event("act_closed", closed, correlation_id=self.correlation_id, at=at), "close")
+
+
+class _NoTrace:
+    def open(self) -> None:
+        pass
+
+    def close(self, produced: bool, note: str) -> None:
+        pass
+
+
+def start_run_act(run_id: Any, *, model_ref: Optional[str] = None) -> Any:
+    """Build and open the run's act. Never raises: a broken act build must not strand a run that
+    is already marked `running` (the caller is outside the run's try)."""
+    try:
+        trace = RunActTrace(run_id, publish=default_publisher(), model_ref=model_ref)
+        trace.open()
+        return trace
+    except Exception:  # noqa: BLE001
+        logger.warning("topic_foundry_run_act_build_failed run_id=%s", run_id, exc_info=True)
+        return _NoTrace()
 
 
 def default_publisher() -> Optional[Callable[[GrammarEventV1], None]]:

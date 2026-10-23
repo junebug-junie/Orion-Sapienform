@@ -312,11 +312,10 @@ def _run_training(
     run.started_at = utc_now()
     update_run(run)
     # Act ledger (body economy A5): one `maintain` act per run, closed exactly once below.
-    act = act_emit.RunActTrace(
-        run_id, publish=act_emit.default_publisher(),
+    act = act_emit.start_run_act(
+        run_id,
         model_ref=f"topic_foundry_model:{model_row.get('name', 'unknown')}:{model_row.get('version', 'unknown')}",
     )
-    act.open()
 
     try:
         start = time.monotonic()

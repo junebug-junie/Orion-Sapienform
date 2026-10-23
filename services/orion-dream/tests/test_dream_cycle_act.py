@@ -79,7 +79,14 @@ def test_completed_sleep_opens_once_and_closes_once_produced():
     from orion.grammar.acts import stable_act_id
 
     f = _Fakes()
-    cycle = asyncio.run(run_cycle_once(f.deps()))
+
+    async def go():
+        out = await run_cycle_once(f.deps())
+        # Same task as the cycle: the lease binding must be gone (sleep_loop reuses this task).
+        return out, act_emit.current_lease_correlation()
+
+    cycle, after = asyncio.run(go())
+    assert after is None
     assert cycle.status == "completed" and cycle.hypotheses
     assert _kinds(f.events) == ["act_opened", "act_closed"]
     opened, closed = f.events
@@ -94,8 +101,6 @@ def test_completed_sleep_opens_once_and_closes_once_produced():
     assert opened.correlation_id == closed.correlation_id == corr
     # Every recombination call carried the act's correlation id (the GPU lease join) ...
     assert f.call_corrs and set(f.call_corrs) == {corr}
-    # ... and the binding ends with the cycle.
-    assert act_emit.current_lease_correlation() is None
     assert opened.act.expect.signal_id == "artifact_produced"
     assert closed.act.expect == opened.act.expect
 
@@ -137,12 +142,16 @@ def test_exception_after_open_closes_zero_and_reraises():
         raise RuntimeError("db gone")
 
     f = _Fakes(persist=boom)
-    with pytest.raises(RuntimeError, match="db gone"):
-        asyncio.run(run_cycle_once(f.deps()))
+
+    async def go():
+        with pytest.raises(RuntimeError, match="db gone"):
+            await run_cycle_once(f.deps())
+        return act_emit.current_lease_correlation()
+
+    assert asyncio.run(go()) is None
     assert _kinds(f.events) == ["act_opened", "act_closed"]
     assert f.events[1].act.outcome.value == 0.0
     assert f.events[1].act.outcome.note.startswith("raised:RuntimeError")
-    assert act_emit.current_lease_correlation() is None
 
 
 def test_cancellation_after_open_closes_zero():
@@ -265,3 +274,30 @@ def test_llm_complete_uses_the_cycle_correlation_with_a_unique_reply_channel():
     assert sent[0][0] == sent[1][0] == corr
     assert sent[0][1] != sent[1][1]  # reply channels stay per call
     assert sent[2][0] != corr  # outside a cycle: a fresh id, as before
+
+
+def test_cancel_while_the_open_is_published_still_closes():
+    from app.cycle import run_cycle_once
+
+    f = _Fakes()
+    deps = f.deps()
+    gate = asyncio.Event()
+
+    async def slow_publish(event):
+        f.events.append(event)
+        if event.event_kind == "act_opened":
+            gate.set()
+            await asyncio.sleep(3600)
+
+    deps.publish_act = slow_publish
+
+    async def go():
+        task = asyncio.create_task(run_cycle_once(deps))
+        await gate.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(go())
+    assert _kinds(f.events) == ["act_opened", "act_closed"]
+    assert f.events[1].act.outcome.value == 0.0

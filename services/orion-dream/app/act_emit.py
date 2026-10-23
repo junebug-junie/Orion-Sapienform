@@ -16,6 +16,11 @@ derived from the cycle id (``cycle_correlation_id``), which the gateway passes t
 the lease's ``turn_correlation_id``. The act carries the same id, so the act ledger's close-time
 cost fill (orion/grammar/act_ledger.py fill_close_cost) finds the cycle's leases. Before this, each
 call minted its own random id (live 10-16..23: 60 dream leases, 60 distinct ids), so no join.
+Known side effect: orion-llm-gateway keys its assistant-reply embedding doc_id on the envelope
+correlation id, so a cycle's recombination replies now upsert one embedding doc per cycle (the
+last reply) instead of one per call. Hub chat turns already share one id across their calls the
+same way. Known gap (UNVERIFIED until live): the ledger fills GPU cost once, when it processes
+the close; a lease released after that query misses the fill.
 
 The event is built here, not with orion.grammar.acts.act_opened_event: that helper only knows
 the hub and thought producer identities. ``build_act`` and ``stable_act_id`` are reused as is.
@@ -78,9 +83,10 @@ def horizon_sec(*, hypotheses_per_cycle: int, control_per_cycle: int, llm_timeou
 def _basis(horizon: float) -> str:
     return (
         f"artifact_produced (a persisted, completed sleep with >= 1 hypothesis) by {horizon:.0f}s: "
-        "the cycle's own deadline, one sequential LLM call per pair x DREAM_LLM_TIMEOUT_SEC + "
-        f"{_REM_AND_PERSIST_SLACK_SEC:.0f}s for REM compaction and persistence; live 30d wall time "
-        "p90 9.7s, max 190s (n=81, measured 2026-10-23)"
+        "upper bound from the cycle's configured pairs, one sequential LLM call per pair x "
+        f"DREAM_LLM_TIMEOUT_SEC, + {_REM_AND_PERSIST_SLACK_SEC:.0f}s slack for REM compaction, the "
+        "arc/walkway reads and persistence (those DB reads have no deadline of their own); live 30d "
+        "wall time p90 9.7s, max 190s (n=81, measured 2026-10-23)"
     )
 
 

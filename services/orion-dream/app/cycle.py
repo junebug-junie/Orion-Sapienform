@@ -239,7 +239,10 @@ async def _publish_drive(deps: CycleDeps, build: Callable[[], DriveReadingV1]) -
 
 
 class CycleActTrace:
-    """One sleep's ``make`` act: opened once, closed once (app/act_emit.py). Never raises."""
+    """One sleep's ``make`` act: opened once, closed once (app/act_emit.py). Never raises.
+
+    The close is sent whenever an open was attempted, even if the open publish failed or timed
+    out: the writer then builds the row from the close (close-before-open) and still grades it."""
 
     def __init__(self, deps: CycleDeps, cycle_id: str) -> None:
         self._publish = deps.publish_act
@@ -337,7 +340,10 @@ async def _publish_after_sleep(deps: CycleDeps, cycle: DreamCycleV1, last_start:
 
 
 async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: bool = False) -> Optional[DreamCycleV1]:
-    """Run one sleep if due (or forced). None when not due. Never raises."""
+    """Run one sleep if due (or forced). None when not due.
+
+    Read and gate failures never raise. An unexpected error after the sleep started (e.g. the
+    cycle cannot be persisted) or a cancellation closes the sleep's act at 0 and is re-raised."""
     started = datetime.now(timezone.utc)
     check_id = f"dp-{uuid4().hex}"
     deps.read_errors.clear()
@@ -418,9 +424,11 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
         return cycle
 
     act = CycleActTrace(deps, cycle_id)
-    await act.open()
-    lease_token = act.bind_leases()
+    lease_token = None
     try:
+        # Inside the try: a cancel while the open is being published still closes the act at 0.
+        await act.open()
+        lease_token = act.bind_leases()
         # Mixing rule: arcs join the pool as their own source_kind, capped at a third of the
         # replay (replay.arc_replay_slots: 4 of 12), so the existing sources keep at least two
         # thirds; ARC_WEIGHT_MAX (0.8) keeps a critical metacog ahead of every arc. Arcs never

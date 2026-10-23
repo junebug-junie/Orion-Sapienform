@@ -3047,6 +3047,10 @@ channels:
       - orion-bus
       - orion-cortex-exec
       - orion-cortex-orch
+      # act ledger (body economy A5): the dream cycle's `make` act, opened when a sleep starts
+      # replay and closed when it is persisted (services/orion-dream/app/act_emit.py), gated by
+      # DREAM_ACT_EMIT_ENABLED.
+      - orion-dream
       # act ledger (body economy A5): want-family durable runs publish act_opened at their
       # first pool grant and act_closed at their terminal (infer / ask / sense / make) --
       # services/orion-durable-runs/app/run_acts.py, gated by ORION_DURABLE_ACT_EMIT_ENABLED.

@@ -555,12 +555,12 @@ class ZeldaExperience:
         except Exception:  # noqa: BLE001
             logger.warning('action_bet_session_end_failed session_id=%s', retro_session_id, exc_info=True)
 
-    async def learned_lines(self, retro_session_id: str) -> list[str]:
+    async def learned_lines(self, retro_session_id: str, since: Optional[float] = None) -> list[str]:
         """The memory card's learned lines (scripts.retro_memory_export.fetch_learned_lines)."""
         if not self.enabled:
             return []
         from scripts.retro_memory_export import fetch_learned_lines
-        return await fetch_learned_lines(retro_session_id, get=self.get)
+        return await fetch_learned_lines(retro_session_id, get=self.get, since=since)
 
 
 __all__ = ['BODY', 'DOMAIN', 'Entry', 'Menu', 'NEAR_PX', 'OpenBet', 'Option', 'VALUE', 'ZeldaExperience',

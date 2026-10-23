@@ -1410,6 +1410,15 @@ class Settings(BaseSettings):
     HUB_ENDOGENOUS_OUTREACH_AROUSAL_ENABLED: bool = Field(
         default=True, alias="HUB_ENDOGENOUS_OUTREACH_AROUSAL_ENABLED"
     )
+    # Strain report door (strain loop part 3, scripts/strain_report.py): once per strained
+    # episode that has lasted MIN_EPISODE_SEC, one message may pass the arousal_strained refusal
+    # (every other gate still holds), at most one per local day (ORION_SITUATION_TIMEZONE).
+    ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED: bool = Field(
+        default=True, alias="ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED"
+    )
+    ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC: float = Field(
+        default=3600.0, ge=0.0, alias="ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC"
+    )
     # Background outreach waits this long after Juniper's last saved message (read from
     # chat_history_log, so a Hub restart cannot reset it). 2026-10-09: a fresh restart forgot
     # she was mid-conversation and Orion spoke over her. 0 disables.

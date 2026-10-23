@@ -140,7 +140,7 @@ Contract models: `ActionBetQuoteRequestV1`, `ActionBetQuoteV1`, `ActionBetV1` an
 
 | Option | Built when |
 |---|---|
-| `exit`/`explore` toward each open side | always (all 4 sides when `open_sides` is null) |
+| one traverse option per side: `exit` toward each open side, or `explore` toward every side when `open_sides` is null | always (exit and explore toward one side are the same bet, so never both) |
 | `fight nearest` | an enemy is present |
 | `collect` at each drop tile | a drop is in the observation |
 | `enter` at each known cave | the atlas lists a cave |
@@ -151,7 +151,7 @@ Each option maps to a skill, context and place through `orion/embodiment/skills.
 
 **Scoring:**
 - One `POST /action-bets/quote` returns the probabilities.
-- The Hub scores each option: `p · value + 2 · eig_nats`.
+- The Hub scores each option: `value · (p + 2 · eig_nats)`. Learning about an action is worth only as much as the action, so an untried `wait` (p 0.5, EIG 0.193) cannot outrank a likely exit on curiosity alone (build review 2026-10-23: under `p · value + 2 · eig` it scored 0.41 against failing exits at 0.29).
 - `value` is a fixed v1 table, labelled as hand-set: new room 1.0, visited room 0.3, drop 0.7, fight with a threat present 0.6, withdraw 0.4 when `hurt` or `low` (0.1 otherwise), enter a known cave 0.5, hold 0.05.
 - Learning `value` is out of scope for v1.
 - Scoring lives in the Hub, not the prediction service, because value is the body's preference, not a prediction.

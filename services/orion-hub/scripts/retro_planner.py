@@ -368,7 +368,32 @@ def observation_facts(observation: dict) -> dict:
     return {k: v for k, v in observation.items() if k not in ('walls', 'terrain')}
 
 
-def build_zelda_prompt(decision: dict, atlas: Optional[dict], history: Any) -> str:
+MENU_INSTRUCTION = 'Choose one of these unless the facts above show it cannot work.'
+# Keys plan_zelda adds for its callers that Retro's GoalV2 (extra='forbid') would reject.
+NON_GOAL_V2_KEYS = ('chosen_rank',)
+
+
+def goal_v2_body(goal: dict) -> dict:
+    """The planner's answer without the Hub-only keys, ready to merge into a POST /goal body."""
+    return {k: v for k, v in goal.items() if k not in NON_GOAL_V2_KEYS}
+
+
+def menu_lines(menu: Any) -> list[str]:
+    """The scored options (scripts.retro_experience.Menu.for_planner()) as prompt lines; [] for none."""
+    lines = [m['line'] for m in menu or [] if isinstance(m, dict) and isinstance(m.get('line'), str)]
+    if not lines:
+        return []
+    return (['Options scored from how often each move worked before (best first; chance = how often '
+             'this kind of move worked, learning value = how much trying it would teach):']
+            + lines + [MENU_INSTRUCTION])
+
+
+def menu_rank(menu: Any, goal: dict) -> Optional[int]:
+    """The menu rank whose goal equals the chosen goal, or None for an off-menu answer."""
+    return next((m.get('rank') for m in menu or [] if isinstance(m, dict) and m.get('goal') == goal), None)
+
+
+def build_zelda_prompt(decision: dict, atlas: Optional[dict], history: Any, menu: Any = None) -> str:
     obs = decision['observation']
     previous = decision.get('previous')
     why = (f'the previous goal ended: {_goal_text(previous.get("goal"))} -> {previous.get("outcome", "unknown")}'
@@ -385,6 +410,7 @@ def build_zelda_prompt(decision: dict, atlas: Optional[dict], history: Any) -> s
         '? terrain not known, L Link, 1-9/a/b enemy slot, d item drop.',
         render_room_map(obs, atlas),
         sides_line(decision, atlas),
+        *menu_lines(menu),
         'Observation (zelda-1-ram-v1): ' + json.dumps(observation_facts(obs), separators=(',', ':')),
         'Atlas (only what you observed before):',
         atlas_neighbourhood(atlas),
@@ -499,8 +525,13 @@ async def _gateway_chat(config, prompt: str, *, max_tokens: int) -> tuple[dict, 
         await bus.close()
 
 
-async def plan_zelda(config, decision: Any, atlas: Optional[dict], history: Any, *, chat=None) -> dict:
+async def plan_zelda(config, decision: Any, atlas: Optional[dict], history: Any, *, chat=None,
+                     menu: Any = None) -> dict:
     """Answer one Retro decision with a GoalV2 body (without sponsor/generation/port/epoch).
+
+    ``menu``: scored options from scripts.retro_experience (``Menu.for_planner()``), listed after the
+    sides line. With a menu the result also carries ``chosen_rank`` (the matching option's rank by
+    goal equality, None off-menu); strip it with ``goal_v2_body`` before posting to Retro.
 
     Raises PlannerBusy (another request in flight), PlannerRejected (nothing to answer, or the
     answer broke the contract), PlannerShed (GPU heat shed; ``details`` carries the pool's
@@ -518,7 +549,7 @@ async def plan_zelda(config, decision: Any, atlas: Optional[dict], history: Any,
     _in_flight = True
     outcome: Optional[str] = 'cancelled'
     try:
-        prompt = build_zelda_prompt(decision, atlas, history)
+        prompt = build_zelda_prompt(decision, atlas, history, menu)
         # A refused answer gets one retry that names the refusal; the second refusal is final.
         started = _now()
         for attempt in (1, 2):
@@ -559,9 +590,12 @@ async def plan_zelda(config, decision: Any, atlas: Optional[dict], history: Any,
                 if attempt == 2 or exc.reason == 'observation_unknown' or _now() - started > RETRY_WITHIN_SEC:
                     raise   # not controllable, or too slow: a second answer would miss Retro's 30 s offer
                 prompt += f'\nYour previous answer was refused: {refusal_note(exc)}. Choose a different goal.'
-        return choice.model_dump(mode='json') | {
+        result = choice.model_dump(mode='json') | {
             'decision_id': decision['decision_id'],
             'planner_id': 'llm-gateway:metacog_background:' + correlation}
+        if menu:
+            result['chosen_rank'] = menu_rank(menu, result['goal'])
+        return result
     finally:
         _in_flight = False
         if token is not None:

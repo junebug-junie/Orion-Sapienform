@@ -205,6 +205,7 @@ class LeisureDeps:
     plan: Callable[..., Awaitable[dict]]          # scripts.retro_planner.plan_zelda signature
     clock: Callable[[], float] = time.time
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+    experience: Any = None                        # scripts.retro_experience.ZeldaExperience; None = no bets
 
 
 def default_deps(config) -> LeisureDeps:
@@ -213,9 +214,11 @@ def default_deps(config) -> LeisureDeps:
     if store is None:
         raise RuntimeError('leisure_requires_bus_url')
     max_age = float(getattr(config, 'ORION_REGULATION_READER_MAX_AGE_SEC', 360.0))
+    from scripts.retro_experience import ZeldaExperience
     return LeisureDeps(store=store, retro=RetroClient(config),
                        regulation=lambda: read_regulation(store.redis, max_age_sec=max_age),
-                       plan=lambda *a, **k: retro_planner.plan_zelda(config, *a, **k))
+                       plan=lambda *a, **k: retro_planner.plan_zelda(config, *a, **k),
+                       experience=ZeldaExperience.from_config(config))
 
 
 def _settings(config) -> dict:
@@ -304,6 +307,8 @@ class _Run:
     last_goal: Optional[dict] = None
     verdicts: dict = field(default_factory=lambda: {'met': 0, 'refuted': 0, 'unknown': 0})
     history: list = field(default_factory=list)
+    last_decision: Optional[dict] = None        # Retro's newest offered decision (action-bet settle)
+    plan_inputs: Optional[tuple] = None         # (decision, atlas, menu) of the plan in flight
 
 
 _running_here = False
@@ -563,6 +568,8 @@ async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int,
                 return 'not_a_zelda_session', NORMAL
             retro_planner.remember_finished(run.history, cognition)
             run.verdicts = _count_verdicts(run.history)
+            if isinstance(cognition.get('attempt'), dict):
+                run.last_decision = cognition['attempt']
             if now >= next_check:
                 next_check = now + RECHECK_SEC
                 inputs = await gather_gate_inputs(config, deps, own_leisure_id=run.leisure_id, elapsed_sec=elapsed)
@@ -583,8 +590,7 @@ async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int,
             decision_id = decision.get('decision_id') if isinstance(decision, dict) else None
             if (plan_task is None and decision_id and decision_id != run.planned_decision
                     and deps.clock() >= run.next_plan_at):
-                plan_task = asyncio.ensure_future(deps.plan(decision, await _atlas(deps, run),
-                                                            run.history[-retro_planner.HISTORY_LIMIT:]))
+                plan_task = asyncio.ensure_future(_plan(deps, run, decision, await _atlas(deps, run)))
                 plan_decision = decision_id
             await _status(deps, run, 'waiting' if run.waiting else 'playing',
                           ends_by=run.started_at + s['session_max_sec'])
@@ -593,6 +599,17 @@ async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int,
         if plan_task is not None and not plan_task.done():
             plan_task.cancel()
             await asyncio.gather(plan_task, return_exceptions=True)
+
+
+async def _plan(deps: LeisureDeps, run: _Run, decision: dict, atlas: Optional[dict]) -> dict:
+    """Action bets first (settle the previous bet, quote, menu), then the planner. The menu is
+    None when bets are off or the prediction service is unreachable: the plain prompt, no bet."""
+    menu = await deps.experience.prepare(run.session_id, decision, atlas) if deps.experience else None
+    run.plan_inputs = (decision, atlas, menu)
+    history = run.history[-retro_planner.HISTORY_LIMIT:]
+    if menu is None:
+        return await deps.plan(decision, atlas, history)
+    return await deps.plan(decision, atlas, history, menu=menu.for_planner())
 
 
 async def _settle_plan(deps: LeisureDeps, run: _Run, task: asyncio.Task, decision_id: Optional[str]) -> Optional[str]:
@@ -629,7 +646,7 @@ async def _settle_plan(deps: LeisureDeps, run: _Run, task: asyncio.Task, decisio
     else:
         run.consecutive_sheds = 0
         run.waiting = None
-        body = dict(goal, leisure_id=run.leisure_id, generation=run.generation,
+        body = dict(retro_planner.goal_v2_body(goal), leisure_id=run.leisure_id, generation=run.generation,
                     port=run.port, expected_epoch=run.epoch)
         try:
             status, accepted = await deps.retro.call('POST', f'sessions/{run.session_id}/goal', body)
@@ -643,6 +660,9 @@ async def _settle_plan(deps: LeisureDeps, run: _Run, task: asyncio.Task, decisio
             run.last_goal = {k: goal.get(k) for k in ('decision_id', 'goal', 'prediction', 'rationale',
                                                       'budget_seconds', 'planner_id')}
             await _journal(deps, 'goal_accepted', session_id=run.session_id, **run.last_goal)
+            if deps.experience and run.plan_inputs:
+                decision, atlas, menu = run.plan_inputs
+                await deps.experience.placed(run.session_id, decision, atlas, goal, menu)
         elif detail in STALE_GOAL_REFUSALS:
             run.planned_decision = decision_id   # that slot is gone; wait for Retro's next offer
             await _journal(deps, 'goal_stale', session_id=run.session_id, decision_id=decision_id, detail=detail)
@@ -711,6 +731,14 @@ async def _finish(deps: LeisureDeps, run: _Run, reason: str, *, mode: str,
             if (status == 200 and isinstance(session, dict) and session.get('state') == 'paused'
                     and not session.get('scripted')):
                 await _call(deps, 'orphan_stop', 'POST', f'sessions/{run.session_id}/stop', {})
+    learned: tuple = ()
+    if deps.experience and run.session_id:
+        # Action bets: nothing of this session stays open; then read back what was learned.
+        try:
+            await deps.experience.end_session(run.session_id, run.history, run.last_decision)
+            learned = tuple(await deps.experience.learned_lines(run.session_id))
+        except Exception:  # noqa: BLE001 -- the card is written without learned lines
+            logger.warning('retro_leisure_action_bets_end_failed', exc_info=True)
     ended_at = deps.clock()
     if ledger is not None:
         rows = [dict(r, ended_at=ended_at, seconds=round(ended_at - run.started_at, 1))
@@ -724,7 +752,8 @@ async def _finish(deps: LeisureDeps, run: _Run, reason: str, *, mode: str,
         game_id=run.game_id, started_at=run.started_at, ended_at=ended_at, end_reason=reason,
         act_id=run.act_id, loaded_save_id=run.loaded_save_id, end_save_id=save_id,
         end_save_error=save_error, decisions_planned=run.planned, planner_rejections=run.rejections,
-        sheds=run.sheds, verdicts=dict(run.verdicts), human_may_be_in_control=human, **record)
+        sheds=run.sheds, verdicts=dict(run.verdicts), human_may_be_in_control=human,
+        learned_lines=learned, **record)
     await _journal(deps, 'ended' if started else 'refused', reason=reason, mode=mode, **{
         k: v for k, v in ended.as_dict().items() if k not in ('end_reason',)})
     await _status(deps, run, 'ended', end_reason=reason, end_save_id=save_id)

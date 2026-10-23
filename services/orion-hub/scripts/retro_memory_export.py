@@ -25,6 +25,12 @@ says "fun" or "learned". A session where a human drove more than half of the fra
 together", never Orion's achievement (#2751 section 7.4). Not exported: frames, RAM, ROM, raw journals.
 Nothing here feeds phi, arousal, reward or training. Kill switch: HUB_RETRO_MEMORY_EXPORT_ENABLED
 (shipped on); off -> nothing is written, and a leisure act still closes (0, ``export_disabled``).
+
+Learned lines (spec 2026-10-23 embodied experience, "Speaking"): at most 3 plain fact lines read back
+from orion-prediction's action bets (``fetch_learned_lines`` -> ``learned_lines_from``), carried on
+``RetroSessionEnded.learned_lines`` and appended to the card only (the session row's summary is
+unchanged). No calibration line under 10 settled bets. Service unreachable -> no lines, a log line,
+and the card is still written.
 """
 
 from __future__ import annotations
@@ -251,7 +257,102 @@ def session_end_inputs(ended: Any) -> dict[str, Any]:
                 controller_frames=d.get("controller_frames") if isinstance(d.get("controller_frames"), dict) else None)
 
 
-def memory_card_for(s: RetroPlaySessionSummaryV1) -> MemoryCardCreateV1:
+LEARNED_MAX = 3
+MIN_TRIES = 3            # a place or situation line needs at least this many settled tries
+MIN_CALIBRATION = 10     # spec: no calibration line under 10 settled bets
+_DIR_WORDS = {"N": "north", "S": "south", "E": "east", "W": "west"}
+_SIDE_WORDS = {"open_unvisited": "Moving toward rooms I had not visited",
+               "open_visited": "Moving back toward rooms I had visited",
+               "closed": "Walking toward a side with no known way out",
+               "unknown": "Moving toward a side nobody had checked"}
+_SKILL_WORDS = {"traverse": "Moving to another room", "engage": "Fighting", "withdraw": "Retreating",
+                "acquire": "Picking things up", "enter": "Entering caves", "hold": "Waiting"}
+
+
+def _sf(row: Mapping[str, Any]) -> tuple[int, int]:
+    s, f = row.get("successes"), row.get("failures")
+    return (s, f) if isinstance(s, int) and isinstance(f, int) and s >= 0 and f >= 0 else (0, 0)
+
+
+def _place_words(place: str) -> str | None:
+    parts = place.split(":")
+    if len(parts) != 4 or parts[0] != "zelda" or parts[3] not in _DIR_WORDS:
+        return None
+    where = f"Room {parts[2]}" if parts[1] == "0" else f"Level {parts[1]} room {parts[2]}"
+    return f"{where}'s {_DIR_WORDS[parts[3]]} side"
+
+
+def learned_lines_from(session_bets: Any, live: Any) -> list[str]:
+    """Pure. ``session_bets``: GET /action-bets?session_id= (``{"bets": [...]}`` or a list);
+    ``live``: GET /action-bets/live?domain=retro:zelda. Fields are read defensively: anything
+    missing just drops its line. Facts and counts only."""
+    bets = session_bets.get("bets") if isinstance(session_bets, Mapping) else session_bets
+    bets = [b for b in bets or [] if isinstance(b, Mapping) and b.get("result") in ("success", "failure")]
+    live = live if isinstance(live, Mapping) else {}
+    lines: list[str] = []
+    # 1. a place this session tried again and again with one answer every time
+    tries: dict[str, list[int]] = {}
+    for b in bets:
+        if b.get("skill") == "traverse" and isinstance(b.get("place"), str):
+            t = tries.setdefault(b["place"], [0, 0])
+            t[0 if b["result"] == "success" else 1] += 1
+    clear = sorted(((s + f, place, s, f) for place, (s, f) in tries.items()
+                    if s + f >= MIN_TRIES and (s == 0 or f == 0) and _place_words(place)), reverse=True)
+    if clear:
+        n, place, s, _ = clear[0]
+        verb = "led to another room" if s else "is not a way out"
+        lines.append(f"{_place_words(place)} {verb} ({s} of {n} tries).")
+    # 2. how moving went by side state (situations pooled over threat/health), else the busiest skill
+    sides: dict[str, list[int]] = {}
+    for row in live.get("situations") or []:
+        if isinstance(row, Mapping) and row.get("skill") == "traverse" and isinstance(row.get("context"), Mapping):
+            side = row["context"].get("side")
+            if side in _SIDE_WORDS:
+                s, f = _sf(row)
+                acc = sides.setdefault(side, [0, 0]); acc[0] += s; acc[1] += f
+    best = max(((s + f, side, s) for side, (s, f) in sides.items() if s + f >= MIN_TRIES), default=None)
+    if best:
+        n, side, s = best
+        lines.append(f"{_SIDE_WORDS[side]} worked {s} of {n} times.")
+    else:
+        skills = [(sum(_sf(r)), r.get("skill"), _sf(r)[0]) for r in live.get("skills") or []
+                  if isinstance(r, Mapping) and r.get("skill") in _SKILL_WORDS]
+        top = max((t for t in skills if t[0] >= MIN_TRIES), default=None)
+        if top:
+            lines.append(f"{_SKILL_WORDS[top[1]]} worked {top[2]} of {top[0]} times.")
+    # 3. calibration, only with enough settled bets
+    grading = live.get("grading") if isinstance(live.get("grading"), Mapping) else {}
+    served = grading.get("served") if isinstance(grading.get("served"), Mapping) else {}
+    base = grading.get("baseline") if isinstance(grading.get("baseline"), Mapping) else {}
+    n = served.get("n")
+    if (isinstance(n, int) and n >= MIN_CALIBRATION and isinstance(served.get("brier"), (int, float))
+            and isinstance(base.get("brier"), (int, float))):
+        lines.append(f"My guesses about my own moves scored {served['brier']:.2f}. Always guessing my "
+                     f"average would score {base['brier']:.2f} (lower is better).")
+    return lines[:LEARNED_MAX]
+
+
+async def fetch_learned_lines(retro_session_id: str | None, *, get: Any) -> list[str]:
+    """``get``: async (path, params) -> (status, json), e.g. ZeldaExperience.get. Never raises:
+    an unreachable service gives no lines and a log line."""
+    if not retro_session_id:
+        return []
+    try:
+        status, bets = await get("/action-bets", {"session_id": retro_session_id})
+        if status != 200:
+            raise ValueError(f"bets_status_{status}")
+        status, live = await get("/action-bets/live", {"domain": "retro:zelda"})
+        if status != 200:
+            raise ValueError(f"live_status_{status}")
+        return learned_lines_from(bets, live)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("retro_memory_export_learned_unavailable session_id=%s reason=%s", retro_session_id,
+                       f"{type(exc).__name__}:{exc}"[:200])
+        return []
+
+
+def memory_card_for(s: RetroPlaySessionSummaryV1, learned: Iterable[str] = ()) -> MemoryCardCreateV1:
+    learned = [str(x) for x in learned or () if str(x).strip()][:LEARNED_MAX]
     day = s.ended_at.astimezone(ZoneInfo(CARD_TZ)).date().isoformat()
     tags = ["retro_play", "game", "played", s.game_id]
     if s.played_together:
@@ -273,7 +374,7 @@ def memory_card_for(s: RetroPlaySessionSummaryV1) -> MemoryCardCreateV1:
         trust_source=CARD_SOURCE,
         project="retro",
         title=f"Played {s.game_title} on {day}",
-        summary=s.summary,
+        summary=s.summary + ((" From my own moves: " + " ".join(learned)) if learned else ""),
         anchors=[f"retro_session:{s.retro_session_id or s.session_id}"] + ([f"retro_lineage:{s.lineage_id}"] if s.lineage_id else []),
         tags=tags,
         evidence=[EvidenceItemV1(source=f"{TABLE}:{s.session_id}", excerpt=s.summary, ts=s.ended_at.isoformat())],
@@ -282,7 +383,7 @@ def memory_card_for(s: RetroPlaySessionSummaryV1) -> MemoryCardCreateV1:
             "dispatch_id": s.dispatch_id, "human_share": s.human_share, "played_together": s.played_together,
             "control": [c.model_dump() for c in s.control], "control_basis": s.control_basis,
             "decisions": s.decisions,
-            "predictions_met": s.predictions_met}},
+            "predictions_met": s.predictions_met, "learned_lines": learned}},
     )
 
 
@@ -383,6 +484,7 @@ async def export_session(
     controller_frames: Mapping[str, int] | None = None,
     retro_session_id: str | None = None,
     enabled: bool | None = None,
+    learned: Iterable[str] = (),
 ) -> ExportResult:
     """Build, store and (for a leisure dispatch) close the act. Never raises: a failed export is
     returned and logged, and the session itself is already over."""
@@ -429,7 +531,7 @@ async def export_session(
     card_id: UUID | None = None
     card_error: str | None = None
     try:
-        card_id = await mc_dal.insert_card(pool, memory_card_for(s), actor="retro_memory_export", op="create")
+        card_id = await mc_dal.insert_card(pool, memory_card_for(s, learned), actor="retro_memory_export", op="create")
     except Exception as exc:  # noqa: BLE001
         card_error = f"{type(exc).__name__}: {exc}"[:300]
         logger.warning("retro_memory_export_card_failed session_id=%s error=%s", session_id, card_error)
@@ -454,7 +556,9 @@ async def export_session_end(*, pool: Any, bus: Any, ended: Any, dispatch_id: st
     kw = session_end_inputs(ended)
     if dispatch_id:
         kw["dispatch_id"] = dispatch_id
-    return await export_session(pool=pool, bus=bus, enabled=enabled, **kw)
+    d = ended.as_dict() if hasattr(ended, "as_dict") else dict(ended)
+    learned = [x for x in d.get("learned_lines") or () if isinstance(x, str)]
+    return await export_session(pool=pool, bus=bus, enabled=enabled, learned=learned, **kw)
 
 
 # The leisure listener's name for the same path.
@@ -468,6 +572,6 @@ def make_session_end_sink(*, pool_provider, bus_provider):
     return sink
 
 
-__all__ = ["CARD_SOURCE", "export_leisure_outcome", "export_session_end", "make_session_end_sink",
+__all__ = ["CARD_SOURCE", "fetch_learned_lines", "learned_lines_from", "export_leisure_outcome", "export_session_end", "make_session_end_sink",
            "session_end_inputs", "DDL", "ExportResult", "INSERT_SQL", "TABLE", "build_session_summary", "export_session",
            "game_title", "item_words", "memory_card_for"]

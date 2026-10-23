@@ -253,6 +253,33 @@ def picture_answer_detail(answer: str, image_refs: list[str], pictures: list[Pic
     return {"pictures": [out[i] for i in sorted(out)]}
 
 
+def confirm_picture_detail(answer: str, image_refs: list[str], pictures: list[PictureAnswer]) -> dict[str, Any]:
+    """``{"pictures": [...]}`` for an "Is this <name>?" card answered picture by
+    picture (2026-10-23): "same" = it is <name>, "different" = it is not,
+    "unsure". Every picture on the card, once; no names (the card names one person).
+    The answer is "yes" exactly when at least one picture is <name>."""
+    if len(image_refs) < 2:
+        raise HTTPException(status_code=422, detail="pictures_need_a_multi_picture_card")
+    index: dict[str, int] = {}
+    for i, ref in enumerate(image_refs):
+        index.setdefault(ref, i)
+    out: dict[int, dict[str, Any]] = {}
+    for p in pictures:
+        if p.image_ref not in index:
+            raise HTTPException(status_code=422, detail="picture_not_on_card")
+        i = index[p.image_ref]
+        if i in out:
+            raise HTTPException(status_code=422, detail="picture_listed_twice")
+        if clean_name(p.name):
+            raise HTTPException(status_code=422, detail="no_names_on_is_this_cards")
+        out[i] = {"image_ref": p.image_ref, "index": i, "verdict": p.verdict}
+    if len(out) != len(index):
+        raise HTTPException(status_code=422, detail="every_picture_needs_an_answer")
+    if (answer == "yes") != any(v["verdict"] == "same" for v in out.values()):
+        raise HTTPException(status_code=422, detail="answer_does_not_match_pictures")
+    return {"pictures": [out[i] for i in sorted(out)]}
+
+
 class AskResolveBody(BaseModel):
     resolution: Literal["confirmed", "revised", "rejected"]
     note: str = Field(default="", max_length=MAX_NOTE_CHARS)
@@ -445,9 +472,13 @@ async def _answer_detail(conn: Any, ask_id: str, answer: Optional[str], names: d
         if answer in YES_NO_ANSWERS:  # anything else is refused by CLOSE_ASK_SQL (422 below)
             detail.update(pair_answer_detail(answer, card["source_ref"], names) or {})
     if pictures:
-        if card["source_kind"] != WHO_IS_THIS_KIND:
+        if card["source_kind"] == PERSON_CONFIRM_KIND:
+            if answer in YES_NO_ANSWERS:  # anything else is refused by CLOSE_ASK_SQL (422 below)
+                detail.update(confirm_picture_detail(answer, _image_refs(card), pictures))
+        elif card["source_kind"] == WHO_IS_THIS_KIND:
+            detail.update(picture_answer_detail(answer or "", _image_refs(card), pictures) or {})
+        else:
             raise HTTPException(status_code=422, detail="pictures_only_on_who_is_this_cards")
-        detail.update(picture_answer_detail(answer or "", _image_refs(card), pictures) or {})
     return detail or None
 
 

@@ -45,7 +45,8 @@ def pg(monkeypatch):
     engine = create_engine(PG)
     with engine.begin() as conn:
         conn.execute(text("TRUNCATE orion_ask, vision_individual_pair_verdict, vision_individual_sighting, "
-                          "vision_individual, person_fact, person_link, person CASCADE"))
+                          "vision_individual, vision_ask_picture_verdict, vision_person_exemplar, vision_crop_observation, "
+                          "person_fact, person_link, person CASCADE"))
     yield engine
     engine.dispose()
 
@@ -65,13 +66,27 @@ def _cluster(conn, iid, label, *, kind="person", days=1, ask=None, thumb=False):
             {"s": f"s-{iid}", "i": iid, "t": NOW - timedelta(hours=1), "th": "thumb:" + "ab" * 32})
 
 
+THUMB_NAMED, THUMB_OTHER, THUMB_PICKED = ("thumb:" + c * 64 for c in "cde")
+
+
+def _who_is_this(conn, iid, answer, refs, *, ask_id=None, at=NOW - timedelta(hours=2)):
+    """An answered "who is this?" card: its first picture is the one she named."""
+    import json
+
+    from sqlalchemy import text
+
+    conn.execute(text(
+        "INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, answer, answered_at, created_at, "
+        "image_ref, image_refs) VALUES (:a, 'Who is this?', 'vision_individual', :i, 'answered', :ans, :t, :t, "
+        ":img, CAST(:imgs AS jsonb))"),
+        {"a": ask_id or f"who-{iid}", "i": iid, "ans": answer, "t": at, "img": refs[0], "imgs": json.dumps(refs)})
+
+
 def _run(engine, now=NOW, cap=3):
     from app import person_record as rec
-    from app import vision_individuals as vi
 
     with engine.begin() as conn:
-        return rec.run_person_record(conn, now, rec.PersonRecordConfig(ask_daily_cap=cap),
-                                     vi.IndividualsConfig())
+        return rec.run_person_record(conn, now, rec.PersonRecordConfig(ask_daily_cap=cap))
 
 
 def _rows(engine, sql, **params):
@@ -85,6 +100,7 @@ def _rows(engine, sql, **params):
 def test_names_become_one_person_each_with_links_and_questions(pg) -> None:
     with pg.begin() as conn:
         _cluster(conn, "sam-1", "Sam", days=5, ask="ask-a", thumb=True)
+        _who_is_this(conn, "sam-1", "Sam", [THUMB_NAMED, THUMB_OTHER])
         _cluster(conn, "sam-2", "sam", days=2)
         _cluster(conn, "bike", "Sam", kind="bicycle")
         _cluster(conn, "car", "no", kind="vehicle")
@@ -99,11 +115,12 @@ def test_names_become_one_person_each_with_links_and_questions(pg) -> None:
                      ("sam-2", "vision_individual", persons["Sam"]), ("you-1", "vision_individual", "referent-you")]
     assert _rows(pg, "SELECT person_id, category, value_text, voice FROM person_fact") == [
         ("referent-you", "pronouns", "she/her", "authored_profile")]
-    # One question per person, most-seen first, never about Orion; Sam's shows Sam's picture.
+    # One question per person, most-seen first, never about Orion. Sam's shows only the picture
+    # she named Sam, not the cluster's newest sighting nor the card's other picture.
     assert [(a["source_ref"], a["question"]) for a in opened] == [
-        (f"{persons['Sam']}|relationship", "Who is Sam to you?"),
+        (f"{persons['Sam']}|relationship", "How do you know Sam? For example: a family friend, a neighbor, a classmate of your kid."),
         ("referent-you|gender", "What is your gender, in your own words?")]
-    assert opened[0]["image_refs"] == ["thumb:" + "ab" * 32] and opened[1]["image_refs"] == []
+    assert opened[0]["image_refs"] == [THUMB_NAMED] and opened[1]["image_refs"] == []
     # Re-running changes nothing and opens nothing (one open question per person).
     summary2, opened2 = _run(pg, NOW + timedelta(minutes=1))
     assert (summary2["persons_added"], summary2["links_added"], summary2["links_revoked"], opened2) == (0, 0, 0, [])
@@ -192,7 +209,8 @@ def test_a_corrected_typo_leaves_no_person_to_ask_about(pg) -> None:
     with pg.begin() as conn:
         conn.execute(text("UPDATE vision_individual SET label='John' WHERE individual_id='a'"))
     _, opened = _run(pg, NOW + timedelta(days=1), cap=5)
-    assert sorted(a["question"] for a in opened) == ["What is your gender, in your own words?", "Who is John to you?"]
+    assert sorted(a["question"] for a in opened) == ["How do you know John? For example: a family friend, a neighbor, a classmate of your kid.",
+                                                       "What is your gender, in your own words?"]
 
 
 @needs_pg
@@ -210,3 +228,42 @@ def test_a_removed_fact_is_not_asked_about_again(pg) -> None:
                           "VALUES ('f-x', :p, 'relationship', 'wrong', 'hub_edit', now())"), {"p": pid})
     refs = [a["source_ref"] for a in _run(pg, cap=5)[1]]
     assert f"{pid}|relationship" not in refs and f"{pid}|pronouns" in refs
+
+
+@needs_pg
+def test_a_person_question_shows_only_pictures_she_tied_to_that_name(pg) -> None:
+    """2026-10-23, live: "Who is Maeve to you?" showed three different people, the
+    newest pictures of a mixed cluster. An open question opened before the fix is
+    corrected too, and a picture picked on an "Is this <name>?" card joins."""
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _cluster(conn, "sam-1", "Sam", days=5, thumb=True)
+        _who_is_this(conn, "sam-1", "Sam", [THUMB_NAMED, THUMB_OTHER])
+        # She also marked the second picture "someone else": it never shows.
+        conn.execute(text(
+            "INSERT INTO vision_ask_picture_verdict (ask_id, image_ref, picture_index, individual_id, verdict, name, "
+            "answered_at) VALUES ('who-sam-1', :r, 1, 'sam-1', 'different', NULL, :t)"),
+            {"r": THUMB_OTHER, "t": NOW - timedelta(hours=2)})
+    _summary, opened = _run(pg)
+    sam = opened[0]
+    assert sam["question"] == "How do you know Sam? For example: a family friend, a neighbor, a classmate of your kid." and sam["image_refs"] == [THUMB_NAMED]
+    # An old question still showing the mixed pictures is corrected on the next pass.
+    with pg.begin() as conn:
+        conn.execute(text("UPDATE orion_ask SET image_refs = CAST(:imgs AS jsonb), image_ref = :o "
+                          "WHERE ask_id = :a"),
+                     {"imgs": f'["{THUMB_OTHER}", "{THUMB_NAMED}"]', "o": THUMB_OTHER, "a": sam["ask_id"]})
+        # A picture picked as Sam on an "Is this Sam?" card of another, unnamed cluster.
+        conn.execute(text(
+            "INSERT INTO vision_crop_observation (crop_id, observation_id, stream_id, camera_id, artifact_id, "
+            "observed_at, label, score, box_xyxy, thumb_ref) VALUES ('crop-p', 'o', 'walkway', 'c', 'a', :t, "
+            "'person', 0.9, '{0,0,1,1}', :r)"), {"t": NOW - timedelta(minutes=30), "r": THUMB_PICKED})
+        conn.execute(text(
+            "INSERT INTO vision_person_exemplar (exemplar_id, person_label, crop_id, polarity, source, ask_id, added_at) "
+            "VALUES ('e1', 'sam', 'crop-p', 1, 'confirm_pick_yes', 'ask-c', :t)"), {"t": NOW - timedelta(minutes=30)})
+    summary, _ = _run(pg, NOW + timedelta(minutes=1))
+    assert summary["person_ask_pictures_refreshed"] == 1
+    assert _rows(pg, "SELECT image_refs, image_ref FROM orion_ask WHERE ask_id = :a", a=sam["ask_id"]) == [
+        ([THUMB_PICKED, THUMB_NAMED], THUMB_PICKED)]
+    summary, _ = _run(pg, NOW + timedelta(minutes=2))
+    assert summary["person_ask_pictures_refreshed"] == 0

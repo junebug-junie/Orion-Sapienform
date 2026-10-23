@@ -45,3 +45,23 @@ def test_person_confirm_sends_yes_no_or_dismisses_for_cant_tell() -> None:
                    {"action": "answer", "answer": "no", "extra": None},
                    {"action": "dismiss", "answer": "", "extra": None},
                    None]
+
+
+def test_is_this_x_with_several_pictures_sends_one_answer_per_picture() -> None:
+    """2026-10-23: the pictures can be of different people, so each gets its own answer."""
+    got = _node("""(function () {
+      const views = [{raw: "thumb:a"}, {raw: "thumb:b"}, {raw: "thumb:c"}];
+      return [
+        api.personConfirmPicturesSubmission(views, {0: "different", 1: "same"}),
+        api.personConfirmPicturesSubmission(views, {0: "different"}),
+        api.personConfirmPicturesSubmission(views, {}),
+        api.personConfirmPicturesSubmission([views[0]], {0: "same"})
+      ];
+    })()""")
+    pics = lambda *v: [{"image_ref": f"thumb:{c}", "verdict": x} for c, x in zip("abc", v)]
+    assert got == [
+        {"action": "answer", "answer": "yes", "extra": {"pictures": pics("different", "same", "unsure")}},
+        {"action": "answer", "answer": "no", "extra": {"pictures": pics("different", "unsure", "unsure")}},
+        {"action": "dismiss", "answer": "", "extra": None},
+        None,
+    ]

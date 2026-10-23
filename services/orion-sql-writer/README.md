@@ -620,6 +620,14 @@ Each tick it:
    orion-substrate-runtime writes the entity); `no` adds its newest 20 crops
    (the ones guessed on) as `confirm_no` exemplars, kept across
    reconciliation, and revokes that guess; Can't tell = dismiss.
+   **A card with several pictures is answered picture by picture**
+   (2026-10-23: a cluster can hold more than one person, and "one of the three
+   is Emerald" could not be said). `answer_detail.pictures` holds one
+   `same` (is <name>) / `different` (is not) / `unsure` per picture. All
+   `same` = the old yes, all `different` = the old no. Anything else never
+   names the cluster: each marked picture's crop becomes its own exemplar
+   (`confirm_pick_yes` +1 / `confirm_pick_no` -1, kept across
+   reconciliation), "not sure" adds nothing, and the guess is revoked.
 
 Needs `manual_migration_vision_person_album_v1.sql`; without it the step logs
 `person_model: skipped` and the rest of the tick runs. Eval (read-only on
@@ -640,10 +648,17 @@ the individuals tick, after answers apply, while `PERSON_RECORD_ENABLED` (true):
    are ignored. Renames and cleared names revoke links.
 2. Stated pronouns from people.yaml become `person_fact` rows.
 3. Answered `person_fact` asks become `person_fact` rows (her words verbatim).
-4. New `person_fact` asks ("Who is X to you?", then pronouns, age, gender,
-   sexuality, ...; `orion/person_model/categories.yaml`) open under their own
-   cap `PERSON_FACT_ASK_DAILY_CAP` (3), one open per person, least-asked person
-   first, with the person's best camera picture.
+4. New `person_fact` asks ("How do you know X? For example: ...", then
+   pronouns, age, gender, sexuality, ...; `orion/person_model/categories.yaml`)
+   open under their own cap `PERSON_FACT_ASK_DAILY_CAP` (3), one open per
+   person, least-asked person first. Pictures (2026-10-23): only up to 3 that
+   Juniper herself tied to that person (`orion/person_model/pictures.py`: the
+   picture she named on a "who is this?" card, ones she marked "the same
+   person", a face she named on a "same person?" card, a picture she picked
+   on an "Is this <name>?" card). Never a cluster's newest pictures: a cluster
+   can hold more than one person, and the first live cards showed three
+   different people. No confirmed picture, no picture. Every pass also
+   corrects the pictures of questions already open.
 
 Needs `manual_migration_person_record_v1.sql`; without it the step reports
 `person_record: migration_missing`. Dry run on live data:

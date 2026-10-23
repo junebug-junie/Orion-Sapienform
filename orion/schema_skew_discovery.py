@@ -135,6 +135,7 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     "orion/attention/field_attention/policy.py": (None, "policy YAML the reader loads itself"),
     "orion.autonomy.models:CapabilityPolicyV1": (None, "capability policy YAML the reader loads itself"),
     "orion.schemas.person_model:PersonRefV1": (None, "config/person_model/people.yaml the reader loads itself (load_people)"),
+    "orion.schemas.person_model:PronounEvidenceV1": (None, "nested in PersonRefV1 rows of config/person_model/people.yaml"),
     "orion.autonomy.models:CapabilityPolicyRuleV1": (None, "capability policy YAML the reader loads itself"),
     "orion/consolidation/policy.py": (None, "policy YAML the reader loads itself"),
     "orion/execution_dispatch/policy.py": (None, "policy YAML the reader loads itself"),

@@ -625,6 +625,10 @@ async def startup_event():
                     max_age_sec=settings.ORION_REGULATION_READER_MAX_AGE_SEC,
                     name="outreach",
                 ),
+                # Strain report door: one message per long strained episode (scripts/strain_report.py).
+                strain_report_enabled=settings.ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED,
+                strain_report_min_episode_sec=settings.ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC,
+                strain_report_timezone=settings.ORION_SITUATION_TIMEZONE,
                 daily_cap=settings.HUB_ENDOGENOUS_OUTREACH_DAILY_CAP,
                 quiet_start_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR,
                 quiet_end_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR,

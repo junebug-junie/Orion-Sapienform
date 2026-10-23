@@ -181,7 +181,7 @@ def create_router(config, presence=None, experience=None):
                 return  # never saw a Zelda cognition policy: nothing observed, nothing to record
             # Action bets: nothing of this handoff stays open; then read back what was learned.
             await experience.end_session(sid, history, last_decision)
-            learned = tuple(await experience.learned_lines(sid))
+            learned = tuple(await experience.learned_lines(sid, since=started_at))
             # Retro's counts are session-wide; report only what happened during this handoff.
             record = record_delta(first, atlas_session_fields(last))
             held = human_held_frames(record['controller_frames'])

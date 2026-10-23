@@ -278,6 +278,17 @@ from orion.situational.perception_reader import fetch_presence, presence_fragmen
 from orion.regulation.arousal_view import AROUSAL_STRAINED_REASON
 from scripts.arousal_reader import ArousalReader
 from scripts.rest_drive_reader import RestDriveReader
+from scripts.strain_report import (
+    STRAIN_REPORT_INTENT_REASON,
+    STRAIN_REPORT_SOURCE,
+    StrainReportHistory,
+    build_strain_report_prompt,
+    episode_key,
+    fetch_open_strain_arc,
+    render_record,
+    strain_report_block,
+    strain_report_facts,
+)
 from scripts.personality_cue_reader import cue_status, read_personality_cue
 from scripts.outreach_vocabulary import (
     find_ungrounded_signal_mentions,
@@ -1323,6 +1334,8 @@ def summarize_outreach_lanes(lanes: Dict[str, Any]) -> str:
         parts.append(f"curiosity signals ({curiosity})")
     if lanes.get("tension"):
         parts.append("tension trigger")
+    if lanes.get("strain_report"):
+        parts.append("strain report")
     if lanes.get("daydream"):
         age = lanes.get("daydream_age_sec")
         if age is not None:
@@ -1647,8 +1660,22 @@ class EndogenousOutreach:
         # (HUB_PERSONALITY_CUE_ENABLED, base URL HUB_CURIOSITY_DURABLE_RUNS_URL).
         personality_cue_enabled: bool = False,
         durable_runs_url: str = "",
+        # Strain report door (scripts/strain_report.py, strain loop part 3). Off here so bare
+        # constructions in tests keep the old behaviour; settings ship it on
+        # (ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED). The day for once-per-day is
+        # ``strain_report_timezone`` (settings: ORION_SITUATION_TIMEZONE), else this loop's zone.
+        strain_report_enabled: bool = False,
+        strain_report_min_episode_sec: float = 3600.0,
+        strain_report_timezone: Optional[str] = None,
     ) -> None:
         self.enabled = enabled
+        self.strain_report_enabled = bool(strain_report_enabled)
+        self.strain_report_min_episode_sec = max(0.0, float(strain_report_min_episode_sec))
+        self._strain_tz_name = str(strain_report_timezone or "").strip() or None
+        # Rebuilt from the decision log on first use (restart-safe), then kept current in memory:
+        # this process is the only writer of strain_report rows.
+        self._strain_history: Optional[StrainReportHistory] = None
+        self._strain_last: Optional[str] = None
         self.personality_cue_enabled = bool(personality_cue_enabled)
         self.durable_runs_url = str(durable_runs_url or "")
         # Orion's arousal: while it reads `strained`, background outreach is refused.
@@ -1685,6 +1712,15 @@ class EndogenousOutreach:
             )
             self.timezone_name = "UTC"
             self._tz = ZoneInfo("UTC")
+        self._strain_tz = self._tz
+        if self._strain_tz_name:
+            try:
+                self._strain_tz = ZoneInfo(self._strain_tz_name)
+            except (ZoneInfoNotFoundError, ValueError, KeyError):
+                logger.error(
+                    "endogenous_outreach_bad_strain_report_timezone name=%r using %s",
+                    self._strain_tz_name, self.timezone_name,
+                )
         # Defaults to the real tension trigger, imported lazily to match this
         # file's existing convention for cross-Hub-module dependencies
         # (curiosity_hint, hub_presence below) -- keeps a hard Postgres
@@ -1963,6 +1999,12 @@ class EndogenousOutreach:
                 None if self.arousal_reader is None else self.arousal_reader.view().as_dict()
             ),
             "block_reason": outreach_block_reason(inputs),
+            "strain_report": {
+                "enabled": self.strain_report_enabled,
+                "min_episode_sec": self.strain_report_min_episode_sec,
+                "history_recovered": self._strain_history is not None,
+                "last": self._strain_last,
+            },
             "last_result": dict(self._last_result),
         }
 
@@ -2105,6 +2147,11 @@ class EndogenousOutreach:
         if not blocked:
             self._last_spoke_ago = await self._spoke_ago()
             blocked = outreach_block_reason(self._gate_inputs())
+        if blocked == AROUSAL_STRAINED_REASON and self.strain_report_enabled:
+            # Strain is the only gate holding (it is checked last), so every other gate passed.
+            # The strain report door may pass this one refusal, once per long episode.
+            self._last_tension_reason = None
+            return await self._strain_report_once(force=force, compose_started_at=compose_started_at)
         if blocked:
             # Same staleness reasoning as the `force` branch below: this
             # tick never reached `_should_roll()`, so whatever reason the
@@ -2371,6 +2418,213 @@ class EndogenousOutreach:
             forced=force,
             tension_reason=tension_reason,
             grounding=grounding,
+        )
+
+    # -- the strain report door (strain loop part 3) -------------------------
+
+    async def _recover_strain_history(self) -> Optional[StrainReportHistory]:
+        """Rebuild what this door already did from the decision log, once. Retried until it
+        succeeds; None (unknown) keeps the door shut."""
+        if self._strain_history is not None:
+            return self._strain_history
+        from scripts.endogenous_outreach_decisions import fetch_strain_report_history
+
+        try:
+            rows = await asyncio.to_thread(fetch_strain_report_history)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("strain_report_history_read_failed err=%s", exc)
+            rows = None
+        if rows is None:
+            return None
+        self._strain_history = StrainReportHistory.from_rows(rows, self._strain_tz)
+        logger.info(
+            "strain_report_history_recovered rows=%d reported=%d days=%s",
+            len(rows), len(self._strain_history.reported_episodes),
+            ",".join(sorted(self._strain_history.report_dates)) or "-",
+        )
+        return self._strain_history
+
+    def _strain_record(
+        self,
+        result: Dict[str, Any],
+        *,
+        forced: bool,
+        episode: Optional[str],
+        composed: bool,
+        grounding: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """One decision row for this door. Composed outcomes also update the in-memory history
+        with the same rule a restart applies to the rows (StrainReportHistory.note)."""
+        result.setdefault("door", STRAIN_REPORT_SOURCE)
+        if episode:
+            result.setdefault("strain_episode_since", episode)
+        if composed:
+            result["source"] = STRAIN_REPORT_SOURCE
+            result["strain_composed"] = True
+            if episode and self._strain_history is not None:
+                self._strain_history.note(
+                    episode=episode, reason=str(result.get("reason") or ""),
+                    at=datetime.now(timezone.utc), tz=self._strain_tz,
+                )
+        self._strain_last = str(result.get("strain_report") or result.get("reason") or "")
+        return self._record(result, forced=forced, grounding=grounding)
+
+    async def _strain_report_once(self, *, force: bool, compose_started_at: float) -> Dict[str, Any]:
+        """Orion tells Juniper about a long strain episode. Runs only when ``arousal_strained``
+        is the one gate holding. Every non-sending outcome keeps ``reason=arousal_strained`` and
+        names why in ``strain_report``, so the existing refusal counts do not change meaning."""
+        now = datetime.now(timezone.utc)
+        reader = self.arousal_reader
+        view = None if reader is None else reader.view(now)
+        state = None if reader is None else reader.state(now)
+
+        def held(sub: str, episode: Optional[str] = None) -> Dict[str, Any]:
+            return self._strain_record(
+                {"outreach": False, "reason": AROUSAL_STRAINED_REASON, "strain_report": sub},
+                forced=force, episode=episode, composed=False,
+            )
+
+        history = await self._recover_strain_history()
+        if history is None:
+            return held("history_unknown")
+        since = None if view is None else view.since
+        episode = None if since is None else episode_key(since)
+        sub = strain_report_block(
+            level=None if view is None else view.level,
+            since=since,
+            now=now,
+            min_episode_sec=self.strain_report_min_episode_sec,
+            history=history,
+            tz=self._strain_tz,
+        )
+        if sub:
+            return held(sub, episode)
+        # Qualifies. Now the DB read for recent_chat, then the whole gate again: strain must
+        # still be the ONLY thing holding.
+        self._last_spoke_ago = await self._spoke_ago()
+        blocked = outreach_block_reason(self._gate_inputs())
+        if blocked != AROUSAL_STRAINED_REASON:
+            if blocked is None:
+                # The reading aged out between the two gate reads: nothing is held any more.
+                return self._strain_record(
+                    {"outreach": False, "reason": "strain_ended", "strain_report": "strain_ended"},
+                    forced=force, episode=episode, composed=False,
+                )
+            return self._strain_record(
+                {"outreach": False, "reason": blocked, "strain_report": "gated"},
+                forced=force, episode=episode, composed=False,
+            )
+
+        arc, arc_status = await fetch_open_strain_arc(self.durable_runs_url)
+        facts = strain_report_facts(state, arc)
+        if facts is None or episode_key(facts.episode_since) != episode:
+            return held("no_grounding", episode)
+        record_text = render_record(facts, now, self._strain_tz)
+        prompt = build_strain_report_prompt(facts, record_text, now, self._strain_tz)
+        grounding = {"strain_report": facts.as_dict(), "strain_arc_status": arc_status}
+        logger.info(
+            "strain_report_composing episode=%s arc=%s causes_now=%s",
+            episode, facts.arc_id or "-", ",".join(facts.causes_now) or "-",
+        )
+
+        session_id = self._active_session_id()
+        correlation_id = str(uuid4())
+        raw_text, gen_debug = await self._generate(prompt, session_id, correlation_id)
+        correlation_id = str(gen_debug.get("correlation_id") or correlation_id)
+        text = str(raw_text or "").strip()
+        base = {"outreach": False, "generation": gen_debug, "correlation_id": correlation_id}
+        if not text:
+            return self._strain_record(
+                {**base, "reason": "empty_generation"},
+                forced=force, episode=episode, composed=True, grounding=grounding,
+            )
+        if is_pass_response(text):
+            return self._strain_record(
+                {**base, "reason": "orion_passed"},
+                forced=force, episode=episode, composed=True, grounding=grounding,
+            )
+        offending = self._named_ungrounded_terms(text, None, correlation_id, context_texts=[record_text])
+        if offending:
+            return self._strain_record(
+                {**base, "reason": "named_ungrounded_signal", "offending_terms": offending},
+                forced=force, episode=episode, composed=True, grounding=grounding,
+            )
+
+        # Re-gate before delivery, same as the background tick: compose can take minutes.
+        if reader is not None:
+            await reader.refresh(self._bus)
+        blocked_now = outreach_block_reason(self._gate_inputs())
+        if blocked_now == AROUSAL_STRAINED_REASON:
+            now_view = None if reader is None else reader.view()
+            if now_view is None or now_view.since is None or episode_key(now_view.since) != episode:
+                blocked_now = "strain_episode_changed"
+            else:
+                blocked_now = None
+                try:
+                    if await asyncio.to_thread(_juniper_spoke_since, compose_started_at):
+                        blocked_now = "juniper_spoke"
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("strain_report_spoke_since_read_failed err=%s", exc)
+        elif blocked_now is None:
+            blocked_now = "strain_ended"
+        if blocked_now:
+            logger.info("strain_report_dropped_after_generation corr=%s reason=%s", correlation_id, blocked_now)
+            return self._strain_record(
+                {**base, "reason": f"{blocked_now}_after_generation"},
+                forced=force, episode=episode, composed=True, grounding=grounding,
+            )
+
+        # Intent row first, synchronously: if it does not land, do not send. A delivered report
+        # whose fire-and-forget `sent` row is later lost would otherwise be re-sent on restart.
+        from scripts.endogenous_outreach_decisions import record_decision_now
+
+        intent = {
+            **base, "reason": STRAIN_REPORT_INTENT_REASON, "door": STRAIN_REPORT_SOURCE,
+            "source": STRAIN_REPORT_SOURCE, "strain_composed": True, "strain_episode_since": episode,
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+        if not await asyncio.to_thread(record_decision_now, intent):
+            return self._strain_record(
+                {**base, "reason": "intent_write_failed"},
+                forced=force, episode=episode, composed=False, grounding=grounding,
+            )
+        if self._strain_history is not None:
+            self._strain_history.note(
+                episode=episode, reason=STRAIN_REPORT_INTENT_REASON,
+                at=datetime.now(timezone.utc), tz=self._strain_tz,
+            )
+        delivered = f"{text}\n\n{record_text}"
+        decision_id = str(uuid4())
+        provenance = build_outreach_provenance(
+            prompt_text=prompt, lanes=grounding, correlation_id=correlation_id, decision_id=decision_id,
+        )
+        await self._deliver(
+            text=delivered,
+            session_id=session_id,
+            correlation_id=correlation_id,
+            model=gen_debug.get("fcc_model_label"),
+            source_tag=STRAIN_REPORT_SOURCE,
+            provenance=provenance,
+        )
+        self._last_outreach_at = time.time()
+        self._sent_today += 1
+        logger.info(
+            "endogenous_outreach_sent corr=%s session=%s chars=%d sent_today=%d source=%s episode=%s arc=%s",
+            correlation_id, session_id, len(delivered), self._sent_today,
+            STRAIN_REPORT_SOURCE, episode, facts.arc_id or "-",
+        )
+        return self._strain_record(
+            {
+                **base,
+                "outreach": True,
+                "reason": "sent",
+                "session_id": session_id,
+                "chars": len(delivered),
+                "decision_id": decision_id,
+                "provenance": provenance,
+                "strain_arc_id": facts.arc_id,
+            },
+            forced=force, episode=episode, composed=True, grounding=grounding,
         )
 
     # -- delivery on behalf of another loop --------------------------------

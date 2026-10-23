@@ -333,9 +333,26 @@ def learned_lines_from(session_bets: Any, live: Any) -> list[str]:
     return lines[:LEARNED_MAX]
 
 
-async def fetch_learned_lines(retro_session_id: str | None, *, get: Any) -> list[str]:
-    """``get``: async (path, params) -> (status, json), e.g. ZeldaExperience.get. Never raises:
-    an unreachable service gives no lines and a log line."""
+def bets_since(bets: Any, since: float | None) -> Any:
+    """Only the bets placed at or after ``since`` (epoch seconds). One Retro session holds many
+    co-play handoffs; each handoff's card describes its own moves (live 2026-10-23: four cards in a
+    row repeated the whole session's "11 of 15")."""
+    if since is None:
+        return bets
+    rows = bets.get("bets") if isinstance(bets, Mapping) else bets
+    from datetime import datetime
+    def placed(b: Any) -> float | None:
+        try:
+            return datetime.fromisoformat(str(b.get("placed_at")).replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError, AttributeError):
+            return None
+    return [b for b in rows or [] if isinstance(b, Mapping) and (placed(b) or 0) >= since]
+
+
+async def fetch_learned_lines(retro_session_id: str | None, *, get: Any, since: float | None = None) -> list[str]:
+    """``get``: async (path, params) -> (status, json), e.g. ZeldaExperience.get. ``since``: only
+    bets placed from then on (the handoff or leisure start). Never raises: an unreachable service
+    gives no lines and a log line."""
     if not retro_session_id:
         return []
     try:
@@ -345,7 +362,7 @@ async def fetch_learned_lines(retro_session_id: str | None, *, get: Any) -> list
         status, live = await get("/action-bets/live", {"domain": "retro:zelda"})
         if status != 200:
             raise ValueError(f"live_status_{status}")
-        return learned_lines_from(bets, live)
+        return learned_lines_from(bets_since(bets, since), live)
     except Exception as exc:  # noqa: BLE001
         logger.warning("retro_memory_export_learned_unavailable session_id=%s reason=%s", retro_session_id,
                        f"{type(exc).__name__}:{exc}"[:200])

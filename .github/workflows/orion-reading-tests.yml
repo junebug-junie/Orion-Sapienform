@@ -70,6 +70,8 @@ jobs:
             orion/harness/tests/test_claim_gate.py \
             services/orion-hub/tests/test_reading_finding_outreach.py \
             services/orion-hub/tests/test_endogenous_outreach.py \
+            services/orion-hub/tests/test_strain_report_outreach.py \
+            services/orion-hub/evals/test_strain_report_replay_eval.py \
             services/orion-hub/tests/test_outreach_personality_cue.py \
             services/orion-hub/tests/test_curiosity_personality_cue.py \
             services/orion-hub/tests/test_personality_cue_reader.py \

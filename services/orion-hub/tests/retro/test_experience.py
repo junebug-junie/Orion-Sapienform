@@ -690,3 +690,16 @@ def test_gateway_act_bus_retries_and_closes_a_failed_client(monkeypatch):
     asyncio.run(run())
     assert len(made) == 3 and app.state.retro_act_bus is made[2]
     assert [b.closed for b in made] == [True, True, False]
+
+
+def test_each_handoff_card_counts_only_its_own_bets():
+    from scripts.retro_memory_export import bets_since, learned_lines_from
+    old = [dict(_bet(f'zelda:0:1{i}:W', 'success', side='open_unvisited'), placed_at='2026-10-23T19:00:00+00:00')
+           for i in range(5)]
+    new = [dict(_bet(f'zelda:0:2{i}:E', 'failure', side='open_unvisited'), placed_at='2026-10-23T19:40:00+00:00')
+           for i in range(3)]
+    from datetime import datetime
+    since = datetime.fromisoformat('2026-10-23T19:39:00+00:00').timestamp()
+    assert [b['place'] for b in bets_since({'bets': old + new}, since)] == [b['place'] for b in new]
+    assert 'worked 0 of 3 times.' in learned_lines_from(bets_since(old + new, since), {})[0]
+    assert bets_since(old, None) == old

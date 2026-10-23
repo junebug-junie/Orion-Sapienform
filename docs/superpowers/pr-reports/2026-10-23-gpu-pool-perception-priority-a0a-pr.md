@@ -105,6 +105,6 @@ The post-pull rebuild (`scripts/rebuild_services_from_git_diff.sh`) normally reb
 
 ## PR link
 
-(filled on creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2856
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

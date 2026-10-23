@@ -200,6 +200,10 @@ class TemporalSelfArcV1(_Forbid):
     # A strain arc carried over midnight begins at the day boundary; this keeps when the episode
     # itself began (the regulation reading's ``since``). None for every other kind.
     episode_began_at: AwareDatetime | None = None
+    # A strain arc's causes present at its newest row (the label keeps every cause seen in the
+    # episode). [] while a strain only holds before clearing; None when not recorded (every other
+    # kind, and arcs folded before this field existed).
+    causes_now: list[str] | None = None
     related_refs: list[str] = Field(default_factory=list)  # e.g. offered prior ids
     evidence_refs: list[str] = Field(default_factory=list)  # refs that SHARE subject_ref
     evidence_overflow: int = 0
@@ -247,6 +251,8 @@ class ArcSummaryV1(_Forbid):
     last_seen_at: AwareDatetime | None = None
     # Strain loop part 1: when a strain episode began, even if that was on an earlier day.
     episode_began_at: AwareDatetime | None = None
+    # Strain loop: the causes present at the strain arc's newest row (see TemporalSelfArcV1).
+    causes_now: list[str] | None = None
 
 
 class OpenThreadV1(_Forbid):

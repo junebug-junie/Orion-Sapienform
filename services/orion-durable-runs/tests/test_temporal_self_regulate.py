@@ -224,6 +224,40 @@ def test_strain_keepalive_every_30_min_while_strained_and_none_after():
     assert len(causes.rows) == n                                 # not strained: no keepalives
 
 
+def test_strain_row_when_a_cause_leaves_no_sooner_than_10_min():
+    w, causes = World(), Causes()
+    d = driver(w, record_cause=causes)
+    w.depth, w.sustained = 4, 320.0
+    w.reflex, w.thermal = "cabinet_hot", "hot"
+    tick(d)                                                      # onset: cabinet + GPU
+    w.now += timedelta(seconds=120)
+    w.reflex, w.thermal = None, "normal"                         # the cabinet cools at T0+2 min
+    tick(d)
+    assert causes.rows == []                                     # only 2 min since the onset row
+    for _ in range(4):                                           # T0+4 .. T0+10 min
+        w.now += timedelta(seconds=120)
+        tick(d)
+    assert [r[:2] for r in causes.rows] == [([], False)]         # the leave row, at T0+10 min
+    assert w.projected[-1].arousal.arousal_level == "strained"
+    for _ in range(4):                                           # unchanged: no more rows
+        w.now += timedelta(seconds=120)
+        tick(d)
+    assert len(causes.rows) == 1
+
+
+def test_a_flapping_cause_costs_at_most_one_row_per_10_min():
+    w, causes = World(), Causes()
+    d = driver(w, record_cause=causes)
+    w.depth, w.sustained = 4, 320.0
+    tick(d)                                                      # onset: GPU
+    for i in range(30):                                          # 60 min: cabinet on/off every step
+        w.now += timedelta(seconds=120)
+        w.reflex, w.thermal = ("cabinet_hot", "hot") if i % 2 == 0 else (None, "normal")
+        tick(d)
+    assert causes.rows[0][0] == ["cabinet_hot"]                  # the first join is immediate
+    assert len(causes.rows) <= 1 + 60 // 10
+
+
 def test_cause_row_shape_matches_the_level_row():
     from app import regulation_store
     from orion.schemas.regulation import ArousalReadingV1

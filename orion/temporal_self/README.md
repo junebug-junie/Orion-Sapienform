@@ -64,7 +64,10 @@ episode start, a not-strained row after an outage (`prev_dropped:gap`), or no ro
 `strain_stale_sec` (4,500 s; regulation writes a keepalive every 30 min while strained) closes the
 open arc at its last row (`source_stale`), so a lost closing row or the flag turned off can never
 leave "strained since" standing. It carries over midnight like `company`, and `episode_began_at`
-keeps when the episode began. Nothing binds to it by time, and dream replay skips it
+keeps when the episode began. `causes_now` holds the causes present at the newest row (the label
+keeps every cause seen), so the stance cue can say "(now: GPU jobs backed up; earlier: cabinet too
+hot)"; `None` means not recorded (arcs folded before the field), and then the cue keeps the plain
+label wording rather than claim every cause cleared. Nothing binds to it by time, and dream replay skips it
 (`services/orion-dream/app/replay.py` `ARC_EXCLUDED_KINDS`: a days-long arc would fill every
 replay). Known limit, shared with `company`: a reducer state reset that re-folds from local
 midnight has no onset row for an episode carried from yesterday, so that arc is missing until the

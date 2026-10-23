@@ -694,6 +694,7 @@ def _fold_strain(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None:
         else:
             _extend(arc, max(t, arc.last_seen_at), ref, accrue=True)
         _add_causes(arc, list(e.payload.get("causes") or []))
+        arc.causes_now = list(e.payload.get("causes") or [])  # every strained row carries them
         state.active["strain"] = arc.arc_id
         return
     if arc is None:
@@ -897,6 +898,7 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
                 segments=[ArcSegmentV1(began_at=day_end, ended_at=day_end)],
                 carried_from_previous_day=True, carried_from_arc_id=arc.arc_id,
                 episode_began_at=arc.episode_began_at,
+                causes_now=None if arc.causes_now is None else list(arc.causes_now),
             ))
         elif arc.kind == "concern":
             cont = TemporalSelfArcV1(

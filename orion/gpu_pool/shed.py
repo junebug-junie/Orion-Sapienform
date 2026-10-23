@@ -7,7 +7,7 @@ reasons combine lives here.
 
 - A reason is named, has a precedence (lower number wins) and a fixed set of priorities it blocks.
   Only ``background`` and ``system`` can ever be shed; a reason naming anything else is refused at
-  import time. ``interactive`` (chat) and ``urgent`` are never shed.
+  import time. ``interactive`` (chat), ``perception`` (Orion's senses) and ``urgent`` are never shed.
 - A signal is one producer's claim that a reason holds: ``(reason, source_id, detail, valid_until)``.
   The board keeps one per ``(reason, source_id)``; a signal past ``valid_until`` counts as absent,
   so a producer that dies stops shedding within its own validity window (fail-open).

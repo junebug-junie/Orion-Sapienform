@@ -30,6 +30,10 @@ Orion plays Zelda (2026-10-22, docs/superpowers/specs/2026-10-22-orion-plays-zel
 section F) added ``retro_play`` / arc kind ``play``: one finished Retro session
 (``retro_play_sessions``, written by orion-hub) is one process arc, labelled with its deterministic
 summary. Same consumer-first rollout: orion-thought and orion-hub before orion-durable-runs.
+
+``causes_now`` (2026-10-23, on the arc and its summary) follows the same order: every stored frame
+carries it (``null`` on non-strain arcs), so an orion-thought or orion-hub still on older code
+rejects the whole frame and the stance cue goes dark until they are rebuilt.
 """
 
 from __future__ import annotations
@@ -200,6 +204,10 @@ class TemporalSelfArcV1(_Forbid):
     # A strain arc carried over midnight begins at the day boundary; this keeps when the episode
     # itself began (the regulation reading's ``since``). None for every other kind.
     episode_began_at: AwareDatetime | None = None
+    # A strain arc's causes present at its newest row (the label keeps every cause seen in the
+    # episode). [] while a strain only holds before clearing; None when not recorded (every other
+    # kind, and arcs folded before this field existed).
+    causes_now: list[str] | None = None
     related_refs: list[str] = Field(default_factory=list)  # e.g. offered prior ids
     evidence_refs: list[str] = Field(default_factory=list)  # refs that SHARE subject_ref
     evidence_overflow: int = 0
@@ -247,6 +255,8 @@ class ArcSummaryV1(_Forbid):
     last_seen_at: AwareDatetime | None = None
     # Strain loop part 1: when a strain episode began, even if that was on an earlier day.
     episode_began_at: AwareDatetime | None = None
+    # Strain loop: the causes present at the strain arc's newest row (see TemporalSelfArcV1).
+    causes_now: list[str] | None = None
 
 
 class OpenThreadV1(_Forbid):

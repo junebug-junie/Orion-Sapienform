@@ -409,7 +409,7 @@ def _bets() -> ActionBets:
 async def _bets_call(fn, *args):
     try:
         return await asyncio.to_thread(fn, *args)
-    except psycopg.Error as exc:   # table missing / DB down: the caller plans without a menu
+    except psycopg.Error as exc:   # DB down: the caller plans without a menu (a missing table stops boot)
         logger.warning("action_bets_store_error %s: %s", type(exc).__name__, exc)
         raise HTTPException(503, "action bet store unavailable") from exc
 

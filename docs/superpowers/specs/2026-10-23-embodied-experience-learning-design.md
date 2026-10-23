@@ -114,6 +114,7 @@ CREATE INDEX IF NOT EXISTS prediction_action_bet_place ON prediction_action_bet 
   - skill: `Beta(1 + s, 1 + f)`, over all domains;
   - situation: `Beta(k·p_skill + s, k·(1 − p_skill) + f)`, within one domain, for the exact context;
   - place: `Beta(k·p_situation + s, k·(1 − p_situation) + f)`, within one domain.
+  - Note for the next body: a body without place keys contributes one unit per bet at the skill level, so it will outweigh Zelda's traverse there. Revisit when a second body exists.
   - Above the place level each place counts as ONE unit: each of its n settled bets weighs 1/n (a bet without a place weighs 1), so counts there can be fractional. Without this, live 2026-10-23, seven failed walks into one wall made every untried exit read 0.20 and the real model chose `wait` 3 times in 5; with it, untried exits read 0.50 and the model chose the top exit 5 times in 5.
   - `p` is the mean of the deepest level with at least one settled row. Without data the result is `prior` with p = 0.5. The response also carries an 80 % interval from the Beta quantiles (`scipy.stats.beta`; scipy 1.18.1 is already pinned in `requirements.txt`, and digamma comes from `scipy.special`).
 - `action_skill_rate`, the baseline: the skill-level mean only. Stored on every bet as `p_baseline`.
@@ -172,14 +173,14 @@ The prompt adds: "Choose one of these unless the facts above show it cannot work
 
 ### Retro: learned-blocked tiles heal
 
-In `atlas.observe`: when Link is controllable and standing on tile (c, r), remove learned-blocked entries (c, r) and (c+1, r) for that room and `walls_hash`. Standing there is direct evidence that both tiles are passable. This removes the "one false bump is forever" problem. It is map memory, not a prediction, so it stays in Retro.
+In `atlas.observe`: when Link is controllable and standing on position (c, r), remove the learned-blocked entry (c, r) for that room and `walls_hash`. Learned blocks are Link positions (the motor records the position he failed to reach), so standing there proves only that position open. Build review: healing (c+1, r) as well erased every east-side bump on the next frame. This removes the "one false bump is forever" problem. It is map memory, not a prediction, so it stays in Retro.
 
 ### Speaking
 
 At session end, `retro_memory_export` reads `GET /action-bets?session_id=` and `GET /action-bets/live?domain=retro:zelda` and adds at most 3 plain fact lines to the card, for example:
 
-- "Room 119's south side is not a way out (0 of 3 tries)."
-- "Moving toward rooms I had not visited worked 5 of 6 times."
+- "Room 119's south side has not led anywhere (0 of 3 tries)." (Failures include being hit on the way, so it never claims "no way out".)
+- "Moving toward rooms I had not visited worked 5 of 6 times." (Counted from this session's own bets: the service's situation counts weigh places, not tries.)
 - "My guesses about my own moves scored 0.18. Always guessing my average would score 0.24."
 
 With fewer than 10 settled bets, the calibration line is not written. If the prediction service is unreachable, the card is written without these lines, and the export logs it.

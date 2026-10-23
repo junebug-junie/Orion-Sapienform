@@ -379,3 +379,13 @@ def test_one_stubborn_place_does_not_sink_the_whole_skill():
     east, south = q
     assert east["level"] == "situation" and east["p"] == pytest.approx(0.5)   # 1 of 2 places, not 1 of 8
     assert south["level"] == "place" and south["p"] < 0.2
+
+
+def test_backoff_p_matches_backoff_on_many_count_shapes():
+    import itertools
+    from app.action_bets import backoff, backoff_p
+    vals = [None, {"successes": 0, "failures": 0}, {"successes": 1.5, "failures": 0.5}, {"successes": 0, "failures": 7}]
+    for sk, si, pl in itertools.product(vals, vals, vals):
+        for has_place in (True, False):
+            assert backoff_p(sk, si, pl, has_place=has_place) == pytest.approx(
+                backoff(sk, si, pl, has_place=has_place)["p"])

@@ -40,6 +40,8 @@ BODY = 'retro'
 NEAR_PX = 48            # services/orion-retro/app/zelda/navigate.py RETREAT_DISTANCE (Manhattan px)
 MENU_SIZE = 5
 TIMEOUT_SEC = 2.0
+CARD_TIMEOUT_SEC = 10.0
+OPEN_CAP = 200          # in-process open bets; the service expires anything dropped (never_settled)
 EIG_WEIGHT = 2.0
 DIRS = 'NSEW'
 SKILL_OF = {'exit': 'traverse', 'explore': 'traverse', 'fight': 'engage', 'retreat': 'withdraw',
@@ -96,8 +98,10 @@ def _health(obs: dict) -> str:
 
 
 def _here(atlas: Optional[dict], obs: dict) -> Optional[dict]:
-    """The atlas, only when it describes the room Link is standing in."""
-    if isinstance(atlas, dict) and atlas.get('room') == obs.get('room') and atlas.get('level') == obs.get('level'):
+    """The atlas, only when it describes the room Link is standing in (never inside a cave: Retro
+    reports the overworld room id there, but the room's sides are not the cave's)."""
+    if (isinstance(atlas, dict) and obs.get('mode') == 'play' and atlas.get('room') == obs.get('room')
+            and atlas.get('level') == obs.get('level')):
         return atlas
     return None
 
@@ -149,7 +153,8 @@ def option_for_goal(goal: dict, decision: dict, atlas: Optional[dict]) -> Option
         a = ((here or {}).get('adjacent') or {}).get(d) if here else None
         level, room = obs.get('level'), obs.get('room')
         # Overworld only: no dungeon place beliefs until open_sides is verified in dungeons (spec).
-        place = f'zelda:{level}:{room}:{d}' if level == 0 and isinstance(room, int) else None
+        place = (f'zelda:{level}:{room}:{d}' if level == 0 and isinstance(room, int) and obs.get('mode') == 'play'
+                 else None)   # overworld rooms only: never a cave, which reports the room above it
         value = VALUE['visited_room'] if isinstance(a, dict) and a.get('known') else VALUE['new_room']
         return Option(f'{kind}:{d}', dict(goal), skill, skill_context(side=side, threat=threat, health=health),
                       place, value, _traverse_text(kind, d, side, a))
@@ -310,7 +315,10 @@ def _gained(start: dict, obs: dict) -> bool:
     return (any(after['items'].get(k, 0) > v for k, v in start['items'].items())
             or any(k not in start['items'] and v > 0 for k, v in after['items'].items())
             or (isinstance(after['containers'], (int, float)) and isinstance(start.get('containers'), (int, float))
-                and after['containers'] > start['containers']))
+                and after['containers'] > start['containers'])
+            # A heart drop raises only hearts.current (drops are 'contents unknown' to Retro).
+            or (isinstance(after['hearts'], (int, float)) and isinstance(start.get('hearts'), (int, float))
+                and after['hearts'] > start['hearts']))
 
 
 def settle_body(skill: str, start: dict, row: Any, next_observation: Any) -> Optional[ActionBetSettleV1]:
@@ -398,11 +406,13 @@ class ZeldaExperience:
         return cls(enabled=bool(getattr(config, 'HUB_ACTION_BETS_ENABLED', False)),
                    base_url=str(getattr(config, 'HUB_PREDICTION_URL', '') or 'http://127.0.0.1:8132'))
 
-    async def _call(self, method: str, path: str, *, json: Any = None, params: Optional[dict] = None) -> tuple[int, Any]:
+    async def _call(self, method: str, path: str, *, json: Any = None, params: Optional[dict] = None,
+                    timeout: Optional[float] = None) -> tuple[int, Any]:
+        limit = timeout or self.timeout_sec
         if self.http is not None:
-            return await asyncio.wait_for(self.http(method, path, json=json, params=params), self.timeout_sec)
+            return await asyncio.wait_for(self.http(method, path, json=json, params=params), limit)
         import aiohttp
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout_sec)) as s:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=limit)) as s:
             async with s.request(method, self.base_url.rstrip('/') + path, json=json, params=params) as r:
                 try:
                     data = await r.json(content_type=None)
@@ -411,8 +421,9 @@ class ZeldaExperience:
                 return r.status, data
 
     async def get(self, path: str, params: Optional[dict] = None) -> tuple[int, Any]:
-        """Read-only GET for the memory card's learned lines. Raises on transport failure."""
-        return await self._call('GET', path, params=params)
+        """Read-only GET for the memory card's learned lines (session end, off the plan path, so it
+        may take longer than a quote: /action-bets/live grades every settled bet). Raises on failure."""
+        return await self._call('GET', path, params=params, timeout=CARD_TIMEOUT_SEC)
 
     # quote / menu ------------------------------------------------------------------------------------
     async def quote(self, options: list[Option]) -> Optional[dict[str, ActionBetQuoteV1]]:
@@ -476,6 +487,8 @@ class ZeldaExperience:
             if status != 200:
                 logger.warning('action_bet_place_failed bet_id=%s status=%s', bet.bet_id, status)
                 return None
+            while len(self.open) >= OPEN_CAP:          # e.g. a bet whose previous was never seen
+                self.open.pop(next(iter(self.open)))
             self.open[bet.bet_id] = OpenBet(bet.bet_id, retro_session_id, decision_id, option.skill,
                                             start_facts(decision.get('observation')))
             logger.info('action_bet_placed bet_id=%s skill=%s place=%s chosen_rank=%s p=%s', bet.bet_id,

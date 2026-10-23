@@ -269,11 +269,6 @@ _SKILL_WORDS = {"traverse": "Moving to another room", "engage": "Fighting", "wit
                 "acquire": "Picking things up", "enter": "Entering caves", "hold": "Waiting"}
 
 
-def _sf(row: Mapping[str, Any]) -> tuple[int, int]:
-    s, f = row.get("successes"), row.get("failures")
-    return (s, f) if isinstance(s, int) and isinstance(f, int) and s >= 0 and f >= 0 else (0, 0)
-
-
 def _place_words(place: str) -> str | None:
     parts = place.split(":")
     if len(parts) != 4 or parts[0] != "zelda" or parts[3] not in _DIR_WORDS:
@@ -300,35 +295,37 @@ def learned_lines_from(session_bets: Any, live: Any) -> list[str]:
                     if s + f >= MIN_TRIES and (s == 0 or f == 0) and _place_words(place)), reverse=True)
     if clear:
         n, place, s, _ = clear[0]
-        verb = "led to another room" if s else "is not a way out"
+        verb = "led to another room" if s else "has not led anywhere"
         lines.append(f"{_place_words(place)} {verb} ({s} of {n} tries).")
-    # 2. how moving went by side state (situations pooled over threat/health), else the busiest skill
+    # 2. how moving went this session by side state, else the busiest skill. Raw per-bet counts from
+    # this session's own bets: the service's situation counts weigh each place as one unit, so
+    # they count places, not tries.
     sides: dict[str, list[int]] = {}
-    for row in live.get("situations") or []:
-        if isinstance(row, Mapping) and row.get("skill") == "traverse" and isinstance(row.get("context"), Mapping):
-            side = row["context"].get("side")
-            if side in _SIDE_WORDS:
-                s, f = _sf(row)
-                acc = sides.setdefault(side, [0, 0]); acc[0] += s; acc[1] += f
+    by_skill: dict[str, list[int]] = {}
+    for b in bets:
+        i = 0 if b["result"] == "success" else 1
+        if b.get("skill") in _SKILL_WORDS:
+            by_skill.setdefault(b["skill"], [0, 0])[i] += 1
+        side = (b.get("context") or {}).get("side") if isinstance(b.get("context"), Mapping) else None
+        if b.get("skill") == "traverse" and side in _SIDE_WORDS:
+            sides.setdefault(side, [0, 0])[i] += 1
     best = max(((s + f, side, s) for side, (s, f) in sides.items() if s + f >= MIN_TRIES), default=None)
     if best:
         n, side, s = best
         lines.append(f"{_SIDE_WORDS[side]} worked {s} of {n} times.")
     else:
-        skills = [(sum(_sf(r)), r.get("skill"), _sf(r)[0]) for r in live.get("skills") or []
-                  if isinstance(r, Mapping) and r.get("skill") in _SKILL_WORDS]
-        top = max((t for t in skills if t[0] >= MIN_TRIES), default=None)
+        top = max(((s + f, sk, s) for sk, (s, f) in by_skill.items() if s + f >= MIN_TRIES), default=None)
         if top:
             lines.append(f"{_SKILL_WORDS[top[1]]} worked {top[2]} of {top[0]} times.")
     # 3. calibration, only with enough settled bets
     grading = live.get("grading") if isinstance(live.get("grading"), Mapping) else {}
     served = grading.get("served") if isinstance(grading.get("served"), Mapping) else {}
-    base = grading.get("baseline") if isinstance(grading.get("baseline"), Mapping) else {}
     n = served.get("n")
+    # "Always guessing my average" is grade()'s own base-rate Brier, not the skill-rate baseline model.
     if (isinstance(n, int) and n >= MIN_CALIBRATION and isinstance(served.get("brier"), (int, float))
-            and isinstance(base.get("brier"), (int, float))):
+            and isinstance(served.get("brier_base_rate"), (int, float))):
         lines.append(f"My guesses about my own moves scored {served['brier']:.2f}. Always guessing my "
-                     f"average would score {base['brier']:.2f} (lower is better).")
+                     f"average would score {served['brier_base_rate']:.2f} (lower is better).")
     return lines[:LEARNED_MAX]
 
 

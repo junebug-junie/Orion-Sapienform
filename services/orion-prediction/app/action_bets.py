@@ -119,10 +119,23 @@ def skill_rate(skill: dict | None) -> dict:
             "level": "skill" if s0 + f0 else "prior"}
 
 
+def backoff_p(skill: dict | None, situation: dict | None, place: dict | None, *, has_place: bool) -> float:
+    """``backoff``'s p only (no quantiles, no digamma): the verdict and grading call it per bet."""
+    s0, f0 = _sf(skill); s1, f1 = _sf(situation); s2, f2 = _sf(place)
+    p = (1.0 + s0) / (2.0 + s0 + f0)
+    p_sit = (K * p + s1) / (K + s1 + f1)
+    p_place = (K * p_sit + s2) / (K + s2 + f2) if has_place else None
+    if has_place and s2 + f2 > 0:
+        return p_place
+    if s1 + f1 > 0:
+        return p_sit
+    return p if s0 + f0 > 0 else 0.5
+
+
 def model_p_from_counts(counts: list[dict]) -> float:
     """The served model's p, recomputed from a bet's stored counts (identical to what it was at placing)."""
     by = {c["level"]: c for c in counts or []}
-    return backoff(by.get("skill"), by.get("situation"), by.get("place"), has_place="place" in by)["p"]
+    return backoff_p(by.get("skill"), by.get("situation"), by.get("place"), has_place="place" in by)
 
 
 def live_verdict(rows: Iterable[dict]) -> dict:

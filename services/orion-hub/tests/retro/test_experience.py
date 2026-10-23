@@ -532,35 +532,40 @@ def test_leisure_without_experience_plans_exactly_as_before():
 
 # --- learned lines on the memory card ---------------------------------------------------------------------
 
-def _bet(place, result, skill='traverse'):
-    return dict(bet_id=f'b-{place}-{result}', skill=skill, place=place, result=result)
+def _bet(place, result, skill='traverse', side=None):
+    return dict(bet_id=f'b-{place}-{result}', skill=skill, place=place, result=result,
+                context={'side': side} if side else {})
 
 
-LIVE = {'skills': [{'skill': 'traverse', 'successes': 6, 'failures': 8, 'mean': 0.44}],
+# Counts arrive as floats from /action-bets/live (each place weighs as one unit above place level).
+LIVE = {'skills': [{'skill': 'traverse', 'successes': 6.0, 'failures': 8.0, 'mean': 0.44}],
         'situations': [{'domain': 'retro:zelda', 'skill': 'traverse', 'successes': 4, 'failures': 1,
                         'context': {'side': 'open_unvisited', 'threat': 'none', 'health': 'full'}},
                        {'domain': 'retro:zelda', 'skill': 'traverse', 'successes': 1, 'failures': 0,
                         'context': {'side': 'open_unvisited', 'threat': 'near', 'health': 'full'}},
                        {'domain': 'retro:zelda', 'skill': 'traverse', 'successes': 0, 'failures': 2,
                         'context': {'side': 'closed', 'threat': 'none', 'health': 'full'}}],
-        'grading': {'served': {'n': 12, 'brier': 0.18}, 'baseline': {'n': 12, 'brier': 0.2412}},
+        'grading': {'served': {'n': 12, 'brier': 0.18, 'brier_base_rate': 0.2412}, 'baseline': {'n': 12, 'brier': 0.2}},
         'open': 0, 'never_settled_24h': 0}
 
 
 def test_learned_lines_are_facts_from_the_bets():
     from scripts.retro_memory_export import learned_lines_from
-    bets = {'session_id': SID, 'bets': [_bet('zelda:0:119:S', 'failure')] * 3 + [_bet('zelda:0:119:W', 'success'),
-                                                                                 _bet('zelda:0:119:N', 'void')]}
+    bets = {'session_id': SID, 'bets': [_bet('zelda:0:119:S', 'failure', side='closed')] * 3
+            + [_bet(f'zelda:0:1{i}:W', 'success', side='open_unvisited') for i in range(5)]
+            + [_bet('zelda:0:120:E', 'failure', side='open_unvisited'), _bet('zelda:0:119:N', 'void')]}
+    # Line 2 counts THIS session's tries (raw), never the service's place-weighted situation counts;
+    # line 3's "average" is grade()'s base-rate Brier, not the skill-rate baseline model.
     assert learned_lines_from(bets, LIVE) == [
-        "Room 119's south side is not a way out (0 of 3 tries).",
+        "Room 119's south side has not led anywhere (0 of 3 tries).",
         'Moving toward rooms I had not visited worked 5 of 6 times.',
         'My guesses about my own moves scored 0.18. Always guessing my average would score 0.24 (lower is better).']
 
 
 def test_no_calibration_line_under_ten_settled_bets_and_odd_shapes_drop_lines():
     from scripts.retro_memory_export import learned_lines_from
-    few = dict(LIVE, grading={'served': {'n': 9, 'brier': 0.1}, 'baseline': {'n': 9, 'brier': 0.2}}, situations=[])
-    assert learned_lines_from([], few) == ['Moving to another room worked 6 of 14 times.']
+    few = dict(LIVE, grading={'served': {'n': 9, 'brier': 0.1, 'brier_base_rate': 0.2}}, situations=[])
+    assert learned_lines_from([_bet(None, 'success', skill='engage')] * 3, few) == ['Fighting worked 3 of 3 times.']
     assert learned_lines_from(None, None) == [] and learned_lines_from({'bets': 'x'}, {'grading': 3}) == []
 
 
@@ -592,3 +597,19 @@ def test_card_carries_the_learned_lines_and_is_written_without_them(monkeypatch)
     monkeypatch.setattr(rx, 'export_session', fake_export)
     asyncio.run(rx.export_session_end(pool=None, bus=None, ended=ended))
     assert seen['learned'] == list(ended.learned_lines)
+
+
+def test_explore_and_exit_toward_one_side_share_a_menu_rank():
+    from scripts.retro_planner import menu_rank
+    menu = [{'rank': 1, 'goal': {'kind': 'exit', 'dir': 'W'}, 'line': 'x'}]
+    assert menu_rank(menu, {'kind': 'explore', 'dir': 'W'}) == 1 and menu_rank(menu, {'kind': 'exit', 'dir': 'E'}) is None
+
+
+def test_a_cave_never_bets_on_the_room_above_and_hearts_count_as_a_pickup():
+    d, atlas = live_decision()
+    cave = dict(d, observation=dict(d['observation'], mode='cave'), open_sides=None)
+    o = X.option_for_goal({'kind': 'explore', 'dir': 'S'}, cave, atlas)
+    assert o.place is None and o.context['side'] == 'unknown'
+    start = X.start_facts(dict(d['observation'], hearts={'current': 2, 'containers': 3}))
+    after = dict(d['observation'], hearts={'current': 3, 'containers': 3})
+    assert X._gained(start, after)

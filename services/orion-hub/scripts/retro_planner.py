@@ -388,9 +388,19 @@ def menu_lines(menu: Any) -> list[str]:
             + lines + [MENU_INSTRUCTION])
 
 
+def _same_bet(a: Any, b: Any) -> bool:
+    """exit X and explore X toward one side are the same bet (same skill, place and context)."""
+    if not (isinstance(a, dict) and isinstance(b, dict)):
+        return False
+    traverse = ('exit', 'explore')
+    if a.get('kind') in traverse and b.get('kind') in traverse:
+        return a.get('dir') == b.get('dir')
+    return a == b
+
+
 def menu_rank(menu: Any, goal: dict) -> Optional[int]:
-    """The menu rank whose goal equals the chosen goal, or None for an off-menu answer."""
-    return next((m.get('rank') for m in menu or [] if isinstance(m, dict) and m.get('goal') == goal), None)
+    """The menu rank of the chosen goal's bet, or None for an off-menu answer."""
+    return next((m.get('rank') for m in menu or [] if isinstance(m, dict) and _same_bet(m.get('goal'), goal)), None)
 
 
 def build_zelda_prompt(decision: dict, atlas: Optional[dict], history: Any, menu: Any = None) -> str:

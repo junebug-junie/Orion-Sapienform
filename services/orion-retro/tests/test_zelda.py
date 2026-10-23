@@ -692,12 +692,13 @@ def test_learned_blocked_tile_heals_once_link_stands_on_it(tmp_path):
     a.observe(frozen, 2)                                         # not controllable: no change
     assert len(learned()) == 5 and a.dirty is False
     a.observe(here, 3)
-    assert a.blocked(0, 0x77, 'play', h) == {(20, 11), (15, 10)}  # (15, 11) and (16, 11) healed
+    # Only Link's own position heals: (16, 11) is the position east of him (a bump he just made).
+    assert a.blocked(0, 0x77, 'play', h) == {(16, 11), (20, 11), (15, 10)}
     assert [15, 11, 'old-layout'] in learned()                    # another layout's bump is kept
     assert a.dirty is True
     a.dirty = False
     a.observe(here, 4)                                           # nothing left to remove
-    assert a.dirty is False and len(learned()) == 3
+    assert a.dirty is False and len(learned()) == 4
 
 
 def test_learned_blocked_tile_heals_in_the_cave_key_only(tmp_path):

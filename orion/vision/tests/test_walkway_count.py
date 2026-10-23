@@ -80,6 +80,17 @@ def test_story_count_counts_tracks_and_isolated_clear_glimpses_only() -> None:
     assert sc.total == 3
 
 
+def test_dedupe_gap_boundary_is_inclusive_at_11_seconds() -> None:
+    track = _story(None, at=0, dur=20)
+    assert story_count([track, _story("glimpse", at=31)]).covered_glimpses == 1   # end + 11 s
+    assert story_count([track, _story("glimpse", at=32)]).clear_glimpses == 1     # end + 12 s
+
+
+def test_prop_ids_may_be_a_generator() -> None:
+    stories = [_story("glimpse", at=0, dets=[_det(iid="prop1")]), _story("glimpse", at=100, dets=[_det(iid="prop1")])]
+    assert story_count(stories, prop_ids=(p for p in ["prop1"])).clear_glimpses == 0
+
+
 def test_presence_runs_split_on_gaps_over_30_seconds() -> None:
     w = [(T0, 1), (T0 + timedelta(seconds=30), 2), (T0 + timedelta(seconds=61), 1), (T0 + timedelta(seconds=70), 0)]
     assert presence_runs(w) == [(T0, T0 + timedelta(seconds=30), 2),

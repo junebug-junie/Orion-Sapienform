@@ -453,7 +453,11 @@ def percept_age_seconds(observed_at: datetime | None, now: datetime | None = Non
 # (`vision_scene_inventory.counts`), less stationary person individuals
 # (props) sighted then, less the named people already listed. The line says
 # "at least L, at most H unfamiliar people", "at least N", "up to N" or "an
-# unfamiliar person" -- never one bare number of people.
+# unfamiliar person" -- never one bare number of people. Subtracting every
+# named person seen in the 15 minutes is conservative: a named person who
+# passed at another moment still comes off the busiest window, so the floor
+# can read lower than it could ("up to 2" for two strangers together), never
+# higher than what was seen.
 # STATIONARY FIXTURES. A box that has not moved for VISION_STATIONARY_MIN_SEC
 # (the patio skeleton) is a prop, not a visitor: sightings flagged
 # `stationary` are left out of "who is around". The column ships in the same
@@ -1071,7 +1075,9 @@ def fetch_street_summary(
             tz=tz,
             camera=stream_id,
             captions=captions,
-            people_windows=people_windows,
+            # Without the props read the floor could still hold the patio
+            # skeleton, so an unread props count makes the floor unread too.
+            people_windows=people_windows if stationary_rows is not None else None,
             stationary_people=int((stationary_rows or [{}])[0].get("n") or 0),
         )
     except Exception as exc:  # noqa: BLE001

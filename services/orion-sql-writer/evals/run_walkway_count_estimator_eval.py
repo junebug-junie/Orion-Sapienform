@@ -311,14 +311,14 @@ def hours_to_check(hours: Mapping[datetime, Mapping[str, Any]], *, since_stories
 
 
 def _local(t: datetime) -> str:
-    return t.astimezone(TZ).strftime("%a %m-%d %H:%M")
+    return t.astimezone(TZ).strftime("%a %m-%d %H:%M %Z")
 
 
 def print_check_list(rows: Sequence[tuple[datetime, Mapping[str, Any]]]) -> None:
     print(f"\nHours to count by hand (add a row to {DEFAULT_LABELS.relative_to(HERE.parents[3])}):")
     for t, h in rows:
         e = h["est"]
-        print(f"\n- {_local(t)} MDT  (hour_start_utc {t.strftime('%Y-%m-%dT%H:%M:%SZ')})")
+        print(f"\n- {_local(t)}  (hour_start_utc {t.strftime('%Y-%m-%dT%H:%M:%SZ')})")
         print("  estimates: " + ", ".join(f"{k}={e[k]}" for k in ESTIMATORS))
         runs = presence_runs(h["windows"])
         shown = ", ".join(f"{a.astimezone(TZ):%H:%M:%S}-{b.astimezone(TZ):%H:%M:%S} (peak {p})" for a, b, p in runs[:8])
@@ -371,6 +371,9 @@ def main() -> int:
 
     checked, empty_fails = live_empty_gate(hours)
     fails += empty_fails
+    if checked == 0 and any(h["camera"] == "ok" for h in hours.values()):
+        # A prop seen as a person in every window would hide every empty hour.
+        print("  WARNING: no live empty hour to check (a stationary prop in every window?)")
     print(f"  live empty hours checked: {checked}; failures for {', '.join(GATED)}: {len(empty_fails)}")
 
     spans = standing_report(live, prop_ids)
@@ -399,8 +402,11 @@ def main() -> int:
         print(f"  {k:<20} MAE {s['mae']:.2f}  bias {s['bias']:+.2f}  exact {s['exact']}/{scored['scored_hours']}")
     print(f"  true count inside [most_at_once, clusters]: {scored['inside_range']}/{scored['scored_hours']}")
     sig = scored["sign_test_p"] < 0.05
+    # Best and runner-up are picked on the same rows the sign test runs on: a screen, not a
+    # held-out test. Re-check on new hours before an estimator reaches Orion-facing text.
     verdict = (f"BEST {scored['best']} (beats {scored['runner_up']} {scored['wins']}-{scored['losses']}, "
-               f"sign test p={scored['sign_test_p']:.3f}{'' if sig else ', NOT SIGNIFICANT: keep the range'})")
+               f"sign test p={scored['sign_test_p']:.3f}, picked on the same hours"
+               f"{'' if sig else ', NOT SIGNIFICANT: keep the range'})")
     return _finish(fails, verdict=verdict)
 
 

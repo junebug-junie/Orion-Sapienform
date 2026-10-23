@@ -158,6 +158,17 @@ def test_fetch_reads_the_window_counts_as_dicts_or_json_text() -> None:
     assert got.lines == [PREFIX + "at least 2, at most 5 unfamiliar people" + SPLIT + "."]
 
 
+def test_fetch_with_the_props_read_failing_says_up_to() -> None:
+    # The skeleton could be in every window; without the props count the floor is unread.
+    conn = _Conn({
+        "GROUP BY s.individual_id": [_s("a"), _s("b")],
+        "vision_scene_inventory": [{"counts": {"person": 2}}],
+        "count(DISTINCT s.individual_id)": RuntimeError("statement timeout"),
+    })
+    got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
+    assert got.lines == [PREFIX + "up to 2 unfamiliar people" + SPLIT + "."]
+
+
 def test_fetch_with_the_window_read_failing_says_up_to() -> None:
     conn = _Conn({
         "GROUP BY s.individual_id": [_s("a"), _s("b")],

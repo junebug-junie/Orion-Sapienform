@@ -73,12 +73,13 @@ def _f(v: Any) -> Optional[float]:
 def clear_detection(d: Mapping[str, Any], *, frame_h: Any = None,
                     prop_ids: Iterable[str] = ()) -> bool:
     """One evidence detection of a motion story (``vision_motion_story.evidence[]``)."""
+    props = frozenset(map(str, prop_ids))
     if str(d.get("label") or "person").strip().lower() != "person":
         return False
     if d.get("clipped") is True or not d.get("zone"):
         return False
     iid = d.get("individual_id")
-    if iid and str(iid) in set(prop_ids):
+    if iid and str(iid) in props:
         return False
     score = _f(d.get("score"))
     box = d.get("box") or []
@@ -93,9 +94,10 @@ def clear_detection(d: Mapping[str, Any], *, frame_h: Any = None,
 
 def clear_glimpse(story: Mapping[str, Any], *, prop_ids: Iterable[str] = ()) -> bool:
     """Decision 6: a person glimpse story counts only when one of its detections is clear."""
+    prop_ids = frozenset(map(str, prop_ids))
     if str(story.get("kind") or "") != "person" or story.get("drop_reason") != GLIMPSE:
         return False
-    if story.get("individual_id") and str(story["individual_id"]) in set(prop_ids):
+    if story.get("individual_id") and str(story["individual_id"]) in prop_ids:
         return False
     ev = story.get("evidence") or []
     return any(isinstance(d, Mapping) and clear_detection(d, frame_h=story.get("frame_h"), prop_ids=prop_ids)
@@ -134,6 +136,7 @@ def story_count(stories: Sequence[Mapping[str, Any]], *, prop_ids: Iterable[str]
     story). A glimpse counts only when it is clear (decision 6) AND no multi-frame story or
     already-counted glimpse lies within ``dedupe_sec`` of it.
     """
+    prop_ids = frozenset(map(str, prop_ids))
     people = [s for s in stories if str(s.get("kind") or "") == "person"]
     multi = [s for s in people if s.get("drop_reason") in MULTI_FRAME_REASONS]
     counted = [sp for sp in (_span(s) for s in multi) if sp]

@@ -912,6 +912,31 @@ Patch A is low-risk: it writes new rows and decides nothing. It also settles the
 
 ---
 
+## Patch A results (2026-10-23) — what the measurements changed
+
+- **Fact 2 is overturned in part** (PR #2861, `2026-10-23-body-economy-heat-and-replay-findings.md`):
+  - **Weather explains nothing.** Daily cabinet vs outdoor temperature r = 0.05, and the hottest cabinet days were cool outside.
+  - **Orion's load does heat the cabinet in the short run.** circe adds +0.35 °C per 100 W within 2 h (CI 0.23–0.48); a typical busy step is about +1.3 °C. Over a whole day the effect is unclear.
+  - **The 0.10 vs 0.22 correlations** came from different 14-day windows of the same query. Neither is a usable sensitivity.
+  - **Main suspect for the 10-17..22 heat:** a physical change in the cabinet on 10-16 at 21:00–01:00Z. The lidar distance changed, humidity dropped, and the overnight floor rose about 5 °C. UNVERIFIED; Juniper asked.
+  - **Consequence:** heat stays a real lever on a ~2 h horizon. Organ 2's heat cost should use the short-run sensitivity. Five replay-driven changes to the price rules are listed in the findings doc for Patch B (a bind ramp, flag hysteresis, ...).
+- **Replay:** R4 (energy forecast) passes, worst error −6.1%. R1 and R3 pass only after the Patch B changes. R2, R5, R6 and R7 wait for wants.
+- **Question 10 is answered.** Only the pre-turn repair-pressure probe ran sheddable on Juniper's turn. It was shed on 19 of 19 turns on 10-20..21 and reported a fake "ok, 0". Fixed in PR #2866: route `quick_turn` (interactive), an honest failure status, and the turn correlation id passed through.
+- **Readers registry** (PR #2862): 61 modules (4 spinal, 18 bidder, 22 display, 17 sources). Six gates this doc missed are now registered. The gpu-pool 32 °C guard's role is Juniper's call. The "synthetic goal" retirement row is stale: commit 3354188e1 already removed it.
+- **Body organ live-ready** (PR #2863). **Act cost** (PR #2864): 199 of 221 closes gain a cost. Expired and resolver closes record no wall seconds, by design.
+- **Producer split for A5** (from the recon):
+  1. durable-runs `_drive`/`_terminal` (covers curiosity, self-inquiry, self-sense eval, journal);
+  2. dream;
+  3. actions;
+  4. topic-foundry;
+  5. vision-council (cost only);
+  6. the retro emitter (0 acts);
+  7. sql-writer decision-site materializer (act → arc evidence_refs → day_citations).
+  
+  Weight source (c), the personality graph, stays out until it records real choices.
+
+---
+
 ## Review findings fixed (independent adversarial review, 2026-10-23)
 
 The reviewer spot-checked 12 facts against live data and code. 8 were confirmed. The rest are corrected above: the share range, the timing of the grants drop, the cabinet daily means, and correlations not reproducible exactly. Mechanism findings:

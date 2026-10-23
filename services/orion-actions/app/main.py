@@ -33,7 +33,6 @@ from orion.journaler import (
     build_collapse_stored_trigger,
     build_compose_request,
     build_manual_trigger,
-    build_metacog_trigger,
     build_notify_summary_trigger,
     build_scheduler_trigger,
     build_write_payload,
@@ -47,8 +46,6 @@ from orion.schemas.compactor_digest_run import COMPACTOR_DIGEST_WORKFLOW
 from orion.schemas.durable_run import DURABLE_RUN_STATE_CHANNEL, DURABLE_RUN_STATE_KIND, DurableRunStateV1
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.notify import NotificationRecord, NotificationRequest
-from orion.metacog.self_signal_episode import trigger_wants_prose
-from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from .capability_gap_journal import build_daily_seed_payload, collect_capability_gaps
 from .perception_gap_journal import collect_perception_gaps
 from .walkway_forecast import collect_walkway_jobs, guard_walkway_draft, run_walkway_tick
@@ -1217,13 +1214,6 @@ def should_journal_from_collapse(is_causally_dense: bool, *, dense_only: bool) -
     return bool(is_causally_dense) or not dense_only
 
 
-def should_journal_metacog_trigger(trigger: MetacogTriggerV1) -> bool:
-    """A self_signal_episode CLOSE row is a terse record with no prose (spec
-    2026-10-07 section D, prose once per episode); every other trigger keeps
-    getting its metacog_digest journal."""
-    return trigger_wants_prose(trigger.trigger_kind, trigger.upstream)
-
-
 def should_run_interval(*, now_monotonic: float, last_run_monotonic: float | None, interval_seconds: int, run_on_startup: bool) -> bool:
     if last_run_monotonic is None:
         return bool(run_on_startup)
@@ -1417,8 +1407,6 @@ async def lifespan(app: FastAPI):
         sched_daily = tk == "daily_summary" and sk == "scheduler"
         if sched_daily:
             recall_profile = settings.actions_journal_scheduler_recall_profile
-        elif tk == "metacog_digest":
-            recall_profile = settings.actions_journal_metacog_recall_profile
         elif tk == "notify_summary":
             recall_profile = settings.actions_journal_notify_recall_profile
         elif tk == "world_pulse_digest":
@@ -1426,7 +1414,7 @@ async def lifespan(app: FastAPI):
         else:
             recall_profile = settings.actions_recall_profile
 
-        if sched_daily or tk in {"metacog_digest", "notify_summary", "world_pulse_digest"}:
+        if sched_daily or tk in {"notify_summary", "world_pulse_digest"}:
             logger.info(
                 "journal_compose profile=%s trigger_kind=%s recall_enabled=true",
                 recall_profile,
@@ -1868,28 +1856,6 @@ async def lifespan(app: FastAPI):
             dedupe_key=cooldown_key_for_trigger(trigger),
         )
 
-    async def _handle_journal_metacog(env: BaseEnvelope) -> None:
-        try:
-            trigger_payload = MetacogTriggerV1.model_validate(env.payload)
-        except Exception:
-            return
-        if not should_journal_metacog_trigger(trigger_payload):
-            await _audit(
-                env,
-                status="skipped",
-                event_id=str(env.correlation_id),
-                action_name="journal.metacog_digest",
-                reason="self_signal_episode_close_no_prose",
-            )
-            return
-        trigger = build_metacog_trigger(trigger_payload)
-        await _dispatch_journal(
-            env,
-            trigger=trigger,
-            audit_action="journal.metacog_digest",
-            dedupe_key=cooldown_key_for_trigger(trigger),
-        )
-
     async def _handle_world_pulse_run_result_journal(env: BaseEnvelope) -> bool:
         # Submitted as an admitted journal.compose durable run (GPU pool hold, restart-durable,
         # deadline = next local midnight); orion-durable-runs composes and publishes the write.
@@ -2143,9 +2109,6 @@ async def lifespan(app: FastAPI):
             return
         if kind == "notify.notification.request.v1":
             await _handle_journal_notify(env)
-            return
-        if kind == "orion.metacog.trigger.v1":
-            await _handle_journal_metacog(env)
             return
         if kind == "world.pulse.run.result.v1":
             if await _handle_world_pulse_run_result_journal(env):

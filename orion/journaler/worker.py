@@ -12,7 +12,6 @@ from uuid import UUID, uuid4, uuid5
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorStoredV1
 from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, RecallDirective
 from orion.schemas.notify import NotificationRecord
-from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.world_pulse import CuriosityFollowupV1, WorldPulseRunResultV1
 
 from .schemas import JournalEntryDraftV1, JournalEntryWriteV1, JournalMode, JournalTriggerV1
@@ -361,27 +360,6 @@ def merge_world_pulse_curiosity_into_draft(
     """Append concrete gap-fill findings when compose omitted them from the body."""
     block, markers = world_pulse_curiosity_appendix(result)
     return append_unless_present(draft, block, markers)
-
-
-def build_metacog_trigger(trigger: MetacogTriggerV1) -> JournalTriggerV1:
-    prompt_seed = json.dumps(
-        {
-            "trigger_kind": trigger.trigger_kind,
-            "zen_state": trigger.zen_state,
-            "pressure": trigger.pressure,
-            "window_sec": trigger.window_sec,
-            "upstream": trigger.upstream,
-        },
-        sort_keys=True,
-        default=str,
-    )
-    return JournalTriggerV1(
-        trigger_kind="metacog_digest",
-        source_kind="metacog",
-        source_ref=trigger.timestamp,
-        summary=trigger.reason,
-        prompt_seed=prompt_seed,
-    )
 
 
 def build_compose_request(

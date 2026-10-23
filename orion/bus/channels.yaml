@@ -1212,7 +1212,9 @@ channels:
     # investigation (docs/superpowers/design/2026-07-18-collapse-mirror-
     # metacog-redesign.md). Real contract drift, unrelated to whether that
     # trigger ships.
-    consumer_services: ["orion-cortex-orch", "orion-sql-writer", "orion-actions"]
+    # orion-actions unsubscribed 2026-10-23: its metacog_digest journal writer
+    # was removed (telemetry narration, ~140 LLM calls/day, no grounding).
+    consumer_services: ["orion-cortex-orch", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-01-10"
 

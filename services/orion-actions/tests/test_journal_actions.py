@@ -132,7 +132,7 @@ def _daily_summary_entry(entry_id: str = "entry-daily-1") -> JournalEntryWriteV1
     )
 
 
-def test_scheduler_daily_journal_produces_exactly_one_email_dispatch() -> None:
+def test_journal_entry_produces_exactly_one_email_dispatch() -> None:
     """Regression for the double-email bug: two independent codepaths used to email
     the same trigger_kind=daily_summary/source_kind=scheduler entry_id under two
     different dedupe-key namespaces (actions:journal:daily:scheduler:{entry_id} and
@@ -144,7 +144,7 @@ def test_scheduler_daily_journal_produces_exactly_one_email_dispatch() -> None:
     double-send."""
     notify = _FakeNotify()
     deduper = ActionDedupe(ttl_seconds=3600)
-    entry = _daily_summary_entry()
+    entry = _manual_entry()
 
     first = _dispatch_journal_notifications(entry, correlation_id="corr-daily-1", notify=notify, deduper=deduper)
     assert first["deduped"] is False
@@ -158,23 +158,62 @@ def test_scheduler_daily_journal_produces_exactly_one_email_dispatch() -> None:
     assert len(notify.send_calls) == 1
     email_req = notify.send_calls[0]
     assert email_req.dedupe_key == f"actions:journal:notify:{entry.entry_id}"
-    # in_app is off for daily_summary per JOURNAL_DISPATCH_REGISTRY (0 measured
+    # in_app is off for every kind per JOURNAL_DISPATCH_REGISTRY (0 measured
     # engagement -- see orion/journaler/dispatch_registry.py docstring).
     assert len(notify.chat_calls) == 0
 
 
-def _metacog_digest_entry(entry_id: str = "entry-metacog-1") -> JournalEntryWriteV1:
+def _manual_entry(entry_id: str = "entry-manual-1") -> JournalEntryWriteV1:
     return JournalEntryWriteV1(
         entry_id=entry_id,
         author="orion",
-        mode="daily",
-        title="Metacog Digest",
-        body="Reflect on today's metacognitive triggers.",
-        source_kind="metacog",
+        mode="manual",
+        title="Manual Journal",
+        body="A journal entry someone asked for.",
+        source_kind="manual",
+        source_ref="2026-07-13",
+        correlation_id="corr-manual-1",
+        trigger_kind="manual",
+    )
+
+
+def _autonomy_episode_entry(entry_id: str = "entry-autonomy-1") -> JournalEntryWriteV1:
+    return JournalEntryWriteV1(
+        entry_id=entry_id,
+        author="orion",
+        mode="digest",
+        title="Autonomy Episode",
+        body="What happened in the episode.",
+        source_kind="autonomy_episode",
         source_ref="2026-07-13",
         correlation_id="corr-2",
-        trigger_kind="metacog_digest",
+        trigger_kind="autonomy_episode",
     )
+
+
+def test_removed_and_silenced_reflective_kinds_send_no_email() -> None:
+    """2026-10-23: metacog_digest's writer was removed (telemetry narration that
+    emailed Juniper up to 6x/day); its registry row stays only for old rows, email off.
+    daily_summary and notify_summary are the same prose and only stayed out of the
+    inbox because metacog_digest won the shared daily slot, so their email is off
+    too -- removing metacog must not hand the slot on to them."""
+    from orion.journaler import JOURNAL_DISPATCH_REGISTRY
+
+    assert not JOURNAL_DISPATCH_REGISTRY["metacog_digest"].email_enabled
+    notify = _FakeNotify()
+    deduper = ActionDedupe(ttl_seconds=3600)
+    moment = datetime(2026, 10, 23, 18, 0, tzinfo=timezone.utc)
+    for i, (tk, sk) in enumerate(
+        [("metacog_digest", "metacog"), ("daily_summary", "scheduler"), ("notify_summary", "notify")]
+    ):
+        entry = _daily_summary_entry(entry_id=f"entry-silent-{i}").model_copy(
+            update={"trigger_kind": tk, "source_kind": sk}
+        )
+        _dispatch_journal_notifications(entry, correlation_id=f"c{i}", notify=notify, deduper=deduper, now_utc=moment)
+    assert notify.send_calls == []
+    # The shared slot is still free for a kind that does email.
+    _dispatch_journal_notifications(_manual_entry(), correlation_id="c9", notify=notify, deduper=deduper, now_utc=moment)
+    assert len(notify.send_calls) == 1
 
 
 def test_second_freeform_journal_of_the_day_is_not_emailed_even_with_a_different_trigger_kind() -> None:
@@ -192,14 +231,14 @@ def test_second_freeform_journal_of_the_day_is_not_emailed_even_with_a_different
     same_moment = datetime(2026, 7, 13, 15, 0, tzinfo=timezone.utc)
 
     first = _dispatch_journal_notifications(
-        _daily_summary_entry(entry_id="entry-daily-1"), correlation_id="corr-1", notify=notify, deduper=deduper, now_utc=same_moment
+        _manual_entry(), correlation_id="corr-1", notify=notify, deduper=deduper, now_utc=same_moment
     )
     assert first["deduped"] is False
     assert first["email_ok"] is True
     assert len(notify.send_calls) == 1
 
     second = _dispatch_journal_notifications(
-        _metacog_digest_entry(), correlation_id="corr-2", notify=notify, deduper=deduper, now_utc=same_moment
+        _autonomy_episode_entry(), correlation_id="corr-2", notify=notify, deduper=deduper, now_utc=same_moment
     )
 
     # A different entry_id/trigger_kind is not the same dedupe -- this is not the
@@ -236,7 +275,7 @@ def test_world_pulse_digest_has_its_own_daily_cap_slot_independent_of_the_shared
     same_moment = datetime(2026, 7, 30, 15, 0, tzinfo=timezone.utc)
 
     shared_first = _dispatch_journal_notifications(
-        _daily_summary_entry(entry_id="entry-daily-1"), correlation_id="corr-1", notify=notify, deduper=deduper, now_utc=same_moment
+        _manual_entry(), correlation_id="corr-1", notify=notify, deduper=deduper, now_utc=same_moment
     )
     assert shared_first["email_ok"] is True
     assert len(notify.send_calls) == 1
@@ -264,13 +303,13 @@ def test_daily_email_cap_resets_on_the_next_local_calendar_day() -> None:
     day_two = datetime(2026, 7, 14, 15, 0, tzinfo=timezone.utc)
 
     first = _dispatch_journal_notifications(
-        _daily_summary_entry(entry_id="entry-daily-1"), correlation_id="corr-1", notify=notify, deduper=deduper, now_utc=day_one
+        _manual_entry(), correlation_id="corr-1", notify=notify, deduper=deduper, now_utc=day_one
     )
     assert first["email_ok"] is True
     assert len(notify.send_calls) == 1
 
     second = _dispatch_journal_notifications(
-        _metacog_digest_entry(), correlation_id="corr-2", notify=notify, deduper=deduper, now_utc=day_two
+        _autonomy_episode_entry(), correlation_id="corr-2", notify=notify, deduper=deduper, now_utc=day_two
     )
     assert second["email_ok"] is True
     assert len(notify.send_calls) == 2  # new day -> cap reset -> second email actually sent
@@ -292,7 +331,7 @@ def test_daily_cap_slot_is_released_when_notify_raises_instead_of_leaking_foreve
 
     with pytest.raises(RuntimeError):
         _dispatch_journal_notifications(
-            _daily_summary_entry(entry_id="entry-daily-1"),
+            _manual_entry(),
             correlation_id="corr-1",
             notify=_RaisingNotify(),
             deduper=deduper,
@@ -302,7 +341,7 @@ def test_daily_cap_slot_is_released_when_notify_raises_instead_of_leaking_foreve
     # The failed send must have released the cap key, not left it in-flight forever.
     notify = _FakeNotify()
     second = _dispatch_journal_notifications(
-        _metacog_digest_entry(), correlation_id="corr-2", notify=notify, deduper=deduper, now_utc=moment
+        _autonomy_episode_entry(), correlation_id="corr-2", notify=notify, deduper=deduper, now_utc=moment
     )
     assert second["email_ok"] is True
     assert len(notify.send_calls) == 1
@@ -355,7 +394,7 @@ def test_daily_cap_duration_is_independent_of_the_dedupers_generic_ttl() -> None
     moment = datetime(2026, 7, 13, 15, 0, tzinfo=timezone.utc)
 
     first = _dispatch_journal_notifications(
-        _daily_summary_entry(entry_id="entry-daily-1"), correlation_id="corr-1", notify=notify, deduper=deduper, now_utc=moment
+        _manual_entry(), correlation_id="corr-1", notify=notify, deduper=deduper, now_utc=moment
     )
     assert first["email_ok"] is True
     assert len(notify.send_calls) == 1
@@ -364,7 +403,7 @@ def test_daily_cap_duration_is_independent_of_the_dedupers_generic_ttl() -> None
     # the cap must still hold because mark_done overrode the ttl to "until midnight."
     later_same_day = datetime(2026, 7, 13, 20, 0, tzinfo=timezone.utc)
     second = _dispatch_journal_notifications(
-        _metacog_digest_entry(), correlation_id="corr-2", notify=notify, deduper=deduper, now_utc=later_same_day
+        _autonomy_episode_entry(), correlation_id="corr-2", notify=notify, deduper=deduper, now_utc=later_same_day
     )
     assert second["email_ok"] is True  # not required -> True, but nothing was actually sent
     assert len(notify.send_calls) == 1  # still just the first email
@@ -413,3 +452,19 @@ def test_missing_trigger_kind_sends_nothing() -> None:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_actions_no_longer_listens_for_metacog_triggers() -> None:
+    """The metacog_digest writer is dead (2026-10-23): the channel is not in the
+    default subscription and nothing in main.py dispatches the trigger kind."""
+    from pathlib import Path
+
+    from app.settings import Settings
+
+    channels = Settings.model_fields["actions_subscribe_channels"].default
+    assert "orion:equilibrium:metacog:trigger" not in channels
+    env_example = Path(__file__).resolve().parents[1].joinpath(".env_example").read_text()
+    assert "orion:equilibrium:metacog:trigger" not in env_example
+    assert "ACTIONS_JOURNAL_METACOG_RECALL_PROFILE" not in env_example
+    main_src = Path(__file__).resolve().parents[1].joinpath("app", "main.py").read_text()
+    assert "orion.metacog.trigger.v1" not in main_src

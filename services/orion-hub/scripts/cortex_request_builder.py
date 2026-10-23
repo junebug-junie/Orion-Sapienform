@@ -394,8 +394,10 @@ def _build_social_epistemic_phrase_hint(
     }
 
 
-def _is_third_party_room(payload: Dict[str, Any], social_room: bool) -> bool:
+def is_third_party_room(payload: Dict[str, Any], social_room: bool | None = None) -> bool:
     """A social-room turn relayed from an external room, not the Hub UI's own hub_direct room."""
+    if social_room is None:
+        social_room = is_social_room_payload(payload)
     if not social_room:
         return False
     if str(payload.get("social_room_mode") or "").strip().lower() == "hub_direct":
@@ -608,7 +610,7 @@ def build_cortex_chat_request(
     # only a "juniper" run on the interactive (never heat-shed) tier. A message relayed from an
     # external social room (orion-social-room-bridge) is a third party speaking, so it never
     # carries Juniper's mark; the Hub UI's own hub_direct room is still Juniper typing.
-    if utterance_origin in ("juniper", "orion") and not _is_third_party_room(payload, social_room):
+    if utterance_origin in ("juniper", "orion") and not is_third_party_room(payload, social_room):
         metadata["utterance_origin"] = utterance_origin
     draft_ac = build_answer_contract_draft_for_hub(prompt)
     metadata["answer_contract_draft"] = draft_ac

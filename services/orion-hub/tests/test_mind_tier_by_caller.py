@@ -42,18 +42,25 @@ _SPEC.loader.exec_module(hub_builder)
 #   nudge in the motor prompt) and the "self-authored investigation subject" stance note, which are
 #   wrong for a world-pulse read, an outreach message or a collapse-mirror reply.
 EXPECTED_ORIGIN = {
-    ("services/orion-hub/scripts/api_routes.py", "handle_chat_request", "execute_unified_turn"): ["juniper"],
+    # Juniper unless the payload is a relayed external social room (is_third_party_room).
+    ("services/orion-hub/scripts/api_routes.py", "handle_chat_request", "execute_unified_turn"): ["if:None|else:juniper"],
     ("services/orion-hub/scripts/api_routes.py", "handle_chat_request", "build_chat_request"): ["juniper"],
     ("orion/hub/turn_orchestrator.py", "run_unified_turn", "execute_unified_turn"): ["juniper"],
+    # run_unified_turn hardcodes "juniper" (above): every caller of it inherits Juniper's mark.
+    ("services/orion-hub/scripts/websocket_handler.py", "websocket_endpoint", "run_unified_turn"): [None],  # juniper inside
     ("services/orion-hub/scripts/websocket_handler.py", "websocket_endpoint", "build_chat_request"): ["juniper"],
-    ("services/orion-hub/scripts/curiosity_investigation.py", "*", "execute_unified_turn"): ["orion"],
-    ("services/orion-hub/scripts/reading_turn_listener.py", "*", "execute_unified_turn"): [None],
-    ("services/orion-hub/scripts/endogenous_outreach.py", "*", "execute_unified_turn"): [None],
-    ("services/orion-hub/scripts/collapse_mirror_chat_reply.py", "*", "execute_unified_turn"): [None],
-    ("services/orion-hub/scripts/memory_graph_suggest.py", "*", "build_chat_request"): [None],
-    ("orion/social/scenario_replay.py", "*", "build_chat_request"): [None],
+    ("services/orion-hub/scripts/curiosity_investigation.py", "_generate", "execute_unified_turn"): ["orion"],
+    ("services/orion-hub/scripts/reading_turn_listener.py", "_execute", "execute_unified_turn"): [None],
+    ("services/orion-hub/scripts/endogenous_outreach.py", "_attempt_unified_turn", "execute_unified_turn"): [None],
+    ("services/orion-hub/scripts/collapse_mirror_chat_reply.py", "_run_chat_lane_turn", "execute_unified_turn"): [None],
+    ("services/orion-hub/scripts/memory_graph_suggest.py", "suggest_with_escalation", "build_chat_request"): [None],
+    ("orion/social/scenario_replay.py", "_run_fixture", "build_chat_request"): [None],
+    # Direct stance-request builders: the origin rides stance_inputs, not a kwarg.
+    ("orion/hub/turn_orchestrator.py", "execute_unified_turn", "StanceReactRequestV1"): [None],
+    ("services/orion-hub/scripts/unified_turn_stub.py", "run_orion_unified_turn_stub", "StanceReactRequestV1"): [None],
 }
-_TARGETS = ("execute_unified_turn", "build_chat_request", "build_cortex_chat_request")
+_TARGETS = ("execute_unified_turn", "run_unified_turn", "build_chat_request", "build_cortex_chat_request",
+            "StanceReactRequestV1")
 _SCAN_ROOTS = ("services/orion-hub/scripts", "services/orion-hub/app", "orion")
 
 
@@ -71,6 +78,9 @@ def _origin_literal(node: ast.Call) -> object:
         if kw.arg == "utterance_origin":
             if isinstance(kw.value, ast.Constant):
                 return kw.value.value
+            v = kw.value
+            if isinstance(v, ast.IfExp) and isinstance(v.body, ast.Constant) and isinstance(v.orelse, ast.Constant):
+                return f"if:{v.body.value}|else:{v.orelse.value}"
             return "<non-literal>"
     return None
 
@@ -103,8 +113,7 @@ def _scan() -> dict[tuple[str, str, str], list[object]]:
 
 
 def _expected_for(key: tuple[str, str, str]) -> list[object] | None:
-    rel, func, name = key
-    return EXPECTED_ORIGIN.get((rel, func, name), EXPECTED_ORIGIN.get((rel, "*", name)))
+    return EXPECTED_ORIGIN.get(key)
 
 
 def test_every_turn_call_site_is_classified() -> None:
@@ -122,11 +131,24 @@ def test_every_call_site_passes_its_expected_origin() -> None:
     assert not wrong, f"utterance_origin drifted at: {wrong}"
 
 
+def test_no_aliased_import_of_a_turn_builder() -> None:
+    """`import execute_unified_turn as x` would hide a call site from the scan."""
+    aliased = []
+    for root in _SCAN_ROOTS:
+        for path in sorted((REPO_ROOT / root).rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.ImportFrom):
+                    for alias in node.names:
+                        if alias.name in _TARGETS and alias.asname and alias.asname != alias.name:
+                            aliased.append(f"{path.relative_to(REPO_ROOT)}: {alias.name} as {alias.asname}")
+    assert not aliased, aliased
+
+
 def test_every_juniper_path_in_the_table_still_exists() -> None:
     """A renamed Juniper call site must not silently drop out of the gate."""
     found = _scan()
     for (rel, func, name), origins in EXPECTED_ORIGIN.items():
-        if "juniper" not in origins:
+        if not any("juniper" in str(o) for o in origins):
             continue
         assert (rel, func, name) in found, f"Juniper call site missing: {rel}::{func} -> {name}"
 
@@ -165,3 +187,11 @@ def test_hub_direct_social_room_is_still_juniper() -> None:
     payload = {"mode": "brain", "chat_profile": "social_room", "social_room_mode": "hub_direct",
                "external_room": {"platform": "hub", "room_id": "hub-direct"}}
     assert _build(payload, "juniper").get("utterance_origin") == "juniper"
+
+
+def test_unified_http_turn_from_external_room_is_not_juniper() -> None:
+    assert hub_builder.is_third_party_room(
+        {"chat_profile": "social_room", "external_room": {"platform": "callsyne", "room_id": "r"}}) is True
+    assert hub_builder.is_third_party_room({"mode": "orion"}) is False
+    assert hub_builder.is_third_party_room(
+        {"chat_profile": "social_room", "social_room_mode": "hub_direct"}) is False

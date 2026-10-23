@@ -217,6 +217,14 @@ def _coplay_act(key: str, retro_session_id: str | None):
     )
 
 
+def _coplay_envelope_id(key: str):
+    """The row key is not a UUID; one stable UUID per handoff keeps open and close on one bus
+    correlation id (otherwise each envelope gets a random one)."""
+    from uuid import NAMESPACE_URL, uuid5
+
+    return uuid5(NAMESPACE_URL, f"orion:retro_coplay:{key}")
+
+
 async def publish_coplay_opened(bus: Any, *, key: str, retro_session_id: str | None,
                                 started_at: float | None = None) -> bool:
     """Open a co-play handoff's `play` act, stamped at the handoff start (epoch seconds)."""
@@ -228,12 +236,12 @@ async def publish_coplay_opened(bus: Any, *, key: str, retro_session_id: str | N
         from orion.grammar.acts import act_opened_event
         from orion.grammar.publish import publish_grammar_event
 
-        at = datetime.fromtimestamp(float(started_at), tz=timezone.utc) if started_at else None
+        at = datetime.fromtimestamp(float(started_at), tz=timezone.utc) if started_at is not None else None
         event = act_opened_event(
             _coplay_act(key, retro_session_id), source_service="orion-hub", source_component="retro_coplay.act",
             correlation_id=str(key), at=at,
         )
-        await publish_grammar_event(bus, event, source_name="orion-hub")
+        await publish_grammar_event(bus, event, source_name="orion-hub", correlation_id=_coplay_envelope_id(key))
         return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("coplay_act_open_failed key=%s error=%s", key, exc)
@@ -252,7 +260,7 @@ async def publish_coplay_closed(bus: Any, *, key: str, retro_session_id: str | N
             _coplay_act(key, retro_session_id), produced=produced, note=note,
             source_service="orion-hub", source_component="retro_coplay.act", correlation_id=str(key),
         )
-        await publish_grammar_event(bus, event, source_name="orion-hub")
+        await publish_grammar_event(bus, event, source_name="orion-hub", correlation_id=_coplay_envelope_id(key))
         return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("coplay_act_close_failed key=%s error=%s", key, exc)

@@ -70,21 +70,48 @@ def register_session_start_sink(app, settings, *, bus_factory=None):
         logger.warning('retro_gateway_act_bus_skipped reason=bus_disabled_or_unset')
         return None
 
-    async def open_bus():
-        try:
-            nonlocal bus_factory
-            if bus_factory is None:
-                from orion.core.bus.async_service import OrionBusAsync
-                bus_factory = lambda u: OrionBusAsync(u, enabled=True)  # noqa: E731
-            bus = bus_factory(url)
-            await bus.connect()
-            app.state.retro_act_bus = bus
-        except Exception as exc:  # noqa: BLE001 -- the relay keeps running without play acts
-            logger.warning('retro_gateway_act_bus_failed error=%s', exc)
-        logger.info('retro_gateway_act_bus_ready bus=%s', app.state.retro_act_bus is not None)
-
     import asyncio
+    # Imported here, not on the first handoff: the opener runs on the realtime relay's loop.
+    import orion.grammar.acts  # noqa: F401
+    import orion.grammar.publish  # noqa: F401
+
+    async def open_bus():
+        nonlocal bus_factory
+        if bus_factory is None:
+            from orion.core.bus.async_service import OrionBusAsync
+            bus_factory = lambda u: OrionBusAsync(u, enabled=True)  # noqa: E731
+        delay = BUS_RETRY_FIRST_SEC
+        while True:   # Redis down at boot must not mean no play acts for the process's life
+            bus = None
+            try:
+                bus = bus_factory(url)
+                await bus.connect()
+                app.state.retro_act_bus = bus
+                logger.info('retro_gateway_act_bus_ready')
+                return
+            except asyncio.CancelledError:
+                await _close_quietly(bus)
+                raise
+            except Exception as exc:  # noqa: BLE001 -- the relay keeps running without play acts
+                await _close_quietly(bus)
+                logger.warning('retro_gateway_act_bus_failed retry_in_sec=%.0f error=%s', delay, exc)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, BUS_RETRY_MAX_SEC)
+
     return asyncio.create_task(open_bus())
+
+
+BUS_RETRY_FIRST_SEC = 2.0
+BUS_RETRY_MAX_SEC = 60.0
+
+
+async def _close_quietly(bus):
+    if bus is None:
+        return
+    try:
+        await bus.close()
+    except Exception:  # noqa: BLE001 -- a half-built client
+        pass
 
 
 @asynccontextmanager

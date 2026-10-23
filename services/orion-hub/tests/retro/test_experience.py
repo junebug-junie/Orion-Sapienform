@@ -669,3 +669,24 @@ def test_gateway_opens_a_bus_for_the_coplay_play_act():
     off = SimpleNamespace(state=SimpleNamespace())
     assert G.register_session_start_sink(off, SimpleNamespace(ORION_BUS_URL='', ORION_BUS_ENABLED=True)) is None
     assert off.state.retro_act_bus is None
+
+
+def test_gateway_act_bus_retries_and_closes_a_failed_client(monkeypatch):
+    # Review finding: one failed connect at boot left the gateway without play acts for life, and
+    # the half-built client leaked.
+    from scripts import retro_gateway as G
+    monkeypatch.setattr(G, 'BUS_RETRY_FIRST_SEC', 0.0)
+    app = SimpleNamespace(state=SimpleNamespace())
+    made = []
+    class Bus:
+        def __init__(self): self.closed = False; made.append(self)
+        async def connect(self):
+            if len(made) < 3: raise ConnectionError('redis down')
+        async def close(self): self.closed = True
+    async def run():
+        await G.register_session_start_sink(app, SimpleNamespace(ORION_BUS_URL='redis://x:6379/0',
+                                                                 ORION_BUS_ENABLED=True),
+                                            bus_factory=lambda url: Bus())
+    asyncio.run(run())
+    assert len(made) == 3 and app.state.retro_act_bus is made[2]
+    assert [b.closed for b in made] == [True, True, False]

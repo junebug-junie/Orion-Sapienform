@@ -447,6 +447,21 @@ def test_coplay_handoff_opens_its_play_act_once_before_the_end(tmp_path, monkeyp
     assert order[0][1:] == order[1][1:]   # same session and start epoch: the same act key
 
 
+
+def test_coplay_handoff_gone_before_first_poll_opens_no_act(tmp_path, monkeypatch):
+    # Review finding: the policy already gone on the first poll still exports the row, but the
+    # start sink never fired, so the export must not close an act (see retro_memory_export).
+    app, world = _coplay_app(tmp_path, monkeypatch, frames=None)
+    world.polls = 3   # the next status() is poll 4: running, no scripted policy
+    started = []
+    async def start(sid, started_at): started.append(sid)
+    app.state.retro_session_start_sink = start
+    with TestClient(app) as c:
+        c.post('/api/retro/sessions/' + 'a' * 36 + '/scripted', json=HANDOFF, headers=H)
+        assert _wait(lambda: world.ended)
+    assert started == []
+
+
 def test_record_delta_is_none_when_retro_reset_or_did_not_report():
     from scripts.retro_session_end import record_delta
     a = dict(rooms_new=5, deaths=1, controller_frames=dict(human=10, script=0))

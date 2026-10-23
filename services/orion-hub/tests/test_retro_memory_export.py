@@ -381,6 +381,7 @@ async def test_a_session_with_no_planner_decision_closes_its_act_at_zero(cards) 
 @pytest.mark.asyncio
 async def test_co_play_closes_its_own_act_keyed_by_the_row(cards) -> None:
     bus = _Bus()
+    rx._remember_opened("r:1.000")   # this process published the open
     out = await _export(_Pool(), bus, kind="co_play", dispatch_id=None, session_id="r:1.000", retro_session_id="r",
                         journal=_journal(human=60000, orion=40000))
     assert out.state == "exported" and out.summary.played_together
@@ -390,6 +391,21 @@ async def test_co_play_closes_its_own_act_keyed_by_the_row(cards) -> None:
     bus2 = _Bus()
     off = await _export(_Pool(), bus2, kind="co_play", dispatch_id=None, session_id="r:1.000", enabled=False)
     assert off.state == "disabled" and [e.act.outcome.value for e in bus2.events()] == [0.0]
+
+
+@pytest.mark.asyncio
+async def test_a_co_play_handoff_never_opened_closes_no_act(cards) -> None:
+    # Review finding: a handoff that ended before its first Zelda cognition poll, or whose open
+    # found no bus, must not publish a close-before-open (the ledger would grade a 0 for it).
+    bus = _Bus()
+    out = await _export(_Pool(), bus, kind="co_play", dispatch_id=None, session_id="never:1.000",
+                        retro_session_id="never")
+    assert out.state == "exported" and bus.events() == []
+    nobus = rx.make_session_start_sink(bus_provider=lambda: None)
+    assert await nobus("late", 5.0) is False
+    late = await _export(_Pool(), bus, kind="co_play", dispatch_id=None, session_id="late:5.000",
+                         retro_session_id="late")
+    assert late.state == "exported" and bus.events() == []
 
 
 @pytest.mark.asyncio

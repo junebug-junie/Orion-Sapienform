@@ -37,6 +37,8 @@ and the card is still written.
 
 from __future__ import annotations
 
+from collections import OrderedDict
+
 import hashlib
 import json
 import math
@@ -442,7 +444,10 @@ def _enabled() -> bool:
 async def _close_play(bus: Any, dispatch_id: str | None, session_id: str, *, produced: bool, note: str,
                       kind: str = "leisure", retro_session_id: str | None = None) -> None:
     if kind == "co_play":
-        if not session_id:
+        # Close only a handoff whose open was published by this process: a handoff that ended
+        # before its first Zelda cognition poll (or whose open found no bus) must not grade a 0
+        # into the posterior through a close-before-open row.
+        if not session_id or session_id not in _OPENED_COPLAY:
             return
         from scripts.act_emit import publish_coplay_closed
 
@@ -454,6 +459,19 @@ async def _close_play(bus: Any, dispatch_id: str | None, session_id: str, *, pro
     from scripts.act_emit import publish_play_closed
 
     await publish_play_closed(bus, dispatch_id=dispatch_id, session_id=session_id, produced=produced, note=note)
+
+
+# Co-play acts opened by this process (row keys), newest last. The watcher that opens and the export
+# that closes run in the same process; a restart loses the watcher too, and the open act expires.
+_OPENED_COPLAY: "OrderedDict[str, None]" = OrderedDict()
+OPENED_COPLAY_CAP = 1024
+
+
+def _remember_opened(key: str) -> None:
+    _OPENED_COPLAY[key] = None
+    _OPENED_COPLAY.move_to_end(key)
+    while len(_OPENED_COPLAY) > OPENED_COPLAY_CAP:
+        _OPENED_COPLAY.popitem(last=False)
 
 
 def coplay_key(retro_session_id: Any, started_at: Any) -> str:
@@ -588,8 +606,14 @@ def make_session_start_sink(*, bus_provider):
     async def sink(retro_session_id: str, started_at: float) -> bool:
         from scripts.act_emit import publish_coplay_opened
 
-        return await publish_coplay_opened(bus_provider(), key=coplay_key(retro_session_id, started_at),
-                                           retro_session_id=str(retro_session_id), started_at=started_at)
+        key, bus = coplay_key(retro_session_id, started_at), bus_provider()
+        if bus is None:
+            logger.warning("coplay_act_open_skipped key=%s reason=no_bus", key)
+            return False
+        ok = await publish_coplay_opened(bus, key=key, retro_session_id=str(retro_session_id), started_at=started_at)
+        if ok:
+            _remember_opened(key)
+        return ok
     return sink
 
 

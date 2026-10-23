@@ -3924,6 +3924,17 @@ channels:
     since: "2026-10-13"
     description: "orion-introspect node_history tool RPC. Read-only: one substrate node's prediction-error readings over a window of at most 168 h (count, min/median/max, first/last, <=48 bucketed points, largest reading-to-reading changes), or which nodes have readings in the window. Answered by Hub from substrate_node_prediction_error_history in a READ ONLY transaction. Reply on orion:introspect:result:<correlation_id>."
 
+  - name: "orion:introspect:power_attribution:request"
+    kind: "request"
+    schema_id: "IntrospectRequestV1"
+    message_kind: "introspect.tool.request.v1"
+    producer_services: ["orion-harness-governor"]
+    consumer_services: ["orion-hub"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-10-23"
+    description: "orion-introspect power_attribution tool RPC (heat archaeology). Read-only: per node, steps in hourly wall watts over a 2-30 day window, each split into GPU/CPU/rest watts and attributed to GPU-pool workloads and a CPU-load regime by least squares (R2 reported), plus CPU-load shifts and the SQL behind every claim. Answered by Hub from orion_energy_hourly, orion_biometrics_cluster, gpu_pool_events and durable_run_workflow in a READ ONLY transaction. Correlational, never verified. Reply on orion:introspect:result:<correlation_id>."
+
   - name: "orion:introspect:result:*"
     kind: "result"
     schema_id: "IntrospectResultV1"

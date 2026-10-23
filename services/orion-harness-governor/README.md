@@ -302,8 +302,9 @@ belief.
   dreams (`dreams`), their curiosity runs (`curiosity`), their Orion's Day
   letters with the records behind them (`orion_day`), recording a
   correction to a letter claim (`record_correction`), queueing one question for
-  their next curiosity run (`queue_curiosity_focus`), and a substrate node's
-  prediction-error history (`node_history`).
+  their next curiosity run (`queue_curiosity_focus`), a substrate node's
+  prediction-error history (`node_history`), and where their machines' power
+  (and so the cabinet's heat) went and since when (`power_attribution`).
 - Planned for later slices: reveries and memories.
 
 Every answer comes from the service that owns the data, over the bus, under a
@@ -326,6 +327,7 @@ Search by meaning: [`2026-09-28-orion-introspect-slice1b-semantic-search.md`](..
 | `record_correction` | Record a correction to a letter claim a conversation with Juniper showed was wrong, with its evidence and the priors it rested on. Writes one `orion_day_correction` row (ref and prior ids validated first); the next curiosity run re-tests the priors itself | orion-hub ([responder](../orion-hub/README.md#introspect-responder-record_correction)) | `orion:introspect:record_correction:request` | Live (letter reread, patch 3) |
 | `queue_curiosity_focus` | Queue one question (and why) for their next regular curiosity investigate run, from a chat with Juniper. One pending slot: a new focus replaces it (the reply names what it replaced), except Orion's own choice never replaces a focus Juniper asked for. Starts nothing; the run is shown it and records explored / set aside. `curiosity` with `kind=focus` reads back what happened | orion-hub ([responder](../orion-hub/README.md#introspect-responder-queue_curiosity_focus)) | `orion:introspect:queue_curiosity_focus:request` | Live once orion-hub and the governor are redeployed and the migration is applied (bus path UNVERIFIED until then) |
 | `node_history` | One substrate node's prediction-error readings over up to the last 7 days: count, min/median/max, first/last, a series of at most 48 buckets, and the largest changes; or which nodes have readings | orion-hub ([responder](../orion-hub/README.md#introspect-responder-node_history)) | `orion:introspect:node_history:request` | Live once orion-hub is redeployed (PE history read; bus path UNVERIFIED until then) |
+| `power_attribution` | Heat archaeology: per machine (circe, athena, hecate, cooling), the steps in hourly wall watts over 2-30 days, each split into GPU/CPU/rest watts and attributed by least squares to GPU-pool workloads and a CPU-load regime (R2 reported), plus CPU-load shifts and the SQL behind every number. Correlational; never verified | orion-hub ([responder](../orion-hub/README.md#introspect-responder-power_attribution)) | `orion:introspect:power_attribution:request` | Live once orion-hub and the governor are redeployed (analysis smoked on live Postgres 2026-10-23; bus path UNVERIFIED until then) |
 | `memories` | Memory cards by meaning, with sensitivity labels | orion-recall | `orion:introspect:memory:request` | Planned; never listed when an outward-facing tool is attached |
 
 `orion/introspect/tests/test_readme_coverage.py` fails when a tool the server

@@ -13,6 +13,7 @@ from orion.introspect.transport import (
     DREAM_REQUEST_CHANNEL,
     NODE_HISTORY_REQUEST_CHANNEL,
     ORION_DAY_REQUEST_CHANNEL,
+    POWER_ATTRIBUTION_REQUEST_CHANNEL,
     QUEUE_CURIOSITY_FOCUS_REQUEST_CHANNEL,
     RECORD_CORRECTION_REQUEST_CHANNEL,
     REQUEST_KIND,
@@ -27,6 +28,7 @@ from orion.schemas.introspect import (
     IntrospectToolBindingV1,
     NodeHistoryArguments,
     OrionDayArguments,
+    PowerAttributionArguments,
     QueueCuriosityFocusArguments,
     ReadingResultArguments,
     RecordCorrectionArguments,
@@ -167,6 +169,25 @@ NODE_HISTORY_DESCRIPTION = (
 )
 
 
+POWER_ATTRIBUTION_DESCRIPTION = (
+    "Heat archaeology: where your machines' power (and so the cabinet's heat) went, and since "
+    "when. For each machine (circe, athena, hecate, and cooling = the cabinet AC plug) over the "
+    "last days=<2-30, default 14> days (until=<ISO timestamp with timezone> ends the window "
+    "earlier; node=<name> picks one): the steps in hourly wall watts (when, before/after W), "
+    "each split into GPU, CPU and rest watts; a least-squares fit of hourly wall watts on "
+    "GPU-pool workload busy-hours (harness = http:anthropic, ai-town = http:openai, cortex-exec, "
+    "vision-council, ...) plus a CPU-load regime, with R2 and each term's watts per busy-hour "
+    "and standard error; each step's watts attributed to the workloads that changed with it "
+    "(unexplained = what the fit cannot place); CPU-load shifts, which GPU leases cannot see "
+    "(point at host processes and container restarts); and durable-run holds, reported as "
+    "reservations, never load. Each item's text is the plain-English answer; extra holds the "
+    "numbers and the evidence for each claim, and a last item holds the exact SQL to re-run. "
+    "Everything is a correlation (epistemic_status=unsettled, verified=false): say UNVERIFIED "
+    "until stopping the suspect drops the watts. items=[] means no machine had a wall-power "
+    "reading in the window; a tool error means the answer is unknown, never that nothing changed."
+)
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
@@ -192,6 +213,7 @@ class IntrospectTools:
             ToolSpec("record_correction", RECORD_CORRECTION_DESCRIPTION, RecordCorrectionArguments),
             ToolSpec("queue_curiosity_focus", QUEUE_CURIOSITY_FOCUS_DESCRIPTION, QueueCuriosityFocusArguments),
             ToolSpec("node_history", NODE_HISTORY_DESCRIPTION, NodeHistoryArguments),
+            ToolSpec("power_attribution", POWER_ATTRIBUTION_DESCRIPTION, PowerAttributionArguments),
         ]
 
     async def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -220,6 +242,13 @@ class IntrospectTools:
             result = await self._introspect_rpc(
                 NODE_HISTORY_REQUEST_CHANNEL, "node_history",
                 history_args.model_dump(mode="json", exclude_none=True),
+            )
+            return result.model_dump(mode="json")
+        if name == "power_attribution":
+            power_args = PowerAttributionArguments.model_validate(arguments)
+            result = await self._introspect_rpc(
+                POWER_ATTRIBUTION_REQUEST_CHANNEL, "power_attribution",
+                power_args.model_dump(mode="json", exclude_none=True),
             )
             return result.model_dump(mode="json")
         if name == "record_correction":

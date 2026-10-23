@@ -3646,6 +3646,56 @@ kept 168 h), through `orion/introspect/node_history.py`.
   line per answer: `node_history_introspect_answered corr=<id> node=<id>
   hours=<h> items=<n> readings=<n>`.
 
+### Introspect responder: `power_attribution`
+
+**What it does.** Answers "where is my power (and so the cabinet's heat) going,
+and since when?" with numbers instead of a guess. Curiosity runs kept landing
+on "my cabinet runs hot and I don't know why"; this is the method that found
+the 2026-10-14 circe step by hand (~790 W -> ~1100 W, with a crash loop worth
+~144 W inside it), made deterministic. Orion calls it from a unified chat turn
+or a curiosity run through the orion-introspect `power_attribution` tool: one
+implementation, two callers.
+
+- **What Orion can ask.** `node` (`circe`, `athena`, `hecate`, or `cooling` =
+  the cabinet AC plug; omitted = every machine with wall watts), `days` (2-30,
+  default 14), optional `until=<ISO timestamp with timezone>`. The window must
+  start within the last 30 days (raw per-node watts are pruned after that).
+- **What it computes** (`orion/physiology/heat_archaeology.py`, pure, no numpy):
+  steps in hourly wall watts (binary segmentation, >= 60 W, >= 24 h each side),
+  each split into GPU/CPU/rest watts; a least-squares fit of hourly wall watts
+  on GPU-pool busy-hours per holder (`http:anthropic` = harness, `http:openai` =
+  ai-town, cortex-exec, vision-council, ...) plus a CPU-load regime indicator
+  (Otsu split of `load_15m`, kept only when the load is clearly two-moded);
+  each step's watts split across the terms that changed with it (`unexplained`
+  = the rest); CPU-load and CPU-watt shifts on their own; durable-run holds as
+  reservations (never fitted: their compute is the child leases).
+- **Sources** (`orion/introspect/power_attribution.py`, three parameterized
+  SELECTs): `orion_energy_hourly`, `orion_biometrics_cluster`,
+  `gpu_pool_events` + `durable_run_workflow`. A 30-day read takes ~4 s live.
+- **What comes back.** One `power_attribution` item per machine (`unsettled`;
+  text = the plain-English answer, extra = steps, fit with R2 and per-term
+  watts/SE, attributions, shifts, reservations, evidence refs, `verified=false`)
+  and one `power_attribution_queries` item (`record`) with the exact SQL. The
+  result is kept under the 12k MCP budget by shedding the daily trend, evidence
+  refs, then structure, in that order, naming each drop in `extra.omitted`.
+- **Honesty.** Correlational. An always-on marker is confounded with anything
+  else that started the same hour. The text says UNVERIFIED until an
+  intervention (stop the suspect, watch the watts) confirms it. A CPU-load
+  shift points at host processes and container restart counts, which GPU
+  leases cannot see.
+- **Transport and trust.** `orion:introspect:power_attribution:request`
+  (`IntrospectRequestV1`), answered by
+  `scripts/power_attribution_introspect_listener.py`; the reply goes to exactly
+  `orion:introspect:result:<correlation_id>`. Reads run in a READ ONLY
+  transaction (`ReadOnlyPool`). Nothing is written, no container is touched.
+- **Empty vs unknown.** No machine with a wall-power reading in the window:
+  `ok=true, items=[]`. Postgres down or no pool:
+  `power_attribution_unavailable; answer unknown`. Log line per answer:
+  `power_attribution_introspect_answered corr=<id> node=<n> days=<d> items=<n> steps=<n>`.
+- **Live eval.** `POSTGRES_URI=... python services/orion-hub/evals/run_power_attribution_live_eval.py`
+  reruns the analysis on live Postgres, checks it against the raw rows, and
+  checks the 2026-10-14 circe step comes back.
+
 ### Introspect responder: `record_correction`
 
 **What it does.** When a conversation about an Orion's Day letter establishes

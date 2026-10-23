@@ -144,6 +144,9 @@ readers:
   - module: services/orion-substrate-runtime/app/store.py
     role: display
     reason: loads cabinet temperature points for the cabinet-heat tick.
+  - module: orion/introspect/power_attribution.py
+    role: display
+    reason: heat archaeology for the power_attribution introspect tool; reads hourly watts/leases read-only and returns a correlational answer to Orion; gates nothing.
   - module: services/orion-proposal-runtime/app/store.py
     role: display
     reason: loads cabinet temperature points for the proposal worker.

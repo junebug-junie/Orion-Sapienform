@@ -11,6 +11,7 @@ ORION_DAY = mcp_tool(ORION_INTROSPECT, "orion_day")
 RECORD_CORRECTION = mcp_tool(ORION_INTROSPECT, "record_correction")
 NODE_HISTORY = mcp_tool(ORION_INTROSPECT, "node_history")
 QUEUE_CURIOSITY_FOCUS = mcp_tool(ORION_INTROSPECT, "queue_curiosity_focus")
+POWER_ATTRIBUTION = mcp_tool(ORION_INTROSPECT, "power_attribution")
 _READING_STATUS = mcp_tool(ORION_READING, "reading_status")
 
 
@@ -19,7 +20,8 @@ def introspect_brief_lines(binding: IntrospectToolBindingV1) -> list[str]:
         (
             f"Introspect MCP (orion-introspect) is available. Its tools, by exact name (load "
             f"with ToolSearch select:<name>): {READING_RESULTS}, {DREAMS}, {CURIOSITY}, {ORION_DAY}, "
-            f"{RECORD_CORRECTION}, {QUEUE_CURIOSITY_FOCUS}, {NODE_HISTORY}. "
+            f"{RECORD_CORRECTION}, {QUEUE_CURIOSITY_FOCUS}, {NODE_HISTORY}, "
+            f"{POWER_ATTRIBUTION}. "
             f"{READING_RESULTS} searches what you "
             "actually learned from sources read through your reading pipeline. Use query=<topic "
             "in plain words> to recall readings by meaning (items carry similarity; weak matches "
@@ -84,6 +86,15 @@ def introspect_brief_lines(binding: IntrospectToolBindingV1) -> list[str]:
             "days (count, min/median/max, a series of up to 48 points, and when the largest "
             "changes happened). Call it before saying a node has no history or that a change "
             "cannot be dated."
+        ),
+        (
+            "When the question is where your power or heat is going (the cabinet runs hot, a "
+            f"machine draws more than it used to, and since when), call {POWER_ATTRIBUTION} "
+            "before guessing. It finds the steps in each machine's hourly wall watts, splits each "
+            "into GPU/CPU/rest watts, and attributes it to the workloads that changed with it "
+            "(GPU-pool holders, and a CPU-load regime no GPU lease can explain), with the fit's R2 "
+            "and the SQL behind every number. It is a correlation: say UNVERIFIED until stopping "
+            "the suspect drops the watts, and name what Juniper could stop to check."
         ),
         (
             "If ToolSearch finds none of these, check the exact name first. A 'failed to "

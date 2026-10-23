@@ -81,6 +81,7 @@ from scripts.retro_leisure_listener import RetroLeisureListener
 from scripts.curiosity_introspect_listener import CuriosityIntrospectListener
 from scripts.orion_day_introspect_listener import SEARCH_COLLECTION as ORION_DAY_SEARCH_COLLECTION, OrionDayIntrospectListener
 from scripts.node_history_introspect_listener import NodeHistoryIntrospectListener
+from scripts.power_attribution_introspect_listener import PowerAttributionIntrospectListener
 from scripts.orion_day_correction_listener import OrionDayCorrectionListener
 from scripts.curiosity_focus_listener import CuriosityFocusListener
 from scripts.reading_turn_listener import ReadingTurnListener
@@ -374,6 +375,7 @@ def _cabinet_temp_reading() -> tuple[float | None, float | None]:
 curiosity_introspect_listener = None
 orion_day_introspect_listener = None
 node_history_introspect_listener = None
+power_attribution_introspect_listener = None
 orion_day_correction_listener = None
 curiosity_focus_listener = None
 reading_turn_listener = None
@@ -485,7 +487,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global reading_turn_listener, reading_listener, world_pulse_read_pull_listener, retro_leisure_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, world_pulse_read_pull_listener, retro_leisure_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -939,6 +941,13 @@ async def startup_event():
                 source_ref=world_pulse_read_pipeline._source_ref,
             )
             await node_history_introspect_listener.start(bus)
+            # orion-introspect `power_attribution` tool (heat archaeology): where each machine's
+            # watts went and since when, attributed to workloads. Read-only.
+            power_attribution_introspect_listener = PowerAttributionIntrospectListener(
+                pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+                source_ref=world_pulse_read_pipeline._source_ref,
+            )
+            await power_attribution_introspect_listener.start(bus)
 
             world_pulse_read_stage2 = WorldPulseReadStage2Pipeline(
                 durable_url=settings.HUB_READING_DURABLE_URL,
@@ -1717,7 +1726,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global reading_turn_listener, reading_listener, world_pulse_read_pull_listener, retro_leisure_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, world_pulse_read_pull_listener, retro_leisure_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -1810,6 +1819,9 @@ async def shutdown_event() -> None:
     if node_history_introspect_listener is not None:
         await node_history_introspect_listener.stop()
         node_history_introspect_listener = None
+    if power_attribution_introspect_listener is not None:
+        await power_attribution_introspect_listener.stop()
+        power_attribution_introspect_listener = None
     if orion_day_correction_listener is not None:
         await orion_day_correction_listener.stop()
         orion_day_correction_listener = None

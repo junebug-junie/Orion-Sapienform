@@ -48,6 +48,7 @@ Temporal Self frame with the open `strain` arc.
 - `services/orion-hub/tests/test_strain_report_outreach.py`: 23 tests.
 - `services/orion-hub/evals/run_strain_report_replay.py`, `evals/test_strain_report_replay_eval.py`: replay eval and its fixture test.
 - `.github/workflows/orion-reading-tests.yml`: runs the new test and eval.
+- `config/physiology/contract.yaml`: registers `strain_report.py` as a display reader.
 - `services/orion-hub/README.md`: door rules, trace query, limits.
 
 ## Schema / bus / API changes
@@ -76,7 +77,7 @@ scripts/check_settings_defaults.py orion-hub --example-drift -> OK
 scripts/check_env_template_parity.py -> PASS
 scripts/check_env_key_single_source.py, check_async_routes_not_blocking.py, check_metric_lineage.py --gate,
 check_scripts_dir_no_stdlib_shadow.py, check_personal_terms.py -> pass
-Full services/orion-hub/tests: see "Risks" (one pre-existing unrelated UI failure).
+Full services/orion-hub/tests locally: 4239 passed, 33 failed, 138 skipped; none of the 33 failing files import a touched module (memory, recall, UI suites; not in this branch's CI).
 ```
 
 ## Evals run
@@ -128,6 +129,9 @@ Live check after deploy:
   - Fix: holds count on the day the episode ended unreported.
 - Finding: daily-cap interaction was untested and undocumented.
   - Fix: `test_strain_report_spends_a_daily_cap_slot`, plus a README line.
+- Finding (CI, Static repo gates): body-economy contract flagged `strain_report.py` as an unregistered reader of regulation state.
+  - Fix: registered in `config/physiology/contract.yaml` as `display` (it renders the reading into the report and vetoes nothing).
+  - Evidence: `scripts/check_body_economy_contract.py` -> OK (67 modules); `tests/test_check_body_economy_contract.py` 36 passed.
 - Documented, not changed: a regulation outage that resets `since` makes a new episode (the reviewer suggested keying on the arc, but `_fold_strain` also opens a new arc on a new `since`, so the arc does not survive either; once-per-day still bounds it); 30-day history lookback; `reason=strain_ended` when the reading goes stale between two gate reads.
 
 ## Restart required
@@ -141,7 +145,7 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && scripts/safe_docker_bu
 ## Risks / concerns
 
 - Severity: low. Concern: each report is one unified turn while the GPU queue may be the cause. Mitigation: at most one send per episode/day and 3 failed tries per episode.
-- Severity: low. Concern: full `services/orion-hub/tests` has a pre-existing failure, `test_agent_trace_debug_panel.py::test_memory_and_autonomy_modals_coordinate_scroll_lock_and_visibility` (asserts text in `static/js/app.js`, which this branch does not touch).
+- Severity: low. Concern: the full local `services/orion-hub/tests` run has 33 failures in suites this branch does not touch (memory consolidation, recall canary, UI text asserts). Not compared against a main baseline run.
 - Severity: low. Concern: Orion's wording is generated; only the attached record is fixed text. Mitigation: the closed-vocabulary guard runs with only the record as grounding; PASS is respected.
 
 ## PR link

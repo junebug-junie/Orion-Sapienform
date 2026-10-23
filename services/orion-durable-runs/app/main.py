@@ -12,6 +12,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hunter
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 from orion.schemas.chat_history import CHAT_HISTORY_TURN_KIND
+from orion.schemas.claude_limit import CLAUDE_LIMIT_KIND
 from orion.schemas.durable_run import (
     DURABLE_RUN_RECEIPT_KIND,
     DURABLE_RUN_REQUEST_KIND,
@@ -44,6 +45,7 @@ _admission_task: asyncio.Task | None = None
 _reconcile_task: asyncio.Task | None = None
 situation: Any = None
 temporal_self: Any = None
+claude_limits: Any = None   # app.physiology_store.ClaudeLimitCache while the physiology node runs
 chronicle: Any = None
 personality: Any = None
 rpc_health_publisher: RpcHealthPublisher | None = None
@@ -84,6 +86,13 @@ def _chassis_cfg() -> ChassisConfig:
 
 
 async def _handle_request(env: BaseEnvelope) -> None:
+    if env.kind == CLAUDE_LIMIT_KIND:
+        # The physiology node's claude constraint: keep the latest observation per kind.
+        if claude_limits is not None:
+            from datetime import datetime, timezone
+
+            claude_limits.offer(env.payload, datetime.now(timezone.utc))
+        return
     if env.kind == IDENTITY_SIGHTING_KIND:
         if situation is not None and isinstance(env.payload, dict):
             from app.situation_driver import event_from_sighting
@@ -258,6 +267,8 @@ def _build_temporal_self(saver: Any):
     checkpointer's pool, the rest drive from Redis, projects RegulationStateV1 to Redis."""
     from datetime import datetime, timezone
 
+    import dataclasses
+
     from app import regulation_store
     from app.temporal_self_driver import TemporalSelfDriver
     from app.temporal_self_graph import TemporalSelfDeps
@@ -316,6 +327,9 @@ def _build_temporal_self(saver: Any):
         return await regulation_store.record_immune_findings(
             _checkpointer_cm, [regulation_store.immune_finding_row(f, day_id, now) for f in findings])
 
+    read_body, project_physiology, body_config = (_build_physiology() if s.physiology_enabled
+                                                  else (None, None, None))
+
     global chronicle
     chronicle = _build_chronicle() if s.temporal_self_chronicle_enabled else None
 
@@ -332,10 +346,64 @@ def _build_temporal_self(saver: Any):
         gpu_sustain_sec=s.regulation_strained_gpu_queue_sec,
         clear_sec=s.regulation_strained_clear_sec,
         max_prev_gap_sec=3.0 * s.temporal_self_tick_sec,
+        read_body=read_body, project_physiology=project_physiology,
+        physiology_min_interval_sec=s.physiology_min_interval_sec,
     )
+    if body_config is not None:
+        deps = dataclasses.replace(deps, body_config=body_config)
     return TemporalSelfDriver(checkpointer=saver, deps=deps,
                               timezone_name=s.orion_situation_timezone, tick_sec=s.temporal_self_tick_sec,
                               retention_days=s.temporal_self_retention_days)
+
+
+def _build_physiology():
+    """Body economy Patch A3: the physiology node's reads and its projection. Reads run on the
+    checkpointer's pool; the pool-capacity RPC and the projection on the long-lived rpc_bus."""
+    from uuid import uuid4
+    from zoneinfo import ZoneInfo
+
+    from app import physiology_store
+    from orion.gpu_pool.placement import fetch_pool_state
+    from orion.physiology.body import BodyConfig, BodyInputs
+    from orion.schemas.physiology import PHYSIOLOGY_STATE_KIND, PHYSIOLOGY_STATE_REDIS_KEY
+
+    global claude_limits
+    s = _settings
+    tz = ZoneInfo(s.orion_situation_timezone)
+    source = ServiceRef(name=s.service_name, version=s.service_version, node=s.node_name)
+    claude_limits = physiology_store.ClaudeLimitCache()
+    cfg = BodyConfig(heat_soft_line_c=s.physiology_heat_soft_line_c,
+                     energy_monthly_envelope_usd=s.physiology_energy_monthly_envelope_usd,
+                     juniper_daily_cap=s.hub_endogenous_outreach_daily_cap,
+                     lane_window_sec=s.physiology_lane_window_sec)
+
+    async def read_body(now, heat):
+        warnings: list[str] = []
+        pool_state = None
+        if rpc_bus is not None:
+            pool_state = await fetch_pool_state(rpc_bus, source=s.service_name, timeout_sec=2.0)
+        if pool_state is None:
+            warnings.append("lane_capacity:pool_state_unread")
+        body = BodyInputs(
+            heat=heat,
+            energy=await physiology_store.read_energy(_checkpointer_cm, now, tz),
+            lanes=await physiology_store.read_lanes(_checkpointer_cm, now, s.physiology_lane_window_sec, pool_state),
+            juniper=await physiology_store.read_juniper(_checkpointer_cm, now, tz),
+            claude=claude_limits.snapshot() if claude_limits is not None else ())
+        return body, warnings
+
+    async def project_physiology(model) -> None:
+        if rpc_bus is None:
+            raise RuntimeError("no bus")
+        try:
+            await rpc_bus.redis.setex(PHYSIOLOGY_STATE_REDIS_KEY, s.physiology_redis_ttl_sec, model.model_dump_json())
+        except Exception:  # noqa: BLE001 - the bus event (and its table row) still lands
+            logger.warning("physiology_redis_write_failed", exc_info=True)
+        await rpc_bus.publish(s.physiology_state_channel, BaseEnvelope(
+            kind=PHYSIOLOGY_STATE_KIND, source=source, correlation_id=uuid4(),
+            payload=model.model_dump(mode="json")))
+
+    return read_body, project_physiology, cfg
 
 
 def _build_chronicle():
@@ -443,6 +511,8 @@ async def lifespan(app: FastAPI):
                              _settings.identity_sighting_channel]
             if temporal_self is not None and _settings.chat_history_turn_channel not in patterns:
                 patterns.append(_settings.chat_history_turn_channel)
+            if claude_limits is not None and _settings.claude_limit_channel not in patterns:
+                patterns.append(_settings.claude_limit_channel)
             hunter = Hunter(_chassis_cfg(), handler=_handle_request, patterns=patterns)
             await hunter.start_background()
             logger.info("durable_runs_listening channel=%s", _settings.request_channel)

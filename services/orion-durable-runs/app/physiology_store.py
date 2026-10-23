@@ -1,0 +1,196 @@
+"""The physiology node's reads (body economy Patch A3, Organ 1 Body), on the service's psycopg pool.
+
+Read-only, bounded, each read failing on its own: a failed read turns only its own constraint into
+``no_reading``, never 0. The pure reducer is ``orion.physiology.body``; this module only fetches.
+
+* energy  -- ``orion_energy_hourly`` (sql-writer's rollup) summed per hour since the local month
+  start, and ``energy_cost_accrued`` next-kWh rates (newest ``computed_at`` per interval; the
+  table keeps one row per tariff version, so a plain sum triples).
+* lanes   -- ``gpu_pool_events``: every lease close in the window (each carries ``held_ms``), and
+  grants in the last ``OPEN_GRANT_LOOKBACK`` with no close yet (open leases). Capacity per role
+  comes from the pool's own state RPC (``orion.gpu_pool.placement.fetch_pool_state``).
+* juniper -- ``endogenous_outreach_decisions``: sends today (local date), and the newest decision
+  of any outcome, so a stopped decision log reads stale instead of "0 sent".
+* claude  -- not a table: the latest ``ClaudeLimitObservationV1`` per kind, held in memory by
+  ``ClaudeLimitCache`` from the bus (``orion:substrate:claude_limit``).
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
+from zoneinfo import ZoneInfo
+
+from orion.physiology.body import (
+    LEASE_CLOSE_EVENTS,
+    ClaudeObservation,
+    EnergyHour,
+    EnergyInput,
+    EnergyPrice,
+    JuniperInput,
+    LaneInput,
+    LeaseEvent,
+)
+
+logger = logging.getLogger("orion-durable-runs.physiology_store")
+
+# Rates from before the month start seed the carry-forward for the month's first hours.
+PRICE_SEED_LOOKBACK = timedelta(days=14)
+# A grant older than this with no close is not counted as open (a lost close must not hold a
+# lane "busy" forever). Durable-run holds are the longest leases; none held this long live.
+OPEN_GRANT_LOOKBACK = timedelta(hours=6)
+# Outreach sources the Hub's daily cap does not count (scripts/endogenous_outreach_decisions.py
+# count_sent_on). They still reach Juniper, so ``sent_today`` counts them.
+CAP_EXEMPT_SOURCES = ("curiosity_outreach", "reading_finding_outreach")
+
+ENERGY_HOURS_SQL = (
+    "SELECT hour_start, SUM(kwh) AS kwh FROM orion_energy_hourly "
+    "WHERE hour_start >= %(since)s GROUP BY hour_start ORDER BY hour_start"
+)
+ENERGY_PRICES_SQL = """
+SELECT date_trunc('hour', interval_start) AS hour_start,
+       SUM(marginal_usd_per_kwh * energy_kwh) / NULLIF(SUM(energy_kwh), 0) AS marginal_usd_per_kwh,
+       AVG(marginal_usd_per_kwh) AS marginal_unweighted
+FROM (
+  SELECT DISTINCT ON (usage_point_id, interval_start) interval_start, energy_kwh, marginal_usd_per_kwh
+  FROM energy_cost_accrued
+  WHERE interval_start >= %(since)s
+  ORDER BY usage_point_id, interval_start, computed_at DESC
+) latest
+GROUP BY 1 ORDER BY 1
+"""
+LANE_CLOSES_SQL = (
+    "SELECT lease_id, role, event, generated_at, held_ms FROM gpu_pool_events "
+    "WHERE generated_at >= %(since)s AND event = ANY(%(events)s)"
+)
+# idx_gpu_pool_events_lease serves the NOT EXISTS.
+LANE_OPEN_GRANTS_SQL = """
+SELECT g.lease_id, g.role, g.event, g.generated_at, g.held_ms FROM gpu_pool_events g
+WHERE g.event = 'granted' AND g.generated_at >= %(since)s AND g.lease_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM gpu_pool_events c
+                  WHERE c.lease_id = g.lease_id AND c.event = ANY(%(events)s))
+"""
+JUNIPER_SENT_SQL = """
+SELECT count(*) FILTER (WHERE reason = 'sent') AS sent,
+       count(*) FILTER (WHERE reason = 'sent'
+                        AND coalesce(result_json->>'source', '') <> ALL(%(exempt)s)) AS cap_counted
+FROM endogenous_outreach_decisions
+WHERE (decided_at AT TIME ZONE %(tz)s)::date = %(day)s::date AND decided_at >= %(since)s
+"""
+JUNIPER_NEWEST_SQL = "SELECT max(decided_at) AS newest FROM endogenous_outreach_decisions"
+
+
+def _utc(v: datetime) -> datetime:
+    return v.replace(tzinfo=timezone.utc) if v.tzinfo is None else v.astimezone(timezone.utc)
+
+
+def month_start_utc(now: datetime, tz: ZoneInfo) -> datetime:
+    local = now.astimezone(tz)
+    return datetime(local.year, local.month, 1, tzinfo=tz).astimezone(timezone.utc)
+
+
+async def read_energy(pool: Any, now: datetime, tz: ZoneInfo) -> EnergyInput:
+    start = month_start_utc(now, tz)
+    try:
+        async with pool.connection() as conn:
+            hours = await (await conn.execute(ENERGY_HOURS_SQL, {"since": start})).fetchall()
+    except Exception:  # noqa: BLE001
+        logger.warning("physiology_energy_hours_read_failed", exc_info=True)
+        return EnergyInput(read_ok=False, failed_source="orion_energy_hourly")
+    try:
+        async with pool.connection() as conn:
+            prices = await (await conn.execute(ENERGY_PRICES_SQL, {"since": start - PRICE_SEED_LOOKBACK})).fetchall()
+    except Exception:  # noqa: BLE001
+        logger.warning("physiology_energy_prices_read_failed", exc_info=True)
+        return EnergyInput(read_ok=False, failed_source="energy_cost_accrued")
+    out_prices = []
+    for r in prices:
+        rate = r.get("marginal_usd_per_kwh")
+        if rate is None:
+            rate = r.get("marginal_unweighted")
+        if rate is not None:
+            out_prices.append(EnergyPrice(_utc(r["hour_start"]), float(rate)))
+    return EnergyInput(
+        read_ok=True, month_start=start,
+        hours=[EnergyHour(_utc(r["hour_start"]), float(r["kwh"])) for r in hours if r.get("kwh") is not None],
+        prices=out_prices)
+
+
+async def read_lane_events(pool: Any, now: datetime, window_sec: float) -> tuple[bool, list[LeaseEvent]]:
+    events = list(LEASE_CLOSE_EVENTS)
+    try:
+        async with pool.connection() as conn:
+            closes = await (await conn.execute(LANE_CLOSES_SQL, {
+                "since": now - timedelta(seconds=window_sec), "events": events})).fetchall()
+            grants = await (await conn.execute(LANE_OPEN_GRANTS_SQL, {
+                "since": now - OPEN_GRANT_LOOKBACK, "events": events})).fetchall()
+    except Exception:  # noqa: BLE001
+        logger.warning("physiology_lane_events_read_failed", exc_info=True)
+        return False, []
+    return True, [LeaseEvent(lease_id=r.get("lease_id"), role=r.get("role"), event=r["event"],
+                             at=_utc(r["generated_at"]),
+                             held_ms=None if r.get("held_ms") is None else float(r["held_ms"]))
+                  for r in list(closes) + list(grants)]
+
+
+def capacity_from_pool_state(payload: Optional[dict]) -> Optional[dict[str, int]]:
+    """role -> discovered slots, from a ``GpuPoolStateV1`` payload. None: no state (RPC failed).
+    A role the pool cannot serve right now (down, silent, unloaded) has 0 slots of capacity."""
+    if not isinstance(payload, dict):
+        return None
+    out: dict[str, int] = {}
+    for role in payload.get("roles") or []:
+        name = role.get("role") if isinstance(role, dict) else None
+        if not name:
+            continue
+        ok = role.get("status") in ("confirmed", "static")
+        out[str(name)] = int(role.get("slots") or 0) if ok else 0
+    return out
+
+
+async def read_lanes(pool: Any, now: datetime, window_sec: float, pool_state: Optional[dict]) -> LaneInput:
+    ok, events = await read_lane_events(pool, now, window_sec)
+    return LaneInput(events_read_ok=ok, events=events, capacity=capacity_from_pool_state(pool_state))
+
+
+async def read_juniper(pool: Any, now: datetime, tz: ZoneInfo) -> JuniperInput:
+    local = now.astimezone(tz)
+    day_start = datetime(local.year, local.month, local.day, tzinfo=tz).astimezone(timezone.utc)
+    try:
+        async with pool.connection() as conn:
+            row = await (await conn.execute(JUNIPER_SENT_SQL, {
+                "tz": str(tz), "day": local.date().isoformat(), "since": day_start - timedelta(hours=2),
+                "exempt": list(CAP_EXEMPT_SOURCES)})).fetchone()
+            newest = await (await conn.execute(JUNIPER_NEWEST_SQL)).fetchone()
+    except Exception:  # noqa: BLE001
+        logger.warning("physiology_juniper_read_failed", exc_info=True)
+        return JuniperInput(read_ok=False)
+    newest_at = (newest or {}).get("newest")
+    return JuniperInput(read_ok=True, sent_today=int((row or {}).get("sent") or 0),
+                        cap_counted_today=int((row or {}).get("cap_counted") or 0),
+                        newest_decision_at=_utc(newest_at) if newest_at is not None else None)
+
+
+class ClaudeLimitCache:
+    """The latest ``ClaudeLimitObservationV1`` per kind, from the bus, with its receive time."""
+
+    def __init__(self) -> None:
+        self._latest: dict[str, ClaudeObservation] = {}
+
+    def offer(self, payload: Any, received_at: datetime) -> bool:
+        from orion.schemas.claude_limit import ClaudeLimitObservationV1
+
+        try:
+            obs = ClaudeLimitObservationV1.model_validate(payload)
+        except Exception:  # noqa: BLE001 -- a malformed observation is no observation
+            logger.warning("physiology_claude_limit_invalid", exc_info=True)
+            return False
+        self._latest[obs.kind] = ClaudeObservation(
+            kind=obs.kind, state=obs.state, observed=obs.observed, event_count=int(obs.event_count),
+            received_at=_utc(received_at),
+            resets_at=_utc(obs.resets_at) if obs.resets_at is not None else None)
+        return True
+
+    def snapshot(self) -> tuple[ClaudeObservation, ...]:
+        return tuple(self._latest[k] for k in sorted(self._latest))

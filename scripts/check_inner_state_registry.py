@@ -65,6 +65,8 @@ INNER_STATE_KEYWORDS: tuple[str, ...] = (
     "mood",
     "felt_state",
     "cluster",
+    # Body economy (2026-10-23): every physiology-shaped schema is an inner-state signal.
+    "physiology",
 )
 
 DEFAULT_CHANNELS_FILE = REPO_ROOT / "orion" / "bus" / "channels.yaml"

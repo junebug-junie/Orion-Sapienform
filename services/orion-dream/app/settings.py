@@ -106,6 +106,13 @@ class Settings(BaseSettings):
     DREAM_WALKWAY_STREAM_IDS: str = Field(default="walkway")
     DREAM_WALKWAY_TIMEZONE: str = Field(default="America/Denver")
 
+    # Act ledger (body economy A5): each sleep that starts replay publishes one `make` act
+    # (actor dream.cycle) on orion:grammar:event, opened at the start and closed when the cycle
+    # is persisted (0 on any failure). Its recombination LLM calls then share the act's
+    # correlation id, so the ledger charges the cycle for its GPU leases. Off = no act, and each
+    # LLM call keeps its own correlation id. app/act_emit.py.
+    DREAM_ACT_EMIT_ENABLED: bool = Field(default=True)
+
     # Weekly/monthly Curiosity write-up summaries after a persisted successful sleep.
     DREAM_CURIOSITY_COMPACTION_ENABLED: bool = Field(default=False)
 

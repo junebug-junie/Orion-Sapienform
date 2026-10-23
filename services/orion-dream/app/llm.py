@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 
+from app.act_emit import current_lease_correlation
 from app.settings import settings
 
 
@@ -39,8 +40,12 @@ async def complete(
     `gpu_lease` (a GpuLeaseRefV1 dump) attaches the call to a durable run's existing hold
     (options.gpu_lease) instead of the gateway taking a lease of its own: the dream.carry text
     hop runs under its run's LLM hold."""
-    rpc_corr = str(uuid4())
-    reply_channel = f"orion:exec:result:LLMGatewayService:{rpc_corr}"
+    # The reply channel is always unique per call. The envelope's correlation id is the
+    # dream cycle's act correlation while a cycle runs (app/act_emit.py), so the gateway
+    # leases its GPU slot under that id and the act ledger can charge the cycle for it.
+    reply_corr = str(uuid4())
+    rpc_corr = current_lease_correlation() or reply_corr
+    reply_channel = f"orion:exec:result:LLMGatewayService:{reply_corr}"
     route = route or settings.DREAM_LLM_ROUTE
     timeout = float(timeout_sec if timeout_sec is not None else settings.DREAM_LLM_TIMEOUT_SEC)
     options: dict[str, Any] = {

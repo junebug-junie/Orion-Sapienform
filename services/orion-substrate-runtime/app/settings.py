@@ -497,6 +497,10 @@ class Settings(BaseSettings):
     walkway_seen_interval_sec: float = Field(1800.0, gt=0.0, alias="WALKWAY_SEEN_INTERVAL_SEC")
     walkway_seen_streams: str = Field("walkway", alias="WALKWAY_SEEN_STREAMS")
     walkway_seen_lookback_days: int = Field(3, ge=1, alias="WALKWAY_SEEN_LOOKBACK_DAYS")
+    # person / person_link rows (PR #2852) -> one graph node per person and an instance_of
+    # claim per named camera cluster, via the journal (app/person_graph_loop.py). false = none written.
+    person_graph_enabled: bool = Field(True, alias="PERSON_GRAPH_ENABLED")
+    person_graph_interval_sec: float = Field(600.0, gt=0.0, alias="PERSON_GRAPH_INTERVAL_SEC")
     # Voluntary attention (ORION_ATTENTION_TOPDOWN_ENABLED) goal-context feed:
     # populates the in-memory active-goal store from GoalProposalV1 events.
     channel_goal_proposal: str = Field(

@@ -87,6 +87,13 @@ ORDER BY recorded_at DESC, event_id DESC LIMIT 1
 """
 
 
+# Each target's newest decision by one producer: what that producer last said about it.
+_LATEST_DECISIONS = """
+SELECT DISTINCT ON (target_id) payload FROM substrate_graph_journal
+WHERE event_kind = 'decision' AND actor = $1
+ORDER BY target_id, revision DESC
+"""
+
 
 class RevisionConflict(RuntimeError):
     """Another decision already claimed this target's next revision."""
@@ -161,3 +168,10 @@ class SubstrateGraphJournal:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(_LAST_MATERIALIZATION, decision_id)
         return SubstrateGraphMaterializationV1.model_validate(_payload(row)) if row else None
+
+    async def latest_decisions(self, actor: str) -> dict[str, SubstrateGraphDecisionV1]:
+        """target_id -> the newest decision ``actor`` journalled about it (applied or not)."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(_LATEST_DECISIONS, actor)
+        decisions = [SubstrateGraphDecisionV1.model_validate(_payload(row)) for row in rows]
+        return {d.target_id: d for d in decisions}

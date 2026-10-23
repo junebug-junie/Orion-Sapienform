@@ -29,6 +29,7 @@ equilibrium publishes `MetacogTriggerV1`. orion-actions `_handle_journal_metacog
 - `config/metrics/metric_definitions.lock.json`: re-locked for the consumer change.
 - `services/orion-actions/tests/test_journal_actions.py`: the cap tests now use kinds that still email. New tests cover the silenced kinds and the removed subscription.
 - `services/orion-actions/tests/test_metacog_self_signal_episode_journal.py`: deleted. It tested the removed gate.
+- `.github/workflows/self-signal-episode-tests.yml`: drop the step for the deleted test.
 - `services/orion-actions/README.md`: documents the removal.
 
 ## Schema / bus / API changes

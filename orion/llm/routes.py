@@ -103,6 +103,10 @@ ACCEPTED_LLM_ROUTES: FrozenSet[str] = frozenset(
         # same pool class, interactive priority, so a heat shed never holds a live Hub turn.
         # System-only: see SYSTEM_LLM_ROUTES.
         "metacog_turn",
+        # Fast-class twin for a live turn (2026-10-23): the pre-turn repair-pressure probe
+        # (cortex-exec REPAIR_PRESSURE_PROBE_ROUTE). Interactive, never shed by heat.
+        # System-only: see SYSTEM_LLM_ROUTES.
+        "quick_turn",
         # Orion's sight (2026-10-23, body-economy design A0): vision-council at pool priority
         # `perception`, never shed by heat. System-only: see SYSTEM_LLM_ROUTES.
         "metacog_perception",
@@ -141,6 +145,7 @@ LLM_ROUTE_DISPLAY_ORDER: tuple[str, ...] = (
     "chat-burst",
     "memory_distill",
     "metacog_turn",
+    "quick_turn",
     "metacog_perception",
 )
 
@@ -231,7 +236,16 @@ if not METACOG_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
 SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset(
     # `metacog_perception` (2026-10-23): vision-council's route. Jumps the heat shed like
     # metacog_turn, so the same rule: never a human's Compute choice or override.
-    {"harness", "agent-burst", "chat-burst", "memory_distill", "metacog_turn", "metacog_perception"}
+    # `quick_turn` (2026-10-23): cortex-exec's pre-turn repair-pressure probe. Same rule.
+    {
+        "harness",
+        "agent-burst",
+        "chat-burst",
+        "memory_distill",
+        "metacog_turn",
+        "quick_turn",
+        "metacog_perception",
+    }
 )
 
 if not SYSTEM_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:

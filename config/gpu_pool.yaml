@@ -163,10 +163,14 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
   # Calls on a human's critical path (spec 2026-10-06-thermal-controller-redesign D4): same class
   # as metacog, but interactive, so a heat shed never holds a live Hub turn (orion-mind on a Hub
   # turn, MIND_TURN_MODEL_ROUTE). metacog stays system: it also carries background callers.
-  # quick_turn / agent_turn (spec D4, Q4) are NOT added: no live-turn caller sends quick or agent
-  # today (cortex-orch's memory annotation listens to finished turns; Hub Agent mode runs through the
-  # FCC harness). Add each with the caller that uses it, not before.
+  # agent_turn (spec D4, Q4) is NOT added: no live-turn caller sends agent today (Hub Agent mode
+  # runs through the FCC harness). Add it with the caller that uses it, not before.
   metacog_turn: {class: metacog, priority: interactive}
+  # quick_turn (2026-10-23): the pre-turn repair-pressure probe (cortex-exec
+  # REPAIR_PRESSURE_PROBE_ROUTE), awaited by every Hub turn before the stance runs. On `quick`
+  # (system) the 34 C reflex refused it on 19/19 Juniper turns 10-20..21, and the turn went on
+  # with no repair reading. Same fast class, interactive, so heat never sheds it.
+  quick_turn: {class: fast, priority: interactive}
   # Orion's sight (2026-10-23, docs/superpowers/specs/2026-10-23-organism-body-economy-design.md, A0):
   # vision-council's scene reads. On metacog_background the 34 C reflex refused it 25,430 times in the
   # 7 days to 10-23 -- Orion stopped interpreting what it saw whenever the cabinet ran hot. perception

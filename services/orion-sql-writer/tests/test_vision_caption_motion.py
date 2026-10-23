@@ -24,10 +24,17 @@ T0 = datetime(2026, 10, 19, 17, 12, 0, tzinfo=timezone.utc)
 
 
 def _verdict_for(row: dict) -> cm.CaptionVerdict:
-    _ts, boxes = parse_caption_refs(row["evidence_refs"])
+    ts, boxes = parse_caption_refs(row["evidence_refs"])
     crops = [FrameCrop(c["crop_id"], c["label"], tuple(c["box"])) for c in row["crops"]]
     matched = match_caption_crops(boxes, crops)
-    return decide_caption(row["narrative"], matched, row["story_class"], settled=True)
+    local = cm.local_classes(matched, row["story_evidence"], ts)
+    return decide_caption(row["narrative"], matched, local, settled=True)
+
+
+def _track(frame, kind, offsets_and_x, *, h=100.0, w=60.0, y=500.0):
+    """Story evidence: one box per (seconds from frame, left x)."""
+    return [{"crop_id": f"c{i}", "t": (frame + timedelta(seconds=dt)).isoformat(), "label": kind,
+             "box": [x, y, x + w, y + h], "clipped": False} for i, (dt, x) in enumerate(offsets_and_x)]
 
 
 # --- Replay: the 9 known "driving" captions (live, read-only, 2026-10-17..20) ---
@@ -150,17 +157,50 @@ def test_a_glimpse_of_the_claimed_kind_blocks_contradiction() -> None:
     assert v2.status == "contradicted"
 
 
-@pytest.mark.parametrize("speed,drop,want", [
-    ("parked", "prop", "parked"),
-    ("parked", "parked", "parked"),
-    ("walking", None, "walking"),
-    ("parked", "glimpse", None),
-    ("walking", "too_long", None),
-    ("standing", "edge_clipped", None),
-    (None, None, None),
-])
-def test_usable_speed_drops_stories_that_cannot_vouch_for_the_frame(speed, drop, want) -> None:
-    assert cm.usable_speed(speed, drop) == want
+# --- Local motion near the frame, not the story's whole-passage average ---
+
+
+def test_car_that_drove_in_then_parked_is_not_contradicted() -> None:
+    """The failure this replaces: a car drives in (frame taken then) and then
+    parks for minutes. The whole passage averages to "parked"; near the frame
+    it was moving, so the "driving" caption is supported, not contradicted."""
+    frame = T0
+    drive_in = [(-10, 0.0), (-5, 400.0), (0, 800.0), (5, 1100.0), (10, 1150.0)]
+    parked_after = [(15 + 5 * i, 1150.0) for i in range(60)]  # five minutes still
+    ev = _track(frame, "vehicle", drive_in + parked_after)
+    local = cm.local_motion(ev, frame, "vehicle")
+    assert local is not None and local not in cm.STILL_CLASSES
+    car = FrameCrop("c2", "vehicle", (800.0, 500.0, 860.0, 600.0))
+    v = decide_caption("A car is driving.", [car], cm.local_classes([car], {"c2": ev}, frame), settled=True)
+    assert v.status == "supported"
+
+
+def test_clearly_still_near_the_frame_is_parked() -> None:
+    ev = _track(T0, "vehicle", [(-10, 500.0), (-5, 501.0), (0, 499.0), (5, 502.0), (10, 500.0)])
+    assert cm.local_motion(ev, T0, "vehicle") == "parked"
+
+
+def test_thin_local_evidence_is_none() -> None:
+    # Two boxes only, and three boxes over 4 s: too thin either way.
+    assert cm.local_motion(_track(T0, "vehicle", [(0, 500.0), (5, 500.0)]), T0, "vehicle") is None
+    assert cm.local_motion(_track(T0, "vehicle", [(-2, 500.0), (0, 500.0), (2, 500.0)]), T0, "vehicle") is None
+    # Boxes outside the window do not count.
+    far = _track(T0, "vehicle", [(-60, 500.0), (-50, 500.0), (0, 500.0), (50, 500.0)])
+    assert cm.local_motion(far, T0, "vehicle") is None
+
+
+def test_in_between_movement_is_none_not_still() -> None:
+    """Net travel 0.4 body heights: still by the story rule (< 0.5) but not
+    clearly still (> 0.25), so it decides nothing."""
+    ev = _track(T0, "vehicle", [(-10, 500.0), (0, 520.0), (10, 540.0)])
+    assert cm.local_motion(ev, T0, "vehicle") is None
+
+
+def test_clipped_boxes_are_skipped() -> None:
+    ev = _track(T0, "vehicle", [(-10, 500.0), (-5, 500.0), (0, 500.0), (5, 500.0), (10, 500.0)])
+    for e in ev[1:4]:
+        e["clipped"] = True
+    assert cm.local_motion(ev, T0, "vehicle") is None
 
 
 def test_no_motion_claim_gets_no_tag() -> None:
@@ -245,7 +285,8 @@ def test_caption_motion_step_tags_once_and_skips_final_rows() -> None:
     captions = [("e-drive", "A car is driving.", json.dumps(refs)),
                 ("e-still", "A car is parked.", json.dumps(refs)),
                 ("e-walk", "A person is walking.", json.dumps(refs))]
-    db = _FakeDB(captions, crops=[("v", "vehicle", [0, 0, 10, 10])], stories=[(["v"], "parked", "prop")], cursor=T0)
+    db = _FakeDB(captions, crops=[("v", "vehicle", [0, 0, 10, 10])], stories=[(["v"], _track(frame, "vehicle", [(-10, 0.0), (-5, 0.0), (0, 0.0), (5, 0.0), (10, 0.0)], h=10.0, w=10.0, y=0.0))],
+                 cursor=T0)
     counts = cm.caption_motion_step(db, "walkway", T0, lookback_sec=21600, settle_sec=911, min_iou=0.5)
     assert counts["tagged"] == 1 and counts["contradicted"] == 1
     assert counts["no_claim"] == 1 and counts["undecided"] == 1

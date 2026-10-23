@@ -125,6 +125,22 @@ def caption_motion_phrase(check: CaptionMotionCheck | None) -> str:
     return f"caption said {check.word}; the {check.kind} {outcome}"
 
 
+# A people count in a street narrative ("Two persons are observed walking",
+# council row 2026-10-16) is what ONE frame showed, not how many people were
+# there or passed: the camera splits and merges people (PR #2781 range rule).
+# The detector is the rollup's own (`walkway_rollup.bare_people_counts`), so
+# the readers and the rollup's anti-invention guard agree on what a bare
+# people count is. No second word list.
+ONE_FRAME_COUNT_NOTE = "people count from one frame, not a head count"
+
+
+def one_frame_count_note(text: str) -> str:
+    """ONE_FRAME_COUNT_NOTE when `text` states a bare people count, else ""."""
+    from orion.vision.walkway_rollup import bare_people_counts
+
+    return ONE_FRAME_COUNT_NOTE if bare_people_counts(text or "") else ""
+
+
 def label_camera_caption(
     text: str,
     detector_labels: Sequence[str],
@@ -136,14 +152,17 @@ def label_camera_caption(
     stroller; motion not verified): "A person is pushing a stroller…"'.
     `at` is the row's write time (seconds after the frame), hence "logged".
     With a decided `motion_check` the motion part says what the motion
-    story showed: "caption said driving; the vehicle did not move"."""
+    story showed: "caption said driving; the vehicle did not move". A bare
+    people count in the text adds ONE_FRAME_COUNT_NOTE."""
     when = f" logged {at}" if at else ""
     labels = list(detector_labels)
     named = ", ".join(labels[:CAPTION_LABELS_NAMED])
     if len(labels) > CAPTION_LABELS_NAMED:
         named += f" +{len(labels) - CAPTION_LABELS_NAMED}"
     saw = f"detector saw {named}; " if labels else ""
-    return f'camera caption{when} (one frame; {saw}{caption_motion_phrase(motion_check)}): "{text}"'
+    count = one_frame_count_note(text)
+    count = f"; {count}" if count else ""
+    return f'camera caption{when} (one frame; {saw}{caption_motion_phrase(motion_check)}{count}): "{text}"'
 
 
 GRADED_STATUSES: tuple[str, ...] = ("met", "missed")
@@ -177,6 +196,12 @@ def _clean(text: Any, limit: int = CAPTION_MAX_CHARS) -> str:
 
 def _norm_key(text: str) -> str:
     return "".join(ch for ch in text.lower() if ch.isalnum() or ch == " ").strip()
+
+
+def _note_council_count(text: str) -> str:
+    """A council narrative, with ONE_FRAME_COUNT_NOTE when it states a bare people count."""
+    note = one_frame_count_note(text)
+    return f"{text.rstrip('.')} ({note})" if note else text
 
 
 def dedupe_street_captions(
@@ -241,7 +266,8 @@ def dedupe_street_captions(
         motion = caption_motion_check_from_tags(row.get("tags")) if is_caption else None
         out.append(
             {
-                "narrative": label_camera_caption(text, labels, motion_check=motion) if is_caption else text,
+                "narrative": (label_camera_caption(text, labels, motion_check=motion) if is_caption
+                              else _note_council_count(text)),
                 "observed_at": ts,
                 "age_sec": max(0.0, (now - ts).total_seconds()),
                 "stream_id": str(row.get("stream_id") or ""),

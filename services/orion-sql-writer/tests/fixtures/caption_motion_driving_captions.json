@@ -58,10 +58,285 @@
   ],
   "live_status": "contradicted",
   "narrative": "A car is driving down a residential street, passing by a sidewalk and a fence.",
-  "story_class": {
-   "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:1": "parked",
-   "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:2": "walking",
-   "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:3": null
+  "story_evidence": {
+   "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:1": [
+    {
+     "box": [
+      1697.5,
+      360.4,
+      1778.8,
+      420.6
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:77fc18e8-d8fb-458a-817a-3ada7ed62a8d:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.356,
+     "t": "2026-10-17T19:36:32.040943+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.0,
+      359.7,
+      1779.5,
+      421.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:88bfe042-6d19-4503-bdaa-c58051b89e38:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.361,
+     "t": "2026-10-17T19:36:37.083615+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.6,
+      361.7,
+      1778.8,
+      421.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:b31db7cc-9ff4-4647-9977-1543591b119c:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.353,
+     "t": "2026-10-17T19:36:42.080808+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.8,
+      360.4,
+      1779.1,
+      420.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:ab3ae01c-dda8-4a74-b960-e97fda80d0fd:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.359,
+     "t": "2026-10-17T19:36:47.007938+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.9,
+      360.6,
+      1779.0,
+      420.6
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:cba79a99-e973-4413-ae44-84acd7bccc6b:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.379,
+     "t": "2026-10-17T19:36:52.007931+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.6,
+      362.1,
+      1778.7,
+      420.7
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.379,
+     "t": "2026-10-17T19:36:54.511902+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.5,
+      360.2,
+      1779.0,
+      420.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:0d53b1e5-5d94-4bfe-bbcf-7ab98f854774:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.4,
+     "t": "2026-10-17T19:36:57.039362+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.8,
+      360.6,
+      1779.1,
+      420.7
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:55e58218-452d-41a4-9f27-d61e17e1a75b:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.384,
+     "t": "2026-10-17T19:37:02.073919+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.1,
+      360.2,
+      1779.1,
+      420.7
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:d1e74e86-d86c-42d3-b1fd-f682ffeaa3b6:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.367,
+     "t": "2026-10-17T19:37:04.570256+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.6,
+      361.3,
+      1779.0,
+      420.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:23f1d91e-6f9a-4fee-837e-6587fbb69e24:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.357,
+     "t": "2026-10-17T19:37:07.009180+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.3,
+      360.0,
+      1778.8,
+      420.8
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:cdcd4794-6664-4a21-971d-0a9609ffc977:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.356,
+     "t": "2026-10-17T19:37:12.009105+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.1,
+      361.4,
+      1778.7,
+      420.8
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:539f69b6-b062-4e52-87f5-0ce53917b5ab:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.356,
+     "t": "2026-10-17T19:37:22.002777+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    }
+   ],
+   "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:2": [
+    {
+     "box": [
+      704.0,
+      814.0,
+      803.3,
+      1096.6
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:cba79a99-e973-4413-ae44-84acd7bccc6b:3",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.364,
+     "t": "2026-10-17T19:36:52.007931+00:00",
+     "thumb": null,
+     "zone": "mailbox"
+    },
+    {
+     "box": [
+      979.7,
+      713.0,
+      1095.2,
+      967.4
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:2",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.357,
+     "t": "2026-10-17T19:36:54.511902+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1336.6,
+      631.6,
+      1408.3,
+      869.4
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:0d53b1e5-5d94-4bfe-bbcf-7ab98f854774:2",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.362,
+     "t": "2026-10-17T19:36:57.039362+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    }
+   ],
+   "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:3": [
+    {
+     "box": [
+      657.9,
+      854.4,
+      779.8,
+      1155.5
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:cba79a99-e973-4413-ae44-84acd7bccc6b:2",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.372,
+     "t": "2026-10-17T19:36:52.007931+00:00",
+     "thumb": null,
+     "zone": "mailbox"
+    },
+    {
+     "box": [
+      1055.5,
+      681.4,
+      1132.2,
+      905.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:3",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.35,
+     "t": "2026-10-17T19:36:54.511902+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    }
+   ]
   },
   "stream_id": "walkway"
  },
@@ -124,10 +399,301 @@
   ],
   "live_status": "contradicted",
   "narrative": "A car is driving down a street in a residential area, passing by a white fence and some trees.",
-  "story_class": {
-   "cropobs:8adcac02-586e-4cac-9caf-fe2e5b01ed6d:1": "parked",
-   "cropobs:8adcac02-586e-4cac-9caf-fe2e5b01ed6d:2": "walking",
-   "cropobs:8adcac02-586e-4cac-9caf-fe2e5b01ed6d:3": "walking"
+  "story_evidence": {
+   "cropobs:8adcac02-586e-4cac-9caf-fe2e5b01ed6d:1": [
+    {
+     "box": [
+      1697.1,
+      361.4,
+      1778.7,
+      420.8
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:539f69b6-b062-4e52-87f5-0ce53917b5ab:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.356,
+     "t": "2026-10-17T19:37:22.002777+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.8,
+      361.4,
+      1778.6,
+      421.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:3f8e52e0-87b8-49fe-8c51-58dbdd928cbe:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.35,
+     "t": "2026-10-17T19:37:27.038146+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.0,
+      361.2,
+      1778.5,
+      420.7
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:153b1d7c-5ccd-41b8-b8d8-930057d9dc1c:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.361,
+     "t": "2026-10-17T19:37:32.031301+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.0,
+      361.4,
+      1778.5,
+      420.8
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:f3471308-283b-4b5d-8ab8-eb993ac819b1:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.374,
+     "t": "2026-10-17T19:37:37.007925+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.1,
+      362.7,
+      1778.2,
+      420.7
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:ef3f1f8f-1471-4e69-8477-aa46ccf2c8b0:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.375,
+     "t": "2026-10-17T19:37:42.025669+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.8,
+      361.1,
+      1778.7,
+      420.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:a388651d-f3ea-4145-9d69-fe265b695c0f:1",
+     "individual_id": null,
+     "label": "vehicle",
+     "score": 0.366,
+     "t": "2026-10-17T19:37:47.099774+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.2,
+      362.2,
+      1778.7,
+      420.5
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:8adcac02-586e-4cac-9caf-fe2e5b01ed6d:1",
+     "individual_id": null,
+     "label": "vehicle",
+     "score": 0.377,
+     "t": "2026-10-17T19:37:49.512620+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.5,
+      362.5,
+      1778.6,
+      420.5
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:d65057cf-8410-419a-90a2-c0d9dde8e7c9:3",
+     "individual_id": null,
+     "label": "vehicle",
+     "score": 0.373,
+     "t": "2026-10-17T19:37:52.107527+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.2,
+      362.4,
+      1778.3,
+      420.5
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:32fbd86a-a886-466f-b3e4-ad450491b0e4:3",
+     "individual_id": null,
+     "label": "vehicle",
+     "score": 0.377,
+     "t": "2026-10-17T19:37:54.606028+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.6,
+      360.6,
+      1779.1,
+      420.7
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:4e81a76f-0ac9-4b58-b9d8-007624f97fba:1",
+     "individual_id": null,
+     "label": "vehicle",
+     "score": 0.361,
+     "t": "2026-10-17T19:38:04.514581+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.7,
+      360.4,
+      1778.9,
+      420.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:54fb025f-a020-4225-a976-c4dba121a01e:1",
+     "individual_id": null,
+     "label": "vehicle",
+     "score": 0.361,
+     "t": "2026-10-17T19:38:14.532254+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    }
+   ],
+   "cropobs:8adcac02-586e-4cac-9caf-fe2e5b01ed6d:2": [
+    {
+     "box": [
+      956.6,
+      712.7,
+      1086.3,
+      939.5
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:8adcac02-586e-4cac-9caf-fe2e5b01ed6d:2",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.373,
+     "t": "2026-10-17T19:37:49.512620+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      871.7,
+      745.4,
+      987.3,
+      994.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:d65057cf-8410-419a-90a2-c0d9dde8e7c9:2",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.414,
+     "t": "2026-10-17T19:37:52.107527+00:00",
+     "thumb": null,
+     "zone": "mailbox"
+    },
+    {
+     "box": [
+      600.9,
+      870.9,
+      742.7,
+      1176.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:32fbd86a-a886-466f-b3e4-ad450491b0e4:2",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.415,
+     "t": "2026-10-17T19:37:54.606028+00:00",
+     "thumb": null,
+     "zone": "mailbox"
+    }
+   ],
+   "cropobs:8adcac02-586e-4cac-9caf-fe2e5b01ed6d:3": [
+    {
+     "box": [
+      1173.4,
+      649.7,
+      1249.1,
+      871.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:8adcac02-586e-4cac-9caf-fe2e5b01ed6d:3",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.35,
+     "t": "2026-10-17T19:37:49.512620+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      702.7,
+      826.9,
+      841.9,
+      1096.6
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:d65057cf-8410-419a-90a2-c0d9dde8e7c9:1",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.418,
+     "t": "2026-10-17T19:37:52.107527+00:00",
+     "thumb": null,
+     "zone": "mailbox"
+    },
+    {
+     "box": [
+      394.2,
+      991.9,
+      551.1,
+      1294.4
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:32fbd86a-a886-466f-b3e4-ad450491b0e4:0",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.455,
+     "t": "2026-10-17T19:37:54.606028+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      221.6,
+      1093.9,
+      385.8,
+      1484.4
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:8ac68d93-2758-432c-92c7-6cd8785fdff6:1",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.351,
+     "t": "2026-10-17T19:37:57.080197+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    }
+   ]
   },
   "stream_id": "walkway"
  },
@@ -178,10 +744,541 @@
   ],
   "live_status": "contradicted",
   "narrative": "A car is driving down a street with a person walking on the sidewalk.",
-  "story_class": {
-   "cropobs:687ab875-601b-4384-9cbe-7605637ca818:0": "parked",
-   "cropobs:687ab875-601b-4384-9cbe-7605637ca818:1": "parked",
-   "cropobs:687ab875-601b-4384-9cbe-7605637ca818:2": "walking"
+  "story_evidence": {
+   "cropobs:687ab875-601b-4384-9cbe-7605637ca818:0": [
+    {
+     "box": [
+      1241.0,
+      467.2,
+      1341.0,
+      539.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:78263ecf-6df9-475b-a7da-48e2cff88bd9:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.385,
+     "t": "2026-10-17T20:31:01.697882+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1230.9,
+      467.5,
+      1342.0,
+      540.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:8f712ae4-8871-4582-90f4-b8fea3cce286:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.396,
+     "t": "2026-10-17T20:31:06.700179+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1239.2,
+      467.5,
+      1340.4,
+      539.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:d1dbe65d-a5ee-4433-aeaf-ec076e59ab80:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.38,
+     "t": "2026-10-17T20:31:11.744283+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1240.3,
+      467.2,
+      1340.7,
+      539.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:8f439f12-68d9-4871-bc42-e004e74d5194:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.396,
+     "t": "2026-10-17T20:31:16.655318+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1238.6,
+      467.6,
+      1340.9,
+      539.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:d6a5dc45-ff3c-45bc-95d2-f7794b09d4da:0",
+     "individual_id": "e94a0ce303c54aa1bcb63d6f277c67cc",
+     "label": "vehicle",
+     "score": 0.377,
+     "t": "2026-10-17T20:31:21.738189+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1236.1,
+      467.6,
+      1342.2,
+      540.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:6b947a95-c02b-4b49-a340-dbe0e60a8861:1",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.396,
+     "t": "2026-10-17T20:31:26.650198+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1241.1,
+      467.7,
+      1340.8,
+      539.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:687ab875-601b-4384-9cbe-7605637ca818:0",
+     "individual_id": "e94a0ce303c54aa1bcb63d6f277c67cc",
+     "label": "vehicle",
+     "score": 0.399,
+     "t": "2026-10-17T20:31:29.223476+00:00",
+     "thumb": "8b5fbdfdbc65c90ca2d0fe0c229ab13f06d08a1c18063e4c99f803fd8740371a",
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1240.8,
+      467.5,
+      1340.7,
+      538.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:ecfeb949-5b53-435e-a7c9-f2cf6b77f053:1",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.397,
+     "t": "2026-10-17T20:31:31.734571+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1239.7,
+      467.6,
+      1340.6,
+      538.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:927b326b-9f16-4437-ad86-609cfa0dac09:1",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.395,
+     "t": "2026-10-17T20:31:33.968480+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1240.2,
+      467.2,
+      1340.5,
+      539.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:0413f192-6b97-4f14-b6c3-80a42cdcc7c5:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.376,
+     "t": "2026-10-17T20:31:36.750914+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1239.7,
+      467.2,
+      1341.1,
+      539.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:6898d898-35da-4ed1-8112-089fc6c96a94:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.375,
+     "t": "2026-10-17T20:31:39.259721+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1238.9,
+      467.0,
+      1340.4,
+      539.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:799b13b0-b7ca-447c-96d2-621f0e4cae78:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.372,
+     "t": "2026-10-17T20:31:41.685610+00:00",
+     "thumb": "7070a48393254e0af3f9951639f4da830f3d802be522e4fe0dd257165efdfa47",
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1240.4,
+      466.9,
+      1340.6,
+      539.4
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:468a5737-d022-46d8-a780-1f3bd5d4352d:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.385,
+     "t": "2026-10-17T20:31:46.672571+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1236.1,
+      467.7,
+      1342.8,
+      540.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:b4bdb01f-b1c6-4b0b-a970-0e8f1861c79c:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.401,
+     "t": "2026-10-17T20:31:51.669502+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1240.1,
+      467.4,
+      1340.7,
+      538.8
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:fcdd97eb-4841-433d-9745-a65fe133e7c1:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.377,
+     "t": "2026-10-17T20:31:56.744657+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    }
+   ],
+   "cropobs:687ab875-601b-4384-9cbe-7605637ca818:1": [
+    {
+     "box": [
+      1697.8,
+      361.3,
+      1780.0,
+      419.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:78263ecf-6df9-475b-a7da-48e2cff88bd9:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.371,
+     "t": "2026-10-17T20:31:01.697882+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.5,
+      361.3,
+      1780.1,
+      420.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:8f712ae4-8871-4582-90f4-b8fea3cce286:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.366,
+     "t": "2026-10-17T20:31:06.700179+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1698.1,
+      361.0,
+      1780.1,
+      420.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:d1dbe65d-a5ee-4433-aeaf-ec076e59ab80:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.364,
+     "t": "2026-10-17T20:31:11.744283+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.6,
+      361.0,
+      1780.2,
+      420.4
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:8f439f12-68d9-4871-bc42-e004e74d5194:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.37,
+     "t": "2026-10-17T20:31:16.655318+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.3,
+      361.1,
+      1780.4,
+      420.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:d6a5dc45-ff3c-45bc-95d2-f7794b09d4da:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.352,
+     "t": "2026-10-17T20:31:21.738189+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1698.2,
+      361.4,
+      1780.0,
+      419.8
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:687ab875-601b-4384-9cbe-7605637ca818:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.382,
+     "t": "2026-10-17T20:31:29.223476+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.7,
+      360.8,
+      1780.2,
+      419.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:ecfeb949-5b53-435e-a7c9-f2cf6b77f053:2",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.38,
+     "t": "2026-10-17T20:31:31.734571+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1698.0,
+      361.4,
+      1780.5,
+      419.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:927b326b-9f16-4437-ad86-609cfa0dac09:2",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.382,
+     "t": "2026-10-17T20:31:33.968480+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.1,
+      360.5,
+      1780.5,
+      420.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:0413f192-6b97-4f14-b6c3-80a42cdcc7c5:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.354,
+     "t": "2026-10-17T20:31:36.750914+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.9,
+      361.4,
+      1780.4,
+      420.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:6898d898-35da-4ed1-8112-089fc6c96a94:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.354,
+     "t": "2026-10-17T20:31:39.259721+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.4,
+      360.7,
+      1780.6,
+      420.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:799b13b0-b7ca-447c-96d2-621f0e4cae78:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.354,
+     "t": "2026-10-17T20:31:41.685610+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.9,
+      360.2,
+      1780.4,
+      420.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:468a5737-d022-46d8-a780-1f3bd5d4352d:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.363,
+     "t": "2026-10-17T20:31:46.672571+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.4,
+      361.0,
+      1780.1,
+      420.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:b4bdb01f-b1c6-4b0b-a970-0e8f1861c79c:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.369,
+     "t": "2026-10-17T20:31:51.669502+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1698.0,
+      359.8,
+      1780.6,
+      420.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:fcdd97eb-4841-433d-9745-a65fe133e7c1:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.364,
+     "t": "2026-10-17T20:31:56.744657+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    }
+   ],
+   "cropobs:687ab875-601b-4384-9cbe-7605637ca818:2": [
+    {
+     "box": [
+      2058.3,
+      541.9,
+      2230.3,
+      824.5
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:6b947a95-c02b-4b49-a340-dbe0e60a8861:0",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.435,
+     "t": "2026-10-17T20:31:26.650198+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1419.1,
+      611.2,
+      1531.4,
+      877.5
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:687ab875-601b-4384-9cbe-7605637ca818:2",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.355,
+     "t": "2026-10-17T20:31:29.223476+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      837.4,
+      761.3,
+      1049.8,
+      1043.5
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:ecfeb949-5b53-435e-a7c9-f2cf6b77f053:0",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.403,
+     "t": "2026-10-17T20:31:31.734571+00:00",
+     "thumb": null,
+     "zone": "mailbox"
+    },
+    {
+     "box": [
+      292.1,
+      950.4,
+      533.0,
+      1244.7
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:927b326b-9f16-4437-ad86-609cfa0dac09:0",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.416,
+     "t": "2026-10-17T20:31:33.968480+00:00",
+     "thumb": null,
+     "zone": "mailbox"
+    }
+   ]
   },
   "stream_id": "walkway"
  },
@@ -232,10 +1329,509 @@
   ],
   "live_status": "contradicted",
   "narrative": "A car is driving down a residential street, passing by a sidewalk and some trees.",
-  "story_class": {
-   "cropobs:be10eddd-67f5-4158-8b55-8eca3bf57a9e:0": "parked",
-   "cropobs:be10eddd-67f5-4158-8b55-8eca3bf57a9e:1": "walking",
-   "cropobs:be10eddd-67f5-4158-8b55-8eca3bf57a9e:2": "parked"
+  "story_evidence": {
+   "cropobs:be10eddd-67f5-4158-8b55-8eca3bf57a9e:0": [
+    {
+     "box": [
+      1241.1,
+      466.9,
+      1340.8,
+      539.4
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:06607a55-e6b7-402c-a784-328f956aca6b:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.392,
+     "t": "2026-10-17T20:35:19.342343+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1240.3,
+      466.9,
+      1340.8,
+      539.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:c949ef57-58d5-4418-90dd-44c64c8a55d1:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.38,
+     "t": "2026-10-17T20:35:24.285600+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1240.5,
+      467.3,
+      1340.6,
+      538.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:49f9dc36-3b64-4457-ab3a-09f261faf8f6:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.387,
+     "t": "2026-10-17T20:35:29.358928+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1235.8,
+      467.7,
+      1342.0,
+      540.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:4394c68e-da79-4079-899e-592d7dd6b5cf:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.405,
+     "t": "2026-10-17T20:35:34.303981+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1241.0,
+      467.4,
+      1340.2,
+      539.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:8b0cafe0-7435-4e0f-9e00-2af76a13bc92:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.415,
+     "t": "2026-10-17T20:35:39.352045+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1241.0,
+      467.3,
+      1340.4,
+      539.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:a1a81310-b1a4-4511-b54a-48ebe41607d1:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.395,
+     "t": "2026-10-17T20:35:41.549544+00:00",
+     "thumb": "f1f8d22e890a284915b52aaede5325addcfff3a9e1cd3737eb212f6b36e40a69",
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1241.0,
+      467.4,
+      1340.3,
+      538.7
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:be10eddd-67f5-4158-8b55-8eca3bf57a9e:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.418,
+     "t": "2026-10-17T20:35:44.345600+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1240.8,
+      467.4,
+      1340.5,
+      539.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:a7fea8ea-b9f4-44fd-9ba3-577fc3b560dd:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.388,
+     "t": "2026-10-17T20:35:46.867340+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1241.0,
+      467.0,
+      1340.8,
+      539.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:45d07cd6-5723-4963-9f24-758627837cc7:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.381,
+     "t": "2026-10-17T20:35:49.326510+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1240.6,
+      466.8,
+      1340.7,
+      539.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:70b0c487-ef6f-4528-a373-bf40ca868855:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.398,
+     "t": "2026-10-17T20:35:51.870492+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1241.2,
+      467.3,
+      1340.5,
+      539.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:8c07ea03-e3cb-42d1-8c08-1b14bb4fd725:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.41,
+     "t": "2026-10-17T20:35:54.364173+00:00",
+     "thumb": "51a598772a5b90985cab17a1aa0c9b31042a658a8a7e4f58351464db41b650c3",
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1240.9,
+      467.0,
+      1340.9,
+      539.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:74cc900b-1775-4ef3-9ee3-2205593cca1e:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.385,
+     "t": "2026-10-17T20:35:59.308046+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1240.7,
+      466.7,
+      1340.8,
+      539.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:50d8951a-3d92-4586-ac7a-1e9109cdabb0:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.401,
+     "t": "2026-10-17T20:36:04.285343+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1241.4,
+      466.8,
+      1340.1,
+      539.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:a51f95c1-8e3f-49e9-ae2f-fd472df8211e:0",
+     "individual_id": "fdd9a191bf364715aec31e1bbb5cc0cc",
+     "label": "vehicle",
+     "score": 0.414,
+     "t": "2026-10-17T20:36:09.371051+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    }
+   ],
+   "cropobs:be10eddd-67f5-4158-8b55-8eca3bf57a9e:1": [
+    {
+     "box": [
+      2094.8,
+      528.4,
+      2245.7,
+      820.4
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:8b0cafe0-7435-4e0f-9e00-2af76a13bc92:1",
+     "individual_id": "0974baafd7cd431785840c1890f11b53",
+     "label": "person",
+     "score": 0.404,
+     "t": "2026-10-17T20:35:39.352045+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1072.5,
+      675.9,
+      1231.0,
+      945.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:be10eddd-67f5-4158-8b55-8eca3bf57a9e:1",
+     "individual_id": "2269fbc3743d4cb797a27aa25a08e5fd",
+     "label": "person",
+     "score": 0.409,
+     "t": "2026-10-17T20:35:44.345600+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      570.6,
+      830.4,
+      747.4,
+      1159.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:a7fea8ea-b9f4-44fd-9ba3-577fc3b560dd:2",
+     "individual_id": "2269fbc3743d4cb797a27aa25a08e5fd",
+     "label": "person",
+     "score": 0.36,
+     "t": "2026-10-17T20:35:46.867340+00:00",
+     "thumb": null,
+     "zone": "mailbox"
+    }
+   ],
+   "cropobs:be10eddd-67f5-4158-8b55-8eca3bf57a9e:2": [
+    {
+     "box": [
+      1697.9,
+      360.4,
+      1780.4,
+      420.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:06607a55-e6b7-402c-a784-328f956aca6b:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.371,
+     "t": "2026-10-17T20:35:19.342343+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.8,
+      361.1,
+      1780.5,
+      420.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:c949ef57-58d5-4418-90dd-44c64c8a55d1:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.353,
+     "t": "2026-10-17T20:35:24.285600+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.9,
+      361.3,
+      1780.1,
+      420.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:49f9dc36-3b64-4457-ab3a-09f261faf8f6:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.363,
+     "t": "2026-10-17T20:35:29.358928+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.8,
+      360.1,
+      1780.5,
+      420.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:4394c68e-da79-4079-899e-592d7dd6b5cf:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.378,
+     "t": "2026-10-17T20:35:34.303981+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.8,
+      361.2,
+      1780.2,
+      419.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:8b0cafe0-7435-4e0f-9e00-2af76a13bc92:2",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.389,
+     "t": "2026-10-17T20:35:39.352045+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1698.1,
+      360.6,
+      1780.2,
+      419.7
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:a1a81310-b1a4-4511-b54a-48ebe41607d1:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.379,
+     "t": "2026-10-17T20:35:41.549544+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.7,
+      359.8,
+      1780.6,
+      419.5
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:be10eddd-67f5-4158-8b55-8eca3bf57a9e:2",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.398,
+     "t": "2026-10-17T20:35:44.345600+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.8,
+      360.4,
+      1780.4,
+      419.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:a7fea8ea-b9f4-44fd-9ba3-577fc3b560dd:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.36,
+     "t": "2026-10-17T20:35:46.867340+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.8,
+      362.0,
+      1779.9,
+      420.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:45d07cd6-5723-4963-9f24-758627837cc7:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.354,
+     "t": "2026-10-17T20:35:49.326510+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1698.0,
+      359.8,
+      1780.8,
+      419.7
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:70b0c487-ef6f-4528-a373-bf40ca868855:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.373,
+     "t": "2026-10-17T20:35:51.870492+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.5,
+      361.5,
+      1780.0,
+      420.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:8c07ea03-e3cb-42d1-8c08-1b14bb4fd725:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.382,
+     "t": "2026-10-17T20:35:54.364173+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1698.0,
+      361.0,
+      1780.2,
+      420.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:74cc900b-1775-4ef3-9ee3-2205593cca1e:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.355,
+     "t": "2026-10-17T20:35:59.308046+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1697.5,
+      360.0,
+      1780.5,
+      420.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:50d8951a-3d92-4586-ac7a-1e9109cdabb0:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.376,
+     "t": "2026-10-17T20:36:04.285343+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1698.0,
+      360.4,
+      1780.4,
+      419.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:a51f95c1-8e3f-49e9-ae2f-fd472df8211e:1",
+     "individual_id": "9f3d8ecdbca4404ea833d65e9f977db1",
+     "label": "vehicle",
+     "score": 0.396,
+     "t": "2026-10-17T20:36:09.371051+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    }
+   ]
   },
   "stream_id": "walkway"
  },
@@ -286,9 +1882,315 @@
   ],
   "live_status": "contradicted",
   "narrative": "A car is driving down a residential street, passing by a house and a tree.",
-  "story_class": {
-   "cropobs:0cd19108-c7cd-4bff-bf62-071d1e78b20d:1": "parked",
-   "cropobs:0cd19108-c7cd-4bff-bf62-071d1e78b20d:2": null
+  "story_evidence": {
+   "cropobs:0cd19108-c7cd-4bff-bf62-071d1e78b20d:1": [
+    {
+     "box": [
+      1695.1,
+      362.2,
+      1779.7,
+      421.8
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:3525f93d-0acd-4c2c-a18d-f13bd328d43f:1",
+     "individual_id": "4cb34ee7edf043699a315a29b31bdfc2",
+     "label": "vehicle",
+     "score": 0.354,
+     "t": "2026-10-19T16:50:51.808584+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.2,
+      363.2,
+      1779.4,
+      421.8
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:ce4d951d-ed84-46d3-97ae-701830aba28e:1",
+     "individual_id": "4cb34ee7edf043699a315a29b31bdfc2",
+     "label": "vehicle",
+     "score": 0.357,
+     "t": "2026-10-19T16:50:56.871572+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.6,
+      362.7,
+      1778.6,
+      420.7
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:fe1f046c-9001-461c-bc90-0b8dd5cbab31:4",
+     "individual_id": "4cb34ee7edf043699a315a29b31bdfc2",
+     "label": "vehicle",
+     "score": 0.521,
+     "t": "2026-10-19T16:51:01.824738+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.3,
+      362.8,
+      1778.3,
+      420.8
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:f32e3df1-637e-4f09-a59f-34b48e30e711:4",
+     "individual_id": "4cb34ee7edf043699a315a29b31bdfc2",
+     "label": "vehicle",
+     "score": 0.499,
+     "t": "2026-10-19T16:51:04.193906+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.9,
+      363.1,
+      1778.5,
+      420.8
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:d1ab6002-3663-46e9-bc49-af048dff58bf:3",
+     "individual_id": "4cb34ee7edf043699a315a29b31bdfc2",
+     "label": "vehicle",
+     "score": 0.5,
+     "t": "2026-10-19T16:51:06.844499+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.5,
+      363.8,
+      1778.8,
+      420.4
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:429413bf-8720-4ffd-8348-5399ef63474b:4",
+     "individual_id": "4cb34ee7edf043699a315a29b31bdfc2",
+     "label": "vehicle",
+     "score": 0.505,
+     "t": "2026-10-19T16:51:09.324932+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.4,
+      363.8,
+      1778.8,
+      420.5
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:d6927527-fbaa-4e8f-a009-7abc61724d9d:2",
+     "individual_id": "4cb34ee7edf043699a315a29b31bdfc2",
+     "label": "vehicle",
+     "score": 0.498,
+     "t": "2026-10-19T16:51:11.837607+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.7,
+      362.9,
+      1778.7,
+      420.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:59479b2d-65c3-4d6a-9baa-a01633580477:1",
+     "individual_id": "4cb34ee7edf043699a315a29b31bdfc2",
+     "label": "vehicle",
+     "score": 0.435,
+     "t": "2026-10-19T16:51:14.184264+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.2,
+      363.0,
+      1779.1,
+      421.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:0cd19108-c7cd-4bff-bf62-071d1e78b20d:1",
+     "individual_id": "4cb34ee7edf043699a315a29b31bdfc2",
+     "label": "vehicle",
+     "score": 0.429,
+     "t": "2026-10-19T16:51:16.882580+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.8,
+      363.8,
+      1778.9,
+      420.7
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:5f58c492-5e15-49ca-b01c-a49f6d07bfca:1",
+     "individual_id": null,
+     "label": "vehicle",
+     "score": 0.432,
+     "t": "2026-10-19T16:51:19.355359+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.7,
+      363.1,
+      1779.1,
+      420.6
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:c0328d93-01d2-4981-ac16-fd394401a721:4",
+     "individual_id": null,
+     "label": "vehicle",
+     "score": 0.456,
+     "t": "2026-10-19T16:51:21.820840+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.3,
+      363.9,
+      1779.0,
+      420.8
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:eaa908f9-7ea1-4c6f-a21e-0ad11d208d5b:1",
+     "individual_id": null,
+     "label": "vehicle",
+     "score": 0.468,
+     "t": "2026-10-19T16:51:24.186892+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.8,
+      362.8,
+      1779.2,
+      421.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:a9e10413-9728-435f-89de-20508db3e760:1",
+     "individual_id": null,
+     "label": "vehicle",
+     "score": 0.378,
+     "t": "2026-10-19T16:51:26.814813+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.1,
+      363.7,
+      1778.8,
+      421.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:b29c90e6-98bf-40fa-9767-7571275f5a1f:1",
+     "individual_id": null,
+     "label": "vehicle",
+     "score": 0.354,
+     "t": "2026-10-19T16:51:29.366116+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.9,
+      364.2,
+      1779.3,
+      420.8
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:bffe19a4-9ffd-4286-9768-a332e8bbb411:1",
+     "individual_id": null,
+     "label": "vehicle",
+     "score": 0.358,
+     "t": "2026-10-19T16:51:36.835736+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.8,
+      365.8,
+      1780.3,
+      421.5
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:3f0be52a-8f1a-43e6-90e9-3aa80347edca:1",
+     "individual_id": null,
+     "label": "vehicle",
+     "score": 0.377,
+     "t": "2026-10-19T16:51:41.830836+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.3,
+      361.6,
+      1779.4,
+      421.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:ed7e3fde-4ef6-475d-b4a6-87c6d4f49f4d:1",
+     "individual_id": null,
+     "label": "vehicle",
+     "score": 0.358,
+     "t": "2026-10-19T16:51:46.811623+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    }
+   ],
+   "cropobs:0cd19108-c7cd-4bff-bf62-071d1e78b20d:2": [
+    {
+     "box": [
+      959.0,
+      743.6,
+      1068.1,
+      827.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:0cd19108-c7cd-4bff-bf62-071d1e78b20d:2",
+     "individual_id": "e5df025c5607411a8311c4054362a513",
+     "label": "dog",
+     "score": 0.364,
+     "t": "2026-10-19T16:51:16.882580+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1286.7,
+      661.1,
+      1361.3,
+      741.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:c0328d93-01d2-4981-ac16-fd394401a721:2",
+     "individual_id": null,
+     "label": "dog",
+     "score": 0.561,
+     "t": "2026-10-19T16:51:21.820840+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    }
+   ]
   },
   "stream_id": "walkway"
  },
@@ -339,9 +2241,283 @@
   ],
   "live_status": "contradicted",
   "narrative": "A car is driving down a street in a residential area with houses and a fence in the background.",
-  "story_class": {
-   "cropobs:baae0a9c-f646-4416-914e-777a5bb76f56:1": "parked",
-   "cropobs:baae0a9c-f646-4416-914e-777a5bb76f56:2": null
+  "story_evidence": {
+   "cropobs:baae0a9c-f646-4416-914e-777a5bb76f56:1": [
+    {
+     "box": [
+      1695.5,
+      363.9,
+      1779.2,
+      421.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:35558539-4eea-4e15-a39f-b7477210df2e:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.382,
+     "t": "2026-10-19T17:11:24.842930+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.2,
+      362.2,
+      1779.3,
+      420.7
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:3fd7749f-0b66-4564-b612-72a661ca58ec:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.391,
+     "t": "2026-10-19T17:11:27.335006+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.9,
+      362.2,
+      1778.8,
+      420.4
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:fe440d57-6ffa-40e8-9918-99cbb2b857f9:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.388,
+     "t": "2026-10-19T17:11:32.261291+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.0,
+      363.3,
+      1779.2,
+      420.5
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:95c77dca-dfe1-4ca5-9559-7d28852d28f3:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.372,
+     "t": "2026-10-19T17:11:37.348132+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.0,
+      362.1,
+      1779.2,
+      420.8
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:15951972-fe4e-4059-b907-c5b94be03d8b:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.399,
+     "t": "2026-10-19T17:11:42.243350+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.5,
+      364.4,
+      1779.0,
+      420.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:1fe7fc9e-be04-41f7-be0b-f925969895e4:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.405,
+     "t": "2026-10-19T17:11:47.359133+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.3,
+      365.0,
+      1778.7,
+      420.7
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:0a124cd3-8224-4d70-a43a-9e0a27a244a2:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.392,
+     "t": "2026-10-19T17:11:52.178808+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.7,
+      362.4,
+      1778.9,
+      420.4
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:baae0a9c-f646-4416-914e-777a5bb76f56:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.392,
+     "t": "2026-10-19T17:11:54.818417+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.2,
+      363.4,
+      1778.8,
+      420.7
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:d6738410-edaa-4ef4-b0cb-c80b4437d262:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.395,
+     "t": "2026-10-19T17:11:57.360388+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.0,
+      362.2,
+      1778.5,
+      420.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:5d3aa335-8212-4016-bac1-9ec54eaee732:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.379,
+     "t": "2026-10-19T17:11:59.777522+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.8,
+      363.6,
+      1779.0,
+      421.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:3f0eb853-348b-4f37-9224-6af4ab33128d:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.417,
+     "t": "2026-10-19T17:12:02.170585+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.5,
+      364.3,
+      1778.8,
+      421.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:4ba47ea1-cdd3-40dc-914b-c40fe6e6e6aa:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.382,
+     "t": "2026-10-19T17:12:07.369568+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.9,
+      364.6,
+      1778.8,
+      421.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:808119b3-ed74-4f01-b985-85f3efd3c9b8:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.407,
+     "t": "2026-10-19T17:12:12.147643+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.9,
+      367.1,
+      1778.3,
+      421.4
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:0138afbc-fd90-4e73-ab74-a77694ab5456:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.371,
+     "t": "2026-10-19T17:12:17.370167+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.8,
+      364.4,
+      1778.9,
+      421.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:64e75d48-dd81-4178-bbfd-9340b853f028:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.364,
+     "t": "2026-10-19T17:12:22.242846+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    }
+   ],
+   "cropobs:baae0a9c-f646-4416-914e-777a5bb76f56:2": [
+    {
+     "box": [
+      200.9,
+      919.3,
+      322.2,
+      1179.4
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:0a124cd3-8224-4d70-a43a-9e0a27a244a2:2",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.351,
+     "t": "2026-10-19T17:11:52.178808+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      237.8,
+      917.3,
+      374.6,
+      1184.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:baae0a9c-f646-4416-914e-777a5bb76f56:2",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.368,
+     "t": "2026-10-19T17:11:54.818417+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    }
+   ]
   },
   "stream_id": "walkway"
  },
@@ -382,8 +2558,249 @@
   ],
   "live_status": "contradicted",
   "narrative": "A car is driving down a residential street, passing by a house with a fence and some trees.",
-  "story_class": {
-   "cropobs:3f0eb853-348b-4f37-9224-6af4ab33128d:1": "parked"
+  "story_evidence": {
+   "cropobs:3f0eb853-348b-4f37-9224-6af4ab33128d:1": [
+    {
+     "box": [
+      1695.9,
+      362.2,
+      1778.8,
+      420.4
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:fe440d57-6ffa-40e8-9918-99cbb2b857f9:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.388,
+     "t": "2026-10-19T17:11:32.261291+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.0,
+      363.3,
+      1779.2,
+      420.5
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:95c77dca-dfe1-4ca5-9559-7d28852d28f3:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.372,
+     "t": "2026-10-19T17:11:37.348132+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.0,
+      362.1,
+      1779.2,
+      420.8
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:15951972-fe4e-4059-b907-c5b94be03d8b:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.399,
+     "t": "2026-10-19T17:11:42.243350+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.5,
+      364.4,
+      1779.0,
+      420.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:1fe7fc9e-be04-41f7-be0b-f925969895e4:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.405,
+     "t": "2026-10-19T17:11:47.359133+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.3,
+      365.0,
+      1778.7,
+      420.7
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:0a124cd3-8224-4d70-a43a-9e0a27a244a2:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.392,
+     "t": "2026-10-19T17:11:52.178808+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.7,
+      362.4,
+      1778.9,
+      420.4
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:baae0a9c-f646-4416-914e-777a5bb76f56:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.392,
+     "t": "2026-10-19T17:11:54.818417+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.2,
+      363.4,
+      1778.8,
+      420.7
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:d6738410-edaa-4ef4-b0cb-c80b4437d262:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.395,
+     "t": "2026-10-19T17:11:57.360388+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.0,
+      362.2,
+      1778.5,
+      420.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:5d3aa335-8212-4016-bac1-9ec54eaee732:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.379,
+     "t": "2026-10-19T17:11:59.777522+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.8,
+      363.6,
+      1779.0,
+      421.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:3f0eb853-348b-4f37-9224-6af4ab33128d:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.417,
+     "t": "2026-10-19T17:12:02.170585+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.5,
+      364.3,
+      1778.8,
+      421.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:4ba47ea1-cdd3-40dc-914b-c40fe6e6e6aa:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.382,
+     "t": "2026-10-19T17:12:07.369568+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.9,
+      364.6,
+      1778.8,
+      421.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:808119b3-ed74-4f01-b985-85f3efd3c9b8:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.407,
+     "t": "2026-10-19T17:12:12.147643+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.9,
+      367.1,
+      1778.3,
+      421.4
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:0138afbc-fd90-4e73-ab74-a77694ab5456:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.371,
+     "t": "2026-10-19T17:12:17.370167+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.8,
+      364.4,
+      1778.9,
+      421.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:64e75d48-dd81-4178-bbfd-9340b853f028:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.364,
+     "t": "2026-10-19T17:12:22.242846+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.0,
+      363.6,
+      1778.4,
+      421.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:c60411b9-d059-446b-9009-e03df73931e3:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.375,
+     "t": "2026-10-19T17:12:27.342786+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.7,
+      364.5,
+      1778.4,
+      421.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:0ca1d935-81f4-498a-966c-2d857c5fec43:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.395,
+     "t": "2026-10-19T17:12:32.122158+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    }
+   ]
   },
   "stream_id": "walkway"
  },
@@ -434,9 +2851,347 @@
   ],
   "live_status": "contradicted",
   "narrative": "A car is driving down a residential street with a fence and trees on the side.",
-  "story_class": {
-   "cropobs:c9dc9671-405e-4a76-95e0-e6a377893b9b:1": "parked",
-   "cropobs:c9dc9671-405e-4a76-95e0-e6a377893b9b:2": "standing"
+  "story_evidence": {
+   "cropobs:c9dc9671-405e-4a76-95e0-e6a377893b9b:1": [
+    {
+     "box": [
+      1695.9,
+      367.1,
+      1778.3,
+      421.4
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:0138afbc-fd90-4e73-ab74-a77694ab5456:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.371,
+     "t": "2026-10-19T17:12:17.370167+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.8,
+      364.4,
+      1778.9,
+      421.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:64e75d48-dd81-4178-bbfd-9340b853f028:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.364,
+     "t": "2026-10-19T17:12:22.242846+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.0,
+      363.6,
+      1778.4,
+      421.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:c60411b9-d059-446b-9009-e03df73931e3:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.375,
+     "t": "2026-10-19T17:12:27.342786+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.7,
+      364.5,
+      1778.4,
+      421.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:0ca1d935-81f4-498a-966c-2d857c5fec43:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.395,
+     "t": "2026-10-19T17:12:32.122158+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.2,
+      364.4,
+      1778.7,
+      421.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:45d7f662-9239-407d-a6ad-8be2ea119977:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.38,
+     "t": "2026-10-19T17:12:37.378151+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.0,
+      362.5,
+      1778.4,
+      420.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:6aae3384-11fb-40ea-8bf8-a24ccc0b9ec6:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.406,
+     "t": "2026-10-19T17:12:39.860312+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.3,
+      363.4,
+      1778.8,
+      420.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:c9dc9671-405e-4a76-95e0-e6a377893b9b:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.411,
+     "t": "2026-10-19T17:12:42.198218+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.6,
+      363.4,
+      1778.3,
+      421.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:c1ed9052-5cc3-44f0-aee2-00a48148ae59:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.395,
+     "t": "2026-10-19T17:12:44.883634+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.5,
+      364.1,
+      1778.0,
+      421.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:3caaaece-0e86-403a-9044-cb664a2c64d8:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.374,
+     "t": "2026-10-19T17:12:47.312700+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.2,
+      363.4,
+      1778.4,
+      421.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:56a71434-9fb6-4988-9de0-8f86849ffd37:2",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.408,
+     "t": "2026-10-19T17:12:49.891521+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.0,
+      362.5,
+      1778.6,
+      421.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:e197203e-071f-4e22-be1f-3fcb766be813:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.378,
+     "t": "2026-10-19T17:12:52.107811+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.3,
+      363.5,
+      1778.6,
+      421.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:0f33781d-fac9-47fd-bc74-bd8bef4b933a:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.377,
+     "t": "2026-10-19T17:12:54.890811+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.5,
+      363.8,
+      1778.7,
+      421.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:67082256-1d1a-430a-b816-84b112f81ef0:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.377,
+     "t": "2026-10-19T17:12:57.347811+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.2,
+      363.8,
+      1778.2,
+      421.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:b149eca2-1511-4ef5-bc1b-0b48e4e11bfd:2",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.396,
+     "t": "2026-10-19T17:13:02.100600+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.1,
+      363.7,
+      1777.9,
+      421.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:8f543c8c-95c1-4620-a452-c6e1a2bfdcc6:2",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.382,
+     "t": "2026-10-19T17:13:04.878467+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.6,
+      362.3,
+      1778.9,
+      421.5
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:de8777f7-e95d-4579-9efe-c72b9a9e0f4c:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.381,
+     "t": "2026-10-19T17:13:07.290992+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.9,
+      363.3,
+      1778.4,
+      421.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:e06bf793-1c10-41fb-b301-1c335e78461e:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.398,
+     "t": "2026-10-19T17:13:09.901251+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.8,
+      362.6,
+      1778.2,
+      421.6
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:c82bb18a-be35-4962-a3ea-1855846f6161:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.397,
+     "t": "2026-10-19T17:13:12.107542+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    }
+   ],
+   "cropobs:c9dc9671-405e-4a76-95e0-e6a377893b9b:2": [
+    {
+     "box": [
+      237.7,
+      920.3,
+      360.6,
+      1186.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:45d7f662-9239-407d-a6ad-8be2ea119977:2",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.355,
+     "t": "2026-10-19T17:12:37.378151+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      213.1,
+      920.5,
+      337.8,
+      1177.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:c9dc9671-405e-4a76-95e0-e6a377893b9b:2",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.371,
+     "t": "2026-10-19T17:12:42.198218+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      324.9,
+      893.7,
+      447.1,
+      1173.0
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:56a71434-9fb6-4988-9de0-8f86849ffd37:1",
+     "individual_id": null,
+     "label": "person",
+     "score": 0.453,
+     "t": "2026-10-19T17:12:49.891521+00:00",
+     "thumb": null,
+     "zone": "mailbox"
+    }
+   ]
   },
   "stream_id": "walkway"
  },
@@ -477,8 +3232,297 @@
   ],
   "live_status": "contradicted",
   "narrative": "A car is driving down a street in a residential area, passing by a house with a blue sign.",
-  "story_class": {
-   "cropobs:0f33781d-fac9-47fd-bc74-bd8bef4b933a:1": "parked"
+  "story_evidence": {
+   "cropobs:0f33781d-fac9-47fd-bc74-bd8bef4b933a:1": [
+    {
+     "box": [
+      1696.0,
+      363.6,
+      1778.4,
+      421.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:c60411b9-d059-446b-9009-e03df73931e3:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.375,
+     "t": "2026-10-19T17:12:27.342786+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.7,
+      364.5,
+      1778.4,
+      421.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:0ca1d935-81f4-498a-966c-2d857c5fec43:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.395,
+     "t": "2026-10-19T17:12:32.122158+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.2,
+      364.4,
+      1778.7,
+      421.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:45d7f662-9239-407d-a6ad-8be2ea119977:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.38,
+     "t": "2026-10-19T17:12:37.378151+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.0,
+      362.5,
+      1778.4,
+      420.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:6aae3384-11fb-40ea-8bf8-a24ccc0b9ec6:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.406,
+     "t": "2026-10-19T17:12:39.860312+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.3,
+      363.4,
+      1778.8,
+      420.9
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:c9dc9671-405e-4a76-95e0-e6a377893b9b:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.411,
+     "t": "2026-10-19T17:12:42.198218+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.6,
+      363.4,
+      1778.3,
+      421.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:c1ed9052-5cc3-44f0-aee2-00a48148ae59:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.395,
+     "t": "2026-10-19T17:12:44.883634+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.5,
+      364.1,
+      1778.0,
+      421.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:3caaaece-0e86-403a-9044-cb664a2c64d8:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.374,
+     "t": "2026-10-19T17:12:47.312700+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.2,
+      363.4,
+      1778.4,
+      421.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:56a71434-9fb6-4988-9de0-8f86849ffd37:2",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.408,
+     "t": "2026-10-19T17:12:49.891521+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.0,
+      362.5,
+      1778.6,
+      421.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:e197203e-071f-4e22-be1f-3fcb766be813:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.378,
+     "t": "2026-10-19T17:12:52.107811+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.3,
+      363.5,
+      1778.6,
+      421.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:0f33781d-fac9-47fd-bc74-bd8bef4b933a:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.377,
+     "t": "2026-10-19T17:12:54.890811+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.5,
+      363.8,
+      1778.7,
+      421.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:67082256-1d1a-430a-b816-84b112f81ef0:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.377,
+     "t": "2026-10-19T17:12:57.347811+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.2,
+      363.8,
+      1778.2,
+      421.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:b149eca2-1511-4ef5-bc1b-0b48e4e11bfd:2",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.396,
+     "t": "2026-10-19T17:13:02.100600+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.1,
+      363.7,
+      1777.9,
+      421.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:8f543c8c-95c1-4620-a452-c6e1a2bfdcc6:2",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.382,
+     "t": "2026-10-19T17:13:04.878467+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.6,
+      362.3,
+      1778.9,
+      421.5
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:de8777f7-e95d-4579-9efe-c72b9a9e0f4c:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.381,
+     "t": "2026-10-19T17:13:07.290992+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.9,
+      363.3,
+      1778.4,
+      421.2
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:e06bf793-1c10-41fb-b301-1c335e78461e:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.398,
+     "t": "2026-10-19T17:13:09.901251+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1695.8,
+      362.6,
+      1778.2,
+      421.6
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:c82bb18a-be35-4962-a3ea-1855846f6161:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.397,
+     "t": "2026-10-19T17:13:12.107542+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.2,
+      365.7,
+      1778.0,
+      421.3
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:366e3ff3-588f-4894-ab3d-c0b1daaea6b7:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.388,
+     "t": "2026-10-19T17:13:17.388340+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    },
+    {
+     "box": [
+      1696.9,
+      362.8,
+      1778.2,
+      421.1
+     ],
+     "clipped": false,
+     "crop_id": "cropobs:d4e87c79-dd31-40a8-9da4-2b6fa92fb1ca:1",
+     "individual_id": "9799262064634c0b9d23b185ff5f845b",
+     "label": "vehicle",
+     "score": 0.402,
+     "t": "2026-10-19T17:13:22.052580+00:00",
+     "thumb": null,
+     "zone": "walkway"
+    }
+   ]
   },
   "stream_id": "walkway"
  }

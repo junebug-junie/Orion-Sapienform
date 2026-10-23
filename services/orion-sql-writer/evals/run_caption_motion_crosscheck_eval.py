@@ -35,6 +35,7 @@ from app.vision_caption_motion import _refs, check_caption, parse_caption_refs, 
 DEFAULT_PG = "postgresql://postgres:postgres@localhost:55432/conjourney"
 # Same as the reducer: LoopConfig.window_sec + the close gap.
 SETTLE_SEC = 900.0 + 11.0
+FIXTURE_SEC = 30.0
 
 
 def main() -> int:
@@ -77,12 +78,16 @@ def main() -> int:
                 if args.fixture and "driving" in (narrative or "").lower() and v.status in (
                         "contradicted", "supported", "undecided"):
                     frame_ts, _ = parse_caption_refs(refs)
-                    crops, story_class = read_frame(conn, stream, frame_ts) if frame_ts else ([], {})
+                    crops, story_evidence = read_frame(conn, stream, frame_ts) if frame_ts else ([], {})
+                    # Only the boxes near the frame (local_motion reads LOCAL_WINDOW_SEC of them).
+                    near = {cid: [e for e in ev if isinstance(e, dict) and e.get("t") and abs(
+                                (datetime.fromisoformat(str(e["t"])) - frame_ts).total_seconds()) <= FIXTURE_SEC]
+                            for cid, ev in story_evidence.items()}
                     fixture.append({
                         "event_id": event_id, "created_at": created_at.isoformat(), "stream_id": stream,
                         "narrative": narrative, "evidence_refs": refs,
                         "crops": [{"crop_id": c.crop_id, "label": c.label, "box": list(c.box)} for c in crops],
-                        "story_class": story_class, "live_status": v.status,
+                        "story_evidence": near, "live_status": v.status,
                     })
             total = sum(status.values())
             print(f"== {stream}: {total} camera_caption rows {since:%Y-%m-%d %H:%M} .. {until:%Y-%m-%d %H:%M} UTC "
@@ -90,7 +95,7 @@ def main() -> int:
             for k in ("contradicted", "supported", "undecided", "pending", "no_claim"):
                 print(f"   {k:13s} {status.get(k, 0)}")
             for (word, verdict, speed), n in sorted(claim_words.items(), key=lambda kv: -kv[1]):
-                print(f"   claim {word!r:12s} {verdict:13s} story={speed:9s} {n}")
+                print(f"   claim {word!r:12s} {verdict:13s} local={speed:9s} {n}")
     if args.fixture:
         Path(args.fixture).write_text(json.dumps(fixture, indent=1, sort_keys=True))
         print(f"wrote {len(fixture)} driving captions to {args.fixture}")

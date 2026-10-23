@@ -66,8 +66,13 @@ def _caption(conn, event_id, narrative, created_at):
         {"id": event_id, "n": narrative, "tags": json.dumps(OWN_TAGS), "refs": json.dumps(refs), "c": created_at})
 
 
-def _car_in_story(conn, speed_class, drop_reason):
+def _car_in_story(conn, speed_class, drop_reason, offsets=(-10, -5, 0, 5, 10)):
+    """The caption's car in a story whose boxes sit still around the frame
+    (``offsets``: seconds from the frame of each box)."""
     from sqlalchemy import text
+
+    evidence = [{"crop_id": "car" if dt == 0 else f"car{dt}", "t": (FRAME + timedelta(seconds=dt)).isoformat(),
+                 "label": "vehicle", "box": list(CAR), "clipped": False} for dt in offsets]
 
     conn.execute(text(
         "INSERT INTO vision_crop_observation (crop_id, observation_id, stream_id, observed_at, label, score, box_xyxy) "
@@ -76,9 +81,9 @@ def _car_in_story(conn, speed_class, drop_reason):
         "INSERT INTO vision_motion_story (story_id, stream_id, kind, started_at, ended_at, detection_count, "
         "dir_lateral, dir_depth, zone_path, individual_id, published, crop_ids, evidence, rules_version, "
         "speed_class, drop_reason) VALUES ('s1', 'walkway', 'vehicle', :a, :b, 3, 0, 0, :zp, NULL, false, "
-        "ARRAY['car'], '[]'::jsonb, 1, :sc, :dr)"),
+        "ARRAY['car'], CAST(:ev AS jsonb), 1, :sc, :dr)"),
         {"a": FRAME - timedelta(seconds=60), "b": FRAME + timedelta(seconds=60), "zp": ["walkway"],
-         "sc": speed_class, "dr": drop_reason})
+         "ev": json.dumps(evidence), "sc": speed_class, "dr": drop_reason})
 
 
 def _tags(pg, event_id):
@@ -120,10 +125,10 @@ def test_update_guard_never_adds_a_second_verdict(pg) -> None:
     assert _tags(pg, "e") == [*OWN_TAGS, "motion_supported"]
 
 
-def test_glimpse_story_leaves_the_row_untagged(pg) -> None:
+def test_thin_local_evidence_leaves_the_row_untagged(pg) -> None:
     with pg.begin() as conn:
         _caption(conn, "e", "A car is driving.", FRAME)
-        _car_in_story(conn, "parked", "glimpse")
+        _car_in_story(conn, "parked", "glimpse", offsets=(0, 5))
     counts = _step(pg)
     assert counts["undecided"] == 1 and counts["tagged"] == 0
     assert _tags(pg, "e") == OWN_TAGS

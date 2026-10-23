@@ -852,14 +852,18 @@ after its caption is written).
 - Match: the caption's own `box:` and `crop:` refs to the detector crops of its
   frame (`frame_ts`), best IoU >= `VISION_CAPTION_MOTION_MIN_IOU` (0.5). Never
   every crop in the frame.
-- Verdict per claim: a moving story of the claimed kind -> supported; only
-  `parked`/`standing` stories -> contradicted; no story or no speed -> nothing.
-  A glimpse, too-long or edge-clipped story counts as "no speed", and any such
-  story among the matched crops blocks a contradiction (a passing car is
-  usually a glimpse). One contradicted claim makes the row contradicted.
-- Known limits: the story's speed class is the average over its whole passage,
-  not the motion at the frame (a car that drives in and parks reads `parked`).
-  Negations ("not driving") still count as claims; "moving", "drove", "rode"
+- Local motion, not the story average: each matched crop is judged by its own
+  track's boxes within 10 s of the frame (`local_motion`: net travel over box
+  height, classed by the story reducer's own `kinematics`/`speed_class`, clipped
+  boxes skipped). Fewer than 3 boxes or a span under 8 s -> no evidence. Still
+  only when the story rule says still AND net travel <= 0.25 body heights; in
+  between -> no evidence. A story's `speed_class` averages the whole passage, so
+  a car that drove in and then parked would read `parked` and wrongly contradict
+  a true "driving" caption.
+- Verdict per claim: any matched crop of the claimed kind clearly moving near
+  the frame -> supported; clearly still and no matched crop without evidence ->
+  contradicted; otherwise nothing. One contradicted claim makes the row contradicted.
+- Known limits: Negations ("not driving") still count as claims; "moving", "drove", "rode"
   are not checked. A caption row re-written with the same event_id (redelivery,
   `worker.py` `sess.merge`) loses its tags; inside the lookback the step tags it again.
 - Writes tags only (no column): `motion_contradicted` or `motion_supported`, plus

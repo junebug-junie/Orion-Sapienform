@@ -18,9 +18,14 @@ This module is the pure half. For one ``camera_caption`` row it:
 2. matches the caption's own boxes (its ``box:`` and ``crop:`` evidence refs,
    the boxes the VLM read) to the detector crops of the same frame by IoU --
    never every crop in the frame;
-3. reads the speed_class of the story that holds each matched crop, and
-   decides per claim: a moving story of the claimed kind -> supported; only
-   still stories -> contradicted; no story -> undecided.
+3. measures how each matched crop's own track moved NEAR THE FRAME
+   (`local_motion`: the story's boxes within LOCAL_WINDOW_SEC of
+   ``frame_ts``, displacement normalised by box height, classed with the
+   story reducer's own `kinematics`/`speed_class`), and decides per claim:
+   clearly moving -> supported; clearly still -> contradicted; too few boxes
+   or in between -> undecided. Not the story's ``speed_class``: that is an
+   average over the whole passage, so a car that drove in and then parked
+   reads ``parked`` and would wrongly contradict a true "driving" caption.
 
 The clocked half (`caption_motion_step` in `app/vision_motion_loop.py`) runs
 after stories are written, because a story closes after the caption is saved.
@@ -40,7 +45,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from app.vision_motion import KINDS, SPEED_CLASSES, STILL_CLASSES
+from app.vision_motion import KINDS, SPEED_CLASSES, STILL_CLASSES, MotionConfig, MotionCrop, kinematics, speed_class
 from orion.situational.street_material import (
     CAPTION_MOTION_CHECK_TAG_PREFIX,
     CAPTION_MOTION_CONTRADICTED_TAG,
@@ -204,17 +209,16 @@ class ClaimCheck:
 
 def check_claim(claim: MotionClaim, matched: Sequence[FrameCrop], story_class: Mapping[str, Optional[str]],
                 *, settled: bool) -> ClaimCheck:
-    """``story_class``: crop_id -> usable speed_class of the story that holds
-    it (None = a story with no usable speed: a glimpse, a too-long or
-    edge-clipped passage; see `usable_speed`). A crop absent from it has no
-    story. ``settled``: no story can still close for this frame, so a
-    storyless crop will stay storyless.
+    """``story_class``: crop_id -> the crop's LOCAL motion class near the
+    frame (`local_motion`; None = too little or ambiguous local evidence). A
+    crop absent from it has no story. ``settled``: no story can still close
+    for this frame, so a storyless crop will stay storyless.
 
-    Supported: any matched crop of the claimed kind is in a moving story.
-    Contradicted: matched crops are in still stories and NONE of them is in a
-    story with no usable speed -- a glimpse is how a passing car usually
-    looks, so it may be the very car the caption saw driving. Storyless crops
-    carry no evidence either way."""
+    Supported: any matched crop of the claimed kind clearly moved near the
+    frame. Contradicted: matched crops were clearly still near the frame and
+    NONE of them is undecided -- an undecided crop (often a passing car seen
+    in one or two frames) may be the very car the caption saw driving.
+    Storyless crops carry no evidence either way."""
     relevant = [c for c in matched if c.label in claim.kinds]
     if not relevant:
         return ClaimCheck(claim, "undecided")
@@ -261,6 +265,66 @@ def decide_caption(text: str, matched: Sequence[FrameCrop], story_class: Mapping
 
 
 # ---------------------------------------------------------------------------
+# Local motion: how the crop's own track moved near the frame
+# ---------------------------------------------------------------------------
+
+# The story's boxes this close to the frame (the detector looks every ~5 s,
+# so a 10 s half-window holds up to ~5 boxes on a steady track).
+LOCAL_WINDOW_SEC = 10.0
+# Too thin below this: fewer boxes, or a shorter span, says nothing reliable.
+LOCAL_MIN_BOXES = 3
+LOCAL_MIN_SPAN_SEC = 8.0
+# "Clearly still": the story reducer's own still rule (net travel < still_bh
+# body heights, or speed < STILL_SPEED_BH) AND net travel within half of
+# still_bh. In between is undecided, never contradicted.
+LOCAL_STILL_SHARE = 0.5
+_LOCAL_CFG = MotionConfig()
+
+
+def _ts(raw: Any) -> Optional[datetime]:
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def local_motion(evidence: Sequence[Any], frame_ts: datetime, kind: str, *,
+                 cfg: MotionConfig = _LOCAL_CFG) -> Optional[str]:
+    """The motion class of one track within LOCAL_WINDOW_SEC of the frame:
+    a still class ("parked"/"standing") only when clearly still, a moving
+    class when it clearly travelled, None when the local evidence is too thin
+    or in between. Edge-clipped boxes are skipped (their size is cut)."""
+    crops: List[MotionCrop] = []
+    for e in evidence or ():
+        if not isinstance(e, dict) or e.get("clipped"):
+            continue
+        box, t = e.get("box"), _ts(e.get("t"))
+        if not isinstance(box, (list, tuple)) or len(box) != 4 or t is None:
+            continue
+        if abs((t - frame_ts).total_seconds()) > LOCAL_WINDOW_SEC:
+            continue
+        crops.append(MotionCrop(crop_id=str(e.get("crop_id") or ""), t=t, label=kind,
+                                box=tuple(float(v) for v in box)))  # type: ignore[arg-type]
+    crops.sort(key=lambda c: c.t)
+    if len(crops) < LOCAL_MIN_BOXES or (crops[-1].t - crops[0].t).total_seconds() < LOCAL_MIN_SPAN_SEC:
+        return None
+    k = kinematics(crops, cfg)
+    if k is None:
+        return None
+    sc = speed_class(kind, k, cfg)
+    if sc in STILL_CLASSES:
+        return sc if k.net_bh <= cfg.still_bh * LOCAL_STILL_SHARE else None
+    return sc
+
+
+def local_classes(matched: Sequence[FrameCrop], story_evidence: Mapping[str, Sequence[Any]],
+                  frame_ts: datetime) -> Dict[str, Optional[str]]:
+    """crop_id -> local motion class, for matched crops that have a story."""
+    return {c.crop_id: local_motion(story_evidence[c.crop_id], frame_ts, c.label)
+            for c in matched if c.crop_id in story_evidence}
+
+
+# ---------------------------------------------------------------------------
 # Reads and the clocked step (run by vision_motion_loop after stories close)
 # ---------------------------------------------------------------------------
 
@@ -281,19 +345,8 @@ FRAME_CROPS_SQL = (
     "SELECT crop_id, label, box_xyxy FROM vision_crop_observation "
     "WHERE stream_id = :s AND observed_at BETWEEN :a AND :b")
 FRAME_STORIES_SQL = (
-    "SELECT crop_ids, speed_class, drop_reason FROM vision_motion_story "
+    "SELECT crop_ids, evidence FROM vision_motion_story "
     "WHERE stream_id = :s AND ended_at >= :a AND started_at <= :b ORDER BY ended_at, story_id")
-# Stories whose speed class says little about the moment of the frame: a
-# glimpse has too few boxes, a too-long passage is cut at the window start,
-# an edge-clipped one has its boxes cut by the frame edge.
-UNUSABLE_DROP_REASONS = frozenset({"glimpse", "too_long", "edge_clipped"})
-
-
-def usable_speed(speed_class: Optional[str], drop_reason: Optional[str]) -> Optional[str]:
-    """The story's speed class when it can vouch for the frame, else None."""
-    if not speed_class or (drop_reason or "") in UNUSABLE_DROP_REASONS:
-        return None
-    return speed_class
 # Append only, and only to a row that has no verdict yet (a re-run is a no-op).
 ADD_TAGS_SQL = (
     "UPDATE vision_events SET tags = COALESCE(tags, '[]'::jsonb) || CAST(:add AS jsonb) "
@@ -309,22 +362,31 @@ def _refs(raw: Any) -> List[str]:
     return [str(r) for r in raw] if isinstance(raw, list) else []
 
 
-def read_frame(conn, stream_id: str, frame_ts: datetime) -> Tuple[List[FrameCrop], Dict[str, Optional[str]]]:
-    """(crops of the caption's frame, crop_id -> usable speed class of its story)."""
+def _evidence(raw: Any) -> List[Any]:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return []
+    return raw if isinstance(raw, list) else []
+
+
+def read_frame(conn, stream_id: str, frame_ts: datetime) -> Tuple[List[FrameCrop], Dict[str, List[Any]]]:
+    """(crops of the caption's frame, crop_id -> evidence boxes of the story that holds it)."""
     from sqlalchemy import text
 
     a, b = frame_ts - timedelta(seconds=FRAME_MATCH_SEC), frame_ts + timedelta(seconds=FRAME_MATCH_SEC)
     crops = [FrameCrop(crop_id=r[0], label=r[1], box=tuple(float(v) for v in r[2]))  # type: ignore[arg-type]
              for r in conn.execute(text(FRAME_CROPS_SQL), {"s": stream_id, "a": a, "b": b}).fetchall()
              if r[2] and len(r[2]) == 4]
-    story_class: Dict[str, Optional[str]] = {}
+    story_evidence: Dict[str, List[Any]] = {}
     if crops:
         ids = {c.crop_id for c in crops}
-        for crop_ids, speed, drop in conn.execute(text(FRAME_STORIES_SQL), {"s": stream_id, "a": a, "b": b}).fetchall():
+        for crop_ids, evidence in conn.execute(text(FRAME_STORIES_SQL), {"s": stream_id, "a": a, "b": b}).fetchall():
             for cid in crop_ids or ():
                 if cid in ids:
-                    story_class[cid] = usable_speed(speed, drop)
-    return crops, story_class
+                    story_evidence[cid] = _evidence(evidence)
+    return crops, story_evidence
 
 
 def check_caption(conn, stream_id: str, narrative: str, refs: Sequence[str], *, cursor: Optional[datetime],
@@ -340,10 +402,10 @@ def check_caption(conn, stream_id: str, narrative: str, refs: Sequence[str], *, 
         return CaptionVerdict("undecided")
     if cursor is None or cursor < frame_ts:
         return CaptionVerdict("pending")
-    crops, story_class = read_frame(conn, stream_id, frame_ts)
+    crops, story_evidence = read_frame(conn, stream_id, frame_ts)
     matched = match_caption_crops(boxes, crops, min_iou=min_iou)
     settled = (cursor - frame_ts).total_seconds() >= settle_sec
-    return decide_caption(narrative, matched, story_class, settled=settled)
+    return decide_caption(narrative, matched, local_classes(matched, story_evidence, frame_ts), settled=settled)
 
 
 # Per process: rows already final with no tag (no claim, or undecidable).

@@ -317,6 +317,28 @@ def test_unchecked_or_malformed_motion_tags_stay_not_verified() -> None:
         assert got["motion_check"] is None
 
 
+def test_one_frame_people_count_is_not_shown_as_a_head_count() -> None:
+    """Live council row 2026-10-16 17:52 and caption 2026-10-18 22:16: one
+    frame's count of people must not read as how many people there were."""
+    council = _cap("Two persons are observed walking on the walkway.", 1)
+    caption = _camcap("In the image, three people are riding bicycles on a residential street.", 2,
+                      labels=("bicycle",))
+    got = dedupe_street_captions([council, caption], now=NOW, max_age_sec=900, limit=3)
+    assert got[0]["narrative"] == (
+        "Two persons are observed walking on the walkway (people count from one frame, not a head count)")
+    assert got[1]["narrative"].startswith(
+        "camera caption (one frame; detector saw bicycle; motion not verified; "
+        "people count from one frame, not a head count): ")
+    line = street_caption_line(got, camera="walkway", tz=TZ)
+    assert line.count("people count from one frame, not a head count") == 2
+
+
+def test_no_count_and_range_counts_are_left_alone() -> None:
+    for text in ("A person walks a dog.", "Two cars are parked.", "At least 2, at most 5 people passed."):
+        (got,) = dedupe_street_captions([_cap(text, 1)], now=NOW, max_age_sec=900, limit=2)
+        assert got["narrative"] == text
+
+
 def test_council_rows_stay_unlabelled() -> None:
     (got,) = dedupe_street_captions([_cap("A vehicle is observed in the walkway area.", 1)],
                                     now=NOW, max_age_sec=900, limit=2)

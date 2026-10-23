@@ -45,6 +45,7 @@ from orion.gpu_pool.shed import REFLEX_REASONS, ShedBoard, ShedSignal
 from orion.schemas.hardware_watch import HardwareWatchIncidentV1, HardwareWatchReflexShedV1
 from orion.gpu_pool.config import SWAP_GUARDS
 from orion.gpu_pool.controller_health import ControllerHealth
+from orion.gpu_pool.perception_load import PerceptionLoad
 from orion.schemas.gpu_pool import (
     GPU_ACTUATE_KIND, GPU_POOL_ACTUATE_REQUEST_CHANNEL, GPU_POOL_EVENT_CHANNEL, GPU_POOL_EVENT_KIND,
     GPU_POOL_STATE_CHANNEL, GPU_POOL_STATE_KIND,
@@ -160,7 +161,10 @@ class PoolRuntime:
                  orion_shed_caps: OrionShedCaps | None = None, orion_shed_ledger: OrionShedLedger | None = None,
                  controller_alert: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None = None,
                  fault_alert: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None = None,
-                 fault_alert_after_sec: float = 1800.0, fault_realert_sec: float = 21600.0):
+                 fault_alert_after_sec: float = 1800.0, fault_realert_sec: float = 21600.0,
+                 perception_alert: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None = None,
+                 perception_alert_held_sec_per_hour: float = 3360.0,
+                 perception_realert_sec: float = 21600.0):
         if mode not in POOL_MODES:
             raise ValueError(f"GPU_POOL_MODE must be one of {POOL_MODES}, got {mode!r}")
 
@@ -226,6 +230,12 @@ class PoolRuntime:
         self._fault_since: dict[str, datetime] = {}
         self._fault_alerted_at: dict[str, datetime] = {}
         self._fault_why: dict[str, dict[str, Any]] = {}
+        # Perception load alert (body-economy design A0): perception leases are never shed by heat, so
+        # their own GPU use is watched instead -- a card when the last hour's held slot-seconds pass
+        # the ceiling, again every perception_realert_sec while still high, info when back under.
+        self.perception_alert = perception_alert
+        self.perception_load = PerceptionLoad(perception_alert_held_sec_per_hour)
+        self.perception_realert_sec = perception_realert_sec
         self._started = False
         self._recent_actions: dict[str, list[str]] = {}
         self._ctx_saved: dict[str, int] = {}
@@ -604,6 +614,7 @@ class PoolRuntime:
             await self._check_actuation()
             await self._clear_faults()
             self._check_fault_alerts()
+            self._check_perception_load()
             self._phase("actuation", t)
             await self._schedule_and_apply()
             if self._last_state is None or (now - self._last_state).total_seconds() >= self.state_publish_sec:
@@ -1166,6 +1177,30 @@ class PoolRuntime:
                          name, view.get("seat"), age / 60, view.get("reason"))
             self._fire_fault_alert(name, "faulted", view)
 
+    def _check_perception_load(self) -> None:
+        """Called every tick: alert when perception's last-hour GPU hold passes its ceiling (see __init__)."""
+        now = self.now()
+        state = self.perception_load.check(now, timedelta(seconds=self.perception_realert_sec))
+        if state is None:
+            return
+        view = {"held_sec_last_hour": round(self.perception_load.held_last_hour(now)),
+                "ceiling_sec": round(self.perception_load.ceiling_sec), "at": now.isoformat()}
+        log = logger.error if state == "high" else logger.info
+        log("gpu_pool_perception_load state=%s held_sec_last_hour=%s ceiling_sec=%s",
+            state, view["held_sec_last_hour"], view["ceiling_sec"])
+        if self.perception_alert is None:
+            return
+
+        async def send() -> None:
+            try:
+                await self.perception_alert("perception", state, view)
+            except Exception:  # noqa: BLE001
+                logger.exception("gpu_pool_perception_alert_failed state=%s", state)
+
+        task = asyncio.create_task(send())
+        self._alert_tasks.add(task)
+        task.add_done_callback(self._alert_tasks.discard)
+
     def _fire_fault_alert(self, card: str, state: str, view: dict[str, Any]) -> None:
         """Fire-and-forget, like the controller alert. An undelivered "faulted" card is retried in
         ~10 min (not on every tick, and not only after fault_realert_sec)."""
@@ -1686,6 +1721,8 @@ class PoolRuntime:
             waited_ms = (now - row["queued_since"]).total_seconds() * 1000
         if event in ("released", "aborted", "expired", "retried") and prior and prior.get("granted_at"):
             held_ms = (now - prior["granted_at"]).total_seconds() * 1000
+            if row.get("priority") == "perception":
+                self.perception_load.record(now, held_ms / 1000.0)
         detail: dict[str, Any] = {}
         if event == "granted" and row.get("role"):
             detail["grant"] = self.grant_for(row["role"], row["lease_id"], row["generation"]).model_dump(mode="json")

@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     fault_alert_enabled: bool = Field(True, alias="GPU_POOL_FAULT_ALERT_ENABLED")
     fault_alert_after_sec: float = Field(1800.0, ge=0, alias="GPU_POOL_FAULT_ALERT_AFTER_SEC")
     fault_realert_sec: float = Field(21600.0, gt=0, alias="GPU_POOL_FAULT_REALERT_SEC")
+    # Perception load alert (runtime._check_perception_load, body-economy design A0): perception leases are
+    # never shed by heat, so a card fires when their last-hour held GPU slot-seconds pass the ceiling.
+    # 3360 = 2x the 14-day p90 (1,679) of vision-council's hourly hold on 2026-10-23.
+    perception_alert_enabled: bool = Field(True, alias="GPU_POOL_PERCEPTION_ALERT_ENABLED")
+    perception_alert_held_sec_per_hour: float = Field(3360.0, gt=0, alias="GPU_POOL_PERCEPTION_ALERT_HELD_SEC_PER_HOUR")
+    perception_realert_sec: float = Field(21600.0, gt=0, alias="GPU_POOL_PERCEPTION_REALERT_SEC")
     notify_base_url: str = Field("http://orion-athena-notify:7140", alias="NOTIFY_BASE_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
 

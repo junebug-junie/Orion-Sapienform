@@ -258,6 +258,28 @@ def test_a_flapping_cause_costs_at_most_one_row_per_10_min():
     assert len(causes.rows) <= 1 + 60 // 10
 
 
+def test_first_steps_after_deploy_record_causes_now_within_10_min():
+    """A checkpoint from before this key existed: episode causes and last row known, causes present
+    at that row not. A row lands once the rate limit allows, not only at the 30-min keepalive."""
+    from app.temporal_self_graph import STRAIN_CAUSE_CHANGE_MIN_SEC, _strain_causes_step
+    from orion.schemas.regulation import ArousalReadingV1
+
+    causes = Causes()
+    deps = World().deps(record_cause=causes)
+    state = {"strain_causes_seen": ["cabinet_hot", "gpu_queue_sustained"],
+             "strain_row_at": T0.isoformat(), "day_id": "2026-10-10"}
+
+    def step(minutes):
+        r = ArousalReadingV1(arousal_level="strained", since=T0 - timedelta(days=1),
+                             observed_at=T0 + timedelta(minutes=minutes), reasons=["gpu_queue_sustained"])
+        return asyncio.run(_strain_causes_step(deps, r, state, False, []))
+
+    assert step(STRAIN_CAUSE_CHANGE_MIN_SEC / 60 - 1)[2] is None and causes.rows == []   # too soon
+    seen, row_at, now = step(STRAIN_CAUSE_CHANGE_MIN_SEC / 60)
+    assert [r[:2] for r in causes.rows] == [([], False)] and now == ["gpu_queue_sustained"]
+    assert seen == ["cabinet_hot", "gpu_queue_sustained"]
+
+
 def test_cause_row_shape_matches_the_level_row():
     from app import regulation_store
     from orion.schemas.regulation import ArousalReadingV1

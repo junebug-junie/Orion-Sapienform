@@ -30,6 +30,10 @@ Orion plays Zelda (2026-10-22, docs/superpowers/specs/2026-10-22-orion-plays-zel
 section F) added ``retro_play`` / arc kind ``play``: one finished Retro session
 (``retro_play_sessions``, written by orion-hub) is one process arc, labelled with its deterministic
 summary. Same consumer-first rollout: orion-thought and orion-hub before orion-durable-runs.
+
+``causes_now`` (2026-10-23, on the arc and its summary) follows the same order: every stored frame
+carries it (``null`` on non-strain arcs), so an orion-thought or orion-hub still on older code
+rejects the whole frame and the stance cue goes dark until they are rebuilt.
 """
 
 from __future__ import annotations

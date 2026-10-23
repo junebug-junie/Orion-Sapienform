@@ -174,7 +174,10 @@ async def _strain_causes_step(
     joined = [c for c in causes if c not in (seen or [])]
     age = None if row_at is None else (now - row_at).total_seconds()
     due = age is None or age >= STRAIN_KEEPALIVE_SEC
-    changed = (recorded_now is not None and set(causes) != set(recorded_now)
+    # None: no row since this key existed (the first steps after deploy) -- what the last row
+    # carried is unknown here, so write one once the rate limit allows rather than wait for the
+    # keepalive.
+    changed = ((recorded_now is None or set(causes) != set(recorded_now))
                and age is not None and age >= STRAIN_CAUSE_CHANGE_MIN_SEC)
     if seen is not None and not joined and not due and not changed:
         return seen, state.get("strain_row_at"), recorded_now

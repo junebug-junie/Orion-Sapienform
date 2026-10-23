@@ -307,3 +307,11 @@ def test_causes_now_carry_over_midnight():
     s = advance_clock(fold(initial_state(), events=evs(rows)), midnight + timedelta(minutes=31))
     (cont,) = strains(s)
     assert cont.carried_from_previous_day and cont.causes_now == [GPU]
+
+
+def test_seed_while_only_holding_renders_settling_with_no_label():
+    # A seed row written while the strain only holds: no cause now, none recorded before.
+    s = fold(initial_state(), events=evs([cause(at(0), at(-60), [], seed=True)]))
+    now = at(10)
+    cue = project_stance_cue(build_frame(advance_clock(s, now), now), now)
+    assert "Strained since 08:00 (no cause right now, settling) [arc:" in cue.text

@@ -3076,6 +3076,10 @@ channels:
       # THOUGHT_ACT_LEDGER_ENABLED. orion-hub's say/ask/look acts ride its existing entry
       # (HUB_ACT_LEDGER_ENABLED). Persisted by orion-sql-writer to grammar_acts.
       - orion-thought
+      # act ledger (body economy A5): each topic-foundry training run publishes one `maintain`
+      # act (services/orion-topic-foundry/app/services/act_emit.py), gated by
+      # TOPIC_FOUNDRY_ACT_EMIT_ENABLED.
+      - orion-topic-foundry
       # per-window storage-write outcome traces (sql_writer.storage:), gated by
       # SQL_WRITER_WRITE_HEALTH_ENABLED -- services/orion-sql-writer/app/write_health.py.
       # The writer is also this channel's persister; it never counts its own

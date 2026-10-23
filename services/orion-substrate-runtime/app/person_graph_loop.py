@@ -21,10 +21,14 @@ person. This clocked pass puts that in the substrate graph without matching name
 
 The "different people" guard and the person-kinds-only rule live in record.py and are not
 repeated here. Day sighting links stay on the clusters (app/walkway_seen_loop.py).
-A claim waits until both endpoint nodes exist (a cluster gets its node when the interlocutor
-names it, app/ask_answered_listener.py), so the projector never fails on a missing endpoint.
+A claim waits until both endpoint nodes exist, so the projector never fails on a missing
+endpoint. A cluster normally gets its node when the interlocutor names it
+(app/ask_answered_listener.py, from the bus). That event is not replayed: 7 linked clusters
+named 10-15..10-21 never got a node (the listener was not hearing at the time). So a linked
+cluster with no node gets one here, built from its ``vision_individual`` row with the same
+adapter the listener uses. An existing cluster node is never touched.
 
-Trace: ``person_graph synced persons=... nodes_written=... nodes_retired=... claims=...
+Trace: ``person_graph synced persons=... nodes_written=... nodes_retired=... clusters_written=... claims=...
 retired=... waiting=... replayed=... stuck=... applied=... held=... failed=...``. Fail-open: an error is logged; the loop keeps going.
 Kill switch: PERSON_GRAPH_ENABLED=false.
 """
@@ -48,8 +52,11 @@ _NAMESPACE = uuid.UUID("2d8f5f0e-7c4b-5a39-9e61-4b3a8c1d7e25")
 
 PERSONS_SQL = "SELECT person_id, display_name, status, created_at FROM person"
 LINKS_SQL = (
-    "SELECT link_id, person_id, source_ref, evidence_ref, decided_by FROM person_link "
-    "WHERE source_kind = 'vision_individual' AND revoked_at IS NULL"
+    "SELECT l.link_id, l.person_id, l.source_ref, l.evidence_ref, l.decided_by, "
+    "v.label, v.kind, v.label_ask_id, v.stream_id, o.answered_at "
+    "FROM person_link l LEFT JOIN vision_individual v ON v.individual_id = l.source_ref "
+    "LEFT JOIN orion_ask o ON o.ask_id = v.label_ask_id "
+    "WHERE l.source_kind = 'vision_individual' AND l.revoked_at IS NULL"
 )
 
 
@@ -68,6 +75,12 @@ class LinkRow:
     individual_id: str
     evidence_ref: Optional[str] = None
     decided_by: str = "camera_name"
+    # The cluster's own row, to rebuild its node if the ask listener missed the answer.
+    label: str = ""
+    kind: Optional[str] = None
+    label_ask_id: Optional[str] = None
+    stream_id: Optional[str] = None
+    answered_at: Optional[datetime] = None
 
 
 @dataclass
@@ -75,6 +88,7 @@ class SyncReport:
     persons: int = 0
     nodes_written: int = 0
     nodes_retired: int = 0
+    clusters_written: int = 0
     claims: int = 0
     retired: int = 0
     waiting: int = 0
@@ -196,6 +210,8 @@ async def sync_person_graph(*, persons: list[PersonRow], links: list[LinkRow], j
             report.nodes_written += 1
         else:
             report.nodes_retired += 1
+    report.clusters_written = await _ensure_cluster_nodes(persons, links, store=store, materializer=materializer,
+                                                         now=ts)
     latest = await journal.latest_decisions(PRODUCER)
     events, report.claims, report.retired, report.waiting = plan_events(
         persons=persons, links=links, latest=latest, has_node=lambda nid: store.get_node_by_id(nid) is not None,
@@ -207,11 +223,39 @@ async def sync_person_graph(*, persons: list[PersonRow], links: list[LinkRow], j
     report.applied, report.held, report.failed = len(result.applied), len(result.waiting), dict(result.failed)
     if result.blocked is not None:
         report.failed["readers_not_ready"] = result.blocked.reason
-    logger.info("person_graph synced persons=%d nodes_written=%d nodes_retired=%d claims=%d retired=%d waiting=%d "
-                "replayed=%d stuck=%d applied=%d held=%d failed=%s",
-                report.persons, report.nodes_written, report.nodes_retired, report.claims, report.retired,
+    logger.info("person_graph synced persons=%d nodes_written=%d nodes_retired=%d clusters_written=%d claims=%d "
+                "retired=%d waiting=%d replayed=%d stuck=%d applied=%d held=%d failed=%s",
+                report.persons, report.nodes_written, report.nodes_retired, report.clusters_written,
+                report.claims, report.retired,
                 report.waiting, report.replayed, report.stuck, report.applied, report.held, report.failed)
     return report
+
+
+async def _ensure_cluster_nodes(persons: list[PersonRow], links: list[LinkRow], *, store: Any, materializer: Any,
+                                now: datetime) -> int:
+    """A linked cluster of a live person with no node gets the node the ask listener would have
+    written. Returns how many were written."""
+    from orion.substrate.adapters.vision_individual import (
+        entity_node_id_for_individual,
+        map_vision_individual_label_to_substrate,
+    )
+
+    live = {p.person_id for p in persons if p.status != "not_a_person"}
+    written = 0
+    for link in links:
+        if link.person_id not in live or not link.label.strip():
+            continue
+        if await asyncio.to_thread(store.get_node_by_id, entity_node_id_for_individual(link.individual_id)):
+            continue
+        record = map_vision_individual_label_to_substrate(
+            individual_id=link.individual_id, label=link.label, kind=link.kind,
+            ask_id=link.label_ask_id or link.evidence_ref or f"person_link:{link.link_id}",
+            answered_at=link.answered_at or now, stream_id=link.stream_id)
+        if record is None:
+            continue
+        await asyncio.to_thread(materializer.apply_record, record)
+        written += 1
+    return written
 
 
 async def _recover(latest: dict[str, Any], *, journal: Any, store: Any, projector: Any, report: SyncReport) -> None:
@@ -240,7 +284,8 @@ async def read_rows(pool: Any) -> tuple[list[PersonRow], list[LinkRow]]:
     async with pool.acquire() as conn:
         persons = [PersonRow(r["person_id"], r["display_name"], r["status"], r["created_at"])
                    for r in await conn.fetch(PERSONS_SQL)]
-        links = [LinkRow(r["link_id"], r["person_id"], r["source_ref"], r["evidence_ref"], r["decided_by"])
+        links = [LinkRow(r["link_id"], r["person_id"], r["source_ref"], r["evidence_ref"], r["decided_by"],
+                         r["label"] or "", r["kind"], r["label_ask_id"], r["stream_id"], r["answered_at"])
                  for r in await conn.fetch(LINKS_SQL)]
     return persons, links
 

@@ -25,7 +25,9 @@ GrammarEventKind = Literal[
 ]
 
 # Closed, versioned verb vocabulary (design section 3.2). The same at every
-# level. Producers as of rung 2: make (orion-thought paintings), say (hub chat
+# level. Producers as of rung 2: make (orion-thought paintings; orion-durable-runs journal
+# compose), infer / ask / sense (orion-durable-runs curiosity, self-inquiry, self-sense eval,
+# body economy A5), say (hub chat
 # reply, outreach), ask (outreach), look (reading), play (hub retro leisure
 # session, 2026-10-22: docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md
 # section E). The others are reserved by the design and have no producer yet; a

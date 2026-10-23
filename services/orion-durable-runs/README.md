@@ -873,6 +873,33 @@ Code: `orion/personality/situation.py` (pure) and `PersonalityStore.load_situati
 
 `GET /personality/dispositions` gives each node a `situation_mix`: `{"n", "arousal": {level: count}, "day_phase": {phase: count}, "company": {"true": n, "false": n}}`. It counts that node's evidence rows by situation, in one grouped query (`SITUATION_MIX_SQL`) bounded to the returned node ids. Rows without a situation (all rows before 2026-10-16 23:36 UTC) are left out, and `n` counts only the rows that have one. A node with no stamped rows gets `n=0` and empty counts. It is observability only: weights, matching and the frame do not read it.
 
+## Acts: want-family runs write to `grammar_acts` (2026-10-23, body economy Patch A5)
+
+Every durable run Orion starts for itself leaves an efference copy in the act ledger, so the body
+economy can grade each family and price it (`app/run_acts.py`). Flag:
+`ORION_DURABLE_ACT_EMIT_ENABLED` (default `true`).
+
+| family | workflow / line | actor | verb |
+|---|---|---|---|
+| curiosity investigate | `curiosity.investigate` / `investigate` | `durable.curiosity_investigate` | `infer` |
+| self-inquiry | `curiosity.investigate` / `self_inquiry` | `durable.self_inquiry` | `ask` |
+| self-sense eval | `self_sense_eval` | `durable.self_sense_eval` | `sense` |
+| journal compose | `journal.compose` | `durable.journal_compose` | `make` |
+
+- **Open:** when the run's FIRST pool grant is recorded (`run.resource_granted`). The queue wait is
+  not the act. A run refused before any grant opens nothing. A restart or a later re-grant does not
+  re-open (only the call that inserted the first grant row publishes).
+- **Close:** in `_terminal`, with the actual terminal status: `completed` = 1, `failed` /
+  `cancelled` = 0. Cost = ActCostV1 `seconds` (first grant -> terminal). The ledger fills GPU
+  slot-seconds itself by joining `correlation_id` (= the hold lease's `turn_correlation_id`).
+- **Never stuck open:** each act expects `artifact_produced` by a measured horizon (24 h curiosity
+  lines, 12 h self-sense, 1 h journal or the run's own deadline + 600 s); the ledger expires an act
+  past it at 0.
+- **Excluded:** urgent curiosity incident runs (a sensor alarm forced them), reading.turn and
+  reverie.visual (Hub / thought already emit their acts), dream.carry (dream producer), and upkeep
+  workflows (episode distill, compaction, digest, orion_day letter, self_study.reflect).
+- **Live replay (read-only):** `python evals/run_acts_live_replay.py --dsn <live dsn> --days 7`.
+
 ## Deploy order
 
 Stage 4.5 is a cutover: follow `docs/runbooks/2026-09-25-gpu-pool-stage4-cutover.md` exactly

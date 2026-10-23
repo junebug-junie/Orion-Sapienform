@@ -9,6 +9,11 @@ Co-play session ends are exported from HERE (scripts/retro_routes.py watch_copla
 the process that relayed the handoff). Until 2026-10-23 only Hub's main.py registered the
 exporter, so every co-play handoff through this gateway ended with no session row and no
 memory card (found by evals/retro_coplay.mjs: 7 handoffs, 0 rows).
+
+The co-play ``play`` act (actor ``hub.retro_coplay``) is published from here too, so this process
+opens its own bus client (ORION_BUS_URL, in the background like the pool). Until 2026-10-23 the
+gateway had no bus and co-play opened no act, so ``grammar_acts`` held 0 retro acts while every
+played session went through this process.
 """
 import logging
 from contextlib import asynccontextmanager
@@ -33,7 +38,7 @@ def register_session_end_sink(app, settings, *, create_pool=None):
         return None
     app.state.retro_session_end_sink = make_session_end_sink(
         pool_provider=lambda: getattr(app.state, 'memory_pg_pool', None),
-        bus_provider=lambda: None,   # co-play has no play act to close
+        bus_provider=lambda: getattr(app.state, 'retro_act_bus', None),
     )
 
     async def open_pool():
@@ -52,17 +57,84 @@ def register_session_end_sink(app, settings, *, create_pool=None):
     return asyncio.create_task(open_pool())
 
 
+def register_session_start_sink(app, settings, *, bus_factory=None):
+    """Register the co-play act opener now and connect its bus in the background (the relay never
+    waits for Redis). An act before the bus is ready is not published (``act_emit`` returns False
+    with no bus). Returns the bus task, or None when the bus is disabled or has no URL."""
+    from scripts.retro_memory_export import make_session_start_sink
+    app.state.retro_act_bus = None
+    app.state.retro_session_start_sink = make_session_start_sink(
+        bus_provider=lambda: getattr(app.state, 'retro_act_bus', None))
+    url = str(getattr(settings, 'ORION_BUS_URL', '') or '').strip()
+    if not getattr(settings, 'ORION_BUS_ENABLED', True) or not url:
+        logger.warning('retro_gateway_act_bus_skipped reason=bus_disabled_or_unset')
+        return None
+
+    import asyncio
+    # Imported here, not on the first handoff: the opener runs on the realtime relay's loop.
+    import orion.grammar.acts  # noqa: F401
+    import orion.grammar.publish  # noqa: F401
+
+    async def open_bus():
+        nonlocal bus_factory
+        if bus_factory is None:
+            from orion.core.bus.async_service import OrionBusAsync
+            bus_factory = lambda u: OrionBusAsync(u, enabled=True)  # noqa: E731
+        delay = BUS_RETRY_FIRST_SEC
+        while True:   # Redis down at boot must not mean no play acts for the process's life
+            bus = None
+            try:
+                bus = bus_factory(url)
+                await bus.connect()
+                app.state.retro_act_bus = bus
+                logger.info('retro_gateway_act_bus_ready')
+                return
+            except asyncio.CancelledError:
+                await _close_quietly(bus)
+                raise
+            except Exception as exc:  # noqa: BLE001 -- the relay keeps running without play acts
+                await _close_quietly(bus)
+                logger.warning('retro_gateway_act_bus_failed retry_in_sec=%.0f error=%s', delay, exc)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, BUS_RETRY_MAX_SEC)
+
+    return asyncio.create_task(open_bus())
+
+
+BUS_RETRY_FIRST_SEC = 2.0
+BUS_RETRY_MAX_SEC = 60.0
+
+
+async def _close_quietly(bus):
+    if bus is None:
+        return
+    try:
+        await bus.close()
+    except Exception:  # noqa: BLE001 -- a half-built client
+        pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import asyncio
     from app.settings import settings
     task = register_session_end_sink(app, settings)
+    # No exporter, no close: never open an act that only its horizon could end.
+    bus_task = (register_session_start_sink(app, settings)
+                if getattr(app.state, 'retro_session_end_sink', None) is not None else None)
     try:
         yield
     finally:
-        if task is not None and not task.done():
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        for t in (task, bus_task):
+            if t is not None and not t.done():
+                t.cancel()
+                await asyncio.gather(t, return_exceptions=True)
+        act_bus = getattr(app.state, 'retro_act_bus', None)
+        if act_bus is not None:
+            try:
+                await asyncio.wait_for(act_bus.close(), 5)
+            except Exception:  # noqa: BLE001
+                logger.warning('retro_gateway_act_bus_close_failed', exc_info=True)
         pool = getattr(app.state, 'memory_pg_pool', None)
         if pool is not None:
             try:

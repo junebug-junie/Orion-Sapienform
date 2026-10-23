@@ -246,6 +246,23 @@ picture), so the last picture's caption is the dream's last word. Design:
   one-shot story, and the endpoint refuses). The step responder keeps running so
   carries already in flight still finish.
 
+### Every sleep is one act in the act ledger (2026-10-23, body economy A5)
+
+A sleep that starts replay is one `make` act (actor `dream.cycle`) on `orion:grammar:event`,
+persisted by orion-sql-writer to `grammar_acts`. It opens once the cycle has passed its gates and
+has material to replay, and closes once when the cycle is persisted: 1 for a completed, saved
+sleep with at least one hypothesis, else 0. Any exception or cancellation after the open closes it
+at 0 and is re-raised. A check that is not due, held, or `empty` opens nothing.
+
+- Act key = the cycle id (stable act id). A restart mid-cycle leaves the act open; the writer
+  expires it at 0 at its horizon: (DREAM_HYPOTHESES_PER_CYCLE + DREAM_CONTROL_PER_CYCLE) x
+  DREAM_LLM_TIMEOUT_SEC + 120 s (480 s by default).
+- GPU cost: during the sleep every recombination LLM call carries one correlation id derived from
+  the cycle id, so the GPU pool's leases carry it and the ledger charges the cycle for them.
+- Cost `seconds` = wall time from open to close.
+- Flag: `DREAM_ACT_EMIT_ENABLED` (default on). Off = no act, and each LLM call keeps its own id.
+- Code: `app/act_emit.py`, `CycleActTrace` in `app/cycle.py`. Tests: `tests/test_dream_cycle_act.py`.
+
 ### HTTP / bus behavior
 
 - **No Hunter** in this process: `dream.trigger` is consumed by **cortex-orch** so triggers are not duplicated.

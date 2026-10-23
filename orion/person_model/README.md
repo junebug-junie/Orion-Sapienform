@@ -8,6 +8,18 @@ file appears in module code.
 
 Spec: `docs/superpowers/specs/2026-10-14-person-model-and-identity-card-design.md` (rev 3).
 
+## One record per person (2026-10-22, live in orion-sql-writer)
+
+Spec: `docs/superpowers/specs/2026-10-22-people-one-record-design.md`.
+
+| File | What it does |
+|---|---|
+| `record.py` | Pure planner: named camera clusters + "different people" verdicts + `people.yaml` -> `person` / `person_link` writes. Links only from typed names; a "different" verdict blocks a merge |
+| `facts.py` + `categories.yaml` | Which question to ask about a person next, the wording ("you" for the interlocutor, never a pronoun for anyone else), answers kept verbatim as `person_fact` rows |
+| `evals/run_person_record_backfill_eval.py` | Read-only dry run on live data: who would link to whom, conflicts, ignored names |
+
+The writer is `services/orion-sql-writer/app/person_record.py` (runs inside the camera individuals cycle).
+
 ## What exists (P1 + P2, dry run only)
 
 | File | What it does |

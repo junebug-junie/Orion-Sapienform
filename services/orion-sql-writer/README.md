@@ -628,6 +628,27 @@ live; `--write` stores a `vision_person_model_eval` row):
 gate = zero wrong accepts; a new model version must beat the last on an exact
 McNemar test (p < 0.05).
 
+**One record per person** (`app/person_record.py`, 2026-10-22, spec
+`docs/superpowers/specs/2026-10-22-people-one-record-design.md`). Runs inside
+the individuals tick, after answers apply, while `PERSON_RECORD_ENABLED` (true):
+
+1. `person` / `person_link` follow the named clusters
+   (`orion/person_model/record.py`): one person per folded name, joined to the
+   `config/person_model/people.yaml` referent when the name matches. A
+   "different people" verdict blocks a merge (logged `person_link_conflict`).
+   Named bicycles and cars link as that person's belonging; other named things
+   are ignored. Renames and cleared names revoke links.
+2. Stated pronouns from people.yaml become `person_fact` rows.
+3. Answered `person_fact` asks become `person_fact` rows (her words verbatim).
+4. New `person_fact` asks ("Who is X to you?", then pronouns, age, gender,
+   sexuality, ...; `orion/person_model/categories.yaml`) open under their own
+   cap `PERSON_FACT_ASK_DAILY_CAP` (3), one open per person, least-asked person
+   first, with the person's best camera picture.
+
+Needs `manual_migration_person_record_v1.sql`; without it the step reports
+`person_record: migration_missing`. Dry run on live data:
+`orion/person_model/evals/run_person_record_backfill_eval.py --live <dsn>`.
+
 **Rhythm loop** (`app/vision_rhythm.py`, every `VISION_RHYTHM_INTERVAL_SEC`,
 default 900 s). Subjects are individuals and the labels in
 `VISION_RHYTHM_LABELS` (arrivals from `vision_scene_inventory`: first positive

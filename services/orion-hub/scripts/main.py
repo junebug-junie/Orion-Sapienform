@@ -23,6 +23,7 @@ from scripts.crystallization_routes import router as crystallization_router
 from scripts.mind_routes import router as mind_router
 from scripts.ask_routes import router as ask_router
 from scripts.motion_story_routes import router as motion_story_router
+from scripts.people_routes import router as people_router
 from scripts.walkway_rollup_routes import router as walkway_rollup_router
 from scripts.memory_graph_routes import router as memory_graph_router
 from scripts.memory_consolidation_draft_routes import router as memory_consolidation_draft_router
@@ -1912,6 +1913,7 @@ app.include_router(crystallization_router)
 app.include_router(mind_router)
 app.include_router(ask_router)
 app.include_router(motion_story_router)
+app.include_router(people_router)
 app.include_router(walkway_rollup_router)
 app.include_router(memory_graph_router)
 app.include_router(memory_consolidation_draft_router)

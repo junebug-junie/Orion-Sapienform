@@ -552,6 +552,12 @@ class Settings(BaseSettings):
     # Juniper's answers, learned accept/reject bars, "probably X" guesses for
     # unnamed clusters. Off = no album, bars or guesses are written.
     vision_person_model_enabled: bool = Field(True, alias="VISION_PERSON_MODEL_ENABLED")
+    # One record per person (2026-10-22, app/person_record.py): camera names
+    # link to person rows, Juniper's answers become person facts, and Orion asks
+    # her about people. False: none of that is written or asked.
+    person_record_enabled: bool = Field(True, alias="PERSON_RECORD_ENABLED")
+    # "Who is X to you?" style questions per local day, their own budget (0 = none).
+    person_fact_ask_daily_cap: int = Field(3, alias="PERSON_FACT_ASK_DAILY_CAP")
     # Bound on the false-accept rate of each person's accept bar (conformal).
     vision_person_false_accept_alpha: float = Field(0.05, alias="VISION_PERSON_FALSE_ACCEPT_ALPHA")
     # A crop's score is the mean of its top-k cosines to the person's album.

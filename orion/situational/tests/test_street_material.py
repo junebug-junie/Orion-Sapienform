@@ -224,7 +224,7 @@ def test_stationary_sightings_are_excluded_with_fallback_before_the_migration() 
 
     class _Migrated(_Conn):
         def execute(self, stmt, params):
-            if "vision_individual_sighting" in str(stmt):
+            if "GROUP BY s.individual_id" in str(stmt):  # the who-is-around read
                 seen.append(str(stmt))
             return super().execute(stmt, params)
 
@@ -241,7 +241,7 @@ def test_head_count_row_found_by_head_count_zone_flag_and_kept_a_count() -> None
          "updated_at": now},
     ]})
     got = fetch_street_summary("walkway", engine=_Engine(conn), now=now)
-    assert got.lines == ["2 people are on the patio."]
+    assert got.lines == ["At least 2 people are on the patio."]
     from orion.situational.perception_reader import _PATIO_PRESENCE_SQL
 
     sql = str(_PATIO_PRESENCE_SQL)

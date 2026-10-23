@@ -30,6 +30,7 @@ from orion.situational.street_material import (
     split_caption_sql,
     street_caption_line,
 )
+from orion.vision.walkway_rollup import SPLIT_NOTE, count_range, window_peak
 
 logger = logging.getLogger(__name__)
 
@@ -445,6 +446,14 @@ def percept_age_seconds(observed_at: datetime | None, now: datetime | None = Non
 #     patio"); identity fields on that row are dropped -- it is a count;
 #   * a no-embed zone (`embed: false`, none configured today) never becomes an
 #     individual: sightings flagged `zone_no_embed` are excluded here too.
+# PEOPLE ARE A RANGE (spec PR #2763 decision 5, same rule as the rollups in
+# PR #2781). The matcher splits one person into several individuals, so the
+# number of unnamed person individuals is only the HIGH end. The LOW end is
+# the most people in one vision window over the same 15 minutes
+# (`vision_scene_inventory.counts`), less stationary person individuals
+# (props) sighted then, less the named people already listed. The line says
+# "at least L, at most H unfamiliar people", "at least N", "up to N" or "an
+# unfamiliar person" -- never one bare number of people.
 # STATIONARY FIXTURES. A box that has not moved for VISION_STATIONARY_MIN_SEC
 # (the patio skeleton) is a prop, not a visitor: sightings flagged
 # `stationary` are left out of "who is around". The column ships in the same
@@ -474,6 +483,28 @@ _STREET_SIGHTINGS_SELECT = (
 _STREET_SIGHTINGS_SQL = text(_STREET_SIGHTINGS_SELECT.format(stationary="  AND NOT s.stationary "))
 # Fallback while that migration is unapplied (no `stationary` column yet).
 _STREET_SIGHTINGS_PRE_STATIONARY_SQL = text(_STREET_SIGHTINGS_SELECT.format(stationary=""))
+
+# Most people in one vision window (the floor of the people range). Rows only;
+# the label mapping ("person", compound labels) is walkway_rollup.window_peak.
+_STREET_PEOPLE_WINDOWS_SQL = text(
+    "SELECT counts FROM vision_scene_inventory "
+    "WHERE stream_id = :stream_id "
+    "  AND observed_at > CAST(:now AS timestamptz) - make_interval(mins => :lookback) "
+    "  AND observed_at <= CAST(:until AS timestamptz) "
+    "  AND counts <> '{}'::jsonb "
+    "ORDER BY observed_at DESC LIMIT 1000"
+)
+
+# Person individuals sighted standing still (the patio skeleton): each may be
+# one of a window's detections, so the floor drops by that many (as in
+# walkway_rollup.count_range's `props`).
+_STREET_STATIONARY_PEOPLE_SQL = text(
+    "SELECT count(DISTINCT s.individual_id) AS n FROM vision_individual_sighting s "
+    "JOIN vision_individual i ON i.individual_id = s.individual_id "
+    "WHERE s.stream_id = :stream_id AND i.kind = 'person' AND s.stationary "
+    "  AND s.ended_at > CAST(:now AS timestamptz) - make_interval(mins => :lookback) "
+    "  AND s.started_at <= CAST(:until AS timestamptz)"
+)
 
 _STREET_EXPECTATIONS_SQL = text(
     "SELECT subject_key, subject_label, status, peak_minute, window_start, "
@@ -599,7 +630,57 @@ def _new_phrase(kind: str, n: int) -> str:
     return f"{_article('unfamiliar')} unfamiliar {kind}" if n == 1 else f"{n} unfamiliar {_plural(kind)}"
 
 
-def _who_line(sightings: list[dict[str, Any]], *, recent_cut: datetime) -> str:
+def unnamed_people_range(
+    *, unnamed: int, named: int, peak: int | None, props: int = 0
+) -> tuple[int | None, int]:
+    """(low, high) for the unnamed people in the who line.
+
+    High: the unnamed person individuals, raised to the low when more stood in
+    one window than were matched. Low: `count_range`'s floor over everyone
+    (most in one window less props, at least 1 when a person was sighted),
+    less the `named` people listed by name; None when the window count could
+    not be read (then only "up to" can be said).
+    """
+    unnamed, named = max(0, int(unnamed)), max(0, int(named))
+    if peak is None:
+        return None, unnamed
+    r = count_range(peak, unnamed + named, props=props)
+    low = max(0, int(r["low"]) - named)
+    return low, max(unnamed, low)
+
+
+def _people_phrase(low: int | None, high: int, *, recurring: list[int]) -> str:
+    """Unnamed people as a range (decision 5). `recurring`: distinct_days of
+    the individuals seen on 2+ days (said as "some", never as a count; one
+    person who is surely one keeps the day count)."""
+    if recurring and high == 1 and low != 0:
+        return _recurring_phrase("person", recurring[:1])
+    if recurring:
+        one, many = "a person I have no name for", "people I have no name for"
+    else:
+        one, many = "an unfamiliar person", "unfamiliar people"
+    notes: list[str] = []
+    if recurring:
+        notes.append("seen here on other days" if len(recurring) >= high else "some seen here on other days")
+    if low is None or low < 1:
+        text = (f"possibly {one}" if low == 0 else one) if high == 1 else f"up to {high} {many}"
+        if high > 1:
+            notes.append(SPLIT_NOTE)
+    elif low == high:
+        text = one if low == 1 else f"at least {low} {many}"
+    else:
+        text = f"at least {low}, at most {high} {many}"
+        notes.append(SPLIT_NOTE)
+    return text + (f" ({'; '.join(notes)})" if notes else "")
+
+
+def _who_line(
+    sightings: list[dict[str, Any]],
+    *,
+    recent_cut: datetime,
+    people_peak: int | None = None,
+    people_props: int = 0,
+) -> str:
     """The "who is around" list, most important first.
 
     Order: names Juniper gave (most recent first), then unnamed people and
@@ -608,10 +689,16 @@ def _who_line(sightings: list[dict[str, Any]], *, recent_cut: datetime) -> str:
     and kinds with recurring members come first. Identical unnamed
     phrases are grouped by kind. At most `_MAX_WHO_PHRASES` phrases are
     shown, so a name is only cut when there are more names than that; "and
-    N more" counts the individuals left out, not the phrases.
+    N more" counts the individuals left out, not the phrases ("and others"
+    when the people range is among them: it has no single count).
+
+    Unnamed people are one range phrase (`_people_phrase`), never a count of
+    individuals: `people_peak` is the most people in one window over the same
+    minutes (None: unread), `people_props` the stationary person individuals.
     """
     named: list[str] = []
     seen_names: set[str] = set()
+    named_people: set[str] = set()
     # kind -> distinct_days per individual, in first-seen (most recent) order.
     recurring: dict[str, list[int]] = {}
     new: dict[str, int] = {}
@@ -625,6 +712,8 @@ def _who_line(sightings: list[dict[str, Any]], *, recent_cut: datetime) -> str:
             if label.casefold() not in seen_names:
                 seen_names.add(label.casefold())
                 named.append(label)
+            if str(row.get("kind") or "").strip() == "person":
+                named_people.add(label.casefold())
             continue
         kind = str(row.get("kind") or "").strip() or "something"
         try:
@@ -636,13 +725,21 @@ def _who_line(sightings: list[dict[str, Any]], *, recent_cut: datetime) -> str:
         else:
             new[kind] = new.get(kind, 0) + 1
 
-    # (phrase, how many individuals it stands for)
-    phrases: list[tuple[str, int]] = [(name, 1) for name in named]
+    # (phrase, how many individuals it stands for; None = a range, no count)
+    phrases: list[tuple[str, int | None]] = [(name, 1) for name in named]
     # One kind stays together: its recurring phrase, then its new one.
     kinds = list(recurring) + sorted(k for k in new if k not in recurring)
     for living in (True, False):
         for kind in kinds:
             if (kind in _LIVING_KINDS) is not living:
+                continue
+            if kind == "person":
+                rec = recurring.get(kind, [])
+                low, high = unnamed_people_range(
+                    unnamed=len(rec) + new.get(kind, 0), named=len(named_people),
+                    peak=people_peak, props=people_props,
+                )
+                phrases.append((_people_phrase(low, high, recurring=rec), None))
                 continue
             if kind in recurring:
                 phrases.append((_recurring_phrase(kind, recurring[kind]), len(recurring[kind])))
@@ -651,7 +748,10 @@ def _who_line(sightings: list[dict[str, Any]], *, recent_cut: datetime) -> str:
     if not phrases:
         return ""
     shown = [p for p, _ in phrases[:_MAX_WHO_PHRASES]]
-    extra = sum(n for _, n in phrases[_MAX_WHO_PHRASES:])
+    cut = phrases[_MAX_WHO_PHRASES:]
+    if any(n is None for _, n in cut):
+        return ", ".join(shown) + ", and others"
+    extra = sum(n or 0 for _, n in cut)
     if extra > 0:
         return ", ".join(shown) + f", and {extra} more"
     if len(shown) == 1:
@@ -700,6 +800,8 @@ def summarize_street(
     tz: Any,
     camera: str = "walkway",
     captions: list[dict[str, Any]] | None = None,
+    people_windows: list[dict[str, Any]] | None = None,
+    stationary_people: int | None = None,
 ) -> list[str]:
     """Pure: rows in, a few short plain-English lines out.
 
@@ -707,6 +809,10 @@ def summarize_street(
     never a sentence claiming the street was empty. `patio` is one presence
     snapshot per no-embed zone (a single dict is accepted too); each names its
     own zone under `zone`. `camera` is the stream the rows came from.
+    `people_windows` are `vision_scene_inventory` rows (`counts`) from the
+    last 15 minutes and `stationary_people` the stationary person
+    individuals then; together they are the floor of the people range
+    (None: unread, the line can only say "up to").
     """
     lines: list[str] = []
     camera = (camera or "").strip() or "camera"
@@ -727,7 +833,15 @@ def summarize_street(
         lines.append(caption)
 
     # 1. Who is around (last 15 minutes).
-    who = _who_line(sightings or [], recent_cut=now - timedelta(minutes=STREET_RECENT_MINUTES))
+    peak: int | None = None
+    if people_windows is not None:
+        peak = max((window_peak(_json_obj(r.get("counts"))) for r in people_windows), default=0)
+    who = _who_line(
+        sightings or [],
+        recent_cut=now - timedelta(minutes=STREET_RECENT_MINUTES),
+        people_peak=peak,
+        people_props=int(stationary_people or 0),
+    )
     if who:
         lines.append(f"On the {camera} in the last {STREET_RECENT_MINUTES} minutes: {who}.")
 
@@ -811,13 +925,23 @@ def summarize_street(
         except (TypeError, ValueError):
             count = None
         if count is not None and count >= 2:
-            lines.append(f"{count} people are on the {zone}.")
+            # One frame's head count: a floor (the detector can miss people).
+            lines.append(f"At least {count} people are on the {zone}.")
         elif count == 1:
             lines.append(f"Someone is on the {zone}.")
         elif count is None:
             lines.append(f"People are on the {zone}.")
         # count == 0 with state present contradicts itself: say nothing.
     return lines
+
+
+def _json_obj(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return {}
+    return raw if isinstance(raw, dict) else {}
 
 
 def _street_rows(conn: Any, stmt: Any, params: dict[str, Any], label: str) -> list[dict[str, Any]] | None:
@@ -892,6 +1016,16 @@ def fetch_street_summary(
                 {**window, "lookback": STREET_RECENT_MINUTES},
                 "captions",
             )
+            people_windows = _street_rows(
+                conn, _STREET_PEOPLE_WINDOWS_SQL,
+                {**window, "lookback": STREET_RECENT_MINUTES},
+                "people_windows",
+            )
+            stationary_rows = _street_rows(
+                conn, _STREET_STATIONARY_PEOPLE_SQL,
+                {**window, "lookback": STREET_RECENT_MINUTES},
+                "stationary_people",
+            )
     except Exception as exc:  # noqa: BLE001 -- fail-open by contract
         logger.warning("situation_street_connect_failed err=%s", exc)
         return StreetSummary(stream_id, [], False)
@@ -937,6 +1071,8 @@ def fetch_street_summary(
             tz=tz,
             camera=stream_id,
             captions=captions,
+            people_windows=people_windows,
+            stationary_people=int((stationary_rows or [{}])[0].get("n") or 0),
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("situation_street_summarize_failed err=%s", exc)

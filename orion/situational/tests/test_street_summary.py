@@ -53,7 +53,14 @@ def test_names_only_from_labels_otherwise_unfamiliar_or_counted_days() -> None:
     ])
     assert lines == [
         "On the walkway in the last 15 minutes: Biscuit, a dog I have seen on 9 days "
-        "but have no name for, and 2 unfamiliar people."
+        "but have no name for, and up to 2 unfamiliar people (the camera splits one person into several)."
+    ]
+    # With the window count read: at most one person stood in one window.
+    lines = _street(sightings=[_sighting("b", "person"), _sighting("c", "person")],
+                    people_windows=[{"counts": {"person": 1}}])
+    assert lines == [
+        "On the walkway in the last 15 minutes: at least 1, at most 2 unfamiliar people "
+        "(the camera splits one person into several)."
     ]
 
 
@@ -103,7 +110,7 @@ def test_patio_is_a_count_never_a_name_and_only_when_fresh() -> None:
     fresh = {"state": "present", "count": 3, "subject": "Juniper", "zone": "patio",
              "row_updated_at": datetime.now(timezone.utc)}
     (line,) = _street(patio=fresh)
-    assert line == "3 people are on the patio."
+    assert line == "At least 3 people are on the patio."
     assert "Juniper" not in line
     stale = dict(fresh, row_updated_at=datetime.now(timezone.utc) - timedelta(hours=2))
     assert _street(patio=stale) == []
@@ -171,8 +178,9 @@ def test_missing_tables_cost_only_their_own_line() -> None:
     got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
     assert got.read_ok is True
     assert got.lines == ["In the last hour I saw one thing on the walkway I could not name at 07:47: a shape."]
-    # sightings (stationary read + pre-stationary fallback) and expectations.
-    assert conn.rollbacks == 3
+    # sightings (stationary read + pre-stationary fallback), expectations and
+    # the stationary-people read (it joins vision_individual_sighting too).
+    assert conn.rollbacks == 4
 
 
 def test_patio_row_is_read_by_stream_and_stripped_of_identity() -> None:
@@ -209,7 +217,7 @@ def test_a_second_no_embed_zone_gets_its_own_line_named_from_its_row() -> None:
          "updated_at": now},
     ]})
     got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
-    assert got.lines == ["2 people are on the garden.", "Someone is on the patio."]
+    assert got.lines == ["At least 2 people are on the garden.", "Someone is on the patio."]
 
 
 def test_like_prefix_escapes_wildcards() -> None:
@@ -410,4 +418,4 @@ def test_patio_count_is_read_from_the_reducers_subject_shape() -> None:
          "updated_at": datetime.now(timezone.utc)},
     ]})
     got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
-    assert got.lines == ["3 people are on the patio."]
+    assert got.lines == ["At least 3 people are on the patio."]

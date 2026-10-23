@@ -144,15 +144,26 @@ is a street section):
   `ORION_REVERIE_STREET_GRADED_MAX` (4), each with the subject's 14-day hit rate
   when there is one. The rhythm reducer needs >= 5 days of support before it
   emits an expectation, so this is empty for the camera's first week.
+- **The day so far** (2026-10-23): one line from `vision_rollup` -- today's
+  running day row ("Walkway Fri 23 Oct 2026 (so far, through 10:00): people: at
+  least 1, at most 2 ..."), or, before today has a day row, the newest complete
+  hour row from the last 3 h. Shown only through
+  `orion.vision.walkway_rollup.display_line`, so people are a range and an old
+  rules_version 1 row is re-rendered or dropped, never shown with a bare count.
+  Cut at a clause boundary to `ORION_REVERIE_STREET_DAY_MAX_CHARS` (480); a
+  first clause longer than that means no line. Yesterday's day row and older
+  hours are not "the day so far" and are skipped. Context key `street_day`;
+  `ORION_REVERIE_STREET_DAY_ENABLED=false` turns only this line off. A failed
+  read costs only this line.
 
-Context keys `street_percepts` / `street_predictions` (absent when empty: no
-heading over nothing). The room-only expectation judge never reads them, and the
+Context keys `street_percepts` / `street_predictions` / `street_day` (absent
+when empty: no heading over nothing). The room-only expectation judge never reads them, and the
 prompt says any stated expectation is about the room. Readers:
 `app/vision_reader.py` `read_recent_street_events` / `read_recent_street_graded`
 (fail-open); shared wording in `orion/situational/street_material.py`.
 `ORION_REVERIE_STREET_ENABLED=false` or an empty stream list turns both off
 (no query is made). Log line when present: `reverie_street_context corr=...
-captions=N graded=N`.
+captions=N graded=N rollup=0|1` (`rollup=1`: the day line went in).
 
 ## Reverie expectation scoring (Movement III)
 

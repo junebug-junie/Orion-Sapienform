@@ -254,6 +254,90 @@ def read_recent_street_graded(
     return graded_expectation_lines([dict(r) for r in rows], [dict(r) for r in cal], tz=tz, limit=limit)
 
 
+# --- The walkway's day so far (vision_rollup), 2026-10-23 ---------------------
+#
+# One line: today's running day rollup ("Walkway Fri 23 Oct 2026 (so far,
+# through 10:00): people: at least 1, at most 2 ..."), or, when today has no
+# day row yet (just after local midnight), the newest complete hour row from
+# the last few hours. Rendered ONLY through walkway_rollup.display_line: a row
+# from before count-range rules is re-rendered as a range, an unreadable one is
+# dropped -- never the raw stored line, which may hold a bare people count.
+
+STREET_DAY_ROLLUP_SQL = (
+    "SELECT grain, line, rollup FROM vision_rollup "
+    "WHERE stream_id IN :stream_ids AND ("
+    "  (grain = 'day' AND period_start >= :day_start) "
+    "  OR (grain = 'hour' AND complete AND period_start >= :hour_since)) "
+    "ORDER BY CASE WHEN grain = 'day' THEN 0 ELSE 1 END, period_start DESC "
+    "LIMIT 3"
+)
+# A complete hour older than this is not "the day so far".
+_STREET_HOUR_FALLBACK_HOURS = 3
+
+
+def trim_rollup_line(line: str, max_chars: int) -> str:
+    """Cut at a clause boundary ("; "), never inside one: the first clause holds the
+    people range ("at least 1, at most 2"), and a hard cut there could leave a bare
+    number. A first clause longer than the budget means no line at all."""
+    line = (line or "").strip()
+    if max_chars <= 0 or not line:
+        return ""
+    if len(line) <= max_chars:
+        return line
+    clauses = line.split("; ")
+    kept = clauses[0]
+    if len(kept) + 1 > max_chars:
+        return ""
+    for clause in clauses[1:]:
+        if len(kept) + 2 + len(clause) + 1 > max_chars:
+            break
+        kept = f"{kept}; {clause}"
+    return kept.rstrip(" .;,") + "…"
+
+
+def read_street_day_line(
+    *,
+    stream_ids: Sequence[str],
+    tz_name: str,
+    max_chars: int,
+    now: datetime | None = None,
+) -> str:
+    """The walkway's day so far as one honest line, or "". Never raises; "" on any
+    failure, when ``stream_ids`` is empty, or when no row from today is readable."""
+    ids = [str(s).strip() for s in stream_ids if str(s).strip()]
+    if max_chars <= 0 or not ids:
+        return ""
+    from zoneinfo import ZoneInfo
+
+    from orion.vision.walkway_rollup import display_line
+
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = timezone.utc
+    now = now or datetime.now(timezone.utc)
+    local = now.astimezone(tz)
+    day_start = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    try:
+        from sqlalchemy import bindparam, text
+
+        stmt = text(STREET_DAY_ROLLUP_SQL).bindparams(bindparam("stream_ids", expanding=True))
+        with _get_engine().connect() as conn:
+            rows = conn.execute(
+                stmt,
+                {"stream_ids": ids, "day_start": day_start,
+                 "hour_since": now - timedelta(hours=_STREET_HOUR_FALLBACK_HOURS)},
+            ).mappings().all()
+    except Exception as exc:
+        logger.warning("street day rollup read failed: %s", exc)
+        return ""
+    for row in rows:
+        line = trim_rollup_line(display_line(row.get("line"), row.get("rollup")), max_chars)
+        if line:
+            return line
+    return ""
+
+
 def reset_vision_reader_engine_for_tests() -> None:
     global _engine, _engine_url
     _engine = None

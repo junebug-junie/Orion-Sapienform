@@ -46,11 +46,14 @@ null if nothing natural comes to mind. Never force one every tick. At most ONE
 claim, never a list.
 {% endif %}
 
-{% if street_percepts or street_predictions %}
+{% if street_percepts or street_predictions or street_day %}
 OUTSIDE, ON THE WALKWAY ({{ street_camera or "the street camera" }} -- your own eye outside the house, public, NOT your room):
 {% for p in street_percepts or [] %}
 - just now: {{ p.narrative }}
 {% endfor %}
+{% if street_day %}
+- the day so far, counted from this camera: {{ street_day }}
+{% endif %}
 {% for line in street_predictions or [] %}
 - {{ line }}
 {% endfor %}
@@ -133,11 +136,14 @@ RECENT VERDICTS ON THESE LOOPS (read this before you narrate urgency)
   about the loop; never say a person closed it.
 {% endif %}
 
-{% if street_percepts or street_predictions %}
+{% if street_percepts or street_predictions or street_day %}
 OUTSIDE, ON THE WALKWAY ({{ street_camera or "the street camera" }} -- your own eye outside the house, public, NOT your room):
 {% for p in street_percepts or [] %}
 - just now: {{ p.narrative }}
 {% endfor %}
+{% if street_day %}
+- the day so far, counted from this camera: {{ street_day }}
+{% endif %}
 {% for line in street_predictions or [] %}
 - {{ line }}
 {% endfor %}
@@ -176,7 +182,7 @@ GROUNDING DISCIPLINE (the anti-hollow rule — this is the whole point)
 - evidence_refs MUST be a non-empty subset of the attended node ids or open
   loop ids above. A thought that cites no such id will be discarded as
   un-anchored (hollow).
-{% if street_percepts or street_predictions %}
+{% if street_percepts or street_predictions or street_day %}
 - The walkway (street) lines are outside the house: context only, never an
   id to cite, and "I notice the street" is not an anchored thought.
 {% endif %}

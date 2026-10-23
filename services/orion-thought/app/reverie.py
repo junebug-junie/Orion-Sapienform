@@ -455,6 +455,7 @@ def build_reverie_context(
     personality_cue: str | None = None,
     street_percepts: list[dict[str, Any]] | None = None,
     street_predictions: list[str] | None = None,
+    street_day: str | None = None,
     continuity: ChainContinuity | None = None,
 ) -> dict[str, Any]:
     percepts = recent_percepts or []
@@ -466,6 +467,9 @@ def build_reverie_context(
         street["street_percepts"] = list(street_percepts)
     if street_predictions:
         street["street_predictions"] = list(street_predictions)
+    if street_day:
+        # The walkway's day so far, one line, people as a range (display_line).
+        street["street_day"] = street_day
     if street:
         # Which of Orion's own eyes this is (2026-10-15): without it the
         # section read as one more sensor feed, not as Orion's camera outside.
@@ -545,6 +549,7 @@ def build_reverie_plan_request(
     personality_cue: str | None = None,
     street_percepts: list[dict[str, Any]] | None = None,
     street_predictions: list[str] | None = None,
+    street_day: str | None = None,
     continuity: ChainContinuity | None = None,
 ) -> PlanExecutionRequest:
     use_lift = settings.reverie_semantic_lift_enabled and bool(concern_cards)
@@ -574,6 +579,7 @@ def build_reverie_plan_request(
             personality_cue=personality_cue,
             street_percepts=street_percepts,
             street_predictions=street_predictions,
+            street_day=street_day,
             continuity=continuity,
         ),
     )
@@ -957,6 +963,24 @@ async def run_reverie_once(
                 return [], []
             return list(captions or []), list(graded or [])
 
+        async def _fetch_street_day() -> str:
+            # Separate from _fetch_street: a failed rollup read costs only this line.
+            if not (want_street and settings.reverie_street_day_enabled):
+                return ""
+            from .vision_reader import read_street_day_line
+
+            try:
+                line = await asyncio.to_thread(
+                    read_street_day_line,
+                    stream_ids=settings.reverie_street_stream_id_list,
+                    tz_name=settings.reverie_street_timezone,
+                    max_chars=settings.reverie_street_day_max_chars,
+                )
+            except Exception as exc:
+                logger.warning("reverie street day read failed corr=%s err=%s", correlation_id, exc)
+                return ""
+            return str(line or "").strip()
+
         async def _fetch_self_readings() -> str | None:
             # Only the coalition branch renders it (see build_reverie_context).
             if not want_loop_outcomes:
@@ -975,6 +999,7 @@ async def run_reverie_once(
             self_readings,
             (street_percepts, street_predictions),
             personality_cue,
+            street_day,
         ) = await asyncio.gather(
             _fetch_loop_outcomes(),
             _fetch_percepts(),
@@ -982,11 +1007,12 @@ async def run_reverie_once(
             _fetch_self_readings(),
             _fetch_street(),
             build_personality_cue_text(correlation_id),
+            _fetch_street_day(),
         )
-        if street_percepts or street_predictions:
+        if street_percepts or street_predictions or street_day:
             logger.info(
-                "reverie_street_context corr=%s captions=%d graded=%d",
-                correlation_id, len(street_percepts), len(street_predictions),
+                "reverie_street_context corr=%s captions=%d graded=%d rollup=%d",
+                correlation_id, len(street_percepts), len(street_predictions), 1 if street_day else 0,
             )
         plan_request = build_reverie_plan_request(
             broadcast,
@@ -999,6 +1025,7 @@ async def run_reverie_once(
             personality_cue=personality_cue,
             street_percepts=street_percepts,
             street_predictions=street_predictions,
+            street_day=street_day or None,
             continuity=continuity,
         )
         # Same formula build_reverie_plan_request uses internally to decide `use_lift` --

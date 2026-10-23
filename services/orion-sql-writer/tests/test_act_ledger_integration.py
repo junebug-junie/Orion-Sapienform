@@ -444,16 +444,42 @@ def test_close_fills_seconds_when_gpu_events_cannot_be_read(session):
     assert row["cost_json"]["seconds"] == pytest.approx(42.0) and row["cost_json"]["gpu_slot_s_by_lane"] is None
 
 
-def test_resolver_close_fills_seconds_too(session):
+def test_resolver_and_expired_closes_do_not_invent_seconds(session):
+    """A resolver close is stamped at the horizon: its wall time would be horizon_sec, a constant."""
+    session.execute(text(_GPU_EVENTS_DDL))
     now = datetime.now(timezone.utc)
-    act = _say_act("c-resolved", horizon=60.0)
+    say = _say_act("c-resolved", horizon=60.0)
     opened = now - timedelta(seconds=300)
     apply_grammar_trace_batch(session, [act_opened_event(
-        act, source_service="orion-hub", source_component="t", correlation_id="c-resolved", at=opened)])
-    assert resolve_due_acts(session, now=now).closed_not_replied == 1
-    row = _row(session, act.act_id)
-    # Closed at the horizon: wall = horizon (it includes the wait for Juniper).
-    assert row["cost_json"]["seconds"] == pytest.approx(60.0, abs=0.01)
+        say, source_service="orion-hub", source_component="t", correlation_id="c-resolved", at=opened)])
+    # The reply's own generation lease, released just before the act opened.
+    _lease(session, eid="r1", at=opened - timedelta(seconds=20), event="released", lease="LR", role="chat",
+           corr="c-resolved", held_ms=15000.0)
+    look = build_act(actor="hub.world_pulse_read", verb="look", key="seed-x", signal_id="artifact_produced",
+                     horizon_sec=60.0, basis="p90")
+    apply_grammar_trace_batch(session, [act_opened_event(
+        look, source_service="orion-hub", source_component="t", at=opened)])
+    summary = resolve_due_acts(session, now=now)
+    assert summary.closed_not_replied == 1 and summary.closed_expired == 1
+    say_cost = _row(session, say.act_id)["cost_json"]
+    # No invented wall time; the GPU the reply really used is still measured.
+    assert say_cost["seconds"] is None and say_cost["gpu_slot_s_by_lane"] == {"chat": pytest.approx(15.0)}
+    # Nothing measured at all: NULL, not a cost of zeros.
+    assert _row(session, look.act_id)["cost_json"] is None
+
+
+def test_cost_reported_at_open_survives_the_close(session):
+    from orion.schemas.grammar import ActCostV1
+
+    t0 = datetime.now(timezone.utc) - timedelta(minutes=10)
+    act = _make_act("open-cost").model_copy(update={"cost": ActCostV1(tokens=5)})
+    apply_grammar_trace_batch(session, [act_opened_event(
+        act, source_service="orion-thought", source_component="t", at=t0)])
+    apply_grammar_trace_batch(session, [act_closed_event(
+        act.model_copy(update={"cost": None}), produced=True, source_service="orion-thought",
+        source_component="t", at=t0 + timedelta(seconds=30))])
+    cost = _row(session, act.act_id)["cost_json"]
+    assert cost["tokens"] == 5 and cost["seconds"] == pytest.approx(30.0)
 
 
 def test_close_before_open_has_no_wall_time(session):

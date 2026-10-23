@@ -258,9 +258,10 @@ class ActCostV2(BaseModel):
 
     Additive and optional: every V1 field, same meaning. None means not measured, never zero.
 
-    * ``seconds``: wall time from act_opened to act_closed. The act ledger fills it on close when
-      the producer left it unset and the open time is known. For an act graded by the horizon
-      resolver (say/ask -> juniper_replied) it includes the wait for the outcome.
+    * ``seconds``: wall time from act_opened to act_closed. The act ledger fills it on a PRODUCER
+      close when the producer left it unset and the open time is known. A resolver or expired
+      close is stamped at the horizon (or at Juniper's reply), so its wall time is not what the
+      act spent: left None.
     * ``gpu_slot_s_by_lane``: GPU pool slot-seconds held, per lane (pool role). Filled on close
       from ``gpu_pool_events`` leases whose ``turn_correlation_id`` is the act's correlation_id.
     * ``wh_by_host``: watt-hours drawn, per host. Not measured yet.

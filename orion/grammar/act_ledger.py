@@ -305,7 +305,7 @@ _INSERT_OPEN_SQL = text(
 )
 
 
-def _isolated(conn: Any, what: str, act_id: str, fn: Any) -> Any:
+def _isolated(conn: Any, what: str, act_id: str, fn: Any, *, log_prefix: str = "act_workspace") -> Any:
     """Run a rung-3 side step in its own SAVEPOINT. The binding is a trace of the act: a failure
     (no broadcast table, a bad row) must never abort the act's own open or close, which share
     the caller's transaction. Returns None on failure."""
@@ -318,7 +318,7 @@ def _isolated(conn: Any, what: str, act_id: str, fn: Any) -> Any:
     except Exception:
         if nested is not None:
             nested.rollback()
-        logger.warning("act_workspace_%s_failed act_id=%s", what, act_id, exc_info=True)
+        logger.warning("%s_%s_failed act_id=%s", log_prefix, what, act_id, exc_info=True)
         return None
 
 
@@ -347,12 +347,18 @@ def open_act(conn: Any, event: GrammarEventV1) -> None:
 #
 # What the act spent, measured by the writer when the producer left it unset. Never 0 for
 # "unknown": a field with no measurement stays None, and a cost with nothing measured stays NULL.
-# * seconds: closed_at - opened_at (needs the open; a close-before-open has no wall time).
+# Merge order: the close's own cost, then the cost stored at open, then the writer's fill.
+# * seconds: closed_at - opened_at, for a PRODUCER close only (the producer reported when it
+#   finished). A resolver or expired close is stamped at the horizon, so its wall time is the
+#   act's own horizon_sec (a constant, not a measurement) or Juniper's reply latency: left None.
+#   A close-before-open has no wall time either.
 # * gpu_slot_s_by_lane: GPU pool lease time per lane for the act's turn. gpu_pool_events carries
 #   the caller's turn_correlation_id on every lease; the act's correlation_id is that turn. A chat
 #   reply's leases are released BEFORE its act opens (live 10-21: ~1 min), hence the lookback.
 #   Each lease counts once (an expired-then-released lease carries held_ms twice: the max wins).
 #   Known overcount: a durable-run hold and its child calls share one slot but are separate leases.
+#   Live every correlation_id maps to one act; if several acts ever share a turn's correlation_id,
+#   each is charged the whole turn's GPU time.
 GPU_COST_LOOKBACK_SEC = 3600.0
 GPU_COST_CLOSE_GRACE_SEC = 120.0
 _GPU_LEASES_FOR_TURN_SQL = text(
@@ -377,21 +383,42 @@ def _gpu_slot_seconds(conn: Any, corr: str, since: datetime, until: datetime) ->
     return out or None
 
 
+def _stored_cost(raw: Any) -> dict[str, Any]:
+    """grammar_acts.cost_json as stored at open (jsonb arrives decoded; a text double as str)."""
+    if raw is None:
+        return {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return {}
+    return {k: v for k, v in raw.items() if v is not None} if isinstance(raw, dict) else {}
+
+
 def fill_close_cost(conn: Any, act: ActV1, *, opened_at: datetime | None, closed_at: datetime,
-                    correlation_id: str | None) -> ActCostV2 | None:
-    """The producer's cost with every unset field the writer can measure filled in. Producer
-    values win. None when nothing is measured at all."""
-    cost = ActCostV2.from_any(act.cost) or ActCostV2()
+                    correlation_id: str | None, source: str = "producer",
+                    stored: Any = None) -> ActCostV2 | None:
+    """The act's cost: the close's own fields, then the fields stored at open, then every unset
+    field the writer can measure. None when nothing is measured at all."""
+    merged = _stored_cost(stored)
+    close_cost = ActCostV2.from_any(act.cost)
+    if close_cost is not None:
+        merged.update({k: v for k, v in close_cost.model_dump().items() if v is not None})
+    try:
+        cost = ActCostV2(**merged)
+    except Exception:  # noqa: BLE001 -- a malformed stored cost must not lose the close's own
+        logger.warning("act_cost_stored_invalid act_id=%s", act.act_id, exc_info=True)
+        cost = close_cost or ActCostV2()
     update: dict[str, Any] = {}
-    if cost.seconds is None and opened_at is not None:
+    if cost.seconds is None and opened_at is not None and source == "producer":
         wall = (closed_at - _aware(opened_at)).total_seconds()
         if wall >= 0:
             update["seconds"] = round(wall, 3)
     if cost.gpu_slot_s_by_lane is None and correlation_id:
         anchor = _aware(opened_at) if opened_at is not None else closed_at
-        lanes = _isolated(conn, "gpu_cost", act.act_id, lambda: _gpu_slot_seconds(
+        lanes = _isolated(conn, "gpu", act.act_id, lambda: _gpu_slot_seconds(
             conn, str(correlation_id), anchor - timedelta(seconds=GPU_COST_LOOKBACK_SEC),
-            closed_at + timedelta(seconds=GPU_COST_CLOSE_GRACE_SEC)))
+            closed_at + timedelta(seconds=GPU_COST_CLOSE_GRACE_SEC)), log_prefix="act_cost")
         if lanes:
             update["gpu_slot_s_by_lane"] = lanes
     if update:
@@ -421,7 +448,8 @@ def close_act(
     """Close one act by act_id and grade it into L10. First close wins."""
     row = conn.execute(
         text(
-            "SELECT closed_at, predicted, opened_at, horizon_at, workspace_ref, correlation_id FROM grammar_acts "
+            "SELECT closed_at, predicted, opened_at, horizon_at, workspace_ref, correlation_id, cost_json "
+            "FROM grammar_acts "
             "WHERE act_id = :a FOR UPDATE"
         ),
         {"a": act.act_id},
@@ -447,11 +475,13 @@ def close_act(
         workspace_ref = params.get("workspace_ref")
         opened_at_row = None
         correlation_id = params.get("correlation_id")
+        stored_cost = None
     else:
         predicted_at_open = None if row[1] is None else float(row[1])
         workspace_ref = row[4]
         opened_at_row = row[2]
         correlation_id = row[5] or (event.correlation_id if event is not None else None)
+        stored_cost = row[6]
 
     value = float(outcome.value)
     observed_at = _aware(outcome.observed_at)
@@ -551,7 +581,7 @@ def close_act(
             )
 
     cost = fill_close_cost(conn, act, opened_at=opened_at_row, closed_at=observed_at,
-                           correlation_id=correlation_id)
+                           correlation_id=correlation_id, source=outcome.source, stored=stored_cost)
     conn.execute(
         text(
             """

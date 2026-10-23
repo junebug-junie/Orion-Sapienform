@@ -357,3 +357,85 @@ def test_retro_play_rows_fold_into_one_play_arc_and_a_missing_table_reads_nothin
         assert not [e for e in gone if e.source_kind == "retro_play"]
 
     with_db(scenario_fn)
+
+
+STORY_INSERT = """
+INSERT INTO vision_motion_story (story_id, stream_id, kind, started_at, ended_at, speed_class, dir_lateral,
+  dir_depth, name_label, individual_id, companion_kinds, together_story_ids, published, drop_reason, clean,
+  rules_version, sentence)
+VALUES (%(story_id)s, %(stream_id)s, %(kind)s, %(started_at)s, %(ended_at)s, 'walking', 1, -1, %(name_label)s,
+  'ind-1', %(companion_kinds)s, %(together)s, %(published)s, NULL, true, 1, 'A person walked.')
+"""
+
+
+def test_street_rows_become_labelled_street_arcs_and_the_flag_restores_room_only():
+    """Episodes from the street (PR #2763 item 1) on real Postgres: the three street reads return only
+    notable events (a gated published story, one per walking-together group; a doorbell ring; a
+    handoff with p < 0.05), the chronicle folds them into street arcs whose evidence names the source
+    row, the flag's off path reads nothing, and a database without the verdict table skips the story
+    read instead of failing the whole read."""
+    async def scenario_fn(pool):
+        start = T0 + timedelta(minutes=2)
+
+        def story(sid, **kw):
+            base = {"story_id": sid, "stream_id": "walkway", "kind": "person", "started_at": start,
+                    "ended_at": start + timedelta(seconds=15), "name_label": None, "companion_kinds": [],
+                    "together": [], "published": True}
+            base.update(kw)
+            return base
+
+        stories = [story("a1", companion_kinds=["person"], together=["a2"]),  # kept: lowest id of its group
+                   story("a2", companion_kinds=["person"], together=["a1"]),  # same group: skipped
+                   story("b1", published=False),                              # parked / glimpse: not published
+                   story("c1", kind="vehicle"),                               # traffic
+                   story("d1", stream_id="cam0")]                             # the room
+        checked = story("v", started_at=start - timedelta(days=3), ended_at=start - timedelta(days=3))
+        async with pool.connection() as conn:
+            for s in stories + [dict(checked, story_id=f"v{i}") for i in range(52)]:
+                await conn.execute(STORY_INSERT, s)
+            # Juniper's spot checks: 50 right of 52 on rules version 1 (the live 10-23 tally).
+            await conn.execute("INSERT INTO vision_motion_story_verdict (story_id, verdict, rules_version) "
+                               "SELECT story_id, CASE WHEN story_id IN ('v0', 'v1') THEN 'wrong_other' ELSE 'right' "
+                               "END, 1 FROM vision_motion_story WHERE story_id LIKE 'v%'")
+            await fdb.insert(conn, "vision_rollup", [{
+                "stream_id": "walkway", "grain": "hour", "period_start": T0, "period_end": T0 + timedelta(hours=1),
+                "complete": True, "line": "x", "rules_version": 2, "rollup": {"rules_version": 2, "kinds": {"person": {
+                    "passings": 6, "count_range": {"low": 2, "high": 6, "method_low": "most_in_one_window",
+                                                   "method_high": "appearance_clusters"}}}}}])
+            await fdb.insert(conn, "vision_events", [
+                {"event_id": "ring-1", "stream_id": "doorbell", "event_type": "doorbell_ring",
+                 "entities": [], "created_at": start + timedelta(minutes=1)},
+                {"event_id": "motion-1", "stream_id": "doorbell", "event_type": "doorbell_motion",
+                 "entities": [], "created_at": start + timedelta(minutes=1)}])
+            for eid, kind, p in (("e1", "handoff_missed", 0.01), ("e2", "handoff_met", 0.4), ("e3", "approach_door", None)):
+                ev = {"event_id": eid, "kind": kind, "stream_ids": ["walkway", "doorbell"], "p_value": p,
+                      "occurred_at": (start + timedelta(minutes=3)).isoformat(), "salience": 0.5, "correlation_id": "c"}
+                await fdb.insert(conn, "vision_handoff_street_outbox", [{
+                    "event_id": eid, "handoff_id": f"h-{eid}", "kind": kind, "event": ev,
+                    "created_at": start + timedelta(minutes=4)}])
+        lo, hi = T0 - timedelta(minutes=5), T0 + timedelta(minutes=50)
+        _, events = await SourceReader(pool, TZ).read(lo, hi, ticks=False, kinds=["street_event"])
+        assert sorted(e.event_id for e in events) == ["street_event:a1", "street_event:e1", "street_event:ring-1"]
+        (a1,) = [e for e in events if e.source_ref == "a1"]
+        assert a1.label == ("Outside (walkway camera): a person walked left to right, away from the house, with "
+                            "other people; that hour, people: at least 2, at most 6 (the camera splits one person "
+                            "into several)")
+        assert all(e.payload["outside_world"] for e in events)
+
+        w = scenario()
+        await run_pg(pool, w, T0 + timedelta(hours=1))
+        arcs = [canon(a) for a in await ChronicleStore(pool).arcs("2026-10-10")]
+        street = [a for a in arcs if a["kind"] == "street"]
+        assert sorted(a["evidence_refs"][0] for a in street) == [
+            "vision_events:ring-1", "vision_handoff_street_outbox:e1", "vision_motion_story:a1"]
+        assert all(a["subject_label"].startswith("Outside (") for a in street)
+        assert not [a for a in arcs if a["kind"] == "company"]  # the street never opens room company
+
+        _, off = await SourceReader(pool, TZ, exclude_kinds=("street_event",)).read(lo, hi, ticks=False)
+        assert not [e for e in off if e.source_kind == "street_event"]
+        async with pool.connection() as conn:
+            await conn.execute("DROP TABLE vision_motion_story_verdict")
+        _, partial = await SourceReader(pool, TZ).read(lo, hi, ticks=False, kinds=["street_event"])
+        assert sorted(e.source_ref for e in partial) == ["e1", "ring-1"]  # the story read skipped, not failed
+
+    with_db(scenario_fn)

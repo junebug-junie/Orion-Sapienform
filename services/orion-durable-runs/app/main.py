@@ -419,7 +419,8 @@ def _build_chronicle():
     reducer = ReducerConfig(
         tz_name=s.orion_situation_timezone, arc_min_ticks=s.temporal_self_arc_min_ticks,
         return_window_sec=60.0 * s.temporal_self_return_window_min,
-        conversation_return_window_sec=60.0 * s.temporal_self_conversation_return_window_min)
+        conversation_return_window_sec=60.0 * s.temporal_self_conversation_return_window_min,
+        street_arcs_per_day=s.temporal_self_street_episodes_per_day)
     cfg = ChronicleConfig(
         reducer=reducer, read_lag_sec=s.temporal_self_read_lag_sec, backfill_days=s.temporal_self_backfill_days,
         event_retention_days=s.temporal_self_event_retention_days,
@@ -428,7 +429,8 @@ def _build_chronicle():
     return Chronicler(store=ChronicleStore(_checkpointer_cm), reader=SourceReader(
         _checkpointer_cm, reducer.tz_name,
         exclude_kinds=tuple(k for k, on in (("arousal_transition", s.temporal_self_strain_arcs_enabled),
-                                            ("retro_play", s.temporal_self_retro_play_enabled)) if not on)),
+                                            ("retro_play", s.temporal_self_retro_play_enabled),
+                                            ("street_event", s.temporal_self_street_episodes_enabled)) if not on)),
                       cfg=cfg, now=lambda: datetime.now(timezone.utc))
 
 

@@ -90,6 +90,32 @@ thread and sleep clauses (as the last clause it was dropped on both real 10-11 f
 "played <label>". Day letter: counted as `play`. Eval: `evals/run_play_cue_eval.py`. Kill switch:
 `TEMPORAL_SELF_RETRO_PLAY_ENABLED` (orion-durable-runs); a database without the table skips the source.
 
+### Street arcs (episodes from the street, 2026-10-23)
+
+Spec: walkway follow-ups, PR #2763 item 1 ("Memory and day letter"). Before this, episodes were
+room-only (`ROOM_STREAMS = {"cam0"}`): the walkway and doorbell cameras reached no arc at all. Source
+`street_event` (`sources.street_event`) reads only events something already marked notable:
+
+- a `vision_motion_story` that is published and clean, on a non-room stream, kind person / dog /
+  bicycle / stroller (not vehicles), whose rules version passed Juniper's spot-check gate
+  (`orion/vision/motion_story_gate.py`); one story per walking-together group;
+- a doorbell ring (`vision_events.event_type = 'doorbell_ring'`);
+- a graded handoff from sql-writer's `StreetEventV1` outbox with `p_value < 0.05` (the street attention
+  gate's event clause, `orion/substrate/street_attention.py`).
+
+Each is one closed `street` process arc, subject `street:<origin>:<id>`, evidence the source row
+(`vision_motion_story:<id>`, `vision_events:<id>`, `vision_handoff_street_outbox:<id>`). The label
+always starts "Outside (<camera>):" and is built from the row's fields, never the story sentence
+(which says "together with 1 other person", a bare track count). People appear only as the closed
+hour's honest range (`walkway_rollup.person_count_range`, PR #2781); live, the hour is usually not
+closed yet when the story is read, so most live labels carry no count at all. Nothing binds to a street
+arc by time (room percepts are not about the street), it reads no body, and `presence_transition` /
+`vision_percept` stay room-only. Cap: `ReducerConfig.street_arcs_per_day` (12), first come first kept.
+Recent arcs show only the latest street arc ("saw Outside (walkway camera): ..."). Kill switch:
+`TEMPORAL_SELF_STREET_EPISODES_ENABLED` (orion-durable-runs); cap `TEMPORAL_SELF_STREET_EPISODES_PER_DAY`.
+Proof on the live rail: `temporal_self_arc` rows with `kind = 'street'`, and the chronicle's
+`temporal_self_street_episode arc_id=... source=vision_motion_story:...` log line.
+
 ### Thread arc ids and the truth eval (2026-10-12)
 
 `OpenThreadV1.arc_id` names the concern arc a thread is, so the cue cites every open thread

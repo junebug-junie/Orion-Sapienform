@@ -45,7 +45,7 @@ One service's compose GPU reservation and its docs. No bus, schema or code-path 
 ## Tests run
 
 ```text
-pytest services/orion-affectgpt-worker/tests -q        -> 44 passed
+pytest services/orion-affectgpt-worker/tests -q        -> 43 passed
 pytest tests/test_compose_logging_journald.py -q       -> 2 passed
 ```
 
@@ -67,7 +67,19 @@ NVIDIA runtime accepting the UUID at `up` on circe: UNVERIFIED (no circe shell f
 
 ## Review findings fixed
 
-- Reviewed together with the companion guardian PR's review subagent scope note: this PR is config/docs only; no material findings specific to it.
+Review ran in a subagent (manual; no code-review skill available). No must-fix findings. It checked that a compose refusal for this one service does not abort `rebuild_services_from_git_diff.sh`, `up_all_services*.sh`, or any CI job.
+
+- Finding: the memory need was stated three ways (">7.3 GB", "~15 GB", "~18.4 GB peak").
+  - Fix: one figure everywhere: ~18.4 GB peak (2026-08 README measurement); 7.3 GB is "the OOM hit with 7.3 GB free".
+- Finding: the empty pin also blocks `docker compose stop/down/logs` for this service and does not stop an existing container.
+  - Fix: compose comment and this report name the working command (`docker rm -f orion-circe-affectgpt-worker`, or set the variable for one command).
+- Finding: rebuild noise on circe is wider than "pulls touching this service" (shared `orion/` changes also select it).
+  - Fix: stated under Risks.
+- Finding (nit): the bare-index regex was easy to bypass.
+  - Fix: the test parses the compose YAML and requires every `device_ids` entry to be the required env key.
+- Finding (nit): the UUID table's role labels will go stale.
+  - Fix: role labels dropped; the table is marked as a snapshot to re-check with `nvidia-smi -L`.
+- Not changed: `orion-kev` still pins by bare index (`KEV_GPU_DEVICE_ID=3`) and can fail the same way. Follow-up, not this PR.
 
 ## Restart required
 
@@ -80,8 +92,11 @@ scripts/safe_docker_build.sh orion-affectgpt-worker up -d --build
 ## Risks / concerns
 
 - Severity: low
-- Concern: a circe pull that touches this service now fails its rebuild step for this one service until the key is set.
-- Mitigation: that is intended (no crash loop); the error names the key and the file.
+- Concern: until the key is set on circe, every circe post-pull rebuild that selects this worker prints `FAILED orion-affectgpt-worker` and exits 1 at the end. It is selected by its own files AND by shared `orion/bus/`, `orion/schemas/` changes, so this will be frequent noise that can hide a real failure. Other services still rebuild.
+- Mitigation: intended (no crash loop); the error names the key and file. If the noise is unwanted before a card is picked, drop `orion-affectgpt-worker` from `mesh-utilities/common/include_services_circe.txt` and restore it with the UUID. Left for Juniper.
+- Severity: medium
+- Concern: the empty pin does not stop a container that already exists. How the worker was stopped at 22:27Z and whether its container still exists on circe is UNVERIFIED from here.
+- Mitigation: on circe, `docker ps -a --filter name=affectgpt`; remove with `docker rm -f orion-circe-affectgpt-worker` (compose commands for this service refuse while the key is empty).
 
 ## PR link
 

@@ -69,15 +69,18 @@ services:
     # The SXM2 is index 3 now. An index can move again; a UUID cannot.
     #
     # circe cards (nvidia-smi -L, 2026-10-23):
-    #   idx0 GPU-5b4609d2-95c2-2891-8aff-98ac1af92302  V100-PCIE-32GB  chat
-    #   idx1 GPU-83b0aa77-90da-ed6c-cc04-a1e530d0a0f1  V100-PCIE-32GB  agent llama (~24.3 GB)
+    # (a snapshot -- re-check with `nvidia-smi -L` before choosing)
+    #   idx0 GPU-5b4609d2-95c2-2891-8aff-98ac1af92302  V100-PCIE-32GB
+    #   idx1 GPU-83b0aa77-90da-ed6c-cc04-a1e530d0a0f1  V100-PCIE-32GB
     #   idx2 GPU-00e3b626-de2a-e344-796e-017b7a1b3f40  PG500-216
-    #   idx3 GPU-599d16a7-8c7c-1e3a-ac94-a01e5cb5cf7a  V100-SXM2-32GB  (~12 GB free)
+    #   idx3 GPU-599d16a7-8c7c-1e3a-ac94-a01e5cb5cf7a  V100-SXM2-32GB
     #
-    # NO CARD IS CHOSEN HERE. This worker needs more than 7.3 GB (likely ~15 GB)
+    # NO CARD IS CHOSEN HERE. This worker needs ~18.4 GB peak (2026-08 measurement, README; the OOM hit with 7.3 GB free)
     # and on 2026-10-23 no card had that much free. Juniper picks the card.
-    # Until then the empty pin keeps the container from starting and
-    # crash-looping again on a pull-triggered rebuild.
+    # Until then the empty pin keeps compose from starting the container
+    # (and from running ANY compose command for it: stop/down/logs too --
+    # use `docker rm -f orion-circe-affectgpt-worker`, or set the variable
+    # for that one command). It does not stop a container that already exists.
     #
     # Inside the container the one exposed card is always index 0, so
     # AFFECTGPT_DEVICE=cuda:0 above stays correct for any UUID.

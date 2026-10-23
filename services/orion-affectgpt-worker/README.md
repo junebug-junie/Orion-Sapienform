@@ -10,8 +10,9 @@ while it is empty).
 the V100-SXM2-32GB on 2026-08-25. circe's GPU numbering later changed: index 1
 became the agent llama-server's card, and from 2026-10-14 03:00Z to
 2026-10-23 22:27Z this worker hit CUDA OOM at model load and restarted 601
-times (exit 3, ~144 W for 9 days, nothing alerted). The worker needs more
-than 7.3 GB free (likely ~15 GB); no circe card had that on 2026-10-23
+times (exit 3, ~144 W for 9 days, nothing alerted). The worker needs
+~18.4 GB at peak (measured 2026-08, below; the OOM hit with 7.3 GB free); no
+circe card had that on 2026-10-23
 (the SXM2, now index 3, had ~12 GB). Juniper chooses the card; the UUIDs are
 listed in `docker-compose.yml`.
 

@@ -10,32 +10,37 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import yaml
+
 SERVICE_DIR = Path(__file__).resolve().parents[1]
-
-
-def _live(text: str) -> str:
-    return "\n".join(ln for ln in text.splitlines() if not ln.strip().startswith("#"))
+UUID = re.compile(r"GPU-[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 
 
 def _env_example() -> dict[str, str]:
     out = {}
-    for line in _live((SERVICE_DIR / ".env_example").read_text()).splitlines():
-        if "=" in line:
-            k, v = line.strip().split("=", 1)
-            out[k] = v
+    for line in (SERVICE_DIR / ".env_example").read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            out[k] = v.split("#", 1)[0].strip()
     return out
 
 
-def test_compose_pin_is_a_required_env_key():
-    text = _live((SERVICE_DIR / "docker-compose.yml").read_text())
-    assert 'device_ids: ["${AFFECTGPT_GPU_DEVICE_ID:?' in text
+def _device_ids() -> list[str]:
+    compose = yaml.safe_load((SERVICE_DIR / "docker-compose.yml").read_text())
+    ids = []
+    for svc in compose["services"].values():
+        for dev in svc.get("deploy", {}).get("resources", {}).get("reservations", {}).get("devices", []):
+            ids += [str(i) for i in dev.get("device_ids", [])]
+    return ids
 
 
-def test_no_bare_index_pin():
-    text = _live((SERVICE_DIR / "docker-compose.yml").read_text())
-    assert not re.search(r'device_ids:\s*\[\s*"\d+"\s*\]', text)
+def test_every_device_id_is_the_required_env_key():
+    ids = _device_ids()
+    assert ids, "no GPU reservation found"
+    assert all(i.startswith("${AFFECTGPT_GPU_DEVICE_ID:?") for i in ids), ids
 
 
 def test_env_example_key_is_empty_or_a_uuid():
     value = _env_example()["AFFECTGPT_GPU_DEVICE_ID"]
-    assert value == "" or re.fullmatch(r"GPU-[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}", value), value
+    assert value == "" or UUID.fullmatch(value), value

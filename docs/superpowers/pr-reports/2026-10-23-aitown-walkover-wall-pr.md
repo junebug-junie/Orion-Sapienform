@@ -74,7 +74,7 @@ Not deployed. It needs a merge, then a pull on circe. Once #2880 is merged, that
 
 ## Restart required
 
-After merge, on circe: `git pull` (with #2880 merged, that deploys it). Otherwise: `cd services/orion-ai-town && bash scripts/pre_rebuild.sh && cd .. && cd .. && scripts/safe_docker_build.sh orion-ai-town up -d --build frontend && bash services/orion-ai-town/scripts/post_rebuild.sh`
+Merge #2880 (deploy on pull) first, then this PR. Then on circe, from the clean primary checkout: `git pull --ff-only`. The post-merge rebuild runs `pre_rebuild.sh`, builds, then runs `post_rebuild.sh`.
 
 ## Risks / concerns
 

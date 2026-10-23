@@ -159,6 +159,9 @@ readers:
   - module: orion/hardware_watch/shed_effect.py
     role: display
     reason: measures the temperature effect of a shed (minute means); no gate.
+  - module: services/orion-hub/scripts/strain_report.py
+    role: display
+    reason: renders the strained reading (since, causes, cabinet temp, GPU queue) into Orion's one strain report per episode; it opens an exception to the outreach strained refusal and vetoes nothing itself.
   - module: orion/temporal_self/arcs.py
     role: display
     reason: builds strain arcs for Orion's self-narrative from level transitions.

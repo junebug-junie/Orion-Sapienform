@@ -27,6 +27,7 @@ from orion.schemas.dream_cycle import DreamCycleV1, DreamPressureObservationV1, 
 from orion.schemas.drive_reading import DriveReadingV1
 from orion.schemas.telemetry.dream import DreamInternalTriggerV1
 
+from app import act_emit
 from app.recombine import Complete, control_pairs, dream_pairs, recombine
 from app.replay import (
     arc_candidates,
@@ -80,6 +81,10 @@ class CycleDeps:
     # walkway candidates. Replay material only, read after the pressure read like arcs.
     load_walkway_rows: Optional[Callable[[datetime, datetime], dict[str, list[dict[str, Any]]]]] = None
     walkway_timezone: str = "America/Denver"
+    # Act ledger (body economy A5): publishes one dream cycle's act_opened/act_closed grammar
+    # event (app/act_emit.py). None (DREAM_ACT_EMIT_ENABLED off) = no act, and recombination
+    # calls keep their own per-call correlation ids, exactly as before.
+    publish_act: Optional[Callable[[Any], Awaitable[None]]] = None
     # Set by run_cycle_once when arousal held a sleep this check (e.g. "arousal_strained"),
     # else None, so a manual run can say "held" instead of "not due".
     hold_reason: Optional[str] = None
@@ -233,6 +238,62 @@ async def _publish_drive(deps: CycleDeps, build: Callable[[], DriveReadingV1]) -
         )
 
 
+class CycleActTrace:
+    """One sleep's ``make`` act: opened once, closed once (app/act_emit.py). Never raises.
+
+    The close is sent whenever an open was attempted, even if the open publish failed or timed
+    out: the writer then builds the row from the close (close-before-open) and still grades it."""
+
+    def __init__(self, deps: CycleDeps, cycle_id: str) -> None:
+        self._publish = deps.publish_act
+        self.cycle_id = cycle_id
+        self.horizon = act_emit.horizon_sec(
+            hypotheses_per_cycle=settings.DREAM_HYPOTHESES_PER_CYCLE,
+            control_per_cycle=settings.DREAM_CONTROL_PER_CYCLE,
+            llm_timeout_sec=settings.DREAM_LLM_TIMEOUT_SEC,
+        )
+        self.opened_at: Optional[datetime] = None
+        self.closed = False
+
+    @property
+    def on(self) -> bool:
+        return self._publish is not None
+
+    async def _send(self, build: Callable[[], Any], what: str) -> None:
+        try:
+            await asyncio.wait_for(self._publish(build()), timeout=PUBLISH_TIMEOUT_SEC)
+        except Exception:  # noqa: BLE001 -- the act is a trace; never fail or hold a sleep
+            logger.warning("dream_cycle_act_%s_failed cycle_id=%s", what, self.cycle_id, exc_info=True)
+
+    async def open(self) -> None:
+        if not self.on:
+            return
+        self.opened_at = datetime.now(timezone.utc)
+        at = self.opened_at
+        await self._send(lambda: act_emit.opened_event(self.cycle_id, horizon=self.horizon, at=at), "open")
+
+    async def close(self, produced: bool, note: str) -> None:
+        # Once per cycle, even if called again (a close after the success close is ignored).
+        if not self.on or self.closed or self.opened_at is None:
+            return
+        self.closed = True
+        at = datetime.now(timezone.utc)
+        seconds = (at - self.opened_at).total_seconds()
+        await self._send(lambda: act_emit.closed_event(
+            self.cycle_id, horizon=self.horizon, produced=produced, note=note, seconds=seconds, at=at,
+        ), "close")
+
+    def bind_leases(self):
+        """While the cycle runs, its LLM calls carry the act's correlation id (the GPU cost join)."""
+        if not self.on:
+            return None
+        return act_emit.set_lease_correlation(act_emit.cycle_correlation_id(self.cycle_id))
+
+    def unbind_leases(self, token) -> None:
+        if token is not None:
+            act_emit.reset_lease_correlation(token)
+
+
 def drive_reading_for(
     pressure: SleepPressureV1, *, now: datetime, check_id: str, last_start: Optional[datetime],
     last_end: Optional[datetime], has_candidates: bool, source_errors,
@@ -279,7 +340,10 @@ async def _publish_after_sleep(deps: CycleDeps, cycle: DreamCycleV1, last_start:
 
 
 async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: bool = False) -> Optional[DreamCycleV1]:
-    """Run one sleep if due (or forced). None when not due. Never raises."""
+    """Run one sleep if due (or forced). None when not due.
+
+    Read and gate failures never raise. An unexpected error after the sleep started (e.g. the
+    cycle cannot be persisted) or a cancellation closes the sleep's act at 0 and is re-raised."""
     started = datetime.now(timezone.utc)
     check_id = f"dp-{uuid4().hex}"
     deps.read_errors.clear()
@@ -359,76 +423,88 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
         await _publish_after_sleep(deps, cycle, last_start)
         return cycle
 
-    # Mixing rule: arcs join the pool as their own source_kind, capped at a third of the
-    # replay (replay.arc_replay_slots: 4 of 12), so the existing sources keep at least two
-    # thirds; ARC_WEIGHT_MAX (0.8) keeps a critical metacog ahead of every arc. Arcs never
-    # start a sleep on their own: with no existing candidate the cycle above is `empty`.
-    # Arcs above an existing item's weight do displace it, within that third.
-    arcs = await read_arc_candidates(deps, pressure.since, started)
-    arc_slots = arc_replay_slots(settings.DREAM_REPLAY_MAX)
-    # Graded walkway predictions: same rule as arcs, capped at a sixth of the replay.
-    walkway = await read_walkway_candidates(deps, pressure.since, started)
-    walkway_slots = walkway_replay_slots(settings.DREAM_REPLAY_MAX)
-    replay = select_replay(
-        candidates + arcs + walkway, settings.DREAM_REPLAY_MAX,
-        source_caps={"arc": arc_slots, "walkway": walkway_slots},
-    )
-    # Control pool: the same top arcs replay could take, not all 20. Uniform sampling over
-    # 20 arcs + ~5-12 existing items would make most control fragments arcs while the dream
-    # arm is capped at a third: source mix would confound the dream-vs-control comparison.
-    # Same for walkway items.
-    pool = candidates + arcs[:arc_slots] + walkway[:walkway_slots]
+    act = CycleActTrace(deps, cycle_id)
+    lease_token = None
+    try:
+        # Inside the try: a cancel while the open is being published still closes the act at 0.
+        await act.open()
+        lease_token = act.bind_leases()
+        # Mixing rule: arcs join the pool as their own source_kind, capped at a third of the
+        # replay (replay.arc_replay_slots: 4 of 12), so the existing sources keep at least two
+        # thirds; ARC_WEIGHT_MAX (0.8) keeps a critical metacog ahead of every arc. Arcs never
+        # start a sleep on their own: with no existing candidate the cycle above is `empty`.
+        # Arcs above an existing item's weight do displace it, within that third.
+        arcs = await read_arc_candidates(deps, pressure.since, started)
+        arc_slots = arc_replay_slots(settings.DREAM_REPLAY_MAX)
+        # Graded walkway predictions: same rule as arcs, capped at a sixth of the replay.
+        walkway = await read_walkway_candidates(deps, pressure.since, started)
+        walkway_slots = walkway_replay_slots(settings.DREAM_REPLAY_MAX)
+        replay = select_replay(
+            candidates + arcs + walkway, settings.DREAM_REPLAY_MAX,
+            source_caps={"arc": arc_slots, "walkway": walkway_slots},
+        )
+        # Control pool: the same top arcs replay could take, not all 20. Uniform sampling over
+        # 20 arcs + ~5-12 existing items would make most control fragments arcs while the dream
+        # arm is capped at a third: source mix would confound the dream-vs-control comparison.
+        # Same for walkway items.
+        pool = candidates + arcs[:arc_slots] + walkway[:walkway_slots]
 
-    compaction_delta_id = None
-    if deps.rem_compaction is not None:
-        try:
-            compaction_delta_id = await deps.rem_compaction(cycle_id, pressure.since)
-        except Exception as exc:
-            logger.warning("dream_cycle rem compaction failed err=%s", exc)
+        compaction_delta_id = None
+        if deps.rem_compaction is not None:
+            try:
+                compaction_delta_id = await deps.rem_compaction(cycle_id, pressure.since)
+            except Exception as exc:
+                logger.warning("dream_cycle rem compaction failed err=%s", exc)
 
-    d_pairs = dream_pairs(replay, settings.DREAM_HYPOTHESES_PER_CYCLE)
-    c_pairs = control_pairs(
-        pool, settings.DREAM_CONTROL_PER_CYCLE, seed=cycle_id, exclude=d_pairs
-    )
-    rem = await recombine(
-        d_pairs + c_pairs, deps.complete, cycle_id=cycle_id,
-        ttl_hours=settings.DREAM_HYPOTHESIS_TTL_HOURS,
-    )
+        d_pairs = dream_pairs(replay, settings.DREAM_HYPOTHESES_PER_CYCLE)
+        c_pairs = control_pairs(
+            pool, settings.DREAM_CONTROL_PER_CYCLE, seed=cycle_id, exclude=d_pairs
+        )
+        rem = await recombine(
+            d_pairs + c_pairs, deps.complete, cycle_id=cycle_id,
+            ttl_hours=settings.DREAM_HYPOTHESIS_TTL_HOURS,
+        )
 
-    pairs = d_pairs + c_pairs
-    # Every LLM call failed: nothing was recombined, so this sleep must not
-    # close the window (the backlog stays for the next attempt, which the
-    # min-interval gate still spaces out).
-    failed = bool(pairs) and rem.failures == len(pairs)
-    cycle = DreamCycleV1(
-        cycle_id=cycle_id,
-        trigger=trigger,  # type: ignore[arg-type]
-        status="failed" if failed else "completed",
-        started_at=started,
-        ended_at=datetime.now(timezone.utc),
-        pressure=pressure,
-        replay=replay,
-        hypotheses=rem.hypotheses,
-        no_link_count=rem.no_link,
-        unparseable_count=rem.unparseable,
-        llm_failures=rem.failures,
-        compaction_delta_id=compaction_delta_id,
-        note=f"pairs dream={len(d_pairs)} control={len(c_pairs)}"
-        + (f" | arc candidates={len(arcs)}" if deps.load_arc_rows is not None else "")
-        + (f" | walkway candidates={len(walkway)}" if deps.load_walkway_rows is not None else "")
-        + (f" | overdue: {settings.DREAM_LOOKBACK_HOURS:g} h without crossing threshold" if backstop else ""),
-    )
-    persisted = await asyncio.to_thread(deps.persist_cycle, cycle)
-    if not persisted:
-        logger.warning("dream_cycle %s ran but was not persisted", cycle_id)
-    logger.info(
-        "dream_cycle %s id=%s pressure=%.2f replay=%d hypotheses=%d (dream=%d control=%d) "
-        "no_link=%d unparseable=%d llm_failures=%d",
-        cycle.status, cycle_id, pressure.pressure, len(replay), len(rem.hypotheses),
-        sum(1 for h in rem.hypotheses if h.arm == "dream"),
-        sum(1 for h in rem.hypotheses if h.arm == "control"),
-        rem.no_link, rem.unparseable, rem.failures,
-    )
+        pairs = d_pairs + c_pairs
+        # Every LLM call failed: nothing was recombined, so this sleep must not
+        # close the window (the backlog stays for the next attempt, which the
+        # min-interval gate still spaces out).
+        failed = bool(pairs) and rem.failures == len(pairs)
+        cycle = DreamCycleV1(
+            cycle_id=cycle_id,
+            trigger=trigger,  # type: ignore[arg-type]
+            status="failed" if failed else "completed",
+            started_at=started,
+            ended_at=datetime.now(timezone.utc),
+            pressure=pressure,
+            replay=replay,
+            hypotheses=rem.hypotheses,
+            no_link_count=rem.no_link,
+            unparseable_count=rem.unparseable,
+            llm_failures=rem.failures,
+            compaction_delta_id=compaction_delta_id,
+            note=f"pairs dream={len(d_pairs)} control={len(c_pairs)}"
+            + (f" | arc candidates={len(arcs)}" if deps.load_arc_rows is not None else "")
+            + (f" | walkway candidates={len(walkway)}" if deps.load_walkway_rows is not None else "")
+            + (f" | overdue: {settings.DREAM_LOOKBACK_HOURS:g} h without crossing threshold" if backstop else ""),
+        )
+        persisted = await asyncio.to_thread(deps.persist_cycle, cycle)
+        if not persisted:
+            logger.warning("dream_cycle %s ran but was not persisted", cycle_id)
+        logger.info(
+            "dream_cycle %s id=%s pressure=%.2f replay=%d hypotheses=%d (dream=%d control=%d) "
+            "no_link=%d unparseable=%d llm_failures=%d",
+            cycle.status, cycle_id, pressure.pressure, len(replay), len(rem.hypotheses),
+            sum(1 for h in rem.hypotheses if h.arm == "dream"),
+            sum(1 for h in rem.hypotheses if h.arm == "control"),
+            rem.no_link, rem.unparseable, rem.failures,
+        )
+    except BaseException as exc:  # noqa: BLE001 -- closed at 0, then re-raised unchanged
+        await act.close(False, f"raised:{type(exc).__name__}:{str(exc)[:200]}")
+        raise
+    finally:
+        act.unbind_leases(lease_token)
+    await act.close(*act_emit.cycle_outcome(cycle, persisted=persisted))
     # No story for an unsaved sleep: its audit would point at a cycle that doesn't exist.
     if deps.start_story is not None and persisted:
         story = story_trigger(

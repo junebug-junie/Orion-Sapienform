@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from orion.regulation.arousal_view import UNKNOWN_DISABLED, ArousalView, arousal_view
-from orion.schemas.regulation import REGULATION_STATE_REDIS_KEY
+from orion.schemas.regulation import REGULATION_STATE_REDIS_KEY, RegulationStateV1, parse_regulation_state
 
 logger = logging.getLogger("orion-hub.arousal")
 
@@ -73,6 +73,16 @@ class ArousalReader:
         """The level a gate may act on, or None for unknown (None = today's behaviour)."""
         v = self.view(now)
         return v.level if v.known else None
+
+    def state(self, now: Optional[datetime] = None) -> Optional[RegulationStateV1]:
+        """The full reading behind a known level (cabinet temp, GPU queue, reasons), or None.
+
+        Same freshness judgement as ``view``: an unknown view (stale, absent, flag off) returns
+        None, so a caller can never ground anything on a reading the gate would not act on.
+        Used by the strain report door (scripts/strain_report.py)."""
+        if not self.view(now).known:
+            return None
+        return parse_regulation_state(self._raw)
 
 
 __all__ = ["ArousalReader"]

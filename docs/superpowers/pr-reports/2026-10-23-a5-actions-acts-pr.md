@@ -148,6 +148,6 @@ Run this from the clean primary `main` checkout after the merge.
 
 ## PR link
 
-(filled on open)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2889
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

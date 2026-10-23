@@ -2,10 +2,11 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 758,
   "_last_change": {
-    "change_count": 1,
-    "high_severity_count": 1,
+    "change_count": 2,
+    "high_severity_count": 2,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-biometrics/orion:grammar:event (all_producers: \u2026ch', 'orion-gpu-pool', '\u2026 -> \u2026ch', 'orion-dream', 'orion-gpu-pool', '\u2026)"
+      "high   routing_changed metric://bus_channel/orion-biometrics/orion:grammar:event (all_producers: \u2026ch', 'orion-gpu-pool', '\u2026 -> \u2026ch', 'orion-dream', 'orion-gpu-pool', '\u2026)",
+      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026vices.orion-proposal-run\u2026 -> \u2026vices.orion-hub.scripts.endogenous_outreach:EndogenousOutre\u2026\u2026)"
     ]
   },
   "definitions": {
@@ -4900,6 +4901,7 @@
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (strained holds; engaged doubles the cooldown)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick_self_inquiry (runs only at idle)",
         "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (strained refuses background outreach)",
+        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._strain_report_once -> scripts.strain_report (strain loop part 3: a strained episode >= 60 min may pass the strained refusal with ONE grounded report, once per episode and once per local day; reads since, reasons, cabinet_temp_c, gpu_queue_depth)",
         "services.orion-proposal-runtime.app.worker:ProposalRuntimeWorker._baseline_arousal_level -> orion.reverie.baseline:schedule (strained defers a due visual baseline image by retry_sec)",
         "services.orion-substrate-runtime.app.worker:BiometricsSubstrateWorker._strain_attention_tick -> orion.regulation.strain_news:strain_news (strained -> rare budgeted news events on node:substrate.strain for attention; the level itself never competes)",
         "services.orion-thought.app.chain:_next_chain_sleep_sec (strained doubles the pause between reverie chains)"

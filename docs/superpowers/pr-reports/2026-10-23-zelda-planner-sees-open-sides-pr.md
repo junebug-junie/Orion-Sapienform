@@ -97,6 +97,6 @@ git pull   # the post-pull rebuild rebuilds orion-hub and orion-retro (a running
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2870
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -100,6 +100,6 @@ scripts/safe_docker_build.sh orion-affectgpt-worker up -d --build
 
 ## PR link
 
-(filled in after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2894 (companion: https://github.com/junebug-junie/Orion-Sapienform/pull/2895)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

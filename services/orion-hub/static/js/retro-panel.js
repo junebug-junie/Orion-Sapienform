@@ -243,12 +243,13 @@
   action('cognitive',()=>handoff(true));
   async function showPolicy(){
     if(!sid)return;
-    const current=sid, state=await api(`sessions/${sid}`);
+    const current=sid, grantAsked=handoffGrant, state=await api(`sessions/${sid}`);
     if(current!==sid)return;
     if(state.state==='paused' && !(state.scripted||[]).length){scriptedMode=false;cognitivePort=null;handoffGrant=null;}
     // Our grant ended (budget, Retro pause, or another controller such as leisure took the port):
     // leave handoff mode so blur releases the sockets and a click takes the game back.
-    if(scriptedMode && handoffGrant){
+    // Only a status requested after the handoff can say its grant is gone.
+    if(scriptedMode && handoffGrant && handoffGrant===grantAsked){
       const mine=(state.scripted||[]).find(p=>p.port===handoffGrant.port);
       if(mine && handoffGrant.epoch===null)handoffGrant.epoch=mine.epoch;
       else if(!mine || mine.epoch!==handoffGrant.epoch){scriptedMode=false;cognitivePort=null;handoffGrant=null;}

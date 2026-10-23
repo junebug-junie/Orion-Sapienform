@@ -376,6 +376,9 @@ rebuild_one() {
         else
             echo "[dry-run] would rebuild: $svc${RECREATE_FLAG:+ ($RECREATE_FLAG)}"
         fi
+        if [ -x "$REPO_ROOT/services/$svc/scripts/pre_rebuild.sh" ]; then
+            echo "[dry-run] would run first: services/$svc/scripts/pre_rebuild.sh"
+        fi
         if [ -n "$PROFILE_SERVICES" ]; then
             printf '%s\n' "$PROFILE_SERVICES" | while IFS="$(printf '\t')" read -r profile name; do
                 [ -n "$name" ] || continue
@@ -394,6 +397,25 @@ rebuild_one() {
 
     echo ""
     echo "=== rebuild_services_from_git_diff: $svc ==="
+
+    # A stack whose build reads generated source runs its own step first:
+    # orion-ai-town builds from its patched, gitignored upstream/ and keeps its
+    # Convex functions outside compose, so a plain `up --build` shipped neither
+    # (live town code sat at 2026-08-30 until 2026-10-23). Failure skips the stack.
+    PRE_REBUILD="$REPO_ROOT/services/$svc/scripts/pre_rebuild.sh"
+    if [ -x "$PRE_REBUILD" ]; then
+        rebuild_log "PRE-START $svc"
+        set +e
+        "$PRE_REBUILD" </dev/null
+        rc=$?
+        set -e
+        rebuild_log "PRE-END rc=$rc $svc"
+        if [ "$rc" -ne 0 ]; then
+            echo "rebuild_services_from_git_diff.sh: FAILED $svc -- services/$svc/scripts/pre_rebuild.sh exit $rc; not building" >&2
+            FAILED="$FAILED $svc"
+            return 0
+        fi
+    fi
 
     if [ -n "$POOL_PLAN" ]; then
         # Build first, then decide what to start from a FRESH look at docker:

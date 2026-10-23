@@ -673,3 +673,25 @@ def test_run_started_on_stale_main_is_not_pinned(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     pins = [c for c in calls if c.startswith("PIN=")]
     assert pins == ["PIN="]
+
+
+def _write_pre_rebuild(tmp_path: Path, svc: str, rc: int) -> None:
+    pre = tmp_path / "repo" / "services" / svc / "scripts" / "pre_rebuild.sh"
+    pre.parent.mkdir(parents=True)
+    pre.write_text(f"#!/bin/sh\nprintf 'PRE {svc}\\n' >> \"$REBUILD_TEST_CAPTURE\"\nexit {rc}\n")
+    pre.chmod(0o755)
+
+
+def test_pre_rebuild_runs_before_the_build(tmp_path: Path) -> None:
+    _write_pre_rebuild(tmp_path, "orion-ai-town", 0)
+    completed, calls = _run(tmp_path, plan="orion-ai-town,build")
+    assert completed.returncode == 0, completed.stderr
+    assert calls[0] == "PRE orion-ai-town"
+    assert calls[1].startswith("orion-ai-town up -d --build")
+
+
+def test_failing_pre_rebuild_skips_the_build(tmp_path: Path) -> None:
+    _write_pre_rebuild(tmp_path, "orion-ai-town", 3)
+    completed, calls = _run(tmp_path, plan="orion-ai-town,build")
+    assert calls == ["PRE orion-ai-town"]
+    assert "pre_rebuild.sh exit 3; not building" in completed.stderr

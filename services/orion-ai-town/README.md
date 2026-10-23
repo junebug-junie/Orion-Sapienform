@@ -309,6 +309,18 @@ git -C upstream diff -- convex/constants.ts convex/world.ts > patches/orion-huma
 
 > Note: `patches/orion-character.patch` and `patches/orion-human-juniper.patch` are generated from real diffs against the cloned `upstream/`. On a node where `upstream/` is not yet cloned, the apply script skips a patch (with a message) rather than failing; generate the patches on a node that has `upstream/` before relying on the cast. If `upstream/` already has an older apply of these two patches, `apply_upstream_patches.sh` will refuse the new hunks — restore vanilla `data/characters.ts` and `convex/world.ts` from the pin (or re-clone), then re-apply, **or** run `generate_descriptions.py` on the dirty tree (it pins Juniper's sprite and rewrites Nico from the cards) and refresh the two patch files.
 
+### Deploys: `scripts/pre_rebuild.sh`
+
+`scripts/rebuild_services_from_git_diff.sh` runs `scripts/pre_rebuild.sh` before every post-pull rebuild of this stack. If it fails, the stack is skipped. Before 2026-10-23 nothing did this. The frontend image builds from `upstream/`, and the Convex functions live outside compose, so a pull rebuilt only an unpatched frontend. The live town ran 2026-08-30 code for almost two months.
+
+The script does four things:
+1. It saves `upstream/`'s diff to `~/.orion/aitown-upstream-backup-<time>/` (keeps the last 10).
+2. It resets `upstream/` to `AITOWN_UPSTREAM_REF` from `.env_example` and deletes the files the patches create.
+3. It applies the chain from scratch.
+4. It pushes the functions with `npx convex dev --once`. On a host without Node (circe), it runs that in `node:20-alpine`.
+
+It refuses when `cards/town_cards.local.yaml` is missing, because the Juniper join text would render from the redacted example. Copy that file from the operator host with owner-only permissions. To deploy by hand, run `bash scripts/pre_rebuild.sh`, then rebuild the frontend.
+
 ### Fresh game / reset
 
 Reseed the town from scratch (destructive — wipes all world/memory tables). Operator-run:

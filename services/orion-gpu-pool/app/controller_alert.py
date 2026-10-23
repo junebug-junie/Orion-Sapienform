@@ -83,7 +83,10 @@ def build_perception_request(name: str, state: str, view: dict[str, Any], *, sou
             "or a new camera stream was added. Check: gpu_pool_events where priority='perception', by holder;",
             "vision-council logs for [COUNCIL] transition reasons.",
         ])
-        severity, require_ack = "error", True   # unacked 60 min -> email (notify attention_escalation)
+        # warning, not error: the 3360 ceiling was measured while vision-council was being shed by heat
+        # (25,430 refusals in that week), so unshed load may run higher. A Hub card, no email, until the
+        # ceiling is re-baselined on a week of perception-priority data.
+        severity, require_ack = "warning", True
     else:
         reason = "[GPU pool] Orion's sight is back under its GPU ceiling"
         message = f"Perception's last-hour GPU hold is {view.get('held_sec_last_hour')} s (ceiling {view.get('ceiling_sec')})."

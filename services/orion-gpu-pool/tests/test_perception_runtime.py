@@ -21,7 +21,23 @@ def test_perception_lease_granted_while_cabinet_hot_blocks_system():
         sight = await rt.acquire(acq("metacog", priority="perception"))
         own = await rt.acquire(acq("metacog", priority="system"))
         assert sight.status == "granted"
-        assert own.status != "granted"
+        assert own.status == "unavailable" and own.reason == "shed:cabinet_hot"   # shed, not slot-full
+    run(go())
+
+
+def test_expired_perception_lease_counts_its_hold_once():
+    """An expiry emits two names (expired + released); the hold must be counted once."""
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        lease = await rt.acquire(acq("metacog", priority="perception"))
+        assert lease.status == "granted"
+        clock.advance(rt.cfg.defaults.request_lease_ttl_sec + 5)
+        await rt.tick()
+        row = await rt.store.lease(lease.lease_id)
+        assert row["status"] not in ("granted", "recalling")
+        held = rt.perception_load.held_last_hour(rt.now())
+        assert 0 < held <= rt.cfg.defaults.request_lease_ttl_sec + 5
     run(go())
 
 
@@ -48,7 +64,7 @@ def test_released_perception_hold_counts_toward_the_hour_and_alerts_once():
         [(name, state, view)] = sent
         assert (name, state) == ("perception", "high") and view["held_sec_last_hour"] == 150
         req = build_perception_request(name, state, view, source="orion-gpu-pool")
-        assert req.severity == "error" and req.require_ack
+        assert req.severity == "warning" and req.require_ack
 
         clock.advance(3700)
         await rt.tick()

@@ -1571,6 +1571,13 @@ class PoolRuntime:
                 names.append(outcome)
         for name in names:
             await self._emit_row(name, row, prior=prior, reason=row.get("reason") or event.get("reason"))
+        # Perception load (body-economy A0): once per transition -- one transition can emit two names
+        # (expired+released) -- and only when the lease actually leaves a slot it held. granted_at is
+        # never cleared, so a retry_wait lease being released must not count its old grant again.
+        if (row.get("priority") == "perception" and prior and prior.get("granted_at")
+                and prior.get("status") in ("granted", "recalling")
+                and row["status"] not in ("granted", "recalling")):
+            self.perception_load.record(self.now(), (self.now() - prior["granted_at"]).total_seconds())
         return row
 
     async def _sync_row(self, lease_id: str) -> dict | None:
@@ -1721,8 +1728,6 @@ class PoolRuntime:
             waited_ms = (now - row["queued_since"]).total_seconds() * 1000
         if event in ("released", "aborted", "expired", "retried") and prior and prior.get("granted_at"):
             held_ms = (now - prior["granted_at"]).total_seconds() * 1000
-            if row.get("priority") == "perception":
-                self.perception_load.record(now, held_ms / 1000.0)
         detail: dict[str, Any] = {}
         if event == "granted" and row.get("role"):
             detail["grant"] = self.grant_for(row["role"], row["lease_id"], row["generation"]).model_dump(mode="json")

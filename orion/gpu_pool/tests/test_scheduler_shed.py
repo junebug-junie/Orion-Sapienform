@@ -308,3 +308,52 @@ def test_shed_held_queue_reflex_filter_drops_orion_self_shed():
     leases = [vars(lease("agent", priority="background", kind="hold", retryable=True, lease_id="r"))]
     assert shed_held_queue(leases, {"background": "orion_self_shed"}, reasons=REFLEX_REASONS) == ({}, None)
     assert shed_held_queue(leases, {"background": "cabinet_hot"}, reasons=REFLEX_REASONS) == ({"agent": 1}, "cabinet_hot")
+
+
+# --- deferrable_queued: Orion's own waiting self-work, hunger not strain (2026-10-23) ----------
+
+def _deferrable_fixture():
+    return [
+        hold("queued", None, priority="background", lease_id="r1"),
+        hold("queued", None, priority="background", lease_id="r2"),
+        lease("metacog", priority="background", lease_id="m", retryable=True),          # a request
+        lease("memory_distill", priority="system", kind="hold", retryable=True, lease_id="d"),  # system
+        lease("metacog", priority="interactive", lease_id="i"),
+        hold("granted", "agent", priority="background", lease_id="run", granted_at=T0 - timedelta(seconds=60)),
+        lease("agent", priority="background", kind="hold", lease_id="c", hold_lease_id="run"),  # a child
+    ]
+
+
+def test_deferrable_queued_is_structural_not_by_holder():
+    """Only queued background holds with no parent hold; the holder name never matters."""
+    from orion.gpu_pool.shed import deferrable_queued, is_deferrable_self_work
+
+    leases = _deferrable_fixture()
+    assert deferrable_queued(leases, {}) == {"agent": 2}
+    assert deferrable_queued([vars(l) for l in leases], None) == {"agent": 2}
+    assert [l.lease_id for l in leases if is_deferrable_self_work(l)] == ["r1", "r2"]
+    # A history-row dict (GpuLeaseRowV1 shape): any holder name, same answer either way.
+    row = dict(status="queued", priority="background", kind="hold", hold_lease_id=None, work_class="agent")
+    for holder in ("durable-runs:reading-x", "durable-runs:curiosity-compaction:y", "cortex-exec"):
+        assert is_deferrable_self_work({**row, "holder": holder})
+    assert not is_deferrable_self_work({**row, "kind": "request"})
+    assert not is_deferrable_self_work({**row, "priority": "system"})
+
+
+def test_deferrable_queued_never_counts_a_shed_held_lease():
+    """Each lease counts once: under a reflex shed every background hold is shed-held, not deferrable;
+    under Orion's own shed (not counted shed-held by the history row) they stay deferrable."""
+    from orion.gpu_pool.shed import REFLEX_REASONS, deferrable_queued, shed_held_queue
+
+    leases = _deferrable_fixture()
+    for blocked in ({"background": "cabinet_hot", "system": "cabinet_hot"},
+                    {"background": "cabinet_unknown"}, {"background": "orion_self_shed"}, {}):
+        held, _ = shed_held_queue(leases, blocked, reasons=REFLEX_REASONS)
+        dfr = deferrable_queued(leases, blocked, reasons=REFLEX_REASONS)
+        held_ids = {l.lease_id for l in leases if l.status == "queued" and l.hold_lease_id is None
+                    and blocked.get(l.priority) in REFLEX_REASONS}
+        dfr_ids = {l.lease_id for l in leases if l.lease_id in {"r1", "r2"}} - held_ids
+        assert not (held_ids & dfr_ids)
+        assert sum(held.values()) == len(held_ids) and sum(dfr.values()) == len(dfr_ids)
+    assert deferrable_queued(leases, {"background": "cabinet_hot"}, reasons=REFLEX_REASONS) == {}
+    assert deferrable_queued(leases, {"background": "orion_self_shed"}, reasons=REFLEX_REASONS) == {"agent": 2}

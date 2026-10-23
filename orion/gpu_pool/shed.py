@@ -181,6 +181,43 @@ def shed_held_queue(leases: Any, blocked: Any, *,
     return held, ("+".join(sorted(seen)) or None)
 
 
+def is_deferrable_self_work(row: Any) -> bool:
+    """A queued lease that is Orion's own deferrable work: a durable-run HOLD at ``background``
+    priority with no parent hold (``hold_lease_id`` None). Decided by lease fields only, never by
+    holder name. Live 2026-10-23: the agent-lane queue was all such holds (curiosity readings,
+    compaction), retryable, and kept arousal's S2 strained for days after the heat cleared.
+
+    Waiting deferrable self-work is hunger (an unfunded want), not strain (body-economy design
+    2026-10-23, "S2 decision"). Requests at any priority, and background REQUESTS, are not this.
+    A durable-run hold that serves Juniper must therefore ask for ``system`` or ``urgent`` priority:
+    ``ResourceRequirementV1.priority`` defaults to ``background``, which reads as self-work here."""
+    row = row if isinstance(row, dict) else vars(row)
+    return (row.get("status") == "queued" and row.get("priority") == "background"
+            and row.get("kind") == "hold" and row.get("hold_lease_id") is None)
+
+
+def deferrable_queued(leases: Any, blocked: Any, *, reasons: Any = None) -> dict[str, int]:
+    """Of a pool snapshot's QUEUED leases, the deferrable self-work (``is_deferrable_self_work``)
+    that a shed is NOT already holding: ``{work_class: n}``.
+
+    Each lease counts once. A lease ``shed_held_queue(leases, blocked, reasons=reasons)`` counts as
+    shed-held is left out here, so a reader subtracting both never subtracts it twice. Pass the
+    same ``blocked``/``reasons`` as the shed-held count (the history row passes ``REFLEX_REASONS``).
+    Readers: ``orion.regulation.arousal.gpu_queue_evidence`` (S2 stopgap until the holds move onto
+    bid(), body-economy Patch D)."""
+    blocked = blocked if isinstance(blocked, dict) else {}
+    out: dict[str, int] = {}
+    for lease in leases or ():
+        row = lease if isinstance(lease, dict) else vars(lease)
+        if not is_deferrable_self_work(row):
+            continue
+        reason = blocked.get(row.get("priority"))
+        if reason and (reasons is None or reason in reasons):
+            continue  # already shed-held: shed_held_queue counts it
+        out[row["work_class"]] = out.get(row["work_class"], 0) + 1
+    return out
+
+
 # ---------------------------------------------------------------------------------------------
 # Reading a shed back out of a refusal. When the pool sheds a request, orion-llm-gateway answers
 # ``raw.error="gpu_pool_unavailable"`` with ``raw.details.reason="shed:<name>"``, and cortex-exec's

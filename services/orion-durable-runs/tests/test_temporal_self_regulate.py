@@ -488,11 +488,31 @@ def test_store_reads_the_shed_held_queue_and_selects_its_columns():
     assert classify_arousal(None, inputs).reasons == ["gpu_shed:cabinet_hot"]
 
 
+def test_store_reads_deferrable_self_work_and_selects_its_column():
+    """2026-10-23: the live queue {"agent": 8}, all background holds (deferrable_depth, sql-writer).
+    It reaches the reducer as hunger, not load: no sustained run, S2 fresh and clear."""
+    from app import regulation_store
+    from orion.regulation.arousal import classify_arousal
+
+    q = {"agent": 8}
+    snaps = [{"host": "circe", "generated_at": T0 - timedelta(seconds=5 * i), "queue_depth": dict(q),
+              "shed_held_depth": {}, "shed_reason": None,
+              "deferrable_depth": json.dumps(q) if i % 2 else dict(q)} for i in range(70)]
+    out = asyncio.run(regulation_store._gpu(_GpuPool(snaps, []), T0, floor=2, sustain_sec=300.0))
+    assert out["gpu_queue_depth"] == 8 and out["gpu_queue_sustained_sec"] == 0.0
+    assert out["gpu_queue_self_deferrable"] == 8
+    assert "deferrable_depth" in regulation_store.GPU_SNAPSHOTS_SQL
+    inputs = ArousalInputsV1(observed_at=T0, juniper_turn_read_ok=True, minutes_since_juniper_turn=300.0,
+                             cabinet_read_ok=True, cabinet_reflex=None, cabinet_thermal_state="elevated", **out)
+    assert classify_arousal(None, inputs).reasons == ["no_juniper_turn_45m", "gpu_queue_self_deferrable:8"]
+
+
 def test_store_reads_rows_saved_before_the_shed_columns_as_nothing_held():
     from app import regulation_store
 
     out = asyncio.run(regulation_store._gpu(_GpuPool(_jam(T0), []), T0, floor=2, sustain_sec=300.0))
     assert out["gpu_queue_shed_held"] == 0 and out["gpu_shed_reason"] is None
+    assert out["gpu_queue_self_deferrable"] == 0   # no deferrable_depth key: an older row, read as 0
     assert out["gpu_queue_sustained_sec"] >= 300.0
 
 
@@ -540,6 +560,7 @@ DSN = os.getenv("ORION_ADMISSION_TEST_DSN")
 MIGRATION = REPO_ROOT / "services/orion-sql-db/manual_migration_temporal_self_event_v1.sql"
 HISTORY_MIGRATION = REPO_ROOT / "services/orion-sql-db/manual_migration_regulation_history.sql"
 SHED_MIGRATION = REPO_ROOT / "services/orion-sql-db/manual_migration_regulation_gpu_shed_held_v1.sql"
+DEFERRABLE_MIGRATION = REPO_ROOT / "services/orion-sql-db/manual_migration_regulation_gpu_deferrable_depth_v1.sql"
 
 
 async def _with_schema(scenario):
@@ -566,7 +587,8 @@ def test_store_reads_and_transition_write_on_postgres():
 
     async def scenario(pool):
         async with pool.connection() as conn:
-            for sql in (MIGRATION.read_text(), HISTORY_MIGRATION.read_text(), SHED_MIGRATION.read_text()):
+            for sql in (MIGRATION.read_text(), HISTORY_MIGRATION.read_text(), SHED_MIGRATION.read_text(),
+                        DEFERRABLE_MIGRATION.read_text()):
                 await conn.execute(sql, prepare=False)
             await conn.execute("""CREATE TABLE chat_history_log (id varchar PRIMARY KEY, source varchar, prompt text,
                                   client_meta jsonb, created_at timestamp DEFAULT now())""")

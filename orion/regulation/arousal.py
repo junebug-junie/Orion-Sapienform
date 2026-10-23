@@ -25,6 +25,13 @@ Rule, evaluated in this order (spec R3):
    S2 reads like a stale input (``gpu_shed:<reason>``), and a run of shed-held snapshots never counts
    toward ``gpu_sustain_sec``. Live 2026-10-18 -> 10-20: the shed held every queued background and
    system lease for ~26 of 54 h, and arousal read that queue as independent GPU strain.
+   Queue entries that are Orion's own deferrable self-work (queued ``background`` HOLDS with no
+   parent hold, ``orion.gpu_pool.shed.deferrable_queued``; sql-writer never counts a lease twice)
+   are not load and not missing evidence: waiting self-work is hunger, not strain (body-economy
+   design, "S2 decision", 2026-10-23). They are simply left out, so a queue of only them reads
+   fresh and clear, and the reading carries ``gpu_queue_self_deferrable:<n>``. Live 10-23: the
+   agent lane's queue was all such holds and kept strain latched for days after the heat cleared.
+   Stopgap until body-economy Patch D moves the holds onto bid() and S2 is retired.
 4. A Juniper turn within ``engaged_minutes`` (the dream's DREAM_IDLE_MINUTES, 45) -> engaged.
 5. Otherwise idle.
 
@@ -99,22 +106,26 @@ def gpu_queue_evidence(
     *,
     floor: int = DEFAULT_GPU_QUEUE_FLOOR,
     max_gap_sec: float = GPU_STATE_STALE_SEC,
-) -> tuple[Optional[float], Optional[int], Optional[float], int, Optional[str]]:
+) -> tuple[Optional[float], Optional[int], Optional[float], int, Optional[str], int]:
     """Saved GPU pool snapshots (ascending) -> S2 evidence.
 
-    Each snapshot is ``(generated_at, queue_depth)`` or ``(generated_at, queue_depth,
-    shed_held_depth, shed_reason)`` (``orion.gpu_pool.shed.shed_held_queue``, saved by sql-writer;
-    None = not recorded, read as nothing held -- the reading before the shed columns existed).
+    Each snapshot is ``(generated_at, queue_depth)``, ``(generated_at, queue_depth,
+    shed_held_depth, shed_reason)`` (``orion.gpu_pool.shed.shed_held_queue``) or that plus
+    ``deferrable_depth`` (``orion.gpu_pool.shed.deferrable_queued``), as saved by sql-writer.
+    None = not recorded, read as nothing held / nothing deferrable -- the reading before those
+    columns existed.
 
-    Returns ``(age_sec, depth, sustained_sec, held, shed_reason)``: the newest snapshot's age, its
-    summed queue depth, how long the LOAD depth (queue minus shed-held) has held at or above
-    ``floor`` back from the newest snapshot with no gap longer than ``max_gap_sec`` (a gap is
-    missing evidence, so it breaks the run), and the newest snapshot's shed-held count and reason.
-    All None (held 0) when there is no snapshot. A malformed depth map counts as no snapshot; a
-    malformed held map counts as nothing held, and held never exceeds the queue.
+    Returns ``(age_sec, depth, sustained_sec, held, shed_reason, deferrable)``: the newest
+    snapshot's age, its summed queue depth, how long the LOAD depth (queue minus shed-held minus
+    deferrable self-work, never below 0) has held at or above ``floor`` back from the newest
+    snapshot with no gap longer than ``max_gap_sec`` (a gap is missing evidence, so it breaks the
+    run), the newest snapshot's shed-held count and reason, and its deferrable count. All None
+    (held and deferrable 0) when there is no snapshot. A malformed depth map counts as no
+    snapshot; a malformed held or deferrable map counts as 0, and held + deferrable never exceed
+    the queue.
     """
     now = _utc(now)
-    rows: list[tuple[datetime, int, int, Optional[str]]] = []
+    rows: list[tuple[datetime, int, int, Optional[str], int]] = []
     for snap in snapshots:
         ts, depth = snap[0], snap[1]
         total = _depth_sum(depth)
@@ -123,20 +134,22 @@ def gpu_queue_evidence(
         held = _depth_sum(snap[2]) if len(snap) > 2 and snap[2] is not None else None
         held = min(held or 0, total)
         reason = (snap[3] if len(snap) > 3 else None) if held else None
-        rows.append((_utc(ts), total, held, reason))
+        deferrable = _depth_sum(snap[4]) if len(snap) > 4 and snap[4] is not None else None
+        deferrable = min(deferrable or 0, total - held)
+        rows.append((_utc(ts), total, held, reason, deferrable))
     if not rows:
-        return None, None, None, 0, None
+        return None, None, None, 0, None, 0
     rows.sort(key=lambda r: r[0])
-    newest_ts, newest_depth, newest_held, newest_reason = rows[-1]
+    newest_ts, newest_depth, newest_held, newest_reason, newest_def = rows[-1]
     age = max(0.0, (now - newest_ts).total_seconds())
-    if newest_depth - newest_held < floor:
-        return age, newest_depth, 0.0, newest_held, newest_reason
+    if newest_depth - newest_held - newest_def < floor:
+        return age, newest_depth, 0.0, newest_held, newest_reason, newest_def
     start = newest_ts
-    for (ts, depth, held, _), (later_ts, *_rest) in zip(reversed(rows[:-1]), reversed(rows[1:])):
-        if depth - held < floor or (later_ts - ts).total_seconds() > max_gap_sec:
+    for (ts, depth, held, _, dfr), (later_ts, *_rest) in zip(reversed(rows[:-1]), reversed(rows[1:])):
+        if depth - held - dfr < floor or (later_ts - ts).total_seconds() > max_gap_sec:
             break
         start = ts
-    return age, newest_depth, (newest_ts - start).total_seconds(), newest_held, newest_reason
+    return age, newest_depth, (newest_ts - start).total_seconds(), newest_held, newest_reason, newest_def
 
 
 def _fault_event(event: str, reason: Optional[str]) -> tuple[bool, Optional[str]]:
@@ -238,14 +251,21 @@ def classify_arousal(
     s1_hot = s1_fresh and inputs.cabinet_reflex == REFLEX_CABINET_HOT
     s2_seen = (inputs.gpu_state_age_sec is not None and inputs.gpu_state_age_sec <= GPU_STATE_STALE_SEC
                and inputs.gpu_queue_depth is not None)
+    # Orion's own deferrable self-work (queued background holds) is not load and not missing
+    # evidence: it is left out of the queue entirely (hunger, not strain; S2 decision 2026-10-23).
+    held = min(inputs.gpu_queue_shed_held or 0, inputs.gpu_queue_depth or 0) if s2_seen else 0
+    deferrable = (min(inputs.gpu_queue_self_deferrable or 0, inputs.gpu_queue_depth - held)
+                  if s2_seen else 0)
+    queue = (inputs.gpu_queue_depth - deferrable) if s2_seen else None
     # A queue at/above the floor while a lane controller refuses to act measures the fault, not
     # load: it can neither strain nor clear. Below the floor nothing is waiting, which stays true.
+    # The RAW depth on purpose: self-work may be waiting because of the fault, so a fault with only
+    # self-work queued still voids S2 (review 10-23: keep the 10-09 rule, do not let it clear).
     s2_faulted = s2_seen and bool(inputs.gpu_fault) and inputs.gpu_queue_depth >= gpu_queue_floor
     # Queue entries a shed (heat) holds back are not load either (S1 already reads the heat). Only
     # the rest is load; when the held entries alone lift the queue to the floor, S2 is no evidence.
-    held = min(inputs.gpu_queue_shed_held or 0, inputs.gpu_queue_depth or 0) if s2_seen else 0
-    load = (inputs.gpu_queue_depth - held) if s2_seen else None
-    s2_shed = (s2_seen and not s2_faulted and held > 0 and inputs.gpu_queue_depth >= gpu_queue_floor
+    load = (queue - held) if s2_seen else None
+    s2_shed = (s2_seen and not s2_faulted and held > 0 and queue >= gpu_queue_floor
                and load < gpu_queue_floor)
     s2_fresh = s2_seen and not s2_faulted and not s2_shed
     s2_strain = s2_fresh and (inputs.gpu_queue_sustained_sec or 0.0) >= gpu_sustain_sec
@@ -293,6 +313,9 @@ def classify_arousal(
     if held and not s2_shed and not s2_faulted:
         # Annotate only: part of the queue is shed-held, the rest still counted as load.
         reasons.append(f"gpu_shed_partial:{inputs.gpu_shed_reason or 'unknown'}:{held}")
+    if deferrable:
+        # Annotate only: N of the queue is Orion's own deferrable self-work, waiting (not strain).
+        reasons.append(f"gpu_queue_self_deferrable:{deferrable}")
     if inputs.gpu_fault and not s2_faulted:
         # Annotate only: the fault is real, but this step did not lean on the queue reading.
         reasons.append(f"gpu_fault:{inputs.gpu_fault}")

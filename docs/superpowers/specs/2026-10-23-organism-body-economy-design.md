@@ -589,6 +589,10 @@ physiology:
 8. ~~Tier 1 funding~~ **Decided 10-23:** vision and perception are Tier 0. Metacog- and fast-lane upkeep callers are Tier 1, with a reserved share. Tiers attach to callers, not lanes.
 9. ~~Vision past the heat reflex~~ **Decided 10-23:** a new `perception` pool priority, never shed by heat, ordered below interactive (Patch A0).
 10. **Turn-path calls on `quick` and `metacog` system.** Patch A verifies live whether cortex-exec's `quick` stance brief and Mind's system-priority reads sit on Juniper's turn path. If they do, they are Tier 0, and they should be on interactive routes, which the reflex never sheds.
+11. ~~Arousal S2 (`gpu_queue_sustained`) on self-queued work~~ **Decided 10-23 (S2 decision).** Live 10-23: the cabinet heat cleared about 01:00 UTC, but strain stayed latched because the GPU queue never emptied. The whole queue was the agent lane, and every entry was Orion's own deferrable work: queued background holds with no parent hold (readings and curiosity compaction). Three answers:
+    - **What it is.** Waiting deferrable self-work is hunger, an unfunded want at the lane's price. It is not strain.
+    - **When S2 dies.** S2 is retired fully when Patch D moves the holds onto `bid()`. Not before.
+    - **Stopgap now** (PR `fix/arousal-s2-deferrable-holds`). S2's load leaves out deferrable self-work. The rule uses lease fields only, never holder names: `status=queued`, `priority='background'`, `kind='hold'`, `hold_lease_id IS NULL`. Requests at every priority, and background *requests*, still count. sql-writer saves the count as `gpu_pool_state_history.deferrable_depth` (`orion/gpu_pool/shed.py:deferrable_queued`). A lease the heat shed already holds is never counted again. The reading notes the count as `gpu_queue_self_deferrable:<n>`.
 
 ---
 
@@ -667,6 +671,7 @@ Each retirement lands in the same patch as its replacement. None is left as a pa
 | retired | replaced by | patch |
 |---|---|---|
 | `strained` as a veto at ~12–14 sites (listed under Fact 3) | each reader's `bid()` decision | D, one reader per PR |
+| arousal S2 `gpu_queue_sustained` (and the 10-23 `deferrable_depth` stopgap with it) | the lane price, once the holds bid (question 11) | D |
 | energy stakes gate (`energy_stakes_gate.py`, flag off) | energy price | D |
 | `quota_budget.py` (dead; its dollar unit was refuted) | **deleted**. The `claude` constraint reads `ClaudeLimitObservationV1` | B |
 | `ORION_DISPATCH_MIN_NATS_PER_SEC` constant floor | lane price | D |

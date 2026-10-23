@@ -163,6 +163,6 @@ Expected: `perception` rows with grants, and 0 `shed:cabinet_hot`, including dur
 
 ## PR link
 
-(filled on creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2857
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -1041,6 +1041,26 @@ SELECT source, date_trunc('day', hour_start) d, round(sum(kwh)::numeric, 1) kwh
 FROM orion_energy_hourly GROUP BY 1, 2 ORDER BY 2 DESC, 1 LIMIT 12;
 ```
 
+### Act downstream use (`act_downstream_use`, body economy weight source (a))
+
+`app/act_downstream_use.py` answers, per `grammar_acts` act: was its output used by a later
+decision within 72 h? Read-only over its sources; writes only `act_downstream_use`
+(migration `services/orion-sql-db/manual_migration_act_downstream_use_v1.sql`).
+
+- The one working link today: act -> its output row `<table>:<id>` -> a Temporal Self arc holding
+  that ref in `arc_json.evidence_refs` -> a `thought_decision` whose `day_citations.cited_valid`
+  cites `arc:<arc_id>`, made after the act opened and within 72 h of its output.
+- Paths: `direct` (the act's `object_ref`/`test_before` already is an arc-source ref), `painting`
+  (`reverie_visual_chain` by dispatch id), `chat_row` (`hub.chat_reply` -> `chat_history_log.id`),
+  `retro_leisure` (`retro_play_sessions.dispatch_id`).
+- `link_status`: `linked`, `no_output` (path exists, output row missing; `used=false`), or
+  `no_link_path` (`used` NULL, never 0%: world-pulse reads, dream-carry pictures, outreach).
+- `window_closed=false` means a later decision can still flip `used`.
+- Every `ACT_DOWNSTREAM_USE_INTERVAL_SEC` (900) it recomputes acts opened in the last 5 days; an
+  empty table backfills every act (live: 266 acts in 0.07 s).
+- Log: `[ACT_DOWNSTREAM_USE] tick_complete rows_upserted=N`. Per-family report:
+  `docker exec orion-athena-sql-writer python -m app.act_downstream_use 14`.
+
 ## Act ledger (rung 2, 2026-10-16)
 
 "Doing on one track" from `docs/superpowers/specs/2026-10-14-orion-thinking-architecture-design.md`.

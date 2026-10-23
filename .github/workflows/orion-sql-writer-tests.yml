@@ -93,6 +93,7 @@ jobs:
             services/orion-sql-writer/tests/test_vision_osnet_shadow.py \
             services/orion-sql-writer/tests/test_vision_walkway_faces_stationary.py \
             services/orion-sql-writer/tests/test_vision_rollup.py \
+            services/orion-sql-writer/tests/test_act_downstream_use.py \
             orion/vision/tests \
             services/orion-sql-writer/tests/test_vision_rhythm.py \
             services/orion-sql-writer/tests/test_vision_walkway_zones_thumbs_cursor.py \
@@ -225,5 +226,24 @@ jobs:
             services/orion-sql-writer/tests/test_orion_energy_rollup_pg.py | tee energy_rollup_pg.out
           if grep -q "SKIPPED" energy_rollup_pg.out; then
             echo "Orion energy rollup Postgres tests skipped -- ORION_TEST_PG_URI wiring is broken" >&2
+            exit 1
+          fi
+      # Act downstream use (body economy weight source (a)): act -> output -> cited arc -> decision.
+      # Drops and recreates narrowed source tables, so it gets its own database.
+      - name: Run act downstream use Postgres tests (must not skip)
+        env:
+          ORION_TEST_PG_URI: postgresql://postgres:postgres@localhost:5432/act_downstream_use_test
+        run: |
+          set -o pipefail
+          python - <<'PY'
+          import psycopg2
+          conn = psycopg2.connect("postgresql://postgres:postgres@localhost:5432/conjourney")
+          conn.autocommit = True
+          conn.cursor().execute("CREATE DATABASE act_downstream_use_test")
+          PY
+          PYTHONPATH=.:services/orion-sql-writer python -m pytest -q -rs \
+            services/orion-sql-writer/tests/test_act_downstream_use_pg.py | tee act_downstream_use_pg.out
+          if grep -q "SKIPPED" act_downstream_use_pg.out; then
+            echo "act downstream use Postgres tests skipped -- ORION_TEST_PG_URI wiring is broken" >&2
             exit 1
           fi

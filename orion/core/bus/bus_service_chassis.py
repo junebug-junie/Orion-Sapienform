@@ -517,8 +517,9 @@ class Hunter(BaseChassis):
         patterns: Union[List[str], str, None] = None,
         pattern: Optional[str] = None,
         concurrent_handlers: bool = False,
+        heartbeat_details: Optional[HeartbeatDetailsProvider] = None,
     ):
-        super().__init__(cfg)
+        super().__init__(cfg, heartbeat_details=heartbeat_details)
         
         self.patterns: List[str] = []
         if patterns is not None:

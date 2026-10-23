@@ -517,6 +517,7 @@ from orion.schemas.telemetry.spark_candidate import SparkCandidateV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.signals.models import OrionSignalV1
 from orion.schemas.telemetry.system_health import (
+    ContainerRestartsV1,
     EquilibriumSnapshotV1,
     EquilibriumServiceTransitionV1,
     SystemHealthV1,
@@ -973,6 +974,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SparkStateSnapshotV1": SparkStateSnapshotV1,
     "SparkTelemetryPayload": SparkTelemetryPayload,
     "SystemHealthV1": SystemHealthV1,
+    "ContainerRestartsV1": ContainerRestartsV1,
     "RpcHealthSnapshotV1": RpcHealthSnapshotV1,
     "RpcChannelLatencyV1": RpcChannelLatencyV1,
     "BusConsumerReadinessV1": BusConsumerReadinessV1,

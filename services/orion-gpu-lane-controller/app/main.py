@@ -11,7 +11,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.gpu_pool.actuator_probe import config_fix_hint
 from orion.schemas.gpu_pool import GPU_POOL_ACTUATE_REQUEST_CHANNEL
 
-from . import actuator_bus, pool_fence
+from . import actuator_bus, container_census, pool_fence
 from .settings import settings
 
 actuator_chassis: Hunter | None = None
@@ -36,8 +36,9 @@ def build_actuator_chassis() -> Hunter:
     async def on_request(env):
         await actuator_bus.handle(env.payload, holder["publish"], env.correlation_id)
 
+    details = container_census.heartbeat_details if settings.GPU_LANE_CONTAINER_CENSUS_ENABLED else None
     hunter = Hunter(_chassis_config(), handler=on_request, patterns=[GPU_POOL_ACTUATE_REQUEST_CHANNEL],
-                    concurrent_handlers=True)
+                    concurrent_handlers=True, heartbeat_details=details)
     holder["publish"] = actuator_bus.bus_publisher(hunter.bus)
     return hunter
 
@@ -73,6 +74,12 @@ async def _start_bus_with_retry() -> None:
 async def lifespan(app: FastAPI):
     global actuator_chassis
     bus_task = None
+    census_task = None
+    if settings.GPU_LANE_CONTAINER_CENSUS_ENABLED:
+        census_task = asyncio.create_task(
+            container_census.census_loop(settings.GPU_LANE_CONTAINER_CENSUS_INTERVAL_SEC),
+            name="gpu-lane-container-census",
+        )
     try:
         interrupted = await asyncio.to_thread(pool_fence.recover_interrupted)
         if interrupted:
@@ -82,6 +89,10 @@ async def lifespan(app: FastAPI):
     if settings.ORION_BUS_ENABLED:
         bus_task = asyncio.create_task(_start_bus_with_retry(), name="gpu-lane-bus-start")
     yield
+    if census_task is not None:
+        census_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await census_task
     if bus_task is not None:
         bus_task.cancel()
         with suppress(asyncio.CancelledError):

@@ -121,6 +121,16 @@ Keys: `GPU_POOL_ACTUATOR_NAME`, `GPU_POOL_FENCE_STATE_PATH`, `GPU_LANE_DRAIN_TIM
 - `launch_digest` is unchanged by the deletion (the always-null bridge fields stay in its hashed
   body), so a pool and a controller on either side of 5.6 still agree.
 
+## Container restart census (for the mesh guardian)
+
+Every `GPU_LANE_CONTAINER_CENSUS_INTERVAL_SEC` (30) this controller reads `RestartCount` of every
+container on circe (read-only: `docker ps -aq --no-trunc`, then `docker inspect`) and carries the
+last read on its heartbeat as `details["container_restarts"]` (`ContainerRestartsV1`). orion-mesh-guardian
+on athena reads it from the equilibrium snapshot and raises `crash_loop:circe/<container>` cards.
+A failed read is published as `error` with empty counts (the guardian says "blind", not "calm").
+Added after `orion-circe-affectgpt-worker` restarted 601 times unseen (2026-10-14..23). Off switch:
+`GPU_LANE_CONTAINER_CENSUS_ENABLED=false` (the guardian then reports circe as blind).
+
 ## Docker-outside-of-docker
 
 This container talks to circe's **host** docker daemon over a bind-mounted

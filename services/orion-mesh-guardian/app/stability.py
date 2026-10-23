@@ -8,7 +8,9 @@ FalkorDB's snapshot child sat deadlocked for 38h with nothing persisted. Each
 check below watches a signal that moved during that incident and is flat on a
 healthy stack:
 
-- crash loop: Docker ``RestartCount`` rising, any container
+- crash loop: Docker ``RestartCount`` rising, any container -- athena's own docker socket, plus
+  remote hosts' censuses carried on their heartbeats (``remote_restart_counts``; added after
+  circe's affectgpt worker restarted 601 times unseen, 2026-10-14..23)
 - slow-consumer kill: Redis ``client_output_buffer_limit_disconnections`` rising
 - snapshot: Redis/FalkorDB ``BGSAVE`` stuck, failed, or long overdue
 - graph inflation: bus-synapse Channel nodes far above the channel catalog
@@ -20,7 +22,11 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterable
+
+from pydantic import ValidationError
+
+from orion.schemas.telemetry.system_health import CONTAINER_RESTARTS_DETAIL_KEY, ContainerRestartsV1
 
 # Fixed thresholds, chosen against the 10-02 incident and the healthy baseline
 # measured the same day (highest RestartCount on the host: 5, flat for days).
@@ -30,6 +36,9 @@ SNAPSHOT_STUCK_SEC = 15 * 60
 SNAPSHOT_STALE_SEC = 6 * 3600
 GRAPH_INFLATION_RATIO = 2.0
 REALERT_AFTER_SEC = 6 * 3600
+# A remote census older than this is not evidence of anything: the host reads as blind, not calm.
+# 10x the producer's 30 s refresh, so one late heartbeat or equilibrium tick is not a card.
+REMOTE_CENSUS_STALE_SEC = 300
 
 
 @dataclass(frozen=True)
@@ -50,10 +59,16 @@ class CrashLoopTracker:
     def __init__(self) -> None:
         self._samples: dict[str, deque[tuple[float, int]]] = {}
 
-    def observe(self, restart_counts: dict[str, int], now: float) -> list[StabilityAlert]:
+    def observe(
+        self, restart_counts: dict[str, int], now: float, *, read_hosts: set[str] | None = None
+    ) -> list[StabilityAlert]:
+        """``read_hosts``: when given, a container missing from ``restart_counts`` loses its history
+        only if its host ("<host>/..." key prefix) was read this cycle (it was removed); a host
+        that could not be read keeps its histories. None = every key is in scope (one host)."""
         alerts: list[StabilityAlert] = []
         for key, count in restart_counts.items():
-            name = key.split("@", 1)[0]
+            name = key.split("@", 1)[0]  # "<host>/<container>" or a bare local name
+            host, _, container = name.rpartition("/")
             samples = self._samples.setdefault(key, deque())
             if samples and count < samples[-1][1]:
                 samples.clear()
@@ -72,14 +87,99 @@ class CrashLoopTracker:
                         message=(
                             f"{name} restarted {rose} times in the last {minutes:.0f} min "
                             f"(total {count}). It looks 'Up' between restarts; check "
-                            f"`docker logs {name}` for the exit reason."
+                            f"`docker logs {container}`{f' on {host}' if host else ''} for the exit reason."
                         ),
-                        context={"restart_count": count, "restarts_in_window": rose},
+                        context={"restart_count": count, "restarts_in_window": rose, "host": host or None},
                     )
                 )
         for gone in set(self._samples) - set(restart_counts):
-            del self._samples[gone]
+            if read_hosts is None or gone.split("@", 1)[0].rpartition("/")[0] in read_hosts:
+                del self._samples[gone]
         return alerts
+
+
+def qualify(host: str, counts: dict[str, int]) -> dict[str, int]:
+    """{"<name>@<id12>": n} -> {"<host>/<name>@<id12>": n}: one host's containers never share a
+    history or a card with another host's container of the same name."""
+    return {f"{host}/{key}": count for key, count in counts.items()}
+
+
+@dataclass
+class RemoteCensus:
+    counts: dict[str, int]  # host-qualified, from fresh readings only
+    fresh_hosts: dict[str, float]  # host -> age (s) of the reading used
+    alerts: list[StabilityAlert]  # one container_watch_blind per expected host without a fresh reading
+
+
+def remote_restart_counts(
+    services: Iterable[Any],
+    *,
+    expected_hosts: Iterable[str],
+    local_node: str,
+    now: float,
+    watching_since: float,
+    stale_after_sec: float = REMOTE_CENSUS_STALE_SEC,
+) -> RemoteCensus:
+    """Remote hosts' RestartCount censuses out of the equilibrium snapshot's per-service heartbeat
+    details (``services``: anything with ``.node``, ``.service`` and ``.details``).
+
+    Absence is not calm. An expected host with no reading, only a stale one, or only a failed one
+    yields a ``container_watch_blind`` alert instead of zero restarts -- after a boot grace of
+    ``stale_after_sec`` (the guardian has not had time to receive one yet). Hosts not in
+    ``expected_hosts`` are still watched when they report; they just never read as blind."""
+    counts: dict[str, int] = {}
+    fresh: dict[str, float] = {}
+    last_seen: dict[str, tuple[float, str, str | None]] = {}  # host -> (age, reporter, error)
+    for svc in services:
+        host = str(getattr(svc, "node", None) or "")
+        details = getattr(svc, "details", None) or {}
+        raw = details.get(CONTAINER_RESTARTS_DETAIL_KEY) if isinstance(details, dict) else None
+        if not host or host == local_node or raw is None:
+            continue
+        try:
+            reading = ContainerRestartsV1.model_validate(raw)
+        except ValidationError:
+            continue
+        age = now - reading.read_at.timestamp()
+        reporter = str(getattr(svc, "service", "?"))
+        prev = last_seen.get(host)
+        if prev is None or age < prev[0]:
+            last_seen[host] = (age, reporter, reading.error)
+        if reading.error is None and age <= stale_after_sec:
+            counts.update(qualify(host, reading.counts))
+            fresh[host] = min(age, fresh.get(host, age))
+    alerts: list[StabilityAlert] = []
+    if now - watching_since >= stale_after_sec:
+        for host in expected_hosts:
+            if host in fresh or host == local_node:
+                continue
+            seen = last_seen.get(host)
+            if seen is None:
+                why = "no container census from it has reached the equilibrium snapshot"
+            elif seen[2] is not None:
+                why = f"its last census ({seen[1]}, {seen[0]:.0f}s ago) failed: {seen[2]}"
+            else:
+                why = f"its newest census ({seen[1]}) is {seen[0] / 60:.0f} min old"
+            alerts.append(
+                StabilityAlert(
+                    key=f"container_watch_blind:{host}",
+                    subject=host,
+                    kind="container_watch_blind",
+                    severity="warning",
+                    message=(
+                        f"The crash-loop check cannot see {host}'s containers: {why}. A container "
+                        f"there could be restarting right now and nothing would say so. The census "
+                        f"rides a {host} service's heartbeat ({seen[1] if seen else 'on circe: gpu-lane-controller'}) "
+                        f"through orion-equilibrium-service: check both."
+                    ),
+                    context={
+                        "host": host,
+                        "last_census_age_sec": None if seen is None else int(seen[0]),
+                        "last_census_error": None if seen is None else seen[2],
+                    },
+                )
+            )
+    return RemoteCensus(counts=counts, fresh_hosts=fresh, alerts=alerts)
 
 
 class CounterRiseTracker:

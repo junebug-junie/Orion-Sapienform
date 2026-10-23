@@ -129,6 +129,6 @@ No restart required.
 
 ## PR link
 
-See the PR.
+https://github.com/junebug-junie/Orion-Sapienform/pull/2898
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

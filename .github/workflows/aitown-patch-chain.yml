@@ -11,6 +11,7 @@ on:
       - 'services/orion-ai-town/cards/**'
       - 'services/orion-ai-town/tests/**'
       - 'services/orion-ai-town/README.md'  # holds AITOWN_UPSTREAM_REF
+      - 'services/orion-ai-town/.env_example'  # pre_rebuild.sh reads the pin here
       - '.github/workflows/aitown-patch-chain.yml'
   workflow_dispatch:
 permissions:
@@ -27,6 +28,6 @@ jobs:
         with:
           node-version: '24'
       - run: pip install pytest pyyaml
-      - run: python -m pytest -q -rs services/orion-ai-town/tests/test_live_turn_roles_patch.py
+      - run: python -m pytest -q -rs services/orion-ai-town/tests/test_live_turn_roles_patch.py services/orion-ai-town/tests/test_pre_rebuild.py
         env:
           AITOWN_REQUIRE_TOOLS: '1'

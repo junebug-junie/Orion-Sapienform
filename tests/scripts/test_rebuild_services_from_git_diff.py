@@ -673,3 +673,54 @@ def test_run_started_on_stale_main_is_not_pinned(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     pins = [c for c in calls if c.startswith("PIN=")]
     assert pins == ["PIN="]
+
+
+
+def _write_hook(tmp_path: Path, svc: str, name: str, rc: int) -> None:
+    hook = tmp_path / "repo" / "services" / svc / "scripts" / name
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text(f"#!/bin/sh\nprintf '{name} {svc}\\n' >> \"$REBUILD_TEST_CAPTURE\"\nexit {rc}\n")
+    hook.chmod(0o755)
+
+
+def test_pre_and_post_rebuild_wrap_the_build(tmp_path: Path) -> None:
+    _write_hook(tmp_path, "orion-ai-town", "pre_rebuild.sh", 0)
+    _write_hook(tmp_path, "orion-ai-town", "post_rebuild.sh", 0)
+    completed, calls = _run(tmp_path, plan="orion-ai-town,build")
+    assert completed.returncode == 0, completed.stderr
+    assert calls[0] == "pre_rebuild.sh orion-ai-town"
+    assert calls[1].startswith("orion-ai-town up -d --build")
+    assert calls[-1] == "post_rebuild.sh orion-ai-town"
+
+
+def test_failing_pre_rebuild_skips_build_and_post(tmp_path: Path) -> None:
+    _write_hook(tmp_path, "orion-ai-town", "pre_rebuild.sh", 3)
+    _write_hook(tmp_path, "orion-ai-town", "post_rebuild.sh", 0)
+    completed, calls = _run(tmp_path, plan="orion-ai-town,build")
+    assert calls == ["pre_rebuild.sh orion-ai-town"]
+    assert "pre_rebuild.sh exit 3; not building" in completed.stderr
+    assert completed.returncode != 0
+
+
+def test_failed_build_never_runs_post_rebuild(tmp_path: Path) -> None:
+    _write_hook(tmp_path, "orion-ai-town", "post_rebuild.sh", 0)
+    completed, calls = _run(tmp_path, plan="orion-ai-town,build", safe_build_rc=1)
+    assert "post_rebuild.sh orion-ai-town" not in calls
+    assert completed.returncode != 0
+
+
+def test_failing_post_rebuild_marks_the_stack_failed(tmp_path: Path) -> None:
+    _write_hook(tmp_path, "orion-ai-town", "post_rebuild.sh", 4)
+    completed, calls = _run(tmp_path, plan="orion-ai-town,build")
+    assert calls[-1] == "post_rebuild.sh orion-ai-town"
+    assert "post_rebuild.sh exit 4" in completed.stderr
+    assert completed.returncode != 0
+
+
+def test_dry_run_names_the_hooks_without_running_them(tmp_path: Path) -> None:
+    _write_hook(tmp_path, "orion-ai-town", "pre_rebuild.sh", 0)
+    _write_hook(tmp_path, "orion-ai-town", "post_rebuild.sh", 0)
+    completed, calls = _run(tmp_path, plan="orion-ai-town,build", extra_args=["--dry-run"])
+    assert calls == []
+    assert "would run first: services/orion-ai-town/scripts/pre_rebuild.sh" in completed.stdout
+    assert "would run after a good build: services/orion-ai-town/scripts/post_rebuild.sh" in completed.stdout

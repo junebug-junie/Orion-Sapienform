@@ -730,18 +730,23 @@ TURN_LIFTED_ROUTE = "metacog"
 
 
 def carries_live_turn(req: MindRunRequestV1) -> bool:
-    """Is a human waiting on this run's answer?
+    """Is Juniper waiting on this run's answer?
 
-    Every Mind caller today is a turn path (enumerated 2026-10-06): cortex-orch runs Mind only
-    when the request's metadata has ``mind_enabled`` -- set solely by the Hub browser
-    (app.js, thought-process.js) -- and orion-thought runs it inside a unified turn. Both send
-    ``trigger="user_turn"`` (orch by default; no producer sets ``mind_trigger``). orion-thought
-    marks a turn Orion authored itself with ``utterance_origin="orion"``: nobody is waiting on
-    that one, so it stays on the sheddable route. ``scheduled``/``operator``/``replay`` runs are
-    not turns. Weakness: ``user_turn`` is the schema default, so a FUTURE background caller that
-    forgets to set ``trigger`` would be treated as a live turn (never shed) -- the safe direction
-    for a human, the wrong one for heat."""
-    return req.trigger == "user_turn" and req.utterance_origin != "orion"
+    Only a run positively marked as Juniper's turn is live: ``trigger="user_turn"`` AND
+    ``utterance_origin="juniper"``. Unknown (None) and ``"orion"`` are not live, so they stay on the
+    sheddable ``metacog`` route (system tier). Before 2026-10-23 the test was the inverse
+    (``!= "orion"``), and every caller that set nothing -- world-pulse reads, outreach, the
+    collapse-mirror reply -- rode Juniper's interactive tier (72 interactive orion-mind grants
+    10-22..23 with no Juniper chat).
+
+    Juniper paths that set the mark (enumerated 2026-10-23, tests pin each one):
+    * Hub websocket + HTTP unified turn (``mode`` orion/agent): ``execute_unified_turn(
+      utterance_origin="juniper")`` -> stance_inputs -> orion-thought ``build_light_mind_request``.
+    * Hub websocket + HTTP brain-mode chat with the Mind toggle: ``build_chat_request(
+      utterance_origin="juniper")`` writes ``metadata.utterance_origin``; cortex-orch
+      ``build_mind_run_request`` copies it onto this request.
+    A new Juniper-facing path must set the mark, or its Mind phases can be heat-shed."""
+    return req.trigger == "user_turn" and req.utterance_origin == "juniper"
 
 
 def run_mind_llm_synthesis(

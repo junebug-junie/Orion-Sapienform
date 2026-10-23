@@ -52,6 +52,7 @@ from .autonomy_payloads import extract_autonomy_payload, log_autonomy_payload_ex
 from .workflow_payloads import extract_workflow_payload
 from .cortex_chat_display import hub_effective_chat_text
 from .cortex_request_builder import (
+    is_third_party_room,
     HubRequestValidationError,
     build_chat_request,
     build_continuity_messages,
@@ -3359,7 +3360,8 @@ async def handle_chat_request(
             continuity_messages=continuity_messages,
             harness_rpc_bus=rpc_bus or bus,
             harness_step_relay=harness_step_relay,
-            utterance_origin="juniper",
+            # A relayed external social-room message is a third party, not Juniper.
+            utterance_origin=None if is_third_party_room(payload) else "juniper",
             client_meta=client_meta,
         )
         final_frame = frames[-1] if frames else {
@@ -3494,6 +3496,7 @@ async def handle_chat_request(
             source_label="hub_http",
             prompt=user_prompt,
             messages=continuity_messages,
+            utterance_origin="juniper",
         )
     except HubRequestValidationError as exc:
         return {"error": str(exc), "error_code": exc.code}

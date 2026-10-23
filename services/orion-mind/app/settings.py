@@ -76,7 +76,8 @@ class Settings(BaseSettings):
     MIND_SEMANTIC_MODEL_ROUTE: str = Field(default="metacog", alias="MIND_SEMANTIC_MODEL_ROUTE")
     MIND_APPRAISAL_MODEL_ROUTE: str = Field(default="metacog", alias="MIND_APPRAISAL_MODEL_ROUTE")
     MIND_STANCE_MODEL_ROUTE: str = Field(default="metacog", alias="MIND_STANCE_MODEL_ROUTE")
-    # On a live Hub turn (engine.carries_live_turn), every phase configured as `metacog` uses this
+    # On Juniper's live turn (engine.carries_live_turn: utterance_origin="juniper" only; Orion's
+    # own and unmarked runs stay `system`), every phase configured as `metacog` uses this
     # route instead: same pool class, `interactive` priority, so a heat shed never refuses the
     # turn's Mind calls (spec 2026-10-06-thermal-controller-redesign D4). Empty = rollback (turns
     # use the phase routes above, `system`, and are shed with background work).

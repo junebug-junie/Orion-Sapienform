@@ -245,6 +245,28 @@ node services/orion-hub/evals/retro_play.mjs --url https://athena.tail348bbe.ts.
 `--url` is required. A run starts a real game on that service and ends any game
 already running there, so do not run it while someone is playing.
 
+### Zelda co-play harness (`evals/retro_coplay.mjs`)
+
+Watches Orion play: a real browser loads a Zelda save, clicks the game (as a person
+would), hands the controller to Orion (**Try Orion goals**) and hands it back every
+time a 60 s grant ends. At the end it reads that session's action bets from
+orion-prediction and records every socket close, with the code or stack that closed it.
+
+```sh
+RETRO_PUPPETEER_PACKAGE=/mnt/scripts/Orion-Sapienform/services/orion-hub/package.json \
+node services/orion-hub/evals/retro_coplay.mjs --url https://athena.tail348bbe.ts.net \
+  --game the-legend-of-zelda-prg1 --minutes 5 --out /tmp/coplay [--save <id>] [--no-click]
+```
+
+It loads a real game and ends any game already running, like `retro_play.mjs`.
+First live run (2026-10-23, 5 min):
+- 5 grants and 15 bets, 11 of which worked.
+- Orion took the top-ranked option 11 times.
+- The atlas went from 2 rooms to 7.
+- It also found a planner bug: in a room with 4 enemies Orion answered "fight nearest,
+  enemies_cleared, value 1" 13 times, and each answer was refused for the stray number.
+  A stray value on a non-room prediction is now dropped instead.
+
 ### Quick taps
 
 A newer input that replaces a pending one before the next frame no longer erases

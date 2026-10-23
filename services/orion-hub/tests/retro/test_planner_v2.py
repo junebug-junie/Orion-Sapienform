@@ -112,7 +112,6 @@ def test_history_keeps_each_finished_goal_once(planner):
     (dict(GOOD, goal=dict(kind='fight', target=5)), 'planner_unknown_target'),
     (dict(GOOD, goal=dict(kind='fight', target='nearest'), prediction=dict(kind='enemies_cleared')), None),
     (dict(GOOD, prediction=dict(kind='reach_room')), 'planner_prediction_value_mismatch'),
-    (dict(GOOD, prediction=dict(kind='survive', value=3)), 'planner_prediction_value_mismatch'),
 ])
 def test_bad_answers_are_rejected_and_never_become_a_goal(planner, raw, reason):
     chat = reply(dict(content=raw if isinstance(raw, str) else json.dumps(raw)))
@@ -517,3 +516,16 @@ def test_slow_first_answer_is_not_retried(planner, monkeypatch):
     with pytest.raises(planner.PlannerRejected) as exc:
         asyncio.run(planner.plan_zelda(None, _closed_south(), ATLAS, [], chat=chat))
     assert exc.value.reason == 'planner_side_closed' and len(chat.calls) == 1
+
+
+def test_a_stray_value_on_a_non_room_prediction_is_dropped_not_refused(planner):
+    # Live 2026-10-23 room 118: "fight nearest, enemies_cleared, value 1" was refused 13 times.
+    fight = dict(GOOD, goal=dict(kind='fight', target='nearest'), prediction=dict(kind='enemies_cleared', value=1))
+    chat = reply(dict(content=json.dumps(fight)))
+    goal = asyncio.run(planner.plan_zelda(None, decision(), ATLAS, [], chat=chat))
+    assert goal['prediction'] == {'kind': 'enemies_cleared', 'value': None} and len(chat.calls) == 1
+    room = dict(GOOD, prediction=dict(kind='reach_room'))          # reach_room without a room is still refused
+    with pytest.raises(planner.PlannerRejected) as exc:
+        asyncio.run(planner.plan_zelda(None, decision(), ATLAS, [], chat=reply(dict(content=json.dumps(room)))))
+    assert exc.value.reason == 'planner_prediction_value_mismatch'
+    assert 'reach_room needs "value"' in planner.refusal_note(exc.value)

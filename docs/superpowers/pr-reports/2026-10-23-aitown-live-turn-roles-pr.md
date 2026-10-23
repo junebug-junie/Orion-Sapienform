@@ -108,6 +108,6 @@ cd services/orion-ai-town && git -C upstream checkout 7b242334bfbfef02f7718bded1
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2871
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

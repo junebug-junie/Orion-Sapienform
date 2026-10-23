@@ -72,6 +72,7 @@ async def choose(config, attempt):
 # ``zelda-navigator-v1``):
 #   attempt:       {decision_id, port, expected_epoch, observation (zelda-1-ram-v1 without the
 #                   wall grid unless Retro includes it), supported_goals, supported_predictions,
+#                   open_sides (the screen edges Link can walk to, or None outside play),
 #                   previous (the last goal_finished row)}
 #   goal:          the accepted GoalV2, or None
 #   last_finished: the newest goal_finished row {decision_id, goal, prediction, outcome, verdict}
@@ -319,6 +320,20 @@ def _goal_text(goal: Any) -> str:
     return f'{kind} {arg}' if arg is not None else str(kind)
 
 
+def sides_line(decision: dict, atlas: Optional[dict] = None) -> str:
+    sides = decision.get('open_sides')
+    if not isinstance(sides, list):
+        return 'Sides Link can walk off: not known here.'
+    adjacent = (atlas or {}).get('adjacent') if isinstance(atlas, dict) else None
+    def label(d):
+        a = (adjacent or {}).get(d)
+        if not isinstance(a, dict): return d
+        return f'{d} (room {a.get("room")}, {"visited" if a.get("known") else "never visited"})'
+    closed = [d for d in 'NSEW' if d not in sides]
+    return (f'Sides Link can walk off from here (Retro searched the map; an exit can only use these): '
+            f'{", ".join(label(d) for d in sides) or "none"}. No way out: {", ".join(closed) or "none"}.')
+
+
 def history_lines(history: Any) -> str:
     rows = [h for h in (history or []) if isinstance(h, dict)][-HISTORY_LIMIT:]
     if not rows:
@@ -328,7 +343,8 @@ def history_lines(history: Any) -> str:
         p = h.get('prediction') or {}
         out.append(f'{_goal_text(h.get("goal"))}; predicted {p.get("kind", "?")}'
                    f'{" " + str(p["value"]) if p.get("value") is not None else ""}; '
-                   f'outcome {h.get("outcome", "unknown")}; verdict {h.get("verdict", "unknown")}')
+                   f'outcome {h.get("outcome", "unknown")}; verdict {h.get("verdict", "unknown")}'
+                   + ('; Link did not move' if h.get('applied_frames') == 0 else ''))
     return '\n'.join(out)
 
 
@@ -353,6 +369,7 @@ def build_zelda_prompt(decision: dict, atlas: Optional[dict], history: Any) -> s
         '# blocked, . walkable, x blocked (Link bumped into it here before), C a cave you entered, '
         '? terrain not known, L Link, 1-9/a/b enemy slot, d item drop.',
         render_room_map(obs, atlas),
+        sides_line(decision, atlas),
         'Observation (zelda-1-ram-v1): ' + json.dumps(observation_facts(obs), separators=(',', ':')),
         'Atlas (only what you observed before):',
         atlas_neighbourhood(atlas),
@@ -390,6 +407,16 @@ def validate_zelda_choice(raw: Any, decision: dict) -> ZeldaChoice:
     obs = decision['observation']
     if choice.goal.kind != 'wait' and not (obs.get('link') or {}).get('controllable', True):
         raise PlannerRejected('observation_unknown', observation_reason='link_not_controllable')
+    sides = decision.get('open_sides')
+    direction = getattr(choice.goal, 'dir', None)
+    if isinstance(choice.goal, ExitGoal) and isinstance(sides, list) and direction not in sides:
+        raise PlannerRejected('planner_side_closed', dir=direction)   # Retro would push into a wall
+    previous = decision.get('previous')
+    if isinstance(previous, dict) and previous.get('goal') == choice.goal.model_dump(mode='json') and (
+            previous.get('applied_frames') == 0
+            or (isinstance(choice.goal, ExploreGoal) and isinstance(sides, list) and direction not in sides)):
+        # Live 2026-10-23: "explore S" eight times against a solid south wall, 0 frames moved.
+        raise PlannerRejected('planner_repeats_no_effect', goal=_goal_text(previous['goal']))
     if isinstance(choice.goal, FightGoal):
         alive = {e.get('slot') for e in obs.get('enemies') or [] if isinstance(e, dict)}
         if not alive:
@@ -397,6 +424,15 @@ def validate_zelda_choice(raw: Any, decision: dict) -> ZeldaChoice:
         if choice.goal.target != 'nearest' and choice.goal.target not in alive:
             raise PlannerRejected('planner_unknown_target', target=choice.goal.target)
     return choice
+
+
+def refusal_note(exc: 'PlannerRejected') -> str:
+    """One plain line telling the model why its answer was refused, for the single retry."""
+    d = exc.details
+    text = {'planner_side_closed': f'exit {d.get("dir")}: Link cannot reach that edge from here',
+            'planner_repeats_no_effect': f'{d.get("goal")}: the same goal just left Link where he was',
+            'planner_unparseable': 'the reply was not one JSON object'}.get(exc.reason)
+    return text or exc.reason + (f' ({d["error"]})' if d.get('error') else '')
 
 
 def check_decision(decision: Any) -> dict:
@@ -464,37 +500,45 @@ async def plan_zelda(config, decision: Any, atlas: Optional[dict], history: Any,
     outcome: Optional[str] = 'cancelled'
     try:
         prompt = build_zelda_prompt(decision, atlas, history)
-        try:
-            data, correlation = await (chat or _gateway_chat)(config, prompt, max_tokens=320)
-        except PlannerError:
-            outcome = 'pool_unreachable'
-            raise
-        except Exception as exc:
-            outcome = 'pool_unreachable'
-            raise PlannerUnavailable('planner_unavailable', error=type(exc).__name__)
-        shed = gateway_shed_refusal(data)
-        if shed:
-            outcome = shed[0]
-            SHED_BACKOFF.resolve(key, shed[0], token=token, hint_sec=shed[1])
-            token = None
-            retry = SHED_BACKOFF.remaining(key)
-            raise PlannerShed('gpu_pool_unavailable', reason=shed[0],
-                              retry_after_sec=round(retry if retry is not None else (shed[1] or 30.0), 1))
-        refusal = gateway_error_reason(data)
-        if refusal:
-            outcome = refusal
-            raise PlannerUnavailable('gpu_pool_unavailable', reason=refusal)
-        outcome = None  # the pool answered: a shed episode (if any) ends
-        text = data.get('content') or data.get('text') or ''
-        if not text:
-            raise PlannerUnavailable('planner_empty_result',
-                                     error=str((data.get('raw') or {}).get('error', 'no_content'))[:200])
-        from orion.core.llm_json import parse_json_object
-        try:
-            raw = parse_json_object(text)
-        except ValueError:
-            raise PlannerRejected('planner_unparseable')
-        choice = validate_zelda_choice(raw, decision)
+        # A refused answer gets one retry that names the refusal; the second refusal is final.
+        for attempt in (1, 2):
+            try:
+                data, correlation = await (chat or _gateway_chat)(config, prompt, max_tokens=320)
+            except PlannerError:
+                outcome = 'pool_unreachable'
+                raise
+            except Exception as exc:
+                outcome = 'pool_unreachable'
+                raise PlannerUnavailable('planner_unavailable', error=type(exc).__name__)
+            shed = gateway_shed_refusal(data)
+            if shed:
+                outcome = shed[0]
+                SHED_BACKOFF.resolve(key, shed[0], token=token, hint_sec=shed[1])
+                token = None
+                retry = SHED_BACKOFF.remaining(key)
+                raise PlannerShed('gpu_pool_unavailable', reason=shed[0],
+                                  retry_after_sec=round(retry if retry is not None else (shed[1] or 30.0), 1))
+            refusal = gateway_error_reason(data)
+            if refusal:
+                outcome = refusal
+                raise PlannerUnavailable('gpu_pool_unavailable', reason=refusal)
+            outcome = None  # the pool answered: a shed episode (if any) ends
+            text = data.get('content') or data.get('text') or ''
+            if not text:
+                raise PlannerUnavailable('planner_empty_result',
+                                         error=str((data.get('raw') or {}).get('error', 'no_content'))[:200])
+            from orion.core.llm_json import parse_json_object
+            try:
+                try:
+                    raw = parse_json_object(text)
+                except ValueError:
+                    raise PlannerRejected('planner_unparseable')
+                choice = validate_zelda_choice(raw, decision)
+                break
+            except PlannerRejected as exc:
+                if attempt == 2 or exc.reason == 'observation_unknown':
+                    raise   # Link is not controllable: asking again cannot help
+                prompt += f'\nYour previous answer was refused: {refusal_note(exc)}. Choose a different goal.'
         return choice.model_dump(mode='json') | {
             'decision_id': decision['decision_id'],
             'planner_id': 'llm-gateway:metacog_background:' + correlation}

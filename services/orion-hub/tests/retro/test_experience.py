@@ -470,6 +470,9 @@ def test_route_places_only_after_retro_accepts_and_strips_chosen_rank(tmp_path, 
 # --- the replay eval runs offline -----------------------------------------------------------------------
 
 def test_offline_replay_eval_passes(capsys):
+    # The eval grades orion-prediction's real model (numpy/scipy); jobs without them skip, the
+    # orion-prediction job and a local venv run it.
+    pytest.importorskip('scipy')
     import importlib.util
     spec = importlib.util.spec_from_file_location('zelda_experience_replay', HUB / 'evals/zelda_experience_replay.py')
     mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)

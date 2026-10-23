@@ -496,7 +496,8 @@ class AdmissionRuntime:
                                                     event_id=f"granted:{ref['lease_id']}:{ref['generation']}")
             await self.store.record_event(run_id, "run.lane_assigned", detail,
                                           event_id=f"assigned:{ref['lease_id']}:{ref['generation']}")
-            await self.acts.on_grant(state, granted)
+            if (acts := getattr(self, "acts", None)) is not None:   # absent on bare test runtimes
+                await acts.on_grant(state, granted)
             return GRANTED, {"status": "admitted", "lease": ref, "hold": _without_backoff(hold)}
         if reply.status in POOL_WAITING:
             self._checked[run_id] = time.monotonic()   # just read: the poll fallback starts from here
@@ -1184,7 +1185,8 @@ class AdmissionRuntime:
         if actual is not None:
             self._hints.discard(run_id)
             self._checked.pop(run_id, None)
-            await self.acts.on_terminal({**state, "run_id": run_id, "workflow": wf}, actual)
+            if (acts := getattr(self, "acts", None)) is not None:
+                await acts.on_terminal({**state, "run_id": run_id, "workflow": wf}, actual)
         if wf == DREAM_CARRY_WORKFLOW and actual in TERMINAL:
             # Any carry terminal, completed-partial included (a deadline stop with a picture still being
             # painted): nobody reads that child any more. _cancel_carry_child skips ended/unknown ones.

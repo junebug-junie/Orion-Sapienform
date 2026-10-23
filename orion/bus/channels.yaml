@@ -3051,6 +3051,10 @@ channels:
       # replay and closed when it is persisted (services/orion-dream/app/act_emit.py), gated by
       # DREAM_ACT_EMIT_ENABLED.
       - orion-dream
+      # act ledger (body economy A5): want-family durable runs publish act_opened at their
+      # first pool grant and act_closed at their terminal (infer / ask / sense / make) --
+      # services/orion-durable-runs/app/run_acts.py, gated by ORION_DURABLE_ACT_EMIT_ENABLED.
+      - orion-durable-runs
       - orion-gpu-pool
       - orion-harness-governor
       # settled H1 verdict transitions + one summary per hour (trace prefix

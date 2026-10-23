@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # the only scheduler. The broker, widening and gpu2 elastic keys were deleted with the broker.
     admission_enabled: bool = Field(False, alias="DURABLE_RUNS_ADMISSION_ENABLED")
     admission_tick_sec: float = Field(5.0, gt=0.0, alias="DURABLE_RUNS_ADMISSION_TICK_SEC")
+    # Body economy Patch A5: want-family runs (curiosity investigate -> infer, self-inquiry -> ask,
+    # self-sense eval -> sense, journal compose -> make) open an act in grammar_acts at their first
+    # pool grant and close it at their terminal (app/run_acts.py). false -> no act events.
+    durable_act_emit_enabled: bool = Field(True, alias="ORION_DURABLE_ACT_EMIT_ENABLED")
     # How often a working run heartbeats its pool hold (must be at most half the pool's
     # hold_lease_ttl_sec, checked at startup) and how often a Door-A hold is kept alive.
     lease_heartbeat_sec: float = Field(15.0, gt=0.0, alias="DURABLE_RUNS_LEASE_HEARTBEAT_SEC")

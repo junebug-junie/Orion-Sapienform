@@ -5,7 +5,7 @@
     "change_count": 1,
     "high_severity_count": 1,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-biometrics/orion:grammar:event (all_producers: \u2026ch', 'orion-gpu-pool', '\u2026 -> \u2026ch', 'orion-dream', 'orion-gpu-pool', '\u2026)"
+      "high   routing_changed metric://bus_channel/orion-biometrics/orion:grammar:event (all_producers: \u2026am', 'orion-gpu-pool', '\u2026 -> \u2026am', 'orion-durable-runs', 'orion-gpu-pool', '\u2026)"
     ]
   },
   "definitions": {
@@ -508,6 +508,7 @@
         "orion-cortex-exec",
         "orion-cortex-orch",
         "orion-dream",
+        "orion-durable-runs",
         "orion-gpu-pool",
         "orion-harness-governor",
         "orion-heartbeat",

@@ -11,7 +11,9 @@ Reads (read-only, bounded):
   jammed by a broken lane controller is not read as load. Either read failing makes S2 stale.
   Each snapshot also carries what an active shed (heat) is holding back (``shed_held_depth``,
   ``shed_reason``; manual_migration_regulation_gpu_shed_held_v1.sql), so a queue the heat
-  shed holds is not read as GPU load either.
+  shed holds is not read as GPU load either, and how much of it is Orion's own deferrable
+  self-work (``deferrable_depth``, queued background holds; manual_migration_regulation_gpu_
+  deferrable_depth_v1.sql), which is hunger, not load.
 
 Each read fails on its own: a failed read makes only that input stale (-> ``unknown``), never 0.
 
@@ -49,7 +51,8 @@ CABINET_POINTS_PG = (CABINET_POINTS_SQL.replace(":node", "%(node)s").replace(":s
                      .replace(":until", "%(until)s"))
 
 GPU_SNAPSHOTS_SQL = (
-    "SELECT host, generated_at, queue_depth, shed_held_depth, shed_reason FROM gpu_pool_state_history "
+    "SELECT host, generated_at, queue_depth, shed_held_depth, shed_reason, deferrable_depth "
+    "FROM gpu_pool_state_history "
     "WHERE generated_at >= %(since)s ORDER BY host, generated_at"
 )
 
@@ -131,22 +134,24 @@ async def _gpu(pool: Any, now: datetime, *, floor: int, sustain_sec: float) -> d
         if depth is None:
             continue
         by_host.setdefault(r["host"], []).append(
-            (r["generated_at"], depth, _json_field(r.get("shed_held_depth")), r.get("shed_reason")))
+            (r["generated_at"], depth, _json_field(r.get("shed_held_depth")), r.get("shed_reason"),
+             _json_field(r.get("deferrable_depth"))))
     # One evidence run per pool host; the most strained FRESH host speaks for the fleet. A host
     # that stopped publishing must not outrank a fresh one and turn S2 stale (review finding).
     best: Optional[tuple] = None
     for snaps in by_host.values():
-        age, depth, sustained, held, shed_reason = gpu_queue_evidence(snaps, now, floor=floor)
+        age, depth, sustained, held, shed_reason, deferrable = gpu_queue_evidence(snaps, now, floor=floor)
         if age is None:
             continue
         key = (age <= GPU_STATE_STALE_SEC, sustained or 0.0, -age)
         if best is None or key > best[0]:
-            best = (key, age, depth, sustained, held, shed_reason)
+            best = (key, age, depth, sustained, held, shed_reason, deferrable)
     if best is None:
         return {}
-    _, age, depth, sustained, held, shed_reason = best
+    _, age, depth, sustained, held, shed_reason, deferrable = best
     return {"gpu_state_age_sec": age, "gpu_queue_depth": depth, "gpu_queue_sustained_sec": sustained,
-            "gpu_fault": fault, "gpu_queue_shed_held": held, "gpu_shed_reason": shed_reason}
+            "gpu_fault": fault, "gpu_queue_shed_held": held, "gpu_shed_reason": shed_reason,
+            "gpu_queue_self_deferrable": deferrable}
 
 
 async def read_arousal_inputs(

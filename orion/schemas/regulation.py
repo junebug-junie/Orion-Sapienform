@@ -28,6 +28,9 @@ Inputs, per the spec's metric gate (R3):
   Queue entries a GPU pool shed (heat) holds back are not load either: S2 reads the queue minus
   them, and when they alone lift it to the floor S2 reads like a stale input, ``gpu_shed:<reason>``
   (2026-10-18 -> 10-20: the heat shed's held queue read as GPU strain for two days).
+  Queued background holds (Orion's own deferrable self-work) are left out of the queue entirely:
+  waiting self-work is hunger, not strain (2026-10-23 S2 decision; the agent lane's self-queued
+  readings kept strain latched for days). The reading notes them as ``gpu_queue_self_deferrable:<n>``.
 """
 
 from __future__ import annotations
@@ -83,6 +86,11 @@ class ArousalInputsV1(BaseModel):
     # snapshot saved before the shed columns existed.
     gpu_queue_shed_held: Optional[int] = Field(default=None, ge=0)
     gpu_shed_reason: Optional[str] = None
+    # S2 deferrable (2026-10-23): of ``gpu_queue_depth``, how many queued leases are Orion's own
+    # deferrable self-work (background holds, ``orion.gpu_pool.shed.deferrable_queued``; never a
+    # lease already counted shed-held) in the newest snapshot. Hunger, not load: S2 leaves them out
+    # and the reading says ``gpu_queue_self_deferrable:<n>``. None/0: none, or an older snapshot.
+    gpu_queue_self_deferrable: Optional[int] = Field(default=None, ge=0)
 
 
 class ArousalReadingV1(BaseModel):

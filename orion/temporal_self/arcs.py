@@ -65,6 +65,8 @@ PROCESS_KINDS = {
     "dream_cycle": "sleep",
     # Orion plays Zelda (section F): one finished Retro session.
     "retro_play": "play",
+    # Episodes from the street (PR #2763 item 1): one notable outside event, capped per day.
+    "street_event": "street",
 }
 CONTEXT_KINDS = {"metacog_observation", "memory_episode", "vision_percept", "attention_row"}
 CONSTRAINT_KINDS = {"visual_deferral", "gpu_wait"}
@@ -109,6 +111,10 @@ class ReducerConfig:
     # was lost, the producer died, or the kind stopped being read (flag off): closed source_stale
     # at its last row, so "strained since" is never asserted past the evidence.
     strain_stale_sec: float = 4500.0
+    # Street (PR #2763 item 1): at most this many street arcs per local day, first come first kept;
+    # the rest are never folded (the chronicle logs them per window). 0 admits none. Live 72 h to
+    # 2026-10-23: 25 events passed (7 to 10 a day), so 12 binds only on an unusually busy day.
+    street_arcs_per_day: int = 12
 
 
 LANE_RULES = {
@@ -121,6 +127,9 @@ LANE_RULES = {
     "imagery": "one visual reverie chain",
     "sleep": "one completed dream cycle",
     "play": "one finished Retro session (retro_play_sessions); label = its deterministic summary",
+    "street": ("one notable outside event (street_event: a spot-check-gated motion story, a doorbell ring, "
+               "or a handoff with p < 0.05); label starts 'Outside (<camera>)'; nothing binds to it by time; "
+               "at most street_arcs_per_day a day"),
     "company": ("presence_transition presence_id (room camera); opens on present, recent is the grace "
                 "period, same-state keepalives only refresh; closes on absent (process_ended, at the last "
                 "sighting), unknown / a producer restart / no row for company_stale_sec (source_stale); "
@@ -328,7 +337,9 @@ def _forward_reach(arc: TemporalSelfArcV1, cfg: "ReducerConfig") -> float:
 
 # Arcs that are threads or facts about the room, not stretches of Orion's own process: nothing
 # binds to them by time.
-_NO_CONTEXT_KINDS = {"concern", "company", "strain"}
+# A street arc is a fact about the outside world: room percepts and Orion's own attention rows in
+# the same seconds are not about it.
+_NO_CONTEXT_KINDS = {"concern", "company", "strain", "street"}
 
 
 def _covers(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, at: datetime, cfg: "ReducerConfig") -> bool:
@@ -719,6 +730,9 @@ def _fold_process(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: Reduc
     arc_id = arc_id_for(state.day_id, kind, e.subject_ref, evidence[0])
     if arc_id in state.arcs:
         return
+    if kind == "street" and sum(
+            1 for a in state.arcs.values() if a.kind == "street" and a.day_id == state.day_id) >= cfg.street_arcs_per_day:
+        return  # over the daily street cap: never folded (the chronicle logs the count per window)
     arc = TemporalSelfArcV1(
         arc_id=arc_id, day_id=state.day_id, kind=kind, subject_ref=e.subject_ref,  # type: ignore[arg-type]
         subject_label=e.label, began_at=start, last_seen_at=end, status="open",

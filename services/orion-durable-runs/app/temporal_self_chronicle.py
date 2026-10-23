@@ -75,6 +75,27 @@ def _changed(prev: TemporalSelfStateV1, new: TemporalSelfStateV1) -> list[Tempor
     return [a for k, a in new.arcs.items() if prev.arcs.get(k) != a]
 
 
+def _log_street(prev: TemporalSelfStateV1, arcs: list[TemporalSelfArcV1], events: list[TemporalSelfEventV1],
+                cap: int) -> None:
+    """Episodes from the street (PR #2763 item 1): one log line per new street arc, naming the
+    outside source row it came from, and one line when the daily cap kept window events out (an
+    event with no arc, on a day whose street arcs already reached the cap)."""
+    per_day: dict[str, int] = {}
+    for a in arcs:
+        if a.kind != "street":
+            continue
+        per_day[a.day_id] = per_day.get(a.day_id, 0) + 1
+        if a.arc_id not in prev.arcs:
+            logger.info("temporal_self_street_episode arc_id=%s day=%s source=%s label=%r", a.arc_id, a.day_id,
+                        ",".join(a.evidence_refs), a.subject_label)
+    kept = {a.subject_ref for a in arcs if a.kind == "street"}
+    capped = [e for e in events if e.source_kind == "street_event" and e.subject_ref not in kept
+              and per_day.get(e.day_id, 0) >= cap]
+    if capped:
+        logger.info("temporal_self_street_capped count=%d refs=%s", len(capped),
+                    ",".join(e.source_ref for e in capped[:10]))
+
+
 def _needs_body(a: TemporalSelfArcV1) -> bool:
     return a.status == "closed" and a.body is None and a.kind not in NO_BODY_KINDS
 
@@ -225,6 +246,7 @@ class Chronicler:
         for d in days:
             self.days_closed.append(d.day_id)
             logger.info("temporal_self_day_closed day=%s arcs=%d", d.day_id, len(d.arcs))
+        _log_street(prev, [*s.arcs.values(), *(a for d in days for a in d.arcs)], events, cfg.street_arcs_per_day)
         if late:
             logger.info("temporal_self_late_rows window_lo=%s count=%d kinds=%s", lo.isoformat(), len(late),
                         ",".join(sorted({e.source_kind for e in late})))

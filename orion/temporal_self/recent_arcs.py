@@ -60,6 +60,8 @@ def _what(arc: ArcSummaryV1) -> str:
         return f"attention on {label}"
     if arc.kind == "play":
         return f"played {label}"
+    if arc.kind == "street":
+        return f"saw {label}"  # the label already says "Outside (<camera>): ..."
     if arc.kind == "strain":
         causes = strain_cause_text(arc.subject_label)
         return f"strained ({causes})" if causes else "strained"
@@ -121,7 +123,11 @@ def project_recent_arcs(
     n = max(1, min(int(limit), MAX_LIMIT))
     tz = ZoneInfo(tz_name)
     dreams = [a for a in closed if a.kind == "reverie"]
-    others = [a for a in closed if a.kind != "reverie"][: n - 1 if dreams else n]
+    # Street arcs (passers-by) are about the outside world: only the latest one may take a line, so
+    # a busy walkway never pushes Orion's own arcs out of the block.
+    latest_street = next((a for a in closed if a.kind == "street"), None)
+    others = [a for a in closed if a.kind != "reverie" and (a.kind != "street" or a is latest_street)][
+        : n - 1 if dreams else n]
     # (line, cited arc, sort key) -- the daydream line sits where its latest daydream ended
     rows = [(_line(a, tz), a, as_utc(a.ended_at)) for a in others]
     if dreams:

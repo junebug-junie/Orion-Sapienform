@@ -590,6 +590,19 @@ session, shown in the chat stance cue. The query is skipped while the table does
 (`to_regclass`), so the source can never fail the whole read. Kill switch:
 `TEMPORAL_SELF_RETRO_PLAY_ENABLED` (ON).
 
+**Street episodes (2026-10-23, walkway follow-ups spec PR #2763 item 1).** The chronicle reads notable
+outside events as source `street_event`, three reads of one kind: published clean motion stories whose
+rules version passed Juniper's spot-check gate (`vision_motion_story` + `vision_motion_story_verdict`;
+labels carry no people count), doorbell rings (`vision_events`), and graded
+handoffs with p < 0.05 (`vision_handoff_street_outbox`). One `street` arc each, labelled "Outside
+(<camera>): ...", at most `TEMPORAL_SELF_STREET_EPISODES_PER_DAY` (12) a local day. Each read is skipped
+while one of its tables is missing. Log lines: `temporal_self_street_episode arc_id=... source=...` per
+new arc, `temporal_self_street_capped count=...` when the cap kept events out. A story is available at
+its `ended_at` and written a median 49 s later; one in 54 (7 days to 10-23) lands after the 300 s read
+lag and is stored late, not folded. Kill switch: `TEMPORAL_SELF_STREET_EPISODES_ENABLED` (ON); off, the
+source is not read and episodes are room-only again. Deploy order: orion-thought and orion-hub before
+this service (the `street` arc kind is new to `extra="forbid"` frame readers).
+
 Kill switches: `TEMPORAL_SELF_ENABLED=false` (no thread), `ORION_REGULATION_AROUSAL_ENABLED=false`
 (reads `unknown`). Health: `/health` -> `temporal_self`.
 

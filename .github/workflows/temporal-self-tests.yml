@@ -4,6 +4,8 @@ on:
     paths:
       - 'orion/temporal_self/**'
       - 'orion/schemas/temporal_self.py'
+      - 'orion/vision/motion_story_gate.py'
+      - 'orion/substrate/street_attention.py'
       - 'orion/schemas/registry.py'
       - 'orion/orion_day/window.py'
       - 'orion/situational/context.py'
@@ -14,6 +16,8 @@ on:
     paths:
       - 'orion/temporal_self/**'
       - 'orion/schemas/temporal_self.py'
+      - 'orion/vision/motion_story_gate.py'
+      - 'orion/substrate/street_attention.py'
       - 'orion/schemas/registry.py'
       - 'orion/orion_day/window.py'
       - 'orion/situational/context.py'

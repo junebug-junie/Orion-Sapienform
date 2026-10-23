@@ -31,6 +31,12 @@ section F) added ``retro_play`` / arc kind ``play``: one finished Retro session
 (``retro_play_sessions``, written by orion-hub) is one process arc, labelled with its deterministic
 summary. Same consumer-first rollout: orion-thought and orion-hub before orion-durable-runs.
 
+Episodes from the street (2026-10-23, walkway follow-ups spec PR #2763 item 1) added
+``street_event`` / arc kind ``street``: a notable outside event (a published motion story that passed
+Juniper's spot-check gate, a doorbell ring, a graded handoff that passed the street attention gate)
+is one closed process arc, labelled "Outside (<camera>): ..." so it is never read as room company.
+Same consumer-first rollout: orion-thought and orion-hub before orion-durable-runs.
+
 ``causes_now`` (2026-10-23, on the arc and its summary) follows the same order: every stored frame
 carries it (``null`` on non-strain arcs), so an orion-thought or orion-hub still on older code
 rejects the whole frame and the stance cue goes dark until they are rebuilt.
@@ -74,6 +80,8 @@ TemporalSourceKind = Literal[
     "arousal_transition",
     # one finished Retro (game) session, orion-hub's retro_play_sessions (Orion plays Zelda, F)
     "retro_play",
+    # one notable outside (walkway / doorbell) event: story, ring, or gated handoff (PR #2763 item 1)
+    "street_event",
 ]
 
 ArcKind = Literal[
@@ -88,6 +96,7 @@ ArcKind = Literal[
     "company",
     "strain",
     "play",
+    "street",
 ]
 
 ArcStatus = Literal["open", "suspended", "closed"]

@@ -28,7 +28,8 @@ Row = Mapping[str, Any]
 
 # Reverie chains (~170 a day with content) are seconds long and not foreground: no body read.
 # Company arcs are a fact about the room (someone at the camera), not a stretch of Orion's work.
-NO_BODY_KINDS = frozenset({"reverie", "company"})
+# Street arcs are about the outside world (a passer-by, a ring): not a stretch of Orion's work either.
+NO_BODY_KINDS = frozenset({"reverie", "company", "street"})
 POINT_ARC_PAD = timedelta(seconds=30)
 
 

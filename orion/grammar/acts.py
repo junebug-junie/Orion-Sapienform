@@ -127,6 +127,8 @@ def _provenance(source_service: str, source_component: str) -> GrammarProvenance
         return GrammarProvenanceV1(source_service="orion-hub", source_component=source_component)
     if source_service == "orion-thought":
         return GrammarProvenanceV1(source_service="orion-thought", source_component=source_component)
+    if source_service == "orion-durable-runs":
+        return GrammarProvenanceV1(source_service="orion-durable-runs", source_component=source_component)
     raise ValueError(f"unregistered act producer {source_service!r}")
 
 

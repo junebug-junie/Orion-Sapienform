@@ -741,7 +741,7 @@ async def _finish(deps: LeisureDeps, run: _Run, reason: str, *, mode: str,
         # Action bets: nothing of this session stays open; then read back what was learned.
         try:
             await deps.experience.end_session(run.session_id, run.history, run.last_decision)
-            learned = tuple(await deps.experience.learned_lines(run.session_id))
+            learned = tuple(await deps.experience.learned_lines(run.session_id, since=run.started_at))
         except Exception:  # noqa: BLE001 -- the card is written without learned lines
             logger.warning('retro_leisure_action_bets_end_failed', exc_info=True)
     ended_at = deps.clock()

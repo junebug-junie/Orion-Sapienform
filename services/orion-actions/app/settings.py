@@ -29,6 +29,7 @@ _BLANK_ENV_BOOL_FIELDS = (
     "actions_skills_notify_enabled",
     "actions_skills_docker_health_enabled",
     "actions_journaling_enabled",
+    "actions_act_emit_enabled",
     "actions_journaling_daily_enabled",
     "actions_journal_capability_gaps_enabled",
     "actions_journal_perception_gaps_enabled",
@@ -104,6 +105,12 @@ class Settings(BaseSettings):
     actions_daily_llm_route: str | None = Field(None, alias="ACTIONS_DAILY_LLM_ROUTE")
     actions_journal_llm_route: str | None = Field(None, alias="ACTIONS_JOURNAL_LLM_ROUTE")
     actions_exec_timeout_seconds: float = Field(240.0, alias="ACTIONS_EXEC_TIMEOUT_SECONDS")
+    # Act ledger (body economy A5): each daily_metacog_v1 attempt (`actions.daily_metacog`, infer)
+    # and each in-process journal compose (`actions.journal`, make) publishes act_opened/act_closed
+    # on orion:grammar:event. Durable journal.compose runs are left to orion-durable-runs' own
+    # act producer (not shipped yet), so a journal is never counted twice.
+    # Off = no acts. app/act_emit.py.
+    actions_act_emit_enabled: bool = Field(True, alias="ACTIONS_ACT_EMIT_ENABLED")
     # RPC wait for a SCHEDULED compactor workflow dispatch (LONG_RUNNING_SCHEDULED_WORKFLOWS in main.py).
     # Covers only the synchronous part: the fetch (GitHub PR walk <=300s) and registering the
     # compactor.digest durable run (<=10s receipt per generation). The LLM digest runs in that durable

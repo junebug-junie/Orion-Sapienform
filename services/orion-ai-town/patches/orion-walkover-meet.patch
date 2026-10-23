@@ -1,5 +1,5 @@
 diff --git a/convex/aiTown/agent.ts b/convex/aiTown/agent.ts
-index 1c5a93d..a691dee 100644
+index 1c5a93d..c47fa48 100644
 --- a/convex/aiTown/agent.ts
 +++ b/convex/aiTown/agent.ts
 @@ -17,12 +17,13 @@ import {
@@ -33,17 +33,18 @@ index 1c5a93d..a691dee 100644
          // Don't keep moving around if we're near enough.
          const playerDistance = distance(player.position, otherPlayer.position);
          if (playerDistance < CONVERSATION_DISTANCE) {
-@@ -164,6 +174,17 @@ export class Agent {
+@@ -164,6 +174,18 @@ export class Agent {
                y: Math.floor((player.position.y + otherPlayer.position.y) / 2),
              };
            }
-+          // The midpoint of two players on either side of a wall is the wall:
-+          // findRoute fails, the player stops, and the next tick picks it again.
-+          // findRoute only closes straight-line distance, so it cannot go around
-+          // the wall either. Instead one player waits and the other walks to a
-+          // free tile next to them (1 tile < CONVERSATION_DISTANCE).
++          // The midpoint of two players on either side of a wall is the wall.
++          // findRoute can never reach it; its fallback keeps the start tile
++          // (already closest), returns null, and the next tick picks the same
++          // tile again. Instead one player waits and the other walks to a free
++          // tile next to them (1 tile < CONVERSATION_DISTANCE). An agent always
++          // walks to a human: humans only move when they choose to.
 +          if (blockedWithPositions(destination, [], game.worldMap) !== null) {
-+            if (player.id > otherPlayer.id) {
++            if (!otherPlayer.human && player.id > otherPlayer.id) {
 +              return;
 +            }
 +            destination = freeTileNextTo(game, now, otherPlayer.position, player.id) ?? destination;
@@ -51,7 +52,7 @@ index 1c5a93d..a691dee 100644
            console.log(`Agent ${player.id} walking towards ${otherPlayer.id}...`, destination);
            movePlayer(game, now, player, destination);
          }
-@@ -383,3 +404,26 @@ export const findConversationCandidate = internalQuery({
+@@ -383,3 +405,26 @@ export const findConversationCandidate = internalQuery({
      return candidates[0]?.id;
    },
  });

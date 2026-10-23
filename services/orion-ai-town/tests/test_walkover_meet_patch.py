@@ -35,7 +35,7 @@ def test_blocked_midpoint_sends_one_player_next_to_the_other():
     added = _added()
     assert "if (blockedWithPositions(destination, [], game.worldMap) !== null) {" in added
     # Exactly one of the pair waits, so they never chase each other's tiles.
-    assert "if (player.id > otherPlayer.id) {" in added
+    assert "if (!otherPlayer.human && player.id > otherPlayer.id) {" in added  # never wait for a human
     assert "destination = freeTileNextTo(game, now, otherPlayer.position, player.id) ?? destination;" in added
     assert "if (blocked(game, now, tile, playerId) === null) {" in added
 

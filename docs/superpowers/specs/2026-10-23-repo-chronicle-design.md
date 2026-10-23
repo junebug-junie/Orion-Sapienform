@@ -108,29 +108,48 @@ prints.
 
 ## Design
 
-### Foundation F1: the self-now projection ("who I am today")
+### Foundation F1: "who I am today" is a converging ladder, not a parts list
 
-A deterministic projection, built with no model, rebuilt on a timer in orion-durable-runs next to
-the Temporal Self driver. Every line cites a row.
+Juniper's review (rev 3): a parts list is "a pretty swamp of machinations". The self-now must
+*converge*: these channels run → these organs feed each other → "I have a metabolism, I keep
+long-standing thoughts, I can think and act" → "I am a being like this". The live state of the
+existing self-model shows why this is needed. Self Atlas has written 6,016 "concepts", and its
+newest read "Self Atlas cluster 'topic_27' (no keywords available)". Layer 3 reflections are
+real but leaf-level. Nothing converges from parts to a whole.
 
-```text
-SelfNowV1
-  as_of, inputs_as_of{per source}
-  organs[]:     name, status ∈ live | idle | off | gone | unknown, evidence_ref, last_seen_at
-  body:         latest self_knowledge_items run → counts by category + diff vs previous run
-  body_changes: merges since T-7d (labelled "merged", never "live", unless a deploy row exists)
-  self_concept: latest N self_concept_history rows (layer3_reflect, curiosity_self_inquiry)
-  dispositions: current personality_disposition rows
-  lived_recent: Temporal Self closed days in the last 7 days (arc counts and top subjects)
-```
+Each rung reads only the rung below, cites it, and must be much smaller than it. The shrink is
+the convergence test.
 
-Rules:
+| Rung | What | Built by | Size (live 2026-10-23) |
+|---|---|---|---|
+| 1 Parts | declared services + every live bus source; status live / dormant / declared_only / transient | code | 137 parts (33 transient) |
+| 2 Circulation | producer → consumer flows. Each flow is labelled `declared`, `observed_publish`, or `observed_causal`. A channel is one hyperedge, normalized over its pairs. | code (`channels.yaml` + orion-bus-mirror's synaptic graph) | 833 flows |
+| 3 Organs | Louvain communities over Newman modularity; Q is the "organ or mush" number. Orion names each organ from what it takes in and gives out. | code; names by Orion | 7 organs, Q = 0.33 |
+| 4 Capacities | what organs do together. The lens is Stafford Beer's Viable System Model (operations, coordination, control, intelligence, identity) plus metabolism, used as a lens and not a cage. | Orion, each capacity citing its organs | target 5–7 |
+| 5 Portrait | one paragraph, "I am…", written from the capacities alone; old versions kept | Orion | 1 |
 
-- **`unknown` is a real answer.** If no evidence exists, the status is `unknown`. Code never
-  guesses `live`.
-- **The organ list comes from code, not from a hand-written list.** Start from services in the
-  latest inventory run. Status comes from heartbeat or recent-write evidence. Where no evidence
-  source exists, the status stays `unknown`, and that gap is itself output worth reading.
+Rungs 1–3 are **built** (PR: feat/body-atlas, `orion/body_atlas/`). Live result:
+
+- **Recognizable organs:** eyes (vision council, retinas, frame router, walkway and doorbell
+  cameras), thinking (cortex, thought, recall, attention), memory/inference (LLM gateway, vectors,
+  consolidation, chat memory), acting/compute (Hub, GPU pool, harness, durable runs, LLM workers),
+  compute regulation (lane controller, mesh guardian), and social.
+- **One mixed organ:** body sensing, storage, and the substrate runtimes.
+- **Why the hyperedge normalization exists:** with pairwise weights, the heartbeat channel
+  carried 29.5% of all flow weight and Q fell to 0.22.
+
+The ladder runs on any snapshot, and that is how it serves the dig:
+
+- **A past checkout** gives "what I was built as then" (catalog only, from 2026-01).
+- **Today** adds liveness: "what I am alive as now".
+
+Two portraits built the same way can be compared without a model inventing a story.
+
+**Lenses, for later traversal.** Juniper plans a 3D/4D "fantastic voyage" through the body. The
+atlas keeps stable ids at every rung (`part:` → `organ:` → capacity → portrait), and every
+element cites the one below it. A lens is then a choice of rung and projection: the parts view,
+the circulation view, the organ view, the VSM view, or time (two atlases joined by id). Nothing
+visual is built now. The data shape just must not block it.
 
 ### Foundation F2 and F3: Temporal Self past one day, and body changes as arcs
 
@@ -330,9 +349,8 @@ resource_request -> resource_wait -> pick_period -> open_past (orion.dig open)
 
 ## Recommended next patch
 
-**Patch 1: F1, the self-now projection.** It is code only, cheap, and useful on its own. It also
-shows how much of Orion is `unknown` today, and that number decides how honest the "now" hop can
-be.
+**Patch 1 (built): body atlas rungs 1–3**, `orion/body_atlas/`. **Patch 1b:** Orion names the
+organs, then rungs 4–5 (capacities through the VSM lens, then the portrait).
 
 Then:
 

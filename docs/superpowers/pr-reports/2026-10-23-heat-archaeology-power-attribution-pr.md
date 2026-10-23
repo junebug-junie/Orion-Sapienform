@@ -155,6 +155,6 @@ scripts/safe_docker_build.sh orion-harness-governor up -d --build
 
 ## PR link
 
-<filled after push>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2900
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

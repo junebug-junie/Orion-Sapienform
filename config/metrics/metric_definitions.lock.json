@@ -2,10 +2,11 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 758,
   "_last_change": {
-    "change_count": 1,
+    "change_count": 2,
     "high_severity_count": 1,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-biometrics/orion:grammar:event (all_producers: \u2026am', 'orion-gpu-pool', '\u2026 -> \u2026am', 'orion-durable-runs', 'orion-gpu-pool', '\u2026)"
+      "high   removed metric://bus_channel/orion-biometrics/orion:grammar:event",
+      "medium added metric://bus_channel/orion-actions/orion:grammar:event"
     ]
   },
   "definitions": {
@@ -333,6 +334,34 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-actions/orion:grammar:event": {
+      "schema_id": "GrammarEventV1",
+      "all_producers": [
+        "orion-actions",
+        "orion-biometrics",
+        "orion-bus",
+        "orion-cortex-exec",
+        "orion-cortex-orch",
+        "orion-dream",
+        "orion-durable-runs",
+        "orion-gpu-pool",
+        "orion-harness-governor",
+        "orion-heartbeat",
+        "orion-hub",
+        "orion-llm-gateway",
+        "orion-sql-writer",
+        "orion-substrate-runtime",
+        "orion-thought",
+        "orion-vision-frame-router"
+      ],
+      "declared_consumers": [
+        "orion-equilibrium-service",
+        "orion-heartbeat",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-actions/orion:hub:collapse_mirror:chat_reply": {
       "schema_id": "CollapseMirrorChatReplyRequestV1",
       "all_producers": [
@@ -498,33 +527,6 @@
         "orion-cortex-exec"
       ],
       "notes": "kind=result stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-biometrics/orion:grammar:event": {
-      "schema_id": "GrammarEventV1",
-      "all_producers": [
-        "orion-biometrics",
-        "orion-bus",
-        "orion-cortex-exec",
-        "orion-cortex-orch",
-        "orion-dream",
-        "orion-durable-runs",
-        "orion-gpu-pool",
-        "orion-harness-governor",
-        "orion-heartbeat",
-        "orion-hub",
-        "orion-llm-gateway",
-        "orion-sql-writer",
-        "orion-substrate-runtime",
-        "orion-thought",
-        "orion-vision-frame-router"
-      ],
-      "declared_consumers": [
-        "orion-equilibrium-service",
-        "orion-heartbeat",
-        "orion-sql-writer"
-      ],
-      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-biometrics/orion:power:intent:settled": {

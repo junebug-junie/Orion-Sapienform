@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import uvicorn
@@ -49,6 +49,7 @@ from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.notify import NotificationRecord, NotificationRequest
 from orion.metacog.self_signal_episode import trigger_wants_prose
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
+from . import act_emit
 from .capability_gap_journal import build_daily_seed_payload, collect_capability_gaps
 from .perception_gap_journal import collect_perception_gaps
 from .walkway_forecast import collect_walkway_jobs, guard_walkway_draft, run_walkway_tick
@@ -1336,6 +1337,9 @@ async def lifespan(app: FastAPI):
         state_path=scheduler_cursor_store.path.parent / DAILY_ATTEMPT_STATE_FILENAME,
     )
 
+    # Act ledger (body economy A5, app/act_emit.py). None = ACTIONS_ACT_EMIT_ENABLED off: no acts.
+    _act_publish = act_emit.bus_publisher(lambda: hunter.bus) if settings.actions_act_emit_enabled else None
+
     async def _audit(
         parent: BaseEnvelope,
         *,
@@ -1410,6 +1414,7 @@ async def lifespan(app: FastAPI):
         parent: BaseEnvelope,
         *,
         trigger,
+        compose_correlation_id: str | None = None,
     ) -> dict[str, Any]:
         journal_llm_route = _normalized_llm_route(settings.actions_journal_llm_route, settings.actions_llm_route)
         tk = str(getattr(trigger, "trigger_kind", "") or "")
@@ -1444,7 +1449,14 @@ async def lifespan(app: FastAPI):
             },
         )
         reply_channel = new_reply_channel("orion:cortex:result")
-        req_env = parent.derive_child(kind="cortex.orch.request", source=src, payload=req, reply_to=reply_channel)
+        # The compose request carries its own correlation id (one per compose attempt), so the GPU
+        # leases it causes join exactly one actions.journal act. The parent's id is shared by other
+        # work (every walkway job in a scheduler tick; a collapse's chat reply), so it cannot be the
+        # cost key. The journal write below keeps the parent's id, as before.
+        req_env = parent.derive_child(
+            kind="cortex.orch.request", source=src, payload=req, reply_to=reply_channel,
+            **({"correlation_id": UUID(compose_correlation_id)} if compose_correlation_id else {}),
+        )
         msg = await _actions_rpc_bus.rpc_request(
             settings.cortex_request_channel,
             req_env,
@@ -1491,13 +1503,27 @@ async def lifespan(app: FastAPI):
 
         acquired = False
         t0 = time.monotonic()
+        compose_corr = act_emit.compose_correlation_id(dedupe_key, str(parent.correlation_id)) if _act_publish else None
+        jact = act_emit.ActTrace(
+            _act_publish,
+            act_emit.journal_act(
+                dedupe_key, str(parent.correlation_id),
+                trigger_kind=str(getattr(trigger, "trigger_kind", "") or "unknown"),
+                horizon=act_emit.journal_horizon_sec(settings.actions_exec_timeout_seconds),
+            ),
+            component=f"{audit_action}.act",
+            correlation_id=compose_corr or str(parent.correlation_id),
+        )
         try:
             await sem.acquire()
             acquired = True
+            await jact.open()
             result = await _run_journal(
                 parent,
                 trigger=trigger,
+                compose_correlation_id=compose_corr,
             )
+            await jact.close(True, f"entry_id={result['write']['entry_id']} mode={result['draft']['mode']}")
             # Notification dispatch (email/in-app) happens exactly once, from the
             # post-persist consumer (_handle_journal_created) after the SQL write is
             # confirmed -- see _dispatch_journal_notifications. This function only
@@ -1521,6 +1547,8 @@ async def lifespan(app: FastAPI):
             return True
         except Exception as exc:
             dt_ms = int((time.monotonic() - t0) * 1000)
+            # Close first: a cancel during the audit await must not leave the act open.
+            await jact.close(False, f"raised:{type(exc).__name__}:{str(exc)[:200]}")
             await _audit(
                 parent,
                 status="failed",
@@ -1531,6 +1559,9 @@ async def lifespan(app: FastAPI):
             )
             logger.exception("Journal dispatch failed action=%s corr=%s", audit_action, parent.correlation_id)
             return False
+        except BaseException as exc:  # cancellation: close at 0, then re-raise
+            await jact.close(False, f"raised:{type(exc).__name__}")
+            raise
         finally:
             if acquired:
                 sem.release()
@@ -1553,9 +1584,20 @@ async def lifespan(app: FastAPI):
         t0 = time.monotonic()
         acquired = False
         outcome = DailyAttemptResult(completed=False, attempted=True, failure_reason="daily_execute_no_outcome")
+        # Only daily_metacog_v1 is an act family (A5 verb map); daily_pulse_v1 opens nothing.
+        dact = act_emit.ActTrace(
+            _act_publish if action_name == ACTION_DAILY_METACOG_V1 else None,
+            act_emit.daily_metacog_act(
+                dedupe_key, str(parent.correlation_id),
+                horizon=act_emit.daily_metacog_horizon_sec(settings.actions_exec_timeout_seconds),
+            ),
+            component="daily_metacog.act",
+            correlation_id=str(parent.correlation_id),
+        )
         try:
             await sem.acquire()
             acquired = True
+            await dact.open()
             await _audit(parent, status="started", event_id=dedupe_key, action_name=action_name)
             context = {
                 "request_date": window.request_date,
@@ -1715,6 +1757,7 @@ async def lifespan(app: FastAPI):
 
             if generic_ok and chat_ok:
                 deduper.mark_done(dedupe_key)
+                await dact.close(True, f"delivered duration_ms={dt_ms}")
                 await _audit(parent, status="completed", event_id=dedupe_key, action_name=action_name, extra=extra)
                 outcome = DailyAttemptResult(completed=True)
             else:
@@ -1724,11 +1767,13 @@ async def lifespan(app: FastAPI):
                 elif chat_message_accepted and not chat_message_accepted.ok:
                     reason = chat_message_accepted.detail
                 outcome = DailyAttemptResult(completed=False, failure_reason=f"notify_failed:{reason or 'unknown'}")
+                await dact.close(False, f"notify_failed:{reason or 'unknown'}")
                 await _audit(parent, status="failed", event_id=dedupe_key, action_name=action_name, reason=reason, extra=extra)
 
         except Exception as exc:
             dt_ms = int((time.monotonic() - t0) * 1000)
             outcome = DailyAttemptResult(completed=False, failure_reason=str(exc) or exc.__class__.__name__)
+            await dact.close(False, f"raised:{type(exc).__name__}:{str(exc)[:200]}")
             await _audit(
                 parent,
                 status="failed",
@@ -1738,6 +1783,9 @@ async def lifespan(app: FastAPI):
                 extra={"duration_ms": dt_ms},
             )
             logger.exception("Daily action failed action=%s dedupe=%s", action_name, dedupe_key)
+        except BaseException as exc:  # cancellation: close at 0, then re-raise
+            await dact.close(False, f"raised:{type(exc).__name__}")
+            raise
         finally:
             if acquired:
                 sem.release()

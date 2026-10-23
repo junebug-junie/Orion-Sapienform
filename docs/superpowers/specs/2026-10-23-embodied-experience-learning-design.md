@@ -199,7 +199,8 @@ With fewer than 10 settled bets, the calibration line is not written. If the pre
    - EIG as mutual information (Bayesian experimental design; the epistemic term of expected free energy in active inference).
    - Brier skill against a reference forecast, as `grading.py` already does.
 4. **Live sanity** (acceptance check 6, on the first real session's rows):
-   - a place with 5 or more failures and no success reads p < 0.2;
+   - a place with 5 or more failures and no success reads below its situation mean, and below 0.35 at any situation mean
+     (with k = 4 it is (4·m)/(4 + 5) = 0.44·m; it reads p < 0.2 only once the situation mean is below 0.45);
    - a skill with 20 or more settled bets has EIG < 0.03 nats;
    - Brier is not reported below 10 bets, and `enough` stays false below 50;
    - the share of void and never-settled bets is reported, so a broken settle path cannot hide as calm.

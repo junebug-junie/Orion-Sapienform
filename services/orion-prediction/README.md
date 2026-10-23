@@ -136,12 +136,63 @@ says whether it is safe to start an ON block (P(≥ 32 °C within 30 min) < 5 %)
 logs each block (`POST /interventions` with `experiment_id` + `arm`) and re-checks the guard
 before each ON block. The 34 °C reflex in hardware-watch stays the hard stop.
 
+## Action bets
+
+An action bet is a yes/no prediction about one of Orion's own body actions: "this action, in this
+situation, at this place, works with probability p". The body adapter (the Hub for Zelda) asks for a
+quote on each possible move, places a bet on the move it starts, and settles the bet when the move
+ends. The service only sees opaque strings (`skill`, `context` values, `place`); what a skill means
+and when it succeeded is the body's business. Spec:
+`docs/superpowers/specs/2026-10-23-embodied-experience-learning-design.md` ("the action bet").
+Contracts: `ActionBet*V1` in `orion/schemas/prediction.py` (HTTP only, no bus channel). Code:
+`app/action_bets.py`.
+
+| endpoint | does |
+|---|---|
+| `POST /action-bets/quote` | `{domain, body, options: [{option_id, skill, context, place?}]}` (at most 20) -> `{domain, body, served_model, quotes: [{option_id, model, p, p_baseline, interval80, eig_nats, level, counts}]}`. Read-only, one grouped count query. |
+| `POST /action-bets` | place: `{bet_id, domain, body, skill, context, place?, action, chosen_rank?, session_id?}` -> the stored bet. The service computes `p` and `p_baseline`; a caller cannot send them (422). Idempotent by `bet_id`: a repeat returns the stored bet unchanged. |
+| `POST /action-bets/{bet_id}/settle` | `{result: success\|failure\|void, outcome, detail?}` -> the stored bet. Open -> settled only: the same result again is 200, a different one 409 (`detail.bet` is the stored bet), an unknown bet 404. |
+| `GET /action-bets/live?domain=&body=` | per-skill and per-situation posteriors (counts, mean, interval80, eig), the top 20 place beliefs, grading of the served and baseline p, the live verdict, open / never-settled / void counts (24 h), the last 20 bets |
+| `GET /action-bets?session_id=` | that session's bets, oldest first, at most 500 |
+
+**Model** `action_beta_backoff` (served): a Beta-Bernoulli rate with three levels of backoff, strength
+k = 4, over settled `success` / `failure` bets (void never counts). Skill: `Beta(1+s, 1+f)` over every
+domain and body. Situation (same domain, skill, exact context): prior = the skill mean with strength k.
+Place (same domain, place): prior = the situation mean with strength k. `p` is the mean of the deepest
+level with at least one settled bet (`level`); no data -> `prior`, p = 0.5. `interval80` is the
+10 %/90 % Beta quantile of that level; `eig_nats` the expected information gain of one more try
+(0.193 at no data, 0.022 at 10 of 20). With k = 4, five failures at a place read p < 0.2 only when the
+situation mean is below about 0.45.
+
+**Baseline** `action_skill_rate`: the skill mean alone, stored on every bet as `p_baseline`. Each bet
+also stores its counts at placing, so the model's p is recomputable for every bet even while the
+baseline serves.
+
+**Gate**: squared error of the model's p vs the baseline's, one pair per session (a bet without a
+session is its own unit), the paired test from `app/live.py`/`backtest.paired_win_p`: `pending` under
+20 sessions, then `better` / `worse` / `unclear` at p < 0.05. Global over every domain, cached 60 s.
+When the model is live-`worse`, quotes and new bets serve the baseline (`model` / `served_model` say
+`action_skill_rate`). Grading of served and baseline p uses `app/grading.py` `grade` (`enough` at
+n >= 50; `reportable` false under 10 bets).
+
+**Expiry**: a bet still open 1 h after placing is closed `void` with outcome `never_settled` (checked
+at most every 30 s, on quote / place / live). Never graded; counted in `/health`
+(`action_bets: {open, never_settled_24h, served_model}`) and `/live`. Log lines: `action_bet_placed`,
+`action_bet_settled`, `action_bet_expired`.
+
+**Table** `prediction_action_bet`, operator migration (also auto-applied by the post-pull rebuild;
+the service checks it at boot like every other prediction table):
+
+```bash
+docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_prediction_action_bet_v1.sql
+```
+
 ## Contracts
 
 - Bus: `orion:prediction:forecast` (`PredictionForecastV1`, `orion/schemas/prediction.py`).
   Consumer: orion-hardware-watch shows the shed probability beside each reflex decision
   (observe-only).
-- Tables: `services/orion-sql-db/manual_migration_prediction_v1.sql`, `manual_migration_prediction_change_events_v1.sql`.
+- Tables: `services/orion-sql-db/manual_migration_prediction_v1.sql`, `manual_migration_prediction_change_events_v1.sql`, `manual_migration_prediction_action_bet_v1.sql`.
 - Series registry: `config/prediction/series.v1.yaml` (baked into the image).
 
 ## Run

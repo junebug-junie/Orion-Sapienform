@@ -32,7 +32,13 @@ TABLES = {
     "prediction_shadow_forecast": ("shadow_id", "model", "origin_ts", "horizon_min", "point", "abs_error"),
     "prediction_weather_hourly": ("hour_ts", "temp_f", "is_forecast", "source", "fetched_at"),
     "prediction_exceedance": ("exceedance_id", "probability", "window_start", "window_end", "hit_raw", "hit_mean"),
+    "prediction_action_bet": ("bet_id", "skill", "context", "place", "p", "p_baseline", "counts", "result"),
 }
+ACTION_BET_COLS = ("bet_id", "domain", "body", "skill", "context", "place", "action", "model", "p", "p_baseline",
+                   "level", "counts", "chosen_rank", "session_id", "placed_at", "settled_at", "result", "outcome",
+                   "detail")
+_ACTION_BET_JSONB = {"context", "action", "counts", "detail"}
+_SETTLED = "result IN ('success', 'failure')"
 
 
 def _since(ts: datetime) -> str:
@@ -373,3 +379,126 @@ class PostgresStore:
     def effects(self, action: str, series_id: str) -> list[dict]:
         return self._all("SELECT * FROM prediction_effect_estimate WHERE action = %s AND series_id = %s "
                          "ORDER BY created_at DESC LIMIT 200", (action, series_id))
+
+    # --- action bets (manual_migration_prediction_action_bet_v1.sql) ----------------------------
+    @staticmethod
+    def _bet(row: dict | None) -> dict | None:
+        if row is None:
+            return None
+        row = dict(row)
+        row["detail"] = row.get("detail") or {}
+        row["context"] = row.get("context") or {}
+        row["action"] = row.get("action") or {}
+        return row
+
+    def action_bet_counts(self, domain: str | None, skills: Sequence[str] | None, places: Sequence[str] | None,
+                          body: str | None = None, combos: bool = False) -> list[dict]:
+        """Settled success/failure counts in ONE query: per skill over every domain and body, per
+        (domain, skill, context), per (domain, place). ``None`` for skills/places/domain = all.
+        ``body`` narrows the situation and place levels only (the skill level pools every body).
+        ``combos`` adds each distinct (domain, skill, context, place) that has a place (for /live)."""
+        parts, args = [], []
+        where = [_SETTLED]
+        if skills is not None:
+            where.append("skill = ANY(%s)")
+            args.append(list(skills))
+        parts.append("SELECT 'skill' AS level, skill, NULL::text AS domain, NULL::jsonb AS context, NULL::text AS place, "
+                     "count(*) FILTER (WHERE result = 'success') AS successes, "
+                     "count(*) FILTER (WHERE result = 'failure') AS failures "
+                     f"FROM prediction_action_bet WHERE {' AND '.join(where)} GROUP BY skill")
+        scope, scope_args = [_SETTLED], []
+        if domain is not None:
+            scope.append("domain = %s")
+            scope_args.append(domain)
+        if body is not None:
+            scope.append("body = %s")
+            scope_args.append(body)
+        sit = list(scope)
+        sit_args = list(scope_args)
+        if skills is not None:
+            sit.append("skill = ANY(%s)")
+            sit_args.append(list(skills))
+        parts.append("SELECT 'situation', skill, domain, context, NULL::text, "
+                     "count(*) FILTER (WHERE result = 'success'), count(*) FILTER (WHERE result = 'failure') "
+                     f"FROM prediction_action_bet WHERE {' AND '.join(sit)} GROUP BY skill, domain, context")
+        args += sit_args
+        if places is None or places:
+            pl = list(scope) + ["place IS NOT NULL"]
+            pl_args = list(scope_args)
+            if places is not None:
+                pl.append("place = ANY(%s)")
+                pl_args.append(list(places))
+            parts.append("SELECT 'place', NULL::text, domain, NULL::jsonb, place, "
+                         "count(*) FILTER (WHERE result = 'success'), count(*) FILTER (WHERE result = 'failure') "
+                         f"FROM prediction_action_bet WHERE {' AND '.join(pl)} GROUP BY domain, place")
+            args += pl_args
+            if combos:
+                parts.append("SELECT 'combo', skill, domain, context, place, 0::bigint, 0::bigint "
+                             f"FROM prediction_action_bet WHERE {' AND '.join(pl)} GROUP BY skill, domain, context, place")
+                args += pl_args
+        return self._all(" UNION ALL ".join(parts), args)
+
+    def get_action_bet(self, bet_id: str) -> dict | None:
+        rows = self._all("SELECT * FROM prediction_action_bet WHERE bet_id = %s", (bet_id,))
+        return self._bet(rows[0]) if rows else None
+
+    def insert_action_bet(self, row: dict) -> dict | None:
+        """Insert once by bet_id; None when a row with that id already exists (the caller reads it)."""
+        cols = [c for c in ACTION_BET_COLS if c in row]
+        sql = (f"INSERT INTO prediction_action_bet ({', '.join(cols)}) VALUES "
+               f"({', '.join('%s::jsonb' if c in _ACTION_BET_JSONB else '%s' for c in cols)}) "
+               "ON CONFLICT (bet_id) DO NOTHING RETURNING *")
+        rows = self._all(sql, [(_j(row[c]) if c in _ACTION_BET_JSONB else row[c]) for c in cols])
+        return self._bet(rows[0]) if rows else None
+
+    def settle_action_bet(self, bet_id: str, result: str, outcome: str, detail: dict, now: datetime) -> dict | None:
+        """Open -> settled only; None when the bet is unknown or already settled."""
+        rows = self._all("UPDATE prediction_action_bet SET result = %s, outcome = %s, detail = %s::jsonb, "
+                         "settled_at = %s WHERE bet_id = %s AND result IS NULL RETURNING *",
+                         (result, outcome, _j(detail), now, bet_id))
+        return self._bet(rows[0]) if rows else None
+
+    def expire_action_bets(self, placed_before: datetime, now: datetime, outcome: str) -> list[str]:
+        rows = self._all("UPDATE prediction_action_bet SET result = 'void', outcome = %s, settled_at = %s "
+                         "WHERE result IS NULL AND placed_at < %s RETURNING bet_id", (outcome, now, placed_before))
+        return [r["bet_id"] for r in rows]
+
+    def _bet_where(self, domain: str | None, body: str | None, session_id: str | None = None) -> tuple[list, list]:
+        where, args = [], []
+        for col, val in (("domain", domain), ("body", body), ("session_id", session_id)):
+            if val is not None:
+                where.append(f"{col} = %s")
+                args.append(val)
+        return where, args
+
+    def settled_action_bets(self, domain: str | None = None, body: str | None = None, limit: int = 5000) -> list[dict]:
+        """Most recent settled success/failure bets (the grading + verdict input)."""
+        where, args = self._bet_where(domain, body)
+        where.append(_SETTLED)
+        return self._all("SELECT bet_id, session_id, placed_at, p, p_baseline, counts, result "
+                         f"FROM prediction_action_bet WHERE {' AND '.join(where)} "
+                         "ORDER BY settled_at DESC LIMIT %s", (*args, limit))
+
+    def action_bets(self, domain: str | None = None, body: str | None = None, session_id: str | None = None,
+                    limit: int = 20) -> list[dict]:
+        """A session's bets oldest first; otherwise the newest first."""
+        where, args = self._bet_where(domain, body, session_id)
+        sql = "SELECT * FROM prediction_action_bet"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY placed_at" + ("" if session_id is not None else " DESC") + ", bet_id LIMIT %s"
+        return [self._bet(r) for r in self._all(sql, (*args, limit))]
+
+    def action_bet_status(self, domain: str | None, body: str | None, since: datetime,
+                          never_settled: str = "never_settled") -> dict:
+        where, args = self._bet_where(domain, body)
+        sql = ("SELECT count(*) FILTER (WHERE result IS NULL) AS open, "
+               "count(*) FILTER (WHERE result = 'void' AND outcome = %s AND settled_at >= %s) AS never_settled, "
+               "count(*) FILTER (WHERE result = 'void' AND settled_at >= %s) AS void, "
+               "count(*) FILTER (WHERE result IN ('success', 'failure') AND settled_at >= %s) AS settled "
+               "FROM prediction_action_bet")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        rows = self._all(sql, (never_settled, since, since, since, *args))
+        r = rows[0] if rows else {}
+        return {k: int(r.get(k) or 0) for k in ("open", "never_settled", "void", "settled")}

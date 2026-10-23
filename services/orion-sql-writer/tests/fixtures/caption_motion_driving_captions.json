@@ -1,0 +1,485 @@
+[
+ {
+  "created_at": "2026-10-17T19:36:58.317108+00:00",
+  "crops": [
+   {
+    "box": [
+     1696.6125,
+     362.1213,
+     1778.6985,
+     420.7206
+    ],
+    "crop_id": "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:1",
+    "label": "vehicle"
+   },
+   {
+    "box": [
+     1236.7892,
+     468.08328,
+     1339.8573,
+     539.603
+    ],
+    "crop_id": "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:0",
+    "label": "vehicle"
+   },
+   {
+    "box": [
+     979.6948,
+     713.0161,
+     1095.1898,
+     967.38684
+    ],
+    "crop_id": "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:2",
+    "label": "person"
+   },
+   {
+    "box": [
+     1055.4518,
+     681.38196,
+     1132.178,
+     905.93585
+    ],
+    "crop_id": "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:3",
+    "label": "person"
+   }
+  ],
+  "event_id": "023f0e5c-5878-51e1-b8db-3de333ca54d0",
+  "evidence_refs": [
+   "artifact:357fe32d-4537-499a-9c73-fda00fc0b6cd",
+   "frame:/mnt/telemetry/vision/frames/walkway_walkway_1792265814511_7d845f8b.jpg",
+   "frame_ts:2026-10-17T19:36:54.511902+00:00",
+   "box:person:980,713,1095,967",
+   "box:person:1055,681,1132,906",
+   "crop:1237,468,1340,540",
+   "crop:1697,362,1779,421",
+   "crop:980,713,1095,967",
+   "crop:1055,681,1132,906",
+   "model:Qwen/Qwen2-VL-2B-Instruct"
+  ],
+  "live_status": "contradicted",
+  "narrative": "A car is driving down a residential street, passing by a sidewalk and a fence.",
+  "story_class": {
+   "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:1": "parked",
+   "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:2": "walking",
+   "cropobs:74682cbf-baae-4ce1-9dac-1b8d91c1bc11:3": "walking"
+  },
+  "stream_id": "walkway"
+ },
+ {
+  "created_at": "2026-10-17T19:37:55.713888+00:00",
+  "crops": [
+   {
+    "box": [
+     1236.8982,
+     468.11636,
+     1339.4452,
+     539.1664
+    ],
+    "crop_id": "cropobs:8adcac02-586e-4cac-9caf-fe2e5b01ed6d:0",
+    "label": "vehicle"
+   },
+   {
+    "box": [
+     1697.2336,
+     362.19318,
+     1778.7034,
+     420.4928
+    ],
+    "crop_id": "cropobs:8adcac02-586e-4cac-9caf-fe2e5b01ed6d:1",
+    "label": "vehicle"
+   },
+   {
+    "box": [
+     956.55975,
+     712.67487,
+     1086.342,
+     939.53284
+    ],
+    "crop_id": "cropobs:8adcac02-586e-4cac-9caf-fe2e5b01ed6d:2",
+    "label": "person"
+   },
+   {
+    "box": [
+     1173.4067,
+     649.7189,
+     1249.1058,
+     871.11945
+    ],
+    "crop_id": "cropobs:8adcac02-586e-4cac-9caf-fe2e5b01ed6d:3",
+    "label": "person"
+   }
+  ],
+  "event_id": "94b42e45-e170-5c9c-be99-ae7c05236dbf",
+  "evidence_refs": [
+   "artifact:43cf57d1-ed88-4071-86c8-23ed03918201",
+   "frame:/mnt/telemetry/vision/frames/walkway_walkway_1792265869512_c42547cb.jpg",
+   "frame_ts:2026-10-17T19:37:49.512620+00:00",
+   "box:person:957,713,1086,940",
+   "box:person:1173,650,1249,871",
+   "crop:1237,468,1339,539",
+   "crop:1697,362,1779,420",
+   "crop:957,713,1086,940",
+   "crop:1173,650,1249,871",
+   "model:Qwen/Qwen2-VL-2B-Instruct"
+  ],
+  "live_status": "contradicted",
+  "narrative": "A car is driving down a street in a residential area, passing by a white fence and some trees.",
+  "story_class": {
+   "cropobs:8adcac02-586e-4cac-9caf-fe2e5b01ed6d:1": "parked",
+   "cropobs:8adcac02-586e-4cac-9caf-fe2e5b01ed6d:2": "walking",
+   "cropobs:8adcac02-586e-4cac-9caf-fe2e5b01ed6d:3": "walking"
+  },
+  "stream_id": "walkway"
+ },
+ {
+  "created_at": "2026-10-17T20:31:33.616176+00:00",
+  "crops": [
+   {
+    "box": [
+     1241.0543,
+     467.7211,
+     1340.75,
+     538.993
+    ],
+    "crop_id": "cropobs:687ab875-601b-4384-9cbe-7605637ca818:0",
+    "label": "vehicle"
+   },
+   {
+    "box": [
+     1698.19,
+     361.3864,
+     1780.0464,
+     419.8349
+    ],
+    "crop_id": "cropobs:687ab875-601b-4384-9cbe-7605637ca818:1",
+    "label": "vehicle"
+   },
+   {
+    "box": [
+     1419.1371,
+     611.1918,
+     1531.4031,
+     877.5007
+    ],
+    "crop_id": "cropobs:687ab875-601b-4384-9cbe-7605637ca818:2",
+    "label": "person"
+   }
+  ],
+  "event_id": "9cb70a87-084e-5d07-9cf7-357ddae6c4e8",
+  "evidence_refs": [
+   "artifact:fdd2bc14-9bc9-4b1e-903e-cbb48b637285",
+   "frame:/mnt/telemetry/vision/frames/walkway_walkway_1792269089223_ee2ea6c9.jpg",
+   "frame_ts:2026-10-17T20:31:29.223476+00:00",
+   "box:person:1419,611,1531,878",
+   "crop:1241,468,1341,539",
+   "crop:1698,361,1780,420",
+   "crop:1419,611,1531,878",
+   "model:Qwen/Qwen2-VL-2B-Instruct"
+  ],
+  "live_status": "contradicted",
+  "narrative": "A car is driving down a street with a person walking on the sidewalk.",
+  "story_class": {
+   "cropobs:687ab875-601b-4384-9cbe-7605637ca818:0": "parked",
+   "cropobs:687ab875-601b-4384-9cbe-7605637ca818:1": "parked",
+   "cropobs:687ab875-601b-4384-9cbe-7605637ca818:2": "walking"
+  },
+  "stream_id": "walkway"
+ },
+ {
+  "created_at": "2026-10-17T20:35:47.819525+00:00",
+  "crops": [
+   {
+    "box": [
+     1240.9679,
+     467.43805,
+     1340.262,
+     538.69183
+    ],
+    "crop_id": "cropobs:be10eddd-67f5-4158-8b55-8eca3bf57a9e:0",
+    "label": "vehicle"
+   },
+   {
+    "box": [
+     1072.5123,
+     675.91516,
+     1230.9756,
+     945.3301
+    ],
+    "crop_id": "cropobs:be10eddd-67f5-4158-8b55-8eca3bf57a9e:1",
+    "label": "person"
+   },
+   {
+    "box": [
+     1697.6923,
+     359.8157,
+     1780.5715,
+     419.48572
+    ],
+    "crop_id": "cropobs:be10eddd-67f5-4158-8b55-8eca3bf57a9e:2",
+    "label": "vehicle"
+   }
+  ],
+  "event_id": "c9527b0a-d159-5717-ac1b-785dd2be2308",
+  "evidence_refs": [
+   "artifact:ab73e057-b853-4062-96fe-a4a2f7b7c191",
+   "frame:/mnt/telemetry/vision/frames/walkway_walkway_1792269344345_93ea5342.jpg",
+   "frame_ts:2026-10-17T20:35:44.345600+00:00",
+   "box:person:1073,676,1231,945",
+   "crop:1241,467,1340,539",
+   "crop:1073,676,1231,945",
+   "crop:1698,360,1781,419",
+   "model:Qwen/Qwen2-VL-2B-Instruct"
+  ],
+  "live_status": "contradicted",
+  "narrative": "A car is driving down a residential street, passing by a sidewalk and some trees.",
+  "story_class": {
+   "cropobs:be10eddd-67f5-4158-8b55-8eca3bf57a9e:0": "parked",
+   "cropobs:be10eddd-67f5-4158-8b55-8eca3bf57a9e:1": "walking",
+   "cropobs:be10eddd-67f5-4158-8b55-8eca3bf57a9e:2": "parked"
+  },
+  "stream_id": "walkway"
+ },
+ {
+  "created_at": "2026-10-19T16:51:20.601099+00:00",
+  "crops": [
+   {
+    "box": [
+     1222.3181,
+     467.64218,
+     1339.0698,
+     540.8486
+    ],
+    "crop_id": "cropobs:0cd19108-c7cd-4bff-bf62-071d1e78b20d:0",
+    "label": "vehicle"
+   },
+   {
+    "box": [
+     1695.2239,
+     363.0281,
+     1779.1182,
+     420.9936
+    ],
+    "crop_id": "cropobs:0cd19108-c7cd-4bff-bf62-071d1e78b20d:1",
+    "label": "vehicle"
+   },
+   {
+    "box": [
+     959.0415,
+     743.6351,
+     1068.1215,
+     827.13654
+    ],
+    "crop_id": "cropobs:0cd19108-c7cd-4bff-bf62-071d1e78b20d:2",
+    "label": "dog"
+   }
+  ],
+  "event_id": "60f084ff-71d4-5c8f-9723-324f9a45308d",
+  "evidence_refs": [
+   "artifact:a7fb218f-3c12-49e5-817d-a76c8253627c",
+   "frame:/mnt/telemetry/vision/frames/walkway_walkway_1792428676882_16eadb7a.jpg",
+   "frame_ts:2026-10-19T16:51:16.882580+00:00",
+   "box:dog:959,744,1068,827",
+   "crop:1222,468,1339,541",
+   "crop:1695,363,1779,421",
+   "crop:959,744,1068,827",
+   "model:Qwen/Qwen2-VL-2B-Instruct"
+  ],
+  "live_status": "contradicted",
+  "narrative": "A car is driving down a residential street, passing by a house and a tree.",
+  "story_class": {
+   "cropobs:0cd19108-c7cd-4bff-bf62-071d1e78b20d:1": "parked",
+   "cropobs:0cd19108-c7cd-4bff-bf62-071d1e78b20d:2": "walking"
+  },
+  "stream_id": "walkway"
+ },
+ {
+  "created_at": "2026-10-19T17:11:58.481939+00:00",
+  "crops": [
+   {
+    "box": [
+     1218.2454,
+     467.56866,
+     1340.1328,
+     540.37506
+    ],
+    "crop_id": "cropobs:baae0a9c-f646-4416-914e-777a5bb76f56:0",
+    "label": "vehicle"
+   },
+   {
+    "box": [
+     1695.7354,
+     362.42093,
+     1778.9055,
+     420.38898
+    ],
+    "crop_id": "cropobs:baae0a9c-f646-4416-914e-777a5bb76f56:1",
+    "label": "vehicle"
+   },
+   {
+    "box": [
+     237.75375,
+     917.2521,
+     374.58118,
+     1184.1093
+    ],
+    "crop_id": "cropobs:baae0a9c-f646-4416-914e-777a5bb76f56:2",
+    "label": "person"
+   }
+  ],
+  "event_id": "760beec3-836b-5fad-9cab-6ad75a641b88",
+  "evidence_refs": [
+   "artifact:6c7b7256-bebc-425b-9e64-2f31f31c4b2d",
+   "frame:/mnt/telemetry/vision/frames/walkway_walkway_1792429914818_d30ecc5c.jpg",
+   "frame_ts:2026-10-19T17:11:54.818417+00:00",
+   "box:person:238,917,375,1184",
+   "crop:1218,468,1340,540",
+   "crop:1696,362,1779,420",
+   "crop:238,917,375,1184",
+   "model:Qwen/Qwen2-VL-2B-Instruct"
+  ],
+  "live_status": "contradicted",
+  "narrative": "A car is driving down a street in a residential area with houses and a fence in the background.",
+  "story_class": {
+   "cropobs:baae0a9c-f646-4416-914e-777a5bb76f56:1": "parked",
+   "cropobs:baae0a9c-f646-4416-914e-777a5bb76f56:2": "standing"
+  },
+  "stream_id": "walkway"
+ },
+ {
+  "created_at": "2026-10-19T17:12:05.755915+00:00",
+  "crops": [
+   {
+    "box": [
+     1212.7174,
+     467.8619,
+     1340.0254,
+     540.186
+    ],
+    "crop_id": "cropobs:3f0eb853-348b-4f37-9224-6af4ab33128d:0",
+    "label": "vehicle"
+   },
+   {
+    "box": [
+     1695.7997,
+     363.58444,
+     1779.0227,
+     421.1521
+    ],
+    "crop_id": "cropobs:3f0eb853-348b-4f37-9224-6af4ab33128d:1",
+    "label": "vehicle"
+   }
+  ],
+  "event_id": "54871f74-c240-510e-9a36-820b8f9d8994",
+  "evidence_refs": [
+   "artifact:03f2c455-2e21-438a-925c-628fa1f9af3e",
+   "frame:/mnt/telemetry/vision/frames/walkway_walkway_1792429922170_2132d8d3.jpg",
+   "frame_ts:2026-10-19T17:12:02.170585+00:00",
+   "box:mail truck:181,745,825,1136",
+   "crop:1213,468,1340,540",
+   "crop:1696,364,1779,421",
+   "crop:181,745,825,1136",
+   "model:Qwen/Qwen2-VL-2B-Instruct"
+  ],
+  "live_status": "contradicted",
+  "narrative": "A car is driving down a residential street, passing by a house with a fence and some trees.",
+  "story_class": {
+   "cropobs:3f0eb853-348b-4f37-9224-6af4ab33128d:1": "parked"
+  },
+  "stream_id": "walkway"
+ },
+ {
+  "created_at": "2026-10-19T17:12:45.624866+00:00",
+  "crops": [
+   {
+    "box": [
+     1217.0762,
+     467.52896,
+     1340.522,
+     540.5455
+    ],
+    "crop_id": "cropobs:c9dc9671-405e-4a76-95e0-e6a377893b9b:0",
+    "label": "vehicle"
+   },
+   {
+    "box": [
+     1696.3247,
+     363.3952,
+     1778.782,
+     420.94788
+    ],
+    "crop_id": "cropobs:c9dc9671-405e-4a76-95e0-e6a377893b9b:1",
+    "label": "vehicle"
+   },
+   {
+    "box": [
+     213.11221,
+     920.46136,
+     337.8371,
+     1176.9606
+    ],
+    "crop_id": "cropobs:c9dc9671-405e-4a76-95e0-e6a377893b9b:2",
+    "label": "person"
+   }
+  ],
+  "event_id": "4321b1d5-0710-50dd-8fbc-abef8c28a065",
+  "evidence_refs": [
+   "artifact:6455f853-484d-4a6f-8edf-7f8bddc70ec0",
+   "frame:/mnt/telemetry/vision/frames/walkway_walkway_1792429962198_b86fcbde.jpg",
+   "frame_ts:2026-10-19T17:12:42.198218+00:00",
+   "box:person:213,920,338,1177",
+   "crop:1217,468,1341,541",
+   "crop:1696,363,1779,421",
+   "crop:213,920,338,1177",
+   "model:Qwen/Qwen2-VL-2B-Instruct"
+  ],
+  "live_status": "contradicted",
+  "narrative": "A car is driving down a residential street with a fence and trees on the side.",
+  "story_class": {
+   "cropobs:c9dc9671-405e-4a76-95e0-e6a377893b9b:1": "parked",
+   "cropobs:c9dc9671-405e-4a76-95e0-e6a377893b9b:2": "standing"
+  },
+  "stream_id": "walkway"
+ },
+ {
+  "created_at": "2026-10-19T17:13:01.670406+00:00",
+  "crops": [
+   {
+    "box": [
+     1221.3613,
+     467.5546,
+     1340.5308,
+     540.2334
+    ],
+    "crop_id": "cropobs:0f33781d-fac9-47fd-bc74-bd8bef4b933a:0",
+    "label": "vehicle"
+   },
+   {
+    "box": [
+     1696.3197,
+     363.49188,
+     1778.5955,
+     421.27835
+    ],
+    "crop_id": "cropobs:0f33781d-fac9-47fd-bc74-bd8bef4b933a:1",
+    "label": "vehicle"
+   }
+  ],
+  "event_id": "4a41fd5c-522a-557a-a908-9fbcbe36abea",
+  "evidence_refs": [
+   "artifact:67d2171f-f1f6-44c7-9318-21ecd960d235",
+   "frame:/mnt/telemetry/vision/frames/walkway_walkway_1792429974890_49c8c2fe.jpg",
+   "frame_ts:2026-10-19T17:12:54.890811+00:00",
+   "box:mail truck:181,743,825,1137",
+   "crop:1221,468,1341,540",
+   "crop:181,743,825,1137",
+   "crop:1696,363,1779,421",
+   "model:Qwen/Qwen2-VL-2B-Instruct"
+  ],
+  "live_status": "contradicted",
+  "narrative": "A car is driving down a street in a residential area, passing by a house with a blue sign.",
+  "story_class": {
+   "cropobs:0f33781d-fac9-47fd-bc74-bd8bef4b933a:1": "parked"
+  },
+  "stream_id": "walkway"
+ }
+]

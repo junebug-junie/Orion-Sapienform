@@ -670,6 +670,15 @@ class Settings(BaseSettings):
     # the patio skeleton, never flagged stationary because its box drifts.
     vision_motion_prop_individual_ids: str = Field(
         "fefb24d7e4074e9f827ad711874f6edf", alias="VISION_MOTION_PROP_INDIVIDUAL_IDS")
+    # Caption motion cross-check (app/vision_caption_motion.py, spec PR #2763
+    # item 3 patch C). Each motion-story tick, a camera_caption on a story
+    # stream whose text claims motion ("driving") is tagged motion_contradicted
+    # / motion_supported by the story of the caption's own box (matched by IoU
+    # at the frame), so readers can say "the vehicle did not move". Only rows
+    # written in the last LOOKBACK seconds are read; older rows stay untagged.
+    vision_caption_motion_check_enabled: bool = Field(True, alias="VISION_CAPTION_MOTION_CHECK_ENABLED")
+    vision_caption_motion_lookback_sec: float = Field(21600.0, gt=0.0, alias="VISION_CAPTION_MOTION_LOOKBACK_SEC")
+    vision_caption_motion_min_iou: float = Field(0.5, gt=0.0, le=1.0, alias="VISION_CAPTION_MOTION_MIN_IOU")
 
     # Walkway rollups by hour, day, week and month (app/vision_rollup.py,
     # app/vision_rollup_loop.py; orion/vision/walkway_rollup.py). Deterministic

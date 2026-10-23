@@ -280,6 +280,43 @@ def test_camera_caption_tags_as_json_text_still_parse() -> None:
     assert got["detector_labels"] == ["dog"]
 
 
+DRIVING = "A car is driving down a residential street."
+
+
+def _checked(text, tags, minutes_ago=1):
+    row = _camcap(text, minutes_ago, labels=("person",))
+    row["tags"] = [*row["tags"], *tags]
+    return row
+
+
+def test_contradicted_caption_says_the_thing_did_not_move_for_every_consumer() -> None:
+    """dedupe_street_captions is the shared step of the chat brief, reverie
+    (orion-thought vision_reader) and curiosity (study_material) readers."""
+    row = _checked(DRIVING, ["motion_contradicted", "motion_check:vehicle:driving:parked"])
+    (got,) = dedupe_street_captions([row], now=NOW, max_age_sec=900, limit=2)
+    assert got["narrative"] == (
+        'camera caption (one frame; detector saw person; caption said driving; the vehicle did not move): '
+        f'"{DRIVING}"')
+    assert "motion not verified" not in got["narrative"]
+    assert got["motion_check"].contradicted is True
+    line = street_caption_line([got], camera="walkway", tz=TZ)
+    assert "caption said driving; the vehicle did not move" in line
+
+
+def test_supported_caption_says_the_thing_did_move() -> None:
+    row = _checked("A person is walking a dog.", ["motion_supported", "motion_check:person:walking:walking"])
+    (got,) = dedupe_street_captions([row], now=NOW, max_age_sec=900, limit=2)
+    assert "caption said walking; the person did move" in got["narrative"]
+
+
+def test_unchecked_or_malformed_motion_tags_stay_not_verified() -> None:
+    for tags in ([], ["motion_contradicted"], ["motion_check:vehicle:driving:parked"],
+                 ["motion_contradicted", "motion_check:vehicle:driving"]):
+        (got,) = dedupe_street_captions([_checked(DRIVING, tags)], now=NOW, max_age_sec=900, limit=2)
+        assert "motion not verified" in got["narrative"], tags
+        assert got["motion_check"] is None
+
+
 def test_council_rows_stay_unlabelled() -> None:
     (got,) = dedupe_street_captions([_cap("A vehicle is observed in the walkway area.", 1)],
                                     now=NOW, max_age_sec=900, limit=2)

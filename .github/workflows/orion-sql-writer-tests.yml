@@ -20,6 +20,7 @@ on:
       - "config/vision_topology.yaml"
       - "services/orion-sql-db/**"
       - "services/orion-sql-writer/**"
+      - "orion/situational/street_material.py"
       - "services/orion-substrate-runtime/**"
       - "tests/test_sql_writer_*.py"
       - "tests/test_transport_*.py"
@@ -41,6 +42,7 @@ on:
       - "config/vision_topology.yaml"
       - "services/orion-sql-db/**"
       - "services/orion-sql-writer/**"
+      - "orion/situational/street_material.py"
       - "services/orion-substrate-runtime/**"
       - "tests/test_sql_writer_*.py"
       - "tests/test_transport_*.py"
@@ -195,6 +197,7 @@ jobs:
             services/orion-sql-writer/tests/test_vision_body_match.py \
             services/orion-sql-writer/tests/test_vision_reanchor.py \
             services/orion-sql-writer/tests/test_vision_motion.py \
+            services/orion-sql-writer/tests/test_vision_caption_motion.py \
             services/orion-sql-writer/tests/test_vision_story_strip.py \
             services/orion-sql-writer/tests/test_vision_rollup.py \
             services/orion-sql-writer/tests/test_vision_handoff_pg.py | tee vision_pg.out

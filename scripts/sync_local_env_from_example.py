@@ -419,6 +419,8 @@ SYNC_PREFIXES = (
     # "seen on <day>" links. Neither matched an existing prefix.
     "VISION_ROLLUP_",
     "WALKWAY_SEEN_",
+    # Caption motion cross-check (orion-sql-writer, 2026-10-23, spec PR #2763 item 3 C).
+    "VISION_CAPTION_MOTION_",
 )
 
 SYNC_EXACT = frozenset(

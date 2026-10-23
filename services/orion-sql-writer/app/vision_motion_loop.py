@@ -18,6 +18,11 @@ Each tick, per stream in ``VISION_MOTION_STORY_STREAMS``:
    (``relink_stories``, null-only, stories that ended in the last 6 h).
 5. Prune stories older than ``VISION_MOTION_STORY_RETENTION_DAYS``.
 
+After each stream's stories, the caption motion cross-check
+(``app/vision_caption_motion.py``, ``VISION_CAPTION_MOTION_CHECK_ENABLED``) tags
+that stream's motion-claiming ``camera_caption`` rows ``motion_contradicted`` /
+``motion_supported`` from the stories of the caption's own boxes.
+
 Frame size and edges (2026-10-20,
 manual_migration_vision_motion_story_edges_v1.sql): crops are read with the
 detector's own frame size (``vision_crop_observation.frame_width/height``)
@@ -61,6 +66,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app.settings import Settings
+from app.vision_caption_motion import caption_motion_step
 from app.vision_motion import PUBLISH_KINDS, MotionConfig, MotionCrop, Story, build_stories, link_passages
 from app.vision_story_strip import StripConfig
 
@@ -92,6 +98,11 @@ class LoopConfig:
     # VISION_MOTION_FRAME_SIZE_BY_STREAM: the box pixel space per stream, used
     # when a crop does not carry its own frame size.
     frame_size_by_stream: Tuple[Tuple[str, Tuple[float, float]], ...] = ()
+    # Caption motion cross-check (app/vision_caption_motion.py): tag each
+    # camera_caption's motion claim against the story of its own box.
+    caption_check: bool = True
+    caption_lookback_sec: float = 21600.0
+    caption_min_iou: float = 0.5
 
     def motion_for(self, stream_id: str) -> MotionConfig:
         """The motion config for one stream: its configured frame size, if any."""
@@ -164,6 +175,9 @@ def loop_config(settings: Settings) -> LoopConfig:
             frame_h=float(settings.vision_motion_frame_height),
         ) if bool(settings.vision_story_strips_enabled) else None,
         strip_keep_forever=float(settings.vision_story_strip_retention_days) <= 0,
+        caption_check=bool(getattr(settings, "vision_caption_motion_check_enabled", True)),
+        caption_lookback_sec=float(getattr(settings, "vision_caption_motion_lookback_sec", 21600.0)),
+        caption_min_iou=float(getattr(settings, "vision_caption_motion_min_iou", 0.5)),
     )
 
 
@@ -711,6 +725,22 @@ def run_one_motion_cycle(*, postgres_uri: str, cfg: LoopConfig, zones_by_stream:
                         engine, stream_id, ts, cfg)
                 except Exception as exc:
                     logger.warning("story_strip_assemble_step_failed stream=%s error=%s", stream_id, exc)
+            if cfg.caption_check:
+                # After the stories: a caption's frame is decided by the stories closed just now.
+                try:
+                    cc = caption_motion_step(
+                        engine, stream_id, ts, lookback_sec=cfg.caption_lookback_sec,
+                        settle_sec=cfg.window_sec + cfg.motion_for(stream_id).link_gap_sec,
+                        min_iou=cfg.caption_min_iou)
+                    for k, v in cc.items():
+                        summary["caption_" + k] = summary.get("caption_" + k, 0) + v
+                    if cc["checked"] - cc["pending"] > 0:
+                        logger.info(
+                            "[CAPTION_MOTION] stream=%s checked=%d tagged=%d contradicted=%d supported=%d "
+                            "undecided=%d pending=%d no_claim=%d", stream_id, cc["checked"], cc["tagged"],
+                            cc["contradicted"], cc["supported"], cc["undecided"], cc["pending"], cc["no_claim"])
+                except Exception as exc:
+                    logger.warning("caption_motion_step_failed stream=%s error=%s", stream_id, exc)
         try:
             with engine.begin() as conn:
                 linked = relink_stories(conn, ts - timedelta(seconds=RELINK_LOOKBACK_SEC), cfg.streams)

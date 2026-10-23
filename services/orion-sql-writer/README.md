@@ -839,6 +839,35 @@ new identity. Design: `docs/superpowers/specs/2026-10-16-walkway-motion-stories-
   `rules_version` stays 1: walkway stories (all verdicts so far) read exactly as before. Without the
   migration the loop logs `[MOTION_STORY] missing columns ...` each tick and writes the older columns.
 
+### Caption motion cross-check (2026-10-23, spec PR #2763 item 3 patch C)
+
+A camera caption describes one frame, so a claim like "A car is driving" is a
+guess. `app/vision_caption_motion.py` checks it against the motion stories,
+inside the motion-story tick, after the stories close (a story closes minutes
+after its caption is written).
+
+- Claims: the moving speed classes of `vision_motion.SPEED_CLASSES` (walking,
+  running, riding, creeping, driving, pushed) and their verb forms. No second
+  word list: "passing" or "mowing" are not checked.
+- Match: the caption's own `box:` and `crop:` refs to the detector crops of its
+  frame (`frame_ts`), best IoU >= `VISION_CAPTION_MOTION_MIN_IOU` (0.5). Never
+  every crop in the frame.
+- Verdict per claim: a moving story of the claimed kind -> supported; only
+  `parked`/`standing` stories -> contradicted; no story or no speed -> nothing.
+  One contradicted claim makes the row contradicted.
+- Writes tags only (no column): `motion_contradicted` or `motion_supported`, plus
+  `motion_check:<kind>:<word>:<speed_class>`. Readers
+  (`orion/situational/street_material.py` `label_camera_caption`: chat brief,
+  reverie, curiosity) then say "caption said driving; the vehicle did not move".
+- Only rows written in the last `VISION_CAPTION_MOTION_LOOKBACK_SEC` (6 h) are
+  read; older rows stay untagged. A frame is final once the story cursor is
+  `window + close gap` (911 s) past it.
+- Trace: `[CAPTION_MOTION] stream=.. checked=.. tagged=.. contradicted=..
+  supported=.. undecided=.. pending=.. no_claim=..`.
+- Kill switch: `VISION_CAPTION_MOTION_CHECK_ENABLED=false`.
+- Replay (read only, prints counts):
+  `PYTHONPATH=. python services/orion-sql-writer/evals/run_caption_motion_crosscheck_eval.py --hours 72`.
+
 ### Walkway story pictures of the moment (2026-10-17)
 
 `app/vision_story_strip.py`, run inside the motion loop when

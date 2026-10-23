@@ -77,17 +77,75 @@ def detector_labels_from_tags(raw: Any) -> list[str]:
 CAPTION_LABELS_NAMED = 3
 
 
-def label_camera_caption(text: str, detector_labels: Sequence[str], *, at: str | None = None) -> str:
+# Motion cross-check tags (orion-sql-writer app/vision_caption_motion.py,
+# 2026-10-23): a later reducer compares a caption's motion claim with the motion
+# story of the caption's own box. One definition, writer and readers.
+CAPTION_MOTION_CONTRADICTED_TAG = "motion_contradicted"
+CAPTION_MOTION_SUPPORTED_TAG = "motion_supported"
+# "motion_check:<kind>:<claim word>:<speed_class>", contradicted claims first.
+CAPTION_MOTION_CHECK_TAG_PREFIX = "motion_check:"
+
+
+@dataclass(frozen=True)
+class CaptionMotionCheck:
+    """A camera caption's motion claim, checked against its motion story."""
+
+    contradicted: bool
+    kind: str  # story kind ("vehicle")
+    word: str  # the caption's claim word ("driving")
+    speed_class: str  # the story's speed class ("parked")
+
+
+def caption_motion_check_from_tags(raw: Any) -> CaptionMotionCheck | None:
+    """The row's motion cross-check, or None when it was not decided (no
+    verdict tag, or a verdict without a readable detail tag). The first
+    detail tag is the one the verdict rests on (the writer puts
+    contradicted claims first)."""
+    tags = _tags(raw)
+    if CAPTION_MOTION_CONTRADICTED_TAG in tags:
+        contradicted = True
+    elif CAPTION_MOTION_SUPPORTED_TAG in tags:
+        contradicted = False
+    else:
+        return None
+    for tag in tags:
+        if tag.startswith(CAPTION_MOTION_CHECK_TAG_PREFIX):
+            parts = [p.strip() for p in tag[len(CAPTION_MOTION_CHECK_TAG_PREFIX):].split(":")]
+            if len(parts) == 3 and all(parts):
+                return CaptionMotionCheck(contradicted, parts[0], parts[1], parts[2])
+    return None
+
+
+def caption_motion_phrase(check: CaptionMotionCheck | None) -> str:
+    """'caption said driving; the vehicle did not move' / '...; the person
+    did move'. 'motion not verified' when there is no decided check."""
+    if check is None:
+        return "motion not verified"
+    outcome = "did not move" if check.contradicted else "did move"
+    return f"caption said {check.word}; the {check.kind} {outcome}"
+
+
+def label_camera_caption(
+    text: str,
+    detector_labels: Sequence[str],
+    *,
+    at: str | None = None,
+    motion_check: CaptionMotionCheck | None = None,
+) -> str:
     """'camera caption[ logged HH:MM] (one frame; detector saw person,
     stroller; motion not verified): "A person is pushing a stroller…"'.
-    `at` is the row's write time (seconds after the frame), hence "logged"."""
+    `at` is the row's write time (seconds after the frame), hence "logged".
+    With a decided `motion_check` the motion part says what the motion
+    story showed: "caption said driving; the vehicle did not move"."""
     when = f" logged {at}" if at else ""
     labels = list(detector_labels)
     named = ", ".join(labels[:CAPTION_LABELS_NAMED])
     if len(labels) > CAPTION_LABELS_NAMED:
         named += f" +{len(labels) - CAPTION_LABELS_NAMED}"
     saw = f"detector saw {named}; " if labels else ""
-    return f'camera caption{when} (one frame; {saw}motion not verified): "{text}"'
+    return f'camera caption{when} (one frame; {saw}{caption_motion_phrase(motion_check)}): "{text}"'
+
+
 GRADED_STATUSES: tuple[str, ...] = ("met", "missed")
 CALIBRATION_LOOKBACK_DAYS = 14
 
@@ -147,8 +205,9 @@ def dedupe_street_captions(
     filling the list with captions and pushing out the council's narrative.
 
     Returns `{narrative, observed_at, age_sec, stream_id, event_id,
-    event_type, caption_text, detector_labels}`, newest first; `caption_text`
-    and `detector_labels` are the unlabelled parts (camera captions only).
+    event_type, caption_text, detector_labels, motion_check}`, newest first;
+    `caption_text`, `detector_labels` and `motion_check` (the motion
+    cross-check, or None) are the unlabelled parts (camera captions only).
     """
     if limit <= 0:
         return []
@@ -179,9 +238,10 @@ def dedupe_street_captions(
             camera_kept += 1
         seen.add(key)
         labels = detector_labels_from_tags(row.get("tags")) if is_caption else []
+        motion = caption_motion_check_from_tags(row.get("tags")) if is_caption else None
         out.append(
             {
-                "narrative": label_camera_caption(text, labels) if is_caption else text,
+                "narrative": label_camera_caption(text, labels, motion_check=motion) if is_caption else text,
                 "observed_at": ts,
                 "age_sec": max(0.0, (now - ts).total_seconds()),
                 "stream_id": str(row.get("stream_id") or ""),
@@ -189,6 +249,7 @@ def dedupe_street_captions(
                 "event_type": event_type,
                 "caption_text": text if is_caption else None,
                 "detector_labels": labels,
+                "motion_check": motion,
             }
         )
         if len(out) >= limit:
@@ -209,7 +270,8 @@ def street_caption_line(
             observed = _utc(c.get("observed_at"))
             if observed is not None and tz is not None:
                 at = f"{observed.astimezone(tz):%H:%M}"
-            texts.append(label_camera_caption(str(c["caption_text"]), c.get("detector_labels") or [], at=at))
+            texts.append(label_camera_caption(str(c["caption_text"]), c.get("detector_labels") or [], at=at,
+                                              motion_check=c.get("motion_check")))
         else:
             texts.append(str(c.get("narrative") or "").strip().rstrip("."))
     texts = [t for t in texts if t]

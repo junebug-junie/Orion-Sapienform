@@ -127,6 +127,11 @@ SELECT json_build_object('k','arousal_transition','event_id',event_id,'day_id',d
 FROM temporal_self_event WHERE source_kind = 'arousal_transition' AND source_table = 'regulation'
   AND occurred_at >= :start AND occurred_at < :end;
 
+-- Orion plays Zelda (section F): finished Retro sessions, whole rows (one per session). The table is
+-- created by manual_migration_retro_play_sessions_v1.sql (post-pull auto-applied).
+SELECT (jsonb_build_object('k','retro_play') || to_jsonb(r))::json
+FROM retro_play_sessions r WHERE ended_at >= :start AND ended_at < :end;
+
 -- Body rows for the eval day only (the metric gate's live sanity check).
 SELECT json_build_object('k','body_cluster','observed_at',observed_at,'chassis_watts',chassis_watts)
 FROM orion_biometrics_cluster WHERE observed_at >= :body_start AND observed_at < :end;

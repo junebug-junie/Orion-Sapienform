@@ -3008,6 +3008,30 @@ sql-writer (Hub's `DATABASE_URL`). Spec:
 | `HUB_ENERGY_TIMEZONE` | `America/Denver` | Local day boundary for the daily kWh bars (Postgres `AT TIME ZONE` name). |
 | `ORION_ENERGY_STAKES_MAX_AGE_SEC` | `1800` | Snapshot age past which the strip reads stale (and curiosity never holds -- section 4.2.4). |
 
+### Orion Energy tab
+
+`#orion-energy` (iframe: `static/orion-energy.html` + `static/js/orion-energy.js`) shows what
+Orion itself draws -- athena, circe, hecate and the cabinet AC's Shelly plug -- stacked per
+hour / day / week / month / quarter / year, with the RMP house meter as a line on the same
+kWh axis and Orion's share of the house in a second chart. Hovering a period lists each
+source's kWh and how much of the period it was measured, the house kWh and how many RMP
+hours have arrived, the share, and the dollars.
+
+API: `GET /api/energy/orion?grain=day&periods=31` (`scripts/energy_routes.py`). Reads
+`orion_energy_hourly` (sql-writer's rollup), `energy_usage_interval` and the newest pricing
+per interval in `energy_cost_accrued`. Buckets follow `HUB_ENERGY_TIMEZONE` (weeks start
+Monday). Rules:
+
+- The share counts only hours where both Orion's meters and the RMP meter have data, so RMP's
+  ~24 h lag never reads as Orion using the whole house -- and only hours where every reporting
+  source was measured for 90% of the hour (`partial_hours` counts the ones left out). The two
+  kWh tiles cover those same hours.
+- Orion cost prices each Orion hour at that hour's next-kWh rate -- what Orion adds to the
+  bill under block pricing. Pre-tax. `orion_priced_kwh` says how much of Orion's kWh had a price.
+- Unknown is null: no rows means `orion_kwh: null`, never 0.
+- RMP reports whole kWh per hour, so the hourly share is rough (the tab says so).
+- Not measured: prometheus, the network switch, UPS losses. Per-node history starts 2026-09-22.
+
 API: `GET /api/energy/latest` (stakes, importer, reconcile, `stale`, `as_of`,
 `covered_through`), `GET /api/energy/usage/daily?days=1..90` (`scripts/energy_routes.py`,
 `/static/js/energy-strip.js`). Polls every 60s while `#cabinet` is visible. Needs
@@ -3263,6 +3287,8 @@ The check uses `POSTGRES_URI` and a read-only transaction, resolves the latest U
 **Reads in flight (2026-10-14).** Each Stage 1 and Stage 2 tick makes up to `HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT` claims (default 3; 1 = one read at a time). The claim order puts seeds with a submitted durable turn first, so in-flight reads are polled before a new one starts, and a new one only starts while fewer than that many are in flight. Before this, a tick claimed one seed, so a running read was re-claimed every tick and no second read was ever submitted: the GPU pool never saw two agent holds to spread over gpu1/gpu2. Priority order and Stage 1 before Stage 2 per seed are unchanged. Log line: `world_pulse_read_tick_claims n=<k>`.
 
 **Reading pull (2026-10-21, thinking rung 3 follow-up).** The motor allocator may ask for ONE extra Stage 1 read now (`orion:world_pulse_read:pull:request`, `scripts/world_pulse_read_pull_listener.py`, `WorldPulseReadPipeline.pull`). Hub picks the seed the lane would claim next (`CLAIM_SQL` order: priority, then age; not one already in flight or already pulled) and runs every gate first, in this order: kill switch `HUB_WORLD_PULSE_READ_PULL_ENABLED` (ON); the lane's own Wallet A gate (window, refund backoff); `HUB_WORLD_PULSE_READ_PULL_DAILY_CAP` started pulls per UTC day (default 8: the lane's median reading day over 30 days, `orion/world_pulse_read/pull.py`); arousal `strained` (`HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED`, same rule as the baseline painting); thermal `hot` on Hub's own cabinet sensor (`orion/autonomy/thermal_gate.py` defaults and hysteresis). `op=check` has no side effect. `op=act` marks the seed (`pull_dispatch_id`, `pull_arm`, `pulled_at`; migration `manual_migration_reading_pull_v1.sql`, also added lazily): a treated pull claims it and starts it under the lane lock, then the lane polls it like any other read; a control pull only marks it, and the lane may still read it. The lane itself is unchanged. Log lines: `reading_pull op=...`, `reading_pull_started`.
+
+**Retro leisure start and memory export (2026-10-22, Orion plays Zelda sections E and F).** The motor allocator may ask for ONE solo Zelda session (`orion:retro_leisure:start:request`, `scripts/retro_leisure_listener.py`). The listener asks the leisure runner (`scripts/retro_leisure.py`) for its own `should_start(settings)` verdict and passes a refusal through by name; with no runner it refuses `runner_unavailable` (300 s hold), never a fake session. A passed gate starts `run_leisure_session(settings, act_id=<dispatch_id>)`; a refusal from its own re-check within 5 s is still answered as a refusal. Otherwise the listener opens one `play` act (`hub.retro_leisure`, key = dispatch id, `test_before=retro_leisure_dispatch:<dispatch_id>`, horizon 2400 s = 1800 s session cap + 600 s save/export, `scripts/act_emit.py`). When the leisure session ends the listener passes its `RetroSessionEnded` to `scripts/retro_memory_export.py:export_leisure_outcome` (co-play sessions call `export_session` with their journal and atlas delta; that call site is not wired yet): it builds one deterministic summary (facts and counts only; "played together" when a human drove more than half of the frames), writes one `retro_play_sessions` row (migration `services/orion-sql-db/manual_migration_retro_play_sessions_v1.sql`, also created lazily), one active `memory_cards` row with provenance and trust_source `retro_play`, links them, and closes the leisure `play` act (1 only with at least one real planner decision). Kill switch: `HUB_RETRO_MEMORY_EXPORT_ENABLED` (ON). Log lines: `retro_leisure_started`, `retro_leisure_refused`, `retro_memory_export`.
 
 **Stale digest items.** Every Stage 1 tick marks pending `digest_item` seeds older than `HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS` (default 5, 0 disables) as `skipped` / `stale_digest_item`, except one that a finding or reading request was aliased onto. Digest items are priority 10 behind findings and readings, so without this the tail only grew older. Log line: `world_pulse_read_skipped_stale_digest_items`.
 
@@ -4133,7 +4159,8 @@ as "Orion first wrote: ..." when it differs.
 
 `/retro` offers native NES viewing/control without an additional access code through a
 private Unix socket. Disabled by default. See [setup and acceptance](../../docs/runbooks/retro-browser.md)
-for exact-origin configuration, credentials, browser checks and known limits.
+for exact-origin configuration, credentials, browser checks and known limits, and for
+Zelda play (planner v2, the play panel and solo leisure, `scripts/retro_leisure.py`).
 
 ### Cabinet sonification (live instrument)
 

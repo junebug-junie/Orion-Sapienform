@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     HUB_RETRO_ORIGIN: str = ""
     HUB_RETRO_SOCKET: str = "/run/orion-retro/retro.sock"
     HUB_RETRO_AUTH_DIR: str = "/run/orion-retro-auth"
+    # Solo leisure play (scripts/retro_leisure.py). Ships on; the allocator act and the doer
+    # gates decide when it actually runs.
+    RETRO_LEISURE_ENABLED: bool = Field(default=True, alias="RETRO_LEISURE_ENABLED")
+    RETRO_LEISURE_GAME_IDS: str = Field(default="the-legend-of-zelda", alias="RETRO_LEISURE_GAME_IDS")
+    RETRO_LEISURE_SESSION_MAX_SEC: float = Field(default=1800.0, ge=60.0, le=1800.0, alias="RETRO_LEISURE_SESSION_MAX_SEC")
+    RETRO_LEISURE_DAILY_MAX_SEC: float = Field(default=5400.0, ge=0.0, le=86400.0, alias="RETRO_LEISURE_DAILY_MAX_SEC")
+    RETRO_LEISURE_MIN_GAP_SEC: float = Field(default=10800.0, ge=0.0, alias="RETRO_LEISURE_MIN_GAP_SEC")
 
     """Configuration for the Orion Hub service, loaded from environment variables."""
 
@@ -852,6 +859,13 @@ class Settings(BaseSettings):
     # waking baseline painting follows. Unknown / stale / false changes nothing.
     HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED: bool = Field(
         default=True, alias="HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED"
+    )
+    # Orion plays Zelda (2026-10-22, spec section F; scripts/retro_memory_export.py): one
+    # deterministic summary per finished Retro session -> one memory_cards row (provenance
+    # retro_play) + one retro_play_sessions row (Temporal Self source retro_play). Shipped ON;
+    # false writes nothing (a leisure session's play act still closes, at 0).
+    HUB_RETRO_MEMORY_EXPORT_ENABLED: bool = Field(
+        default=True, alias="HUB_RETRO_MEMORY_EXPORT_ENABLED"
     )
     # Pending digest_item seeds older than this many days are marked
     # skipped/stale_digest_item on every Stage 1 tick. 0 disables.

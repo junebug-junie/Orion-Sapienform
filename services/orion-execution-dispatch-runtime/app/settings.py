@@ -259,6 +259,14 @@ class Settings(BaseSettings):
     orion_dispatch_reading_pull_rpc_timeout_sec: float = Field(
         15.0, gt=0.0, le=120.0, alias="ORION_DISPATCH_READING_PULL_RPC_TIMEOUT_SEC"
     )
+    # Orion plays Zelda (2026-10-22, spec section E): route retro_leisure_session ->
+    # orion.retro_leisure.start.v1, one bus RPC to Hub's leisure runner. false -> its candidates are
+    # refused `retro_leisure_disabled` and no RPC is sent. Hub has its own switch
+    # (RETRO_LEISURE_ENABLED) and every gate. Shipped ON.
+    orion_dispatch_retro_leisure_enabled: bool = Field(True, alias="ORION_DISPATCH_RETRO_LEISURE_ENABLED")
+    orion_dispatch_retro_leisure_rpc_timeout_sec: float = Field(
+        15.0, gt=0.0, le=120.0, alias="ORION_DISPATCH_RETRO_LEISURE_RPC_TIMEOUT_SEC"
+    )
     # 2026-10-01 -- attend-to-act loop (docs/superpowers/specs/2026-09-29-attend-to-act-loop-design.md
     # D5). The MASTER switch for world actions (SELF_REVERSIBLE_SCOPE routes, today only
     # shed_background_gpu). false -> every such candidate is blocked `world_actions_disabled`, visibly.

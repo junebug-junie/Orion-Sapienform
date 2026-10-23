@@ -808,6 +808,9 @@ let chatTurnTimer = null;
   const moodArcStatusTabButton = document.getElementById("moodArcStatusTabButton");
   const moodArcStatusPanelEl = document.getElementById("mood-arc-status");
   const moodArcStatusFrame = document.getElementById("moodArcStatusFrame");
+  const orionEnergyTabButton = document.getElementById("orionEnergyTabButton");
+  const orionEnergyPanelEl = document.getElementById("orion-energy");
+  const orionEnergyFrame = document.getElementById("orionEnergyFrame");
   const topicFoundryBaseLabel = document.getElementById("topicFoundryBaseLabel");
   const tsDatasetSelect = document.getElementById("tsDatasetSelect");
   const tsDatasetName = document.getElementById("tsDatasetName");
@@ -1101,6 +1104,9 @@ let chatTurnTimer = null;
     if (tabKey === "mood-arc-status" && !moodArcStatusPanelEl) {
       effectiveTab = "hub";
     }
+    if (tabKey === "orion-energy" && !orionEnergyPanelEl) {
+      effectiveTab = "hub";
+    }
     if (tabKey === "collapse-mirror" && !collapseMirrorPanel) {
       effectiveTab = "hub";
     }
@@ -1137,6 +1143,7 @@ let chatTurnTimer = null;
     const isSubstrateLattice = effectiveTab === "substrate-lattice";
     const isFieldChannelGlossary = effectiveTab === "field-channel-glossary";
     const isMoodArcStatus = effectiveTab === "mood-arc-status";
+    const isOrionEnergy = effectiveTab === "orion-energy";
     const isMind = effectiveTab === "mind";
     const isSignals = effectiveTab === "signals";
     const isCollapseMirror = effectiveTab === "collapse-mirror";
@@ -1303,6 +1310,13 @@ let chatTurnTimer = null;
       const currentSrc = moodArcStatusFrame.getAttribute("src");
       moodArcStatusFrame.setAttribute("src", currentSrc);
     }
+    if (orionEnergyPanelEl) {
+      orionEnergyPanelEl.classList.toggle("hidden", !isOrionEnergy);
+    }
+    if (orionEnergyFrame && isOrionEnergy) {
+      const currentSrc = orionEnergyFrame.getAttribute("src");
+      orionEnergyFrame.setAttribute("src", currentSrc);
+    }
     if (collapseMirrorPanel) {
       collapseMirrorPanel.classList.toggle("hidden", !isCollapseMirror);
     }
@@ -1426,6 +1440,9 @@ let chatTurnTimer = null;
     }
     if (moodArcStatusTabButton) {
       styleTabButton(moodArcStatusTabButton, isMoodArcStatus);
+    }
+    if (orionEnergyTabButton) {
+      styleTabButton(orionEnergyTabButton, isOrionEnergy);
     }
     if (collapseMirrorTabButton) {
       styleTabButton(collapseMirrorTabButton, isCollapseMirror);
@@ -2028,6 +2045,8 @@ let chatTurnTimer = null;
       setActiveTab("field-channel-glossary");
     } else if (h === "#mood-arc-status" && moodArcStatusPanelEl && moodArcStatusTabButton) {
       setActiveTab("mood-arc-status");
+    } else if (h === "#orion-energy" && orionEnergyPanelEl && orionEnergyTabButton) {
+      setActiveTab("orion-energy");
     } else if (h === "#memory" && memoryPanel && memoryTabButton) {
       setActiveTab("memory");
     } else if (h === "#mind" && mindPanel && mindTabButton) {
@@ -2057,6 +2076,7 @@ let chatTurnTimer = null;
         || h === "#substrate-lattice"
         || h === "#field-channel-glossary"
         || h === "#mood-arc-status"
+        || h === "#orion-energy"
         || h === "#memory"
         || h === "#mind"
         || h === "#signals"
@@ -13500,6 +13520,13 @@ let chatTurnTimer = null;
         event.preventDefault();
         setActiveTab("mood-arc-status");
         history.replaceState(null, "", "#mood-arc-status");
+      });
+    }
+    if (orionEnergyTabButton && orionEnergyPanelEl) {
+      orionEnergyTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("orion-energy");
+        history.replaceState(null, "", "#orion-energy");
       });
     }
     if (collapseMirrorTabButton && collapseMirrorPanel) {

@@ -323,3 +323,37 @@ def test_arousal_rows_fold_into_one_strain_arc_and_are_never_copied():
         assert not [e for e in off if e.source_kind == "arousal_transition"]  # the flag's off path
 
     with_db(scenario_fn)
+
+
+def test_retro_play_rows_fold_into_one_play_arc_and_a_missing_table_reads_nothing():
+    """Orion plays Zelda (section F). The SQL source reads exactly what the adapter needs, one session is
+    one closed play arc, the flag's off path reads nothing, and a database without the table (its
+    migration not applied yet) skips the source instead of failing the whole read."""
+    async def scenario_fn(pool):
+        w = scenario()
+        start = T0 + timedelta(minutes=2)
+        w.add("retro_play", {
+            "session_id": "sess-1", "lineage_id": "lin-1", "game_id": "zelda-prg0", "game_title": "The Legend of Zelda",
+            "kind": "leisure", "dispatch_id": "d:1", "started_at": start, "ended_at": start + timedelta(minutes=22),
+            "duration_sec": 1320.0, "end_reason": "budget", "control": [{"port": 0, "human_frames": 0, "orion_frames": 79200}],
+            "control_basis": "frames",
+            "human_frames": 0, "orion_frames": 79200, "human_share": 0.0, "played_together": False, "rooms_new": 9,
+            "caves_new": 3, "items_gained": ["wooden sword"], "deaths": 2, "death_rooms": ["0:79"], "decisions": 31,
+            "predictions_met": 14, "predictions_refuted": 12, "predictions_unknown": 5, "human_interventions": 0,
+            "summary": "Played The Legend of Zelda solo for 22 min, 9 new rooms (3 caves), got the wooden sword, "
+                       "died twice, 14 of 31 predictions met."})
+        await run_pg(pool, w, T0 + timedelta(hours=1))
+        lo, hi = T0 - timedelta(minutes=5), T0 + timedelta(minutes=50)
+        _, events = await SourceReader(pool, TZ).read(lo, hi, ticks=False, kinds=["retro_play"])
+        assert [e.event_id for e in events] == ["retro_play:sess-1"]
+        assert events[0].label == "The Legend of Zelda solo, 14 of 31 predictions met, 5 unknown"
+        (arc,) = [canon(a) for a in await ChronicleStore(pool).arcs("2026-10-10") if a["kind"] == "play"]
+        assert arc["status"] == "closed" and arc["subject_ref"] == "retro_session:sess-1"
+        _, off = await SourceReader(pool, TZ, exclude_kinds=("retro_play",)).read(lo, hi, ticks=False)
+        assert not [e for e in off if e.source_kind == "retro_play"]
+        async with pool.connection() as conn:
+            await conn.execute("DROP TABLE retro_play_sessions")
+        _, gone = await SourceReader(pool, TZ).read(lo, hi, ticks=False)
+        assert not [e for e in gone if e.source_kind == "retro_play"]
+
+    with_db(scenario_fn)

@@ -67,7 +67,7 @@ def test_gateway_process_serves_only_retro_with_the_same_boundary(tmp_path, monk
         monkeypatch.delitem(sys.modules,name)
     from scripts.retro_gateway import app
     paths={r.path for r in app.routes}
-    assert paths=={'/retro','/api/retro/{path:path}','/api/retro/sessions/{sid}/{channel}','/api/retro-gateway/health'}
+    assert paths=={'/retro','/api/retro/leisure','/api/retro/{path:path}','/api/retro/sessions/{sid}/{channel}','/api/retro-gateway/health'}
     with TestClient(app) as c:
         assert c.get('/api/retro-gateway/health').json()=={'status':'ok'}
         assert c.post('/api/retro/sessions',json={},headers={'Origin':'https://evil.example'}).status_code==403

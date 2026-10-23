@@ -63,6 +63,8 @@ PROCESS_KINDS = {
     "reverie_chain": "reverie",
     "visual_run": "imagery",
     "dream_cycle": "sleep",
+    # Orion plays Zelda (section F): one finished Retro session.
+    "retro_play": "play",
 }
 CONTEXT_KINDS = {"metacog_observation", "memory_episode", "vision_percept", "attention_row"}
 CONSTRAINT_KINDS = {"visual_deferral", "gpu_wait"}
@@ -118,6 +120,7 @@ LANE_RULES = {
     "reverie": "one reverie chain with >= 1 thought",
     "imagery": "one visual reverie chain",
     "sleep": "one completed dream cycle",
+    "play": "one finished Retro session (retro_play_sessions); label = its deterministic summary",
     "company": ("presence_transition presence_id (room camera); opens on present, recent is the grace "
                 "period, same-state keepalives only refresh; closes on absent (process_ended, at the last "
                 "sighting), unknown / a producer restart / no row for company_stale_sec (source_stale); "

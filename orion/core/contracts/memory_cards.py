@@ -17,6 +17,9 @@ MemoryProvenance = Literal[
     "imported",
     "repo_compactor",
     "chat_compactor",
+    # Orion plays Zelda (2026-10-22, spec section F): one deterministic summary card per Retro
+    # session, written by orion-hub scripts/retro_memory_export.py.
+    "retro_play",
 ]
 AnchorClass = Literal[
     "person",

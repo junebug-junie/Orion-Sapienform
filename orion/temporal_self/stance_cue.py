@@ -16,6 +16,12 @@ An open ``company`` arc (seam S1: someone at the room camera) adds "Someone has 
 A strain arc (strain loop part 1) adds "Strained since Sat 12:07 (GPU jobs backed up, cabinet too
 hot) [arc:<id>]" while it is open, or "Was strained 12:07 to 14:30 (...) [arc:<id>]" for today's
 latest closed one. The time is when the episode began, even on an earlier day.
+
+A play arc (Orion plays Zelda, section F) adds today's latest finished Retro session: "Played The
+Legend of Zelda solo, 14 of 31 predictions met (14:02 to 14:24) [arc:<id>]" ("together" when a human
+drove more than half of the frames). It ranks above the thread and sleep clauses: on the real
+2026-10-11 frames, as the last clause it was dropped by the length cap every time
+(orion/temporal_self/evals/run_play_cue_eval.py).
 """
 
 from __future__ import annotations
@@ -174,6 +180,17 @@ def _strain_clause(frame: TemporalSelfFrameV1, tz_name: str) -> tuple[str, list[
     return f"Strained since {clock(began)}{why} {_ref(arc)}.", [arc]
 
 
+def _play_clause(frame: TemporalSelfFrameV1, tz_name: str) -> tuple[str, list[ArcSummaryV1]] | None:
+    plays = [a for a in frame.arcs_today if a.kind == "play" and a.subject_label.strip()]
+    if not plays:
+        return None
+    arc = max(plays, key=lambda a: (a.ended_at or a.began_at, a.arc_id))
+    tz = ZoneInfo(tz_name)
+    began = as_utc(arc.began_at).astimezone(tz).strftime("%H:%M")
+    ended = as_utc(arc.ended_at or arc.last_seen_at or arc.began_at).astimezone(tz).strftime("%H:%M")
+    return f"Played {arc.subject_label.strip()} ({began} to {ended}) {_ref(arc)}.", [arc]
+
+
 def _thread_arc(thread: OpenThreadV1, concern: dict[str, ArcSummaryV1]) -> ArcSummaryV1 | None:
     """The arc a thread cites: its own ``arc_id`` (frames since thread arc ids), else the open
     concern arc of the same subject in ``arcs_today`` (older frames; may have fallen off the cap)."""
@@ -279,6 +296,10 @@ def project_stance_cue(
     company = _company_clause(frame, tz_name)
     if company is not None:
         clauses.append(company)
+
+    play = _play_clause(frame, tz_name)
+    if play is not None:
+        clauses.append(play)
 
     thread_clause = _threads_clause(frame)
     if thread_clause is not None:

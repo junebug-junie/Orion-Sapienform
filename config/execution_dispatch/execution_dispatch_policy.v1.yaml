@@ -213,6 +213,37 @@ template_to_cortex:
       horizon_sec: 12000
       object_source: queue
 
+  # 2026-10-22 (Orion plays Zelda, docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md
+  # section E): one solo leisure session. This dispatch IS the hub.retro_leisure `play` act: Hub opens
+  # it keyed retro_leisure_dispatch:<dispatch_id> when the session starts and closes it at session end
+  # (artifact_produced = a session summary with at least one real planner decision). Not a cortex verb:
+  # orion.retro_leisure.start.v1 is the executor key the dispatch runtime maps to one
+  # orion:retro_leisure:start:request RPC. Hub's leisure runner runs every gate (arousal strained,
+  # cabinet_hot, human present or recent, 1 per 3 h, 90 min/day, RETRO_LEISURE_ENABLED); the
+  # allocator only admits or refuses, and a refusal is stamped allocator:<reason> on the frame.
+  # horizon_sec 2400: the runner's 1800 s session cap (spec E) + 600 s for its end-of-session save
+  # state and the memory export that closes the act. A session not closed by then counts 0.
+  # object_source dispatch: the session exists only because of the dispatch, so no control arm.
+  # cost_source act_duration: the RPC answers in milliseconds; the work is the session itself.
+  # cold_cost_ceiling_sec 1800: the session cap, charged until the first session closes.
+  # express_bounded: the session heats the GPU (planner) and holds the cabinet, so it shares the
+  # outward gate mode.allow_express_dispatch. Dispatch-side kill switch:
+  # ORION_DISPATCH_RETRO_LEISURE_ENABLED.
+  retro_leisure_session:
+    dispatch_kind: express
+    cortex_verb: orion.retro_leisure.start.v1
+    cortex_mode: brain
+    allowed_scope: express_bounded
+    rpc_timeout_sec: 15
+    act:
+      verb: play
+      actor: hub.retro_leisure
+      signal_id: artifact_produced
+      horizon_sec: 2400
+      object_source: dispatch
+      cost_source: act_duration
+      cold_cost_ceiling_sec: 1800
+
   # 2026-08-25: analysis -> self-study journal entry.
   #
   # `summarize_only`, not a new scope. builder.py::scope_allowed permits

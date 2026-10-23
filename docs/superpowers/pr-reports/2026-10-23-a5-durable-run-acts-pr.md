@@ -10,14 +10,16 @@
 
 Before this patch, these four want families had zero graded acts, so the body economy could not grade or price them. A live replay of the last 7 days (read-only) gives these numbers:
 
-| family | actor / verb | runs | acts opened | closed 1 / 0 | still open | acts/day | median s | GPU slot-h joined |
-|---|---|---|---|---|---|---|---|---|
-| curiosity investigate | `durable.curiosity_investigate` / infer | 14 | 13 | 13 / 0 | 0 | 1.86 | 3494 | 14.99 |
-| self-inquiry | `durable.self_inquiry` / ask | 17 | 16 | 15 / 0 | 1 | 2.29 | 991 | 8.53 |
-| self-sense eval | `durable.self_sense_eval` / sense | 49 | 49 | 43 / 5 | 1 | 7.00 | 2059 | 40.92 |
-| journal compose | `durable.journal_compose` / make | 9 | 9 | 9 / 0 | 0 | 1.29 | 10 | 0.02 |
+The replay applies the ledger's own cost window. A lease counts as joined only if its release lands in [first grant - 3600 s, terminal + 120 s] and its row was already written 5 s after the terminal.
 
-That is about 12.4 acts/day. Self-sense eval reaches the 30-graded-close cutover bar in about 5 days. The other three families need about 2 to 3 weeks.
+| family | actor / verb | runs | acts opened | closed 1 / 0 | still open | acts/day | median s | slot-h the ledger would fill | closes missing a lease |
+|---|---|---|---|---|---|---|---|---|---|
+| curiosity investigate | `durable.curiosity_investigate` / infer | 13 | 13 | 12 / 0 | 1 | 1.86 | 3494 | 8.48 | 1 (2.2 h, Door-A) |
+| self-inquiry | `durable.self_inquiry` / ask | 16 | 15 | 14 / 0 | 1 | 2.14 | 1466 | 8.38 | 0 |
+| self-sense eval | `durable.self_sense_eval` / sense | 49 | 48 | 42 / 5 | 1 | 6.86 | 2059 | 40.77 | 0 |
+| journal compose | `durable.journal_compose` / make | 9 | 9 | 9 / 0 | 0 | 1.29 | 10 | 0.02 | 0 |
+
+That is about 12 acts/day. Self-sense eval reaches the 30-graded-close cutover bar in about 5 days. The other three families need about 2 to 3 weeks.
 
 Runs that never got a grant open nothing: 1 investigate run and 1 self-inquiry run.
 
@@ -60,8 +62,10 @@ Runs that never got a grant open nothing: 1 investigate run and 1 self-inquiry r
 
 ## Correlation join
 
-- The act's `correlation_id` is the run's request `correlation_id`. Live data shows that this is exactly the `turn_correlation_id` on the run's pool **hold** lease (checked on 4 runs, one per family, and on every closed act in the 7-day replay: 85 of 85 closed acts join at least one lease). No key fix was needed.
-- Child calls inside a curiosity harness turn (cortex-exec, orion-mind) carry the turn's own fenced id (`app/graph.py turn_correlation_id`), so they are not joined. Over 7 days this is about 2.0 slot-h, compared with about 66 slot-h on the holds. The children on the hold's own lane (`agent`, `agent-gpu2`) run inside the hold's slot, so leaving them out avoids the double count the ledger already notes. The off-lane children (metacog about 0.1 h, chat about 0.3 h) are a small known undercount.
+- The act's `correlation_id` is the run's request `correlation_id`. This is exactly the `turn_correlation_id` on the run's pool **hold** lease. I checked it live on one run per family, and over 7 days 82 of 83 closed acts join their hold inside the ledger's window. No key fix was needed.
+- **Ordering.** The hold is released by the graph node that ends the run, before `_terminal` publishes the close. Live data shows 83 of 84 hold-release rows were already in Postgres before the run's terminal row was written. So the sql-writer cost fill finds them.
+- **Known gap: Door-A outreach.** A completed curiosity run can keep its hold for Hub's outreach composition, and that hold is released minutes later. The ledger fills cost once at close, with a 120 s grace, so that hold time is not charged. Live this happened to 1 act in 7 days (2.2 slot-h). Fixing it needs a ledger-side late cost refill. That is a change to `act_ledger` semantics, so it is out of scope here and is the proposed follow-up.
+- Child calls inside a curiosity harness turn (cortex-exec, orion-mind) carry the turn's own fenced id (`app/graph.py turn_correlation_id`), so they are not joined. Over 7 days this is about 2.0 slot-h, compared with about 66 slot-h on the holds. The children on the hold's own lane run inside the hold's slot, so leaving them out avoids a double count. The off-lane children (metacog about 0.1 h, chat about 0.3 h) are a small known undercount.
 
 ## Env/config changes
 
@@ -73,7 +77,10 @@ Runs that never got a grant open nothing: 1 investigate run and 1 self-inquiry r
 ## Tests run
 
 ```text
-services/orion-durable-runs tests (real Postgres 16 + in-process pool): see final commit; tests/test_run_acts.py 32 passed
+cd services/orion-durable-runs && pytest tests (real Postgres 16 + in-process pool) -> 611 passed, 1 skipped
+  of which tests/test_run_acts.py -> 32 passed (open-once/close-once for completed, failed, cancelled;
+  restart mid-turn does not reopen; lost-hold re-grant does not reopen; refused-before-grant emits nothing;
+  flag off / non-want emit nothing; act correlation_id == hold lease turn_correlation_id)
 tests/test_grammar_event_producer_catalog.py tests/test_act_ledger_contract.py: 21 passed
 ```
 
@@ -99,7 +106,16 @@ No Docker build was run. The image already copies `orion/`, and no dependency ch
 
 ## Review findings fixed
 
-(see below)
+- Finding: the GPU cost join could race the hold's release row, and the eval joined over the whole day, so it overstated what the ledger fills.
+  - Fix: the eval now applies the ledger's exact window plus the row-insert time. It reports `closes missing a lease` and fails only when fewer than 80% of a family's closes join (a broken key). The Door-A gap is documented above as a follow-up.
+  - Evidence: live, 83 of 84 hold releases were persisted before the terminal row. The replay exits 0 and shows 1 Door-A miss.
+- Finding: a later step in `_terminal` raising, or a crash after `finish_projection`, could lose the close. A completed run would then expire at 0.
+  - Fix: the close is now published directly after `finish_projection` returns, before any step that can raise. `on_terminal` never raises.
+  - Evidence: the full service suite passes (611 passed).
+- Finding (my own, from the full suite): some tests build `AdmissionRuntime` without `__init__`, which raised `AttributeError: acts`.
+  - Fix: both call sites now use `getattr(self, "acts", None)`.
+  - Evidence: 15 failures went to 0.
+- Not fixed (low): the crash window between inserting the first grant and publishing the open. The close-before-open path still records and grades the act. This is listed under Risks.
 
 ## Restart required
 
@@ -112,7 +128,8 @@ Run this from the clean primary `main` checkout after merge. No migration is nee
 ## Risks / concerns
 
 - Severity: low. Concern: if the process crashes between inserting the first grant row and publishing the open, the open is lost. Mitigation: the close then creates the row (the ledger's close-before-open path), so the act is still graded, but it has no `opened_at` and only a partial GPU cost window.
-- Severity: low. Concern: if the process crashes after `finish_projection` but before the close is published, the act is expired at 0 at its horizon, even if the run completed. This is rare, and it is the designed backstop.
+- Severity: low. Concern: if the process crashes in the small window after `finish_projection` but before the close is published, the act is expired at 0 at its horizon, even if the run completed. The designed backstop catches it, and a reconcile-side re-send is a possible follow-up.
+- Severity: low. Concern: a Door-A outreach hold is not charged to the act (1 act / 2.2 slot-h in 7 days). Follow-up: a ledger-side late cost refill.
 - Severity: low. Concern: the outcome is status-based, so a `completed` run with thin content still grades 1. Finer grading (for example, did a self-inquiry write a `:SelfDefinition`) is a follow-up once a second signal exists.
 
 ## PR link

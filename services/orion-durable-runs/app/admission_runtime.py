@@ -1175,6 +1175,11 @@ class AdmissionRuntime:
             actual = await self.store.finish_projection(run_id, status, detail, cancelled_detail=cancelled)
         else:
             actual = await self.store.finish_projection(run_id, status, detail)
+        if actual is not None and (acts := getattr(self, "acts", None)) is not None:
+            # Close the run's act first, right after the terminal row commits: nothing below may
+            # raise before it (a later step failing would leave the act to the ledger's expiry).
+            # on_terminal never raises.
+            await acts.on_terminal({**state, "run_id": run_id, "workflow": wf}, actual)
         if actual is not None and actual != status:
             await self._graph_for(wf).aupdate_state(self.config(run_id), {"status": actual}, as_node="finish")
         if actual is not None and actual != "completed" and run_id in self.outreach:
@@ -1185,8 +1190,6 @@ class AdmissionRuntime:
         if actual is not None:
             self._hints.discard(run_id)
             self._checked.pop(run_id, None)
-            if (acts := getattr(self, "acts", None)) is not None:
-                await acts.on_terminal({**state, "run_id": run_id, "workflow": wf}, actual)
         if wf == DREAM_CARRY_WORKFLOW and actual in TERMINAL:
             # Any carry terminal, completed-partial included (a deadline stop with a picture still being
             # painted): nobody reads that child any more. _cancel_carry_child skips ended/unknown ones.

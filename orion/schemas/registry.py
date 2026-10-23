@@ -645,6 +645,7 @@ from orion.schemas.thought import (
     GroundingCapsuleV1,
     HubAssociationBundleV1,
     StanceHarnessSliceV1,
+    TurnSelfPredictionV1,
     StanceReactRequestV1,
     ThoughtDecisionRecordV1,
     ThoughtEventV1,
@@ -1627,6 +1628,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SelfExperimentListResponseV1": SelfExperimentListResponseV1,
     "CoalitionSnapshotV1": CoalitionSnapshotV1,
     "StanceHarnessSliceV1": StanceHarnessSliceV1,
+    "TurnSelfPredictionV1": TurnSelfPredictionV1,
     "HubAssociationBundleV1": HubAssociationBundleV1,
     "ThoughtEventV1": ThoughtEventV1,
     "ThoughtDecisionRecordV1": ThoughtDecisionRecordV1,
@@ -1830,6 +1832,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "StanceHarnessSliceV1": SchemaRegistration(
         model=StanceHarnessSliceV1,
         kind="stance.harness.slice.v1",
+    ),
+    "TurnSelfPredictionV1": SchemaRegistration(
+        model=TurnSelfPredictionV1,
+        kind="turn.self_prediction.v1",
     ),
     "HubAssociationBundleV1": SchemaRegistration(
         model=HubAssociationBundleV1,

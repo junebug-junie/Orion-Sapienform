@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo
 
 from orion.person_model import facts as pf
 from orion.person_model import record as pr
+from orion.person_model.pictures import confirmed_pictures_sql, newest_distinct
 
 logger = logging.getLogger("sql-writer.person_record")
 
@@ -171,26 +172,43 @@ WHERE a.source_kind = :k AND split_part(a.source_ref, '|', 1) = :p
 """
 
 
-def _pictures(conn, person_id: str, now: datetime, individuals_cfg) -> List[str]:
-    """Up to 3 pictures from the person's most-seen linked cluster, or []."""
+MAX_PICTURES = 3
+
+
+def _pictures(conn, person_ids: List[str]) -> Dict[str, List[str]]:
+    """person_id -> up to 3 pictures Juniper herself tied to that person, newest
+    first (orion/person_model/pictures.py). A camera cluster can hold more than
+    one person, so its newest pictures are not used: no confirmed picture, no picture."""
     from sqlalchemy import text
 
-    from app.vision_individuals import _images, _sighting_rows
-
-    if individuals_cfg is None:
-        return []
-    ids = [r[0] for r in conn.execute(text(
-        "SELECT l.source_ref FROM person_link l JOIN vision_individual i ON i.individual_id = l.source_ref "
-        "WHERE l.person_id = :p AND l.source_kind = 'vision_individual' AND l.revoked_at IS NULL "
-        "ORDER BY i.sighting_count DESC, l.source_ref"), {"p": person_id})]
-    for iid in ids:
-        images = _images(_sighting_rows(conn, iid), now, individuals_cfg)
-        if images:
-            return images
-    return []
+    if not person_ids:
+        return {}
+    rows = conn.execute(text(confirmed_pictures_sql(":ids")), {"ids": list(person_ids)}).fetchall()
+    return newest_distinct(rows, MAX_PICTURES)
 
 
-def open_fact_asks(conn, now: datetime, cfg: PersonRecordConfig, individuals_cfg=None) -> List[dict]:
+def refresh_open_ask_pictures(conn) -> int:
+    """Open person questions show the current confirmed pictures (a picture she
+    picks later shows up; one opened before 2026-10-23 loses its mixed ones)."""
+    from sqlalchemy import text
+
+    asks = conn.execute(text(
+        "SELECT ask_id, split_part(source_ref, '|', 1), image_refs FROM orion_ask "
+        "WHERE source_kind = :k AND status = 'open'"), {"k": pf.SOURCE_KIND_PERSON_FACT}).fetchall()
+    pics = _pictures(conn, sorted({a[1] for a in asks}))
+    moved = 0
+    for ask_id, person_id, current in asks:
+        want = pics.get(person_id, [])
+        if list(current or []) != want:
+            conn.execute(text(
+                "UPDATE orion_ask SET image_refs = CAST(:imgs AS jsonb), image_ref = :img "
+                "WHERE ask_id = :a AND status = 'open'"),
+                {"imgs": json.dumps(want), "img": want[0] if want else None, "a": ask_id})
+            moved += 1
+    return moved
+
+
+def open_fact_asks(conn, now: datetime, cfg: PersonRecordConfig) -> List[dict]:
     from sqlalchemy import text
 
     from app.vision_individuals import local_day_start, remaining_ask_budget
@@ -216,7 +234,7 @@ def open_fact_asks(conn, now: datetime, cfg: PersonRecordConfig, individuals_cfg
         if nxt is None:
             continue
         category, question = nxt
-        images = _pictures(conn, person_id, now, individuals_cfg)
+        images = _pictures(conn, [person_id]).get(person_id, [])
         ask = OrionAskV1(
             ask_id=f"ask-{uuid.uuid4().hex}", question=question,
             evidence_refs=[f"person:{person_id}", f"category:{category}"],
@@ -237,8 +255,7 @@ def open_fact_asks(conn, now: datetime, cfg: PersonRecordConfig, individuals_cfg
     return out
 
 
-def run_person_record(conn, now: datetime, cfg: PersonRecordConfig,
-                      individuals_cfg=None) -> Tuple[Dict[str, Any], List[dict]]:
+def run_person_record(conn, now: datetime, cfg: PersonRecordConfig) -> Tuple[Dict[str, Any], List[dict]]:
     """One pass. Returns (summary, opened asks). Skips quietly while the migration is not applied."""
     if not tables_present(conn):
         return {"person_record": "migration_missing"}, []
@@ -249,7 +266,8 @@ def run_person_record(conn, now: datetime, cfg: PersonRecordConfig,
     # A savepoint: a failing question never rolls back the links and answers above.
     try:
         with conn.begin_nested():
-            opened = open_fact_asks(conn, now, cfg, individuals_cfg)
+            summary["person_ask_pictures_refreshed"] = refresh_open_ask_pictures(conn)
+            opened = open_fact_asks(conn, now, cfg)
     except Exception as exc:
         logger.warning("person_fact_asks_failed error=%s", exc)
         summary["person_asks_error"] = str(exc)[:200]

@@ -34,6 +34,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from orion.person_model.facts import SOURCE_KIND_PERSON_FACT, VOICE_HUB_EDIT, category_keys
+from orion.person_model.pictures import confirmed_pictures_sql, newest_distinct
 
 from scripts import ask_routes
 
@@ -62,16 +63,9 @@ ORDER BY (p.status = 'active') DESC, days DESC, lower(p.display_name), p.person_
 LIMIT $1
 """
 
-# The newest picture of each person's most-seen linked cluster.
-_THUMB_SQL = """
-SELECT DISTINCT ON (l.person_id) l.person_id, s.thumb_ref
-FROM person_link l
-JOIN vision_individual i ON i.individual_id = l.source_ref
-JOIN vision_individual_sighting s ON s.individual_id = i.individual_id AND s.thumb_ref IS NOT NULL
-WHERE l.person_id = ANY($1::text[]) AND l.source_kind = 'vision_individual' AND l.revoked_at IS NULL
-  AND NOT s.zone_no_embed
-ORDER BY l.person_id, i.sighting_count DESC, s.started_at DESC
-"""
+# The newest picture she herself tied to each person (orion/person_model/pictures.py):
+# a camera cluster can hold more than one person, so its own pictures are not used.
+_THUMB_SQL = confirmed_pictures_sql("$1::text[]")
 
 _FACTS_SQL = """
 SELECT fact_id, person_id, category, value_text, voice, created_at FROM person_fact
@@ -112,7 +106,8 @@ async def list_people(request: Request) -> dict[str, Any]:
         async with pool.acquire() as conn:
             rows = await conn.fetch(_LIST_SQL, MAX_PEOPLE)
             ids = [r["person_id"] for r in rows]
-            thumbs = {r["person_id"]: r["thumb_ref"] for r in await conn.fetch(_THUMB_SQL, ids)}
+            thumbs = {pid: refs[0] for pid, refs in newest_distinct(
+                [(r["person_id"], r["image_ref"], r["at"]) for r in await conn.fetch(_THUMB_SQL, ids)], 1).items()}
             fact_rows = await conn.fetch(_FACTS_SQL, ids)
             asks = {r["person_id"]: r for r in await conn.fetch(_OPEN_ASK_SQL, ids, SOURCE_KIND_PERSON_FACT)}
     except Exception as exc:

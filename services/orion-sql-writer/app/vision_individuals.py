@@ -1314,7 +1314,7 @@ def run_one_individuals_cycle(
             # Its own transaction, after names were applied this tick: a failure never blocks the prune.
             try:
                 with engine.begin() as conn:
-                    record_summary, record_opened = run_person_record(conn, ts, person_record_cfg, cfg)
+                    record_summary, record_opened = run_person_record(conn, ts, person_record_cfg)
                 summary.update(record_summary)
                 opened.extend(record_opened)
             except Exception as exc:
@@ -1844,15 +1844,7 @@ def _record_pictures(conn, rows: List[dict]) -> int:
 
     if not rows:
         return 0
-    refs = [r["ref"] for r in rows]
-    crop = {}
-    for ref, crop_id in conn.execute(text(
-            "SELECT DISTINCT ON (ref) ref, crop_id FROM ("
-            "  SELECT face_thumb_ref AS ref, crop_id, observed_at FROM vision_crop_observation "
-            "  WHERE face_thumb_ref = ANY(:r) UNION ALL "
-            "  SELECT thumb_ref, crop_id, observed_at FROM vision_crop_observation WHERE thumb_ref = ANY(:r)) c "
-            "ORDER BY ref, observed_at DESC"), {"r": refs}).fetchall():
-        crop[ref] = crop_id
+    crop = _crops_for_refs(conn, [r["ref"] for r in rows])
     for r in rows:
         conn.execute(text(
             "INSERT INTO vision_ask_picture_verdict (ask_id, image_ref, picture_index, individual_id, verdict, name, "
@@ -1974,7 +1966,7 @@ def _apply_answers(conn, now: datetime) -> int:
         elif kind == SOURCE_KIND_STORY_PERSON:
             _record_pictures(conn, picture_rows(ask_id, ref, _detail(detail), at))
         elif kind == SOURCE_KIND_PERSON_CONFIRM:
-            _apply_person_confirm(conn, ask_id, ref, answer, at, now)
+            _apply_person_confirm(conn, ask_id, ref, answer, at, now, _detail(detail))
         else:
             _apply_pair_answer(conn, ask_id, ref, answer, at, _detail(detail), now)
         conn.execute(text("UPDATE orion_ask SET applied_at=:now WHERE ask_id=:a"), {"now": now, "a": ask_id})
@@ -2368,18 +2360,73 @@ def _open_person_confirm_asks(conn, now: datetime, tz: ZoneInfo, cfg: Individual
     return out
 
 
-def _apply_person_confirm(conn, ask_id: str, ref: str, answer: Optional[str], at: datetime, now: datetime) -> None:
+def confirm_picture_verdicts(detail: Dict[str, Any]) -> Dict[str, str]:
+    """``answer_detail.pictures`` of an "Is this <name>?" card -> image_ref -> verdict
+    ("same" = it is <name>, "different" = it is not, "unsure"). Pure."""
+    out: Dict[str, str] = {}
+    for p in detail.get("pictures") or []:
+        if isinstance(p, dict) and p.get("image_ref") and p.get("verdict") in PICTURE_VERDICTS:
+            out.setdefault(str(p["image_ref"]), str(p["verdict"]))
+    return out
+
+
+def _crops_for_refs(conn, refs: Sequence[str]) -> Dict[str, str]:
+    """thumbnail ref (face or crop) -> the newest crop it is a picture of."""
+    from sqlalchemy import text
+
+    if not refs:
+        return {}
+    return {ref: crop_id for ref, crop_id in conn.execute(text(
+        "SELECT DISTINCT ON (ref) ref, crop_id FROM ("
+        "  SELECT face_thumb_ref AS ref, crop_id, observed_at FROM vision_crop_observation "
+        "  WHERE face_thumb_ref = ANY(:r) UNION ALL "
+        "  SELECT thumb_ref, crop_id, observed_at FROM vision_crop_observation WHERE thumb_ref = ANY(:r)) c "
+        "ORDER BY ref, observed_at DESC"), {"r": list(refs)}).fetchall()}
+
+
+def _apply_person_confirm(conn, ask_id: str, ref: str, answer: Optional[str], at: datetime, now: datetime,
+                          detail: Optional[Dict[str, Any]] = None) -> None:
     """yes: name the individual (the album picks it up as a named cluster).
     no: its newest crops (the ones guessed on) become "not <name>" exemplars,
-    which also stops Orion guessing that name for it."""
+    which also stops Orion guessing that name for it.
+
+    Per-picture answers (2026-10-23, Juniper: "one of the three is Emerald but I
+    can't specify which"): when she did not give every picture the same answer,
+    the cluster holds more than one person, so it is NOT named. Each picture she
+    marked becomes an exemplar of its own crop instead: "is <name>" (+1,
+    confirm_pick_yes) or "not <name>" (-1, confirm_pick_no). "Not sure" adds nothing."""
     from sqlalchemy import text
 
     from app.vision_person_model import ATTRIBUTION_CROPS, exemplar_id, tables_present
+    from orion.person_model.pictures import CONFIRM_PICK_NO, CONFIRM_PICK_YES
 
     iid, _, person = ref.partition(PAIR_SEP)
     verdict = parse_yes_no(answer)
     if not iid or not person or verdict is None:
         logger.warning("person_confirm_answer_unusable ask_id=%s ref=%r answer=%r", ask_id, ref, answer)
+        return
+    pictures = confirm_picture_verdicts(detail or {})
+    if pictures and set(pictures.values()) not in ({"same"}, {"different"}):
+        if not tables_present(conn):
+            logger.warning("person_confirm_pictures_not_applied ask_id=%s reason=person tables missing", ask_id)
+            return
+        crops = _crops_for_refs(conn, [r for r, v in pictures.items() if v != "unsure"])
+        added = 0
+        for pic_ref, v in pictures.items():
+            crop_id = crops.get(pic_ref)
+            if v == "unsure" or not crop_id:
+                continue
+            source, polarity = (CONFIRM_PICK_YES, 1) if v == "same" else (CONFIRM_PICK_NO, -1)
+            added += conn.execute(text(
+                "INSERT INTO vision_person_exemplar (exemplar_id, person_label, crop_id, polarity, source, ask_id, "
+                "added_at) VALUES (:e, :p, :c, :pol, :s, :a, :t) ON CONFLICT (exemplar_id) DO NOTHING"),
+                {"e": exemplar_id(person, crop_id, source), "p": person, "c": crop_id, "pol": polarity,
+                 "s": source, "a": ask_id, "t": at}).rowcount or 0
+        conn.execute(text(
+            "UPDATE vision_person_attribution SET revoked_at=:t WHERE individual_id=:i AND person_label=:p "
+            "AND revoked_at IS NULL"), {"t": now, "i": iid, "p": person})
+        logger.info("person_confirm_pictures ask_id=%s individual_id=%s verdicts=%s exemplars_added=%d",
+                    ask_id, iid, ",".join(sorted(pictures.values())), added)
         return
     if verdict:
         unnamed = conn.execute(text("SELECT label IS NULL FROM vision_individual WHERE individual_id=:i"),

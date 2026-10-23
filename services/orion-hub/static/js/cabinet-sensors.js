@@ -970,11 +970,13 @@
       state.lastPayload = payload;
       state.lastFetchedAt = Date.now();
       renderPayload(payload);
+      if (state.active && window.OrionCabinetSonification) window.OrionCabinetSonification.receive(payload);
       setStatusLine(
         "Updated " + new Date().toLocaleTimeString() + " · polling every " + POLL_MS / 1000 + "s",
         "text-gray-500"
       );
     } catch (err) {
+      if (window.OrionCabinetSonification) window.OrionCabinetSonification.fail();
       // Keep last good render on transient fetch error; show poll-error badge.
       if (state.lastPayload) {
         setStatusLine(
@@ -1151,6 +1153,8 @@
   async function fetchSensorHistory() {
     var requestId = ++state.sensorHistoryRequest;
     var requestedWindow = state.sensorWindow;
+    var requestStartedAt = Date.now();
+    if (window.OrionCabinetSonification) window.OrionCabinetSonification.historyLoading(requestedWindow);
     state.sensorHistoryNote = "Loading " + requestedWindow + " sensor history…";
     renderSensorHistoryStatus();
     try {
@@ -1165,6 +1169,7 @@
       }
       if (requestId !== state.sensorHistoryRequest) return;
       state.sensorHistory = payload;
+      if (state.active && window.OrionCabinetSonification) window.OrionCabinetSonification.receiveHistory(payload, requestStartedAt);
       renderSensorHistory(payload);
       var stats = payload.stats || {};
       var tempStats = stats.temp_c || {};
@@ -1181,6 +1186,7 @@
       state.sensorHistoryNote = note;
     } catch (err) {
       if (requestId !== state.sensorHistoryRequest) return;
+      if (window.OrionCabinetSonification) window.OrionCabinetSonification.historyFailed();
       state.sensorHistoryNote =
         "history error — " +
         (state.sensorHistory ? "keeping last good charts" : "no chart data yet") +
@@ -1232,6 +1238,7 @@
   }
 
   function deactivate() {
+    if (window.OrionCabinetSonification) window.OrionCabinetSonification.stop("Cabinet hidden");
     state.active = false;
     stopTimer();
     // Rendered DOM is deliberately left in place -- switching away and back
@@ -1292,6 +1299,12 @@
   var api = {
     activate: activate,
     deactivate: deactivate,
+    setHistoryWindow: function (nextWindow) {
+      if (["24h", "3d", "7d"].indexOf(nextWindow) < 0 || nextWindow === state.sensorWindow) return;
+      state.sensorWindow = nextWindow;
+      renderSensorWindowButtons();
+      fetchSensorHistory();
+    },
     refresh: function () {
       poll();
       pollAmbientLatest();

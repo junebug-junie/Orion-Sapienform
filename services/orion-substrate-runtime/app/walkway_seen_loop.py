@@ -16,11 +16,13 @@ already linked in this process is skipped, and a restart re-applies the same
 record harmlessly. A day is re-linked when its set of linkable people grows (someone
 named after the first pass).
 
-Which entity nodes: every individual in the day's ``named`` entry (the rollup lists
-the individual ids carrying that name that day), plus individuals Juniper typed the
-same name for on the same stream (``label_copied`` false): a copied label has no
-entity node of its own, so its sightings link to the typed individual's node.
-Entity nodes are never created here.
+Which entity nodes: only individuals the day's ``named`` entry lists (the rollup
+records the individual ids actually sighted under that name that day). A copied label
+has no entity node of its own, so its sighting links to the typed individuals of the
+same name in its "same person" group (the group the name was copied along). Never a join
+on the name alone: two people Juniper gave the same name (the Adeline and Esme twins,
+live 2026-10-22) each got every day either of them was seen. Entity nodes are never
+created here.
 
 Trace: ``walkway_seen linked day=... stream=... people=... edges_created=...``.
 Fail-open: a missing table, store or DB error is logged; the loop keeps going.
@@ -41,9 +43,16 @@ DAYS_SQL = (
     "WHERE grain = 'day' AND complete AND stream_id = ANY(:streams) AND period_start > :since "
     "ORDER BY period_start"
 )
-TYPED_SQL = (
-    "SELECT individual_id FROM vision_individual WHERE stream_id = :s AND lower(label) = lower(:l) "
-    "AND NOT label_copied"
+# Copied row -> the typed rows of the same name in its "same person" group: the group the
+# writer copied the name along (orion-sql-writer vision_individuals._propagate_label).
+COPIED_SQL = (
+    "WITH RECURSIVE g(root, id) AS ("
+    "  SELECT individual_id, individual_id FROM vision_individual WHERE individual_id = ANY(:ids) AND label_copied "
+    "  UNION SELECT g.root, CASE WHEN v.individual_a = g.id THEN v.individual_b ELSE v.individual_a END "
+    "  FROM vision_individual_pair_verdict v JOIN g ON g.id IN (v.individual_a, v.individual_b) "
+    "  WHERE v.verdict = 'same') "
+    "SELECT g.root, t.individual_id FROM g JOIN vision_individual c ON c.individual_id = g.root "
+    "JOIN vision_individual t ON t.individual_id = g.id AND NOT t.label_copied AND lower(t.label) = lower(c.label)"
 )
 
 
@@ -89,9 +98,16 @@ def link_recent_days(*, engine: Any, store: Any, streams: tuple[str, ...], lookb
             day = date.fromisoformat(str(row["label"]))
             key = (row["stream_id"], day)
             seen: list[tuple[str, str, Optional[str]]] = []
-            for label, entry in _named(row["named"]).items():
-                ids = set((entry or {}).get("individual_ids") or [])
-                ids.update(r[0] for r in conn.execute(text(TYPED_SQL), {"s": row["stream_id"], "l": label}).all())
+            named = _named(row["named"])
+            sighted = sorted({i for e in named.values() for i in ((e or {}).get("individual_ids") or [])})
+            sources: dict[str, set[str]] = {}
+            if sighted:
+                for copy_id, typed_id in conn.execute(text(COPIED_SQL), {"ids": sighted}).all():
+                    sources.setdefault(copy_id, set()).add(typed_id)
+            for label, entry in named.items():
+                ids = set()
+                for iid in (entry or {}).get("individual_ids") or []:
+                    ids.update(sources.get(iid) or {iid})
                 first = ((entry or {}).get("times") or [None])[0]
                 for iid in sorted(ids):
                     nid = entity_node_id_for_individual(iid)

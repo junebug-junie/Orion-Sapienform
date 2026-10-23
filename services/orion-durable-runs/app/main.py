@@ -12,6 +12,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hunter
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 from orion.schemas.chat_history import CHAT_HISTORY_TURN_KIND
+from orion.schemas.claude_limit import CLAUDE_LIMIT_KIND
 from orion.schemas.durable_run import (
     DURABLE_RUN_RECEIPT_KIND,
     DURABLE_RUN_REQUEST_KIND,
@@ -44,6 +45,7 @@ _admission_task: asyncio.Task | None = None
 _reconcile_task: asyncio.Task | None = None
 situation: Any = None
 temporal_self: Any = None
+claude_limits: Any = None   # app.physiology_store.ClaudeLimitCache while the physiology node runs
 chronicle: Any = None
 personality: Any = None
 rpc_health_publisher: RpcHealthPublisher | None = None
@@ -84,6 +86,13 @@ def _chassis_cfg() -> ChassisConfig:
 
 
 async def _handle_request(env: BaseEnvelope) -> None:
+    if env.kind == CLAUDE_LIMIT_KIND:
+        # The physiology node's claude constraint: keep the latest observation per kind.
+        if claude_limits is not None:
+            from datetime import datetime, timezone
+
+            claude_limits.offer(env.payload, datetime.now(timezone.utc))
+        return
     if env.kind == IDENTITY_SIGHTING_KIND:
         if situation is not None and isinstance(env.payload, dict):
             from app.situation_driver import event_from_sighting
@@ -258,6 +267,8 @@ def _build_temporal_self(saver: Any):
     checkpointer's pool, the rest drive from Redis, projects RegulationStateV1 to Redis."""
     from datetime import datetime, timezone
 
+    import dataclasses
+
     from app import regulation_store
     from app.temporal_self_driver import TemporalSelfDriver
     from app.temporal_self_graph import TemporalSelfDeps
@@ -299,6 +310,10 @@ def _build_temporal_self(saver: Any):
         return await regulation_store.record_transition(
             _checkpointer_cm, regulation_store.transition_row(prev, new, day_id))
 
+    async def record_cause(reading, day_id, joined, seed) -> bool:
+        return await regulation_store.record_transition(
+            _checkpointer_cm, regulation_store.cause_row(reading, day_id, joined, seed))
+
     async def read_immune_series(now):
         """R4: 24 h of every glossary channel that carries semantics, one sample per minute."""
         from orion.field.channel_glossary import load_glossary
@@ -312,12 +327,16 @@ def _build_temporal_self(saver: Any):
         return await regulation_store.record_immune_findings(
             _checkpointer_cm, [regulation_store.immune_finding_row(f, day_id, now) for f in findings])
 
+    read_body, project_physiology, body_config = (_build_physiology() if s.physiology_enabled
+                                                  else (None, None, None))
+
     global chronicle
     chronicle = _build_chronicle() if s.temporal_self_chronicle_enabled else None
 
     deps = TemporalSelfDeps(
         read_inputs=read_inputs, read_drives=read_drives, project=project,
         record_transition=record_transition, now=lambda: datetime.now(timezone.utc),
+        record_cause=record_cause if s.temporal_self_strain_arcs_enabled else None,
         chronicle=chronicle.step if chronicle is not None else None,
         read_immune_series=read_immune_series if s.temporal_self_immune_enabled else None,
         record_immune=record_immune,
@@ -327,10 +346,64 @@ def _build_temporal_self(saver: Any):
         gpu_sustain_sec=s.regulation_strained_gpu_queue_sec,
         clear_sec=s.regulation_strained_clear_sec,
         max_prev_gap_sec=3.0 * s.temporal_self_tick_sec,
+        read_body=read_body, project_physiology=project_physiology,
+        physiology_min_interval_sec=s.physiology_min_interval_sec,
     )
+    if body_config is not None:
+        deps = dataclasses.replace(deps, body_config=body_config)
     return TemporalSelfDriver(checkpointer=saver, deps=deps,
                               timezone_name=s.orion_situation_timezone, tick_sec=s.temporal_self_tick_sec,
                               retention_days=s.temporal_self_retention_days)
+
+
+def _build_physiology():
+    """Body economy Patch A3: the physiology node's reads and its projection. Reads run on the
+    checkpointer's pool; the pool-capacity RPC and the projection on the long-lived rpc_bus."""
+    from uuid import uuid4
+    from zoneinfo import ZoneInfo
+
+    from app import physiology_store
+    from orion.gpu_pool.placement import fetch_pool_state
+    from orion.physiology.body import BodyConfig, BodyInputs
+    from orion.schemas.physiology import PHYSIOLOGY_STATE_KIND, PHYSIOLOGY_STATE_REDIS_KEY
+
+    global claude_limits
+    s = _settings
+    tz = ZoneInfo(s.orion_situation_timezone)
+    source = ServiceRef(name=s.service_name, version=s.service_version, node=s.node_name)
+    claude_limits = physiology_store.ClaudeLimitCache()
+    cfg = BodyConfig(heat_soft_line_c=s.physiology_heat_soft_line_c,
+                     energy_monthly_envelope_usd=s.physiology_energy_monthly_envelope_usd,
+                     juniper_daily_cap=s.hub_endogenous_outreach_daily_cap,
+                     lane_window_sec=s.physiology_lane_window_sec)
+
+    async def read_body(now, heat):
+        warnings: list[str] = []
+        pool_state = None
+        if rpc_bus is not None:
+            pool_state = await fetch_pool_state(rpc_bus, source=s.service_name, timeout_sec=2.0)
+        if pool_state is None:
+            warnings.append("lane_capacity:pool_state_unread")
+        body = BodyInputs(
+            heat=heat,
+            energy=await physiology_store.read_energy(_checkpointer_cm, now, tz),
+            lanes=await physiology_store.read_lanes(_checkpointer_cm, now, s.physiology_lane_window_sec, pool_state),
+            juniper=await physiology_store.read_juniper(_checkpointer_cm, now, tz),
+            claude=claude_limits.snapshot() if claude_limits is not None else ())
+        return body, warnings
+
+    async def project_physiology(model) -> None:
+        if rpc_bus is None:
+            raise RuntimeError("no bus")
+        try:
+            await rpc_bus.redis.setex(PHYSIOLOGY_STATE_REDIS_KEY, s.physiology_redis_ttl_sec, model.model_dump_json())
+        except Exception:  # noqa: BLE001 - the bus event (and its table row) still lands
+            logger.warning("physiology_redis_write_failed", exc_info=True)
+        await rpc_bus.publish(s.physiology_state_channel, BaseEnvelope(
+            kind=PHYSIOLOGY_STATE_KIND, source=source, correlation_id=uuid4(),
+            payload=model.model_dump(mode="json")))
+
+    return read_body, project_physiology, cfg
 
 
 def _build_chronicle():
@@ -346,13 +419,18 @@ def _build_chronicle():
     reducer = ReducerConfig(
         tz_name=s.orion_situation_timezone, arc_min_ticks=s.temporal_self_arc_min_ticks,
         return_window_sec=60.0 * s.temporal_self_return_window_min,
-        conversation_return_window_sec=60.0 * s.temporal_self_conversation_return_window_min)
+        conversation_return_window_sec=60.0 * s.temporal_self_conversation_return_window_min,
+        street_arcs_per_day=s.temporal_self_street_episodes_per_day)
     cfg = ChronicleConfig(
         reducer=reducer, read_lag_sec=s.temporal_self_read_lag_sec, backfill_days=s.temporal_self_backfill_days,
         event_retention_days=s.temporal_self_event_retention_days,
         arc_retention_days=s.temporal_self_arc_retention_days,
         day_retention_days=s.temporal_self_day_retention_days)
-    return Chronicler(store=ChronicleStore(_checkpointer_cm), reader=SourceReader(_checkpointer_cm, reducer.tz_name),
+    return Chronicler(store=ChronicleStore(_checkpointer_cm), reader=SourceReader(
+        _checkpointer_cm, reducer.tz_name,
+        exclude_kinds=tuple(k for k, on in (("arousal_transition", s.temporal_self_strain_arcs_enabled),
+                                            ("retro_play", s.temporal_self_retro_play_enabled),
+                                            ("street_event", s.temporal_self_street_episodes_enabled)) if not on)),
                       cfg=cfg, now=lambda: datetime.now(timezone.utc))
 
 
@@ -368,7 +446,8 @@ def _build_personality():
     embed, close_embed = http_embedder(_settings.personality_embed_url)
     return PersonalityDriver(store=PersonalityStore(_checkpointer_cm), reader=PersonalitySourceReader(_checkpointer_cm),
                              embed=embed, now=lambda: datetime.now(timezone.utc),
-                             tick_sec=_settings.personality_tick_sec, close_embedder=close_embed)
+                             tick_sec=_settings.personality_tick_sec, close_embedder=close_embed,
+                             naming_enabled=_settings.personality_naming_apply_enabled)
 
 
 @asynccontextmanager
@@ -434,6 +513,8 @@ async def lifespan(app: FastAPI):
                              _settings.identity_sighting_channel]
             if temporal_self is not None and _settings.chat_history_turn_channel not in patterns:
                 patterns.append(_settings.chat_history_turn_channel)
+            if claude_limits is not None and _settings.claude_limit_channel not in patterns:
+                patterns.append(_settings.claude_limit_channel)
             hunter = Hunter(_chassis_cfg(), handler=_handle_request, patterns=patterns)
             await hunter.start_background()
             logger.info("durable_runs_listening channel=%s", _settings.request_channel)
@@ -613,7 +694,8 @@ async def _personality_read(coro):
         return await coro
     except (UndefinedTable, UndefinedColumn) as exc:
         raise HTTPException(503, "personality tables missing: apply "
-                                 "services/orion-sql-db/manual_migration_personality_graph_v1.sql") from exc
+                                 "services/orion-sql-db/manual_migration_personality_graph_v1.sql and "
+                                 "manual_migration_personality_naming_v1.sql") from exc
 
 
 @app.get("/personality/frame")
@@ -624,7 +706,9 @@ async def personality_frame():
     store = _personality_store()
     now = datetime.now(timezone.utc)
     frame = await _personality_read(store.frame(now, warnings=personality.frame_warnings(now)))
-    return frame.model_dump(mode="json")
+    # exclude_none: an unnamed node carries no name keys, so readers built before self-naming
+    # (DispositionV1 is extra="forbid") keep validating the frame if durable-runs deploys first.
+    return frame.model_dump(mode="json", exclude_none=True)
 
 
 _PERSONALITY_STATUSES = {"active", "candidate", "retired", "all"}
@@ -644,6 +728,32 @@ async def personality_evidence(disposition_id: Optional[str] = None, limit: int 
     """Evidence rows, newest first; optionally one disposition's."""
     rows = await _personality_read(_personality_store().evidence(disposition_id or None, limit=max(1, min(limit, 500))))
     return {"disposition_id": disposition_id, "count": len(rows), "evidence": rows}
+
+
+@app.get("/personality/naming/next")
+async def personality_naming_next():
+    """The next DispositionNamingPacketV1 for Hub's self-inquiry naming run, or 204 when nothing is
+    due (or PERSONALITY_NAMING_APPLY_ENABLED=false). Read-only: a node counts as shown only when
+    Orion's answer row is applied, so a run that never answers leaves nothing behind."""
+    from datetime import datetime, timezone
+
+    from fastapi import Response
+
+    store = _personality_store()
+    if not personality.naming_enabled:
+        return Response(status_code=204, headers={"X-Personality-Naming": "disabled"})
+    packet = await _personality_read(store.naming_next(datetime.now(timezone.utc)))
+    if packet is None:
+        return Response(status_code=204)
+    return packet.model_dump(mode="json")
+
+
+@app.get("/personality/naming")
+async def personality_naming(disposition_id: Optional[str] = None, limit: int = 50):
+    """The naming log (orion_disposition_naming), newest first; optionally one disposition's."""
+    rows = await _personality_read(_personality_store().namings(disposition_id or None,
+                                                                limit=max(1, min(limit, 500))))
+    return {"disposition_id": disposition_id, "count": len(rows), "namings": rows}
 
 
 @app.get("/runs/unfinished")

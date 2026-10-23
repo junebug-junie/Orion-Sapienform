@@ -60,6 +60,10 @@ def _worker(monkeypatch, *, live: bool) -> tuple[BiometricsSubstrateWorker, list
         )
     ]
     worker._get_substrate_graph_store = MagicMock(return_value=None)
+    # The hourly prune compares time.monotonic() against this; on a CI runner
+    # booted < 1 h ago monotonic() is < 3600, so an unset (0.0) stamp skipped
+    # the first prune (failed in street-attention-tests, 2026-10-20).
+    worker._last_raw_reading_prune_monotonic = float("-inf")
     # Never a real store in tests: a stub that already reads as Postgres.
     worker._control_surface_store = SimpleNamespace(source_kind=lambda: "postgres", postgres_url="stub")
     surface_reads: list[str] = []

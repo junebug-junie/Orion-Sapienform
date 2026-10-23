@@ -40,7 +40,9 @@ from orion.schemas.reverie import ConcernCardV1, SpontaneousThoughtV1
 from orion.schemas.thought import CoalitionSnapshotV1
 
 from .rpc_health import fold_bus
-from .bus_listener import extract_stance_react_payload
+from orion.gpu_pool.shed import is_gpu_pool_refusal, shed_reason_from_error
+
+from .bus_listener import exec_failure_reason, extract_stance_react_payload
 from .cortex_client import CortexExecClient
 from .settings import settings
 from .store import (
@@ -55,6 +57,22 @@ from .store import (
 logger = logging.getLogger("orion-thought.reverie")
 
 BroadcastReader = Callable[[], AttentionBroadcastProjectionV1 | None]
+
+
+class ReverieLlmUnavailable(RuntimeError):
+    """The GPU pool refused the narration call (``gpu_pool_unavailable[:<reason>]``).
+
+    Raised by ``run_reverie_once`` instead of returning None, because None means "the
+    model answered and there was nothing grounded to say" -- a judgement on the theme.
+    A refusal is no judgement: the model was never asked. The chain (chain.py) must not
+    count it toward the theme's no_coalition streak; on 2026-10-20 the hot cabinet's
+    ``shed:cabinet_hot`` refusals were pushing healthy themes into forced cooldown.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.shed_reason = shed_reason_from_error(reason)
 
 
 def _source() -> ServiceRef:
@@ -437,6 +455,7 @@ def build_reverie_context(
     personality_cue: str | None = None,
     street_percepts: list[dict[str, Any]] | None = None,
     street_predictions: list[str] | None = None,
+    street_day: str | None = None,
     continuity: ChainContinuity | None = None,
 ) -> dict[str, Any]:
     percepts = recent_percepts or []
@@ -448,6 +467,9 @@ def build_reverie_context(
         street["street_percepts"] = list(street_percepts)
     if street_predictions:
         street["street_predictions"] = list(street_predictions)
+    if street_day:
+        # The walkway's day so far, one line, people as a range (display_line).
+        street["street_day"] = street_day
     if street:
         # Which of Orion's own eyes this is (2026-10-15): without it the
         # section read as one more sensor feed, not as Orion's camera outside.
@@ -527,6 +549,7 @@ def build_reverie_plan_request(
     personality_cue: str | None = None,
     street_percepts: list[dict[str, Any]] | None = None,
     street_predictions: list[str] | None = None,
+    street_day: str | None = None,
     continuity: ChainContinuity | None = None,
 ) -> PlanExecutionRequest:
     use_lift = settings.reverie_semantic_lift_enabled and bool(concern_cards)
@@ -556,6 +579,7 @@ def build_reverie_plan_request(
             personality_cue=personality_cue,
             street_percepts=street_percepts,
             street_predictions=street_predictions,
+            street_day=street_day,
             continuity=continuity,
         ),
     )
@@ -819,8 +843,14 @@ async def run_reverie_once(
     cortex_client: CortexExecClient | None = None,
     chain_context: tuple[str, int] | None = None,
     continuity: ChainContinuity | None = None,
+    raise_llm_unavailable: bool = False,
 ) -> SpontaneousThoughtV1 | None:
     """One spontaneous-thought tick. Returns the published thought, or None.
+
+    ``raise_llm_unavailable``: the one exception to "never a raise". When True, a GPU-pool
+    refusal of the narration call raises ``ReverieLlmUnavailable`` so the chain
+    (chain.py) can tell "the pool refused" from "nothing grounded to say". When False
+    (the standalone tick) the refusal is logged and the tick returns None as before.
 
     Returns None (publishes nothing) when there is no coalition to narrate or the
     narration comes back hollow — never empty-shell cognition, never a raise.
@@ -933,6 +963,24 @@ async def run_reverie_once(
                 return [], []
             return list(captions or []), list(graded or [])
 
+        async def _fetch_street_day() -> str:
+            # Separate from _fetch_street: a failed rollup read costs only this line.
+            if not (want_street and settings.reverie_street_day_enabled):
+                return ""
+            from .vision_reader import read_street_day_line
+
+            try:
+                line = await asyncio.to_thread(
+                    read_street_day_line,
+                    stream_ids=settings.reverie_street_stream_id_list,
+                    tz_name=settings.reverie_street_timezone,
+                    max_chars=settings.reverie_street_day_max_chars,
+                )
+            except Exception as exc:
+                logger.warning("reverie street day read failed corr=%s err=%s", correlation_id, exc)
+                return ""
+            return str(line or "").strip()
+
         async def _fetch_self_readings() -> str | None:
             # Only the coalition branch renders it (see build_reverie_context).
             if not want_loop_outcomes:
@@ -951,6 +999,7 @@ async def run_reverie_once(
             self_readings,
             (street_percepts, street_predictions),
             personality_cue,
+            street_day,
         ) = await asyncio.gather(
             _fetch_loop_outcomes(),
             _fetch_percepts(),
@@ -958,11 +1007,12 @@ async def run_reverie_once(
             _fetch_self_readings(),
             _fetch_street(),
             build_personality_cue_text(correlation_id),
+            _fetch_street_day(),
         )
-        if street_percepts or street_predictions:
+        if street_percepts or street_predictions or street_day:
             logger.info(
-                "reverie_street_context corr=%s captions=%d graded=%d",
-                correlation_id, len(street_percepts), len(street_predictions),
+                "reverie_street_context corr=%s captions=%d graded=%d rollup=%d",
+                correlation_id, len(street_percepts), len(street_predictions), 1 if street_day else 0,
             )
         plan_request = build_reverie_plan_request(
             broadcast,
@@ -975,6 +1025,7 @@ async def run_reverie_once(
             personality_cue=personality_cue,
             street_percepts=street_percepts,
             street_predictions=street_predictions,
+            street_day=street_day or None,
             continuity=continuity,
         )
         # Same formula build_reverie_plan_request uses internally to decide `use_lift` --
@@ -1002,6 +1053,15 @@ async def run_reverie_once(
         else:
             if report_metacog_health:
                 check_reverie_metacog_timeout(False)
+        # Only a plan that did not succeed was refused: exec_failure_reason() also falls back
+        # to any failed side step (e.g. recall), which must not discard a real narration.
+        plan_ok = isinstance(exec_result, dict) and exec_result.get("status") == "success"
+        failure = None if plan_ok else exec_failure_reason(exec_result)
+        if failure is not None and is_gpu_pool_refusal(failure):
+            logger.info(
+                "reverie tick refused by gpu pool corr=%s reason=%s", correlation_id, failure
+            )
+            raise ReverieLlmUnavailable(failure)
         raw_payload = extract_stance_react_payload(exec_result)
 
         thought = parse_reverie_payload(
@@ -1101,6 +1161,10 @@ async def run_reverie_once(
                         ),
                     )
                 persist_salience_trace(trace)
+    except ReverieLlmUnavailable:
+        if raise_llm_unavailable:
+            raise
+        return None
     except Exception as exc:
         # A tick must never raise (hard constraint) — a bus/narration/parse
         # failure degrades to a dropped tick, not a crash.

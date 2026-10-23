@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any, Collection, Sequence
 
 from orion.bus.ewma import compute_ewma_update
 from orion.schemas.biometrics_projection import NodeBiometricsProjectionV1
@@ -589,6 +589,8 @@ def execution_raw_reading(
 def biometrics_prediction_error(
     prev: NodeBiometricsProjectionV1,
     curr: NodeBiometricsProjectionV1,
+    *,
+    exclude_nodes: Collection[str] = (),
 ) -> float:
     """0-1 surprise score: how much did node biometrics pressure hints change this batch?
 
@@ -605,9 +607,20 @@ def biometrics_prediction_error(
     single fixed key list covers every node. So this diffs the union of keys
     present on either side of a given node, defaulting a missing key to 0.0 the
     same way ``execution_prediction_error`` defaults a missing fixed key.
+
+    **Definition v2 (2026-10-20): silent nodes are left out.** ``exclude_nodes`` names
+    nodes that have stopped reporting (``orion/substrate/biometrics_loop/
+    report_cadence.py::silent_nodes`` -- last report older than 6x the node's own
+    report interval). Their hints are frozen, so every key added a 0.0 delta that was
+    never observed. Live 2026-10-20: hecate in BMC-only standby since 2026-10-15
+    contributed 9 of 35 keys, so the mean read 26% lower than the reporting nodes'
+    real change. A node that reports again counts again on that tick.
     """
+    excluded = set(exclude_nodes)
     deltas: list[float] = []
     for node_id, curr_node in curr.nodes.items():
+        if node_id in excluded:
+            continue
         prev_node = prev.nodes.get(node_id)
         if prev_node is None:
             continue

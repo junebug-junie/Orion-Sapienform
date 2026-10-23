@@ -91,6 +91,21 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     # claims (orion/world_pulse_read/assertions.py) became a writer code can see. A
     # declaration only applies to a model with NO discovered writer, so it went stale;
     # the durable-runs writer is now uncovered by this check (single-writer limit).
+    "orion.schemas.prediction:ActionBetCountsV1": (
+        "orion-prediction",
+        "app/action_bets.py backoff() builds the per-level counts at quote/place time and stores them on "
+        "prediction_action_bet; the Hub reads them back over HTTP (/action-bets/quote) as part of ActionBetQuoteV1",
+    ),
+    "orion.schemas.prediction:ActionBetQuoteV1": (
+        "orion-prediction",
+        "POST /action-bets/quote (app/main.py) validates each quote from app/action_bets.py; the Hub "
+        "reads it back over HTTP (scripts/retro_experience.py)",
+    ),
+    "orion.schemas.prediction:ActionBetV1": (
+        "orion-prediction",
+        "app/main.py _bet_out validates each stored prediction_action_bet row before returning it from "
+        "place / settle / list; the Hub reads only plain JSON from it",
+    ),
     "orion.schemas.regulation:ArousalInputsV1": (
         "orion-durable-runs",
         "the regulate node builds it from its own DB reads (app/regulation_store.py) and reads it back "
@@ -134,6 +149,8 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     ),
     "orion/attention/field_attention/policy.py": (None, "policy YAML the reader loads itself"),
     "orion.autonomy.models:CapabilityPolicyV1": (None, "capability policy YAML the reader loads itself"),
+    "orion.schemas.person_model:PersonRefV1": (None, "config/person_model/people.yaml the reader loads itself (load_people)"),
+    "orion.schemas.person_model:PronounEvidenceV1": (None, "nested in PersonRefV1 rows of config/person_model/people.yaml"),
     "orion.autonomy.models:CapabilityPolicyRuleV1": (None, "capability policy YAML the reader loads itself"),
     "orion/consolidation/policy.py": (None, "policy YAML the reader loads itself"),
     "orion/execution_dispatch/policy.py": (None, "policy YAML the reader loads itself"),

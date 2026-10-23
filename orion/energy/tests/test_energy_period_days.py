@@ -69,8 +69,9 @@ def test_projection_prices_with_the_period_length() -> None:
     assert projection.fixed_usd == pytest.approx(R2.fixed_usd(31))
     remaining = projection.projected_kwh - 405
     expected = 405 * RATE1 + R2.energy_cost_usd(remaining, cycle_kwh_before=405, month=8, period_days=31)
-    assert projection.projected_energy_usd == pytest.approx(expected)
-    assert projection.projected_energy_usd == pytest.approx(405 * RATE1 + 8 * RATE1 + (remaining - 8) * RATE2)
+    # The projection is priced like the bill (every line rounded to the cent), so it lands within cents.
+    assert projection.projected_energy_usd == pytest.approx(expected, abs=0.05)
+    assert projection.projected_energy_usd == pytest.approx(405 * RATE1 + 8 * RATE1 + (remaining - 8) * RATE2, abs=0.05)
 
 
 def test_run_cost_prices_at_the_cycle_length_block_position() -> None:
@@ -105,7 +106,7 @@ def test_one_day_bill_with_a_credit_reconciles_instead_of_crashing() -> None:
     assert R2.fixed_usd(1) < 0
     assert rec.orion_fixed_usd == pytest.approx(R2.fixed_usd(1))
     # 1-day block is round(400 / 30) = 13 kWh.
-    assert rec.orion_total_usd == pytest.approx(13 * RATE1 + 11 * RATE2 + R2.fixed_usd(1))
+    assert rec.orion_total_usd == pytest.approx(13 * RATE1 + 11 * RATE2 + R2.fixed_usd(1), abs=0.03)
 
 
 def _variant(tmp_path: Path, mutate) -> Path:
@@ -126,7 +127,7 @@ def test_itemize_rounds_an_exact_half_cent_up(tmp_path) -> None:
         raw["riders"] = [{"name": "eba", "pct": 7.63, "applies_to": ["base_energy"]}]
         raw["fixed_monthly"], raw["per_bill"], raw["sales_tax"] = [], [], None
 
-    est = load_tariff(_variant(tmp_path, flat)).itemize(500, month=7, period_days=30)
+    est = load_tariff(_variant(tmp_path, flat)).itemize(500, start=date(2026, 7, 1), end=date(2026, 7, 31))
     assert dict(est.lines)["eba"] == 3.82
     assert est.total_usd == 53.82
 
@@ -140,6 +141,11 @@ def test_itemize_rounds_an_exact_half_cent_up(tmp_path) -> None:
         (lambda r: r["fixed_monthly"][0].pop("component"), "no fixed_monthly item"),
         (lambda r: r["fixed_monthly"][1].update(name="sales_tax"), "reserved"),
         (lambda r: r["per_bill"][0].update(name="energy_block_1"), "reserved"),
+        (lambda r: r["per_bill"][0].update(name="credit@2026-01-01"), "reserved"),
+        (lambda r: r["riders"][0].update(rates=[{"from": "2026-08-10", "pct": 1.0}]), "exactly one of pct or rates"),
+        (lambda r: r["riders"][0].pop("pct") and r["riders"][0].update(rates=[{"from": "2026-09-25", "pct": 1.0}, {"from": "2026-08-10", "pct": 2.0}]), "ascending"),
+        (lambda r: r["riders"][0].pop("pct") and r["riders"][0].update(rates=[{"from": "soon", "pct": 1.0}]), "YYYY-MM-DD"),
+        (lambda r: r["proration"].update(normal_days=[33, 27]), "normal_days"),
         (lambda r: r["fixed_monthly"][1].update(name="schedule_92_deferral"), "unique"),
         (lambda r: r["fixed_monthly"][1].update(tax_exempt="false"), "true or false"),
         (lambda r: r["proration"].update(round_block_kwh="yes"), "true or false"),

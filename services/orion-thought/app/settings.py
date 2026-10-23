@@ -165,6 +165,12 @@ class ThoughtSettings(BaseSettings):
     )
     reverie_street_graded_max: int = Field(4, alias="ORION_REVERIE_STREET_GRADED_MAX")
     reverie_street_timezone: str = Field("America/Denver", alias="ORION_REVERIE_STREET_TIMEZONE")
+    # 2026-10-23 (walkway day line): today's running walkway day rollup line
+    # (people as a range, via orion.vision.walkway_rollup.display_line); never
+    # yesterday's. Cut at a clause boundary to MAX_CHARS; a row that cannot be
+    # shown honestly is dropped. Same stream ids and timezone as the street captions above.
+    reverie_street_day_enabled: bool = Field(True, alias="ORION_REVERIE_STREET_DAY_ENABLED")
+    reverie_street_day_max_chars: int = Field(480, alias="ORION_REVERIE_STREET_DAY_MAX_CHARS")
 
     @property
     def reverie_street_stream_id_list(self) -> list[str]:
@@ -729,6 +735,13 @@ class ThoughtSettings(BaseSettings):
     # self-readings block is byte-identical to before.
     self_signal_outcome_association_enabled: bool = Field(
         True, alias="SELF_SIGNAL_OUTCOME_ASSOCIATION_ENABLED"
+    )
+    # Repeated looks: the association is re-tested every hour, so a clause renders only after its
+    # verdict (same direction) held on each of the last CONSECUTIVE_HOLDS hourly computations; a
+    # missing hour or a different verdict resets the run. Same rule and default as
+    # orion-equilibrium-service's EQUILIBRIUM_SELF_SIGNAL_OUTCOME_CONSECUTIVE_HOLDS.
+    self_signal_outcome_consecutive_holds: int = Field(
+        6, ge=1, le=48, alias="SELF_SIGNAL_OUTCOME_CONSECUTIVE_HOLDS"
     )
 
     # --- Temporal Self rev 4: reverie gets the last few closed arcs (app/reverie.py) ---

@@ -34,7 +34,7 @@ from typing import Any, Iterable, Optional
 from orion.schemas.temporal_self import TemporalSelfEventV1
 from orion.temporal_self.broadcast import BroadcastTickView, tick_from_log_row
 from orion.temporal_self.day import as_utc
-from orion.temporal_self.sources import ADAPTERS
+from orion.temporal_self.sources import ADAPTERS, ROOM_STREAMS, STREET_STORY_KINDS
 
 STATEMENT_TIMEOUT = "30s"  # a stalled read fails the window (retried next step), never hangs it
 
@@ -59,6 +59,11 @@ class SourceQuery:
     # How far before ``lo`` the natural column may sit while the event is still available
     # inside the window (a process that started earlier, a joined timestamp that precedes it).
     slack: timedelta = timedelta(0)
+    # A table that may not exist yet (its migration lands with the producer): checked with
+    # to_regclass first, and skipped while missing, so one new source can never fail the whole read.
+    optional_table: str | None = None
+    # More tables the query needs, checked the same way (a join across several new tables).
+    also_requires: tuple[str, ...] = ()
 
 
 # %(lo)s / %(hi)s are the superset bounds (already widened by ``slack``); timestamptz params.
@@ -175,7 +180,67 @@ SELECT transition_id, presence_id, from_state, to_state, occurred_at, identity_c
   CASE WHEN identity_confirmed THEN label END AS label
 FROM vision_presence_transition WHERE occurred_at >= %(lo)s AND occurred_at < %(hi)s
 """),
+    # Strain loop part 1: the regulation step's own rows in the event table (the chronicle's
+    # copies of other kinds share the table; only regulation writes this kind).
+    SourceQuery("arousal_transition", """
+SELECT event_id, occurred_at, payload_json FROM temporal_self_event
+WHERE source_kind = 'arousal_transition' AND source_table = 'regulation'
+  AND occurred_at >= %(lo)s AND occurred_at < %(hi)s
+"""),
+    # Orion plays Zelda (section F): one finished Retro session per row (orion-hub writes it at
+    # session end). Available at ended_at, so the window is on ended_at and needs no slack.
+    SourceQuery("retro_play", """
+SELECT session_id, retro_session_id, lineage_id, game_id, game_title, kind, started_at, ended_at, summary,
+  control_basis, human_may_be_in_control, played_together, human_share, decisions, predictions_met, predictions_unknown, rooms_new, deaths, memory_card_id
+FROM retro_play_sessions WHERE ended_at >= %(lo)s AND ended_at < %(hi)s
+""", optional_table="retro_play_sessions"),
+    # Episodes from the street (PR #2763 item 1), three reads of one kind; the adapter
+    # (sources.street_event) decides every rule again, these only narrow the rows.
+    # 1. Published clean motion stories, with the spot-check verdict counts of the newest rules version
+    #    (vision_rollup.py story_gate's rule). The gate is read as of the read, not as of the story:
+    #    a re-fold after Juniper's tally or the rules version moves can keep a different set. One
+    #    story per walking-together group: a story is skipped when a lower-id member of its group
+    #    qualifies too (live groups list every member symmetrically). Available at ended_at, written a
+    #    median 49 s later (p99 20 min, 7 days to 10-23), so a story written after the read lag is a
+    #    late row: stored, counted, not folded.
+    SourceQuery("street_event", """
+WITH gate AS (SELECT max(rules_version) AS v FROM vision_motion_story WHERE published AND clean),
+counts AS (
+  SELECT json_object_agg(verdict, n) AS c FROM (
+    SELECT CASE WHEN vd.cant_tell THEN 'cant_tell' ELSE vd.verdict END AS verdict, count(*) AS n
+    FROM vision_motion_story_verdict vd JOIN vision_motion_story vs ON vs.story_id = vd.story_id, gate
+    WHERE vs.published AND vs.clean AND vs.rules_version = gate.v GROUP BY 1) x
+  WHERE verdict IS NOT NULL)
+SELECT 'motion_story' AS origin, s.story_id, s.stream_id, s.kind, s.started_at, s.ended_at, s.speed_class,
+  s.dir_lateral, s.dir_depth, s.name_label, s.individual_id, s.companion_kinds, s.together_story_ids,
+  s.published, s.clean, s.rules_version, gate.v AS gate_rules_version, counts.c AS gate_counts
+FROM vision_motion_story s CROSS JOIN gate CROSS JOIN counts
+WHERE s.published AND s.clean AND s.ended_at >= %(lo)s AND s.ended_at < %(hi)s
+  AND s.stream_id <> ALL(%(room_streams)s) AND s.kind = ANY(%(story_kinds)s)
+  AND NOT EXISTS (
+    SELECT 1 FROM vision_motion_story t
+    WHERE t.story_id = ANY(s.together_story_ids) AND t.story_id < s.story_id AND t.published AND t.clean
+      AND t.rules_version = s.rules_version AND t.stream_id = s.stream_id AND t.kind = ANY(%(story_kinds)s))
+""", optional_table="vision_motion_story",
+                also_requires=("vision_motion_story_verdict",)),
+    # 2. Doorbell rings (orion-vision-retina writes one vision_events row per Ring push).
+    SourceQuery("street_event", """
+SELECT 'doorbell_ring' AS origin, event_id, stream_id, event_type, created_at
+FROM vision_events WHERE event_type = 'doorbell_ring' AND created_at >= %(lo)s AND created_at < %(hi)s
+"""),
+    # 3. Graded handoffs from sql-writer's StreetEventV1 outbox. The event's occurred_at is the time;
+    #    the row is written after it, so created_at (widened by slack for clock skew between the
+    #    story times and sql-writer's clock) bounds the read from below. No SQL cast of occurred_at:
+    #    one malformed row would fail the whole window; the adapter parses it and the reader keeps
+    #    only events available in [lo, hi). The table holds a handful of rows (5 ever, to 10-23).
+    SourceQuery("street_event", """
+SELECT 'street_event' AS origin, event_id, handoff_id, event, created_at
+FROM vision_handoff_street_outbox
+WHERE created_at >= %(lo)s AND kind IN ('handoff_met', 'handoff_late', 'handoff_missed')
+""", slack=timedelta(minutes=10), optional_table="vision_handoff_street_outbox"),
 )
+
+TABLE_EXISTS_SQL = "SELECT to_regclass(%(t)s) IS NOT NULL AS present"
 
 REVERIE_CHAINS_SQL = """
 SELECT chain_id, created_at, theme_key, terminal_reason FROM substrate_reverie_chain
@@ -221,12 +286,21 @@ async def _fetch(conn: Any, sql: str, params: dict) -> list[dict]:
     return list(await cur.fetchall())
 
 
+async def _tables_present(conn: Any, tables: Iterable[str]) -> bool:
+    for t in tables:
+        present = await _fetch(conn, TABLE_EXISTS_SQL, {"t": t})
+        if not present or not present[0]["present"]:
+            return False
+    return True
+
+
 class SourceReader:
     """Reads one window from Postgres on the service's psycopg pool (dict rows)."""
 
-    def __init__(self, pool: Any, tz_name: str) -> None:
+    def __init__(self, pool: Any, tz_name: str, *, exclude_kinds: Iterable[str] = ()) -> None:
         self._pool = pool
         self._tz = tz_name
+        self._exclude = frozenset(exclude_kinds)
 
     async def read(
         self, lo: datetime, hi: datetime, *, ticks: bool = True, kinds: Optional[Iterable[str]] = None,
@@ -243,11 +317,16 @@ class SourceReader:
                 if ticks:
                     out_ticks = [tick_from_log_row(r) for r in await _fetch(conn, BROADCAST_SQL, {"lo": lo, "hi": hi})]
                 for q in QUERIES:
-                    if want is not None and q.kind not in want:
+                    if (want is not None and q.kind not in want) or q.kind in self._exclude:
+                        continue
+                    needed = ((q.optional_table,) if q.optional_table else ()) + q.also_requires
+                    if needed and not await _tables_present(conn, needed):
                         continue
                     qlo = lo - q.slack
                     rows = await _fetch(conn, q.sql, {"lo": qlo, "hi": hi, "in_flight": list(VISUAL_IN_FLIGHT),
-                                                      "lo_key": _text_key(qlo - timedelta(days=1))})
+                                                      "lo_key": _text_key(qlo - timedelta(days=1)),
+                                                      "room_streams": sorted(ROOM_STREAMS),
+                                                      "story_kinds": sorted(STREET_STORY_KINDS)})
                     events.extend(ADAPTERS[q.kind](r, self._tz) for r in rows)
                 if want is None or "reverie_chain" in want:
                     events.extend(await self._reverie(conn, lo, hi))

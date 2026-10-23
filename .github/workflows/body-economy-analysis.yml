@@ -1,0 +1,46 @@
+name: Body economy price math and replay
+
+# Body-economy design, patch A4: the pure price math (orion/physiology/prices.py, the seed of the
+# Budget organ), the Body organ (orion/physiology/body.py, patch A3; needs pydantic for its schema)
+# and the offline checks for the heat-sensitivity fit and the price replay. No DB:
+# the live scripts are read-only analysis run by hand; these tests use synthetic data.
+
+on:
+  pull_request:
+    paths:
+      - "orion/physiology/**"
+      - "scripts/analysis/_body_economy_data.py"
+      - "scripts/analysis/fit_heat_sensitivity.py"
+      - "scripts/analysis/replay_body_economy.py"
+      - "scripts/analysis/tests/test_body_economy_replay_and_fit.py"
+      - ".github/workflows/body-economy-analysis.yml"
+      # the fit reads orion-prediction's central-AC proxy definition through its own parser
+      - "config/prediction/series.v1.yaml"
+      - "services/orion-prediction/app/series.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prices:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ORION_BUS_URL: redis://100.92.216.81:6379/0
+      ORION_BUS_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install pytest pyyaml "numpy>=1.26.4,<2.0.0" pydantic==2.11.5
+      - name: Pure price math
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q -p no:cacheprovider orion/physiology/tests
+      - name: Heat fit and replay (synthetic data)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q -p no:cacheprovider scripts/analysis/tests/test_body_economy_replay_and_fit.py

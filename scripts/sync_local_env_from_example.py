@@ -127,6 +127,9 @@ SYNC_PREFIXES = (
     # had no keys left before that. Its pool-placement keys are below.)
     "DURABLE_RUNS_",
     "CORTEX_DURABLE_",
+    # Body economy Patch A3 (2026-10-23): durable-runs' physiology node (Organ 1 Body).
+    "ORION_PHYSIOLOGY_",
+    "CHANNEL_PHYSIOLOGY_",
     # GPU pool (2026-09-25, stage 3): the pool's own keys and the Gateway's pool-placement keys.
     # Without these the default sync visited both .env files and silently added nothing.
     "GPU_POOL_",
@@ -416,6 +419,8 @@ SYNC_PREFIXES = (
     # "seen on <day>" links. Neither matched an existing prefix.
     "VISION_ROLLUP_",
     "WALKWAY_SEEN_",
+    # Caption motion cross-check (orion-sql-writer, 2026-10-23, spec PR #2763 item 3 C).
+    "VISION_CAPTION_MOTION_",
 )
 
 SYNC_EXACT = frozenset(

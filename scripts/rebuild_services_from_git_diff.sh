@@ -77,6 +77,22 @@ fi
 # a log write never fails the rebuild.
 REBUILD_LOG="${ORION_REBUILD_LOG:-${HOME:-/tmp}/.orion/post_pull_rebuild.log}"
 REBUILD_HEAD=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+# Judge every `up` of this run against the commit the run started on, not
+# against an origin/main that a PR merge moves mid-run (2026-10-20: one merge
+# refused 55 remaining services). safe_docker_build.sh still refuses a main
+# that moved, is ahead of, or diverged from origin/main. Pin only when the run
+# STARTS in sync with origin/main: a run started on an already-stale main stays
+# unpinned, so the wrapper refuses it exactly as before.
+ORION_DEPLOY_PINNED_HEAD=""
+if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] &&
+    git -C "$REPO_ROOT" fetch --quiet origin main 2>/dev/null; then
+    _pin_head=$(git -C "$REPO_ROOT" rev-parse --verify HEAD 2>/dev/null || true)
+    _pin_origin=$(git -C "$REPO_ROOT" rev-parse --verify origin/main 2>/dev/null || true)
+    if [ -n "$_pin_head" ] && [ "$_pin_head" = "$_pin_origin" ]; then
+        ORION_DEPLOY_PINNED_HEAD="$_pin_head"
+    fi
+fi
+export ORION_DEPLOY_PINNED_HEAD
 rebuild_log() {
     (
         mkdir -p "$(dirname "$REBUILD_LOG")" &&
@@ -307,8 +323,8 @@ if [ "$DRY_RUN" != "1" ]; then
     rebuild_log "RUN base=${BASE_REF:-default} services=$(printf '%s ' $SERVICES)recreate=$(printf '%s ' $RECREATE)"
 fi
 
-# rebuild_one <service>: the full rebuild of one stack; adds it to FAILED or
-# counts it in REBUILT.
+# rebuild_one <service>: the full rebuild of one stack; adds it to FAILED,
+# or counts it in REBUILT.
 rebuild_one() {
     local svc="$1"
     RECREATE_FLAG=""
@@ -327,6 +343,12 @@ rebuild_one() {
     fi
     # shellcheck disable=SC2086
     PROFILE_SERVICES=$(python3 "$PY" --running-profile-services "$svc" $SKIP_PROFILE_ARGS || true)
+    # Second compose files of this stack (docker-compose.<name>.yml) with a
+    # container running from them now. A plain `up` only ever read
+    # docker-compose.yml, so the Qwen caption lane (docker-compose.circe-qwen.yml)
+    # kept its 2026-10-16 image and env through every pull (2026-10-20). Never
+    # starts a lane that is not running; GPU-pool launch files are skipped.
+    EXTRA_COMPOSE=$(python3 "$PY" --running-extra-compose "$svc" || true)
 
     # GPU-pool launch targets of this stack (config/gpu_pool.yaml `launch:`).
     # A STOPPED one was evicted by the pool on purpose: build its image, never
@@ -358,6 +380,12 @@ rebuild_one() {
             printf '%s\n' "$PROFILE_SERVICES" | while IFS="$(printf '\t')" read -r profile name; do
                 [ -n "$name" ] || continue
                 echo "[dry-run] would rebuild running profile service: $svc --profile $profile $name"
+            done
+        fi
+        if [ -n "$EXTRA_COMPOSE" ]; then
+            printf '%s\n' "$EXTRA_COMPOSE" | while IFS="$(printf '\t')" read -r extra names; do
+                [ -n "$extra" ] || continue
+                echo "[dry-run] would rebuild running extra compose file: $svc --compose-file $extra $names"
             done
         fi
         REBUILT=$((REBUILT + 1))
@@ -431,6 +459,24 @@ rebuild_one() {
         done <<EOF_PROFILES
 $PROFILE_SERVICES
 EOF_PROFILES
+    fi
+
+    if [ -n "$EXTRA_COMPOSE" ]; then
+        TAB=$(printf '\t')
+        while IFS="$TAB" read -r extra names; do
+            [ -n "$extra" ] && [ -n "$names" ] || continue
+            echo "=== rebuild_services_from_git_diff: $svc (running extra compose file $extra: $names) ==="
+            # Only the services running now, --no-deps: a stopped sibling in the
+            # same file (or a depends_on edge) is never started.
+            # shellcheck disable=SC2086
+            run_safe_build "$svc" --compose-file "$extra" up -d --build --no-deps $RECREATE_FLAG $names </dev/null
+            if [ "$rc" -ne 0 ]; then
+                echo "rebuild_services_from_git_diff.sh: FAILED $svc/$extra (exit $rc)" >&2
+                svc_failed=1
+            fi
+        done <<EOF_EXTRA
+$EXTRA_COMPOSE
+EOF_EXTRA
     fi
 
     if [ "$svc_failed" -ne 0 ]; then

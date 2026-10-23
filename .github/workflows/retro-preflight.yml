@@ -7,12 +7,17 @@ on:
       - 'services/orion-retro/**'
       - 'services/orion-hub/scripts/retro_routes.py'
       - 'services/orion-hub/scripts/retro_gateway.py'
+      - 'services/orion-hub/scripts/retro_planner.py'
+      - 'services/orion-hub/scripts/retro_leisure.py'
+      - 'services/orion-hub/scripts/retro_presence.py'
+      - 'services/orion-hub/scripts/retro_session_end.py'
       - 'services/orion-hub/docker-compose.yml'
       - 'services/orion-hub/static/js/retro-panel.js'
       - 'services/orion-hub/static/js/retro-tab.js'
       - 'services/orion-hub/templates/retro.html'
       - 'services/orion-hub/tests/retro/**'
       - 'services/orion-hub/evals/retro_browser*'
+      - 'services/orion-hub/evals/retro_play_panel*'
       - 'services/orion-hub/evals/retro_play.mjs'
       - '.github/workflows/retro-preflight.yml'
   push:
@@ -23,12 +28,17 @@ on:
       - 'services/orion-retro/**'
       - 'services/orion-hub/scripts/retro_routes.py'
       - 'services/orion-hub/scripts/retro_gateway.py'
+      - 'services/orion-hub/scripts/retro_planner.py'
+      - 'services/orion-hub/scripts/retro_leisure.py'
+      - 'services/orion-hub/scripts/retro_presence.py'
+      - 'services/orion-hub/scripts/retro_session_end.py'
       - 'services/orion-hub/docker-compose.yml'
       - 'services/orion-hub/static/js/retro-panel.js'
       - 'services/orion-hub/static/js/retro-tab.js'
       - 'services/orion-hub/templates/retro.html'
       - 'services/orion-hub/tests/retro/**'
       - 'services/orion-hub/evals/retro_browser*'
+      - 'services/orion-hub/evals/retro_play_panel*'
       - 'services/orion-hub/evals/retro_play.mjs'
       - '.github/workflows/retro-preflight.yml'
 permissions:
@@ -94,7 +104,7 @@ jobs:
           from pathlib import Path
           p=Path('services/orion-retro/.env')
           s=p.read_text()
-          for key in ('RETRO_CATALOG_DIR','RETRO_EVIDENCE_DIR','RETRO_SOCKET_DIR','RETRO_TOKEN_FILE'):
+          for key in ('RETRO_CATALOG_DIR','RETRO_EVIDENCE_DIR','RETRO_SOCKET_DIR','RETRO_SAVES_DIR','RETRO_TOKEN_FILE'):
               s=s.replace(key+'=\n',key+'=/tmp/retro-ci-build-placeholder\n')
           p.write_text(s)
           PY

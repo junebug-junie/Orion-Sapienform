@@ -101,7 +101,7 @@ import os
 import sys
 import time
 
-from scripts.orion_ambient_audio_reader import capture_pcm_via_arecord, compute_levels_from_pcm
+from scripts.orion_ambient_audio_reader import compute_levels_from_pcm, stream_pcm_via_arecord
 
 device = os.environ["ORION_AMBIENT_AUDIO_DEVICE"]
 needed = int(os.environ["ORION_AMBIENT_AUDIO_NEEDED"])
@@ -114,23 +114,20 @@ last_rms = 0.0
 
 while valid < needed and time.monotonic() < deadline:
     try:
-        pcm = capture_pcm_via_arecord(
+        for pcm in stream_pcm_via_arecord(
             device=device,
             sample_rate=16000,
             channels=1,
             duration_sec=0.5,
-        )
-        rms, peak = compute_levels_from_pcm(pcm)
-        if peak < 0:
-            errors += 1
-            continue
-        valid += 1
-        last_rms = rms
+        ):
+            rms, peak = compute_levels_from_pcm(pcm)
+            valid += 1
+            last_rms = rms
+            if valid >= needed or time.monotonic() >= deadline:
+                break
     except (OSError, RuntimeError):
         errors += 1
         time.sleep(0.25)
-        continue
-    time.sleep(0.25)
 
 if valid < needed:
     print(

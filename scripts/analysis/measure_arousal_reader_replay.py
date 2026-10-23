@@ -116,7 +116,10 @@ SELECT row_to_json(r) FROM (
 ) r ORDER BY at;
 SELECT row_to_json(r) FROM (
  SELECT 'live_level' AS kind, occurred_at AS at, label AS level FROM temporal_self_event
-  WHERE source_kind = 'arousal_transition' AND occurred_at < '{hi}'::timestamptz ORDER BY occurred_at
+  WHERE source_kind = 'arousal_transition' AND occurred_at < '{hi}'::timestamptz
+    -- Level changes only: strain cause/seed/keepalive rows (event id ``...:at:<time>``, strain loop
+    -- part 1) repeat the level and would restart its age here.
+    AND event_id NOT LIKE '%:at:%' ORDER BY occurred_at
 ) r;
 """
     return base[: -len("ROLLBACK;")] + extra + "ROLLBACK;\n"

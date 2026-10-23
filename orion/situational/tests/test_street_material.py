@@ -224,7 +224,7 @@ def test_stationary_sightings_are_excluded_with_fallback_before_the_migration() 
 
     class _Migrated(_Conn):
         def execute(self, stmt, params):
-            if "vision_individual_sighting" in str(stmt):
+            if "GROUP BY s.individual_id" in str(stmt):  # the who-is-around read
                 seen.append(str(stmt))
             return super().execute(stmt, params)
 
@@ -241,7 +241,7 @@ def test_head_count_row_found_by_head_count_zone_flag_and_kept_a_count() -> None
          "updated_at": now},
     ]})
     got = fetch_street_summary("walkway", engine=_Engine(conn), now=now)
-    assert got.lines == ["2 people are on the patio."]
+    assert got.lines == ["At least 2 people are on the patio."]
     from orion.situational.perception_reader import _PATIO_PRESENCE_SQL
 
     sql = str(_PATIO_PRESENCE_SQL)
@@ -278,6 +278,65 @@ def test_camera_caption_tags_as_json_text_still_parse() -> None:
     row["tags"] = '["camera_caption", "detector:dog"]'
     (got,) = dedupe_street_captions([row], now=NOW, max_age_sec=900, limit=2)
     assert got["detector_labels"] == ["dog"]
+
+
+DRIVING = "A car is driving down a residential street."
+
+
+def _checked(text, tags, minutes_ago=1):
+    row = _camcap(text, minutes_ago, labels=("person",))
+    row["tags"] = [*row["tags"], *tags]
+    return row
+
+
+def test_contradicted_caption_says_the_thing_did_not_move_for_every_consumer() -> None:
+    """dedupe_street_captions is the shared step of the chat brief, reverie
+    (orion-thought vision_reader) and curiosity (study_material) readers."""
+    row = _checked(DRIVING, ["motion_contradicted", "motion_check:vehicle:driving:parked"])
+    (got,) = dedupe_street_captions([row], now=NOW, max_age_sec=900, limit=2)
+    assert got["narrative"] == (
+        'camera caption (one frame; detector saw person; caption said driving; the vehicle did not move): '
+        f'"{DRIVING}"')
+    assert "motion not verified" not in got["narrative"]
+    assert got["motion_check"].contradicted is True
+    line = street_caption_line([got], camera="walkway", tz=TZ)
+    assert "caption said driving; the vehicle did not move" in line
+
+
+def test_supported_caption_says_the_thing_did_move() -> None:
+    row = _checked("A person is walking a dog.", ["motion_supported", "motion_check:person:walking:walking"])
+    (got,) = dedupe_street_captions([row], now=NOW, max_age_sec=900, limit=2)
+    assert "caption said walking; the person did move" in got["narrative"]
+
+
+def test_unchecked_or_malformed_motion_tags_stay_not_verified() -> None:
+    for tags in ([], ["motion_contradicted"], ["motion_check:vehicle:driving:parked"],
+                 ["motion_contradicted", "motion_check:vehicle:driving"]):
+        (got,) = dedupe_street_captions([_checked(DRIVING, tags)], now=NOW, max_age_sec=900, limit=2)
+        assert "motion not verified" in got["narrative"], tags
+        assert got["motion_check"] is None
+
+
+def test_one_frame_people_count_is_not_shown_as_a_head_count() -> None:
+    """Live council row 2026-10-16 17:52 and caption 2026-10-18 22:16: one
+    frame's count of people must not read as how many people there were."""
+    council = _cap("Two persons are observed walking on the walkway.", 1)
+    caption = _camcap("In the image, three people are riding bicycles on a residential street.", 2,
+                      labels=("bicycle",))
+    got = dedupe_street_captions([council, caption], now=NOW, max_age_sec=900, limit=3)
+    assert got[0]["narrative"] == (
+        "Two persons are observed walking on the walkway (count from one frame)")
+    assert got[1]["narrative"].startswith(
+        "camera caption (one frame; detector saw bicycle; motion not verified; "
+        "count from one frame): ")
+    line = street_caption_line(got, camera="walkway", tz=TZ)
+    assert line.count("count from one frame") == 2
+
+
+def test_no_count_and_range_counts_are_left_alone() -> None:
+    for text in ("A person walks a dog.", "Two cars are parked.", "At least 2, at most 5 people passed."):
+        (got,) = dedupe_street_captions([_cap(text, 1)], now=NOW, max_age_sec=900, limit=2)
+        assert got["narrative"] == text
 
 
 def test_council_rows_stay_unlabelled() -> None:
@@ -341,6 +400,31 @@ def test_seven_detector_labels_still_fit_the_street_budget() -> None:
     assert "detector saw person, dog, bicycle +4;" in lines[0]
     assert len(" ".join(lines)) <= 420
     assert "did not come" in " ".join(lines)
+
+
+def test_worst_case_labels_still_fit_the_street_budget() -> None:
+    """Seven detector labels, a motion verdict and the one-frame count note on
+    the caption, the count note on the council row: still within 420 chars."""
+    every = ("person", "dog", "bicycle", "stroller", "vehicle", "package", "mail truck")
+    long = "two people " + "very " * 60 + "long."
+    cam = _camcap("Three persons " + long, 1, labels=every)
+    cam["tags"] += ["motion_contradicted", "motion_check:vehicle:driving:parked"]
+    lines = summarize_street(
+        sightings=[], expectations=[{"subject_label": "the black dog", "status": "missed", "peak_minute": 460}],
+        unresolved=[], patio=None, now=NOW, tz=TZ, camera="walkway",
+        captions=[cam, _cap("Four persons " + long, 2)],
+    )
+    assert lines[0].count("count from one frame") == 2
+    assert "caption said driving; the vehicle did not move" in lines[0]
+    assert len(" ".join(lines)) <= 420
+    assert "did not come" in " ".join(lines)
+
+
+def test_count_note_uses_the_unclipped_text() -> None:
+    """A range phrase cut off by the clip must not make the count bare."""
+    row = _cap("A " + "very " * 30 + "busy street: 79 people at most.", 1)
+    (got,) = dedupe_street_captions([row], now=NOW, max_age_sec=900, limit=2, max_chars=60)
+    assert "count from one frame" not in got["narrative"]
 
 
 def test_many_captions_never_crowd_out_the_council_row_in_any_consumer() -> None:

@@ -1,0 +1,248 @@
+# Body-economy contract (Phase 2 "hard gates", early slice landed in Patch A1).
+#
+# Design: docs/superpowers/specs/2026-10-23-organism-body-economy-design.md ("Phase 2").
+# Checked by scripts/check_body_economy_contract.py (CI: orion-static-gates.yml;
+# local: `make check-body-economy-contract`).
+#
+# What the gate enforces today ("No unregistered veto"): every module that reads Orion's
+# regulation / arousal / thermal / price state must be listed below, either in `readers`
+# (with a role) or in `sources`. Detection is structural (AST): imports from the arousal,
+# regulation-schema, thermal_gate, cabinet_heat or physiology modules; references to their
+# state symbols; the literals "orion:regulation:latest", "arousal_level",
+# "arousal_strained"/"arousal_engaged"/"arousal_engaged_cooldown", "cabinet_hot"; and any
+# comparison against the arousal level "strained". Tests and evals are not scanned.
+#
+# Roles (readers):
+#   spinal  -- may veto. A fact about hardware safety or consent. Adding one needs Juniper's
+#              sign-off (Phase 2: "Body-Economy-Spinal: approved <date>" in the PR report).
+#   bidder  -- gates optional work on the state today. Phase 1 Patch D moves each of these to
+#              bid() against posted prices, one reader per PR; until then they are listed so
+#              the pile cannot grow while it is being retired.
+#   display -- reads the state but gates nothing: status pages, logs, self-narrative,
+#              grading, offline replay, data loaders.
+#
+# `sources` are not readers: they define, produce or fetch the state for others and gate
+# nothing themselves (schemas, the reducer, the producer, shared fetch helpers).
+#
+# Adding a new reader: prefer not to. A new `if arousal == "strained": return` is exactly what
+# this file exists to stop. If you must, add a row with role + one-line reason, and expect
+# review to ask why it is not a bid.
+
+version: 1
+
+protected_paths:
+  - {glob: "orion/physiology/**", organ: "all (body, budget, appetite, choice, felt state, learning)"}
+  - {glob: "orion/regulation/arousal.py", organ: body}
+  - {glob: "orion/autonomy/thermal_gate.py", organ: "body / spinal (heat reflex thresholds)"}
+  - {glob: "orion/gpu_pool/shed.py", organ: "budget / spinal (shed reasons)"}
+  - {glob: "orion/gpu_pool/scheduler.py", organ: budget}
+  - {glob: "orion/gpu_pool/shed_backoff.py", organ: budget}
+  - {glob: "orion/autonomy/allocator.py", organ: choice}
+  - {glob: "orion/grammar/act_ledger.py", organ: learning}
+  - {glob: "config/physiology/**", organ: "contract"}
+  # "the bid sites in each producer" (design doc) are added here as Patch D lands each bid().
+
+readers:
+  # --- spinal: hardware safety. The 34 C reflex and hardware-watch. ---
+  - module: orion/hardware_watch/rules.py
+    role: spinal
+    reason: hardware-watch cooling rule that raises the cabinet_hot reflex (34 C, re-arm 33 C).
+  - module: services/orion-hardware-watch/app/watcher.py
+    role: spinal
+    reason: hardware-watch loop; reads cabinet heat and publishes the reflex claim.
+  - module: orion/gpu_pool/shed.py
+    role: spinal
+    reason: pool shed-reason table; cabinet_hot is the reflex reason that sheds background leases.
+  - module: services/orion-gpu-pool/app/runtime.py
+    role: spinal
+    reason: pool runtime applies hardware-watch's cabinet_hot / cabinet_unknown reflex claims.
+
+  # --- bidder: today's vetoes on optional work. Each moves to bid() in Patch D. ---
+  - module: orion/reverie/baseline.py
+    role: bidder
+    reason: defers the reverie visual baseline while arousal reads strained (arousal_strained).
+    note: pending Patch D
+  - module: services/orion-proposal-runtime/app/worker.py
+    role: bidder
+    reason: visual-baseline deferral on strained arousal; cabinet heat in shed-eligibility.
+    note: pending Patch D
+  - module: orion/world_pulse_read/pull.py
+    role: bidder
+    reason: world_pulse_read pull gate refuses on arousal_strained and on thermal_hot.
+    note: pending Patch D
+  - module: services/orion-hub/scripts/world_pulse_read_pipeline.py
+    role: bidder
+    reason: feeds arousal + thermal_state into the pull gate.
+    note: pending Patch D
+  - module: services/orion-hub/scripts/retro_leisure.py
+    role: bidder
+    reason: retro leisure refuses on cabinet_hot and arousal_strained.
+    note: pending Patch D
+  - module: orion/substrate/mutation_pressure.py
+    role: bidder
+    reason: mutation pressure withholds a proposal while arousal is strained.
+    note: pending Patch D
+  - module: orion/substrate/mutation_worker.py
+    role: bidder
+    reason: per-cycle arousal probe holds mutation proposals when the level is strained.
+    note: pending Patch D
+  - module: services/orion-hub/scripts/api_routes.py
+    role: bidder
+    reason: _mutation_arousal_level() reads arousal for the scheduled mutation cycle.
+    note: pending Patch D
+  - module: services/orion-dream/app/cycle.py
+    role: bidder
+    reason: dream sleeps only at idle; engaged or strained holds the sleep.
+    note: pending Patch D
+  - module: services/orion-dream/app/main.py
+    role: bidder
+    reason: wires the Redis regulation read into the dream cycle's arousal hold.
+    note: pending Patch D
+  - module: services/orion-hub/scripts/curiosity_investigation.py
+    role: bidder
+    reason: curiosity scheduling refuses on arousal_strained; engaged stretches cooldown.
+    note: pending Patch D
+  - module: services/orion-hub/scripts/endogenous_outreach.py
+    role: bidder
+    reason: outreach refuses on arousal_strained.
+    note: pending Patch D
+  - module: services/orion-hub/scripts/main.py
+    role: bidder
+    reason: constructs the Hub ArousalReader for the curiosity, outreach and pull vetoes.
+    note: pending Patch D (goes with its callers)
+  - module: services/orion-thought/app/chain.py
+    role: bidder
+    reason: reverie chain stretches its interval while arousal is strained.
+    note: pending Patch D
+  - module: services/orion-thought/app/visual_chain.py
+    role: bidder
+    reason: visual chain thermal gate (32 C hot line) defers painting.
+    note: pending Patch B (one thermal owner) then D
+  - module: services/orion-thought/app/visual_steps.py
+    role: bidder
+    reason: durable visual generate step refuses GPU work (thermal_refused) unless allows_gpu_work.
+    note: pending Patch B (one thermal owner) then D
+  - module: services/orion-gpu-pool/app/guards.py
+    role: bidder
+    reason: swap-load guard refuses a gpu2 model load at the 32 C hot line or unknown heat.
+    note: pending Patch B/D -- Juniper to decide spinal vs priced (it is not the 34 C reflex)
+  - module: orion/autonomy/self_shed.py
+    role: bidder
+    reason: Orion's self-shed act is eligible only while the cabinet is elevated/hot/unknown.
+    note: pending Patch D (eligibility becomes a price)
+
+  # --- display: reads the state, gates nothing. ---
+  - module: services/orion-thought/app/visual_chain_health_monitor.py
+    role: display
+    reason: diagnostic read that explains a baseline deferral; its own comment says it gates nothing.
+  - module: services/orion-hub/scripts/temporal_self_routes.py
+    role: display
+    reason: Hub temporal-self routes proxy the regulation state and arousal_level for display.
+  - module: services/orion-substrate-runtime/app/worker.py
+    role: display
+    reason: cabinet-heat tick (prediction error that feeds attention competition) and strain-news tick write substrate nodes; vetoes nothing.
+  - module: services/orion-substrate-runtime/app/store.py
+    role: display
+    reason: loads cabinet temperature points for the cabinet-heat tick.
+  - module: services/orion-proposal-runtime/app/store.py
+    role: display
+    reason: loads cabinet temperature points for the proposal worker.
+  - module: services/orion-feedback-runtime/app/worker.py
+    role: display
+    reason: grades heat outcomes (cabinet_heat_pressure before/after) for world settlement.
+  - module: services/orion-feedback-runtime/app/store.py
+    role: display
+    reason: loads cabinet temperature points for outcome grading.
+  - module: orion/feedback/world_settlement.py
+    role: display
+    reason: settles a heat-related act by the cabinet_heat_pressure change.
+  - module: orion/hardware_watch/shed_effect.py
+    role: display
+    reason: measures the temperature effect of a shed (minute means); no gate.
+  - module: orion/temporal_self/arcs.py
+    role: display
+    reason: builds strain arcs for Orion's self-narrative from level transitions.
+  - module: orion/temporal_self/sources.py
+    role: display
+    reason: maps strain causes into temporal-self evidence.
+  - module: orion/temporal_self/stance_cue.py
+    role: display
+    reason: turns strain causes (cabinet_hot) into plain words for the chat stance cue.
+  - module: services/orion-thought/app/main.py
+    role: display
+    reason: visual execution receipt reports deferred_thermal as refused; no gate of its own.
+  - module: services/orion-durable-runs/app/dream_carry_graph.py
+    role: display
+    reason: treats a child's deferred_thermal outcome as retryable; reacts to the outcome, no heat read.
+  - module: orion/feedback/builder.py
+    role: display
+    reason: maps deferred_thermal to a neutral "deferred" feedback outcome.
+  - module: orion/execution_dispatch/visual_settlement.py
+    role: display
+    reason: settles a deferred_thermal visual run as a real answer, not a failure.
+  - module: orion/temporal_self/body.py
+    role: display
+    reason: counts thermal refusals for Orion's body summary.
+  - module: scripts/analysis/measure_arousal_reader_replay.py
+    role: display
+    reason: offline replay of reader decisions.
+  - module: scripts/analysis/measure_arousal_reducer_replay.py
+    role: display
+    reason: offline replay of the arousal reducer.
+  - module: scripts/analysis/measure_arousal_replay.py
+    role: display
+    reason: offline arousal replay.
+  - module: scripts/analysis/replay_attention_eligibility.py
+    role: display
+    reason: offline replay of attention eligibility with cabinet heat.
+  - module: scripts/analysis/replay_strain_news.py
+    role: display
+    reason: offline replay of strain news.
+  - module: scripts/analysis/replay_body_economy.py
+    role: display
+    reason: "read-only replay of the body-economy price rules over live history (PR #2861); gates nothing"
+
+sources:
+  - module: orion/autonomy/thermal_gate.py
+    reason: defines ThermalState / thermal_state() and the 32/34 C lines (protected path).
+  - module: orion/autonomy/cabinet_heat.py
+    reason: reads cabinet temperature into CabinetHeatReading; defines the reflex reasons.
+  - module: orion/regulation/arousal.py
+    reason: the arousal reducer (levels, strain causes).
+  - module: orion/regulation/arousal_view.py
+    reason: judges a reading into a level; defines the arousal_* reason constants.
+  - module: orion/regulation/arousal_read.py
+    reason: shared one-GET fetch of orion:regulation:latest; gating stays in callers.
+  - module: orion/regulation/strain_news.py
+    reason: derives strain onset/rest news from the reading.
+  - module: orion/schemas/regulation.py
+    reason: RegulationStateV1 schema and the Redis key constant.
+  - module: orion/schemas/registry.py
+    reason: registers RegulationStateV1 in the schema registry.
+  - module: orion/schemas/reverie_visual.py
+    reason: visual-chain schema; defines the thermal_refused / deferred_thermal outcome literals.
+  - module: orion/schemas/hardware_watch.py
+    reason: hardware-watch claim schema (cabinet_hot reason literal).
+  - module: orion/inner_state_registry.py
+    reason: registers RegulationStateV1 as an inner-state surface.
+  - module: services/orion-hub/scripts/arousal_reader.py
+    reason: Hub-side fetch helper (ArousalReader); gating stays in its callers.
+  - module: services/orion-durable-runs/app/main.py
+    reason: producer; writes RegulationStateV1 to orion:regulation:latest.
+  - module: services/orion-durable-runs/app/regulation_store.py
+    reason: producer; gathers arousal inputs (cabinet heat, GPU faults).
+  - module: services/orion-durable-runs/app/temporal_self_graph.py
+    reason: producer; the regulate step that classifies arousal.
+  - module: services/orion-durable-runs/app/temporal_self_driver.py
+    reason: producer; drives the temporal-self thread and holds the latest state.
+  - module: services/orion-durable-runs/app/runner.py
+    reason: imports the temporal-self workflow name constant from the regulation schema module.
+  # Body economy Patch A3 (Organ 1 Body). Define / produce / persist PhysiologyStateV1; gate nothing.
+  - module: orion/schemas/physiology.py
+    reason: defines PhysiologyStateV1 (Organ 1 Body readings; no prices yet).
+  - module: orion/physiology/body.py
+    reason: the pure Body reducer; builds PhysiologyStateV1 from raw source reads.
+  - module: services/orion-durable-runs/app/physiology_store.py
+    reason: producer; reads the Body organ's sources (energy, GPU leases, outreach, claude limits).
+  - module: services/orion-sql-writer/app/worker.py
+    reason: persists PhysiologyStateV1 to physiology_state (route + schema map); gates nothing.

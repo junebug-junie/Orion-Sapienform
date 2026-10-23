@@ -1,11 +1,13 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 748,
+  "metric_count": 758,
   "_last_change": {
-    "change_count": 1,
+    "change_count": 3,
     "high_severity_count": 1,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-vision-council/orion:vision:events (all_producers: ['orion-vision-council'] -> ['orion-vision-council', 'orion-vision-window'])"
+      "high   routing_changed metric://bus_channel/orion-cocreation-signals/orion:substrate:claude_limit (declared_consumers: ['orion-hub'] -> ['orion-durable-runs', 'orion-hub'])",
+      "medium added metric://bus_channel/orion-durable-runs/orion:physiology:state",
+      "medium added metric://inner_state/orion-durable-runs/physiology.state.v1"
     ]
   },
   "definitions": {
@@ -554,6 +556,7 @@
         "orion-cocreation-signals"
       ],
       "declared_consumers": [
+        "orion-durable-runs",
         "orion-hub"
       ],
       "notes": "kind=event stability=experimental",
@@ -1307,6 +1310,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-durable-runs/orion:physiology:state": {
+      "schema_id": "PhysiologyStateV1",
+      "all_producers": [
+        "orion-durable-runs"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-durable-runs/orion:reading:turn:request": {
       "schema_id": "ReadingTurnRequestV1",
       "all_producers": [
@@ -1587,6 +1601,28 @@
       ],
       "declared_consumers": [
         "orion-gpu-pool"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-execution-dispatch-runtime/orion:retro_leisure:start:request": {
+      "schema_id": "RetroLeisureStartRequestV1",
+      "all_producers": [
+        "orion-execution-dispatch-runtime"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-execution-dispatch-runtime/orion:world_pulse_read:pull:request": {
+      "schema_id": "WorldPulseReadPullRequestV1",
+      "all_producers": [
+        "orion-execution-dispatch-runtime"
+      ],
+      "declared_consumers": [
+        "orion-hub"
       ],
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -2309,6 +2345,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-hub/orion:personality:naming": {
+      "schema_id": "DispositionNamingV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-hub/orion:reading:lifecycle": {
       "schema_id": "ReadingLifecycleV1",
       "all_producers": [
@@ -2365,6 +2412,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-hub/orion:retro_leisure:start:reply:*": {
+      "schema_id": "RetroLeisureStartResultV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-execution-dispatch-runtime"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-hub/orion:room:claude:request": {
       "schema_id": "RoomClaudeRequestV1",
       "all_producers": [
@@ -2418,6 +2476,17 @@
         "orion-whisper-tts"
       ],
       "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:world_pulse_read:pull:reply:*": {
+      "schema_id": "WorldPulseReadPullResultV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-execution-dispatch-runtime"
+      ],
+      "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-juniper-affective-state/orion:affectgpt:assessment": {
@@ -3205,6 +3274,18 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-sql-writer/orion:vision:street:events": {
+      "schema_id": "StreetEventV1",
+      "all_producers": [
+        "orion-sql-writer",
+        "orion-vision-retina"
+      ],
+      "declared_consumers": [
+        "orion-substrate-runtime"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-state-service/orion:exec:result:StateService:*": {
       "schema_id": "StateLatestReply",
       "all_producers": [
@@ -3486,6 +3567,7 @@
       "schema_id": "VisionEventPayload",
       "all_producers": [
         "orion-vision-council",
+        "orion-vision-retina",
         "orion-vision-window"
       ],
       "declared_consumers": [
@@ -4251,7 +4333,7 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/execution_friction": {
-      "meaning": "How much resistance (retries/backoff) execution is encountering on a node.",
+      "meaning": "How much resistance (retries/backoff) execution is encountering on a node. Failed steps over started steps; deliberate GPU-pool sheds (gpu_pool_unavailable:shed:*) are excluded from the failed count since 2026-10-20.",
       "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "reliability_pressure"
@@ -4274,7 +4356,7 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/failure_pressure": {
-      "meaning": "Recent execution failure rate/severity on a node.",
+      "meaning": "Recent execution failure rate/severity on a node. A step the GPU pool shed on purpose (gpu_pool_unavailable:shed:*, e.g. cabinet_hot) is not a failure and does not raise it (since 2026-10-20); pool deadline/outage refusals and every other error still do.",
       "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "reliability_pressure"
@@ -4597,15 +4679,15 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-substrate-runtime/node:substrate.perception.prediction_error": {
-      "meaning": "How surprising the camera scene is versus that stream's own recent normal: embedding distance from its running average, z-scored against its own history, negatives clipped, 3 sigma = 1.0.",
+      "meaning": "How surprising the room camera's latest frame is versus that stream's own recent normal: embedding distance from its running average, z-scored against its own history, negatives clipped, 3 sigma = 1.0. One reading per tick (~30 s), from a frame that arrived since the previous reading.",
       "value_kind": "level",
-      "rest": "0.0 = at or below this stream's usual surprise. Also 0.0 while the baseline is still warming (fewer than 2 surprise samples) and when the frame is stale -- so 0 here does NOT prove the camera is working; node:substrate.vision_organ's vision_frame_staleness carries that.",
+      "rest": "0.0 = the frame is at or below this stream's usual surprise. Reachable: 61% of live readings 2026-10-14..21 were exact 0.0 (replay of stored per-frame baselines). A 0.0 placeholder written while the input is missing (embeddings stale, baseline warming, or no scored frame in the window) carries prediction_error_missing_reason on the node and is NOT a reading: it is never recorded in the history and the self-model omits it.",
       "rest_range": [
         0.0,
         0.0
       ],
       "sparsity": "designed_sparse",
-      "absent_means": "written as 0.0 every tick rather than dropped; nothing written until 15 s after process start before the first embedding arrives.",
+      "absent_means": "per-tick writer: the graph node and receipt get a 0.0 placeholder every tick while the input is missing, marked prediction_error_missing_reason; substrate_node_prediction_error_history gets no row then (a gap = missing, not calm). Nothing written until 15 s after process start before the first embedding arrives.",
       "polarity": "higher_is_worse",
       "declared_consumers": [
         "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
@@ -4614,17 +4696,18 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-substrate-runtime/node:substrate.perception_walkway.prediction_error": {
-      "meaning": "How surprising the walkway (outdoor) camera scene is versus that stream's own recent normal: embedding distance from its running average, z-scored against its own history, negatives clipped, 3 sigma = 1.0. Kept apart from node:substrate.perception so the street does not overwrite the room cameras.",
+      "meaning": "How surprising the walkway (outdoor) camera's latest frame is versus that stream's own recent normal: embedding distance from its running average, z-scored against its own history, negatives clipped, 3 sigma = 1.0. One reading per tick (~30 s), from a frame that arrived since the previous reading. Kept apart from node:substrate.perception so the street does not overwrite the room cameras.",
       "value_kind": "level",
-      "rest": "0.0 = at or below the walkway stream's usual surprise. Also 0.0 while its baseline is still warming (fewer than 2 surprise samples) and when its frames are stale -- so 0 here does NOT prove the walkway camera is working; embedding_staleness on the same node carries that.",
+      "rest": "0.0 = the frame is at or below the walkway stream's usual surprise (63% of live readings 2026-10-15..21). A 0.0 placeholder written while the input is missing (embeddings stale, baseline warming, or no scored frame in the window) carries prediction_error_missing_reason on the node and is NOT a reading: it is never recorded in the history.",
       "rest_range": [
         0.0,
         0.0
       ],
       "sparsity": "designed_sparse",
-      "absent_means": "written as 0.0 every tick rather than dropped; nothing written until 15 s after process start, then 0.0 with embedding_staleness 1.0 until the first walkway embedding arrives.",
+      "absent_means": "per-tick writer: the graph node and receipt get a 0.0 placeholder every tick while the input is missing, marked prediction_error_missing_reason (embedding_staleness 1.0 when stale); substrate_node_prediction_error_history gets no row then (a gap = missing, not calm). Nothing written until 15 s after process start.",
       "polarity": "higher_is_worse",
       "declared_consumers": [
+        "orion.attention.world_first:judge_candidate",
         "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
       ],
       "notes": "category=self_monitoring level=node",
@@ -4649,6 +4732,41 @@
         "orion.attention.self_readings:render_self_readings"
       ],
       "notes": "category=task_execution level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error": {
+      "meaning": "TRIGGER: strain news -- fires 1.0 when Orion's regulation turns strained (onset), when a new strain cause joins the episode or the cabinet crosses critical 34 C (escalation), and as reminders at 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h while it lasts; at most 8 per local day, 30 min apart. The strain level itself never competes. FalkorDB node only; not in FieldStateV1 node_vectors.",
+      "value_kind": "trigger",
+      "rest": "0.0 = no strain news this tick (not strained, or strained with no event due). The strain level is not the value: a 54 h strain reads 0.0 between its news events.",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "sparsity": "designed_sparse",
+      "absent_means": "only written as 1.0 at a strain news event, then carried unwritten for attention's 300 s orienting window; every other tick with a known regulation reading writes 0.0. An unknown, stale or missing regulation reading writes nothing and the node keeps its last value.",
+      "declared_consumers": [
+        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings"
+      ],
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-substrate-runtime/node:substrate.street.prediction_error": {
+      "meaning": "TRIGGER: a street event passed the attention gate -- a doorbell ring (always), or a graded cross-camera handoff with p < 0.05 from a camera that is up, under the hourly cap. Value is the event's salience (ring 1.0), held 90 s, then 0.0. The outside world, not Orion's body.",
+      "value_kind": "trigger",
+      "rest": "0.0 = the street listener is up, a street camera delivered a frame recently, and no event passed the gate in the last 90 s. Written as a real 0.0 every tick, never decayed to it.",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "sparsity": "designed_sparse",
+      "absent_means": "written every tick while measurable; the tick writes nothing while the street listener is not subscribed or no street camera (walkway, doorbell) delivered a frame within 600 s, so the reading ages and attention reads it absent after 180 s.",
+      "declared_consumers": [
+        "orion.substrate.attention_broadcast:world_first_signals"
+      ],
+      "notes": "category=self_monitoring level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://inner_state/orion-attention-runtime/field_attention_frame.v1": {
@@ -4761,6 +4879,15 @@
       "notes": "scalar field on DriveReadingV1",
       "registry_source": "orion/inner_state_registry.py"
     },
+    "metric://inner_state/orion-durable-runs/physiology.state.v1": {
+      "schema_id": "PhysiologyStateV1",
+      "value_kind": "bucket",
+      "rest": "Each constraint at rest: heat below the 31 C soft line; lane slot-seconds well under slots x 3600 (0 when no lease ran); attention:juniper 0 sends today; claude state clear with 0 limit events. Energy (month-to-date USD) only grows within a month and resets at the local month start: its rest is the month start, not 0.",
+      "sparsity": "per_tick",
+      "absent_means": "A constraint whose source failed, went stale or was never observed has level=None and a no_reading reason (e.g. claude:no_observation while orion-cocreation-signals' COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED is false). Never 0. Redis orion:physiology:latest expired (TTL 360 s): the whole body is unknown.",
+      "notes": "cadence=per_tick composition=no_cognition_consumer",
+      "registry_source": "orion/inner_state_registry.py"
+    },
     "metric://inner_state/orion-durable-runs/regulation.state.v1": {
       "schema_id": "RegulationStateV1",
       "value_kind": "bucket",
@@ -4769,11 +4896,13 @@
       "absent_means": "Redis orion:regulation:latest expired (TTL 360 s, three ticks) or arousal_level unknown (a stale input, or ORION_REGULATION_AROUSAL_ENABLED=false): arousal unavailable, and every reader keeps its pre-arousal behaviour. Never read as idle.",
       "declared_consumers": [
         "services.orion-dream.app.cycle:run_cycle_once (a due sleep is held while engaged or strained)",
+        "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> orion.temporal_self.arcs:_fold_strain (strain loop part 1: one `strain` arc per episode from the arousal_transition rows; read by the chat stance cue, the Day letter and the reverie arc block)",
         "services.orion-hub.scripts.api_routes:_mutation_arousal_level -> orion.substrate.mutation_pressure:PressureAccumulator.ready_for_proposal (no self-modification proposal while strained)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (strained holds; engaged doubles the cooldown)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick_self_inquiry (runs only at idle)",
         "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (strained refuses background outreach)",
         "services.orion-proposal-runtime.app.worker:ProposalRuntimeWorker._baseline_arousal_level -> orion.reverie.baseline:schedule (strained defers a due visual baseline image by retry_sec)",
+        "services.orion-substrate-runtime.app.worker:BiometricsSubstrateWorker._strain_attention_tick -> orion.regulation.strain_news:strain_news (strained -> rare budgeted news events on node:substrate.strain for attention; the level itself never competes)",
         "services.orion-thought.app.chain:_next_chain_sleep_sec (strained doubles the pause between reverie chains)"
       ],
       "notes": "cadence=per_tick composition=shadow_declared_not_composed",

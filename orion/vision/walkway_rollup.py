@@ -335,6 +335,12 @@ def _peaks(raw: Mapping[str, Any] | None) -> dict[str, int]:
     return out
 
 
+def window_peak(counts: Mapping[str, Any] | None, kind: str = "person") -> int:
+    """How many of ``kind`` one vision window held (``vision_scene_inventory.counts``), with
+    compound detector labels mapped like the rollup does (max, never a sum)."""
+    return _peaks(counts).get(kind, 0)
+
+
 def _max_peaks(rows: Iterable[Mapping[str, Any] | None]) -> dict[str, int]:
     out: dict[str, int] = {}
     for r in rows:

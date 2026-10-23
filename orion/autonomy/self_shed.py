@@ -33,6 +33,8 @@ from orion.autonomy.cabinet_heat import CabinetHeatReading
 from orion.schemas.proposal_frame import AttentionWinnerRefV1
 
 WINNER_MAX_AGE_SEC = 90.0
+# Workspace refs a winner can bind through: substrate nodes and world-first world sources.
+BINDABLE_REF_PREFIXES = ("node:", "world:")
 WINNER_MIN_DWELL_TICKS = 2
 # hardware-watch ticks every ~30 s; three missed ticks means we cannot tell the reflex is idle.
 HARDWARE_WATCH_MAX_TICK_AGE_SEC = 180.0
@@ -81,8 +83,14 @@ def bind_workspace_winner(
     # attended_node_ids IS the selected loop's source_refs ([node_id] + contributing ids): its first
     # node ref is the node the selected loop is about. Binding to any other member would answer a
     # different loop than the one the action's verdict is written on.
+    #
+    # Rung 3 (2026-10-21): a world-first winner can be the WORLD, whose ref is ``world:<source>``
+    # (Juniper's chat is ``world:chat``, orion.attention.world_first.WORLD_CHAT_SOURCE_ID). The old
+    # ``node:``-only scan skipped it, so a world winner could never bind (live 48 h to 2026-10-21:
+    # 64 broadcast ticks attended world:chat, every one unbindable). Templates still bind only
+    # to the refs they list in ``binds_to_nodes``.
     attended = [str(n) for n in projection.get("attended_node_ids") or []]
-    node = next((n for n in attended if n.startswith("node:")), None)
+    node = next((n for n in attended if n.startswith(BINDABLE_REF_PREFIXES)), None)
     if node is None or node not in set(binds_to_nodes):
         return None, "winner_unbindable:node_not_bound"
     if not broadcast_log_id:

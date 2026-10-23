@@ -122,7 +122,7 @@ def test_turn_routes_are_accepted_system_only_and_known_to_the_pool() -> None:
     from orion.llm.routes import METACOG_LLM_ROUTES, fcc_model_for_route
 
     pool_routes = load_pool_config().routes
-    for name in ("metacog_turn",):
+    for name in ("metacog_turn", "quick_turn"):
         assert name in ACCEPTED_LLM_ROUTES and name in LLM_ROUTE_DISPLAY_ORDER
         assert name in SYSTEM_LLM_ROUTES and name not in BACKGROUND_LLM_ROUTES
         assert normalize_llm_route(name) is None
@@ -130,8 +130,12 @@ def test_turn_routes_are_accepted_system_only_and_known_to_the_pool() -> None:
         assert pool_routes[name].priority == "interactive"
     # same worker as metacog: the gateway must pin the metacog profile for it too
     assert "metacog_turn" in METACOG_LLM_ROUTES
-    # no caller sends quick/agent on a live turn yet: no route without its caller (keyword cathedral)
-    assert "quick_turn" not in pool_routes and "agent_turn" not in pool_routes
+    # quick_turn's caller is cortex-exec's pre-turn repair-pressure probe (2026-10-23); it is the
+    # fast class, not metacog, so it must NOT be pinned to the metacog profile.
+    assert pool_routes["quick_turn"].work_class == "fast"
+    assert "quick_turn" not in METACOG_LLM_ROUTES
+    # no caller sends agent on a live turn yet: no route without its caller (keyword cathedral)
+    assert "agent_turn" not in pool_routes
 
 
 def test_every_accepted_route_is_a_pool_route() -> None:

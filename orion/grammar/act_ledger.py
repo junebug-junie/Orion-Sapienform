@@ -49,7 +49,7 @@ from orion.autonomy.prediction import (
     score_act_outcome,
 )
 from orion.regulation.juniper_turns import JUNIPER_INGRESS_PREDICATE, JUNIPER_TURN_PREDICATE
-from orion.schemas.grammar import ActExpectV1, ActOutcomeV1, ActV1, GrammarEventV1
+from orion.schemas.grammar import ActCostV2, ActExpectV1, ActOutcomeV1, ActV1, GrammarEventV1
 
 logger = logging.getLogger("orion.grammar.act_ledger")
 
@@ -59,6 +59,130 @@ ACT_EVENT_KINDS = frozenset({"act_opened", "act_closed"})
 # producer before the resolver records it as not produced. Covers bus + writer
 # lag only (grammar batches flush in seconds); it is not a second horizon.
 EXPIRY_GRACE_SEC = 120.0
+
+
+# --- rung 3: bind an act to the workspace winner it answers, and close that loop ----------
+#
+# Thinking architecture rung 3 ("bind the winner to action"). An act whose actor answers a
+# world-first workspace source is stamped, at open, with the winning loop it was opened under
+# (``workspace_ref`` = the broadcast's selected open_loop_id), using the ONE binding rule the
+# proposal layer already uses (orion.autonomy.self_shed.bind_workspace_winner: an action was
+# selected, the winner is <= 90 s old and held >= 2 ticks, and the attended ref is one this actor
+# answers). When the act closes, Orion writes its own non-final ``acted`` verdict on that loop in
+# ``attention_loop_outcome`` (actor='orion') with the act's outcome in features_at_close. Never
+# ``resolved``/``dismissed``: those are terminal and would let acting silence Orion's own
+# attention (orion/substrate/attention/verdicts.py TERMINAL_VERDICTS is unchanged).
+#
+# Which actors answer which world source. One row, because it is the only pairing joined in the
+# data rather than asserted: Juniper's chat activity (``world:chat``, and its substrate node) wins
+# the workspace when she is busier than her own week, and Orion's reply is the act that answers it
+# (live 2026-10-21: 11 of 20 hub.chat_reply acts opened while that winner was bindable).
+ACT_ANSWERS_WORKSPACE_REFS: dict[str, tuple[str, ...]] = {
+    "hub.chat_reply": ("world:chat", "node:substrate.chat"),
+}
+
+_WORKSPACE_BINDING_ENABLED = True
+
+
+def configure_act_workspace_binding(enabled: bool) -> None:
+    """SQL_WRITER_ACT_WORKSPACE_BINDING_ENABLED. Off: no stamping, no Orion loop verdicts."""
+    global _WORKSPACE_BINDING_ENABLED
+    _WORKSPACE_BINDING_ENABLED = bool(enabled)
+
+
+def act_workspace_binding_enabled() -> bool:
+    return _WORKSPACE_BINDING_ENABLED
+
+
+_BROADCAST_AT_SQL = text(
+    """
+    SELECT log_id, generated_at,
+           projection_json->>'selected_action_type' AS selected_action_type,
+           projection_json->>'selected_open_loop_id' AS selected_open_loop_id,
+           projection_json->'attended_node_ids' AS attended_node_ids,
+           projection_json->>'dwell_ticks' AS dwell_ticks
+      FROM substrate_attention_broadcast_log
+     WHERE generated_at <= :at AND generated_at > :since
+     ORDER BY generated_at DESC
+     LIMIT 1
+    """
+)
+
+
+def bind_act_to_workspace(conn: Any, *, actor: str, opened_at: datetime) -> str | None:
+    """The open_loop_id of the winner this act answers, or None. Reads the broadcast row current
+    at ``opened_at`` (not "now": the writer may lag the act by seconds), so it is replayable."""
+    refs = ACT_ANSWERS_WORKSPACE_REFS.get(actor)
+    if not refs or not _WORKSPACE_BINDING_ENABLED:
+        return None
+    from orion.autonomy.self_shed import WINNER_MAX_AGE_SEC, bind_workspace_winner
+
+    at = _aware(opened_at)
+    row = conn.execute(_BROADCAST_AT_SQL, {"at": at, "since": at - timedelta(seconds=WINNER_MAX_AGE_SEC)}).mappings().first()
+    if row is None:
+        return None
+    attended = row["attended_node_ids"]
+    if isinstance(attended, str):
+        attended = json.loads(attended)
+    projection = {
+        "selected_action_type": row["selected_action_type"],
+        "selected_open_loop_id": row["selected_open_loop_id"],
+        "generated_at": _aware(row["generated_at"]),
+        "dwell_ticks": int(row["dwell_ticks"] or 0),
+        "attended_node_ids": list(attended or []),
+    }
+    winner, _why = bind_workspace_winner(projection, broadcast_log_id=str(row["log_id"]), binds_to_nodes=refs, now=at)
+    return None if winner is None else winner.open_loop_id
+
+
+_LOOP_SALIENCE_SQL = text(
+    """
+    SELECT (ol->>'salience')::float
+      FROM substrate_attention_broadcast_log l,
+           jsonb_array_elements(l.projection_json->'frame'->'open_loops') ol
+     WHERE l.generated_at >= :since AND l.generated_at <= :until AND ol->>'id' = :loop
+     ORDER BY l.generated_at DESC
+     LIMIT 1
+    """
+)
+
+
+def write_orion_loop_outcome(conn: Any, *, loop_id: str, act: ActV1, value: float, error: float | None,
+                             nats: float | None, source: str, opened_at: datetime | None,
+                             closed_at: datetime) -> str:
+    """Orion's non-final ``acted`` verdict on the loop its act answered. Idempotent per act."""
+    from orion.core.ids import stable_hash_id
+
+    outcome_id = stable_hash_id("loopoutcome", [loop_id, "acted", "orion", act.act_id])
+    from orion.autonomy.self_shed import WINNER_MAX_AGE_SEC
+
+    # From the bound tick (up to 90 s before the open) to the close: the newest salience the loop had.
+    start = _aware(opened_at) if opened_at is not None else _aware(closed_at) - timedelta(hours=24)
+    since = start - timedelta(seconds=WINNER_MAX_AGE_SEC)
+    salience = conn.execute(_LOOP_SALIENCE_SQL, {"since": since, "until": _aware(closed_at), "loop": loop_id}).scalar()
+    features = {
+        "act_id": act.act_id, "actor": act.actor, "verb": act.verb,
+        "signal_id": act.expect.signal_id if act.expect else None,
+        "outcome_value": value, "outcome_source": source, "error": error, "surprise_nats": nats,
+        "opened_at": _aware(opened_at).isoformat() if opened_at is not None else None,
+    }
+    conn.execute(
+        text(
+            """
+            INSERT INTO attention_loop_outcome
+                (outcome_id, loop_id, theme_key, verdict, actor, note, salience_at_close,
+                 weights_version, features_at_close, created_at)
+            VALUES (:outcome_id, :loop_id, :loop_id, 'acted', 'orion', :note, :salience,
+                    'gwt-coalition-v1', CAST(:features AS jsonb), :created_at)
+            ON CONFLICT (outcome_id) DO NOTHING
+            """
+        ),
+        {"outcome_id": outcome_id, "loop_id": loop_id,
+         "note": f"{act.actor} {act.verb} closed {value:.0f} ({source})"[:500],
+         "salience": max(0.0, min(1.0, float(salience or 0.0))),
+         "features": json.dumps(features, default=str), "created_at": _aware(closed_at)},
+    )
+    return outcome_id
 
 
 def _utc_now() -> datetime:
@@ -170,6 +294,7 @@ _INSERT_OPEN_SQL = text(
         parent_act_id = EXCLUDED.parent_act_id,
         test_before = EXCLUDED.test_before,
         session_id = COALESCE(grammar_acts.session_id, EXCLUDED.session_id),
+        workspace_ref = COALESCE(grammar_acts.workspace_ref, EXCLUDED.workspace_ref),
         correlation_id = COALESCE(grammar_acts.correlation_id, EXCLUDED.correlation_id),
         opened_at = EXCLUDED.opened_at,
         horizon_at = EXCLUDED.horizon_at,
@@ -180,13 +305,126 @@ _INSERT_OPEN_SQL = text(
 )
 
 
+def _isolated(conn: Any, what: str, act_id: str, fn: Any, *, log_prefix: str = "act_workspace") -> Any:
+    """Run a rung-3 side step in its own SAVEPOINT. The binding is a trace of the act: a failure
+    (no broadcast table, a bad row) must never abort the act's own open or close, which share
+    the caller's transaction. Returns None on failure."""
+    nested = conn.begin_nested() if hasattr(conn, "begin_nested") else None
+    try:
+        out = fn()
+        if nested is not None:
+            nested.commit()
+        return out
+    except Exception:
+        if nested is not None:
+            nested.rollback()
+        logger.warning("%s_%s_failed act_id=%s", log_prefix, what, act_id, exc_info=True)
+        return None
+
+
+def _stamp_workspace(conn: Any, params: dict[str, Any], act: ActV1, event: GrammarEventV1) -> None:
+    """Writer-stamped workspace_ref (rung 3), only when the producer left it unset."""
+    if params.get("workspace_ref") or act.actor not in ACT_ANSWERS_WORKSPACE_REFS or not _WORKSPACE_BINDING_ENABLED:
+        return
+    loop_id = _isolated(conn, "bind", act.act_id, lambda: bind_act_to_workspace(
+        conn, actor=act.actor, opened_at=event.observed_at or event.emitted_at))
+    if loop_id:
+        params["workspace_ref"] = loop_id
+
+
 def open_act(conn: Any, event: GrammarEventV1) -> None:
     act = event.act
     assert act is not None
     stamp = None
     if act.expect is not None:
         stamp = _load_posterior(conn, act_dispatch_kind(act.verb), act.actor, act.expect.signal_id)
-    conn.execute(_INSERT_OPEN_SQL, _open_params(event, act, stamp=stamp))
+    params = _open_params(event, act, stamp=stamp)
+    _stamp_workspace(conn, params, act, event)
+    conn.execute(_INSERT_OPEN_SQL, params)
+
+
+# --- body economy Patch A2: fill ActCostV2 on close ----------------------------------------------
+#
+# What the act spent, measured by the writer when the producer left it unset. Never 0 for
+# "unknown": a field with no measurement stays None, and a cost with nothing measured stays NULL.
+# Merge order: the close's own cost, then the cost stored at open, then the writer's fill.
+# * seconds: closed_at - opened_at, for a PRODUCER close only (the producer reported when it
+#   finished). A resolver or expired close is stamped at the horizon, so its wall time is the
+#   act's own horizon_sec (a constant, not a measurement) or Juniper's reply latency: left None.
+#   A close-before-open has no wall time either.
+# * gpu_slot_s_by_lane: GPU pool lease time per lane for the act's turn. gpu_pool_events carries
+#   the caller's turn_correlation_id on every lease; the act's correlation_id is that turn. A chat
+#   reply's leases are released BEFORE its act opens (live 10-21: ~1 min), hence the lookback.
+#   Each lease counts once (an expired-then-released lease carries held_ms twice: the max wins).
+#   Known overcount: a durable-run hold and its child calls share one slot but are separate leases.
+#   Live every correlation_id maps to one act; if several acts ever share a turn's correlation_id,
+#   each is charged the whole turn's GPU time.
+GPU_COST_LOOKBACK_SEC = 3600.0
+GPU_COST_CLOSE_GRACE_SEC = 120.0
+_GPU_LEASES_FOR_TURN_SQL = text(
+    """
+    SELECT role, SUM(held_ms) AS held_ms FROM (
+        SELECT lease_id, max(role) AS role, max(held_ms) AS held_ms
+          FROM gpu_pool_events
+         WHERE turn_correlation_id = :corr
+           AND generated_at >= :since AND generated_at <= :until
+           AND event IN ('released', 'expired', 'aborted')
+           AND held_ms IS NOT NULL AND role IS NOT NULL
+         GROUP BY lease_id
+    ) leases
+    GROUP BY role
+    """
+)
+
+
+def _gpu_slot_seconds(conn: Any, corr: str, since: datetime, until: datetime) -> dict[str, float] | None:
+    rows = conn.execute(_GPU_LEASES_FOR_TURN_SQL, {"corr": corr, "since": since, "until": until}).fetchall()
+    out = {str(r[0]): round(float(r[1]) / 1000.0, 3) for r in rows if r[0] is not None and r[1] is not None}
+    return out or None
+
+
+def _stored_cost(raw: Any) -> dict[str, Any]:
+    """grammar_acts.cost_json as stored at open (jsonb arrives decoded; a text double as str)."""
+    if raw is None:
+        return {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return {}
+    return {k: v for k, v in raw.items() if v is not None} if isinstance(raw, dict) else {}
+
+
+def fill_close_cost(conn: Any, act: ActV1, *, opened_at: datetime | None, closed_at: datetime,
+                    correlation_id: str | None, source: str = "producer",
+                    stored: Any = None) -> ActCostV2 | None:
+    """The act's cost: the close's own fields, then the fields stored at open, then every unset
+    field the writer can measure. None when nothing is measured at all."""
+    merged = _stored_cost(stored)
+    close_cost = ActCostV2.from_any(act.cost)
+    if close_cost is not None:
+        merged.update({k: v for k, v in close_cost.model_dump().items() if v is not None})
+    try:
+        cost = ActCostV2(**merged)
+    except Exception:  # noqa: BLE001 -- a malformed stored cost must not lose the close's own
+        logger.warning("act_cost_stored_invalid act_id=%s", act.act_id, exc_info=True)
+        cost = close_cost or ActCostV2()
+    update: dict[str, Any] = {}
+    if cost.seconds is None and opened_at is not None and source == "producer":
+        wall = (closed_at - _aware(opened_at)).total_seconds()
+        if wall >= 0:
+            update["seconds"] = round(wall, 3)
+    if cost.gpu_slot_s_by_lane is None and correlation_id:
+        anchor = _aware(opened_at) if opened_at is not None else closed_at
+        lanes = _isolated(conn, "gpu", act.act_id, lambda: _gpu_slot_seconds(
+            conn, str(correlation_id), anchor - timedelta(seconds=GPU_COST_LOOKBACK_SEC),
+            closed_at + timedelta(seconds=GPU_COST_CLOSE_GRACE_SEC)), log_prefix="act_cost")
+        if lanes:
+            update["gpu_slot_s_by_lane"] = lanes
+    if update:
+        cost = cost.model_copy(update=update)
+    measured = any(v is not None for v in cost.model_dump().values())
+    return cost if measured else None
 
 
 @dataclass(frozen=True)
@@ -210,7 +448,9 @@ def close_act(
     """Close one act by act_id and grade it into L10. First close wins."""
     row = conn.execute(
         text(
-            "SELECT closed_at, predicted, opened_at, horizon_at FROM grammar_acts WHERE act_id = :a FOR UPDATE"
+            "SELECT closed_at, predicted, opened_at, horizon_at, workspace_ref, correlation_id, cost_json "
+            "FROM grammar_acts "
+            "WHERE act_id = :a FOR UPDATE"
         ),
         {"a": act.act_id},
     ).first()
@@ -228,10 +468,20 @@ def close_act(
         params["opened_at"] = None
         params["horizon_at"] = None
         params["open_event_id"] = None
+        # No open time is known; the close is the closest moment the act is placed at.
+        _stamp_workspace(conn, params, act, event)
         conn.execute(_INSERT_OPEN_SQL, params)
         predicted_at_open = stamp.mean if stamp else None
+        workspace_ref = params.get("workspace_ref")
+        opened_at_row = None
+        correlation_id = params.get("correlation_id")
+        stored_cost = None
     else:
         predicted_at_open = None if row[1] is None else float(row[1])
+        workspace_ref = row[4]
+        opened_at_row = row[2]
+        correlation_id = row[5] or (event.correlation_id if event is not None else None)
+        stored_cost = row[6]
 
     value = float(outcome.value)
     observed_at = _aware(outcome.observed_at)
@@ -330,6 +580,8 @@ def close_act(
                 {"p": predicted, "n": prior.n, "c": prior.n == 0, "a": act.act_id},
             )
 
+    cost = fill_close_cost(conn, act, opened_at=opened_at_row, closed_at=observed_at,
+                           correlation_id=correlation_id, source=outcome.source, stored=stored_cost)
     conn.execute(
         text(
             """
@@ -351,11 +603,17 @@ def close_act(
             "row_id": outcome_row_id,
             "closed_at": observed_at,
             "close_event_id": close_event_id,
-            "cost_json": json.dumps(act.cost.model_dump(mode="json")) if act.cost else None,
+            "cost_json": json.dumps(cost.model_dump(mode="json")) if cost is not None else None,
             "now": _utc_now(),
             "act_id": act.act_id,
         },
     )
+    if workspace_ref and _WORKSPACE_BINDING_ENABLED and act.actor in ACT_ANSWERS_WORKSPACE_REFS:
+        # Same transaction as the close, in its own savepoint: the act and Orion's verdict on its
+        # loop land together, and a failed verdict never loses the close.
+        _isolated(conn, "loop_outcome", act.act_id, lambda: write_orion_loop_outcome(
+            conn, loop_id=str(workspace_ref), act=act, value=value, error=error, nats=nats,
+            source=outcome.source, opened_at=opened_at_row, closed_at=observed_at))
     return CloseResult(act.act_id, True, "closed", error=error, surprise_nats=nats, outcome_row_id=outcome_row_id)
 
 

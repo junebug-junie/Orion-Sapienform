@@ -30,10 +30,22 @@ _VALID_HDBSCAN_METRICS = frozenset(
 
 
 class Settings(BaseSettings):
+    HUB_RETRO_COGNITION_ENABLED: bool = Field(default=True, alias="HUB_RETRO_COGNITION_ENABLED")
+    # Action bets (spec 2026-10-23 embodied experience; scripts/retro_experience.py): every planned
+    # Zelda goal is quoted, placed and settled in orion-prediction. Off -> the #2870 planner exactly.
+    HUB_ACTION_BETS_ENABLED: bool = Field(default=True, alias="HUB_ACTION_BETS_ENABLED")
+    HUB_PREDICTION_URL: str = Field(default="http://127.0.0.1:8132", alias="HUB_PREDICTION_URL")
     HUB_RETRO_ENABLED: bool = False
     HUB_RETRO_ORIGIN: str = ""
     HUB_RETRO_SOCKET: str = "/run/orion-retro/retro.sock"
     HUB_RETRO_AUTH_DIR: str = "/run/orion-retro-auth"
+    # Solo leisure play (scripts/retro_leisure.py). Ships on; the allocator act and the doer
+    # gates decide when it actually runs.
+    RETRO_LEISURE_ENABLED: bool = Field(default=True, alias="RETRO_LEISURE_ENABLED")
+    RETRO_LEISURE_GAME_IDS: str = Field(default="the-legend-of-zelda", alias="RETRO_LEISURE_GAME_IDS")
+    RETRO_LEISURE_SESSION_MAX_SEC: float = Field(default=1800.0, ge=60.0, le=1800.0, alias="RETRO_LEISURE_SESSION_MAX_SEC")
+    RETRO_LEISURE_DAILY_MAX_SEC: float = Field(default=5400.0, ge=0.0, le=86400.0, alias="RETRO_LEISURE_DAILY_MAX_SEC")
+    RETRO_LEISURE_MIN_GAP_SEC: float = Field(default=10800.0, ge=0.0, alias="RETRO_LEISURE_MIN_GAP_SEC")
 
     """Configuration for the Orion Hub service, loaded from environment variables."""
 
@@ -478,6 +490,11 @@ class Settings(BaseSettings):
         default=5.0,
         alias="AMBIENT_AUDIO_STALE_AFTER_SEC",
     )
+    # Host reader's live PCM slot ring (tmpfs) for the Cabinet Audio listen button.
+    AMBIENT_AUDIO_LIVE_DIR: str = Field(
+        default="/run/orion-audio/live",
+        alias="AMBIENT_AUDIO_LIVE_DIR",
+    )
     CABINET_AMBIENT_HISTORY_NODE: str = Field(
         default="athena",
         alias="CABINET_AMBIENT_HISTORY_NODE",
@@ -830,6 +847,29 @@ class Settings(BaseSettings):
     # gpu1/gpu2/gpu0. 1 == one read at a time (pre-2026-10-14 behaviour).
     HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT: int = Field(
         default=3, ge=1, le=8, alias="HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT"
+    )
+    # Reading pull (thinking rung 3 follow-up, orion/world_pulse_read/pull.py): the motor
+    # allocator may admit ONE extra Stage 1 read on the seed the lane would claim next. Kill
+    # switch, shipped on. Off = every pull is refused `disabled`; the lane is unchanged either way.
+    HUB_WORLD_PULSE_READ_PULL_ENABLED: bool = Field(
+        default=True, alias="HUB_WORLD_PULSE_READ_PULL_ENABLED"
+    )
+    # Started pulls per UTC day. Default derived from data, not picked: the lane's median reading
+    # day over 30 days (orion/world_pulse_read/pull.py DERIVED_DAILY_CAP = 8).
+    HUB_WORLD_PULSE_READ_PULL_DAILY_CAP: int = Field(
+        default=8, ge=0, le=100, alias="HUB_WORLD_PULSE_READ_PULL_DAILY_CAP"
+    )
+    # Orion's arousal (Redis orion:regulation:latest): `strained` refuses a pull, the same rule the
+    # waking baseline painting follows. Unknown / stale / false changes nothing.
+    HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED: bool = Field(
+        default=True, alias="HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED"
+    )
+    # Orion plays Zelda (2026-10-22, spec section F; scripts/retro_memory_export.py): one
+    # deterministic summary per finished Retro session -> one memory_cards row (provenance
+    # retro_play) + one retro_play_sessions row (Temporal Self source retro_play). Shipped ON;
+    # false writes nothing (a leisure session's play act still closes, at 0).
+    HUB_RETRO_MEMORY_EXPORT_ENABLED: bool = Field(
+        default=True, alias="HUB_RETRO_MEMORY_EXPORT_ENABLED"
     )
     # Pending digest_item seeds older than this many days are marked
     # skipped/stale_digest_item on every Stage 1 tick. 0 disables.
@@ -1200,6 +1240,15 @@ class Settings(BaseSettings):
     )
     HUB_CURIOSITY_SELF_PINNED_FLOOR_DAYS: float = Field(
         default=7.0, alias="HUB_CURIOSITY_SELF_PINNED_FLOOR_DAYS"
+    )
+    # Naming branch of the self-inquiry line: Orion is shown one personality disposition
+    # (GET HUB_CURIOSITY_DURABLE_RUNS_URL/personality/naming/next) and names, rejects or merges
+    # it. Uses an existing self-inquiry slot; never displaces an overdue pinned lived question.
+    HUB_CURIOSITY_SELF_NAMING_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_SELF_NAMING_ENABLED"
+    )
+    HUB_CURIOSITY_SELF_NAMING_DAILY_CAP: int = Field(
+        default=1, alias="HUB_CURIOSITY_SELF_NAMING_DAILY_CAP"
     )
     # Where Orion's own repository is mounted INSIDE the FCC sandbox (the
     # harness governor's compose mounts it read-only at /repo). Rendered into

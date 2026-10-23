@@ -230,6 +230,13 @@ class Settings(BaseSettings):
     )
     self_signal_outcome_min_hours: int = Field(24, ge=1, alias="EQUILIBRIUM_SELF_SIGNAL_OUTCOME_MIN_HOURS")
     self_signal_outcome_grace_sec: float = Field(600.0, ge=0.0, alias="EQUILIBRIUM_SELF_SIGNAL_OUTCOME_GRACE_SEC")
+    # Repeated looks: the association is re-tested every hour, so a clause reaches an open row
+    # only after its verdict (same direction) held on each of the last CONSECUTIVE_HOLDS hourly
+    # computations; a missing hour or a different verdict resets the run. Same rule and default
+    # as orion-thought's SELF_SIGNAL_OUTCOME_CONSECUTIVE_HOLDS. 1 = the old newest-row rule.
+    self_signal_outcome_consecutive_holds: int = Field(
+        6, ge=1, le=48, alias="EQUILIBRIUM_SELF_SIGNAL_OUTCOME_CONSECUTIVE_HOLDS"
+    )
     # Leave windows led by a task_execution channel (glossary category) to the
     # chat_turn trigger while a harness turn is active. Needs the episode gate.
     metacog_telemetry_anomaly_turn_suppress_enable: bool = Field(

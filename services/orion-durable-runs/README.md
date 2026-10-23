@@ -567,6 +567,42 @@ gap longer than three ticks) is one `arousal_transition` row in
 hand-applied). The latest rest-drive reading (`orion:drive:rest:latest`) is embedded verbatim
 for the trace; arousal never reads it. No dial reads arousal yet (spec order 6).
 
+Strain loop part 1 (2026-10-20, `docs/superpowers/specs/2026-10-20-strain-loop-design.md`): a
+level row is written only when the level changes, so a cause that joins an episode already
+strained (the cabinet going critical mid-episode) was never recorded. While strained, the node
+now also writes one row per strain cause new to the episode (`cause_row`, event id
+`...:strained:at:<observed_at>`, `payload.joined`), one seed row (`payload.seed = true`) when
+the episode has nothing recorded yet (the first step after deploy, a lost onset row), and a
+keepalive (`joined = []`) every `STRAIN_KEEPALIVE_SEC` (1,800 s) so the chronology can close an
+arc whose closing row was lost, and a row when the causes present now differ from the last row's
+(a cause left, e.g. the cabinet cooled; at most every `STRAIN_CAUSE_CHANGE_MIN_SEC`, 600 s, so a
+flapping cause costs at most one row per 10 min). Every row's reading carries the causes present
+at that moment. A failed write is retried on the next step. Same table, kind and label, so readers of levels still
+read `strained` (`scripts/analysis/measure_arousal_reader_replay.py` filters them out, since they
+would restart a level's age). The causes already recorded and the last row's time ride in the
+checkpoint as `strain_causes_seen` / `strain_row_at` / `strain_causes_now`.
+Kill switch: `TEMPORAL_SELF_STRAIN_ARCS_ENABLED=false` (no cause rows, no strain arcs).
+
+**Retro play source (2026-10-22, Orion plays Zelda section F).** The chronicle reads orion-hub's
+`retro_play_sessions` (migration `services/orion-sql-db/manual_migration_retro_play_sessions_v1.sql`,
+REQUIRED-BY this service and orion-hub) as source `retro_play`: one `play` arc per finished Retro
+session, shown in the chat stance cue. The query is skipped while the table does not exist
+(`to_regclass`), so the source can never fail the whole read. Kill switch:
+`TEMPORAL_SELF_RETRO_PLAY_ENABLED` (ON).
+
+**Street episodes (2026-10-23, walkway follow-ups spec PR #2763 item 1).** The chronicle reads notable
+outside events as source `street_event`, three reads of one kind: published clean motion stories whose
+rules version passed Juniper's spot-check gate (`vision_motion_story` + `vision_motion_story_verdict`;
+labels carry no people count), doorbell rings (`vision_events`), and graded
+handoffs with p < 0.05 (`vision_handoff_street_outbox`). One `street` arc each, labelled "Outside
+(<camera>): ...", at most `TEMPORAL_SELF_STREET_EPISODES_PER_DAY` (12) a local day. Each read is skipped
+while one of its tables is missing. Log lines: `temporal_self_street_episode arc_id=... source=...` per
+new arc, `temporal_self_street_capped count=...` when the cap kept events out. A story is available at
+its `ended_at` and written a median 49 s later; one in 54 (7 days to 10-23) lands after the 300 s read
+lag and is stored late, not folded. Kill switch: `TEMPORAL_SELF_STREET_EPISODES_ENABLED` (ON); off, the
+source is not read and episodes are room-only again. Deploy order: orion-thought and orion-hub before
+this service (the `street` arc kind is new to `extra="forbid"` frame readers).
+
 Kill switches: `TEMPORAL_SELF_ENABLED=false` (no thread), `ORION_REGULATION_AROUSAL_ENABLED=false`
 (reads `unknown`). Health: `/health` -> `temporal_self`.
 
@@ -625,9 +661,35 @@ deploy). Kill switch: `TEMPORAL_SELF_CHRONICLE_ENABLED=false`. Health: `/health`
 `temporal_self_chronicle`. Eval: `evals/temporal_self_live_replay.py` runs this code path over the
 10-09 fixture on a disposable Postgres (`--source-dsn` reads real tables read-only instead).
 
+## Body: the `physiology` node (2026-10-23, body economy Patch A3, no reader yet)
+
+Organ 1 of the body economy (`docs/superpowers/specs/2026-10-23-organism-body-economy-design.md`).
+After `regulate`, at most once per `ORION_PHYSIOLOGY_MIN_INTERVAL_SEC` (100 s; chat-turn steps in
+between are skipped), the node reads every constraint Orion lives under and writes one
+`PhysiologyStateV1` (`orion/schemas/physiology.py`):
+
+| constraint | level (unit) | line | source |
+|---|---|---|---|
+| `heat` | cabinet C | soft line `ORION_PHYSIOLOGY_HEAT_SOFT_LINE_C` (31) | this step's own regulate inputs (no second query) |
+| `energy` | Orion month-to-date USD (local month) | `ORION_PHYSIOLOGY_ENERGY_MONTHLY_ENVELOPE_USD` (unset: no line) | `orion_energy_hourly` x `energy_cost_accrued` next-kWh rate (newest `computed_at`; unpriced recent hours carry the newest rate) |
+| `lane:<role>` | GPU slot-seconds held in the last `ORION_PHYSIOLOGY_LANE_WINDOW_SEC` | discovered slots x window (pool state RPC) | `gpu_pool_events` closes (`held_ms`) + open grants |
+| `attention:juniper` | outreach messages sent today | `HUB_ENDOGENOUS_OUTREACH_DAILY_CAP` (owner: Hub) | `endogenous_outreach_decisions` |
+| `claude` | limit events, plus `state` | not limited | `orion:substrate:claude_limit` (`ClaudeLimitObservationV1`), latest per kind in memory |
+
+A failed, stale or never-observed source is `level=None` with a `no_reading` reason, never 0. Pure
+logic: `orion/physiology/body.py`; reads: `app/physiology_store.py`. Transport: Redis
+`orion:physiology:latest` (TTL `ORION_PHYSIOLOGY_REDIS_TTL_SEC`) and bus `orion:physiology:state` ->
+sql-writer `physiology_state` (one row per tick). `/health` -> `temporal_self.physiology` shows the
+last tick id and every `no_reading`. Own 30 s timeout; a failure is the step warning
+`physiology_failed` and never touches the regulation reading. Off: `ORION_PHYSIOLOGY_ENABLED=false`.
+
+Known limits: lane slot-seconds count a durable-run hold and its child calls separately (pool events
+carry no `hold_lease_id`); `claude` reads `no_observation` while orion-cocreation-signals'
+`COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED` is false.
+
 ## Runtime immune sweep: the `immune` node (2026-10-13, Temporal Self R4)
 
-The thread runs `ingest -> regulate -> immune -> chronicle -> done`. `immune` asks whether any of
+The thread runs `ingest -> regulate -> physiology -> immune -> chronicle -> done`. `immune` asks whether any of
 Orion's own gauges has stopped telling the truth. It runs only while arousal reads `idle`, at most
 once per `TEMPORAL_SELF_IMMUNE_INTERVAL_SEC` (6 h; the last run time is in the checkpoint and
 carries over midnight). It reads 24 h of every field channel whose glossary entry carries
@@ -710,6 +772,43 @@ keeps running. Kill switch: `PERSONALITY_ENABLED=false` (tables stay).
 
 Tests: `tests/test_personality_loop.py` (fakes), `tests/test_personality_postgres.py` (real
 Postgres, needs `ORION_ADMISSION_TEST_DSN`).
+
+### Orion names their own dispositions (2026-10-20)
+
+Orion is shown one disposition at a time and says what it is: a name, "not me", or "the same as
+this neighbor". This service picks what to show, and applies Orion's answer to the graph.
+
+Spec: `docs/superpowers/specs/2026-10-17-personality-orion-names-dispositions-design.md` (decisions
+2026-10-20). Needs `services/orion-sql-db/manual_migration_personality_naming_v1.sql` applied before
+deploy (new `personality_disposition` columns and the `orion_disposition_naming` table).
+
+- `GET /personality/naming/next` returns the next `DispositionNamingPacketV1` or 204. Due order
+  (`orion/personality/naming.py`, `naming_due`): an active node never shown, strongest first; a node
+  whose last answer was empty or refused, again after 3 days, at most 3 tries; a named or rejected node
+  only when its evidence doubled or a new source now counts toward promotion, never sooner than 14
+  days. Reading the packet marks nothing; the node counts as shown when Orion's answer row is applied.
+- `GET /personality/naming?disposition_id=&limit=50` is the naming log, newest first.
+- `/personality/dispositions` rows add `name`, `name_sentence`, `orion_verdict`, `merged_into`,
+  `name_grounding_rank`, `name_grounding_margin`, `named_at`, `last_shown_at`, `shown_count`.
+- Each tick reads `orion_disposition_naming` after the `naming` cursor (keyset `created_at,
+  naming_id`, same read lag as the sources) and applies it after the fold, in the same transaction
+  (`graph.apply_namings`). NAME sets the name only. REJECT marks the node; it keeps matching and
+  fading, and leaves the frame. MERGE pools B into A only at centroid cosine >= 0.85
+  (`merge_min_cosine`, set from P0 live cosines) and retires B with `merged_into`; otherwise
+  `apply_status=merge_too_far`. No verdict adds a hit. Each applied row logs
+  `personality_naming_applied naming=<id> verdict=<v> grounding_rank=<n> margin=<x> apply_status=<s>`
+  after commit.
+- Grounding: `name + " " + sentence` is embedded and ranked against every non-retired centroid.
+  Recorded only, never a refusal. A failed embed holds the naming cursor for up to 3 ticks, then the
+  name is applied without grounding.
+- Own-name echo: evidence whose text contains the matched node's own current name still counts
+  (`lane_counts`, `evidence_count`) but adds no weight, and is stored with `meta.cites_own_name=true`.
+- Kill switch: `PERSONALITY_NAMING_APPLY_ENABLED=false` (answers wait in the table, the route answers 204).
+- Roll back one merge: `scripts/personality_unmerge.py --disposition <B>` (dry run; `--apply` writes;
+  approximate for A because the merge clamp is not reversible; stop the loop first).
+
+Tests: `orion/personality/tests/test_naming.py`, `tests/test_personality_naming.py`, and the naming test
+in `tests/test_personality_postgres.py`.
 
 ### Situation on every piece of evidence (2026-10-16)
 

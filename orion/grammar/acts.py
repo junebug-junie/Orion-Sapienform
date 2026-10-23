@@ -150,6 +150,8 @@ def act_closed_event(
     source_service: str,
     source_component: str,
     note: str = "",
+    # V1 only until every reader of orion:grammar:event runs ActCostV2-aware code (consumer-first,
+    # orion/schemas/grammar.py ActCostV2). The act ledger fills V2 fields itself on close.
     cost: ActCostV1 | None = None,
     correlation_id: str | None = None,
     session_id: str | None = None,

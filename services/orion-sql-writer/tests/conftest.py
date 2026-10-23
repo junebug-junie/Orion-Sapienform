@@ -116,7 +116,9 @@ DB_REACHABLE = _database_is_reachable()
 
 # Measured, not guessed -- see the note above. Adding a module here must be
 # justified by showing it actually fails against an unreachable database.
-_DB_DEPENDENT_MODULES = {"test_grammar_ledger_integration", "test_act_ledger_integration"}
+_DB_DEPENDENT_MODULES = {
+    "test_grammar_ledger_integration", "test_act_ledger_integration", "test_act_workspace_binding_integration",
+}
 
 _TESTS_DIR = Path(__file__).resolve().parent
 

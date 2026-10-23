@@ -25,7 +25,7 @@ Second Rabbit listener (`app/pre_turn_appraisal.py`) serves Hub pre-turn apprais
 
 1. Hub publishes `PreTurnAppraisalRequestV1` on `orion:cortex:pre_turn_appraisal:request`.
 2. Handler loops `paradigms_requested`, builds each paradigm from `PARADIGM_REGISTRY`, runs with timeout from `req.options.timeout_ms`.
-3. `repair_pressure` paradigm calls LLM Gateway with `return_logprobs=true` (`REPAIR_PRESSURE_PROBE_ROUTE`, default `quick`).
+3. `repair_pressure` paradigm calls LLM Gateway with `return_logprobs=true` (`REPAIR_PRESSURE_PROBE_ROUTE`, default `quick_turn`). A refused, empty, or unparseable probe marks the paradigm failed with a reason in `failure_reasons` (e.g. `shed:cabinet_hot`); its level is unknown, never 0.0.
 4. Kind scores + weights (`REPAIR_PRESSURE_WEIGHTS_V2_PATH`) feed `assemble_repair_contract_delta()`; contract metadata attached when mode changes.
 5. Reply on `orion:cortex:pre_turn_appraisal:result:{correlation_id}` as `TurnAppraisalBundleV1`.
 
@@ -35,7 +35,7 @@ Second Rabbit listener (`app/pre_turn_appraisal.py`) serves Hub pre-turn apprais
 | :--- | :--- | :--- |
 | `ENABLE_PRE_TURN_APPRAISAL_HANDLER` | `true` (main only) | Register Rabbit listener on `orion:cortex:pre_turn_appraisal:request`. Lane replicas: `false`. |
 | `REPAIR_PRESSURE_WEIGHTS_V2_PATH` | `config/substrate/repair_pressure_weights.v2.yaml` | Kind weights for level reduction. |
-| `REPAIR_PRESSURE_PROBE_ROUTE` | `quick` | LLM Gateway route for logprob probes. |
+| `REPAIR_PRESSURE_PROBE_ROUTE` | `quick_turn` | LLM Gateway route for logprob probes. `quick_turn` is the fast class at interactive pool priority, so the heat reflex never sheds it (on `quick` it was shed on 19/19 turns 2026-10-20..21). The probe's envelope carries the turn's correlation id, so its pool lease joins to the turn. |
 | `CHANNEL_PRE_TURN_APPRAISAL_REQUEST` | `orion:cortex:pre_turn_appraisal:request` | Request channel. |
 | `CHANNEL_PRE_TURN_APPRAISAL_RESULT_PREFIX` | `orion:cortex:pre_turn_appraisal:result` | Reply channel prefix. |
 

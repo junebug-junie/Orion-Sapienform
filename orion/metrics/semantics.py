@@ -104,6 +104,7 @@ PROMPT_INVENTORY_URNS: frozenset[str] = frozenset(
         "metric://field_channel/orion-substrate-runtime/node:substrate.chat.prediction_error",
         "metric://field_channel/orion-substrate-runtime/node:substrate.codebase.prediction_error",
         "metric://field_channel/orion-substrate-runtime/node:substrate.route.prediction_error",
+        "metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error",
         "metric://inner_state/orion-field-digester/field_state.v1#queue_contention_score",
         "metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1#coalition_stability_score",
         "metric://inner_state/orion-cortex-exec/attention_salience_trace.v1#salience",

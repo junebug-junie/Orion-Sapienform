@@ -26,6 +26,12 @@ if "--running-profile-services" in args:
         if owner == svc and profile not in skip:
             print(profile + "\\t" + name)
     raise SystemExit(0)
+if "--running-extra-compose" in args:
+    svc = args[args.index("--running-extra-compose") + 1]
+    for line in os.environ.get("FAKE_EXTRA", "").split(";"):
+        if line and line.split(",")[0] == svc:
+            print(line.split(",")[1] + "\\t" + line.split(",")[2])
+    raise SystemExit(0)
 if "--pool-held-services" in args:
     svc = args[args.index("--pool-held-services") + 1]
     # FAKE_POOL answers the first call, FAKE_POOL_AFTER (when set) every later one:
@@ -59,6 +65,7 @@ def _run(
     *,
     plan: str,
     profiles: str = "",
+    extra: str = "",
     pool: str = "",
     pool_after: str | None = None,
     pool_rc: int | None = None,
@@ -70,6 +77,7 @@ def _run(
     checker: str | None = None,
     applier: str | None = None,
     safe_build_body: str | None = None,
+    init_git: bool | str = False,
 ):
     fake_root = tmp_path / "repo"
     fake_scripts = fake_root / "scripts"
@@ -95,10 +103,31 @@ def _run(
     )
     safe_build.chmod(0o755)
 
+    if init_git:
+        def g(*cmd, cwd=fake_root):
+            subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=T", *cmd],
+                           cwd=cwd, check=True, capture_output=True)
+        g("init", "-q", "-b", "main")
+        g("add", "-A")
+        g("commit", "-qm", "init")
+        remote = tmp_path / "remote.git"
+        g("init", "--bare", "-q", str(remote), cwd=tmp_path)
+        g("remote", "add", "origin", str(remote))
+        g("push", "-qu", "origin", "main")
+        if init_git == "stale":  # origin/main already ahead when the run starts
+            other = tmp_path / "other"
+            g("clone", "-q", "-b", "main", str(remote), str(other), cwd=tmp_path)
+            (other / "ahead.txt").write_text("ahead\n")
+            g("add", "ahead.txt", cwd=other)
+            g("commit", "-qm", "ahead", cwd=other)
+            g("push", "-q", "origin", "main", cwd=other)
+
     env = os.environ.copy()
+    env.pop("ORION_DEPLOY_PINNED_HEAD", None)
     env["REBUILD_TEST_CAPTURE"] = str(capture)
     env["FAKE_PLAN"] = plan
     env["FAKE_PROFILES"] = profiles
+    env["FAKE_EXTRA"] = extra
     env["FAKE_POOL"] = pool
     env["FAKE_POOL_CALLS"] = str(tmp_path / "pool-calls")
     env.pop("FAKE_POOL_AFTER", None)
@@ -559,3 +588,88 @@ def test_nothing_to_rebuild_still_leaves_a_log_line(tmp_path: Path) -> None:
     assert calls == []
     lines = _log_lines(tmp_path)
     assert len(lines) == 1 and " NOTHING " in lines[0], lines
+
+
+# --- Second compose files (2026-10-20: Qwen caption lane ran stale for days) ---
+
+
+def test_running_extra_compose_file_is_rebuilt_from_that_file(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-vision-host,build",
+        extra="orion-vision-host,docker-compose.circe-qwen.yml,vision-host-circe-qwen",
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == [
+        "orion-vision-host up -d --build",
+        "orion-vision-host --compose-file docker-compose.circe-qwen.yml up -d --build --no-deps vision-host-circe-qwen",
+    ]
+
+
+def test_extra_compose_file_gets_force_recreate_with_its_stack(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-vision-host,recreate",
+        extra="orion-vision-host,docker-compose.circe-qwen.yml,vision-host-circe-qwen",
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls[-1] == "orion-vision-host --compose-file docker-compose.circe-qwen.yml up -d --build --no-deps --force-recreate vision-host-circe-qwen"
+
+
+def test_failed_extra_compose_file_fails_its_stack(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-vision-host,build",
+        extra="orion-vision-host,docker-compose.circe-qwen.yml,vision-host-circe-qwen",
+        safe_build_body='case "$*" in *circe-qwen*) exit 9;; esac\n',
+    )
+    assert "FAILED orion-vision-host/docker-compose.circe-qwen.yml (exit 9)" in completed.stderr
+    assert completed.returncode != 0
+
+
+def test_dry_run_reports_extra_compose_files_without_building(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-vision-host,build",
+        extra="orion-vision-host,docker-compose.circe-qwen.yml,vision-host-circe-qwen",
+        extra_args=["--dry-run"],
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == []
+    assert "would rebuild running extra compose file: orion-vision-host --compose-file docker-compose.circe-qwen.yml vision-host-circe-qwen" in completed.stdout
+
+
+def test_no_extra_compose_means_plain_up_only(tmp_path: Path) -> None:
+    completed, calls = _run(tmp_path, plan="orion-vision-host,build")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == ["orion-vision-host up -d --build"]
+
+
+def test_every_safe_build_call_is_pinned_to_the_run_start_head(tmp_path: Path) -> None:
+    """2026-10-20: a PR merge mid-run refused every remaining service. The run
+    hands the wrapper the commit it started on so it judges against that."""
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-a,build;orion-b,build",
+        init_git=True,
+        safe_build_body='echo "PIN=$ORION_DEPLOY_PINNED_HEAD" >> "$REBUILD_TEST_CAPTURE"\n',
+    )
+    assert completed.returncode == 0, completed.stderr
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp_path / "repo",
+                          capture_output=True, text=True, check=True).stdout.strip()
+    pins = [c for c in calls if c.startswith("PIN=")]
+    assert pins and set(pins) == {f"PIN={head}"}
+
+
+def test_run_started_on_stale_main_is_not_pinned(tmp_path: Path) -> None:
+    """A run that starts behind origin/main must not get a pin, or the wrapper
+    would accept the stale main it used to refuse."""
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-a,build",
+        init_git="stale",
+        safe_build_body='echo "PIN=$ORION_DEPLOY_PINNED_HEAD" >> "$REBUILD_TEST_CAPTURE"\n',
+    )
+    assert completed.returncode == 0, completed.stderr
+    pins = [c for c in calls if c.startswith("PIN=")]
+    assert pins == ["PIN="]

@@ -72,12 +72,14 @@ from app.models import (
     DurableRunStateSQL,
     GpuPoolEventSQL,
     GpuPoolStateSQL,
+    PhysiologyStateSQL,
     TransportBaselineHourlySQL,
     SelfSignalHourSQL,
     SelfSignalOutcomeAssociationSQL,
     FieldChannelAnomalyScoreSQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
+    DispositionNamingSQL,
     SelfSenseEvalLogSQL,
     SocialRoomTurnSQL,
     ExternalRoomMessageSQL,
@@ -127,11 +129,14 @@ from orion.schemas.curiosity_supervisor import HopReadingV1
 from orion.schemas.durable_run import DurableRunStateV1
 from orion.schemas.gpu_pool import GpuPoolEventV1, GpuPoolStateV1
 from app.models.gpu_pool_state import state_history_row
+from app.models.physiology_state import physiology_state_row
+from orion.schemas.physiology import PhysiologyStateV1
 from orion.schemas.telemetry.transport_baseline_hourly import TransportBaselineHourlyV1
 from orion.schemas.self_signal_outcome import SelfSignalHourV1, SelfSignalOutcomeAssociationV1
 from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
 from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
 from orion.schemas.self_concept_history import SelfConceptHistoryV1
+from orion.schemas.personality import DispositionNamingV1
 from orion.schemas.self_sense import SelfSenseEvalV1
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
@@ -263,6 +268,7 @@ INSERT_ONLY_MODELS = {
     JournalEntrySQL,
     GpuPoolEventSQL,
     GpuPoolStateSQL,
+    PhysiologyStateSQL,
     TransportBaselineHourlySQL,
     SelfSignalOutcomeAssociationSQL,
     FieldChannelAnomalyScoreSQL,
@@ -274,6 +280,7 @@ INSERT_ONLY_MODELS = {
     DurableRunStateSQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
+    DispositionNamingSQL,
     SocialRoomTurnSQL,
     ChatResponseFeedbackSQL,
     MindRunSQL,
@@ -547,12 +554,14 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "DurableRunStateSQL": (DurableRunStateSQL, DurableRunStateV1),
     "GpuPoolEventSQL": (GpuPoolEventSQL, GpuPoolEventV1),
     "GpuPoolStateSQL": (GpuPoolStateSQL, GpuPoolStateV1),
+    "PhysiologyStateSQL": (PhysiologyStateSQL, PhysiologyStateV1),
     "TransportBaselineHourlySQL": (TransportBaselineHourlySQL, TransportBaselineHourlyV1),
     "SelfSignalHourSQL": (SelfSignalHourSQL, SelfSignalHourV1),
     "SelfSignalOutcomeAssociationSQL": (SelfSignalOutcomeAssociationSQL, SelfSignalOutcomeAssociationV1),
     "FieldChannelAnomalyScoreSQL": (FieldChannelAnomalyScoreSQL, FieldChannelAnomalyScoreV1),
     "ChatStanceBeliefLogSQL": (ChatStanceBeliefLogSQL, ChatStanceBeliefLogV1),
     "SelfConceptHistorySQL": (SelfConceptHistorySQL, SelfConceptHistoryV1),
+    "DispositionNamingSQL": (DispositionNamingSQL, DispositionNamingV1),
     "SelfSenseEvalLogSQL": (SelfSenseEvalLogSQL, SelfSenseEvalV1),
     "SocialRoomTurnSQL": (SocialRoomTurnSQL, SocialRoomTurnV1),
     "ExternalRoomMessageSQL": (ExternalRoomMessageSQL, ExternalRoomMessageV1),
@@ -2159,7 +2168,14 @@ async def _write(
             )
             raise
         data = (state_history_row(obj) if sql_model_cls is GpuPoolStateSQL else
+                physiology_state_row(obj) if sql_model_cls is PhysiologyStateSQL else
                 obj.model_dump() if hasattr(obj, "model_dump") else obj.dict())
+        if sql_model_cls is DispositionNamingSQL:
+            # jsonb columns hold the nested packet (datetimes inside); the engine's serializer is
+            # plain json.dumps. Top-level written_at stays a datetime for its timestamptz column.
+            as_json = obj.model_dump(mode="json")
+            for key in ("shown", "evidence_refs", "refused_reasons"):
+                data[key] = as_json[key]
     else:
         data = payload if isinstance(payload, dict) else {}
 

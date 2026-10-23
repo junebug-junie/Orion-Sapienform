@@ -8,8 +8,11 @@ import uuid
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 from settings import Settings
-from .contracts import Start, Control, Input, ScriptControl
+from .contracts import (Start, Control, Input, ScriptControl, Goal, LoadSave, GoalV2,
+                        LeisureControl, LeisureScriptControl)
 from .session import Sessions
+from .zelda.observe import PROFILE as ZELDA_PROFILE
+from .zelda import atlas as zelda_atlas
 
 
 def create_app(settings=None):
@@ -73,18 +76,79 @@ def create_app(settings=None):
 
     @app.post('/sessions')
     async def start(body: Start, request: Request):
-        return await manager().start(body.game_id, body.idempotency_key, auth(request.headers))
+        return await manager().start(body.game_id, body.idempotency_key, auth(request.headers), body.save_id)
+
+    @app.get('/games/{game_id}/saves')
+    async def saves(game_id: str):
+        return manager().list_saves(game_id)
 
     @app.get('/sessions/{sid}')
     async def status(sid: str, request: Request):
         return owned(sid, request.headers).session
 
+    def zelda(m):
+        return m.session.get('game_profile') == ZELDA_PROFILE
+
+    def sponsor_live(m, body):
+        # A browser sponsor must hold a live input socket. A leisure sponsor (server-side,
+        # no browser) is only accepted on a Zelda session, and the arbiter lets any human
+        # acquire or takeover preempt it at once.
+        if body.connection_id is not None:
+            if body.connection_id not in m.connections: raise ValueError('connection_not_live')
+        elif not zelda(m): raise ValueError('leisure_requires_zelda')
+        return body.sponsor()
+
+    @app.get('/sessions/{sid}/atlas')
+    async def atlas(sid: str, request: Request):
+        m = owned(sid, request.headers)
+        z = m.session.get('zelda') or {}
+        lineage = (z.get('atlas') or {}).get('lineage_id'); obs = z.get('observation') or {}
+        if not lineage: raise HTTPException(404, 'no_atlas')
+        doc = await asyncio.to_thread(zelda_atlas.load, settings.saves, lineage)
+        if doc is None: raise HTTPException(404, 'atlas_not_written_yet')
+        observed = obs.get('status') == 'observed'
+        # Unknown stays unknown: no level 0 or room -1 stand-ins.
+        return zelda_atlas.neighbourhood(doc, obs.get('level') if observed else 'unknown',
+                                         obs.get('room') if observed else None)
+
     @app.post('/sessions/{sid}/{operation}')
     async def lifecycle(sid: str, operation: str, request: Request):
         m = owned(sid, request.headers)
+        if operation == 'goal' and zelda(m):
+            if not settings.cognition_enabled: raise HTTPException(503, 'retro_cognition_disabled')
+            try: body = GoalV2.model_validate_json(await request.body())
+            except ValidationError: raise HTTPException(422, 'invalid_goal')
+            if body.generation != m.generation: raise ValueError('session_generation_mismatch')
+            return await m.command('goal', sponsor_live(m, body),
+                                   body.model_dump(exclude={'connection_id', 'leisure_id', 'generation'}))
+        if operation in ('scripted', 'control'):
+            raw = await request.body()
+            try: parsed = json.loads(raw)
+            except (ValueError, RecursionError): parsed = None
+            leisure = isinstance(parsed, dict) and parsed.get('leisure_id') is not None
+            if leisure:
+                model = LeisureScriptControl if operation == 'scripted' else LeisureControl
+                try: body = model.model_validate_json(raw)
+                except ValidationError: raise HTTPException(422, 'invalid_'+('script_control' if operation == 'scripted' else 'control'))
+                if operation == 'scripted':
+                    if not settings.cognition_enabled: raise HTTPException(503, 'retro_cognition_disabled')
+                    if body.generation != m.generation: raise ValueError('session_generation_mismatch')
+                    return await m.command('scripted', sponsor_live(m, body),
+                                           body.model_dump(exclude={'connection_id', 'leisure_id', 'generation'}))
+                return await m.command('control', sponsor_live(m, body),
+                                       dict(port=body.port, action=body.action, leisure=body.leisure_id is not None))
+        if operation == 'goal':
+            if not settings.cognition_enabled: raise HTTPException(503, 'retro_cognition_disabled')
+            try: body = Goal.model_validate_json(await request.body())
+            except ValidationError: raise HTTPException(422, 'invalid_goal')
+            if body.generation != m.generation: raise ValueError('session_generation_mismatch')
+            if body.connection_id not in m.connections: raise ValueError('connection_not_live')
+            return await m.command('goal', body.connection_id,
+                                   body.model_dump(exclude={'connection_id', 'generation'}))
         if operation == 'scripted':
             try: body = ScriptControl.model_validate_json(await request.body())
             except ValidationError: raise HTTPException(422, 'invalid_script_control')
+            if body.cognition and not settings.cognition_enabled: raise HTTPException(503, 'retro_cognition_disabled')
             if body.generation != m.generation: raise ValueError('session_generation_mismatch')
             if body.connection_id not in m.connections: raise ValueError('connection_not_live')
             return await m.command('scripted', body.connection_id,
@@ -96,6 +160,15 @@ def create_app(settings=None):
             return await m.command('control', body.connection_id,
                                    dict(port=body.port, action=body.action))
         if operation in ('pause','resume'): return await m.command(operation)
+        if operation in ('save', 'load'):
+            if not m.save_enabled(): raise ValueError('saves_unavailable')
+            if operation == 'save': return await m.command('save')
+            try: body = LoadSave.model_validate_json(await request.body())
+            except ValidationError: raise HTTPException(422, 'invalid_load')
+            # Refuse a missing or mismatched save before it reaches the worker; the
+            # worker re-checks identity and digest against the core it actually loaded.
+            m.saves.meta(m.session['game_id'], body.save_id, m.identity(m.session['game_id']))
+            return await m.command('load', data={'save_id': body.save_id})
         if operation == 'stop':
             await m.stop(); return m.session
         raise HTTPException(404)

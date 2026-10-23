@@ -96,3 +96,26 @@ def test_worker_reads_arousal_only_through_the_flagged_reader():
     src = (REPO / "services/orion-proposal-runtime/app/worker.py").read_text()
     assert "arousal_level=self._baseline_arousal_level" in src
     assert "enabled=bool(self._settings.visual_baseline_arousal_enabled)" in src
+
+
+def test_deferrals_are_recorded_with_their_first_time_and_cleared_on_issue():
+    """2026-10-20: the checkpoint names the deferral run so the painting-gap alert can cite it.
+    Live 10-18 12:07 -> 10-20: every due baseline deferred, and nothing recorded why or since when."""
+    _, state, _ = b.schedule(activity(), {}, now=NOW, policy=POLICY, arousal_level=Probe("strained"))
+    assert state[b.DEFERRAL_KEY] == {"reason": "arousal_strained", "since": NOW.isoformat(), "last_at": NOW.isoformat()}
+    later = NOW + timedelta(seconds=POLICY.retry_sec + 1)
+    _, state, reason = b.schedule(activity(observed_at=later), json.loads(json.dumps(state)), now=later,
+                                  policy=POLICY, arousal_level=Probe("strained"))
+    assert reason == "arousal_strained"
+    assert state[b.DEFERRAL_KEY] == {"reason": "arousal_strained", "since": NOW.isoformat(), "last_at": later.isoformat()}
+    issue_at = later + timedelta(seconds=POLICY.retry_sec + 1)
+    issued, state, _ = b.schedule(activity(observed_at=issue_at), state, now=issue_at, policy=POLICY,
+                                  arousal_level=Probe("idle"))
+    assert issued is not None and b.DEFERRAL_KEY not in state
+
+
+def test_a_new_painting_clears_an_old_deferral():
+    _, state, _ = b.schedule(activity(), {}, now=NOW, policy=POLICY, arousal_level=Probe("strained"))
+    painted = activity(last_success_at=NOW, last_success_chain_id="new", last_success_sha256="a" * 64)
+    _, state, reason = b.schedule(painted, state, now=NOW + timedelta(seconds=60), policy=POLICY)
+    assert reason == "visual_baseline_not_due" and b.DEFERRAL_KEY not in state

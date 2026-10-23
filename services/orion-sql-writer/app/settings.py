@@ -68,12 +68,15 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "durable.run.state.v1": "DurableRunStateSQL",
     "gpu_pool.event.v1": "GpuPoolEventSQL",
     "gpu_pool.state.v1": "GpuPoolStateSQL",
+    # Body economy Patch A3: one row per Body-organ tick (durable-runs physiology node).
+    "physiology.state.v1": "PhysiologyStateSQL",
     "transport_baseline.hourly.v1": "TransportBaselineHourlySQL",
     "self_signal.hour.v1": "SelfSignalHourSQL",
     "self_signal.outcome_association.v1": "SelfSignalOutcomeAssociationSQL",
     "field_channel_anomaly.score.v1": "FieldChannelAnomalyScoreSQL",
     "chat_stance.belief.write.v1": "ChatStanceBeliefLogSQL",
     "self_concept.history.write.v1": "SelfConceptHistorySQL",
+    "personality.naming.v1": "DispositionNamingSQL",
     "self_sense.eval.write.v1": "SelfSenseEvalLogSQL",
     "journal.entry.index.v1": "JournalEntryIndexSQL",
     "evidence.unit.v1": "EvidenceUnitSQL",
@@ -202,12 +205,14 @@ class Settings(BaseSettings):
             "orion:durable:run:state",
             "orion:gpu_pool:event",
             "orion:gpu_pool:state",
+            "orion:physiology:state",
             "orion:equilibrium:transport_baseline:hourly",
             "orion:equilibrium:self_signal:hour",
             "orion:equilibrium:self_signal:outcome_association",
             "orion:field_channel:anomaly_score",
             "orion:chat_stance:belief:write",
             "orion:self_concept:history:write",
+            "orion:personality:naming",
             "orion:self_sense:eval:write",
             "orion:journal:index",
             "orion:evidence:index:upsert",
@@ -439,6 +444,11 @@ class Settings(BaseSettings):
     gpu_pool_events_retention_days: int = Field(30, alias="GPU_POOL_EVENTS_RETENTION_DAYS")
 
     gpu_pool_state_history_retention_days: int = Field(30, alias="GPU_POOL_STATE_HISTORY_RETENTION_DAYS")
+    # self_signal_outcome_association: ~21 rows/hour (equilibrium's hourly rollup). Readers need
+    # only each pair's last few hours (consecutive-holds rule); 30 days of audit history. 0 disables.
+    self_signal_outcome_association_retention_days: int = Field(
+        30, alias="SELF_SIGNAL_OUTCOME_ASSOCIATION_RETENTION_DAYS"
+    )
 
     # 15 -> 3 days (2026-08-20, Juniper's call, made against measured numbers).
     #
@@ -545,6 +555,12 @@ class Settings(BaseSettings):
     # Juniper's answers, learned accept/reject bars, "probably X" guesses for
     # unnamed clusters. Off = no album, bars or guesses are written.
     vision_person_model_enabled: bool = Field(True, alias="VISION_PERSON_MODEL_ENABLED")
+    # One record per person (2026-10-22, app/person_record.py): camera names
+    # link to person rows, Juniper's answers become person facts, and Orion asks
+    # her about people. False: none of that is written or asked.
+    person_record_enabled: bool = Field(True, alias="PERSON_RECORD_ENABLED")
+    # "Who is X to you?" style questions per local day, their own budget (0 = none).
+    person_fact_ask_daily_cap: int = Field(3, alias="PERSON_FACT_ASK_DAILY_CAP")
     # Bound on the false-accept rate of each person's accept bar (conformal).
     vision_person_false_accept_alpha: float = Field(0.05, alias="VISION_PERSON_FALSE_ACCEPT_ALPHA")
     # A crop's score is the mean of its top-k cosines to the person's album.
@@ -594,6 +610,9 @@ class Settings(BaseSettings):
     # since local midnight. Separate from ORION_ASK_DAILY_CAP (the slow
     # 10-sightings rule) and from the memory confirmation caps.
     vision_confirm_ask_daily_cap: int = Field(6, alias="VISION_CONFIRM_ASK_DAILY_CAP")
+    # Daily cap for "Is this <name>?" asks (vision_person_confirm), since local
+    # midnight. Separate from ORION_ASK_DAILY_CAP, which the slow rule uses up first.
+    vision_person_confirm_ask_daily_cap: int = Field(6, alias="VISION_PERSON_CONFIRM_ASK_DAILY_CAP")
     # Splitting individuals from Juniper's picture answers (2026-10-16,
     # docs/superpowers/specs/2026-10-16-vision-individual-split-proposal.md).
     # A picture she marks "someone else" moves out of the asked individual into
@@ -635,6 +654,15 @@ class Settings(BaseSettings):
     # and zones depend on it.
     vision_motion_frame_width: float = Field(2560.0, gt=0.0, alias="VISION_MOTION_FRAME_WIDTH")
     vision_motion_frame_height: float = Field(1920.0, gt=0.0, alias="VISION_MOTION_FRAME_HEIGHT")
+    # Per-stream box pixel space, "stream=WxH,..." (e.g. "doorbell=1920x1440").
+    # Used only for a crop that does not carry the detector's own frame size
+    # (vision_crop_observation.frame_width/height, recorded since 2026-10-20);
+    # a stream with no entry uses the global size above. Empty by default: the
+    # doorbell's real size is not measured yet, and a guess is worse than none.
+    vision_motion_frame_size_by_stream: str = Field("", alias="VISION_MOTION_FRAME_SIZE_BY_STREAM")
+    # A story's first/last box within this share of the frame from an edge
+    # entered/left through that edge (entry_edge/exit_edge); else "inside".
+    vision_motion_edge_zone_frac: float = Field(0.05, ge=0.0, le=0.5, alias="VISION_MOTION_EDGE_ZONE_FRAC")
     # Stories starting before this are marked clean=false (RTSP smear before the
     # stream fix); the Hub tally and the replay eval count clean stories only.
     vision_motion_clean_since: str = Field("2026-10-16T18:59:00Z", alias="VISION_MOTION_CLEAN_SINCE")
@@ -642,6 +670,15 @@ class Settings(BaseSettings):
     # the patio skeleton, never flagged stationary because its box drifts.
     vision_motion_prop_individual_ids: str = Field(
         "fefb24d7e4074e9f827ad711874f6edf", alias="VISION_MOTION_PROP_INDIVIDUAL_IDS")
+    # Caption motion cross-check (app/vision_caption_motion.py, spec PR #2763
+    # item 3 patch C). Each motion-story tick, a camera_caption on a story
+    # stream whose text claims motion ("driving") is tagged motion_contradicted
+    # / motion_supported by the story of the caption's own box (matched by IoU
+    # at the frame), so readers can say "the vehicle did not move". Only rows
+    # written in the last LOOKBACK seconds are read; older rows stay untagged.
+    vision_caption_motion_check_enabled: bool = Field(True, alias="VISION_CAPTION_MOTION_CHECK_ENABLED")
+    vision_caption_motion_lookback_sec: float = Field(21600.0, gt=0.0, alias="VISION_CAPTION_MOTION_LOOKBACK_SEC")
+    vision_caption_motion_min_iou: float = Field(0.5, gt=0.0, le=1.0, alias="VISION_CAPTION_MOTION_MIN_IOU")
 
     # Walkway rollups by hour, day, week and month (app/vision_rollup.py,
     # app/vision_rollup_loop.py; orion/vision/walkway_rollup.py). Deterministic
@@ -705,6 +742,39 @@ class Settings(BaseSettings):
     # steering starts within this many seconds of a window opening rather
     # than up to one rhythm tick late. 0 disables (the rhythm tick still sets it).
     vision_expect_refresh_interval_sec: float = Field(60.0, alias="VISION_EXPECT_REFRESH_INTERVAL_SEC")
+    # Street continuity (app/vision_handoff.py + _loop.py, 2026-10-20): one passage
+    # across the door and walkway cameras. Portals: config/vision_topology.yaml.
+    # Off = no handoff rows, no steering, no street events, no handoff asks.
+    vision_handoff_enabled: bool = Field(True, alias="VISION_HANDOFF_ENABLED")
+    vision_handoff_interval_sec: float = Field(15.0, alias="VISION_HANDOFF_INTERVAL_SEC")
+    # Motion-story kinds that open gap handoffs and overlap pairs (vehicles: no --
+    # parked cars would pair all day).
+    vision_handoff_kinds: str = Field("person,dog,bicycle,stroller", alias="VISION_HANDOFF_KINDS")
+    # Kinds that open approach_door expectations and may open the doorbell's own live view.
+    vision_handoff_look_kinds: str = Field("person,dog", alias="VISION_HANDOFF_LOOK_KINDS")
+    # The prior band is replaced by the learned (split-conformal 10-90%) band after
+    # this many met handoffs per portal and kind.
+    vision_handoff_min_met: int = Field(10, alias="VISION_HANDOFF_MIN_MET")
+    # Target camera looked at less than this share of the window -> unscorable, never missed.
+    vision_handoff_min_coverage: float = Field(0.8, alias="VISION_HANDOFF_MIN_COVERAGE")
+    # "Strong appearance" bars: cosine of the two stories' centroid vectors. Measured
+    # live 2026-10-20 (walkway, 23 individuals): different people's body centroids
+    # 95th pct 0.90, 99th 0.93; OSNet 95th 0.79, 99th 0.82. Face: the same-ask's 0.40 plus margin.
+    vision_handoff_min_face_cosine: float = Field(0.50, alias="VISION_HANDOFF_MIN_FACE_COSINE")
+    vision_handoff_min_body_cosine: float = Field(0.92, alias="VISION_HANDOFF_MIN_BODY_COSINE")
+    vision_handoff_min_osnet_cosine: float = Field(0.82, alias="VISION_HANDOFF_MIN_OSNET_COSINE")
+    # Attention gate: p below this AND (known person OR unusual for the hour).
+    vision_handoff_attention_p: float = Field(0.05, alias="VISION_HANDOFF_ATTENTION_P")
+    # "Same person?" asks opened from a strong met / overlap pair, per local day. 0 = none.
+    vision_handoff_same_ask_daily_cap: int = Field(2, alias="VISION_HANDOFF_SAME_ASK_DAILY_CAP")
+    vision_handoff_initial_lookback_sec: float = Field(3600.0, alias="VISION_HANDOFF_INITIAL_LOOKBACK_SEC")
+    # Set orion:vision:expect:walkway while a walkway arrival window is ahead.
+    vision_handoff_steer_enabled: bool = Field(True, alias="VISION_HANDOFF_STEER_ENABLED")
+    # Set orion:vision:look:doorbell (the retina opens a live view, capped by
+    # RETINA_RING_SELF_LOOK_MAX_PER_DAY) while a doorbell arrival window is ahead.
+    vision_handoff_self_look_enabled: bool = Field(True, alias="VISION_HANDOFF_SELF_LOOK_ENABLED")
+    # Publish StreetEventV1 on orion:vision:street:events (outbox in vision_handoff).
+    vision_handoff_street_events_enabled: bool = Field(True, alias="VISION_HANDOFF_STREET_EVENTS_ENABLED")
 
     grammar_retention_interval_sec: float = Field(
         60.0, alias="GRAMMAR_RETENTION_INTERVAL_SEC"
@@ -753,9 +823,9 @@ class Settings(BaseSettings):
     # 7.5s fair share a 45s budget gives the first of six tables. `effective_max_elapsed_sec`
     # on /grammar/truth is what tells you which cap actually bound.
     #
-    # Fourteen tables need >=5s each; adding GPU state history raises 66 -> 70.
+    # Fifteen tables need >=5s each; adding self_signal_outcome_association raises 70 -> 75.
     grammar_retention_periodic_max_cycle_sec: float = Field(
-        70.0, alias="GRAMMAR_RETENTION_PERIODIC_MAX_CYCLE_SEC"
+        75.0, alias="GRAMMAR_RETENTION_PERIODIC_MAX_CYCLE_SEC"
     )
     sql_writer_allow_accepted_pressure_ingest: bool = Field(
         False,
@@ -778,6 +848,14 @@ class Settings(BaseSettings):
     # Horizon resolver cadence: closes juniper_replied acts from Juniper turn starts and expires
     # producer-reported acts past their horizon. 0 disables (open acts then stay open).
     sql_writer_act_resolver_interval_sec: float = Field(60.0, alias="SQL_WRITER_ACT_RESOLVER_INTERVAL_SEC")
+    # Hourly kWh per Orion power source (app/orion_energy_rollup.py), kept after raw watts are
+    # pruned. 0 disables, and months of Orion energy history are then lost after 30 days.
+    orion_energy_rollup_interval_sec: float = Field(600.0, alias="ORION_ENERGY_ROLLUP_INTERVAL_SEC")
+    # Rung 3 (thinking architecture, "bind the winner to action"): stamp an act's workspace_ref with
+    # the world-first winner it answers (orion/grammar/act_ledger.py ACT_ANSWERS_WORKSPACE_REFS) and,
+    # at close, write Orion's own non-final `acted` verdict on that loop (attention_loop_outcome,
+    # actor='orion'). Off: no stamping, no Orion loop verdicts; the ledger itself is unchanged.
+    sql_writer_act_workspace_binding_enabled: bool = Field(True, alias="SQL_WRITER_ACT_WORKSPACE_BINDING_ENABLED")
 
     @property
     def route_map(self) -> dict[str, str]:
@@ -870,6 +948,11 @@ class Settings(BaseSettings):
         # rather than merges.
         if "orion:self_concept:history:write" not in channels:
             channels.append("orion:self_concept:history:write")
+        # Same guarantee, same reason. personality.naming.v1 (Orion's verdicts
+        # on their own dispositions, Hub self-inquiry naming runs) is a
+        # code-default route with no feature toggle.
+        if "orion:personality:naming" not in channels:
+            channels.append("orion:personality:naming")
         # Same guarantee again, same reason. self_sense.eval.write.v1 is a
         # code-default route with no feature toggle (producer: services/
         # orion-hub/evals/run_self_sense_eval.py); this exact omission made
@@ -912,6 +995,10 @@ class Settings(BaseSettings):
             channels.append("orion:gpu_pool:event")
         if "orion:gpu_pool:state" not in channels:
             channels.append("orion:gpu_pool:state")
+        # Same guarantee, same reason (physiology.state.v1 is a code-default route; without the
+        # channel the physiology_state table stays empty while the producer looks healthy).
+        if "orion:physiology:state" not in channels:
+            channels.append("orion:physiology:state")
         # Same guarantee, same reason (transport_baseline.hourly.v1 is a
         # code-default route; SQL_WRITER_SUBSCRIBE_CHANNELS replaces).
         if "orion:equilibrium:transport_baseline:hourly" not in channels:

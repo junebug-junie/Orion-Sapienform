@@ -225,6 +225,15 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
 # node:substrate.vision -> capability:vision edge maps perception_staleness to
 # pressure. Note `perception_yield` is a raw count mean (live: 6-8 objects per
 # frame), NOT a 0-1 pressure, and is encoded unbounded on purpose.
+# `embedding_staleness` / `prediction_error_missing_reason` added 2026-10-21,
+# caught the same way (review of fix/camera-surprise-honest-input): upsert_node
+# caches the DECODED durable row, so a key missing here is gone even inside the
+# writer's own process. Both camera surprise nodes write them every tick;
+# consumers: the history sampler (worker.py _node_prediction_error_reading,
+# skips a marked placeholder), the self-model freshness rule
+# (prediction_error_freshness.classify_reading) and the broadcast's camera
+# absence check (attention_broadcast.world_first_signals). The reason is
+# encoded as None when absent, so ON MATCH clears it on the next real reading.
 DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "dynamic_pressure",
     "dynamic_pressure_reason",
@@ -235,6 +244,8 @@ DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "prediction_error_evidence_event_ids",
     "perception_staleness",
     "perception_yield",
+    "embedding_staleness",
+    "prediction_error_missing_reason",
 )
 
 # Native properties ONLY SubstrateDynamicsEngine.tick() writes on an existing
@@ -310,6 +321,8 @@ EXTERNALLY_OWNED_METADATA_KEYS: frozenset[str] = frozenset(
         "prediction_error_evidence_event_ids",
         "perception_staleness",
         "perception_yield",
+        "embedding_staleness",
+        "prediction_error_missing_reason",
     }
 )
 
@@ -398,6 +411,14 @@ def _dynamics_properties_from_metadata(metadata: Mapping[str, Any] | None) -> di
         # Raw count mean, not a 0-1 pressure -- live values run 6-8 objects per
         # frame. Encoded unbounded on purpose; see _write_prediction_error_node.
         "perception_yield": _safe_float(meta.get("perception_yield"), default=None),
+        # Camera surprise nodes (2026-10-21). None when absent: the reason is
+        # cleared by the next real reading, never carried forward.
+        "embedding_staleness": _safe_float(meta.get("embedding_staleness"), default=None),
+        "prediction_error_missing_reason": (
+            str(meta["prediction_error_missing_reason"]).strip() or None
+            if meta.get("prediction_error_missing_reason") is not None
+            else None
+        ),
     }
 
 
@@ -501,6 +522,12 @@ def _dynamics_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
     perception_yield = _safe_float(row.get("perception_yield"), default=None)
     if perception_yield is not None:
         metadata["perception_yield"] = perception_yield
+    embedding_staleness = _safe_float(row.get("embedding_staleness"), default=None)
+    if embedding_staleness is not None:
+        metadata["embedding_staleness"] = embedding_staleness
+    missing_reason = row.get("prediction_error_missing_reason")
+    if missing_reason:
+        metadata["prediction_error_missing_reason"] = str(missing_reason)
     # Fail-open, matching every other decode field in this function: a
     # malformed contributing_turn_ids_json value (corrupt JSON, wrong shape)
     # must not abort decoding the whole node -- treat it as absent rather

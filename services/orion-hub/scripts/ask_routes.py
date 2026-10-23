@@ -124,6 +124,10 @@ _SELECT_COLUMNS = (
 # only answers are yes / no; "not sure" is Dismiss. sql-writer reads the
 # answer as a verdict, so free text is refused here instead of being dropped there.
 SAME_INDIVIDUAL_KIND = "vision_same_individual"
+# "Is this <name>?" (orion-sql-writer person learning, 2026-10-20): yes / no too;
+# "can't tell" is Dismiss. source_ref "<individual_id>|<name>".
+PERSON_CONFIRM_KIND = "vision_person_confirm"
+YES_NO_KINDS = (SAME_INDIVIDUAL_KIND, PERSON_CONFIRM_KIND)
 YES_NO_ANSWERS = ("yes", "no")
 WHO_IS_THIS_KIND = "vision_individual"
 PAIR_SEP = "|"
@@ -142,7 +146,7 @@ WHERE ask_id = $1
   AND status = 'open'
   AND (expires_at IS NULL OR expires_at > now())
   AND source_kind <> ALL($4::text[])
-  AND (source_kind <> $5::text OR $3::text IS NULL OR $3::text = ANY($6::text[]))
+  AND (source_kind <> ALL($5::text[]) OR $3::text IS NULL OR $3::text = ANY($6::text[]))
 RETURNING ask_id, status, answer, answered_at, source_kind, source_ref
 """
 
@@ -246,6 +250,35 @@ def picture_answer_detail(answer: str, image_refs: list[str], pictures: list[Pic
             raise HTTPException(status_code=422, detail="same_picture_takes_the_answer")
         out[i] = {"image_ref": p.image_ref, "index": i, "verdict": p.verdict,
                   "name": answer if p.verdict == "same" else (name if p.verdict == "different" and name else None)}
+    return {"pictures": [out[i] for i in sorted(out)]}
+
+
+def confirm_picture_detail(answer: str, image_refs: list[str], pictures: list[PictureAnswer]) -> dict[str, Any]:
+    """``{"pictures": [...]}`` for an "Is this <name>?" card answered picture by
+    picture (2026-10-23): "same" = it is <name>, "different" = it is not,
+    "unsure". Each picture at most once (one left out is "unsure"); no names
+    (the card names one person).
+    The answer is "yes" exactly when at least one picture is <name>."""
+    if len(image_refs) < 2:
+        raise HTTPException(status_code=422, detail="pictures_need_a_multi_picture_card")
+    index: dict[str, int] = {}
+    for i, ref in enumerate(image_refs):
+        index.setdefault(ref, i)
+    out: dict[int, dict[str, Any]] = {}
+    for p in pictures:
+        if p.image_ref not in index:
+            raise HTTPException(status_code=422, detail="picture_not_on_card")
+        i = index[p.image_ref]
+        if i in out:
+            raise HTTPException(status_code=422, detail="picture_listed_twice")
+        if clean_name(p.name):
+            raise HTTPException(status_code=422, detail="no_names_on_is_this_cards")
+        out[i] = {"image_ref": p.image_ref, "index": i, "verdict": p.verdict}
+    # A picture the card could not show gets no answer: it counts as "unsure".
+    for ref, i in index.items():
+        out.setdefault(i, {"image_ref": ref, "index": i, "verdict": "unsure"})
+    if (answer == "yes") != any(v["verdict"] == "same" for v in out.values()):
+        raise HTTPException(status_code=422, detail="answer_does_not_match_pictures")
     return {"pictures": [out[i] for i in sorted(out)]}
 
 
@@ -441,9 +474,13 @@ async def _answer_detail(conn: Any, ask_id: str, answer: Optional[str], names: d
         if answer in YES_NO_ANSWERS:  # anything else is refused by CLOSE_ASK_SQL (422 below)
             detail.update(pair_answer_detail(answer, card["source_ref"], names) or {})
     if pictures:
-        if card["source_kind"] != WHO_IS_THIS_KIND:
+        if card["source_kind"] == PERSON_CONFIRM_KIND:
+            if answer in YES_NO_ANSWERS:  # anything else is refused by CLOSE_ASK_SQL (422 below)
+                detail.update(confirm_picture_detail(answer, _image_refs(card), pictures))
+        elif card["source_kind"] == WHO_IS_THIS_KIND:
+            detail.update(picture_answer_detail(answer or "", _image_refs(card), pictures) or {})
+        else:
             raise HTTPException(status_code=422, detail="pictures_only_on_who_is_this_cards")
-        detail.update(picture_answer_detail(answer or "", _image_refs(card), pictures) or {})
     return detail or None
 
 
@@ -471,7 +508,7 @@ async def _close_ask(
                     new_status,
                     answer,
                     list(RESOLVABLE_KINDS),
-                    SAME_INDIVIDUAL_KIND,
+                    list(YES_NO_KINDS),
                     list(YES_NO_ANSWERS),
                     None if detail is None else json.dumps(detail),
                 )
@@ -489,7 +526,7 @@ async def _close_ask(
     if row is None:
         if existing is None:
             raise HTTPException(status_code=404, detail="ask_not_found")
-        if (existing["source_kind"] == SAME_INDIVIDUAL_KIND and new_status == "answered"
+        if (existing["source_kind"] in YES_NO_KINDS and new_status == "answered"
                 and answer not in YES_NO_ANSWERS and existing["status"] == "open"
                 and (existing["expires_at"] is None or existing["expires_at"] > datetime.now(timezone.utc))):
             raise HTTPException(status_code=422, detail="answer_must_be_yes_or_no")

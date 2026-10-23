@@ -198,6 +198,47 @@ async def test_run_pre_turn_appraisal_skips_publish_when_no_repair_pressure_para
 
 
 @pytest.mark.asyncio
+async def test_run_pre_turn_appraisal_shed_probe_is_failed_not_ok() -> None:
+    """Regression (2026-10-20..21): the probe was shed by heat on 19/19 turns and the cockpit read
+    `ok`. A failed paradigm must make the status `failed`, name the reason, and publish no level."""
+    _ensure_hub_import_paths()
+    from orion.hub.turn_orchestrator import _run_pre_turn_appraisal
+    from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1
+    import scripts.pre_turn_appraisal_client as pta_client_mod
+
+    bundle = TurnAppraisalBundleV1(
+        correlation_id=_CORR_ID,
+        failed_paradigms=["repair_pressure"],
+        failure_reasons={"repair_pressure": "shed:cabinet_hot"},
+    )
+    settings = SimpleNamespace(
+        ENABLE_PRE_TURN_APPRAISAL=True,
+        PRE_TURN_APPRAISAL_PARADIGMS="repair_pressure",
+        PRE_TURN_APPRAISAL_TIMEOUT_MS=800,
+    )
+    publish_mock = AsyncMock()
+    with patch.object(
+        pta_client_mod.PreTurnAppraisalClient, "appraise", AsyncMock(return_value=bundle)
+    ), patch(
+        "scripts.pre_turn_appraisal_wiring._publish_repair_pressure_appraisal", publish_mock
+    ):
+        result, texture = await _run_pre_turn_appraisal(
+            bus=MagicMock(),
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello",
+            continuity_messages=None,
+            settings=settings,
+        )
+
+    assert result is bundle
+    assert texture["status"] == "failed"
+    assert texture["failure_reasons"] == {"repair_pressure": "shed:cabinet_hot"}
+    assert texture["error"] == "failed_paradigms=repair_pressure:shed:cabinet_hot"
+    publish_mock.assert_not_awaited()  # no 0.0 "calm" reading reaches equilibrium's metacog gate
+
+
+@pytest.mark.asyncio
 async def test_turn_orchestrator_defaults_fcc_model_label() -> None:
     harness_run = HarnessRunV1(
         correlation_id=_CORR_ID,

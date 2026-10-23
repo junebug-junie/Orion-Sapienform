@@ -44,6 +44,8 @@ ClaudeLimitState = Literal["clear", "limited", "unknown"]
 # Mirrors `orion.dev_economics.rate_limit_events.EventKind`. Restated rather
 # than imported so a bus schema does not drag in a transcript-scanning module.
 ClaudeLimitKind = Literal["session_limit", "weekly_limit"]
+# The envelope kind on orion:substrate:claude_limit (the producer's KIND, the schema_version).
+CLAUDE_LIMIT_KIND = "substrate.claude_limit.v1"
 
 
 class ClaudeLimitObservationV1(BaseModel):

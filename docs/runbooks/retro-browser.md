@@ -266,3 +266,74 @@ still loading (~0.48 s measured). Nova then failed at frame 0 with
 `worker_unavailable`. With the wait, all 6 catalog games pass `retro_play.mjs`
 (4/4 Start taps, no drops). Regression:
 `test_command_waits_for_a_starting_worker_instead_of_failing_the_session`.
+
+
+### Optional goal experiment
+
+`Try Orion goals · 60s` requires default-off `RETRO_COGNITION_ENABLED` (Retro)
+and `HUB_RETRO_COGNITION_ENABLED` (Hub/relay). It hands off only the currently
+owned port. The UI displays goal/rationale/outcome; `Take this controller`,
+Pause, a hidden tab and disconnect retain priority. Blur alone keeps the handoff, so
+you can watch from another window (2026-10-23). Five-second motor goals expire to
+wait if background planning is unavailable. The gateway uses GPU-pool background
+admission; thermal refusal is not an emulator failure and must not be bypassed.
+
+See the [goal-loop implementation record](../superpowers/specs/2026-10-20-retro-goal-loop-implementation.md)
+for the fingerprinted Nova observation scope, unknown cases, local evidence,
+and the real-planner acceptance gate. No deployment or game restart is implied.
+
+## Zelda play: planner v2, play panel, solo leisure
+
+Spec: [Orion plays The Legend of Zelda](../superpowers/specs/2026-10-22-orion-plays-zelda-design.md)
+(Hub half: sections D, E and the Hub view). Needs the Retro-side Zelda reader,
+navigator and atlas (Lane A) to be deployed; until then the Hub code is idle.
+
+- **Planner v2** (`scripts/retro_planner.py`, `plan_zelda`). One request per Retro
+  decision (room entry, goal finished, death, stuck), at most one in flight per
+  process, local GPU route `metacog_background` only. The prompt holds a 22x32
+  text map of the room (Link, enemies, drops, caves, learned-blocked tiles; walls
+  only when Retro includes the grid in its offer, otherwise the map says so), the
+  atlas neighbourhood and the last 5 decisions with their verdicts (the Hub keeps
+  them from Retro's `last_finished`), plus a plain line naming the sides Link can
+  walk off (Retro's `open_sides`, overworld only, each labelled visited or never
+  visited) and "nothing changed" on any goal whose start and end digests match
+  (never a `wait` or a `stopped:*` goal). Two answers are refused: an `exit`
+  through a side that is not open (`planner_side_closed`), and the previous goal
+  again when it changed nothing or was a completed `explore` toward a closed side
+  (`planner_repeats_no_effect`). A refused answer gets ONE retry with the reason
+  appended, only when the first answer took under 12 s (Retro's offer lives 30 s);
+  a second refusal is final (2026-10-23: the old
+  prompt asked "explore S" eight times against a solid wall). Replay that moment
+  against the real model with `evals/zelda_planner_replay.py`. A parse failure, an unsupported goal or an unknown observation
+  produces no goal; Retro's motor holds `wait`. A heat shed returns
+  `503 {"detail":"gpu_pool_unavailable","reason":"shed:cabinet_hot","retry_after_sec":N}`
+  and the shared `orion/gpu_pool/shed_backoff.py` rule spaces the retries.
+- **Play panel** (`/retro`, "Orion's map and goal"). The atlas grid (16x8 rooms;
+  bright edge = exit Orion used, `c` = cave, `×` = deaths, outline = current room),
+  the current goal with its reason and prediction, and the last 5 verdicts. During
+  a shed it reads "Orion is waiting: cabinet hot". A solo session is shown live
+  when the page opens, by watching only (media socket); clicking the game or
+  `Take this controller` acquires a controller, which preempts Orion.
+- **Solo leisure** (`scripts/retro_leisure.py`). Started only by the allocator's
+  `play` act (Lane C calls `should_start(config)` and then
+  `run_leisure_session(config, act_id=...)`). Doer gates, checked at start and every
+  30 s, each with a named reason in the journal: arousal known and not strained,
+  no `cabinet_hot`, no relay socket open and no human Retro action in 10 min, no
+  game already running, one start per 3 h, 90 min per rolling 24 h, 30 min per
+  session, `RETRO_LEISURE_ENABLED=true` (the rollback lever). Ends after 3
+  consecutive sheds, or earlier (`shed_wait_policy_lost`) when Retro drops the
+  policy after 60 s with no goal; the paused orphan game is then closed. Loads the newest compatible save or starts fresh, and saves
+  at the end. When a human may be in control (they acted, or presence cannot be
+  read), it never saves over or stops their game: it only releases its port.
+- **Shared state** (`scripts/retro_presence.py`, Redis on `ORION_BUS_URL`):
+  `orion:retro:presence:human_at`, `orion:retro:presence:browser:<id>` (15 s TTL),
+  `orion:retro:leisure:{status,ledger,journal,lock}`. Read the journal with
+  `redis-cli -u $ORION_BUS_URL lrange orion:retro:leisure:journal 0 20`.
+- **Browser eval** (fixture Retro, real template/asset/router):
+  `python services/orion-hub/evals/retro_play_panel.py --output /tmp/retro-play-panel`
+  (set `RETRO_PUPPETEER_PACKAGE` to a `package.json` with puppeteer installed if
+  the local `node_modules` is incomplete).
+- **Session end** (`scripts/retro_session_end.py`). Leisure returns a `RetroSessionEnded`.
+  Co-play sends one to `app.state.retro_session_end_sink` (none registered means nothing is
+  written). It carries Retro's atlas record (`rooms_new`, `deaths`, `controller_frames`), and a
+  field stays None when Retro did not report it.

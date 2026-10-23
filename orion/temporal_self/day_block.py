@@ -31,7 +31,7 @@ from orion.schemas.temporal_self import (
     TemporalSelfDayV1,
 )
 from orion.temporal_self.day import DEFAULT_TZ
-from orion.temporal_self.stance_cue import span_words
+from orion.temporal_self.stance_cue import span_words, strain_cause_text
 
 TOP_ATTENTION = 5
 MAX_CURIOSITY_LINES = 10
@@ -39,7 +39,7 @@ MAX_IMMUNE_LINES = 5
 IMMUNE_KIND_WORDS = {"constant": "constant", "floor_locked": "floor-locked", "replayed": "replayed",
                      "decayed_to_zero": "decayed to zero"}
 KIND_ORDER = ("attention", "conversation", "curiosity", "sleep", "imagery", "concern", "reverie", "interoception",
-              "company")
+              "company", "strain", "play", "street")
 
 
 def _clock(at: datetime | None, day_id: str, tz: ZoneInfo) -> str:
@@ -175,6 +175,16 @@ def render_closed_day_block(
             lines.append((4 + i, f"- {start}, {took}{doubt} {ref(a, start)}."))
         if len(runs) > MAX_CURIOSITY_LINES:
             lines.append((4, f"- and {len(runs) - MAX_CURIOSITY_LINES} more {day_ref}."))
+
+    strains = [a for a in arcs if a.kind == "strain"]
+    if strains:
+        parts = []
+        for a in strains:
+            start = clock(a, a.episode_began_at or a.began_at)
+            causes = strain_cause_text(a.subject_label)
+            end = "still strained at midnight" if a.closed_reason == "day_boundary" else f"to {clock(a, a.ended_at)}"
+            parts.append(f"{start} {end}{f' ({causes})' if causes else ''} {ref(a, start)}")
+        lines.append((2, "Strained: " + "; ".join(parts) + "."))
 
     sleeps = [a for a in arcs if a.kind == "sleep"]
     if sleeps:

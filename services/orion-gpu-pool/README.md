@@ -401,6 +401,17 @@ has been in fault for `GPU_POOL_FAULT_ALERT_AFTER_SEC` (1800), again every
 `GPU_POOL_FAULT_REALERT_SEC` (21600) while it stays faulted, and an info card when it clears. An
 undelivered card is retried ~10 min later. Memory only: a pool restart restarts the clock.
 `GPU_POOL_FAULT_ALERT_ENABLED=false` drops the cards. Log: `gpu_pool_card_fault_alert card=...`.
+
+**Perception priority and its load alert (2026-10-23, body-economy design Patch A0).** Priority
+order is `urgent > interactive > perception > system > background`. `perception` is Orion's sight
+(vision-council on route `metacog_perception`): below Juniper's turn, above Orion's own work, and
+never shed by heat (`orion/gpu_pool/shed.py` can only block system/background). On
+`metacog_background` the 34 C reflex refused vision-council 25,430 times in the 7 days to 10-23.
+Because it is exempt, its own load is watched: a warning card when the last hour's held GPU
+slot-seconds pass `GPU_POOL_PERCEPTION_ALERT_HELD_SEC_PER_HOUR` (3360 = 2x the 14-day p90), again
+every `GPU_POOL_PERCEPTION_REALERT_SEC` while high, info when back under. Memory only. Log:
+`gpu_pool_perception_load state=...`. A config without `perception` in `priorities:` still loads
+(the validator inserts it below `interactive`), which is how the code shipped ahead of the YAML.
 - The pool keeps retrying at the cooldown: the first retry the rebuilt controller accepts clears it.
 - Fix: rebuild the controller on circe (`services/orion-gpu-lane-controller`); confirm with
   `python3 scripts/gpu_pool_actuator_probe.py`.

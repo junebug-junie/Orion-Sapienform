@@ -15,7 +15,8 @@ services:
       args:
         INSTALL_DEV_DEPS: ${INSTALL_DEV_DEPS:-true}
     container_name: ${PROJECT}-hub-retro-gateway
-    # Skip Hub's entrypoint: it waits for the Redis bus, which this relay never uses.
+    # Skip Hub's bus-wait entrypoint: only optional goal planning uses Redis;
+    # human input/media must start even when cognition is unavailable.
     entrypoint: []
     network_mode: "host"
     restart: unless-stopped
@@ -123,7 +124,7 @@ services:
       # Host cabinet sensor snapshot (systemd reader -> /run/orion-sensors/latest.json).
       # Same :ro mount as orion-biometrics; create via scripts/setup_athena_cabinet_sensors.sh.
       - /run/orion-sensors:/run/orion-sensors:ro
-      # Host ambient-audio snapshot (systemd reader -> /run/orion-audio/latest.json).
+      # Host ambient-audio snapshot + live PCM ring (systemd reader -> /run/orion-audio/{latest.json,live/}).
       - /run/orion-audio:/run/orion-audio:ro
     environment:
       - HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=${HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED:-true}
@@ -184,6 +185,7 @@ services:
       - CABINET_SENSORS_STALE_AFTER_SEC=${CABINET_SENSORS_STALE_AFTER_SEC:-10.0}
       - AMBIENT_AUDIO_PATH=${AMBIENT_AUDIO_PATH:-/run/orion-audio/latest.json}
       - AMBIENT_AUDIO_STALE_AFTER_SEC=${AMBIENT_AUDIO_STALE_AFTER_SEC:-5}
+      - AMBIENT_AUDIO_LIVE_DIR=${AMBIENT_AUDIO_LIVE_DIR:-/run/orion-audio/live}
       - CABINET_AMBIENT_HISTORY_NODE=${CABINET_AMBIENT_HISTORY_NODE:-athena}
       - CABINET_AMBIENT_HISTORY_MAX_POINTS=${CABINET_AMBIENT_HISTORY_MAX_POINTS:-800}
       - NOTIFY_IN_APP_ENABLED=${NOTIFY_IN_APP_ENABLED}

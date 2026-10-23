@@ -116,6 +116,7 @@ jobs:
           orion/substrate/tests/test_reader_capability.py
           orion/substrate/tests/test_reconcile.py
           orion/substrate/tests/test_attention_broadcast.py
+          orion/substrate/tests/test_attention_broadcast_world_first.py
           orion/substrate/relational/tests/test_curiosity_ctx_reading_link_compat.py
       - name: Direct concept-region reads equal the hydrated cache (real FalkorDB)
         env:
@@ -189,3 +190,11 @@ jobs:
         run: python -m orion.substrate.evals.run_dynamics_lost_update_eval
       - name: PE writer vs dynamics tick lost-update eval (both interleavings)
         run: PYTHONPATH=. python services/orion-substrate-runtime/evals/run_pe_writer_tick_lost_update_eval.py
+      - name: Camera surprise honest input (missing is not 0.0; eval logic on real rows)
+        working-directory: services/orion-substrate-runtime
+        run: >-
+          PYTHONPATH=${{ github.workspace }} python -m pytest -q
+          tests/test_worker_perception_honest_input.py
+          tests/test_worker_perception_prediction_error.py
+          tests/test_worker_perception_walkway_split.py
+          evals/test_camera_surprise_input_eval.py

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pydantic import Field
+from typing import Optional
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 from orion.schemas.durable_run import DURABLE_RUN_REQUEST_CHANNEL, DURABLE_RUN_STATE_CHANNEL
@@ -173,6 +175,21 @@ class Settings(BaseSettings):
     # TEMPORAL_SELF_CHRONICLE_ENABLED (regulation keeps running). Tables:
     # services/orion-sql-db/manual_migration_temporal_self_v1.sql.
     temporal_self_chronicle_enabled: bool = Field(True, alias="TEMPORAL_SELF_CHRONICLE_ENABLED")
+    # Strain loop part 1 (docs/superpowers/specs/2026-10-20-strain-loop-design.md): the regulate
+    # node writes a row when a strain cause joins an episode (or seeds one), and the chronicle folds
+    # arousal_transition rows into one `strain` arc per episode (chat stance cue, Day letter,
+    # reverie). Off: no cause rows, no strain arcs; level rows and arousal are unchanged.
+    temporal_self_strain_arcs_enabled: bool = Field(True, alias="TEMPORAL_SELF_STRAIN_ARCS_ENABLED")
+    # Orion plays Zelda (docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md section F): the
+    # chronicle reads orion-hub's retro_play_sessions as source `retro_play`, one `play` arc per
+    # finished Retro session (chat stance cue, recent arcs, Day letter count). Off: not read.
+    temporal_self_retro_play_enabled: bool = Field(True, alias="TEMPORAL_SELF_RETRO_PLAY_ENABLED")
+    # Episodes from the street (walkway follow-ups spec PR #2763 item 1): the chronicle reads notable
+    # outside events as source `street_event` (spot-check-gated motion stories, doorbell rings, graded
+    # handoffs with p < 0.05), one `street` arc each, labelled "Outside (<camera>)". Off: not read,
+    # episodes are room-only again. The cap bounds street arcs per local day (first come first kept).
+    temporal_self_street_episodes_enabled: bool = Field(True, alias="TEMPORAL_SELF_STREET_EPISODES_ENABLED")
+    temporal_self_street_episodes_per_day: int = Field(12, ge=0, le=200, alias="TEMPORAL_SELF_STREET_EPISODES_PER_DAY")
     # K: consecutive broadcast ticks that open or resume an attention arc (~110 s live). PR #2597 sweep.
     temporal_self_arc_min_ticks: int = Field(3, ge=1, alias="TEMPORAL_SELF_ARC_MIN_TICKS")
     # R: a suspended arc may return within this window, else it closes (PR #2597 sweep: 30, not 180).
@@ -194,6 +211,30 @@ class Settings(BaseSettings):
     # gauges and records `immune_finding` rows in temporal_self_event. Never fixes anything.
     temporal_self_immune_enabled: bool = Field(True, alias="TEMPORAL_SELF_IMMUNE_ENABLED")
     temporal_self_immune_interval_sec: float = Field(21600.0, gt=0.0, alias="TEMPORAL_SELF_IMMUNE_INTERVAL_SEC")
+    # Body economy Patch A3 (docs/superpowers/specs/2026-10-23-organism-body-economy-design.md, Organ 1
+    # Body): a `physiology` node after `regulate` reads every constraint (heat, energy, GPU lanes,
+    # Juniper's attention, Claude limits) in its own unit with an explicit no_reading, and writes
+    # PhysiologyStateV1 to Redis orion:physiology:latest + bus orion:physiology:state (sql-writer
+    # table physiology_state). No prices; nothing decides from it yet. false -> no node.
+    physiology_enabled: bool = Field(True, alias="ORION_PHYSIOLOGY_ENABLED")
+    physiology_min_interval_sec: float = Field(100.0, gt=0.0, alias="ORION_PHYSIOLOGY_MIN_INTERVAL_SEC")
+    physiology_redis_ttl_sec: int = Field(360, gt=0, alias="ORION_PHYSIOLOGY_REDIS_TTL_SEC")
+    physiology_state_channel: str = Field("orion:physiology:state", alias="CHANNEL_PHYSIOLOGY_STATE")
+    physiology_heat_soft_line_c: float = Field(31.0, alias="ORION_PHYSIOLOGY_HEAT_SOFT_LINE_C")
+    # Juniper-set monthly envelope for Orion's electricity, USD. Empty: no line yet (level only).
+    physiology_energy_monthly_envelope_usd: Optional[float] = Field(
+        None, ge=0.0, alias="ORION_PHYSIOLOGY_ENERGY_MONTHLY_ENVELOPE_USD")
+    physiology_lane_window_sec: float = Field(3600.0, gt=0.0, alias="ORION_PHYSIOLOGY_LANE_WINDOW_SEC")
+    # The attention:juniper line is the Hub's own outreach daily cap (owner services/orion-hub/
+    # .env_example; scripts/check_env_key_single_source.py fails if this copy drifts).
+    hub_endogenous_outreach_daily_cap: int = Field(4, ge=0, alias="HUB_ENDOGENOUS_OUTREACH_DAILY_CAP")
+    # The claude constraint listens here (producer orion-cocreation-signals).
+    claude_limit_channel: str = Field("orion:substrate:claude_limit", alias="CHANNEL_CLAUDE_LIMIT")
+
+    @field_validator("physiology_energy_monthly_envelope_usd", mode="before")
+    @classmethod
+    def _empty_envelope_is_none(cls, v):
+        return None if v is None or (isinstance(v, str) and not v.strip()) else v
     # Personality graph loop (spec 2026-10-16-orion-dynamic-personality-graph-design.md rev 2): a
     # periodic reducer folds Orion's own output (dream, journal, reverie, reading, day letter, chat,
     # outreach, curiosity picks, self-inquiry seeds) into personality_* tables
@@ -201,6 +242,11 @@ class Settings(BaseSettings):
     # what chat stance / reverie / curiosity / outreach read back. Kill switch: PERSONALITY_ENABLED.
     personality_enabled: bool = Field(True, alias="PERSONALITY_ENABLED")
     personality_tick_sec: float = Field(600.0, gt=0.0, alias="PERSONALITY_TICK_SEC")
+    # Self-naming (docs/superpowers/specs/2026-10-17-personality-orion-names-dispositions-design.md):
+    # each tick applies Orion's answers from orion_disposition_naming (name / reject / merge) to the
+    # graph, and GET /personality/naming/next hands Hub the next packet. false -> answers wait in the
+    # table (cursor does not move) and /personality/naming/next answers 204.
+    personality_naming_apply_enabled: bool = Field(True, alias="PERSONALITY_NAMING_APPLY_ENABLED")
     # vector-host /embedding (bge-large, compute only). durable-runs and vector-host share app-net.
     personality_embed_url: str = Field("http://orion-athena-vector-host:8320/embedding",
                                        alias="PERSONALITY_EMBED_URL")

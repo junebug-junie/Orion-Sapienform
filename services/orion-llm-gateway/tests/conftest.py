@@ -163,3 +163,14 @@ def fake_pool(monkeypatch: pytest.MonkeyPatch) -> FakePool:
     monkeypatch.setattr(pool_placement, "_bus", object())
     pool_placement.reset_pool_unreachable()
     return pool
+
+
+@pytest.fixture(autouse=True)
+def _reset_gpu_pool_shed_backoff():
+    """The pool client's shed backoff is process-wide: a test that ends in a real shed refusal must
+    not leave later tests' leases refused locally (orion/gpu_pool/shed_backoff.py)."""
+    from orion.gpu_pool.client import SHED_BACKOFF
+
+    SHED_BACKOFF.reset()
+    yield
+    SHED_BACKOFF.reset()

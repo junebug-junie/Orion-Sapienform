@@ -289,3 +289,150 @@ def test_attempt_inserted_active_then_abandoned_ninety_minutes_later_is_late_not
         assert (await store.frame())["skipped_at_or_before_watermark"] == 1
 
     with_db(scenario_fn)
+
+
+def test_arousal_rows_fold_into_one_strain_arc_and_are_never_copied():
+    """Strain loop part 1. The regulation step's rows share the chronicle's event table: folding them
+    must keep their own ids (no copy the next read would fold again) and build one strain arc."""
+    async def scenario_fn(pool):
+        w = scenario()
+        onset = T0 + timedelta(minutes=1)
+        r0 = ArousalReadingV1(arousal_level="strained", since=onset, observed_at=onset,
+                              reasons=["gpu_queue_sustained"], gpu_queue_depth=4)
+        r1 = r0.model_copy(update={"observed_at": T0 + timedelta(minutes=9),
+                                   "reasons": ["cabinet_hot", "gpu_queue_sustained"], "cabinet_temp_c": 34.6})
+        r2 = ArousalReadingV1(arousal_level="idle", since=T0 + timedelta(minutes=30),
+                              observed_at=T0 + timedelta(minutes=30), reasons=["strain_cleared"])
+        rows = [regulation_store.transition_row(None, r0, "2026-10-10"),
+                regulation_store.cause_row(r1, "2026-10-10", ["cabinet_hot"], False),
+                regulation_store.transition_row(r1, r2, "2026-10-10")]
+        for row in rows:
+            w.add("arousal_transition", dict(row, payload_json=json.loads(row["payload"])))
+        await run_pg(pool, w, T0 + timedelta(hours=1))
+        lo, hi = T0 - timedelta(minutes=5), T0 + timedelta(minutes=50)
+        _, events = await SourceReader(pool, TZ).read(lo, hi, ticks=False, kinds=["arousal_transition"])
+        assert sorted(e.event_id for e in events) == sorted(r["event_id"] for r in rows)
+        async with pool.connection() as conn:
+            n = (await (await conn.execute(
+                "SELECT count(*) AS n FROM temporal_self_event WHERE source_kind = 'arousal_transition'")).fetchone())["n"]
+        assert n == 3  # folded twice over the run's many windows, still only the regulation step's rows
+        (arc,) = [canon(a) for a in await ChronicleStore(pool).arcs("2026-10-10") if a["kind"] == "strain"]
+        assert arc["subject_label"] == "gpu_queue_sustained+cabinet_hot"
+        assert arc["status"] == "closed" and arc["closed_reason"] == "process_ended"
+        _, off = await SourceReader(pool, TZ, exclude_kinds=("arousal_transition",)).read(lo, hi, ticks=False)
+        assert not [e for e in off if e.source_kind == "arousal_transition"]  # the flag's off path
+
+    with_db(scenario_fn)
+
+
+def test_retro_play_rows_fold_into_one_play_arc_and_a_missing_table_reads_nothing():
+    """Orion plays Zelda (section F). The SQL source reads exactly what the adapter needs, one session is
+    one closed play arc, the flag's off path reads nothing, and a database without the table (its
+    migration not applied yet) skips the source instead of failing the whole read."""
+    async def scenario_fn(pool):
+        w = scenario()
+        start = T0 + timedelta(minutes=2)
+        w.add("retro_play", {
+            "session_id": "sess-1", "lineage_id": "lin-1", "game_id": "zelda-prg0", "game_title": "The Legend of Zelda",
+            "kind": "leisure", "dispatch_id": "d:1", "started_at": start, "ended_at": start + timedelta(minutes=22),
+            "duration_sec": 1320.0, "end_reason": "budget", "control": [{"port": 0, "human_frames": 0, "orion_frames": 79200}],
+            "control_basis": "frames",
+            "human_frames": 0, "orion_frames": 79200, "human_share": 0.0, "played_together": False, "rooms_new": 9,
+            "caves_new": 3, "items_gained": ["wooden sword"], "deaths": 2, "death_rooms": ["0:79"], "decisions": 31,
+            "predictions_met": 14, "predictions_refuted": 12, "predictions_unknown": 5, "human_interventions": 0,
+            "summary": "Played The Legend of Zelda solo for 22 min, 9 new rooms (3 caves), got the wooden sword, "
+                       "died twice, 14 of 31 predictions met."})
+        await run_pg(pool, w, T0 + timedelta(hours=1))
+        lo, hi = T0 - timedelta(minutes=5), T0 + timedelta(minutes=50)
+        _, events = await SourceReader(pool, TZ).read(lo, hi, ticks=False, kinds=["retro_play"])
+        assert [e.event_id for e in events] == ["retro_play:sess-1"]
+        assert events[0].label == "The Legend of Zelda solo, 14 of 31 predictions met, 5 unknown"
+        (arc,) = [canon(a) for a in await ChronicleStore(pool).arcs("2026-10-10") if a["kind"] == "play"]
+        assert arc["status"] == "closed" and arc["subject_ref"] == "retro_session:sess-1"
+        _, off = await SourceReader(pool, TZ, exclude_kinds=("retro_play",)).read(lo, hi, ticks=False)
+        assert not [e for e in off if e.source_kind == "retro_play"]
+        async with pool.connection() as conn:
+            await conn.execute("DROP TABLE retro_play_sessions")
+        _, gone = await SourceReader(pool, TZ).read(lo, hi, ticks=False)
+        assert not [e for e in gone if e.source_kind == "retro_play"]
+
+    with_db(scenario_fn)
+
+
+STORY_INSERT = """
+INSERT INTO vision_motion_story (story_id, stream_id, kind, started_at, ended_at, speed_class, dir_lateral,
+  dir_depth, name_label, individual_id, companion_kinds, together_story_ids, published, drop_reason, clean,
+  rules_version, sentence)
+VALUES (%(story_id)s, %(stream_id)s, %(kind)s, %(started_at)s, %(ended_at)s, 'walking', 1, -1, %(name_label)s,
+  'ind-1', %(companion_kinds)s, %(together)s, %(published)s, NULL, true, 1, 'A person walked.')
+"""
+
+
+def test_street_rows_become_labelled_street_arcs_and_the_flag_restores_room_only():
+    """Episodes from the street (PR #2763 item 1) on real Postgres: the three street reads return only
+    notable events (a gated published story, one per walking-together group; a doorbell ring; a
+    handoff with p < 0.05), the chronicle folds them into street arcs whose evidence names the source
+    row, the flag's off path reads nothing, and a database without the verdict table skips the story
+    read instead of failing the whole read."""
+    async def scenario_fn(pool):
+        start = T0 + timedelta(minutes=2)
+
+        def story(sid, **kw):
+            base = {"story_id": sid, "stream_id": "walkway", "kind": "person", "started_at": start,
+                    "ended_at": start + timedelta(seconds=15), "name_label": None, "companion_kinds": [],
+                    "together": [], "published": True}
+            base.update(kw)
+            return base
+
+        stories = [story("a1", companion_kinds=["person"], together=["a2"]),  # kept: lowest id of its group
+                   story("a2", companion_kinds=["person"], together=["a1"]),  # same group: skipped
+                   story("b1", published=False),                              # parked / glimpse: not published
+                   story("c1", kind="vehicle"),                               # traffic
+                   story("d1", stream_id="cam0")]                             # the room
+        checked = story("v", started_at=start - timedelta(days=3), ended_at=start - timedelta(days=3))
+        async with pool.connection() as conn:
+            for s in stories + [dict(checked, story_id=f"v{i}") for i in range(52)]:
+                await conn.execute(STORY_INSERT, s)
+            # Juniper's spot checks: 50 right of 52 on rules version 1 (the live 10-23 tally).
+            await conn.execute("INSERT INTO vision_motion_story_verdict (story_id, verdict, rules_version) "
+                               "SELECT story_id, CASE WHEN story_id IN ('v0', 'v1') THEN 'wrong_other' ELSE 'right' "
+                               "END, 1 FROM vision_motion_story WHERE story_id LIKE 'v%'")
+            await fdb.insert(conn, "vision_events", [
+                {"event_id": "ring-1", "stream_id": "doorbell", "event_type": "doorbell_ring",
+                 "entities": [], "created_at": start + timedelta(minutes=1)},
+                {"event_id": "motion-1", "stream_id": "doorbell", "event_type": "doorbell_motion",
+                 "entities": [], "created_at": start + timedelta(minutes=1)}])
+            good = (start + timedelta(minutes=3)).isoformat()
+            for eid, kind, p, occurred in (("e1", "handoff_missed", 0.01, good), ("e2", "handoff_met", 0.4, good),
+                                           ("e3", "approach_door", None, good),
+                                           ("e4", "handoff_late", 0.01, "not a time")):  # dropped, never fails the read
+                ev = {"event_id": eid, "kind": kind, "stream_ids": ["walkway", "doorbell"], "p_value": p,
+                      "occurred_at": occurred, "salience": 0.5, "correlation_id": "c"}
+                await fdb.insert(conn, "vision_handoff_street_outbox", [{
+                    "event_id": eid, "handoff_id": f"h-{eid}", "kind": kind, "event": ev,
+                    "created_at": start + timedelta(minutes=4)}])
+        lo, hi = T0 - timedelta(minutes=5), T0 + timedelta(minutes=50)
+        _, events = await SourceReader(pool, TZ).read(lo, hi, ticks=False, kinds=["street_event"])
+        assert sorted(e.event_id for e in events) == ["street_event:a1", "street_event:e1", "street_event:ring-1"]
+        (a1,) = [e for e in events if e.source_ref == "a1"]
+        assert a1.label == ("Outside (walkway camera): a person walked left to right, away from the house, with "
+                            "other people")  # no people count: the sentence's "1 other person" never leaks
+        assert all(e.payload["outside_world"] for e in events)
+
+        w = scenario()
+        await run_pg(pool, w, T0 + timedelta(hours=1))
+        arcs = [canon(a) for a in await ChronicleStore(pool).arcs("2026-10-10")]
+        street = [a for a in arcs if a["kind"] == "street"]
+        assert sorted(a["evidence_refs"][0] for a in street) == [
+            "vision_events:ring-1", "vision_handoff_street_outbox:e1", "vision_motion_story:a1"]
+        assert all(a["subject_label"].startswith("Outside (") for a in street)
+        assert not [a for a in arcs if a["kind"] == "company"]  # the street never opens room company
+
+        _, off = await SourceReader(pool, TZ, exclude_kinds=("street_event",)).read(lo, hi, ticks=False)
+        assert not [e for e in off if e.source_kind == "street_event"]
+        async with pool.connection() as conn:
+            await conn.execute("DROP TABLE vision_motion_story_verdict")
+        _, partial = await SourceReader(pool, TZ).read(lo, hi, ticks=False, kinds=["street_event"])
+        assert sorted(e.source_ref for e in partial) == ["e1", "ring-1"]  # the story read skipped, not failed
+
+    with_db(scenario_fn)

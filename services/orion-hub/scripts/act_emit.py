@@ -13,6 +13,13 @@ orion/hub/turn_orchestrator.py):
   that start; closed here on stage1_completed (1) or stage1_failed (0), expired at
   0 by the writer if neither arrives. A read refused before work never opens.
 
+- Retro leisure session -> ``play`` (Orion plays Zelda, 2026-10-22, spec section E). Opened by
+  scripts/retro_leisure_listener.py when the motor allocator's dispatch starts a session (key: the
+  dispatch id; test_before ``retro_leisure_dispatch:<dispatch_id>``). Expects a session summary with
+  at least one real planner decision within PLAY_HORIZON_SEC; closed by
+  scripts/retro_memory_export.py at session end (1, or 0 for an empty or unexportable session),
+  expired at 0 by the writer if neither arrives.
+
 Every function is best-effort and never raises: the act is a trace of doing,
 and losing one must never block the doing itself. Gated by
 HUB_ACT_LEDGER_ENABLED.
@@ -158,4 +165,72 @@ async def publish_read_closed(bus: Any, seed: Any, *, produced: bool, note: str 
         return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("read_act_close_failed seed=%s error=%s", getattr(seed, "seed_id", None), exc)
+        return False
+
+
+# Play: 2400 s from the session start. Not measured yet (no session has run): it is the leisure
+# runner's own enforced session cap, 1800 s (docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md
+# section E, "Maximum 30 minutes per session"), plus 600 s for the end-of-session save state and the
+# memory export that closes the act. Same value as the dispatch route's act horizon
+# (config/execution_dispatch/execution_dispatch_policy.v1.yaml retro_leisure_session).
+PLAY_HORIZON_SEC = 2400.0
+PLAY_BASIS = (
+    "artifact_produced (a session summary with >= 1 real planner decision) by 2400s after the leisure "
+    "session starts: the runner's 1800s session cap (spec 2026-10-22 section E) + 600s for the "
+    "end-of-session save and memory export; not yet measured (no session has run)"
+)
+
+
+def _play_act(dispatch_id: str, session_id: str | None):
+    from orion.grammar.acts import build_act
+    from orion.schemas.retro_leisure import retro_leisure_object_ref
+
+    return build_act(
+        actor="hub.retro_leisure",
+        verb="play",
+        key=str(dispatch_id),
+        signal_id="artifact_produced",
+        horizon_sec=PLAY_HORIZON_SEC,
+        basis=PLAY_BASIS,
+        object_ref=(f"retro_session:{session_id}" if session_id else None),
+        test_before=retro_leisure_object_ref(str(dispatch_id)),
+    )
+
+
+async def publish_play_opened(bus: Any, *, dispatch_id: str, session_id: str | None) -> bool:
+    """Open the leisure session's `play` act, now (the session has just started)."""
+    if bus is None or not _enabled():
+        return False
+    try:
+        from orion.grammar.acts import act_opened_event
+        from orion.grammar.publish import publish_grammar_event
+
+        event = act_opened_event(
+            _play_act(dispatch_id, session_id), source_service="orion-hub", source_component="retro_leisure.act",
+            correlation_id=str(dispatch_id),
+        )
+        await publish_grammar_event(bus, event, source_name="orion-hub")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("play_act_open_failed dispatch_id=%s error=%s", dispatch_id, exc)
+        return False
+
+
+async def publish_play_closed(bus: Any, *, dispatch_id: str, session_id: str | None, produced: bool,
+                              note: str = "") -> bool:
+    if bus is None or not _enabled():
+        return False
+    try:
+        from orion.grammar.acts import act_closed_event
+        from orion.grammar.publish import publish_grammar_event
+
+        event = act_closed_event(
+            _play_act(dispatch_id, session_id), produced=produced, note=note,
+            source_service="orion-hub", source_component="retro_leisure.act",
+            correlation_id=str(dispatch_id),
+        )
+        await publish_grammar_event(bus, event, source_name="orion-hub")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("play_act_close_failed dispatch_id=%s error=%s", dispatch_id, exc)
         return False

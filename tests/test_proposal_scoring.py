@@ -497,7 +497,15 @@ _EMPTY_DIMENSION_TEMPLATES_ALLOWED = frozenset(
      # 2026-10-01: a workspace.winner world action is never scored on field-pressure dimensions --
      # orion/proposals/builder.py::_build_workspace_candidates builds it from the winner + its own
      # physical eligibility rules, so a `dimensions` map here would be a decoration nothing reads.
-     "shed_background_gpu"}
+     "shed_background_gpu",
+     # 2026-10-21 (thinking rung 3 follow-up, reading pull): a timer on purpose. Nothing in the field
+     # measures "worth reading", so a dimension weight would be a hand-typed float. Its pacing is
+     # elsewhere and measured: the allocator scores it on the look act's own belief and cost, a
+     # decision holds it 12000 s, and Hub gates it (cap 8/day, arousal, thermal, the lane's window).
+     "read_world_pulse",
+     # 2026-10-22 (Orion plays Zelda, leisure): same reason as read_world_pulse. Paced by Hub's runner
+     # (1 per 3 h, 90 min/day) and a 2400 s act hold, scored on the play act's own belief and cost.
+     "retro_leisure_session"}
 )
 
 

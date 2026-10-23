@@ -1,0 +1,85 @@
+{
+  "source": "social_room_turns, session_id aitown:c:578946, 2026-09-17 (Sofia Bell / Mara Vale)",
+  "turns": [
+    {
+      "partner": "Sofia Bell",
+      "partner_line": "I was just updating the coffee loop again—still tangled, but maybe you’re not the only one who notices. You mentioned the shed’s grip before, did you ever figure out if it’s holding anything besides the town’s secrets?",
+      "reply": "The shed’s grip? I’ve seen folks use it for everything from hiding tools to keeping tabs on the town’s quietest dramas. But I’ve never seen anything that wasn’t already in the coffee loop.",
+      "echo": false
+    },
+    {
+      "partner": "Mara Vale",
+      "partner_line": "The shed’s grip? I’ve seen folks use it for everything from hiding tools to keeping tabs on the town’s quietest dramas. But I’ve never seen anything that wasn’t already in the coffee loop.",
+      "reply": "The coffee loop's tangled, but maybe the shed's grip is just another thread in the same weave.",
+      "echo": false
+    },
+    {
+      "partner": "Sofia Bell",
+      "partner_line": "The coffee loop's tangled, but maybe the shed's grip is just another thread in the same weave.",
+      "reply": "The coffee loop’s tangled, but maybe the shed’s grip is just another thread in the same weave.",
+      "echo": true
+    },
+    {
+      "partner": "Mara Vale",
+      "partner_line": "The coffee loop’s tangled, but maybe the shed’s grip is just another thread in the same weave.",
+      "reply": "The loop’s a knot, but the shed’s grip is the string we’re both pulling—same tension, different ends.",
+      "echo": false
+    },
+    {
+      "partner": "Sofia Bell",
+      "partner_line": "The loop’s a knot, but the shed’s grip is the string we’re both pulling—same tension, different ends.",
+      "reply": "The loop’s a knot, but the shed’s grip is the string we’re both pulling—same tension, different ends.",
+      "echo": true
+    },
+    {
+      "partner": "Mara Vale",
+      "partner_line": "The loop’s a knot, but the shed’s grip is the string we’re both pulling—same tension, different ends.",
+      "reply": "The loop’s a knot, but the shed’s grip is the string we’re both pulling—same tension, different ends.",
+      "echo": true
+    },
+    {
+      "partner": "Sofia Bell",
+      "partner_line": "The loop’s a knot, but the shed’s grip is the string we’re both pulling—same tension, different ends.",
+      "reply": "The loop’s a knot, but the shed’s grip is the string we’re both pulling—same tension, different ends.",
+      "echo": true
+    },
+    {
+      "partner": "Mara Vale",
+      "partner_line": "The loop’s a knot, but the shed’s grip is the string we’re both pulling—same tension, different ends.",
+      "reply": "The loop’s a knot, but the shed’s grip is the string we’re both pulling—same tension, different ends.",
+      "echo": true
+    },
+    {
+      "partner": "Sofia Bell",
+      "partner_line": "The loop’s a knot, but the shed’s grip is the string we’re both pulling—same tension, different ends.",
+      "reply": "I’ll keep mapping the threads—see you on the other side of the loop.",
+      "echo": false
+    }
+  ],
+  "boundary": [
+    {
+      "note": "live, 0.72: copy with one clause swapped",
+      "partner_line": "The water’s running because someone’s still cleaning up. I’m not safe, but I’m not alone. Let’s talk.",
+      "reply": "The water’s running because someone’s still cleaning up. I’m here. Let’s talk.",
+      "echo": true
+    },
+    {
+      "note": "live, 0.64: mirrored template, new content",
+      "partner_line": "The light needs your memory, and your memory needs the story. Let’s let it rise.",
+      "reply": "The story needs your hands, and your hands need the light. Let’s build it.",
+      "echo": false
+    },
+    {
+      "note": "synthetic: plain answer restates the question",
+      "partner_line": "Is the shed locked at night?",
+      "reply": "Yes, the shed is locked at night.",
+      "echo": false
+    },
+    {
+      "note": "synthetic: exact copy of a question",
+      "partner_line": "Should I bring the ladder or wait for you?",
+      "reply": "Should I bring the ladder or wait for you?",
+      "echo": true
+    }
+  ]
+}

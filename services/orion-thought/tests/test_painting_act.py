@@ -1,8 +1,9 @@
 """A durable painting run is one `make` act (act ledger, rung 2).
 
-prepare opens it exactly once, when it first writes the attempt's plan (the open is
-covered against the step store in test_visual_steps.py); produced closes 1; a terminal
-or a non-produced abandon closes 0; retries publish nothing. The published events are
+the first real generation opens it exactly once (2026-10-21: no longer prepare -- a run that
+never reaches the GPU is not an attempt; covered against the step store in test_visual_steps.py);
+produced closes 1; a terminal or a non-produced abandon closes 0 only if the act was opened;
+retries publish nothing. The published events are
 valid act grammar events.
 """
 from __future__ import annotations

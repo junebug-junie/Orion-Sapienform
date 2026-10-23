@@ -167,8 +167,8 @@ def snaps(depths, start=T0, every=5):
 
 def test_gpu_evidence_sustained_run_and_age():
     s = snaps([{}] + [{"agent": 2}] * 61)                    # 61 snapshots at depth 2 = 300 s
-    age, depth, sus = gpu_queue_evidence(s, T0 + timedelta(seconds=305 + 3))
-    assert (age, depth, sus) == (3.0, 2, 300.0)
+    age, depth, sus, held, reason, dfr = gpu_queue_evidence(s, T0 + timedelta(seconds=305 + 3))
+    assert (age, depth, sus, held, reason, dfr) == (3.0, 2, 300.0, 0, None, 0)
 
 
 def test_gpu_evidence_single_stuck_lease_is_below_the_floor():
@@ -178,13 +178,13 @@ def test_gpu_evidence_single_stuck_lease_is_below_the_floor():
 
 def test_gpu_evidence_gap_breaks_the_run():
     s = snaps([{"agent": 3}] * 10) + snaps([{"agent": 3}] * 10, start=T0 + timedelta(seconds=100))
-    _, _, sus = gpu_queue_evidence(s, T0 + timedelta(seconds=150))
+    _, _, sus, _, _, _ = gpu_queue_evidence(s, T0 + timedelta(seconds=150))
     assert sus == 45.0
 
 
 def test_gpu_evidence_none_and_malformed():
-    assert gpu_queue_evidence([], T0) == (None, None, None)
-    assert gpu_queue_evidence([(T0, {"agent": -1}), (T0, "x")], T0) == (None, None, None)
+    assert gpu_queue_evidence([], T0) == (None, None, None, 0, None, 0)
+    assert gpu_queue_evidence([(T0, {"agent": -1}), (T0, "x")], T0) == (None, None, None, 0, None, 0)
 
 
 def test_level_seconds():
@@ -354,3 +354,232 @@ def test_fault_voids_the_whole_summed_queue_by_design():
     The cost: real load elsewhere during a fault reads unknown (pre-arousal behaviour), not strained."""
     r = classify_arousal(None, fault_inputs(depth=5))
     assert r.arousal_level == "unknown"
+
+
+# --- shed-held queue (2026-10-20) -----------------------------------------------------------
+# Live 2026-10-20 18:13Z: queue {"memory_distill": 2, "agent": 9}, every one of the 11 a queued
+# background/system hold the cabinet_hot shed was holding (gpu_pool_state broadcast).
+LIVE_QUEUE = {"memory_distill": 2, "agent": 9}
+
+
+def shed_snaps(n, *, held=LIVE_QUEUE, reason="cabinet_hot", start=T0, depth=LIVE_QUEUE):
+    return [(start + timedelta(seconds=i * 5), depth, held, reason) for i in range(n)]
+
+
+def shed_inputs(at=T0, *, held=11, reason="cabinet_hot", **kw):
+    base = dict(depth=11, sustained=0.0)
+    base.update(kw)
+    return inputs(at, **base).model_copy(update={"gpu_queue_shed_held": held, "gpu_shed_reason": reason})
+
+
+def test_gpu_evidence_shed_held_queue_is_not_a_sustained_load_run():
+    """Two days of a shed-held queue never count toward the sustain window."""
+    age, depth, sus, held, reason, _ = gpu_queue_evidence(shed_snaps(600), T0 + timedelta(seconds=3000))
+    assert (depth, sus, held, reason) == (11, 0.0, 11, "cabinet_hot")
+
+
+def test_gpu_evidence_run_starts_when_the_shed_lifts():
+    """The heat lifts at 600 s; the same queue is load from then on, not from two days back."""
+    s = shed_snaps(120) + shed_snaps(61, held=None, reason=None, start=T0 + timedelta(seconds=600))
+    _, depth, sus, held, _, _ = gpu_queue_evidence(s, T0 + timedelta(seconds=900))
+    assert (depth, sus, held) == (11, 300.0, 0)
+
+
+def test_gpu_evidence_counts_only_what_the_shed_does_not_hold():
+    s = shed_snaps(70, held={"agent": 9}, depth={"agent": 9, "chat": 2})
+    _, depth, sus, held, _, _ = gpu_queue_evidence(s, T0 + timedelta(seconds=350))
+    assert (depth, held) == (11, 9) and sus == 345.0   # 2 un-shed leases >= floor 2: a real run
+
+
+def test_gpu_evidence_held_is_capped_and_malformed_held_is_nothing():
+    _, _, _, held, _, _ = gpu_queue_evidence([(T0, {"agent": 2}, {"agent": 5}, "cabinet_hot")], T0)
+    assert held == 2
+    _, _, sus, held, reason, _ = gpu_queue_evidence([(T0, {"agent": 3}, "x", "cabinet_hot")], T0)
+    assert (held, reason) == (0, None)
+
+
+def evidence_inputs(snapshots, now, **kw):
+    """The regulate node's own path: saved snapshots -> gpu_queue_evidence -> ArousalInputsV1."""
+    age, depth, sus, held, reason, deferrable = gpu_queue_evidence(snapshots, now)
+    return inputs(now, gpu_age=age, depth=depth, sustained=sus, **kw).model_copy(
+        update={"gpu_queue_shed_held": held, "gpu_shed_reason": reason,
+                "gpu_queue_self_deferrable": deferrable})
+
+
+def test_replay_2026_10_20_shed_held_queue_is_not_gpu_strain():
+    """The 10-20 state (50 min of the live shed-held queue, cabinet hot): strained by the heat
+    ONLY. Old code read the same queue as a 50-minute GPU load run: cabinet_hot + gpu_queue_sustained."""
+    now = T0 + timedelta(seconds=3000)
+    r = classify_arousal(None, evidence_inputs(shed_snaps(600), now, reflex="cabinet_hot", thermal="hot"))
+    assert r.arousal_level == "strained" and r.reasons == ["cabinet_hot"]
+
+
+def test_replay_2026_10_20_after_cooling_the_queue_must_sustain_on_its_own():
+    """Old code: the shed-held run made gpu_queue_sustained true the moment the heat cleared.
+    New: once the shed lifts the queue is load again, but its run starts then -- and a real
+    backlog that outlasts the sustain window still strains, honestly."""
+    hot = shed_snaps(600)
+    lifted = T0 + timedelta(seconds=3000)
+    prev = classify_arousal(None, evidence_inputs(hot, lifted - timedelta(seconds=5),
+                                                  reflex="cabinet_hot", thermal="hot"))
+    cool = hot + shed_snaps(61, held=None, reason=None, start=lifted)
+    prev = classify_arousal(prev, evidence_inputs(cool[:-36], lifted + timedelta(seconds=120)))
+    assert prev.arousal_level == "strained" and prev.reasons == ["strain_holding"]
+    prev = classify_arousal(prev, evidence_inputs(cool, lifted + timedelta(seconds=300)))
+    assert prev.reasons == ["gpu_queue_sustained"]
+
+
+def test_shed_held_queue_alone_is_no_evidence_like_a_fault():
+    """Cabinet just below the reflex but the pool's shed still holding the queue (its signal lags):
+    the queue can neither strain nor clear -- unknown, naming the shed."""
+    r = classify_arousal(None, shed_inputs(sustained=86400.0))
+    assert r.arousal_level == "unknown" and r.reasons == ["gpu_shed:cabinet_hot"]
+    assert not r.strain_latched
+
+
+def test_shed_held_queue_never_earns_clear_time_for_a_latched_strain():
+    prev = classify_arousal(None, shed_inputs(reflex="cabinet_hot", thermal="hot"))
+    t = T0
+    for _ in range(10):
+        t += timedelta(seconds=120)
+        prev = classify_arousal(prev, shed_inputs(t))
+        assert prev.arousal_level == "unknown" and prev.strain_clear_since is None
+    assert prev.strain_latched
+
+
+def test_shed_holding_part_of_a_queue_leaves_real_load_visible_and_says_so():
+    r = classify_arousal(None, shed_inputs(depth=13, held=11, sustained=301.0))
+    assert r.arousal_level == "strained"
+    assert r.reasons == ["gpu_queue_sustained", "gpu_shed_partial:cabinet_hot:11"]
+
+
+def test_shed_holding_a_queue_below_the_floor_is_a_fresh_clear():
+    r = classify_arousal(None, shed_inputs(depth=1, held=1, minutes=300.0))
+    assert r.arousal_level == "idle"
+
+
+def test_fault_wins_over_shed_when_both_hold():
+    r = classify_arousal(None, shed_inputs().model_copy(update={"gpu_fault": "config_unreadable:agent-gpu2"}))
+    assert r.reasons == ["gpu_fault:config_unreadable:agent-gpu2"]
+
+
+# --- deferrable self-work (2026-10-23 S2 decision) --------------------------------------------
+# Live 2026-10-23: the queue was the agent lane only, every lease a queued background hold with no
+# parent hold (durable-runs readings and curiosity compaction). Strain had been latched since
+# 10-18; the heat cleared about 10-23 01:00 and this queue alone kept gpu_queue_sustained true.
+LIVE_DEFERRABLE = {"agent": 8}
+
+
+def dfr_snaps(n, *, depth=LIVE_DEFERRABLE, deferrable=LIVE_DEFERRABLE, held=None, reason=None, start=T0):
+    return [(start + timedelta(seconds=i * 5), depth, held, reason, deferrable) for i in range(n)]
+
+
+def test_gpu_evidence_only_background_holds_is_no_load_run():
+    age, depth, sus, held, reason, dfr = gpu_queue_evidence(dfr_snaps(600), T0 + timedelta(seconds=3000))
+    assert (depth, sus, held, dfr) == (8, 0.0, 0, 8)
+
+
+def test_gpu_evidence_none_deferrable_is_back_compat_zero():
+    """A row from before the column (5th element None, or a 4-tuple) reads as nothing deferrable."""
+    s = dfr_snaps(61, depth={"agent": 2}, deferrable=None)
+    assert gpu_queue_evidence(s, T0 + timedelta(seconds=300))[2:] == (300.0, 0, None, 0)
+    assert gpu_queue_evidence([(T0, {"agent": 3}, None, None, "x")], T0)[5] == 0   # malformed -> 0
+
+
+def test_gpu_evidence_shed_held_and_deferrable_never_exceed_the_queue():
+    """Even a writer that double counted cannot drive load below 0: deferrable caps at queue - held."""
+    _, depth, sus, held, _, dfr = gpu_queue_evidence(
+        [(T0, {"agent": 4}, {"agent": 3}, "cabinet_hot", {"agent": 4})], T0)
+    assert (depth, held, dfr, sus) == (4, 3, 1, 0.0)
+
+
+def dfr_inputs(at=T0, *, deferrable=8, depth=8, sustained=0.0, **kw):
+    return inputs(at, depth=depth, sustained=sustained, **kw).model_copy(
+        update={"gpu_queue_self_deferrable": deferrable})
+
+
+def test_only_background_holds_never_strain_and_read_clear():
+    r = classify_arousal(None, dfr_inputs(sustained=0.0))
+    assert r.arousal_level == "idle"
+    assert "gpu_queue_self_deferrable:8" in r.reasons and "gpu_queue_sustained" not in r.reasons
+    assert r.reasons[0] == "no_juniper_turn_45m"   # annotation never leads (arousal_view reads [0])
+
+
+def test_system_requests_at_floor_for_300s_still_strain():
+    s = [(T0 + timedelta(seconds=i * 5), {"agent": 2}, {}, None, {}) for i in range(61)]
+    r = classify_arousal(None, evidence_inputs(s, T0 + timedelta(seconds=302)))
+    assert r.arousal_level == "strained" and r.reasons == ["gpu_queue_sustained"]
+
+
+def test_mix_counts_only_the_requests():
+    """8 background holds + 2 system requests: load 2 >= floor, strains on the 2 alone; 8 holds +
+    1 request: load 1 < floor, clear."""
+    s = dfr_snaps(61, depth={"agent": 10}, deferrable={"agent": 8})
+    r = classify_arousal(None, evidence_inputs(s, T0 + timedelta(seconds=302)))
+    assert r.arousal_level == "strained"
+    assert r.reasons == ["gpu_queue_sustained", "gpu_queue_self_deferrable:8"]
+    s = dfr_snaps(61, depth={"agent": 9}, deferrable={"agent": 8})
+    r = classify_arousal(None, evidence_inputs(s, T0 + timedelta(seconds=302)))
+    assert r.arousal_level == "idle"
+
+
+def test_shed_held_plus_deferrable_overlap_is_counted_once():
+    """Under a reflex shed, sql-writer counts a background hold as shed-held, not deferrable
+    (orion.gpu_pool.shed.deferrable_queued). 3 held + 0 deferrable of 5, 2 system requests left:
+    load 2 -> a real run. Had the 3 also been counted deferrable, load would read 0 (wrong)."""
+    from orion.gpu_pool.shed import REFLEX_REASONS, deferrable_queued, shed_held_queue
+    leases = ([dict(status="queued", priority="background", kind="hold", hold_lease_id=None,
+                    work_class="agent")] * 3
+              + [dict(status="queued", priority="interactive", kind="request", hold_lease_id=None,
+                      work_class="chat")] * 2)
+    blocked = {"background": "cabinet_unknown"}
+    held, reason = shed_held_queue(leases, blocked, reasons=REFLEX_REASONS)
+    dfr = deferrable_queued(leases, blocked, reasons=REFLEX_REASONS)
+    assert (held, dfr) == ({"agent": 3}, {})
+    s = [(T0 + timedelta(seconds=i * 5), {"agent": 3, "chat": 2}, held, reason, dfr) for i in range(61)]
+    _, depth, sus, h, _, d = gpu_queue_evidence(s, T0 + timedelta(seconds=302))
+    assert (depth, h, d, sus) == (5, 3, 0, 300.0)
+
+
+def test_a_fault_still_voids_s2_when_only_self_work_is_queued():
+    """Self-work may be waiting BECAUSE of the fault: the 10-09 rule holds on the raw depth, so a
+    latched strain can neither strain nor clear on that queue (review 10-23)."""
+    fault = {"gpu_fault": "config_unreadable:agent-gpu2"}
+    r = classify_arousal(None, dfr_inputs().model_copy(update=fault))
+    assert r.arousal_level == "unknown" and "gpu_fault:config_unreadable:agent-gpu2" in r.reasons
+    hot = classify_arousal(None, inputs(reflex="cabinet_hot", thermal="hot"))
+    r = classify_arousal(hot, dfr_inputs(T0 + timedelta(seconds=120)).model_copy(update=fault))
+    assert r.arousal_level == "unknown" and r.strain_latched
+
+
+@pytest.mark.parametrize("held,deferrable,level,lead", [
+    # 2 shed-held + 1 self-work of 3: the shed alone lifts the non-self-work queue to the floor -> stale.
+    (2, 1, "unknown", "gpu_shed:cabinet_unknown"),
+    # 1 shed-held + 2 self-work of 3: non-self-work queue is 1 < floor -> fresh and clear.
+    (1, 2, "idle", "no_juniper_turn_45m"),
+])
+def test_shed_then_deferrable_ordering_is_pinned(held, deferrable, level, lead):
+    r = classify_arousal(None, dfr_inputs(depth=3, deferrable=deferrable).model_copy(
+        update={"gpu_queue_shed_held": held, "gpu_shed_reason": "cabinet_unknown"}))
+    assert r.arousal_level == level and r.reasons[0] == lead
+    assert f"gpu_queue_self_deferrable:{deferrable}" in r.reasons
+
+
+def test_replay_2026_10_23_agent_background_holds_do_not_hold_strain():
+    """The live case: strain latched from the heat; the heat clears; the queue is {"agent": 8},
+    all background holds. Old code: gpu_queue_sustained re-strained every step (latched for days).
+    New: S2 reads clear, strain clears after clear_sec."""
+    now = T0 + timedelta(seconds=3000)
+    hot = classify_arousal(None, inputs(now, reflex="cabinet_hot", thermal="hot", depth=8, sustained=3000.0))
+    assert hot.arousal_level == "strained"
+    old = classify_arousal(hot, inputs(now + timedelta(seconds=120), depth=8, sustained=3120.0))
+    assert old.reasons == ["gpu_queue_sustained"]          # the bug, with no deferrable column
+    prev, levels = hot, []
+    for k in range(1, 8):
+        at = now + timedelta(seconds=120 * k)
+        prev = classify_arousal(prev, evidence_inputs(dfr_snaps(700, start=at - timedelta(seconds=3495)), at))
+        levels.append((prev.arousal_level, prev.reasons[0]))
+    # Clear clock starts at the first cool step (+120 s) and runs clear_sec (600 s): cleared at +720 s.
+    assert levels[:5] == [("strained", "strain_clearing")] * 5
+    assert levels[5] == ("idle", "strain_cleared") and levels[6] == ("idle", "no_juniper_turn_45m")
+    assert not prev.strain_latched and "gpu_queue_self_deferrable:8" in prev.reasons

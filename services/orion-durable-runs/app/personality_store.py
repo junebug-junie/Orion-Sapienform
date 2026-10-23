@@ -51,10 +51,18 @@ TICK_HEARTBEAT = "__tick__"  # personality_cursor row written by every committed
 HISTORY_POINTS = 60
 
 FRAME_NODE_COLUMNS = ("disposition_id, origin, status, label, label_similarity, centroid_n, weight, evidence_count, "
-                      "lane_counts, chosen_count, first_seen_at, last_reinforced_at, retired_at, updated_at, lane_recent")
+                      "lane_counts, chosen_count, first_seen_at, last_reinforced_at, retired_at, updated_at, lane_recent, "
+                      "name, name_sentence, orion_verdict")
+# Self-naming columns (manual_migration_personality_naming_v1.sql). Written only by apply_namings.
+NAMING_NODE_FIELDS = ("name", "name_sentence", "named_at", "naming_id", "orion_verdict", "merged_into",
+                      "name_grounding_rank", "name_grounding_margin", "last_shown_at", "shown_count",
+                      "verdict_evidence_count")
 NODE_COLUMNS = ("disposition_id, origin, status, label, label_similarity, centroid, centroid_n, weight, "
                 "evidence_count, lane_counts, chosen_count, first_seen_at, last_reinforced_at, retired_at, updated_at, "
-                "lane_recent, last_folded_at, history_weight")
+                "lane_recent, last_folded_at, history_weight, " + ", ".join(NAMING_NODE_FIELDS))
+NAMING_CURSOR = "naming"  # personality_cursor row: keyset (created_at, naming_id) into orion_disposition_naming
+NAMING_LOG_COLUMNS = ("naming_id, run_id, packet_id, disposition_id, verdict, name, sentence, merge_with, "
+                      "evidence_refs, shown, hub_check, refused_reasons, written_at, created_at")
 
 INSERT_EVIDENCE_SQL = """
 INSERT INTO personality_evidence (evidence_id, lane, source_ref, occurred_at, excerpt, disposition_id,
@@ -105,18 +113,26 @@ def situation_mix_by_id(rows: Iterable[Mapping[str, Any]]) -> dict[str, dict]:
 UPSERT_NODE_SQL = """
 INSERT INTO personality_disposition (disposition_id, origin, status, label, label_similarity, centroid,
   centroid_n, weight, evidence_count, lane_counts, chosen_count, first_seen_at, last_reinforced_at,
-  retired_at, updated_at, lane_recent, last_folded_at, history_weight)
+  retired_at, updated_at, lane_recent, last_folded_at, history_weight, name, name_sentence, named_at, naming_id,
+  orion_verdict, merged_into, name_grounding_rank, name_grounding_margin, last_shown_at, shown_count,
+  verdict_evidence_count)
 VALUES (%(disposition_id)s, %(origin)s, %(status)s, %(label)s, %(label_similarity)s, %(centroid)s::real[],
   %(centroid_n)s, %(weight)s, %(evidence_count)s, %(lane_counts)s::jsonb, %(chosen_count)s, %(first_seen_at)s,
   %(last_reinforced_at)s, %(retired_at)s, %(updated_at)s, %(lane_recent)s::jsonb, %(last_folded_at)s,
-  %(history_weight)s)
+  %(history_weight)s, %(name)s, %(name_sentence)s, %(named_at)s, %(naming_id)s, %(orion_verdict)s, %(merged_into)s,
+  %(name_grounding_rank)s, %(name_grounding_margin)s, %(last_shown_at)s, %(shown_count)s, %(verdict_evidence_count)s)
 ON CONFLICT (disposition_id) DO UPDATE SET origin = EXCLUDED.origin, status = EXCLUDED.status,
   label = EXCLUDED.label, label_similarity = EXCLUDED.label_similarity, centroid = EXCLUDED.centroid,
   centroid_n = EXCLUDED.centroid_n, weight = EXCLUDED.weight, evidence_count = EXCLUDED.evidence_count,
   lane_counts = EXCLUDED.lane_counts, chosen_count = EXCLUDED.chosen_count,
   first_seen_at = EXCLUDED.first_seen_at, last_reinforced_at = EXCLUDED.last_reinforced_at,
   retired_at = EXCLUDED.retired_at, updated_at = EXCLUDED.updated_at, lane_recent = EXCLUDED.lane_recent,
-  last_folded_at = EXCLUDED.last_folded_at, history_weight = EXCLUDED.history_weight
+  last_folded_at = EXCLUDED.last_folded_at, history_weight = EXCLUDED.history_weight,
+  name = EXCLUDED.name, name_sentence = EXCLUDED.name_sentence, named_at = EXCLUDED.named_at,
+  naming_id = EXCLUDED.naming_id, orion_verdict = EXCLUDED.orion_verdict, merged_into = EXCLUDED.merged_into,
+  name_grounding_rank = EXCLUDED.name_grounding_rank, name_grounding_margin = EXCLUDED.name_grounding_margin,
+  last_shown_at = EXCLUDED.last_shown_at, shown_count = EXCLUDED.shown_count,
+  verdict_evidence_count = EXCLUDED.verdict_evidence_count
 """
 # Fade-only change (no evidence folded into the node this tick): skip rewriting the 1024-float
 # centroid. Every non-retired node fades every tick, so this is the common case. lane_recent fades
@@ -174,6 +190,13 @@ def node_from_row(r: Mapping[str, Any]) -> Node:
         last_reinforced_at=r["last_reinforced_at"], retired_at=r["retired_at"], updated_at=r["updated_at"],
         lane_recent=_lane_recent(r.get("lane_recent")),
         last_folded_at=r.get("last_folded_at"), history_weight=float(r.get("history_weight") or 0.0),
+        name=r.get("name"), name_sentence=r.get("name_sentence"), named_at=r.get("named_at"),
+        naming_id=r.get("naming_id"), orion_verdict=r.get("orion_verdict"), merged_into=r.get("merged_into"),
+        name_grounding_rank=r.get("name_grounding_rank"),
+        name_grounding_margin=(float(r["name_grounding_margin"]) if r.get("name_grounding_margin") is not None
+                               else None),
+        last_shown_at=r.get("last_shown_at"), shown_count=int(r.get("shown_count") or 0),
+        verdict_evidence_count=r.get("verdict_evidence_count"),
     )
 
 
@@ -186,6 +209,7 @@ def node_row(n: Node) -> dict:
         "first_seen_at": n.first_seen_at, "last_reinforced_at": n.last_reinforced_at, "retired_at": n.retired_at,
         "updated_at": n.updated_at, "lane_recent": _json_lane_recent(n),
         "last_folded_at": n.last_folded_at, "history_weight": float(n.history_weight),
+        **{f: getattr(n, f) for f in NAMING_NODE_FIELDS},
     }
 
 
@@ -212,7 +236,7 @@ def node_key(n: Node) -> tuple:
     full upsert."""
     return (n.origin, n.label, n.label_similarity, n.centroid_n, n.evidence_count, n.chosen_count,
             json.dumps(n.lane_counts, sort_keys=True), n.first_seen_at, n.last_reinforced_at,
-            n.last_folded_at)
+            n.last_folded_at, *(getattr(n, f) for f in NAMING_NODE_FIELDS))
 
 
 def split_nodes(nodes: Sequence[Node], loaded: Mapping[str, tuple]) -> tuple[list[dict], list[dict]]:
@@ -350,7 +374,7 @@ class PersonalityStore:
                 await conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
                 active = await (await conn.execute(
                     f"SELECT {FRAME_NODE_COLUMNS} FROM personality_disposition WHERE status = 'active' "
-                    "ORDER BY weight DESC, disposition_id LIMIT %(n)s", {"n": FRAME_MAX_DISPOSITIONS})).fetchall()
+                    "AND orion_verdict IS DISTINCT FROM 'rejected' ORDER BY weight DESC, disposition_id LIMIT %(n)s", {"n": FRAME_MAX_DISPOSITIONS})).fetchall()
                 counts = {r["status"]: int(r["n"]) for r in await (await conn.execute(
                     "SELECT status, count(*) AS n FROM personality_disposition GROUP BY status")).fetchall()}
                 choice_rows = await (await conn.execute(
@@ -377,7 +401,9 @@ class PersonalityStore:
 
     async def dispositions(self, status: str = "active", limit: int = 50) -> list[dict]:
         sql = ("SELECT disposition_id, origin, status, label, label_similarity, centroid_n, weight, evidence_count, "
-               "lane_counts, lane_recent, chosen_count, first_seen_at, last_reinforced_at, retired_at, updated_at "
+               "lane_counts, lane_recent, chosen_count, first_seen_at, last_reinforced_at, retired_at, updated_at, "
+               "name, name_sentence, orion_verdict, merged_into, name_grounding_rank, name_grounding_margin, "
+               "named_at, last_shown_at, shown_count "
                "FROM personality_disposition")
         params: dict = {"limit": limit}
         if status != "all":
@@ -411,6 +437,62 @@ class PersonalityStore:
             sql += " WHERE disposition_id = %(d)s"
             params["d"] = disposition_id
         sql += " ORDER BY occurred_at DESC, evidence_id LIMIT %(limit)s"
+        async with self._pool.connection() as conn:
+            rows = await (await conn.execute(sql, params)).fetchall()
+        return [{k: _iso(v) for k, v in dict(r).items()} for r in rows]
+
+    # --- self-naming ----------------------------------------------------------------------------
+
+    async def naming_log(self, disposition_ids: Optional[Iterable[str]] = None) -> list[dict]:
+        """``orion_disposition_naming`` rows for ``naming_due`` / ``prior_verdict``, oldest first. Only
+        the packet's ``evidence_count`` and ``lane_counts`` are read from ``shown``."""
+        sql = ("SELECT naming_id, disposition_id, verdict, hub_check, name, sentence, written_at, "
+               "jsonb_build_object('evidence_count', shown->'evidence_count', 'lane_counts', shown->'lane_counts') "
+               "AS shown FROM orion_disposition_naming")
+        params: dict = {}
+        if disposition_ids is not None:
+            sql += " WHERE disposition_id = ANY(%(ids)s)"
+            params["ids"] = sorted(set(disposition_ids))
+        sql += " ORDER BY written_at, naming_id"
+        async with self._pool.connection() as conn:
+            rows = await (await conn.execute(sql, params)).fetchall()
+        return [dict(r) for r in rows]
+
+    async def packet_evidence(self, disposition_id: str, limit: int = 5000) -> list[dict]:
+        """A node's evidence for its naming packet, including rows of nodes merged into it (history
+        is not rewritten by a MERGE). Only ``meta.situation`` is read from meta."""
+        async with self._pool.connection() as conn:
+            rows = await (await conn.execute(
+                "SELECT evidence_id, lane, occurred_at, excerpt, similarity, "
+                "jsonb_build_object('situation', meta->'situation') AS meta FROM personality_evidence "
+                "WHERE disposition_id = %(d)s OR disposition_id IN "
+                "(SELECT disposition_id FROM personality_disposition WHERE merged_into = %(d)s) "
+                "ORDER BY similarity DESC NULLS LAST, evidence_id LIMIT %(limit)s",
+                {"d": disposition_id, "limit": limit})).fetchall()
+        return [dict(r) for r in rows]
+
+    async def naming_next(self, now: datetime):
+        """The packet for the most-due node, or None. Read-only: nothing is marked shown here; the
+        shown bookkeeping moves when Orion's answer row is applied."""
+        from orion.personality.naming import build_packet, naming_due, prior_verdict
+
+        nodes = await self.load_nodes()
+        log = await self.naming_log()
+        for node in naming_due(nodes, log, now):
+            evidence = await self.packet_evidence(node.disposition_id)
+            packet = build_packet(node, evidence, nodes, prior_verdict(log, node.disposition_id), now)
+            if packet is not None:
+                return packet
+        return None
+
+    async def namings(self, disposition_id: Optional[str] = None, limit: int = 50) -> list[dict]:
+        """The naming log, newest first; optionally one disposition's."""
+        sql = f"SELECT {NAMING_LOG_COLUMNS} FROM orion_disposition_naming"
+        params: dict = {"limit": limit}
+        if disposition_id:
+            sql += " WHERE disposition_id = %(d)s"
+            params["d"] = disposition_id
+        sql += " ORDER BY written_at DESC, naming_id LIMIT %(limit)s"
         async with self._pool.connection() as conn:
             rows = await (await conn.execute(sql, params)).fetchall()
         return [{k: _iso(v) for k, v in dict(r).items()} for r in rows]

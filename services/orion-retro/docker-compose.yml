@@ -23,11 +23,13 @@ services:
         tag: "{{.Name}}"
     environment:
       RETRO_ENABLED: ${RETRO_ENABLED:-false}
+      RETRO_COGNITION_ENABLED: ${RETRO_COGNITION_ENABLED:-true}
     network_mode: none
     volumes:
       - ${RETRO_SOCKET_DIR:?private socket directory required}:/ipc
       - ${RETRO_CATALOG_DIR:?local catalog required}:/catalog:ro
       - ${RETRO_EVIDENCE_DIR:?local evidence required}:/evidence
+      - ${RETRO_SAVES_DIR:?save-state directory required}:/saves
       - ${RETRO_TOKEN_FILE:?operator credential required}:/run/secrets/retro_operator:ro
       - ${RETRO_HUB_TOKEN_FILE:-/dev/null}:/run/secrets/retro_hub:ro
     tmpfs:

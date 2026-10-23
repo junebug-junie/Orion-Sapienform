@@ -475,7 +475,10 @@ class Settings(BaseSettings):
         "config/substrate/repair_pressure_weights.v2.yaml",
         alias="REPAIR_PRESSURE_WEIGHTS_V2_PATH",
     )
-    repair_pressure_probe_route: str = Field("quick", alias="REPAIR_PRESSURE_PROBE_ROUTE")
+    # quick_turn (2026-10-23): the fast class at interactive pool priority. Every Hub turn awaits
+    # this probe; on `quick` (system) the heat reflex shed it on 19/19 of Juniper's turns 10-20..21.
+    # The gateway must know quick_turn (config/gpu_pool.yaml) before this is deployed.
+    repair_pressure_probe_route: str = Field("quick_turn", alias="REPAIR_PRESSURE_PROBE_ROUTE")
     # Same-turn LLM novelty/salience judgment for the chat-scoped attention/
     # curiosity pipeline (app/current_turn_llm_signals.py), replacing the
     # deleted LegacyRegexSignalDetector's "any capitalized word" regex.

@@ -33,11 +33,13 @@ Configured via `SQL_WRITER_SUBSCRIBE_CHANNELS` (JSON list).
 
 **Drive audit persistence — REMOVED 2026-08-13:** `orion-spark-concept-induction`'s `DriveEngine` (the sole producer of `memory.drives.audit.v1`) was deleted outright 2026-07-30 (`chore/delete-orion-drives`, PR #1486). The `drive_audits` table was dropped 2026-08-13 (snapshotted first, `/tmp/drive_audits_drop_2026-08-13/`) alongside the Hub Drives Analytics tab that read it (docs/superpowers/pr-reports/2026-08-13-remove-hub-drives-analytics-tab-pr.md, which also removed the boot DDL). This service's write-path wiring for it (`DriveAuditSQL` model, `MODEL_MAP`/`INSERT_ONLY_MODELS`/route-map entries, the channel subscription, `DRIVE_AUDITS_RETENTION_DAYS` and its startup prune job) was fully untangled the same day (docs/superpowers/pr-reports/2026-08-13-untangle-drive-audit-sql-writer-pr.md) — an earlier scope note claiming `DriveAuditSQL` shared a `_JSONB` type declaration with other live models was checked and found wrong (every model declares its own private copy), so nothing blocked full removal. `scripts/drive_history_reflection_synthesis.py` and `scripts/analysis/measure_autonomy_gate.py` both still reference the concept but already degrade safely to "insufficient/missing data" — neither is on any cron/scheduler in this repo.
 
+**Body organ history (2026-10-23, body economy Patch A3):** `physiology.state.v1` on `orion:physiology:state` (produced every ~120 s by orion-durable-runs' `physiology` node) -> `physiology_state` (`PhysiologyStateSQL`, PK `tick_id`, insert-only). One row per tick; `constraints` (jsonb) keeps every reading verbatim, `no_reading` ones included, so a missing reading stays missing. Table: `services/orion-sql-db/manual_migration_physiology_state_v1.sql` (create_all makes it too). The channel is force-subscribed in code (`effective_subscribe_channels`). ~720 rows/day; no retention policy yet.
+
 **Field-channel anomaly scores (2026-10-13):** `field_channel_anomaly.score.v1` on `orion:field_channel:anomaly_score` (produced every 60s by `orion-field-digester`'s mood-arc anomaly scorer, flagged or not) is appended to `field_channel_anomaly_score` (`FieldChannelAnomalyScoreSQL`, PK `correlation_id`, insert-only). Created by `Base.metadata.create_all` at boot. Calibration data for the telemetry_anomaly trigger threshold: before this table only flagged windows survived. ~1,440 rows/day; no retention policy yet. The channel is force-subscribed in code (`effective_subscribe_channels`), so a stale `SQL_WRITER_SUBSCRIBE_CHANNELS` in a local `.env` still receives it.
 
 **Transport baseline hourly readings (2026-09-29):** `transport_baseline.hourly.v1` on `orion:equilibrium:transport_baseline:hourly` (produced by `orion-equilibrium-service`'s per-hop transport baseline gate, one row per (service, instance, hop, UTC hour)) is appended to `transport_baseline_hourly` (`TransportBaselineHourlySQL`, PK `summary_id`, insert-only). Created by `Base.metadata.create_all` at boot (new table, no manual migration). This service must be deployed **before** equilibrium publishes, or rows land in the fallback log. Read by `scripts/analysis/grade_transport_baseline.py` (spec 2026-09-24 acceptance check 1). ~1,500 rows/day; no retention policy yet.
 
-**Self-signal outcome association (2026-10-14):** `self_signal.hour.v1` on `orion:equilibrium:self_signal:hour` -> `self_signal_hour` (`SelfSignalHourSQL`, PK `hour_id`, upsert: a retried publish rewrites the same hour) and `self_signal.outcome_association.v1` on `orion:equilibrium:self_signal:outcome_association` -> `self_signal_outcome_association` (`SelfSignalOutcomeAssociationSQL`, PK `association_id`, insert-only), both produced by `orion-equilibrium-service`'s hourly rollup (spec 2026-10-07 section E). Created by `Base.metadata.create_all` at boot (new tables, no manual migration). Deploy this service **before** equilibrium. ~24 hour rows and ~500 association rows per day (no retention policy yet); read by orion-thought (newest row per signal/outcome) and `scripts/analysis/self_signal_outcome_truth.py --persisted`.
+**Self-signal outcome association (2026-10-14):** `self_signal.hour.v1` on `orion:equilibrium:self_signal:hour` -> `self_signal_hour` (`SelfSignalHourSQL`, PK `hour_id`, upsert: a retried publish rewrites the same hour) and `self_signal.outcome_association.v1` on `orion:equilibrium:self_signal:outcome_association` -> `self_signal_outcome_association` (`SelfSignalOutcomeAssociationSQL`, PK `association_id`, insert-only), both produced by `orion-equilibrium-service`'s hourly rollup (spec 2026-10-07 section E). Created by `Base.metadata.create_all` at boot (new tables, no manual migration). Deploy this service **before** equilibrium. ~24 hour rows and ~500 association rows per day (`self_signal_hour`: no retention, tiny; associations: `SELF_SIGNAL_OUTCOME_ASSOCIATION_RETENTION_DAYS`, 30); read by orion-thought and equilibrium (each pair's last few hourly rows, consecutive-holds rule) and `scripts/analysis/self_signal_outcome_truth.py --persisted`.
 
 **Juniper multimodal affect persistence (2026-08-25):** `orion:affectgpt:assessment` (produced by `orion-juniper-affective-state` after wrapping a real `orion-affectgpt-worker` AffectGPT read) is projected into `juniper_multimodal_affect_log` (`JuniperMultimodalAffectSQL`, PK `event_id` derived from the envelope `correlation_id` -- upserts on redelivery). First real persistence consumer of that channel; previously the only reader was the producer's own `scripts/tap_assessments.py` debug tap, and the live cognition path (`orion/situational/juniper_affect_state.py`, PR #1865) reads a separate 1h-TTL Redis SETEX mirror -- once that key expires, nothing durable recorded a capture ever happened. Deliberately does NOT persist `transcript` (Whisper's verbatim transcription of Juniper's spoken words) -- a privacy-boundary decision documented on the model class, mechanically enforced by `_write_row()`'s column-filter rather than bespoke redaction code. `raw_response` (the model's own generated affect read, already surfaced in the Hub UI and on the bus) is kept in full. **2026-08-26:** added `chat_correlation_id` (boot-time `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, same convention as the `chat_*` statements) for Hub's per-chat-turn affect bracket -- the `chat_turn_pre`/`chat_turn_post` pair fired around one Orion-mode turn. It is a *separate join axis* from `correlation_id`: that one joins a single capture's retina/worker/event legs, this one joins a capture to the conversation turn that caused it and joins a turn's pre/post pair to each other. Indexed, NULL for `manual`/`ambient` captures. Without the column, `_write_row`'s column-filter would have silently dropped the key and the join would have existed only on the bus and in the 1h Redis mirror -- never durably.
 
@@ -605,12 +607,64 @@ Each tick it:
    a person ruled out by a -1 crop in the cluster is never guessed. A guess
    never writes `vision_individual.label`.
 
+4. Asks *"Is this <name>?"* (`source_kind=vision_person_confirm`,
+   `source_ref=<individual_id>|<name>`) about the strongest unsure guesses of
+   individuals seen at least twice, under their own cap
+   `VISION_PERSON_CONFIRM_ASK_DAILY_CAP` (6). Until 2026-10-22 they shared
+   `ORION_ASK_DAILY_CAP` with the slow rule, which opens first and used both
+   slots every day, so none were ever asked. Same rules as
+   the other openers: no picture, no ask; a skipped candidate never uses up a
+   slot; one open question per individual, both ways (the face and slow
+   openers skip an individual with an open "Is this <name>?" card, and a name
+   given anywhere closes it); a pair already answered or dismissed, in any
+   casing, is not asked again. `yes` names the individual through the usual
+   typed-name path (the album takes it as a named cluster on the next cycle;
+   orion-substrate-runtime writes the entity); `no` adds its newest 20 crops
+   (the ones guessed on) as `confirm_no` exemplars, kept across
+   reconciliation, and revokes that guess; Can't tell = dismiss.
+   **A card with several pictures is answered picture by picture**
+   (2026-10-23: a cluster can hold more than one person, and "one of the three
+   is Emerald" could not be said). `answer_detail.pictures` holds one
+   `same` (is <name>) / `different` (is not) / `unsure` per picture. All
+   `same` = the old yes, all `different` = the old no. Anything else never
+   names the cluster: each marked picture's crop becomes its own exemplar
+   (`confirm_pick_yes` +1 / `confirm_pick_no` -1, kept across
+   reconciliation), "not sure" adds nothing, and the guess is revoked.
+
 Needs `manual_migration_vision_person_album_v1.sql`; without it the step logs
 `person_model: skipped` and the rest of the tick runs. Eval (read-only on
 live; `--write` stores a `vision_person_model_eval` row):
 `evals/run_person_recognition_eval.py --live <dsn>` -- leave-one-cluster-out,
 gate = zero wrong accepts; a new model version must beat the last on an exact
 McNemar test (p < 0.05).
+
+**One record per person** (`app/person_record.py`, 2026-10-22, spec
+`docs/superpowers/specs/2026-10-22-people-one-record-design.md`). Runs inside
+the individuals tick, after answers apply, while `PERSON_RECORD_ENABLED` (true):
+
+1. `person` / `person_link` follow the named clusters
+   (`orion/person_model/record.py`): one person per folded name, joined to the
+   `config/person_model/people.yaml` referent when the name matches. A
+   "different people" verdict blocks a merge (logged `person_link_conflict`).
+   Named bicycles and cars link as that person's belonging; other named things
+   are ignored. Renames and cleared names revoke links.
+2. Stated pronouns from people.yaml become `person_fact` rows.
+3. Answered `person_fact` asks become `person_fact` rows (her words verbatim).
+4. New `person_fact` asks ("How do you know X? For example: ...", then
+   pronouns, age, gender, sexuality, ...; `orion/person_model/categories.yaml`)
+   open under their own cap `PERSON_FACT_ASK_DAILY_CAP` (3), one open per
+   person, least-asked person first. Pictures (2026-10-23): only up to 3 that
+   Juniper herself tied to that person (`orion/person_model/pictures.py`: the
+   picture she named on a "who is this?" card, ones she marked "the same
+   person", a face she named on a "same person?" card, a picture she picked
+   on an "Is this <name>?" card). Never a cluster's newest pictures: a cluster
+   can hold more than one person, and the first live cards showed three
+   different people. No confirmed picture, no picture. Every pass also
+   corrects the pictures of questions already open.
+
+Needs `manual_migration_person_record_v1.sql`; without it the step reports
+`person_record: migration_missing`. Dry run on live data:
+`orion/person_model/evals/run_person_record_backfill_eval.py --live <dsn>`.
 
 **Rhythm loop** (`app/vision_rhythm.py`, every `VISION_RHYTHM_INTERVAL_SEC`,
 default 900 s). Subjects are individuals and the labels in
@@ -629,6 +683,63 @@ only the open-window query, no fitting), so steering starts within a minute
 of a window opening rather than up to one rhythm tick late. Rhythm surprise stays in
 this table; it is not wired to the substrate graph until live data passes the
 metric gate.
+
+**Street continuity loop** (`app/vision_handoff.py` rules, `app/vision_handoff_loop.py`
+I/O, every `VISION_HANDOFF_INTERVAL_SEC`, default 15 s; design:
+`docs/superpowers/specs/2026-10-20-street-continuity-handoff-design.md`). One passage
+across the door and walkway cameras. Portals live in `config/vision_topology.yaml`
+(override with env `VISION_TOPOLOGY_PATH`, read by the loader `orion/vision/topology.py`, not Settings): `central_walk`
+(overlap, the cameras see the central walkway together), `approach_door` (a walkway
+person moving toward the house expects a Ring motion / ring event or a doorbell story
+3-30 s later), `door_to_walkway` / `walkway_to_door` (the sidewalk gap). Tables:
+`manual_migration_vision_handoff_v1.sql` (`vision_handoff`, `vision_handoff_hypothesis`,
+`vision_handoff_street_outbox`, `vision_handoff_cursor`); without it the loop backs off with a log line.
+Each row is processed in its own savepoint: a row that raises is rolled back alone,
+counted (`row_failed_<step>`), and settled (`unscorable`, or its open hypotheses `false`).
+Companion / standing / parked / out-of-scope / prop stories never depart; props and
+companions are never arrival candidates.
+
+- **Open** from new motion stories (cursor on `created_at`). Most walkway stories end
+  `inside` (the detector looks every ~5 s), so a departure is projected: moving toward
+  the portal edge, last foot within 0.6 of it, a measured exit speed (frame widths/s).
+  Window = `(exit_dist + g) / exit_speed` with `g` the prior x0.4..x3 until
+  `VISION_HANDOFF_MIN_MET` met for that portal and kind, then the split-conformal 10-90%
+  band of learned `g = transit_sec x exit_speed - exit_dist`. While a window is ahead it
+  sets `orion:vision:expect:walkway` (extend-only; the rhythm loop keeps the key until
+  `handoff_until`) or `orion:vision:look:doorbell` (= handoff id, TTL = window; the
+  retina opens a capped live view). Stories land ~50 s after the walker left, so about
+  half the windows are already past (`steer_too_late` in the tick summary).
+- **Grade** once the target camera's motion cursor passed the late margin: `met` /
+  `early` / `late` / `ambiguous` (two candidates, no clear appearance winner; never
+  trains), `missed` only if the target camera delivered census frames for at least
+  `VISION_HANDOFF_MIN_COVERAGE` of the window, else `unscorable` (the doorbell only
+  looks during Ring bursts and self-looks). Appearance: story centroid cosine, face then
+  body then OSNet. Writes `vision_events` `handoff_met` / `handoff_early` /
+  `handoff_late` / `handoff_missed` / `overlap_pair`.
+- **Misses** open five hypotheses (`detector_miss`, `late`, `turned_back`,
+  `entered_place`, `unexplained`) with counted-outcome priors (start at 1 each), settled
+  from data by deadline; `unexplained` writes a `vision_unresolved` row (reason
+  `handoff_missed`, the curiosity seam) and the `handoff_missed` street event. A ring
+  with no approach seen first is an `unannounced` row (walkway `detector_miss` or
+  `out_of_view`); every ring gets a row (`announced` / `unannounced` / `unscorable` when
+  the walkway was not looking). Hypotheses whose stories never caught up settle `false`
+  with `never_caught_up`, never `unexplained`.
+- **Street events** (`StreetEventV1` on `orion:vision:street:events`, outbox columns on
+  `vision_handoff`, `VISION_HANDOFF_STREET_EVENTS_ENABLED`): `approach_door`,
+  `handoff_met` / `handoff_late` for every arrival (with `arrival_log_score`, nats/s of the
+  arrival time under the predicted distribution, for the Rung 6 `street_handoff` domain),
+  `handoff_missed` once unexplained, `overlap_pair` (low salience). One outbox row per
+  event; facts older than 1 h (approach: 5 min) are recorded but not published. The prior
+  band's p is floored at `2/(VISION_HANDOFF_MIN_MET+1)`, so a hand-set prior never opens
+  the attention gate. Salience = who x what x surprise (`SALIENCE_*` in
+  `vision_handoff.py`). p-value calm state and the conformal floor `2/(n+1)` are
+  documented in the module.
+- **Asks**: a strong met / overlap pair opens a `vision_same_individual` ask
+  (`VISION_HANDOFF_SAME_ASK_DAILY_CAP`, evidence `rule:handoff`). The handoff code never
+  writes a label, a pair verdict or a merge. No "where did they go?" ask: `OrionAskV1`
+  has no choices field.
+- Replay (read-only, the metric gate): `PYTHONPATH=. python
+  services/orion-sql-writer/evals/run_vision_handoff_replay_eval.py [--since ...]`.
 
 Safety rails added after review: each cycle holds a Postgres advisory lock
 (a second instance skips the tick); crops newer than
@@ -707,7 +818,67 @@ new identity. Design: `docs/superpowers/specs/2026-10-16-walkway-motion-stories-
   deletes a story Juniper has given a verdict.
 - Kill switch: `VISION_MOTION_STORIES_ENABLED=false`.
 - Replay (read only): `PYTHONPATH=. python services/orion-sql-writer/evals/run_vision_motion_story_replay_eval.py`
-  (clean frames from `VISION_MOTION_CLEAN_SINCE` by default; `--include-corrupt` for earlier).
+  (clean frames from `VISION_MOTION_CLEAN_SINCE` by default; `--include-corrupt` for earlier;
+  `--stream doorbell --frame-size WxH` to replay old crops under a frame size).
+- Frame size and edges (2026-10-20, migration
+  `services/orion-sql-db/manual_migration_vision_motion_story_edges_v1.sql`, auto-applies on pull;
+  for the street-continuity handoff, `docs/superpowers/specs/2026-10-20-street-continuity-handoff-design.md`).
+  The writer now keeps the detector's frame size on each crop
+  (`vision_crop_observation.frame_width/height`). Every box is measured against its own frame:
+  that size, else `VISION_MOTION_FRAME_SIZE_BY_STREAM` (`stream=WxH,...`), else
+  `VISION_MOTION_FRAME_WIDTH/HEIGHT`. Before this, the doorbell was measured as a 2560x1920 frame,
+  so its lateral direction was under-read and its right/bottom clipping never fired.
+  Each story also records (NULL on older rows):
+  - `entry_edge`, `exit_edge`: `left|right|top|bottom|inside`, from the first/last box. Left/right/bottom:
+    the box side within `VISION_MOTION_EDGE_ZONE_FRAC` (0.05) of the frame (nearest wins). Top: only when
+    the foot point is that close to the top (a head cut by the top edge is not an exit). Else `inside`.
+  - `exit_foot_x`, `exit_foot_y`: last box's foot point, 0..1 of its frame.
+  - `exit_speed_fw_per_sec`: lateral foot speed over the last <= 4 unclipped boxes, frame widths per second,
+    unsigned (direction: `exit_edge` / `dir_lateral`); NULL with < 2 unclipped boxes.
+  - `frame_w`, `frame_h`, `frame_size_source` (`detection|stream_setting|default`).
+  `rules_version` stays 1: walkway stories (all verdicts so far) read exactly as before. Without the
+  migration the loop logs `[MOTION_STORY] missing columns ...` each tick and writes the older columns.
+
+### Caption motion cross-check (2026-10-23, spec PR #2763 item 3 patch C)
+
+A camera caption describes one frame, so a claim like "A car is driving" is a
+guess. `app/vision_caption_motion.py` checks it against the motion stories,
+inside the motion-story tick, after the stories close (a story closes minutes
+after its caption is written).
+
+- Claims: the moving speed classes of `vision_motion.SPEED_CLASSES` (walking,
+  running, riding, creeping, driving, pushed) and their verb forms. No second
+  word list: "passing" or "mowing" are not checked.
+- Match: the caption's own `box:` and `crop:` refs to the detector crops of its
+  frame (`frame_ts`), best IoU >= `VISION_CAPTION_MOTION_MIN_IOU` (0.5). Never
+  every crop in the frame.
+- Local motion, not the story average: each matched crop is judged by its own
+  track's boxes within 10 s of the frame (`local_motion`: net travel over box
+  height, classed by the story reducer's own `kinematics`/`speed_class`, clipped
+  boxes skipped). Moving needs 2 boxes. Still needs 3 boxes, one at least 4 s
+  before and one at least 4 s after the frame, the story rule's still class,
+  and net travel and total path both <= 0.25 body heights; anything else ->
+  no evidence. A story's `speed_class` averages the whole passage, so
+  a car that drove in and then parked would read `parked` and wrongly contradict
+  a true "driving" caption.
+- Verdict per claim: any matched crop of the claimed kind clearly moving near
+  the frame -> supported; clearly still and no matched crop without evidence ->
+  contradicted; otherwise nothing. One contradicted claim makes the row contradicted.
+- Known limits: Negations ("not driving") still count as claims; "moving", "drove", "rode"
+  are not checked. A caption row re-written with the same event_id (redelivery,
+  `worker.py` `sess.merge`) loses its tags; inside the lookback the step tags it again.
+- Writes tags only (no column): `motion_contradicted` or `motion_supported`, plus
+  `motion_check:<kind>:<word>:<speed_class>`. Readers
+  (`orion/situational/street_material.py` `label_camera_caption`: chat brief,
+  reverie, curiosity) then say "caption said driving; the vehicle did not move".
+- Only rows written in the last `VISION_CAPTION_MOTION_LOOKBACK_SEC` (6 h) are
+  read; older rows stay untagged. A frame is final once the story cursor is
+  `window + close gap` (911 s) past it.
+- Trace: `[CAPTION_MOTION] stream=.. checked=.. tagged=.. contradicted=..
+  supported=.. undecided=.. pending=.. no_claim=..`.
+- Kill switch: `VISION_CAPTION_MOTION_CHECK_ENABLED=false`.
+- Replay (read only, prints counts):
+  `PYTHONPATH=. python services/orion-sql-writer/evals/run_caption_motion_crosscheck_eval.py --hours 72`.
 
 ### Walkway story pictures of the moment (2026-10-17)
 
@@ -808,6 +979,21 @@ no model. Design: `docs/superpowers/plans/2026-10-18-walkway-rollups-design.md`.
   Hub "Walkway history" panel, orion-substrate-runtime "seen on <day>" links.
 - Backfill (dry run by default): `PYTHONPATH=. python scripts/backfill_vision_rollups.py --days 7 [--apply]`.
 - Replay (read only): `PYTHONPATH=. python services/orion-sql-writer/evals/run_vision_rollup_replay_eval.py --days 3`.
+- **Which people count is closest to the truth** (spec PR #2763, Item 2 patch B):
+  `PYTHONPATH=. python services/orion-sql-writer/evals/run_walkway_count_estimator_eval.py --days 7`
+  (read only). It scores the estimators in `orion/vision/walkway_count.py` (clusters,
+  most at once, motion stories + clear glimpses, presence runs) against hand counts in
+  `evals/fixtures/walkway_count_labels.csv` (format in the file). With fewer than 10
+  hand-counted hours it says INSUFFICIENT LABELS and lists the 10 hours most worth
+  counting. Gates: an empty hour reads 0, a person standing 2 minutes stays 1.
+- **A glimpse counts only when it is clearly a person** (decision 6, Juniper 2026-10-23):
+  a one- or two-frame person story counts when one detection has score >= 0.44, a box at
+  least 6.25 % of the frame tall (120 px of 1920), is not edge-clipped, lies in a zone, and
+  is not a prop; and no other counted person story lies within 11 s of it
+  (`walkway_count.clear_glimpse`, `story_count`). The thresholds come from the stories
+  Juniper checked in the Hub. This feeds only the story-based estimator. The Orion-facing
+  range does not change, and a story-based count may only be shown held inside
+  [most at once, clusters] (`within_range`).
 
 ## Storage-write organ (2026-10-02)
 
@@ -833,6 +1019,28 @@ and never touches the write path. substrate-runtime's storage_write reducer turn
 Flag: `SQL_WRITER_WRITE_HEALTH_ENABLED` (off in code, on in `.env_example`). Replay real history
 through the emitter and reducer: `python services/orion-sql-writer/evals/storage_write_replay.py --live`.
 
+## Orion energy hourly rollup (2026-10-22)
+
+`orion_energy_hourly` holds Orion's own kWh per UTC hour per source, written only by
+`app/orion_energy_rollup.py` and read by the Hub Orion Energy tab. Raw cluster watts are pruned
+after `ORION_BIOMETRICS_CLUSTER_RETENTION_DAYS` (30); this table has no retention, so months and
+years survive.
+
+- Sources: every node in `orion_biometrics_cluster.measurements_by_node` with `chassis_watts`
+  (BMC or PDU wall draw), plus `cooling` from `home_cooling_sample` (non-stale, device online).
+- kWh = each sample's watts held until the next sample, capped at 60 s (nodes) / 30 s (cooling),
+  so a gap is left uncovered rather than filled in. `covered_sec` says how much of the hour was
+  measured. No samples, no row.
+- Every `ORION_ENERGY_ROLLUP_INTERVAL_SEC` (600) it recomputes the last 6 hours; an empty table
+  backfills from every raw row still on disk (~3 s for 30 days). An upsert never lowers
+  `covered_sec`, so a half-pruned hour cannot overwrite a complete one.
+- Log: `[ORION_ENERGY_ROLLUP] tick_complete rows_upserted=N`.
+
+```sql
+SELECT source, date_trunc('day', hour_start) d, round(sum(kwh)::numeric, 1) kwh
+FROM orion_energy_hourly GROUP BY 1, 2 ORDER BY 2 DESC, 1 LIMIT 12;
+```
+
 ## Act ledger (rung 2, 2026-10-16)
 
 "Doing on one track" from `docs/superpowers/specs/2026-10-14-orion-thinking-architecture-design.md`.
@@ -856,6 +1064,26 @@ Producers today: orion-thought paintings (`make`), hub chat reply (`say`), hub o
 (`say`/`ask`), hub world-pulse reading Stage 1 (`look`). Debug surface: `GET /act/ledger?days=7`.
 Kill switch: `SQL_WRITER_ACT_LEDGER_ENABLED=false` (events still land in `grammar_events`).
 Eval: `python evals/act_ledger_calibration.py [--live]`.
+
+**Cost filled on close (body economy Patch A2, 2026-10-23).** `ActV1.cost` accepts `ActCostV1` or
+`ActCostV2` (V1 plus `gpu_slot_s_by_lane`, `wh_by_host`, `juniper_msgs`, `claude_limit_events`; all
+optional, None = not measured, never 0). On every close the ledger fills what it can measure and
+the producer left unset, into `grammar_acts.cost_json`: `seconds` = closed_at - opened_at (needs
+the open), and `gpu_slot_s_by_lane` = lease time per pool role from `gpu_pool_events` whose
+`turn_correlation_id` is the act's correlation_id (window: open - 1 h .. close + 120 s; each lease
+once; the read runs in its own savepoint). Producer values win. `substrate_action_outcomes.latency_ms`
+still comes only from a producer-reported `seconds`. Rollout is consumer-first: producers keep
+sending V1 until every reader of `orion:grammar:event` / `grammar_events` runs V2-aware code.
+
+**Rung 3: acts bound to the workspace winner (2026-10-21).** At open, an act whose actor answers a
+world-first workspace source is stamped with the winning loop it was opened under
+(`grammar_acts.workspace_ref` = the broadcast's selected open loop id), through the same binding
+rule the proposal layer uses (`orion.autonomy.self_shed.bind_workspace_winner`: action selected,
+<= 90 s old, held >= 2 ticks). Today one pairing: `hub.chat_reply` answers `world:chat` /
+`node:substrate.chat` (`ACT_ANSWERS_WORKSPACE_REFS`). When the act closes, the writer adds Orion's own
+non-final `acted` verdict on that loop to `attention_loop_outcome` (`actor='orion'`, outcome in
+`features_at_close`), in the same transaction under its own savepoint. Never `resolved` or
+`dismissed`. Kill switch: `SQL_WRITER_ACT_WORKSPACE_BINDING_ENABLED=false`.
 
 ## Running & Testing
 
@@ -898,8 +1126,9 @@ stable snapshot id, so redelivery is insert-only and idempotent.
 
 `GPU_POOL_STATE_HISTORY_RETENTION_DAYS=30` bounds roughly 518,400 small rows per
 pool at the current five-second cadence. Retention health includes this table.
-`GRAMMAR_RETENTION_PERIODIC_MAX_CYCLE_SEC=70` preserves the existing minimum
-five seconds per managed table now that there are fourteen. Both keys are passed
+`GRAMMAR_RETENTION_PERIODIC_MAX_CYCLE_SEC=75` preserves the existing minimum
+five seconds per managed table now that there are fifteen (2026-10-20 added
+`self_signal_outcome_association`, `SELF_SIGNAL_OUTCOME_ASSOCIATION_RETENTION_DAYS=30`). Both keys are passed
 through compose; the subscription and route templates include the state channel.
 
 Apply `services/orion-sql-db/manual_migration_regulation_history.sql` before

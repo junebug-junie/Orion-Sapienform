@@ -27,6 +27,13 @@ def proxy(output, port):
     mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)
     config=SimpleNamespace(HUB_RETRO_ENABLED=True,HUB_RETRO_ORIGIN=f'http://127.0.0.1:{port}',
         HUB_RETRO_AUTH_DIR=str(output/'auth'),HUB_RETRO_SOCKET=str(output/'ipc/retro.sock'))
+    sys.path.insert(0, str(hub))
+    from scripts import retro_planner
+    async def fixture_choice(config, attempt):
+        return dict(goal='wait', rationale='Synthetic browser fixture: unsupported Pad Lab observation.',
+                    planner_id='browser-fixture')
+    retro_planner.choose = fixture_choice
+    config.HUB_RETRO_COGNITION_ENABLED = True
     app=FastAPI();app.include_router(mod.create_router(config));app.mount('/static',StaticFiles(directory=hub/'static'))
     @app.get('/__retro_tab_test')
     async def tab_fixture():
@@ -46,7 +53,7 @@ def run(args):
     import httpx
     from orion.retro.pad_lab import build_rom
     output=args.output.resolve();output.mkdir(mode=0o700,exist_ok=False,parents=True)
-    for d in ('auth','catalog','ipc','evidence'):(output/d).mkdir(mode=0o700)
+    for d in ('auth','catalog','ipc','evidence','saves'):(output/d).mkdir(mode=0o700)
     for name in ('hub.token','operator.token'):
         p=output/'auth'/name;p.write_text(secrets.token_urlsafe(48));p.chmod(0o600)
     if args.catalog: catalog=args.catalog.resolve()
@@ -57,8 +64,8 @@ def run(args):
     with socket.socket() as s:s.bind(('127.0.0.1',0));port=s.getsockname()[1]
     cmd=['docker','run','-d','--name',name,'--network','none','--read-only','--init',
         '--user',f'{os.getuid()}:{os.getgid()}','--cap-drop','ALL','--security-opt','no-new-privileges',
-        '--pids-limit','64','--memory','512m','--memory-swap','512m','--cpus','2','--tmpfs','/tmp:rw,noexec,nosuid,size=16m','-e','RETRO_ENABLED=true']
-    for src,dst,ro in [(catalog,'/catalog',True),(output/'ipc','/ipc',False),(output/'evidence','/evidence',False),(output/'auth/operator.token','/run/secrets/retro_operator',True),(output/'auth/hub.token','/run/secrets/retro_hub',True)]:
+        '--pids-limit','64','--memory','512m','--memory-swap','512m','--cpus','2','--tmpfs','/tmp:rw,noexec,nosuid,size=16m','-e','RETRO_ENABLED=true','-e','RETRO_COGNITION_ENABLED=true']
+    for src,dst,ro in [(catalog,'/catalog',True),(output/'ipc','/ipc',False),(output/'evidence','/evidence',False),(output/'saves','/saves',False),(output/'auth/operator.token','/run/secrets/retro_operator',True),(output/'auth/hub.token','/run/secrets/retro_hub',True)]:
         cmd+=['--mount',f'type=bind,src={src},dst={dst}'+(',readonly' if ro else '')]
     process=None
     try:

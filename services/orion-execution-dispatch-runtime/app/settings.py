@@ -219,10 +219,53 @@ class Settings(BaseSettings):
     # most of that selection but provably not all of it.
     #
     # Cost is a bounded, measurable capability loss: at 0.05, one acting tick
-    # in twenty does nothing. Off by default -- this deliberately makes Orion
-    # do less, and that is a decision to take on purpose.
+    # in twenty does nothing.
+    #
+    # 2026-10-21 (thinking rung 3, "turn the holdback treatment arm on"): ON at
+    # 0.2, the share the attend-to-act design proposes (2026-09-29 spec, D3).
+    # Drawn only on ticks that can yield a control observation
+    # (worker.tick_can_yield_control: a candidate with a declared field signal,
+    # not a world action, not a visual baseline) -- every other tick is
+    # re-proposed seconds later, so withholding it would only delay it.
+    # Kill: set 0.0 and restart.
     orion_dispatch_holdback_fraction: float = Field(
-        0.0, alias="ORION_DISPATCH_HOLDBACK_FRACTION", ge=0.0, le=0.5
+        0.2, alias="ORION_DISPATCH_HOLDBACK_FRACTION", ge=0.0, le=0.5
+    )
+    # 2026-10-21 -- thinking rung 3 ("compete across doers"). ONE kill switch for allocator-driven
+    # dispatch of rung-2 acts: a route that declares `act:` in execution_dispatch_policy.v1.yaml
+    # (today only render_scene -> thought.painting `make`) is scored on that act's own
+    # EffectPosterior and measured cost (orion/autonomy/act_candidates.py) and, when admitted, sent
+    # through the doer's full existing path. false -> those candidates are scored exactly as before
+    # (render_scene: `unmeasurable`, refused), kill means kill. Shipped ON.
+    orion_dispatch_act_candidates_enabled: bool = Field(True, alias="ORION_DISPATCH_ACT_CANDIDATES_ENABLED")
+    # Cost window for act-backed candidates: p50 of the route's own settled dispatch latency over
+    # this many hours. Longer than the 24 h template window on purpose: a painting runs a few times a
+    # day at most, and with a 24 h window a quiet day leaves it with no measured cost at all.
+    # Stage 3 option B (Juniper 2026-10-21): a second, separate admission path for an act-backed
+    # candidate the information floor refused but whose own belief proves it helps
+    # (orion/autonomy/act_candidates.py proven_effect: n >= 20, 2-sigma lower bound above the
+    # control arm's rate or, before 20 controls, the act prior). Its admissions are held back at
+    # ORION_DISPATCH_HOLDBACK_FRACTION into substrate_act_episodes (control vs treated). false -> the
+    # path is off; the information path is untouched either way. Shipped ON.
+    orion_dispatch_proven_effect_enabled: bool = Field(True, alias="ORION_DISPATCH_PROVEN_EFFECT_ENABLED")
+    orion_dispatch_act_cost_lookback_hours: int = Field(
+        720, ge=24, le=2160, alias="ORION_DISPATCH_ACT_COST_LOOKBACK_HOURS"
+    )
+    # Thinking rung 3 follow-up (2026-10-21): the reading pull route (read_world_pulse ->
+    # orion.world_pulse_read.pull.v1, one bus RPC to Hub). false -> its candidates are refused
+    # `reading_pull_disabled` and no RPC is sent. Hub has its own kill switch and every reading gate.
+    # Shipped ON.
+    orion_dispatch_reading_pull_enabled: bool = Field(True, alias="ORION_DISPATCH_READING_PULL_ENABLED")
+    orion_dispatch_reading_pull_rpc_timeout_sec: float = Field(
+        15.0, gt=0.0, le=120.0, alias="ORION_DISPATCH_READING_PULL_RPC_TIMEOUT_SEC"
+    )
+    # Orion plays Zelda (2026-10-22, spec section E): route retro_leisure_session ->
+    # orion.retro_leisure.start.v1, one bus RPC to Hub's leisure runner. false -> its candidates are
+    # refused `retro_leisure_disabled` and no RPC is sent. Hub has its own switch
+    # (RETRO_LEISURE_ENABLED) and every gate. Shipped ON.
+    orion_dispatch_retro_leisure_enabled: bool = Field(True, alias="ORION_DISPATCH_RETRO_LEISURE_ENABLED")
+    orion_dispatch_retro_leisure_rpc_timeout_sec: float = Field(
+        15.0, gt=0.0, le=120.0, alias="ORION_DISPATCH_RETRO_LEISURE_RPC_TIMEOUT_SEC"
     )
     # 2026-10-01 -- attend-to-act loop (docs/superpowers/specs/2026-09-29-attend-to-act-loop-design.md
     # D5). The MASTER switch for world actions (SELF_REVERSIBLE_SCOPE routes, today only

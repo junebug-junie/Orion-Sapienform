@@ -1018,9 +1018,11 @@ async def lifespan(app: FastAPI):
         )
 
     # Act ledger (rung 2): materialise act events + grade closed acts; resolver closes by horizon.
+    from orion.grammar.act_ledger import configure_act_workspace_binding
     from orion.grammar.ledger import configure_act_ledger
 
     configure_act_ledger(bool(getattr(settings, "sql_writer_act_ledger_enabled", True)))
+    configure_act_workspace_binding(bool(getattr(settings, "sql_writer_act_workspace_binding_enabled", True)))
     act_resolver_task: asyncio.Task | None = None
     if bool(getattr(settings, "sql_writer_act_ledger_enabled", True)) and float(
             getattr(settings, "sql_writer_act_resolver_interval_sec", 0.0) or 0.0) > 0:
@@ -1029,6 +1031,11 @@ async def lifespan(app: FastAPI):
         act_resolver_task = asyncio.create_task(act_resolver_loop(settings))
     else:
         logger.info("act ledger resolver DISABLED (SQL_WRITER_ACT_LEDGER_ENABLED / SQL_WRITER_ACT_RESOLVER_INTERVAL_SEC)")
+
+    # Hourly kWh per Orion power source, kept after raw watts are pruned (Hub Orion energy tab).
+    from app.orion_energy_rollup import orion_energy_rollup_loop
+
+    orion_energy_rollup_task: asyncio.Task | None = asyncio.create_task(orion_energy_rollup_loop(settings))
 
     # Replays events shed with error='grammar queue full' back into the ledger once the
     # grammar lanes are idle. See app/grammar_fallback_drain.py.
@@ -1106,13 +1113,23 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("vision rollups DISABLED (VISION_ROLLUP_ENABLED=false or interval 0)")
 
+    # Street continuity across the door and walkway cameras (app/vision_handoff_loop.py).
+    vision_handoff_task: asyncio.Task | None = None
+    if bool(getattr(settings, "vision_handoff_enabled", False)) and float(
+            getattr(settings, "vision_handoff_interval_sec", 0.0) or 0.0) > 0:
+        from app.vision_handoff_loop import vision_handoff_loop
+
+        vision_handoff_task = asyncio.create_task(vision_handoff_loop(settings))
+    else:
+        logger.info("vision handoff loop DISABLED (VISION_HANDOFF_ENABLED=false or interval 0)")
+
     try:
         yield
     finally:
         pending = [
             t for t in (task, write_health_task, watch_task, retention_task, drain_task, vision_permanence_task,
                         vision_individuals_task, vision_rhythm_task, vision_expect_task, act_resolver_task,
-                        vision_motion_task, vision_rollup_task)
+                        vision_motion_task, vision_rollup_task, vision_handoff_task, orion_energy_rollup_task)
             if t is not None
         ]
         for background in pending:

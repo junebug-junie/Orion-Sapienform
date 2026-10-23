@@ -8,6 +8,10 @@ from .media import MediaProbe
 from .control import Arbiter
 from .evidence import Evidence
 from .scripted import Scripted
+from .observation import Observer, outcome
+from .saves import SaveStore
+from .zelda.observe import supported as zelda_supported, PROFILE as ZELDA_PROFILE
+from .zelda.runtime import ZeldaRuntime
 
 
 def run(commands, urgent, replies, stop, settings, game, session, generation, media=None):
@@ -21,12 +25,44 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
         authority = Arbiter(game['ports'])
         def record(kind, **fields):
             evidence.write(dict(kind=kind, session_id=session, generation=generation, frame=frame, **fields))
-        scripted = Scripted(authority, record)
-        sources = sorted(Path(__file__).parent.glob('*.py')) + [Path(__file__).parents[1]/'settings.py']
+        store = SaveStore(settings.saves, settings.save_max_per_game, settings.save_max_bytes)
+        # Zelda (fingerprint-gated, cognition gate on) gets its reader, GoalV2 motor and
+        # atlas. Every other game keeps the Nova v1 path unchanged.
+        zelda = None
+        if settings.cognition_enabled and zelda_supported(core.identity):
+            lineage = None
+            if game.get('save_id'):
+                try: lineage = store.meta(game['game_id'], game['save_id'], core.identity).get('lineage_id')
+                except ValueError: pass  # load() below refuses it with the real reason
+            zelda = ZeldaRuntime(core, settings.saves, session, record, lineage)
+        scripted = Scripted(authority, record, goals_factory=zelda.goals if zelda else None)
+        observer = Observer(core)
+        sources = sorted(Path(__file__).parent.rglob('*.py')) + [Path(__file__).parents[1]/'settings.py']
         runtime_sha = hashlib.sha256(b''.join(p.name.encode()+b'\0'+p.read_bytes() for p in sources)).hexdigest()
-        record('start', game_id=game['game_id'], identity=core.identity, runtime_sha256=runtime_sha)
+        record('start', game_id=game['game_id'], identity=core.identity, runtime_sha256=runtime_sha,
+               game_profile=ZELDA_PROFILE if zelda else None)
+        # played_frames survives save/load; frame stays this session's monotonic clock.
+        played = dict(base=0, at=0)
+        def load(save_id):
+            meta, data = store.read(game['game_id'], save_id, core.identity)
+            try: previous = core.snapshot()
+            except RuntimeError: raise ValueError('save_serialize_failed')
+            try: core.restore(data)
+            except RuntimeError:
+                core.restore(previous)  # a failed rollback stays fatal: core state is unknown
+                raise ValueError('save_restore_failed')
+            played.update(base=meta['played_frames'], at=frame)
+            record('load', save_id=save_id, save_frame=meta['frame'], played_frames=meta['played_frames'])
+            # A loaded save continues its own atlas lineage; a pre-atlas save loaded mid-session
+            # starts a new one. Either way the atlas forgets the replaced game's last room.
+            if zelda: zelda.on_load(meta.get('lineage_id'), initial=not started['done'])
+            return meta
+        started = dict(done=False)
+        if game.get('save_id'): load(game['save_id'])
+        started['done'] = True
         state = 'running'; paused_by = ''
-        send(dict(kind='ready', identity=core.identity, runtime_sha256=runtime_sha, fps=core.av.timing.fps))
+        send(dict(kind='ready', identity=core.identity, runtime_sha256=runtime_sha, fps=core.av.timing.fps,
+                  game_profile=ZELDA_PROFILE if zelda else None))
         period = 1 / core.av.timing.fps
         deadline = time.monotonic(); last_status = deadline; misses = 0
         acquire_deadline = deadline+5
@@ -62,21 +98,48 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
                         result = authority.control(cmd['connection'], **data, now=time.monotonic())
                         if data['port'] in pending:
                             send(dict(kind='reply', id=pending.pop(data['port']), error='lease_replaced'))
-                        record('control', port=data['port'], action=data['action'])
+                        record('control', port=data['port'], action=data['action'], leisure=data.get('leisure', False),
+                               preempted_leisure=result.get('preempted_leisure', False))
                         scripted.tick(time.monotonic())
                     elif op == 'scripted':
                         if state != 'running': raise ValueError(not_running())
                         port = data['port']
                         if data['action'] == 'start':
+                            if data.get('cognition') and not settings.cognition_enabled:
+                                raise ValueError('retro_cognition_disabled')
                             scripted.start(cmd['connection'], port, data['duration_seconds'],
-                                           time.monotonic(), frame, data['expected_epoch'])
+                                           time.monotonic(), frame, data['expected_epoch'], data.get('cognition', False))
                             reject_pending('control_revoked', [port])
                         else:
                             active = scripted.active.get(port)
                             if active and active['grant']['epoch'] != data['expected_epoch']:
                                 raise ValueError('stale_script_epoch')
+                            if (active and cmd['connection'].startswith('leisure:')
+                                    and active['sponsor'] != cmd['connection']):
+                                raise ValueError('not_script_sponsor')
                             scripted.stop(port, 'operator_stop')
                         result = {'scripted': scripted.public()}
+                    elif op == 'goal':
+                        if state != 'running': raise ValueError(not_running())
+                        result = scripted.goal(cmd['connection'], data, time.monotonic())
+                    elif op == 'save':
+                        if state not in ('running', 'paused'): raise ValueError(not_running())
+                        try: snapshot = core.snapshot()
+                        except RuntimeError: raise ValueError('save_serialize_failed')  # core state is untouched
+                        meta = store.write(game['game_id'], core.identity, snapshot, frame=frame,
+                                           played_frames=played['base']+frame-played['at'], session_id=session,
+                                           lineage_id=zelda.lineage_id() if zelda else None)
+                        if zelda and zelda.atlas: zelda.atlas.flush(force=True)
+                        record('save', save_id=meta['save_id'], played_frames=meta['played_frames'], bytes=meta['bytes'])
+                        result = {'saved': meta}
+                    elif op == 'load':
+                        if state not in ('running', 'paused'): raise ValueError(not_running())
+                        # Scripted/goal observations describe the replaced game; stop them
+                        # first, so a goal never drives (or is counted in) the loaded state.
+                        scripted.cancel('load')
+                        meta = load(data.get('save_id'))
+                        deadline = time.monotonic()
+                        result = {'loaded': meta}
                     elif op in ('pause', 'resume', 'disconnect'):
                         if op == 'disconnect':
                             scripted.cancel('sponsor_disconnected', cmd['connection'])
@@ -107,7 +170,26 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
             if state == 'running':
                 scripted.tick(time.monotonic())
                 masks, applied, neutral = authority.frame(time.monotonic())
+                for event in applied:
+                    policy = scripted.active.get(event['port'])
+                    goals = policy['goals'] if policy else None
+                    if (goals and hasattr(goals, 'applied_start') and goals.accepted_current() and event['seq'] == policy['seq']
+                            and policy['goal_attempt_id'] == goals.accepted['attempt_id']):
+                        goals.applied_start(frame+1, observer.read())
                 core.step(*masks); frame += 1
+                # Port 0 is Zelda's only controller; Lane C derives the control share from this.
+                if zelda: zelda.after_frame(frame, time.monotonic(), scripted.active, scripted.controller(0))
+                for port, policy in scripted.active.items():
+                    goals = policy['goals']
+                    if not goals or hasattr(goals, 'observe_frame'): continue  # GoalV2 runs above
+                    now = time.monotonic()
+                    if goals.ready_for_observation(now):
+                        observation = observer.read()
+                        previous = goals.start_observation if goals.accepted_current() else {}
+                        goal = goals.accepted['goal'] if goals.accepted_current() else 'wait'
+                        verdict = outcome(previous or {}, observation, goal)
+                        goals.offer(port, policy['grant']['epoch'], frame, observation, now, verdict)
+
                 if media is not None: core.publish(media, frame)
                 if neutral: record('neutral', ports=neutral)
                 if not authority.leases and (neutral or time.monotonic() >= acquire_deadline):
@@ -140,9 +222,10 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
             if now-last_status >= .1:
                 send(dict(kind='status', state=state, frame=frame, video_frames=core.video_frames,
                           audio_samples=core.audio_samples, frame_hash=core.frame_hash,
-                          scripted=scripted.public()))
+                          scripted=scripted.public(), **({'zelda': zelda.status()} if zelda else {})))
                 last_status = now
         scripted.cancel('worker_stop')
+        if zelda: zelda.close()
         authority.clear(); core.buttons = (0, 0)
         reject_pending('stopped')
         record('transition', state='stopped', reason='operator_or_service_stop')

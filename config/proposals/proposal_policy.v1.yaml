@@ -592,6 +592,42 @@ proposal_templates:
     dimensions:
       resource_pressure: 0.35
 
+  # 2026-10-21 (thinking rung 3 follow-up): read one more world-pulse item now. Same shape as
+  # render_scene: emitted every tick the action warrant allows, and the motor allocator decides on
+  # the `look` act's own belief and measured cost (config/execution_dispatch route
+  # read_world_pulse). No dimensions on purpose: nothing in the field measures "worth reading", so
+  # a weight here would be a hand-typed float pretending to be a reason (analyze_self_study_source
+  # carries {} for the same reason). No expected_signal: the act's outcome (artifact_produced) is
+  # the claim, graded by the act ledger, not a field signal.
+  read_world_pulse:
+    kind: observe
+    target_kind: system
+    target_id: queue:world_pulse_read
+    proposed_effect: increase_observability
+    required_policy_gate: read_only
+    base_priority: 0.30
+    base_risk: 0.05
+    reversibility: 1.0
+    dimensions: {}
+
+  # 2026-10-22 (Orion plays Zelda, spec section E): play one solo Zelda leisure session now. Same shape
+  # as read_world_pulse: emitted every tick the action warrant allows, and the motor allocator decides
+  # on the `play` act's own belief and measured cost (config/execution_dispatch route
+  # retro_leisure_session). No dimensions: nothing in the field measures "worth playing", so a weight
+  # here would be a hand-typed float pretending to be a reason. No expected_signal: the act's outcome
+  # (artifact_produced) is the claim, graded by the act ledger. Pacing is elsewhere and enforced: Hub's
+  # runner allows 1 session per 3 h and 90 min per day, and a decision holds the act 2400 s.
+  retro_leisure_session:
+    kind: express
+    target_kind: system
+    target_id: cabinet:retro
+    proposed_effect: increase_observability
+    required_policy_gate: read_only
+    base_priority: 0.30
+    base_risk: 0.05
+    reversibility: 1.0
+    dimensions: {}
+
   # 2026-10-01: ORION'S FIRST WORLD-FACING, SELF-REVERTING ACTION (attend-to-act loop A1;
   # docs/superpowers/specs/2026-09-29-attend-to-act-loop-design.md, "Amendment 2026-09-29").
   #

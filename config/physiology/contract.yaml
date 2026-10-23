@@ -118,6 +118,10 @@ readers:
     role: bidder
     reason: visual chain thermal gate (32 C hot line) defers painting.
     note: pending Patch B (one thermal owner) then D
+  - module: services/orion-thought/app/visual_steps.py
+    role: bidder
+    reason: durable visual generate step refuses GPU work (thermal_refused) unless allows_gpu_work.
+    note: pending Patch B (one thermal owner) then D
   - module: services/orion-gpu-pool/app/guards.py
     role: bidder
     reason: swap-load guard refuses a gpu2 model load at the 32 C hot line or unknown heat.
@@ -136,7 +140,7 @@ readers:
     reason: Hub temporal-self routes proxy the regulation state and arousal_level for display.
   - module: services/orion-substrate-runtime/app/worker.py
     role: display
-    reason: cabinet-heat attention tick and strain-news tick write substrate nodes; no gate.
+    reason: cabinet-heat tick (prediction error that feeds attention competition) and strain-news tick write substrate nodes; vetoes nothing.
   - module: services/orion-substrate-runtime/app/store.py
     role: display
     reason: loads cabinet temperature points for the cabinet-heat tick.
@@ -164,6 +168,21 @@ readers:
   - module: orion/temporal_self/stance_cue.py
     role: display
     reason: turns strain causes (cabinet_hot) into plain words for the chat stance cue.
+  - module: services/orion-thought/app/main.py
+    role: display
+    reason: visual execution receipt reports deferred_thermal as refused; no gate of its own.
+  - module: services/orion-durable-runs/app/dream_carry_graph.py
+    role: display
+    reason: treats a child's deferred_thermal outcome as retryable; reacts to the outcome, no heat read.
+  - module: orion/feedback/builder.py
+    role: display
+    reason: maps deferred_thermal to a neutral "deferred" feedback outcome.
+  - module: orion/execution_dispatch/visual_settlement.py
+    role: display
+    reason: settles a deferred_thermal visual run as a real answer, not a failure.
+  - module: orion/temporal_self/body.py
+    role: display
+    reason: counts thermal refusals for Orion's body summary.
   - module: scripts/analysis/measure_arousal_reader_replay.py
     role: display
     reason: offline replay of reader decisions.
@@ -197,6 +216,8 @@ sources:
     reason: RegulationStateV1 schema and the Redis key constant.
   - module: orion/schemas/registry.py
     reason: registers RegulationStateV1 in the schema registry.
+  - module: orion/schemas/reverie_visual.py
+    reason: visual-chain schema; defines the thermal_refused / deferred_thermal outcome literals.
   - module: orion/schemas/hardware_watch.py
     reason: hardware-watch claim schema (cabinet_hot reason literal).
   - module: orion/inner_state_registry.py

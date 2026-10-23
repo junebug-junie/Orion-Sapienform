@@ -88,6 +88,17 @@ def test_stale_entry_fails_when_file_is_gone(tmp_path):
     ("def f(p):\n    return p.get('arousal_level')\n", "literal 'arousal_level'"),
     ("def f(level):\n    return level in ('engaged', 'strained')\n", "compares against 'strained'"),
     ("def f(level):\n    return 'strained' != level\n", "compares against 'strained'"),
+    # Review B1: the visual generate step's heat veto, reached through a wrapper module.
+    ("async def g(vc):\n    t = await vc.thermal_gate_snapshot()\n    if not t['allows_gpu_work']:\n        return 1\n",
+     "attribute .thermal_gate_snapshot"),
+    ("async def g(vc):\n    t = await vc.thermal_gate_snapshot()\n    if not t['allows_gpu_work']:\n        return 1\n",
+     "literal 'allows_gpu_work'"),
+    # Review S2: veto shapes rule 4 alone missed.
+    ("def f(v):\n    match v.level:\n        case 'strained':\n            return None\n", "matches case 'strained'"),
+    ("BLOCK = {'strained'}\ndef f(v):\n    return v.level in BLOCK\n", "binds a name to 'strained'"),
+    # Review S1: relative imports.
+    ("from .arousal_view import level_of\n", "(arousal_view)"),
+    ("from . import thermal_gate\n", "(thermal_gate)"),
 ])
 def test_each_structural_rule_detects(src, evidence):
     ev = gate.scan_source(src)
@@ -103,6 +114,35 @@ def test_each_structural_rule_detects(src, evidence):
 ])
 def test_non_reads_are_not_detected(src):
     assert gate.scan_source(src) == []
+
+
+def test_unparseable_module_fails_closed(tmp_path):
+    _write(tmp_path, "orion/broken.py", "def f(:\n    return 'strained'\n")
+    errors, _ = gate.check(tmp_path, _contract(tmp_path))
+    assert len(errors) == 1 and errors[0].startswith("UNSCANNABLE orion/broken.py: cannot parse")
+
+
+def test_git_fast_path_agrees_with_fallback(tmp_path):
+    """Review S3: tracked, untracked, gitignored and tests/ files through the git path."""
+    import shutil
+    import subprocess
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    _write(tmp_path, "orion/tracked.py", STRAINED_VETO)
+    _write(tmp_path, "orion/deep/er/untracked.py", STRAINED_VETO)
+    _write(tmp_path, "orion/tests/test_x.py", STRAINED_VETO)
+    _write(tmp_path, "orion/clean.py", "x = 1\n")
+    _contract(tmp_path)
+    serial = gate.scan_repo(tmp_path, gate.DEFAULT_INCLUDE, gate.DEFAULT_EXCLUDE)
+    assert gate._git_prefiltered(tmp_path, gate.DEFAULT_INCLUDE, gate.DEFAULT_EXCLUDE) is None  # not a repo yet
+    run = lambda *a: subprocess.run(["git", "-C", str(tmp_path), *a], check=True, capture_output=True)
+    run("init", "-q")
+    run("add", "orion/tracked.py", "orion/clean.py")
+    files = gate._git_prefiltered(tmp_path, gate.DEFAULT_INCLUDE, gate.DEFAULT_EXCLUDE)
+    assert files == ["orion/deep/er/untracked.py", "orion/tracked.py"]
+    assert gate.scan_repo(tmp_path, gate.DEFAULT_INCLUDE, gate.DEFAULT_EXCLUDE)[0].keys() == serial[0].keys()
+    # A custom include with a mid-path "**/" keeps its meaning on the git path (review S4).
+    assert gate._git_prefiltered(tmp_path, ("orion/**/er/*.py",), ()) == ["orion/deep/er/untracked.py"]
 
 
 def test_tests_and_evals_are_not_scanned(tmp_path):

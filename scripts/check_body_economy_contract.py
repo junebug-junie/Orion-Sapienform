@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import ast
 import functools
+import multiprocessing
 import os
 import re
 import subprocess
@@ -86,6 +87,16 @@ WATCHED_NAMES = frozenset({
     "CabinetHeatReading",
     "read_cabinet_heat",
     "PhysiologyStateV1",
+    "thermal_gate_snapshot",     # orion-thought's thermal verdict for GPU work
+    "allows_gpu_work",           # the verdict's go/no-go field, read as an attribute
+})
+
+# A relative import whose target module has one of these leaf names is reading the state
+# (``from .arousal_view import x`` inside orion/regulation, ``from .arousal_reader import``
+# inside the Hub). Absolute imports are matched by WATCHED_MODULE_PREFIXES instead.
+WATCHED_RELATIVE_LEAVES = frozenset({
+    "arousal", "arousal_view", "arousal_read", "strain_news", "regulation",
+    "thermal_gate", "cabinet_heat", "arousal_reader", "physiology",
 })
 
 # Holding any of these as a string literal is reading the state.
@@ -96,6 +107,9 @@ WATCHED_STRINGS = frozenset({
     "arousal_engaged",
     "arousal_engaged_cooldown",
     "cabinet_hot",               # hardware-watch's 34 C reflex reason
+    "allows_gpu_work",           # thermal verdict field, read as a dict key
+    "thermal_refused",           # visual-chain refusal reason on heat
+    "deferred_thermal",          # visual-chain deferral outcome on heat
 })
 
 # The arousal level that every strained veto compares against.
@@ -103,7 +117,7 @@ STRAINED_LEVEL = "strained"
 
 # Cheap text pre-filter: a file that contains none of these cannot match any rule above
 # (every watched module, name and literal contains one of them, case-insensitively).
-_PREFILTER = ("regulation", "arousal", "thermal", "cabinet", "physiology", "strained")
+_PREFILTER = ("regulation", "arousal", "thermal", "cabinet", "physiology", "strained", "allows_gpu_work")
 
 DEFAULT_INCLUDE = ("**/*.py",)
 DEFAULT_EXCLUDE = (
@@ -140,18 +154,43 @@ def _compares_to_strained(node: ast.Compare) -> bool:
     return False
 
 
-def scan_source(text: str) -> list[str]:
-    """Evidence lines for one module's source; empty when it does not read the state."""
+def _holds_strained(node: ast.AST) -> bool:
+    """A literal collection holding "strained" (``BLOCK = {"strained"}``) -- a veto set."""
+    return isinstance(node, (ast.Tuple, ast.List, ast.Set)) and any(_is_strained(e) for e in node.elts)
+
+
+def _relative_target(module: str | None) -> list[str]:
+    """Module path segments of a relative import (``from ..a.b import y`` -> a, b)."""
+    return [p for p in (module or "").split(".") if p]
+
+
+class Unparseable(Exception):
+    pass
+
+
+def scan_source(text: str, rel: str = "") -> list[str]:
+    """Evidence lines for one module's source; empty when it does not read the state.
+    Raises ``Unparseable`` for a syntax error, so the gate fails closed on it."""
     low = text.lower()
     if not any(tok in low for tok in _PREFILTER):
         return []
     try:
         tree = ast.parse(text)
     except SyntaxError as exc:
-        return [f"unparseable: {exc.msg} (line {exc.lineno})"]
+        raise Unparseable(f"{exc.msg} (line {exc.lineno})") from exc
     evidence: list[str] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+        if isinstance(node, ast.ImportFrom) and node.level > 0:
+            leaves = _relative_target(node.module)
+            leaves += [a.name for a in node.names]
+            hit = sorted(set(leaves) & WATCHED_RELATIVE_LEAVES)
+            if hit:
+                dots = "." * node.level
+                evidence.append(f"L{node.lineno} from {dots}{node.module or ''} import ... ({','.join(hit)})")
+            for a in node.names:
+                if a.name in WATCHED_NAMES:
+                    evidence.append(f"L{node.lineno} import name {a.name}")
+        elif isinstance(node, ast.ImportFrom) and node.module:
             if _watched_module(node.module):
                 names = ",".join(a.name for a in node.names)
                 evidence.append(f"L{node.lineno} from {node.module} import {names}")
@@ -173,6 +212,11 @@ def scan_source(text: str) -> list[str]:
             evidence.append(f"L{node.lineno} literal {node.value!r}")
         elif isinstance(node, ast.Compare) and _compares_to_strained(node):
             evidence.append(f"L{node.lineno} compares against {STRAINED_LEVEL!r}")
+        elif isinstance(node, ast.MatchValue) and _is_strained(node.value):
+            evidence.append(f"L{node.lineno} matches case {STRAINED_LEVEL!r}")
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None and (
+                _is_strained(node.value) or _holds_strained(node.value)):
+            evidence.append(f"L{node.lineno} binds a name to {STRAINED_LEVEL!r}")
     # Stable order, no duplicates.
     seen: set[str] = set()
     return [e for e in evidence if not (e in seen or seen.add(e))]
@@ -221,11 +265,17 @@ def iter_candidate_files(root: Path, include: Iterable[str], exclude: Iterable[s
 def _git_prefiltered(root: Path, include: Iterable[str], exclude: Iterable[str]) -> list[str] | None:
     """Fast path: let ``git grep`` (tracked + untracked, .gitignore respected) apply the text
     pre-filter. Returns None when ``root`` is not a git work tree, so callers fall back."""
-    if not (root / ".git").exists():
+    try:
+        top = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
         return None
-    cmd = ["git", "-C", str(root), "grep", "-l", "-i", "--untracked", "-E", "|".join(_PREFILTER), "--"]
-    # git pathspecs: "*" crosses "/" by default, so "orion/*.py" is recursive.
-    cmd += [g.replace("**/", "") for g in include]
+    if top.returncode != 0 or Path(top.stdout.strip()).resolve() != root.resolve():
+        return None
+    cmd = ["git", "-C", str(root), "-c", "core.quotePath=false", "grep", "-l", "-z", "-i",
+           "--untracked", "-E", "|".join(_PREFILTER), "--"]
+    # ":(glob)" magic: git understands "**/" itself, so custom include globs keep their meaning.
+    cmd += [f":(glob){g}" for g in include]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
@@ -233,7 +283,7 @@ def _git_prefiltered(root: Path, include: Iterable[str], exclude: Iterable[str])
     if proc.returncode not in (0, 1):
         return None
     out = []
-    for rel in proc.stdout.splitlines():
+    for rel in proc.stdout.split("\0"):
         rel = rel.strip()
         if not rel or not _matches(rel, include):
             continue
@@ -243,16 +293,37 @@ def _git_prefiltered(root: Path, include: Iterable[str], exclude: Iterable[str])
     return sorted(out)
 
 
-def _scan_file(job: tuple[str, str]) -> tuple[str, list[str]]:
+def _scan_file(job: tuple[str, str]) -> tuple[str, list[str], str | None]:
+    """(path, evidence, problem). A file the gate cannot read or parse is a problem, never a
+    silent pass: an unreadable module could be hiding a veto."""
     root, rel = job
     try:
         text = (Path(root) / rel).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return rel, []
-    return rel, scan_source(text)
+    except (OSError, UnicodeDecodeError) as exc:
+        return rel, [], f"cannot read: {type(exc).__name__}"
+    try:
+        return rel, scan_source(text, rel), None
+    except Unparseable as exc:
+        return rel, [], f"cannot parse: {exc}"
 
 
-def scan_repo(root: Path, include: Iterable[str], exclude: Iterable[str]) -> dict[str, Hit]:
+def _run_pool(jobs: list[tuple[str, str]], workers: int) -> list[tuple[str, list[str], str | None]]:
+    """Fan out over processes. Uses fork where the platform has it (the module may have been
+    loaded by file path, so a spawned child could not re-import ``_scan_file``); any pool
+    failure falls back to the serial path, which gives the same result, only slower."""
+    try:
+        ctx = multiprocessing.get_context("fork")
+    except ValueError:
+        return [_scan_file(j) for j in jobs]
+    try:
+        with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as pool:
+            return list(pool.map(_scan_file, jobs, chunksize=8))
+    except Exception:  # noqa: BLE001 -- serial fallback is always correct
+        return [_scan_file(j) for j in jobs]
+
+
+def scan_repo(root: Path, include: Iterable[str], exclude: Iterable[str]) -> tuple[dict[str, Hit], list[str]]:
+    """(hits, problems). ``problems`` are files the gate could not read or parse."""
     files = _git_prefiltered(root, include, exclude)
     if files is None:
         files = iter_candidate_files(root, include, exclude)
@@ -261,11 +332,14 @@ def scan_repo(root: Path, include: Iterable[str], exclude: Iterable[str]) -> dic
     # budget. Results are keyed by path and sorted, so the output does not depend on order.
     workers = min(8, os.cpu_count() or 1)
     if workers > 1 and len(jobs) > 32:
-        with ProcessPoolExecutor(max_workers=workers) as pool:
-            results = list(pool.map(_scan_file, jobs, chunksize=8))
+        results = _run_pool(jobs, workers)
     else:
         results = [_scan_file(j) for j in jobs]
-    return {rel: Hit(rel, ev) for rel, ev in sorted(results) if ev}
+    hits = {rel: Hit(rel, ev) for rel, ev, _ in sorted(results, key=lambda r: r[0]) if ev}
+    problems = [f"UNSCANNABLE {rel}: {why}. Fix: make the file valid UTF-8 Python, or exclude it "
+                f"via `scan.exclude` in the contract if it is not code."
+                for rel, _, why in sorted(results, key=lambda r: r[0]) if why]
+    return hits, problems
 
 
 @dataclass
@@ -335,8 +409,9 @@ def check(root: Path, contract_path: Path) -> tuple[list[str], dict[str, Hit]]:
     contract, errors = load_contract(contract_path)
     if contract is None:
         return errors, {}
-    hits = scan_repo(root, contract.include, contract.exclude)
+    hits, problems = scan_repo(root, contract.include, contract.exclude)
     hits.pop(SELF_PATH, None)
+    errors.extend(problems)
     try:
         rel_contract = contract_path.resolve().relative_to(root.resolve())
     except ValueError:

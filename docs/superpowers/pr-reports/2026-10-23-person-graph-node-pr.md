@@ -86,7 +86,7 @@ Expected log line: `person_graph synced persons=12 nodes_written=10 claims=27 ..
 ## Risks / concerns
 
 - Severity: low. Concern: 8 links wait forever. Their clusters got a copied name, so they have no graph node. Mitigation: they are counted as `waiting` in every log line. They claim as soon as a node exists.
-- Severity: low. Concern: person rows "Addy and Esme" and "UPS delivery" become person nodes. That is how `record.py` built them. Mitigation: marking them `not_a_person` in the Hub retires their nodes' claims.
+- Severity: low. Concern: two person rows that are not one person (a "two children together" name and a delivery driver) become person nodes. That is how `record.py` built them. Mitigation: marking them `not_a_person` in the Hub retires their nodes' claims.
 
 ## PR link
 

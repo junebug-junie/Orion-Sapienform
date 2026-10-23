@@ -42,7 +42,7 @@ GPU_POOL_SHED_REQUEST_KIND = "gpu_pool.shed.request.v1"
 GPU_POOL_SHED_RESULT_KIND = "gpu_pool.shed.result.v1"
 LLM_WORKER_ANNOUNCE_KIND = "llm.worker.announce.v1"
 
-Priority = Literal["urgent", "interactive", "system", "background"]
+Priority = Literal["urgent", "interactive", "perception", "system", "background"]
 LeaseKind = Literal["request", "hold"]
 # Recall/abort/queued reason for a hold paused for urgent work: aborted after
 # urgent_preempt_grace_sec and re-queued in place (orion/gpu_pool/scheduler.py U1/U2).

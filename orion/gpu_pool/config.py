@@ -16,7 +16,15 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator, model_serializer
 
 DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "gpu_pool.yaml"
-PRIORITIES = ("urgent", "interactive", "system", "background")
+# ``perception`` (2026-10-23, docs/superpowers/specs/2026-10-23-organism-body-economy-design.md,
+# Patch A0): Orion's senses -- vision-council scene reads. Below Juniper's turn, above Orion's own
+# system/background work, and never shed by heat (``orion/gpu_pool/shed.py`` can only block
+# SHEDDABLE). A config file that predates it (no ``perception`` in ``priorities:``) still loads:
+# the validator inserts it just below ``interactive``. That is what lets this code ship to every
+# loader -- including circe's lane controller, which reads the live checkout's YAML -- before any
+# YAML names it.
+PRIORITIES = ("urgent", "interactive", "perception", "system", "background")
+Priority = Literal["urgent", "interactive", "perception", "system", "background"]
 # Pool-side swap preconditions (stage 4 spec, "Guards"). A guard named here must be one the
 # scheduler evaluates; the scheduler side lands with the actuation engine (stage 4.3).
 SwapGuard = Literal["thermal"]   # visual_baseline deleted in stage 5.4
@@ -256,7 +264,7 @@ class ClassSpec(BaseModel):
 class RouteSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     work_class: str = Field(alias="class")
-    priority: Literal["urgent", "interactive", "system", "background"] = "system"
+    priority: Priority = "system"
 
 
 class PoolConfig(BaseModel):
@@ -284,6 +292,16 @@ class PoolConfig(BaseModel):
         if not isinstance(value, dict):
             return value
         return {k: ({"class": v} if isinstance(v, str) else v) for k, v in value.items()}
+
+    @field_validator("priorities", mode="after")
+    @classmethod
+    def _insert_perception(cls, value: list[str]) -> list[str]:
+        """Pre-perception configs list four priorities; slot ``perception`` in below ``interactive``."""
+        if "perception" in value or "interactive" not in value:
+            return value
+        out = list(value)
+        out.insert(out.index("interactive") + 1, "perception")
+        return out
 
     @model_validator(mode="after")
     def _cross_refs(self):

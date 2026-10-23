@@ -614,7 +614,7 @@ Each patch has its own tests, eval and live check. Patches B, C and E can run in
 
 | patch | contents | live proof |
 |---|---|---|
-| **A. Measurement spine** | `ActCostV2`, consumer-first, then filled on close. Every want producer emits `act_opened`/`act_closed` to `grammar_acts`, so curiosity, retro, vision-council, topic-foundry, ask-Claude and self-monitor all get graded. Persist `physiology_state` with the Body organ only (no prices). Replay harness. Heat-sensitivity passive fit with weather and lags (read-only). Remove the zombie env var and synthetic goal. | A1, A2; every producer has act rows; first sensitivity estimate per host, with its interval |
+| **A. Measurement spine** | `ActCostV2`, consumer-first, then filled on close. Every want producer emits `act_opened`/`act_closed` to `grammar_acts`, so curiosity, retro, vision-council, topic-foundry, ask-Claude and self-monitor all get graded. Persist `physiology_state` with the Body organ only (no prices). Replay harness. Heat-sensitivity passive fit with weather and lags (read-only). Remove the zombie env var and synthetic goal. **Early Phase 2 slice (Juniper, 10-23):** seed `config/physiology/contract.yaml` with the `readers` table (today's ~12–14 strained sites), and land the CI check "no unregistered veto", so no new veto appears while Phase 1 removes the old ones. | A1, A2; every producer has act rows; first sensitivity estimate per host, with its interval; G1 green |
 | **B. Budget, shadow** | Prices with anti-windup, ceilings and reservations. The Felt dials, plus a plain debug readout (JSON route only; the real surface is Phase 3). One owner for the 32 °C line. Delete `quota_budget.py`; wire `ClaudeLimitObservationV1`. Prices are computed and displayed but read by nothing. | Replay R1, R3, R4, R6 green; live prices visible |
 | **C. Appetite + Choice, shadow** | `WantV1`, `/physiology/bid`, the client, `want_ledger`. Every producer bids in `shadow`: it logs a would-fund decision next to its real gate decision. Holdback pulses start feeding the sensitivity fit. | A3; a shadow-vs-real disagreement table for 7 days |
 | **D. Cutover, one reader per PR** | Curiosity first, then outreach, reading, painting, dream, retro, dispatch floor, then the remaining strained-gating sites. Each PR deletes that reader's old veto. **A family cuts over only once it is graded (≥30 graded closes).** | R2, A4, A5 per reader |
@@ -694,7 +694,7 @@ The PR report gets a required `## Body economy impact` section, and the CI gate 
 - **G5.** Editing `orion/autonomy/thermal_gate.py` in a Claude session prints the card.
 - **G6.** The gate's own false-positive rate: run against the last 30 merged PRs; any that would have failed are listed and judged by hand in the Phase 2 PR report.
 
-**Ordering note.** The `readers` table is cheapest to seed while Patch A is being written: the ~12–14 strained sites are already listed in this doc. If Juniper agrees, the registry plus the "no unregistered veto" check alone can land early, in Patch A. The rest of Phase 2 follows Phase 1.
+**Ordering (decided 10-23).** The `readers` registry and the "no unregistered veto" check land early, in Patch A. The rest of Phase 2 follows Phase 1.
 
 ---
 

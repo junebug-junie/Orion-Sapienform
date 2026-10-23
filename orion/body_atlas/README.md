@@ -48,5 +48,8 @@ Known limits:
   process across time.
 - **Old checkouts.** Before 2026-01 there is no producer catalog, so an older checkout gives no
   atlas.
+- **Wildcard channels are not joined.** Observed channels are matched to catalog names exactly,
+  so the 42 wildcard catalog entries (for example `orion:world_pulse_read:pull:reply:*`) add no
+  `observed_publish` flows. In the 2026-10-23 fixture that leaves out 24 messages.
 - **Replicas stay separate.** Replicas (`atlas-worker-1`, `-2`) are separate parts that land in
   one organ.

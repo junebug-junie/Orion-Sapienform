@@ -29,6 +29,15 @@ def test_summary_stays_inside_the_context_caps(tmp_path):
     assert text.endswith("full atlas: /x/atlas.json")
 
 
+def test_char_cap_keeps_the_full_atlas_path(tmp_path):
+    long = [{"name": f"orion:ns{i}:x", "producer_services": [f"p{i}-" + "x" * 300],
+             "consumer_services": [f"c{i}-" + "y" * 300]} for i in range(30)]
+    text = summarize(build_atlas(long, None, now=datetime(2026, 10, 23, tzinfo=timezone.utc)),
+                     out="/x/atlas.json")
+    assert len(text) <= MAX_CHARS and "(cut at 4000 chars)" in text
+    assert text.endswith("full atlas: /x/atlas.json")
+
+
 def test_catalog_only_run_writes_the_full_atlas(tmp_path, capsys):
     root = _catalog_root(tmp_path, _pairs(3))
     out = tmp_path / "out" / "atlas.json"

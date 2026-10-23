@@ -67,11 +67,13 @@ def summarize(atlas: BodyAtlasV1, *, out: str | None) -> str:
         lines.append(f"{i:>2}. [{len(organ.members)} parts, {live} live] ns={ns}: {shown}{more}")
     if len(multi) > budget:
         lines.append(f"showing {budget} of {len(multi)} multi-part organs")
-    lines.append(f"full atlas: {out}" if out else "full atlas: not written (pass --out PATH)")
+    tail = f"full atlas: {out}" if out else "full atlas: not written (pass --out PATH)"
     text = "\n".join(lines)
-    if len(text) > MAX_CHARS:
-        text = text[: MAX_CHARS - 40].rsplit("\n", 1)[0] + "\n(cut at 4000 chars; see full atlas)"
-    return text
+    if len(text) + 1 + len(tail) > MAX_CHARS:
+        # keep the path line: it is how the reader finds what was cut
+        note = "(cut at 4000 chars)"
+        text = text[: MAX_CHARS - len(tail) - len(note) - 2].rsplit("\n", 1)[0] + "\n" + note
+    return text + "\n" + tail
 
 
 def main(argv: list[str] | None = None) -> int:

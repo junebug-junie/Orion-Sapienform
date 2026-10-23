@@ -8,6 +8,8 @@ on:
       - "orion/bus/channels.yaml"
       - "orion/fcc/**"
       - "orion/introspect/**"
+      - "orion/physiology/heat_archaeology.py"
+      - "orion/physiology/tests/heat_fixture.py"
       - "orion/core/bus/**"
       - "orion/harness/**"
       - "orion/hub/**"
@@ -66,6 +68,8 @@ jobs:
             services/orion-hub/tests/test_curiosity_routes_runs.py \
             services/orion-hub/tests/test_curiosity_focus.py \
             services/orion-hub/evals/test_curiosity_focus_eval.py \
+            services/orion-hub/tests/test_power_attribution_introspect_listener.py \
+            services/orion-hub/evals/test_power_attribution_eval.py \
             orion/curiosity/tests/test_focus_lifecycle.py \
             orion/harness/tests/test_claim_gate.py \
             services/orion-hub/tests/test_reading_finding_outreach.py \

@@ -290,3 +290,14 @@ def test_small_evidence_is_not_truncated():
 def test_empty_evidence_is_said_plainly():
     prompt = build_urgent_prompt(_seed(evidence={}), run_id=RUN_ID)
     assert "No evidence was collected" in prompt
+
+
+def test_power_attribution_is_offered_beside_postgres_only():
+    """Heat archaeology is one call for "where did the watts go, since when". It is offered
+    with the Postgres sources and never when the evidence bundle is all there is."""
+    from orion.introspect.brief import POWER_ATTRIBUTION
+
+    with_pg = _tool_section(build_urgent_prompt(_seed(), run_id=RUN_ID))
+    without_pg = _tool_section(build_urgent_prompt(_seed(), run_id=RUN_ID, pg_available=False))
+    assert POWER_ATTRIBUTION in with_pg and "correlation" in with_pg
+    assert POWER_ATTRIBUTION not in without_pg

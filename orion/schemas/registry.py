@@ -822,7 +822,8 @@ from orion.schemas.reading import (
 )
 from orion.schemas.introspect import (
     CuriosityArguments, DreamsArguments, IntrospectItemV1, OrionDayArguments, IntrospectRequestV1, IntrospectResultV1, IntrospectToolBindingV1,
-    NodeHistoryArguments, QueueCuriosityFocusArguments, ReadingResultArguments, RecordCorrectionArguments,
+    NodeHistoryArguments, PowerAttributionArguments, QueueCuriosityFocusArguments, ReadingResultArguments,
+    RecordCorrectionArguments,
 )
 from orion.schemas.reading_resonance import (
     ReadingResonanceCheckV1,
@@ -1563,6 +1564,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "OrionDayArguments": OrionDayArguments,
     "RecordCorrectionArguments": RecordCorrectionArguments,
     "NodeHistoryArguments": NodeHistoryArguments,
+    "PowerAttributionArguments": PowerAttributionArguments,
     "QueueCuriosityFocusArguments": QueueCuriosityFocusArguments,
     "WorldPulseReadSeedV1": WorldPulseReadSeedV1,
     "WorldPulseReadHandoffV1": WorldPulseReadHandoffV1,

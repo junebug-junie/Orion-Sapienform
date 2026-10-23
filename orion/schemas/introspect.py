@@ -43,11 +43,20 @@ CURIOSITY_RUN_ID_PATTERN = r"^[A-Za-z0-9_.:-]{1,64}$"
 
 IntrospectBusOperation = Literal[
     "dreams", "curiosity", "orion_day", "record_correction", "node_history", "queue_curiosity_focus",
+    "power_attribution",
 ]
 IntrospectOperation = Literal[
     "reading_result", "dreams", "curiosity", "orion_day", "record_correction", "node_history",
-    "queue_curiosity_focus",
+    "queue_curiosity_focus", "power_attribution",
 ]
+
+# power_attribution: heat archaeology over hourly watts (orion.physiology.heat_archaeology).
+# Raw per-node watts (orion_biometrics_cluster) are kept ~30 days, so the window may not start
+# earlier than that; a step needs 24 h on each side, so the window is at least 2 days.
+POWER_ATTRIBUTION_MAX_DAYS = 30
+POWER_ATTRIBUTION_MIN_DAYS = 2
+POWER_ATTRIBUTION_DEFAULT_DAYS = 14
+PowerNode = Literal["circe", "athena", "hecate", "cooling"]
 
 # node_history: a substrate node's prediction-error readings from
 # substrate_node_prediction_error_history. The writer prunes at
@@ -450,3 +459,38 @@ class NodeHistoryArguments(BaseModel):
         # `until` within the clock-skew slack of now is now.
         end = min(self.until, now) if self.until is not None else now
         return end - timedelta(hours=self.hours), end
+
+
+class PowerAttributionArguments(BaseModel):
+    """Model-supplied arguments for the ``power_attribution`` tool.
+
+    ``node`` given: that node only (``cooling`` is the cabinet AC plug). Omitted: every node
+    with wall watts in the window. The window ends at ``until`` (default now), reaches back
+    ``days``, and must start inside raw-watts retention.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    node: PowerNode | None = None
+    days: float = Field(
+        default=POWER_ATTRIBUTION_DEFAULT_DAYS, ge=POWER_ATTRIBUTION_MIN_DAYS, le=POWER_ATTRIBUTION_MAX_DAYS,
+    )
+    until: datetime | None = None
+
+    @model_validator(mode="after")
+    def _window(self):
+        _require_tz(self.until, "until")
+        if self.until is not None:
+            now = datetime.now(timezone.utc)
+            if self.until > now + NODE_HISTORY_FUTURE_SLACK:
+                raise ValueError("until is in the future: no readings exist there yet; omit it to end the window now")
+            start = self.until - timedelta(days=self.days)
+            if start < now - timedelta(days=POWER_ATTRIBUTION_MAX_DAYS) - NODE_HISTORY_EDGE_SLACK:
+                raise ValueError(
+                    f"the window must start within the last {POWER_ATTRIBUTION_MAX_DAYS} days: older "
+                    "per-node watts are pruned, so an earlier window would read as missing, not quiet"
+                )
+        return self
+
+    def window(self, now: datetime) -> tuple[datetime, datetime]:
+        end = min(self.until, now) if self.until is not None else now
+        return end - timedelta(days=self.days), end

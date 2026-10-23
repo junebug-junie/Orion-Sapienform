@@ -141,6 +141,11 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
         "orion-introspect MCP (spawned by the governor's FCC turns) validates the model's node_history "
         "tool arguments into the bus request; orion-hub's node_history introspect listener validates them back",
     ),
+    "orion.schemas.introspect:PowerAttributionArguments": (
+        "orion-harness-governor",
+        "orion-introspect MCP (spawned by the governor's FCC turns) validates the model's power_attribution "
+        "tool arguments into the bus request; orion-hub's power_attribution introspect listener validates them back",
+    ),
     # No cross-service writer.
     "orion.substrate.neighborhood:NeighborhoodRequestV1": (
         None,

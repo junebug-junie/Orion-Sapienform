@@ -83,6 +83,23 @@
     return null;
   }
 
+  // What an "Is this <name>?" card with several pictures sends (2026-10-23):
+  // choices[i] is "same" (it is <name>), "different" (it is not) or "unsure".
+  // At least one <name> -> yes; none, but at least one "not" -> no; all "not
+  // sure" -> null (nothing to send). Every picture rides along, so a card holding two
+  // people can say which picture is <name>.
+  function personConfirmPicturesSubmission(views, choices) {
+    if (!views || views.length < 2) return null;
+    const pictures = views.map(function (v, i) {
+      return { image_ref: v.raw, verdict: choices[i] || "unsure" };
+    });
+    const verdicts = pictures.map(function (p) { return p.verdict; });
+    if (verdicts.indexOf("same") >= 0) return { action: "answer", answer: "yes", extra: { pictures: pictures } };
+    if (verdicts.indexOf("different") >= 0) return { action: "answer", answer: "no", extra: { pictures: pictures } };
+    // Nothing chosen: refused, never a silent dismissal ("Can't tell" is its own button).
+    return null;
+  }
+
   // Every picture an ask shows, in order, no repeats: image_refs, else the
   // single image_ref of an older row.
   function askImageViews(ask) {
@@ -437,6 +454,7 @@
   }
 
   function renderPersonConfirm(doc, vm, onAction) {
+    if (vm.images.length > 1) return renderPersonConfirmByPicture(doc, vm, onAction);
     const card = el(doc, "div", "rounded-lg border border-sky-800 bg-gray-800/60 p-3 space-y-2");
     card.setAttribute("data-ask-id", vm.askId);
     card.setAttribute("data-ask-kind", "person-confirm");
@@ -485,6 +503,73 @@
       });
     });
     card.appendChild(sendBtn);
+    card.appendChild(note);
+    return card;
+  }
+
+  // "Is this <name>?" with several pictures: one choice under each picture,
+  // because the pictures can be of different people (2026-10-23, Juniper: "one
+  // of the three is Emerald but I can't specify which").
+  function renderPersonConfirmByPicture(doc, vm, onAction) {
+    const name = vm.personName || "them";
+    const card = el(doc, "div", "rounded-lg border border-sky-800 bg-gray-800/60 p-3 space-y-2");
+    card.setAttribute("data-ask-id", vm.askId);
+    card.setAttribute("data-ask-kind", "person-confirm");
+    card.appendChild(el(doc, "div", "text-sm text-gray-100", vm.question));
+    card.appendChild(el(doc, "div", "text-[11px] text-gray-400",
+      "These pictures may not all be the same person. Say for each one."));
+    const choices = {};
+    card.appendChild(renderImages(doc, vm, function (i) {
+      const wrap = el(doc, "div", "space-y-1");
+      const id = nextId("ask-pic");
+      const label = el(doc, "label", "block text-[11px] text-gray-400", "Picture " + (i + 1) + ":");
+      label.setAttribute("for", id);
+      const select = el(doc, "select", "w-full bg-gray-900 text-gray-100 text-xs rounded px-1 py-1 border border-gray-700");
+      setStyle(select, { width: "100%", minWidth: "0", boxSizing: "border-box" });
+      select.setAttribute("id", id);
+      select.setAttribute("data-ask-picture", String(i));
+      [["unsure", "Not sure"], ["same", name], ["different", "Not " + name]].forEach(function (o) {
+        const opt = el(doc, "option", "", o[1]);
+        opt.setAttribute("value", o[0]);
+        select.appendChild(opt);
+      });
+      select.value = "unsure";
+      choices[i] = "unsure";
+      select.addEventListener("change", function () { choices[i] = String(select.value || "unsure"); });
+      wrap.appendChild(label);
+      wrap.appendChild(select);
+      return wrap;
+    }));
+    if (vm.askedAt) card.appendChild(el(doc, "div", "text-[11px] text-gray-500", "Asked " + vm.askedAt));
+    const sendBtn = el(doc, "button", "text-xs rounded px-3 py-1 bg-sky-700 hover:bg-sky-600 text-white", "Send");
+    sendBtn.setAttribute("type", "button");
+    sendBtn.setAttribute("data-ask-action", "send");
+    const note = el(doc, "div", "text-[11px] text-amber-300 hidden");
+    const cantTellBtn = el(doc, "button",
+      "text-xs rounded px-3 py-1 bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700", "Can't tell");
+    cantTellBtn.setAttribute("type", "button");
+    cantTellBtn.setAttribute("data-ask-action", "dismiss");
+    const buttons = [sendBtn, cantTellBtn];
+    function run(sub) {
+      buttons.forEach(function (b) { b.disabled = true; });
+      return Promise.resolve(onAction(vm.askId, sub.action, sub.answer, note, undefined, sub.extra)).finally(function () {
+        buttons.forEach(function (b) { b.disabled = false; });
+      });
+    }
+    sendBtn.addEventListener("click", function () {
+      const sub = personConfirmPicturesSubmission(vm.images, choices);
+      if (!sub) {
+        note.textContent = "Choose " + name + " or Not " + name + " for at least one picture, or press Can't tell.";
+        note.classList.remove("hidden");
+        return;
+      }
+      return run(sub);
+    });
+    cantTellBtn.addEventListener("click", function () { return run(personConfirmSubmission("unsure")); });
+    const row = el(doc, "div", "flex items-center gap-2");
+    row.appendChild(sendBtn);
+    row.appendChild(cantTellBtn);
+    card.appendChild(row);
     card.appendChild(note);
     return card;
   }
@@ -724,6 +809,7 @@
     isPersonConfirm: isPersonConfirm,
     personConfirmName: personConfirmName,
     personConfirmSubmission: personConfirmSubmission,
+    personConfirmPicturesSubmission: personConfirmPicturesSubmission,
     pictureSubmission: pictureSubmission,
     askCardViewModel: askCardViewModel,
     statusLine: statusLine,

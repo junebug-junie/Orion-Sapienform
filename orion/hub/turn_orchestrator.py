@@ -330,7 +330,10 @@ async def _publish_unified_turn_chat_grammar(
             # into memory as a "repair". The sub-floor reading still
             # travels on its own atom.
             has_repair_signal=is_repair_signal(repair_pressure_level),
-            has_repair_pressure_reading=repair_bundle is not None,
+            # A reading exists only if the paradigm measured one. A bundle whose
+            # repair_pressure failed (e.g. probe shed by heat) has no level (None):
+            # no atom, rather than a 0.0 "calm" reading.
+            has_repair_pressure_reading=repair_pressure_level is not None,
             stance_disposition=stance_disposition,
             stance_disposition_reasons=stance_disposition_reasons,
             stance_boundary_register=stance_boundary_register,
@@ -603,13 +606,16 @@ async def _run_pre_turn_appraisal(
     """Run pre-turn appraisal and return (bundle, cockpit_texture).
 
     Texture is honest Hub-boundary detail for Soft HUD progress hops — never
-    fabricated cognition. Keys: status, error, failed_paradigms, elapsed_ms,
-    skipped_reason.
+    fabricated cognition. Keys: status, error, failed_paradigms, failure_reasons,
+    elapsed_ms, skipped_reason. A failed paradigm (e.g. its probe shed by heat:
+    failure_reasons={"repair_pressure": "shed:cabinet_hot"}) makes the status
+    ``failed``: its level is unknown, never reported as ``ok``.
     """
     texture: dict[str, Any] = {
         "status": "skipped",
         "error": None,
         "failed_paradigms": [],
+        "failure_reasons": {},
         "elapsed_ms": None,
         "skipped_reason": None,
     }
@@ -664,10 +670,20 @@ async def _run_pre_turn_appraisal(
         return None, texture
 
     failed = list(bundle.failed_paradigms or [])
+    reasons = dict(getattr(bundle, "failure_reasons", None) or {})
     texture["failed_paradigms"] = failed
+    texture["failure_reasons"] = reasons
     if failed:
         texture["status"] = "failed"
-        texture["error"] = f"failed_paradigms={','.join(failed)}"
+        texture["error"] = "failed_paradigms=" + ",".join(
+            f"{name}:{reasons[name]}" if reasons.get(name) else name for name in failed
+        )
+        logger.warning(
+            "pre_turn_appraisal_failed corr=%s failed=%s reasons=%s",
+            correlation_id,
+            failed,
+            reasons,
+        )
     else:
         texture["status"] = "ok"
 
@@ -1113,6 +1129,7 @@ async def execute_unified_turn(
                     "phase": "done",
                     "status": appraisal_status,
                     "failed_paradigms": list(appraisal_texture.get("failed_paradigms") or []),
+                    "failure_reasons": dict(appraisal_texture.get("failure_reasons") or {}),
                     "elapsed_ms": appraisal_texture.get("elapsed_ms"),
                     "error": appraisal_error,
                     "skipped_reason": appraisal_texture.get("skipped_reason"),

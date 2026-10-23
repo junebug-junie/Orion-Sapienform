@@ -579,6 +579,63 @@ def test_no_rules_the_name_out_for_that_cluster(pg) -> None:
         assert all(a["source_ref"] != "unk-j|Juniper" for a in later)
 
 
+def _answer_confirm_by_picture(conn, verdicts):
+    """Answer the open "Is this Juniper?" card about unk-j picture by picture:
+    verdicts[k] for the crop unk-j-<k> (its thumbnail is the picture)."""
+    import json
+
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    (ask,) = vi._open_person_confirm_asks(conn, NOW, ZONE, vi.IndividualsConfig(ask_face_min_faces=0))
+    pictures = []
+    for k, v in enumerate(verdicts):
+        ref = "thumb:" + f"{k:x}" * 64
+        conn.execute(text("UPDATE vision_crop_observation SET thumb_ref=:r WHERE crop_id=:c"),
+                     {"r": ref, "c": f"unk-j-{k}"})
+        pictures.append({"image_ref": ref, "index": k, "verdict": v})
+    answer = "yes" if "same" in verdicts else "no"
+    conn.execute(text("UPDATE orion_ask SET status='answered', answer=:ans, answered_at=:t, "
+                      "answer_detail=CAST(:d AS jsonb) WHERE ask_id=:a"),
+                 {"ans": answer, "t": NOW, "a": ask["ask_id"], "d": json.dumps({"pictures": pictures})})
+    vi._apply_answers(conn, NOW)
+    return ask
+
+
+@needs_pg
+def test_one_picture_of_three_is_the_person(pg) -> None:
+    """2026-10-23, Juniper: "one of the three is Emerald but I can't specify which".
+    Mixed answers never name the cluster (it holds more than one person); each
+    marked picture teaches its own crop, "not sure" teaches nothing."""
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _confirm_world(conn)
+        _answer_confirm_by_picture(conn, ["same", "different", "unsure"])
+        assert conn.execute(text("SELECT label FROM vision_individual WHERE individual_id='unk-j'")).scalar() is None
+        assert conn.execute(text("SELECT count(*) FROM vision_person_attribution WHERE individual_id='unk-j' "
+                                 "AND person_label='Juniper' AND revoked_at IS NULL")).scalar() == 0
+        pm.run_person_model(conn, NOW + timedelta(minutes=10), CFG)
+        ex = conn.execute(text("SELECT crop_id, polarity, source FROM vision_person_exemplar "
+                               "WHERE source LIKE 'confirm_pick%' AND revoked_at IS NULL ORDER BY crop_id")).fetchall()
+        # Both survive the album's reconciliation.
+        assert [tuple(r) for r in ex] == [("unk-j-0", 1, "confirm_pick_yes"), ("unk-j-1", -1, "confirm_pick_no")]
+
+
+@needs_pg
+def test_every_picture_is_the_person_still_names_the_cluster(pg) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _confirm_world(conn)
+        ask = _answer_confirm_by_picture(conn, ["same", "same", "same"])
+        assert conn.execute(text("SELECT label, label_ask_id FROM vision_individual "
+                                 "WHERE individual_id='unk-j'")).one() == ("Juniper", ask["ask_id"])
+        assert conn.execute(text("SELECT count(*) FROM vision_person_exemplar "
+                                 "WHERE source LIKE 'confirm_pick%'")).scalar() == 0
+
+
 @needs_pg
 def test_cant_tell_is_a_dismissal_and_that_pair_is_not_asked_again(pg) -> None:
     from sqlalchemy import text

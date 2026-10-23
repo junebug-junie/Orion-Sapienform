@@ -574,10 +574,13 @@ now also writes one row per strain cause new to the episode (`cause_row`, event 
 `...:strained:at:<observed_at>`, `payload.joined`), one seed row (`payload.seed = true`) when
 the episode has nothing recorded yet (the first step after deploy, a lost onset row), and a
 keepalive (`joined = []`) every `STRAIN_KEEPALIVE_SEC` (1,800 s) so the chronology can close an
-arc whose closing row was lost. A failed write is retried on the next step. Same table, kind and label, so readers of levels still
+arc whose closing row was lost, and a row when the causes present now differ from the last row's
+(a cause left, e.g. the cabinet cooled; at most every `STRAIN_CAUSE_CHANGE_MIN_SEC`, 600 s, so a
+flapping cause costs at most one row per 10 min). Every row's reading carries the causes present
+at that moment. A failed write is retried on the next step. Same table, kind and label, so readers of levels still
 read `strained` (`scripts/analysis/measure_arousal_reader_replay.py` filters them out, since they
 would restart a level's age). The causes already recorded and the last row's time ride in the
-checkpoint as `strain_causes_seen` / `strain_row_at`.
+checkpoint as `strain_causes_seen` / `strain_row_at` / `strain_causes_now`.
 Kill switch: `TEMPORAL_SELF_STRAIN_ARCS_ENABLED=false` (no cause rows, no strain arcs).
 
 **Retro play source (2026-10-22, Orion plays Zelda section F).** The chronicle reads orion-hub's

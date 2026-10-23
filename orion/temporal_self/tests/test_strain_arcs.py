@@ -262,3 +262,56 @@ def test_citation_phrase_ignores_ordinary_strained():
     assert any(p.search("Was strained 09:00 to 09:40") for p in strain)
     assert any(p.search("Strained since Wed 12:07") for p in strain)
     assert not any(p.search("the GPU queue was strained by the batch") for p in strain)
+
+
+# --------------------------------------------------------------------------- causes present now
+
+
+def test_cue_names_a_cleared_cause_as_earlier():
+    # The cabinet cools mid-episode: the label keeps every cause seen, the cue says what is true now.
+    rows = [level("idle", "strained", at(0), [HOT, GPU]), cause(at(30), at(0), [GPU])]
+    now = at(40)
+    s = advance_clock(fold(initial_state(), events=evs(rows)), now)
+    (arc,) = strains(s)
+    assert arc.subject_label == f"{HOT}+{GPU}" and arc.causes_now == [GPU]
+    cue = project_stance_cue(build_frame(s, now), now)
+    assert "Strained since 09:00 (now: GPU jobs backed up; earlier: cabinet too hot) [arc:" in cue.text
+
+
+def test_cue_says_settling_while_strain_only_holds():
+    rows = [level("idle", "strained", at(0), [GPU]), cause(at(30), at(0), [])]
+    now = at(40)
+    cue = project_stance_cue(_frame(rows, now), now)
+    assert "Strained since 09:00 (no cause right now, settling; earlier: GPU jobs backed up) [arc:" in cue.text
+
+
+def test_cue_keeps_plain_wording_when_nothing_cleared_or_not_recorded():
+    rows = [level("idle", "strained", at(0), [GPU]), cause(at(20), at(0), [GPU, HOT], joined=[HOT])]
+    now = at(30)
+    s = advance_clock(fold(initial_state(), events=evs(rows)), now)
+    cue = project_stance_cue(build_frame(s, now), now)
+    assert "Strained since 09:00 (GPU jobs backed up, cabinet too hot) [arc:" in cue.text
+    # An arc folded before causes_now existed: never read as "no cause right now".
+    (arc,) = strains(s)
+    arc.causes_now = None
+    cue = project_stance_cue(build_frame(s, now), now)
+    assert "Strained since 09:00 (GPU jobs backed up, cabinet too hot) [arc:" in cue.text
+    assert "settling" not in cue.text
+
+
+def test_causes_now_carry_over_midnight():
+    late = datetime(2026, 10, 10, 5, 0, tzinfo=timezone.utc)
+    midnight = datetime(2026, 10, 10, 6, 0, tzinfo=timezone.utc)
+    rows = [level("idle", "strained", late, [HOT, GPU]), cause(late + timedelta(minutes=30), late, [GPU]),
+            *keep(late, late + timedelta(minutes=30), midnight + timedelta(minutes=31))]
+    s = advance_clock(fold(initial_state(), events=evs(rows)), midnight + timedelta(minutes=31))
+    (cont,) = strains(s)
+    assert cont.carried_from_previous_day and cont.causes_now == [GPU]
+
+
+def test_seed_while_only_holding_renders_settling_with_no_label():
+    # A seed row written while the strain only holds: no cause now, none recorded before.
+    s = fold(initial_state(), events=evs([cause(at(0), at(-60), [], seed=True)]))
+    now = at(10)
+    cue = project_stance_cue(build_frame(advance_clock(s, now), now), now)
+    assert "Strained since 08:00 (no cause right now, settling) [arc:" in cue.text

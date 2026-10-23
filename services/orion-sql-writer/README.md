@@ -622,6 +622,14 @@ Each tick it:
    orion-substrate-runtime writes the entity); `no` adds its newest 20 crops
    (the ones guessed on) as `confirm_no` exemplars, kept across
    reconciliation, and revokes that guess; Can't tell = dismiss.
+   **A card with several pictures is answered picture by picture**
+   (2026-10-23: a cluster can hold more than one person, and "one of the three
+   is Emerald" could not be said). `answer_detail.pictures` holds one
+   `same` (is <name>) / `different` (is not) / `unsure` per picture. All
+   `same` = the old yes, all `different` = the old no. Anything else never
+   names the cluster: each marked picture's crop becomes its own exemplar
+   (`confirm_pick_yes` +1 / `confirm_pick_no` -1, kept across
+   reconciliation), "not sure" adds nothing, and the guess is revoked.
 
 Needs `manual_migration_vision_person_album_v1.sql`; without it the step logs
 `person_model: skipped` and the rest of the tick runs. Eval (read-only on
@@ -642,10 +650,17 @@ the individuals tick, after answers apply, while `PERSON_RECORD_ENABLED` (true):
    are ignored. Renames and cleared names revoke links.
 2. Stated pronouns from people.yaml become `person_fact` rows.
 3. Answered `person_fact` asks become `person_fact` rows (her words verbatim).
-4. New `person_fact` asks ("Who is X to you?", then pronouns, age, gender,
-   sexuality, ...; `orion/person_model/categories.yaml`) open under their own
-   cap `PERSON_FACT_ASK_DAILY_CAP` (3), one open per person, least-asked person
-   first, with the person's best camera picture.
+4. New `person_fact` asks ("How do you know X? For example: ...", then
+   pronouns, age, gender, sexuality, ...; `orion/person_model/categories.yaml`)
+   open under their own cap `PERSON_FACT_ASK_DAILY_CAP` (3), one open per
+   person, least-asked person first. Pictures (2026-10-23): only up to 3 that
+   Juniper herself tied to that person (`orion/person_model/pictures.py`: the
+   picture she named on a "who is this?" card, ones she marked "the same
+   person", a face she named on a "same person?" card, a picture she picked
+   on an "Is this <name>?" card). Never a cluster's newest pictures: a cluster
+   can hold more than one person, and the first live cards showed three
+   different people. No confirmed picture, no picture. Every pass also
+   corrects the pictures of questions already open.
 
 Needs `manual_migration_person_record_v1.sql`; without it the step reports
 `person_record: migration_missing`. Dry run on live data:
@@ -993,6 +1008,16 @@ Producers today: orion-thought paintings (`make`), hub chat reply (`say`), hub o
 (`say`/`ask`), hub world-pulse reading Stage 1 (`look`). Debug surface: `GET /act/ledger?days=7`.
 Kill switch: `SQL_WRITER_ACT_LEDGER_ENABLED=false` (events still land in `grammar_events`).
 Eval: `python evals/act_ledger_calibration.py [--live]`.
+
+**Cost filled on close (body economy Patch A2, 2026-10-23).** `ActV1.cost` accepts `ActCostV1` or
+`ActCostV2` (V1 plus `gpu_slot_s_by_lane`, `wh_by_host`, `juniper_msgs`, `claude_limit_events`; all
+optional, None = not measured, never 0). On every close the ledger fills what it can measure and
+the producer left unset, into `grammar_acts.cost_json`: `seconds` = closed_at - opened_at (needs
+the open), and `gpu_slot_s_by_lane` = lease time per pool role from `gpu_pool_events` whose
+`turn_correlation_id` is the act's correlation_id (window: open - 1 h .. close + 120 s; each lease
+once; the read runs in its own savepoint). Producer values win. `substrate_action_outcomes.latency_ms`
+still comes only from a producer-reported `seconds`. Rollout is consumer-first: producers keep
+sending V1 until every reader of `orion:grammar:event` / `grammar_events` runs V2-aware code.
 
 **Rung 3: acts bound to the workspace winner (2026-10-21).** At open, an act whose actor answers a
 world-first workspace source is stamped with the winning loop it was opened under

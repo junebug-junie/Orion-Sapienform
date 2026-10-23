@@ -7,7 +7,7 @@ from orion.schemas.person_model import PersonRefV1
 
 
 def test_first_question_about_someone_is_who_they_are_to_you() -> None:
-    assert pf.next_question(name="Sam", role="other", done=()) == ("relationship", "Who is Sam to you?")
+    assert pf.next_question(name="Sam", role="other", done=()) == ("relationship", "How do you know Sam? For example: a family friend, a neighbor, a classmate of your kid.")
 
 
 def test_questions_follow_the_yaml_order_and_skip_done_ones() -> None:

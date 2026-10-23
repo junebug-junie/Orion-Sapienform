@@ -38,6 +38,38 @@ _EVIDENCE_KINDS: tuple[EvidenceKind, ...] = (
 _LLMCaller = Callable[[str], dict[str, Any] | Awaitable[dict[str, Any]]]
 
 
+class RepairProbeUnavailable(RuntimeError):
+    """The probe produced no measurement. ``reason`` says why, e.g. ``shed:cabinet_hot`` (the GPU
+    pool refused it), ``llm_unavailable`` (empty reply), ``probe_unparseable``.
+
+    Raised instead of returning ``level=0.0``: until 2026-10-23 a refused probe came back as a
+    calm 0.0 reading with notes=["no_repair_evidence"] and the cockpit read ``ok`` -- 19/19 of
+    Juniper's turns on 10-20..21 while the 34 C heat reflex shed the probe. The caller records the
+    paradigm as failed, so its level is unknown, not zero."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def probe_failure_reason(payload: dict[str, Any]) -> str | None:
+    """Why a gateway reply carries no answer, or None if it carries one.
+
+    The gateway's refusal shape (``raw.error`` + ``raw.details.reason``, llm-gateway
+    ``_pool_unavailable_result``) names the reason, e.g. ``shed:cabinet_hot``. An empty reply with
+    no stated error is ``llm_unavailable``."""
+    raw = payload.get("raw") if isinstance(payload.get("raw"), dict) else {}
+    error = raw.get("error")
+    if error:
+        details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+        reason = str(details.get("reason") or error).strip()
+        return reason[:120] or "llm_unavailable"
+    text = str(payload.get("text") or payload.get("content") or "")
+    if not text.strip():
+        return "llm_unavailable"
+    return None
+
+
 def _repo_root() -> Path:
     here = Path(__file__).resolve()
     for parent in here.parents:
@@ -297,38 +329,32 @@ class RepairPressureV2Paradigm:
     async def run(self, req: PreTurnAppraisalRequestV1) -> TurnAppraisalParadigmSliceV1:
         prompt = build_repair_probe_prompt(req.turn_window)
         payload = await self._call_llm(prompt)
+        failure = probe_failure_reason(payload)
+        if failure is not None:
+            logger.warning(
+                "repair_pressure_probe_unavailable corr=%s reason=%s", req.correlation_id, failure
+            )
+            raise RepairProbeUnavailable(failure)
         evidence = _evidence_from_probe_response(payload)
 
         if not evidence:
+            # The model answered, but not in the seven-line YES/NO shape: no measurement either.
             probe_text = str(payload.get("text") or payload.get("content") or "")
             logger.warning(
                 "repair_pressure_probe_no_evidence corr=%s text_head=%r",
                 req.correlation_id,
                 probe_text[:240],
             )
-            return TurnAppraisalParadigmSliceV1(
-                appraisal_kind="repair_pressure",
-                level=0.0,
-                confidence=0.0,
-                dimensions={},
-                evidence=[],
-                contract_delta=dict(req.contract_before or {"mode": "default"}),
-                notes=["no_repair_evidence"],
-            )
+            raise RepairProbeUnavailable("probe_unparseable")
 
         kind_scores = {ev.evidence_kind: float(ev.score) for ev in evidence}
         confidences = {ev.evidence_kind: float(ev.confidence) for ev in evidence}
         weights = load_repair_weights(self._weights_path)
         if not weights:
-            return TurnAppraisalParadigmSliceV1(
-                appraisal_kind="repair_pressure",
-                level=0.0,
-                confidence=0.0,
-                dimensions=dict(kind_scores),
-                evidence=evidence,
-                contract_delta=dict(req.contract_before or {"mode": "default"}),
-                notes=["weights_file_missing"],
+            logger.warning(
+                "repair_pressure_weights_missing corr=%s path=%s", req.correlation_id, self._weights_path
             )
+            raise RepairProbeUnavailable("weights_file_missing")
         level, confidence = reduce_repair_level(
             kind_scores,
             confidences=confidences,

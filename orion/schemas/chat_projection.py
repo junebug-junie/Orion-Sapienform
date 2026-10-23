@@ -12,8 +12,10 @@ class ChatTurnStateV1(BaseModel):
     node_id: str
     observed_at: datetime
     word_count: int = 0
-    repair_pressure_level: float = 0.0
-    repair_pressure_confidence: float = 0.0
+    # None = no repair-pressure reading on this turn (appraisal skipped/failed, probe shed by
+    # heat). 0.0 is a measured calm turn. Older persisted rows hold 0.0 for both cases.
+    repair_pressure_level: float | None = None
+    repair_pressure_confidence: float | None = None
     has_repair_signal: bool = False
     stance_disposition: str = "unknown"
     stance_disposition_reasons: list[str] = Field(default_factory=list)

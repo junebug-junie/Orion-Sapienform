@@ -4038,10 +4038,12 @@ The Vision panel's camera dropdown has polled "live" views: **Carbon (live)** (e
 
 One card per person (`#peopleCard`, under "Orion is asking"; `static/js/people.js`, routes in `scripts/people_routes.py`, spec `docs/superpowers/specs/2026-10-22-people-one-record-design.md`). Reads the person record orion-sql-writer keeps from the camera names (`person`, `person_link`, `person_fact`):
 
-- `GET /api/people`: everyone but Orion, most-seen first: picture, days seen on camera, what Juniper said about them, and Orion's open question about them.
+- `GET /api/people`: everyone but Orion, most-seen first: the newest picture Juniper herself tied to them (`orion/person_model/pictures.py`, never a camera cluster's own newest picture, which can be someone else), days seen on camera, what Juniper said about them, and Orion's open question about them.
 - `POST /api/people/{id}/facts` `{category, value}`: add what she knows (`hub_edit`). Categories come from `orion/person_model/categories.yaml`.
 - `POST /api/people/{id}/facts/{fact_id}/remove`: the fact stops counting (`removed_at`, never deleted).
 - `POST /api/people/{id}/status` `{status: not_a_person|active}`: for a name that is not one person (a delivery company, two people named together). Orion stops asking about it; its open question is dismissed.
+
+An "Is this <name>?" card with several pictures (2026-10-23) puts Not sure / <name> / Not <name> under each picture and one Send; the answer carries `pictures: [{image_ref, verdict}]` for every picture (`same` = it is <name>). `answer` must be `yes` exactly when one picture is <name> (422 `answer_does_not_match_pictures`, `every_picture_needs_an_answer`, `no_names_on_is_this_cards`); all "not sure" is a dismissal.
 
 Orion's questions about people (`source_kind=person_fact`) appear in "Orion is asking" as ordinary free-text cards. Camera links are corrected where they come from: rename the person on a camera card. Needs `services/orion-sql-db/manual_migration_person_record_v1.sql`; without it the routes return 503 `ask_schema_missing`. Tests: `tests/test_people_routes.py` (real Postgres), `tests/test_people_panel_browser_smoke.py` (Chromium, 360 px).
 

@@ -198,6 +198,9 @@ readers:
   - module: scripts/analysis/replay_strain_news.py
     role: display
     reason: offline replay of strain news.
+  - module: scripts/analysis/replay_body_economy.py
+    role: display
+    reason: "read-only replay of the body-economy price rules over live history (PR #2861); gates nothing"
 
 sources:
   - module: orion/autonomy/thermal_gate.py

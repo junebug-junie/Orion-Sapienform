@@ -13,7 +13,7 @@
 # person_fact. A category nobody answered renders nothing.
 categories:
   - key: relationship
-    about_other: "Who is {name} to you?"
+    about_other: "How do you know {name}? For example: a family friend, a neighbor, a classmate of your kid."
     about_you: null
     sensitive: false
   - key: pronouns

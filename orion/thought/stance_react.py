@@ -206,6 +206,13 @@ def slim_repair_bundle_for_prompt(bundle: TurnAppraisalBundleV1 | None) -> dict[
     slim: dict[str, Any] = {
         "paradigms": paradigms,
     }
+    # A failed paradigm has no slice. Say so explicitly, so the stance does not read an empty
+    # `paradigms` as "no repair pressure": the level is unknown (e.g. the probe was shed by heat).
+    if bundle.failed_paradigms:
+        reasons = dict(bundle.failure_reasons or {})
+        slim["unmeasured"] = {
+            name: f"level unknown: {reasons.get(name) or 'failed'}" for name in bundle.failed_paradigms
+        }
     contract = (bundle.metadata_attachments or {}).get("repair_pressure_contract")
     if isinstance(contract, dict) and contract:
         slim["repair_pressure_contract"] = contract

@@ -29,7 +29,8 @@ from scripts import people_routes as pr  # noqa: E402
 ADMIN_DSN = os.environ.get("ORION_MEMORY_EPISODE_TEST_DATABASE_URL")
 SQL = REPO_ROOT / "services" / "orion-sql-db"
 MIGRATIONS = [SQL / f"manual_migration_{f}.sql" for f in (
-    "walkway_camera_v1", "walkway_privacy_v2", "vision_confirm_asks_v1", "vision_ask_names_v1", "person_record_v1")]
+    "walkway_camera_v1", "walkway_privacy_v2", "vision_confirm_asks_v1", "vision_ask_names_v1",
+    "vision_person_album_v1", "person_record_v1")]
 needs_pg = pytest.mark.skipif(not ADMIN_DSN, reason="ORION_MEMORY_EPISODE_TEST_DATABASE_URL not set")
 JS = HUB_ROOT / "static" / "js" / "people.js"
 THUMB = "ab" * 32
@@ -128,10 +129,17 @@ async def _world(pool) -> None:
             "INSERT INTO vision_individual (individual_id, stream_id, kind, centroid, centroid_n, first_seen_at, "
             "last_seen_at, sighting_count, distinct_days, label) VALUES ($1, 'walkway', 'person', '{1,0}', 1, "
             "now(), now(), $2, $2, 'x')", iid, days)
+    # The cluster's own newest picture is never shown (a cluster can hold two people);
+    # the picture she named Sam on a "who is this?" card is.
     await pool.execute(
         "INSERT INTO vision_individual_sighting (sighting_id, individual_id, stream_id, started_at, ended_at, "
         "dwell_sec, observation_count, thumb_ref) VALUES ('s1', 'sam-1', 'walkway', now(), now(), 0, 1, $1)",
-        f"thumb:{THUMB}")
+        "thumb:" + "cd" * 32)
+    await pool.execute("UPDATE vision_individual SET label = 'Sam' WHERE individual_id = 'sam-1'")
+    await pool.execute(
+        "INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, answer, answered_at, created_at, "
+        "image_ref, image_refs) VALUES ('who-sam', 'Who is this?', 'vision_individual', 'sam-1', 'answered', "
+        "'sam', now(), now(), $1, $2::jsonb)", f"thumb:{THUMB}", json.dumps([f"thumb:{THUMB}", "thumb:" + "ef" * 32]))
     await pool.execute("INSERT INTO person_link (link_id, person_id, source_kind, source_ref, decided_by) "
                        "VALUES ('l5', 'p-ups', 'vision_individual', 'ups-1', 'camera_name')")
     for lid, pid, kind, ref in (("l1", "p-sam", "vision_individual", "sam-1"), ("l2", "p-sam", "vision_individual", "sam-2"),

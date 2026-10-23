@@ -15,7 +15,9 @@ An open ``company`` arc (seam S1: someone at the room camera) adds "Someone has 
 
 A strain arc (strain loop part 1) adds "Strained since Sat 12:07 (GPU jobs backed up, cabinet too
 hot) [arc:<id>]" while it is open, or "Was strained 12:07 to 14:30 (...) [arc:<id>]" for today's
-latest closed one. The time is when the episode began, even on an earlier day.
+latest closed one. The time is when the episode began, even on an earlier day. Once the arc knows
+which causes are present now, a cause that cleared is named as earlier: "(now: GPU jobs backed up;
+earlier: cabinet too hot)", or "(no cause right now, settling; earlier: ...)" while it holds.
 
 A play arc (Orion plays Zelda, section F) adds today's latest finished Retro session: "Played The
 Legend of Zelda solo, 14 of 31 predictions met (14:02 to 14:24) [arc:<id>]" ("together" when a human
@@ -173,8 +175,20 @@ def _strain_clause(frame: TemporalSelfFrameV1, tz_name: str) -> tuple[str, list[
         local = as_utc(at).astimezone(tz)
         return local.strftime("%H:%M") if local.date().isoformat() == frame.day_id else local.strftime("%a %H:%M")
 
-    causes = strain_cause_text(arc.subject_label)
-    why = f" ({causes})" if causes else ""
+    if closed or arc.causes_now is None:
+        causes = strain_cause_text(arc.subject_label)
+        why = f" ({causes})" if causes else ""
+    else:
+        # Say what is true now: the label keeps every cause seen in the episode, and one that
+        # cleared (the cabinet cooled) must not read as present.
+        seen = [c for c in arc.subject_label.split("+") if c]
+        # In the order each cause joined the episode (the label's order), then any not in it.
+        now = strain_cause_text("+".join([c for c in seen if c in arc.causes_now]
+                                         + [c for c in arc.causes_now if c not in seen]))
+        earlier = strain_cause_text("+".join(c for c in seen if c not in arc.causes_now))
+        parts = ([f"now: {now}"] if now else ["no cause right now, settling"]) + (
+            [f"earlier: {earlier}"] if earlier else [])
+        why = f" ({now})" if now and not earlier else f" ({'; '.join(parts)})"
     if closed:
         return f"Was strained {clock(began)} to {clock(arc.ended_at or arc.began_at)}{why} {_ref(arc)}.", [arc]
     return f"Strained since {clock(began)}{why} {_ref(arc)}.", [arc]

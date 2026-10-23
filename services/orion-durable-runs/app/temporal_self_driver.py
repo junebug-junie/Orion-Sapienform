@@ -39,7 +39,7 @@ logger = logging.getLogger("orion-durable-runs.temporal_self_driver")
 _PRIORITY = {"chat_turn": 3, "tick": 1, "boot": 0}
 RETIRE_LOOKBACK_DAYS = 31
 CARRIED_KEYS = ("regulation", "last_inputs", "last_juniper_turn_at", "immune", "strain_causes_seen",
-                "strain_row_at", "physiology_at")
+                "strain_row_at", "strain_causes_now", "physiology_at")
 
 
 def day_id_for(at: datetime, tz: ZoneInfo) -> str:

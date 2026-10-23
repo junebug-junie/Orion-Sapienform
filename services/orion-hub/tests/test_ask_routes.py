@@ -621,6 +621,65 @@ def test_is_this_x_card_takes_yes_or_no_only_and_publishes_the_ref(env):
         "vision_person_confirm", "ind-9|Juniper", "no")
 
 
+def _confirm_row_3(ask_id: str) -> dict[str, Any]:
+    r = _confirm_row(ask_id)
+    refs = ["thumb:" + c * 64 for c in "def"]
+    r.update(image_ref=refs[0], image_refs=json.dumps(refs))
+    return r
+
+
+def test_is_this_x_card_says_which_picture_is_the_person(env):
+    """2026-10-23, Juniper: "one of the three is Emerald but I can't specify which"."""
+    client, rows, published = env
+    rows["c3"] = _confirm_row_3("c3")
+    refs = ["thumb:" + c * 64 for c in "def"]
+    r = client.post("/api/asks/c3/answer", json={"answer": "yes", "pictures": [
+        {"image_ref": refs[2], "verdict": "unsure"},
+        {"image_ref": refs[0], "verdict": "different"},
+        {"image_ref": refs[1], "verdict": "same"},
+    ]})
+    assert r.status_code == 200, r.text
+    assert rows["c3"]["answer"] == "yes"
+    assert rows["c3"]["answer_detail"] == {"pictures": [
+        {"image_ref": refs[0], "index": 0, "verdict": "different"},
+        {"image_ref": refs[1], "index": 1, "verdict": "same"},
+        {"image_ref": refs[2], "index": 2, "verdict": "unsure"},
+    ]}
+    assert published[0].source_kind == "vision_person_confirm"
+
+
+@pytest.mark.parametrize("answer,pictures,detail", [
+    ("no", [("d", "same"), ("e", "unsure"), ("f", "unsure")], "answer_does_not_match_pictures"),
+    ("yes", [("d", "different"), ("e", "unsure"), ("f", "unsure")], "answer_does_not_match_pictures"),
+    ("yes", [("d", "same"), ("d", "same"), ("f", "unsure")], "picture_listed_twice"),
+    ("yes", [("d", "same"), ("e", "unsure"), ("z", "unsure")], "picture_not_on_card"),
+])
+def test_bad_picture_answers_on_is_this_x_are_refused(env, answer, pictures, detail):
+    client, rows, published = env
+    rows["c3"] = _confirm_row_3("c3")
+    r = client.post("/api/asks/c3/answer", json={"answer": answer, "pictures": [
+        {"image_ref": "thumb:" + c * 64, "verdict": v} for c, v in pictures]})
+    assert r.status_code == 422 and r.json()["detail"] == detail, r.text
+    assert rows["c3"]["status"] == "open" and published == []
+
+
+def test_a_picture_the_card_could_not_show_counts_as_not_sure(env):
+    client, rows, _pub = env
+    rows["c3"] = _confirm_row_3("c3")
+    r = client.post("/api/asks/c3/answer", json={"answer": "yes", "pictures": [
+        {"image_ref": "thumb:" + "d" * 64, "verdict": "same"}, {"image_ref": "thumb:" + "e" * 64, "verdict": "different"}]})
+    assert r.status_code == 200, r.text
+    assert [p["verdict"] for p in rows["c3"]["answer_detail"]["pictures"]] == ["same", "different", "unsure"]
+
+
+def test_a_name_on_an_is_this_x_picture_is_refused(env):
+    client, rows, _pub = env
+    rows["c3"] = _confirm_row_3("c3")
+    r = client.post("/api/asks/c3/answer", json={"answer": "yes", "pictures": [
+        {"image_ref": "thumb:" + c * 64, "verdict": "same", "name": "Bob" if c == "d" else ""} for c in "def"]})
+    assert r.status_code == 422 and r.json()["detail"] == "no_names_on_is_this_cards"
+
+
 def test_is_this_x_card_can_be_dismissed_as_cant_tell(env):
     client, rows, _pub = env
     rows["c2"] = _confirm_row("c2")

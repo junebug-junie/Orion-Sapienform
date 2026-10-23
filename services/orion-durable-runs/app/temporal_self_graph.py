@@ -80,6 +80,7 @@ class TemporalSelfGraphState(TypedDict, total=False):
     # strained). Carried across days so a long episode is not re-seeded at every midnight.
     strain_causes_seen: Optional[list]
     strain_row_at: Optional[str]     # when the last strain row (level, cause, seed or keepalive) was written
+    strain_causes_now: Optional[list]  # the strain causes present at that row
     physiology_at: Optional[str]     # when the physiology node last produced a state (ISO)
     physiology: Optional[dict]       # its one-line summary: tick_id, no_reading, error
 
@@ -164,32 +165,47 @@ def _prev_inputs(raw: Optional[dict]) -> Optional[ArousalInputsV1]:
 STRAIN_KEEPALIVE_SEC = 1800.0
 
 
+# A cause that LEFT (or came back) is recorded no sooner than this after the last strain row, so a
+# cause flapping around its threshold costs at most one row per 10 min; a cause that JOINS the
+# episode for the first time is recorded at once.
+STRAIN_CAUSE_CHANGE_MIN_SEC = 600.0
+
+
 async def _strain_causes_step(
     deps: TemporalSelfDeps, reading: ArousalReadingV1, state: TemporalSelfGraphState, level_row_written: bool,
     warnings: list,
-) -> tuple[Optional[list], Optional[str]]:
+) -> tuple[Optional[list], Optional[str], Optional[list]]:
     """Strain loop part 1. A level row is written only when the level changes, so a cause that joins
     an episode already strained (the cabinet going critical mid-episode) was never recorded. While
-    strained, write a row when a cause joins, a seed row when nothing was recorded for the episode
-    (the first step after deploy, a lost onset row), and a keepalive every STRAIN_KEEPALIVE_SEC.
-    Returns the new ``(strain_causes_seen, strain_row_at)``; a failed write keeps the old pair, so the
-    next step retries it."""
+    strained, write a row when a cause joins, when the causes present now differ from the last row's
+    (a cause left, e.g. the cabinet cooled; at most every STRAIN_CAUSE_CHANGE_MIN_SEC), a seed row
+    when nothing was recorded for the episode (the first step after deploy, a lost onset row), and a
+    keepalive every STRAIN_KEEPALIVE_SEC. Every row carries the causes present now.
+    Returns the new ``(strain_causes_seen, strain_row_at, strain_causes_now)``; a failed write keeps
+    the old values, so the next step retries it."""
     if deps.record_cause is None or reading.arousal_level != "strained":
-        return None, None
+        return None, None, None
     now = reading.observed_at
     causes = strain_causes(reading.reasons)
     if level_row_written:
-        return causes, now.isoformat()  # the onset row carries this episode's causes
+        return causes, now.isoformat(), causes  # the onset row carries this episode's causes
     seen = state.get("strain_causes_seen")
     row_at = _dt(state.get("strain_row_at"))
+    recorded_now = state.get("strain_causes_now")
     joined = [c for c in causes if c not in (seen or [])]
-    due = row_at is None or (now - row_at).total_seconds() >= STRAIN_KEEPALIVE_SEC
-    if seen is not None and not joined and not due:
-        return seen, state.get("strain_row_at")
+    age = None if row_at is None else (now - row_at).total_seconds()
+    due = age is None or age >= STRAIN_KEEPALIVE_SEC
+    # None: no row since this key existed (the first steps after deploy) -- what the last row
+    # carried is unknown here, so write one once the rate limit allows rather than wait for the
+    # keepalive.
+    changed = ((recorded_now is None or set(causes) != set(recorded_now))
+               and age is not None and age >= STRAIN_CAUSE_CHANGE_MIN_SEC)
+    if seen is not None and not joined and not due and not changed:
+        return seen, state.get("strain_row_at"), recorded_now
     if not await deps.record_cause(reading, state.get("day_id") or "", joined, seen is None):
         warnings.append("strain_cause_write_failed")
-        return seen, state.get("strain_row_at")
-    return list(seen or []) + joined, now.isoformat()
+        return seen, state.get("strain_row_at"), recorded_now
+    return list(seen or []) + joined, now.isoformat(), causes
 
 
 def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
@@ -229,7 +245,7 @@ def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
             recorded = await deps.record_transition(prev, reading, state.get("day_id") or "")
             if not recorded:
                 warnings.append("transition_write_failed")
-        seen, row_at = await _strain_causes_step(deps, reading, state, recorded, warnings)
+        seen, row_at, causes_now = await _strain_causes_step(deps, reading, state, recorded, warnings)
         open_findings = int((state.get("immune") or {}).get("open") or 0)
         model = RegulationStateV1(generated_at=now, arousal=reading, drives=drives, warnings=warnings,
                                   immune_findings_open=max(0, open_findings))
@@ -239,7 +255,8 @@ def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
             logger.warning("regulation_project_failed", exc_info=True)
             model = model.model_copy(update={"warnings": warnings + ["project_failed"]})
         return {"regulation": model.model_dump(mode="json"), "last_inputs": inputs.model_dump(mode="json"),
-                "transition": transition, "warnings": model.warnings, "strain_causes_seen": seen, "strain_row_at": row_at}
+                "transition": transition, "warnings": model.warnings, "strain_causes_seen": seen, "strain_row_at": row_at,
+                "strain_causes_now": causes_now}
 
     async def physiology(state: TemporalSelfGraphState) -> dict:
         if deps.read_body is None or deps.project_physiology is None:

@@ -59,6 +59,7 @@ _closure_listener_task = None
 _goal_context_listener_task = None
 _ask_answered_listener_task = None
 _walkway_seen_task = None
+_person_graph_task = None
 heartbeat_chassis: HeartbeatOnly | None = None
 
 
@@ -84,7 +85,7 @@ def build_heartbeat_chassis() -> HeartbeatOnly:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _finalize_listener_task, _closure_listener_task, _goal_context_listener_task, _ask_answered_listener_task, heartbeat_chassis
-    global _walkway_seen_task
+    global _walkway_seen_task, _person_graph_task
     # Advertise that this process reads the assertion-core graph shapes, so the referent/
     # assertion projectors' readiness gate can open. Background thread; never blocks or raises.
     from orion.substrate.reader_capability import advertise_at_startup
@@ -124,6 +125,17 @@ async def lifespan(app: FastAPI):
         ),
         name="substrate-walkway-seen",
     )
+    # person / person_link rows -> person nodes + instance_of claims (app/person_graph_loop.py).
+    from .person_graph_loop import run_person_graph_loop
+
+    _person_graph_task = asyncio.create_task(
+        run_person_graph_loop(
+            get_store=lambda: worker._get_substrate_graph_store(log_label="person_graph_store_init_failed"),
+            settings=get_settings(),
+            stop_event=worker.stop_event,
+        ),
+        name="substrate-person-graph",
+    )
     try:
         heartbeat_chassis = build_heartbeat_chassis()
         await heartbeat_chassis.start_background()
@@ -156,6 +168,10 @@ async def lifespan(app: FastAPI):
             _walkway_seen_task.cancel()
             await asyncio.gather(_walkway_seen_task, return_exceptions=True)
         _walkway_seen_task = None
+        if _person_graph_task is not None and not _person_graph_task.done():
+            _person_graph_task.cancel()
+            await asyncio.gather(_person_graph_task, return_exceptions=True)
+        _person_graph_task = None
         await worker.stop()
 
 

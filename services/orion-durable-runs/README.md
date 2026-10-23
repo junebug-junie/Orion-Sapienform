@@ -648,9 +648,35 @@ deploy). Kill switch: `TEMPORAL_SELF_CHRONICLE_ENABLED=false`. Health: `/health`
 `temporal_self_chronicle`. Eval: `evals/temporal_self_live_replay.py` runs this code path over the
 10-09 fixture on a disposable Postgres (`--source-dsn` reads real tables read-only instead).
 
+## Body: the `physiology` node (2026-10-23, body economy Patch A3, no reader yet)
+
+Organ 1 of the body economy (`docs/superpowers/specs/2026-10-23-organism-body-economy-design.md`).
+After `regulate`, at most once per `ORION_PHYSIOLOGY_MIN_INTERVAL_SEC` (100 s; chat-turn steps in
+between are skipped), the node reads every constraint Orion lives under and writes one
+`PhysiologyStateV1` (`orion/schemas/physiology.py`):
+
+| constraint | level (unit) | line | source |
+|---|---|---|---|
+| `heat` | cabinet C | soft line `ORION_PHYSIOLOGY_HEAT_SOFT_LINE_C` (31) | this step's own regulate inputs (no second query) |
+| `energy` | Orion month-to-date USD (local month) | `ORION_PHYSIOLOGY_ENERGY_MONTHLY_ENVELOPE_USD` (unset: no line) | `orion_energy_hourly` x `energy_cost_accrued` next-kWh rate (newest `computed_at`; unpriced recent hours carry the newest rate) |
+| `lane:<role>` | GPU slot-seconds held in the last `ORION_PHYSIOLOGY_LANE_WINDOW_SEC` | discovered slots x window (pool state RPC) | `gpu_pool_events` closes (`held_ms`) + open grants |
+| `attention:juniper` | outreach messages sent today | `HUB_ENDOGENOUS_OUTREACH_DAILY_CAP` (owner: Hub) | `endogenous_outreach_decisions` |
+| `claude` | limit events, plus `state` | not limited | `orion:substrate:claude_limit` (`ClaudeLimitObservationV1`), latest per kind in memory |
+
+A failed, stale or never-observed source is `level=None` with a `no_reading` reason, never 0. Pure
+logic: `orion/physiology/body.py`; reads: `app/physiology_store.py`. Transport: Redis
+`orion:physiology:latest` (TTL `ORION_PHYSIOLOGY_REDIS_TTL_SEC`) and bus `orion:physiology:state` ->
+sql-writer `physiology_state` (one row per tick). `/health` -> `temporal_self.physiology` shows the
+last tick id and every `no_reading`. Own 30 s timeout; a failure is the step warning
+`physiology_failed` and never touches the regulation reading. Off: `ORION_PHYSIOLOGY_ENABLED=false`.
+
+Known limits: lane slot-seconds count a durable-run hold and its child calls separately (pool events
+carry no `hold_lease_id`); `claude` reads `no_observation` while orion-cocreation-signals'
+`COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED` is false.
+
 ## Runtime immune sweep: the `immune` node (2026-10-13, Temporal Self R4)
 
-The thread runs `ingest -> regulate -> immune -> chronicle -> done`. `immune` asks whether any of
+The thread runs `ingest -> regulate -> physiology -> immune -> chronicle -> done`. `immune` asks whether any of
 Orion's own gauges has stopped telling the truth. It runs only while arousal reads `idle`, at most
 once per `TEMPORAL_SELF_IMMUNE_INTERVAL_SEC` (6 h; the last run time is in the checkpoint and
 carries over midnight). It reads 24 h of every field channel whose glossary entry carries

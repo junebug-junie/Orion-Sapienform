@@ -100,6 +100,7 @@ jobs:
             tests/test_street_event_bus_catalog.py \
             services/orion-sql-writer/tests/test_vision_event_sql_shape.py \
             services/orion-sql-writer/tests/test_energy_sql_shape.py \
+            services/orion-sql-writer/tests/test_physiology_state_sql_shape.py \
             services/orion-sql-writer/evals/test_walkway_reducers_eval.py \
             services/orion-sql-writer/tests/test_write_health.py \
             services/orion-sql-writer/evals/test_storage_write_replay_eval.py \

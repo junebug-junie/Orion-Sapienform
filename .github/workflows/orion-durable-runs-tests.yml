@@ -13,6 +13,9 @@ on:
       - "services/orion-sql-db/manual_migration_personality_graph_v1*.sql"
       - "orion/regulation/**"
       - "orion/schemas/regulation.py"
+      - "orion/physiology/**"
+      - "orion/schemas/physiology.py"
+      - "services/orion-sql-db/manual_migration_physiology_state_v1.sql"
       - "orion/autonomy/cabinet_heat.py"
       - "services/orion-sql-db/manual_migration_temporal_self_event_v1.sql"
       - "services/orion-sql-db/manual_migration_temporal_self_v1.sql"
@@ -176,6 +179,10 @@ jobs:
             services/orion-dream/tests/test_dream_cycle_v2.py \
             services/orion-dream/evals/test_curiosity_compaction_eval.py
           python -m pytest -q -p no:cacheprovider services/orion-cortex-exec/tests/test_dream_cycle_prompt_render.py
+      - name: Pytest orion/physiology/tests (body economy Organ 1 Body reducer)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest orion/physiology/tests -q -p no:cacheprovider
       - name: Pytest orion/orion_day/tests (Orion's Day gather, budget, contracts)
         env:
           PYTHONPATH: ${{ github.workspace }}

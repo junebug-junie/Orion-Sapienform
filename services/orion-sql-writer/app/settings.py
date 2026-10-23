@@ -68,6 +68,8 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "durable.run.state.v1": "DurableRunStateSQL",
     "gpu_pool.event.v1": "GpuPoolEventSQL",
     "gpu_pool.state.v1": "GpuPoolStateSQL",
+    # Body economy Patch A3: one row per Body-organ tick (durable-runs physiology node).
+    "physiology.state.v1": "PhysiologyStateSQL",
     "transport_baseline.hourly.v1": "TransportBaselineHourlySQL",
     "self_signal.hour.v1": "SelfSignalHourSQL",
     "self_signal.outcome_association.v1": "SelfSignalOutcomeAssociationSQL",
@@ -203,6 +205,7 @@ class Settings(BaseSettings):
             "orion:durable:run:state",
             "orion:gpu_pool:event",
             "orion:gpu_pool:state",
+            "orion:physiology:state",
             "orion:equilibrium:transport_baseline:hourly",
             "orion:equilibrium:self_signal:hour",
             "orion:equilibrium:self_signal:outcome_association",
@@ -983,6 +986,10 @@ class Settings(BaseSettings):
             channels.append("orion:gpu_pool:event")
         if "orion:gpu_pool:state" not in channels:
             channels.append("orion:gpu_pool:state")
+        # Same guarantee, same reason (physiology.state.v1 is a code-default route; without the
+        # channel the physiology_state table stays empty while the producer looks healthy).
+        if "orion:physiology:state" not in channels:
+            channels.append("orion:physiology:state")
         # Same guarantee, same reason (transport_baseline.hourly.v1 is a
         # code-default route; SQL_WRITER_SUBSCRIBE_CHANNELS replaces).
         if "orion:equilibrium:transport_baseline:hourly" not in channels:

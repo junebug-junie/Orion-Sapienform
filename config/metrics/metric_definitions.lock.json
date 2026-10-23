@@ -1,12 +1,13 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 756,
+  "metric_count": 758,
   "_last_change": {
-    "change_count": 2,
-    "high_severity_count": 0,
+    "change_count": 3,
+    "high_severity_count": 1,
     "changes": [
-      "medium added metric://bus_channel/orion-execution-dispatch-runtime/orion:retro_leisure:start:request",
-      "medium added metric://bus_channel/orion-hub/orion:retro_leisure:start:reply:*"
+      "high   routing_changed metric://bus_channel/orion-cocreation-signals/orion:substrate:claude_limit (declared_consumers: ['orion-hub'] -> ['orion-durable-runs', 'orion-hub'])",
+      "medium added metric://bus_channel/orion-durable-runs/orion:physiology:state",
+      "medium added metric://inner_state/orion-durable-runs/physiology.state.v1"
     ]
   },
   "definitions": {
@@ -555,6 +556,7 @@
         "orion-cocreation-signals"
       ],
       "declared_consumers": [
+        "orion-durable-runs",
         "orion-hub"
       ],
       "notes": "kind=event stability=experimental",
@@ -1304,6 +1306,17 @@
       ],
       "declared_consumers": [
         "orion-harness-governor"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-durable-runs/orion:physiology:state": {
+      "schema_id": "PhysiologyStateV1",
+      "all_producers": [
+        "orion-durable-runs"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -4864,6 +4877,15 @@
         "metric://inner_state/orion-dream/drive_reading.rest.v1"
       ],
       "notes": "scalar field on DriveReadingV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/physiology.state.v1": {
+      "schema_id": "PhysiologyStateV1",
+      "value_kind": "bucket",
+      "rest": "Each constraint at rest: heat below the 31 C soft line; lane slot-seconds well under slots x 3600 (0 when no lease ran); attention:juniper 0 sends today; claude state clear with 0 limit events. Energy (month-to-date USD) only grows within a month and resets at the local month start: its rest is the month start, not 0.",
+      "sparsity": "per_tick",
+      "absent_means": "A constraint whose source failed, went stale or was never observed has level=None and a no_reading reason (e.g. claude:no_observation while orion-cocreation-signals' COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED is false). Never 0. Redis orion:physiology:latest expired (TTL 360 s): the whole body is unknown.",
+      "notes": "cadence=per_tick composition=no_cognition_consumer",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-durable-runs/regulation.state.v1": {

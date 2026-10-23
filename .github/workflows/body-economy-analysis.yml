@@ -1,7 +1,8 @@
 name: Body economy price math and replay
 
 # Body-economy design, patch A4: the pure price math (orion/physiology/prices.py, the seed of the
-# Budget organ) and the offline checks for the heat-sensitivity fit and the price replay. No DB:
+# Budget organ), the Body organ (orion/physiology/body.py, patch A3; needs pydantic for its schema)
+# and the offline checks for the heat-sensitivity fit and the price replay. No DB:
 # the live scripts are read-only analysis run by hand; these tests use synthetic data.
 
 on:
@@ -34,7 +35,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        run: python -m pip install pytest pyyaml "numpy>=1.26.4,<2.0.0"
+        run: python -m pip install pytest pyyaml "numpy>=1.26.4,<2.0.0" pydantic==2.11.5
       - name: Pure price math
         env:
           PYTHONPATH: ${{ github.workspace }}

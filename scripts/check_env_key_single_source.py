@@ -42,6 +42,9 @@ OWNERS: dict[str, str] = {
     # orion-durable-runs (Temporal Self rev 4 R3: "reuses the dream setting's existing
     # meaning, so the threshold is not copied"). Two services need the env key; one owns it.
     "DREAM_IDLE_MINUTES": "services/orion-dream/.env_example",
+    # The outreach daily cap. Enforced by the Hub's outreach gate; read by orion-durable-runs as
+    # the attention:juniper line of the Body organ (body economy Patch A3). One owner.
+    "HUB_ENDOGENOUS_OUTREACH_DAILY_CAP": "services/orion-hub/.env_example",
 }
 
 # Line-level opt-out for text that quotes a value deliberately.

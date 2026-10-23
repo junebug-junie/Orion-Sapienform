@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pydantic import Field
+from typing import Optional
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 from orion.schemas.durable_run import DURABLE_RUN_REQUEST_CHANNEL, DURABLE_RUN_STATE_CHANNEL
@@ -203,6 +205,30 @@ class Settings(BaseSettings):
     # gauges and records `immune_finding` rows in temporal_self_event. Never fixes anything.
     temporal_self_immune_enabled: bool = Field(True, alias="TEMPORAL_SELF_IMMUNE_ENABLED")
     temporal_self_immune_interval_sec: float = Field(21600.0, gt=0.0, alias="TEMPORAL_SELF_IMMUNE_INTERVAL_SEC")
+    # Body economy Patch A3 (docs/superpowers/specs/2026-10-23-organism-body-economy-design.md, Organ 1
+    # Body): a `physiology` node after `regulate` reads every constraint (heat, energy, GPU lanes,
+    # Juniper's attention, Claude limits) in its own unit with an explicit no_reading, and writes
+    # PhysiologyStateV1 to Redis orion:physiology:latest + bus orion:physiology:state (sql-writer
+    # table physiology_state). No prices; nothing decides from it yet. false -> no node.
+    physiology_enabled: bool = Field(True, alias="ORION_PHYSIOLOGY_ENABLED")
+    physiology_min_interval_sec: float = Field(100.0, gt=0.0, alias="ORION_PHYSIOLOGY_MIN_INTERVAL_SEC")
+    physiology_redis_ttl_sec: int = Field(360, gt=0, alias="ORION_PHYSIOLOGY_REDIS_TTL_SEC")
+    physiology_state_channel: str = Field("orion:physiology:state", alias="CHANNEL_PHYSIOLOGY_STATE")
+    physiology_heat_soft_line_c: float = Field(31.0, alias="ORION_PHYSIOLOGY_HEAT_SOFT_LINE_C")
+    # Juniper-set monthly envelope for Orion's electricity, USD. Empty: no line yet (level only).
+    physiology_energy_monthly_envelope_usd: Optional[float] = Field(
+        None, ge=0.0, alias="ORION_PHYSIOLOGY_ENERGY_MONTHLY_ENVELOPE_USD")
+    physiology_lane_window_sec: float = Field(3600.0, gt=0.0, alias="ORION_PHYSIOLOGY_LANE_WINDOW_SEC")
+    # The attention:juniper line is the Hub's own outreach daily cap (owner services/orion-hub/
+    # .env_example; scripts/check_env_key_single_source.py fails if this copy drifts).
+    hub_endogenous_outreach_daily_cap: int = Field(4, ge=0, alias="HUB_ENDOGENOUS_OUTREACH_DAILY_CAP")
+    # The claude constraint listens here (producer orion-cocreation-signals).
+    claude_limit_channel: str = Field("orion:substrate:claude_limit", alias="CHANNEL_CLAUDE_LIMIT")
+
+    @field_validator("physiology_energy_monthly_envelope_usd", mode="before")
+    @classmethod
+    def _empty_envelope_is_none(cls, v):
+        return None if v is None or (isinstance(v, str) and not v.strip()) else v
     # Personality graph loop (spec 2026-10-16-orion-dynamic-personality-graph-design.md rev 2): a
     # periodic reducer folds Orion's own output (dream, journal, reverie, reading, day letter, chat,
     # outreach, curiosity picks, self-inquiry seeds) into personality_* tables

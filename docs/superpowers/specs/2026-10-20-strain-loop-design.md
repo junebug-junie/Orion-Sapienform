@@ -251,3 +251,16 @@ Build in 3 PRs, in this order. Each PR ships ON and is verified live before the 
 2. **Strain news + budget eval (Part 2).** The replay eval is written first and has to pass
    before the producer is wired.
 3. **Strain report door (Part 3).**
+
+## As built (2026-10-23)
+
+- **Part 1, strain arcs: #2817 + #2860.** Shipped as designed, plus three changes:
+  - The regulate step also writes a row when a cause joins an episode, a seed row after deploy, and a keepalive every 30 min. It also writes a row when a cause leaves, at most one per 10 min.
+  - The reducer closes an arc with no row for 75 min.
+  - The cue says "(now: X; earlier: Y)".
+  - Verified live: the 10-18 episode closed `process_ended` on 10-23 at 11:24 UTC. Day citations cited the strain arc in 22 turns.
+- **Part 2, strain news: #2821.** One change from this doc. The node is not written only on events: it writes 0.0 on calm ticks and holds 1.0 for the 300 s orienting window. Attention needs 200 readings in 7 days before it calls anything unusual, and an event-only node at 8 a day never reaches that. A test demonstrates this.
+  - Live onset: 10-21 at 08:04 UTC.
+  - Strain won 0.48% of attention ticks in 24 h (budget 3%).
+- **Missing question 3, chronic loosening.** Superseded. The real cause of the 5-day episode was S2 counting Orion's own deferrable backlog. The body-economy session fixed that on 10-23 (d5bb75729, `gpu_queue_self_deferrable:N`). Retiring the strained vetoes belongs to the body economy (#2855).
+- **Part 3, the strain report door.** Built after this doc merged. See its own PR.

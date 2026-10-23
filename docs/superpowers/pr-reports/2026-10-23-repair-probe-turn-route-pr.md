@@ -120,10 +120,17 @@ Regression tests that would have caught the bug:
 ## Evals run
 
 ```text
-No eval harness exists for the pre-turn appraisal seam (cortex-exec has no evals/ for it; Hub's are UI evals).
-The behavior is a deterministic failure-path contract, covered by the gate tests above. Follow-up: a live
-smoke after deploy (see below) is the runtime proof.
+python -m pytest -q orion/substrate/evals/repair_pressure_v2_eval.py      4 passed
+python -m orion.substrate.evals.repair_pressure_v2_eval                   PASS grounding_negative level=0.187
+                                                                          PASS neutral level=0.050
+                                                                          PASS ops_frustration_positive level=0.876 repair_concrete
+                                                                          PASS probe_shed unavailable reason=shed:cabinet_hot
 ```
+
+The `neutral` fixture had no probe lines (`mock_probe_lines: {}`). The empty reply that produced passed as a calm
+turn. In other words, the eval itself encoded this bug, and it failed after the fix. `neutral` now has real
+all-NO probe answers, which makes it a measured calm turn. A new `probe_shed` fixture checks that the gateway's
+heat refusal fails with its reason.
 
 ## Static gates (from .github/workflows/orion-static-gates.yml)
 
@@ -143,14 +150,32 @@ test_no_personal_terms, metric_prompt_semantics, metric_rest_range, check_settin
 ```text
 No Docker build was run. The changes are Python plus config that the existing images already copy, and no
 dependency changed. Live path: UNVERIFIED until deploy. Smoke after deploy: send one Hub turn while
-cabinet_hot is active. Then check two things:
+cabinet_hot is active. Then check three things:
   1. The cockpit pre_turn_appraisal hop reads ok with a real level, or FAILED with a reason. It must never read ok with 0.0.
   2. The gpu_pool lease events for the probe carry turn_correlation_id equal to the turn's id.
+  3. The cortex-exec log shows the probe on quick_turn, for example on a failure:
+     docker logs orion-athena-cortex-exec 2>&1 | grep -E "pre_turn_appraisal_paradigm_(result|failed)" | tail
+     A failure line prints route=quick_turn. If it prints route=quick, the .env sed has not been applied.
 ```
 
 ## Review findings fixed
 
-Filled in after review.
+The review ran in an orion-repo-agent subagent (read-only).
+
+- Finding (material): the repair-pressure eval (`orion/substrate/evals/repair_pressure_v2_eval.py`) failed on `neutral`. That fixture's empty probe reply had been passing as a calm 0.0, so it encoded the bug. This report also claimed no eval existed.
+  - Fix: `neutral` now has real all-NO probe lines. Added a `probe_shed` fixture that expects `RepairProbeUnavailable("shed:cabinet_hot")`. The CLI `main()` now handles an expected failure. Corrected the Evals section.
+  - Evidence: 4 passed, and the CLI prints PASS for all four fixtures.
+- Finding (material): the live `.env` keeps `quick` until an operator runs the sed.
+  - Fix: no code change, because the live `.env` is deliberately not edited by this patch. The Restart section gives the sed in order, and the smoke now checks the actual route in the cortex-exec log.
+  - Evidence: Restart and Docker/smoke sections.
+- Finding (minor): the field-lattice decay behavior change was not reported. Also, rolling back substrate-runtime would hit `null` in the persisted projection.
+  - Fix: both added to Risks.
+- Finding (nit): `build_chat_turn_grammar_events` defaulted `repair_pressure_level` to 0.0.
+  - Fix: the default is now `None`, so an omitted reading means no reading.
+  - Evidence: Hub grammar tests 26 passed. Both real callers pass the value explicitly.
+- Finding (minor, accepted): the Hub cockpit test only fails on old code because `failure_reasons` is missing. The real regression is guarded elsewhere: the paradigm, the cortex-exec handler, and the `test_repair_signal_threshold` tests. Those tests fail on old code for the right reason. The cockpit test stays as a contract test for the reason text.
+- Finding (minor, accepted): `failure_reasons` is also set for unknown paradigms. The deploy order (thought and hub before cortex-exec) covers this.
+- Finding (minor, accepted): the probe text becomes an embedding under the turn's id, and later calls with the same id overwrite it. orion-mind and orion-thought already share that key, so this is not a new class of collision. Recorded in Risks.
 
 ## Restart required
 
@@ -181,6 +206,12 @@ Notes on these commands:
 - Severity: low.
   - Concern: `chat_prediction_error` still reads a missing repair reading as 0.0. It is a drift-locked metric definition (`chat_session` v3). Changing it needs the metric gate and a definition bump, so it was left out of this fix on purpose.
   - Mitigation: a test pins the unchanged number. Follow-up: skip unknown repair readings in `chat_raw_reading` (v4), with the metric gate.
+- Severity: low.
+  - Concern: the field-lattice `repair_pressure` channel behaves differently now. Before, every turn with no reading wrote a fabricated 0.0 (`mode="replace"`), which reset the node. Now nothing is written. The node keeps the last real reading, and the generic node decay (`decay.py` `NODE_DECAY_CHANNELS`) multiplies it by 0.92 each tick. During a long shed or skip streak, the node fades toward 0. That is still more honest than an instant fabricated 0.0, but a value that decayed to 0 looks like a calm 0.
+  - Mitigation: with `quick_turn`, heat no longer causes shed streaks. Follow-up together with the `chat_raw_reading` v4 item above.
+- Severity: medium (rollback only).
+  - Concern: once the new orion-substrate-runtime writes `repair_pressure_level: null` into the singleton `substrate_chat_session_projection` row, the old code (`float = 0.0`) fails validation on every tick. That is the same crash-loop class `check_substrate_projection_schema_drift.py` guards against. Forward deploy is safe.
+  - Mitigation: do not roll orion-substrate-runtime back past this PR without also reverting the schema change, or nulling those fields to 0.0.
 - Severity: low.
   - Concern: `quick_turn` puts the probe at interactive priority on the fast class, beside `quick`'s background callers. The probe is one short call (`max_tokens=128`) per human turn.
   - Mitigation: none needed for this slice.

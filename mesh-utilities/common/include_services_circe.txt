@@ -5,13 +5,16 @@
 # This allowlist is live: scripts/rebuild_affected_services.py reads
 # include_services_<host>.txt for the detected host when it plans a post-pull
 # rebuild. (The 2026-09-21 note that called it documentation-only is stale.)
+# up_all_services*.sh still ignore it and read exclude_services.txt instead.
 #
 # one service per line
 # orion-affectgpt-worker PAUSED 2026-10-23: no circe GPU has its ~18 GB free, and
 # its compose now refuses to start until AFFECTGPT_GPU_DEVICE_ID names a card
 # (PR #2894; it crash-looped 601x on a full card from 10-14, PR #2895). Listed,
 # every circe rebuild that picked it failed. Re-add this line when a card is
-# chosen and the UUID is set in services/orion-affectgpt-worker/.env.
+# chosen and its UUID is the AFFECTGPT_GPU_DEVICE_ID value in
+# services/orion-affectgpt-worker/.env_example (as kev pins KEV_GPU_DEVICE_ID):
+# tests/scripts/test_host_allowlist_buildable.py fails while that key is empty.
 orion-ai-town
 orion-biometrics
 orion-diffusion-host

@@ -5,6 +5,7 @@ Never runs in the emulator or input relay task.
 """
 import asyncio
 import json
+import time
 from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Annotated, Any, Literal, Optional, Union
@@ -91,6 +92,8 @@ ZELDA_ROUTE = 'metacog_background'
 ZELDA_GOALS = ('exit', 'enter', 'fight', 'retreat', 'collect', 'explore', 'wait')
 PREDICTION_KINDS = ('reach_room', 'enter_cave', 'item_gained', 'enemies_cleared', 'survive', 'unknown')
 HISTORY_LIMIT = 5
+RETRY_WITHIN_SEC = 12   # one retry only if the first answer took less; Retro's offer lives 30 s
+_now = time.monotonic
 MAP_ROWS, MAP_COLS, HUD_PX, TILE_PX = 22, 32, 64, 8
 
 # One shared backoff per process for this call path (orion/gpu_pool/shed_backoff.py).
@@ -334,6 +337,18 @@ def sides_line(decision: dict, atlas: Optional[dict] = None) -> str:
             f'{", ".join(label(d) for d in sides) or "none"}. No way out: {", ".join(closed) or "none"}.')
 
 
+def did_nothing(row: Any) -> bool:
+    """A finished goal that ran and left the game exactly as it found it (same digest: room,
+    Link's position and facing, hearts, items, enemies). A wait, or a goal stopped before it
+    could act (takeover, pause, sponsor loss), never counts: repeating those can still help."""
+    if not isinstance(row, dict) or (row.get('goal') or {}).get('kind') == 'wait':
+        return False
+    if str(row.get('outcome', '')).startswith('stopped:'):
+        return False
+    start = row.get('start_digest')
+    return isinstance(start, str) and start not in ('', 'unknown') and start == row.get('end_digest')
+
+
 def history_lines(history: Any) -> str:
     rows = [h for h in (history or []) if isinstance(h, dict)][-HISTORY_LIMIT:]
     if not rows:
@@ -344,7 +359,7 @@ def history_lines(history: Any) -> str:
         out.append(f'{_goal_text(h.get("goal"))}; predicted {p.get("kind", "?")}'
                    f'{" " + str(p["value"]) if p.get("value") is not None else ""}; '
                    f'outcome {h.get("outcome", "unknown")}; verdict {h.get("verdict", "unknown")}'
-                   + ('; Link did not move' if h.get('applied_frames') == 0 else ''))
+                   + ('; nothing changed' if did_nothing(h) else ''))
     return '\n'.join(out)
 
 
@@ -413,8 +428,9 @@ def validate_zelda_choice(raw: Any, decision: dict) -> ZeldaChoice:
         raise PlannerRejected('planner_side_closed', dir=direction)   # Retro would push into a wall
     previous = decision.get('previous')
     if isinstance(previous, dict) and previous.get('goal') == choice.goal.model_dump(mode='json') and (
-            previous.get('applied_frames') == 0
-            or (isinstance(choice.goal, ExploreGoal) and isinstance(sides, list) and direction not in sides)):
+            did_nothing(previous)
+            or (isinstance(choice.goal, ExploreGoal) and isinstance(sides, list) and direction not in sides
+                and previous.get('outcome') == 'completed')):
         # Live 2026-10-23: "explore S" eight times against a solid south wall, 0 frames moved.
         raise PlannerRejected('planner_repeats_no_effect', goal=_goal_text(previous['goal']))
     if isinstance(choice.goal, FightGoal):
@@ -431,7 +447,10 @@ def refusal_note(exc: 'PlannerRejected') -> str:
     d = exc.details
     text = {'planner_side_closed': f'exit {d.get("dir")}: Link cannot reach that edge from here',
             'planner_repeats_no_effect': f'{d.get("goal")}: the same goal just left Link where he was',
-            'planner_unparseable': 'the reply was not one JSON object'}.get(exc.reason)
+            'planner_unparseable': 'the reply was not one JSON object',
+            'planner_no_enemies': 'fight: there is no enemy in the room',
+            'planner_unknown_target': f'fight {d.get("target")}: no enemy has that slot',
+            'planner_unsupported_goal': f'{d.get("goal")}: not a supported goal for this decision'}.get(exc.reason)
     return text or exc.reason + (f' ({d["error"]})' if d.get('error') else '')
 
 
@@ -501,6 +520,7 @@ async def plan_zelda(config, decision: Any, atlas: Optional[dict], history: Any,
     try:
         prompt = build_zelda_prompt(decision, atlas, history)
         # A refused answer gets one retry that names the refusal; the second refusal is final.
+        started = _now()
         for attempt in (1, 2):
             try:
                 data, correlation = await (chat or _gateway_chat)(config, prompt, max_tokens=320)
@@ -536,8 +556,8 @@ async def plan_zelda(config, decision: Any, atlas: Optional[dict], history: Any,
                 choice = validate_zelda_choice(raw, decision)
                 break
             except PlannerRejected as exc:
-                if attempt == 2 or exc.reason == 'observation_unknown':
-                    raise   # Link is not controllable: asking again cannot help
+                if attempt == 2 or exc.reason == 'observation_unknown' or _now() - started > RETRY_WITHIN_SEC:
+                    raise   # not controllable, or too slow: a second answer would miss Retro's 30 s offer
                 prompt += f'\nYour previous answer was refused: {refusal_note(exc)}. Choose a different goal.'
         return choice.model_dump(mode='json') | {
             'decision_id': decision['decision_id'],

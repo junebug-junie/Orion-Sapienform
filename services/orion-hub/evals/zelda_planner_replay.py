@@ -24,7 +24,7 @@ def dead_move(goal: dict, decision: dict) -> str | None:
     sides, previous = decision.get('open_sides') or [], decision.get('previous') or {}
     if goal['kind'] == 'exit' and goal['dir'] not in sides:
         return 'exit through a closed side'
-    if goal == previous.get('goal') and (previous.get('applied_frames') == 0 or goal.get('dir') not in sides):
+    if goal == previous.get('goal') and (retro_planner.did_nothing(previous) or goal.get('dir') not in sides):
         return 'repeats the move that did nothing'
     return None
 

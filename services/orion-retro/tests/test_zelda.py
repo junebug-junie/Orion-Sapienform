@@ -664,3 +664,13 @@ def test_offer_lists_only_sides_link_can_walk_off():
     g = ZeldaGoals(lambda kind, **f: None)
     g.observe_frame(0, 2, 1, World(blocked=boxed).obs(), 0)
     assert g.attempt['open_sides'] == []
+
+
+def test_open_sides_ignore_the_last_goals_bumps_and_skip_dungeons():
+    g = ZeldaGoals(lambda kind, **f: None)
+    g.blocked = {(c, r) for c in range(32) for r in range(1, 10)}   # bumps left over from another room
+    g.observe_frame(0, 2, 1, World().obs(), 0)
+    assert g.attempt['open_sides'] == ['N', 'W', 'E']
+    g = ZeldaGoals(lambda kind, **f: None)
+    g.observe_frame(0, 2, 1, World(level=1).obs(), 0)                # doorways not verified: no claim
+    assert g.attempt['open_sides'] is None

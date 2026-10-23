@@ -248,10 +248,11 @@
     if(state.state==='paused' && !(state.scripted||[]).length){scriptedMode=false;cognitivePort=null;handoffGrant=null;}
     // Our grant ended (budget, Retro pause, or another controller such as leisure took the port):
     // leave handoff mode so blur releases the sockets and a click takes the game back.
-    // Only a status requested after the handoff can say its grant is gone.
+    // Retro's status can lag the handoff, so the grant counts as gone only after a status showed it,
+    // and only from a status requested after the handoff.
     if(scriptedMode && handoffGrant && handoffGrant===grantAsked){
       const mine=(state.scripted||[]).find(p=>p.port===handoffGrant.port);
-      if(mine && handoffGrant.epoch===null)handoffGrant.epoch=mine.epoch;
+      if(handoffGrant.epoch===null){if(mine)handoffGrant.epoch=mine.epoch;}
       else if(!mine || mine.epoch!==handoffGrant.epoch){scriptedMode=false;cognitivePort=null;handoffGrant=null;}
     }
     el('policy').textContent=(state.scripted||[]).length
@@ -277,7 +278,7 @@
   }
   // Read-only ownership display also tells a second window which port is scripted.
   let pollingPolicy=false;
-  setInterval(async()=>{if((document.hidden && !scriptedMode) || pollingPolicy)return;pollingPolicy=true;
+  setInterval(async()=>{if(document.hidden || pollingPolicy)return;pollingPolicy=true;
     try{await showPolicy();}catch(_){el('policy').textContent='Controller status unavailable.';}
     finally{pollingPolicy=false;}},1000);
   // --- Orion's play: Zelda goals, atlas and solo leisure (spec 2026-10-22, D/E) ------------------
@@ -413,12 +414,12 @@
   document.addEventListener('fullscreenchange',()=>{
     el('fullscreen').textContent=document.fullscreenElement?'Exit fullscreen':'Fullscreen';screen.focus();});
   window.addEventListener('keyup',e=>{keys.delete(e.code);send();});
-  // Leaving the page releases a human's held keys. A handoff holds no keys, and closing its
-  // socket would end Orion's turn (Retro cancels a grant whose sponsor disconnects).
-  const stepAway=()=>{away=true;if(scriptedMode){keys.clear();return;}neutral();};
-  window.addEventListener('blur',stepAway);window.addEventListener('pagehide',neutral);
+  // Blur releases a human's held keys. A handoff holds no keys and the game is still on screen,
+  // so blur keeps it: closing the socket would end Orion's turn (Retro cancels a grant whose
+  // sponsor disconnects). A hidden tab or closed page still ends the handoff: nobody can watch.
+  window.addEventListener('blur',()=>{away=true;if(!scriptedMode)neutral();});window.addEventListener('pagehide',neutral);
   window.addEventListener('gamepaddisconnected',()=>{if(!scriptedMode)neutral();});
-  document.addEventListener('visibilitychange',()=>{if(document.hidden)stepAway();else{away=false;heal();}});
+  document.addEventListener('visibilitychange',()=>{if(document.hidden){away=true;neutral();}else{away=false;heal();}});
   window.addEventListener('focus',()=>{away=false;heal();});
   screen.addEventListener('pointerdown',()=>{away=false;if(scriptedMode)return;if(sid)wanted=true;heals=0;heal();});
   void load().catch(err=>{el('player').hidden=false;report(err.message);});

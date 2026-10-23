@@ -21,14 +21,11 @@ def test_asset_reads_leisure_atlas_and_shed_and_watches_without_a_controller():
     assert '/input' not in watch and 'grant(' not in watch   # watching never takes a controller
 
 
-def test_leaving_the_page_never_closes_a_handoff_sponsor_socket():
+def test_blur_keeps_a_handoff_but_a_hidden_tab_ends_it():
     # Retro cancels a grant whose sponsor socket closes, so a blur must not end Orion's turn
     # (2026-10-23: a co-play handoff died within a second of the window losing focus).
     js = (HUB / 'static/js/retro-panel.js').read_text()
-    step = js[js.index('const stepAway'):js.index("window.addEventListener('focus'")]
-    assert 'if(scriptedMode){keys.clear();return;}' in step
-    assert "addEventListener('blur',stepAway)" in step and 'stepAway()' in step
-    assert "addEventListener('blur',()=>{away=true;neutral();})" not in js
-    # The handoff keeps planning in a hidden tab, and leaves handoff mode once its grant is gone.
-    assert '(document.hidden && !scriptedMode) || pollingPolicy' in js
+    assert "addEventListener('blur',()=>{away=true;if(!scriptedMode)neutral();})" in js
+    assert "if(document.hidden){away=true;neutral();}" in js   # nobody can watch a hidden tab
+    # Once the handed-off grant is gone, the page leaves handoff mode.
     assert '!mine || mine.epoch!==handoffGrant.epoch' in js

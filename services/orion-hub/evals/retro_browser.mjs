@@ -152,9 +152,15 @@ try{
   await page.waitForFunction(()=>document.activeElement===document.querySelector('#screen'));
   await page.keyboard.down('ArrowLeft');await pause(200);await page.keyboard.up('ArrowLeft');
   await page.click('#scripted');await pause(300);
+  // Blur keeps a handoff (the game is still on screen); a hidden tab ends it.
   await page.evaluate(()=>window.dispatchEvent(new Event('blur')));await pause(400);
+  const blurredScript=await page.evaluate(async()=>(await (await fetch('/api/retro/health/ready')).json()).session);
+  assert.equal(blurredScript.state,'running');assert.equal(blurredScript.scripted.length,1,'blur ended the handoff');
+  await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,get:()=>true});
+    document.dispatchEvent(new Event('visibilitychange'));});await pause(400);
   const stoppedScript=await page.evaluate(async()=>(await (await fetch('/api/retro/health/ready')).json()).session);
   assert.equal(stoppedScript.state,'paused');assert.deepEqual(stoppedScript.scripted,[]);
+  await page.evaluate(()=>{delete document.hidden;document.dispatchEvent(new Event('visibilitychange'));});
   await page.click('#screen');
   await page.waitForFunction(async()=>(await (await fetch('/api/retro/health/ready')).json()).session.state==='running');
   await pause(300);

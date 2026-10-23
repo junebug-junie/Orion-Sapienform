@@ -273,7 +273,8 @@ still loading (~0.48 s measured). Nova then failed at frame 0 with
 `Try Orion goals · 60s` requires default-off `RETRO_COGNITION_ENABLED` (Retro)
 and `HUB_RETRO_COGNITION_ENABLED` (Hub/relay). It hands off only the currently
 owned port. The UI displays goal/rationale/outcome; `Take this controller`,
-Pause, blur and disconnect retain priority. Five-second motor goals expire to
+Pause, a hidden tab and disconnect retain priority. Blur alone keeps the handoff, so
+you can watch from another window (2026-10-23). Five-second motor goals expire to
 wait if background planning is unavailable. The gateway uses GPU-pool background
 admission; thermal refusal is not an emulator failure and must not be bypassed.
 

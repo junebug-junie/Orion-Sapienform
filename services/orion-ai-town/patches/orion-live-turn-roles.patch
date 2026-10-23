@@ -1,5 +1,5 @@
 diff --git a/convex/agent/conversation.ts b/convex/agent/conversation.ts
-index 2a625b8..eebcaeb 100644
+index 2a625b8..a8f4c9a 100644
 --- a/convex/agent/conversation.ts
 +++ b/convex/agent/conversation.ts
 @@ -50,21 +50,24 @@ function isOrionName(name: string): boolean {
@@ -58,13 +58,16 @@ index 2a625b8..eebcaeb 100644
      if (line) {
        out.push(line);
      }
-@@ -273,6 +267,27 @@ function ownPriorLines(messages: LLMMessage[], playerName: string): string[] {
+@@ -273,6 +267,33 @@ function ownPriorLines(messages: LLMMessage[], playerName: string): string[] {
    return out.slice(-4);
  }
 
 +// Word-set overlap with the partner's last line. Measured on 9,391 live town
 +// turns (2026-10-23): >= 0.7 is a copy or pronoun-swapped copy (192, 2.0%);
 +// below that is shared topic. Lines under 4 words ("Take care.") are exempt.
++// After a question only an exact copy counts: a plain answer restates it
++// ("Is it locked?" -> "Yes, it is locked."), and all 7 live question echoes
++// were exact copies.
 +const PARTNER_ECHO_MIN_OVERLAP = 0.7;
 +const PARTNER_ECHO_MIN_WORDS = 4;
 +
@@ -80,13 +83,16 @@ index 2a625b8..eebcaeb 100644
 +      shared++;
 +    }
 +  }
++  if (partnerLine.trim().endsWith('?')) {
++    return shared === a.size && shared === b.size;
++  }
 +  return shared / (a.size + b.size - shared) >= PARTNER_ECHO_MIN_OVERLAP;
 +}
 +
  function isSelfRepeat(reply: string, ownLines: string[]): boolean {
    const norm = normalizeTownLine(reply);
    if (!norm) {
-@@ -347,16 +362,19 @@ export async function continueConversationMessage(
+@@ -347,29 +368,34 @@ export async function continueConversationMessage(
      ...priorMessages,
    ];
    const lastPrompt = `${player.name} to ${otherPlayer.name}:`;
@@ -109,19 +115,26 @@ index 2a625b8..eebcaeb 100644
      // Live 2026-09-15 Sofia↔Juniper: exact line reposted after goodbye.
      // One retry, then sentinel so agentGenerateMessage leaves (not a bare
      // empty continue — those can happen for other reasons mid-chat).
-@@ -366,10 +384,9 @@ export async function continueConversationMessage(
+     const firstAttempt = response;
++    // The nudge goes in the system turn: a trailing user turn would read as
++    // the partner speaking.
+     const retryMessages: LLMMessage[] = [
+-      ...llmMessages,
        {
-         role: 'user',
+-        role: 'user',
++        role: 'system',
          content:
 -          `You already said that. Do not repeat your earlier line. ` +
-+          `You already said that. Do not repeat your earlier line or copy their words back. ` +
++          prompt.join('\n') +
++          `\nYou already said that. Do not repeat your earlier line or copy their words back. ` +
            `Answer their latest message with something new, or say a short goodbye.`,
        },
 -      { role: 'user', content: lastPrompt },
++      ...llmMessages.slice(1),
      ];
      const retry = await chatCompletion({
        messages: retryMessages,
-@@ -377,7 +394,7 @@ export async function continueConversationMessage(
+@@ -377,7 +403,7 @@ export async function continueConversationMessage(
        stop: stopWords(otherPlayer.name, player.name),
      });
      response = clampTownReply(trimContentPrefx(retry.content, lastPrompt));
@@ -130,7 +143,7 @@ index 2a625b8..eebcaeb 100644
        return SELF_REPEAT_LEAVE_SENTINEL;
      }
    }
-@@ -385,7 +402,7 @@ export async function continueConversationMessage(
+@@ -385,7 +411,7 @@ export async function continueConversationMessage(
    void ingestTownTurn({
      speaker: player.name,
      other: otherPlayer.name,
@@ -139,7 +152,7 @@ index 2a625b8..eebcaeb 100644
      response,
      conversationId,
    });
-@@ -432,7 +449,7 @@ export async function leaveConversationMessage(
+@@ -432,7 +458,7 @@ export async function leaveConversationMessage(
      ...priorMessages,
    ];
    const lastPrompt = `${player.name} to ${otherPlayer.name}:`;
@@ -148,7 +161,7 @@ index 2a625b8..eebcaeb 100644
 
    const { content } = await chatCompletion({
      messages: llmMessages,
-@@ -443,7 +460,7 @@ export async function leaveConversationMessage(
+@@ -443,7 +469,7 @@ export async function leaveConversationMessage(
    void ingestTownTurn({
      speaker: player.name,
      other: otherPlayer.name,
@@ -157,7 +170,7 @@ index 2a625b8..eebcaeb 100644
      response,
      conversationId,
    });
-@@ -503,12 +520,13 @@ async function previousMessages(
+@@ -503,12 +529,13 @@ async function previousMessages(
  ) {
    const llmMessages: LLMMessage[] = [];
    const prevMessages = await ctx.runQuery(api.messages.listMessages, { worldId, conversationId });

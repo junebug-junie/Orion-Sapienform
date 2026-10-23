@@ -60,7 +60,17 @@ def test_echo_joins_self_repeat_gate():
     added = _added(_PATCH.read_text(encoding="utf-8"))
     assert "isSelfRepeat(line, ownLines) || isPartnerEcho(line, partnerLine)" in added
     assert "if (repeats(response)) {" in added
+    # Retry nudge rides in the system turn, not as a partner (user) turn.
+    assert "...llmMessages.slice(1)," in added
+    assert "partnerLine.trim().endsWith('?')" in added
     assert "repeats(response) || isSelfRepeat(response, [firstAttempt])" in added
+
+
+def _skip(reason: str) -> None:
+    # CI sets AITOWN_REQUIRE_TOOLS=1 so a missing tool fails instead of going green.
+    if os.environ.get("AITOWN_REQUIRE_TOOLS") == "1":
+        pytest.fail(reason)
+    pytest.skip(reason)
 
 
 def _node_with_strip_types() -> str | None:
@@ -87,8 +97,9 @@ def _helper_source() -> str:
 def test_partner_echo_flags_real_transcript(tmp_path):
     node = _node_with_strip_types()
     if not node:
-        pytest.skip("needs node >= 22.6 (set AITOWN_TEST_NODE)")
-    turns = json.loads(_FIXTURE.read_text(encoding="utf-8"))["turns"]
+        _skip("needs node >= 22.6 (set AITOWN_TEST_NODE)")
+    fixture = json.loads(_FIXTURE.read_text(encoding="utf-8"))
+    turns = fixture["turns"] + fixture["boundary"]
     script = tmp_path / "echo.ts"
     script.write_text(
         _helper_source()
@@ -104,7 +115,9 @@ def test_partner_echo_flags_real_transcript(tmp_path):
     ).stdout
     got = json.loads(out)
     assert got == [t["echo"] for t in turns]
-    assert sum(got) == 5  # the five word-for-word copies in c:578946
+    # The five word-for-word copies in c:578946; boundary rows pin 0.7 and the
+    # question exemption (0.99 or 0.6 would fail them).
+    assert sum(got[: len(fixture["turns"])]) == 5
 
 
 def _upstream_source() -> str | None:
@@ -119,7 +132,7 @@ def _upstream_source() -> str | None:
 def test_patch_chain_applies_to_pinned_upstream(tmp_path):
     src = _upstream_source()
     if not src or not shutil.which("git"):
-        pytest.skip("no upstream clone available (set AITOWN_UPSTREAM_GIT)")
+        _skip("no upstream clone available (set AITOWN_UPSTREAM_GIT)")
     readme = (_SERVICE / "README.md").read_text(encoding="utf-8")
     ref = re.search(r"AITOWN_UPSTREAM_REF=([0-9a-f]{40})", readme).group(1)
     work = tmp_path / "town"

@@ -139,6 +139,6 @@ From the clean primary `main` checkout after merge. Readers (`orion-cortex-exec`
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/2877
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

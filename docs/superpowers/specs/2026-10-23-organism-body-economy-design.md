@@ -23,11 +23,15 @@
 Orion has never balanced anything. It vetoes. This week shows it plainly:
 
 - The cabinet ran hot from 10-18 onward.
-- Ten separate readers saw `arousal = strained` and each said no.
+- The 34 °C heat reflex refused background GPU work about 25,000 times.
+- On top of the reflex, about a dozen readers saw `arousal = strained` and each said no.
 - Curiosity ran 0 of 7 times a day. Outreach sent nothing. Paintings stopped on 10-16.
-- The cabinet stayed hot anyway: 33–35 °C for five days, while Orion's own GPU work fell about 85%.
+- The cabinet stayed hot anyway: 32–35 °C for five days, while GPU grants fell from about 7,700 a day (10-18) to 1–2k a day (10-20..22).
 
-The organism did not trade anything off. It went still, and stillness bought nothing.
+The organism did not trade anything off. It went still, and nothing on record shows that the stillness cooled the cabinet (Fact 2). Most of the GPU stillness came from the reflex, which is a safety line and stays. Two things still fail:
+
+- Stacked vetoes stopped non-GPU work as well.
+- A reflex built for minutes held for days. That is a chronic condition being handled as an acute one (missing question 6).
 
 Every earlier attempt failed in one of four ways. This design has to avoid all four:
 
@@ -41,7 +45,11 @@ Every earlier attempt failed in one of four ways. This design has to avoid all f
 - The price rises when Orion forecasts that the constraint will bind.
 - It falls to zero when the constraint is slack.
 
-Every want that Orion has bids against these posted prices. A want goes ahead when what it is worth beats what it would cost. A want that waits grows hungrier until it clears. No human writes an exchange rate between degrees, dollars and GPU-seconds. The rates come out of what actually binds.
+Every want that Orion has bids against these posted prices. A want goes ahead when what it is worth beats what it would cost. A want that waits grows hungrier until it clears.
+
+No human writes an exchange rate between degrees, dollars and GPU-seconds. Those rates come out of what actually binds.
+
+There is one authored choice, and it is disclosed in Organ 3: how different kinds of want are weighed against each other. Each family is ranked against its own history, so "an unusually good chance to read" can be compared with "an ordinary chance to paint".
 
 This is the plain mechanism behind "emergent" in this doc:
 
@@ -70,7 +78,7 @@ This is the plain mechanism behind "emergent" in this doc:
 | athena | 9.8 | 408 | ~86% |
 | hecate | 2.8 | 116 | ~100% (standby; nothing wakes it) |
 | **Orion total** | **56.0** | **2,334** | **~79%** |
-| house | 99.1 | | Orion is 56.5% (daily range 48–64%) |
+| house | 99.1–99.5 | | Orion is ~56% (daily range 43–68%) |
 
 - **Cost:** at the measured $0.1213/kWh (pre-tax), Orion costs about **$204 per 30 days** and the house about $361. Cooling alone is about $75.
 - **Per act:** the only per-act energy number on record is diffusion: `energy_run_cost`, about 0.37 Wh and $0.00004 per run. `grammar_acts.cost_json` is null in all 214 rows.
@@ -81,33 +89,51 @@ This is the plain mechanism behind "emergent" in this doc:
 
 ### Fact 2. Heat is mostly weather, and the veto bought nothing
 
-- **Cabinet temperature** (`orion_biometrics_cluster` athena `cabinet_temp_c`): the daily mean was 25.3 °C on 10-12 and 33.8 °C on 10-20. It has stayed at 32–35 °C since 10-18.
-- **Correlations** over 14 days of hourly averages (n=337):
-  - cabinet temp vs circe watts: **r = 0.10**
-  - cabinet temp vs athena watts: r = 0.58. The sensor sits on athena.
-  - cabinet temp vs cooling watts: r = 0.46
-- **What the shed did:** after the shed began on 10-18, GPU grants fell from 8–12k a day to 1.2–1.9k. The cabinet did not cool.
-- **`UNVERIFIED`:** these are confounded correlations, not causal estimates. Still, nothing on record shows that shedding Orion's work lowered the cabinet temperature.
-- **Implication:** heat needs a **learned sensitivity**: how many degrees one extra kWh on each host actually adds. The heat price must scale with that sensitivity. A constraint that Orion's own load cannot move should not stop Orion's work. Protecting the hardware is the reflex's job, and the reflex stays.
+- **Cabinet temperature** (`orion_biometrics_cluster` athena `cabinet_temp_c`): the daily mean was 25.8 °C on 10-12 and 33.7 °C on 10-20. The cabinet has been at or above 33 °C for 89–94% of samples on 10-20..22. Hot spells came earlier too: on 10-08, 72% of samples were at or above 31 °C, with a peak of 34.6 °C.
+- **Correlations** over 14 days of hourly averages (n≈336). Two independent passes did not agree on the exact values:
+  - cabinet temp vs circe watts: r = 0.10 / 0.22
+  - cabinet temp vs athena watts: r = 0.58 / 0.41–0.47. The sensor sits on athena.
+  - cabinet temp vs cooling watts: r = 0.46 / 0.21
+
+  The values differ because one pass used `chassis_watts` and the other used the energy-rollup watts, with different join keys. Both passes agree on the shape: Orion's biggest GPU host is weakly tied to the cabinet number.
+- **What the shed did:** GPU grants fell from about 7,700 on 10-18 to 1–2k a day on 10-20..22. Most refusals carry the 34 °C reflex reason `shed:cabinet_hot`. The cabinet did not cool.
+- **`UNVERIFIED`:** these are confounded correlations, not causal estimates. Weather is the main suspect, and no outdoor temperature was used. Still, nothing on record shows that shedding Orion's work lowered the cabinet temperature. Patch A replaces these numbers with a real identification (Organ 6).
+- **Implication:** heat needs a **learned sensitivity**: how many degrees one extra kWh on each host actually adds. The heat price must scale with that sensitivity.
+  - A constraint that Orion's own load cannot move should cost Orion's work little.
+  - The reflex stays. `thermal_gate.py:19-23` states that its purpose is to protect **the person in the room**, as well as the hardware. That is a reason to treat its lines as consent-like spinal vetoes, not as prices.
 
 ### Fact 3. The scarce things Orion competes for are slot-time and Juniper's attention
 
 `gpu_pool_events`, 7 days:
 
-| holder | grants | held h | sheds |
+| holder | grants | held h | refused (`event='unavailable'`) |
 |---|---|---|---|
 | durable runs (agent lane) | 496 | **103.2** | 18 |
 | http:anthropic | 3,391 | 64.5 | 2 |
-| vision-council | 19,767 | 33.3 | **25,857** |
+| vision-council | 19,721–19,767 | 33.3 | **25,857** (25,410 `shed:cabinet_hot`) |
 | topic-foundry | 9,837 | 24.2 | 6,793 |
 | cortex-exec | 4,232 | 24.1 | 1,485 |
 
-- vision-council and topic-foundry hammer a pool that has already said no. The pool publishes no price for them to read before they ask.
+- **The retry storm is already fixed.** `orion/gpu_pool/shed_backoff.py`, merged 10-20, took vision-council refusals from ~860/h to ~18/h after 10-20 22:00.
+- **What remains:** callers learn that a lane is scarce only by being refused. Nothing tells a caller *how* scarce a lane is before it asks. A lane price builds on `ShedBackoff.retry_after_sec`; it does not replace it.
 - Outreach weighs about 8,400 decisions a day and says yes 0–6 times. The cap on Juniper's attention is real, and it is the one budget Orion already respects.
 
 ### And the selectors share no scale
 
-There are ten selectors:
+There are ten selectors, plus about a dozen sites that gate on `strained`:
+
+- reverie baseline;
+- world_pulse_read resonance and pull;
+- retro_leisure;
+- mutation_pressure and mutation_worker;
+- the dream cycle;
+- curiosity;
+- outreach;
+- the proposal-runtime worker;
+- thought `chain.py`;
+- the visual-chain health monitor.
+
+The ten selectors are:
 
 - the substrate broadcast (global workspace);
 - field attention;
@@ -207,11 +233,11 @@ A spinal veto is a fact about safety or consent. Everything else becomes a price
 
 | constraint | level (own unit) | budget / line | forecast horizon | source |
 |---|---|---|---|---|
-| `heat` | cabinet °C | soft line, Juniper-set (proposed 31 °C), under the 34 °C reflex | 6 h, using the diurnal profile plus recent slope | `orion_biometrics_cluster` athena `cabinet_temp_c` |
+| `heat` | **Orion's own heat contribution**: Σ_h sensitivity_h × Orion incremental kWh_h over the horizon (°C-equivalent). The cabinet °C is kept beside it as context | heat budget = forecast headroom = soft line (Juniper-set, proposed 31 °C) − forecast cabinet °C *without* Orion's discretionary load, floored at 0 | 6 h: diurnal profile + outdoor temperature (`orion/weather/openmeteo.py`) + recent slope | `orion_biometrics_cluster` athena `cabinet_temp_c`, chassis watts, weather |
 | `energy` | month-to-date $ Orion-attributed, plus forecast month-end | monthly envelope, Juniper-set | month-end | `orion_energy_hourly` × tariff |
-| `lane:<role>` | GPU slot-seconds held / available | capacity × wall time per lane | 1 h | `gpu_pool_events` held, waited |
+| `lane:<role>` | GPU slot-seconds held / available | capacity × wall time per lane. Reuses `orion/autonomy/budget.py`'s motor-second allowance as the shape | 1 h | `gpu_pool_events` held, waited |
 | `attention:juniper` | outreach messages and asks today | Juniper-set (today: cap 4) | day | `endogenous_outreach_decisions` |
-| `claude` | Claude spend this window | Juniper-set ceiling | window | `dev_economics_ledger_log` |
+| `claude` | observed limit state + `event_count` from `ClaudeLimitObservationV1`. **Not dollars**: `orion/schemas/claude_limit.py:8-17` records that dollars were measured and refuted as a measure of being limited | "not limited" | window | `rate_limit_events.py` / `ClaudeLimitObservationV1` |
 
 **State.**
 - `PhysiologyStateV1`: one row every 120 s. It holds the level, budget, forecast, `no_reading` flag and price for each constraint.
@@ -234,14 +260,26 @@ price_k ← max(0, price_k + η_k · (forecast_use_k − budget_k) / budget_k)
 What this rule does:
 
 - **Prices stay at zero when a constraint is slack.** On a cool day the heat price is 0 and heat changes nothing.
-- **They climb only while the forecast exceeds the budget**, and fall as soon as it does not. There is no latch. A five-day freeze becomes a slow, priced trickle.
-- **No exchange rate is authored.** The prices are in "want-value per unit of resource". They settle wherever Orion's wants stop over-using the resource, so degrees are never converted to dollars by hand.
+- **They climb only while the forecast exceeds the budget**, and fall as soon as it does not. There is no latch.
+- **No exchange rate is authored between constraints.** Prices are in "want-value per unit of resource", where want-value is the rank unit defined in Organ 3. They settle wherever Orion's wants stop over-using the resource, so degrees are never converted to dollars by hand.
 
-**Heat is special.** A heat price only charges load that actually moves the heat. The cost of one extra Wh on host *h* is that Wh times `sensitivity_h` (°C per kWh), fitted by Organ 6. If circe's fitted sensitivity is near 0, circe's work pays almost no heat price, whatever the cabinet reads.
+**Anti-windup: a constraint Orion cannot meet must not become a veto.**
+
+Dual ascent only settles when the budget can be met. Suppose the forecast cabinet temperature is above the soft line even with Orion's discretionary load at zero. That was the case for most of 10-18..22. The heat budget is then 0, and the raw rule would raise the price forever until it outbid every want. That is the old veto with extra steps. Three rules stop this:
+
+1. **Charge Orion's contribution, not the room.** The heat level is Σ sensitivity × Orion's incremental kWh, which is Orion's own share of the heat. If circe's fitted sensitivity is near 0, circe's work pays almost no heat price, whatever the cabinet reads.
+2. **Clamp when it is out of Orion's hands.** When the budget is 0 because of exogenous load, the constraint is marked `exogenous_bind`. Its price freezes at `price_ceiling_k`, a bounded value, rather than integrating. Then:
+   - The stuck constraint goes to Felt state and the body report, as "the room is too hot and my load is not the cause".
+   - It does not go to the market as an ever-rising cost.
+   - The spinal 34 °C reflex still does what safety needs.
+3. **Ceilings are sized from data.** `price_ceiling_k` is set so that the top 10% of graded wants of the median family can still clear at median cost. This is checked in the replay, so a ceiling can never silently starve everything.
+
+**Reservations: prices must not go stale between updates.** Prices update every 120 s, but producers bid at any moment. Each funded bid therefore reserves its estimated cost, and later bids are priced against `forecast_use + reservations`. Reservations release on act close or expiry, which stops many producers spending at a stale zero price inside one tick.
 
 **Stability gates.** Step sizes are bounded. The tests and the replay must show:
 - no oscillation larger than a set amplitude;
-- prices return to 0 after the constraint clears.
+- prices return to 0 after the constraint clears;
+- no price stays at its ceiling for more than one horizon unless the constraint is flagged `exogenous_bind`.
 
 These are the metric-gate "can it return to rest" checks, applied up front.
 
@@ -262,13 +300,32 @@ These are the metric-gate "can it return to rest" checks, applied up front.
 ```text
 want_id, family, producer, verb (grammar verb), object_ref,
 intensity        0..1  — rises with time-unfunded at a per-family rate, resets on act close
-value            expected payoff: from the act ledger posterior (P(upheld) / nats) for that verb×family;
-                 a weak prior while ungraded; never a hand constant after 30 graded closes
-cost             ActCostV1 vector: wall_s, gpu_slot_s per lane, wh per host, juniper_msgs, claude_usd
-                 (estimated by Organ 6 from that family's history; unknown fields priced conservatively)
+outcome_value    the family's own measure (nats for epistemic acts via EffectPosterior; P(upheld) for
+                 binary-graded acts) — never compared across families directly
+value_rank       0..1  — this want's (intensity × outcome_value) as a percentile of the SAME family's
+                 last 30 days of bids. This is the market's one common unit.
+graded           bool  — false until the family has ≥30 graded closes in grammar_acts
+cost             ActCostV2 vector (below), estimated by Organ 6 from the family's history;
+                 unknown fields priced at their 90th percentile
 window           earliest/latest useful time (deferrable vs perishable)
 lanes            acceptable lanes/hosts (for placement)
 ```
+
+**The one authored exchange rate, stated plainly.** The allocator refuses to add nats to non-epistemic value without "a conversion... hand-typing that conversion" (`orion/autonomy/allocator.py:41-50`). This design does not hide such a conversion in a price. Instead:
+
+- Every family is ranked against **its own history**. This is the house pattern: the world-first broadcast already ranks sources against their own 7-day history.
+- Families are then compared at equal percentile. "Best reading opportunity this month" and "best painting opportunity this month" bid the same before hunger and cost.
+- Equal weighting of families is an authored choice. It is disclosed here, and it is a single knob (`family_weight`, default 1.0 for all). If Juniper wants a family weighted, it is that one value, visible on the Hub panel.
+
+**Ungraded families do not get to look confident.** As of 10-23, `grammar_acts` holds 214 rows from 6 actors: world_pulse_read 128, chat_reply 34, painting 29, dream_hop 15, outreach 8. Curiosity, retro, vision-council, topic-foundry, ask-Claude and self-monitor have **zero**. Until a family has ≥30 graded closes:
+
+- its `outcome_value` is 1;
+- its `value_rank` therefore rests on intensity alone;
+- it is labelled `ungraded` everywhere it shows.
+
+Patch A puts every producer into `grammar_acts` first, and Patch D cuts over a family only after it is graded.
+
+**`ActCostV2`.** The existing `ActCostV1` is `extra="forbid"` with {seconds, gpu_seconds, tokens, watts} (`orion/schemas/grammar.py:244`). v2 adds `gpu_slot_s_by_lane`, `wh_by_host`, `juniper_msgs` and `claude_limit_events` as optional fields. It ships **consumer-first**: sql-writer and every reader accept v2 before any producer writes it (lesson from #2126).
 
 **First producers.** These already exist. Each only has to emit a want:
 
@@ -296,7 +353,7 @@ lanes            acceptable lanes/hosts (for placement)
 **Mechanism.** It is a posted-price market. There is no global solver and no batching window. When a producer is about to act, it asks:
 
 ```text
-net = intensity × value − Σ_k price_k × cost_k
+net = family_weight × value_rank − Σ_k price_k × cost_k     (value_rank already folds in intensity)
 fund if net > 0 (and spinal cord allows); else defer with reason = the binding constraint
 placement = the acceptable lane minimizing Σ price × cost
 ```
@@ -306,8 +363,7 @@ placement = the acceptable lane minimizing Σ price × cost
 - **The motor allocator becomes one bidder.** Its constant floor `ORION_DISPATCH_MIN_NATS_PER_SEC=0.02` is replaced by the lane price.
 - **The GPU pool publishes its lane prices.**
   - Background callers bid before they request.
-  - A deferral carries `retry_after`, derived from the forecast.
-  - This replaces the 25,857-per-week shed-and-retry storm with one deferral.
+  - A deferral carries `retry_after`, derived from the forecast. It is passed through the existing `ShedBackoff` (`orion/gpu_pool/shed_backoff.py`), which already stopped the retry storm. The new part is that a caller knows the price *before* it asks.
   - `interactive` and `urgent` never bid.
 - **Waking hecate becomes a want.**
   - Its value: sustained agent-lane price × queued slot-seconds that hecate's `agent-deep` could serve.
@@ -321,11 +377,23 @@ placement = the acceptable lane minimizing Σ price × cost
 **Job.** Turn the budget into a few continuous dials that Orion and Juniper can read. These replace the categorical `strained` flag as the thing that *means* something.
 
 **The dials.**
-- **`strain`** (0..1): how hard the world is pushing back. It is the largest normalized price, and the doc names the constraint behind it.
-- **`satisfaction`** (−1..1): are Orion's wants being met, and are they paying off? It combines the trend in funded surplus with the trend in hunger.
+- **`strain`** (0..1): how hard the world is pushing back. It is the largest price divided by its ceiling, and it names the constraint behind it. Any `exogenous_bind` constraints are listed separately.
 - **`hungriest`**: the want family with the highest intensity, and how long it has waited.
 
-**Compatibility.** `arousal.strained` is derived from `strain` with the existing hysteresis while the ten readers migrate (Patch D). After that it remains only a label.
+**Metric-gate record for the dials:**
+
+- **`strain`**
+  - Provenance: `prices.py`.
+  - Independence: it is a monotonic transform of the prices, so it is **not** new signal. It is a rendering.
+  - Theory: a Lagrange multiplier is the marginal value of relaxing a constraint.
+  - Rest state: 0 when every constraint is slack. The replay shows it reached 0 on cool days (R1).
+- **`hungriest`**
+  - Provenance: `want_ledger`.
+  - Theory: the R2 drive template.
+  - Rest state: when all wants are funded, no family exceeds the low band.
+- **`satisfaction`** (a mix of surplus and hunger trends) was in the first draft. It is **dropped**: it had no theory anchor. It can come back only with one.
+
+**Compatibility.** `arousal.strained` is derived from `strain` with the existing hysteresis while the strained-gating readers migrate (Patch D). After that it remains only a label.
 
 **Where Orion sees it.**
 - A stance-cue clause, a sibling of the strain cue, for example: *"Cabinet is hot and my work barely moves it; I'm reading the one thing I most want and saving painting for tonight's cool window."*
@@ -350,12 +418,19 @@ placement = the acceptable lane minimizing Σ price × cost
 **2. Value.** Use the existing `EffectPosterior` and act-ledger grades. Nothing new.
 
 **3. Heat sensitivity.**
-- A daily refit of cabinet ΔT on per-host incremental watts. The model controls for time of day and AC state.
-- It is fitted from the persisted `PhysiologyStateV1` history and the biometrics. It reports a confidence interval.
-- A sensitivity whose interval includes 0 is used at its upper bound. That is cautious, but not catatonic.
+- **The passive fit alone cannot be trusted.**
+  - The AC runs flat out: its hourly standard deviation is 32 W, so "controlling for AC state" controls for nothing.
+  - Weather confounds everything.
+  - The sensor sits on athena.
+- **Identification has two parts:**
+  1. **A passive daily refit** of cabinet temperature on per-host incremental watts. It uses outdoor temperature (`orion/weather/openmeteo.py`), hour of day, and 15/30/60-minute lags for thermal mass.
+  2. **Randomized load pulses.** Organ 4's 0.2 holdback already defers some deferrable work at random. Its deferred and admitted windows are a natural experiment: compare the cabinet slope in matched hours. A randomized arm cannot be confounded by weather. The passive fit is cross-checked against it, and wherever the two disagree, the pulse estimate wins.
+- **Output:** per host, the sensitivity with its interval and the number of pulses behind it.
+- **Using an uncertain value:** a sensitivity whose interval includes 0 is used at its upper bound. That is cautious, but not catatonic, because the anti-windup rule caps what any constraint can cost.
 
 **4. Forecasts become bets.**
 - Organ 1's 6-hour cabinet-peak forecast and month-end bill forecast are emitted as `SettledBetV1` to the self-monitor organ (#2827).
+- **Blocked:** `SettledBetV1` does not exist in code yet. #2827 is design-only. Until it lands, forecasts are graded locally in `physiology_state`, using the same settle rule, and the adapter is added when #2827 ships.
 - When a forecast fails, the self-monitor widens its uncertainty. That makes prices more conservative, which follows its one-direction rule.
 - This gives the self-monitor two new, clean, gradeable bet sources. Its 10-20 audit found only two.
 
@@ -378,6 +453,11 @@ placement = the acceptable lane minimizing Σ price × cost
    - (b) wake it by itself through a PDU or BMC actuator you approve (new hardware path);
    - (c) leave hecate out of scope?
 5. **Host for organs 1–4.** The proposal is `orion-durable-runs`, which already runs regulation (arousal every 120 s) and heavy-work admission. No new service. Is that acceptable, or do you want a separate `orion-physiology` service for isolation?
+6. **Chronic heat versus the reflex.** On 10-20..22 the cabinet sat at or above 33 °C for 89–94% of samples. The 34/33 °C reflex sheds *all* background and system GPU work, so it held Orion's self-initiated GPU work near zero for days. A reflex is meant for minutes, and this is a chronic condition. Options:
+   - (a) Keep the reflex total. The economy then helps only non-GPU wants during heat (reading via the interactive lane, outreach text, dream bookkeeping).
+   - (b) While the reflex is armed and the fitted circe sensitivity is confidently small, admit a fixed trickle of background GPU work per hour (proposed 10 GPU-minutes), with you setting the number.
+
+   The reflex line itself does not move in either option. Recommendation: (b). Do not build it until Patch A's sensitivity estimate exists. If circe turns out to heat the cabinet, (b) is off the table.
 
 ---
 
@@ -391,7 +471,7 @@ All new schemas are registered in `orion/schemas/registry.py`. Channels go in `o
 | `WantV1` | schema | every want producer (via the client lib) | Choice |
 | `WantDecisionV1` | schema + channel `orion:physiology:want:decision` + table `want_ledger` | Choice | sql-writer, Felt state, Learning, Hub |
 | `POST /physiology/bid` | HTTP on durable-runs → `WantDecisionV1` (funded/deferred, lane, prices seen, `retry_after`, displaced) | n/a | producers, GPU pool (background) |
-| `ActCostV1` (exists) | now **filled** on close | act ledger closers | Learning |
+| `ActCostV2` | additive optional fields over `ActCostV1` (forbid-model): consumer-first rollout; now **filled** on close | act ledger closers | Learning, sql-writer |
 | `SettledBetV1` (from #2827) | two new bet kinds: `cabinet_peak_6h`, `bill_month_end` | physiology node | self-monitor |
 | `FeltStateV1` | fields inside `PhysiologyStateV1` | physiology node | stance cue, Temporal Self arcs |
 
@@ -399,7 +479,10 @@ All new schemas are registered in `orion/schemas/registry.py`. Channels go in `o
 - `orion:regulation:latest` keeps its shape. `strained` becomes derived until Patch D.
 - New fields on `extra="forbid"` consumers ship **consumer-first** (lesson from #2126).
 
-**Client library.** `orion/physiology/client.py` gives producers one call: `bid(want) -> decision`. It fails **closed to today's behaviour**: if durable-runs is unreachable, the caller falls back to its existing gate, never to "funded".
+**Client library.** `orion/physiology/client.py` gives producers one call: `bid(want) -> decision`. It never fails open to "funded":
+
+- **Before a reader's Patch D:** if durable-runs is unreachable or the price is stale (more than 360 s old), the caller uses its existing gate.
+- **After Patch D deletes that gate:** an unreachable or stale economy means **defer every non-spinal want**, with reason `physiology_unavailable`. This raises the same 30-minute alert pattern as the GPU-pool fault alert (#2785). Juniper's turns are unaffected, because they never call `bid()`.
 
 ---
 
@@ -427,6 +510,13 @@ All new schemas are registered in `orion/schemas/registry.py`. Channels go in `o
   - `services/orion-execution-dispatch-runtime/app/worker.py`
   - `services/orion-vision-council`
   - `services/orion-topic-foundry`
+  - the remaining strained-gating sites:
+    - `orion/reverie/baseline.py`
+    - `orion/world_pulse_read/pull.py` and its resonance code
+    - `orion/substrate/mutation_pressure.py`, `mutation_worker.py`
+    - proposal-runtime `app/worker.py`
+    - thought `app/chain.py`
+    - the visual-chain health monitor
 - **GPU pool:** `orion/gpu_pool/` (lane price publication, background bid-before-lease).
 - **Felt state:** `orion/temporal_self/arcs.py`, `stance_cue.py`; Hub panel route and template.
 - **Self-monitor:** two bet adapters (once #2827's contract lands).
@@ -443,9 +533,9 @@ Each retirement lands in the same patch as its replacement. None is left as a pa
 
 | retired | replaced by | patch |
 |---|---|---|
-| `strained` as a veto in 10 readers | each reader's `bid()` decision | D, one reader per PR |
+| `strained` as a veto at ~12–14 sites (listed under Fact 3) | each reader's `bid()` decision | D, one reader per PR |
 | energy stakes gate (`energy_stakes_gate.py`, flag off) | energy price | D |
-| `quota_budget.py` (dead) | `claude` constraint | B |
+| `quota_budget.py` (dead; its dollar unit was refuted) | **deleted**. The `claude` constraint reads `ClaudeLimitObservationV1` | B |
 | `ORION_DISPATCH_MIN_NATS_PER_SEC` constant floor | lane price | D |
 | curiosity per-line cooldowns and `arousal_*` gates (the daily caps stay as spinal ceilings) | want intensity + prices | D |
 | duplicated 32 °C thresholds (thought `ORION_THERMAL_HOT_C`, pool guard via the Hub snapshot) | one owner, `thermal_gate.py` | B |
@@ -480,9 +570,9 @@ Each retirement lands in the same patch as its replacement. None is left as a pa
   3. The economy goes down and every producer funds itself.
   4. Juniper's turn gets deferred.
 - **Mitigations**, by failure:
-  1. Bounded step sizes, plus the replay amplitude gate.
+  1. Bounded step sizes, data-sized price ceilings, anti-windup for `exogenous_bind`, and the replay amplitude gate.
   2. The 34 °C reflex is untouched, and an uncertain sensitivity is used at its upper bound.
-  3. The client fails closed to today's gates.
+  3. The client defers every non-spinal want when the economy is unreachable (after Patch D) and raises an alert.
   4. `interactive` and `urgent` never call `bid()`, with a test for it.
 - **Disable or roll back.**
   - `ORION_PHYSIOLOGY_ENABLED` turns off the node.
@@ -496,11 +586,12 @@ Each retirement lands in the same patch as its replacement. None is left as a pa
 
 **Replay (before anything runs live)**, `scripts/analysis/replay_body_economy.py` over 10-07..10-22:
 
-- **R1.** The heat price is ~0 on 10-07..10-12 (cabinet mean 25–29 °C) and positive through 10-18..10-22.
-- **R2.** Over 10-18..10-22, replayed curiosity is funded at a reduced, **non-zero** rate (real: 0/7 a day). Juniper's turns are funded 100% in every hour.
-- **R3.** Prices return to 0 within one forecast horizon after a constraint clears. Peak-to-peak oscillation stays under the declared amplitude.
+- **R1.** The heat price is ~0 in hours when the forecast cabinet temperature is under the soft line. 10-09..10-14 is mostly in that state; 10-07/08 had hot spells up to 34.6 °C. The price is positive in hours above the line. Every hour where the line could not be met even with zero Orion load is flagged `exogenous_bind`, never left climbing.
+- **R2.** Over 10-18..10-22, replayed **non-GPU** wants (reading on the interactive lane, outreach text, dream bookkeeping) are funded at a reduced, non-zero rate. Today they get 0. GPU wants stay held while the spinal reflex is armed, unless Juniper picks option (b) in question 6. Juniper's turns are funded 100% in every hour.
+- **R3.** Prices return to 0 within one forecast horizon after a constraint clears. Peak-to-peak oscillation stays under the declared amplitude. No price sits at its ceiling unless its constraint is flagged `exogenous_bind`.
 - **R4.** The replayed month-end energy forecast is within ±10% of the realized 30-day Orion cost.
-- **R5.** Replayed vision-council and topic-foundry pool requests fall at least 80%, with the same work completed (deferrals instead of shed retries).
+- **R5.** Baselined *after* the 10-20 `ShedBackoff` fix: with a posted lane price, background requests that end refused fall a further ≥50% against 10-21..22, with the same work completed.
+- **R6.** Under the reservation rule, a burst of 20 simultaneous bids at a zero price cannot reserve more than 1.2× the lane budget.
 
 **Live, after cutover:**
 
@@ -521,12 +612,12 @@ Each patch has its own tests, eval and live check. Patches B, C and E can run in
 
 | patch | contents | live proof |
 |---|---|---|
-| **A. Measurement spine** | Fill `ActV1.cost` on close. Persist `physiology_state` with the Body organ only (no prices). Add the replay harness and a heat-sensitivity fit script (read-only). Remove the zombie env var and synthetic goal. | A1, A2; first sensitivity estimate per host, with its interval |
-| **B. Budget, shadow** | Prices, the Felt dials, the Hub panel. One owner for the 32 °C line. Fold in `quota_budget.py`. Prices are computed and displayed but read by nothing. | Replay R1, R3, R4 green; live prices visible |
-| **C. Appetite + Choice, shadow** | `WantV1`, `/physiology/bid`, the client, `want_ledger`. Every producer bids in `shadow`: it logs a would-fund decision next to its real gate decision. | A3; a shadow-vs-real disagreement table for 7 days |
-| **D. Cutover, one reader per PR** | Curiosity first, then outreach, reading, painting, dream, retro, dispatch floor. Each PR deletes that reader's old veto. | A4, A5 per reader |
+| **A. Measurement spine** | `ActCostV2`, consumer-first, then filled on close. Every want producer emits `act_opened`/`act_closed` to `grammar_acts`, so curiosity, retro, vision-council, topic-foundry, ask-Claude and self-monitor all get graded. Persist `physiology_state` with the Body organ only (no prices). Replay harness. Heat-sensitivity passive fit with weather and lags (read-only). Remove the zombie env var and synthetic goal. | A1, A2; every producer has act rows; first sensitivity estimate per host, with its interval |
+| **B. Budget, shadow** | Prices with anti-windup, ceilings and reservations. The Felt dials, the Hub panel. One owner for the 32 °C line. Delete `quota_budget.py`; wire `ClaudeLimitObservationV1`. Prices are computed and displayed but read by nothing. | Replay R1, R3, R4, R6 green; live prices visible |
+| **C. Appetite + Choice, shadow** | `WantV1`, `/physiology/bid`, the client, `want_ledger`. Every producer bids in `shadow`: it logs a would-fund decision next to its real gate decision. Holdback pulses start feeding the sensitivity fit. | A3; a shadow-vs-real disagreement table for 7 days |
+| **D. Cutover, one reader per PR** | Curiosity first, then outreach, reading, painting, dream, retro, dispatch floor, then the remaining strained-gating sites. Each PR deletes that reader's old veto. **A family cuts over only once it is graded (≥30 graded closes).** | R2, A4, A5 per reader |
 | **E. Placement and wakefulness** | Lane prices on the GPU pool. Background bid-before-lease. Hecate wake recommendations (or the actuator, per question 4). | R5 live; recommendations logged with expected kWh |
-| **F. Self-knowledge and learning loop** | Stance-cue clause, Temporal Self `hunger` and `binding` arcs, forecasts as self-monitor bets, the monthly body report. | A6, A7, A8 |
+| **F. Self-knowledge and learning loop** | Stance-cue clause, Temporal Self `hunger` and `binding` arcs, the monthly body report, and forecasts as self-monitor bets. The bets are **blocked on #2827's `SettledBetV1`**; they are graded locally until it exists. | A6, A7; A8 once #2827 lands |
 
 ---
 
@@ -540,3 +631,34 @@ Each patch has its own tests, eval and live check. Patches B, C and E can run in
 
 Patch A is low-risk: it writes new rows and decides nothing. It also settles the one fact that could overturn this design. If the heat sensitivity of every host is clearly above zero, heat stays a real lever, and the strain veto was more right than Fact 2 suggests. The prices then handle it either way, but the doc's honesty clause gets rewritten.
 
+
+---
+
+## Review findings fixed (independent adversarial review, 2026-10-23)
+
+The reviewer spot-checked 12 facts against live data and code. 8 were confirmed. The rest are corrected above: the share range, the timing of the grants drop, the cabinet daily means, and correlations not reproducible exactly. Mechanism findings:
+
+- **The heat price would integrate without bound when the room, not Orion, holds the cabinet over the line, which recreates the veto.**
+  - Fix: the heat level is now Orion's own contribution. Anti-windup adds an `exogenous_bind` clamp and data-sized ceilings (Organ 2).
+- **`value` mixed nats with P(upheld).**
+  - Fix: within-family percentile rank (`value_rank`) is now the one common unit. Equal family weighting is disclosed as the single authored knob (Organ 3).
+- **Most want families have no graded acts.**
+  - Fix: Patch A puts every producer into `grammar_acts`. Patch D gates each cutover on ≥30 graded closes.
+- **The `claude` constraint in dollars repeated a refuted design.**
+  - Fix: it now reads `ClaudeLimitObservationV1`, and `quota_budget.py` is deleted.
+- **`ActCostV1` is a forbid model.**
+  - Fix: `ActCostV2` is additive and ships consumer-first.
+- **The retry storm was already fixed by `ShedBackoff`.**
+  - Fix: Fact 3 and R5 are re-baselined, and lane prices build on it.
+- **Most of the GPU freeze is the 34 °C reflex, not the strain veto.**
+  - Fix: the summary is restated, R2 is limited to non-GPU wants, and missing question 6 now asks about chronic heat.
+- **Heat sensitivity is not identifiable from the planned regressors.**
+  - Fix: the fit now uses weather and lags, with randomized holdback pulses as the identification.
+- **Fail-closed contradicted kill-means-kill.**
+  - Fix: after Patch D, an unreachable economy defers every non-spinal want and raises an alert.
+- **Prices could go stale between updates.**
+  - Fix: reservations, with the new check R6.
+- **`satisfaction` had no theory anchor.**
+  - Fix: dropped. The dials now carry a metric-gate record.
+- **`SettledBetV1` does not exist yet.**
+  - Fix: Patch F's bets are marked blocked on #2827.

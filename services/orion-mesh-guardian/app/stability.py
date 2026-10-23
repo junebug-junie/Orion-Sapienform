@@ -39,6 +39,9 @@ REALERT_AFTER_SEC = 6 * 3600
 # A remote census older than this is not evidence of anything: the host reads as blind, not calm.
 # 10x the producer's 30 s refresh, so one late heartbeat or equilibrium tick is not a card.
 REMOTE_CENSUS_STALE_SEC = 300
+# A read_at further in the future than this is clock skew, not a fresh reading. (A remote clock
+# more than REMOTE_CENSUS_STALE_SEC behind reads blind: loud, and the card shows the age.)
+CLOCK_SKEW_TOLERANCE_SEC = 60
 
 
 @dataclass(frozen=True)
@@ -130,24 +133,38 @@ def remote_restart_counts(
     counts: dict[str, int] = {}
     fresh: dict[str, float] = {}
     last_seen: dict[str, tuple[float, str, str | None]] = {}  # host -> (age, reporter, error)
+    best: dict[str, tuple[float, dict[str, int]]] = {}  # host -> freshest usable (age, counts)
     for svc in services:
         host = str(getattr(svc, "node", None) or "")
         details = getattr(svc, "details", None) or {}
         raw = details.get(CONTAINER_RESTARTS_DETAIL_KEY) if isinstance(details, dict) else None
         if not host or host == local_node or raw is None:
             continue
+        reporter = str(getattr(svc, "service", "?"))
         try:
-            reading = ContainerRestartsV1.model_validate(raw)
-        except ValidationError:
+            # Unknown fields are dropped first: the model forbids extras, and a newer producer
+            # adding one must not blind an older guardian.
+            known = {k: v for k, v in raw.items() if k in ContainerRestartsV1.model_fields} if isinstance(raw, dict) else raw
+            reading = ContainerRestartsV1.model_validate(known)
+        except ValidationError as exc:
+            last_seen.setdefault(host, (float("inf"), reporter, f"malformed census: {exc.errors()[0]['msg']}"))
             continue
         age = now - reading.read_at.timestamp()
-        reporter = str(getattr(svc, "service", "?"))
+        error = reading.error
+        if error is None and age < -CLOCK_SKEW_TOLERANCE_SEC:
+            # read_at in the future: the hosts' clocks disagree, so age means nothing.
+            error = f"census read_at is {-age:.0f}s in the future (clock skew between {host} and this host)"
         prev = last_seen.get(host)
         if prev is None or age < prev[0]:
-            last_seen[host] = (age, reporter, reading.error)
-        if reading.error is None and age <= stale_after_sec:
-            counts.update(qualify(host, reading.counts))
-            fresh[host] = min(age, fresh.get(host, age))
+            last_seen[host] = (age, reporter, error)
+        if error is None and age <= stale_after_sec:
+            # Freshest error-free reading per host wins outright: merging two reporters could let
+            # an older, lower count read as a container recreate and reset the loop history.
+            if host not in best or age < best[host][0]:
+                best[host] = (age, reading.counts)
+    for host, (age, host_counts) in best.items():
+        counts.update(qualify(host, host_counts))
+        fresh[host] = max(age, 0.0)
     alerts: list[StabilityAlert] = []
     if now - watching_since >= stale_after_sec:
         for host in expected_hosts:
@@ -157,7 +174,8 @@ def remote_restart_counts(
             if seen is None:
                 why = "no container census from it has reached the equilibrium snapshot"
             elif seen[2] is not None:
-                why = f"its last census ({seen[1]}, {seen[0]:.0f}s ago) failed: {seen[2]}"
+                when = "" if seen[0] == float("inf") else f", {seen[0]:.0f}s ago"
+                why = f"its last census ({seen[1]}{when}) is unusable: {seen[2]}"
             else:
                 why = f"its newest census ({seen[1]}) is {seen[0] / 60:.0f} min old"
             alerts.append(
@@ -174,7 +192,7 @@ def remote_restart_counts(
                     ),
                     context={
                         "host": host,
-                        "last_census_age_sec": None if seen is None else int(seen[0]),
+                        "last_census_age_sec": None if seen is None or seen[0] == float("inf") else int(seen[0]),
                         "last_census_error": None if seen is None else seen[2],
                     },
                 )

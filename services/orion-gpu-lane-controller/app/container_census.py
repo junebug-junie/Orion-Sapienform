@@ -40,7 +40,7 @@ def parse_inspect(text: str) -> dict[str, int]:
 
 
 def read_restart_counts(runner: SafeCommandRunner) -> dict[str, int]:
-    listed = runner.run(["docker", "ps", "-aq", "--no-trunc"])
+    listed = runner.run(["docker", "ps", "-aq"])
     if listed.returncode != 0:
         raise RuntimeError(f"docker ps rc={listed.returncode}: {listed.stderr.strip()[:200]}")
     ids = listed.stdout.split()
@@ -79,7 +79,12 @@ async def census_loop(interval_sec: float, *, timeout_sec: float = 30.0) -> None
     runner = SafeCommandRunner(allowed_commands={"docker"}, timeout_sec=timeout_sec)
     first = True
     while True:
-        result = await asyncio.to_thread(refresh, runner)
+        try:
+            result = await asyncio.to_thread(refresh, runner)
+        except Exception as exc:  # noqa: BLE001 -- refresh never raises; keep the loop alive regardless
+            logger.warning(f"[HOST] container_census_loop_error error={exc!r}")
+            await asyncio.sleep(interval_sec)
+            continue
         if first:
             logger.info(
                 f"[HOST] container_census_first_read containers={len(result.counts)} error={result.error}"

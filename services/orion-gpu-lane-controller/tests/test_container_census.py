@@ -48,7 +48,7 @@ def test_parse_inspect_keys_by_name_and_short_id():
 def test_read_is_read_only_ps_then_inspect():
     runner = _Runner([(0, "aaa\nbbb\n", ""), (0, "aaa111111111 /x 3\nbbb222222222 /y 0\n", "")])
     assert census.read_restart_counts(runner) == {"x@aaa111111111": 3, "y@bbb222222222": 0}
-    assert runner.calls[0] == ["docker", "ps", "-aq", "--no-trunc"]
+    assert runner.calls[0] == ["docker", "ps", "-aq"]
     assert runner.calls[1][:4] == ["docker", "inspect", "--format", census.INSPECT_FORMAT]
     assert runner.calls[1][4:] == ["aaa", "bbb"]
 
@@ -91,3 +91,30 @@ def test_census_ships_on_and_rides_the_actuator_heartbeat(monkeypatch):
     assert hunter._heartbeat_details is main_module.container_census.heartbeat_details
     monkeypatch.setattr(main_module.settings, "GPU_LANE_CONTAINER_CENSUS_ENABLED", False)
     assert main_module.build_actuator_chassis()._heartbeat_details is None
+
+
+def test_census_loop_keeps_reading_after_an_error(monkeypatch):
+    import asyncio
+
+    calls = []
+
+    def fake_refresh(runner):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+        return ContainerRestartsV1(read_at=NOW)
+
+    monkeypatch.setattr(census, "refresh", fake_refresh)
+
+    async def run():
+        task = asyncio.create_task(census.census_loop(0.0))
+        while len(calls) < 3:
+            await asyncio.sleep(0)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(asyncio.wait_for(run(), timeout=5))
+    assert len(calls) >= 3

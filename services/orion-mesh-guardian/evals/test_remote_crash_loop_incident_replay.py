@@ -9,10 +9,11 @@ The restart cadence is replayed two ways, because the two numbers we have disagr
 report says "every ~22 s", while 601 restarts over 235.45 h averages one per ~23.5 min. The slow
 cadence is the conservative case (fewest restarts per window), so it bounds time-to-card.
 
-The path replayed is the real one: circe's gpu-lane-controller reads RestartCount every 30 s
-(ContainerRestartsV1 on its heartbeat) -> the equilibrium snapshot carries that heartbeat's details
--> the guardian's 60 s stability cycle reads the latest snapshot. Each hop's lag is modelled by the
-age of the reading the guardian sees (census age up to 30 s + snapshot 15 s).
+Each tick's input runs through the real code at every hop: the controller's own census module
+(parse of `docker inspect` output, heartbeat hook) -> SystemHealthV1 JSON -> equilibrium's
+EquilibriumServiceState -> EquilibriumSnapshotV1 parsed from JSON -> the guardian's
+remote_restart_counts + CrashLoopTracker + AlertGate. Docker itself and the bus are stubbed. Timing
+is modelled: census every 30 s, ~15 s equilibrium lag, 60 s guardian cycle.
 
 Measures: cycles until the first crash_loop card on the circe-qualified key, that it lands within
 one CRASH_LOOP_WINDOW_SEC, how many cards the whole 9.8 days would have raised (AlertGate), that the
@@ -20,8 +21,12 @@ healthy baseline is silent, and that circe going silent mid-incident is a blind 
 """
 from __future__ import annotations
 
+import importlib.util
+import subprocess
+import sys
+import types
 from datetime import datetime, timezone
-from types import SimpleNamespace
+from pathlib import Path
 
 from app.stability import (
     CRASH_LOOP_WINDOW_SEC,
@@ -30,7 +35,33 @@ from app.stability import (
     qualify,
     remote_restart_counts,
 )
-from orion.schemas.telemetry.system_health import CONTAINER_RESTARTS_DETAIL_KEY
+from orion.schemas.telemetry.system_health import (
+    EquilibriumServiceState,
+    EquilibriumSnapshotV1,
+    SystemHealthV1,
+)
+
+
+def _load_controller_census():
+    """The producer's real module (circe's gpu-lane-controller), under its own package name so its
+    ``app`` never collides with this service's ``app``."""
+    svc = Path(__file__).resolve().parents[2] / "orion-gpu-lane-controller"
+    for name, path in (("_glc", svc), ("_glc.app", svc / "app")):
+        if name not in sys.modules:
+            pkg = types.ModuleType(name)
+            pkg.__path__ = [str(path)]
+            sys.modules[name] = pkg
+    out = {}
+    for mod in ("settings", "compose", "container_census"):
+        spec = importlib.util.spec_from_file_location(f"_glc.app.{mod}", svc / "app" / f"{mod}.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        out[mod] = module
+    return out["container_census"]
+
+
+census = _load_controller_census()
 
 T0 = datetime(2026, 10, 14, 3, 0, tzinfo=timezone.utc).timestamp()
 STOPPED = datetime(2026, 10, 23, 22, 27, tzinfo=timezone.utc).timestamp()
@@ -43,18 +74,43 @@ SLOW_GAP = (STOPPED - T0) / TOTAL_RESTARTS  # ~1410 s
 FAST_GAP = 22.0
 
 
-def _snapshot(now: float, count: int, *, frozen_at: float | None = None) -> SimpleNamespace:
-    """What the guardian sees at ``now``: the newest census, CENSUS_EVERY-quantized, SNAPSHOT_LAG late.
-    ``frozen_at``: the reporter stopped heartbeating then; equilibrium keeps serving its last
-    record (and that record's details) until retention purges it, so the reading just ages."""
+def _snapshot(now: float, count: int, *, frozen_at: float | None = None) -> EquilibriumSnapshotV1:
+    """What the guardian sees at ``now``, built through every real serialization hop: the
+    controller's own ``parse_inspect`` + ``heartbeat_details`` -> ``SystemHealthV1`` (JSON) ->
+    equilibrium's ``EquilibriumServiceState`` -> ``EquilibriumSnapshotV1.model_validate`` of the
+    JSON (what ``equilibrium_watch`` does). Readings are CENSUS_EVERY-quantized and SNAPSHOT_LAG
+    late. ``frozen_at``: the reporter stopped heartbeating then; equilibrium keeps serving its
+    last record (and its details) until retention purges it, so the reading just ages."""
     read_at = (now - SNAPSHOT_LAG) // CENSUS_EVERY * CENSUS_EVERY
     if frozen_at is not None:
         read_at = min(read_at, (frozen_at - SNAPSHOT_LAG) // CENSUS_EVERY * CENSUS_EVERY)
-    details = {CONTAINER_RESTARTS_DETAIL_KEY: {
-        "read_at": datetime.fromtimestamp(read_at, tz=timezone.utc).isoformat(),
-        "counts": {KEY: count, "orion-circe-biometrics@aaaaaaaaaaaa": 2},
-    }}
-    return SimpleNamespace(services=[SimpleNamespace(service="gpu-lane-controller", node="circe", details=details)])
+    inspect_out = f"{KEY.split('@')[1]}ffff /{KEY.split('@')[0]} {count}\naaaaaaaaaaaa /orion-circe-biometrics 2\n"
+    census.refresh(_InspectOnly(inspect_out), now=lambda: datetime.fromtimestamp(read_at, tz=timezone.utc))
+    hb = SystemHealthV1(
+        service="gpu-lane-controller", node="circe", boot_id="b",
+        last_seen_ts=datetime.fromtimestamp(read_at, tz=timezone.utc), details=census.heartbeat_details(),
+    ).model_dump(mode="json")
+    state = EquilibriumServiceState(
+        service=hb["service"], node=hb["node"], status="ok", last_seen_ts=hb["last_seen_ts"],
+        heartbeat_interval_sec=10.0, down_for_ms=0, details=hb["details"],
+    )
+    snap = EquilibriumSnapshotV1(
+        source_service="equilibrium", producer_boot_id="p", generated_at=datetime.fromtimestamp(now, tz=timezone.utc),
+        grace_multiplier=3.0, windows_sec=[60], services=[state],
+    )
+    return EquilibriumSnapshotV1.model_validate(snap.model_dump(mode="json"))
+
+
+class _InspectOnly:
+    """The controller's command runner, answering ``docker ps`` and ``docker inspect``."""
+
+    def __init__(self, inspect_out: str) -> None:
+        self.inspect_out = inspect_out
+
+    def run(self, command, **_):
+        if command[:2] == ["docker", "ps"]:
+            return subprocess.CompletedProcess(command, 0, "x\ny\n", "")
+        return subprocess.CompletedProcess(command, 0, self.inspect_out, "")
 
 
 def _replay(*, gap: float | None, cycles: int, silent_from: int | None = None) -> dict:

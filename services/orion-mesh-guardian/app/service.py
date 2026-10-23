@@ -412,6 +412,8 @@ class MeshGuardianService:
         snapshot, all host-qualified ("<host>/<name>@<id12>") into one tracker. Either source
         failing must not blind the other: a dead local socket still lets circe through, and a
         blind remote host is its own card, never zero restarts."""
+        if self._stability_started_at is None:
+            self._stability_started_at = now
         local = self._local_node()
         counts: dict[str, int] = {}
         info: dict[str, object] = {}
@@ -429,7 +431,7 @@ class MeshGuardianService:
                 expected_hosts=self.settings.remote_container_host_list(),
                 local_node=local,
                 now=now,
-                watching_since=self._stability_started_at if self._stability_started_at is not None else now,
+                watching_since=self._stability_started_at,
                 stale_after_sec=self.settings.remote_container_stale_sec,
             )
             counts.update(census.counts)

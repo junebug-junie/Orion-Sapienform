@@ -124,7 +124,7 @@ Keys: `GPU_POOL_ACTUATOR_NAME`, `GPU_POOL_FENCE_STATE_PATH`, `GPU_LANE_DRAIN_TIM
 ## Container restart census (for the mesh guardian)
 
 Every `GPU_LANE_CONTAINER_CENSUS_INTERVAL_SEC` (30) this controller reads `RestartCount` of every
-container on circe (read-only: `docker ps -aq --no-trunc`, then `docker inspect`) and carries the
+container on circe (read-only: `docker ps -aq`, then `docker inspect`) and carries the
 last read on its heartbeat as `details["container_restarts"]` (`ContainerRestartsV1`). orion-mesh-guardian
 on athena reads it from the equilibrium snapshot and raises `crash_loop:circe/<container>` cards.
 A failed read is published as `error` with empty counts (the guardian says "blind", not "calm").

@@ -96,6 +96,33 @@ class TestRemoteCensus:
         ])
         assert "new" in got.alerts[0].message and "other" in got.alerts[0].message
 
+    def test_two_reporters_on_one_host_freshest_wins_no_merge(self) -> None:
+        got = _census([
+            _svc("circe", {"w@1": 9}, read_at=T0 - 10),
+            _svc("circe", {"w@1": 7}, read_at=T0 - 40, service="other"),  # older, lower: must not win
+        ])
+        assert got.counts == {"circe/w@1": 9}
+
+    def test_newer_producer_field_is_ignored_not_blinding(self) -> None:
+        svc = _svc("circe", {"w@1": 2}, read_at=T0 - 5)
+        svc.details[CONTAINER_RESTARTS_DETAIL_KEY]["host_uptime_s"] = 123
+        got = _census([svc])
+        assert got.counts == {"circe/w@1": 2} and got.alerts == []
+
+    def test_malformed_census_card_says_malformed(self) -> None:
+        svc = SimpleNamespace(service="x", node="circe", details={CONTAINER_RESTARTS_DETAIL_KEY: {"read_at": "no"}})
+        got = _census([svc])
+        assert "malformed census" in got.alerts[0].message
+        assert got.alerts[0].context["last_census_age_sec"] is None
+
+    def test_future_read_at_is_clock_skew_not_fresh(self) -> None:
+        got = _census([_svc("circe", {"w@1": 2}, read_at=T0 + 600)])
+        assert got.counts == {}
+        assert "clock skew" in got.alerts[0].message
+
+    def test_small_future_read_at_is_tolerated(self) -> None:
+        assert _census([_svc("circe", {"w@1": 2}, read_at=T0 + 20)]).counts == {"circe/w@1": 2}
+
 
 class TestTrackerScope:
     def test_unread_host_keeps_its_history(self) -> None:
@@ -149,7 +176,9 @@ class TestServiceCrashLoopCheck:
 
     def test_blind_circe_is_a_card_through_the_full_cycle(self, monkeypatch) -> None:
         guardian = _guardian(monkeypatch, {"orion-athena-hub@1": 0})
-        guardian._stability_started_at = T0 - REMOTE_CENSUS_STALE_SEC
+        guardian.latest_snapshot = SimpleNamespace(services=[])
+        first, _ = asyncio.run(guardian._check_crash_loops(T0 - REMOTE_CENSUS_STALE_SEC))
+        assert first == []  # boot grace, started by the check itself
         guardian.latest_snapshot = SimpleNamespace(services=[])
         alerts, info = asyncio.run(guardian._check_crash_loops(T0))
         assert [(a.kind, a.subject) for a in alerts] == [("container_watch_blind", "circe")]

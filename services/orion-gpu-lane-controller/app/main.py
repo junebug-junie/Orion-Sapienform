@@ -91,7 +91,7 @@ async def lifespan(app: FastAPI):
     yield
     if census_task is not None:
         census_task.cancel()
-        with suppress(asyncio.CancelledError):
+        with suppress(asyncio.CancelledError, Exception):  # never skip the bus cleanup below
             await census_task
     if bus_task is not None:
         bus_task.cancel()

@@ -350,19 +350,36 @@ Patch A puts every producer into `grammar_acts` first, and Patch D cuts over a f
 
 **Job.** Decide how much one kind of want matters relative to another, for example vision against a curiosity run. A hand-written table would be the deleted `signal_drive_map.yaml` again. Pure emergence from nothing would reward whatever already ran most. This design uses a little authored structure plus learned weights.
 
-**Part 1: tiers, authored once (structure, not numbers).**
+**Part 1: tiers, authored once (structure, not numbers). Decided by Juniper 10-23.**
+
+**Tiers attach to callers (routes and processes), not to GPU lanes.** Lanes mix critical and optional work. The `metacog` (:8012) and `fast` (:8013) lanes share **one card, circe gpu3**. Here is what used them over the 7 days to 10-23 (`gpu_pool_events`, plus the services' `.env` routes):
+
+| lane | caller (route, priority) | 7-day use | what it does | tier |
+|---|---|---|---|---|
+| metacog | vision-council (`metacog_background`, background) | 19,584 grants, 33.1 GPU-h; **25,430 refused by `shed:cabinet_hot`** | scene interpretation of camera windows | **0** (vision) |
+| metacog | orion-mind (`metacog_turn`, interactive) | 351 grants | Hub turn model, on Juniper's critical path | **0** (Juniper's turn) |
+| metacog | orion-mind stance / appraisal / semantic (`metacog`, system) | 605 grants | Mind's per-turn reads; whether all of them sit on the turn path is `UNVERIFIED` | **1**, or 0 if on the turn path |
+| metacog | cortex-exec (`metacog`, system; daily metacog/journal on `metacog_background`) | 2,488 grants, 2.9 GPU-h | metacog mode, daily metacog draft | **1** |
+| metacog | orion-actions (`metacog`), dream (`metacog_background`), memory-consolidation turn-change classify (background) | 22–24 grants each | actions, dream narration, memory upkeep | **1** |
+| fast | cortex-exec (`quick`, system) | 414 grants | chat stance brief / quick single-pass / introspect / repair-pressure probe (`executor.py:2223`). The route table says no live-turn caller sends `quick`; the code comment says chat_general does. **Which is live is `UNVERIFIED`** | **0** if on the turn path, else **1** |
+| fast | Hub memory-graph suggest, embodiment speech (`quick`), cortex-orch memory annotation (`quick_background`), actions journal | small | upkeep and speech | **1** |
+| fast | orion-topic-foundry (`quick`, system) | **9,740 grants, 23.8 GPU-h**, the largest user of the fast lane | clustering and labelling (Self Atlas, drift) | **2** |
+| fast | gateway default (`LLM_ROUTE_DEFAULT=quick`) | anything unrouted | catch-all | **must be eliminated**: an unrouted caller has no tier. The Phase 2 gate fails any caller without an explicit route |
+
+**The tiers:**
 
 | tier | contents | how it is funded |
 |---|---|---|
-| **0 vital** | Juniper's turns; safety reflexes | Never enters the economy |
-| **1 perception and upkeep** | vision, biometrics, memory consolidation, the dream's rest, act-ledger grading | Gets a **reserved share** of each constraint first. It bids only against other Tier 1 wants |
-| **2 discretionary** | curiosity, painting, reading, retro play, metacog runs, outreach, ask-Claude, topic-foundry | The open market, on whatever Tier 1 leaves |
+| **0 vital, never deferred by the economy** | Juniper's turns (including every turn-path call above); **vision and the perception pipeline**: retinas (cam, walkway, doorbell), vision-edge, frame-router, vision-host / host-qwen, vision-window, vision-scribe, vision-council, percept-store. These are Orion's primary sense and connection to the world; safety reflexes | Never priced or deferred. Tier 0 acts still record cost in the act ledger, so the bill and the Hub stay honest |
+| **1 critical upkeep** | metacog-lane and fast-lane upkeep callers above (Mind's non-turn reads, metacog/journal, actions, memory consolidation and annotation, embodiment speech), biometrics, the dream's rest, act-ledger grading | A **reserved share** of each constraint, gpu3 slot-time first, sized as the 75th percentile of its own 14-day use and capped at 50%. Bids only against other Tier 1 wants |
+| **2 discretionary** | curiosity, painting, reading, retro play, outreach, ask-Claude, topic-foundry, durable investigation runs | Open market, on whatever Tiers 0 and 1 leave. topic-foundry, today the largest user of gpu3, moves here |
 
-**The reserved share is sized from data, not set by hand:**
-- the 75th percentile of Tier 1's own 14-day use of that constraint;
-- capped at 50% of the budget, so Tier 2 is never starved out completely.
+**Tier 0 does not get vision past the heat reflex.** In the 7 days to 10-23, vision-council was refused **25,430 times** by `shed:cabinet_hot`. The reflex sheds by priority class, and council runs at `background`. So during the heat Orion was effectively not interpreting what it saw, and no economy setting changes that. Making vision truly vital needs a change to the reflex's class rules. That is Juniper's call (missing question 9):
 
-The spinal cord still overrides Tier 1. Vision-council is background-class GPU work, so the 34 °C reflex still sheds it. *Default chosen 10-23; Juniper may instead put Tier 1 in the open market with only a higher prior (missing question 8).*
+- Option: council moves to a new `perception` priority that the reflex sheds only at a higher line, or never.
+- Its load is known: ~33 GPU-h a week on gpu3, a V100 at roughly 40–190 W.
+
+**Placement consequence for gpu3.** Tiers 0 and 1 together own most of gpu3's useful work. Tier 2 callers (topic-foundry) get gpu3 only from what Tiers 0 and 1 leave, or are placed on another lane by Choice.
 
 **Part 2: learned weights inside each tier.** Each family's weight is a shrinkage estimate. It starts at a prior and moves toward the family's evidence as acts accumulate:
 
@@ -512,7 +529,9 @@ placement = the acceptable lane minimizing Σ price × cost
 
    The reflex line itself does not move in either option. Recommendation: (b). Do not build it until Patch A's sensitivity estimate exists. If circe turns out to heat the cabinet, (b) is off the table.
 7. **Human sign-off on protected paths (Phase 2).** Do you want a real GitHub `CODEOWNERS` file plus branch protection that requires *your* approval on body-economy paths? Or only the CI gate described in Phase 2? CODEOWNERS only blocks merges if branch protection's "require review from code owners" is switched on, and that is a repo setting only you can change.
-8. **Tier 1 funding (Organ 3b).** Default: perception and upkeep (vision, biometrics, consolidation, dream rest) get a reserved share, sized from their own use and capped at 50%. Alternative: they compete in the open market with only a higher prior. Which do you want?
+8. ~~Tier 1 funding~~ **Decided 10-23:** vision and perception are Tier 0. Metacog- and fast-lane upkeep callers are Tier 1, with a reserved share. Tiers attach to callers, not lanes.
+9. **Vision past the heat reflex.** Should vision-council (and any GPU-using perception step) get a priority the 34 °C reflex does not shed, for example a new `perception` class? Without that, vision being Tier 0 still goes dark in heat, as it did 25,430 times in the last week.
+10. **Turn-path calls on `quick` and `metacog` system.** Patch A verifies live whether cortex-exec's `quick` stance brief and Mind's system-priority reads sit on Juniper's turn path. If they do, they are Tier 0, and they should be on interactive routes, which the reflex never sheds.
 
 ---
 

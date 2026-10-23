@@ -398,14 +398,17 @@ class PostgresStore:
         ``body`` narrows the situation and place levels only (the skill level pools every body).
         ``combos`` adds each distinct (domain, skill, context, place) that has a place (for /live)."""
         parts, args = [], []
-        where = [_SETTLED]
+        # Skill and situation levels weigh each place as one unit (1/n per bet), see action_bets.py.
+        weighted = ("(SELECT *, CASE WHEN place IS NULL THEN 1.0 ELSE 1.0 / count(*) OVER (PARTITION BY domain, place) "
+                    f"END AS w FROM prediction_action_bet WHERE {_SETTLED}) AS weighted")
+        wsum = ("COALESCE(sum(w) FILTER (WHERE result = 'success'), 0) AS successes, "
+                "COALESCE(sum(w) FILTER (WHERE result = 'failure'), 0) AS failures")
+        where = ["TRUE"]
         if skills is not None:
             where.append("skill = ANY(%s)")
             args.append(list(skills))
         parts.append("SELECT 'skill' AS level, skill, NULL::text AS domain, NULL::jsonb AS context, NULL::text AS place, "
-                     "count(*) FILTER (WHERE result = 'success') AS successes, "
-                     "count(*) FILTER (WHERE result = 'failure') AS failures "
-                     f"FROM prediction_action_bet WHERE {' AND '.join(where)} GROUP BY skill")
+                     f"{wsum} FROM {weighted} WHERE {' AND '.join(where)} GROUP BY skill")
         scope, scope_args = [_SETTLED], []
         if domain is not None:
             scope.append("domain = %s")
@@ -419,8 +422,7 @@ class PostgresStore:
             sit.append("skill = ANY(%s)")
             sit_args.append(list(skills))
         parts.append("SELECT 'situation', skill, domain, context, NULL::text, "
-                     "count(*) FILTER (WHERE result = 'success'), count(*) FILTER (WHERE result = 'failure') "
-                     f"FROM prediction_action_bet WHERE {' AND '.join(sit)} GROUP BY skill, domain, context")
+                     f"{wsum} FROM {weighted} WHERE {' AND '.join(sit)} GROUP BY skill, domain, context")
         args += sit_args
         if places is None or places:
             pl = list(scope) + ["place IS NOT NULL"]
@@ -429,11 +431,12 @@ class PostgresStore:
                 pl.append("place = ANY(%s)")
                 pl_args.append(list(places))
             parts.append("SELECT 'place', NULL::text, domain, NULL::jsonb, place, "
-                         "count(*) FILTER (WHERE result = 'success'), count(*) FILTER (WHERE result = 'failure') "
+                         "(count(*) FILTER (WHERE result = 'success'))::numeric, "
+                         "(count(*) FILTER (WHERE result = 'failure'))::numeric "
                          f"FROM prediction_action_bet WHERE {' AND '.join(pl)} GROUP BY domain, place")
             args += pl_args
             if combos:
-                parts.append("SELECT 'combo', skill, domain, context, place, 0::bigint, 0::bigint "
+                parts.append("SELECT 'combo', skill, domain, context, place, 0::numeric, 0::numeric "
                              f"FROM prediction_action_bet WHERE {' AND '.join(pl)} GROUP BY skill, domain, context, place")
                 args += pl_args
         return self._all(" UNION ALL ".join(parts), args)

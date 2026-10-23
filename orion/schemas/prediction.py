@@ -99,8 +99,10 @@ class ActionBetCountsV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     level: ActionBetLevel
-    successes: int = Field(..., ge=0)
-    failures: int = Field(..., ge=0)
+    # Above the place level each place counts as ONE unit (its bets weigh 1/n each), so one stubborn
+    # wall cannot teach a body that a whole skill fails: these may be fractional there.
+    successes: float = Field(..., ge=0)
+    failures: float = Field(..., ge=0)
 
 
 class ActionBetQuoteV1(BaseModel):

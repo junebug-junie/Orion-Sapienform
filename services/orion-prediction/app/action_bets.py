@@ -7,7 +7,9 @@ The service only sees opaque strings (skill, context values, place). What a skil
 succeeded is the body adapter's business.
 
 Served model ``action_beta_backoff``: Beta-Bernoulli with empirical-Bayes backoff over settled
-success/failure bets (void never counts), strength K = 4:
+success/failure bets (void never counts), strength K = 4. At the skill and situation levels each place
+counts as ONE unit (each of its n bets weighs 1/n; a bet without a place weighs 1): live 2026-10-23,
+seven failed walks into one wall made every untried exit read 0.20 under raw pooled counts.
 
     skill      Beta(1 + s, 1 + f)                            pooled over every domain and body
     situation  Beta(K p_skill + s, K (1 - p_skill) + f)      same domain, same skill, exact context
@@ -74,7 +76,7 @@ def beta_interval80(a: float, b: float) -> tuple[float, float]:
 def _sf(c: dict | None) -> tuple[int, int]:
     if not c:
         return 0, 0
-    return int(c.get("successes", 0)), int(c.get("failures", 0))
+    return float(c.get("successes", 0)), float(c.get("failures", 0))
 
 
 def backoff(skill: dict | None, situation: dict | None, place: dict | None, *, has_place: bool) -> dict:
@@ -174,7 +176,7 @@ def index_counts(rows: Iterable[dict]) -> dict:
     """Store count rows -> lookup dicts keyed (skill) / (domain, skill, context) / (domain, place)."""
     idx: dict[str, dict] = {"skill": {}, "situation": {}, "place": {}}
     for r in rows:
-        c = {"successes": int(r["successes"]), "failures": int(r["failures"])}
+        c = {"successes": float(r["successes"]), "failures": float(r["failures"])}
         if r["level"] == "skill":
             idx["skill"][r["skill"]] = c
         elif r["level"] == "situation":

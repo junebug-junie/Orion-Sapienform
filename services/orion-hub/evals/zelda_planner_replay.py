@@ -35,12 +35,25 @@ async def main(args) -> int:
                              LLM_GATEWAY_SERVICE_NAME='LLMGatewayService',
                              CHANNEL_LLM_INTAKE='orion:exec:request:LLMGatewayService')
     history = [fixture['decision']['previous']]
+    menu = None
+    if args.with_menu:
+        # The scored options the Hub would send after this session (action bets, offline counts
+        # replayed from the session's evidence through the real orion-prediction model).
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('zelda_experience_replay',
+                                                      HUB / 'evals/zelda_experience_replay.py')
+        replay = importlib.util.module_from_spec(spec); spec.loader.exec_module(replay)
+        counts, _, _ = replay.replay(json.loads(Path(args.session_fixture).read_text())['rows'])
+        options = replay.X.build_options(fixture['decision'], fixture['atlas'])
+        menu = replay.X.build_menu(options, counts.quotes(options)).for_planner()
+        print('menu:'); [print('  ' + m['line']) for m in menu]
     results = []
     for run in range(args.runs):
         try:
-            goal = await retro_planner.plan_zelda(config, fixture['decision'], fixture['atlas'], history)
+            goal = await retro_planner.plan_zelda(config, fixture['decision'], fixture['atlas'], history,
+                                                  **({'menu': menu} if menu else {}))
             bad = dead_move(goal['goal'], fixture['decision'])
-            results.append(dict(run=run, goal=goal['goal'], prediction=goal['prediction'], dead=bad,
+            results.append(dict(run=run, goal=goal['goal'], rank=goal.get('chosen_rank'), prediction=goal['prediction'], dead=bad,
                                 rationale=goal['rationale'][:200]))
         except retro_planner.PlannerError as exc:
             results.append(dict(run=run, refused=exc.reason, details=exc.details))
@@ -57,4 +70,6 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('--fixture', default=str(HUB / 'evals/fixtures/zelda_room119_south_wall.json'))
     p.add_argument('--runs', type=int, default=5)
+    p.add_argument('--with-menu', action='store_true', help='add the action-bet menu (offline counts)')
+    p.add_argument('--session-fixture', default=str(HUB / 'evals/fixtures/zelda_session_c6041e2d_goals.json'))
     sys.exit(asyncio.run(main(p.parse_args())))

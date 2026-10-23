@@ -250,8 +250,13 @@ def build_menu(options: list[Option], quotes: dict[str, ActionBetQuoteV1], size:
     return Menu(tuple(Entry(rank, o, quotes[o.option_id], s) for rank, (s, _, o) in enumerate(scored[:size], 1)))
 
 
-def _counts(quote: ActionBetQuoteV1) -> dict[str, tuple[int, int]]:
-    return {c.level: (c.successes, c.successes + c.failures) for c in quote.counts}
+def _n(x: float) -> str:
+    """Counts above the place level weigh each place as one unit, so they can be fractional."""
+    return f'{round(float(x), 1):g}'
+
+
+def _counts(quote: ActionBetQuoteV1) -> dict[str, tuple[str, str]]:
+    return {c.level: (_n(c.successes), _n(c.successes + c.failures)) for c in quote.counts}
 
 
 def counts_phrase(skill: str, quote: ActionBetQuoteV1) -> str:

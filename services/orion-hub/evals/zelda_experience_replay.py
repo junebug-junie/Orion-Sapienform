@@ -51,17 +51,25 @@ class Counts:
     """The settled-bet counts orion-prediction would read (void never counts)."""
 
     def __init__(self):
+        self.rows = []
         self.skill, self.situation, self.place = {}, {}, {}
 
     def add(self, skill, context, place, result):
         if result not in ('success', 'failure'):
             return
-        key = 'successes' if result == 'success' else 'failures'
-        for table, k in ((self.skill, skill), (self.situation, (skill, tuple(sorted(context.items())))),
-                         (self.place, place)):
-            if k is None:
-                continue
-            table.setdefault(k, {'successes': 0, 'failures': 0})[key] += 1
+        self.rows.append((skill, tuple(sorted(context.items())), place, result))
+        # Mirror services/orion-prediction/app/store.py: above the place level each place is ONE
+        # unit (each of its n bets weighs 1/n); the place level keeps raw counts.
+        n = {}
+        for _, _, pl, _ in self.rows:
+            if pl is not None: n[pl] = n.get(pl, 0) + 1
+        self.skill, self.situation, self.place = {}, {}, {}
+        for sk, ctx, pl, res in self.rows:
+            key = 'successes' if res == 'success' else 'failures'
+            w = 1.0 if pl is None else 1.0 / n[pl]
+            for table, k, inc in ((self.skill, sk, w), (self.situation, (sk, ctx), w), (self.place, pl, 1)):
+                if k is not None:
+                    table.setdefault(k, {'successes': 0, 'failures': 0})[key] += inc
 
     def quote(self, option):
         q = backoff(self.skill.get(option.skill), self.situation.get((option.skill, tuple(sorted(option.context.items())))),

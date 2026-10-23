@@ -25,18 +25,23 @@ class FakeStore:
         self.count_calls += 1
         agg: dict[tuple, dict] = {}
 
-        def add(key, r):
+        def add(key, r, w=1.0):
             c = agg.setdefault(key, {"successes": 0, "failures": 0})
-            c["successes" if r["result"] == "success" else "failures"] += 1
+            c["successes" if r["result"] == "success" else "failures"] += w
 
+        per_place: dict[tuple, int] = {}
+        for r in self.rows.values():
+            if r["result"] in SETTLED and r["place"] is not None:
+                per_place[(r["domain"], r["place"])] = per_place.get((r["domain"], r["place"]), 0) + 1
         for r in self.rows.values():
             if r["result"] not in SETTLED:
                 continue
+            w = 1.0 if r["place"] is None else 1.0 / per_place[(r["domain"], r["place"])]   # one unit per place
             if skills is None or r["skill"] in skills:
-                add(("skill", r["skill"], None, None, None), r)
+                add(("skill", r["skill"], None, None, None), r, w)
             in_scope = (domain is None or r["domain"] == domain) and (body is None or r["body"] == body)
             if in_scope and (skills is None or r["skill"] in skills):
-                add(("situation", r["skill"], r["domain"], tuple(sorted(r["context"].items())), None), r)
+                add(("situation", r["skill"], r["domain"], tuple(sorted(r["context"].items())), None), r, w)
             if in_scope and r["place"] is not None and (places is None or r["place"] in places):
                 add(("place", None, r["domain"], None, r["place"]), r)
                 if combos:
@@ -230,8 +235,9 @@ def test_skill_pools_across_domains_but_situation_and_place_do_not():
         bet(svc, result="failure", domain="aitown", body="aitown", context=ctx, place="P")
     q = svc.quote("retro:zelda", [{"option_id": "a", "skill": "traverse", "context": ctx, "place": "P"}])["quotes"][0]
     counts = {c["level"]: (c["successes"], c["failures"]) for c in q["counts"]}
-    assert counts == {"skill": (0, 4), "situation": (0, 0), "place": (0, 0)}
-    assert q["level"] == "skill" and q["p"] == pytest.approx(1 / 6) and q["p_baseline"] == pytest.approx(1 / 6)
+    # Four bets at one place count as ONE unit above the place level.
+    assert counts == {"skill": (0, 1), "situation": (0, 0), "place": (0, 0)}
+    assert q["level"] == "skill" and q["p"] == pytest.approx(1 / 3) and q["p_baseline"] == pytest.approx(1 / 3)
 
 
 def test_situation_needs_the_exact_context():
@@ -311,7 +317,7 @@ def test_live_view_lists_skills_situations_places_and_grading():
     out = svc.live("retro:zelda", None)
     assert [s["skill"] for s in out["skills"]] == ["traverse"]
     assert {(s["context"].get("side"), s["successes"], s["failures"]) for s in out["situations"]} == {
-        ("closed", 0, 5), ("open_unvisited", 1, 0)}
+        ("closed", 0, 1), ("open_unvisited", 1, 0)}                 # 5 bets at one place = one unit
     south = next(p for p in out["places"] if p["place"] == "zelda:0:119:S")
     west = next(p for p in out["places"] if p["place"] == "zelda:0:119:W")
     assert south["mean"] < 0.2 < west["mean"]
@@ -358,3 +364,18 @@ def test_http_quote_place_settle_list(client):
     live = c.get("/action-bets/live", params={"domain": "retro:zelda"}).json()
     assert live["grading"]["served"]["n"] == 1 and live["last_bets"][0]["bet_id"] == "retro:zelda:s1:15:9"
     assert live["places"][0]["place"] == "zelda:0:119:W"
+
+
+def test_one_stubborn_place_does_not_sink_the_whole_skill():
+    # Live 2026-10-23: seven failed walks into room 119's south wall made untried exits read 0.20.
+    svc, _ = make()
+    for i in range(7):
+        bet(svc, result="failure", place="zelda:0:119:S", context={"side": "unknown"}, session=f"s{i}")
+    bet(svc, result="success", place="zelda:0:103:S", context={"side": "unknown"})
+    q = svc.quote("retro:zelda", [{"option_id": "e", "skill": "traverse", "context": {"side": "unknown"},
+                                   "place": "zelda:0:119:E"},
+                                  {"option_id": "s", "skill": "traverse", "context": {"side": "unknown"},
+                                   "place": "zelda:0:119:S"}])["quotes"]
+    east, south = q
+    assert east["level"] == "situation" and east["p"] == pytest.approx(0.5)   # 1 of 2 places, not 1 of 8
+    assert south["level"] == "place" and south["p"] < 0.2

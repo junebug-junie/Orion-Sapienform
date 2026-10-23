@@ -114,6 +114,7 @@ CREATE INDEX IF NOT EXISTS prediction_action_bet_place ON prediction_action_bet 
   - skill: `Beta(1 + s, 1 + f)`, over all domains;
   - situation: `Beta(k·p_skill + s, k·(1 − p_skill) + f)`, within one domain, for the exact context;
   - place: `Beta(k·p_situation + s, k·(1 − p_situation) + f)`, within one domain.
+  - Above the place level each place counts as ONE unit: each of its n settled bets weighs 1/n (a bet without a place weighs 1), so counts there can be fractional. Without this, live 2026-10-23, seven failed walks into one wall made every untried exit read 0.20 and the real model chose `wait` 3 times in 5; with it, untried exits read 0.50 and the model chose the top exit 5 times in 5.
   - `p` is the mean of the deepest level with at least one settled row. Without data the result is `prior` with p = 0.5. The response also carries an 80 % interval from the Beta quantiles (`scipy.stats.beta`; scipy 1.18.1 is already pinned in `requirements.txt`, and digamma comes from `scipy.special`).
 - `action_skill_rate`, the baseline: the skill-level mean only. Stored on every bet as `p_baseline`.
 - **Expected learning**, returned with each quote: EIG (expected information gain), the mutual information between the next outcome and the rate at the deepest level. That is H(mean) − E[H(θ)], via `scipy.special.digamma`. Hand-checked: 0.193 nats at `Beta(1,1)`, 0.022 at `Beta(11,11)`, 0.020 at `Beta(21,3)`.

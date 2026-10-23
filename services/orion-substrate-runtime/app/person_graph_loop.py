@@ -12,15 +12,20 @@ person. This clocked pass puts that in the substrate graph without matching name
   ``provisional``), applied by AssertionProjector as a ``semantic_projection`` edge;
 - a claim with no active link left (the link was revoked by a rename or a cleared name,
   or the person became ``not_a_person``) gets a decision to ``deprecated``: its edge is
-  closed and stops walking. Nothing is deleted.
+  closed and stops walking. Nothing is deleted;
+- a minted person node with no active link left (renamed, taken over by a people.yaml
+  person, or ``not_a_person``) is re-written as ``deprecated``;
+- a claim the journal says was applied but whose Assertion is missing from the graph (a
+  wiped or rebuilt store) is replayed from the journal. A claim whose last attempt failed
+  for a terminal reason is counted as ``stuck``: it needs a human, no retry will fix it.
 
 The "different people" guard and the person-kinds-only rule live in record.py and are not
 repeated here. Day sighting links stay on the clusters (app/walkway_seen_loop.py).
 A claim waits until both endpoint nodes exist (a cluster gets its node when the interlocutor
 names it, app/ask_answered_listener.py), so the projector never fails on a missing endpoint.
 
-Trace: ``person_graph synced persons=... nodes_written=... claims=... retired=...
-waiting=... applied=... failed=...``. Fail-open: an error is logged; the loop keeps going.
+Trace: ``person_graph synced persons=... nodes_written=... nodes_retired=... claims=...
+retired=... waiting=... replayed=... stuck=... applied=... held=... failed=...``. Fail-open: an error is logged; the loop keeps going.
 Kill switch: PERSON_GRAPH_ENABLED=false.
 """
 
@@ -69,10 +74,14 @@ class LinkRow:
 class SyncReport:
     persons: int = 0
     nodes_written: int = 0
+    nodes_retired: int = 0
     claims: int = 0
     retired: int = 0
     waiting: int = 0
+    replayed: int = 0
+    stuck: int = 0
     applied: int = 0
+    held: int = 0             # decisions waiting behind an earlier revision of their target
     failed: dict[str, str] = field(default_factory=dict)
 
 
@@ -84,12 +93,12 @@ def _decision_id(target: str, prior: int, state: str) -> str:
     return str(uuid.uuid5(_NAMESPACE, f"{target}|{prior}|{state}"))
 
 
-def person_node(p: PersonRow, *, now: datetime) -> Any:
+def person_node(p: PersonRow, *, now: datetime, state: str = "provisional") -> Any:
     from orion.core.schemas.cognitive_substrate import EntityNodeV1, SubstrateProvenanceV1, SubstrateTemporalWindowV1
 
     return EntityNodeV1(
         node_id=p.person_id, label=" ".join(p.display_name.split()), entity_type="person", anchor_scope="world",
-        subject_ref=f"person:{p.person_id}", promotion_state="provisional",
+        subject_ref=f"person:{p.person_id}", promotion_state=state,
         temporal=SubstrateTemporalWindowV1(observed_at=now, valid_from=p.created_at or now),
         provenance=SubstrateProvenanceV1(authority="user_asserted", source_kind=SOURCE_KIND,
                                          source_channel="person", producer=PRODUCER,
@@ -125,7 +134,9 @@ def plan_events(*, persons: list[PersonRow], links: list[LinkRow], latest: dict[
         if not (has_node(cluster) and has_node(link.person_id)):
             waiting += 1
             continue
-        proposal_id = str(uuid.uuid5(_NAMESPACE, key))
+        revision = prior.resulting_revision if prior is not None else 0
+        # One proposal per acceptance: a re-accepted claim gets its own valid_from and text.
+        proposal_id = str(uuid.uuid5(_NAMESPACE, f"{key}|{revision}"))
         events.append(SubstrateGraphProposalV1(
             proposal_id=proposal_id, proposal_kind="relationship_assertion", target_id=target, actor=PRODUCER,
             subject_node_id=cluster, subject_kind="entity", object_node_id=link.person_id, object_kind="entity",
@@ -134,7 +145,6 @@ def plan_events(*, persons: list[PersonRow], links: list[LinkRow], latest: dict[
             anchor_scope="world", subject_ref=f"vision_individual:{link.individual_id}",
             authority="user_asserted", recorded_at=now,
         ))
-        revision = prior.resulting_revision if prior is not None else 0
         events.append(SubstrateGraphDecisionV1(
             proposal_id=proposal_id, proposal_kind="relationship_assertion", target_id=target, actor=PRODUCER,
             decision_id=_decision_id(target, revision, "provisional"), expected_prior_revision=revision,
@@ -168,30 +178,62 @@ async def sync_person_graph(*, persons: list[PersonRow], links: list[LinkRow], j
     ts = now or datetime.now(timezone.utc)
     report = SyncReport(persons=len(persons))
     materializer = SubstrateGraphMaterializer(store=store, identity_resolver=SubstrateIdentityResolver(store=store))
+    linked = {link.person_id for link in links}
     for p in persons:
-        if p.status == "not_a_person" or not p.person_id.startswith(MINTED_PREFIX):
+        if not p.person_id.startswith(MINTED_PREFIX):
             continue
+        live = p.status != "not_a_person" and p.person_id in linked
         existing = await asyncio.to_thread(store.get_node_by_id, p.person_id)
-        node = person_node(p, now=ts)
-        if existing is not None and getattr(existing, "label", None) == node.label:
+        if existing is None and not live:
+            continue
+        node = person_node(p, now=ts, state="provisional" if live else "deprecated")
+        if existing is not None and (getattr(existing, "label", None), existing.promotion_state) == (
+                node.label, node.promotion_state):
             continue
         await asyncio.to_thread(materializer.apply_record,
                                 SubstrateGraphRecordV1(anchor_scope="world", subject_ref=node.subject_ref, nodes=[node]))
-        report.nodes_written += 1
+        if live:
+            report.nodes_written += 1
+        else:
+            report.nodes_retired += 1
     latest = await journal.latest_decisions(PRODUCER)
     events, report.claims, report.retired, report.waiting = plan_events(
         persons=persons, links=links, latest=latest, has_node=lambda nid: store.get_node_by_id(nid) is not None,
         now=ts)
     for event in events:
         await journal.append(event)
+    await _recover(latest, journal=journal, store=store, projector=projector, report=report)
     result = await projector.run_once()
-    report.applied, report.failed = len(result.applied), dict(result.failed)
+    report.applied, report.held, report.failed = len(result.applied), len(result.waiting), dict(result.failed)
     if result.blocked is not None:
         report.failed["readers_not_ready"] = result.blocked.reason
-    logger.info("person_graph synced persons=%d nodes_written=%d claims=%d retired=%d waiting=%d applied=%d failed=%s",
-                report.persons, report.nodes_written, report.claims, report.retired, report.waiting,
-                report.applied, report.failed)
+    logger.info("person_graph synced persons=%d nodes_written=%d nodes_retired=%d claims=%d retired=%d waiting=%d "
+                "replayed=%d stuck=%d applied=%d held=%d failed=%s",
+                report.persons, report.nodes_written, report.nodes_retired, report.claims, report.retired,
+                report.waiting, report.replayed, report.stuck, report.applied, report.held, report.failed)
     return report
+
+
+async def _recover(latest: dict[str, Any], *, journal: Any, store: Any, projector: Any, report: SyncReport) -> None:
+    """For claims whose Assertion in the graph is not at the journal's latest revision: replay
+    an applied one the graph lost, count a terminally failed one as stuck. A decision that is
+    simply pending is left to the projector."""
+    from orion.substrate.graph_journal import TERMINAL_FAILURE_REASONS
+
+    for target, decision in sorted(latest.items()):
+        node = store.get_node_by_id(target)
+        if node is not None and getattr(node, "revision", None) == decision.resulting_revision:
+            continue
+        if await journal.latest_applied_revision(target) >= decision.resulting_revision:
+            if await projector.replay(decision):
+                report.replayed += 1
+            continue
+        last = await journal.last_materialization(decision.decision_id)
+        if last is not None and last.outcome == "failed" and (
+                (last.failure_reason or "").split(":")[0] in TERMINAL_FAILURE_REASONS):
+            report.stuck += 1
+            logger.warning("person_graph stuck target=%s decision=%s reason=%s",
+                           target, decision.decision_id, last.failure_reason)
 
 
 async def read_rows(pool: Any) -> tuple[list[PersonRow], list[LinkRow]]:

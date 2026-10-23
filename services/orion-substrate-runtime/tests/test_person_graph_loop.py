@@ -286,3 +286,31 @@ def test_a_terminally_failed_claim_is_counted_as_stuck_not_done():
     _sync(store, journal, _Refusing(), persons, links)
     report = _sync(store, journal, _Refusing(), persons, links)
     assert (report.stuck, report.claims) == (1, 0) and not _walks(store, "c1", SAM)
+
+
+def test_a_linked_cluster_the_ask_listener_missed_gets_its_node_and_claim():
+    """Live 10-23: 7 typed clusters had no node because the bus event was missed."""
+    from app.person_graph_loop import LinkRow, PersonRow
+
+    store, journal, projector = _world()
+    links = [LinkRow("l1", SAM, "c7", "ask-c7", label="Sam", kind="person", label_ask_id="ask-c7",
+                     stream_id="walkway", answered_at=NOW)]
+    report = _sync(store, journal, projector, [PersonRow(SAM, "Sam")], links)
+    node = store.get_node_by_id(entity_node_id_for_individual("c7"))
+    assert isinstance(node, EntityNodeV1) and node.label == "Sam" and node.entity_type == "person"
+    assert node.subject_ref == "vision_individual:c7"
+    assert (report.clusters_written, report.waiting, report.claims) == (1, 0, 1) and _walks(store, "c7", SAM)
+    assert _sync(store, journal, projector, [PersonRow(SAM, "Sam")], links).clusters_written == 0
+
+
+def test_no_cluster_node_for_a_not_a_person_row_an_unnamed_or_a_copied_cluster():
+    from app.person_graph_loop import LinkRow, PersonRow
+
+    store, journal, projector = _world()
+    report = _sync(store, journal, projector, [PersonRow(SAM, "Sam", "not_a_person"), PersonRow(ROBIN, "Robin")],
+                   [LinkRow("l1", SAM, "c7", label="Sam", kind="person"), LinkRow("l2", ROBIN, "c8"),
+                    LinkRow("l3", ROBIN, "c9", label="Robin", kind="person", label_copied=True)])
+    assert report.clusters_written == 0 and report.waiting == 2
+    assert store.get_node_by_id(entity_node_id_for_individual("c9")) is None
+    assert store.get_node_by_id(entity_node_id_for_individual("c7")) is None
+    assert store.get_node_by_id(entity_node_id_for_individual("c8")) is None

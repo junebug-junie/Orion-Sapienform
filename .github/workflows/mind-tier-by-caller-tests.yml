@@ -104,8 +104,8 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r services/orion-hub/requirements.txt
-          python -m pip install -r requirements-dev.txt
+          # Full Hub requirements do not build on 3.12 in CI; the builder needs only this set.
+          python -m pip install -r services/orion-hub/tests/requirements-reading.txt
       - name: Hub call-site table + chat builder mark
         working-directory: services/orion-hub
         run: PYTHONPATH=${{ github.workspace }}/services/orion-hub:${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests/test_mind_tier_by_caller.py

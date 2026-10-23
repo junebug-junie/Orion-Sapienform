@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Deploys the town's code before every post-pull rebuild of orion-ai-town
-# (scripts/rebuild_services_from_git_diff.sh runs this first; exit != 0 skips
-# the stack). The frontend image builds from the gitignored upstream/ and the
-# Convex functions live outside compose, so a plain rebuild shipped neither:
-# the live town ran 2026-08-30 code until 2026-10-23.
+# Rebuilds upstream/ from the pin before every post-pull rebuild of
+# orion-ai-town (scripts/rebuild_services_from_git_diff.sh runs this first;
+# exit != 0 skips the stack). The frontend image builds from the gitignored
+# upstream/, so without this a pull rebuilt it from whatever upstream/ held:
+# the live town ran 2026-08-30 code until 2026-10-23. post_rebuild.sh pushes
+# the Convex functions once the stack is up.
 #
-# 1. Save upstream/'s current diff (hand edits are recoverable).
-# 2. Reset upstream/ to the pin and delete files the patches create, so the
-#    chain applies from scratch every time (re-applying on a patched tree
+# 1. Save upstream/'s changes (tracked vs HEAD, plus untracked file contents).
+# 2. Reset tracked files to the pin and delete files the patches create, so
+#    the chain applies from scratch every time (re-applying on a patched tree
 #    stops at orion-conversation-proximity.patch).
-# 3. Apply the chain. 4. Push the Convex functions.
+# 3. Apply the chain.
 #
-# Overrides: AITOWN_CONVEX_PUSH (command run in upstream/ instead of the push),
-# AITOWN_ALLOW_EXAMPLE_CARDS=1 (deploy with the redacted example cards),
-# AITOWN_BACKUP_ROOT (default ~/.orion).
+# Override: AITOWN_ALLOW_EXAMPLE_CARDS=1 (deploy with the redacted example
+# cards), AITOWN_BACKUP_ROOT (default ~/.orion).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 UPSTREAM="${ROOT}/upstream"
@@ -34,17 +34,25 @@ if [[ -z "${REF}" ]]; then
   echo "pre_rebuild: no 40-hex AITOWN_UPSTREAM_REF in .env_example" >&2
   exit 1
 fi
+# A pin bump also changes package.json and node_modules: do it by hand.
+HEAD_REF="$(git -C "${UPSTREAM}" rev-parse HEAD)"
+if [[ "${HEAD_REF}" != "${REF}" ]]; then
+  echo "pre_rebuild: upstream HEAD ${HEAD_REF} is not the pin ${REF} -- after" \
+    "'git -C upstream checkout --detach ${REF}' and 'npm ci', rerun" >&2
+  exit 1
+fi
 
 BACKUP_ROOT="${AITOWN_BACKUP_ROOT:-${HOME}/.orion}"
 BACKUP="${BACKUP_ROOT}/aitown-upstream-backup-$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir -p "${BACKUP}"
-git -C "${UPSTREAM}" diff > "${BACKUP}/tracked.diff"
+mkdir -p "${BACKUP}/untracked"
+git -C "${UPSTREAM}" diff HEAD > "${BACKUP}/tracked.diff"
 git -C "${UPSTREAM}" status --short > "${BACKUP}/status.txt"
+(cd "${UPSTREAM}" && git ls-files --others --exclude-standard -z | xargs -0 -r cp --parents -t "${BACKUP}/untracked")
 # Keep the newest 10.
-ls -1d "${BACKUP_ROOT}"/aitown-upstream-backup-* 2>/dev/null | sort | head -n -10 | while read -r old; do
+ls -1d "${BACKUP_ROOT}"/aitown-upstream-backup-* | sort -r | tail -n +11 | while read -r old; do
   rm -r -- "${old}"
 done
-echo "pre_rebuild: saved upstream diff to ${BACKUP}"
+echo "pre_rebuild: saved upstream changes to ${BACKUP}"
 
 git -C "${UPSTREAM}" checkout -q "${REF}" -- .
 for patch in "${ROOT}"/patches/*.patch; do
@@ -53,15 +61,4 @@ done | while read -r created; do
   rm -f -- "${UPSTREAM:?}/${created}"
 done
 bash "${ROOT}/scripts/apply_upstream_patches.sh"
-
-cd "${UPSTREAM}"
-if [[ -n "${AITOWN_CONVEX_PUSH:-}" ]]; then
-  bash -c "${AITOWN_CONVEX_PUSH}"
-elif command -v npx >/dev/null 2>&1; then
-  npx convex dev --once
-else
-  # circe has no host node; node_modules is already in upstream/.
-  docker run --rm --network host -u "$(id -u):$(id -g)" -e HOME=/tmp \
-    -v "${UPSTREAM}:/app" -w /app node:20-alpine npx convex dev --once
-fi
-echo "pre_rebuild: town code deployed at ${REF}"
+echo "pre_rebuild: upstream/ is the pin plus the patch chain"

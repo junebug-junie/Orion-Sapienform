@@ -309,17 +309,22 @@ git -C upstream diff -- convex/constants.ts convex/world.ts > patches/orion-huma
 
 > Note: `patches/orion-character.patch` and `patches/orion-human-juniper.patch` are generated from real diffs against the cloned `upstream/`. On a node where `upstream/` is not yet cloned, the apply script skips a patch (with a message) rather than failing; generate the patches on a node that has `upstream/` before relying on the cast. If `upstream/` already has an older apply of these two patches, `apply_upstream_patches.sh` will refuse the new hunks — restore vanilla `data/characters.ts` and `convex/world.ts` from the pin (or re-clone), then re-apply, **or** run `generate_descriptions.py` on the dirty tree (it pins Juniper's sprite and rewrites Nico from the cards) and refresh the two patch files.
 
-### Deploys: `scripts/pre_rebuild.sh`
+### Deploys: `scripts/pre_rebuild.sh` and `scripts/post_rebuild.sh`
 
-`scripts/rebuild_services_from_git_diff.sh` runs `scripts/pre_rebuild.sh` before every post-pull rebuild of this stack. If it fails, the stack is skipped. Before 2026-10-23 nothing did this. The frontend image builds from `upstream/`, and the Convex functions live outside compose, so a pull rebuilt only an unpatched frontend. The live town ran 2026-08-30 code for almost two months.
+`scripts/rebuild_services_from_git_diff.sh` runs `scripts/pre_rebuild.sh` before every post-pull rebuild of this stack. It runs `scripts/post_rebuild.sh` only after every compose step passed. If either fails, the stack is marked failed. Before 2026-10-23 nothing did this. The frontend image builds from `upstream/`, and the Convex functions live outside compose, so a pull rebuilt only an unpatched frontend. The live town ran 2026-08-30 code for almost two months.
 
-The script does four things:
-1. It saves `upstream/`'s diff to `~/.orion/aitown-upstream-backup-<time>/` (keeps the last 10).
-2. It resets `upstream/` to `AITOWN_UPSTREAM_REF` from `.env_example` and deletes the files the patches create.
+`pre_rebuild.sh` does three things:
+1. It saves `upstream/`'s changes to `~/.orion/aitown-upstream-backup-<time>/`: the diff against HEAD, and the contents of untracked files. It keeps the last 10.
+2. It resets tracked files to `AITOWN_UPSTREAM_REF` from `.env_example` and deletes the files the patches create.
 3. It applies the chain from scratch.
-4. It pushes the functions with `npx convex dev --once`. On a host without Node (circe), it runs that in `node:20-alpine`.
 
-It refuses when `cards/town_cards.local.yaml` is missing, because the Juniper join text would render from the redacted example. Copy that file from the operator host with owner-only permissions. To deploy by hand, run `bash scripts/pre_rebuild.sh`, then rebuild the frontend.
+It refuses in two cases:
+- `cards/town_cards.local.yaml` is missing, because the Juniper join text would render from the redacted example. Copy that file from the operator host with owner-only permissions.
+- Upstream's HEAD isn't the pin. A pin bump also needs `npm ci`, so do it by hand.
+
+`post_rebuild.sh` pushes the functions with `npx convex dev --once`. On a host without Node (circe), it runs that in `node:20-alpine`. It runs after `up`, so the backend is running, and `safe_docker_build.sh`'s main-checkout and migration gates have already passed.
+
+To deploy by hand: `bash scripts/pre_rebuild.sh`, rebuild the frontend, then `bash scripts/post_rebuild.sh`.
 
 ### Fresh game / reset
 

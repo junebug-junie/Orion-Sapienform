@@ -379,6 +379,9 @@ rebuild_one() {
         if [ -x "$REPO_ROOT/services/$svc/scripts/pre_rebuild.sh" ]; then
             echo "[dry-run] would run first: services/$svc/scripts/pre_rebuild.sh"
         fi
+        if [ -x "$REPO_ROOT/services/$svc/scripts/post_rebuild.sh" ]; then
+            echo "[dry-run] would run after a good build: services/$svc/scripts/post_rebuild.sh"
+        fi
         if [ -n "$PROFILE_SERVICES" ]; then
             printf '%s\n' "$PROFILE_SERVICES" | while IFS="$(printf '\t')" read -r profile name; do
                 [ -n "$name" ] || continue
@@ -398,7 +401,8 @@ rebuild_one() {
     echo ""
     echo "=== rebuild_services_from_git_diff: $svc ==="
 
-    # A stack whose build reads generated source runs its own step first:
+    # A stack whose build reads generated source runs its own step first, and
+    # can ship what compose does not after a good build (post_rebuild.sh, below):
     # orion-ai-town builds from its patched, gitignored upstream/ and keeps its
     # Convex functions outside compose, so a plain `up --build` shipped neither
     # (live town code sat at 2026-08-30 until 2026-10-23). Failure skips the stack.
@@ -499,6 +503,22 @@ EOF_PROFILES
         done <<EOF_EXTRA
 $EXTRA_COMPOSE
 EOF_EXTRA
+    fi
+
+    # Only after every compose step passed: safe_docker_build.sh's main-checkout
+    # and migration gates have let this tree deploy, and the stack is up.
+    POST_REBUILD="$REPO_ROOT/services/$svc/scripts/post_rebuild.sh"
+    if [ "$svc_failed" -eq 0 ] && [ -x "$POST_REBUILD" ]; then
+        rebuild_log "POST-START $svc"
+        set +e
+        "$POST_REBUILD" </dev/null
+        rc=$?
+        set -e
+        rebuild_log "POST-END rc=$rc $svc"
+        if [ "$rc" -ne 0 ]; then
+            echo "rebuild_services_from_git_diff.sh: FAILED $svc -- services/$svc/scripts/post_rebuild.sh exit $rc" >&2
+            svc_failed=1
+        fi
     fi
 
     if [ "$svc_failed" -ne 0 ]; then

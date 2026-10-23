@@ -103,6 +103,9 @@ ACCEPTED_LLM_ROUTES: FrozenSet[str] = frozenset(
         # same pool class, interactive priority, so a heat shed never holds a live Hub turn.
         # System-only: see SYSTEM_LLM_ROUTES.
         "metacog_turn",
+        # Orion's sight (2026-10-23, body-economy design A0): vision-council at pool priority
+        # `perception`, never shed by heat. System-only: see SYSTEM_LLM_ROUTES.
+        "metacog_perception",
         # hecate's 27B (2026-10-08): its own GPU node, agent-class work a caller asks for by name.
         "agent-deep",
     }
@@ -138,6 +141,7 @@ LLM_ROUTE_DISPLAY_ORDER: tuple[str, ...] = (
     "chat-burst",
     "memory_distill",
     "metacog_turn",
+    "metacog_perception",
 )
 
 if set(LLM_ROUTE_DISPLAY_ORDER) != set(ACCEPTED_LLM_ROUTES) or len(
@@ -190,7 +194,10 @@ if not BACKGROUND_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
 # metacog-only, not a generic "background implies same profile as its sibling" rule -- a future
 # `_background` lane needing the same guarantee should add itself here explicitly.
 # `metacog_turn` (2026-10-06) is the same worker at interactive pool priority: it must pin too.
-METACOG_LLM_ROUTES: FrozenSet[str] = frozenset({"metacog", "metacog_background", "metacog_turn"})
+# `metacog_perception` (2026-10-23) is the same worker at perception priority: it must pin too.
+METACOG_LLM_ROUTES: FrozenSet[str] = frozenset(
+    {"metacog", "metacog_background", "metacog_turn", "metacog_perception"}
+)
 
 if not METACOG_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
     raise RuntimeError(
@@ -222,7 +229,9 @@ if not METACOG_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
 # POST /api/chat body) and so by fcc_model_for_route. A future caller that must reach one through
 # those override paths needs an explicit decision here, not a quiet removal from this set.
 SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset(
-    {"harness", "agent-burst", "chat-burst", "memory_distill", "metacog_turn"}
+    # `metacog_perception` (2026-10-23): vision-council's route. Jumps the heat shed like
+    # metacog_turn, so the same rule: never a human's Compute choice or override.
+    {"harness", "agent-burst", "chat-burst", "memory_distill", "metacog_turn", "metacog_perception"}
 )
 
 if not SYSTEM_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:

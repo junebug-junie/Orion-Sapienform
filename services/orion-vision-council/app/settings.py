@@ -36,11 +36,11 @@ class Settings(BaseSettings):
 
     # Config
     COUNCIL_MODEL: str = "llama-3-8b-instruct-q4_k_m"
-    # metacog_background (not plain metacog) as of 2026-09-07: this is background
-    # perception work, not a live chat turn -- it should yield slot slack to Mind's
-    # now-live metacog traffic via the gateway's existing priority_admission.py,
-    # not compete evenly with it. See docs/superpowers/pr-reports/ for this patch.
-    COUNCIL_LLM_ROUTE: str = "metacog_background"
+    # metacog_perception (2026-10-23, body-economy design A0): vision is Orion's primary sense
+    # (Tier 0). On metacog_background the 34 C heat reflex refused it 25,430 times in a week.
+    # perception ranks below Juniper's turn (metacog_turn) and is never shed by heat.
+    # Was metacog_background (2026-09-07, yield to Mind's metacog traffic).
+    COUNCIL_LLM_ROUTE: str = "metacog_perception"
     COUNCIL_LLM_MAX_TOKENS: int = 1024
     COUNCIL_LLM_TIMEOUT_SEC: float = 90.0
     COUNCIL_STRUCTURED_OUTPUT_METHOD: str = "json_object_schema"

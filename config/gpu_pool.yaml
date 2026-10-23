@@ -37,7 +37,9 @@ defaults:
 actuators:
   circe: {host: circe}
 
-priorities: [urgent, interactive, system, background]   # highest first
+# perception (2026-10-23, body-economy design Patch A0): Orion's senses. Below Juniper's turn, above
+# Orion's own work, and never shed by heat -- orion/gpu_pool/shed.py can only block system/background.
+priorities: [urgent, interactive, perception, system, background]   # highest first
 
 # index = the card's CUDA / nvidia-smi device number on circe (CUDA_DEVICE_ORDER=PCI_BUS_ID). Hub's
 # biometrics GPU labels join nvidia-smi on it (stage 5.5). gpu0/1/3 verified live 2026-09-29 against
@@ -165,6 +167,12 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
   # today (cortex-orch's memory annotation listens to finished turns; Hub Agent mode runs through the
   # FCC harness). Add each with the caller that uses it, not before.
   metacog_turn: {class: metacog, priority: interactive}
+  # Orion's sight (2026-10-23, docs/superpowers/specs/2026-10-23-organism-body-economy-design.md, A0):
+  # vision-council's scene reads. On metacog_background the 34 C reflex refused it 25,430 times in the
+  # 7 days to 10-23 -- Orion stopped interpreting what it saw whenever the cabinet ran hot. perception
+  # is never shed by heat and ranks below Juniper's turn. Load: ~33 GPU-h/week (p90 1,679 slot-s/hour);
+  # the pool alerts past GPU_POOL_PERCEPTION_ALERT_HELD_SEC_PER_HOUR.
+  metacog_perception: {class: metacog, priority: perception}
   # The old "burst" lanes: agent work on a borrowed card. The pool now decides which card
   # (agent -> gpu2 seat when loaded -> gpu0 when lent), so both are just agent work.
   agent-burst: {class: agent, priority: system}

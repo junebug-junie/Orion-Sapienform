@@ -98,6 +98,13 @@ def on_screen_edge(tile, direction):
     return {'N': r == MIN_ROW, 'S': r == MAX_ROW, 'W': c == 0, 'E': c == MAX_COL}[direction]
 
 
+def open_sides(walls, blocked, start):
+    """Sides whose screen edge Link can walk to from `start` (the only sides an exit can use).
+    Computed by the motor's own search, so the planner never has to read the map to know."""
+    area = reachable(walls, blocked, start) | {start}
+    return [d for d in DIRS if any(on_screen_edge(t, d) for t in area)]
+
+
 def terrain(obs, learned=(), caves=()):
     """Planner map: 22 rows x 32 chars (~770 bytes). '#' blocked, '.' walkable, 'x' learned
     blocked by a bump on this layout, 'C' a cave this lineage has entered. Same tile grid as
@@ -193,10 +200,20 @@ class ZeldaGoals:
             view['terrain'] = terrain(observation, self._blocked(observation),
                                       self.atlas.caves(observation['level'], observation['room'])
                                       if self.atlas and observation['mode'] == 'play' else ())
+        sides = None
+        if (observation.get('status') == 'observed' and observation['mode'] == 'play'
+                and observation['level'] == 0 and 'walls' in observation):
+            # Overworld only: dungeon doorways and locked doors are not verified against the
+            # wall grid. Only the atlas's per-room learned blocks count; the last goal's own
+            # bump set (self.blocked) may belong to the room Link just left.
+            learned = (self.atlas.blocked(observation['level'], observation['room'], observation['mode'],
+                                          observation.get('walls_hash')) if self.atlas else set())
+            link = observation['link']
+            sides = open_sides(observation['walls'], learned, tile_of(link['x'], link['y']))
         self.attempt = dict(decision_id=f'{epoch}:{self.counter}', port=port, expected_epoch=epoch,
                             observation_frame=frame, observation=view,
                             supported_goals=list(GOALS), supported_predictions=list(PREDICTIONS),
-                            previous=self.last_finished)
+                            open_sides=sides, previous=self.last_finished)
         self.offered_at = now
         self.record('decision_offered', **self.attempt)
 

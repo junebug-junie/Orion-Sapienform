@@ -438,3 +438,82 @@ def test_record_delta_is_none_when_retro_reset_or_did_not_report():
     d = record_delta(a, b)
     assert d['rooms_new'] is None and d['deaths'] == 0 and d['controller_frames'] is None
     assert record_delta(dict(rooms_new=None), dict(rooms_new=3))['rooms_new'] is None
+
+
+def _closed_south(**over):
+    # Live 2026-10-23 room 119: south side solid, Link already at the bottom wall.
+    previous = dict(decision_id='3:0', goal=dict(kind='explore', dir='S'), prediction=dict(kind='reach_room', value=120),
+                    outcome='completed', verdict='refuted', applied_frames=0,
+                    start_digest='ea8443189cdd1bb1', end_digest='ea8443189cdd1bb1')
+    return decision(open_sides=['N', 'W', 'E'], previous=previous, **over)
+
+
+def test_prompt_names_open_sides_and_moves_that_did_nothing(planner):
+    d = _closed_south()
+    prompt = planner.build_zelda_prompt(d, ATLAS, [d['previous']])
+    assert ('an exit can only use these): N (room 103, visited), W (room 118, never visited), '
+            'E (room 120, visited). No way out: S.') in prompt
+    assert 'verdict refuted; nothing changed' in prompt
+    assert 'Sides Link can walk off: not known here.' in planner.build_zelda_prompt(decision(), ATLAS, [])
+
+
+@pytest.mark.parametrize('goal,reason', [
+    (dict(kind='exit', dir='S'), 'planner_side_closed'),
+    (dict(kind='explore', dir='S'), 'planner_repeats_no_effect'),
+])
+def test_impossible_or_repeated_goal_is_retried_once_with_the_reason(planner, goal, reason):
+    bad = dict(GOOD, goal=goal, prediction=dict(kind='reach_room', value=120))
+    chat = reply(lambda n: dict(content=json.dumps(bad if n == 1 else GOOD)))
+    out = asyncio.run(planner.plan_zelda(None, _closed_south(), ATLAS, [], chat=chat))
+    assert out['goal'] == {'kind': 'exit', 'dir': 'N'} and len(chat.calls) == 2
+    assert 'Your previous answer was refused' in chat.calls[1] and 'refused' not in chat.calls[0]
+    chat = reply(dict(content=json.dumps(bad)))              # refused twice: no goal, never a third call
+    with pytest.raises(planner.PlannerRejected) as exc:
+        asyncio.run(planner.plan_zelda(None, _closed_south(), ATLAS, [], chat=chat))
+    assert exc.value.reason == reason and len(chat.calls) == 2
+
+
+def test_explore_toward_a_closed_side_is_allowed_once_and_moved_repeats_are_fine(planner):
+    walk = dict(GOOD, goal=dict(kind='explore', dir='S'), prediction=dict(kind='unknown'))
+    first = decision(open_sides=['N', 'W', 'E'])                     # walking to a wall once can be looking
+    assert asyncio.run(planner.plan_zelda(None, first, ATLAS, [], chat=reply(dict(content=json.dumps(walk)))))
+    moved = dict(_closed_south()['previous'], goal=dict(kind='exit', dir='N'), applied_frames=40,
+                 end_digest='0000000000000000')
+    again = dict(GOOD)                                               # same exit, but Link moved last time
+    out = asyncio.run(planner.plan_zelda(None, decision(open_sides=['N'], previous=moved), ATLAS, [],
+                                         chat=reply(dict(content=json.dumps(again)))))
+    assert out['goal'] == {'kind': 'exit', 'dir': 'N'}
+
+
+def test_not_controllable_is_never_retried(planner):
+    d = decision(); d['observation']['link']['controllable'] = False
+    chat = reply(dict(content=json.dumps(GOOD)))
+    with pytest.raises(planner.PlannerRejected) as exc:
+        asyncio.run(planner.plan_zelda(None, d, ATLAS, [], chat=chat))
+    assert exc.value.reason == 'observation_unknown' and len(chat.calls) == 1
+
+
+@pytest.mark.parametrize('previous', [
+    dict(goal=dict(kind='wait'), outcome='budget_expired', applied_frames=0, start_digest='a', end_digest='a'),
+    dict(goal=dict(kind='exit', dir='N'), outcome='stopped:human_takeover', applied_frames=0,
+         start_digest='a', end_digest='a'),
+    dict(goal=dict(kind='exit', dir='N'), outcome='budget_expired', applied_frames=0,
+         start_digest='unknown', end_digest='unknown'),
+])
+def test_waits_and_goals_that_never_ran_may_be_repeated(planner, previous):
+    answer = dict(GOOD, goal=previous['goal'], prediction=dict(kind='survive') if previous['goal']['kind'] == 'wait'
+                  else GOOD['prediction'])
+    d = decision(open_sides=['N', 'W', 'E'], previous=dict(previous, decision_id='3:0', prediction={}, verdict='unknown'))
+    chat = reply(dict(content=json.dumps(answer)))
+    assert asyncio.run(planner.plan_zelda(None, d, ATLAS, [], chat=chat))['goal'] == previous['goal']
+    assert len(chat.calls) == 1
+
+
+def test_slow_first_answer_is_not_retried(planner, monkeypatch):
+    bad = dict(GOOD, goal=dict(kind='exit', dir='S'), prediction=dict(kind='reach_room', value=120))
+    ticks = iter([0.0, 20.0])
+    monkeypatch.setattr(planner, '_now', lambda: next(ticks))
+    chat = reply(dict(content=json.dumps(bad)))
+    with pytest.raises(planner.PlannerRejected) as exc:
+        asyncio.run(planner.plan_zelda(None, _closed_south(), ATLAS, [], chat=chat))
+    assert exc.value.reason == 'planner_side_closed' and len(chat.calls) == 1

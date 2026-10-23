@@ -294,7 +294,17 @@ navigator and atlas (Lane A) to be deployed; until then the Hub code is idle.
   text map of the room (Link, enemies, drops, caves, learned-blocked tiles; walls
   only when Retro includes the grid in its offer, otherwise the map says so), the
   atlas neighbourhood and the last 5 decisions with their verdicts (the Hub keeps
-  them from Retro's `last_finished`). A parse failure, an unsupported goal or an unknown observation
+  them from Retro's `last_finished`), plus a plain line naming the sides Link can
+  walk off (Retro's `open_sides`, overworld only, each labelled visited or never
+  visited) and "nothing changed" on any goal whose start and end digests match
+  (never a `wait` or a `stopped:*` goal). Two answers are refused: an `exit`
+  through a side that is not open (`planner_side_closed`), and the previous goal
+  again when it changed nothing or was a completed `explore` toward a closed side
+  (`planner_repeats_no_effect`). A refused answer gets ONE retry with the reason
+  appended, only when the first answer took under 12 s (Retro's offer lives 30 s);
+  a second refusal is final (2026-10-23: the old
+  prompt asked "explore S" eight times against a solid wall). Replay that moment
+  against the real model with `evals/zelda_planner_replay.py`. A parse failure, an unsupported goal or an unknown observation
   produces no goal; Retro's motor holds `wait`. A heat shed returns
   `503 {"detail":"gpu_pool_unavailable","reason":"shed:cabinet_hot","retry_after_sec":N}`
   and the shared `orion/gpu_pool/shed_backoff.py` rule spaces the retries.

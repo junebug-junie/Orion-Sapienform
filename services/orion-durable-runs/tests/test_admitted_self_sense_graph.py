@@ -417,3 +417,24 @@ def test_the_question_turn_id_derives_from_the_checkpoint():
         assert len(ids) == 5
 
     asyncio.run(scenario())
+
+
+def test_near_the_deadline_the_rest_are_skipped_and_the_answers_in_hand_are_published():
+    async def scenario():
+        world, saver = FlakyWorld(TimeoutError(), fail_calls={2}), InMemorySaver()
+        world.grant()
+        share = 600.0 / len(SELF_SENSE_QUESTIONS)
+        state = initial()
+        # The deadline is 0.9 share away (the fake clock does not move). Question 1 is answered;
+        # question 2 times out; a retry needs 3 shares and even one more question needs 1, so
+        # question 2 and the rest are recorded as skipped and question 1's answer is published.
+        state["admission"] = {**state["admission"], "deadline_at": (world.now + timedelta(seconds=share * 0.9)).isoformat()}
+        done = await asyncio.wait_for(world.graph(saver).ainvoke(state, CFG), 2)
+        first, second = SELF_SENSE_QUESTIONS[0][0], SELF_SENSE_QUESTIONS[1][0]
+        assert done["status"] == "completed" and len(world.published) == 4
+        assert done["answers"][first]["text"] and done["answers"][second]["error"].startswith("retry_skipped")
+        assert all(done["answers"][k]["error"].startswith("skipped_insufficient_time")
+                   for k, _ in SELF_SENSE_QUESTIONS[2:])
+        assert done.get("last_error") is None and len(world.turn_calls) == 1
+
+    asyncio.run(scenario())

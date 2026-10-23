@@ -98,7 +98,9 @@ def build_admitted_self_sense_graph(deps: Deps, admission: AdmissionDeps, checkp
             # This question is done trying. The run goes on unless not even one more question
             # fits before the deadline.
             if remaining > 1 and retry_cannot_finish(state, admission.now(), share):
-                return update
+                # Not even one more question fits before the deadline: record the rest as skipped
+                # so the answers already in hand are still published.
+                return _give_up(state, update, question_key, correlation_id, skip_rest=True)
             return _give_up(state, update, question_key, correlation_id)
         answer = result["answer"]
         if not answer.get("text"):
@@ -112,20 +114,29 @@ def build_admitted_self_sense_graph(deps: Deps, admission: AdmissionDeps, checkp
                   "attempt": 0, "retry_at": None}
         return await _maybe_all_empty(state, update)
 
-    def _give_up(state, update, question_key, correlation_id) -> dict:
+    def _give_up(state, update, question_key, correlation_id, *, skip_rest: bool = False) -> dict:
         """This question spent its attempts (or cannot succeed): record it as an empty answer that
         names the error, reset the per-question budget, and go on. The hold is already released, so
-        the next question queues for a fresh one."""
-        answer = {"text": "", "debug": {}, "correlation_id": correlation_id,
-                  "error": str(update.get("last_error") or "attempt_failed")[:300],
-                  "attempts": int(update.get("attempt") or 0)}
-        answers = {**(state.get("answers") or {}), question_key: answer}
+        the next question queues for a fresh one. ``skip_rest``: no further question fits before
+        the deadline, so every remaining question is recorded as skipped and the run publishes
+        what it has (or fails, when nothing has text)."""
+        error = str(update.get("last_error") or "attempt_failed")[:300]
+        answers = {**(state.get("answers") or {}),
+                   question_key: {"text": "", "debug": {}, "correlation_id": correlation_id, "error": error,
+                                  "attempts": int(update.get("attempt") or 0)}}
+        if skip_rest:
+            for key, _ in _brief_questions(state["brief"]):
+                answers.setdefault(key, {"text": "", "debug": {},
+                                         "error": f"skipped_insufficient_time: {error}"[:300]})
         if next_unanswered({**state, "answers": answers}) is None:
             no_answers = no_answers_error(answers)
             if no_answers is not None:
                 return {**update, "answers": answers, "status": "failed", "last_error": no_answers}
-            return {**update, "answers": answers, "status": "running", "attempt": 0, "retry_at": None}
-        return {**update, "answers": answers, "status": "waiting_resource", "attempt": 0, "retry_at": None}
+            # Per-question errors live on the answers (finish_detail's turns), not the run.
+            return {**update, "answers": answers, "status": "running", "attempt": 0, "retry_at": None,
+                    "last_error": None}
+        return {**update, "answers": answers, "status": "waiting_resource", "attempt": 0, "retry_at": None,
+                "last_error": None}
 
     async def _maybe_all_empty(state, update) -> dict:
         if next_unanswered({**state, "answers": update["answers"]}) is None:

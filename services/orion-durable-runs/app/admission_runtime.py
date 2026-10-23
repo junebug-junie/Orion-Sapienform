@@ -59,6 +59,7 @@ from app.pool_hold import (
     hold_placement, ref_dict, refusal_is_terminal,
 )
 from app.reflect_graph import finish_detail as reflect_finish_detail
+from app.run_acts import RunActEmitter
 from app.orion_day_graph import (
     OrionDayDeps, build_orion_day_graph, finish_detail as orion_day_finish_detail, slim_brief as orion_day_slim_brief,
 )
@@ -161,6 +162,11 @@ class AdmissionRuntime:
         self.store = store or DurableRunRegistryStore(pool)
         self.now = clock or (lambda: datetime.now(timezone.utc))
         self.holds = holds or PoolHolds(runner._bus, source=settings.service_name)
+        # Body economy A5: want-family runs open an act at their first grant, close it at terminal.
+        self.acts = RunActEmitter(
+            enabled=bool(getattr(settings, "durable_act_emit_enabled", True)), store=self.store,
+            publish=lambda *args: runner._publish(*args), corr_for=lambda c: runner._corr_for_admission(c),
+            now=self.now)
         if settings.lease_heartbeat_sec * 2 > self.holds.hold_ttl_sec:
             # Two missed beats must still land inside the pool's TTL, or a slow bus expires a
             # healthy run's hold mid-turn.
@@ -486,10 +492,11 @@ class AdmissionRuntime:
             ref = ref_dict(reply, durable_run_holder(run_id))
             detail = {"lease": ref, "lane": ref["role"], "lease_id": ref["lease_id"], "generation": ref["generation"],
                       "role": ref["role"], "requested_lane": (state.get("admission") or {}).get("preferred_lane")}
-            await self.store.record_event(run_id, "run.resource_granted", detail,
-                                          event_id=f"granted:{ref['lease_id']}:{ref['generation']}")
+            granted = await self.store.record_event(run_id, "run.resource_granted", detail,
+                                                    event_id=f"granted:{ref['lease_id']}:{ref['generation']}")
             await self.store.record_event(run_id, "run.lane_assigned", detail,
                                           event_id=f"assigned:{ref['lease_id']}:{ref['generation']}")
+            await self.acts.on_grant(state, granted)
             return GRANTED, {"status": "admitted", "lease": ref, "hold": _without_backoff(hold)}
         if reply.status in POOL_WAITING:
             self._checked[run_id] = time.monotonic()   # just read: the poll fallback starts from here
@@ -1177,6 +1184,7 @@ class AdmissionRuntime:
         if actual is not None:
             self._hints.discard(run_id)
             self._checked.pop(run_id, None)
+            await self.acts.on_terminal({**state, "run_id": run_id, "workflow": wf}, actual)
         if wf == DREAM_CARRY_WORKFLOW and actual in TERMINAL:
             # Any carry terminal, completed-partial included (a deadline stop with a picture still being
             # painted): nobody reads that child any more. _cancel_carry_child skips ended/unknown ones.

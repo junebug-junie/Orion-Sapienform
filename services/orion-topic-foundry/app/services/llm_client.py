@@ -12,6 +12,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, LLMMessage, ServiceRef
 from orion.gpu_pool.shed_backoff import ShedBackoff, gateway_error_reason, gateway_shed_refusal
 
+from app.services.act_emit import current_lease_correlation
 from app.settings import settings
 
 
@@ -156,12 +157,18 @@ class TopicFoundryLLMClient:
         temperature: float,
         max_tokens: Optional[int],
     ) -> ChatResultPayload:
+        # Read here, in the caller's thread: _run_blocking may run _call in a fresh thread, which
+        # does not inherit context variables. Inside a training run this is the run's act
+        # correlation (app/services/act_emit.py), so the GPU leases join the run's act.
+        run_correlation = current_lease_correlation()
+
         async def _call() -> ChatResultPayload:
             bus = OrionBusAsync(url=settings.orion_bus_url, enabled=settings.orion_bus_enabled)
             await bus.connect()
             try:
-                correlation_id = str(uuid4())
-                reply_channel = f"{settings.topic_foundry_llm_reply_prefix}:{correlation_id}"
+                reply_corr = str(uuid4())
+                correlation_id = run_correlation or reply_corr
+                reply_channel = f"{settings.topic_foundry_llm_reply_prefix}:{reply_corr}"
                 options: Dict[str, Any] = {
                     "temperature": temperature,
                     "return_json": True,

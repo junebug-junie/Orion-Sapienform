@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import uvicorn
@@ -1414,6 +1414,7 @@ async def lifespan(app: FastAPI):
         parent: BaseEnvelope,
         *,
         trigger,
+        compose_correlation_id: str | None = None,
     ) -> dict[str, Any]:
         journal_llm_route = _normalized_llm_route(settings.actions_journal_llm_route, settings.actions_llm_route)
         tk = str(getattr(trigger, "trigger_kind", "") or "")
@@ -1448,7 +1449,14 @@ async def lifespan(app: FastAPI):
             },
         )
         reply_channel = new_reply_channel("orion:cortex:result")
-        req_env = parent.derive_child(kind="cortex.orch.request", source=src, payload=req, reply_to=reply_channel)
+        # The compose request carries its own correlation id (one per compose attempt), so the GPU
+        # leases it causes join exactly one actions.journal act. The parent's id is shared by other
+        # work (every walkway job in a scheduler tick; a collapse's chat reply), so it cannot be the
+        # cost key. The journal write below keeps the parent's id, as before.
+        req_env = parent.derive_child(
+            kind="cortex.orch.request", source=src, payload=req, reply_to=reply_channel,
+            **({"correlation_id": UUID(compose_correlation_id)} if compose_correlation_id else {}),
+        )
         msg = await _actions_rpc_bus.rpc_request(
             settings.cortex_request_channel,
             req_env,
@@ -1495,6 +1503,7 @@ async def lifespan(app: FastAPI):
 
         acquired = False
         t0 = time.monotonic()
+        compose_corr = act_emit.compose_correlation_id(dedupe_key, str(parent.correlation_id)) if _act_publish else None
         jact = act_emit.ActTrace(
             _act_publish,
             act_emit.journal_act(
@@ -1503,7 +1512,7 @@ async def lifespan(app: FastAPI):
                 horizon=act_emit.journal_horizon_sec(settings.actions_exec_timeout_seconds),
             ),
             component=f"{audit_action}.act",
-            correlation_id=str(parent.correlation_id),
+            correlation_id=compose_corr or str(parent.correlation_id),
         )
         try:
             await sem.acquire()
@@ -1512,6 +1521,7 @@ async def lifespan(app: FastAPI):
             result = await _run_journal(
                 parent,
                 trigger=trigger,
+                compose_correlation_id=compose_corr,
             )
             await jact.close(True, f"entry_id={result['write']['entry_id']} mode={result['draft']['mode']}")
             # Notification dispatch (email/in-app) happens exactly once, from the
@@ -1537,6 +1547,8 @@ async def lifespan(app: FastAPI):
             return True
         except Exception as exc:
             dt_ms = int((time.monotonic() - t0) * 1000)
+            # Close first: a cancel during the audit await must not leave the act open.
+            await jact.close(False, f"raised:{type(exc).__name__}:{str(exc)[:200]}")
             await _audit(
                 parent,
                 status="failed",
@@ -1545,7 +1557,6 @@ async def lifespan(app: FastAPI):
                 reason=str(exc),
                 extra={"duration_ms": dt_ms},
             )
-            await jact.close(False, f"raised:{type(exc).__name__}:{str(exc)[:200]}")
             logger.exception("Journal dispatch failed action=%s corr=%s", audit_action, parent.correlation_id)
             return False
         except BaseException as exc:  # cancellation: close at 0, then re-raise

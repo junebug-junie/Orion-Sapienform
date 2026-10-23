@@ -107,7 +107,8 @@ class Settings(BaseSettings):
     actions_exec_timeout_seconds: float = Field(240.0, alias="ACTIONS_EXEC_TIMEOUT_SECONDS")
     # Act ledger (body economy A5): each daily_metacog_v1 attempt (`actions.daily_metacog`, infer)
     # and each in-process journal compose (`actions.journal`, make) publishes act_opened/act_closed
-    # on orion:grammar:event. Durable journal.compose runs are owned by orion-durable-runs.
+    # on orion:grammar:event. Durable journal.compose runs are left to orion-durable-runs' own
+    # act producer (not shipped yet), so a journal is never counted twice.
     # Off = no acts. app/act_emit.py.
     actions_act_emit_enabled: bool = Field(True, alias="ACTIONS_ACT_EMIT_ENABLED")
     # RPC wait for a SCHEDULED compactor workflow dispatch (LONG_RUNNING_SCHEDULED_WORKFLOWS in main.py).

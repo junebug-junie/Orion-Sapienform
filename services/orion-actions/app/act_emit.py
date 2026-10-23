@@ -14,8 +14,9 @@ Journal ownership rule: the process that runs the journal's compose owns its act
 ``_dispatch_journal`` composes in-process here, so orion-actions emits ``actions.journal``.
 A journal submitted as a durable ``journal.compose`` run (today: world_pulse_digest, via
 ``app/world_pulse_journal.py`` -> cortex-orch durable ingress) is composed by orion-durable-runs,
-which owns that act at its run seam; that path never calls ``_dispatch_journal``, so no journal is
-counted by both.
+and WILL be owned by its run-seam act producer (A5 producer 1, not shipped as of 2026-10-23: until
+it lands, durable journals have no act). That path has no in-process fallback and never calls
+``_dispatch_journal``, so no journal is counted by both.
 
 Act key = (the job's dedupe key, the attempt envelope's correlation id). A redelivered trigger
 carries the same correlation id, so it maps to the same act id (the writer is first-close-wins).
@@ -23,9 +24,13 @@ A scheduler retry is a new attempt with a new correlation id: a new act, because
 own GPU time. A restart mid-attempt leaves the act open; orion-sql-writer expires it at 0 at its
 horizon.
 
-correlation_id = the attempt envelope's correlation id. cortex-orch / cortex-exec take their GPU
-leases under it (verified live 10-23 for journal composes: lease turn_correlation_id = the journal's
-correlation_id), so the ledger's close-time cost fill joins.
+correlation_id = the id the attempt's GPU leases carry, so the ledger's close-time cost fill joins:
+* daily metacog: the attempt envelope's id (the scheduler mints one per attempt); _run_plan sends
+  the cortex-exec request under it and the gateway leases under the request's id.
+* journal: a per-compose id (``compose_correlation_id``), sent as the cortex-orch compose request's
+  correlation id. Not the trigger's id: several composes share one (every walkway job in a scheduler
+  tick; a collapse's chat reply), and the ledger charges an act every lease under its id.
+  Verified live 10-23 that orch/exec compose leases carry the compose request's correlation id.
 
 The event is built here, not with orion.grammar.acts.act_opened_event: that helper only knows
 the hub and thought producer identities. ``build_act`` is reused as is. Gated by
@@ -38,7 +43,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from orion.schemas.grammar import ActCostV1, ActOutcomeV1, ActV1, GrammarEventV1, GrammarProvenanceV1
 
@@ -51,6 +56,12 @@ _PUBLISH_SLACK_SEC = 60.0
 
 DAILY_METACOG_ACTOR = "actions.daily_metacog"
 JOURNAL_ACTOR = "actions.journal"
+
+
+def compose_correlation_id(dedupe_key: str, parent_correlation_id: str) -> str:
+    """One UUID per compose attempt, derived from the act's own key: a redelivered trigger gets the
+    same id (and the same act), a different job in the same tick gets a different one."""
+    return str(uuid5(NAMESPACE_URL, f"orion:actions.journal:{dedupe_key}|{parent_correlation_id}"))
 
 
 def daily_metacog_horizon_sec(exec_timeout_sec: float) -> float:

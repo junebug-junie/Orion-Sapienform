@@ -42,6 +42,7 @@ class _Harness:
         self.notify_ok = notify_ok
         self.emit = emit
         self.hunters: list = []
+        self.sent: list = []  # outbound cortex request envelopes (their correlation ids lease the GPU)
 
     async def run(self, tmp_path, body):
         harness = self
@@ -62,7 +63,8 @@ class _Harness:
 
         rpc_bus = MagicMock()
 
-        async def _rpc(*a, **k):
+        async def _rpc(channel, env, **k):
+            harness.sent.append(env)
             if harness.rpc_error is not None:
                 raise harness.rpc_error
             return {"data": b"stub"}
@@ -89,6 +91,7 @@ class _Harness:
             return real_create_task(_idle())
 
         async def _plan_rpc(**kwargs):
+            harness.sent.append(kwargs["envelope_factory"]("orion:exec:result:test", 1))
             if harness.rpc_error is not None:
                 raise harness.rpc_error
             return {"data": b"stub"}
@@ -145,7 +148,7 @@ def test_daily_metacog_success_opens_and_closes_one_infer_act(tmp_path):
     assert closed["act"]["outcome"]["value"] == 1.0
     assert closed["act"]["cost"]["seconds"] >= 0.0
     assert set(closed["act"]["cost"]) == {"seconds", "gpu_seconds", "tokens", "watts"}  # V1 only
-    assert opened["correlation_id"] == closed["correlation_id"]
+    assert opened["correlation_id"] == closed["correlation_id"] == str(h.sent[0].correlation_id)
 
 
 def test_daily_metacog_failure_closes_zero(tmp_path):
@@ -189,7 +192,9 @@ def test_journal_compose_success_opens_and_closes_one_make_act(tmp_path):
     assert [e["event_kind"] for e in events] == ["act_opened", "act_closed"]
     opened, closed = events
     assert opened["act"]["actor"] == "actions.journal" and opened["act"]["verb"] == "make"
-    assert opened["correlation_id"] == str(env.correlation_id)  # the id the cortex leases carry
+    # The act's id is the compose request's id (the one its GPU leases carry), not the trigger's.
+    assert opened["correlation_id"] == closed["correlation_id"] == str(h.sent[0].correlation_id)
+    assert opened["correlation_id"] != str(env.correlation_id)
     assert closed["act"]["outcome"]["value"] == 1.0 and "entry_id=entry-1" in closed["act"]["outcome"]["note"]
 
 
@@ -298,3 +303,47 @@ def test_trace_closes_once_and_survives_a_failing_publish():
     asyncio.run(t2.close(False, "second"))
     assert [e.event_kind for e in sent] == ["act_opened", "act_closed"]
     assert sent[1].act.outcome.note == "first"
+
+
+def test_two_composes_sharing_a_trigger_id_get_distinct_cost_keys(tmp_path):
+    """Walkway jobs in one scheduler tick share the parent correlation id; their acts must not."""
+    shared = str(uuid4())
+
+    def env(summary):
+        return BaseEnvelope(kind="orion.actions.trigger.journal.v1", source=ServiceRef(name="test"),
+                            correlation_id=shared, payload={"summary": summary})
+
+    async def body(app):
+        await app.state.bus_handler(env("day rollup"))
+        await app.state.bus_handler(env("week rollup"))
+
+    h = _Harness(orch_payload={"ok": True})
+    events = asyncio.run(h.run(tmp_path, body))
+    closed = [e for e in events if e["event_kind"] == "act_closed"]
+    assert len(closed) == 2
+    assert closed[0]["correlation_id"] != closed[1]["correlation_id"]
+    assert closed[0]["act"]["act_id"] != closed[1]["act"]["act_id"]
+    assert [str(e.correlation_id) for e in h.sent] == [c["correlation_id"] for c in closed]
+
+
+def test_journal_cancellation_closes_zero_and_propagates(tmp_path):
+    async def body(app):
+        with pytest.raises(asyncio.CancelledError):
+            await app.state.bus_handler(_journal_env())
+
+    h = _Harness(rpc_error=asyncio.CancelledError())
+    events = asyncio.run(h.run(tmp_path, body))
+    assert [e["event_kind"] for e in events] == ["act_opened", "act_closed"]
+    assert events[1]["act"]["outcome"]["value"] == 0.0
+    assert events[1]["act"]["outcome"]["note"].startswith("raised:CancelledError")
+
+
+def test_daily_metacog_cancellation_closes_zero_and_propagates(tmp_path):
+    async def body(app):
+        with pytest.raises(asyncio.CancelledError):
+            await _metacog_tick(app)
+
+    h = _Harness(rpc_error=asyncio.CancelledError())
+    events = asyncio.run(h.run(tmp_path, body))
+    assert [e["event_kind"] for e in events] == ["act_opened", "act_closed"]
+    assert events[1]["act"]["outcome"]["note"].startswith("raised:CancelledError")

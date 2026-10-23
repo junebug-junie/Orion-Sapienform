@@ -3045,7 +3045,7 @@ channels:
     producer_services:
       # act ledger (body economy A5): daily_metacog_v1 attempts (`infer`) and in-process journal
       # composes (`make`) publish act_opened/act_closed (services/orion-actions/app/act_emit.py),
-      # gated by ACTIONS_ACT_EMIT_ENABLED. Durable journal.compose runs belong to orion-durable-runs.
+      # gated by ACTIONS_ACT_EMIT_ENABLED. Durable journal.compose runs are left to orion-durable-runs (its act producer is not shipped yet).
       - orion-actions
       - orion-biometrics
       - orion-bus

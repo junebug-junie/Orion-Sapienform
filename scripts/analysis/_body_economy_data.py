@@ -84,6 +84,17 @@ select coalesce(json_agg(r order by r.t), '[]'::json) from (
 ) r;"""
 
 
+def _house_sql(start: str, end: str) -> str:
+    # Whole-house meter (Rocky Mountain Power, hourly, whole kWh, ~3 days behind): the signal
+    # orion-prediction's run_house_heat_balance_eval.py uses to validate the central-AC proxy.
+    return f"""
+select coalesce(json_agg(r order by r.t), '[]'::json) from (
+  select to_char(interval_start at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as t, energy_kwh as kwh
+  from energy_usage_interval
+  where source = 'rockymountain_power' and interval_start >= timestamptz '{start}' and interval_start < timestamptz '{end}'
+) r;"""
+
+
 # orion-prediction's change events (#2780): the same rows its engine folds into training
 # (services/orion-prediction/app/store.py change_events, app/events.py applies()).
 CHANGE_EVENTS_SQL = """
@@ -133,9 +144,11 @@ def fetch(start: str, end: str) -> dict:
         # 6 h earlier so a lagged weather covariate (central AC proxy: 3 h) has values from the start.
         "weather_hourly": run_query(_weather_sql(_minus_hours(start, 6), end)),
         "cooling15": run_query(_cooling_sql(start, end)),
+        "house_hourly": run_query(_house_sql(_minus_hours(start, 6), end)),
         "change_events": run_query(CHANGE_EVENTS_SQL),
         "queries": {
             "cooling15": _cooling_sql(start, end).strip(),
+            "house_hourly": _house_sql(_minus_hours(start, 6), end).strip(),
             "change_events": CHANGE_EVENTS_SQL.strip(),
             "bins15": _bins_sql(start, end).strip(),
             "energy_hourly": _energy_sql(start, end).strip(),
@@ -147,7 +160,7 @@ def fetch(start: str, end: str) -> dict:
 def load_or_fetch(start: str, end: str, cache: str | None) -> dict:
     if cache and Path(cache).exists():
         data = json.loads(Path(cache).read_text())
-        if data.get("window") == {"start": start, "end": end} and "change_events" in data:
+        if data.get("window") == {"start": start, "end": end} and "house_hourly" in data:
             return data
     data = fetch(start, end)
     if cache:

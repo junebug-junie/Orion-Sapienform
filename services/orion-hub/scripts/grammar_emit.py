@@ -71,8 +71,8 @@ def build_chat_turn_grammar_events(
     session_id: str,
     node_id: str = "athena",
     word_count: int = 0,
-    repair_pressure_level: float = 0.0,
-    repair_pressure_confidence: float = 0.0,
+    repair_pressure_level: float | None = 0.0,
+    repair_pressure_confidence: float | None = 0.0,
     repair_pressure_dims: dict[str, float] | None = None,
     has_repair_signal: bool = False,
     has_repair_pressure_reading: bool = False,
@@ -84,6 +84,16 @@ def build_chat_turn_grammar_events(
 ) -> list[GrammarEventV1]:
     observed_at_ = _dt(observed_at)
     emitted_at = datetime.now(timezone.utc)
+
+    # None = no repair-pressure reading this turn (appraisal skipped, failed, or its probe was
+    # shed). Emit no repair atom at all, so the chat projection keeps the level unknown instead of
+    # reading a fabricated 0.0.
+    if repair_pressure_level is None:
+        has_repair_signal = False
+        has_repair_pressure_reading = False
+        repair_pressure_level = 0.0
+    repair_pressure_level = float(repair_pressure_level)
+    repair_pressure_confidence = float(repair_pressure_confidence or 0.0)
 
     trace_id = f"hub.chat:{node_id}:{turn_id}"
 

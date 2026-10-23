@@ -71,3 +71,18 @@ class TurnAppraisalBundleV1(BaseModel):
     metadata_attachments: dict[str, Any] = Field(default_factory=dict)
     grammar_scalars: dict[str, dict[str, float]] = Field(default_factory=dict)
     failed_paradigms: list[str] = Field(default_factory=list)
+    # Why each failed paradigm produced no reading, e.g. {"repair_pressure": "shed:cabinet_hot"}
+    # (the GPU pool refused the probe), "llm_unavailable" (empty reply), "TimeoutError".
+    # A failed paradigm has NO slice in `paradigms`: its level is unknown, never 0.0.
+    failure_reasons: dict[str, str] = Field(default_factory=dict)
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_failure_reasons(self, handler):  # type: ignore[no-untyped-def]
+        # Every consumer validates with extra="forbid" (Hub, orion-thought via the stance
+        # request). Dropping the key when empty keeps a successful bundle byte-identical to
+        # before this field existed, so an un-rebuilt consumer only ever sees it on a turn whose
+        # appraisal already failed.
+        data = handler(self)
+        if isinstance(data, dict) and not data.get("failure_reasons"):
+            data.pop("failure_reasons", None)
+        return data

@@ -190,6 +190,15 @@ jobs:
       - name: Inner-state registry completeness
         run: python scripts/check_inner_state_registry.py
 
+      # Body economy "no unregistered veto" (Patch A1 of the 2026-10-23 body-economy
+      # design): every module that reads regulation/arousal/thermal/price state must be
+      # registered in config/physiology/contract.yaml, so the strained-veto pile cannot
+      # grow back while Phase 1 retires it. AST scan, no live data.
+      - name: Body economy contract (no unregistered veto)
+        run: |
+          python scripts/check_body_economy_contract.py
+          python -m pytest tests/test_check_body_economy_contract.py -q -p no:cacheprovider
+
       - name: scripts/ must not shadow a stdlib module
         run: python scripts/check_scripts_dir_no_stdlib_shadow.py
 

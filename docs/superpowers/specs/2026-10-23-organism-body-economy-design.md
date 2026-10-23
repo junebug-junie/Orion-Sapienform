@@ -374,10 +374,17 @@ Patch A puts every producer into `grammar_acts` first, and Patch D cuts over a f
 | **1 critical upkeep** | metacog-lane and fast-lane upkeep callers above (Mind's non-turn reads, metacog/journal, actions, memory consolidation and annotation, embodiment speech), biometrics, the dream's rest, act-ledger grading | A **reserved share** of each constraint, gpu3 slot-time first, sized as the 75th percentile of its own 14-day use and capped at 50%. Bids only against other Tier 1 wants |
 | **2 discretionary** | curiosity, painting, reading, retro play, outreach, ask-Claude, topic-foundry, durable investigation runs | Open market, on whatever Tiers 0 and 1 leave. topic-foundry, today the largest user of gpu3, moves here |
 
-**Tier 0 does not get vision past the heat reflex.** In the 7 days to 10-23, vision-council was refused **25,430 times** by `shed:cabinet_hot`. The reflex sheds by priority class, and council runs at `background`. So during the heat Orion was effectively not interpreting what it saw, and no economy setting changes that. Making vision truly vital needs a change to the reflex's class rules. That is Juniper's call (missing question 9):
+**Vision gets through the heat: a `perception` priority (decided by Juniper, 10-23).**
 
-- Option: council moves to a new `perception` priority that the reflex sheds only at a higher line, or never.
-- Its load is known: ~33 GPU-h a week on gpu3, a V100 at roughly 40–190 W.
+- **Why:** in the 7 days to 10-23, vision-council was refused **25,430 times** by `shed:cabinet_hot`. The reflex sheds by priority class, and council ran at `background`. Being Tier 0 in the economy alone would not have changed that.
+- **The change:**
+  - A new pool priority, `perception`, ordered `urgent > interactive > perception > system > background`. It ranks below Juniper's turn and is never shed by heat (`cabinet_hot`, `orion_self_shed`).
+  - Controller faults still apply.
+  - vision-council's route becomes `council_perception: {class: metacog, priority: perception}`.
+  - Every other GPU-using perception step gets the same route.
+- **Its load is known:** ~33 GPU-h a week on gpu3. The council's own transition gate already limits it.
+- **Bound:** an alert fires if perception's GPU use passes 2× its 14-day p90, so the exemption cannot quietly grow into a heat source.
+- **When:** this ships as Patch A0, alone, before the rest.
 
 **Placement consequence for gpu3.** Tiers 0 and 1 together own most of gpu3's useful work. Tier 2 callers (topic-foundry) get gpu3 only from what Tiers 0 and 1 leave, or are placed on another lane by Choice.
 
@@ -509,6 +516,56 @@ placement = the acceptable lane minimizing Σ price × cost
 - Contents: the bill forecast against the envelope, what was deferred and why, and proposals with numbers. For example: "GPU 2 has idled 8 days at ~45 W"; "the AC has not cycled since 10-18".
 - This is how Orion takes part in decisions only Juniper can make.
 
+### Execution seam: what runs through cortex verbs, and what does not (Juniper, 10-23)
+
+**Rule:**
+- **An act that Orion chooses runs as a cortex verb.** It is dispatched through cortex-orch and executed by cortex-exec, or started as a durable run from cortex, as `curiosity.investigate` already is.
+- **Autonomic machinery does not run as a verb.** Body readings, price updates, bid decisions, reflexes and GPU placement are deterministic, run every tick, and must not wait on cortex or touch an LLM (non-goal: "no LLM in the decision path").
+
+This mirrors the body: you choose to look; you do not choose to sweat.
+
+**Verb YAML is where a want's economics are declared.** The verb registry (`orion/cognition/verbs/*.yaml`, 108 verbs, read by `orion/cognition/plan_loader.py`) already carries `priority`, `requires_gpu` and `timeout_ms`. Each verb gains one block:
+
+```yaml
+physiology:
+  tier: 2                 # 0 | 1 | 2  (Organ 3b)
+  family: curiosity       # want family for weights + hunger
+  lanes: [agent, agent-deep]
+  deferrable_window_s: 21600   # how long it can wait and still be useful (0 = perishable)
+```
+
+**cortex-orch is the single bid site for self-initiated verbs.**
+
+- **When it bids:** when cortex-orch is about to dispatch a verb that is not part of Juniper's turn, it calls `physiology.client.bid()`, using the verb's `physiology` block plus the request's want fields.
+- **What it gives:** one choke point instead of about a dozen bid calls scattered across services, and one place to emit `act_opened`/`act_closed` with `ActCostV2` (cortex-orch already emits grammar events, `app/grammar_emit.py`).
+- **Interactive turns:** they come through cortex-orch with their own turn context and never bid. Phase 2 tests this.
+
+**How each producer gets there:**
+
+| producer | today | under this design |
+|---|---|---|
+| curiosity investigate / self-inquiry / self-sense eval | Hub tick → durable run via cortex (`curiosity.investigate`) | unchanged path; the bid moves from Hub's 8 gates to cortex-orch dispatch |
+| reading pull | Hub pipeline → turn | becomes a verb (`reading.pull`) dispatched through cortex-orch |
+| painting (thought visual chain) | orion-thought timer → durable `reverie.visual` hold | the chain is started by a verb (`reverie.visual`) through cortex-orch. The diffusion hold stays inside the durable graph |
+| dream cycle | orion-dream's own cycle (verbs `dream_cycle` etc. exist) | the dream's discharge is dispatched as `dream_cycle` through cortex-orch. The rest drive stays the dream's own reading (R2 template) |
+| outreach compose | Hub generates on chat rails | the compose step becomes a verb (`outreach.compose`). Quiet hours and the daily cap stay spinal |
+| retro play, ask-Claude, self-monitor inquiry | various | verbs through cortex-orch |
+| metacog daily / journal | cortex-exec verb on `metacog_background` | already a verb; it gets a `physiology` block (Tier 1) |
+| topic-foundry | calls the gateway directly | its scheduled runs start from a verb (`topic_foundry.run`, Tier 2). Inner LLM calls carry the run's lease |
+| vision-council, retinas, vision-host | pipeline, direct | **stays a pipeline**: perception is autonomic, Tier 0, priority `perception`. Not a verb. Orion's *chosen* looks already are verbs (`skills.perception.look_at_camera.v1`, `ask_camera`) |
+| body readings, prices, bids, reflex, pool | n/a | **autonomic, never verbs** |
+
+**New verbs this design adds (each with a producer and a consumer in the same patch):**
+
+- **`skills.physiology.state.v1`**: read-only, no GPU, the sibling of `look_at_camera`. Orion can inspect its own body mid-chat or in an agent turn: prices, the binding constraint, the hungriest want, and "why did I wait for X". Consumer: chat and agent turns.
+- **`physiology.body_report`**: composes the monthly or on-demand body report (Tier 2, outreach door). Consumer: outreach.
+- **`physiology.recommend_wake`**: drafts the hecate wake recommendation, with the expected kWh and the queue it would clear. Consumer: outreach, or the actuator if question 4 says (b).
+
+**What this buys:**
+- Every chosen act has one dispatch path, one bid point and one ledger emitter.
+- Tier and family are declared next to the verb they describe, where a reviewer will see them.
+- The Phase 2 gate can check the registry structurally instead of hunting call sites.
+
 ---
 
 ## Missing questions
@@ -530,7 +587,7 @@ placement = the acceptable lane minimizing Σ price × cost
    The reflex line itself does not move in either option. Recommendation: (b). Do not build it until Patch A's sensitivity estimate exists. If circe turns out to heat the cabinet, (b) is off the table.
 7. **Human sign-off on protected paths (Phase 2).** Do you want a real GitHub `CODEOWNERS` file plus branch protection that requires *your* approval on body-economy paths? Or only the CI gate described in Phase 2? CODEOWNERS only blocks merges if branch protection's "require review from code owners" is switched on, and that is a repo setting only you can change.
 8. ~~Tier 1 funding~~ **Decided 10-23:** vision and perception are Tier 0. Metacog- and fast-lane upkeep callers are Tier 1, with a reserved share. Tiers attach to callers, not lanes.
-9. **Vision past the heat reflex.** Should vision-council (and any GPU-using perception step) get a priority the 34 °C reflex does not shed, for example a new `perception` class? Without that, vision being Tier 0 still goes dark in heat, as it did 25,430 times in the last week.
+9. ~~Vision past the heat reflex~~ **Decided 10-23:** a new `perception` pool priority, never shed by heat, ordered below interactive (Patch A0).
 10. **Turn-path calls on `quick` and `metacog` system.** Patch A verifies live whether cortex-exec's `quick` stance brief and Mind's system-priority reads sit on Juniper's turn path. If they do, they are Tier 0, and they should be on interactive routes, which the reflex never sheds.
 
 ---
@@ -592,6 +649,7 @@ All new schemas are registered in `orion/schemas/registry.py`. Channels go in `o
     - thought `app/chain.py`
     - the visual-chain health monitor
 - **GPU pool:** `orion/gpu_pool/` (lane price publication, background bid-before-lease).
+- **Cortex:** `orion/cognition/verbs/*.yaml` (physiology blocks, new verbs), `orion/cognition/plan_loader.py`, `services/orion-cortex-orch/app/{orchestrator,durable_runs,grammar_emit}.py` (bid at dispatch, act emission), `services/orion-cortex-exec/app/` (the `skills.physiology.state.v1` skill).
 - **Felt state:** `orion/temporal_self/arcs.py`, `stance_cue.py`.
 - **Phase 2 gates and Phase 3 surface:** files listed in their own sections below.
 - **Self-monitor:** two bet adapters (once #2827's contract lands).
@@ -688,9 +746,10 @@ Each patch has its own tests, eval and live check. Patches B, C and E can run in
 
 | patch | contents | live proof |
 |---|---|---|
+| **A0. Perception priority** | New `perception` pool priority (never shed by heat, ordered below interactive). vision-council and the other GPU perception steps move to `council_perception`. Add the 2× p90 load alert. Update `config/gpu_pool.yaml`, `orion/gpu_pool/{scheduler,shed}.py`, the route-priority tests and vision-council's `.env`/`.env_example`. | On the next hot hour, `gpu_pool_events` shows vision-council granted while `cabinet_hot` is active, with 0 `shed:cabinet_hot` for that holder |
 | **A. Measurement spine** | `ActCostV2`, consumer-first, then filled on close. Every want producer emits `act_opened`/`act_closed` to `grammar_acts`, so curiosity, retro, vision-council, topic-foundry, ask-Claude and self-monitor all get graded. Persist `physiology_state` with the Body organ only (no prices). Replay harness. Heat-sensitivity passive fit with weather and lags (read-only). Remove the zombie env var and synthetic goal. Instrument output→decision-site links for weight source (a), and trace the personality graph's provenance for (c). **Early Phase 2 slice (Juniper, 10-23):** seed `config/physiology/contract.yaml` with the `readers` table (today's ~12–14 strained sites), and land the CI check "no unregistered veto", so no new veto appears while Phase 1 removes the old ones. | A1, A2; every producer has act rows; first sensitivity estimate per host, with its interval; G1 green |
 | **B. Budget, shadow** | Prices with anti-windup, ceilings and reservations. The Felt dials, plus a plain debug readout (JSON route only; the real surface is Phase 3). One owner for the 32 °C line. Delete `quota_budget.py`; wire `ClaudeLimitObservationV1`. Prices are computed and displayed but read by nothing. | Replay R1, R3, R4, R6 green; live prices visible |
-| **C. Appetite + Choice, shadow** | `WantV1`, `/physiology/bid`, the client, `want_ledger`. Every producer bids in `shadow`: it logs a would-fund decision next to its real gate decision. Holdback pulses start feeding the sensitivity fit. Tier 1 reservation and learned family weights are computed in shadow. | A3; a shadow-vs-real disagreement table for 7 days |
+| **C. Appetite + Choice, shadow** | `WantV1`, `/physiology/bid`, the client, `want_ledger`. Add `physiology` blocks to the verb YAML. cortex-orch bids at dispatch for self-initiated verbs. The new verbs `skills.physiology.state.v1` and the reading, outreach-compose and topic-foundry verbs. Every producer bids in `shadow`: it logs a would-fund decision next to its real gate decision. Holdback pulses start feeding the sensitivity fit. Tier 1 reservation and learned family weights are computed in shadow. | A3; a shadow-vs-real disagreement table for 7 days |
 | **D. Cutover, one reader per PR** | Curiosity first, then outreach, reading, painting, dream, retro, dispatch floor, then the remaining strained-gating sites. Each PR deletes that reader's old veto. **A family cuts over only once it is graded (≥30 graded closes).** | R2, A4, A5 per reader |
 | **E. Placement and wakefulness** | Lane prices on the GPU pool. Background bid-before-lease. Hecate wake recommendations (or the actuator, per question 4). | R5 live; recommendations logged with expected kWh |
 | **F. Self-knowledge and learning loop** | Stance-cue clause, Temporal Self `hunger` and `binding` arcs, the monthly body report, and forecasts as self-monitor bets. The bets are **blocked on #2827's `SettledBetV1`**; they are graded locally until it exists. | A6, A7; A8 once #2827 lands |
@@ -739,6 +798,9 @@ CLAUDE.md §0A already says: "if Juniper has to repeat a rule twice, turn it int
 | **Interactive never bids** | Static check plus a unit test: no `bid()` call is reachable from `interactive`/`urgent` code paths (chat turn handlers listed in the contract) | Juniper's turn getting deferred |
 | **One owner per threshold** | Thermal and price settings keys are owned by one module. This reuses `scripts/check_env_key_single_source.py` (extending its owner table), not a new scanner | Duplicate 32 °C lines |
 | **Acts carry cost** | AST: every `act_closed` construction passes `cost=` (ActCostV2). There is an allowlist for closers proven unable to measure, each with a reason | `cost_json` null again |
+| **Every verb declares its physiology** | Every `orion/cognition/verbs/*.yaml` has a valid `physiology` block (tier, family, lanes, window) | Untiered acts slipping into the market |
+| **Chosen acts go through cortex** | A module that starts a self-initiated act (opens an `ActV1` that is not Tier 0 or autonomic) outside cortex-orch must be listed in `readers` as a registered exception with a reason | Producers re-growing private bid paths |
+| **No unrouted GPU caller** | Every gateway caller names an explicit route; `LLM_ROUTE_DEFAULT` is removed | Calls with no tier |
 | **Constraint records complete** | Every `constraints` row has non-empty metric-gate fields, and its `rest_state_evidence.date` is ≤90 days old | Unanchored metrics entering prices |
 | **Replay stays green** | When a diff touches protected paths, CI runs the replay checks R1, R3 and R6 against a committed **hourly fixture** (`tests/fixtures/physiology/replay_2026-10-07_22.parquet`, aggregated, ~1 MB) | Silent behaviour drift in prices or anti-windup |
 

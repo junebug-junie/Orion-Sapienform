@@ -70,7 +70,7 @@ async def fake_retro(path, log):
     finished = iter(range(1, 7))
     async def status(_):
         # Retro shows only the newest goal_finished row; advance one per poll so the page must keep history.
-        i = next(finished, None)
+        i = next(finished, None) if session['scripted'] else None
         if i is not None: session['scripted'][0]['cognition']['last_finished'] = finished_row(i)
         return web.json_response(session)
     async def atlas(_): return web.json_response(ATLAS)
@@ -87,6 +87,7 @@ async def fake_retro(path, log):
             await sock.send_json({'connection_id': 'c0c0c0c0-0000-4000-8000-000000000003', 'generation': GEN})
         async for msg in sock:
             if msg.type != WSMsgType.TEXT: break
+        log.append(dict(op='ws_closed', channel=request.match_info['channel']))
         return sock
     app.add_routes([web.get('/health/ready', ready), web.get('/games', games), web.get(f'/sessions/{SID}', status),
                     web.get(f'/sessions/{SID}/atlas', atlas), web.post(f'/sessions/{SID}/{{op}}', op),
@@ -113,7 +114,7 @@ async def serve(output: Path, port: int, sock: str):
     spec = importlib.util.spec_from_file_location('retro_play_routes', HUB / 'scripts/retro_routes.py')
     mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
     log = []
-    await fake_retro(sock, log)
+    session = await fake_retro(sock, log)
     store = MemoryStore()
     store.value = dict(state='playing', session_id=SID, game_id='the-legend-of-zelda', started_at=__import__('time').time() - 300,
                        decisions=6, waiting=None, last_goal=zelda_session()['scripted'][0]['cognition']['goal'])
@@ -125,6 +126,11 @@ async def serve(output: Path, port: int, sock: str):
     @app.post('/__fixture/waiting')
     async def waiting():
         store.value = dict(store.value, state='waiting', waiting=dict(reason='shed:cabinet_hot', retry_after_sec=60))
+        return {}
+    @app.post('/__fixture/end_grant')
+    async def end_grant():
+        # The handed-off grant is gone while the game keeps running (e.g. leisure took the port).
+        session['scripted'] = []
         return {}
     @app.get('/__fixture/log')
     async def fixture_log():

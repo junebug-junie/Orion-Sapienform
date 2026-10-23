@@ -12,7 +12,7 @@ try{
   const assets=[];page.on('response',r=>{if(r.url().includes('/static/js/'))assets.push([r.url(),r.status()]);});
   await page.goto(url+'/retro');
   // Rendered template + linked asset.
-  assert(assets.some(([u,s])=>u.includes('/static/js/retro-panel.js?v=8') && s===200),JSON.stringify(assets));
+  assert(assets.some(([u,s])=>u.includes('/static/js/retro-panel.js?v=9') && s===200),JSON.stringify(assets));
   // Leisure is visible live on open, by watching only.
   await page.waitForSelector('#play:not([hidden])',{timeout:8000});
   await page.waitForFunction(()=>document.querySelector('#leisure').textContent.includes('playing alone'),{timeout:8000});
@@ -54,6 +54,24 @@ try{
   assert(control && control.body.action==='acquire' && control.body.port===0,JSON.stringify(log.retro));
   assert(log.retro.some(r=>r.op==='ws' && r.channel==='input'),'takeover never opened the input socket');
   assert(log.human>=1,'the relay did not record the human action');
+  // Handing off to Orion survives the window losing focus: the sponsor socket stays open,
+  // because Retro ends a grant whose sponsor disconnects.
+  const closed=l=>l.retro.filter(r=>r.op==='ws_closed' && r.channel==='input').length;
+  const before=closed(log);
+  await page.click('#cognitive');
+  for(let i=0;i<50;i++){log=await fixture();if(log.retro.some(r=>r.op==='scripted'))break;await new Promise(r=>setTimeout(r,100));}
+  assert(log.retro.some(r=>r.op==='scripted' && r.body.cognition===true),JSON.stringify(log.retro));
+  await page.evaluate(()=>window.dispatchEvent(new Event('blur')));
+  await new Promise(r=>setTimeout(r,1500));
+  log=await fixture();
+  assert.equal(closed(log),before,'a blur during a handoff closed the sponsor socket and would end Orion\'s turn');
+  // Once that grant ends while the game runs on, the page leaves handoff mode: a blur releases the socket.
+  await fetch(url+'/__fixture/end_grant',{method:'POST'});
+  await page.waitForFunction(()=>document.querySelector('#policy').textContent==='No scripted controller active.',{timeout:5000});
+  await new Promise(r=>setTimeout(r,300));
+  await page.evaluate(()=>window.dispatchEvent(new Event('blur')));
+  for(let i=0;i<50;i++){log=await fixture();if(closed(log)>before)break;await new Promise(r=>setTimeout(r,100));}
+  assert(closed(log)>before,'after the handoff ended, a blur must release the socket (page stuck in handoff mode)');
   assert.deepEqual(errors,[]);
   fs.writeFileSync(out+'/play-panel.json',JSON.stringify({atlas,goal,retro:log.retro.map(r=>r.op+(r.channel?':'+r.channel:'')),human:log.human},null,2));
 }finally{await browser.close();}

@@ -17,6 +17,8 @@
   // an older connect or pending heal can never override a newer choice.
   let wanted = false, away = false, connecting = 0, intent = 0, healPending = false, heals = 0, healWindow = 0;
   let scriptedMode = false, cognitivePort = null, planning = false, plannedAttempt = null;
+  // The grant this page handed off ({port, epoch}); epoch latches on the first status that shows it.
+  let handoffGrant = null;
   // Zelda (planner v2): one plan per Retro decision; a heat shed waits out retry_after_sec.
   let plannedDecision = null, planRetryAt = 0, watching = false;
   function heal() {
@@ -48,7 +50,7 @@
     gain.gain.value=el('mute').checked?0:1; await audio.resume();
   }
   function closeConnections() {
-    scriptedMode=false;cognitivePort=null;watching=false;
+    scriptedMode=false;cognitivePort=null;handoffGrant=null;watching=false;
     transportEpoch++; clearInterval(timer); keys.clear(); lease=null; outstanding.clear();
     if (input) { input.onclose=null; input.close(); } if (media) { media.onclose=null; media.close(); }
     input=null;media=null; pendingPacket=null; flushAudio();
@@ -79,12 +81,12 @@
     const result=await api(`sessions/${sid}/control`,{connection_id:connection,port:Number(el('port').value),action});
     if(epoch!==transportEpoch || document.hidden)return;
     lease=result;
-    scriptedMode=false;cognitivePort=null;
+    scriptedMode=false;cognitivePort=null;handoffGrant=null;
     seq=0; outstanding.clear();clearInterval(timer);timer=setInterval(send,50);send();screen.focus();
   }
   const wsURL = path => `${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/retro/${path}`;
   async function connect() {
-    scriptedMode=false;cognitivePort=null;
+    scriptedMode=false;cognitivePort=null;handoffGrant=null;
     const mine = ++intent; connecting = mine; away = false;
     try { await connectNow(); if (mine === intent) wanted = true; }
     finally { if (connecting === mine) connecting = 0; }
@@ -228,12 +230,12 @@
   async function handoff(cognition=false){
     if(!lease || input?.readyState!==WebSocket.OPEN)throw Error('Connect to this player before handing it to the script.');
     const port=lease.port, expected_epoch=lease.epoch, epoch=transportEpoch;
-    ++intent;wanted=false;scriptedMode=true;lease=null;keys.clear();outstanding.clear();clearInterval(timer);
+    ++intent;wanted=false;scriptedMode=true;handoffGrant=null;lease=null;keys.clear();outstanding.clear();clearInterval(timer);
     try{
       await api(`sessions/${sid}/scripted`,{connection_id:connection,generation,port,expected_epoch,action:'start',duration_seconds:60,cognition});
     }catch(err){scriptedMode=false;cognitivePort=null;throw Error(`Handoff failed: ${err.message}. Use Take this controller to return.`);}
     if(epoch!==transportEpoch)return;
-    cognitivePort=cognition?port:null;plannedAttempt=null;plannedDecision=null;planRetryAt=0;
+    cognitivePort=cognition?port:null;handoffGrant={port,epoch:null};plannedAttempt=null;plannedDecision=null;planRetryAt=0;
     report(cognition?'Orion goal experiment — 60 seconds. Take this controller to interrupt.':'Scripted right/jump baseline — 60 seconds. Take this controller to interrupt.');
     await showPolicy();
   }
@@ -241,9 +243,18 @@
   action('cognitive',()=>handoff(true));
   async function showPolicy(){
     if(!sid)return;
-    const current=sid, state=await api(`sessions/${sid}`);
+    const current=sid, grantAsked=handoffGrant, state=await api(`sessions/${sid}`);
     if(current!==sid)return;
-    if(state.state==='paused' && !(state.scripted||[]).length){scriptedMode=false;cognitivePort=null;}
+    if(state.state==='paused' && !(state.scripted||[]).length){scriptedMode=false;cognitivePort=null;handoffGrant=null;}
+    // Our grant ended (budget, Retro pause, or another controller such as leisure took the port):
+    // leave handoff mode so blur releases the sockets and a click takes the game back.
+    // Retro's status can lag the handoff, so the grant counts as gone only after a status showed it,
+    // and only from a status requested after the handoff.
+    if(scriptedMode && handoffGrant && handoffGrant===grantAsked){
+      const mine=(state.scripted||[]).find(p=>p.port===handoffGrant.port);
+      if(handoffGrant.epoch===null){if(mine)handoffGrant.epoch=mine.epoch;}
+      else if(!mine || mine.epoch!==handoffGrant.epoch){scriptedMode=false;cognitivePort=null;handoffGrant=null;}
+    }
     el('policy').textContent=(state.scripted||[]).length
       ? state.scripted.map(p=>`Player ${p.port+1}: ${p.policy_id} (${p.cognition?'goal experiment':'scripted'}, ${p.duration_seconds}s limit)`).join(' · ')
       : 'No scripted controller active.';
@@ -403,7 +414,11 @@
   document.addEventListener('fullscreenchange',()=>{
     el('fullscreen').textContent=document.fullscreenElement?'Exit fullscreen':'Fullscreen';screen.focus();});
   window.addEventListener('keyup',e=>{keys.delete(e.code);send();});
-  window.addEventListener('blur',()=>{away=true;neutral();});window.addEventListener('pagehide',neutral);window.addEventListener('gamepaddisconnected',neutral);
+  // Blur releases a human's held keys. A handoff holds no keys and the game is still on screen,
+  // so blur keeps it: closing the socket would end Orion's turn (Retro cancels a grant whose
+  // sponsor disconnects). A hidden tab or closed page still ends the handoff: nobody can watch.
+  window.addEventListener('blur',()=>{away=true;if(!scriptedMode)neutral();});window.addEventListener('pagehide',neutral);
+  window.addEventListener('gamepaddisconnected',()=>{if(!scriptedMode)neutral();});
   document.addEventListener('visibilitychange',()=>{if(document.hidden){away=true;neutral();}else{away=false;heal();}});
   window.addEventListener('focus',()=>{away=false;heal();});
   screen.addEventListener('pointerdown',()=>{away=false;if(scriptedMode)return;if(sid)wanted=true;heals=0;heal();});

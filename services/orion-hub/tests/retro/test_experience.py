@@ -647,3 +647,25 @@ def test_gateway_registers_the_coplay_exporter():
     bare = SimpleNamespace(state=SimpleNamespace())
     assert G.register_session_end_sink(bare, SimpleNamespace(RECALL_PG_DSN='')) is None
     assert not hasattr(bare.state, 'retro_session_end_sink') and bare.state.memory_pg_pool is None
+
+
+def test_gateway_opens_a_bus_for_the_coplay_play_act():
+    # Regression (2026-10-23): the gateway passed bus_provider=lambda: None, so co-play acts could
+    # never be published from the process that runs co-play.
+    from scripts import retro_gateway as G
+    app = SimpleNamespace(state=SimpleNamespace())
+    gate = asyncio.Event()
+    class Bus:
+        async def connect(self): await gate.wait()   # a slow Redis
+    async def run():
+        task = G.register_session_start_sink(app, SimpleNamespace(ORION_BUS_URL='redis://x:6379/0',
+                                                                  ORION_BUS_ENABLED=True),
+                                             bus_factory=lambda url: Bus())
+        # The opener exists before the bus connects: the relay never waits for Redis.
+        assert callable(app.state.retro_session_start_sink) and app.state.retro_act_bus is None
+        gate.set(); await task
+        assert isinstance(app.state.retro_act_bus, Bus)
+    asyncio.run(run())
+    off = SimpleNamespace(state=SimpleNamespace())
+    assert G.register_session_start_sink(off, SimpleNamespace(ORION_BUS_URL='', ORION_BUS_ENABLED=True)) is None
+    assert off.state.retro_act_bus is None

@@ -514,13 +514,15 @@ async def startup_event():
     # ------------------------------------------------------------
     # Orion plays Zelda (section F): co-play session ends (Lane B scripts/retro_routes.py
     # emit_session_end) -> memory export. Needs only the memory pool, so registered whatever the bus
-    # state; with no bus nothing needs closing (co-play has no play act).
-    from scripts.retro_memory_export import make_session_end_sink
+    # state. The handoff's hub.retro_coplay play act opens at its start (emit_session_start) and closes
+    # on export; with no bus neither is published.
+    from scripts.retro_memory_export import make_session_end_sink, make_session_start_sink
 
     app.state.retro_session_end_sink = make_session_end_sink(
         pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
         bus_provider=lambda: bus,
     )
+    app.state.retro_session_start_sink = make_session_start_sink(bus_provider=lambda: bus)
     if settings.ORION_BUS_ENABLED:
         try:
             logger.info(f"Connecting OrionBus → {settings.ORION_BUS_URL}")

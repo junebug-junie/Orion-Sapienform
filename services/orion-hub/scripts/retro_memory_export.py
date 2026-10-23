@@ -17,8 +17,10 @@ What it writes, in order:
 2. one ``memory_cards`` row through ``orion.core.storage.memory_cards.insert_card``, provenance and
    trust_source ``retro_play``, linked to session_id and lineage_id (cross-day recall);
 3. the card id back onto the session row (or ``card_error`` when the card failed);
-4. for a leisure session the motor allocator started (``dispatch_id``): the ``play`` act's close,
-   1 when the session had at least one real planner decision, else 0.
+4. the ``play`` act's close, 1 when the session had at least one real planner decision, else 0:
+   for a leisure session the motor allocator started, the ``hub.retro_leisure`` act keyed by its
+   ``dispatch_id``; for a co-play handoff, the ``hub.retro_coplay`` act keyed by the row key
+   (opened at the handoff start through ``make_session_start_sink``).
 
 The summary is facts and counts only (``build_session_summary``). No model writes it, and it never
 says "fun" or "learned". A session where a human drove more than half of the frames is "played
@@ -245,7 +247,7 @@ def session_end_inputs(ended: Any) -> dict[str, Any]:
     d = ended.as_dict() if hasattr(ended, "as_dict") else dict(ended)
     co_play = d.get("controller") == "co_play"
     sid = str(d.get("session_id") or "")
-    key = f"{sid}:{float(d.get('started_at') or 0):.3f}" if co_play and sid else sid
+    key = coplay_key(sid, d.get("started_at")) if co_play and sid else sid
     journal = [{"kind": "session_started", "at": _epoch(d.get("started_at"))},
                {"kind": "session_ended", "at": _epoch(d.get("ended_at")), "reason": d.get("end_reason")}]
     return dict(session_id=key, retro_session_id=sid or None, journal=[j for j in journal if j["at"]],
@@ -437,12 +439,26 @@ def _enabled() -> bool:
         return True
 
 
-async def _close_play(bus: Any, dispatch_id: str | None, session_id: str, *, produced: bool, note: str) -> None:
+async def _close_play(bus: Any, dispatch_id: str | None, session_id: str, *, produced: bool, note: str,
+                      kind: str = "leisure", retro_session_id: str | None = None) -> None:
+    if kind == "co_play":
+        if not session_id:
+            return
+        from scripts.act_emit import publish_coplay_closed
+
+        await publish_coplay_closed(bus, key=session_id, retro_session_id=retro_session_id, produced=produced,
+                                    note=note)
+        return
     if not dispatch_id:
         return
     from scripts.act_emit import publish_play_closed
 
     await publish_play_closed(bus, dispatch_id=dispatch_id, session_id=session_id, produced=produced, note=note)
+
+
+def coplay_key(retro_session_id: Any, started_at: Any) -> str:
+    """A co-play handoff's row key, also its play act's key: ``<retro session id>:<start epoch>``."""
+    return f"{retro_session_id}:{float(started_at or 0):.3f}"
 
 
 def _close_note(s: RetroPlaySessionSummaryV1) -> str:
@@ -483,11 +499,16 @@ async def export_session(
     enabled: bool | None = None,
     learned: Iterable[str] = (),
 ) -> ExportResult:
-    """Build, store and (for a leisure dispatch) close the act. Never raises: a failed export is
+    """Build, store and close the session's play act (leisure dispatch or co-play handoff). Never
+    raises: a failed export is
     returned and logged, and the session itself is already over."""
     on = _enabled() if enabled is None else enabled
+
+    async def close(*, produced: bool, note: str) -> None:
+        await _close_play(bus, dispatch_id, session_id, produced=produced, note=note, kind=kind,
+                          retro_session_id=retro_session_id)
     if not on:
-        await _close_play(bus, dispatch_id, session_id, produced=False, note="export_disabled")
+        await close(produced=False, note="export_disabled")
         logger.info("retro_memory_export_disabled session_id=%s", session_id)
         return ExportResult("disabled", session_id, reason="HUB_RETRO_MEMORY_EXPORT_ENABLED=false")
     try:
@@ -499,11 +520,11 @@ async def export_session(
                                   human_may_be_in_control=human_may_be_in_control,
                                   controller_frames=controller_frames, retro_session_id=retro_session_id)
     except ValueError as exc:
-        await _close_play(bus, dispatch_id, session_id, produced=False, note=str(exc)[:200])
+        await close(produced=False, note=str(exc)[:200])
         logger.warning("retro_memory_export_skipped session_id=%s reason=%s", session_id, exc)
         return ExportResult("skipped", session_id, reason=str(exc)[:200])
     if pool is None:
-        await _close_play(bus, dispatch_id, session_id, produced=False, note="no_memory_pool")
+        await close(produced=False, note="no_memory_pool")
         logger.warning("retro_memory_export_failed session_id=%s reason=no_memory_pool", session_id)
         return ExportResult("failed", session_id, reason="no_memory_pool", summary=s)
 
@@ -512,14 +533,13 @@ async def export_session(
             await _ensure_table(conn)
             claimed = await conn.fetchval(INSERT_SQL, *_row_values(s))
     except Exception as exc:  # noqa: BLE001
-        await _close_play(bus, dispatch_id, session_id, produced=False, note="session_row_failed")
+        await close(produced=False, note="session_row_failed")
         logger.warning("retro_memory_export_failed session_id=%s reason=session_row error=%s", session_id, exc)
         return ExportResult("failed", session_id, reason=f"session_row:{type(exc).__name__}", summary=s)
     if claimed is None:
         # Already exported (a replayed session end): one card per session, never a second. The act
         # close is repeated (same stable act id): the first one may not have been delivered.
-        await _close_play(bus, dispatch_id, session_id, produced=bool(s.decisions),
-                          note=_close_note(s))
+        await close(produced=bool(s.decisions), note=_close_note(s))
         logger.info("retro_memory_export_duplicate session_id=%s", session_id)
         return ExportResult("duplicate", session_id, summary=s)
 
@@ -539,7 +559,7 @@ async def export_session(
     except Exception:  # noqa: BLE001
         logger.warning("retro_memory_export_link_failed session_id=%s card_id=%s", session_id, card_id, exc_info=True)
 
-    await _close_play(bus, dispatch_id, session_id, produced=bool(s.decisions), note=_close_note(s))
+    await close(produced=bool(s.decisions), note=_close_note(s))
     logger.info("retro_memory_export session_id=%s card_id=%s kind=%s human_share=%s together=%s summary=%r",
                 session_id, card_id, s.kind, s.human_share, s.played_together, s.summary)
     return ExportResult("exported", session_id, card_id=str(card_id) if card_id else None,
@@ -562,6 +582,17 @@ async def export_session_end(*, pool: Any, bus: Any, ended: Any, dispatch_id: st
 export_leisure_outcome = export_session_end
 
 
+def make_session_start_sink(*, bus_provider):
+    """``app.state.retro_session_start_sink``: scripts/retro_routes.py watch_coplay calls it once per
+    co-play handoff, when it first sees a Zelda cognition policy, to open the handoff's play act."""
+    async def sink(retro_session_id: str, started_at: float) -> bool:
+        from scripts.act_emit import publish_coplay_opened
+
+        return await publish_coplay_opened(bus_provider(), key=coplay_key(retro_session_id, started_at),
+                                           retro_session_id=str(retro_session_id), started_at=started_at)
+    return sink
+
+
 def make_session_end_sink(*, pool_provider, bus_provider):
     """``app.state.retro_session_end_sink``: Lane B calls it with every co-play RetroSessionEnded."""
     async def sink(ended: Any) -> ExportResult:
@@ -569,6 +600,6 @@ def make_session_end_sink(*, pool_provider, bus_provider):
     return sink
 
 
-__all__ = ["CARD_SOURCE", "fetch_learned_lines", "learned_lines_from", "export_leisure_outcome", "export_session_end", "make_session_end_sink",
+__all__ = ["CARD_SOURCE", "fetch_learned_lines", "learned_lines_from", "export_leisure_outcome", "export_session_end", "make_session_end_sink", "make_session_start_sink", "coplay_key",
            "session_end_inputs", "DDL", "ExportResult", "INSERT_SQL", "TABLE", "build_session_summary", "export_session",
            "game_title", "item_words", "memory_card_for"]

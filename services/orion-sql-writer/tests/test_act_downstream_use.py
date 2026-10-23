@@ -20,8 +20,11 @@ def test_arc_source_tables_match_the_temporal_self_sources() -> None:
     # A direct ref only links if its table can be arc evidence; a new arc source must show up here.
     from app.act_downstream_use import ARC_SOURCE_TABLES
 
-    src = (REPO / "orion" / "temporal_self" / "sources.py").read_text()
-    assert set(ARC_SOURCE_TABLES) == set(re.findall(r'table="([a-z_]+)"', src))
+    ts = REPO / "orion" / "temporal_self"
+    tables = set(re.findall(r'table="([a-z_]+)"', (ts / "sources.py").read_text()))
+    tables |= set(re.findall(r'f"([a-z_]+):\{', (ts / "arcs.py").read_text()))   # e.g. the broadcast log
+    assert "substrate_attention_broadcast_log" in tables
+    assert set(ARC_SOURCE_TABLES) == tables
 
 
 def test_every_explicit_path_ends_in_an_arc_source_table() -> None:

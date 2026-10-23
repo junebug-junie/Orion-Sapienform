@@ -1056,8 +1056,16 @@ decision within 72 h? Read-only over its sources; writes only `act_downstream_us
 - `link_status`: `linked`, `no_output` (path exists, output row missing; `used=false`), or
   `no_link_path` (`used` NULL, never 0%: world-pulse reads, dream-carry pictures, outreach).
 - `window_closed=false` means a later decision can still flip `used`.
-- Every `ACT_DOWNSTREAM_USE_INTERVAL_SEC` (900) it recomputes acts opened in the last 5 days; an
-  empty table backfills every act (live: 266 acts in 0.07 s).
+- The decision must come after the act started and after its output row existed.
+- Limits: arcs are rewritten in place with no history, so the link reads an arc's current
+  `evidence_refs`; use is arc-granular (one citation credits every act in the arc, so
+  `arc_evidence_n` is stored and the report's `credit_closed` gives each 1/N); the only decision
+  site is the chat stance, so use is gated on Juniper chatting.
+- Report rates (closed windows): `use_rate` = used / linked; `use_rate_all` = used / (linked +
+  no_output), failed acts counted against the family.
+- Every `ACT_DOWNSTREAM_USE_INTERVAL_SEC` (900) it recomputes every act with no row, every act
+  whose window is still open, and acts opened in the last 5 days; an empty table backfills every
+  act (live: 266 acts in 0.07 s).
 - Log: `[ACT_DOWNSTREAM_USE] tick_complete rows_upserted=N`. Per-family report:
   `docker exec orion-athena-sql-writer python -m app.act_downstream_use 14`.
 

@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, DateTime, Index, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Index, Integer, String, Text
 
 from app.db import Base
 
@@ -16,7 +16,7 @@ class ActDownstreamUseSQL(Base):
     act_id = Column(String, primary_key=True)
     actor = Column(String, nullable=False)
     verb = Column(String, nullable=False)
-    opened_at = Column(DateTime(timezone=True))
+    started_at = Column(DateTime(timezone=True))   # opened_at, else created_at (close-before-open)
     link_status = Column(String, nullable=False)  # linked | no_output | no_link_path
     link_path = Column(String)                    # direct | painting | chat_row | retro_leisure
     output_ref = Column(Text)                     # <table>:<id> of the act's output (the used one if used)
@@ -25,9 +25,10 @@ class ActDownstreamUseSQL(Base):
     site = Column(String)
     evidence_ref = Column(Text)
     arc_id = Column(String)
+    arc_evidence_n = Column(Integer)               # refs in the citing arc (arc-granular credit)
     decision_id = Column(String)
     window_end = Column(DateTime(timezone=True))
     window_closed = Column(Boolean, nullable=False)
     refreshed_at = Column(DateTime(timezone=True), nullable=False)
 
-    __table_args__ = (Index("idx_act_downstream_use_actor_opened", "actor", "opened_at"),)
+    __table_args__ = (Index("idx_act_downstream_use_actor_started", "actor", "started_at"),)

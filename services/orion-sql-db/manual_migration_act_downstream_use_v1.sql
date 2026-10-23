@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS act_downstream_use (
     act_id        varchar PRIMARY KEY,
     actor         varchar NOT NULL,
     verb          varchar NOT NULL,
-    opened_at     timestamptz,
+    started_at    timestamptz,
     link_status   varchar NOT NULL,
     link_path     varchar,
     output_ref    text,
@@ -19,10 +19,11 @@ CREATE TABLE IF NOT EXISTS act_downstream_use (
     site          varchar,
     evidence_ref  text,
     arc_id        varchar,
+    arc_evidence_n integer,
     decision_id   varchar,
     window_end    timestamptz,
     window_closed boolean NOT NULL,
     refreshed_at  timestamptz NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_act_downstream_use_actor_opened ON act_downstream_use (actor, opened_at);
+CREATE INDEX IF NOT EXISTS idx_act_downstream_use_actor_started ON act_downstream_use (actor, started_at);

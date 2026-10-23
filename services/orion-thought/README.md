@@ -146,13 +146,13 @@ is a street section):
   emits an expectation, so this is empty for the camera's first week.
 - **The day so far** (2026-10-23): one line from `vision_rollup` -- today's
   running day row ("Walkway Fri 23 Oct 2026 (so far, through 10:00): people: at
-  least 1, at most 2 ..."), or, before today has a day row, the newest complete
-  hour row from the last 3 h. Shown only through
+  least 1, at most 2 ..."). Today's row only: the writer builds it with today's
+  first hour, so just after midnight there is no line. Shown only through
   `orion.vision.walkway_rollup.display_line`, so people are a range and an old
   rules_version 1 row is re-rendered or dropped, never shown with a bare count.
   Cut at a clause boundary to `ORION_REVERIE_STREET_DAY_MAX_CHARS` (480); a
-  first clause longer than that means no line. Yesterday's day row and older
-  hours are not "the day so far" and are skipped. Context key `street_day`;
+  first clause longer than that means no line. Yesterday's row is not "the day
+  so far" and is skipped. Context key `street_day`;
   `ORION_REVERIE_STREET_DAY_ENABLED=false` turns only this line off. A failed
   read costs only this line.
 

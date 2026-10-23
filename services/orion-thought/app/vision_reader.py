@@ -257,34 +257,53 @@ def read_recent_street_graded(
 # --- The walkway's day so far (vision_rollup), 2026-10-23 ---------------------
 #
 # One line: today's running day rollup ("Walkway Fri 23 Oct 2026 (so far,
-# through 10:00): people: at least 1, at most 2 ..."), or, when today has no
-# day row yet (just after local midnight), the newest complete hour row from
-# the last few hours. Rendered ONLY through walkway_rollup.display_line: a row
-# from before count-range rules is re-rendered as a range, an unreadable one is
-# dropped -- never the raw stored line, which may hold a bare people count.
+# through 10:00): people: at least 1, at most 2 ..."). Today's day row only:
+# the rollup writer builds it in the same tick as today's first hour row, so
+# there is no hour-only gap to fill, and yesterday's rows are not "the day so
+# far". Rendered ONLY through walkway_rollup.display_line: a row from before
+# count-range rules is re-rendered as a range, an unreadable one is dropped --
+# never the raw stored line, which may hold a bare people count.
 
 STREET_DAY_ROLLUP_SQL = (
-    "SELECT grain, line, rollup FROM vision_rollup "
-    "WHERE stream_id IN :stream_ids AND ("
-    "  (grain = 'day' AND period_start >= :day_start) "
-    "  OR (grain = 'hour' AND complete AND period_start >= :hour_since)) "
-    "ORDER BY CASE WHEN grain = 'day' THEN 0 ELSE 1 END, period_start DESC "
-    "LIMIT 3"
+    "SELECT stream_id, line, rollup FROM vision_rollup "
+    "WHERE stream_id IN :stream_ids AND grain = 'day' AND period_start >= :day_start "
+    "ORDER BY period_start DESC"
 )
-# A complete hour older than this is not "the day so far".
-_STREET_HOUR_FALLBACK_HOURS = 3
+
+
+def _top_level_clauses(line: str) -> list[str]:
+    """Split on "; " outside brackets: "busiest 09:00 (... 8.8; people ...)" stays whole."""
+    out: list[str] = []
+    cur: list[str] = []
+    depth = 0
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        if depth == 0 and line.startswith("; ", i):
+            out.append("".join(cur))
+            cur = []
+            i += 2
+            continue
+        cur.append(ch)
+        i += 1
+    out.append("".join(cur))
+    return out
 
 
 def trim_rollup_line(line: str, max_chars: int) -> str:
-    """Cut at a clause boundary ("; "), never inside one: the first clause holds the
-    people range ("at least 1, at most 2"), and a hard cut there could leave a bare
-    number. A first clause longer than the budget means no line at all."""
+    """Cut at a top-level clause boundary ("; "), never inside one: the first clause
+    holds the people range ("at least 1, at most 2"), and a hard cut there could leave
+    a bare number. A first clause longer than the budget means no line at all."""
     line = (line or "").strip()
     if max_chars <= 0 or not line:
         return ""
     if len(line) <= max_chars:
         return line
-    clauses = line.split("; ")
+    clauses = _top_level_clauses(line)
     kept = clauses[0]
     if len(kept) + 1 > max_chars:
         return ""
@@ -303,7 +322,7 @@ def read_street_day_line(
     now: datetime | None = None,
 ) -> str:
     """The walkway's day so far as one honest line, or "". Never raises; "" on any
-    failure, when ``stream_ids`` is empty, or when no row from today is readable."""
+    failure, when ``stream_ids`` is empty, or when today has no readable day row."""
     ids = [str(s).strip() for s in stream_ids if str(s).strip()]
     if max_chars <= 0 or not ids:
         return ""
@@ -314,6 +333,7 @@ def read_street_day_line(
     try:
         tz = ZoneInfo(tz_name)
     except Exception:
+        logger.warning("bad street day timezone %r; using UTC (shifts 'today')", tz_name)
         tz = timezone.utc
     now = now or datetime.now(timezone.utc)
     local = now.astimezone(tz)
@@ -325,12 +345,14 @@ def read_street_day_line(
         with _get_engine().connect() as conn:
             rows = conn.execute(
                 stmt,
-                {"stream_ids": ids, "day_start": day_start,
-                 "hour_since": now - timedelta(hours=_STREET_HOUR_FALLBACK_HOURS)},
+                {"stream_ids": ids, "day_start": day_start},
             ).mappings().all()
     except Exception as exc:
         logger.warning("street day rollup read failed: %s", exc)
         return ""
+    # Configured order breaks a tie between cameras (walkway before doorbell).
+    rank = {sid: i for i, sid in enumerate(ids)}
+    rows = sorted(rows, key=lambda r: rank.get(str(r.get("stream_id")), len(ids)))
     for row in rows:
         line = trim_rollup_line(display_line(row.get("line"), row.get("rollup")), max_chars)
         if line:

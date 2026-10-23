@@ -142,3 +142,34 @@ def test_resolve_concern_cards_builds_real_cards_unmocked() -> None:
     cards = resolve_concern_cards(broadcast, referent_loader=loader)
     assert len(cards) == 1
     assert "PR title" in cards[0].human_text
+
+
+def test_reading_the_walkway_day_line_does_not_load_substrate() -> None:
+    """read_street_day_line imports orion.vision.walkway_rollup at call time; that must
+    stay stdlib-light (no orion.substrate, no requests) in the thin container."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    service_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[3]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join([str(service_root), str(repo_root)])
+    env["POSTGRES_URI"] = "postgresql://x:x@127.0.0.1:1/nope"
+    code = (
+        "import sys\n"
+        "from app import vision_reader\n"
+        "assert vision_reader.read_street_day_line("
+        " stream_ids=['walkway'], tz_name='America/Denver', max_chars=480) == ''\n"
+        "assert 'orion.vision.walkway_rollup' in sys.modules\n"
+        "sub=[m for m in sys.modules if m.startswith('orion.substrate')]\n"
+        "assert not sub, sub\n"
+        "assert 'requests' not in sys.modules\n"
+        "print('ok')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env, cwd=str(service_root)
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout

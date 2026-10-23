@@ -132,28 +132,63 @@ def test_unreadable_rollup_costs_the_line(rollup_db):
     assert _read() == ""
 
 
-def test_yesterdays_day_row_and_old_hours_are_not_the_day_so_far(rollup_db):
+def test_yesterdays_day_row_and_hour_rows_are_not_the_day_so_far(rollup_db):
     _row(rollup_db, grain="day", period_start=TODAY - timedelta(days=1),
          line="Walkway Thu 22 Oct 2026: people: at least 2, at most 21.", rollup={"rules_version": 2})
-    _row(rollup_db, grain="hour", period_start=NOW - timedelta(hours=5),
-         line="Walkway 05:00-06:00: 1 vehicle passing.", rollup={"rules_version": 2})
+    _row(rollup_db, grain="hour", period_start=NOW - timedelta(hours=1),
+         line="Walkway 09:00-10:00: 2 strollers.", rollup={"rules_version": 2})
     assert _read() == ""
 
 
-def test_just_after_midnight_falls_back_to_the_newest_complete_hour(rollup_db):
-    now = datetime(2026, 10, 24, 7, 10, tzinfo=timezone.utc)  # 01:10 MDT, no day row yet
-    _row(rollup_db, grain="hour", period_start=datetime(2026, 10, 24, 6, 0, tzinfo=timezone.utc),
-         line="Walkway 00:00-01:00 (Sat 24 Oct): nobody passed.", rollup={"rules_version": 2})
-    _row(rollup_db, grain="hour", period_start=datetime(2026, 10, 24, 7, 0, tzinfo=timezone.utc),
-         line="Walkway 01:00-02:00 (Sat 24 Oct): running.", rollup={"rules_version": 2}, complete=False)
-    assert _read(now=now) == "Walkway 00:00-01:00 (Sat 24 Oct): nobody passed."
-
-
-def test_day_row_wins_over_hours(rollup_db):
-    _row(rollup_db, grain="hour", period_start=NOW - timedelta(hours=1),
-         line="Walkway 09:00-10:00: 2 strollers.", rollup={"rules_version": 2})
+def test_just_after_midnight_yesterdays_late_hours_are_not_today(rollup_db):
+    """00:30 MDT Sat: the writer has not rolled up today's first hour, so there is no
+    day row yet. Yesterday's 23:00 hour is 1.5 h old and must not stand in for it."""
+    now = datetime(2026, 10, 24, 6, 30, tzinfo=timezone.utc)
+    _row(rollup_db, grain="hour", period_start=datetime(2026, 10, 24, 5, 0, tzinfo=timezone.utc),
+         line="Walkway 23:00-00:00 (Fri 23 Oct): 1 vehicle passing.", rollup={"rules_version": 2})
     _row(rollup_db, grain="day", period_start=TODAY, line=V2_DAY_LINE, rollup={"rules_version": 2})
-    assert _read() == V2_DAY_LINE
+    assert _read(now=now) == ""
+
+
+def test_two_cameras_on_one_day_follow_the_configured_order(rollup_db):
+    _row(rollup_db, grain="day", period_start=TODAY, line="Doorbell day: people: at least 1, at most 1.",
+         rollup={"rules_version": 2}, stream="doorbell")
+    _row(rollup_db, grain="day", period_start=TODAY, line=V2_DAY_LINE, rollup={"rules_version": 2})
+    assert _read(stream_ids=["walkway", "doorbell"]) == V2_DAY_LINE
+    assert _read(stream_ids=["doorbell", "walkway"]).startswith("Doorbell day")
+
+
+def test_a_real_rules_version_1_row_is_re_rendered_as_a_range(rollup_db):
+    """Unpatched display_line on a row built by the real rollup code, then stripped to
+    what rules_version 1 wrote (same recipe as orion-sql-writer's _v1 test helper)."""
+    from datetime import date
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("America/Denver")
+    d = date(2026, 10, 23)
+    children = []
+    for i, h in enumerate(wr.child_periods(wr.day_period(d, tz), tz)):
+        ids = [f"p{i}", "a"] if i in (8, 9) else []
+        sightings = [wr.SightingRow(sighting_id=f"s-{x}-{i}", individual_id=x,
+                                    started_at=h.start + timedelta(minutes=1), kind="person", label=None)
+                     for x in ids]
+        children.append((h, wr.build_hour(wr.HourInputs(stream_id="walkway", period=h, sightings=sightings,
+                                                        camera_minutes=60), tz)))
+    day = wr.build_parent("walkway", wr.day_period(d, tz), children, tz)
+    old = json.loads(json.dumps(day, default=str))
+    old["rules_version"] = 1
+    for v in (old.get("kinds") or {}).values():
+        v.pop("count_range", None)
+    for e in old.get("series") or []:
+        e.pop("people", None)
+    for k in ("busiest", "quietest"):
+        if old.get(k):
+            old[k].pop("people", None)
+    stored = "Walkway Fri 23 Oct 2026: 4 passings (4 people) by 3 distinct."
+    _row(rollup_db, grain="day", period_start=TODAY, line=stored, rollup=old)
+    got = _read()
+    assert got and got != stored
+    assert "at least" in got and wr.bare_people_counts(got) == []
 
 
 def test_other_streams_and_off_switches(rollup_db):
@@ -183,12 +218,23 @@ def test_budget_cuts_at_a_clause_and_keeps_the_range(rollup_db):
     assert _read(max_chars=60) == ""
 
 
+def test_every_budget_is_a_range_or_nothing(rollup_db):
+    _row(rollup_db, grain="day", period_start=TODAY, line=V2_DAY_LINE, rollup={"rules_version": 2})
+    for budget in range(1, len(V2_DAY_LINE) + 2):
+        got = _read(max_chars=budget)
+        assert len(got) <= budget
+        assert got == "" or RANGE in got, budget
+        assert wr.bare_people_counts(got) == [], (budget, got)
+        assert got.count("(") == got.count(")"), (budget, got)  # never cut inside brackets
+
+
 def test_trim_rollup_line_pure():
     from app.vision_reader import trim_rollup_line
 
     assert trim_rollup_line("a; b; c", 100) == "a; b; c"
     assert trim_rollup_line("aaaa; bbbb; cccc", 11) == "aaaa; bbbb…"
     assert trim_rollup_line("", 100) == ""
+    assert trim_rollup_line("a; b (x; y); c", 13) == "a; b (x; y)…"
 
 
 # --- the prompt and the tick ---------------------------------------------------

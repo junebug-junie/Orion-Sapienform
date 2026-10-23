@@ -89,6 +89,13 @@
         : b.orion_kwh === null ? "no Orion data" : b.house_kwh === null ? "needs RMP data" : "no hour both meters have") +
         (b.partial_hours ? "; " + b.partial_hours + " partly measured h left out" : ""),
     });
+    var delta = deltaPoint(b);
+    rows.push({
+      name: "Rest of the house", value: delta ? fmtKwh(delta.rest) : "unknown",
+      note: !delta ? "" : delta.rest < 0
+        ? "Orion read above the house: RMP rounds each hour to whole kWh"
+        : "house " + fmtKwh(delta.house) + " − Orion " + fmtKwh(delta.orion) + ", same " + b.overlap_hours + " h",
+    });
     rows.push({
       name: "Orion cost", value: fmtUsd(b.orion_usd),
       note: b.orion_kwh === null ? "no Orion data" : b.orion_usd === null ? "no price for these hours"
@@ -212,25 +219,73 @@
     el.innerHTML = '<svg width="' + W + '" height="' + H + '" role="img" aria-label="Orion kWh by source against the house">' + svg + "</svg>";
   }
 
-  function renderShareChart(el, data) {
-    var W = Math.max(el.clientWidth || 800, 320), H = 180;
+  // Orion and the house over the same hours (the share's hours), so the gap between the two
+  // lines is exactly the rest of the house. Null where those hours don't exist.
+  function deltaPoint(b) {
+    if (!b.overlap_hours) return null;
+    return {
+      house: b.house_kwh_overlap, orion: b.orion_kwh_overlap, rest: b.house_kwh_overlap - b.orion_kwh_overlap,
+      // Both meters cover under 90% of the period (RMP lag, a gap): a dip there is missing hours, not
+      // less use. A few hours short of a full week is not worth flagging.
+      partial: b.overlap_hours < 0.9 * b.hours_elapsed,
+    };
+  }
+
+  function renderDeltaChart(el, data) {
+    var W = Math.max(el.clientWidth || 800, 320), H = 220;
     var buckets = data.buckets;
     var plotH = H - M.top - M.bottom;
     var band = (W - M.left - M.right) / Math.max(buckets.length, 1);
-    var y = function (v) { return M.top + plotH * (1 - v); };
-    var svg = axisAndGrid(W, H, 1, function (v) { return Math.round(v * 100) + "%"; }, 4);
-    var path = "", pen = false, dots = "";
-    buckets.forEach(function (b, i) {
-      var x = M.left + band * (i + 0.5);
-      if (b.orion_share === null) { pen = false; return; }
-      var yy = y(Math.min(b.orion_share, 1));
-      path += (pen ? "L" : "M") + x + "," + yy;
-      pen = true;
-      dots += '<circle cx="' + x + '" cy="' + yy + '" r="4" fill="var(--ink-2)" stroke="var(--surface)" stroke-width="2"/>';
+    var points = buckets.map(deltaPoint);
+    // Orion can read above the house in an hour (RMP rounds to whole kWh), so scale to both.
+    var yMax = niceMax(Math.max.apply(null, points.map(function (p) { return p ? Math.max(p.house, p.orion) : 0; }).concat([0])));
+    var y = function (v) { return M.top + plotH * (1 - Math.max(v, 0) / yMax); };
+    var xAt = function (i) { return M.left + band * (i + 0.5); };
+    var svg = axisAndGrid(W, H, yMax, function (v) { return v >= 100 ? Math.round(v) : +v.toFixed(1); }, 4);
+    // Contiguous runs of known points: a missing period breaks both lines and the gap fill.
+    var runs = [], run = [];
+    points.forEach(function (p, i) {
+      if (p) { run.push(i); } else if (run.length) { runs.push(run); run = []; }
     });
-    svg += '<path d="' + path + '" fill="none" stroke="var(--ink-2)" stroke-width="2"/>' + dots;
-    svg += xLabels(buckets, W, H, band) + hitTargets(buckets, W, H, band);
-    el.innerHTML = '<svg width="' + W + '" height="' + H + '" role="img" aria-label="Orion share of house kWh">' + svg + "</svg>";
+    if (run.length) runs.push(run);
+    var gap = "", lines = "", dots = "";
+    runs.forEach(function (r) {
+      if (r.length === 1) {
+        var i0 = r[0];
+        gap += '<line x1="' + xAt(i0) + '" x2="' + xAt(i0) + '" y1="' + y(points[i0].house) + '" y2="' + y(Math.min(points[i0].orion, points[i0].house)) +
+          '" stroke="var(--rest-fill)" stroke-width="10"/>';
+      } else {
+        var top = r.map(function (i) { return xAt(i) + "," + y(points[i].house); });
+        // Never shade a negative "rest": where Orion reads above the house the fill closes to zero.
+        var bottom = r.slice().reverse().map(function (i) { return xAt(i) + "," + y(Math.min(points[i].orion, points[i].house)); });
+        gap += '<polygon points="' + top.concat(bottom).join(" ") + '" fill="var(--rest-fill)"/>';
+      }
+      ["house", "orion"].forEach(function (key) {
+        var color = key === "house" ? "var(--ink)" : "var(--orion-total)";
+        for (var k = 1; k < r.length; k++) {
+          var a = r[k - 1], c = r[k];
+          lines += '<line x1="' + xAt(a) + '" y1="' + y(points[a][key]) + '" x2="' + xAt(c) + '" y2="' + y(points[c][key]) +
+            '" stroke="' + color + '" stroke-width="2"' +
+            (points[a].partial || points[c].partial ? ' stroke-dasharray="4 3"' : "") + "/>";
+        }
+        r.forEach(function (i) {
+          var hollow = points[i].partial;
+          dots += '<circle cx="' + xAt(i) + '" cy="' + y(points[i][key]) + '" r="4" fill="' + (hollow ? "var(--surface)" : color) +
+            '" stroke="' + (hollow ? color : "var(--surface)") + '" stroke-width="2"/>';
+        });
+      });
+    });
+    svg += gap + lines + dots + xLabels(buckets, W, H, band) + hitTargets(buckets, W, H, band);
+    el.innerHTML = '<svg width="' + W + '" height="' + H + '" role="img" aria-label="Orion against the whole house, same hours, kWh">' + svg + "</svg>";
+  }
+
+  function renderDeltaLegend(el) {
+    el.innerHTML = [
+      '<span class="flex items-center gap-1.5"><span class="inline-block w-4 border-t-2" style="border-color:var(--ink)"></span>whole house</span>',
+      '<span class="flex items-center gap-1.5"><span class="inline-block w-4 border-t-2" style="border-color:var(--orion-total)"></span>Orion (all sources)</span>',
+      '<span class="flex items-center gap-1.5"><span class="inline-block w-3 h-3 rounded-sm" style="background:var(--rest-fill)"></span>rest of the house</span>',
+      '<span class="flex items-center gap-1.5"><span class="inline-block w-2.5 h-2.5 rounded-full border-2" style="border-color:var(--ink-2)"></span>hollow: both meters cover only part of that period</span>',
+    ].join("");
   }
 
   function renderLegend(el, sources) {
@@ -316,7 +371,7 @@
 
   // A failed load must not leave the previous grain's numbers looking current.
   function clearView(doc) {
-    ["oeKwhChart", "oeShareChart", "oeTable", "oeLegend", "oeOrionKwhNote", "oeHouseKwhNote", "oeHouseUsdNote"]
+    ["oeKwhChart", "oeDeltaChart", "oeDeltaLegend", "oeTable", "oeLegend", "oeOrionKwhNote", "oeHouseKwhNote", "oeHouseUsdNote"]
       .forEach(function (id) { doc.getElementById(id).innerHTML = ""; });
     ["oeOrionKwh", "oeHouseKwh", "oeShare", "oeOrionUsd", "oeHouseUsd"]
       .forEach(function (id) { doc.getElementById(id).textContent = "unknown"; });
@@ -334,11 +389,12 @@
     renderTiles(doc, data.buckets);
     doc.getElementById("oeHourNote").classList.toggle("hidden", data.grain !== "hour");
     renderLegend(doc.getElementById("oeLegend"), data.sources);
-    var kwh = doc.getElementById("oeKwhChart"), share = doc.getElementById("oeShareChart");
+    var kwh = doc.getElementById("oeKwhChart"), delta = doc.getElementById("oeDeltaChart");
     renderKwhChart(kwh, data);
-    renderShareChart(share, data);
+    renderDeltaChart(delta, data);
+    renderDeltaLegend(doc.getElementById("oeDeltaLegend"));
     renderTable(doc.getElementById("oeTable"), data);
-    wireHover(doc, [kwh, share], data);
+    wireHover(doc, [kwh, delta], data);
   }
 
   function load(doc, grain) {
@@ -372,7 +428,7 @@
   var api = {
     GRAINS: GRAINS, colorFor: colorFor, sourceName: sourceName, fmtKwh: fmtKwh, fmtUsd: fmtUsd,
     fmtPct: fmtPct, niceMax: niceMax, labelEvery: labelEvery, housePartial: housePartial,
-    tooltipRows: tooltipRows, windowTotals: windowTotals, clearView: clearView, init: init,
+    tooltipRows: tooltipRows, deltaPoint: deltaPoint, windowTotals: windowTotals, clearView: clearView, init: init,
   };
   if (typeof window !== "undefined") {
     window.OrionEnergyTab = api;

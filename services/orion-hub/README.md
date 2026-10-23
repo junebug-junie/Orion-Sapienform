@@ -3013,9 +3013,11 @@ sql-writer (Hub's `DATABASE_URL`). Spec:
 `#orion-energy` (iframe: `static/orion-energy.html` + `static/js/orion-energy.js`) shows what
 Orion itself draws -- athena, circe, hecate and the cabinet AC's Shelly plug -- stacked per
 hour / day / week / month / quarter / year, with the RMP house meter as a line on the same
-kWh axis and Orion's share of the house in a second chart. Hovering a period lists each
-source's kWh and how much of the period it was measured, the house kWh and how many RMP
-hours have arrived, the share, and the dollars.
+kWh axis. A second chart draws the whole house and Orion as two kWh lines over the same
+hours (the share's hours), with the gap between them shaded as the rest of the house; hollow,
+dashed points mark periods where both meters cover under 90% of the time. Hovering a period
+lists each source's kWh and how much of the period it was measured, the house kWh and how
+many RMP hours have arrived, the share, the rest of the house, and the dollars.
 
 API: `GET /api/energy/orion?grain=day&periods=31` (`scripts/energy_routes.py`). Reads
 `orion_energy_hourly` (sql-writer's rollup), `energy_usage_interval` and the newest pricing

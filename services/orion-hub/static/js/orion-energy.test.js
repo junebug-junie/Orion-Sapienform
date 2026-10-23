@@ -87,3 +87,23 @@ test("an empty bucket blames the missing meter, not RMP", () => {
   const noHouse = tab.tooltipRows(bucket({ orion_kwh: 5, kwh_by_source: { athena: 5 } }), ["athena"]);
   assert.equal(noHouse.find((r) => r.name === "Orion share").note, "needs RMP data");
 });
+
+test("delta point and tooltip: the rest of the house is house minus Orion over the same hours", () => {
+  const b = bucket({ overlap_hours: 24, orion_kwh_overlap: 54, house_kwh_overlap: 102, orion_share: 0.529 });
+  assert.deepEqual(tab.deltaPoint(b), { house: 102, orion: 54, rest: 48, partial: false });
+  const lagging = bucket({ complete: false, hours_elapsed: 13.5, overlap_hours: 2, orion_kwh_overlap: 4, house_kwh_overlap: 7 });
+  assert.equal(tab.deltaPoint(lagging).partial, true);
+  const nearlyFullWeek = bucket({ hours_elapsed: 168, overlap_hours: 160, orion_kwh_overlap: 340, house_kwh_overlap: 660 });
+  assert.equal(tab.deltaPoint(nearlyFullWeek).partial, false);
+  assert.equal(tab.deltaPoint(bucket({ house_kwh: 60, house_hours: 20 })), null);
+  const rest = tab.tooltipRows(b, []).find((r) => r.name === "Rest of the house");
+  assert.equal(rest.value, "48.0 kWh");
+  assert.equal(rest.note, "house 102 kWh − Orion 54.0 kWh, same 24 h");
+});
+
+test("Orion above the house (whole-kWh rounding) is explained, not shown as a bare negative", () => {
+  const b = bucket({ hours_elapsed: 1, overlap_hours: 1, orion_kwh_overlap: 1.4, house_kwh_overlap: 1, orion_share: 1.4 });
+  assert.equal(tab.deltaPoint(b).rest < 0, true);
+  const rest = tab.tooltipRows(b, []).find((r) => r.name === "Rest of the house");
+  assert.equal(rest.note, "Orion read above the house: RMP rounds each hour to whole kWh");
+});

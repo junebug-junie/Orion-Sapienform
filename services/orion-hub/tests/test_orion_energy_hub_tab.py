@@ -29,7 +29,7 @@ def test_app_js_routes_hash_click_and_visibility() -> None:
 
 def test_every_id_the_page_js_writes_exists_in_the_page() -> None:
     written = set(re.findall(r'getElementById\("(oe[A-Z][A-Za-z]+)"\)', PAGE_JS))
-    assert {"oeKwhChart", "oeShareChart", "oeTooltip", "oeTable"} <= written
+    assert {"oeKwhChart", "oeDeltaChart", "oeDeltaLegend", "oeTooltip", "oeTable"} <= written
     for element_id in written:
         assert f'id="{element_id}"' in PAGE, element_id
 

@@ -47,6 +47,9 @@ class RetroSessionEnded:
     rooms_new: Optional[int] = None
     deaths: Optional[int] = None
     controller_frames: Optional[dict] = None   # Retro's frames_by_controller {human, script, leisure, none}
+    # Facts read back from orion-prediction's action bets at session end (scripts/retro_experience.py,
+    # retro_memory_export.fetch_learned_lines); () when off, unreachable or nothing to say.
+    learned_lines: tuple = ()
 
     @property
     def duration_sec(self) -> float:

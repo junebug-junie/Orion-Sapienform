@@ -12,10 +12,15 @@ from fastapi.responses import FileResponse, JSONResponse
 COPLAY_POLL_SEC = 2.0
 
 
-def create_router(config, presence=None):
+def create_router(config, presence=None, experience=None):
     """``presence``: a scripts.retro_presence.PresenceStore (tests/evals); default is the
-    process's Redis store from ORION_BUS_URL, or none (human play never depends on it)."""
+    process's Redis store from ORION_BUS_URL, or none (human play never depends on it).
+    ``experience``: a scripts.retro_experience.ZeldaExperience (action bets); default from config
+    (HUB_ACTION_BETS_ENABLED / HUB_PREDICTION_URL)."""
     router = APIRouter()
+    if experience is None:
+        from scripts.retro_experience import ZeldaExperience
+        experience = ZeldaExperience.from_config(config)
     sockets = set()
     planning = False
     last_plan = float("-inf")
@@ -124,6 +129,7 @@ def create_router(config, presence=None):
                                                record_delta)
         key = (sid, port, epoch)
         history, goals, last, first, failures, reason = [], set(), None, None, 0, 'policy_ended'
+        last_decision = None
         try:
           try:
             while True:
@@ -151,10 +157,15 @@ def create_router(config, presence=None):
                 if not retro_planner.is_zelda_cognition(cognition):
                     return  # Nova goal experiment: no session record in this arc
                 retro_planner.remember_finished(history, cognition)
+                if isinstance(cognition.get('attempt'), dict):
+                    last_decision = cognition['attempt']
                 if isinstance(cognition.get('goal'), dict) and cognition['goal'].get('decision_id'):
                     goals.add(cognition['goal']['decision_id'])
             if last is None:
                 return  # never saw a Zelda cognition policy: nothing observed, nothing to record
+            # Action bets: nothing of this handoff stays open; then read back what was learned.
+            await experience.end_session(sid, history, last_decision)
+            learned = tuple(await experience.learned_lines(sid))
             # Retro's counts are session-wide; report only what happened during this handoff.
             record = record_delta(first, atlas_session_fields(last))
             held = human_held_frames(record['controller_frames'])
@@ -170,7 +181,7 @@ def create_router(config, presence=None):
                 loaded_save_id=last.get('loaded_save'), decisions_planned=len(goals),
                 planner_rejections=counts.get('rejections', 0), sheds=counts.get('sheds', 0),
                 # A human handed off and can take back at any time: unknown counts mean "maybe".
-                human_may_be_in_control=held is not False, verdicts=verdicts, **record)
+                human_may_be_in_control=held is not False, verdicts=verdicts, learned_lines=learned, **record)
             await emit_session_end(app, ended)
           except Exception:   # never die silently: an unretrieved task exception logs nothing
             import logging
@@ -201,8 +212,13 @@ def create_router(config, presence=None):
         atlas = None
         async with c.get('http://retro/'+sid+'/atlas', headers=credentials()) as r:
             if r.status == 200: atlas = await r.json()
+        retro_sid = sid.rsplit('/', 1)[-1]
+        # Action bets: settle the previous goal's bet, quote this decision's options (None when
+        # off or the prediction service is unreachable: the plain #2870 prompt, and no bet).
+        menu = await experience.prepare(retro_sid, decision, atlas)
         try:
-            goal = await retro_planner.plan_zelda(config, decision, atlas, list(history))
+            goal = await retro_planner.plan_zelda(config, decision, atlas, list(history),
+                                                  **({'menu': menu.for_planner()} if menu else {}))
         except retro_planner.PlannerShed as exc:
             bump('sheds')
             return JSONResponse(exc.public(), status_code=503,
@@ -215,9 +231,12 @@ def create_router(config, presence=None):
             return JSONResponse(exc.public(), status_code=409 if exc.reason in ('decision_pending', 'observation_unknown') else 422)
         except retro_planner.PlannerError as exc:
             return JSONResponse(exc.public(), status_code=503)
-        body = data | goal
+        body = data | retro_planner.goal_v2_body(goal)
         async with c.post('http://retro/'+sid+'/goal', headers=credentials(), json=body) as r:
-            return JSONResponse(await r.json(), status_code=r.status)
+            result, status = await r.json(), r.status
+        if status == 200:
+            await experience.placed(retro_sid, decision, atlas, goal, menu)
+        return JSONResponse(result, status_code=status)
 
     @router.api_route('/api/retro/{path:path}', methods=['GET','POST'])
     async def proxy(path: str, request: Request):

@@ -674,3 +674,40 @@ def test_open_sides_ignore_the_last_goals_bumps_and_skip_dungeons():
     g = ZeldaGoals(lambda kind, **f: None)
     g.observe_frame(0, 2, 1, World(level=1).obs(), 0)                # doorways not verified: no claim
     assert g.attempt['open_sides'] is None
+
+
+def test_learned_blocked_tile_heals_once_link_stands_on_it(tmp_path):
+    a = Atlas(tmp_path, Atlas.new_lineage(), IDENTITY, 's1', now=lambda: 0)
+    here = obs()                                                 # Link stands on tile (15, 11)
+    assert tile_of(here['link']['x'], here['link']['y']) == (15, 11)
+    away = obs(x=40)                                             # same room, tile (5, 11)
+    a.observe(away, 0)
+    h = here['walls_hash']; learned = lambda: a.doc['rooms']['0:119']['learned_blocked']
+    for tile, wh in (((15, 11), h), ((16, 11), h), ((15, 11), 'old-layout'), ((20, 11), h), ((15, 10), h)):
+        a.mark_blocked(0, 0x77, tile, 'play', wh)
+    a.dirty = False
+    a.observe(away, 1)                                           # not standing on any: all kept
+    assert len(learned()) == 5 and a.dirty is False
+    frozen = dict(here, link=dict(here['link'], controllable=False))
+    a.observe(frozen, 2)                                         # not controllable: no change
+    assert len(learned()) == 5 and a.dirty is False
+    a.observe(here, 3)
+    # Only Link's own position heals: (16, 11) is the position east of him (a bump he just made).
+    assert a.blocked(0, 0x77, 'play', h) == {(16, 11), (20, 11), (15, 10)}
+    assert [15, 11, 'old-layout'] in learned()                    # another layout's bump is kept
+    assert a.dirty is True
+    a.dirty = False
+    a.observe(here, 4)                                           # nothing left to remove
+    assert a.dirty is False and len(learned()) == 4
+
+
+def test_learned_blocked_tile_heals_in_the_cave_key_only(tmp_path):
+    a = Atlas(tmp_path, Atlas.new_lineage(), IDENTITY, 's1', now=lambda: 0)
+    cave = obs(mode=0x0B, ad=2)
+    assert cave['mode'] == 'cave' and cave['link']['controllable']
+    a.observe(obs(), 0); a.observe(dict(cave, link=dict(cave['link'], controllable=False)), 1)
+    a.mark_blocked(0, 0x77, (15, 11), 'cave', cave['walls_hash'])
+    a.mark_blocked(0, 0x77, (15, 11), 'play', cave['walls_hash'])
+    a.observe(cave, 2)
+    assert a.blocked(0, 0x77, 'cave', cave['walls_hash']) == set()
+    assert a.blocked(0, 0x77, 'play', cave['walls_hash']) == {(15, 11)}   # overworld entry untouched

@@ -31,6 +31,10 @@ _VALID_HDBSCAN_METRICS = frozenset(
 
 class Settings(BaseSettings):
     HUB_RETRO_COGNITION_ENABLED: bool = Field(default=True, alias="HUB_RETRO_COGNITION_ENABLED")
+    # Action bets (spec 2026-10-23 embodied experience; scripts/retro_experience.py): every planned
+    # Zelda goal is quoted, placed and settled in orion-prediction. Off -> the #2870 planner exactly.
+    HUB_ACTION_BETS_ENABLED: bool = Field(default=True, alias="HUB_ACTION_BETS_ENABLED")
+    HUB_PREDICTION_URL: str = Field(default="http://127.0.0.1:8132", alias="HUB_PREDICTION_URL")
     HUB_RETRO_ENABLED: bool = False
     HUB_RETRO_ORIGIN: str = ""
     HUB_RETRO_SOCKET: str = "/run/orion-retro/retro.sock"

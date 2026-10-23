@@ -1,0 +1,1346 @@
+{
+ "source": "live Retro evidence /evidence/c6041e2d-ea4f-452a-9f61-5514df7e985a.jsonl (orion-athena-retro), session 2026-10-23; decision_offered / goal_committed / goal_finished / policy rows only. RAM-derived observations without the terrain grid; no rationale text, no frames, no ROM bytes. Pre-#2870: decisions carry no open_sides.",
+ "session_id": "c6041e2d-ea4f-452a-9f61-5514df7e985a",
+ "rows": [
+  {
+   "kind": "policy_started",
+   "frame": 2588,
+   "utc": "2026-10-23T04:18:22.542955+00:00",
+   "port": 0,
+   "policy_id": "zelda-navigator-v1",
+   "epoch": 7
+  },
+  {
+   "kind": "decision_offered",
+   "frame": 2589,
+   "utc": "2026-10-23T04:18:22.547822+00:00",
+   "decision_id": "7:1",
+   "port": 0,
+   "expected_epoch": 7,
+   "observation_frame": 2589,
+   "observation": {
+    "status": "observed",
+    "profile": "zelda-1-ram-v1",
+    "frame": 2589,
+    "mode": "play",
+    "mode_code": 5,
+    "submode": 0,
+    "level": 0,
+    "room": 103,
+    "next_room": 103,
+    "paused": false,
+    "link": {
+     "x": 128,
+     "y": 157,
+     "tile": [
+      16,
+      13
+     ],
+     "facing": "S",
+     "invincible_frames": 0,
+     "controllable": true
+    },
+    "hearts": {
+     "current": 3,
+     "containers": 3
+    },
+    "items": {
+     "sword": 1,
+     "bombs": "unknown",
+     "candle": "unknown",
+     "raft": "unknown",
+     "rupees": 3,
+     "keys": "unknown"
+    },
+    "enemies": [],
+    "drops": [],
+    "menu": null,
+    "walls_hash": "37773f36207d86f5"
+   },
+   "previous": null,
+   "supported_goals": [
+    "exit",
+    "enter",
+    "fight",
+    "retreat",
+    "collect",
+    "explore",
+    "wait"
+   ],
+   "supported_predictions": [
+    "reach_room",
+    "enter_cave",
+    "item_gained",
+    "enemies_cleared",
+    "survive",
+    "unknown"
+   ]
+  },
+  {
+   "kind": "policy_stopped",
+   "frame": 2771,
+   "utc": "2026-10-23T04:18:25.587454+00:00",
+   "port": 0,
+   "policy_id": "zelda-navigator-v1",
+   "epoch": 7,
+   "reason": "sponsor_disconnected"
+  },
+  {
+   "kind": "policy_started",
+   "frame": 3875,
+   "utc": "2026-10-23T05:13:52.470329+00:00",
+   "port": 0,
+   "policy_id": "zelda-navigator-v1",
+   "epoch": 9
+  },
+  {
+   "kind": "decision_offered",
+   "frame": 3876,
+   "utc": "2026-10-23T05:13:52.474954+00:00",
+   "decision_id": "9:1",
+   "port": 0,
+   "expected_epoch": 9,
+   "observation_frame": 3876,
+   "observation": {
+    "status": "observed",
+    "profile": "zelda-1-ram-v1",
+    "frame": 3876,
+    "mode": "play",
+    "mode_code": 5,
+    "submode": 0,
+    "level": 0,
+    "room": 103,
+    "next_room": 103,
+    "paused": false,
+    "link": {
+     "x": 128,
+     "y": 148,
+     "tile": [
+      16,
+      12
+     ],
+     "facing": "S",
+     "invincible_frames": 0,
+     "controllable": true
+    },
+    "hearts": {
+     "current": 3,
+     "containers": 3
+    },
+    "items": {
+     "sword": 1,
+     "bombs": "unknown",
+     "candle": "unknown",
+     "raft": "unknown",
+     "rupees": 3,
+     "keys": "unknown"
+    },
+    "enemies": [],
+    "drops": [],
+    "menu": null,
+    "walls_hash": "37773f36207d86f5"
+   },
+   "previous": null,
+   "supported_goals": [
+    "exit",
+    "enter",
+    "fight",
+    "retreat",
+    "collect",
+    "explore",
+    "wait"
+   ],
+   "supported_predictions": [
+    "reach_room",
+    "enter_cave",
+    "item_gained",
+    "enemies_cleared",
+    "survive",
+    "unknown"
+   ]
+  },
+  {
+   "kind": "policy_stopped",
+   "frame": 4037,
+   "utc": "2026-10-23T05:13:55.165762+00:00",
+   "port": 0,
+   "policy_id": "zelda-navigator-v1",
+   "epoch": 9,
+   "reason": "sponsor_disconnected"
+  },
+  {
+   "kind": "policy_started",
+   "frame": 5109,
+   "utc": "2026-10-23T07:59:43.221584+00:00",
+   "port": 0,
+   "policy_id": "zelda-navigator-v1",
+   "epoch": 13
+  },
+  {
+   "kind": "decision_offered",
+   "frame": 5110,
+   "utc": "2026-10-23T07:59:43.225391+00:00",
+   "decision_id": "13:1",
+   "port": 0,
+   "expected_epoch": 13,
+   "observation_frame": 5110,
+   "observation": {
+    "status": "observed",
+    "profile": "zelda-1-ram-v1",
+    "frame": 5110,
+    "mode": "play",
+    "mode_code": 5,
+    "submode": 0,
+    "level": 0,
+    "room": 103,
+    "next_room": 103,
+    "paused": false,
+    "link": {
+     "x": 128,
+     "y": 173,
+     "tile": [
+      16,
+      15
+     ],
+     "facing": "S",
+     "invincible_frames": 0,
+     "controllable": true
+    },
+    "hearts": {
+     "current": 3,
+     "containers": 3
+    },
+    "items": {
+     "sword": 1,
+     "bombs": "unknown",
+     "candle": "unknown",
+     "raft": "unknown",
+     "rupees": 3,
+     "keys": "unknown"
+    },
+    "enemies": [],
+    "drops": [],
+    "menu": null,
+    "walls_hash": "37773f36207d86f5"
+   },
+   "previous": null,
+   "supported_goals": [
+    "exit",
+    "enter",
+    "fight",
+    "retreat",
+    "collect",
+    "explore",
+    "wait"
+   ],
+   "supported_predictions": [
+    "reach_room",
+    "enter_cave",
+    "item_gained",
+    "enemies_cleared",
+    "survive",
+    "unknown"
+   ]
+  },
+  {
+   "kind": "policy_stopped",
+   "frame": 5306,
+   "utc": "2026-10-23T07:59:46.499364+00:00",
+   "port": 0,
+   "policy_id": "zelda-navigator-v1",
+   "epoch": 13,
+   "reason": "sponsor_disconnected"
+  },
+  {
+   "kind": "policy_started",
+   "frame": 6351,
+   "utc": "2026-10-23T16:16:27.570188+00:00",
+   "port": 0,
+   "policy_id": "zelda-navigator-v1",
+   "epoch": 15
+  },
+  {
+   "kind": "decision_offered",
+   "frame": 6352,
+   "utc": "2026-10-23T16:16:27.574998+00:00",
+   "decision_id": "15:1",
+   "port": 0,
+   "expected_epoch": 15,
+   "observation_frame": 6352,
+   "observation": {
+    "status": "observed",
+    "profile": "zelda-1-ram-v1",
+    "frame": 6352,
+    "mode": "play",
+    "mode_code": 5,
+    "submode": 0,
+    "level": 0,
+    "room": 103,
+    "next_room": 103,
+    "paused": false,
+    "link": {
+     "x": 108,
+     "y": 133,
+     "tile": [
+      14,
+      10
+     ],
+     "facing": "W",
+     "invincible_frames": 0,
+     "controllable": true
+    },
+    "hearts": {
+     "current": 3,
+     "containers": 3
+    },
+    "items": {
+     "sword": 1,
+     "bombs": "unknown",
+     "candle": "unknown",
+     "raft": "unknown",
+     "rupees": 3,
+     "keys": "unknown"
+    },
+    "enemies": [],
+    "drops": [],
+    "menu": null,
+    "walls_hash": "37773f36207d86f5"
+   },
+   "previous": null,
+   "supported_goals": [
+    "exit",
+    "enter",
+    "fight",
+    "retreat",
+    "collect",
+    "explore",
+    "wait"
+   ],
+   "supported_predictions": [
+    "reach_room",
+    "enter_cave",
+    "item_gained",
+    "enemies_cleared",
+    "survive",
+    "unknown"
+   ]
+  },
+  {
+   "kind": "goal_committed",
+   "frame": 6589,
+   "utc": "2026-10-23T16:16:31.530279+00:00",
+   "decision_id": "15:1",
+   "goal": {
+    "kind": "explore",
+    "dir": "S"
+   },
+   "prediction": {
+    "kind": "reach_room",
+    "value": 119
+   },
+   "planner_id": "llm-gateway:metacog_background:f182a3c9-ab18-4515-910c-0338ebd43a31",
+   "budget_seconds": 15
+  },
+  {
+   "kind": "goal_finished",
+   "frame": 6742,
+   "utc": "2026-10-23T16:16:34.061491+00:00",
+   "decision_id": "15:1",
+   "goal": {
+    "kind": "explore",
+    "dir": "S"
+   },
+   "prediction": {
+    "kind": "reach_room",
+    "value": 119
+   },
+   "planner_id": "llm-gateway:metacog_background:f182a3c9-ab18-4515-910c-0338ebd43a31",
+   "outcome": "prediction_met",
+   "verdict": "met",
+   "start_digest": "4362eb3e2828a1a3",
+   "end_digest": "5dab0dba7e51081d",
+   "start_frame": 6590,
+   "end_frame": 6742,
+   "applied_frames": 69,
+   "human_intervention": false,
+   "bumps": 0
+  },
+  {
+   "kind": "decision_offered",
+   "frame": 6742,
+   "utc": "2026-10-23T16:16:34.061646+00:00",
+   "decision_id": "15:2",
+   "port": 0,
+   "expected_epoch": 15,
+   "observation_frame": 6742,
+   "observation": {
+    "status": "observed",
+    "profile": "zelda-1-ram-v1",
+    "frame": 6742,
+    "mode": "play",
+    "mode_code": 5,
+    "submode": 0,
+    "level": 0,
+    "room": 119,
+    "next_room": 119,
+    "paused": false,
+    "link": {
+     "x": 112,
+     "y": 61,
+     "tile": [
+      14,
+      1
+     ],
+     "facing": "S",
+     "invincible_frames": 0,
+     "controllable": true
+    },
+    "hearts": {
+     "current": 3,
+     "containers": 3
+    },
+    "items": {
+     "sword": 1,
+     "bombs": "unknown",
+     "candle": "unknown",
+     "raft": "unknown",
+     "rupees": 3,
+     "keys": "unknown"
+    },
+    "enemies": [],
+    "drops": [],
+    "menu": null,
+    "walls_hash": "7d7e213851978f62"
+   },
+   "previous": {
+    "decision_id": "15:1",
+    "goal": {
+     "kind": "explore",
+     "dir": "S"
+    },
+    "prediction": {
+     "kind": "reach_room",
+     "value": 119
+    },
+    "planner_id": "llm-gateway:metacog_background:f182a3c9-ab18-4515-910c-0338ebd43a31",
+    "outcome": "prediction_met",
+    "verdict": "met",
+    "start_digest": "4362eb3e2828a1a3",
+    "end_digest": "5dab0dba7e51081d",
+    "start_frame": 6590,
+    "end_frame": 6742,
+    "applied_frames": 69,
+    "human_intervention": false,
+    "bumps": 0
+   },
+   "supported_goals": [
+    "exit",
+    "enter",
+    "fight",
+    "retreat",
+    "collect",
+    "explore",
+    "wait"
+   ],
+   "supported_predictions": [
+    "reach_room",
+    "enter_cave",
+    "item_gained",
+    "enemies_cleared",
+    "survive",
+    "unknown"
+   ]
+  },
+  {
+   "kind": "goal_committed",
+   "frame": 7165,
+   "utc": "2026-10-23T16:16:41.114134+00:00",
+   "decision_id": "15:2",
+   "goal": {
+    "kind": "explore",
+    "dir": "S"
+   },
+   "prediction": {
+    "kind": "reach_room",
+    "value": 119
+   },
+   "planner_id": "llm-gateway:metacog_background:8ef8a22c-3933-432c-b0b9-348b44b6cdd5",
+   "budget_seconds": 15
+  },
+  {
+   "kind": "goal_finished",
+   "frame": 7263,
+   "utc": "2026-10-23T16:16:42.730843+00:00",
+   "decision_id": "15:2",
+   "goal": {
+    "kind": "explore",
+    "dir": "S"
+   },
+   "prediction": {
+    "kind": "reach_room",
+    "value": 119
+   },
+   "planner_id": "llm-gateway:metacog_background:8ef8a22c-3933-432c-b0b9-348b44b6cdd5",
+   "outcome": "completed",
+   "verdict": "refuted",
+   "start_digest": "5dab0dba7e51081d",
+   "end_digest": "ea8443189cdd1bb1",
+   "start_frame": 7166,
+   "end_frame": 7263,
+   "applied_frames": 96,
+   "human_intervention": false,
+   "bumps": 0
+  },
+  {
+   "kind": "decision_offered",
+   "frame": 7263,
+   "utc": "2026-10-23T16:16:42.731035+00:00",
+   "decision_id": "15:3",
+   "port": 0,
+   "expected_epoch": 15,
+   "observation_frame": 7263,
+   "observation": {
+    "status": "observed",
+    "profile": "zelda-1-ram-v1",
+    "frame": 7263,
+    "mode": "play",
+    "mode_code": 5,
+    "submode": 0,
+    "level": 0,
+    "room": 119,
+    "next_room": 119,
+    "paused": false,
+    "link": {
+     "x": 112,
+     "y": 189,
+     "tile": [
+      14,
+      17
+     ],
+     "facing": "S",
+     "invincible_frames": 0,
+     "controllable": true
+    },
+    "hearts": {
+     "current": 3,
+     "containers": 3
+    },
+    "items": {
+     "sword": 1,
+     "bombs": "unknown",
+     "candle": "unknown",
+     "raft": "unknown",
+     "rupees": 3,
+     "keys": "unknown"
+    },
+    "enemies": [],
+    "drops": [],
+    "menu": null,
+    "walls_hash": "7d7e213851978f62"
+   },
+   "previous": {
+    "decision_id": "15:2",
+    "goal": {
+     "kind": "explore",
+     "dir": "S"
+    },
+    "prediction": {
+     "kind": "reach_room",
+     "value": 119
+    },
+    "planner_id": "llm-gateway:metacog_background:8ef8a22c-3933-432c-b0b9-348b44b6cdd5",
+    "outcome": "completed",
+    "verdict": "refuted",
+    "start_digest": "5dab0dba7e51081d",
+    "end_digest": "ea8443189cdd1bb1",
+    "start_frame": 7166,
+    "end_frame": 7263,
+    "applied_frames": 96,
+    "human_intervention": false,
+    "bumps": 0
+   },
+   "supported_goals": [
+    "exit",
+    "enter",
+    "fight",
+    "retreat",
+    "collect",
+    "explore",
+    "wait"
+   ],
+   "supported_predictions": [
+    "reach_room",
+    "enter_cave",
+    "item_gained",
+    "enemies_cleared",
+    "survive",
+    "unknown"
+   ]
+  },
+  {
+   "kind": "goal_committed",
+   "frame": 7551,
+   "utc": "2026-10-23T16:16:47.536870+00:00",
+   "decision_id": "15:3",
+   "goal": {
+    "kind": "explore",
+    "dir": "S"
+   },
+   "prediction": {
+    "kind": "reach_room",
+    "value": 120
+   },
+   "planner_id": "llm-gateway:metacog_background:7c4e0d35-8256-4281-9347-3e1a86c15e35",
+   "budget_seconds": 15
+  },
+  {
+   "kind": "goal_finished",
+   "frame": 7553,
+   "utc": "2026-10-23T16:16:47.555634+00:00",
+   "decision_id": "15:3",
+   "goal": {
+    "kind": "explore",
+    "dir": "S"
+   },
+   "prediction": {
+    "kind": "reach_room",
+    "value": 120
+   },
+   "planner_id": "llm-gateway:metacog_background:7c4e0d35-8256-4281-9347-3e1a86c15e35",
+   "outcome": "completed",
+   "verdict": "refuted",
+   "start_digest": "ea8443189cdd1bb1",
+   "end_digest": "ea8443189cdd1bb1",
+   "start_frame": 7552,
+   "end_frame": 7553,
+   "applied_frames": 0,
+   "human_intervention": false,
+   "bumps": 0
+  },
+  {
+   "kind": "decision_offered",
+   "frame": 7553,
+   "utc": "2026-10-23T16:16:47.555832+00:00",
+   "decision_id": "15:4",
+   "port": 0,
+   "expected_epoch": 15,
+   "observation_frame": 7553,
+   "observation": {
+    "status": "observed",
+    "profile": "zelda-1-ram-v1",
+    "frame": 7553,
+    "mode": "play",
+    "mode_code": 5,
+    "submode": 0,
+    "level": 0,
+    "room": 119,
+    "next_room": 119,
+    "paused": false,
+    "link": {
+     "x": 112,
+     "y": 189,
+     "tile": [
+      14,
+      17
+     ],
+     "facing": "S",
+     "invincible_frames": 0,
+     "controllable": true
+    },
+    "hearts": {
+     "current": 3,
+     "containers": 3
+    },
+    "items": {
+     "sword": 1,
+     "bombs": "unknown",
+     "candle": "unknown",
+     "raft": "unknown",
+     "rupees": 3,
+     "keys": "unknown"
+    },
+    "enemies": [],
+    "drops": [],
+    "menu": null,
+    "walls_hash": "7d7e213851978f62"
+   },
+   "previous": {
+    "decision_id": "15:3",
+    "goal": {
+     "kind": "explore",
+     "dir": "S"
+    },
+    "prediction": {
+     "kind": "reach_room",
+     "value": 120
+    },
+    "planner_id": "llm-gateway:metacog_background:7c4e0d35-8256-4281-9347-3e1a86c15e35",
+    "outcome": "completed",
+    "verdict": "refuted",
+    "start_digest": "ea8443189cdd1bb1",
+    "end_digest": "ea8443189cdd1bb1",
+    "start_frame": 7552,
+    "end_frame": 7553,
+    "applied_frames": 0,
+    "human_intervention": false,
+    "bumps": 0
+   },
+   "supported_goals": [
+    "exit",
+    "enter",
+    "fight",
+    "retreat",
+    "collect",
+    "explore",
+    "wait"
+   ],
+   "supported_predictions": [
+    "reach_room",
+    "enter_cave",
+    "item_gained",
+    "enemies_cleared",
+    "survive",
+    "unknown"
+   ]
+  },
+  {
+   "kind": "goal_committed",
+   "frame": 7743,
+   "utc": "2026-10-23T16:16:50.731371+00:00",
+   "decision_id": "15:4",
+   "goal": {
+    "kind": "explore",
+    "dir": "S"
+   },
+   "prediction": {
+    "kind": "reach_room",
+    "value": 120
+   },
+   "planner_id": "llm-gateway:metacog_background:d54c99d1-809f-41a6-a2dd-757f78046f1a",
+   "budget_seconds": 15
+  },
+  {
+   "kind": "goal_finished",
+   "frame": 7745,
+   "utc": "2026-10-23T16:16:50.751602+00:00",
+   "decision_id": "15:4",
+   "goal": {
+    "kind": "explore",
+    "dir": "S"
+   },
+   "prediction": {
+    "kind": "reach_room",
+    "value": 120
+   },
+   "planner_id": "llm-gateway:metacog_background:d54c99d1-809f-41a6-a2dd-757f78046f1a",
+   "outcome": "completed",
+   "verdict": "refuted",
+   "start_digest": "ea8443189cdd1bb1",
+   "end_digest": "ea8443189cdd1bb1",
+   "start_frame": 7744,
+   "end_frame": 7745,
+   "applied_frames": 0,
+   "human_intervention": false,
+   "bumps": 0
+  },
+  {
+   "kind": "decision_offered",
+   "frame": 7745,
+   "utc": "2026-10-23T16:16:50.751856+00:00",
+   "decision_id": "15:5",
+   "port": 0,
+   "expected_epoch": 15,
+   "observation_frame": 7745,
+   "observation": {
+    "status": "observed",
+    "profile": "zelda-1-ram-v1",
+    "frame": 7745,
+    "mode": "play",
+    "mode_code": 5,
+    "submode": 0,
+    "level": 0,
+    "room": 119,
+    "next_room": 119,
+    "paused": false,
+    "link": {
+     "x": 112,
+     "y": 189,
+     "tile": [
+      14,
+      17
+     ],
+     "facing": "S",
+     "invincible_frames": 0,
+     "controllable": true
+    },
+    "hearts": {
+     "current": 3,
+     "containers": 3
+    },
+    "items": {
+     "sword": 1,
+     "bombs": "unknown",
+     "candle": "unknown",
+     "raft": "unknown",
+     "rupees": 3,
+     "keys": "unknown"
+    },
+    "enemies": [],
+    "drops": [],
+    "menu": null,
+    "walls_hash": "7d7e213851978f62"
+   },
+   "previous": {
+    "decision_id": "15:4",
+    "goal": {
+     "kind": "explore",
+     "dir": "S"
+    },
+    "prediction": {
+     "kind": "reach_room",
+     "value": 120
+    },
+    "planner_id": "llm-gateway:metacog_background:d54c99d1-809f-41a6-a2dd-757f78046f1a",
+    "outcome": "completed",
+    "verdict": "refuted",
+    "start_digest": "ea8443189cdd1bb1",
+    "end_digest": "ea8443189cdd1bb1",
+    "start_frame": 7744,
+    "end_frame": 7745,
+    "applied_frames": 0,
+    "human_intervention": false,
+    "bumps": 0
+   },
+   "supported_goals": [
+    "exit",
+    "enter",
+    "fight",
+    "retreat",
+    "collect",
+    "explore",
+    "wait"
+   ],
+   "supported_predictions": [
+    "reach_room",
+    "enter_cave",
+    "item_gained",
+    "enemies_cleared",
+    "survive",
+    "unknown"
+   ]
+  },
+  {
+   "kind": "goal_committed",
+   "frame": 7916,
+   "utc": "2026-10-23T16:16:53.610004+00:00",
+   "decision_id": "15:5",
+   "goal": {
+    "kind": "explore",
+    "dir": "S"
+   },
+   "prediction": {
+    "kind": "reach_room",
+    "value": 120
+   },
+   "planner_id": "llm-gateway:metacog_background:b6ce8915-afb9-4ba0-9620-35baea88fa73",
+   "budget_seconds": 5
+  },
+  {
+   "kind": "goal_finished",
+   "frame": 7918,
+   "utc": "2026-10-23T16:16:53.631044+00:00",
+   "decision_id": "15:5",
+   "goal": {
+    "kind": "explore",
+    "dir": "S"
+   },
+   "prediction": {
+    "kind": "reach_room",
+    "value": 120
+   },
+   "planner_id": "llm-gateway:metacog_background:b6ce8915-afb9-4ba0-9620-35baea88fa73",
+   "outcome": "completed",
+   "verdict": "refuted",
+   "start_digest": "ea8443189cdd1bb1",
+   "end_digest": "ea8443189cdd1bb1",
+   "start_frame": 7917,
+   "end_frame": 7918,
+   "applied_frames": 0,
+   "human_intervention": false,
+   "bumps": 0
+  },
+  {
+   "kind": "decision_offered",
+   "frame": 7918,
+   "utc": "2026-10-23T16:16:53.631366+00:00",
+   "decision_id": "15:6",
+   "port": 0,
+   "expected_epoch": 15,
+   "observation_frame": 7918,
+   "observation": {
+    "status": "observed",
+    "profile": "zelda-1-ram-v1",
+    "frame": 7918,
+    "mode": "play",
+    "mode_code": 5,
+    "submode": 0,
+    "level": 0,
+    "room": 119,
+    "next_room": 119,
+    "paused": false,
+    "link": {
+     "x": 112,
+     "y": 189,
+     "tile": [
+      14,
+      17
+     ],
+     "facing": "S",
+     "invincible_frames": 0,
+     "controllable": true
+    },
+    "hearts": {
+     "current": 3,
+     "containers": 3
+    },
+    "items": {
+     "sword": 1,
+     "bombs": "unknown",
+     "candle": "unknown",
+     "raft": "unknown",
+     "rupees": 3,
+     "keys": "unknown"
+    },
+    "enemies": [],
+    "drops": [],
+    "menu": null,
+    "walls_hash": "7d7e213851978f62"
+   },
+   "previous": {
+    "decision_id": "15:5",
+    "goal": {
+     "kind": "explore",
+     "dir": "S"
+    },
+    "prediction": {
+     "kind": "reach_room",
+     "value": 120
+    },
+    "planner_id": "llm-gateway:metacog_background:b6ce8915-afb9-4ba0-9620-35baea88fa73",
+    "outcome": "completed",
+    "verdict": "refuted",
+    "start_digest": "ea8443189cdd1bb1",
+    "end_digest": "ea8443189cdd1bb1",
+    "start_frame": 7917,
+    "end_frame": 7918,
+    "applied_frames": 0,
+    "human_intervention": false,
+    "bumps": 0
+   },
+   "supported_goals": [
+    "exit",
+    "enter",
+    "fight",
+    "retreat",
+    "collect",
+    "explore",
+    "wait"
+   ],
+   "supported_predictions": [
+    "reach_room",
+    "enter_cave",
+    "item_gained",
+    "enemies_cleared",
+    "survive",
+    "unknown"
+   ]
+  },
+  {
+   "kind": "goal_committed",
+   "frame": 8262,
+   "utc": "2026-10-23T16:16:59.367290+00:00",
+   "decision_id": "15:6",
+   "goal": {
+    "kind": "explore",
+    "dir": "S"
+   },
+   "prediction": {
+    "kind": "reach_room",
+    "value": 120
+   },
+   "planner_id": "llm-gateway:metacog_background:93f8468a-295a-477f-a1c6-c743617ca41d",
+   "budget_seconds": 15
+  },
+  {
+   "kind": "goal_finished",
+   "frame": 8264,
+   "utc": "2026-10-23T16:16:59.387563+00:00",
+   "decision_id": "15:6",
+   "goal": {
+    "kind": "explore",
+    "dir": "S"
+   },
+   "prediction": {
+    "kind": "reach_room",
+    "value": 120
+   },
+   "planner_id": "llm-gateway:metacog_background:93f8468a-295a-477f-a1c6-c743617ca41d",
+   "outcome": "completed",
+   "verdict": "refuted",
+   "start_digest": "ea8443189cdd1bb1",
+   "end_digest": "ea8443189cdd1bb1",
+   "start_frame": 8263,
+   "end_frame": 8264,
+   "applied_frames": 0,
+   "human_intervention": false,
+   "bumps": 0
+  },
+  {
+   "kind": "decision_offered",
+   "frame": 8264,
+   "utc": "2026-10-23T16:16:59.387782+00:00",
+   "decision_id": "15:7",
+   "port": 0,
+   "expected_epoch": 15,
+   "observation_frame": 8264,
+   "observation": {
+    "status": "observed",
+    "profile": "zelda-1-ram-v1",
+    "frame": 8264,
+    "mode": "play",
+    "mode_code": 5,
+    "submode": 0,
+    "level": 0,
+    "room": 119,
+    "next_room": 119,
+    "paused": false,
+    "link": {
+     "x": 112,
+     "y": 189,
+     "tile": [
+      14,
+      17
+     ],
+     "facing": "S",
+     "invincible_frames": 0,
+     "controllable": true
+    },
+    "hearts": {
+     "current": 3,
+     "containers": 3
+    },
+    "items": {
+     "sword": 1,
+     "bombs": "unknown",
+     "candle": "unknown",
+     "raft": "unknown",
+     "rupees": 3,
+     "keys": "unknown"
+    },
+    "enemies": [],
+    "drops": [],
+    "menu": null,
+    "walls_hash": "7d7e213851978f62"
+   },
+   "previous": {
+    "decision_id": "15:6",
+    "goal": {
+     "kind": "explore",
+     "dir": "S"
+    },
+    "prediction": {
+     "kind": "reach_room",
+     "value": 120
+    },
+    "planner_id": "llm-gateway:metacog_background:93f8468a-295a-477f-a1c6-c743617ca41d",
+    "outcome": "completed",
+    "verdict": "refuted",
+    "start_digest": "ea8443189cdd1bb1",
+    "end_digest": "ea8443189cdd1bb1",
+    "start_frame": 8263,
+    "end_frame": 8264,
+    "applied_frames": 0,
+    "human_intervention": false,
+    "bumps": 0
+   },
+   "supported_goals": [
+    "exit",
+    "enter",
+    "fight",
+    "retreat",
+    "collect",
+    "explore",
+    "wait"
+   ],
+   "supported_predictions": [
+    "reach_room",
+    "enter_cave",
+    "item_gained",
+    "enemies_cleared",
+    "survive",
+    "unknown"
+   ]
+  },
+  {
+   "kind": "goal_committed",
+   "frame": 8602,
+   "utc": "2026-10-23T16:17:05.024114+00:00",
+   "decision_id": "15:7",
+   "goal": {
+    "kind": "explore",
+    "dir": "S"
+   },
+   "prediction": {
+    "kind": "reach_room",
+    "value": 120
+   },
+   "planner_id": "llm-gateway:metacog_background:8de662e0-4b81-4cce-bb66-66b90963516e",
+   "budget_seconds": 15
+  },
+  {
+   "kind": "goal_finished",
+   "frame": 8604,
+   "utc": "2026-10-23T16:17:05.044030+00:00",
+   "decision_id": "15:7",
+   "goal": {
+    "kind": "explore",
+    "dir": "S"
+   },
+   "prediction": {
+    "kind": "reach_room",
+    "value": 120
+   },
+   "planner_id": "llm-gateway:metacog_background:8de662e0-4b81-4cce-bb66-66b90963516e",
+   "outcome": "completed",
+   "verdict": "refuted",
+   "start_digest": "ea8443189cdd1bb1",
+   "end_digest": "ea8443189cdd1bb1",
+   "start_frame": 8603,
+   "end_frame": 8604,
+   "applied_frames": 0,
+   "human_intervention": false,
+   "bumps": 0
+  },
+  {
+   "kind": "decision_offered",
+   "frame": 8604,
+   "utc": "2026-10-23T16:17:05.044223+00:00",
+   "decision_id": "15:8",
+   "port": 0,
+   "expected_epoch": 15,
+   "observation_frame": 8604,
+   "observation": {
+    "status": "observed",
+    "profile": "zelda-1-ram-v1",
+    "frame": 8604,
+    "mode": "play",
+    "mode_code": 5,
+    "submode": 0,
+    "level": 0,
+    "room": 119,
+    "next_room": 119,
+    "paused": false,
+    "link": {
+     "x": 112,
+     "y": 189,
+     "tile": [
+      14,
+      17
+     ],
+     "facing": "S",
+     "invincible_frames": 0,
+     "controllable": true
+    },
+    "hearts": {
+     "current": 3,
+     "containers": 3
+    },
+    "items": {
+     "sword": 1,
+     "bombs": "unknown",
+     "candle": "unknown",
+     "raft": "unknown",
+     "rupees": 3,
+     "keys": "unknown"
+    },
+    "enemies": [],
+    "drops": [],
+    "menu": null,
+    "walls_hash": "7d7e213851978f62"
+   },
+   "previous": {
+    "decision_id": "15:7",
+    "goal": {
+     "kind": "explore",
+     "dir": "S"
+    },
+    "prediction": {
+     "kind": "reach_room",
+     "value": 120
+    },
+    "planner_id": "llm-gateway:metacog_background:8de662e0-4b81-4cce-bb66-66b90963516e",
+    "outcome": "completed",
+    "verdict": "refuted",
+    "start_digest": "ea8443189cdd1bb1",
+    "end_digest": "ea8443189cdd1bb1",
+    "start_frame": 8603,
+    "end_frame": 8604,
+    "applied_frames": 0,
+    "human_intervention": false,
+    "bumps": 0
+   },
+   "supported_goals": [
+    "exit",
+    "enter",
+    "fight",
+    "retreat",
+    "collect",
+    "explore",
+    "wait"
+   ],
+   "supported_predictions": [
+    "reach_room",
+    "enter_cave",
+    "item_gained",
+    "enemies_cleared",
+    "survive",
+    "unknown"
+   ]
+  },
+  {
+   "kind": "goal_committed",
+   "frame": 8998,
+   "utc": "2026-10-23T16:17:11.613254+00:00",
+   "decision_id": "15:8",
+   "goal": {
+    "kind": "explore",
+    "dir": "S"
+   },
+   "prediction": {
+    "kind": "reach_room",
+    "value": 120
+   },
+   "planner_id": "llm-gateway:metacog_background:e1d44511-b8ec-47bb-9cf1-d568e2cf3975",
+   "budget_seconds": 15
+  },
+  {
+   "kind": "goal_finished",
+   "frame": 9000,
+   "utc": "2026-10-23T16:17:11.633311+00:00",
+   "decision_id": "15:8",
+   "goal": {
+    "kind": "explore",
+    "dir": "S"
+   },
+   "prediction": {
+    "kind": "reach_room",
+    "value": 120
+   },
+   "planner_id": "llm-gateway:metacog_background:e1d44511-b8ec-47bb-9cf1-d568e2cf3975",
+   "outcome": "completed",
+   "verdict": "refuted",
+   "start_digest": "ea8443189cdd1bb1",
+   "end_digest": "ea8443189cdd1bb1",
+   "start_frame": 8999,
+   "end_frame": 9000,
+   "applied_frames": 0,
+   "human_intervention": false,
+   "bumps": 0
+  },
+  {
+   "kind": "decision_offered",
+   "frame": 9000,
+   "utc": "2026-10-23T16:17:11.633570+00:00",
+   "decision_id": "15:9",
+   "port": 0,
+   "expected_epoch": 15,
+   "observation_frame": 9000,
+   "observation": {
+    "status": "observed",
+    "profile": "zelda-1-ram-v1",
+    "frame": 9000,
+    "mode": "play",
+    "mode_code": 5,
+    "submode": 0,
+    "level": 0,
+    "room": 119,
+    "next_room": 119,
+    "paused": false,
+    "link": {
+     "x": 112,
+     "y": 189,
+     "tile": [
+      14,
+      17
+     ],
+     "facing": "S",
+     "invincible_frames": 0,
+     "controllable": true
+    },
+    "hearts": {
+     "current": 3,
+     "containers": 3
+    },
+    "items": {
+     "sword": 1,
+     "bombs": "unknown",
+     "candle": "unknown",
+     "raft": "unknown",
+     "rupees": 3,
+     "keys": "unknown"
+    },
+    "enemies": [],
+    "drops": [],
+    "menu": null,
+    "walls_hash": "7d7e213851978f62"
+   },
+   "previous": {
+    "decision_id": "15:8",
+    "goal": {
+     "kind": "explore",
+     "dir": "S"
+    },
+    "prediction": {
+     "kind": "reach_room",
+     "value": 120
+    },
+    "planner_id": "llm-gateway:metacog_background:e1d44511-b8ec-47bb-9cf1-d568e2cf3975",
+    "outcome": "completed",
+    "verdict": "refuted",
+    "start_digest": "ea8443189cdd1bb1",
+    "end_digest": "ea8443189cdd1bb1",
+    "start_frame": 8999,
+    "end_frame": 9000,
+    "applied_frames": 0,
+    "human_intervention": false,
+    "bumps": 0
+   },
+   "supported_goals": [
+    "exit",
+    "enter",
+    "fight",
+    "retreat",
+    "collect",
+    "explore",
+    "wait"
+   ],
+   "supported_predictions": [
+    "reach_room",
+    "enter_cave",
+    "item_gained",
+    "enemies_cleared",
+    "survive",
+    "unknown"
+   ]
+  },
+  {
+   "kind": "policy_stopped",
+   "frame": 9231,
+   "utc": "2026-10-23T16:17:15.490132+00:00",
+   "port": 0,
+   "policy_id": "zelda-navigator-v1",
+   "epoch": 15,
+   "reason": "sponsor_disconnected"
+  }
+ ]
+}

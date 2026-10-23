@@ -139,6 +139,9 @@ class Atlas:
             if place != self.place:
                 self._arrive(obs, frame)
                 self.place = place
+            if obs['link'].get('controllable'):
+                self.unmark_standing(obs['level'], obs['room'], tile_of(obs['link']['x'], obs['link']['y']),
+                                     mode, obs.get('walls_hash'))
         if prev is None or prev.get('status') != 'observed': return
         if mode == 'death' and prev['mode'] != 'death':
             self._room(prev)['deaths'] += 1; self.session['deaths'] += 1; self.dirty = True
@@ -212,6 +215,21 @@ class Atlas:
         entry = [tile[0], tile[1], walls_hash]
         if entry not in r['learned_blocked'] and len(r['learned_blocked']) < MAX_BLOCKED:
             r['learned_blocked'].append(entry); self.dirty = True
+
+    def unmark_standing(self, level, room, tile, mode='play', walls_hash=None):
+        """Link is standing on position (c, r) of this layout, so a learned block AT (c, r) was
+        wrong (a bump against an enemy, a missed press) and heals. Learned blocks are Link
+        positions (navigate._bump records the position he failed to reach; open_tile checks
+        both wall columns itself), so standing here proves nothing about (c+1, r): healing it
+        would erase every east-side bump on the next frame. Scans only this room's short list."""
+        key = room_key(level, room) + (':cave' if mode == 'cave' else '')
+        r = self.doc['rooms'].get(key)
+        if not r or not r['learned_blocked']: return
+        c, row = tile
+        keep = [t for t in r['learned_blocked']
+                if not (len(t) == 3 and t[2] == walls_hash and t[1] == row and t[0] == c)]
+        if len(keep) != len(r['learned_blocked']):
+            r['learned_blocked'] = keep; self.dirty = True
 
     def blocked(self, level, room, mode='play', walls_hash=None):
         key = room_key(level, room) + (':cave' if mode == 'cave' else '')

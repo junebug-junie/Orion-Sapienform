@@ -4166,6 +4166,18 @@ private Unix socket. Disabled by default. See [setup and acceptance](../../docs/
 for exact-origin configuration, credentials, browser checks and known limits, and for
 Zelda play (planner v2, the play panel and solo leisure, `scripts/retro_leisure.py`).
 
+**Action bets (2026-10-23, `scripts/retro_experience.py`).** Before each Zelda goal, the Hub
+lists the moves Orion could make (each open side, fight, collect, enter a known cave, retreat,
+wait). It asks orion-prediction (`HUB_PREDICTION_URL`, default `http://127.0.0.1:8132`) how often
+each kind of move worked before, and shows the model the top 5 in the prompt (score = chance x
+hand-set value + 2 x expected learning). When Retro accepts the goal, the Hub places a bet on it.
+The next decision settles that bet from Retro's `goal_finished` row and the new observation. A
+human takeover or pause (`stopped:*`) is void, never a failure. At session end, any open bet is
+settled, and the memory card gets up to 3 fact lines read back from the bets. Prediction service
+unreachable: no menu, no bet, log line `action_quote_unavailable`. Kill switch
+`HUB_ACTION_BETS_ENABLED` (ON); off restores the #2870 planner exactly. Offline eval:
+`evals/zelda_experience_replay.py`. Spec: `docs/superpowers/specs/2026-10-23-embodied-experience-learning-design.md`.
+
 ### Cabinet sonification (live instrument)
 
 In Biometrics → Cabinet, **Listen** starts a quiet magnetic-field tone. Pitch rises

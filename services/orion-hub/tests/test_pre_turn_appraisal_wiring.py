@@ -225,3 +225,25 @@ async def test_publish_repair_pressure_appraisal_noop_when_bus_none() -> None:
 
     # Should not raise even though bus is None.
     await _mod._publish_repair_pressure_appraisal(None, correlation_id="00000000-0000-4000-8000-000000000009", summary={"level": 0.5})
+
+
+def test_grammar_scalars_are_unknown_for_a_failed_paradigm_not_zero() -> None:
+    """A shed/failed probe has no reading: (None, None), never (0.0, 0.0)."""
+    from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1
+    from scripts.pre_turn_appraisal_wiring import (
+        build_repair_pressure_summary,
+        repair_pressure_grammar_scalars,
+    )
+
+    failed = TurnAppraisalBundleV1(
+        correlation_id="c", failed_paradigms=["repair_pressure"],
+        failure_reasons={"repair_pressure": "shed:cabinet_hot"},
+    )
+    assert repair_pressure_grammar_scalars(pre_turn_bundle=failed, substrate_summary=None) == (None, None)
+    assert repair_pressure_grammar_scalars(pre_turn_bundle=None, substrate_summary=None) == (None, None)
+    assert build_repair_pressure_summary(failed) is None
+    measured = TurnAppraisalBundleV1(
+        correlation_id="c", grammar_scalars={"repair_pressure": {"level": 0.0, "confidence": 0.65}}
+    )
+    # a measured calm 0.0 stays a real 0.0
+    assert repair_pressure_grammar_scalars(pre_turn_bundle=measured, substrate_summary=None) == (0.0, 0.65)

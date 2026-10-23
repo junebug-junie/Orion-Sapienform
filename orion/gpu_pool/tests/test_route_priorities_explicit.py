@@ -50,5 +50,6 @@ def test_turn_routes_are_interactive_and_their_plain_twins_stay_system():
     doc = yaml.safe_load(POOL_YAML.read_text(encoding="utf-8"))
     routes = doc["routes"]
     assert routes["metacog_turn"] == {"class": "metacog", "priority": "interactive"}
+    assert routes["quick_turn"] == {"class": "fast", "priority": "interactive"}
     for plain, cls in (("metacog", "metacog"), ("quick", "fast"), ("agent", "agent")):
         assert routes[plain] == {"class": cls, "priority": "system"}

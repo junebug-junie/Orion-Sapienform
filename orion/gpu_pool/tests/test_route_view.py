@@ -65,7 +65,8 @@ def test_view_from_state_uses_the_config_the_pool_sent():
 
 
 ROUTES_ADDED_AFTER_GOLDEN = {"agent-deep",          # hecate, 2026-10-08
-                             "metacog_perception"}  # Orion's sight, 2026-10-23 (pinned below)
+                             "metacog_perception",  # Orion's sight, 2026-10-23 (pinned below)
+                             "quick_turn"}          # repair-pressure probe, 2026-10-23 (pinned below)
 _GOLDEN = json.loads((Path(__file__).parent / "fixtures_routes_compat_golden.json").read_text())
 
 
@@ -170,3 +171,19 @@ def test_metacog_perception_route_is_system_only_on_the_metacog_class():
     assert {k: v for k, v in r.items() if k not in ("id",)} == {k: v for k, v in turn.items() if k not in ("id",)}
     assert "metacog_perception" in METACOG_LLM_ROUTES and "metacog_perception" in SYSTEM_LLM_ROUTES
     assert CFG.routes["metacog_perception"].priority == "perception"
+
+
+def test_quick_turn_route_is_system_only_on_the_fast_class():
+    """The pre-turn repair-pressure probe's route: served exactly like `quick` (same class, same
+    roles, same model), but interactive in the pool so the heat reflex never sheds it, and hidden
+    from the human picker (route_view reports priority "system")."""
+    from orion.llm.routes import METACOG_LLM_ROUTES, SYSTEM_LLM_ROUTES
+    view = build_route_view(None, CFG)
+    [r] = [e for e in view["routes"] if e["id"] == "quick_turn"]
+    [quick] = [e for e in view["routes"] if e["id"] == "quick"]
+    assert r["priority"] == "system" and quick["priority"] != "system"   # quick stays pickable
+    same = lambda e: {k: v for k, v in e.items() if k not in ("id", "priority")}  # noqa: E731
+    assert same(r) == same(quick)
+    assert "quick_turn" in SYSTEM_LLM_ROUTES and "quick_turn" not in METACOG_LLM_ROUTES
+    assert CFG.routes["quick_turn"].priority == "interactive"
+    assert CFG.routes["quick_turn"].work_class == CFG.routes["quick"].work_class == "fast"

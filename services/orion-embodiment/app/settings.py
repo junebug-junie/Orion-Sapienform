@@ -54,11 +54,11 @@ class Settings(BaseSettings):
     # from speech_lane, which also doubles as the cognition "mode" passed to
     # build_plan_for_verb -- conflating the two would mean changing one for
     # gateway-routing reasons silently changes the other's unrelated meaning.
-    # Set to quick_background (not quick) so Orion's own ai-town dialogue
-    # shares atlas-worker-fast-1 without competing evenly with orion-mind/
-    # orion-hub's own quick traffic -- see services/orion-llm-gateway/README.md's
-    # "Background-priority routes".
-    speech_quick_llm_route: str = Field("quick", alias="EMBODIMENT_SPEECH_QUICK_LLM_ROUTE")
+    # quick_embodied (2026-10-23): the fast lane at GPU pool priority
+    # interactive. On quick_background every reply queued behind system work
+    # past the 45 s speech RPC and Orion never answered in town
+    # (config/gpu_pool.yaml quick_embodied).
+    speech_quick_llm_route: str = Field("quick_embodied", alias="EMBODIMENT_SPEECH_QUICK_LLM_ROUTE")
     speech_verb: str = Field("chat_quick", alias="EMBODIMENT_SPEECH_VERB")
     speech_timeout_sec: float = Field(30.0, alias="EMBODIMENT_SPEECH_TIMEOUT_SEC")
     # Town speech must stay on the chat exec lane — the legacy intake queue is

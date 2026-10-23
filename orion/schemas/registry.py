@@ -517,6 +517,7 @@ from orion.schemas.telemetry.spark_candidate import SparkCandidateV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.signals.models import OrionSignalV1
 from orion.schemas.telemetry.system_health import (
+    ContainerRestartsV1,
     EquilibriumSnapshotV1,
     EquilibriumServiceTransitionV1,
     SystemHealthV1,
@@ -645,6 +646,7 @@ from orion.schemas.thought import (
     GroundingCapsuleV1,
     HubAssociationBundleV1,
     StanceHarnessSliceV1,
+    TurnSelfPredictionV1,
     StanceReactRequestV1,
     ThoughtDecisionRecordV1,
     ThoughtEventV1,
@@ -973,6 +975,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SparkStateSnapshotV1": SparkStateSnapshotV1,
     "SparkTelemetryPayload": SparkTelemetryPayload,
     "SystemHealthV1": SystemHealthV1,
+    "ContainerRestartsV1": ContainerRestartsV1,
     "RpcHealthSnapshotV1": RpcHealthSnapshotV1,
     "RpcChannelLatencyV1": RpcChannelLatencyV1,
     "BusConsumerReadinessV1": BusConsumerReadinessV1,
@@ -1627,6 +1630,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SelfExperimentListResponseV1": SelfExperimentListResponseV1,
     "CoalitionSnapshotV1": CoalitionSnapshotV1,
     "StanceHarnessSliceV1": StanceHarnessSliceV1,
+    "TurnSelfPredictionV1": TurnSelfPredictionV1,
     "HubAssociationBundleV1": HubAssociationBundleV1,
     "ThoughtEventV1": ThoughtEventV1,
     "ThoughtDecisionRecordV1": ThoughtDecisionRecordV1,
@@ -1830,6 +1834,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "StanceHarnessSliceV1": SchemaRegistration(
         model=StanceHarnessSliceV1,
         kind="stance.harness.slice.v1",
+    ),
+    "TurnSelfPredictionV1": SchemaRegistration(
+        model=TurnSelfPredictionV1,
+        kind="turn.self_prediction.v1",
     ),
     "HubAssociationBundleV1": SchemaRegistration(
         model=HubAssociationBundleV1,

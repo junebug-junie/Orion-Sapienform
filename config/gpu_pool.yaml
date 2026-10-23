@@ -171,6 +171,12 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
   # (system) the 34 C reflex refused it on 19/19 Juniper turns 10-20..21, and the turn went on
   # with no repair reading. Same fast class, interactive, so heat never sheds it.
   quick_turn: {class: fast, priority: interactive}
+  # quick_embodied (2026-10-23): Orion's own speech in AI Town (orion-embodiment
+  # EMBODIMENT_SPEECH_QUICK_LLM_ROUTE, through cortex-exec chat_quick). On quick_background it
+  # waited in the fast queue behind system work (orion-topic-foundry) and the embodiment worker's
+  # 45 s RPC gave up on every reply 10-23, while the lane itself answered in 2.2 s. Someone is
+  # standing there waiting for an answer, so it is a live turn: interactive, never shed by heat.
+  quick_embodied: {class: fast, priority: interactive}
   # Orion's sight (2026-10-23, docs/superpowers/specs/2026-10-23-organism-body-economy-design.md, A0):
   # vision-council's scene reads. On metacog_background the 34 C reflex refused it 25,430 times in the
   # 7 days to 10-23 -- Orion stopped interpreting what it saw whenever the cabinet ran hot. perception

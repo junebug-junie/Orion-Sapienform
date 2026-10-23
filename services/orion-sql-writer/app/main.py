@@ -1037,6 +1037,11 @@ async def lifespan(app: FastAPI):
 
     orion_energy_rollup_task: asyncio.Task | None = asyncio.create_task(orion_energy_rollup_loop(settings))
 
+    # Body economy weight source (a): act -> output -> cited arc -> decision (read-only rollup).
+    from app.act_downstream_use import act_downstream_use_loop
+
+    act_downstream_use_task: asyncio.Task | None = asyncio.create_task(act_downstream_use_loop(settings))
+
     # Replays events shed with error='grammar queue full' back into the ledger once the
     # grammar lanes are idle. See app/grammar_fallback_drain.py.
     drain_task: asyncio.Task | None = None
@@ -1129,7 +1134,8 @@ async def lifespan(app: FastAPI):
         pending = [
             t for t in (task, write_health_task, watch_task, retention_task, drain_task, vision_permanence_task,
                         vision_individuals_task, vision_rhythm_task, vision_expect_task, act_resolver_task,
-                        vision_motion_task, vision_rollup_task, vision_handoff_task, orion_energy_rollup_task)
+                        vision_motion_task, vision_rollup_task, vision_handoff_task, orion_energy_rollup_task,
+                        act_downstream_use_task)
             if t is not None
         ]
         for background in pending:

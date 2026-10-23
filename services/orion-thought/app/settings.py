@@ -716,6 +716,11 @@ class ThoughtSettings(BaseSettings):
     # substrate_node_prediction_error_history, calibrated by the attention seam's own rule; only
     # unusual signals render, a calm body renders nothing. Kill switches: false = that prompt
     # exactly as before. The read+render is bounded by FETCH_TIMEOUT_SEC (renders nothing on miss).
+    # Unified-turn self-prediction (docs/superpowers/specs/2026-10-23-unified-turn-self-prediction-
+    # design.md, A1): stance also writes a private bet about this turn's own behaviour
+    # (ThoughtEventV1.self_prediction). Never shown to the motor or judge. false = the stance
+    # prompt exactly as before.
+    stance_self_prediction_enabled: bool = Field(True, alias="STANCE_SELF_PREDICTION_ENABLED")
     self_readings_stance_enabled: bool = Field(True, alias="SELF_READINGS_STANCE_ENABLED")
     self_readings_reverie_enabled: bool = Field(True, alias="SELF_READINGS_REVERIE_ENABLED")
     self_readings_fetch_timeout_sec: float = Field(

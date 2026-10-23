@@ -3039,6 +3039,10 @@ channels:
     # source_service="orion-bus" on rpc_transport_timeout markers published from
     # whichever service's bus client timed out.
     producer_services:
+      # act ledger (body economy A5): daily_metacog_v1 attempts (`infer`) and in-process journal
+      # composes (`make`) publish act_opened/act_closed (services/orion-actions/app/act_emit.py),
+      # gated by ACTIONS_ACT_EMIT_ENABLED. Durable journal.compose runs are left to orion-durable-runs (its act producer is not shipped yet).
+      - orion-actions
       - orion-biometrics
       - orion-bus
       - orion-cortex-exec
@@ -3068,6 +3072,10 @@ channels:
       # THOUGHT_ACT_LEDGER_ENABLED. orion-hub's say/ask/look acts ride its existing entry
       # (HUB_ACT_LEDGER_ENABLED). Persisted by orion-sql-writer to grammar_acts.
       - orion-thought
+      # act ledger (body economy A5): each topic-foundry training run publishes one `maintain`
+      # act (services/orion-topic-foundry/app/services/act_emit.py), gated by
+      # TOPIC_FOUNDRY_ACT_EMIT_ENABLED.
+      - orion-topic-foundry
       # per-window storage-write outcome traces (sql_writer.storage:), gated by
       # SQL_WRITER_WRITE_HEALTH_ENABLED -- services/orion-sql-writer/app/write_health.py.
       # The writer is also this channel's persister; it never counts its own

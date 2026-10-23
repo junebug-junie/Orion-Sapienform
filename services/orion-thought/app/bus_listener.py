@@ -237,6 +237,9 @@ def build_stance_react_context(
     if label_estimates and mind_coloring is not None:
         # Mind's frontier scores / confidences are an LLM's numbers: say so in the prompt.
         context["self_readings_label_estimates"] = True
+    if settings.stance_self_prediction_enabled:
+        # Self-prediction A1: stance_react.j2 asks for the private self_prediction bet only when set.
+        context["self_prediction_enabled"] = True
     if stance_prepare_requested:
         # cortex-exec waits for (and uses) the context it is already building for
         # this turn instead of building a second one (app/stance_prepare.py).

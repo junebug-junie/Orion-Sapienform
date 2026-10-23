@@ -107,6 +107,26 @@ Incremental trim after concept-induction publishes goals: enable `AUTONOMY_GOAL_
 
 Verify in logs: `autonomy_goal_archive_scheduler_result` or `autonomy_goal_archive_drain`.
 
+### Act ledger producers (2026-10-23, body economy A5)
+
+Two activities publish one act per attempt on `orion:grammar:event`, persisted to `grammar_acts`
+by orion-sql-writer (`app/act_emit.py`, flag `ACTIONS_ACT_EMIT_ENABLED`, default on):
+
+- `actions.daily_metacog` / `infer`: one `daily_metacog_v1` attempt. 1 when the report is
+  delivered, 0 on notify failure, exception or cancellation. The job itself is off live
+  (`ACTIONS_DAILY_METACOG_ENABLED=false`), so it emits nothing today. `daily_pulse_v1` is not an act.
+- `actions.journal` / `make`: one in-process journal compose (`_dispatch_journal`). 1 when the
+  draft came back and its `journal.entry.write.v1` was published, else 0.
+
+Ownership rule: the process that runs a journal's compose owns its act. Journals submitted as
+durable `journal.compose` runs (world_pulse_digest) are composed and counted by orion-durable-runs,
+and never pass through `_dispatch_journal`, so no journal is counted twice.
+
+The act opens after the dedupe gate and semaphore wait (the queue wait is not the act). Key = the
+job's dedupe key + the attempt envelope's correlation id: a redelivered trigger is the same act,
+a scheduler retry is a new one. The act's correlation id is the one the cortex GPU leases carry,
+so the ledger's cost fill can charge the attempt. Cost `seconds` = wall time.
+
 ### What Actions does **not** own
 
 - Workflow identity and workflow logic (`dream_cycle`, `journal_pass`, `self_review`, `concept_induction_pass`).

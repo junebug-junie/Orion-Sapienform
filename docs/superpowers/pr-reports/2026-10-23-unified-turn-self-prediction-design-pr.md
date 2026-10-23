@@ -72,10 +72,7 @@ No restart required.
 - Severity: low.
   - Concern: depends on #2827 (open) for grading.
   - Mitigation: A1 can ship first. The bets accumulate until the organ grades them.
-- Separate finding (on the agent board, not fixed here):
-  - 44 of 71 Mind runs in 72 h returned nothing.
-  - 16 of those timed out at 60 s on `metacog_turn` during world-pulse reads.
-  - Mind's turn-path phases run at system priority, which the heat reflex can shed (body economy Q10).
+- Correction (from PR #2879): Juniper's turns were already fully interactive for Mind; the real bug was Orion's own turns riding her tier. #2879 fixed and deployed it. Mind fallback is 92/228 runs in 72 h (stage-1 empty synthesis 49, stage-2 queue timeouts 31, self-sense 8, journal 1); none on Juniper's turns. The spec now treats a shed Mind run as "no reading".
 
 ## PR link
 

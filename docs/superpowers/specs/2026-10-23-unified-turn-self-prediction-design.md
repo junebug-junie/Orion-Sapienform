@@ -71,10 +71,15 @@ find out.
 read 431 + stage 2 315, Hub chat 223, journal 195, outreach 7. **Only about 9% are
 Juniper's chats.** Juniper has not chatted since 10-21.
 
-**Mind health (72 hours, orion-thought log):** 27 runs `meaningful_synthesis`, 44
-`fallback_contract_only` (Mind returned nothing). 16 of the 44 were 60-second timeouts on
-route `metacog_turn` in `orion_world_pulse_read_stage2`. None of the 72-hour runs was a
-Juniper turn. This is a separate finding, recorded on the board, and not fixed here.
+**Mind health (72 hours to 2026-10-23 18:40, corrected by PR #2879):** 92 of 228 Mind
+runs returned nothing (`fallback_contract_only`). By cause:
+- world-pulse stage 1: 49 of 49, empty synthesis;
+- world-pulse stage 2: 31, queue timeouts (the prompt needs 4.1k–7k tokens, and only the
+  busy agent seats fit);
+- self-sense-eval: 8, empty replies, probably local heat sheds;
+- journal: 1, JSON parse failure.
+
+No fallback was seen on Juniper's chat turns. My first figure (44 of 71) was wrong.
 
 ## Design
 
@@ -168,13 +173,19 @@ ranges. Its existing stance cue brings the result back into later turns.
   1 or 2 per the economy table).
 - **Settling is code, with no GPU.** It runs in the organ's tick. That tick is
   "act-ledger grading" upkeep, which is Tier 1.
-- **"Basic thought" on Juniper's turn is already Tier 0** under the economy's rule
-  ("every turn-path call"). The trace confirms that Mind's three phases are awaited inside
-  stance on the turn path (`bus_listener.py:598`). That answers economy open question 10
-  for Mind: on Juniper's turns, Mind's calls are Tier 0 and belong on an interactive
-  priority. Mind's `stance_handoff` and `active_frontier_judge` phases run on route
-  `metacog` (system priority), which the heat reflex can shed. The fix belongs to economy
-  Patch A, not here.
+- **"Basic thought" on Juniper's turn is Tier 0, and was already protected.** Mind's three
+  phases are awaited inside stance on the turn path (`bus_listener.py:598`). On a
+  Juniper-marked turn, all three move together to `metacog_turn` (interactive, never
+  shed): 38 of 38 Juniper turns from 10-14 to 10-21 had 3 interactive Mind grants each. My
+  first reading, that two phases stayed at system priority, was wrong. The real bug was
+  the reverse. Unmarked Orion-started turns also got Juniper's interactive tier: 96
+  grants since 10-21. PR #2879 (deployed 10-23) lifts Mind only when
+  `utterance_origin="juniper"`.
+- **After #2879, a stance on an Orion-started turn can run with Mind shed by heat.** A
+  shed Mind run looks exactly like an empty one (`fallback_contract_only`, sometimes with
+  no pool row). The bets do not depend on Mind. A3's `evidence_ref` records whether Mind
+  coloring was present, so the organ can split faculties later. A shed or empty Mind run
+  is "no reading", never "calm".
 - **Option C (a standing self that ticks between turns) is Tier 1**, critical upkeep with
   a reserved share. It is continuous load, so Tier 0's "never deferred" would fight the
   heat reflex. A turn's *read* of the standing state is free and rides the turn's tier.
@@ -281,6 +292,8 @@ ranges. Its existing stance cue brings the result back into later turns.
 6. Gate re-run at day 7: the stated distributions are not flat.
 7. With organ phase 1: `turn.self.*` faculty records exist, and the stance cue renders a
    line on a live turn.
+8. Fixture: a turn whose Mind run was shed (empty reply, no grant) still settles its bets.
+   Its `evidence_ref` marks Mind as absent, and nothing reads that absence as zero.
 
 ## Arc after A (from the storyboard)
 

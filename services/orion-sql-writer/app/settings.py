@@ -851,6 +851,9 @@ class Settings(BaseSettings):
     # Hourly kWh per Orion power source (app/orion_energy_rollup.py), kept after raw watts are
     # pruned. 0 disables, and months of Orion energy history are then lost after 30 days.
     orion_energy_rollup_interval_sec: float = Field(600.0, alias="ORION_ENERGY_ROLLUP_INTERVAL_SEC")
+    # Act downstream use (app/act_downstream_use.py, body economy weight source (a)): per act,
+    # was its output cited by a later decision within 72 h. 0 disables (no rows, no weights).
+    act_downstream_use_interval_sec: float = Field(900.0, alias="ACT_DOWNSTREAM_USE_INTERVAL_SEC")
     # Rung 3 (thinking architecture, "bind the winner to action"): stamp an act's workspace_ref with
     # the world-first winner it answers (orion/grammar/act_ledger.py ACT_ANSWERS_WORKSPACE_REFS) and,
     # at close, write Orion's own non-final `acted` verdict on that loop (attention_loop_outcome,

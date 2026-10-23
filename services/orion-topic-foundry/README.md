@@ -221,6 +221,21 @@ Example (truncated, representative):
 - `TOPIC_FOUNDRY_COSINE_IMPL` → `cosine_impl_default`
 - `TOPIC_FOUNDRY_INTROSPECT_SCHEMAS` → `introspection.ok` / `introspection.schemas`
 
+## Act ledger: each training run is one act (2026-10-23, body economy A5)
+
+Each `_run_training` call publishes one `maintain` act (actor `topic_foundry.run`) on
+`orion:grammar:event`, persisted by orion-sql-writer to `grammar_acts`
+(`app/services/act_emit.py`, flag `TOPIC_FOUNDRY_ACT_EMIT_ENABLED`, default on).
+
+- Opens when the run starts work. Closes once: 1 on `status=complete`, 0 on failure (including
+  "No documents available for training"), any exception, or anything that escapes (`finally`).
+- Act key = the run id. A restart mid-run (a deploy) leaves the act open; the writer expires it
+  at 0 at its horizon (3600 s: p90 of complete runs over 30 days, rounded up to the hour).
+- GPU cost: not joined yet. The act's correlation id is derived from the run id, but each LLM call
+  keeps its own envelope id (sharing one across a run's ~200 calls would make orion-bus-mirror
+  record fake causal hops). Follow-up: the gateway forwards an explicit turn id to the GPU pool.
+- Cost `seconds` = wall time from open to close.
+
 ## LLM over bus
 
 LLM path is considered usable when:

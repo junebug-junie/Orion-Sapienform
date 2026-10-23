@@ -163,7 +163,7 @@ def test_a_few_human_frames_never_read_as_orion_100_percent() -> None:
     assert "(Orion drove 99% of frames)" in s.summary
 
 
-def test_a_co_play_handoff_is_its_own_row_and_closes_no_act() -> None:
+def test_a_co_play_handoff_is_its_own_row_with_no_dispatch() -> None:
     e = _ended(controller="co_play", leisure_id=None, act_id=None,
                controller_frames={"human": 300, "script": 700, "leisure": 0, "none": 0})
     kw = rx.session_end_inputs(e)
@@ -183,11 +183,23 @@ def test_no_decision_count_is_not_claimed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_co_play_sink_exports(cards) -> None:
+async def test_the_co_play_sinks_open_and_close_one_play_act(cards) -> None:
+    # Regression (2026-10-23): co-play closed no act ("co-play has no play act"), and the gateway
+    # that runs it had no bus, so 7 played handoffs left 0 rows in grammar_acts.
     pool, bus = _Pool(), _Bus()
+    start = rx.make_session_start_sink(bus_provider=lambda: bus)
     sink = rx.make_session_end_sink(pool_provider=lambda: pool, bus_provider=lambda: bus)
+    assert await start("retro-1", 1792699320.0) is True
     out = await sink(_ended(controller="co_play", leisure_id=None, act_id=None))
-    assert out.state == "exported" and list(pool.rows) == ["retro-1:1792699320.000"] and bus.events() == []
+    assert out.state == "exported" and list(pool.rows) == ["retro-1:1792699320.000"]
+    opened, closed = bus.events()
+    assert (opened.event_kind, closed.event_kind) == ("act_opened", "act_closed")
+    assert opened.act.act_id == closed.act.act_id
+    assert (closed.act.actor, closed.act.verb, opened.act.expect.signal_id) == ("hub.retro_coplay", "play", "artifact_produced")
+    assert opened.correlation_id == closed.correlation_id == "retro-1:1792699320.000"   # the row key
+    assert opened.observed_at == datetime.fromtimestamp(1792699320.0, tz=timezone.utc)  # the handoff start
+    assert closed.act.object_ref == "retro_session:retro-1"
+    assert closed.act.outcome.value == 1.0 and closed.act.outcome.note == "decisions=31 met=14"
 
 
 def test_game_title_by_id_segment() -> None:
@@ -367,10 +379,33 @@ async def test_a_session_with_no_planner_decision_closes_its_act_at_zero(cards) 
 
 
 @pytest.mark.asyncio
-async def test_co_play_has_no_act_to_close(cards) -> None:
+async def test_co_play_closes_its_own_act_keyed_by_the_row(cards) -> None:
     bus = _Bus()
-    out = await _export(_Pool(), bus, kind="co_play", dispatch_id=None, journal=_journal(human=60000, orion=40000))
-    assert out.state == "exported" and out.summary.played_together and bus.events() == []
+    rx._remember_opened("r:1.000")   # this process published the open
+    out = await _export(_Pool(), bus, kind="co_play", dispatch_id=None, session_id="r:1.000", retro_session_id="r",
+                        journal=_journal(human=60000, orion=40000))
+    assert out.state == "exported" and out.summary.played_together
+    (ev,) = bus.events()
+    assert ev.act.actor == "hub.retro_coplay" and ev.correlation_id == "r:1.000"
+    # The disabled switch still closes the co-play act at 0, like leisure.
+    bus2 = _Bus()
+    off = await _export(_Pool(), bus2, kind="co_play", dispatch_id=None, session_id="r:1.000", enabled=False)
+    assert off.state == "disabled" and [e.act.outcome.value for e in bus2.events()] == [0.0]
+
+
+@pytest.mark.asyncio
+async def test_a_co_play_handoff_never_opened_closes_no_act(cards) -> None:
+    # Review finding: a handoff that ended before its first Zelda cognition poll, or whose open
+    # found no bus, must not publish a close-before-open (the ledger would grade a 0 for it).
+    bus = _Bus()
+    out = await _export(_Pool(), bus, kind="co_play", dispatch_id=None, session_id="never:1.000",
+                        retro_session_id="never")
+    assert out.state == "exported" and bus.events() == []
+    nobus = rx.make_session_start_sink(bus_provider=lambda: None)
+    assert await nobus("late", 5.0) is False
+    late = await _export(_Pool(), bus, kind="co_play", dispatch_id=None, session_id="late:5.000",
+                         retro_session_id="late")
+    assert late.state == "exported" and bus.events() == []
 
 
 @pytest.mark.asyncio

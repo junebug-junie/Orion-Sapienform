@@ -924,7 +924,7 @@ once per tick; each loop decides what a level means for its own dial:
 |---|---|---|---|---|
 | Curiosity investigation line | held, `arousal_strained` | cooldown x `HUB_CURIOSITY_AROUSAL_ENGAGED_COOLDOWN_MULTIPLIER` (2.0), `arousal_engaged_cooldown` | as today | as today |
 | Curiosity self-inquiry | held, `arousal_strained` | held, `arousal_engaged` | as today | as today |
-| Background outreach | refused, `arousal_strained` | as today | as today | as today |
+| Background outreach | refused, `arousal_strained` (one strain report per long episode may pass, see below) | as today | as today | as today |
 | Scheduled self-modification proposals (R3 reader 6) | no new proposal; pressure kept, traced `mutation_proposal_held` | as today | as today | as today |
 
 Every arousal hold is checked last, so it only ever adds a hold after every other
@@ -937,6 +937,43 @@ the producer's own `unknown`, or a Redis error changes nothing. Off switches:
 `HUB_ENDOGENOUS_OUTREACH_AROUSAL_ENABLED`. The rest drive (above) stays a separate
 input: tired and strained are different facts and both can hold. The outreach
 status endpoint shows `arousal`. Eval: `scripts/analysis/measure_arousal_reader_replay.py`.
+
+**Strain report door (strain loop part 3, `scripts/strain_report.py`).** While strained,
+background outreach stays refused, with one exception: when the current strained episode has
+lasted `ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC` (3600), Orion may send Juniper ONE
+report about it. Rules:
+
+- It passes only the `arousal_strained` refusal. Disabled, turn-in-flight, recent-chat, quiet
+  hours, the daily cap, the cooldowns all still hold. Inside quiet hours it waits, and goes out
+  after quiet hours if the same episode is still open.
+- One per episode (keyed on the episode start, `arousal.since`) and one per local day
+  (`ORION_SITUATION_TIMEZONE`). Both are rebuilt from `endogenous_outreach_decisions` on first
+  use, so a restart does not re-send; if that read fails the door stays shut
+  (`strain_report=history_unknown`). Before delivery a `reason=strain_report_sending` row is
+  written synchronously; if it does not land, nothing is sent (`intent_write_failed`), and the
+  row alone blocks a re-send even if the final `sent` row is lost. A PASS from Orion closes the
+  episode; a failed compose may retry after 30 min, at most 3 times per episode
+  (`attempts_exhausted`).
+- A strain report spends one daily-cap slot (`count_sent_on` counts it), on purpose: it is a
+  background message.
+- Known limits: the episode key is the regulation `since`, so a regulation outage long enough to
+  reset `since` makes a new episode (the once-per-day rule still bounds it). History looks back
+  30 days. If the reading goes stale between the two gate reads the row says
+  `reason=strain_ended`.
+- Grounding is the live regulation reading (since, causes now, cabinet temp, GPU jobs waiting)
+  plus the open `strain` arc from durable-runs `GET /temporal-self/frame` when it is this
+  episode (causes seen, `[arc:<id>]`). What strain holds back comes from the
+  `regulation.state.v1` readers in `orion/inner_state_registry.py` (a test keeps the list in
+  step). No reading, no message (`strain_report=no_grounding`). Orion writes the message through
+  the normal unified turn; a deterministic "Strain record" line with the citation is appended.
+- Trace: every row of this door has `door=strain_report` and `strain_episode_since`; composed
+  rows also have `source=strain_report`. Non-sending ticks keep `reason=arousal_strained` and say
+  why in `strain_report` (`episode_too_short`, `already_reported_episode`,
+  `already_reported_today`, ...). Count live sends:
+  `SELECT count(*) FROM endogenous_outreach_decisions WHERE reason='sent' AND result_json->>'source'='strain_report';`
+- Off switch: `ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED=false` (old refusal, unchanged).
+  Eval: `python3 services/orion-hub/evals/run_strain_report_replay.py` (read-only replay of
+  `arousal_transition` level rows; reports per local day).
 
 The self-modification reader is different in one way: the mutation cycle runs 60-90 s
 off the event loop, so it reads Redis itself (one blocking GET, 2 s timeout) at the
@@ -3290,7 +3327,9 @@ The check uses `POSTGRES_URI` and a read-only transaction, resolves the latest U
 
 **Reading pull (2026-10-21, thinking rung 3 follow-up).** The motor allocator may ask for ONE extra Stage 1 read now (`orion:world_pulse_read:pull:request`, `scripts/world_pulse_read_pull_listener.py`, `WorldPulseReadPipeline.pull`). Hub picks the seed the lane would claim next (`CLAIM_SQL` order: priority, then age; not one already in flight or already pulled) and runs every gate first, in this order: kill switch `HUB_WORLD_PULSE_READ_PULL_ENABLED` (ON); the lane's own Wallet A gate (window, refund backoff); `HUB_WORLD_PULSE_READ_PULL_DAILY_CAP` started pulls per UTC day (default 8: the lane's median reading day over 30 days, `orion/world_pulse_read/pull.py`); arousal `strained` (`HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED`, same rule as the baseline painting); thermal `hot` on Hub's own cabinet sensor (`orion/autonomy/thermal_gate.py` defaults and hysteresis). `op=check` has no side effect. `op=act` marks the seed (`pull_dispatch_id`, `pull_arm`, `pulled_at`; migration `manual_migration_reading_pull_v1.sql`, also added lazily): a treated pull claims it and starts it under the lane lock, then the lane polls it like any other read; a control pull only marks it, and the lane may still read it. The lane itself is unchanged. Log lines: `reading_pull op=...`, `reading_pull_started`.
 
-**Retro leisure start and memory export (2026-10-22, Orion plays Zelda sections E and F).** The motor allocator may ask for ONE solo Zelda session (`orion:retro_leisure:start:request`, `scripts/retro_leisure_listener.py`). The listener asks the leisure runner (`scripts/retro_leisure.py`) for its own `should_start(settings)` verdict and passes a refusal through by name; with no runner it refuses `runner_unavailable` (300 s hold), never a fake session. A passed gate starts `run_leisure_session(settings, act_id=<dispatch_id>)`; a refusal from its own re-check within 5 s is still answered as a refusal. Otherwise the listener opens one `play` act (`hub.retro_leisure`, key = dispatch id, `test_before=retro_leisure_dispatch:<dispatch_id>`, horizon 2400 s = 1800 s session cap + 600 s save/export, `scripts/act_emit.py`). When the leisure session ends the listener passes its `RetroSessionEnded` to `scripts/retro_memory_export.py:export_leisure_outcome` (co-play sessions call `export_session` with their journal and atlas delta; that call site is not wired yet): it builds one deterministic summary (facts and counts only; "played together" when a human drove more than half of the frames), writes one `retro_play_sessions` row (migration `services/orion-sql-db/manual_migration_retro_play_sessions_v1.sql`, also created lazily), one active `memory_cards` row with provenance and trust_source `retro_play`, links them, and closes the leisure `play` act (1 only with at least one real planner decision). Kill switch: `HUB_RETRO_MEMORY_EXPORT_ENABLED` (ON). Log lines: `retro_leisure_started`, `retro_leisure_refused`, `retro_memory_export`.
+**Retro leisure start and memory export (2026-10-22, Orion plays Zelda sections E and F).** The motor allocator may ask for ONE solo Zelda session (`orion:retro_leisure:start:request`, `scripts/retro_leisure_listener.py`). The listener asks the leisure runner (`scripts/retro_leisure.py`) for its own `should_start(settings)` verdict and passes a refusal through by name; with no runner it refuses `runner_unavailable` (300 s hold), never a fake session. A passed gate starts `run_leisure_session(settings, act_id=<dispatch_id>)`; a refusal from its own re-check within 5 s is still answered as a refusal. Otherwise the listener opens one `play` act (`hub.retro_leisure`, key = dispatch id, `test_before=retro_leisure_dispatch:<dispatch_id>`, horizon 2400 s = 1800 s session cap + 600 s save/export, `scripts/act_emit.py`). When the leisure session ends the listener passes its `RetroSessionEnded` to `scripts/retro_memory_export.py:export_leisure_outcome` (co-play handoffs reach the same export through `app.state.retro_session_end_sink`): it builds one deterministic summary (facts and counts only; "played together" when a human drove more than half of the frames), writes one `retro_play_sessions` row (migration `services/orion-sql-db/manual_migration_retro_play_sessions_v1.sql`, also created lazily), one active `memory_cards` row with provenance and trust_source `retro_play`, links them, and closes the leisure `play` act (1 only with at least one real planner decision). Kill switch: `HUB_RETRO_MEMORY_EXPORT_ENABLED` (ON). Log lines: `retro_leisure_started`, `retro_leisure_refused`, `retro_memory_export`.
+
+**Co-play play act (2026-10-23, body-economy A5).** A co-play handoff (Juniper hands her controller to Orion's goal motor on `/retro`) is an act too. `scripts/retro_routes.py` `watch_coplay` opens a `play` act (actor `hub.retro_coplay`, key and correlation id = the session row key `<retro session id>:<handoff start epoch>`, `test_before=retro_play_sessions:<key>`, stamped at the handoff start, horizon 2400 s) when it first sees a Zelda cognition policy, through `app.state.retro_session_start_sink`. The export closes it (1 with at least one real planner decision). Both the Hub and the Retro gateway register the opener; the gateway opens its own bus client (`ORION_BUS_URL`) in the background for it. Before this, co-play opened no act and the gateway had no bus, so `grammar_acts` held 0 retro acts while every played session ran through co-play. Log lines: `retro_gateway_act_bus_ready`, `coplay_act_open_failed`, `coplay_act_close_failed`.
 
 **Stale digest items.** Every Stage 1 tick marks pending `digest_item` seeds older than `HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS` (default 5, 0 disables) as `skipped` / `stale_digest_item`, except one that a finding or reading request was aliased onto. Digest items are priority 10 behind findings and readings, so without this the tail only grew older. Log line: `world_pulse_read_skipped_stale_digest_items`.
 

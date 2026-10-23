@@ -19,6 +19,13 @@ orion/hub/turn_orchestrator.py):
   at least one real planner decision within PLAY_HORIZON_SEC; closed by
   scripts/retro_memory_export.py at session end (1, or 0 for an empty or unexportable session),
   expired at 0 by the writer if neither arrives.
+- Retro co-play handoff -> ``play`` (actor ``hub.retro_coplay``, 2026-10-23). Juniper hands her
+  controller to Orion's goal motor from the Retro page. Opened by scripts/retro_routes.py
+  watch_coplay when it first sees a Zelda cognition policy on the grant (key: the session row key
+  ``<retro session id>:<handoff start epoch>``, also the act's correlation id); closed by
+  scripts/retro_memory_export.py when that handoff's row is exported (1 with >= 1 real planner
+  decision, else 0). Until 10-23 co-play opened no act at all, and it is the path every played
+  session took, so ``grammar_acts`` held 0 retro acts while sessions ran.
 
 Every function is best-effort and never raises: the act is a trace of doing,
 and losing one must never block the doing itself. Gated by
@@ -179,6 +186,85 @@ PLAY_BASIS = (
     "session starts: the runner's 1800s session cap (spec 2026-10-22 section E) + 600s for the "
     "end-of-session save and memory export; not yet measured (no session has run)"
 )
+
+
+# Co-play: 2400 s from the handoff start. Same bound as leisure: a handoff grant is capped at 1800 s
+# by orion-retro (services/orion-retro/app/contracts.py duration_seconds le=1800, default 60), plus
+# 600 s for the session row and memory export that close the act. First live handoffs (2026-10-23,
+# n=7) lasted 5 to 60 s, so the outcome is decided long before the horizon; the horizon only bounds
+# a handoff whose watcher died (gateway restart) before export.
+COPLAY_HORIZON_SEC = 2400.0
+COPLAY_BASIS = (
+    "artifact_produced (a co-play handoff summary with >= 1 real planner decision) by 2400s after the "
+    "handoff starts: orion-retro's 1800s grant cap + 600s for the session row and memory export; "
+    "first 7 live handoffs (2026-10-23) lasted 5-60s"
+)
+COPLAY_ACTOR = "hub.retro_coplay"
+
+
+def _coplay_act(key: str, retro_session_id: str | None):
+    from orion.grammar.acts import build_act
+
+    return build_act(
+        actor=COPLAY_ACTOR,
+        verb="play",
+        key=str(key),
+        signal_id="artifact_produced",
+        horizon_sec=COPLAY_HORIZON_SEC,
+        basis=COPLAY_BASIS,
+        object_ref=(f"retro_session:{retro_session_id}" if retro_session_id else None),
+        test_before=f"retro_play_sessions:{key}",
+    )
+
+
+def _coplay_envelope_id(key: str):
+    """The row key is not a UUID; one stable UUID per handoff keeps open and close on one bus
+    correlation id (otherwise each envelope gets a random one)."""
+    from uuid import NAMESPACE_URL, uuid5
+
+    return uuid5(NAMESPACE_URL, f"orion:retro_coplay:{key}")
+
+
+async def publish_coplay_opened(bus: Any, *, key: str, retro_session_id: str | None,
+                                started_at: float | None = None) -> bool:
+    """Open a co-play handoff's `play` act, stamped at the handoff start (epoch seconds)."""
+    if bus is None or not key or not _enabled():
+        return False
+    try:
+        from datetime import datetime, timezone
+
+        from orion.grammar.acts import act_opened_event
+        from orion.grammar.publish import publish_grammar_event
+
+        at = datetime.fromtimestamp(float(started_at), tz=timezone.utc) if started_at is not None else None
+        event = act_opened_event(
+            _coplay_act(key, retro_session_id), source_service="orion-hub", source_component="retro_coplay.act",
+            correlation_id=str(key), at=at,
+        )
+        await publish_grammar_event(bus, event, source_name="orion-hub", correlation_id=_coplay_envelope_id(key))
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("coplay_act_open_failed key=%s error=%s", key, exc)
+        return False
+
+
+async def publish_coplay_closed(bus: Any, *, key: str, retro_session_id: str | None, produced: bool,
+                                note: str = "") -> bool:
+    if bus is None or not key or not _enabled():
+        return False
+    try:
+        from orion.grammar.acts import act_closed_event
+        from orion.grammar.publish import publish_grammar_event
+
+        event = act_closed_event(
+            _coplay_act(key, retro_session_id), produced=produced, note=note,
+            source_service="orion-hub", source_component="retro_coplay.act", correlation_id=str(key),
+        )
+        await publish_grammar_event(bus, event, source_name="orion-hub", correlation_id=_coplay_envelope_id(key))
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("coplay_act_close_failed key=%s error=%s", key, exc)
+        return False
 
 
 def _play_act(dispatch_id: str, session_id: str | None):

@@ -1,0 +1,177 @@
+diff --git a/convex/agent/conversation.ts b/convex/agent/conversation.ts
+index 2a625b8..eebcaeb 100644
+--- a/convex/agent/conversation.ts
++++ b/convex/agent/conversation.ts
+@@ -50,21 +50,24 @@ function isOrionName(name: string): boolean {
+   return name.trim() === configured;
+ }
+
+-function townLastOtherPrompt(messages: LLMMessage[], otherName: string): string {
+-  const marker = `${otherName} to `;
++function townLastOtherPrompt(messages: LLMMessage[]): string {
+   for (let i = messages.length - 1; i >= 0; i--) {
+-    const content = String(messages[i]?.content || '');
+-    if (!content.startsWith(marker)) {
+-      continue;
+-    }
+-    const sep = content.indexOf(': ');
+-    if (sep >= 0) {
+-      return content.slice(sep + 2).trim();
++    if (messages[i]?.role === 'user') {
++      return String(messages[i].content || '').trim();
+     }
+   }
+   return '';
+ }
+
++// Chat models need the last turn to be the partner's. If the history ends on
++// our own line (or is empty), add a neutral cue instead of a "Name to Name:" one.
++function replyCue(messages: LLMMessage[], otherName: string): LLMMessage[] {
++  if (messages.length > 0 && messages[messages.length - 1].role === 'user') {
++    return [];
++  }
++  return [{ role: 'user', content: `(${otherName} is waiting for your reply.)` }];
++}
++
+ async function fetchTownContinuity(speakerName: string, otherName: string): Promise<string> {
+   try {
+     const speakerId = townSlug(speakerName);
+@@ -251,19 +254,10 @@ function normalizeTownLine(text: string): string {
+     .trim();
+ }
+
+-function ownPriorLines(messages: LLMMessage[], playerName: string): string[] {
+-  const prefix = `${playerName} to `;
++function ownPriorLines(messages: LLMMessage[]): string[] {
+   const out: string[] = [];
+   for (const m of messages) {
+-    const content = typeof m.content === 'string' ? m.content : '';
+-    if (!content.startsWith(prefix)) {
+-      continue;
+-    }
+-    const idx = content.indexOf(': ');
+-    if (idx < 0) {
+-      continue;
+-    }
+-    const line = content.slice(idx + 2).trim();
++    const line = m.role === 'assistant' && typeof m.content === 'string' ? m.content.trim() : '';
+     if (line) {
+       out.push(line);
+     }
+@@ -273,6 +267,27 @@ function ownPriorLines(messages: LLMMessage[], playerName: string): string[] {
+   return out.slice(-4);
+ }
+
++// Word-set overlap with the partner's last line. Measured on 9,391 live town
++// turns (2026-10-23): >= 0.7 is a copy or pronoun-swapped copy (192, 2.0%);
++// below that is shared topic. Lines under 4 words ("Take care.") are exempt.
++const PARTNER_ECHO_MIN_OVERLAP = 0.7;
++const PARTNER_ECHO_MIN_WORDS = 4;
++
++function isPartnerEcho(reply: string, partnerLine: string): boolean {
++  const a = new Set(normalizeTownLine(reply).split(' ').filter(Boolean));
++  const b = new Set(normalizeTownLine(partnerLine).split(' ').filter(Boolean));
++  if (a.size < PARTNER_ECHO_MIN_WORDS || b.size === 0) {
++    return false;
++  }
++  let shared = 0;
++  for (const w of a) {
++    if (b.has(w)) {
++      shared++;
++    }
++  }
++  return shared / (a.size + b.size - shared) >= PARTNER_ECHO_MIN_OVERLAP;
++}
++
+ function isSelfRepeat(reply: string, ownLines: string[]): boolean {
+   const norm = normalizeTownLine(reply);
+   if (!norm) {
+@@ -347,16 +362,19 @@ export async function continueConversationMessage(
+     ...priorMessages,
+   ];
+   const lastPrompt = `${player.name} to ${otherPlayer.name}:`;
+-  llmMessages.push({ role: 'user', content: lastPrompt });
++  llmMessages.push(...replyCue(priorMessages, otherPlayer.name));
+
+-  const ownLines = ownPriorLines(priorMessages, player.name);
++  const ownLines = ownPriorLines(priorMessages);
++  const partnerLine = townLastOtherPrompt(priorMessages);
++  const repeats = (line: string) =>
++    isSelfRepeat(line, ownLines) || isPartnerEcho(line, partnerLine);
+   const { content } = await chatCompletion({
+     messages: llmMessages,
+     max_tokens: 120,
+     stop: stopWords(otherPlayer.name, player.name),
+   });
+   let response = clampTownReply(trimContentPrefx(content, lastPrompt));
+-  if (isSelfRepeat(response, ownLines)) {
++  if (repeats(response)) {
+     // Live 2026-09-15 Sofia↔Juniper: exact line reposted after goodbye.
+     // One retry, then sentinel so agentGenerateMessage leaves (not a bare
+     // empty continue — those can happen for other reasons mid-chat).
+@@ -366,10 +384,9 @@ export async function continueConversationMessage(
+       {
+         role: 'user',
+         content:
+-          `You already said that. Do not repeat your earlier line. ` +
++          `You already said that. Do not repeat your earlier line or copy their words back. ` +
+           `Answer their latest message with something new, or say a short goodbye.`,
+       },
+-      { role: 'user', content: lastPrompt },
+     ];
+     const retry = await chatCompletion({
+       messages: retryMessages,
+@@ -377,7 +394,7 @@ export async function continueConversationMessage(
+       stop: stopWords(otherPlayer.name, player.name),
+     });
+     response = clampTownReply(trimContentPrefx(retry.content, lastPrompt));
+-    if (!response.trim() || isSelfRepeat(response, ownLines) || isSelfRepeat(response, [firstAttempt])) {
++    if (!response.trim() || repeats(response) || isSelfRepeat(response, [firstAttempt])) {
+       return SELF_REPEAT_LEAVE_SENTINEL;
+     }
+   }
+@@ -385,7 +402,7 @@ export async function continueConversationMessage(
+   void ingestTownTurn({
+     speaker: player.name,
+     other: otherPlayer.name,
+-    prompt: townLastOtherPrompt(priorMessages, otherPlayer.name),
++    prompt: townLastOtherPrompt(priorMessages),
+     response,
+     conversationId,
+   });
+@@ -432,7 +449,7 @@ export async function leaveConversationMessage(
+     ...priorMessages,
+   ];
+   const lastPrompt = `${player.name} to ${otherPlayer.name}:`;
+-  llmMessages.push({ role: 'user', content: lastPrompt });
++  llmMessages.push(...replyCue(priorMessages, otherPlayer.name));
+
+   const { content } = await chatCompletion({
+     messages: llmMessages,
+@@ -443,7 +460,7 @@ export async function leaveConversationMessage(
+   void ingestTownTurn({
+     speaker: player.name,
+     other: otherPlayer.name,
+-    prompt: townLastOtherPrompt(priorMessages, otherPlayer.name),
++    prompt: townLastOtherPrompt(priorMessages),
+     response,
+     conversationId,
+   });
+@@ -503,12 +520,13 @@ async function previousMessages(
+ ) {
+   const llmMessages: LLMMessage[] = [];
+   const prevMessages = await ctx.runQuery(api.messages.listMessages, { worldId, conversationId });
++  // Own lines are the assistant's turns, the partner's are the user's.
++  // Every line as a prefixed user turn let the model copy the partner's
++  // last line as its own reply (live 2026-09-17 Sofia↔Mara, c:578946).
+   for (const message of prevMessages) {
+-    const author = message.author === player.id ? player : otherPlayer;
+-    const recipient = message.author === player.id ? otherPlayer : player;
+     llmMessages.push({
+-      role: 'user',
+-      content: `${author.name} to ${recipient.name}: ${message.text}`,
++      role: message.author === player.id ? 'assistant' : 'user',
++      content: message.text,
+     });
+   }
+   return llmMessages;

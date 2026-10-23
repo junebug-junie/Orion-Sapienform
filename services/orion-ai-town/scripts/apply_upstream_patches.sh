@@ -20,6 +20,7 @@ PATCHES=(
   "orion-resync-agent-descriptions.patch"
   "orion-npc-no-self-repeat.patch"
   "orion-mechanical-leave.patch"
+  "orion-live-turn-roles.patch"
 )
 
 if [[ ! -d "${UPSTREAM}/.git" ]]; then

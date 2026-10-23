@@ -1,0 +1,29 @@
+name: AI Town patch chain
+# Applies every AI Town patch to the pinned upstream and runs the partner-echo
+# check on the real c:578946 transcript. On 2026-10-23 a fresh apply on main
+# stopped at orion-npc-no-self-repeat.patch and nothing failed.
+on:
+  pull_request:
+    paths:
+      - 'services/orion-ai-town/patches/**'
+      - 'services/orion-ai-town/scripts/apply_upstream_patches.sh'
+      - 'services/orion-ai-town/scripts/generate_descriptions.py'
+      - 'services/orion-ai-town/cards/**'
+      - 'services/orion-ai-town/tests/**'
+      - '.github/workflows/aitown-patch-chain.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  patch-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: pip install pytest pyyaml
+      - run: python -m pytest -q -rs services/orion-ai-town/tests/test_live_turn_roles_patch.py

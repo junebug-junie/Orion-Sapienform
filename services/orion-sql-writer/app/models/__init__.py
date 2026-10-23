@@ -55,6 +55,7 @@ from .curiosity_hop_reading import CuriosityHopReadingSQL
 from .durable_run_state import DurableRunStateSQL
 from .gpu_pool_event import GpuPoolEventSQL
 from .gpu_pool_state import GpuPoolStateSQL
+from .physiology_state import PhysiologyStateSQL
 from .transport_baseline_hourly import TransportBaselineHourlySQL
 from .orion_energy_hourly import OrionEnergyHourlySQL
 from .self_signal_outcome import SelfSignalHourSQL, SelfSignalOutcomeAssociationSQL
@@ -159,6 +160,7 @@ __all__ = [
     "DurableRunStateSQL",
     "GpuPoolEventSQL",
     "GpuPoolStateSQL",
+    "PhysiologyStateSQL",
     "TransportBaselineHourlySQL",
     "OrionEnergyHourlySQL",
     "SelfSignalHourSQL",

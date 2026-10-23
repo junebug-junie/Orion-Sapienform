@@ -53,6 +53,7 @@ from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.drive_reading import DriveReadingV1
 from orion.schemas.regulation import RegulationStateV1
+from orion.schemas.physiology import PhysiologyStateV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.repair_pressure_appraisal import RepairPressureAppraisalV1
@@ -1514,6 +1515,55 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "to act (gpu_pool_events; reason gpu_fault:<kind>:<seat>, reads unknown). Transport: Redis orion:regulation:latest "
             "+ GET /regulation/state; history: temporal_self_event "
             "arousal_transition rows. No bus channel (no subscriber)."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="physiology.state.v1",
+        schema=PhysiologyStateV1,
+        producer_service="orion-durable-runs",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.REHEARSAL,
+        cognition_consumers=(),
+        semantics=(
+            # orion/physiology/body.py build_physiology_state(): one reading per constraint
+            # (heat, energy, lane:<role>, attention:juniper, claude), each in its own unit with
+            # a budget/line and an explicit no_reading. Written by the `physiology` node of
+            # services/orion-durable-runs/app/temporal_self_graph.py every ~120 s.
+            (
+                "",
+                MetricSemantics(
+                    value_kind="bucket",
+                    rest=(
+                        "Each constraint at rest: heat below the 31 C soft line; lane "
+                        "slot-seconds well under slots x 3600 (0 when no lease ran); "
+                        "attention:juniper 0 sends today; claude state clear with 0 "
+                        "limit events. Energy (month-to-date USD) only grows within a "
+                        "month and resets at the local month start: its rest is the "
+                        "month start, not 0."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "A constraint whose source failed, went stale or was never "
+                        "observed has level=None and a no_reading reason (e.g. "
+                        "claude:no_observation while orion-cocreation-signals' "
+                        "COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED is false). Never 0. "
+                        "Redis orion:physiology:latest expired (TTL 360 s): the whole "
+                        "body is unknown."
+                    ),
+                ),
+            ),
+        ),
+        notes=(
+            "Body economy Patch A3 (docs/superpowers/specs/2026-10-23-organism-body-"
+            "economy-design.md, Organ 1 Body). Transport: bus orion:physiology:state -> "
+            "sql-writer physiology_state (one row per tick: the persisted strain history "
+            "the design notes is missing), Redis orion:physiology:latest. REHEARSAL by "
+            "design: no prices and no reader until Patch B (Budget) and Patch C (Choice). "
+            "Heat is read from the regulate step's own cabinet inputs (same source as "
+            "regulation.state.v1's S1), so it is NOT independent of arousal's cabinet "
+            "reflex -- a mirror in a different unit, not a new signal. Known overcount: "
+            "lane slot-seconds count a durable-run hold and its child calls (which run in "
+            "the hold's slot) separately, because gpu_pool_events carry no hold_lease_id."
         ),
     ),
 )

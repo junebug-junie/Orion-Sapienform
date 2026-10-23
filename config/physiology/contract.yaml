@@ -198,6 +198,9 @@ readers:
   - module: scripts/analysis/replay_strain_news.py
     role: display
     reason: offline replay of strain news.
+  - module: scripts/analysis/replay_body_economy.py
+    role: display
+    reason: "read-only replay of the body-economy price rules over live history (PR #2861); gates nothing"
 
 sources:
   - module: orion/autonomy/thermal_gate.py
@@ -234,3 +237,12 @@ sources:
     reason: producer; drives the temporal-self thread and holds the latest state.
   - module: services/orion-durable-runs/app/runner.py
     reason: imports the temporal-self workflow name constant from the regulation schema module.
+  # Body economy Patch A3 (Organ 1 Body). Define / produce / persist PhysiologyStateV1; gate nothing.
+  - module: orion/schemas/physiology.py
+    reason: defines PhysiologyStateV1 (Organ 1 Body readings; no prices yet).
+  - module: orion/physiology/body.py
+    reason: the pure Body reducer; builds PhysiologyStateV1 from raw source reads.
+  - module: services/orion-durable-runs/app/physiology_store.py
+    reason: producer; reads the Body organ's sources (energy, GPU leases, outreach, claude limits).
+  - module: services/orion-sql-writer/app/worker.py
+    reason: persists PhysiologyStateV1 to physiology_state (route + schema map); gates nothing.

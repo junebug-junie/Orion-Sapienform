@@ -127,6 +127,9 @@ SYNC_PREFIXES = (
     # had no keys left before that. Its pool-placement keys are below.)
     "DURABLE_RUNS_",
     "CORTEX_DURABLE_",
+    # Body economy Patch A3 (2026-10-23): durable-runs' physiology node (Organ 1 Body).
+    "ORION_PHYSIOLOGY_",
+    "CHANNEL_PHYSIOLOGY_",
     # GPU pool (2026-09-25, stage 3): the pool's own keys and the Gateway's pool-placement keys.
     # Without these the default sync visited both .env files and silently added nothing.
     "GPU_POOL_",

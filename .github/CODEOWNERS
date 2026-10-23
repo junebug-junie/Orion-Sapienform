@@ -1,0 +1,14 @@
+# Body economy (docs/superpowers/specs/2026-10-23-organism-body-economy-design.md, Phase 2, Gate 3).
+# Changes to the paths that decide what Orion may spend -- heat, GPU, money, Juniper's attention --
+# need Juniper's review. Keep this list in step with config/physiology/contract.yaml protected_paths;
+# the CI gate (scripts/check_body_economy_contract.py) is the hard check, this routes the human one.
+/orion/physiology/                  @junebug-junie
+/config/physiology/                 @junebug-junie
+/orion/regulation/arousal.py        @junebug-junie
+/orion/autonomy/thermal_gate.py     @junebug-junie
+/orion/autonomy/allocator.py        @junebug-junie
+/orion/gpu_pool/shed.py             @junebug-junie
+/orion/gpu_pool/scheduler.py        @junebug-junie
+/orion/gpu_pool/shed_backoff.py     @junebug-junie
+/orion/grammar/act_ledger.py        @junebug-junie
+/config/gpu_pool.yaml               @junebug-junie

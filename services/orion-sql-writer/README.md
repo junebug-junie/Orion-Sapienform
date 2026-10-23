@@ -855,9 +855,10 @@ after its caption is written).
 - Local motion, not the story average: each matched crop is judged by its own
   track's boxes within 10 s of the frame (`local_motion`: net travel over box
   height, classed by the story reducer's own `kinematics`/`speed_class`, clipped
-  boxes skipped). Fewer than 3 boxes or a span under 8 s -> no evidence. Still
-  only when the story rule says still AND net travel <= 0.25 body heights; in
-  between -> no evidence. A story's `speed_class` averages the whole passage, so
+  boxes skipped). Moving needs 2 boxes. Still needs 3 boxes, one at least 4 s
+  before and one at least 4 s after the frame, the story rule's still class,
+  and net travel and total path both <= 0.25 body heights; anything else ->
+  no evidence. A story's `speed_class` averages the whole passage, so
   a car that drove in and then parked would read `parked` and wrongly contradict
   a true "driving" caption.
 - Verdict per claim: any matched crop of the claimed kind clearly moving near

@@ -325,12 +325,12 @@ def test_one_frame_people_count_is_not_shown_as_a_head_count() -> None:
                       labels=("bicycle",))
     got = dedupe_street_captions([council, caption], now=NOW, max_age_sec=900, limit=3)
     assert got[0]["narrative"] == (
-        "Two persons are observed walking on the walkway (people count from one frame, not a head count)")
+        "Two persons are observed walking on the walkway (count from one frame)")
     assert got[1]["narrative"].startswith(
         "camera caption (one frame; detector saw bicycle; motion not verified; "
-        "people count from one frame, not a head count): ")
+        "count from one frame): ")
     line = street_caption_line(got, camera="walkway", tz=TZ)
-    assert line.count("people count from one frame, not a head count") == 2
+    assert line.count("count from one frame") == 2
 
 
 def test_no_count_and_range_counts_are_left_alone() -> None:
@@ -400,6 +400,31 @@ def test_seven_detector_labels_still_fit_the_street_budget() -> None:
     assert "detector saw person, dog, bicycle +4;" in lines[0]
     assert len(" ".join(lines)) <= 420
     assert "did not come" in " ".join(lines)
+
+
+def test_worst_case_labels_still_fit_the_street_budget() -> None:
+    """Seven detector labels, a motion verdict and the one-frame count note on
+    the caption, the count note on the council row: still within 420 chars."""
+    every = ("person", "dog", "bicycle", "stroller", "vehicle", "package", "mail truck")
+    long = "two people " + "very " * 60 + "long."
+    cam = _camcap("Three persons " + long, 1, labels=every)
+    cam["tags"] += ["motion_contradicted", "motion_check:vehicle:driving:parked"]
+    lines = summarize_street(
+        sightings=[], expectations=[{"subject_label": "the black dog", "status": "missed", "peak_minute": 460}],
+        unresolved=[], patio=None, now=NOW, tz=TZ, camera="walkway",
+        captions=[cam, _cap("Four persons " + long, 2)],
+    )
+    assert lines[0].count("count from one frame") == 2
+    assert "caption said driving; the vehicle did not move" in lines[0]
+    assert len(" ".join(lines)) <= 420
+    assert "did not come" in " ".join(lines)
+
+
+def test_count_note_uses_the_unclipped_text() -> None:
+    """A range phrase cut off by the clip must not make the count bare."""
+    row = _cap("A " + "very " * 30 + "busy street: 79 people at most.", 1)
+    (got,) = dedupe_street_captions([row], now=NOW, max_age_sec=900, limit=2, max_chars=60)
+    assert "count from one frame" not in got["narrative"]
 
 
 def test_many_captions_never_crowd_out_the_council_row_in_any_consumer() -> None:

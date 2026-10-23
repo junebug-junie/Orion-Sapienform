@@ -181,12 +181,39 @@ def test_clearly_still_near_the_frame_is_parked() -> None:
 
 
 def test_thin_local_evidence_is_none() -> None:
-    # Two boxes only, and three boxes over 4 s: too thin either way.
+    # Two still boxes, and three still boxes over 4 s: too thin to call still.
     assert cm.local_motion(_track(T0, "vehicle", [(0, 500.0), (5, 500.0)]), T0, "vehicle") is None
     assert cm.local_motion(_track(T0, "vehicle", [(-2, 500.0), (0, 500.0), (2, 500.0)]), T0, "vehicle") is None
     # Boxes outside the window do not count.
     far = _track(T0, "vehicle", [(-60, 500.0), (-50, 500.0), (0, 500.0), (50, 500.0)])
     assert cm.local_motion(far, T0, "vehicle") is None
+
+
+def test_still_only_after_or_only_before_the_frame_is_none() -> None:
+    """Review finding: the car's first box IS the frame (drove in fast, then
+    parked), or its last box is (pulled away right after). Still on one side
+    only proves nothing about the frame."""
+    after = _track(T0, "vehicle", [(0, 500.0), (5, 500.0), (10, 500.0)])
+    before = _track(T0, "vehicle", [(-10, 500.0), (-5, 500.0), (0, 500.0)])
+    assert cm.local_motion(after, T0, "vehicle") is None
+    assert cm.local_motion(before, T0, "vehicle") is None
+
+
+def test_there_and_back_track_is_not_still() -> None:
+    ev = _track(T0, "person", [(-10, 500.0), (-5, 700.0), (0, 900.0), (5, 700.0), (10, 500.0)])
+    assert cm.local_motion(ev, T0, "person") is None
+
+
+def test_two_moving_boxes_are_enough_to_support() -> None:
+    ev = _track(T0, "person", [(-1.2, 500.0), (1.3, 800.0)])
+    assert cm.local_motion(ev, T0, "person") == "walking" or cm.local_motion(ev, T0, "person") == "running"
+
+
+def test_naive_timestamps_are_read_as_utc() -> None:
+    ev = _track(T0, "vehicle", [(-10, 500.0), (-5, 500.0), (0, 500.0), (5, 500.0), (10, 500.0)])
+    for e in ev:
+        e["t"] = e["t"].replace("+00:00", "")
+    assert cm.local_motion(ev, T0, "vehicle") == "parked"
 
 
 def test_in_between_movement_is_none_not_still() -> None:

@@ -131,7 +131,7 @@ def caption_motion_phrase(check: CaptionMotionCheck | None) -> str:
 # The detector is the rollup's own (`walkway_rollup.bare_people_counts`), so
 # the readers and the rollup's anti-invention guard agree on what a bare
 # people count is. No second word list.
-ONE_FRAME_COUNT_NOTE = "people count from one frame, not a head count"
+ONE_FRAME_COUNT_NOTE = "count from one frame"
 
 
 def one_frame_count_note(text: str) -> str:
@@ -147,20 +147,22 @@ def label_camera_caption(
     *,
     at: str | None = None,
     motion_check: CaptionMotionCheck | None = None,
+    count_note: str | None = None,
 ) -> str:
     """'camera caption[ logged HH:MM] (one frame; detector saw person,
     stroller; motion not verified): "A person is pushing a stroller…"'.
     `at` is the row's write time (seconds after the frame), hence "logged".
     With a decided `motion_check` the motion part says what the motion
     story showed: "caption said driving; the vehicle did not move". A bare
-    people count in the text adds ONE_FRAME_COUNT_NOTE."""
+    people count in the text adds ONE_FRAME_COUNT_NOTE (`count_note`: the note
+    computed on the unclipped text; None = compute it from `text`)."""
     when = f" logged {at}" if at else ""
     labels = list(detector_labels)
     named = ", ".join(labels[:CAPTION_LABELS_NAMED])
     if len(labels) > CAPTION_LABELS_NAMED:
         named += f" +{len(labels) - CAPTION_LABELS_NAMED}"
     saw = f"detector saw {named}; " if labels else ""
-    count = one_frame_count_note(text)
+    count = one_frame_count_note(text) if count_note is None else count_note
     count = f"; {count}" if count else ""
     return f'camera caption{when} (one frame; {saw}{caption_motion_phrase(motion_check)}{count}): "{text}"'
 
@@ -198,9 +200,8 @@ def _norm_key(text: str) -> str:
     return "".join(ch for ch in text.lower() if ch.isalnum() or ch == " ").strip()
 
 
-def _note_council_count(text: str) -> str:
-    """A council narrative, with ONE_FRAME_COUNT_NOTE when it states a bare people count."""
-    note = one_frame_count_note(text)
+def _note_council_count(text: str, note: str) -> str:
+    """A council narrative, with `note` (ONE_FRAME_COUNT_NOTE or "") appended."""
     return f"{text.rstrip('.')} ({note})" if note else text
 
 
@@ -230,9 +231,12 @@ def dedupe_street_captions(
     filling the list with captions and pushing out the council's narrative.
 
     Returns `{narrative, observed_at, age_sec, stream_id, event_id,
-    event_type, caption_text, detector_labels, motion_check}`, newest first;
+    event_type, caption_text, detector_labels, motion_check, count_note,
+    plain_text}`, newest first;
     `caption_text`, `detector_labels` and `motion_check` (the motion
-    cross-check, or None) are the unlabelled parts (camera captions only).
+    cross-check, or None) are the unlabelled parts (camera captions only);
+    `plain_text` is the clipped text and `count_note` the one-frame count note
+    ("" when none) of any row.
     """
     if limit <= 0:
         return []
@@ -264,10 +268,12 @@ def dedupe_street_captions(
         seen.add(key)
         labels = detector_labels_from_tags(row.get("tags")) if is_caption else []
         motion = caption_motion_check_from_tags(row.get("tags")) if is_caption else None
+        # On the unclipped text: a clip can cut a range phrase off a count, or the count itself.
+        count = one_frame_count_note(" ".join(str(row.get("narrative") or "").split()))
         out.append(
             {
-                "narrative": (label_camera_caption(text, labels, motion_check=motion) if is_caption
-                              else _note_council_count(text)),
+                "narrative": (label_camera_caption(text, labels, motion_check=motion, count_note=count)
+                              if is_caption else _note_council_count(text, count)),
                 "observed_at": ts,
                 "age_sec": max(0.0, (now - ts).total_seconds()),
                 "stream_id": str(row.get("stream_id") or ""),
@@ -276,11 +282,23 @@ def dedupe_street_captions(
                 "caption_text": text if is_caption else None,
                 "detector_labels": labels,
                 "motion_check": motion,
+                "count_note": count,
+                "plain_text": text,
             }
         )
         if len(out) >= limit:
             break
     return out
+
+
+# _shrink never clips a text below this many characters.
+SHRINK_FLOOR_CHARS = 40
+
+
+def _shrink(text: str, by: int) -> str:
+    if by <= 0 or len(text) <= SHRINK_FLOOR_CHARS:
+        return text
+    return _clean(text, max(SHRINK_FLOOR_CHARS, len(text) - by))
 
 
 def street_caption_line(
@@ -291,13 +309,21 @@ def street_caption_line(
     renders with its frame's local time when `tz` is given."""
     texts: list[str] = []
     for c in captions or ():
+        note = str(c.get("count_note") or "")
         if c.get("event_type") == CAMERA_CAPTION_EVENT_TYPE and c.get("caption_text"):
             at = None
             observed = _utc(c.get("observed_at"))
             if observed is not None and tz is not None:
                 at = f"{observed.astimezone(tz):%H:%M}"
-            texts.append(label_camera_caption(str(c["caption_text"]), c.get("detector_labels") or [], at=at,
-                                              motion_check=c.get("motion_check")))
+            motion = c.get("motion_check")
+            # A longer label (motion verdict, count note) takes its room from
+            # the caption text, so the line keeps the brief's length budget.
+            extra = len(caption_motion_phrase(motion)) - len(caption_motion_phrase(None))
+            extra += len(note) + 2 if note else 0
+            texts.append(label_camera_caption(_shrink(str(c["caption_text"]), extra), c.get("detector_labels") or [],
+                                              at=at, motion_check=motion, count_note=note))
+        elif note and c.get("plain_text"):
+            texts.append(_note_council_count(_shrink(str(c["plain_text"]), len(note) + 3), note).rstrip("."))
         else:
             texts.append(str(c.get("narrative") or "").strip().rstrip("."))
     texts = [t for t in texts if t]

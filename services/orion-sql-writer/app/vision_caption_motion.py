@@ -42,7 +42,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from app.vision_motion import KINDS, SPEED_CLASSES, STILL_CLASSES, MotionConfig, MotionCrop, kinematics, speed_class
@@ -268,24 +268,32 @@ def decide_caption(text: str, matched: Sequence[FrameCrop], story_class: Mapping
 # Local motion: how the crop's own track moved near the frame
 # ---------------------------------------------------------------------------
 
-# The story's boxes this close to the frame (the detector looks every ~5 s,
-# so a 10 s half-window holds up to ~5 boxes on a steady track).
+# The story's boxes this close to the frame (live walkway tracks have a box
+# every ~2.5 s, so a 10 s half-window holds up to ~9 boxes).
 LOCAL_WINDOW_SEC = 10.0
-# Too thin below this: fewer boxes, or a shorter span, says nothing reliable.
+# A STILL verdict needs this much evidence: at least LOCAL_MIN_BOXES boxes,
+# at least one LOCAL_STILL_SIDE_SEC before the frame and one after it. A track
+# that starts at the frame (drove in fast, then parked) or ends at it (pulled
+# away) is still on one side only and proves nothing about the frame.
 LOCAL_MIN_BOXES = 3
-LOCAL_MIN_SPAN_SEC = 8.0
-# "Clearly still": the story reducer's own still rule (net travel < still_bh
-# body heights, or speed < STILL_SPEED_BH) AND net travel within half of
-# still_bh. In between is undecided, never contradicted.
+LOCAL_STILL_SIDE_SEC = 4.0
+# "Clearly still": the story reducer's own still rule AND both net travel and
+# total path within half of still_bh body heights (a there-and-back track has
+# net ~0 but a long path). In between is undecided, never contradicted.
 LOCAL_STILL_SHARE = 0.5
+# A MOVING verdict needs only two boxes: a wrong "supported" costs less than a
+# wrong "contradicted", and short person tracks are the norm.
+LOCAL_MOVING_MIN_BOXES = 2
 _LOCAL_CFG = MotionConfig()
 
 
 def _ts(raw: Any) -> Optional[datetime]:
+    """Aware datetime; a timestamp with no offset is read as UTC."""
     try:
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        t = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     except ValueError:
         return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
 
 
 def local_motion(evidence: Sequence[Any], frame_ts: datetime, kind: str, *,
@@ -306,15 +314,20 @@ def local_motion(evidence: Sequence[Any], frame_ts: datetime, kind: str, *,
         crops.append(MotionCrop(crop_id=str(e.get("crop_id") or ""), t=t, label=kind,
                                 box=tuple(float(v) for v in box)))  # type: ignore[arg-type]
     crops.sort(key=lambda c: c.t)
-    if len(crops) < LOCAL_MIN_BOXES or (crops[-1].t - crops[0].t).total_seconds() < LOCAL_MIN_SPAN_SEC:
+    if len(crops) < LOCAL_MOVING_MIN_BOXES:
         return None
     k = kinematics(crops, cfg)
     if k is None:
         return None
     sc = speed_class(kind, k, cfg)
-    if sc in STILL_CLASSES:
-        return sc if k.net_bh <= cfg.still_bh * LOCAL_STILL_SHARE else None
-    return sc
+    if sc not in STILL_CLASSES:
+        return sc
+    straddles = ((frame_ts - crops[0].t).total_seconds() >= LOCAL_STILL_SIDE_SEC
+                 and (crops[-1].t - frame_ts).total_seconds() >= LOCAL_STILL_SIDE_SEC)
+    limit = cfg.still_bh * LOCAL_STILL_SHARE
+    if len(crops) >= LOCAL_MIN_BOXES and straddles and k.net_bh <= limit and k.path_bh <= limit:
+        return sc
+    return None
 
 
 def local_classes(matched: Sequence[FrameCrop], story_evidence: Mapping[str, Sequence[Any]],

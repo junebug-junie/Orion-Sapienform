@@ -107,6 +107,6 @@ No restart. The next pull on circe that touches `services/orion-ai-town` deploys
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2880
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

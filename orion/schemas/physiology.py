@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Literal, Optional, Union
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 PHYSIOLOGY_STATE_KIND = "physiology.state.v1"
 PHYSIOLOGY_STATE_CHANNEL = "orion:physiology:state"
@@ -59,6 +59,13 @@ class PhysiologyConstraintReadingV1(BaseModel):
     # Why there is no level: "read_failed:<source>", "stale:<source>", "no_observation", ...
     no_reading: Optional[str] = None
     detail: Dict[str, DetailValue] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _no_reading_means_no_level(self) -> "PhysiologyConstraintReadingV1":
+        # The contract, not a convention: a level of 0 is a fresh real 0, never a missing reading.
+        if (self.no_reading is None) == (self.level is None):
+            raise ValueError("exactly one of level / no_reading must be set")
+        return self
 
 
 class PhysiologyStateV1(BaseModel):

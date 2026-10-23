@@ -66,7 +66,7 @@ class World:
             raise ConnectionError("db down")
         if self.hang:
             await asyncio.sleep(10)
-        return BodyInputs(heat=heat, energy=EnergyInput(read_ok=False), lanes=LaneInput(True, [], {"fast": 4}),
+        return BodyInputs(heat=heat, energy=EnergyInput(read_ok=False), lanes=LaneInput(True, [], {"fast": 4}, newest_event_at=now),
                           juniper=JuniperInput(True, 0, 0, now), claude=()), ["lane_capacity:test"]
 
     async def project_physiology(self, model):
@@ -224,6 +224,8 @@ def test_store_reads_on_postgres():
                                   marginal_usd_per_kwh double precision, computed_at timestamptz)""")
             await conn.execute("""CREATE TABLE gpu_pool_events (event_id varchar PRIMARY KEY, generated_at timestamptz,
                                   event varchar, lease_id varchar, role varchar, held_ms double precision)""")
+            await conn.execute("""CREATE TABLE gpu_pool_leases (lease_id text PRIMARY KEY, status text NOT NULL,
+                                  role text, granted_at timestamptz, hold_lease_id text)""")
             await conn.execute("""CREATE TABLE endogenous_outreach_decisions (decision_id text PRIMARY KEY,
                                   decided_at timestamptz, outreach boolean, reason text, result_json jsonb)""")
             hour = now.replace(minute=0, second=0, microsecond=0)
@@ -237,8 +239,17 @@ def test_store_reads_on_postgres():
                 ('e1', %(a)s, 'released', 'L1', 'fast', 60000),
                 ('e2', %(b)s, 'granted', 'L2', 'agent', NULL),
                 ('e3', %(b)s, 'granted', 'L3', 'fast', NULL),
-                ('e4', %(a)s, 'released', 'L3', 'fast', 1000)""",
-                               {"a": now - timedelta(minutes=5), "b": now - timedelta(minutes=10)})
+                ('e4', %(a)s, 'released', 'L3', 'fast', 1000),
+                ('e5', %(a)s, 'released', 'C1', 'agent', 5000),
+                ('e6', %(old)s, 'released', 'OLD', 'fast', 1000)""",
+                               {"a": now - timedelta(minutes=5), "b": now - timedelta(minutes=10),
+                                "old": now - timedelta(hours=3)})
+            # The pool's own projection: L2 still open; LOST's close event never landed but the pool
+            # says released (must NOT read as open); C1 is a child call inside hold L2.
+            await conn.execute("""INSERT INTO gpu_pool_leases VALUES
+                ('L1', 'released', 'fast', %(b)s, NULL), ('L2', 'granted', 'agent', %(b)s, NULL),
+                ('L3', 'released', 'fast', %(b)s, NULL), ('LOST', 'released', 'metacog', %(b)s, NULL),
+                ('C1', 'released', 'agent', %(b)s, 'L2')""", {"b": now - timedelta(minutes=10)})
             await conn.execute("""INSERT INTO endogenous_outreach_decisions VALUES
                 ('d1', %(t)s, true, 'sent', '{"source": "tension"}'),
                 ('d2', %(t)s, true, 'sent', '{"source": "curiosity_outreach"}'),
@@ -250,9 +261,10 @@ def test_store_reads_on_postgres():
         lanes = await physiology_store.read_lanes(pool, now, 3600.0, {"roles": [
             {"role": "fast", "status": "confirmed", "slots": 4}]})
         assert lanes.events_read_ok and lanes.capacity == {"fast": 4}
-        # L2 is open; L3's grant is closed by e4 and is not returned as open.
-        assert sorted((e.lease_id, e.event) for e in lanes.events) == [
-            ("L1", "released"), ("L2", "granted"), ("L3", "released")]
+        assert lanes.newest_event_at is not None and abs((lanes.newest_event_at - (now - timedelta(minutes=5))).total_seconds()) < 1
+        # Closes in the window (with the child's hold), and open leases from the pool's projection.
+        assert sorted((e.lease_id, e.event, e.hold_lease_id) for e in lanes.events) == [
+            ("C1", "released", "L2"), ("L1", "released", None), ("L2", "granted", None), ("L3", "released", None)]
         jun = await physiology_store.read_juniper(pool, now, tz)
         # Local-date bucketing: the 1-minute-old rows are "today" unless local midnight just passed.
         if (now - timedelta(minutes=1)).astimezone(tz).date() == now.astimezone(tz).date():

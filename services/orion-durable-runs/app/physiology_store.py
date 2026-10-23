@@ -6,9 +6,13 @@ Read-only, bounded, each read failing on its own: a failed read turns only its o
 * energy  -- ``orion_energy_hourly`` (sql-writer's rollup) summed per hour since the local month
   start, and ``energy_cost_accrued`` next-kWh rates (newest ``computed_at`` per interval; the
   table keeps one row per tariff version, so a plain sum triples).
-* lanes   -- ``gpu_pool_events``: every lease close in the window (each carries ``held_ms``), and
-  grants in the last ``OPEN_GRANT_LOOKBACK`` with no close yet (open leases). Capacity per role
-  comes from the pool's own state RPC (``orion.gpu_pool.placement.fetch_pool_state``).
+* lanes   -- ``gpu_pool_events``: every lease close in the window (``held_ms``), each joined to the
+  pool's own lease projection ``gpu_pool_leases`` for ``hold_lease_id`` (a child call runs in
+  its hold's slot); open leases from ``gpu_pool_leases`` itself (status granted/recalling: the
+  pool's truth, so a lost close event never reads as a lease held for hours); the newest event
+  of any kind (feed freshness). Capacity per role comes from the pool's own state RPC
+  (``orion.gpu_pool.placement.fetch_pool_state``). Read-only, like field-digester's and
+  proposal-runtime's reads of the same table.
 * juniper -- ``endogenous_outreach_decisions``: sends today (local date), and the newest decision
   of any outcome, so a stopped decision log reads stale instead of "0 sent".
 * claude  -- not a table: the latest ``ClaudeLimitObservationV1`` per kind, held in memory by
@@ -37,9 +41,6 @@ logger = logging.getLogger("orion-durable-runs.physiology_store")
 
 # Rates from before the month start seed the carry-forward for the month's first hours.
 PRICE_SEED_LOOKBACK = timedelta(days=14)
-# A grant older than this with no close is not counted as open (a lost close must not hold a
-# lane "busy" forever). Durable-run holds are the longest leases; none held this long live.
-OPEN_GRANT_LOOKBACK = timedelta(hours=6)
 # Outreach sources the Hub's daily cap does not count (scripts/endogenous_outreach_decisions.py
 # count_sent_on). They still reach Juniper, so ``sent_today`` counts them.
 CAP_EXEMPT_SOURCES = ("curiosity_outreach", "reading_finding_outreach")
@@ -60,17 +61,18 @@ FROM (
 ) latest
 GROUP BY 1 ORDER BY 1
 """
-LANE_CLOSES_SQL = (
-    "SELECT lease_id, role, event, generated_at, held_ms FROM gpu_pool_events "
-    "WHERE generated_at >= %(since)s AND event = ANY(%(events)s)"
-)
-# idx_gpu_pool_events_lease serves the NOT EXISTS.
-LANE_OPEN_GRANTS_SQL = """
-SELECT g.lease_id, g.role, g.event, g.generated_at, g.held_ms FROM gpu_pool_events g
-WHERE g.event = 'granted' AND g.generated_at >= %(since)s AND g.lease_id IS NOT NULL
-  AND NOT EXISTS (SELECT 1 FROM gpu_pool_events c
-                  WHERE c.lease_id = g.lease_id AND c.event = ANY(%(events)s))
+LANE_CLOSES_SQL = """
+SELECT e.lease_id, e.role, e.event, e.generated_at, e.held_ms, l.hold_lease_id
+FROM gpu_pool_events e LEFT JOIN gpu_pool_leases l ON l.lease_id = e.lease_id
+WHERE e.generated_at >= %(since)s AND e.event = ANY(%(events)s)
 """
+# gpu_pool_leases_live_idx (status <> 'released') serves it.
+LANE_OPEN_SQL = """
+SELECT lease_id, role, 'granted' AS event, granted_at AS generated_at, NULL::float8 AS held_ms, hold_lease_id
+FROM gpu_pool_leases
+WHERE status IN ('granted', 'recalling') AND status <> 'released' AND granted_at IS NOT NULL
+"""
+LANE_NEWEST_SQL = "SELECT max(generated_at) AS newest FROM gpu_pool_events"
 JUNIPER_SENT_SQL = """
 SELECT count(*) FILTER (WHERE reason = 'sent') AS sent,
        count(*) FILTER (WHERE reason = 'sent'
@@ -117,21 +119,24 @@ async def read_energy(pool: Any, now: datetime, tz: ZoneInfo) -> EnergyInput:
         prices=out_prices)
 
 
-async def read_lane_events(pool: Any, now: datetime, window_sec: float) -> tuple[bool, list[LeaseEvent]]:
-    events = list(LEASE_CLOSE_EVENTS)
+async def read_lane_events(pool: Any, now: datetime, window_sec: float
+                           ) -> tuple[bool, list[LeaseEvent], Optional[datetime]]:
     try:
         async with pool.connection() as conn:
             closes = await (await conn.execute(LANE_CLOSES_SQL, {
-                "since": now - timedelta(seconds=window_sec), "events": events})).fetchall()
-            grants = await (await conn.execute(LANE_OPEN_GRANTS_SQL, {
-                "since": now - OPEN_GRANT_LOOKBACK, "events": events})).fetchall()
+                "since": now - timedelta(seconds=window_sec), "events": list(LEASE_CLOSE_EVENTS)})).fetchall()
+            opens = await (await conn.execute(LANE_OPEN_SQL)).fetchall()
+            newest = await (await conn.execute(LANE_NEWEST_SQL)).fetchone()
     except Exception:  # noqa: BLE001
         logger.warning("physiology_lane_events_read_failed", exc_info=True)
-        return False, []
-    return True, [LeaseEvent(lease_id=r.get("lease_id"), role=r.get("role"), event=r["event"],
-                             at=_utc(r["generated_at"]),
-                             held_ms=None if r.get("held_ms") is None else float(r["held_ms"]))
-                  for r in list(closes) + list(grants)]
+        return False, [], None
+    newest_at = (newest or {}).get("newest")
+    events = [LeaseEvent(lease_id=r.get("lease_id"), role=r.get("role"), event=r["event"],
+                         at=_utc(r["generated_at"]),
+                         held_ms=None if r.get("held_ms") is None else float(r["held_ms"]),
+                         hold_lease_id=r.get("hold_lease_id"))
+              for r in list(closes) + list(opens) if r.get("generated_at") is not None]
+    return True, events, (_utc(newest_at) if newest_at is not None else None)
 
 
 def capacity_from_pool_state(payload: Optional[dict]) -> Optional[dict[str, int]]:
@@ -150,8 +155,9 @@ def capacity_from_pool_state(payload: Optional[dict]) -> Optional[dict[str, int]
 
 
 async def read_lanes(pool: Any, now: datetime, window_sec: float, pool_state: Optional[dict]) -> LaneInput:
-    ok, events = await read_lane_events(pool, now, window_sec)
-    return LaneInput(events_read_ok=ok, events=events, capacity=capacity_from_pool_state(pool_state))
+    ok, events, newest = await read_lane_events(pool, now, window_sec)
+    return LaneInput(events_read_ok=ok, events=events, capacity=capacity_from_pool_state(pool_state),
+                     newest_event_at=newest)
 
 
 async def read_juniper(pool: Any, now: datetime, tz: ZoneInfo) -> JuniperInput:

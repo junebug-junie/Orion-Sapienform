@@ -262,13 +262,17 @@ def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
         warnings = list(state.get("warnings") or [])
         try:
             model = await asyncio.wait_for(run(), timeout=deps.physiology_timeout_sec)
+        # A failure also stamps physiology_at: a broken read is retried at the next tick, not on
+        # every chat-turn step in between (each could wait the full timeout).
         except asyncio.TimeoutError:
             logger.warning("physiology_node_timeout sec=%s", deps.physiology_timeout_sec)
-            return {"physiology": {"error": f"timeout after {deps.physiology_timeout_sec:.0f} s"},
+            return {"physiology_at": now.isoformat(),
+                    "physiology": {"error": f"timeout after {deps.physiology_timeout_sec:.0f} s"},
                     "warnings": warnings + ["physiology_failed"]}
         except Exception as exc:  # noqa: BLE001 - the body must never break regulation
             logger.warning("physiology_node_failed", exc_info=True)
-            return {"physiology": {"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
+            return {"physiology_at": now.isoformat(),
+                    "physiology": {"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
                     "warnings": warnings + ["physiology_failed"]}
         missing = [f"{c.constraint}:{c.no_reading}" for c in model.constraints if c.no_reading]
         return {"physiology_at": now.isoformat(),

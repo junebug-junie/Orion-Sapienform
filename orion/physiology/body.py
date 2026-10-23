@@ -14,11 +14,15 @@ Constraints and their sources (design doc, Organ 1 table; A3 scope, no forecast,
   or costs triple). RMP prices arrive about a day late: an hour with no price uses the newest
   earlier rate (``carried_kwh`` says how much). Line: ``ORION_PHYSIOLOGY_ENERGY_MONTHLY_ENVELOPE_USD``
   (unset: no line yet, Juniper sets it).
-* ``lane:<role>``: GPU slot-seconds held in the last hour from ``gpu_pool_events`` (each lease's
-  held interval, clipped to the window; an open grant counts up to now). Line: the role's
-  discovered slots x window, from the pool's own state RPC.
-* ``attention:juniper``: Orion's outreach messages sent today (local date), every source.
-  Line: the outreach daily cap (``ORION_PHYSIOLOGY_JUNIPER_DAILY_CAP``, Hub's cap 4).
+* ``lane:<role>``: GPU slot-seconds held in the last hour. Closed leases from ``gpu_pool_events``
+  (each close's ``held_ms`` interval, merged per lease, clipped to the window); open leases from
+  the pool's own projection ``gpu_pool_leases`` (status granted/recalling), held up to now. A
+  child call (``hold_lease_id`` set) runs inside its durable-run hold's slot and is not counted
+  again. Line: the role's discovered slots x window, from the pool's own state RPC. The events
+  feed going quiet reads stale, never 0.
+* ``attention:juniper``: Orion's outreach messages today (local date) that the Hub's daily cap
+  counts (curiosity and reading-finding outreach are exempt from the cap; their sends are in
+  ``detail``). Line: that cap (``HUB_ENDOGENOUS_OUTREACH_DAILY_CAP``, 4).
 * ``claude``: ``ClaudeLimitObservationV1`` (``orion:substrate:claude_limit``) state and limit
   events. Not dollars: the dollar denominator was measured and refuted (orion/schemas/claude_limit.py).
 
@@ -42,9 +46,12 @@ from orion.schemas.physiology import (
     PhysiologyStateV1,
 )
 
-# gpu_pool_events kinds that close a lease and carry held_ms.
-LEASE_CLOSE_EVENTS = frozenset({"released", "expired", "aborted"})
+# gpu_pool_events kinds that end a lease's hold. released/expired/aborted/retried carry held_ms;
+# cancelled/dead_lettered may not (then the lease is closed with no interval).
+LEASE_CLOSE_EVENTS = frozenset({"released", "expired", "aborted", "retried", "cancelled", "dead_lettered"})
 LEASE_OPEN_EVENTS = frozenset({"granted"})
+# Claude announces two independent limits; both must be read fresh before "clear" is true.
+CLAUDE_KINDS = ("session_limit", "weekly_limit")
 
 
 @dataclass(frozen=True)
@@ -58,6 +65,9 @@ class BodyConfig:
     # the outreach loop is off, so a count of 0 would be a lie -> stale.
     juniper_decision_max_age_sec: float = 3600.0
     lane_window_sec: float = 3600.0
+    # Newest gpu_pool_events row (any kind; live ~1,500 grants/h) older than this: the events feed
+    # (pool -> bus -> sql-writer) stopped -> every lane is stale, not 0.
+    lane_events_max_age_sec: float = 900.0
     # A claude observation received longer ago than this is stale (the producer's slowest
     # window, weekly, emits every 3600 s).
     claude_max_age_sec: float = 3 * 3600.0
@@ -100,9 +110,11 @@ class EnergyInput:
 class LeaseEvent:
     lease_id: Optional[str]
     role: Optional[str]
-    event: str
-    at: datetime
+    event: str                       # a close event, or "granted" for a lease still open
+    at: datetime                     # the close time, or the grant time of an open lease
     held_ms: Optional[float] = None
+    # Set on a child call: it runs inside that durable-run hold's slot (gpu_pool_leases).
+    hold_lease_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -111,6 +123,8 @@ class LaneInput:
     events: Sequence[LeaseEvent] = ()
     # role -> discovered slots. None: the pool state could not be read.
     capacity: Optional[Mapping[str, int]] = None
+    # Newest gpu_pool_events row of any kind (freshness of the feed). None: table empty.
+    newest_event_at: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -214,76 +228,111 @@ def energy_reading(inp: EnergyInput, now: datetime, cfg: BodyConfig) -> Physiolo
         **line)
 
 
-def _lease_intervals(events: Iterable[LeaseEvent], now: datetime) -> tuple[dict[str, list[tuple[datetime, datetime]]], int]:
-    """Per role, one (start, end) interval per lease. A lease's closing events (released, and an
-    expired before it) each carry held_ms; their union is the lease. A grant with no close yet
-    is open: it holds up to ``now``."""
+def _merge(intervals: list[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
+    out: list[tuple[datetime, datetime]] = []
+    for start, end in sorted(intervals):
+        if out and start <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], end))
+        else:
+            out.append((start, end))
+    return out
+
+
+def _lease_intervals(events: Iterable[LeaseEvent], now: datetime) -> tuple[dict[str, list[tuple[datetime, datetime]]], dict]:
+    """Per role, the held intervals of every non-child lease. A lease's closes each carry their
+    own held_ms interval; overlapping ones merge (expired then released is one hold), disjoint
+    ones stay apart (a retried lease's wait is not held). A lease still open (granted, no close)
+    holds from its grant up to ``now``."""
     by_lease: dict[str, dict] = {}
     for e in events:
         if not e.lease_id:
             continue
-        rec = by_lease.setdefault(e.lease_id, {"role": None, "start": None, "end": None, "granted_at": None,
-                                               "closed": False})
+        rec = by_lease.setdefault(e.lease_id, {"role": None, "spans": [], "granted_at": None, "closed": False,
+                                               "child": False})
         if e.role:
             rec["role"] = e.role
+        if e.hold_lease_id:
+            rec["child"] = True
         if e.event in LEASE_CLOSE_EVENTS:
             rec["closed"] = True
             if e.held_ms is not None and e.held_ms >= 0:
-                start = e.at - timedelta(milliseconds=float(e.held_ms))
-                rec["start"] = start if rec["start"] is None else min(rec["start"], start)
-                rec["end"] = e.at if rec["end"] is None else max(rec["end"], e.at)
+                rec["spans"].append((e.at - timedelta(milliseconds=float(e.held_ms)), e.at))
         elif e.event in LEASE_OPEN_EVENTS:
             rec["granted_at"] = e.at if rec["granted_at"] is None else min(rec["granted_at"], e.at)
     out: dict[str, list[tuple[datetime, datetime]]] = {}
-    open_count = 0
+    counts = {"open": 0, "child_skipped": 0}
     for rec in by_lease.values():
         role = rec["role"]
         if not role:
             continue
+        if rec["child"]:
+            counts["child_skipped"] += 1
+            continue
         if rec["closed"]:
-            if rec["start"] is None:
-                continue
-            out.setdefault(role, []).append((rec["start"], rec["end"]))
+            spans = _merge(rec["spans"])
         elif rec["granted_at"] is not None:
-            open_count += 1
-            out.setdefault(role, []).append((rec["granted_at"], now))
-    return out, open_count
+            counts["open"] += 1
+            spans = [(rec["granted_at"], now)]
+        else:
+            continue
+        out.setdefault(role, []).extend(spans)
+    return out, counts
 
 
-def lane_readings(inp: LaneInput, now: datetime, cfg: BodyConfig) -> list[PhysiologyConstraintReadingV1]:
+def lane_readings(inp: LaneInput, now: datetime, cfg: BodyConfig) -> tuple[list[PhysiologyConstraintReadingV1], list[str]]:
+    """One reading per lane, plus warnings for the whole state."""
     window = cfg.lane_window_sec
     capacity = dict(inp.capacity) if inp.capacity is not None else None
+    roles_known = sorted(capacity) if capacity else []
+
+    def _cap(role: str) -> dict:
+        if capacity is None or role not in capacity:
+            return {}
+        return {"budget": float(capacity[role]) * window, "budget_kind": "capacity"}
+
+    def all_no(reason: str, **kw) -> list[PhysiologyConstraintReadingV1]:
+        if not roles_known:
+            return [_no(LANE_PREFIX.rstrip(":"), "slot_s", reason, **kw)]
+        return [_no(f"{LANE_PREFIX}{r}", "slot_s", reason, **_cap(r), **kw) for r in roles_known]
+
     if not inp.events_read_ok:
-        roles = sorted(capacity) if capacity else []
-        if not roles:
-            return [_no(LANE_PREFIX.rstrip(":"), "slot_s", "read_failed:gpu_pool_events")]
-        return [_no(f"{LANE_PREFIX}{r}", "slot_s", "read_failed:gpu_pool_events",
-                    budget=float(capacity[r]) * window, budget_kind="capacity") for r in roles]
-    intervals, open_count = _lease_intervals(inp.events, now)
+        return all_no("read_failed:gpu_pool_events"), []
+    newest = inp.newest_event_at
+    if newest is None:
+        return all_no("no_rows:gpu_pool_events"), []
+    age = (now - newest).total_seconds()
+    if age > cfg.lane_events_max_age_sec:
+        return all_no("stale:gpu_pool_events", source_at=newest, detail={"age_sec": round(age, 1)}), []
+    intervals, counts = _lease_intervals(inp.events, now)
     w_start = now - timedelta(seconds=window)
     roles = sorted(set(intervals) | set(capacity or {}))
+    if not roles:
+        # Fresh events, no lease in the window, and no pool state to name the lanes.
+        return [_no(LANE_PREFIX.rstrip(":"), "slot_s", "read_failed:gpu_pool_state", source_at=newest)], []
     out: list[PhysiologyConstraintReadingV1] = []
     for role in roles:
         held = 0.0
-        leases = 0
+        spans = 0
+        # Leases are NOT merged across each other: concurrent leases hold separate slots.
         for start, end in intervals.get(role, []):
-            s, e = max(start, w_start), min(end, now)
-            if e > s:
-                held += (e - s).total_seconds()
-                leases += 1
-        slots = (capacity or {}).get(role)
-        budget = float(slots) * window if slots else None
-        detail: dict = {"leases": leases, "window_sec": window}
-        if slots is not None:
-            detail["slots"] = int(slots)
+            s0, e0 = max(start, w_start), min(end, now)
+            if e0 > s0:
+                held += (e0 - s0).total_seconds()
+                spans += 1
+        detail: dict = {"held_spans": spans, "window_sec": window}
+        if capacity is not None and role in capacity:
+            detail["slots"] = int(capacity[role])
         if capacity is None:
             detail["capacity"] = "pool_state_unread"
         out.append(PhysiologyConstraintReadingV1(
-            constraint=f"{LANE_PREFIX}{role}", unit="slot_s", level=round(held, 3),
-            budget=budget, budget_kind="capacity" if budget is not None else None, detail=detail))
-    if open_count and out:
-        out[0].detail["open_leases_all_lanes"] = open_count
-    return out
+            constraint=f"{LANE_PREFIX}{role}", unit="slot_s", level=round(held, 3), source_at=newest,
+            detail=detail, **_cap(role)))
+    warnings = []
+    if counts["open"]:
+        warnings.append(f"lane_open_leases:{counts['open']}")
+    if counts["child_skipped"]:
+        warnings.append(f"lane_child_leases_in_hold_slots:{counts['child_skipped']}")
+    return out, warnings
 
 
 def juniper_reading(inp: JuniperInput, now: datetime, cfg: BodyConfig) -> PhysiologyConstraintReadingV1:
@@ -296,34 +345,50 @@ def juniper_reading(inp: JuniperInput, now: datetime, cfg: BodyConfig) -> Physio
     if age > cfg.juniper_decision_max_age_sec:
         return _no(ATTENTION_JUNIPER, "messages", "stale:endogenous_outreach_decisions",
                    source_at=inp.newest_decision_at, detail={"age_sec": round(age, 1)}, **line)
+    if inp.cap_counted_today is None:
+        return _no(ATTENTION_JUNIPER, "messages", "read_failed:endogenous_outreach_decisions", **line)
+    # Level and line count the same thing: the sends the Hub's cap counts. Every send that reached
+    # Juniper (cap-exempt curiosity / reading-finding outreach included) is in detail.
     return PhysiologyConstraintReadingV1(
-        constraint=ATTENTION_JUNIPER, unit="messages", level=float(inp.sent_today),
+        constraint=ATTENTION_JUNIPER, unit="messages", level=float(inp.cap_counted_today),
         source_at=inp.newest_decision_at,
-        detail={"cap_counted_today": inp.cap_counted_today}, **line)
+        detail={"sent_today_all_sources": inp.sent_today}, **line)
 
 
 _STATE_RANK = {"limited": 2, "unknown": 1, "clear": 0}
 
 
 def claude_reading(observations: Sequence[ClaudeObservation], now: datetime, cfg: BodyConfig) -> PhysiologyConstraintReadingV1:
+    """Both limits (session, weekly) must be read fresh before the state can be ``clear``: a kind
+    not yet received (the weekly one emits hourly, so for up to an hour after every restart) or
+    gone stale reads ``unread`` and makes the state ``unknown``."""
     line = dict(budget=0.0, budget_kind="not_limited")
     if not observations:
         return _no(CLAUDE, "limit_events", "no_observation", state="unknown", **line)
-    fresh = [o for o in observations if 0 <= (now - o.received_at).total_seconds() <= cfg.claude_max_age_sec]
     newest = max(o.received_at for o in observations)
+    fresh = {o.kind: o for o in observations
+             if 0 <= (now - o.received_at).total_seconds() <= cfg.claude_max_age_sec}
     if not fresh:
         return _no(CLAUDE, "limit_events", "stale:claude_limit", state="unknown", source_at=newest, **line)
-    seen = [o for o in fresh if o.observed]
+    seen = [o for o in fresh.values() if o.observed]
     if not seen:
         return _no(CLAUDE, "limit_events", "unobserved:claude_limit", state="unknown", source_at=newest, **line)
-    # Any kind limited -> limited. A kind unread beside a clear one -> unknown, never clear.
-    state = max((o.state if o.observed else "unknown" for o in fresh), key=lambda s: _STATE_RANK.get(s, 1))
     detail: dict = {}
-    for o in fresh:
-        detail[f"{o.kind}_state"] = o.state if o.observed else "unknown"
-        detail[f"{o.kind}_events"] = o.event_count
+    states: list[str] = []
+    for kind in sorted(set(CLAUDE_KINDS) | set(fresh)):
+        o = fresh.get(kind)
+        if o is None:
+            detail[f"{kind}_state"] = "unread"
+            states.append("unknown")
+            continue
+        st = o.state if o.observed else "unknown"
+        detail[f"{kind}_state"] = st
+        detail[f"{kind}_events"] = o.event_count
         if o.resets_at is not None:
-            detail[f"{o.kind}_resets_at"] = o.resets_at.isoformat()
+            detail[f"{kind}_resets_at"] = o.resets_at.isoformat()
+        states.append(st)
+    # Any kind limited -> limited. Any kind unread beside clear ones -> unknown, never clear.
+    state = max(states, key=lambda st: _STATE_RANK.get(st, 1))
     return PhysiologyConstraintReadingV1(
         constraint=CLAUDE, unit="limit_events", level=float(sum(o.event_count for o in seen)),
         state=state, source_at=newest, detail=detail, **line)
@@ -331,11 +396,16 @@ def claude_reading(observations: Sequence[ClaudeObservation], now: datetime, cfg
 
 def build_physiology_state(now: datetime, inputs: BodyInputs, cfg: BodyConfig = BodyConfig(),
                            warnings: Sequence[str] = ()) -> PhysiologyStateV1:
-    constraints = [heat_reading(inputs.heat, cfg), energy_reading(inputs.energy, now, cfg)]
-    constraints += lane_readings(inputs.lanes, now, cfg)
-    constraints += [juniper_reading(inputs.juniper, now, cfg), claude_reading(inputs.claude, now, cfg)]
+    warnings = list(warnings)
+    energy = energy_reading(inputs.energy, now, cfg)
+    if energy.level is not None and (energy.detail.get("unpriced_kwh") or 0) > 0:
+        warnings.append("energy_partial:unpriced_kwh")
+    lanes, lane_warnings = lane_readings(inputs.lanes, now, cfg)
+    warnings += lane_warnings
+    constraints = [heat_reading(inputs.heat, cfg), energy, *lanes,
+                   juniper_reading(inputs.juniper, now, cfg), claude_reading(inputs.claude, now, cfg)]
     return PhysiologyStateV1(tick_id=f"physiology:{now.isoformat()}", generated_at=now,
-                             constraints=constraints, warnings=list(warnings))
+                             constraints=constraints, warnings=warnings)
 
 
 __all__ = [

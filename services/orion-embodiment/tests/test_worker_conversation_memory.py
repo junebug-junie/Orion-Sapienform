@@ -452,4 +452,3 @@ def test_town_speech_defaults_to_the_interactive_fast_route():
     from app.settings import Settings
 
     assert Settings.model_fields["speech_quick_llm_route"].default == "quick_embodied"
-

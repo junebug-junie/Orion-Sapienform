@@ -70,7 +70,8 @@ def test_no_self_repeat_patch_hunk_line_counts_match():
                 if lines[i].startswith("diff --git"):
                     break
                 prefix = lines[i][:1]
-                if prefix == " ":
+                # git apply reads an empty line as blank context.
+                if prefix in (" ", ""):
                     old_seen += 1
                     new_seen += 1
                 elif prefix == "-":

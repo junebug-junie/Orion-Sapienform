@@ -85,15 +85,67 @@ def build_frame(extract: dict, hosts: tuple[str, ...]) -> dict:
             outdoor[i] = a * (1 - frac) + b * frac
         elif a is not None and t.minute == 0:
             outdoor[i] = a
-    # AC: hourly average watts from the cooling plug, broadcast to the hour's bins
-    ac_h = {}
-    for r in extract["energy_hourly"]:
-        if r["source"] == "cooling" and r.get("covered_sec") and r["covered_sec"] > 1800:
-            ac_h[_ts(r["t"])] = r["kwh"] * 1000.0 * 3600.0 / r["covered_sec"]
-    ac = np.array([ac_h.get(t.replace(minute=0, second=0, microsecond=0), np.nan) for t in times])
+    # Portable cabinet AC: orion-prediction's athena.cabinet_cooling_watts (home_cooling_sample).
+    ac = np.full(n, np.nan)
+    for r in extract.get("cooling15") or ():
+        i = idx.get(_ts(r["t"]))
+        if i is not None and r.get("w") is not None:
+            ac[i] = r["w"]
     hod = np.array([t.hour + t.minute / 60.0 for t in times])
+    proxy_spec = central_ac_proxy_spec()
+    proxy = central_ac_proxy(times, extract["weather_hourly"], **proxy_spec)
+    events = parse_events(extract.get("change_events") or ())
+    excluded = np.array([any(a <= t < b for a, b in events["exclude"]) for t in times])
     return {"times": times, "cab": cab, "watts": watts, "compute": compute, "fan": fan,
-            "outdoor": outdoor, "ac": ac, "hod": hod}
+            "outdoor": outdoor, "ac": ac, "hod": hod, "proxy": proxy, "proxy_spec": proxy_spec,
+            "breaks": events["breaks"], "excludes": events["exclude"], "excluded": excluded}
+
+
+SERIES_YAML = Path(__file__).resolve().parents[2] / "config" / "prediction" / "series.v1.yaml"
+PREDICTION_SERIES_PY = Path(__file__).resolve().parents[2] / "services" / "orion-prediction" / "app" / "series.py"
+
+
+def central_ac_proxy_spec() -> dict:
+    """orion-prediction's own definition of athena.central_ac_proxy (#2829), read through its own
+    registry parser so the lag / threshold / hold here cannot drift from the service's."""
+    import importlib.util
+
+    mod_spec = importlib.util.spec_from_file_location("orion_prediction_series", PREDICTION_SERIES_PY)
+    mod = importlib.util.module_from_spec(mod_spec)
+    sys.modules["orion_prediction_series"] = mod  # dataclasses need the module registered
+    mod_spec.loader.exec_module(mod)
+    spec = mod.load_registry(SERIES_YAML).get("athena.central_ac_proxy")
+    if spec is None or spec.source.kind != "weather" or spec.above is None:
+        raise SystemExit("athena.central_ac_proxy missing or changed shape in config/prediction/series.v1.yaml")
+    return {"lag_min": spec.lag_min, "above_f": spec.above, "hold_min": spec.max_fill_min}
+
+
+def central_ac_proxy(times: list[datetime], weather_hourly: list[dict], *, lag_min: int, above_f: float,
+                     hold_min: int) -> np.ndarray:
+    """Same rule as orion-prediction's app/frame.py load_points + covariate_series: the value at t is
+    max(outdoor F - above, 0) from the hour that started ``lag`` earlier, held for up to ``hold_min``.
+    Unknown stays NaN."""
+    wx = {_ts(r["t"]): r["temp_f"] for r in weather_hourly if r.get("temp_f") is not None}
+    out = np.full(len(times), np.nan)
+    for i, t in enumerate(times):
+        src = t - timedelta(minutes=lag_min)
+        h0 = src.replace(minute=0, second=0, microsecond=0)
+        if (src - h0) < timedelta(minutes=hold_min) and h0 in wx:
+            out[i] = max(wx[h0] - above_f, 0.0)
+    return out
+
+
+def parse_events(rows) -> dict:
+    """orion-prediction change events (#2780): 'exclude' windows are masked; each 'break' becomes a
+    level-shift step at started_at (app/events.py's 'pending break' treatment)."""
+    excl, breaks = [], []
+    for e in rows:
+        start = _ts(e["started_at"])
+        if e["effect"] == "exclude" and e.get("ended_at"):
+            excl.append((start, _ts(e["ended_at"])))
+        elif e["effect"] == "break":
+            breaks.append({"at": start, "title": e["title"], "notes": e.get("notes") or ""})
+    return {"exclude": excl, "breaks": sorted(breaks, key=lambda b: b["at"])}
 
 
 def restrict(frame: dict, end: datetime) -> dict:
@@ -103,13 +155,6 @@ def restrict(frame: dict, end: datetime) -> dict:
     cab[np.array([t >= end for t in frame["times"]])] = np.nan
     out["cab"] = cab
     return out
-
-
-# 10-16 21:00..10-17 01:00 UTC: athena's cabinet lidar swung 131 -> 92 -> 36 -> 88 mm and settled
-# at ~94 mm (from ~116 mm), humidity stepped down, and the cabinet floor rose ~5 degC with no
-# matching change in outdoor temperature or load. Something physical changed in the cabinet.
-CABINET_SHIFT_UTC = datetime(2026, 10, 16, 21, 0, tzinfo=timezone.utc)
-CABINET_SHIFT_END_UTC = datetime(2026, 10, 17, 1, 0, tzinfo=timezone.utc)  # transient bins dropped
 
 
 def regressors(frame: dict, spec: dict[str, str]) -> dict[str, np.ndarray]:
@@ -125,8 +170,13 @@ def _lag(x: np.ndarray, k: int) -> np.ndarray:
     return out
 
 
-def design(frame: dict, regs: dict[str, np.ndarray], *, outdoor: bool = True, ac: bool = True,
-           day_fe: bool = False) -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray]:
+def break_name(b: dict) -> str:
+    return "break:" + b["title"]
+
+
+def design(frame: dict, regs: dict[str, np.ndarray], *, outdoor: bool = False, proxy: bool = True,
+           ac: bool = True, breaks: bool = True, day_fe: bool = False):
+    """Returns X, y, names, day, rows (indices into the frame grid)."""
     cols, names = [], []
     for h, series in regs.items():
         for k in LAGS_BINS:
@@ -136,9 +186,18 @@ def design(frame: dict, regs: dict[str, np.ndarray], *, outdoor: bool = True, ac
         for lh in OUTDOOR_LAGS_H:
             cols.append(_lag(frame["outdoor"], lh * 60 // BIN_MIN))
             names.append(f"outdoor_c_lag{lh}h")
+    if proxy:
+        cols.append(frame["proxy"])
+        names.append("central_ac_proxy_f")
     if ac:
         cols.append(frame["ac"] / 100.0)
         names.append("ac_per100w")
+    if breaks:
+        for b in frame["breaks"]:
+            step = np.array([t >= b["at"] for t in frame["times"]], dtype=float)
+            if 0 < step.sum() < len(step):
+                cols.append(step)
+                names.append(break_name(b))
     for k in range(1, HARMONICS + 1):
         ang = 2 * math.pi * k * frame["hod"] / 24.0
         cols += [np.sin(ang), np.cos(ang)]
@@ -148,18 +207,12 @@ def design(frame: dict, regs: dict[str, np.ndarray], *, outdoor: bool = True, ac
         for d in sorted(set(day)):  # one per day; the reference is chosen after filtering
             cols.append((day == d).astype(float))
             names.append(f"day_{d}")
-    post = np.array([t >= CABINET_SHIFT_END_UTC for t in frame["times"]], dtype=float)
-    # The 10-16 cabinet change as a step. With day dummies it is redundant (the transient bins
-    # 21:00-01:00Z are dropped below, so the step falls on a day boundary) and would be collinear.
-    if not day_fe and 0 < post.sum() < len(post):
-        cols.append(post)
-        names.append("post_cabinet_shift")
     cols.append(np.ones(len(frame["times"])))
     names.append("const")
     X = np.column_stack(cols)
     y = frame["cab"]
-    transient = np.array([CABINET_SHIFT_UTC <= t < CABINET_SHIFT_END_UTC for t in frame["times"]])
-    ok = np.isfinite(y) & np.all(np.isfinite(X), axis=1) & ~transient
+    ok = np.isfinite(y) & np.all(np.isfinite(X), axis=1) & ~frame["excluded"]
+    rows = np.nonzero(ok)[0]
     X, y, day = X[ok], y[ok], day[ok]
     if day_fe:
         # Drop dummies that ended up empty after filtering, then drop the first remaining one so the
@@ -167,8 +220,12 @@ def design(frame: dict, regs: dict[str, np.ndarray], *, outdoor: bool = True, ac
         keep = [j for j, nm in enumerate(names) if not nm.startswith("day_") or X[:, j].any()]
         first_day = next(j for j in keep if names[j].startswith("day_"))
         keep.remove(first_day)
+        # A break step that is constant within every day is a sum of day dummies: drop it.
+        for j in list(keep):
+            if names[j].startswith("break:") and all(np.ptp(X[day == d, j]) == 0 for d in np.unique(day)):
+                keep.remove(j)
         X, names = X[:, keep], [names[j] for j in keep]
-    return X, y, names, day
+    return X, y, names, day, rows
 
 
 def ols(X: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -207,7 +264,7 @@ def block_bootstrap(X: np.ndarray, y: np.ndarray, day: np.ndarray, contrasts: di
 def fit_model(frame: dict, spec: dict[str, str], *, label: str, reps: int, seed: int,
               hac_lags: int = 96, **design_kw) -> dict:
     hosts = tuple(spec)
-    X, y, names, day = design(frame, regressors(frame, spec), **design_kw)
+    X, y, names, day, rows = design(frame, regressors(frame, spec), **design_kw)
     if X.shape[0] < 4 * X.shape[1]:
         return {"label": label, "status": "insufficient_rows", "n": int(X.shape[0])}
     beta, resid = ols(X, y)
@@ -236,7 +293,15 @@ def fit_model(frame: dict, spec: dict[str, str], *, label: str, reps: int, seed:
             "lag_coefficients_c_per_100w": lag_coefs,
         }
     ctl = {nm: float(beta[j]) for j, nm in enumerate(names) if not nm.startswith(("w_", "day_", "hod_"))}
+    ctl_ci = {}
+    ctl_contrasts = {nm: np.eye(len(names))[j] for j, nm in enumerate(names)
+                     if nm == "central_ac_proxy_f" or nm.startswith("break:")}
+    if ctl_contrasts:
+        cb = block_bootstrap(X, y, day, ctl_contrasts, max(reps // 2, 20), seed + 1)
+        ctl_ci = {k: [float(v) for v in np.percentile(cb[k], [2.5, 97.5])] for k in cb}
     return {
+        "_fit": {"X": X, "y": y, "names": names, "day": day, "rows": rows, "beta": beta},
+        "controls_ci95": ctl_ci,
         "label": label, "status": "ok", "regressor": spec, "hosts": hosts_out, "controls": ctl,
         "n": int(X.shape[0]), "n_days": int(len(np.unique(day))), "p": int(X.shape[1]),
         "r2": r2, "durbin_watson": dw, "resid_lag1_autocorr": ac1,
@@ -265,15 +330,21 @@ def first_difference_hourly(frame: dict, spec: dict[str, str], *, reps: int, see
     cab = hourly(frame["cab"])
     hosts = tuple(spec)
     W = {h: hourly(s) for h, s in regressors(frame, spec).items()}
-    out_t, ac = hourly(frame["outdoor"]), hourly(frame["ac"])
+    px, ac = hourly(frame["proxy"]), hourly(frame["ac"])
+    excl = hourly(frame["excluded"].astype(float))
     d = lambda x: np.concatenate([[np.nan], np.diff(x)])  # noqa: E731
     cols, names = [], []
     for h in hosts:
         dw = d(W[h]) / 100.0
         cols += [dw, _lag(dw, 1)]
         names += [f"w_{h}_lag0h", f"w_{h}_lag1h"]
-    cols += [d(out_t), d(ac) / 100.0]
-    names += ["d_outdoor_c", "d_ac_per100w"]
+    cols += [d(px), d(ac) / 100.0]
+    names += ["d_central_ac_proxy_f", "d_ac_per100w"]
+    for b in frame["breaks"]:
+        step = np.array([1.0 if h >= b["at"].replace(minute=0) else 0.0 for h in hours])
+        if 0 < step.sum() < len(step):
+            cols.append(d(step))
+            names.append("d_" + break_name(b))
     hod = np.array([h.hour for h in hours], dtype=float)
     for k in range(1, HARMONICS + 1):
         ang = 2 * math.pi * k * hod / 24.0
@@ -283,7 +354,7 @@ def first_difference_hourly(frame: dict, spec: dict[str, str], *, reps: int, see
     names.append("const")
     X = np.column_stack(cols)
     y = d(cab)
-    ok = np.isfinite(y) & np.all(np.isfinite(X), axis=1)
+    ok = np.isfinite(y) & np.all(np.isfinite(X), axis=1) & ~(excl > 0) & ~(_lag(excl, 1) > 0)
     X, y = X[ok], y[ok]
     day = np.array([h.date().toordinal() for h in hours])[ok]
     beta, resid = ols(X, y)

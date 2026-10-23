@@ -111,6 +111,14 @@ class _Harness:
         self.compose = compose
         monkeypatch.setattr(decisions, "fetch_strain_report_history", fake_history)
         monkeypatch.setattr(decisions, "record_decision", fake_record)
+        self.intent_ok = True
+
+        def fake_record_now(result):
+            if harness.intent_ok and harness.rows is not None:
+                harness.rows.append(dict(result))
+            return harness.intent_ok
+
+        monkeypatch.setattr(decisions, "record_decision_now", fake_record_now)
         monkeypatch.setitem(g, "fetch_open_strain_arc", fake_arc)
         monkeypatch.setitem(g, "_seconds_since_juniper_spoke", lambda: spoke_ago)
         monkeypatch.setitem(g, "_juniper_spoke_since", lambda epoch: False)
@@ -294,3 +302,38 @@ def test_episode_change_mid_compose_drops_the_report(monkeypatch):
     h.compose = compose
     r = h.tick()
     assert r["reason"] == "strain_episode_changed_after_generation" and h.delivered == []
+
+
+def test_lost_sent_row_still_blocks_resend_after_restart(monkeypatch):
+    """Review finding: the `sent` row is fire-and-forget. The synchronous intent row must be
+    enough on its own to stop a re-send after a restart."""
+    h = _Harness(monkeypatch)
+    assert h.tick()["reason"] == "sent"
+    only_intent = [r for r in h.rows if r.get("reason") == "strain_report_sending"]
+    assert len(only_intent) == 1
+    again = _Harness(monkeypatch, state=h.state, rows=only_intent)
+    assert again.tick()["strain_report"] == "already_reported_episode" and again.delivered == []
+
+
+def test_intent_write_failure_means_no_send(monkeypatch):
+    h = _Harness(monkeypatch)
+    h.intent_ok = False
+    r = h.tick()
+    assert r["reason"] == "intent_write_failed" and h.delivered == []
+
+
+def test_failed_composes_are_capped_per_episode():
+    from scripts.strain_report import STRAIN_REPORT_MAX_ATTEMPTS
+
+    since = _now() - timedelta(hours=10)
+    h = StrainReportHistory()
+    for i in range(STRAIN_REPORT_MAX_ATTEMPTS):
+        h.note(episode=episode_key(since), reason="empty_generation", at=_now() - timedelta(hours=5 - i), tz=UTC)
+    assert _block(since=since, history=h) == "attempts_exhausted"
+
+
+def test_strain_report_spends_a_daily_cap_slot(monkeypatch):
+    h = _Harness(monkeypatch)
+    before = h.o._sent_today
+    assert h.tick()["reason"] == "sent"
+    assert h.o._sent_today == before + 1

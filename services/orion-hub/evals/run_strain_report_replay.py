@@ -133,10 +133,12 @@ def replay(eps: List[Episode], *, min_episode_sec: float, quiet: tuple, tz: Any,
             last_block = block
             t += timedelta(seconds=step_sec)
         else:
+            # Counted on the day the episode ended unreported (where the hold last applied).
+            end_day = days[ep.end.astimezone(tz).date().isoformat()]
             if last_block == "already_reported_today":
-                d["held_by_day_cap"] += 1
+                end_day["held_by_day_cap"] += 1
             elif waited_quiet:
-                d["held_by_quiet_hours"] += 1
+                end_day["held_by_quiet_hours"] += 1
     total = sum(len(v["reports"]) for v in days.values())
     return {"episodes": len(eps), "reports_total": total, "days": dict(sorted(days.items()))}
 

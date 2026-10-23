@@ -279,6 +279,7 @@ from orion.regulation.arousal_view import AROUSAL_STRAINED_REASON
 from scripts.arousal_reader import ArousalReader
 from scripts.rest_drive_reader import RestDriveReader
 from scripts.strain_report import (
+    STRAIN_REPORT_INTENT_REASON,
     STRAIN_REPORT_SOURCE,
     StrainReportHistory,
     build_strain_report_prompt,
@@ -2518,8 +2519,8 @@ class EndogenousOutreach:
         facts = strain_report_facts(state, arc)
         if facts is None or episode_key(facts.episode_since) != episode:
             return held("no_grounding", episode)
-        record_text = render_record(facts, now, self._tz)
-        prompt = build_strain_report_prompt(facts, record_text, now, self._tz)
+        record_text = render_record(facts, now, self._strain_tz)
+        prompt = build_strain_report_prompt(facts, record_text, now, self._strain_tz)
         grounding = {"strain_report": facts.as_dict(), "strain_arc_status": arc_status}
         logger.info(
             "strain_report_composing episode=%s arc=%s causes_now=%s",
@@ -2573,6 +2574,25 @@ class EndogenousOutreach:
                 forced=force, episode=episode, composed=True, grounding=grounding,
             )
 
+        # Intent row first, synchronously: if it does not land, do not send. A delivered report
+        # whose fire-and-forget `sent` row is later lost would otherwise be re-sent on restart.
+        from scripts.endogenous_outreach_decisions import record_decision_now
+
+        intent = {
+            **base, "reason": STRAIN_REPORT_INTENT_REASON, "door": STRAIN_REPORT_SOURCE,
+            "source": STRAIN_REPORT_SOURCE, "strain_composed": True, "strain_episode_since": episode,
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+        if not await asyncio.to_thread(record_decision_now, intent):
+            return self._strain_record(
+                {**base, "reason": "intent_write_failed"},
+                forced=force, episode=episode, composed=False, grounding=grounding,
+            )
+        if self._strain_history is not None:
+            self._strain_history.note(
+                episode=episode, reason=STRAIN_REPORT_INTENT_REASON,
+                at=datetime.now(timezone.utc), tz=self._strain_tz,
+            )
         delivered = f"{text}\n\n{record_text}"
         decision_id = str(uuid4())
         provenance = build_outreach_provenance(

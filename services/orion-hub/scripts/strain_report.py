@@ -40,6 +40,12 @@ STRAIN_REPORT_SOURCE = "strain_report"
 # A compose that failed (empty text, an ungrounded signal name, a drop after generation) may be
 # retried for the same episode after this long. A PASS is Orion's answer and is never retried.
 STRAIN_REPORT_RETRY_SEC = 1800.0
+# At most this many failed composes per episode. Each compose is a full unified turn, and the
+# strain is often a GPU queue: an LLM outage must not add ~48 turns a day to that queue.
+STRAIN_REPORT_MAX_ATTEMPTS = 3
+# Written synchronously BEFORE delivery. Counts as "reported", so a delivered report whose final
+# `sent` row was lost (fire-and-forget write, a restart in the gap) still blocks a re-send.
+STRAIN_REPORT_INTENT_REASON = "strain_report_sending"
 
 # The open arc counts as THIS episode only when its start is this close to the regulation
 # reading's ``since`` (both come from the same arousal_transition row; the arc takes
@@ -105,17 +111,19 @@ class StrainReportHistory:
     declined_episodes: Set[str] = field(default_factory=set)
     report_dates: Set[str] = field(default_factory=set)
     last_attempt_at: Dict[str, datetime] = field(default_factory=dict)
+    attempts: Dict[str, int] = field(default_factory=dict)
 
     def note(self, *, episode: str, reason: str, at: datetime, tz: Any) -> None:
         """Fold one decision row (or one live outcome) in. Same rule for both, so a restart
         that rebuilds this from rows reaches the same state the live process had."""
         at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
-        if reason == "sent":
+        if reason in ("sent", STRAIN_REPORT_INTENT_REASON):
             self.reported_episodes.add(episode)
             self.report_dates.add(at.astimezone(tz).date().isoformat())
         elif reason == "orion_passed":
             self.declined_episodes.add(episode)
         else:
+            self.attempts[episode] = self.attempts.get(episode, 0) + 1
             prev = self.last_attempt_at.get(episode)
             if prev is None or at > prev:
                 self.last_attempt_at[episode] = at
@@ -159,6 +167,8 @@ def strain_report_block(
         return "orion_declined_episode"
     if now.astimezone(tz).date().isoformat() in history.report_dates:
         return "already_reported_today"
+    if history.attempts.get(key, 0) >= STRAIN_REPORT_MAX_ATTEMPTS:
+        return "attempts_exhausted"
     last = history.last_attempt_at.get(key)
     if last is not None and (now - last).total_seconds() < float(retry_sec):
         return "retry_wait"
@@ -370,6 +380,8 @@ async def fetch_open_strain_arc(base_url: str, timeout_sec: float = FRAME_TIMEOU
 __all__ = [
     "ARC_MATCH_TOLERANCE_SEC",
     "STRAIN_HOLDS",
+    "STRAIN_REPORT_INTENT_REASON",
+    "STRAIN_REPORT_MAX_ATTEMPTS",
     "STRAIN_REPORT_RETRY_SEC",
     "STRAIN_REPORT_SOURCE",
     "StrainReportFacts",

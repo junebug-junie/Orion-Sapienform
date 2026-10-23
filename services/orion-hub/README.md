@@ -949,8 +949,17 @@ report about it. Rules:
 - One per episode (keyed on the episode start, `arousal.since`) and one per local day
   (`ORION_SITUATION_TIMEZONE`). Both are rebuilt from `endogenous_outreach_decisions` on first
   use, so a restart does not re-send; if that read fails the door stays shut
-  (`strain_report=history_unknown`). A PASS from Orion closes the episode; a failed compose may
-  retry after 30 min.
+  (`strain_report=history_unknown`). Before delivery a `reason=strain_report_sending` row is
+  written synchronously; if it does not land, nothing is sent (`intent_write_failed`), and the
+  row alone blocks a re-send even if the final `sent` row is lost. A PASS from Orion closes the
+  episode; a failed compose may retry after 30 min, at most 3 times per episode
+  (`attempts_exhausted`).
+- A strain report spends one daily-cap slot (`count_sent_on` counts it), on purpose: it is a
+  background message.
+- Known limits: the episode key is the regulation `since`, so a regulation outage long enough to
+  reset `since` makes a new episode (the once-per-day rule still bounds it). History looks back
+  30 days. If the reading goes stale between the two gate reads the row says
+  `reason=strain_ended`.
 - Grounding is the live regulation reading (since, causes now, cabinet temp, GPU jobs waiting)
   plus the open `strain` arc from durable-runs `GET /temporal-self/frame` when it is this
   episode (causes seen, `[arc:<id>]`). What strain holds back comes from the

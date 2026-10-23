@@ -52,6 +52,7 @@ def _write_decision_to_postgres(
     sustained_load_pressure_channel: Optional[str],
     sustained_load_pressure_node_id: Optional[str],
     forced: bool,
+    ok: Optional[Dict[str, bool]] = None,
 ) -> None:
     try:
         import json
@@ -105,8 +106,32 @@ def _write_decision_to_postgres(
                     "result_json": json.dumps(result),
                 },
             )
+        if ok is not None:
+            ok["ok"] = True
     except Exception as exc:
         logger.warning("endogenous_outreach_decision_write_failed error=%s", exc)
+
+
+def record_decision_now(result: Dict[str, Any]) -> bool:
+    """Write one decision row synchronously and say whether it landed. For a row a later
+    decision depends on (the strain report's pre-delivery intent row); call off the event loop."""
+    if not decision_log_enabled():
+        return False
+    try:
+        from scripts.pg_engine import get_engine
+
+        if get_engine() is None:
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    holder: Dict[str, bool] = {}
+    _write_decision_to_postgres(
+        decision_id=str(result.get("decision_id") or "").strip() or str(uuid4()),
+        result=dict(result), target_id=None, run_length=None, peak_deviation_pressure=None,
+        sustained_load_pressure=None, sustained_load_pressure_channel=None,
+        sustained_load_pressure_node_id=None, forced=False, ok=holder,
+    )
+    return bool(holder.get("ok"))
 
 
 def decision_log_enabled() -> bool:

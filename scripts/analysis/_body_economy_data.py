@@ -71,6 +71,42 @@ select coalesce(json_agg(r order by r.t), '[]'::json) from (
 ) r;"""
 
 
+def _cooling_sql(start: str, end: str) -> str:
+    # The portable cabinet AC, as orion-prediction reads it (series athena.cabinet_cooling_watts:
+    # home_cooling_sample, role cabinet_cooling).
+    return f"""
+select coalesce(json_agg(r order by r.t), '[]'::json) from (
+  select to_char(date_bin('15 minutes', ts, timestamptz '2026-01-01') at time zone 'UTC',
+                 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as t, avg(cooling_watts) as w
+  from home_cooling_sample
+  where role = 'cabinet_cooling' and ts >= timestamptz '{start}' and ts < timestamptz '{end}'
+  group by 1
+) r;"""
+
+
+def _house_sql(start: str, end: str) -> str:
+    # Whole-house meter (Rocky Mountain Power, hourly, whole kWh, ~3 days behind): the signal
+    # orion-prediction's run_house_heat_balance_eval.py uses to validate the central-AC proxy.
+    return f"""
+select coalesce(json_agg(r order by r.t), '[]'::json) from (
+  select to_char(interval_start at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as t, energy_kwh as kwh
+  from energy_usage_interval
+  where source = 'rockymountain_power' and interval_start >= timestamptz '{start}' and interval_start < timestamptz '{end}'
+) r;"""
+
+
+# orion-prediction's change events (#2780): the same rows its engine folds into training
+# (services/orion-prediction/app/store.py change_events, app/events.py applies()).
+CHANGE_EVENTS_SQL = """
+select coalesce(json_agg(r order by r.started_at), '[]'::json) from (
+  select scope, effect, title, notes,
+         to_char(started_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as started_at,
+         to_char(ended_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as ended_at
+  from prediction_change_event
+  where retracted_at is null and scope in ('*', 'athena.cabinet_temp_c')
+) r;"""
+
+
 def _validate_ts(s: str) -> str:
     # Only ISO dates/timestamps reach the SQL text.
     from datetime import datetime
@@ -92,14 +128,28 @@ def run_query(sql: str) -> Any:
     return json.loads(out)
 
 
+def _minus_hours(ts: str, h: int) -> str:
+    from datetime import datetime, timedelta
+
+    t = datetime.fromisoformat(ts.replace("Z", "+00:00")) - timedelta(hours=h)
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def fetch(start: str, end: str) -> dict:
     start, end = _validate_ts(start), _validate_ts(end)
     return {
         "window": {"start": start, "end": end},
         "bins15": run_query(_bins_sql(start, end)),
         "energy_hourly": run_query(_energy_sql(start, end)),
-        "weather_hourly": run_query(_weather_sql(start, end)),
+        # 6 h earlier so a lagged weather covariate (central AC proxy: 3 h) has values from the start.
+        "weather_hourly": run_query(_weather_sql(_minus_hours(start, 6), end)),
+        "cooling15": run_query(_cooling_sql(start, end)),
+        "house_hourly": run_query(_house_sql(_minus_hours(start, 6), end)),
+        "change_events": run_query(CHANGE_EVENTS_SQL),
         "queries": {
+            "cooling15": _cooling_sql(start, end).strip(),
+            "house_hourly": _house_sql(_minus_hours(start, 6), end).strip(),
+            "change_events": CHANGE_EVENTS_SQL.strip(),
             "bins15": _bins_sql(start, end).strip(),
             "energy_hourly": _energy_sql(start, end).strip(),
             "weather_hourly": _weather_sql(start, end).strip(),
@@ -110,7 +160,7 @@ def fetch(start: str, end: str) -> dict:
 def load_or_fetch(start: str, end: str, cache: str | None) -> dict:
     if cache and Path(cache).exists():
         data = json.loads(Path(cache).read_text())
-        if data.get("window") == {"start": start, "end": end}:
+        if data.get("window") == {"start": start, "end": end} and "house_hourly" in data:
             return data
     data = fetch(start, end)
     if cache:

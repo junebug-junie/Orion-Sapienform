@@ -114,6 +114,6 @@ scripts/safe_docker_build.sh orion-dream up -d --build
 
 ## PR link
 
-(filled on open)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2886
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -259,7 +259,9 @@ def classify_arousal(
     queue = (inputs.gpu_queue_depth - deferrable) if s2_seen else None
     # A queue at/above the floor while a lane controller refuses to act measures the fault, not
     # load: it can neither strain nor clear. Below the floor nothing is waiting, which stays true.
-    s2_faulted = s2_seen and bool(inputs.gpu_fault) and queue >= gpu_queue_floor
+    # The RAW depth on purpose: self-work may be waiting because of the fault, so a fault with only
+    # self-work queued still voids S2 (review 10-23: keep the 10-09 rule, do not let it clear).
+    s2_faulted = s2_seen and bool(inputs.gpu_fault) and inputs.gpu_queue_depth >= gpu_queue_floor
     # Queue entries a shed (heat) holds back are not load either (S1 already reads the heat). Only
     # the rest is load; when the held entries alone lift the queue to the floor, S2 is no evidence.
     load = (queue - held) if s2_seen else None

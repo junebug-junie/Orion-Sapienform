@@ -541,11 +541,28 @@ def test_shed_held_plus_deferrable_overlap_is_counted_once():
     assert (depth, h, d, sus) == (5, 3, 0, 300.0)
 
 
-def test_deferrable_queue_does_not_turn_s2_stale_under_a_fault():
-    """A lane controller fault with only self-work queued: nothing non-deferrable is waiting, so
-    S2 is fresh and clear (the fault is annotated), not voided."""
-    r = classify_arousal(None, dfr_inputs().model_copy(update={"gpu_fault": "config_unreadable:agent-gpu2"}))
-    assert r.arousal_level == "idle" and "gpu_fault:config_unreadable:agent-gpu2" in r.reasons
+def test_a_fault_still_voids_s2_when_only_self_work_is_queued():
+    """Self-work may be waiting BECAUSE of the fault: the 10-09 rule holds on the raw depth, so a
+    latched strain can neither strain nor clear on that queue (review 10-23)."""
+    fault = {"gpu_fault": "config_unreadable:agent-gpu2"}
+    r = classify_arousal(None, dfr_inputs().model_copy(update=fault))
+    assert r.arousal_level == "unknown" and "gpu_fault:config_unreadable:agent-gpu2" in r.reasons
+    hot = classify_arousal(None, inputs(reflex="cabinet_hot", thermal="hot"))
+    r = classify_arousal(hot, dfr_inputs(T0 + timedelta(seconds=120)).model_copy(update=fault))
+    assert r.arousal_level == "unknown" and r.strain_latched
+
+
+@pytest.mark.parametrize("held,deferrable,level,lead", [
+    # 2 shed-held + 1 self-work of 3: the shed alone lifts the non-self-work queue to the floor -> stale.
+    (2, 1, "unknown", "gpu_shed:cabinet_unknown"),
+    # 1 shed-held + 2 self-work of 3: non-self-work queue is 1 < floor -> fresh and clear.
+    (1, 2, "idle", "no_juniper_turn_45m"),
+])
+def test_shed_then_deferrable_ordering_is_pinned(held, deferrable, level, lead):
+    r = classify_arousal(None, dfr_inputs(depth=3, deferrable=deferrable).model_copy(
+        update={"gpu_queue_shed_held": held, "gpu_shed_reason": "cabinet_unknown"}))
+    assert r.arousal_level == level and r.reasons[0] == lead
+    assert f"gpu_queue_self_deferrable:{deferrable}" in r.reasons
 
 
 def test_replay_2026_10_23_agent_background_holds_do_not_hold_strain():

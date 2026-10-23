@@ -154,7 +154,9 @@ def replay_readings(rows, start, end, *, tick_sec=120.0, engaged_minutes=DEFAULT
     (no parent hold, per ``gpu_pool_leases``) that the pool's own events put in the queue
     (``admitted``/``queued``) and had not yet taken out (granted, backlogged, released, ...) at the
     snapshot, capped per work class at the snapshot's queue -- a PROXY: the pool's events, not its
-    lease table, and an ``admitted`` that is granted in the same tick counts for those ms."""
+    lease table, and an ``admitted`` that is granted in the same tick counts for those ms. It
+    under-counts (reads more strain, never less): a hold back in the queue after ``aborted`` with no
+    new ``queued`` event is missed, and a snapshot with anything shed-held is not reconstructed."""
     start, end = utc(start), utc(end)
     turns = sorted(utc(r["at"]) for r in rows if r["kind"] == "turn")
     heat = sorted((utc(r["at"]), float(r["temp_c"])) for r in rows
@@ -172,7 +174,7 @@ def replay_readings(rows, start, end, *, tick_sec=120.0, engaged_minutes=DEFAULT
             if not gpu_shed:
                 held = reason = None
             deferrable = r.get("deferrable_depth")
-            if deferrable is None and reconstruct_deferrable and not any((held or {}).values()):
+            if deferrable is None and reconstruct_deferrable and not (isinstance(held, dict) and any(held.values())):
                 deferrable = reconstruct_deferrable_depth(waits, at, r["queue_depth"])
             if not gpu_deferrable:
                 deferrable = None

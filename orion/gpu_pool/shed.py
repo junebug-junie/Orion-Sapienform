@@ -188,7 +188,9 @@ def is_deferrable_self_work(row: Any) -> bool:
     compaction), retryable, and kept arousal's S2 strained for days after the heat cleared.
 
     Waiting deferrable self-work is hunger (an unfunded want), not strain (body-economy design
-    2026-10-23, "S2 decision"). Requests at any priority, and background REQUESTS, are not this."""
+    2026-10-23, "S2 decision"). Requests at any priority, and background REQUESTS, are not this.
+    A durable-run hold that serves Juniper must therefore ask for ``system`` or ``urgent`` priority:
+    ``ResourceRequirementV1.priority`` defaults to ``background``, which reads as self-work here."""
     row = row if isinstance(row, dict) else vars(row)
     return (row.get("status") == "queued" and row.get("priority") == "background"
             and row.get("kind") == "hold" and row.get("hold_lease_id") is None)

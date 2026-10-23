@@ -516,13 +516,15 @@ async def startup_event():
     # ------------------------------------------------------------
     # Orion plays Zelda (section F): co-play session ends (Lane B scripts/retro_routes.py
     # emit_session_end) -> memory export. Needs only the memory pool, so registered whatever the bus
-    # state; with no bus nothing needs closing (co-play has no play act).
-    from scripts.retro_memory_export import make_session_end_sink
+    # state. The handoff's hub.retro_coplay play act opens at its start (emit_session_start) and closes
+    # on export; with no bus neither is published.
+    from scripts.retro_memory_export import make_session_end_sink, make_session_start_sink
 
     app.state.retro_session_end_sink = make_session_end_sink(
         pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
         bus_provider=lambda: bus,
     )
+    app.state.retro_session_start_sink = make_session_start_sink(bus_provider=lambda: bus)
     if settings.ORION_BUS_ENABLED:
         try:
             logger.info(f"Connecting OrionBus → {settings.ORION_BUS_URL}")
@@ -625,6 +627,10 @@ async def startup_event():
                     max_age_sec=settings.ORION_REGULATION_READER_MAX_AGE_SEC,
                     name="outreach",
                 ),
+                # Strain report door: one message per long strained episode (scripts/strain_report.py).
+                strain_report_enabled=settings.ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED,
+                strain_report_min_episode_sec=settings.ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC,
+                strain_report_timezone=settings.ORION_SITUATION_TIMEZONE,
                 daily_cap=settings.HUB_ENDOGENOUS_OUTREACH_DAILY_CAP,
                 quiet_start_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR,
                 quiet_end_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR,

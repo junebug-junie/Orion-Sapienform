@@ -1490,6 +1490,11 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "CuriosityInvestigation.tick_self_inquiry (runs only at idle)",
             "services.orion-hub.scripts.endogenous_outreach:"
             "EndogenousOutreach._gate_inputs (strained refuses background outreach)",
+            "services.orion-hub.scripts.endogenous_outreach:"
+            "EndogenousOutreach._strain_report_once -> scripts.strain_report "
+            "(strain loop part 3: a strained episode >= 60 min may pass the strained refusal "
+            "with ONE grounded report, once per episode and once per local day; reads "
+            "since, reasons, cabinet_temp_c, gpu_queue_depth)",
             "services.orion-proposal-runtime.app.worker:"
             "ProposalRuntimeWorker._baseline_arousal_level -> orion.reverie.baseline:schedule "
             "(strained defers a due visual baseline image by retry_sec)",

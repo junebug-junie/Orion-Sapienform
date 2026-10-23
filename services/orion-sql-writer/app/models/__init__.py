@@ -58,6 +58,7 @@ from .gpu_pool_state import GpuPoolStateSQL
 from .physiology_state import PhysiologyStateSQL
 from .transport_baseline_hourly import TransportBaselineHourlySQL
 from .orion_energy_hourly import OrionEnergyHourlySQL
+from .act_downstream_use import ActDownstreamUseSQL
 from .self_signal_outcome import SelfSignalHourSQL, SelfSignalOutcomeAssociationSQL
 from .field_channel_anomaly_score import FieldChannelAnomalyScoreSQL
 from .chat_stance_belief import ChatStanceBeliefLogSQL
@@ -163,6 +164,7 @@ __all__ = [
     "PhysiologyStateSQL",
     "TransportBaselineHourlySQL",
     "OrionEnergyHourlySQL",
+    "ActDownstreamUseSQL",
     "SelfSignalHourSQL",
     "SelfSignalOutcomeAssociationSQL",
     "FieldChannelAnomalyScoreSQL",

@@ -121,6 +121,19 @@ def create_router(config, presence=None, experience=None):
             import logging
             logging.getLogger('orion-hub.retro').warning('retro_session_end_sink_failed', exc_info=True)
 
+    async def emit_session_start(app, sid, started_at):
+        # Opens the handoff's play act (hub.retro_coplay). Before 2026-10-23 co-play opened none,
+        # so grammar_acts held 0 retro acts while every played session went through here.
+        sink = getattr(getattr(app, 'state', None), 'retro_session_start_sink', None)
+        if sink is None:
+            return
+        try:
+            result = sink(sid, started_at)
+            if asyncio.iscoroutine(result): await result
+        except Exception:
+            import logging
+            logging.getLogger('orion-hub.retro').warning('retro_session_start_sink_failed', exc_info=True)
+
     async def watch_coplay(app, sid, port, epoch, started_at):
         """Follow one browser cognition handoff until Retro ends it (stop, takeover, expiry,
         disconnect), then hand a RetroSessionEnded to the registered sink. Zelda only."""
@@ -129,7 +142,7 @@ def create_router(config, presence=None, experience=None):
                                                record_delta)
         key = (sid, port, epoch)
         history, goals, last, first, failures, reason = [], set(), None, None, 0, 'policy_ended'
-        last_decision = None
+        last_decision, opened = None, False
         try:
           try:
             while True:
@@ -156,6 +169,9 @@ def create_router(config, presence=None, experience=None):
                 cognition = policy.get('cognition') or {}
                 if not retro_planner.is_zelda_cognition(cognition):
                     return  # Nova goal experiment: no session record in this arc
+                if not opened:   # the first Zelda cognition seen: this handoff will be exported
+                    opened = True
+                    await emit_session_start(app, sid, started_at)
                 retro_planner.remember_finished(history, cognition)
                 if isinstance(cognition.get('attempt'), dict):
                     last_decision = cognition['attempt']
@@ -165,7 +181,7 @@ def create_router(config, presence=None, experience=None):
                 return  # never saw a Zelda cognition policy: nothing observed, nothing to record
             # Action bets: nothing of this handoff stays open; then read back what was learned.
             await experience.end_session(sid, history, last_decision)
-            learned = tuple(await experience.learned_lines(sid))
+            learned = tuple(await experience.learned_lines(sid, since=started_at))
             # Retro's counts are session-wide; report only what happened during this handoff.
             record = record_delta(first, atlas_session_fields(last))
             held = human_held_frames(record['controller_frames'])

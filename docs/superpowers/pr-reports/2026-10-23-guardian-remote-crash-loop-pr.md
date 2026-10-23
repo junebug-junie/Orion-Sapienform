@@ -156,8 +156,8 @@ Proof after deploy: one `orion:equilibrium:snapshot` message shows `gpu-lane-con
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2895
 
-Companion PR (GPU UUID pin for the worker, no card chosen): AFFECT_PR_PLACEHOLDER
+Companion PR (GPU UUID pin for the worker, no card chosen): https://github.com/junebug-junie/Orion-Sapienform/pull/2894
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -14,6 +14,7 @@ on:
   pull_request:
     paths:
       - "orion/situational/**"
+      - "orion/vision/walkway_rollup.py"  # perception_reader's street line uses its count range
       - "orion/weather/**"
       - "orion/schemas/situation.py"
       - "orion/hub/turn_orchestrator.py"
@@ -37,6 +38,7 @@ on:
     branches: [main]
     paths:
       - "orion/situational/**"
+      - "orion/vision/walkway_rollup.py"  # perception_reader's street line uses its count range
       - "orion/weather/**"
       - "orion/schemas/situation.py"
       - "orion/hub/turn_orchestrator.py"

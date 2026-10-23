@@ -938,6 +938,21 @@ no model. Design: `docs/superpowers/plans/2026-10-18-walkway-rollups-design.md`.
   Hub "Walkway history" panel, orion-substrate-runtime "seen on <day>" links.
 - Backfill (dry run by default): `PYTHONPATH=. python scripts/backfill_vision_rollups.py --days 7 [--apply]`.
 - Replay (read only): `PYTHONPATH=. python services/orion-sql-writer/evals/run_vision_rollup_replay_eval.py --days 3`.
+- **Which people count is closest to the truth** (spec PR #2763, Item 2 patch B):
+  `PYTHONPATH=. python services/orion-sql-writer/evals/run_walkway_count_estimator_eval.py --days 7`
+  (read only). It scores the estimators in `orion/vision/walkway_count.py` (clusters,
+  most at once, motion stories + clear glimpses, presence runs) against hand counts in
+  `evals/fixtures/walkway_count_labels.csv` (format in the file). With fewer than 10
+  hand-counted hours it says INSUFFICIENT LABELS and lists the 10 hours most worth
+  counting. Gates: an empty hour reads 0, a person standing 2 minutes stays 1.
+- **A glimpse counts only when it is clearly a person** (decision 6, Juniper 2026-10-23):
+  a one- or two-frame person story counts when one detection has score >= 0.44, a box at
+  least 6.25 % of the frame tall (120 px of 1920), is not edge-clipped, lies in a zone, and
+  is not a prop; and no other counted person story lies within 11 s of it
+  (`walkway_count.clear_glimpse`, `story_count`). The thresholds come from the stories
+  Juniper checked in the Hub. This feeds only the story-based estimator. The Orion-facing
+  range does not change, and a story-based count may only be shown held inside
+  [most at once, clusters] (`within_range`).
 
 ## Storage-write organ (2026-10-02)
 

@@ -102,6 +102,7 @@ jobs:
             services/orion-sql-writer/tests/test_energy_sql_shape.py \
             services/orion-sql-writer/tests/test_physiology_state_sql_shape.py \
             services/orion-sql-writer/evals/test_walkway_reducers_eval.py \
+            services/orion-sql-writer/evals/test_walkway_count_estimator_eval.py \
             services/orion-sql-writer/tests/test_write_health.py \
             services/orion-sql-writer/evals/test_storage_write_replay_eval.py \
             services/orion-sql-writer/tests/test_act_ledger_wiring.py \

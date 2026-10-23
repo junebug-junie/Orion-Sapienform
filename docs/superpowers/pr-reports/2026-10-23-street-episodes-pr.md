@@ -127,7 +127,7 @@ scripts/safe_docker_build.sh orion-thought up -d --build && scripts/safe_docker_
 
 - Severity: medium. Concern: UNVERIFIED on live input: the graded-handoff path. `vision_handoff_street_outbox` holds 5 rows ever, all `approach_door`, and `vision_handoff` has no met / late / missed rows yet. That path is proven only by fixtures and the Postgres test.
 - Severity: low. Concern: one visit can spend up to 3 of the 12 daily slots (walkway story, doorbell-camera story, ring; live 10-20 23:50). Mitigation: the cap; merge a ring with its doorbell story later if the cap binds often.
-- Severity: low. Concern: a named story's label states the name as fact ("Teddy walked"), while a handoff guess says "(a guess)". `name_label` is set only under the story's strict naming rule; 0 named published stories live.
+- Severity: low. Concern: a named story's label states the name as fact ("Robin walked"), while a handoff guess says "(a guess)". `name_label` is set only under the story's strict naming rule; 0 named published stories live.
 - Severity: low. Concern: a story is written a median 49 s after it ends (p99 20 min); 1 of 54 published stories in 7 days lands after the read lag and is stored as a late row, never folded. Mitigation: counted in `temporal_self_late_rows`; acceptable loss for a capped source.
 - Severity: low. Concern: the spot-check gate is read as of now, not as of the story's time, so a replay after Juniper's tally changes can differ from the live fold. Mitigation: the same rule the walkway rollups use; stated in the README.
 - Severity: low. Concern: the cap is first come, first kept, so a late ring on a busy day can be capped out. Mitigation: 12 bound once in 72 h (10-21: 15 seen). Revisit if rings get dropped (the capped log line names them).

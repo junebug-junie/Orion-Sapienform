@@ -75,16 +75,16 @@ def test_a_gated_story_is_one_closed_street_arc_labelled_outside() -> None:
 
 
 def test_ring_and_low_p_handoff_are_episodes() -> None:
-    state = _state([ring("r1", at(1)), handoff("e1", at(2), person_guess="Teddy")], at(10))
+    state = _state([ring("r1", at(1)), handoff("e1", at(2), person_guess="Robin")], at(10))
     labels = [a.subject_label for a in _street(state)]
     assert labels == ["Outside (doorbell camera): someone rang the doorbell",
-                      "Outside (walkway camera and doorbell camera): Teddy (a guess) crossing between cameras "
+                      "Outside (walkway camera and doorbell camera): Robin (a guess) crossing between cameras "
                       "never arrived (p 0.01)"]
 
 
 def test_named_story_uses_the_name_and_doorbell_camera() -> None:
-    e = S.street_event(story("s2", at(0), stream_id="doorbell", name_label="Teddy", dir_lateral=0, dir_depth=1))
-    assert e.label == "Outside (doorbell camera): Teddy walked toward the house"
+    e = S.street_event(story("s2", at(0), stream_id="doorbell", name_label="Robin", dir_lateral=0, dir_depth=1))
+    assert e.label == "Outside (doorbell camera): Robin walked toward the house"
     assert e.payload["named"] is True and e.payload["individual_id"] == "ind-1"
     assert S.street_event(story("s3", at(0)), ).payload["individual_id"] is None  # unnamed: no id carried
 

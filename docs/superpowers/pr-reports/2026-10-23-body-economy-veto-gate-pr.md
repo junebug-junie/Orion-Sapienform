@@ -24,14 +24,14 @@ Arousal: durable-runs writes one `RegulationStateV1` to Redis `orion:regulation:
 
 ### Readers table (found by the gate's own scan, not copied from the design doc)
 
-54 modules read the state. 38 are readers and 16 are sources.
+61 modules read the state. 44 are readers and 17 are sources.
 
 | role | count | modules |
 |---|---|---|
 | spinal | 4 | `orion/hardware_watch/rules.py`, `services/orion-hardware-watch/app/watcher.py`, `orion/gpu_pool/shed.py`, `services/orion-gpu-pool/app/runtime.py` |
-| bidder | 17 | reverie `baseline.py`; proposal-runtime `worker.py`; `world_pulse_read/pull.py` + Hub `world_pulse_read_pipeline.py`; Hub `retro_leisure.py`; `mutation_pressure.py`, `mutation_worker.py`, Hub `api_routes.py` (`_mutation_arousal_level`); dream `cycle.py` + `main.py`; Hub `curiosity_investigation.py`, `endogenous_outreach.py`, `main.py` (wires the reader); thought `chain.py`, `visual_chain.py`; gpu-pool `guards.py`; `autonomy/self_shed.py` |
-| display | 17 | thought `visual_chain_health_monitor.py`; Hub `temporal_self_routes.py`; substrate-runtime `worker.py`/`store.py`; proposal-runtime `store.py`; feedback-runtime `worker.py`/`store.py`; `feedback/world_settlement.py`; `hardware_watch/shed_effect.py`; `temporal_self/arcs.py`, `sources.py`, `stance_cue.py`; five `scripts/analysis/*` replay tools |
-| sources | 16 | `thermal_gate.py`, `cabinet_heat.py`, `regulation/arousal.py`, `arousal_view.py`, `arousal_read.py`, `strain_news.py`, `schemas/regulation.py`, `schemas/registry.py`, `schemas/hardware_watch.py`, `inner_state_registry.py`, Hub `arousal_reader.py`, durable-runs `main.py`, `regulation_store.py`, `temporal_self_graph.py`, `temporal_self_driver.py`, `runner.py` |
+| bidder | 18 | reverie `baseline.py`; proposal-runtime `worker.py`; `world_pulse_read/pull.py` + Hub `world_pulse_read_pipeline.py`; Hub `retro_leisure.py`; `mutation_pressure.py`, `mutation_worker.py`, Hub `api_routes.py` (`_mutation_arousal_level`); dream `cycle.py` + `main.py`; Hub `curiosity_investigation.py`, `endogenous_outreach.py`, `main.py` (wires the reader); thought `chain.py`, `visual_chain.py`, `visual_steps.py`; gpu-pool `guards.py`; `autonomy/self_shed.py` |
+| display | 22 | thought `visual_chain_health_monitor.py`, `main.py`; durable-runs `dream_carry_graph.py`; `feedback/builder.py`; `execution_dispatch/visual_settlement.py`; `temporal_self/body.py`; Hub `temporal_self_routes.py`; substrate-runtime `worker.py`/`store.py`; proposal-runtime `store.py`; feedback-runtime `worker.py`/`store.py`; `feedback/world_settlement.py`; `hardware_watch/shed_effect.py`; `temporal_self/arcs.py`, `sources.py`, `stance_cue.py`; five `scripts/analysis/*` replay tools |
+| sources | 17 | `thermal_gate.py`, `schemas/reverie_visual.py`, `cabinet_heat.py`, `regulation/arousal.py`, `arousal_view.py`, `arousal_read.py`, `strain_news.py`, `schemas/regulation.py`, `schemas/registry.py`, `schemas/hardware_watch.py`, `inner_state_registry.py`, Hub `arousal_reader.py`, durable-runs `main.py`, `regulation_store.py`, `temporal_self_graph.py`, `temporal_self_driver.py`, `runner.py` |
 
 How this differs from the design doc's list ("about a dozen" strained sites, under Fact 3):
 
@@ -42,6 +42,7 @@ How this differs from the design doc's list ("about a dozen" strained sites, und
   - Hub `main.py`: it constructs the reader.
   - dream `main.py`: it wires the Redis read.
   - `world_pulse_read_pipeline.py`: it feeds thermal state into the pull gate.
+  - thought `visual_steps.py`: the durable visual generate step refuses GPU work on heat (`thermal_refused`). The review found it.
   - All of the display and source sites.
 - **The doc miscounted one site:** the visual-chain health monitor is display, not a gate. Its own code says "Diagnostic read only (it gates nothing)" (`visual_chain_health_monitor.py:277`).
 - **"world_pulse_read resonance":** `resonance.py` does not read arousal. Its "strained" wording is about a reading straining a belief. Only `pull.py` gates.
@@ -52,9 +53,12 @@ How this differs from the design doc's list ("about a dozen" strained sites, und
 A module reads the state when any one of these is true:
 
 1. It imports from `orion.regulation.{arousal,arousal_view,arousal_read,strain_news}`, `orion.schemas.regulation`, `orion.autonomy.{thermal_gate,cabinet_heat}`, or `orion.physiology`.
-2. It references a state symbol such as `RegulationStateV1`, `ArousalView`, `ArousalReader`, `ThermalVerdict`, `CabinetHeatReading` or `PhysiologyStateV1`.
-3. It holds one of these literals: `"orion:regulation:latest"`, `"arousal_level"`, `"arousal_strained"`/`"arousal_engaged"`/`"arousal_engaged_cooldown"`, `"cabinet_hot"`.
-4. It compares a value against `"strained"`: `==`, `!=`, or `in` a literal tuple, list or set. This rule catches vetoes whose level arrives through an injected callable, such as `mutation_worker.py`.
+   A relative import counts when it reaches one of those modules by name (`from .arousal_view import x`, `from .arousal_reader import ...`).
+2. It references a state symbol such as `RegulationStateV1`, `ArousalView`, `ArousalReader`, `ThermalVerdict`, `CabinetHeatReading`, `thermal_gate_snapshot`, `allows_gpu_work` or `PhysiologyStateV1`.
+3. It holds one of these literals: `"orion:regulation:latest"`, `"arousal_level"`, `"arousal_strained"`/`"arousal_engaged"`/`"arousal_engaged_cooldown"`, `"cabinet_hot"`, `"allows_gpu_work"`, `"thermal_refused"`, `"deferred_thermal"`.
+4. It checks against the level `"strained"`: `==`, `!=`, `in` a literal tuple, list or set, a `match` with `case "strained"`, or a name bound to `"strained"` or to a collection that holds it (`BLOCK = {"strained"}`). This rule catches vetoes whose level arrives through an injected callable, such as `mutation_worker.py`.
+
+A file the gate cannot read or parse fails the gate (`UNSCANNABLE`). It is never skipped silently.
 
 Comments, docstrings and substring tests (`"strained" in text`) do not count. Tests and evals are not scanned.
 
@@ -64,7 +68,7 @@ Known limit: a module that receives the state only through an object passed in b
 
 - `config/physiology/contract.yaml`: new registry.
 - `scripts/check_body_economy_contract.py`: new gate.
-- `tests/test_check_body_economy_contract.py`: 28 tests covering seeded fixtures, each detection rule, non-detections, malformed YAML, exit codes, and the real repo staying green.
+- `tests/test_check_body_economy_contract.py`: 36 tests covering seeded fixtures, each detection rule, the git fast path against the fallback, non-detections, malformed YAML, exit codes, and the real repo staying green.
 - `Makefile`: `check-body-economy-contract` target.
 - `.github/workflows/orion-static-gates.yml`: CI step.
 - `services/orion-cortex-exec/.env_example`: zombie keys removed.
@@ -81,7 +85,7 @@ Known limit: a module that receives the state only through an object passed in b
 - Removed keys: `ORION_ATTENTION_HABITUATION_ENABLED`, `ORION_ATTENTION_SALIENCE_WEIGHTS` (orion-cortex-exec only; the root, orion-thought and orion-substrate-runtime templates already dropped them on 2026-07-31).
   - Evidence that nothing reads them: `rg ORION_ATTENTION_HABITUATION_ENABLED|ORION_ATTENTION_SALIENCE_WEIGHTS` outside docs finds only `.env_example` lines and comments. No Python, compose or shell file reads either key.
 - `.env_example` updated: yes.
-- local `.env` synced with `python scripts/sync_local_env_from_example.py`: ran it. It only adds keys and never removes them, so I removed the two dead lines from the primary checkout's `services/orion-cortex-exec/.env` by hand. That file is gitignored, and no code reads those keys.
+- local `.env` synced with `python scripts/sync_local_env_from_example.py`: ran it. The script only adds keys and never removes them. It also reads `.env_example` from the primary checkout, which still carries both keys until this PR merges. I removed the two dead lines from `services/orion-cortex-exec/.env` by hand, but a later sync run (from any session) put them back before review. After merge, delete these two lines once: `ORION_ATTENTION_HABITUATION_ENABLED`, `ORION_ATTENTION_SALIENCE_WEIGHTS`. They are harmless meanwhile, because cortex-exec settings use `extra="ignore"` and no code reads either key.
 - Skipped keys requiring operator action: none.
 
 ### Synthetic goal in `capability_policy` (investigated, not removed)
@@ -91,9 +95,9 @@ It is already gone. Commit `3354188e1` ("capability_policy.py reads real field-n
 ## Tests run
 
 ```text
-python -m pytest tests/test_check_body_economy_contract.py -q            -> 28 passed
-python -m pytest tests/scripts/test_sync_local_env_from_example.py scripts/tests/test_check_env_template_parity.py tests/test_check_body_economy_contract.py -q -> 66 passed
-python scripts/check_body_economy_contract.py                            -> OK (54 state-reading modules, all registered), ~0.8 s
+python -m pytest tests/test_check_body_economy_contract.py -q            -> 36 passed
+python -m pytest tests/scripts/test_sync_local_env_from_example.py scripts/tests/test_check_env_template_parity.py tests/test_check_body_economy_contract.py -q -> 74 passed
+python scripts/check_body_economy_contract.py                            -> OK (61 state-reading modules, all registered), ~0.9 s
 make check-body-economy-contract                                         -> OK
 python scripts/check_env_template_parity.py                              -> PASS (95 services)
 git diff --check origin/main..HEAD                                       -> clean
@@ -117,7 +121,27 @@ Not applicable: no service code, compose or Dockerfile changed.
 
 ## Review findings fixed
 
-(filled in after the review subagent)
+A read-only review subagent ran over the diff.
+
+- Finding (blocker): a live heat veto was not detected. `services/orion-thought/app/visual_steps.py:573-576` refuses GPU work through `vc.thermal_gate_snapshot()["allows_gpu_work"]`, a wrapper with no watched import.
+  - Fix: watch `thermal_gate_snapshot` and `allows_gpu_work` as names, and `allows_gpu_work`, `thermal_refused` and `deferred_thermal` as literals. `visual_steps.py` is now registered as bidder. Five more outcome consumers surfaced and are registered as display, and the schema is registered as a source.
+  - Evidence: `test_each_structural_rule_detects` covers the exact shape; the gate is green at 61 modules.
+- Finding: relative imports were skipped.
+  - Fix: a relative import counts when it reaches a watched module by name.
+  - Evidence: two new parametrized cases.
+- Finding: three veto shapes slipped past the compare rule: `match ... case "strained"`, a constant set holding `"strained"`, and a bare `"strained"` constant.
+  - Fix: rule 4 now covers all three.
+  - Evidence: two new cases. No new unregistered hits appeared on the real repo.
+- Finding: the git fast path was untested in isolation, and stripping `**/` changed the meaning of custom include globs.
+  - Fix: the include globs now go to git with `:(glob)` pathspecs, `-z`, and `core.quotePath=false`. The git path runs only when `--root` is the repo top level.
+  - Evidence: `test_git_fast_path_agrees_with_fallback`, which covers tracked, untracked and `tests/` files plus a mid-path `**/` glob.
+- Finding: the process pool would break under spawn or forkserver (macOS; and Linux from Python 3.14, where forkserver becomes the default).
+  - Fix: the pool uses an explicit `fork` context and falls back to the serial path on any pool error.
+- Finding: a file that could not be read or parsed was silently skipped.
+  - Fix: that file now fails the gate with `UNSCANNABLE` and a fix hint.
+  - Evidence: `test_unparseable_module_fails_closed`.
+- Not changed: `orion/gpu_pool/client.py` refuses background leases locally after a pool shed. It acts on any `shed:*` reason the pool returns, not on thermal state, so it is not a reader under this gate's definition.
+- Not changed: the role spot-checks found no mislabels. I reworded the substrate-runtime worker's reason to say that it feeds attention.
 
 ## Restart required
 

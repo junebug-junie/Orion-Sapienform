@@ -2,12 +2,10 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 758,
   "_last_change": {
-    "change_count": 3,
+    "change_count": 1,
     "high_severity_count": 1,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-cocreation-signals/orion:substrate:claude_limit (declared_consumers: ['orion-hub'] -> ['orion-durable-runs', 'orion-hub'])",
-      "medium added metric://bus_channel/orion-durable-runs/orion:physiology:state",
-      "medium added metric://inner_state/orion-durable-runs/physiology.state.v1"
+      "high   routing_changed metric://bus_channel/orion-biometrics/orion:grammar:event (all_producers: \u2026ch', 'orion-gpu-pool', '\u2026 -> \u2026ch', 'orion-dream', 'orion-gpu-pool', '\u2026)"
     ]
   },
   "definitions": {
@@ -509,6 +507,7 @@
         "orion-bus",
         "orion-cortex-exec",
         "orion-cortex-orch",
+        "orion-dream",
         "orion-gpu-pool",
         "orion-harness-governor",
         "orion-heartbeat",

@@ -204,6 +204,20 @@ def build_cycle_deps():
         logger.warning("dream_carry_fallback_story trigger_id=%s err=%s", trigger.trigger_id, last_exc)
         await _start_story(trigger)
 
+    async def _publish_act(event):
+        # One dream cycle's act_opened/act_closed on orion:grammar:event (app/act_emit.py).
+        # Best effort; CycleActTrace logs a failure and the sleep carries on.
+        bus = await _cycle_bus()
+        if bus is None:
+            return
+        from app.act_emit import publish_grammar
+
+        try:
+            await publish_grammar(bus, event)
+        except Exception:
+            await _drop_cycle_bus()  # same as _complete: reconnect on the next use
+            raise
+
     async def _publish_drive_reading(reading):
         # Redis, read by Hub curiosity/outreach. TTL = their staleness bound,
         # so an expired key reads as unknown. Best effort; run_cycle_once logs
@@ -294,6 +308,7 @@ def build_cycle_deps():
         load_arc_rows=cycle_store.load_arc_rows if settings.DREAM_REPLAY_ARC_CANDIDATES_ENABLED else None,
         load_walkway_rows=cycle_store.load_walkway_rows if settings.DREAM_REPLAY_WALKWAY_ENABLED else None,
         walkway_timezone=settings.DREAM_WALKWAY_TIMEZONE,
+        publish_act=_publish_act if settings.DREAM_ACT_EMIT_ENABLED else None,
     )
 
 

@@ -165,6 +165,12 @@ class ThoughtSettings(BaseSettings):
     )
     reverie_street_graded_max: int = Field(4, alias="ORION_REVERIE_STREET_GRADED_MAX")
     reverie_street_timezone: str = Field("America/Denver", alias="ORION_REVERIE_STREET_TIMEZONE")
+    # 2026-10-23 (walkway day line): today's running walkway day rollup line
+    # (people as a range, via orion.vision.walkway_rollup.display_line); never
+    # yesterday's. Cut at a clause boundary to MAX_CHARS; a row that cannot be
+    # shown honestly is dropped. Same stream ids and timezone as the street captions above.
+    reverie_street_day_enabled: bool = Field(True, alias="ORION_REVERIE_STREET_DAY_ENABLED")
+    reverie_street_day_max_chars: int = Field(480, alias="ORION_REVERIE_STREET_DAY_MAX_CHARS")
 
     @property
     def reverie_street_stream_id_list(self) -> list[str]:

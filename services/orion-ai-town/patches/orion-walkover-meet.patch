@@ -1,0 +1,93 @@
+diff --git a/convex/aiTown/agent.ts b/convex/aiTown/agent.ts
+index 1c5a93d..a691dee 100644
+--- a/convex/aiTown/agent.ts
++++ b/convex/aiTown/agent.ts
+@@ -17,12 +17,13 @@ import {
+   MESSAGE_COOLDOWN,
+   MIDPOINT_THRESHOLD,
+   PLAYER_CONVERSATION_COOLDOWN,
++  WALK_OVER_TIMEOUT,
+ } from '../constants';
+ import { FunctionArgs } from 'convex/server';
+ import { MutationCtx, internalMutation, internalQuery } from '../_generated/server';
+ import { distance } from '../util/geometry';
+ import { internal } from '../_generated/api';
+-import { movePlayer } from './movement';
++import { blocked, blockedWithPositions, movePlayer } from './movement';
+ import { insertInput } from './insertInput';
+
+ export class Agent {
+@@ -143,6 +144,15 @@ export class Agent {
+           return;
+         }
+
++        // Accepted is a contract to meet, but not forever: a pair that cannot
++        // reach each other froze the whole town (live 2026-10-23, both pairs
++        // walkingOver across a wall for good).
++        if (member.invited + WALK_OVER_TIMEOUT < now) {
++          console.log(`Giving up on walking to ${otherPlayer.id}: no meeting after ${WALK_OVER_TIMEOUT}ms`);
++          conversation.leave(game, now, player);
++          return;
++        }
++
+         // Don't keep moving around if we're near enough.
+         const playerDistance = distance(player.position, otherPlayer.position);
+         if (playerDistance < CONVERSATION_DISTANCE) {
+@@ -164,6 +174,17 @@ export class Agent {
+               y: Math.floor((player.position.y + otherPlayer.position.y) / 2),
+             };
+           }
++          // The midpoint of two players on either side of a wall is the wall:
++          // findRoute fails, the player stops, and the next tick picks it again.
++          // findRoute only closes straight-line distance, so it cannot go around
++          // the wall either. Instead one player waits and the other walks to a
++          // free tile next to them (1 tile < CONVERSATION_DISTANCE).
++          if (blockedWithPositions(destination, [], game.worldMap) !== null) {
++            if (player.id > otherPlayer.id) {
++              return;
++            }
++            destination = freeTileNextTo(game, now, otherPlayer.position, player.id) ?? destination;
++          }
+           console.log(`Agent ${player.id} walking towards ${otherPlayer.id}...`, destination);
+           movePlayer(game, now, player, destination);
+         }
+@@ -383,3 +404,26 @@ export const findConversationCandidate = internalQuery({
+     return candidates[0]?.id;
+   },
+ });
++
++// A tile beside `target` that is on the map, not a wall and not occupied
++// (other than by `playerId`), nearest to `target` first.
++function freeTileNextTo(
++  game: Game,
++  now: number,
++  target: { x: number; y: number },
++  playerId: GameId<'players'>,
++) {
++  const x = Math.floor(target.x);
++  const y = Math.floor(target.y);
++  for (const tile of [
++    { x: x + 1, y },
++    { x: x - 1, y },
++    { x, y: y + 1 },
++    { x, y: y - 1 },
++  ]) {
++    if (blocked(game, now, tile, playerId) === null) {
++      return tile;
++    }
++  }
++  return null;
++}
+diff --git a/convex/constants.ts b/convex/constants.ts
+index 477bf24..b8f1c32 100644
+--- a/convex/constants.ts
++++ b/convex/constants.ts
+@@ -42,6 +42,8 @@ export const INVITE_ACCEPT_PROBABILITY = 0.8;
+
+ // Pending invites (status invited) expire after this window. walkingOver does not.
+ export const INVITE_TIMEOUT = 60000;
++// An accepted walk-over that has not met by then is abandoned.
++export const WALK_OVER_TIMEOUT = 3 * 60000;
+
+ // Wait for another player to say something before jumping in.
+ export const AWKWARD_CONVERSATION_TIMEOUT = 60_000; // more time locally

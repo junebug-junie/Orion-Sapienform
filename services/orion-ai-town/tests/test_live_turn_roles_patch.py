@@ -37,9 +37,8 @@ def _added(patch: str) -> str:
     )
 
 
-def test_live_turn_roles_applies_last():
+def test_live_turn_roles_applies_after_self_repeat():
     order = _apply_order()
-    assert order[-1] == "orion-live-turn-roles.patch"
     assert order.index("orion-npc-no-self-repeat.patch") < order.index("orion-live-turn-roles.patch")
 
 

@@ -42,15 +42,18 @@ Hub tick (scheduling, material, worldview, prompt)
 crash or timeout resumes from the checkpoint instead of ending the run. Used by
 `curiosity.investigate`, `self_sense_eval`, `self_study.reflect` and `curiosity.compaction`.
 
-- **Transient** (`TimeoutError`, transport, a failed turn's `RuntimeError`): the hold is
-  handed back (a re-queued hold keeps its place), `attempt` +1, and the run waits
-  `DURABLE_RUNS_RETRY_BASE_SEC * 2^(n-1)` (capped at `DURABLE_RUNS_RETRY_MAX_SEC`) in
-  `retry_wait`, or re-queues at once in graphs without that node (reflect, compaction).
+- **Transient** (any other exception: the node timer's `TimeoutError`, a failed turn's
+  `RuntimeError`, a transport error that raises): the hold is handed back (a re-queued hold
+  keeps its place), `attempt` +1, and the run waits `DURABLE_RUNS_RETRY_BASE_SEC * 2^(n-1)`
+  (capped at `DURABLE_RUNS_RETRY_MAX_SEC`) in `retry_wait`, or re-queues at once in graphs
+  without that node (reflect, compaction: `backoff=False`). Note: the runner's turn RPC turns
+  a bus timeout or bad reply into an `ok=False` result, not an exception, so for self-sense
+  that is a recorded empty answer (the per-question contract), not a retry.
 - **Deterministic** (`ValueError` incl. pydantic `ValidationError`, `TypeError`,
   `LookupError`, `AttributeError`, ...; `is_deterministic`, by type, never by error text):
   fails at once with `last_error = "deterministic: ..."`. A rejected answer changes nothing,
   so a retry re-sends the same prompt to the same validator (14 days to 2026-10-23:
-  curiosity.compaction failed 24/24 runs this way after up to 3 attempts each).
+  curiosity.compaction: 24 runs, 0 completed, 22 ended on these after up to 3 attempts each).
 - **Budget spent** (`DURABLE_RUNS_RETRY_MAX_ATTEMPTS`; urgent runs 2) or a retry that cannot
   get a whole attempt before the deadline: `failed`.
 
@@ -423,10 +426,17 @@ so each answer is checkpointed when it lands; a timeout, crash or take-back resu
 next unanswered question. Each question's node timer is its share of the brief budget
 (`timeout_sec / len(questions)`, passed to `execute` as `node_timeout_sec`); Hub's turn
 limit is that share minus 30 s, so Hub answers (empty, recorded) before the timer cancels
-the turn. Each question's turn id is on the `run.started` event (`step_correlation_id`)
-before the turn runs, and `last_turn` (`question_key`, `turn_correlation_id`,
-`timeout_sec`) is checkpointed with each outcome. A failed attempt goes through the shared
-`failed_attempt` policy above (`retrying` -> `retry_wait` -> `resource_request`). Live
+the turn. Each question's turn id is a uuid5 of the run, the question and the replay
+counters (`question_turn_id`), so it derives from the checkpoint: a restarted worker cancels
+the turn its predecessor left running in Hub. It is also on the `run.started` event
+(`step_correlation_id`) before the turn runs, and `last_turn` (`question_key`,
+`turn_correlation_id`, `timeout_sec`) is checkpointed with each outcome. A failed attempt
+goes through the shared `failed_attempt` policy above (`retrying` -> `retry_wait` ->
+`resource_request`), with the deadline check reserving one share per unanswered question.
+`attempt` counts the current question's failures. A question that spends its budget or fails
+deterministically is recorded as an empty answer naming the error (each answer records its
+own `attempts`), and the run goes on; it fails only when every answer is empty, on
+`workflow_deadline`, or when not one more question fits before the deadline. Live
 cause: run `20261023T180730Z-0842e5` held agent-gpu2 for its whole 8840 s budget on one
 hung question, then failed with every answer lost.
 Deliberately NOT a branch inside `graph.py`'s curiosity pipeline -- self-sense-eval has

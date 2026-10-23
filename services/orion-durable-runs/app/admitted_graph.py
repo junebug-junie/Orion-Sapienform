@@ -136,9 +136,9 @@ def retry_budget(admission: AdmissionDeps, state: dict) -> tuple[int, float]:
 # * ValueError (pydantic ``ValidationError`` and ``json.JSONDecodeError`` are subclasses): the
 #   attempt's input or answer cannot satisfy the contract. A "rejected answer changes nothing", so
 #   the retry re-sends the same prompt to the same validator. Live 14 days to 2026-10-23:
-#   curiosity.compaction failed 24 of 24 runs on ValueError/ValidationError (TopicPass body too
-#   long, "topic references omit or invent source records", "exceeds reduction budget") after up
-#   to 3 attempts each, 0 completed. A graph whose parse failures DO recover on a fresh sample
+#   curiosity.compaction ran 24 times and completed 0; 22 ended on ValueError/ValidationError
+#   (17 TopicPass body too long, 5 "topic references omit or invent source records" / "exceeds
+#   reduction budget"; no JSON parse errors) after up to 3 attempts each. A graph whose parse failures DO recover on a fresh sample
 #   (journal.compose, memory.episode_distill: explicit minimum attempts) keeps its own policy.
 #
 # Everything else -- TimeoutError, OSError/ConnectionError, RuntimeError from a failed turn or
@@ -155,7 +155,8 @@ def is_deterministic(exc: BaseException) -> bool:
 
 
 async def failed_attempt(admission: AdmissionDeps, state: dict, exc: BaseException, *, waiting: dict,
-                         extra: dict | None = None, attempt_sec: float | None = None) -> dict:
+                         extra: dict | None = None, attempt_sec: float | None = None,
+                         backoff: bool = True) -> dict:
     """The one retry policy for a work node whose attempt raised (shared by every admitted graph
     that uses it, so a run resumes from its checkpoint instead of going terminal on the first
     error). Returns the state update:
@@ -169,7 +170,9 @@ async def failed_attempt(admission: AdmissionDeps, state: dict, exc: BaseExcepti
       the caller's resume status (``{"status": "retrying", "retry_node": None}`` for a graph with
       a ``retry_wait`` node, ``{"status": "waiting_resource"}`` for one that re-queues at once).
 
-    ``extra`` is merged into every outcome (e.g. the failed turn's identity, partial answers)."""
+    ``extra`` is merged into every outcome (e.g. the failed turn's identity, partial answers).
+    ``backoff=False`` for a graph with no ``retry_wait`` node: the retry starts now, so the
+    deadline check uses now and no ``retry_at`` is written (it would be a lie)."""
     attempt = int(state.get("attempt") or 0) + 1
     error = f"{type(exc).__name__}: {exc}"[:500]
     extra = extra or {}
@@ -181,7 +184,7 @@ async def failed_attempt(admission: AdmissionDeps, state: dict, exc: BaseExcepti
     if attempt >= max_attempts:
         released = await admission.release(state, "attempt_failed")
         return {**released, "status": "failed", "attempt": attempt, "last_error": error, **extra}
-    delay = min(admission.retry_max_seconds, retry_base * 2 ** (attempt - 1))
+    delay = min(admission.retry_max_seconds, retry_base * 2 ** (attempt - 1)) if backoff else 0.0
     retry_at = admission.now() + timedelta(seconds=delay)
     if retry_cannot_finish(state, retry_at, attempt_sec):
         # A doomed retry only burns the GPU until the deadline kills it: end now.
@@ -192,7 +195,7 @@ async def failed_attempt(admission: AdmissionDeps, state: dict, exc: BaseExcepti
     # backoff, a newer one) is handed back.
     released = await admission.release(state, "attempt_failed", keep_requeued=True)
     return {**released, **waiting, "attempt": attempt, "last_error": error,
-            "retry_at": retry_at.isoformat(), **extra}
+            **({"retry_at": retry_at.isoformat()} if backoff else {}), **extra}
 
 
 def retry_wait_node(admission: AdmissionDeps):

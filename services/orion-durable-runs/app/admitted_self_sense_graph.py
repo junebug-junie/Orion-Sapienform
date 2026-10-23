@@ -23,17 +23,16 @@ failed with every answer lost.
 
 from __future__ import annotations
 
-import uuid
 from typing import Any
 
 from app.admitted_graph import (
     AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, failed_attempt,
-    replay_if_requeued, resource_nodes, retry_wait_node, taken_back,
+    replay_if_requeued, resource_nodes, retry_cannot_finish, retry_wait_node, taken_back,
 )
 from app.graph import attempt_timeout_sec
 from app.self_sense_graph import (
-    TURN_REPLY_GRACE_SEC, Deps, SelfSenseRunState, ask_one, make_nodes, next_unanswered,
-    no_answers_error, question_share_sec,
+    TURN_REPLY_GRACE_SEC, Deps, SelfSenseRunState, _brief_questions, ask_one, make_nodes,
+    next_unanswered, no_answers_error, question_share_sec, question_turn_id,
 )
 from orion.schemas.durable_run import SELF_SENSE_EVAL_NODES
 
@@ -50,17 +49,22 @@ def build_admitted_self_sense_graph(deps: Deps, admission: AdmissionDeps, checkp
         """ONE question per node run, so each answer is checkpointed the moment it lands: a
         timeout, a crash or a pool take-back resumes at the next unanswered question instead of
         re-asking (or losing) the ones already answered. The node's timer is the question's share
-        of the brief's budget, not the whole budget (``question_share_sec``)."""
+        of the brief's budget, not the whole budget (``question_share_sec``). ``attempt`` counts
+        the CURRENT question's failed attempts (reset when an answer lands); a question that
+        spends its budget, or fails deterministically, is recorded as an empty answer with its
+        error -- the same per-question contract as a failed turn -- and the run goes on."""
         state = dict(state)
         pending = next_unanswered(state)
         if pending is None:
             return {"status": "running"}   # resumed after the last answer's checkpoint
         question_key, question = pending
         share = question_share_sec(state["brief"])
-        turn_timeout = attempt_timeout_sec(state, max(1.0, share - TURN_REPLY_GRACE_SEC), admission.now())
-        correlation_id = str(uuid.uuid4())   # a real uuid4 per question turn (see ask_one)
+        window = attempt_timeout_sec(state, share, admission.now())   # the node timer, deadline-clamped
+        turn_timeout = max(1.0, window - TURN_REPLY_GRACE_SEC)
+        correlation_id = question_turn_id(state, question_key)
         last_turn = {"question_key": question_key, "turn_correlation_id": correlation_id,
                      "timeout_sec": turn_timeout}
+        remaining = sum(1 for key, _ in _brief_questions(state["brief"]) if key not in (state.get("answers") or {}))
 
         async def operation(held):
             return {"answer": await ask_one(
@@ -84,21 +88,48 @@ def build_admitted_self_sense_graph(deps: Deps, admission: AdmissionDeps, checkp
                                       {"status": "waiting_resource"})
             return {**update, "last_turn": last_turn}
         except Exception as exc:  # noqa: BLE001 -- timeout, transport, hung turn: the shared policy
-            # Answers already checkpointed stay; the retry resumes at this same question. A
-            # deterministic error fails at once; a spent budget fails the run.
-            return await failed_attempt(admission, state, exc,
-                                        waiting={"status": "retrying", "retry_node": None},
-                                        extra={"last_turn": last_turn}, attempt_sec=share)
+            # Answers already checkpointed stay; the retry resumes at this same question. The
+            # deadline check reserves a share for every question still unanswered.
+            update = await failed_attempt(admission, state, exc,
+                                          waiting={"status": "retrying", "retry_node": None},
+                                          extra={"last_turn": last_turn}, attempt_sec=share * remaining)
+            if update.get("status") != "failed":
+                return update
+            # This question is done trying. The run goes on unless not even one more question
+            # fits before the deadline.
+            if remaining > 1 and retry_cannot_finish(state, admission.now(), share):
+                return update
+            return _give_up(state, update, question_key, correlation_id)
         answer = result["answer"]
         if not answer.get("text"):
             # An empty answer may be the pool's: if it took the hold, drop this answer and replay.
             replay = await replay_if_requeued(admission, state, {"status": "waiting_resource"})
             if replay is not None:
                 return {**replay, "last_turn": last_turn}
+        answer["attempts"] = int(state.get("attempt") or 0) + 1
         answers = {**(state.get("answers") or {}), question_key: answer}
-        update = {"answers": answers, "last_turn": last_turn, "status": "running", "last_error": None}
+        update = {"answers": answers, "last_turn": last_turn, "status": "running", "last_error": None,
+                  "attempt": 0, "retry_at": None}
+        return await _maybe_all_empty(state, update)
+
+    def _give_up(state, update, question_key, correlation_id) -> dict:
+        """This question spent its attempts (or cannot succeed): record it as an empty answer that
+        names the error, reset the per-question budget, and go on. The hold is already released, so
+        the next question queues for a fresh one."""
+        answer = {"text": "", "debug": {}, "correlation_id": correlation_id,
+                  "error": str(update.get("last_error") or "attempt_failed")[:300],
+                  "attempts": int(update.get("attempt") or 0)}
+        answers = {**(state.get("answers") or {}), question_key: answer}
         if next_unanswered({**state, "answers": answers}) is None:
             no_answers = no_answers_error(answers)
+            if no_answers is not None:
+                return {**update, "answers": answers, "status": "failed", "last_error": no_answers}
+            return {**update, "answers": answers, "status": "running", "attempt": 0, "retry_at": None}
+        return {**update, "answers": answers, "status": "waiting_resource", "attempt": 0, "retry_at": None}
+
+    async def _maybe_all_empty(state, update) -> dict:
+        if next_unanswered({**state, "answers": update["answers"]}) is None:
+            no_answers = no_answers_error(update["answers"])
             if no_answers is not None:
                 # Every question came back empty (e.g. every LLM call 500'd): nothing was measured.
                 # Fail the run with the turns' own errors instead of publishing non-measurements.

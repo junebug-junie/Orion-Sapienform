@@ -341,28 +341,79 @@ def test_each_question_gets_its_share_of_the_budget_not_the_whole_budget():
     asyncio.run(scenario())
 
 
-def test_a_deterministic_error_fails_at_once_without_a_retry_loop():
+def test_a_deterministic_error_gives_up_that_question_at_once_and_the_run_goes_on():
     async def scenario():
-        world, saver = FlakyWorld(ValueError("brief questions malformed"), fail_calls={1}), InMemorySaver()
+        world, saver = FlakyWorld(ValueError("question malformed"), fail_calls={1}), InMemorySaver()
         world.grant()
-        result = await asyncio.wait_for(world.graph(saver).ainvoke(initial(), CFG), 2)
-        assert result["status"] == "failed" and result["attempt"] == 1
-        assert result["last_error"] == "deterministic: ValueError: brief questions malformed"
-        assert (await world.graph(saver).aget_state(CFG)).next == ()
-        assert len(world.executes) == 1 and world.turn_calls == []
+        await asyncio.wait_for(world.graph(saver).ainvoke(initial(), CFG), 2)
+        snap = await world.graph(saver).aget_state(CFG)
+        # No retry_wait: the question is recorded as an error answer after ONE execute; the hold
+        # was released, so the next question queues for a fresh one.
+        assert snap.next == ("resource_wait",) and len(world.executes) == 1
+        first_key = SELF_SENSE_QUESTIONS[0][0]
+        assert snap.values["answers"][first_key]["error"] == "deterministic: ValueError: question malformed"
+        assert snap.values["attempt"] == 0
+
+        world.grant()
+        done = await asyncio.wait_for(world.graph(saver).ainvoke(Command(resume=True), CFG), 2)
+        assert done["status"] == "completed" and len(world.executes) == 4
+        assert len(world.published) == 4 and len(world.turn_calls) == 3
 
     asyncio.run(scenario())
 
 
-def test_exhausted_retries_fail_the_run_and_keep_the_answers():
+def test_a_deterministic_error_on_every_question_fails_without_a_retry_loop():
+    async def scenario():
+        world, saver = FlakyWorld(ValueError("brief malformed"), fail_calls={1, 2, 3, 4}), InMemorySaver()
+        for _ in range(4):
+            world.grant()
+            snap = await world.graph(saver).aget_state(CFG)
+            await asyncio.wait_for(world.graph(saver).ainvoke(initial() if not snap.values else Command(resume=True),
+                                                              CFG), 2)
+        result = (await world.graph(saver).aget_state(CFG)).values
+        assert result["status"] == "failed" and result["last_error"].startswith("self_sense_no_answers")
+        assert "deterministic: ValueError: brief malformed" in result["last_error"]
+        assert len(world.executes) == 4 and world.turn_calls == [] and world.published == []
+        assert (await world.graph(saver).aget_state(CFG)).next == ()
+
+    asyncio.run(scenario())
+
+
+def test_a_question_that_spends_its_retries_is_recorded_and_the_rest_are_published():
     async def scenario():
         world, saver = FlakyWorld(TimeoutError(), fail_calls={2, 3}, max_attempts=2), InMemorySaver()
         world.grant()
         await asyncio.wait_for(world.graph(saver).ainvoke(initial(), CFG), 2)
-        result = await asyncio.wait_for(_resume_after_backoff(world, saver), 2)
-        assert result["status"] == "failed" and result["attempt"] == 2
-        assert result["last_error"].startswith("TimeoutError")
-        assert len(result["answers"]) == 1 and world.published == []
-        assert (await world.graph(saver).aget_state(CFG)).next == ()
+        await asyncio.wait_for(_resume_after_backoff(world, saver), 2)   # attempt 2 on question 2 fails
+        snap = await world.graph(saver).aget_state(CFG)
+        assert snap.next == ("resource_wait",)
+        world.grant()
+        done = await asyncio.wait_for(world.graph(saver).ainvoke(Command(resume=True), CFG), 2)
+        second_key = SELF_SENSE_QUESTIONS[1][0]
+        assert done["status"] == "completed" and len(world.published) == 4
+        assert done["answers"][second_key]["error"].startswith("TimeoutError")
+        assert done["answers"][second_key]["attempts"] == 2 and done["answers"][second_key]["text"] == ""
+        # Questions 1, 3, 4 were each asked once; question 2 never got a turn back.
+        assert len(world.turn_calls) == 3
+
+    asyncio.run(scenario())
+
+
+def test_the_question_turn_id_derives_from_the_checkpoint():
+    """A restarted worker can name (and cancel) the turn its predecessor left running in Hub."""
+    from app.self_sense_graph import question_turn_id
+
+    async def scenario():
+        world, saver = FlakyWorld(TimeoutError(), fail_calls=set()), InMemorySaver()
+        world.grant()
+        await asyncio.wait_for(world.graph(saver).ainvoke(initial(), CFG), 2)
+        first_key = SELF_SENSE_QUESTIONS[0][0]
+        assert world.turn_calls[0].correlation_id == question_turn_id({"run_id": "ss-001", "hold_seq": 1}, first_key)
+        assert len({c.correlation_id for c in world.turn_calls}) == 4
+        # A replay of the same question (a failed attempt, a fence, a take-back) gets a new id.
+        base = {"run_id": "ss-001", "hold_seq": 1}
+        ids = {question_turn_id({**base, **change}, first_key)
+               for change in ({}, {"attempt": 1}, {"turn_fence": 1}, {"hold_takebacks": 1}, {"hold_seq": 2})}
+        assert len(ids) == 5
 
     asyncio.run(scenario())

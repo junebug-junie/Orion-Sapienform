@@ -51,7 +51,8 @@ def build_admitted_reflect_graph(deps: Deps, admission: AdmissionDeps, checkpoin
                                     {"status": "waiting_resource"})
         except Exception as exc:  # noqa: BLE001 -- transport failure: bounded re-try (shared policy)
             # Re-queues at once (no backoff node in this graph); a deterministic error fails now.
-            return await failed_attempt(admission, dict(state), exc, waiting={"status": "waiting_resource"})
+            return await failed_attempt(admission, dict(state), exc, waiting={"status": "waiting_resource"},
+                                        backoff=False)
 
     async def finish(state: ReflectRunState) -> dict:
         released = await admission.release(dict(state), "completed")

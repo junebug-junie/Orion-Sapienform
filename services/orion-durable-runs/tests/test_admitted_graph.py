@@ -294,3 +294,39 @@ def test_failed_attempt_retries_transient_errors_and_fails_deterministic_ones_at
         assert releases == [("attempt_failed", False)]
 
     asyncio.run(scenario())
+
+
+def test_an_immediate_retry_is_not_refused_for_a_backoff_it_never_waits():
+    """Reflect/compaction re-queue at once (no retry_wait node): the deadline check uses now."""
+    from app.admitted_graph import failed_attempt
+
+    async def scenario():
+        releases = []
+        now = datetime(2026, 10, 23, tzinfo=timezone.utc)
+        # 100 s left, attempt 100 s: an immediate retry fits; one after a 30 s backoff would not.
+        state = {"attempt": 0, "brief": {"timeout_sec": 100},
+                 "admission": {"deadline_at": (now + timedelta(seconds=100)).isoformat()}}
+        waiting = {"status": "waiting_resource"}
+        update = await failed_attempt(_policy_admission(releases), state, TimeoutError(), waiting=waiting, backoff=False)
+        assert update["status"] == "waiting_resource" and "retry_at" not in update
+        update = await failed_attempt(_policy_admission(releases), state, TimeoutError(), waiting=waiting)
+        assert update["status"] == "failed" and update["last_error"].startswith("retry_skipped_insufficient_time")
+
+    asyncio.run(scenario())
+
+
+def test_the_curiosity_graph_fails_a_deterministic_harness_error_without_retrying():
+    async def scenario():
+        world, saver = World(), InMemorySaver()
+        world.grant()
+
+        async def broken_turn(req):
+            world.calls.append(req.attempt)
+            raise TypeError("turn wiring broken")
+
+        world.turn = broken_turn
+        result = await asyncio.wait_for(world.graph(saver).ainvoke(initial(), CFG), 2)
+        assert result["status"] == "failed" and world.calls == [1]
+        assert result["last_error"] == "deterministic: TypeError: turn wiring broken"
+        assert (await world.graph(saver).aget_state(CFG)).next == ()
+    asyncio.run(scenario())

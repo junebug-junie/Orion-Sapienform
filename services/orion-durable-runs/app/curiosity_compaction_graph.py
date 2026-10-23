@@ -35,7 +35,6 @@ class CompactionState(TypedDict, total=False):
     turn_fence: int
     status: str
     last_error: str | None
-    retry_at: str | None
     digested: bool
     result: dict
 
@@ -92,8 +91,10 @@ def build_curiosity_compaction_graph(store, call_verb_text, publish_journal, adm
                 return replay
             # Shared policy: transport/timeouts are bounded attempts, re-queued at once. A rejected
             # answer (``record_answer``'s ValueError/ValidationError) changes nothing, so the retry
-            # would re-send the same prompt: it fails now (24/24 such runs never recovered).
-            return await failed_attempt(admission, dict(state), exc, waiting={"status": "waiting_resource"})
+            # would re-send the same prompt: it fails now (14 days to 2026-10-23: 22 runs ended on
+            # these after up to 3 attempts, 0 recovered; none were JSON parse errors).
+            return await failed_attempt(admission, dict(state), exc, waiting={"status": "waiting_resource"},
+                                        backoff=False)
 
     async def finalize(state):
         if admission.guard is not None:

@@ -929,3 +929,17 @@ def test_a_node_timeout_slice_bounds_the_attempt_and_the_step_id_is_logged_befor
         run_started = [e for e in rt.store.events if e[1] == "run.started"]
         assert run_started and run_started[0][2]["step_correlation_id"] == "q-turn-1"
     asyncio.run(scenario())
+
+
+def test_recovery_cancels_the_self_sense_question_a_dead_worker_left_running():
+    from app.self_sense_graph import question_turn_id
+    from test_admitted_self_sense_graph import _brief
+
+    async def scenario():
+        rt = bare_runtime(Holds([_reply("granted")]))
+        state = {**_held_state("self_sense_eval"), "brief": _brief(), "hold_seq": 1,
+                 "answers": {_brief()["questions"][0][0]: {"text": "a", "correlation_id": "answered-1"}}}
+        await rt._cancel_harness(state, "worker_recovery")
+        cancelled = {call.args[2].correlation_id for call in rt.runner._publish.await_args_list}
+        assert question_turn_id(state, _brief()["questions"][1][0]) in cancelled
+    asyncio.run(scenario())

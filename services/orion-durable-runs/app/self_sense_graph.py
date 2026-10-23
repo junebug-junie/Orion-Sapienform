@@ -144,6 +144,18 @@ def question_share_sec(brief: dict[str, Any]) -> float:
     return max(1.0, total / max(1, len(_brief_questions(brief))))
 
 
+def question_turn_id(state: dict[str, Any], question_key: str) -> str:
+    """The turn id the admitted graph issues for ``question_key`` from THIS checkpointed state: a
+    uuid5 over the run, the question, and every counter that changes when the turn is replayed
+    (failed attempt, restart fence, a fresh hold, a pool take-back). Derivable from the checkpoint
+    alone, so a restarted worker can cancel the turn its predecessor left running in Hub
+    (``AdmissionRuntime._cancel_harness``); still a real UUID for ``is_uuid``, still fresh per
+    replay for Hub's ``(run_id, correlation_id)`` result cache."""
+    parts = (state.get("run_id"), question_key, int(state.get("attempt") or 0), int(state.get("turn_fence") or 0),
+             int(state.get("hold_seq") or 0), int(state.get("hold_takebacks") or 0))
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "orion:self_sense_eval:" + ":".join(map(str, parts))))
+
+
 async def ask_one(deps: Deps, state: dict[str, Any], question_key: str, question: str, *,
                   correlation_id: str, timeout_sec: float, attempt: int) -> dict[str, Any]:
     """Ask one question under the run's hold; the recorded answer (never raises on a failed or
@@ -269,10 +281,19 @@ def finish_detail(state: dict[str, Any]) -> dict[str, Any]:
         "published": int(state.get("published") or 0),
         "failed": int(state.get("failed") or 0),
         "empty": int(state.get("empty") or 0),
-        "attempts": int(state.get("attempt") or 0),
+        "attempts": _attempts(state),
         **({"error": str(state["last_error"])[:500]} if state.get("last_error") else {}),
         "turns": _turns_detail(state),
     }
+
+
+def _attempts(state: dict[str, Any]) -> int:
+    """Most attempts any question took. The admitted graph counts attempts per question (``attempt``
+    resets when an answer lands; each answer records its own ``attempts``); the plain graph's
+    ``attempt`` is its pass count."""
+    answers = state.get("answers") if isinstance(state.get("answers"), dict) else {}
+    per_question = [int(a.get("attempts") or 0) for a in answers.values() if isinstance(a, dict)]
+    return max([*per_question, int(state.get("attempt") or 0)])
 
 
 def _turns_detail(state: dict[str, Any]) -> dict[str, dict[str, Any]]:

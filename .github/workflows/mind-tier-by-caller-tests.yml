@@ -1,0 +1,73 @@
+name: mind-tier-by-caller-tests
+
+# Tiers attach to callers, not lanes (body-economy design Organ 3b, 2026-10-23). orion-mind lifts a
+# run to the interactive (never heat-shed) tier only when it is positively marked as Juniper's turn
+# (utterance_origin="juniper"). These tests pin every link: the Hub call-site table, the Hub chat
+# builder's metadata mark, cortex-orch copying it onto MindRunRequestV1, orion-thought carrying the
+# unified-turn mark, and orion-mind's tier decision. No DB, bus or LLM.
+
+on:
+  pull_request:
+    paths:
+      - "services/orion-mind/app/engine.py"
+      - "services/orion-mind/tests/test_mind_turn_route.py"
+      - "services/orion-cortex-orch/app/mind_runtime.py"
+      - "services/orion-cortex-orch/tests/test_mind_utterance_origin_tier.py"
+      - "services/orion-thought/app/mind_enrichment.py"
+      - "services/orion-thought/tests/test_mind_utterance_origin.py"
+      - "services/orion-hub/scripts/cortex_request_builder.py"
+      - "services/orion-hub/scripts/websocket_handler.py"
+      - "services/orion-hub/scripts/api_routes.py"
+      - "services/orion-hub/scripts/reading_turn_listener.py"
+      - "services/orion-hub/scripts/endogenous_outreach.py"
+      - "services/orion-hub/scripts/collapse_mirror_chat_reply.py"
+      - "services/orion-hub/scripts/curiosity_investigation.py"
+      - "services/orion-hub/scripts/memory_graph_suggest.py"
+      - "services/orion-hub/tests/test_mind_tier_by_caller.py"
+      - "orion/hub/turn_orchestrator.py"
+      - "orion/social/scenario_replay.py"
+      - "orion/mind/v1.py"
+      - ".github/workflows/mind-tier-by-caller-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/orion-mind/app/engine.py"
+      - "services/orion-cortex-orch/app/mind_runtime.py"
+      - "services/orion-thought/app/mind_enrichment.py"
+      - "services/orion-hub/scripts/**"
+      - "orion/hub/turn_orchestrator.py"
+      - "orion/mind/v1.py"
+      - ".github/workflows/mind-tier-by-caller-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-mind/requirements.txt
+          python -m pip install -r services/orion-cortex-orch/requirements.txt
+          python -m pip install -r services/orion-thought/requirements.txt
+          python -m pip install -r services/orion-hub/requirements.txt
+          python -m pip install -r requirements-dev.txt
+      - name: orion-mind tier decision (Juniper lifts, Orion/unmarked/world-pulse stay sheddable)
+        working-directory: services/orion-mind
+        run: PYTHONPATH=${{ github.workspace }}/services/orion-mind:${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests/test_mind_turn_route.py
+      - name: cortex-orch copies the mark onto the Mind request
+        working-directory: services/orion-cortex-orch
+        run: PYTHONPATH=${{ github.workspace }}/services/orion-cortex-orch:${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests/test_mind_utterance_origin_tier.py
+      - name: orion-thought carries the unified-turn mark
+        working-directory: services/orion-thought
+        run: PYTHONPATH=${{ github.workspace }}/services/orion-thought:${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests/test_mind_utterance_origin.py
+      - name: Hub call-site table + chat builder mark
+        working-directory: services/orion-hub
+        run: PYTHONPATH=${{ github.workspace }}/services/orion-hub:${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests/test_mind_tier_by_caller.py

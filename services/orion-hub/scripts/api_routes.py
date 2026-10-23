@@ -3494,6 +3494,7 @@ async def handle_chat_request(
             source_label="hub_http",
             prompt=user_prompt,
             messages=continuity_messages,
+            utterance_origin="juniper",
         )
     except HubRequestValidationError as exc:
         return {"error": str(exc), "error_code": exc.code}

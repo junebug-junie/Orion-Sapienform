@@ -844,3 +844,100 @@ def test_self_look_value_is_bounded(tmp_path):
         return src
 
     assert len(asyncio.run(run()).last_self_look_reason) == 80
+
+
+# --- 2026-10-23: blind doorbell (aiortc video buffer too small) -------------
+
+
+def _fu_a_frame(n_packets: int, seq0: int = 1000, ts: int = 90000):
+    """One H.264 IDR frame split into ``n_packets`` FU-A RTP packets."""
+    from aiortc.rtp import RtpPacket
+
+    out = []
+    for i in range(n_packets):
+        fu_header = 0x05 | (0x80 if i == 0 else 0) | (0x40 if i == n_packets - 1 else 0)
+        pkt = RtpPacket(
+            payload_type=99,
+            marker=1 if i == n_packets - 1 else 0,
+            sequence_number=(seq0 + i) & 0xFFFF,
+            timestamp=ts,
+            ssrc=1,
+            payload=bytes([0x7C, fu_header]) + b"\x00" * 1100,
+        )
+        pkt = RtpPacket.parse(pkt.serialize())  # as received off the wire
+        pkt._data = pkt.payload  # RTCRtpReceiver depayloads before the buffer
+        out.append(pkt)
+    return out
+
+
+def _assembles(packets) -> bool:
+    """True when the whole frame comes out of the buffer in one piece."""
+    import aiortc.rtcrtpreceiver as rr
+
+    buf = rr.JitterBuffer(capacity=128, is_video=True)  # what RTCRtpReceiver asks for
+    frames = [buf.add(p)[1] for p in packets]
+    # A frame is released when the next timestamp starts; send one more packet.
+    nxt = _fu_a_frame(1, seq0=packets[-1].sequence_number + 1, ts=packets[-1].timestamp + 3000)
+    frames.append(buf.add(nxt[0])[1])
+    # Complete = every packet's data, start included. Too small a buffer drops
+    # the keyframe's head to make room and hands the decoder the tail, which
+    # never decodes: that is the live failure, not "no frame object at all".
+    whole = sum(len(p._data) for p in packets)
+    return any(f is not None and len(f.data) == whole for f in frames)
+
+
+def test_a_250_packet_keyframe_never_assembles_in_aiortcs_default_buffer():
+    """The live failure, reproduced: Ring keyframes are ~250 packets."""
+    import aiortc.jitterbuffer as jb
+    import aiortc.rtcrtpreceiver as rr
+
+    saved = rr.JitterBuffer
+    rr.JitterBuffer = jb.JitterBuffer
+    try:
+        assert _assembles(_fu_a_frame(100)) is True  # small keyframes always worked
+        assert _assembles(_fu_a_frame(250)) is False
+    finally:
+        rr.JitterBuffer = saved
+
+
+def test_raised_video_capacity_assembles_a_250_packet_keyframe():
+    import aiortc.jitterbuffer as jb
+    import aiortc.rtcrtpreceiver as rr
+
+    from app.ring_source import VIDEO_JITTER_CAPACITY, ensure_video_jitter_capacity
+
+    saved = rr.JitterBuffer
+    rr.JitterBuffer = jb.JitterBuffer
+    try:
+        ensure_video_jitter_capacity()
+        ensure_video_jitter_capacity()  # idempotent: no subclass-of-subclass
+        assert rr.JitterBuffer(capacity=128, is_video=True).capacity == VIDEO_JITTER_CAPACITY
+        assert rr.JitterBuffer(capacity=16, prefetch=4).capacity == 16  # audio untouched
+        assert rr.JitterBuffer.__mro__[1] is jb.JitterBuffer
+        assert _assembles(_fu_a_frame(250)) is True
+    finally:
+        rr.JitterBuffer = saved
+
+
+def test_blind_after_three_failed_live_views_and_clears_on_a_frame(tmp_path):
+    from app.ring_source import BLIND_AFTER_FAILED_BURSTS
+
+    src = _connected(tmp_path)
+    src.consecutive_failed_bursts = BLIND_AFTER_FAILED_BURSTS - 1
+    assert src.blind is False
+    src.consecutive_failed_bursts = BLIND_AFTER_FAILED_BURSTS
+    assert src.blind is True
+    svc = _service_with(src)
+    asyncio.run(svc.capture_once())
+    assert svc.metrics.ring_blind is True
+    assert svc.metrics.ring_consecutive_failed_bursts == BLIND_AFTER_FAILED_BURSTS
+    from app.health import make_system_health_envelope
+
+    env = make_system_health_envelope(
+        service_name="vision-retina-doorbell", service_version="t", camera_id="doorbell",
+        stream_id="doorbell", source_type="ring", source_ok=True, metrics=svc.metrics,
+        fps_target=2.0, storage_dir=str(tmp_path), heartbeat_interval_sec=10.0,
+    )
+    payload = env.payload if isinstance(env.payload, dict) else env.payload.model_dump()
+    assert payload["status"] == "degraded"
+    assert payload["details"]["ring_blind"] is True

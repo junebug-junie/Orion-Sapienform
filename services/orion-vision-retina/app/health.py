@@ -38,6 +38,10 @@ class RetinaMetrics:
     ring_events_ignored: int = 0
     ring_bursts_started: int = 0
     ring_bursts_failed: int = 0
+    # Failed live views in a row; ring_blind once it reaches
+    # ring_source.BLIND_AFTER_FAILED_BURSTS (status degraded).
+    ring_consecutive_failed_bursts: int = 0
+    ring_blind: bool = False
     ring_last_event_kind: str | None = None
     ring_last_event_ts: float | None = None
     # Every recorded push, whatever the live view did (2026-10-20: a ding
@@ -92,7 +96,10 @@ def make_system_health_envelope(
         # capture_stalled: nothing published for RETINA_PUBLISH_STALL_SECONDS
         # outside an expected quiet state. 2026-10-17 the walkway reported
         # "ok" with a 10255 s old frame; that is not ok.
-        status="ok" if source_ok and not capture_stalled else "degraded",
+        # ring_blind: Ring events arrive but every recent live view gave no
+        # picture. 2026-10-21..23 the doorbell was blind ~2.5 days while
+        # source_ok stayed true (aiortc video buffer too small).
+        status="ok" if source_ok and not capture_stalled and not metrics.ring_blind else "degraded",
         details={
             "camera_id": camera_id,
             "stream_id": stream_id,
@@ -118,6 +125,8 @@ def make_system_health_envelope(
             "ring_events_ignored": metrics.ring_events_ignored,
             "ring_bursts_started": metrics.ring_bursts_started,
             "ring_bursts_failed": metrics.ring_bursts_failed,
+            "ring_consecutive_failed_bursts": metrics.ring_consecutive_failed_bursts,
+            "ring_blind": metrics.ring_blind,
             "ring_last_event_kind": metrics.ring_last_event_kind,
             "ring_last_event_ts": metrics.ring_last_event_ts,
             "dings_total": metrics.ring_dings_total,

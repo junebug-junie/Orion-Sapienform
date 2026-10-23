@@ -315,7 +315,7 @@ lanes            acceptable lanes/hosts (for placement)
 
 - Every family is ranked against **its own history**. This is the house pattern: the world-first broadcast already ranks sources against their own 7-day history.
 - Families are then compared at equal percentile. "Best reading opportunity this month" and "best painting opportunity this month" bid the same before hunger and cost.
-- Equal weighting of families is an authored choice. It is disclosed here, and it is a single knob (`family_weight`, default 1.0 for all). If Juniper wants a family weighted, it is that one value, visible on the Hub panel.
+- Equal weighting of families is an authored choice. It is disclosed here, and it is a single knob (`family_weight`, default 1.0 for all). If Juniper wants a family weighted, it is that one value, visible on the Hub body surface (Phase 3).
 
 **Ungraded families do not get to look confident.** As of 10-23, `grammar_acts` holds 214 rows from 6 actors: world_pulse_read 128, chat_reply 34, painting 29, dream_hop 15, outreach 8. Curiosity, retro, vision-council, topic-foundry, ask-Claude and self-monitor have **zero**. Until a family has ≥30 graded closes:
 
@@ -398,7 +398,7 @@ placement = the acceptable lane minimizing Σ price × cost
 **Where Orion sees it.**
 - A stance-cue clause, a sibling of the strain cue, for example: *"Cabinet is hot and my work barely moves it; I'm reading the one thing I most want and saving painting for tonight's cool window."*
 - Temporal Self arc kinds: `hunger:<family>` and `binding:<constraint>`.
-- A Hub panel: prices, dials, and deferred-vs-funded over time.
+- The Hub body surface (Phase 3): prices, dials, and deferred-vs-funded over time, down to single decisions.
 
 **Self-knowledge test.** For a turn shown to Orion, `thought_decision.day_citations` can cite the binding constraint and the deferred want. Both must match the `want_ledger` row (Acceptance check A7).
 
@@ -458,6 +458,7 @@ placement = the acceptable lane minimizing Σ price × cost
    - (b) While the reflex is armed and the fitted circe sensitivity is confidently small, admit a fixed trickle of background GPU work per hour (proposed 10 GPU-minutes), with you setting the number.
 
    The reflex line itself does not move in either option. Recommendation: (b). Do not build it until Patch A's sensitivity estimate exists. If circe turns out to heat the cabinet, (b) is off the table.
+7. **Human sign-off on protected paths (Phase 2).** Do you want a real GitHub `CODEOWNERS` file plus branch protection that requires *your* approval on body-economy paths? Or only the CI gate described in Phase 2? CODEOWNERS only blocks merges if branch protection's "require review from code owners" is switched on, and that is a repo setting only you can change.
 
 ---
 
@@ -518,7 +519,8 @@ All new schemas are registered in `orion/schemas/registry.py`. Channels go in `o
     - thought `app/chain.py`
     - the visual-chain health monitor
 - **GPU pool:** `orion/gpu_pool/` (lane price publication, background bid-before-lease).
-- **Felt state:** `orion/temporal_self/arcs.py`, `stance_cue.py`; Hub panel route and template.
+- **Felt state:** `orion/temporal_self/arcs.py`, `stance_cue.py`.
+- **Phase 2 gates and Phase 3 surface:** files listed in their own sections below.
 - **Self-monitor:** two bet adapters (once #2827's contract lands).
 - **Evals:**
   - `scripts/analysis/replay_body_economy.py` (14-day replay)
@@ -606,14 +608,14 @@ Each retirement lands in the same patch as its replacement. None is left as a pa
 
 ---
 
-## Build sequence: the forest, in order
+## Phase 1 build sequence: the organs, in order
 
 Each patch has its own tests, eval and live check. Patches B, C and E can run in parallel worktrees: they meet only at the `orion/physiology` contract.
 
 | patch | contents | live proof |
 |---|---|---|
 | **A. Measurement spine** | `ActCostV2`, consumer-first, then filled on close. Every want producer emits `act_opened`/`act_closed` to `grammar_acts`, so curiosity, retro, vision-council, topic-foundry, ask-Claude and self-monitor all get graded. Persist `physiology_state` with the Body organ only (no prices). Replay harness. Heat-sensitivity passive fit with weather and lags (read-only). Remove the zombie env var and synthetic goal. | A1, A2; every producer has act rows; first sensitivity estimate per host, with its interval |
-| **B. Budget, shadow** | Prices with anti-windup, ceilings and reservations. The Felt dials, the Hub panel. One owner for the 32 °C line. Delete `quota_budget.py`; wire `ClaudeLimitObservationV1`. Prices are computed and displayed but read by nothing. | Replay R1, R3, R4, R6 green; live prices visible |
+| **B. Budget, shadow** | Prices with anti-windup, ceilings and reservations. The Felt dials, plus a plain debug readout (JSON route only; the real surface is Phase 3). One owner for the 32 °C line. Delete `quota_budget.py`; wire `ClaudeLimitObservationV1`. Prices are computed and displayed but read by nothing. | Replay R1, R3, R4, R6 green; live prices visible |
 | **C. Appetite + Choice, shadow** | `WantV1`, `/physiology/bid`, the client, `want_ledger`. Every producer bids in `shadow`: it logs a would-fund decision next to its real gate decision. Holdback pulses start feeding the sensitivity fit. | A3; a shadow-vs-real disagreement table for 7 days |
 | **D. Cutover, one reader per PR** | Curiosity first, then outreach, reading, painting, dream, retro, dispatch floor, then the remaining strained-gating sites. Each PR deletes that reader's old veto. **A family cuts over only once it is graded (≥30 graded closes).** | R2, A4, A5 per reader |
 | **E. Placement and wakefulness** | Lane prices on the GPU pool. Background bid-before-lease. Hecate wake recommendations (or the actuator, per question 4). | R5 live; recommendations logged with expected kWh |
@@ -621,7 +623,147 @@ Each patch has its own tests, eval and live check. Patches B, C and E can run in
 
 ---
 
+## Phase 2: hard gates, so no agent can quietly break the economy
+
+**Why.** Every earlier economy decayed the same way. Some later patch, written by an agent that never read the design, added "one more" veto or bypass:
+- a new `if strained: return`;
+- a new background caller that grabs a GPU without asking;
+- a second copy of the 32 °C line.
+
+CLAUDE.md §0A already says: "if Juniper has to repeat a rule twice, turn it into a script, test, check, hook". This phase makes that rule concrete. It works like CODEOWNERS, except the owner is the architecture's contract, and both human and agent PRs must satisfy it.
+
+**One source of truth: `config/physiology/contract.yaml`.** It is a hand-maintained registry, checked in CI, with three tables:
+
+1. **Protected paths.** Path globs that belong to the economy, each tagged with its organ:
+   - `orion/physiology/**`
+   - `orion/regulation/arousal.py`
+   - `orion/autonomy/thermal_gate.py`
+   - `orion/gpu_pool/{shed,scheduler,shed_backoff}.py`
+   - `orion/autonomy/allocator.py`
+   - `orion/grammar/act_ledger.py`
+   - the bid sites in each producer
+2. **Readers.** Every code site that reads regulation, thermal or price state. Each gets one role:
+   - `spinal`: may veto, listed by name;
+   - `bidder`: must go through `bid()`;
+   - `display`: read-only.
+3. **Constraints.** Each constraint the Budget organ prices, with its metric-gate record as **required, non-empty fields**:
+   - provenance (file:line);
+   - independence note;
+   - theory anchor;
+   - rest-state evidence (a query plus its result date);
+   - reversibility.
+
+   This turns CLAUDE.md's metric quality gate from prose into a schema. A constraint with an empty theory anchor fails CI.
+
+**Gate 1. CI hard gate: `scripts/check_body_economy_contract.py`.** It runs in `.github/workflows/orion-static-gates.yml`. It is deterministic, takes about 2 seconds, and needs no live data. It fails the PR when any of these hold:
+
+| check | how it detects (structural, not a word list) | failure it prevents |
+|---|---|---|
+| **No unregistered veto** | AST scan for reads of `orion:regulation:latest`, `RegulationStateV1`, `ThermalState`, `arousal_view`, or `PhysiologyStateV1` prices. Every reading module must appear in `readers` | The 12-site strained pile-up growing back |
+| **No new spinal entries without sign-off** | A diff that adds a `spinal` reader also needs a `Body-Economy-Spinal: approved <date>` line in the PR's committed report file. Agents cannot write that line without quoting Juniper's approval; the review checklist enforces this | Safety lines becoming a dumping ground |
+| **Bidders bid** | For every `bidder` module, AST confirms its effector call is dominated by a `physiology.client.bid(...)` call in the same function. New background `gpu_pool` lease callers must be registered | Producers funding themselves |
+| **Interactive never bids** | Static check plus a unit test: no `bid()` call is reachable from `interactive`/`urgent` code paths (chat turn handlers listed in the contract) | Juniper's turn getting deferred |
+| **One owner per threshold** | Thermal and price settings keys are owned by one module. This reuses `scripts/check_env_key_single_source.py` (extending its owner table), not a new scanner | Duplicate 32 °C lines |
+| **Acts carry cost** | AST: every `act_closed` construction passes `cost=` (ActCostV2). There is an allowlist for closers proven unable to measure, each with a reason | `cost_json` null again |
+| **Constraint records complete** | Every `constraints` row has non-empty metric-gate fields, and its `rest_state_evidence.date` is ≤90 days old | Unanchored metrics entering prices |
+| **Replay stays green** | When a diff touches protected paths, CI runs the replay checks R1, R3 and R6 against a committed **hourly fixture** (`tests/fixtures/physiology/replay_2026-10-07_22.parquet`, aggregated, ~1 MB) | Silent behaviour drift in prices or anti-windup |
+
+**Gate 2. Edit-time card, a Claude PreToolUse hook: `scripts/hooks/body_economy_nudge.py`.** It has the same shape as `metric_lineage_nudge.py`: it is informational and fails open. When an agent edits a protected path, it prints a short card:
+- which organ owns the file;
+- the reader's role;
+- the invariants that apply;
+- which CI checks this edit will trip.
+
+This is the "agents have to deal with it" part at the moment of writing, before CI says no. It nudges and never blocks; the hard block is Gate 1.
+
+**Gate 3. Review routing.** When a diff touches protected paths, the mandatory code-review subagent (CLAUDE.md §12) also loads `docs/superpowers/checklists/body-economy-review.md`. The checklist asks:
+- Does this add a veto?
+- Does it bypass `bid()`?
+- Does it change what a price means?
+- Does it touch a spinal line?
+
+The PR report gets a required `## Body economy impact` section, and the CI gate checks that the section exists when protected paths changed. Optionally, a real `.github/CODEOWNERS` routes those paths to Juniper (missing question 7).
+
+**Gate 4. CLAUDE.md pointer.** Add one short paragraph to §0A: "The body economy is gated; see `config/physiology/contract.yaml`." It names the escape hatch: `ORION_ALLOW_BODY_ECONOMY_BYPASS=1`, set per command, logged into the PR report, and treated like the shared-checkout escape hatch — set consciously, never as a habit.
+
+**Acceptance checks for Phase 2:**
+- **G1.** A seeded test PR that adds `if regulation.arousal == "strained": return` to a new module fails CI with a message naming the module and the fix.
+- **G2.** A seeded PR that adds a background `gpu_pool` lease caller without `bid()` fails.
+- **G3.** A constraint row with an empty `theory_anchor` fails.
+- **G4.** A PR touching only unrelated services sees no added CI time beyond the 2-second scan.
+- **G5.** Editing `orion/autonomy/thermal_gate.py` in a Claude session prints the card.
+- **G6.** The gate's own false-positive rate: run against the last 30 merged PRs; any that would have failed are listed and judged by hand in the Phase 2 PR report.
+
+**Ordering note.** The `readers` table is cheapest to seed while Patch A is being written: the ~12–14 strained sites are already listed in this doc. If Juniper agrees, the registry plus the "no unregistered veto" check alone can land early, in Patch A. The rest of Phase 2 follows Phase 1.
+
+---
+
+## Phase 3: the Hub body surface (aggregate down to atomic)
+
+**Job.** Let Juniper see Orion's body economy at a glance, then click down to the single decision behind any pattern. Show the same felt-state words Orion was shown, so Juniper sees what Orion sees.
+
+**Where.** A new Hub tab, `#body-economy`. It follows the house pattern:
+- route: `services/orion-hub/scripts/body_economy_routes.py`;
+- JS: `static/js/body-economy.js` (with `body-economy.test.js`);
+- panel: `templates/index.html`.
+
+It is read-only. It reads `physiology_state`, `want_ledger`, `grammar_acts`, `gpu_pool_events`, `orion_energy_hourly` and `cockpit_turn_sighting`. It reuses `energy-strip.js` and the `gpu_pool.js` lease view instead of redrawing them.
+
+**Aggregate layer (the organism):**
+
+1. **Constraint strip.** One row per constraint. Each row shows:
+   - the level against its budget band;
+   - the price as a line under it;
+   - hatched shading where the constraint was `exogenous_bind` ("the room, not Orion");
+   - reflex firings as tick marks.
+
+   Windows: 24 h, 7 d, 30 d.
+2. **Hunger river.** A stacked area per want family showing funded acts per hour, with deferred wants as a ghost band above it. Colour depth is hunger intensity. A starved family shows up as a widening ghost band.
+3. **Rhythm heatmap.** Hour of day × day, coloured by the share of deferrable heavy work. This is A6, the emergent claim, made visible: if heavy work drifts toward cool hours, it shows here without anyone reading SQL.
+4. **Money and heat forecasts.**
+   - Month-to-date Orion cost against the envelope, with the forecast cone.
+   - The 6-hour cabinet forecast against the actual reading, with each graded forecast marked hit or miss.
+   - Orion's own heat contribution, drawn as a band beneath the cabinet line.
+5. **What Orion was told.** The current stance-cue strain clause and the hungriest want, verbatim, with the time Orion last saw them.
+
+**Atomic layer (single events).** Brushing any time window in the aggregate layer filters an event list below it. Each row is one want, followed through its life:
+
+```text
+want opened → bid (prices seen, net, funded/deferred, binding constraint, what it displaced)
+           → act_opened → act_closed (outcome, measured ActCostV2) → grade
+```
+
+Clicking a row opens its full record:
+- the raw decision JSON;
+- the reflex state at that moment;
+- the `want_id`/`act_id` join;
+- for chat-adjacent acts, a link to the cockpit turn sighting.
+
+There is also a **"why did Orion wait?"** search box: give it a family and a time, and it returns the deferral rows and their binding constraint.
+
+**Visual language.** Follow the repo's dataviz conventions and the Hub's existing dark theme. Each constraint gets one fixed colour across all views. "Exogenous" is always shown as hatching, never as a colour, so it can't be confused with a price.
+
+**Process.** Hub surface was built from a claude.ai mockup first. Do the same here: publish a static mockup on real exported data, get Juniper's read, then build.
+
+**Acceptance checks for Phase 3** (CLAUDE.md §9: rendered template, linked asset, interaction):
+- **H1.** The route returns real rows for 24 h. Its empty states say why ("no wants yet", "physiology offline since …"); it never shows blank charts.
+- **H2.** A JS test for brushing: selecting a window filters the atomic list to exactly the rows inside it.
+- **H3.** A UI smoke opens `#body-economy`, clicks a deferred row, and sees the binding constraint and the displaced want.
+- **H4.** The verbatim stance clause on the page matches the latest `cockpit_turn_sighting` / `thought_decision` text.
+- **H5.** The page loads in under 2 s on 30 days of data. Aggregates come from hourly rollups, never from scanning raw rows.
+
+**Files likely to touch:**
+- `services/orion-hub/scripts/body_economy_routes.py`
+- `services/orion-hub/static/js/body-economy.js` and its test
+- `services/orion-hub/templates/index.html`
+- an hourly rollup in `services/orion-sql-writer/` for `want_ledger`, mirroring `orion_energy_rollup.py`
+- Hub README
+
+---
+
 ## Recommended next patch
+
+Phase order: **Phase 1** (organs, patches A–F) → **Phase 2** (hard gates) → **Phase 3** (Hub body surface).
 
 **Patch A, the measurement spine.** Everything else prices something. Today, though:
 

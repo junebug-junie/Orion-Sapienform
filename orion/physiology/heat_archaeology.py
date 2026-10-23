@@ -13,7 +13,9 @@ The method is the one that found the 2026-10-14 circe step by hand (circe ~790 W
    least ``STEP_MIN_SEGMENT_H`` long and the means differ by ``STEP_MIN_DELTA_W``. Repeat up to
    ``STEP_MAX``. Each step is decomposed by the node's own hourly GPU/CPU watts
    (``orion_biometrics_cluster.measurements_by_node``); "rest" is wall minus both (fans, PSU
-   loss, disks, RAM).
+   loss, disks, RAM). Segment lengths count hourly rows, not clock hours: with missing hours a
+   "24 h" side can span longer. The bar is in autocorrelation-corrected standard errors
+   (``lag1``/``ar1_inflation``), because hourly watts wander.
 2. **Workloads.** Per-hour GPU-pool busy-hours per holder (``gpu_pool_events`` end rows,
    ``held_ms`` spread over the hours it covered). Durable-run holds are reservations, not
    load: their compute is the child leases they start, so they are reported, not fitted.
@@ -35,7 +37,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Iterable, Mapping, Sequence
 
 from orion.schemas.heat_archaeology import (
@@ -54,9 +56,18 @@ POOL_NODE = "circe"
 
 STEP_MIN_SEGMENT_H = 24
 STEP_MIN_DELTA_W = 60.0
-STEP_MIN_T = 3.0
+# Separation in autocorrelation-corrected standard errors (see lag1). Picked on flat AR(1)
+# series with no step, 200 draws each (binary segmentation searches every split, so the bar
+# is above the one-split 2.0): live-like rho 0.6 (circe hourly residuals 2026-10-23: 0.45-0.62)
+# false-alarms 1.5-2.5%; extreme rho 0.97 ~9%. 5.0 also missed the real, hand-found
+# 2026-10-14 circe step (t 4.2 in a 14-day window), so 4.0.
+STEP_MIN_T = 4.0
 STEP_MAX = 4
+# Lag-1 autocorrelation is clipped here so the inflation factor stays finite (<= 199).
+RHO_MAX = 0.99
 LOAD_STEP_MIN_DELTA = 2.0
+# A CPU-load shift this close to a wall step is the same event; it is not attributed twice.
+LOAD_SHIFT_SAME_AS_STEP = timedelta(hours=6)
 CPU_STEP_MIN_DELTA_W = 20.0
 
 # Lease groups fitted individually; the rest are summed into OTHER_LEASES.
@@ -84,6 +95,10 @@ CAVEATS = (
     "intervention (stop the suspect, watch the watts) confirms it.",
     "An always-on marker is confounded with anything else that started the same hour.",
     "Durable-run holds are reservations; their compute appears as the child leases they start.",
+    "Standard errors are corrected for hour-to-hour wander (lag-1 autocorrelation), not for "
+    "every pattern in it; a term named as credible can still be a coincidence.",
+    "Busy-hours count lease-hours, not cards; a lease still open at the window's end counts only "
+    "if granted in its last 6 hours.",
     "A CPU-load regime or shift is invisible to GPU leases: check host processes and container "
     "restart counts (docker inspect -f '{{.RestartCount}}').",
 )
@@ -133,6 +148,33 @@ def _var(xs: Sequence[float]) -> float:
     return sum((x - m) ** 2 for x in xs) / len(xs)
 
 
+def lag1(xs: Sequence[float]) -> float:
+    """Lag-1 autocorrelation of a centred series, clipped to [0, RHO_MAX].
+
+    Hourly watts wander: a busy hour is followed by a busy hour. Treating each hour as an
+    independent draw makes every standard error too small (review 2026-10-23: AR(1) noise at
+    rho 0.97 produced a "step" in 62 of 100 flat series and a "credible" unrelated term in
+    3 of 4 fits). Negative values are clipped to 0: they would only shrink the errors.
+    """
+    if len(xs) < 3:
+        return 0.0
+    m = _mean(xs)
+    c = [x - m for x in xs]
+    den = sum(v * v for v in c)
+    if den <= 0:
+        return 0.0
+    num = sum(a * b for a, b in zip(c, c[1:]))
+    return min(max(num / den, 0.0), RHO_MAX)
+
+
+def ar1_inflation(rho_a: float, rho_b: float = 1.0) -> float:
+    """Variance inflation for a mean (rho_b=1) or a regression slope under AR(1) errors and an
+    AR(1) regressor: (1 + ra*rb) / (1 - ra*rb) (Bartlett 1935; the standard effective-sample
+    correction)."""
+    r = min(rho_a * rho_b, RHO_MAX)
+    return (1.0 + r) / (1.0 - r)
+
+
 def find_steps(
     values: Sequence[float],
     *,
@@ -171,7 +213,13 @@ def find_steps(
         m2 = (pre[b] - pre[k]) / n2
         v1 = sse(a, k) / n1
         v2 = sse(k, b) / n2
-        se = math.sqrt(v1 / n1 + v2 / n2)
+        # Pooled lag-1 autocorrelation of the residuals inside each side (the pair across the
+        # split is left out): the hours are not independent, so the plain SE is inflated.
+        resid = [(values[i] - m1, values[i + 1] - m1) for i in range(a, k - 1)]
+        resid += [(values[i] - m2, values[i + 1] - m2) for i in range(k, b - 1)]
+        den = sum(x * x for x, _ in resid)
+        rho = min(max(sum(x * y for x, y in resid) / den, 0.0), RHO_MAX) if den > 0 else 0.0
+        se = math.sqrt((v1 / n1 + v2 / n2) * ar1_inflation(rho))
         t = abs(m2 - m1) / se if se > 0 else math.inf
         if abs(m2 - m1) < min_delta or t < min_t:
             return None
@@ -292,10 +340,16 @@ def ols(columns: Mapping[str, Sequence[float]], y: Sequence[float]) -> OlsResult
     coef = [beta[j] * scale[j] for j in range(q)]
     c = [-stats[nm][0] / stats[nm][1] for nm in names]
     intercept = beta[q] + sum(cj * beta[j] for j, cj in enumerate(c))
-    se = [math.sqrt(max(sigma2 * inv[j][j], 0.0)) * scale[j] for j in range(q)]
+    # Autocorrelation-corrected SEs: residuals and regressors both wander hour to hour, so each
+    # term's variance is inflated by Bartlett's AR(1) factor for its own column.
+    rho_e = lag1([yk - fk for yk, fk in zip(y, fitted)])
+    se = [
+        math.sqrt(max(sigma2 * inv[j][j], 0.0) * ar1_inflation(rho_e, lag1(cols[j]))) * scale[j]
+        for j in range(q)
+    ]
     # Var(intercept) = Var(b0 + sum c_j b_j) from the full covariance sigma2 * inv.
     w = [*c, 1.0]
-    var_i = sigma2 * sum(w[i] * w[j] * inv[i][j] for i in range(p) for j in range(p))
+    var_i = sigma2 * sum(w[i] * w[j] * inv[i][j] for i in range(p) for j in range(p)) * ar1_inflation(rho_e)
     return OlsResult(
         names=[*names, "intercept"], coef=[*coef, intercept], se=[*se, math.sqrt(max(var_i, 0.0))],
         r2=1.0 - rss / tss if tss > 0 else 0.0,
@@ -321,7 +375,7 @@ def _r(x: float, nd: int = 1) -> float:
 
 
 def _fmt_w(x: float) -> str:
-    return f"{x:+.0f} W"
+    return f"{round(x) + 0:+d} W"  # + 0 turns a rounded -0 into 0
 
 
 def _fmt_hour(t: datetime) -> str:
@@ -357,6 +411,7 @@ def _series_shifts(rows: Sequence[HourReading], attr: str, min_delta: float) -> 
         out.append(RegimeShiftV1(
             series="load_15m" if attr == "load_15m" else "cpu_w",
             at=pts[k][0], before=_r(before, 2), after=_r(after, 2), delta=_r(after - before, 2),
+            segment_start=pts[a][0], segment_end=pts[b - 1][0] + timedelta(hours=1),
         ))
     return out
 
@@ -471,60 +526,7 @@ def analyze_node(
                 claim=f"GPU/CPU/rest split of the {_fmt_hour(step.at)} step", query="biometrics_hourly",
             ))
 
-    # 2-4. Fit wall (and GPU on the pool node) on workloads + regime + intercept.
-    fit_rows = [r for r in wall_rows if r.load_15m is not None]
-    fit = gpu_fit = None
-    attributions: list[StepAttributionV1] = []
-    reservations: dict[str, float] = {}
-    threshold = None
-    if len(fit_rows) >= FIT_MIN_HOURS:
-        hours = [r.hour for r in fit_rows]
-        columns: dict[str, list[float]] = {}
-        if node == pool_node:
-            columns, reservations = _lease_matrix(hours, busy)
-        regime_name = None
-        split = otsu_threshold([r.load_15m for r in fit_rows])
-        if split is not None and split[1] >= REGIME_MIN_SEPARATION:
-            threshold = _r(split[0], 2)
-            ind = [1.0 if r.load_15m > split[0] else 0.0 for r in fit_rows]
-            if REGIME_MIN_HOURS <= sum(ind) <= len(ind) - REGIME_MIN_HOURS:
-                regime_name = f"CPU-load regime (load_15m > {threshold:g})"
-                columns[regime_name] = ind
-        fitted = _fit("wall_w", [r.wall_w for r in fit_rows], columns, regime_name) if columns else None
-        if fitted is not None:
-            fit, res = fitted
-            evidence.append(EvidenceRefV1(
-                claim="wall-watts fit on workload busy-hours", query="pool_busy_hours",
-                values={"r2": fit.r2, "n_hours": fit.n_hours, "residual_sd_w": fit.residual_sd_w,
-                        "terms": len(fit.terms)},
-            ))
-            coef = dict(zip(res.names, res.coef))
-            pos = {h: i for i, h in enumerate(hours)}
-            for step, (before, after) in zip(steps, step_segs):
-                bi = [pos[r.hour] for r in before if r.hour in pos]
-                ai = [pos[r.hour] for r in after if r.hour in pos]
-                if not bi or not ai:
-                    continue
-                contrib = {}
-                for name, c in coef.items():
-                    if name == "intercept":
-                        continue
-                    col = columns[name]
-                    v = c * (_mean([col[i] for i in ai]) - _mean([col[i] for i in bi]))
-                    if abs(v) >= 1.0:  # sub-watt shares are noise; they stay in unexplained's sum
-                        contrib[name] = _r(v, 0)
-                attributions.append(StepAttributionV1(
-                    step_at=step.at, delta_w=step.delta_w, contributions_w=contrib,
-                    unexplained_w=_r(step.delta_w - sum(contrib.values()), 0),
-                ))
-        gpu_rows = [r for r in fit_rows if r.gpu_w is not None]
-        if columns and node == pool_node and len(gpu_rows) == len(fit_rows):
-            gfit = _fit("gpu_w", [r.gpu_w for r in fit_rows], columns, regime_name)
-            # Fit quality only: the wall fit's terms are the attribution; per-term GPU watts
-            # would double the payload for a cross-check.
-            gpu_fit = gfit[0].model_copy(update={"terms": []}) if gfit is not None else None
-
-    # 5. Shifts the leases cannot see.
+    # 5 (first, so the fit can be read across them). Shifts the leases cannot see.
     shifts = _series_shifts(rows, "load_15m", LOAD_STEP_MIN_DELTA) + _series_shifts(rows, "cpu_w", CPU_STEP_MIN_DELTA_W)
     shifts.sort(key=lambda s: s.at)
     for s in shifts:
@@ -533,9 +535,86 @@ def analyze_node(
             values={"before": s.before, "after": s.after},
         ))
 
+    # 2-4. Fit wall (and GPU on the pool node) on workloads + regime + intercept.
+    fit_rows = [r for r in wall_rows if r.load_15m is not None]
+    fit = gpu_fit = None
+    fit_note = None
+    attributions: list[StepAttributionV1] = []
+    reservations: dict[str, float] = {}
+    threshold = None
+    if len(fit_rows) < FIT_MIN_HOURS:
+        fit_note = (f"no fit: {len(fit_rows)} hours have both wall watts and a CPU-load reading, "
+                    f"{FIT_MIN_HOURS} needed")
+    else:
+        hours = [r.hour for r in fit_rows]
+        # The regime column goes first: if a lease is an exact alias of it, the lease (listed
+        # later) is the one dropped and named in fit.dropped, not the regime.
+        columns: dict[str, list[float]] = {}
+        regime_name = None
+        split = otsu_threshold([r.load_15m for r in fit_rows])
+        if split is not None and split[1] >= REGIME_MIN_SEPARATION:
+            threshold = _r(split[0], 2)
+            ind = [1.0 if r.load_15m > split[0] else 0.0 for r in fit_rows]
+            if REGIME_MIN_HOURS <= sum(ind) <= len(ind) - REGIME_MIN_HOURS:
+                regime_name = f"CPU-load regime (load_15m > {threshold:g})"
+                columns[regime_name] = ind
+        if node == pool_node:
+            leases, reservations = _lease_matrix(hours, busy)
+            columns.update(leases)
+        fitted = _fit("wall_w", [r.wall_w for r in fit_rows], columns, regime_name) if columns else None
+        if fitted is None:
+            fit_note = ("no fit: no workload busy-hours on this machine and its CPU load is not "
+                        "two-moded, so there is nothing to attribute watts to")
+        else:
+            fit, res = fitted
+            evidence.append(EvidenceRefV1(
+                claim="wall-watts fit on workload busy-hours", query="pool_busy_hours",
+                values={"r2": fit.r2, "n_hours": fit.n_hours, "residual_sd_w": fit.residual_sd_w,
+                        "terms": len(fit.terms)},
+            ))
+            coef = {k: v for k, v in zip(res.names, res.coef) if k != "intercept"}
+
+            def attribute(at: datetime, lo: datetime, hi: datetime, anchor: str) -> StepAttributionV1 | None:
+                bi = [i for i, h in enumerate(hours) if lo <= h < at]
+                ai = [i for i, h in enumerate(hours) if at <= h < hi]
+                if not bi or not ai:
+                    return None
+                bw = _mean([fit_rows[i].wall_w for i in bi])
+                aw = _mean([fit_rows[i].wall_w for i in ai])
+                contrib = {}
+                for name, c in coef.items():
+                    col = columns[name]
+                    v = c * (_mean([col[i] for i in ai]) - _mean([col[i] for i in bi]))
+                    if abs(v) >= 1.0:  # sub-watt shares are noise; they stay in unexplained's sum
+                        contrib[name] = _r(v, 0)
+                return StepAttributionV1(
+                    step_at=at, anchor=anchor, before_w=_r(bw, 0), after_w=_r(aw, 0),
+                    delta_w=_r(aw - bw, 0), contributions_w=contrib,
+                    unexplained_w=_r(aw - bw - sum(contrib.values()), 0),
+                )
+
+            for step, (before, after) in zip(steps, step_segs):
+                got = attribute(step.at, before[0].hour, after[-1].hour + timedelta(hours=1), "wall_step")
+                if got is not None:
+                    attributions.append(got)
+            for sh in shifts:
+                if sh.series != "load_15m" or sh.segment_start is None or sh.segment_end is None:
+                    continue
+                if any(abs(st.at - sh.at) <= LOAD_SHIFT_SAME_AS_STEP for st in steps):
+                    continue  # the wall step already tells this story
+                got = attribute(sh.at, sh.segment_start, sh.segment_end, "load_shift")
+                if got is not None:
+                    attributions.append(got)
+        gpu_rows = [r for r in fit_rows if r.gpu_w is not None]
+        if fit is not None and node == pool_node and len(gpu_rows) == len(fit_rows):
+            gfit = _fit("gpu_w", [r.gpu_w for r in fit_rows], columns, regime_name)
+            # Fit quality only: the wall fit's terms are the attribution; per-term GPU watts
+            # would double the payload for a cross-check.
+            gpu_fit = gfit[0].model_copy(update={"terms": []}) if gfit is not None else None
+
     result = NodeHeatArchaeologyV1(
         **base, mean_wall_w=_r(mean_wall, 0), daily_wall_w=daily_wall, steps=steps, fit=fit,
-        gpu_fit=gpu_fit, attributions=attributions, regime_shifts=shifts, reservations=reservations,
+        gpu_fit=gpu_fit, fit_note=fit_note, attributions=attributions, regime_shifts=shifts, reservations=reservations,
         load_regime_threshold=threshold, evidence=evidence, summary="", caveats=caveats,
     )
     return result.model_copy(update={"summary": summarize(result)})
@@ -550,6 +629,25 @@ def _credible(fit: WorkloadFitV1) -> set[str]:
     return {t.name for t in fit.terms if t.se is not None and t.se > 0 and abs(t.watts_per_unit) >= SUMMARY_MIN_T * t.se}
 
 
+def _attribution_bits(attr: StepAttributionV1, credible: set[str]) -> str:
+    """The named parts always add up to attr.delta_w: named + other terms + unexplained."""
+    ranked = sorted(attr.contributions_w.items(), key=lambda kv: -abs(kv[1]))
+    shown = [(k, v) for k, v in ranked if k in credible and abs(v) >= SUMMARY_MIN_CONTRIB_W][:SUMMARY_MAX_TERMS]
+    named = {k for k, _ in shown}
+    other = sum(v for k, v in ranked if k not in named)
+    bits = []
+    for name, v in shown:
+        if name.startswith("CPU-load regime"):
+            bits.append(f"{name} {_fmt_w(v)}, which no GPU lease explains (check host processes and "
+                        "container restarts)")
+        else:
+            bits.append(f"{name} {_fmt_w(v)}")
+    if abs(other) >= SUMMARY_MIN_CONTRIB_W:
+        bits.append(f"other terms, too small or too noisy to name, {_fmt_w(other)}")
+    bits.append(f"unexplained {_fmt_w(attr.unexplained_w)}")
+    return "; ".join(bits)
+
+
 def _step_sentence(step: PowerStepV1, attr: StepAttributionV1 | None, credible: set[str]) -> str:
     comp = [f"{label} {_fmt_w(v)}" for label, v in (
         ("GPU", step.gpu_delta_w), ("CPU", step.cpu_delta_w), ("rest", step.rest_delta_w)) if v is not None]
@@ -559,32 +657,31 @@ def _step_sentence(step: PowerStepV1, attr: StepAttributionV1 | None, credible: 
     )
     if attr is None:
         return head + "."
-    ranked = sorted(attr.contributions_w.items(), key=lambda kv: -abs(kv[1]))
-    shown = [(k, v) for k, v in ranked if k in credible and abs(v) >= SUMMARY_MIN_CONTRIB_W][:SUMMARY_MAX_TERMS]
-    uncertain = sum(v for k, v in ranked if k not in credible)
-    bits = []
-    for name, v in shown:
-        if name.startswith("CPU-load regime"):
-            bits.append(f"{name} {_fmt_w(v)}, which no GPU lease explains (check host processes and "
-                        "container restarts)")
-        else:
-            bits.append(f"{name} {_fmt_w(v)}")
-    if abs(uncertain) >= SUMMARY_MIN_CONTRIB_W:
-        bits.append(f"terms too noisy to name {_fmt_w(uncertain)}")
-    bits.append(f"unexplained {_fmt_w(attr.unexplained_w)}")
-    return head + ": " + "; ".join(bits) + "."
+    lead = "" if abs(attr.delta_w - step.delta_w) < 1 else f" over the fitted hours {_fmt_w(attr.delta_w)}"
+    return head + lead + ": " + _attribution_bits(attr, credible) + "."
+
+
+def _shift_sentence(attr: StepAttributionV1, shift: RegimeShiftV1 | None, credible: set[str]) -> str:
+    load = f"CPU load {shift.before:g} -> {shift.after:g} " if shift is not None else "CPU load shifted "
+    return (
+        f"{load}at {_fmt_hour(attr.step_at)}; across it wall power went {attr.before_w:.0f} -> "
+        f"{attr.after_w:.0f} W ({_fmt_w(attr.delta_w)}): " + _attribution_bits(attr, credible) + "."
+    )
 
 
 def summarize(result: NodeHeatArchaeologyV1) -> str:
-    """Plain English, steps in time order. Every number in it is in the structured result."""
+    """Plain English, changes in time order. Every number in it is in the structured result."""
     node = result.node
     if result.mean_wall_w is None:
         return f"{node}: no wall-power reading in this window, so nothing can be attributed."
     parts: list[str] = []
+    credible = _credible(result.fit) if result.fit is not None else set()
+    shift_attrs = [a for a in result.attributions if a.anchor == "load_shift"]
     if not result.steps:
         parts.append(
-            f"{node}: no sustained step of {STEP_MIN_DELTA_W:.0f} W or more in this window; "
-            f"wall power averaged {result.mean_wall_w:.0f} W over {result.hours_with_wall} h."
+            f"{node}: no wall-power step of {STEP_MIN_DELTA_W:.0f} W or more stands out from the "
+            f"hour-to-hour wander in this window; wall power averaged {result.mean_wall_w:.0f} W "
+            f"over {result.hours_with_wall} h."
         )
     else:
         last = result.steps[-1]
@@ -592,16 +689,20 @@ def summarize(result: NodeHeatArchaeologyV1) -> str:
             f"{node}: about {last.after_w:.0f} W since around {_fmt_hour(last.at)}; "
             f"{len(result.steps)} step(s) in this window."
         )
-        if result.fit is not None:
-            parts.append(f"Fit of hourly wall watts on workloads: R2 {result.fit.r2:.2f} over {result.fit.n_hours} h.")
-        credible = _credible(result.fit) if result.fit is not None else set()
-        by_at = {a.step_at: a for a in result.attributions}
-        parts += [_step_sentence(s, by_at.get(s.at), credible) for s in result.steps]
+    if result.fit is not None:
+        parts.append(f"Fit of hourly wall watts on workloads: R2 {result.fit.r2:.2f} over {result.fit.n_hours} h.")
+    elif result.fit_note:
+        parts.append(result.fit_note[0].upper() + result.fit_note[1:] + ".")
+    by_at = {a.step_at: a for a in result.attributions if a.anchor == "wall_step"}
+    parts += [_step_sentence(s, by_at.get(s.at), credible) for s in result.steps]
+    shifts_by_at = {s.at: s for s in result.regime_shifts if s.series == "load_15m"}
+    parts += [_shift_sentence(a, shifts_by_at.get(a.step_at), credible) for a in shift_attrs]
     if result.fit is not None:
         floor = next((t.watts_per_unit for t in result.fit.terms if t.kind == "intercept"), None)
         if floor is not None:
             parts.append(f"Floor with no listed workload running: ~{floor:.0f} W.")
-    load_shifts = [s for s in result.regime_shifts if s.series == "load_15m"]
+    told = {a.step_at for a in shift_attrs}
+    load_shifts = [s for s in result.regime_shifts if s.series == "load_15m" and s.at not in told]
     if load_shifts:
         parts.append("CPU load (15 min) shifts: " + ", ".join(
             f"{s.before:g} -> {s.after:g} at {_fmt_hour(s.at)}" for s in load_shifts) + ".")

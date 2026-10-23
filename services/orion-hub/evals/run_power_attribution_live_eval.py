@@ -5,8 +5,9 @@ ONLY transaction, runs the analysis, then checks it by an independent path:
 
 * every circe step's before/after watts against a direct AVG over orion_energy_hourly for the
   same hours;
-* when 2026-10-14 03:00 UTC is inside the window: a circe step of >= 150 W within 6 h of it
-  comes back, its attribution names a CPU-load regime, and the hand-found load jump
+* when 2026-10-14 03:00 UTC is inside the window: an attribution within 6 h of it comes back
+  (a wall step, or the CPU-load shift when hourly wander keeps the wall step under its bar),
+  it credits a CPU-load regime with >= 60 W (hand-found: ~144 W), and the load jump
   (~1 -> ~13) shows up as a load_15m shift;
 * the whole result fits the 12k MCP budget, and every node's text says UNVERIFIED when it
   makes a claim.
@@ -38,7 +39,8 @@ from orion.introspect import power_attribution as pa  # noqa: E402
 from orion.schemas.introspect import IntrospectResultV1, PowerAttributionArguments  # noqa: E402
 
 KNOWN_STEP_AT = datetime(2026, 10, 14, 3, tzinfo=timezone.utc)
-KNOWN_STEP_MIN_W = 150.0
+# Hand-found 2026-10-23: the crash loop was worth ~144 W; the fit must credit most of it.
+KNOWN_REGIME_MIN_W = 60.0
 KNOWN_STEP_SLACK = timedelta(hours=6)
 MCP_BUDGET = 12000
 DIRECT_AVG_SQL = """
@@ -75,21 +77,21 @@ async def run(dsn: str, days: float, until: datetime | None) -> int:
 
     if start <= KNOWN_STEP_AT - timedelta(days=1) and KNOWN_STEP_AT + timedelta(days=1) <= end:
         circe = next((r for r in results if r.node == "circe"), None)
-        step = None if circe is None else next(
-            (s for s in circe.steps if abs(s.at - KNOWN_STEP_AT) <= KNOWN_STEP_SLACK and s.delta_w >= KNOWN_STEP_MIN_W), None)
-        if step is None:
-            failures.append("the 2026-10-14 circe step did not come back")
+        # Either a wall step or, when hourly wander keeps the wall step under its bar, the
+        # CPU-load shift's attribution must carry the 10-14 change.
+        attr = None if circe is None else next(
+            (a for a in circe.attributions if abs(a.step_at - KNOWN_STEP_AT) <= KNOWN_STEP_SLACK), None)
+        if attr is None:
+            failures.append("the 2026-10-14 circe change did not come back (no step or load-shift attribution)")
         else:
-            attr = next((a for a in circe.attributions if a.step_at == step.at), None)
-            regime = None if attr is None else next(
-                (v for k, v in attr.contributions_w.items() if k.startswith("CPU-load regime")), None)
-            if regime is None or regime <= 0:
-                failures.append(f"10-14 step attribution has no positive CPU-load regime term: {attr}")
+            regime = next((v for k, v in attr.contributions_w.items() if k.startswith("CPU-load regime")), None)
+            if regime is None or regime < KNOWN_REGIME_MIN_W:
+                failures.append(f"10-14 attribution's CPU-load regime term is {regime} W, under {KNOWN_REGIME_MIN_W}")
             if not any(s.series == "load_15m" and abs(s.at - KNOWN_STEP_AT) <= KNOWN_STEP_SLACK and s.delta > 5
                        for s in circe.regime_shifts):
                 failures.append("10-14 load_15m jump not reported as a shift")
-            print(f"# 10-14 step: {step.delta_w:+.0f} W at {step.at:%Y-%m-%d %H:%M} UTC, regime {regime} W, "
-                  f"fit R2 {circe.fit.r2 if circe.fit else None}", file=sys.stderr)
+            print(f"# 10-14 ({attr.anchor}): {attr.delta_w:+.0f} W at {attr.step_at:%Y-%m-%d %H:%M} UTC, "
+                  f"regime {regime} W, fit R2 {circe.fit.r2 if circe.fit else None}", file=sys.stderr)
     else:
         print("# 2026-10-14 is outside this window; the known-step check is skipped", file=sys.stderr)
 

@@ -106,7 +106,9 @@ def test_even_an_absurd_result_fits_by_clipping_summaries_and_says_so():
     items = pa.build_items(results, fx.START, fx.START + timedelta(days=30))
     assert len(_body(items)) < MCP_TOOL_RESULT_MAX_CHARS
     node_items = [i for i in items if i.kind == "power_attribution"]
-    assert all(i.truncated and i.text.endswith("[clipped]") for i in node_items)
+    clipped = [i for i in node_items if i.truncated]
+    assert clipped and all(i.text.endswith(pa.CLIP_MARKER) for i in clipped)
+    assert all(i.text == "x" * 4000 for i in node_items if not i.truncated)
     assert "steps" in node_items[0].extra["omitted"]
 
 
@@ -135,3 +137,21 @@ def test_arguments_refuse_future_and_pruned_windows():
     start, end = ok.window(now)
     assert end - start == timedelta(days=14)
     assert PowerAttributionArguments().window(now)[1] == now
+
+
+def test_uneven_summaries_still_fit_the_budget():
+    """Review 2026-10-23: one 9000-char summary beside three short ones overflowed (13007 chars)."""
+    results = [_worst_node("circe", summary_chars=9000)] + [
+        _worst_node(n, n_terms=2, summary_chars=50) for n in ("athena", "hecate", "cooling")]
+    items = pa.build_items(results, fx.START, fx.START + timedelta(days=30))
+    assert len(_body(items)) <= pa.RESULT_BUDGET_CHARS + 400
+    assert len(_body(items)) < MCP_TOOL_RESULT_MAX_CHARS
+    assert items[0].truncated and items[0].text.endswith(pa.CLIP_MARKER)
+    assert all(i.text == "x" * 50 for i in items[1:4])
+
+
+def test_reader_pins_utc_hours_inside_its_transaction():
+    conn, _ = _read()
+    assert conn.executed == ["set local timezone = 'UTC'"]
+    assert "insert" not in pa.POOL_BUSY_SQL.lower() and "update" not in pa.POOL_BUSY_SQL.lower()
+    assert "opens as" in pa.POOL_BUSY_SQL  # leases still held at the window's end count

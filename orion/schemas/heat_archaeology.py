@@ -50,6 +50,10 @@ class PowerStepV1(BaseModel):
 
 
 class FitTermV1(BaseModel):
+    """One column of the fit. A lease column counts lease-hours, not card-hours: a 2-card lease
+    counts the same as a 1-card one, so watts_per_unit mixes card counts within a group. ``se``
+    is corrected for lag-1 autocorrelation of residuals and column (Bartlett AR(1) factor)."""
+
     model_config = ConfigDict(extra="forbid")
     name: str
     kind: FeatureKind
@@ -72,10 +76,19 @@ class WorkloadFitV1(BaseModel):
 
 
 class StepAttributionV1(BaseModel):
-    """How the fit splits one step's delta across the workloads that changed with it."""
+    """How the fit splits one change's delta across the workloads that changed with it.
+
+    ``anchor`` says what the change is: a step in wall watts, or a CPU-load shift (a crisp
+    clock even when hourly wall watts wander too much for a wall step to clear its bar).
+    ``delta_w`` is measured on the fit's own hours (those with a CPU-load reading), so it can
+    differ slightly from the wall step's own delta when biometrics have gaps.
+    """
 
     model_config = ConfigDict(extra="forbid")
     step_at: datetime
+    anchor: Literal["wall_step", "load_shift"] = "wall_step"
+    before_w: float | None = None
+    after_w: float | None = None
     delta_w: float
     contributions_w: dict[str, float]
     unexplained_w: float
@@ -91,6 +104,9 @@ class RegimeShiftV1(BaseModel):
     before: float
     after: float
     delta: float
+    # The neighbouring change points (or window edges): the span the before/after means cover.
+    segment_start: datetime | None = None
+    segment_end: datetime | None = None
 
 
 class NodeHeatArchaeologyV1(BaseModel):
@@ -105,6 +121,8 @@ class NodeHeatArchaeologyV1(BaseModel):
     fit: WorkloadFitV1 | None = None
     # Same columns fitted to GPU watts (pool node only); quality fields only, terms=[].
     gpu_fit: WorkloadFitV1 | None = None
+    # Why there is no fit, when there is none (no CPU-load readings, no workload columns).
+    fit_note: str | None = None
     attributions: list[StepAttributionV1] = Field(default_factory=list)
     regime_shifts: list[RegimeShiftV1] = Field(default_factory=list)
     # Durable-run holds per workflow: mean busy-hours per hour over the window. Reported, never

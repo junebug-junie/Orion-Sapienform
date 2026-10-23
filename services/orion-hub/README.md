@@ -3667,7 +3667,12 @@ implementation, two callers.
   ai-town, cortex-exec, vision-council, ...) plus a CPU-load regime indicator
   (Otsu split of `load_15m`, kept only when the load is clearly two-moded);
   each step's watts split across the terms that changed with it (`unexplained`
-  = the rest); CPU-load and CPU-watt shifts on their own; durable-run holds as
+  = the rest); CPU-load and CPU-watt shifts on their own, and the same split
+  across each CPU-load shift (a crisp clock when hourly wander keeps the wall
+  step under its bar: the 30-day window finds 10-14 this way). Step and term
+  significance use autocorrelation-corrected standard errors (Bartlett AR(1));
+  measured false-step rate on flat wandering series 1.5-2.5% at live-like
+  autocorrelation; durable-run holds as
   reservations (never fitted: their compute is the child leases).
 - **Sources** (`orion/introspect/power_attribution.py`, three parameterized
   SELECTs): `orion_energy_hourly`, `orion_biometrics_cluster`,

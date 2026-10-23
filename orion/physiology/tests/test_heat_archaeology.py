@@ -82,7 +82,8 @@ def test_flat_node_has_no_step_and_no_invented_regime():
     [athena] = ha.analyze(readings, busy, window_start=fx.START, window_end=fx.END, nodes=["athena"])
     assert athena.steps == []
     assert athena.fit is None  # no workload columns, one-moded load: nothing to fit
-    assert "no sustained step" in athena.summary
+    assert "stands out from the hour-to-hour wander" in athena.summary
+    assert athena.fit_note and "nothing to attribute" in athena.fit_note
     assert athena.mean_wall_w == pytest.approx(400, abs=5)
 
 
@@ -120,6 +121,11 @@ def test_ols_recovers_exact_coefficients_and_drops_constant_and_collinear_column
     res = ha.ols({"a": x1, "b": x2, "flat": [1.0] * 100, "a_twice": [2 * v for v in x1]}, y)
     coef = dict(zip(res.names, res.coef))
     assert "flat" in res.dropped and ("a" in res.dropped or "a_twice" in res.dropped)
+    # The surviving alias carries the whole slope in its own units.
+    if "a" in coef:
+        assert coef["a"] == pytest.approx(2.0)
+    else:
+        assert coef["a_twice"] == pytest.approx(1.0)
     assert coef["intercept"] == pytest.approx(5.0)
     assert coef["b"] == pytest.approx(-3.0)
     assert res.r2 == pytest.approx(1.0)
@@ -158,3 +164,58 @@ def test_short_window_finds_no_step_rather_than_a_fake_one():
     short = [r for r in readings if fx.STEP_AT - timedelta(hours=12) <= r.hour < end]
     [circe] = ha.analyze(short, busy, window_start=fx.STEP_AT - timedelta(hours=12), window_end=end, nodes=["circe"])
     assert circe.steps == []
+
+
+def _ar1(n, rho, sd, rng):
+    x = [0.0]
+    e = sd * (1 - rho * rho) ** 0.5
+    for _ in range(n - 1):
+        x.append(rho * x[-1] + rng.gauss(0, e))
+    return x
+
+
+def test_wandering_flat_series_rarely_reads_as_a_step():
+    """Review 2026-10-23: with independent-hour SEs, AR(1) noise (rho 0.97) gave a 'step' in 62 of
+    100 flat series. Live circe residuals run rho ~0.5-0.6."""
+    rng = random.Random(11)
+    live_like = sum(bool(ha.find_steps([900 + v for v in _ar1(336, 0.6, 120, rng)])) for _ in range(100))
+    extreme = sum(bool(ha.find_steps([900 + v for v in _ar1(336, 0.97, 60, rng)])) for _ in range(100))
+    assert live_like <= 5 and extreme <= 15
+
+
+def test_unrelated_wandering_column_is_rarely_credible():
+    rng = random.Random(12)
+    hits = 0
+    for _ in range(100):
+        y = [900 + v for v in _ar1(336, 0.97, 60, rng)]
+        x = [abs(v) for v in _ar1(336, 0.97, 1, rng)]
+        res = ha.ols({"x": x}, y)
+        hits += abs(res.coef[0]) >= ha.SUMMARY_MIN_T * res.se[0]
+    assert hits <= 20  # was ~75 with independent-hour SEs
+
+
+def test_a_load_shift_is_attributed_when_no_wall_step_clears_the_bar():
+    readings, busy, truth = fx.build()
+    # Make the wall step too small to clear STEP_MIN_DELTA_W by itself: drop the crash-loop watts
+    # to 15 W, leaving the vision rise and the crisp load clock.
+    lowered = [
+        ha.HourReading(hour=r.hour, node=r.node, gpu_w=r.gpu_w, cpu_w=r.cpu_w, load_15m=r.load_15m,
+                       wall_w=None if r.wall_w is None else (r.wall_w - (fx.CRASH_W - 15.0 if r.hour >= fx.STEP_AT else 0.0)))
+        for r in readings
+    ]
+    [circe] = ha.analyze(lowered, busy, window_start=fx.START, window_end=fx.END, nodes=["circe"])
+    assert circe.steps == []
+    [attr] = [a for a in circe.attributions if a.anchor == "load_shift"]
+    assert attr.step_at == fx.STEP_AT
+    regime = next(v for k, v in attr.contributions_w.items() if k.startswith("CPU-load regime"))
+    assert regime == pytest.approx(15.0, abs=12)
+    assert "CPU load 1.5" in circe.summary and "across it wall power went" in circe.summary
+
+
+def test_sentence_parts_add_up_to_the_delta():
+    circe, _ = _circe()
+    [attr] = circe.attributions
+    assert sum(attr.contributions_w.values()) + attr.unexplained_w == pytest.approx(attr.delta_w, abs=1)
+    # Every contribution is either named or folded into "other terms".
+    text = ha._attribution_bits(attr, ha._credible(circe.fit))
+    assert "unexplained" in text

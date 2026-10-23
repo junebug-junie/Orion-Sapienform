@@ -10,8 +10,13 @@ Run inside a READ ONLY transaction by orion-hub's responder; nothing here writes
 * ``biometrics_hourly``: per-node hourly means of GPU watts, CPU watts and ``load_15m`` from
   ``orion_biometrics_cluster.measurements_by_node`` (raw rows are kept ~30 days).
 * ``pool_busy_hours``: GPU-pool busy-hours per holder per hour from ``gpu_pool_events`` end
-  rows (released / aborted / expired), each ``held_ms`` spread over the hours it covered;
-  ``durable_run_workflow`` names a ``durable-runs:<run_id>`` holder's workflow.
+  rows (released / aborted / expired), each ``held_ms`` spread over the hours it covered (ends
+  up to 7 days after the window are read, so a lease that outlives the window still counts
+  inside it), plus leases still open at the window's end (``granted`` with no end row, granted
+  in the last 6 h, counted up to the end); ``durable_run_workflow`` names a
+  ``durable-runs:<run_id>`` holder's workflow.
+
+Hour buckets are UTC hours: the reader sets ``timezone = 'UTC'`` for its own transaction.
 """
 from __future__ import annotations
 
@@ -58,11 +63,27 @@ with ends as (
   from gpu_pool_events e
   left join durable_run_workflow w on e.holder = 'durable-runs:' || w.run_id
   where e.event in ('released', 'aborted', 'expired') and e.held_ms > 0
-    and e.generated_at >= $1::timestamptz and e.generated_at < $2::timestamptz + interval '1 day'
+    and e.generated_at >= $1::timestamptz and e.generated_at < $2::timestamptz + interval '7 days'
+), opens as (
+  -- Still held at the window's end (no end row at all): counted up to the end, but only when
+  -- granted in the last OPEN_LEASE_MAX_H hours, since the pool sometimes never records an end
+  -- and an unbounded ghost would read as a days-long hold.
+  select g.holder, w.workflow, g.generated_at as t0,
+         least($2::timestamptz, g.generated_at + interval '6 hours') as t1
+  from gpu_pool_events g
+  left join durable_run_workflow w on g.holder = 'durable-runs:' || w.run_id
+  where g.event = 'granted'
+    and g.generated_at >= $2::timestamptz - interval '6 hours' and g.generated_at < $2::timestamptz
+    and not exists (
+      select 1 from gpu_pool_events x
+      where x.lease_id = g.lease_id and x.generated_at > g.generated_at
+        and x.event in ('released', 'aborted', 'expired', 'cancelled'))
+), spans as (
+  select * from ends union all select * from opens
 )
 select h as hour, holder, workflow,
        sum(extract(epoch from least(t1, h + interval '1 hour') - greatest(t0, h))) / 3600.0 as busy_h
-from ends, generate_series(date_trunc('hour', t0), date_trunc('hour', t1), interval '1 hour') h
+from spans, generate_series(date_trunc('hour', t0), date_trunc('hour', t1), interval '1 hour') h
 where h >= date_trunc('hour', $1::timestamptz) and h < $2::timestamptz
 group by 1, 2, 3
 """
@@ -70,11 +91,12 @@ group by 1, 2, 3
 QUERIES = {"energy_hourly": ENERGY_SQL, "biometrics_hourly": BIOMETRICS_SQL, "pool_busy_hours": POOL_BUSY_SQL}
 
 ITEM_KIND = "power_attribution"
+CLIP_MARKER = " [clipped]"
 QUERIES_KIND = "power_attribution_queries"
 
 # The whole result must fit the harness proxy's per-tool budget (ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS;
 # see orion/schemas/introspect.py MAX_ITEMS), with room for the envelope around the items.
-RESULT_BUDGET_CHARS = 11000
+RESULT_BUDGET_CHARS = 11500
 # Dropped in this order until the items fit; each drop is named in the item's extra.omitted.
 # The trend line and evidence refs go first (re-readable with the SQL item), then the structure
 # the summary sentence already states. Summaries are clipped only if even that does not fit.
@@ -122,7 +144,12 @@ def busy_rows(rows: Sequence[Any]) -> list[PoolBusy]:
 async def fetch_power_rows(
     conn: Any, start: datetime, end: datetime, node: str | None = None,
 ) -> tuple[list[HourReading], list[PoolBusy], list[str]]:
-    """(hourly readings, pool busy-hours, nodes to analyze). Three SELECTs, nothing else."""
+    """(hourly readings, pool busy-hours, nodes to analyze). Three SELECTs, nothing else.
+
+    ``set local timezone`` lasts only for the caller's (READ ONLY) transaction: date_trunc on a
+    timestamptz buckets in the session zone, and a half-hour zone would shift every hour.
+    """
+    await conn.execute("set local timezone = 'UTC'")
     energy = await conn.fetch(ENERGY_SQL, start, end, MIN_COVERED_SEC)
     biometrics = await conn.fetch(BIOMETRICS_SQL, start, end)
     busy = await conn.fetch(POOL_BUSY_SQL, start, end) if node in (None, POOL_NODE) else []
@@ -157,6 +184,11 @@ def node_item(result: NodeHeatArchaeologyV1) -> IntrospectItemV1:
     )
 
 
+def _one_line(sql: str) -> str:
+    """The SQL as one runnable line: comment lines dropped (they are for code readers)."""
+    return " ".join(" ".join(ln for ln in sql.splitlines() if not ln.strip().startswith("--")).split())
+
+
 def queries_item(start: datetime, end: datetime) -> IntrospectItemV1:
     """The exact SQL behind every claim, so a curiosity run can re-run it with psql."""
     return IntrospectItemV1(
@@ -172,7 +204,7 @@ def queries_item(start: datetime, end: datetime) -> IntrospectItemV1:
             "durable-run holds are reservations, not load; a CPU-load shift points at host "
             "processes and container restart counts, which GPU leases cannot see."
         ),
-        extra={"queries": {k: " ".join(v.split()) for k, v in QUERIES.items()},
+        extra={"queries": {k: _one_line(v) for k, v in QUERIES.items()},
                "window_start": _iso(start), "window_end": _iso(end)},
     )
 
@@ -185,7 +217,8 @@ def build_items(
     results: Sequence[NodeHeatArchaeologyV1], start: datetime, end: datetime,
     *, budget: int = RESULT_BUDGET_CHARS,
 ) -> list[IntrospectItemV1]:
-    """One item per node plus the SQL item, shed to fit ``budget`` (summaries are never cut)."""
+    """One item per node plus the SQL item, shed to fit ``budget``. Summaries are clipped only as
+    the last resort, longest first, and marked truncated."""
     items = [node_item(r) for r in results] + [queries_item(start, end)]
     for field in _SHED_ORDER:
         if _size(items) <= budget:
@@ -198,15 +231,14 @@ def build_items(
                 item = item.model_copy(update={"extra": extra})
             shed.append(item)
         items = shed
-    over = _size(items) - budget
-    if over > 0:
-        # Last resort: clip the longest texts. The SQL item's text is the caveat, so it stays.
-        clipped = []
-        nodes = [i for i in items if i.kind == ITEM_KIND]
-        per = -(-over // max(len(nodes), 1)) + 40
-        for item in items:
-            if item.kind == ITEM_KIND and len(item.text) > per:
-                item = item.model_copy(update={"text": item.text[: len(item.text) - per] + " [clipped]", "truncated": True})
-            clipped.append(item)
-        items = clipped
+    while (over := _size(items) - budget) > 0:
+        # Last resort: clip the longest node text by the remaining overage (plus room for the
+        # marker), then re-measure. The SQL item's text is the caveat, so it stays.
+        nodes = [i for i, it in enumerate(items) if it.kind == ITEM_KIND and len(it.text) > 40]
+        if not nodes:
+            break
+        i = max(nodes, key=lambda k: len(items[k].text))
+        text = items[i].text
+        keep = max(len(text) - over - len(CLIP_MARKER) - 8, 0)
+        items[i] = items[i].model_copy(update={"text": text[:keep] + CLIP_MARKER, "truncated": True})
     return items

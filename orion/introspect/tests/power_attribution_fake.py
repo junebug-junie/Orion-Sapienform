@@ -12,11 +12,15 @@ class FakePowerConn:
         self.fail = fail
         self.queries: list[tuple[str, tuple]] = []
         self.readonly_flags: list[bool] = []
+        self.executed: list[str] = []
 
     @asynccontextmanager
     async def transaction(self, readonly=False):
         self.readonly_flags.append(readonly)
         yield
+
+    async def execute(self, sql, *args):
+        self.executed.append(sql)
 
     async def fetch(self, sql, *args):
         if self.fail:

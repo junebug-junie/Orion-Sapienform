@@ -49,6 +49,12 @@ Live rate (dream_cycle, last 7 days to 2026-10-23): 15 non-empty cycles (8 compl
 - Cost: `ActCostV1(seconds=<open→close wall time>)`. No ActCostV2-only fields.
 - correlation_id = the id the cycle's GPU leases carry (see above).
 
+- Second side effect: orion-bus-mirror now reads each gateway reply → next recombination request under the shared id as a cross-organ causal hop. Its latency is the cycle's think time between calls.
+  - Scale: about 4 calls per cycle and about 2 cycles a day, with cycles of about 10 s (max 190 s). That is about 6 extra hop observations a day.
+  - This is accepted in exchange for the GPU cost join.
+  - topic-foundry (#2890) rejected the same pattern because it would run about 200 calls per run for up to an hour.
+  - Structural fix (follow-up): the gateway forwards an explicit turn id to the pool, and the envelope id stays fresh per call.
+
 ## Env/config changes
 
 - Added keys: `DREAM_ACT_EMIT_ENABLED` (default true).

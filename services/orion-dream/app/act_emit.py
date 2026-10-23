@@ -19,7 +19,11 @@ call minted its own random id (live 10-16..23: 60 dream leases, 60 distinct ids)
 Known side effect: orion-llm-gateway keys its assistant-reply embedding doc_id on the envelope
 correlation id, so a cycle's recombination replies now upsert one embedding doc per cycle (the
 last reply) instead of one per call. Hub chat turns already share one id across their calls the
-same way. Known gap (UNVERIFIED until live): the ledger fills GPU cost once, when it processes
+same way. Second side effect: orion-bus-mirror reads each gateway reply -> next request under the
+shared id as a cross-organ causal hop (latency = the cycle's think time between calls). At ~4 calls
+per cycle, ~2 cycles/day and cycles of ~10 s (max 190 s), that is ~6 extra hop observations a day;
+accepted for the cost join. The structural fix (gateway forwards an explicit turn id to the pool,
+envelope id fresh per call) is the follow-up named in PR #2890. Known gap (UNVERIFIED until live): the ledger fills GPU cost once, when it processes
 the close; a lease released after that query misses the fill.
 
 The event is built here, not with orion.grammar.acts.act_opened_event: that helper only knows

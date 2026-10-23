@@ -15,7 +15,8 @@ from __future__ import annotations
 from typing import Any
 
 from app.admitted_graph import (
-    AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, replay_if_requeued,
+    AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, failed_attempt,
+    replay_if_requeued,
     resource_nodes, taken_back,
 )
 from app.reflect_graph import Deps, ReflectRunState, make_nodes
@@ -48,14 +49,10 @@ def build_admitted_reflect_graph(deps: Deps, admission: AdmissionDeps, checkpoin
             # for the same hold (or a fresh one if the pool ended it) and replay. Not an attempt.
             return await taken_back(admission, dict(state), exc.release_reason, f"{type(exc).__name__}: {exc}",
                                     {"status": "waiting_resource"})
-        except Exception as exc:  # noqa: BLE001 -- transport failure: bounded re-try
-            attempt = int(state.get("attempt") or 0) + 1
-            error = f"{type(exc).__name__}: {exc}"[:500]
-            if attempt >= admission.max_attempts:
-                released = await admission.release(dict(state), "attempt_failed")
-                return {**released, "status": "failed", "attempt": attempt, "last_error": error}
-            released = await admission.release(dict(state), "attempt_failed", keep_requeued=True)
-            return {**released, "status": "waiting_resource", "attempt": attempt, "last_error": error}
+        except Exception as exc:  # noqa: BLE001 -- transport failure: bounded re-try (shared policy)
+            # Re-queues at once (no backoff node in this graph); a deterministic error fails now.
+            return await failed_attempt(admission, dict(state), exc, waiting={"status": "waiting_resource"},
+                                        backoff=False)
 
     async def finish(state: ReflectRunState) -> dict:
         released = await admission.release(dict(state), "completed")

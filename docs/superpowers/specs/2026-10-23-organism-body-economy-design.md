@@ -914,7 +914,8 @@ Patch A is low-risk: it writes new rows and decides nothing. It also settles the
 
 ## Patch A results (2026-10-23) — what the measurements changed
 
-- **Fact 2 is overturned in part** (PR #2861, `2026-10-23-body-economy-heat-and-replay-findings.md`):
+- **Correction (Juniper, 10-23): the cabinet heat is outside weather acting through the house's central AC.** It runs only above about 75 °F outside, and it has been off since about 10-11, so the room runs warmer. orion-prediction already models this: #2829 `athena.central_ac_proxy` plus a house heat-balance eval. A linear outdoor-temperature term cannot see it, which is why the first pass below wrongly said "weather explains nothing". #2780 also records that the 10-16 vision bring-up happened with the cabinet open and moved the sensor's surroundings: the cabinet reads about 2 °C higher since 10-17 00:35Z. #2861 is being redone with both. **Rule for later work:** check orion-prediction's PRs and change-events table before fitting anything about the cabinet.
+- **Fact 2, first pass (superseded where it conflicts with the correction above)** (PR #2861, `2026-10-23-body-economy-heat-and-replay-findings.md`):
   - **Weather explains nothing.** Daily cabinet vs outdoor temperature r = 0.05, and the hottest cabinet days were cool outside.
   - **Orion's load does heat the cabinet in the short run.** circe adds +0.35 °C per 100 W within 2 h (CI 0.23–0.48); a typical busy step is about +1.3 °C. Over a whole day the effect is unclear.
   - **The 0.10 vs 0.22 correlations** came from different 14-day windows of the same query. Neither is a usable sensitivity.

@@ -120,6 +120,17 @@ def test_month_end_forecast():
     assert month_end_forecast(to_date=100.0, trailing_rate_per_hour=None, hours_remaining=10) is None
 
 
+def test_params_reject_decay_floor_above_max_step_and_nan_prev():
+    with pytest.raises(ValueError):
+        PriceParams(eta=0.5, ceiling=1.0, max_step=0.1, budget_floor=0.25, slack_decay_floor=0.5)
+    with pytest.raises(ValueError):
+        step_price(float("nan"), use=1.0, budget=1.0, exogenous_bind=False, params=P)
+
+
+def test_empty_sensitivity_map_is_unknown():
+    assert heat_contribution({}, {}) is None
+
+
 def test_params_reject_nonpositive():
     with pytest.raises(ValueError):
         PriceParams(eta=0.0, ceiling=1.0, max_step=1.0, budget_floor=1.0)

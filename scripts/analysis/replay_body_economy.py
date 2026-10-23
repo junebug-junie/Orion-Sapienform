@@ -82,7 +82,7 @@ def hourly_from_extract(extract: dict) -> dict:
         out[h]["kwh"] = {}
     for r in extract["energy_hourly"]:
         h = _ts(r["t"])
-        if r["source"] in ENERGY_SOURCES and r.get("covered_sec", 0) > 1800:
+        if r["source"] in ENERGY_SOURCES and (r.get("covered_sec") or 0) > 1800:
             out.setdefault(h, {"cabinet_c": None, **{x: None for x in HOST_REGRESSOR}, "kwh": {}})
             # scale a partly covered hour up to a full hour
             out[h]["kwh"][r["source"]] = r["kwh"] * 3600.0 / r["covered_sec"]
@@ -155,9 +155,16 @@ def run_heat_replay(hours: dict, *, sensitivity: dict[str, float], baselines: di
     return out
 
 
-def eval_r1(res: list[HourResult], *, soft_line_c: float, ceiling: float, near_zero_frac: float = 0.05) -> dict:
+def eval_r1(res: list[HourResult], *, soft_line_c: float, ceiling: float, near_zero_frac: float = 0.05,
+            min_coverage: float = 0.8, min_exo_recall: float = 0.9) -> dict:
     """R1: price ~0 when the forecast is under the soft line; positive above it; every hour that
-    is unmeetable with zero Orion load flagged exogenous_bind, never climbing past the ceiling."""
+    is unmeetable with zero Orion load flagged exogenous_bind.
+
+    "Unmeetable" is judged on the REALIZED cabinet temperature (cabinet - Orion's share >= line),
+    not the forecast the flag was set from, so the check measures how well the forecast-driven
+    flag tracks reality instead of passing by construction. "Never climbing past the ceiling" is
+    guaranteed by step_price's clip and is unit-tested there, not graded here.
+    Fails when fewer than ``min_coverage`` of hours have a reading: no data is not a pass."""
     known = [r for r in res if r.forecast_c is not None and r.status != NO_READING]
     under = [r for r in known if r.forecast_c < soft_line_c]
     over = [r for r in known if r.forecast_c >= soft_line_c]
@@ -176,9 +183,11 @@ def eval_r1(res: list[HourResult], *, soft_line_c: float, ceiling: float, near_z
                 tail += 1
             else:
                 other += 1
-    exo = [r for r in known if r.own_c is not None and (r.forecast_c - r.own_c) >= soft_line_c]
+    exo = [r for r in known if r.own_c is not None and r.cabinet_c is not None
+           and (r.cabinet_c - r.own_c) >= soft_line_c]
     exo_flagged = sum(1 for r in exo if r.status == EXOGENOUS_BIND)
-    climbing = sum(1 for r in exo if r.price > ceiling + 1e-12)
+    flagged_total = sum(1 for r in known if r.status == EXOGENOUS_BIND)
+    coverage = len(known) / len(res) if res else 0.0
     frac = lambda a, b: (a / b) if b else None  # noqa: E731
     out = {
         "hours_known": len(known), "hours_no_reading": len(res) - len(known),
@@ -187,20 +196,20 @@ def eval_r1(res: list[HourResult], *, soft_line_c: float, ceiling: float, near_z
         "under_line_mean_price": (sum(r.price for r in under) / len(under)) if under else None,
         "hours_over_line": len(over), "over_line_price_positive": over_pos,
         "over_line_positive_frac": frac(over_pos, len(over)),
-        "hours_exogenous": len(exo), "exogenous_flagged": exo_flagged, "exogenous_price_above_ceiling": climbing,
+        "hours_exogenous_realized": len(exo), "exogenous_flagged": exo_flagged,
+        "exogenous_recall": frac(exo_flagged, len(exo)), "hours_flagged_total": flagged_total,
+        "coverage": coverage,
         "near_zero_threshold": eps,
         "under_line_nonzero_decay_tail": tail, "under_line_nonzero_other": other,
     }
-    out["pass"] = bool(
-        (out["under_line_near_zero_frac"] is None or out["under_line_near_zero_frac"] >= 0.95)
-        and (out["over_line_positive_frac"] is None or out["over_line_positive_frac"] >= 0.95)
-        and exo_flagged == len(exo) and climbing == 0
+    base = bool(
+        coverage >= min_coverage and under and over
+        and out["over_line_positive_frac"] >= 0.95
+        and (not exo or out["exogenous_recall"] >= min_exo_recall)
     )
+    out["pass"] = base and out["under_line_near_zero_frac"] >= 0.95
     # Same check with the integrator's decay tail (<= one horizon after a binding hour) excused.
-    out["pass_excluding_decay_tail"] = bool(
-        other == 0 and (out["over_line_positive_frac"] is None or out["over_line_positive_frac"] >= 0.95)
-        and exo_flagged == len(exo) and climbing == 0
-    )
+    out["pass_excluding_decay_tail"] = base and other == 0
     return out
 
 
@@ -214,7 +223,7 @@ def eval_r3(prices: list[float], statuses: list[str], binding: list[bool], *, ce
     A move smaller than ``min_leg_frac`` x ceiling is not counted as a reversal leg, so a 0.01
     wiggle on a falling price is not called an oscillation."""
     n = len(prices)
-    returns, censored = [], 0
+    returns, censored, stuck = [], 0, 0
     for i in range(1, n):
         if binding[i - 1] and not binding[i]:
             k, got = 0, None
@@ -224,7 +233,10 @@ def eval_r3(prices: list[float], statuses: list[str], binding: list[bool], *, ce
                     break
                 k += 1
             if got is None:
-                censored += 1  # re-bound (or ran out of data) before reaching 0
+                if k > horizon:
+                    stuck += 1  # clear for longer than a horizon and the price never reached 0
+                else:
+                    censored += 1  # re-bound (or ran out of data) within a horizon
             else:
                 returns.append(got)
     # oscillation: peak-to-peak in any horizon window with >= 2 direction reversals
@@ -245,15 +257,15 @@ def eval_r3(prices: list[float], statuses: list[str], binding: list[bool], *, ce
         else:
             run = 0
     out = {
-        "clear_events": len(returns) + censored, "returned_to_zero": len(returns),
-        "censored_rebound_before_zero": censored,
+        "clear_events": len(returns) + censored + stuck, "returned_to_zero": len(returns),
+        "censored_rebound_before_zero": censored, "stuck_positive_past_horizon": stuck,
         "max_hours_to_zero": max(returns) if returns else None,
         "returns_within_horizon": sum(1 for r in returns if r <= horizon),
         "max_peak_to_peak_oscillating_window": worst_osc, "declared_amplitude": amplitude, "min_leg": min_leg,
         "longest_unflagged_ceiling_run_h": longest,
     }
     out["pass"] = bool(
-        all(r <= horizon for r in returns) and worst_osc < amplitude and longest <= horizon
+        stuck == 0 and all(r <= horizon for r in returns) and worst_osc < amplitude and longest <= horizon
     )
     return out
 
@@ -371,6 +383,10 @@ def run(extract: dict, fit: dict, *, soft_line_c: float, replay_start: datetime,
     hours = hourly_from_extract(extract)
     sens_raw = fit["replay_sensitivity"]
     sens = {h: usable_sensitivity(v["point"], v["lo"], v["hi"]) for h, v in sens_raw.items()}
+    bad = [h for h, v in sens.items() if v is None]
+    if bad or not sens:
+        raise SystemExit(f"fit gave no usable sensitivity for {bad or 'any host'}; refusing to replay "
+                         "(every hour would be no_reading)")
     window_hours = [h for h in hours if replay_start <= h < replay_end]
     baselines = {h: _p10([hours[t][h] for t in window_hours]) for h in sens}
     ceiling = 1.0
@@ -404,6 +420,18 @@ def run(extract: dict, fit: dict, *, soft_line_c: float, replay_start: datetime,
             }
     kwh, fill = fill_energy(hours, cycle_start, cycle_end)
     r4 = eval_r4(kwh, cycle_start=cycle_start, cycle_end=cycle_end, replay_start=replay_start, replay_end=replay_end)
+    # Cross-check without any imputation: athena + circe are metered for the whole cycle.
+    metered = {}
+    t = cycle_start
+    while t < cycle_end:
+        k = hours.get(t, {}).get("kwh", {})
+        if k.get("athena") is not None and k.get("circe") is not None:
+            metered[t] = k["athena"] + k["circe"]
+        t += timedelta(hours=1)
+    r4_metered = eval_r4(metered, cycle_start=cycle_start, cycle_end=cycle_end, replay_start=replay_start,
+                         replay_end=replay_end)
+    r4_metered["hours_present"] = len(metered)
+    r4_metered.pop("daily_forecasts", None)
     fixed = _p10([kwh[h] for h in kwh])
     energy = {}
     for env in envelopes:
@@ -426,7 +454,9 @@ def run(extract: dict, fit: dict, *, soft_line_c: float, replay_start: datetime,
         "baseline_watts_p10": baselines,
         "ceiling_note": ("Provisional ceiling = 1.0 want-value per degC. NOT data-sized: size_ceiling() needs "
                          "graded want values and per-act costs, and neither exists (no WantV1; cost_json null)."),
-        "heat": heat, "energy_fill": fill, "R4": r4, "energy_price_dynamics": energy,
+        "heat": heat, "energy_fill": fill, "R4": r4, "R4_athena_circe_unfilled": r4_metered,
+        "energy_price_dynamics": energy,
+        "baseline_note": "p10 baselines are taken over the whole replay window (mild look-ahead in persistence mode; the forecast itself uses only hour t-1).",
         "not_yet_evaluable": NOT_YET,
     }
 
@@ -437,15 +467,15 @@ def render_md(r: dict) -> str:
          "Sensitivity used (degC per 100 W held; upper bound where the interval spans 0): "
          + ", ".join(f"{h} {v:.3f}" for h, v in r["sensitivity_used_c_per_100w"].items() if v is not None), "",
          r["ceiling_note"], "", "## Heat price (R1, R3)", "",
-         "| forecast / rule | R1 | under-line ~0 | under-line >0: decay tail / other | over-line >0 | exogenous hours flagged | R3 | max h to 0 | censored | worst osc | unflagged ceiling run h |",
+         "| forecast / rule | R1 | under-line ~0 | under-line >0: decay tail / other | over-line >0 | realized-unmeetable hours flagged | R3 | max h to 0 | stuck / censored | worst osc | unflagged ceiling run h |",
          "|---|---|---|---|---|---|---|---|---|---|---|"]
     for k, v in r["heat"].items():
         a, b = v["R1"], v["R3"]
         f = lambda x: "n/a" if x is None else f"{x:.2f}"  # noqa: E731
         L.append(f"| {k} | {'PASS' if a['pass'] else 'FAIL'} ({'PASS' if a['pass_excluding_decay_tail'] else 'FAIL'} excl. tail) | {f(a['under_line_near_zero_frac'])} ({a['hours_under_line']} h) | "
                  f"{a['under_line_nonzero_decay_tail']} / {a['under_line_nonzero_other']} | "
-                 f"{f(a['over_line_positive_frac'])} ({a['hours_over_line']} h) | {a['exogenous_flagged']}/{a['hours_exogenous']} | "
-                 f"{'PASS' if b['pass'] else 'FAIL'} | {b['max_hours_to_zero']} | {b['censored_rebound_before_zero']} | "
+                 f"{f(a['over_line_positive_frac'])} ({a['hours_over_line']} h) | {a['exogenous_flagged']}/{a['hours_exogenous_realized']} | "
+                 f"{'PASS' if b['pass'] else 'FAIL'} | {b['max_hours_to_zero']} | {b['stuck_positive_past_horizon']} / {b['censored_rebound_before_zero']} | "
                  f"{b['max_peak_to_peak_oscillating_window']:.2f} | {b['longest_unflagged_ceiling_run_h']} |")
     r4 = r["R4"]
     L += ["", "## Month-end energy forecast (R4)", "",
@@ -455,6 +485,9 @@ def render_md(r: dict) -> str:
           f"mean |error| {r4['mean_abs_error']:.1%} -> {'PASS' if r4['pass'] else 'FAIL'}",
           f"- Harder rate-only forecast (30 d x trailing-7d rate): worst {r4['rate_only_worst_error']:+.1%}, "
           f"mean |error| {r4['rate_only_mean_abs_error']:.1%} -> {'PASS' if r4['rate_only_pass'] else 'FAIL'}",
+          f"- No-imputation cross-check (athena + circe only, {r['R4_athena_circe_unfilled']['hours_present']} h metered): "
+          f"worst {r['R4_athena_circe_unfilled']['worst_error']:+.1%}, rate-only worst {r['R4_athena_circe_unfilled']['rate_only_worst_error']:+.1%} "
+          f"-> {'PASS' if r['R4_athena_circe_unfilled']['pass'] else 'FAIL'}",
           "", "## Energy price dynamics (hypothetical envelopes, R3 only)", ""]
     for k, v in r["energy_price_dynamics"].items():
         b = v["R3"]

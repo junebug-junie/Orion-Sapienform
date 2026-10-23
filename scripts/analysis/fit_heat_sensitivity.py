@@ -6,7 +6,9 @@ item 3, part 1: regress athena's ``cabinet_temp_c`` on per-host chassis watts at
 lags, controlling for outdoor temperature (persisted in ``prediction_weather_hourly``), hour of day
 and AC watts. The per-host sensitivity is the SUM of its lag coefficients: degC per 100 W held
 steady. Intervals are a moving-block bootstrap over whole days (residuals are strongly
-autocorrelated, so a plain OLS SE would be far too narrow) with a Newey-West HAC SE beside it.
+autocorrelated, so a plain OLS SE would be far too narrow; whole days are resampled i.i.d. with
+replacement) with a Newey-West HAC SE beside it. The HAC SE is a LOWER bound: it is computed on
+the rows left after filtering, where row lag is not exactly time lag.
 
 It also re-runs the simple hourly correlations the design quoted (Fact 2) with the exact SQL, to
 settle the circe 0.10 vs 0.22 discrepancy.
@@ -107,6 +109,7 @@ def restrict(frame: dict, end: datetime) -> dict:
 # at ~94 mm (from ~116 mm), humidity stepped down, and the cabinet floor rose ~5 degC with no
 # matching change in outdoor temperature or load. Something physical changed in the cabinet.
 CABINET_SHIFT_UTC = datetime(2026, 10, 16, 21, 0, tzinfo=timezone.utc)
+CABINET_SHIFT_END_UTC = datetime(2026, 10, 17, 1, 0, tzinfo=timezone.utc)  # transient bins dropped
 
 
 def regressors(frame: dict, spec: dict[str, str]) -> dict[str, np.ndarray]:
@@ -142,17 +145,28 @@ def design(frame: dict, regs: dict[str, np.ndarray], *, outdoor: bool = True, ac
         names += [f"hod_sin{k}", f"hod_cos{k}"]
     day = np.array([t.date().toordinal() for t in frame["times"]])
     if day_fe:
-        for d in sorted(set(day))[1:]:
+        for d in sorted(set(day)):  # one per day; the reference is chosen after filtering
             cols.append((day == d).astype(float))
             names.append(f"day_{d}")
+    post = np.array([t >= CABINET_SHIFT_END_UTC for t in frame["times"]], dtype=float)
+    # The 10-16 cabinet change as a step. With day dummies it is redundant (the transient bins
+    # 21:00-01:00Z are dropped below, so the step falls on a day boundary) and would be collinear.
+    if not day_fe and 0 < post.sum() < len(post):
+        cols.append(post)
+        names.append("post_cabinet_shift")
     cols.append(np.ones(len(frame["times"])))
     names.append("const")
     X = np.column_stack(cols)
     y = frame["cab"]
-    ok = np.isfinite(y) & np.all(np.isfinite(X), axis=1)
+    transient = np.array([CABINET_SHIFT_UTC <= t < CABINET_SHIFT_END_UTC for t in frame["times"]])
+    ok = np.isfinite(y) & np.all(np.isfinite(X), axis=1) & ~transient
     X, y, day = X[ok], y[ok], day[ok]
-    if day_fe:  # drop day dummies that ended up empty after filtering
+    if day_fe:
+        # Drop dummies that ended up empty after filtering, then drop the first remaining one so the
+        # reference day is a day that actually has rows (otherwise dummies + const are collinear).
         keep = [j for j, nm in enumerate(names) if not nm.startswith("day_") or X[:, j].any()]
+        first_day = next(j for j in keep if names[j].startswith("day_"))
+        keep.remove(first_day)
         X, names = X[:, keep], [names[j] for j in keep]
     return X, y, names, day
 
@@ -191,7 +205,7 @@ def block_bootstrap(X: np.ndarray, y: np.ndarray, day: np.ndarray, contrasts: di
 
 
 def fit_model(frame: dict, spec: dict[str, str], *, label: str, reps: int, seed: int,
-              hac_lags: int = 16, **design_kw) -> dict:
+              hac_lags: int = 96, **design_kw) -> dict:
     hosts = tuple(spec)
     X, y, names, day = design(frame, regressors(frame, spec), **design_kw)
     if X.shape[0] < 4 * X.shape[1]:
@@ -321,7 +335,7 @@ with b as (
          avg((measurements_by_node->'circe'->>'chassis_watts')::float)  cw,
          avg((measurements_by_node->'athena'->>'chassis_watts')::float) aw
   from orion_biometrics_cluster
-  where observed_at >= timestamptz '{start}' and observed_at < timestamptz '{end}'
+  where observed_at >= timestamptz '{start} 00:00+00' and observed_at < timestamptz '{end} 00:00+00'
   group by 1),
 e as (
   select hour_start h,
@@ -372,11 +386,19 @@ def daily_levels(frame: dict) -> dict:
     return {"n_days": len(full), "daily_corr": corr, "table": table}
 
 
+def _swing(d: dict) -> float:
+    if d.get("watts_p90") is None or d.get("watts_p10") is None:
+        return float("nan")
+    return d["watts_p90"] - d["watts_p10"]
+
+
 def headline(models: dict, diag: dict) -> list[str]:
     lines = []
     prim = models["primary"]
+    if prim.get("status") != "ok":
+        return [f"primary fit did not run: {prim.get('status')} (n={prim.get('n')})"]
     for h, r in prim["hosts"].items():
-        swing = (diag[h]["watts_p90"] or 0) - (diag[h]["watts_p10"] or 0)
+        swing = _swing(diag[h])
         lo, hi = r["ci95_block_bootstrap"]
         lines.append(
             f"{h}: {r['c_per_100w']:+.3f} degC per 100 W held (95% CI {lo:+.3f}..{hi:+.3f}); "
@@ -386,7 +408,7 @@ def headline(models: dict, diag: dict) -> list[str]:
     fd = models.get("first_diff")
     if fd and fd.get("status") == "ok":
         for h, r in fd["hosts"].items():
-            swing = (diag[h]["watts_p90"] or 0) - (diag[h]["watts_p10"] or 0)
+            swing = _swing(diag[h])
             lo, hi = r["ci95_block_bootstrap"]
             lines.append(f"{h} short-run (hourly differences): {r['c_per_100w_step_2h']:+.3f} degC per 100 W step "
                          f"within 2 h (CI {lo:+.3f}..{hi:+.3f}); p10->p90 step = {r['c_per_100w_step_2h'] * swing / 100:+.2f} degC")

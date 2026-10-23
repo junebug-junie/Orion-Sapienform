@@ -55,6 +55,8 @@ class PriceParams:
                 raise ValueError(f"{name} must be a finite positive number, got {v!r}")
         if not (math.isfinite(self.slack_decay_floor) and self.slack_decay_floor >= 0):
             raise ValueError("slack_decay_floor must be finite and >= 0")
+        if self.slack_decay_floor > self.max_step:
+            raise ValueError("slack_decay_floor must not exceed max_step (bounded-step rule)")
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,8 @@ def _known(x: Optional[float]) -> bool:
 def step_price(prev_price: float, *, use: Optional[float], budget: Optional[float],
                exogenous_bind: bool, params: PriceParams) -> PriceStep:
     """One dual-ascent tick with the no_reading, anti-windup and bounded-step rules."""
+    if not _known(prev_price):
+        raise ValueError(f"prev_price must be a finite number, got {prev_price!r}")
     prev = min(max(float(prev_price), 0.0), params.ceiling)
     if exogenous_bind:
         target = min(params.ceiling, prev + params.max_step) if params.bind_ramp else params.ceiling
@@ -103,7 +107,10 @@ def heat_contribution(sensitivity_c_per_100w: Mapping[str, Optional[float]],
     """Orion's own heat share in degC: sum over hosts of sensitivity x incremental watts / 100.
 
     Any host with a sensitivity but no watts reading (or vice versa) makes the whole level
-    unknown (None). A missing host is not a host drawing 0 W."""
+    unknown (None). A missing host is not a host drawing 0 W. An empty sensitivity map is
+    also unknown, not a known zero."""
+    if not sensitivity_c_per_100w:
+        return None
     total = 0.0
     for host, s in sensitivity_c_per_100w.items():
         w = incremental_watts.get(host)

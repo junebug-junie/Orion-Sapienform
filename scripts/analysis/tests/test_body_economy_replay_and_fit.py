@@ -34,16 +34,18 @@ def _synthetic_extract(days: int = 12, s_circe: float = 0.4, s_athena: float = 0
     circe = 400 + 150 * np.sign(np.sin(np.arange(n) / 7.0)) + rng.normal(0, 20, n)
     athena = 240 + rng.normal(0, 15, n)
     day_off = {d: rng.normal(0, 1.5) for d in range(days)}
+    wx_noise = rng.normal(0, 2.0, days * 24 + 1)  # outdoor not a pure function of the hour
     for i in range(n):
         t = T0 + timedelta(minutes=15 * i)
         lag = circe[i - 4] if i >= 4 else circe[0]
-        out_c = 15 + 5 * math.sin(2 * math.pi * (t.hour / 24))
+        out_c = 15 + 5 * math.sin(2 * math.pi * (t.hour / 24)) + wx_noise[i // 4]
         cab = 26 + day_off[i // 96] + 0.05 * out_c + s_circe * lag / 100 + s_athena * athena[i] / 100 + rng.normal(0, 0.05)
         bins.append({"t": _z(t), "cabinet_c": cab, "w_athena": athena[i] + 150, "w_circe": circe[i] + 120,
                      "w_hecate": 96.0, "cw_athena": athena[i], "cw_circe": circe[i], "fan_athena": 40.0, "fan_circe": 40.0, "n": 60})
     for h in range(days * 24):
         t = T0 + timedelta(hours=h)
-        weather.append({"t": _z(t), "temp_f": (15 + 5 * math.sin(2 * math.pi * t.hour / 24)) * 9 / 5 + 32, "source": "history"})
+        weather.append({"t": _z(t), "temp_f": (15 + 5 * math.sin(2 * math.pi * t.hour / 24) + wx_noise[h]) * 9 / 5 + 32,
+                        "source": "history"})
         for src, kwh in (("athena", 0.4), ("circe", 0.9), ("hecate", 0.1), ("cooling", 0.85 + rng.normal(0, 0.01))):
             energy.append({"t": _z(t), "source": src, "kwh": kwh, "covered_sec": 3600.0, "sample_count": 240})
     return {"window": {"start": _z(T0), "end": _z(T0 + timedelta(days=days))},
@@ -86,8 +88,9 @@ def test_heat_replay_flags_unmeetable_hours_and_returns_to_rest():
     statuses = [r.status for r in res]
     assert statuses[11:21] == [EXOGENOUS_BIND] * 10
     r1 = rep.eval_r1(res, soft_line_c=31.0, ceiling=1.0)
-    assert r1["exogenous_flagged"] == r1["hours_exogenous"] == 10
-    assert r1["exogenous_price_above_ceiling"] == 0
+    # realized-unmeetable hours are 10..19; persistence flags 11..20, so it misses the first hour
+    assert r1["hours_exogenous_realized"] == 10
+    assert r1["exogenous_flagged"] == 9 and r1["exogenous_recall"] == pytest.approx(0.9)
     binding = [r.status == EXOGENOUS_BIND or (r.excess is not None and r.excess > 0) for r in res]
     r3 = rep.eval_r3([r.price for r in res], statuses, binding, ceiling=1.0, amplitude=0.5)
     assert r3["max_hours_to_zero"] is not None and r3["max_hours_to_zero"] <= rep.HORIZON_H
@@ -136,3 +139,27 @@ def test_r4_constant_load_forecasts_exactly_and_fill_is_never_zero():
                      replay_start=T0 + timedelta(days=14), replay_end=T0 + timedelta(days=29))
     assert r4["pass"] and abs(r4["worst_error"]) < 1e-9
     assert r4["realized_usd"] == pytest.approx(2.25 * 720 * rep.TARIFF_USD_PER_KWH)
+
+
+def test_r1_with_no_data_is_not_a_pass():
+    assert rep.eval_r1([], soft_line_c=31.0, ceiling=1.0)["pass"] is False
+    nr = [rep.HourResult(hour=str(i), cabinet_c=None, forecast_c=None, own_c=None, budget_c=None,
+                         status=NO_READING, price=0.0, excess=None) for i in range(24)]
+    r = rep.eval_r1(nr, soft_line_c=31.0, ceiling=1.0)
+    assert r["pass"] is False and r["pass_excluding_decay_tail"] is False
+
+
+def test_r3_price_stuck_positive_after_clearing_fails():
+    prices = [1.0] + [0.9] * 20 + [1.0]
+    binding = [True] + [False] * 20 + [True]
+    r = rep.eval_r3(prices, ["live"] * 22, binding, ceiling=1.0, amplitude=0.5)
+    assert r["stuck_positive_past_horizon"] == 1 and r["pass"] is False
+
+
+def test_fit_with_empty_reference_day_keeps_controls_finite():
+    ex = _synthetic_extract(days=6)
+    for r in ex["bins15"][:96]:  # first day has no circe reading at all
+        r["cw_circe"] = None
+    frame = fit.build_frame(ex, ("athena", "circe", "hecate"))
+    m = fit.fit_model(frame, {"athena": "compute", "circe": "compute"}, label="t", reps=20, seed=1, day_fe=True)
+    assert m["status"] == "ok" and m["condition_number"] < 1e8

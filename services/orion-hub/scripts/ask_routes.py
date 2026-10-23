@@ -256,7 +256,8 @@ def picture_answer_detail(answer: str, image_refs: list[str], pictures: list[Pic
 def confirm_picture_detail(answer: str, image_refs: list[str], pictures: list[PictureAnswer]) -> dict[str, Any]:
     """``{"pictures": [...]}`` for an "Is this <name>?" card answered picture by
     picture (2026-10-23): "same" = it is <name>, "different" = it is not,
-    "unsure". Every picture on the card, once; no names (the card names one person).
+    "unsure". Each picture at most once (one left out is "unsure"); no names
+    (the card names one person).
     The answer is "yes" exactly when at least one picture is <name>."""
     if len(image_refs) < 2:
         raise HTTPException(status_code=422, detail="pictures_need_a_multi_picture_card")
@@ -273,8 +274,9 @@ def confirm_picture_detail(answer: str, image_refs: list[str], pictures: list[Pi
         if clean_name(p.name):
             raise HTTPException(status_code=422, detail="no_names_on_is_this_cards")
         out[i] = {"image_ref": p.image_ref, "index": i, "verdict": p.verdict}
-    if len(out) != len(index):
-        raise HTTPException(status_code=422, detail="every_picture_needs_an_answer")
+    # A picture the card could not show gets no answer: it counts as "unsure".
+    for ref, i in index.items():
+        out.setdefault(i, {"image_ref": ref, "index": i, "verdict": "unsure"})
     if (answer == "yes") != any(v["verdict"] == "same" for v in out.values()):
         raise HTTPException(status_code=422, detail="answer_does_not_match_pictures")
     return {"pictures": [out[i] for i in sorted(out)]}

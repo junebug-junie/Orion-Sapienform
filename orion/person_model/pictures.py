@@ -54,6 +54,15 @@ SELECT person_id, ref AS image_ref, at FROM (
     AND p.person_id = ANY(@IDS@)
 ) x
 WHERE ref LIKE 'thumb:%'
+  -- A picture later marked "someone else", or "not <name>", never shows.
+  AND NOT EXISTS (SELECT 1 FROM vision_ask_picture_verdict d WHERE d.image_ref = x.ref AND d.verdict = 'different')
+  AND NOT EXISTS (
+    SELECT 1 FROM vision_person_exemplar n
+    JOIN vision_crop_observation nc ON nc.crop_id = n.crop_id
+    JOIN person np ON np.person_id = x.person_id
+    WHERE n.polarity = -1 AND n.revoked_at IS NULL
+      AND lower(btrim(n.person_label)) = lower(btrim(np.display_name))
+      AND x.ref IN (nc.thumb_ref, nc.face_thumb_ref))
 ORDER BY person_id, at DESC NULLS LAST, ref
 """
 

@@ -62,6 +62,6 @@ def test_is_this_x_with_several_pictures_sends_one_answer_per_picture() -> None:
     assert got == [
         {"action": "answer", "answer": "yes", "extra": {"pictures": pics("different", "same", "unsure")}},
         {"action": "answer", "answer": "no", "extra": {"pictures": pics("different", "unsure", "unsure")}},
-        {"action": "dismiss", "answer": "", "extra": None},
+        None,   # nothing chosen: refused, never a silent dismissal
         None,
     ]

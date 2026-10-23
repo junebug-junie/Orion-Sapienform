@@ -86,7 +86,7 @@
   // What an "Is this <name>?" card with several pictures sends (2026-10-23):
   // choices[i] is "same" (it is <name>), "different" (it is not) or "unsure".
   // At least one <name> -> yes; none, but at least one "not" -> no; all "not
-  // sure" -> a dismissal. Every picture rides along, so a card holding two
+  // sure" -> null (nothing to send). Every picture rides along, so a card holding two
   // people can say which picture is <name>.
   function personConfirmPicturesSubmission(views, choices) {
     if (!views || views.length < 2) return null;
@@ -96,7 +96,8 @@
     const verdicts = pictures.map(function (p) { return p.verdict; });
     if (verdicts.indexOf("same") >= 0) return { action: "answer", answer: "yes", extra: { pictures: pictures } };
     if (verdicts.indexOf("different") >= 0) return { action: "answer", answer: "no", extra: { pictures: pictures } };
-    return { action: "dismiss", answer: "", extra: null };
+    // Nothing chosen: refused, never a silent dismissal ("Can't tell" is its own button).
+    return null;
   }
 
   // Every picture an ask shows, in order, no repeats: image_refs, else the
@@ -544,14 +545,31 @@
     sendBtn.setAttribute("type", "button");
     sendBtn.setAttribute("data-ask-action", "send");
     const note = el(doc, "div", "text-[11px] text-amber-300 hidden");
+    const cantTellBtn = el(doc, "button",
+      "text-xs rounded px-3 py-1 bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700", "Can't tell");
+    cantTellBtn.setAttribute("type", "button");
+    cantTellBtn.setAttribute("data-ask-action", "dismiss");
+    const buttons = [sendBtn, cantTellBtn];
+    function run(sub) {
+      buttons.forEach(function (b) { b.disabled = true; });
+      return Promise.resolve(onAction(vm.askId, sub.action, sub.answer, note, undefined, sub.extra)).finally(function () {
+        buttons.forEach(function (b) { b.disabled = false; });
+      });
+    }
     sendBtn.addEventListener("click", function () {
       const sub = personConfirmPicturesSubmission(vm.images, choices);
-      sendBtn.disabled = true;
-      return Promise.resolve(onAction(vm.askId, sub.action, sub.answer, note, undefined, sub.extra)).finally(function () {
-        sendBtn.disabled = false;
-      });
+      if (!sub) {
+        note.textContent = "Choose " + name + " or Not " + name + " for at least one picture, or press Can't tell.";
+        note.classList.remove("hidden");
+        return;
+      }
+      return run(sub);
     });
-    card.appendChild(sendBtn);
+    cantTellBtn.addEventListener("click", function () { return run(personConfirmSubmission("unsure")); });
+    const row = el(doc, "div", "flex items-center gap-2");
+    row.appendChild(sendBtn);
+    row.appendChild(cantTellBtn);
+    card.appendChild(row);
     card.appendChild(note);
     return card;
   }

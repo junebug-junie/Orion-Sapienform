@@ -267,3 +267,14 @@ def test_a_person_question_shows_only_pictures_she_tied_to_that_name(pg) -> None
         ([THUMB_PICKED, THUMB_NAMED], THUMB_PICKED)]
     summary, _ = _run(pg, NOW + timedelta(minutes=2))
     assert summary["person_ask_pictures_refreshed"] == 0
+    # She later says the named picture is "not Sam" on another card: it stops showing.
+    with pg.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO vision_crop_observation (crop_id, observation_id, stream_id, camera_id, artifact_id, "
+            "observed_at, label, score, box_xyxy, thumb_ref) VALUES ('crop-n', 'o', 'walkway', 'c', 'a', :t, "
+            "'person', 0.9, '{0,0,1,1}', :r)"), {"t": NOW - timedelta(hours=2), "r": THUMB_NAMED})
+        conn.execute(text(
+            "INSERT INTO vision_person_exemplar (exemplar_id, person_label, crop_id, polarity, source, ask_id, added_at) "
+            "VALUES ('e2', 'Sam', 'crop-n', -1, 'confirm_pick_no', 'ask-d', :t)"), {"t": NOW})
+    _run(pg, NOW + timedelta(minutes=3))
+    assert _rows(pg, "SELECT image_refs FROM orion_ask WHERE ask_id = :a", a=sam["ask_id"]) == [([THUMB_PICKED],)]

@@ -191,6 +191,9 @@ def test_orion_is_asking_panel_browser_smoke():
         e_box = page.locator(card_e).bounding_box()
         sel = page.locator(f'{card_e} [data-ask-picture="2"]').bounding_box()
         assert sel["x"] + sel["width"] <= e_box["x"] + e_box["width"] + 1, (sel, e_box)
+        # Send with nothing chosen is refused (review 2026-10-23: it used to dismiss for good).
+        page.click(f'{card_e} [data-ask-action="send"]')
+        assert posted == [] and "or press Can't tell" in page.inner_text(card_e)
         page.locator(f'{card_e} [data-ask-picture="1"]').select_option("same")
         page.locator(f'{card_e} [data-ask-picture="0"]').select_option("different")
         page.click(f'{card_e} [data-ask-action="send"]')

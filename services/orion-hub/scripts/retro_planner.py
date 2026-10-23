@@ -449,6 +449,9 @@ def validate_zelda_choice(raw: Any, decision: dict) -> ZeldaChoice:
         # Only reach_room carries a number. Live 2026-10-23: Orion answered "fight nearest,
         # enemies_cleared, value 1" 13 times in a room with 4 enemies, and every answer was refused.
         # The number adds nothing to the claim, so drop it instead of refusing the move.
+        import logging
+        logging.getLogger('orion-hub.retro_planner').info(
+            'retro_planner_prediction_value_dropped kind=%s value=%r', pred.get('kind'), pred.get('value'))
         raw = dict(raw, prediction={k: v for k, v in pred.items() if k != 'value'})
     try:
         choice = ZeldaChoice.model_validate(raw)

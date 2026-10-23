@@ -20,42 +20,55 @@ from scripts.retro_routes import configured_router
 logger = logging.getLogger('orion-hub.retro_gateway')
 
 
-async def register_session_end_sink(app, settings, *, create_pool=None) -> None:
-    """Open the memory pool (RECALL_PG_DSN, as Hub does) and register the co-play exporter.
-    No DSN: no sink, logged; play is unaffected."""
+def register_session_end_sink(app, settings, *, create_pool=None):
+    """Register the co-play exporter now and open its memory pool (RECALL_PG_DSN, as Hub does) in
+    the background: the realtime relay never waits for the database (a sql-db restart would
+    otherwise refuse the player's socket for the pool's ~58 s retry). An export before the pool
+    is ready logs ``no_memory_pool``. Returns the pool task, or None without a DSN."""
     from scripts.retro_memory_export import make_session_end_sink
     app.state.memory_pg_pool = None
     dsn = str(getattr(settings, 'RECALL_PG_DSN', '') or '').strip()
     if not dsn:
         logger.warning('retro_gateway_session_end_sink_skipped reason=RECALL_PG_DSN_unset')
-        return
-    try:
-        if create_pool is None:
-            import asyncpg
-            create_pool = asyncpg.create_pool
-        from scripts.memory_pg_pool import create_memory_pg_pool_with_retry
-        app.state.memory_pg_pool = await create_memory_pg_pool_with_retry(dsn=dsn, create_pool=create_pool)
-    except Exception as exc:  # noqa: BLE001 -- the relay must start even without the memory DB
-        logger.warning('retro_gateway_memory_pool_failed error=%s', exc)
-    # Registered even without a pool: export_session then logs "no_memory_pool" instead of the
-    # sink being silently absent.
+        return None
     app.state.retro_session_end_sink = make_session_end_sink(
         pool_provider=lambda: getattr(app.state, 'memory_pg_pool', None),
         bus_provider=lambda: None,   # co-play has no play act to close
     )
-    logger.info('retro_gateway_session_end_sink_ready pool=%s', app.state.memory_pg_pool is not None)
+
+    async def open_pool():
+        try:
+            nonlocal create_pool
+            if create_pool is None:
+                import asyncpg
+                create_pool = asyncpg.create_pool
+            from scripts.memory_pg_pool import create_memory_pg_pool_with_retry
+            app.state.memory_pg_pool = await create_memory_pg_pool_with_retry(dsn=dsn, create_pool=create_pool)
+        except Exception as exc:  # noqa: BLE001 -- the relay keeps running without the memory DB
+            logger.warning('retro_gateway_memory_pool_failed error=%s', exc)
+        logger.info('retro_gateway_session_end_sink_ready pool=%s', app.state.memory_pg_pool is not None)
+
+    import asyncio
+    return asyncio.create_task(open_pool())
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
     from app.settings import settings
-    await register_session_end_sink(app, settings)
+    task = register_session_end_sink(app, settings)
     try:
         yield
     finally:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         pool = getattr(app.state, 'memory_pg_pool', None)
         if pool is not None:
-            await pool.close()
+            try:
+                await asyncio.wait_for(pool.close(), 5)
+            except Exception:  # noqa: BLE001 -- a checked-out connection must not hold shutdown
+                pool.terminate()
 
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)

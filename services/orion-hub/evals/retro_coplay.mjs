@@ -68,7 +68,10 @@ try{
   report.session=await page.evaluate(async()=>(await (await fetch('/api/retro/health/ready')).json()).session);
   await page.screenshot({path:path.join(out,'screen.png')});
   await page.click('#pause').catch(()=>{});
-} catch(error){report.error=String(error&&error.stack||error);if(page)await page.screenshot({path:path.join(out,'failure.png')}).catch(()=>{});}
+} catch(error){report.error=String(error&&error.stack||error);
+  if(page){await page.screenshot({path:path.join(out,'failure.png')}).catch(()=>{});
+    report.closes=await page.evaluate(()=>window.__closes).catch(()=>null);
+    report.session=await page.evaluate(async()=>(await (await fetch('/api/retro/health/ready')).json()).session).catch(()=>null);}}
 finally{await browser.close();}
 const sid=report.session?.session_id;
 if(sid){

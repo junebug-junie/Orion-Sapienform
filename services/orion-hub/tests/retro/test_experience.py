@@ -633,10 +633,17 @@ def test_gateway_registers_the_coplay_exporter():
     # main.py registered the exporter, so 7 co-play handoffs wrote 0 session rows.
     from scripts import retro_gateway as G
     app = SimpleNamespace(state=SimpleNamespace())
+    gate = asyncio.Event()
     async def create_pool(**kw):
+        await gate.wait()          # a slow database
         return 'pool'
-    asyncio.run(G.register_session_end_sink(app, SimpleNamespace(RECALL_PG_DSN='postgresql://x'), create_pool=create_pool))
-    assert callable(app.state.retro_session_end_sink) and app.state.memory_pg_pool == 'pool'
+    async def run():
+        task = G.register_session_end_sink(app, SimpleNamespace(RECALL_PG_DSN='postgresql://x'), create_pool=create_pool)
+        # The sink exists before the pool opens: the relay never waits for the database.
+        assert callable(app.state.retro_session_end_sink) and app.state.memory_pg_pool is None
+        gate.set(); await task
+        assert app.state.memory_pg_pool == 'pool'
+    asyncio.run(run())
     bare = SimpleNamespace(state=SimpleNamespace())
-    asyncio.run(G.register_session_end_sink(bare, SimpleNamespace(RECALL_PG_DSN='')))
+    assert G.register_session_end_sink(bare, SimpleNamespace(RECALL_PG_DSN='')) is None
     assert not hasattr(bare.state, 'retro_session_end_sink') and bare.state.memory_pg_pool is None

@@ -83,6 +83,6 @@ After merge, on circe: `git pull` (with #2880 merged, that deploys it). Otherwis
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2881
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

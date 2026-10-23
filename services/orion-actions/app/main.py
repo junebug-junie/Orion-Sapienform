@@ -894,8 +894,8 @@ def _resolve_now_utc(now_utc: datetime | None) -> datetime:
 def _journal_email_daily_cap_key(*, scope: str = "shared", now_utc: datetime | None = None) -> str:
     """One key per local calendar day, per cap `scope` (see
     `JournalDispatchPolicy.daily_cap_scope`). The default "shared" scope is shared
-    across every trigger_kind still using it (daily_summary, metacog_digest,
-    notify_summary, autonomy_episode, collapse_response, manual) -- one send/day
+    across every email-enabled trigger_kind still using it (autonomy_episode,
+    collapse_response, manual) -- one send/day
     across all of them, regardless of which fires first. A non-"shared" scope (e.g.
     world_pulse_digest) gets its own independent slot/day, isolated from the shared
     pool. Journal entries always persist regardless of scope; only the email step is

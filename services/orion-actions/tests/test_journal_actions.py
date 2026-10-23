@@ -137,7 +137,8 @@ def test_journal_entry_produces_exactly_one_email_dispatch() -> None:
     the same trigger_kind=daily_summary/source_kind=scheduler entry_id under two
     different dedupe-key namespaces (actions:journal:daily:scheduler:{entry_id} and
     actions:journal:persisted:{entry_id}), so neither path's dedupe ever saw the
-    other's send. There is now exactly one call site
+    other's send (daily_summary no longer emails, so this now uses a manual entry).
+    There is now exactly one call site
     (_dispatch_journal_notifications, invoked once from the post-persist consumer)
     and one dedupe-key namespace (actions:journal:notify:{entry_id}) -- even a
     redelivered journal.entry.created.v1 event for the same entry_id must not

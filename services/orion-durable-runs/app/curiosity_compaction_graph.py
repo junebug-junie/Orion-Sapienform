@@ -12,7 +12,7 @@ import asyncio
 from typing import Any, TypedDict
 
 from app.admitted_graph import (
-    AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline,
+    AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, failed_attempt,
     replay_if_requeued, resource_nodes, taken_back,
 )
 from orion.curiosity.compaction import journal_entry, next_prompt, record_answer
@@ -35,6 +35,7 @@ class CompactionState(TypedDict, total=False):
     turn_fence: int
     status: str
     last_error: str | None
+    retry_at: str | None
     digested: bool
     result: dict
 
@@ -89,11 +90,10 @@ def build_curiosity_compaction_graph(store, call_verb_text, publish_journal, adm
             replay = await replay_if_requeued(admission, dict(state), {"status": "waiting_resource"})
             if replay is not None:
                 return replay
-            attempt = int(state.get("attempt") or 0) + 1
-            exhausted = attempt >= admission.max_attempts
-            released = await admission.release(dict(state), "attempt_failed", keep_requeued=not exhausted)
-            return {**released, "status": "failed" if exhausted else "waiting_resource",
-                    "attempt": attempt, "last_error": f"{type(exc).__name__}: {exc}"[:500]}
+            # Shared policy: transport/timeouts are bounded attempts, re-queued at once. A rejected
+            # answer (``record_answer``'s ValueError/ValidationError) changes nothing, so the retry
+            # would re-send the same prompt: it fails now (24/24 such runs never recovered).
+            return await failed_attempt(admission, dict(state), exc, waiting={"status": "waiting_resource"})
 
     async def finalize(state):
         if admission.guard is not None:

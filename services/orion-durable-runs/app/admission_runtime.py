@@ -593,12 +593,16 @@ class AdmissionRuntime:
             # Joinable to the pool's child leases (acceptance check 2: no un-attached agent lease
             # under a turn whose run holds a hold).
             detail["turn_correlation_id"] = turn_correlation_id(state)
-        elif state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, DREAM_CARRY_WORKFLOW) \
+        elif state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, DREAM_CARRY_WORKFLOW, SELF_SENSE_WORKFLOW) \
                 and state.get("step_correlation_id"):
+            # The step's own turn identity, on the event log BEFORE the turn runs: a turn that hangs
+            # or a worker that dies mid-step is still traceable by it (self-sense: the question's).
             detail["step_correlation_id"] = state["step_correlation_id"]
         await self.event(state, "run.started", detail)
         work = asyncio.create_task(node(state))
-        timeout = float(state["brief"]["timeout_sec"])
+        # ``node_timeout_sec``: a node whose attempt is a slice of the brief's budget (self-sense:
+        # one question's share), so one hung step cannot hold the GPU for the whole run's budget.
+        timeout = float(state.get("node_timeout_sec") or state["brief"]["timeout_sec"])
         deadline = state["admission"].get("deadline_at")
         if deadline:
             timeout = min(timeout, max(0, (datetime.fromisoformat(deadline)-self.now()).total_seconds()))

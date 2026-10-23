@@ -240,3 +240,57 @@ def test_a_hold_the_pool_refuses_fails_the_run_with_the_pool_reason():
         assert result["status"] == "failed" and world.calls == []
         assert result["last_error"] == "gpu_pool_unavailable:backlog_max_age"
     asyncio.run(scenario())
+
+
+# --- shared failed-attempt policy (2026-10-23) -------------------------------------------------
+
+def _policy_admission(releases, max_attempts=3):
+    async def release(state, reason, keep_requeued=False):
+        releases.append((reason, keep_requeued))
+        return {"lease": None, "hold": None}
+
+    async def noop(*args, **kwargs):
+        return {}
+
+    return AdmissionDeps(noop, noop, noop, release, noop,
+                         now=lambda: datetime(2026, 10, 23, tzinfo=timezone.utc), max_attempts=max_attempts)
+
+
+def test_failed_attempt_retries_transient_errors_and_fails_deterministic_ones_at_once():
+    from pydantic import BaseModel
+
+    from app.admitted_graph import failed_attempt, is_deterministic
+
+    class Strict(BaseModel):
+        n: int
+
+    try:
+        Strict.model_validate({"n": "not a number"})
+    except Exception as exc:  # noqa: BLE001
+        validation_error = exc
+
+    for transient in (TimeoutError(), ConnectionError("bus"), RuntimeError("turn failed")):
+        assert not is_deterministic(transient)
+    for deterministic in (ValueError("x"), validation_error, TypeError("x"), KeyError("x")):
+        assert is_deterministic(deterministic)
+
+    async def scenario():
+        releases = []
+        waiting = {"status": "retrying", "retry_node": None}
+        update = await failed_attempt(_policy_admission(releases), {"attempt": 0}, TimeoutError(), waiting=waiting,
+                                      extra={"last_turn": {"turn_correlation_id": "t-1"}})
+        assert update["status"] == "retrying" and update["attempt"] == 1 and update["retry_at"]
+        assert update["last_turn"] == {"turn_correlation_id": "t-1"}
+        assert releases == [("attempt_failed", True)]
+
+        releases.clear()
+        update = await failed_attempt(_policy_admission(releases), {"attempt": 0}, ValueError("bad"), waiting=waiting)
+        assert update["status"] == "failed" and update["last_error"] == "deterministic: ValueError: bad"
+        assert releases == [("attempt_failed", False)]
+
+        releases.clear()
+        update = await failed_attempt(_policy_admission(releases), {"attempt": 2}, TimeoutError(), waiting=waiting)
+        assert update["status"] == "failed" and update["attempt"] == 3
+        assert releases == [("attempt_failed", False)]
+
+    asyncio.run(scenario())

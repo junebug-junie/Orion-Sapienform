@@ -103,16 +103,17 @@ URGENT_MAX_ATTEMPTS = 2
 URGENT_RETRY_BASE_SECONDS = 10.0
 
 
-def retry_cannot_finish(state: dict, retry_at: datetime) -> bool:
+def retry_cannot_finish(state: dict, retry_at: datetime, attempt_sec: float | None = None) -> bool:
     """A retry starting at ``retry_at`` cannot get a whole attempt before the run's deadline.
 
     An attempt is ``brief.timeout_sec`` long, and the motor inside it is budgeted from that
     same figure (Hub keeps a finalize reserve out of it), so a retry with less left than one
     attempt is cut by ``workflow_deadline`` mid-motor and ends with nothing: run a153451fe423's
     attempt 2 restarted from zero with ~290 s of a 900 s attempt left. Runs with no deadline
-    (or no timeout on the brief) always retry, as before."""
+    (or no timeout on the brief) always retry, as before. ``attempt_sec`` overrides the brief's
+    figure for a node whose attempt is shorter (self-sense: one question's share)."""
     deadline = (state.get("admission") or {}).get("deadline_at")
-    timeout = (state.get("brief") or {}).get("timeout_sec")
+    timeout = attempt_sec or (state.get("brief") or {}).get("timeout_sec")
     if not deadline or not timeout:
         return False
     left = (datetime.fromisoformat(deadline) - retry_at).total_seconds()
@@ -124,6 +125,88 @@ def retry_budget(admission: AdmissionDeps, state: dict) -> tuple[int, float]:
     if is_urgent(state):
         return min(admission.max_attempts, URGENT_MAX_ATTEMPTS), URGENT_RETRY_BASE_SECONDS
     return admission.max_attempts, admission.retry_base_seconds
+
+
+# Exception types a retry cannot fix: the same checkpointed input raises them again, so they fail
+# the run on the spot instead of spending the GPU on more attempts. Classified by type, never by
+# matching error strings.
+#
+# * TypeError / LookupError / AttributeError / NameError / NotImplementedError / AssertionError:
+#   programming errors.
+# * ValueError (pydantic ``ValidationError`` and ``json.JSONDecodeError`` are subclasses): the
+#   attempt's input or answer cannot satisfy the contract. A "rejected answer changes nothing", so
+#   the retry re-sends the same prompt to the same validator. Live 14 days to 2026-10-23:
+#   curiosity.compaction failed 24 of 24 runs on ValueError/ValidationError (TopicPass body too
+#   long, "topic references omit or invent source records", "exceeds reduction budget") after up
+#   to 3 attempts each, 0 completed. A graph whose parse failures DO recover on a fresh sample
+#   (journal.compose, memory.episode_distill: explicit minimum attempts) keeps its own policy.
+#
+# Everything else -- TimeoutError, OSError/ConnectionError, RuntimeError from a failed turn or
+# transport (HarnessTurnFailed, SelfSenseAskFailed, ReflectLlmCallFailed) -- is transient: a
+# bounded, backed-off attempt.
+DETERMINISTIC_ERRORS: tuple[type[BaseException], ...] = (
+    ValueError, TypeError, LookupError, AttributeError, NameError, NotImplementedError, AssertionError,
+)
+
+
+def is_deterministic(exc: BaseException) -> bool:
+    """True when retrying ``exc`` cannot help (see ``DETERMINISTIC_ERRORS``)."""
+    return isinstance(exc, DETERMINISTIC_ERRORS)
+
+
+async def failed_attempt(admission: AdmissionDeps, state: dict, exc: BaseException, *, waiting: dict,
+                         extra: dict | None = None, attempt_sec: float | None = None) -> dict:
+    """The one retry policy for a work node whose attempt raised (shared by every admitted graph
+    that uses it, so a run resumes from its checkpoint instead of going terminal on the first
+    error). Returns the state update:
+
+    * deterministic (``is_deterministic``): released, ``failed``, ``last_error`` prefixed
+      ``deterministic:`` -- no retry loop on an error that cannot change;
+    * budget spent (``retry_budget``) or a retry that cannot get a whole attempt before the
+      deadline (``retry_cannot_finish``): released, ``failed``;
+    * otherwise: released with ``keep_requeued=True`` (a hold the pool already re-queued keeps its
+      lease_id and place), ``attempt`` +1, exponential ``retry_at``, and ``waiting`` merged in --
+      the caller's resume status (``{"status": "retrying", "retry_node": None}`` for a graph with
+      a ``retry_wait`` node, ``{"status": "waiting_resource"}`` for one that re-queues at once).
+
+    ``extra`` is merged into every outcome (e.g. the failed turn's identity, partial answers)."""
+    attempt = int(state.get("attempt") or 0) + 1
+    error = f"{type(exc).__name__}: {exc}"[:500]
+    extra = extra or {}
+    if is_deterministic(exc):
+        released = await admission.release(state, "attempt_failed")
+        return {**released, "status": "failed", "attempt": attempt,
+                "last_error": f"deterministic: {error}"[:500], **extra}
+    max_attempts, retry_base = retry_budget(admission, state)
+    if attempt >= max_attempts:
+        released = await admission.release(state, "attempt_failed")
+        return {**released, "status": "failed", "attempt": attempt, "last_error": error, **extra}
+    delay = min(admission.retry_max_seconds, retry_base * 2 ** (attempt - 1))
+    retry_at = admission.now() + timedelta(seconds=delay)
+    if retry_cannot_finish(state, retry_at, attempt_sec):
+        # A doomed retry only burns the GPU until the deadline kills it: end now.
+        released = await admission.release(state, "attempt_failed")
+        return {**released, "status": "failed", "attempt": attempt,
+                "last_error": f"retry_skipped_insufficient_time: {error}"[:500], **extra}
+    # A hold still granted (at this generation or, since nothing heartbeats it through the
+    # backoff, a newer one) is handed back.
+    released = await admission.release(state, "attempt_failed", keep_requeued=True)
+    return {**released, **waiting, "attempt": attempt, "last_error": error,
+            "retry_at": retry_at.isoformat(), **extra}
+
+
+def retry_wait_node(admission: AdmissionDeps):
+    """The backoff a ``failed_attempt`` retry waits out: an interrupt until ``retry_at`` (the
+    runtime re-drives the run once it passes; ``TIMED_WAIT_NODES``)."""
+    from langgraph.types import interrupt
+
+    async def retry_wait(state) -> dict:
+        until = datetime.fromisoformat(state["retry_at"])
+        if admission.now() < until:
+            interrupt({"reason": "retrying", "until": state["retry_at"]})
+        return {"status": "retrying"}
+
+    return retry_wait
 
 
 async def taken_back(admission: AdmissionDeps, state: dict, reason: str, error: str, waiting: dict) -> dict:
@@ -175,7 +258,6 @@ def resource_nodes(admission: AdmissionDeps):
 
 def build_admitted_graph(deps: Deps, admission: AdmissionDeps, checkpointer: Any):
     from langgraph.graph import END, START, StateGraph
-    from langgraph.types import interrupt
 
     original = make_nodes(deps)
     resource_request, resource_wait, after_wait = resource_nodes(admission)
@@ -209,35 +291,14 @@ def build_admitted_graph(deps: Deps, admission: AdmissionDeps, checkpointer: Any
             return {**update, **failed_meta}
         except Exception as exc:
             # GraphBubbleUp/interrupt is a BaseException and is not caught here.
-            attempt = int(state.get("attempt") or 0) + 1
-            error = f"{type(exc).__name__}: {exc}"[:500]
-            max_attempts, retry_base = retry_budget(admission, state)
-            if attempt >= max_attempts:
-                released = await admission.release(dict(state), "attempt_failed")
-                return {**released, "status": "failed", "attempt": attempt, "last_error": error, **failed_meta}
-            delay = min(admission.retry_max_seconds, retry_base * 2 ** (attempt - 1))
-            retry_at = admission.now() + timedelta(seconds=delay)
-            if retry_cannot_finish(dict(state), retry_at):
-                # A doomed retry only burns the GPU until the deadline kills it: end now.
-                released = await admission.release(dict(state), "attempt_failed")
-                return {**released, "status": "failed", "attempt": attempt,
-                        "last_error": f"retry_skipped_insufficient_time: {error}"[:500], **failed_meta}
-            # A hold the pool already re-queued meanwhile keeps its lease_id and place; one still
-            # granted (at this generation or, since nothing heartbeats it through the backoff, a newer
-            # one) is handed back.
-            released = await admission.release(dict(state), "attempt_failed", keep_requeued=True)
-            return {**released, "status": "retrying", "attempt": attempt, "last_error": error,
-                    "retry_node": None, "retry_at": retry_at.isoformat(),
-                    **failed_meta}
+            return await failed_attempt(admission, dict(state), exc,
+                                        waiting={"status": "retrying", "retry_node": None},
+                                        extra=failed_meta)
 
     async def run_started(state: CuriosityRunState) -> dict:
         return {"status": "running"}
 
-    async def retry_wait(state: CuriosityRunState) -> dict:
-        until = datetime.fromisoformat(state["retry_at"])
-        if admission.now() < until:
-            interrupt({"reason": "retrying", "until": state["retry_at"]})
-        return {"status": "retrying"}
+    retry_wait = retry_wait_node(admission)
 
     def guarded_tail(name, operation):
         async def tail(state):

@@ -397,19 +397,17 @@ def test_street_rows_become_labelled_street_arcs_and_the_flag_restores_room_only
             await conn.execute("INSERT INTO vision_motion_story_verdict (story_id, verdict, rules_version) "
                                "SELECT story_id, CASE WHEN story_id IN ('v0', 'v1') THEN 'wrong_other' ELSE 'right' "
                                "END, 1 FROM vision_motion_story WHERE story_id LIKE 'v%'")
-            await fdb.insert(conn, "vision_rollup", [{
-                "stream_id": "walkway", "grain": "hour", "period_start": T0, "period_end": T0 + timedelta(hours=1),
-                "complete": True, "line": "x", "rules_version": 2, "rollup": {"rules_version": 2, "kinds": {"person": {
-                    "passings": 6, "count_range": {"low": 2, "high": 6, "method_low": "most_in_one_window",
-                                                   "method_high": "appearance_clusters"}}}}}])
             await fdb.insert(conn, "vision_events", [
                 {"event_id": "ring-1", "stream_id": "doorbell", "event_type": "doorbell_ring",
                  "entities": [], "created_at": start + timedelta(minutes=1)},
                 {"event_id": "motion-1", "stream_id": "doorbell", "event_type": "doorbell_motion",
                  "entities": [], "created_at": start + timedelta(minutes=1)}])
-            for eid, kind, p in (("e1", "handoff_missed", 0.01), ("e2", "handoff_met", 0.4), ("e3", "approach_door", None)):
+            good = (start + timedelta(minutes=3)).isoformat()
+            for eid, kind, p, occurred in (("e1", "handoff_missed", 0.01, good), ("e2", "handoff_met", 0.4, good),
+                                           ("e3", "approach_door", None, good),
+                                           ("e4", "handoff_late", 0.01, "not a time")):  # dropped, never fails the read
                 ev = {"event_id": eid, "kind": kind, "stream_ids": ["walkway", "doorbell"], "p_value": p,
-                      "occurred_at": (start + timedelta(minutes=3)).isoformat(), "salience": 0.5, "correlation_id": "c"}
+                      "occurred_at": occurred, "salience": 0.5, "correlation_id": "c"}
                 await fdb.insert(conn, "vision_handoff_street_outbox", [{
                     "event_id": eid, "handoff_id": f"h-{eid}", "kind": kind, "event": ev,
                     "created_at": start + timedelta(minutes=4)}])
@@ -418,8 +416,7 @@ def test_street_rows_become_labelled_street_arcs_and_the_flag_restores_room_only
         assert sorted(e.event_id for e in events) == ["street_event:a1", "street_event:e1", "street_event:ring-1"]
         (a1,) = [e for e in events if e.source_ref == "a1"]
         assert a1.label == ("Outside (walkway camera): a person walked left to right, away from the house, with "
-                            "other people; that hour, people: at least 2, at most 6 (the camera splits one person "
-                            "into several)")
+                            "other people")  # no people count: the sentence's "1 other person" never leaks
         assert all(e.payload["outside_world"] for e in events)
 
         w = scenario()

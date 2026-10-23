@@ -106,12 +106,15 @@ room-only (`ROOM_STREAMS = {"cam0"}`): the walkway and doorbell cameras reached 
 Each is one closed `street` process arc, subject `street:<origin>:<id>`, evidence the source row
 (`vision_motion_story:<id>`, `vision_events:<id>`, `vision_handoff_street_outbox:<id>`). The label
 always starts "Outside (<camera>):" and is built from the row's fields, never the story sentence
-(which says "together with 1 other person", a bare track count). People appear only as the closed
-hour's honest range (`walkway_rollup.person_count_range`, PR #2781); live, the hour is usually not
-closed yet when the story is read, so most live labels carry no count at all. Nothing binds to a street
-arc by time (room percepts are not about the street), it reads no body, and `presence_transition` /
-`vision_percept` stay room-only. Cap: `ReducerConfig.street_arcs_per_day` (12), first come first kept.
-Recent arcs show only the latest street arc ("saw Outside (walkway camera): ..."). Kill switch:
+(which says "together with 1 other person", a bare track count). The label carries no people count at
+all: the honest range (`walkway_rollup`, PR #2781) exists only once the hour's rollup closes, a median
+~3 h after the hour, so using it would give one arc a different label live and on a re-fold. "How many"
+stays the rollups' job (the Day letter line). Nothing binds to a street arc by time (room percepts are
+not about the street), it reads no body, and `presence_transition` / `vision_percept` stay room-only.
+Cap: `ReducerConfig.street_arcs_per_day` (12), first come first kept. In the frame, street arcs rank
+with reverie (they fill leftover slots, so they never push Orion's own arcs out) and today's latest one
+is pinned like the latest play arc. Recent arcs show only the latest street arc ("saw Outside (walkway
+camera): ..."). The spot-check gate is read as of the read, not as of the story. Kill switch:
 `TEMPORAL_SELF_STREET_EPISODES_ENABLED` (orion-durable-runs); cap `TEMPORAL_SELF_STREET_EPISODES_PER_DAY`.
 Proof on the live rail: `temporal_self_arc` rows with `kind = 'street'`, and the chronicle's
 `temporal_self_street_episode arc_id=... source=vision_motion_story:...` log line.

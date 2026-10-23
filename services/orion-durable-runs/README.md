@@ -592,8 +592,8 @@ session, shown in the chat stance cue. The query is skipped while the table does
 
 **Street episodes (2026-10-23, walkway follow-ups spec PR #2763 item 1).** The chronicle reads notable
 outside events as source `street_event`, three reads of one kind: published clean motion stories whose
-rules version passed Juniper's spot-check gate (`vision_motion_story` + `vision_motion_story_verdict` +
-the closed hour's `vision_rollup` for the people range), doorbell rings (`vision_events`), and graded
+rules version passed Juniper's spot-check gate (`vision_motion_story` + `vision_motion_story_verdict`;
+labels carry no people count), doorbell rings (`vision_events`), and graded
 handoffs with p < 0.05 (`vision_handoff_street_outbox`). One `street` arc each, labelled "Outside
 (<camera>): ...", at most `TEMPORAL_SELF_STREET_EPISODES_PER_DAY` (12) a local day. Each read is skipped
 while one of its tables is missing. Log lines: `temporal_self_street_episode arc_id=... source=...` per

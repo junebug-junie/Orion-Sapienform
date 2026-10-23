@@ -28,7 +28,6 @@ from orion.regulation.arousal import strain_causes
 from orion.schemas.temporal_self import LABEL_MAX, TemporalSelfEventV1
 from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for
 from orion.vision.motion_story_gate import gate_passed, tally_from_counts
-from orion.vision.walkway_rollup import person_count_range, range_phrase
 
 Row = Mapping[str, Any]
 
@@ -517,10 +516,12 @@ def _story_gate(row: Row) -> bool:
 
 
 def street_story_label(row: Row) -> str:
-    """"Outside (walkway camera): a person walked left to right, away from the house, with a stroller;
-    that hour, people: at least 1, at most 3". Built from the story's own fields, never its sentence:
-    the sentence says "together with 1 other person", a bare track count. A people count appears only
-    as the closed hour's honest range (orion/vision/walkway_rollup.py, PR #2781)."""
+    """"Outside (walkway camera): a person walked left to right, away from the house, with a stroller".
+    Built from the story's own fields, never its sentence: the sentence says "together with 1 other
+    person", a bare track count. The label carries NO people count. The honest range
+    (orion/vision/walkway_rollup.py, PR #2781) exists only once the hour's rollup closes, a median ~3 h
+    after the hour, long after the chronicle reads the story; adding it would give the same arc a
+    different label live and on a re-fold. "How many" is the rollups' job (the Day letter line)."""
     kind = str(row.get("kind") or "")
     who = str(row.get("name_label") or "").strip() or f"a {kind}"
     motion = _STORY_MOTION.get(str(row.get("speed_class") or ""), "passed")
@@ -537,10 +538,6 @@ def street_story_label(row: Row) -> str:
         text += ", with " + " and ".join(f"a {c}" for c in others)
     if "person" in companions:
         text += ", with other people"
-    if kind == "person" or "person" in companions:
-        rng = person_count_range(_json(row.get("hour_rollup")))
-        if rng:
-            text += f"; that hour, {range_phrase(rng)}"
     return clip(text)
 
 
@@ -549,7 +546,6 @@ def _street_story(row: Row, tz_name: str) -> TemporalSelfEventV1 | None:
     if (not row.get("published") or not row.get("clean") or stream is None or stream in ROOM_STREAMS
             or row.get("kind") not in STREET_STORY_KINDS or not _story_gate(row)):
         return None
-    rollup = _json(row.get("hour_rollup"))
     ref = row.get("story_id")
     named = bool(str(row.get("name_label") or "").strip())
     return _event(
@@ -560,7 +556,6 @@ def _street_story(row: Row, tz_name: str) -> TemporalSelfEventV1 | None:
         payload={"outside_world": True, "origin": "motion_story", "stream_ids": [str(stream)],
                  "subject_kind": row.get("kind"), "named": named,
                  "individual_id": row.get("individual_id") if named else None,
-                 "people_range": person_count_range(rollup) if isinstance(rollup, dict) else None,
                  "gate": f"spot_check rules_version={row.get('rules_version')}"},
     )
 
@@ -574,7 +569,7 @@ def _street_ring(row: Row, tz_name: str) -> TemporalSelfEventV1 | None:
         tz_name=tz_name, subject_ref=f"street:ring:{row.get('event_id')}",
         label=clip(f"Outside ({_camera_words([stream])}): someone rang the doorbell"),
         payload={"outside_world": True, "origin": "doorbell_ring", "stream_ids": [str(stream)],
-                 "subject_kind": "person", "named": False, "people_range": None,
+                 "subject_kind": "person", "named": False,
                  "gate": "doorbell_ring always passes"},
     )
 
@@ -594,6 +589,11 @@ def _street_handoff(row: Row, tz_name: str) -> TemporalSelfEventV1 | None:
     streams = [str(x) for x in (ev.get("stream_ids") or []) if x]
     if not streams or any(x in ROOM_STREAMS for x in streams):
         return None
+    try:
+        if as_utc(ev.get("occurred_at")) is None:
+            return None
+    except (TypeError, ValueError):
+        return None  # one malformed outbox row is dropped, never fails the whole window read
     guess = str(ev.get("person_guess") or "").strip()
     who = f"{guess} (a guess)" if guess else "someone"
     ref = row.get("event_id") or ev.get("event_id")
@@ -605,7 +605,7 @@ def _street_handoff(row: Row, tz_name: str) -> TemporalSelfEventV1 | None:
                    f"{_HANDOFF_WORDS[ev['kind']]} (p {float(p):.2g})"),
         verdict=str(ev["kind"]),
         payload={"outside_world": True, "origin": "street_event", "stream_ids": streams,
-                 "subject_kind": ev.get("subject_kind"), "named": False, "people_range": None,
+                 "subject_kind": ev.get("subject_kind"), "named": False,
                  "p_value": float(p), "gate": f"p_value < {STREET_GATE_P_VALUE}"},
     )
 

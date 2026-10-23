@@ -197,10 +197,12 @@ FROM retro_play_sessions WHERE ended_at >= %(lo)s AND ended_at < %(hi)s
     # Episodes from the street (PR #2763 item 1), three reads of one kind; the adapter
     # (sources.street_event) decides every rule again, these only narrow the rows.
     # 1. Published clean motion stories, with the spot-check verdict counts of the newest rules version
-    #    (vision_rollup.py story_gate's rule) and the closed hour's rollup (people as a range). One
+    #    (vision_rollup.py story_gate's rule). The gate is read as of the read, not as of the story:
+    #    a re-fold after Juniper's tally or the rules version moves can keep a different set. One
     #    story per walking-together group: a story is skipped when a lower-id member of its group
-    #    would itself be kept. Available at ended_at, written a median 49 s later (p99 20 min, 7 days
-    #    to 10-23), so a story written after the read lag is a late row: stored, counted, not folded.
+    #    qualifies too (live groups list every member symmetrically). Available at ended_at, written a
+    #    median 49 s later (p99 20 min, 7 days to 10-23), so a story written after the read lag is a
+    #    late row: stored, counted, not folded.
     SourceQuery("street_event", """
 WITH gate AS (SELECT max(rules_version) AS v FROM vision_motion_story WHERE published AND clean),
 counts AS (
@@ -211,11 +213,8 @@ counts AS (
   WHERE verdict IS NOT NULL)
 SELECT 'motion_story' AS origin, s.story_id, s.stream_id, s.kind, s.started_at, s.ended_at, s.speed_class,
   s.dir_lateral, s.dir_depth, s.name_label, s.individual_id, s.companion_kinds, s.together_story_ids,
-  s.published, s.clean, s.rules_version, gate.v AS gate_rules_version, counts.c AS gate_counts,
-  CASE WHEN r.complete THEN r.rollup END AS hour_rollup
+  s.published, s.clean, s.rules_version, gate.v AS gate_rules_version, counts.c AS gate_counts
 FROM vision_motion_story s CROSS JOIN gate CROSS JOIN counts
-LEFT JOIN vision_rollup r ON r.stream_id = s.stream_id AND r.grain = 'hour'
-  AND r.period_start = date_trunc('hour', s.started_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
 WHERE s.published AND s.clean AND s.ended_at >= %(lo)s AND s.ended_at < %(hi)s
   AND s.stream_id <> ALL(%(room_streams)s) AND s.kind = ANY(%(story_kinds)s)
   AND NOT EXISTS (
@@ -223,20 +222,22 @@ WHERE s.published AND s.clean AND s.ended_at >= %(lo)s AND s.ended_at < %(hi)s
     WHERE t.story_id = ANY(s.together_story_ids) AND t.story_id < s.story_id AND t.published AND t.clean
       AND t.rules_version = s.rules_version AND t.stream_id = s.stream_id AND t.kind = ANY(%(story_kinds)s))
 """, optional_table="vision_motion_story",
-                also_requires=("vision_motion_story_verdict", "vision_rollup")),
+                also_requires=("vision_motion_story_verdict",)),
     # 2. Doorbell rings (orion-vision-retina writes one vision_events row per Ring push).
     SourceQuery("street_event", """
 SELECT 'doorbell_ring' AS origin, event_id, stream_id, event_type, created_at
 FROM vision_events WHERE event_type = 'doorbell_ring' AND created_at >= %(lo)s AND created_at < %(hi)s
 """),
     # 3. Graded handoffs from sql-writer's StreetEventV1 outbox. The event's occurred_at is the time;
-    #    the row is written after it, so created_at >= occurred_at bounds the read from below.
+    #    the row is written after it, so created_at (widened by slack for clock skew between the
+    #    story times and sql-writer's clock) bounds the read from below. No SQL cast of occurred_at:
+    #    one malformed row would fail the whole window; the adapter parses it and the reader keeps
+    #    only events available in [lo, hi). The table holds a handful of rows (5 ever, to 10-23).
     SourceQuery("street_event", """
 SELECT 'street_event' AS origin, event_id, handoff_id, event, created_at
 FROM vision_handoff_street_outbox
 WHERE created_at >= %(lo)s AND kind IN ('handoff_met', 'handoff_late', 'handoff_missed')
-  AND (event->>'occurred_at')::timestamptz < %(hi)s
-""", optional_table="vision_handoff_street_outbox"),
+""", slack=timedelta(minutes=10), optional_table="vision_handoff_street_outbox"),
 )
 
 TABLE_EXISTS_SQL = "SELECT to_regclass(%(t)s) IS NOT NULL AS present"

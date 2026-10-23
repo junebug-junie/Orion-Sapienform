@@ -58,14 +58,23 @@ def build_frame(state: TemporalSelfStateV1, now: datetime, cfg: ReducerConfig = 
     previous = max(ended_fg, key=lambda a: (a.ended_at or a.last_seen_at, a.arc_id), default=None)
 
     # Non-reverie arcs first (most recent), reverie fills what is left; then chronological.
-    ranked = sorted(arcs, key=lambda a: (a.kind == "reverie", -a.began_at.timestamp(), a.arc_id))[:ARCS_IN_FRAME_CAP]
-    # Orion plays Zelda (section F): today's latest Retro session stays in the frame however busy the
-    # day, so the stance cue can still say Orion played (it reads arcs_today; a closed play arc has
-    # no active_by_kind entry to fall back on).
-    latest_play = max((a for a in arcs if a.kind == "play"), key=lambda a: (a.ended_at or a.began_at, a.arc_id),
-                      default=None)
-    if latest_play is not None and latest_play not in ranked:
-        ranked = ranked[: ARCS_IN_FRAME_CAP - 1] + [latest_play]
+    # Street arcs (passers-by, PR #2763 item 1) rank with reverie: they fill leftover slots and never
+    # push Orion's own arcs (sleep, conversation, strain, company) out of a busy day's frame.
+    ranked = sorted(arcs, key=lambda a: (a.kind in ("reverie", "street"), -a.began_at.timestamp(),
+                                         a.arc_id))[:ARCS_IN_FRAME_CAP]
+
+    def _latest(kind: str):
+        return max((a for a in arcs if a.kind == kind), key=lambda a: (a.ended_at or a.began_at, a.arc_id),
+                   default=None)
+
+    # Pinned however busy the day. Orion plays Zelda (section F): today's latest Retro session, so the
+    # stance cue can still say Orion played (it reads arcs_today; a closed play arc has no
+    # active_by_kind entry to fall back on). Street: today's latest outside event, so recent arcs can
+    # still name it.
+    pins = [a for a in (_latest("play"), _latest("street")) if a is not None]
+    if any(a not in ranked for a in pins):
+        rest = [a for a in ranked if a not in pins]
+        ranked = rest[: ARCS_IN_FRAME_CAP - len(pins)] + pins
     listed = sorted(ranked, key=lambda a: (a.began_at, a.arc_id))
 
     threads = [

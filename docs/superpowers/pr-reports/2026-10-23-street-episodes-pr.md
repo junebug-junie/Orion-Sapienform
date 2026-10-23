@@ -5,7 +5,7 @@
 - Notable things that happen outside now become episodes in Orion's day (Temporal Self arcs). Before, episodes came from the room camera only.
 - "Notable" reuses gates that already exist. A walkway or doorbell motion story counts when it is published, clean, and its rules version passed Juniper's spot-check gate. A doorbell ring counts. A graded handoff counts when its p-value is under 0.05 (the street attention gate's event rule).
 - Every frame, every parked car, every unpublished glimpse, every moving car, and plain Ring motion stays out.
-- Each street episode is labelled "Outside (walkway camera): ..." or "Outside (doorbell camera): ...". People are only ever given as the honest range from #2781 ("people: at least 2, at most 6"), never as a bare count.
+- Each street episode is labelled "Outside (walkway camera): ..." or "Outside (doorbell camera): ...". The label carries no people count at all (not even the story sentence's "together with 1 other person"). The honest range from #2781 is written about 3 h after the hour closes, so it stays with the rollups and the Day letter; putting it in the label would make one arc read differently live and on a re-fold.
 - A kill switch (ON) and a daily cap (12) live in orion-durable-runs. A log line and a stored row prove where each street episode came from.
 
 ## Outcome moved
@@ -15,7 +15,7 @@ Before: `ROOM_STREAMS = {"cam0"}`, so Orion's day had no record of anything on t
 ## Proposal mode (CLAUDE.md §0A: memory change)
 
 - **Capability change:** Orion's own chronology (Temporal Self arcs, the recent-arcs block reverie reads, the Day letter arc count) now includes outside events. A street arc can also show in "Recently closed today" (only the latest street arc, so a busy walkway cannot crowd out Orion's own arcs). The chat stance cue does not render street arcs.
-- **Data touched:** reads `vision_motion_story`, `vision_motion_story_verdict`, `vision_rollup`, `vision_events` (rings only), `vision_handoff_street_outbox`. Writes only the chronicle's own tables (`temporal_self_event`, `temporal_self_arc`, frames, days). No new tables, no migration.
+- **Data touched:** reads `vision_motion_story`, `vision_motion_story_verdict`, `vision_events` (rings only), `vision_handoff_street_outbox`. Writes only the chronicle's own tables (`temporal_self_event`, `temporal_self_arc`, frames, days). No new tables, no migration.
 - **Privacy boundary:** there is no boundary between Juniper and Orion. Toward the outside, the label is built from row fields only: no image, no crop, no face, no caption text. A name appears only when the story's strict naming rule already set `name_label` (Juniper-given names); a handoff's `person_guess` is marked "(a guess)". The arc is `orion_internal`, like every other non-chat arc.
 - **Trace that proves it worked:** a `temporal_self_arc` row with `kind = 'street'` whose `evidence_refs` name the source row (`vision_motion_story:<id>`, `vision_events:<id>`, `vision_handoff_street_outbox:<id>`), and the chronicle log line `temporal_self_street_episode arc_id=... source=vision_motion_story:...`. When the cap holds events back: `temporal_self_street_capped count=N`.
 - **Dangerous failure mode:** a passer-by read as company in the room, or as Juniper. Guarded: street arcs are a separate kind, the label always starts "Outside (", `presence_transition` and `vision_percept` stay room-only (tested), and nothing binds to a street arc by time, so room percepts and Orion's attention rows never attach to it (tested with a mutation check). Second risk: the street floods Orion's day. Guarded by the cap and the one-line limit in recent arcs.
@@ -36,6 +36,7 @@ Temporal Self (`orion/temporal_self/`) is a pure reducer: one adapter per source
 - `orion/schemas/temporal_self.py`: `street_event` source kind, `street` arc kind, rollout note.
 - `orion/temporal_self/sources.py`: `street_event` adapter (stories, rings, handoffs), `street_story_label`.
 - `orion/temporal_self/arcs.py`: process kind, lane rule, no time binding, daily cap.
+- `orion/temporal_self/frame.py`: street arcs fill leftover frame slots; today's latest one is pinned.
 - `orion/temporal_self/body.py`, `day_block.py`, `recent_arcs.py`: street is not a body window; Day letter counts it; recent arcs show only the latest street line.
 - `orion/temporal_self/README.md`, `services/orion-durable-runs/README.md`: how it works, proof, kill switch.
 - `orion/temporal_self/tests/test_street_arcs.py`: new gate tests.
@@ -65,7 +66,8 @@ Temporal Self (`orion/temporal_self/`) is a pure reducer: one adapter per source
 ## Tests run
 
 ```text
-pytest orion/temporal_self/tests                                  -> 227 passed (9 new)
+pytest orion/temporal_self/tests                                  -> 228 passed (10 new)
+Mutation check: ranking street arcs like Orion's own in build_frame fails test_a_busy_street_never_pushes...
 pytest orion/temporal_self/tests orion/thought/tests orion/orion_day/tests -> 406 passed
 cd services/orion-durable-runs && pytest tests (ORION_ADMISSION_TEST_DSN = disposable postgres:16) -> 578 passed, 1 skipped
 pytest services/orion-thought/tests/test_stance_temporal_self_cue.py tests/test_personality_cue.py -> 32 passed
@@ -97,7 +99,23 @@ No image build or deploy (not requested).
 
 ## Review findings fixed
 
-- See the follow-up commit on this branch (filled in after the review subagent).
+- Finding: a busy street day pushed Orion's own arcs (sleep, conversation, strain, company) out of the 64-arc frame the stance cue reads.
+  - Fix: `build_frame` ranks street arcs with reverie (leftover slots only) and pins today's latest street arc; pins are taken out before trimming so the play pin and the street pin never evict each other.
+  - Evidence: `test_a_busy_street_never_pushes_orions_own_arcs_out_of_the_frame` (64 own arcs + 12 newer street arcs: 63 own + 1 street); fails with the old ranking.
+- Finding: the label and payload took the hour rollup's people range, which exists only ~3 h after the hour, so the same arc read differently live and on a re-fold; the Postgres test inserted a complete rollup before the read, which never happens live.
+  - Fix: no people count in the label or payload; the rollup join and its table dependency are gone.
+  - Evidence: `test_label_never_carries_a_people_count`; Postgres test label updated; live 72 h replay labels carry no digits.
+- Finding: the replay-identity test re-folded into the same state, so the second fold was dropped by `last_key` and never reached the cap.
+  - Fix: re-fold from `initial_state()` in reverse row order, over the cap, and compare whole states.
+  - Evidence: `test_a_gated_story_is_one_closed_street_arc_labelled_outside`.
+- Finding: the outbox read had no slack for clock skew, and a SQL cast of one malformed `occurred_at` would fail the whole window.
+  - Fix: `slack=10 min`; no SQL cast, the adapter parses and drops a bad row.
+  - Evidence: Postgres test adds a malformed row (`e4`) and the read still returns the right three events.
+- Finding: the "capped" log line fired for events whose arc lived in an earlier-closed day.
+  - Fix: logged only when that day's street arcs already reached the cap.
+  - Evidence: code; full durable-runs suite 578 passed.
+- Finding: the gate is read as of the read, not as of the story. Accepted and documented (same rule as the walkway rollups), in the SQL comment and both READMEs.
+- Not changed (nits): together-group dedupe is not transitive (live groups list members symmetrically); the deploy-order risk is the same as retro_play's and is documented.
 
 ## Restart required
 
@@ -107,7 +125,9 @@ scripts/safe_docker_build.sh orion-thought up -d --build && scripts/safe_docker_
 
 ## Risks / concerns
 
-- Severity: low. Concern: live labels rarely carry the people range, because the hour's rollup is written after the hour closes and the chronicle reads with a 300 s lag. Mitigation: no count is shown at all in that case (never a bare count); replays and backfills get the range.
+- Severity: medium. Concern: UNVERIFIED on live input: the graded-handoff path. `vision_handoff_street_outbox` holds 5 rows ever, all `approach_door`, and `vision_handoff` has no met / late / missed rows yet. That path is proven only by fixtures and the Postgres test.
+- Severity: low. Concern: one visit can spend up to 3 of the 12 daily slots (walkway story, doorbell-camera story, ring; live 10-20 23:50). Mitigation: the cap; merge a ring with its doorbell story later if the cap binds often.
+- Severity: low. Concern: a named story's label states the name as fact ("Teddy walked"), while a handoff guess says "(a guess)". `name_label` is set only under the story's strict naming rule; 0 named published stories live.
 - Severity: low. Concern: a story is written a median 49 s after it ends (p99 20 min); 1 of 54 published stories in 7 days lands after the read lag and is stored as a late row, never folded. Mitigation: counted in `temporal_self_late_rows`; acceptable loss for a capped source.
 - Severity: low. Concern: the spot-check gate is read as of now, not as of the story's time, so a replay after Juniper's tally changes can differ from the live fold. Mitigation: the same rule the walkway rollups use; stated in the README.
 - Severity: low. Concern: the cap is first come, first kept, so a late ring on a busy day can be capped out. Mitigation: 12 bound once in 72 h (10-21: 15 seen). Revisit if rings get dropped (the capped log line names them).
@@ -115,4 +135,4 @@ scripts/safe_docker_build.sh orion-thought up -d --build && scripts/safe_docker_
 
 ## PR link
 
-(filled in after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2876

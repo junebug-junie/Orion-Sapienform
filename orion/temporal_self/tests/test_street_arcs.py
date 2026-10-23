@@ -67,9 +67,11 @@ def test_a_gated_story_is_one_closed_street_arc_labelled_outside() -> None:
     e = S.street_event(story("s1", at(0)))
     assert e.payload["outside_world"] is True and e.payload["origin"] == "motion_story"
     assert e.payload["stream_ids"] == ["walkway"]
-    # Replay identity: folding the same row twice changes nothing.
-    again = advance_clock(fold(state, events=S.adapt("street_event", [story("s1", at(0))])), at(5))
-    assert [a.arc_id for a in _street(again)] == [arc.arc_id]
+    # Replay identity: a fresh re-fold of the same rows (more than the cap, in another order) gives
+    # the same state, so a backfill or reset keeps the same street arcs.
+    cfg = ReducerConfig(street_arcs_per_day=3)
+    rows = [story(f"s{i:02d}", at(i)) for i in range(6)] + [ring("r1", at(2.5))]
+    assert _state(rows, at(30), cfg) == _state(list(reversed(rows)), at(30), cfg)
 
 
 def test_ring_and_low_p_handoff_are_episodes() -> None:
@@ -123,25 +125,20 @@ def test_gate_constants_match_the_street_attention_gate() -> None:
     assert set(ast.literal_eval(handoff_kinds.value.args[0])) == set(S.STREET_HANDOFF_KINDS)
 
 
-# --------------------------------------------------------------------------- people as a range
+# --------------------------------------------------------------------------- no bare people count
 
 
-def test_people_count_is_the_honest_range_never_a_bare_count() -> None:
-    together = story("s1", at(0), companion_kinds=["person", "stroller"], together_story_ids=["s0"])
+def test_label_never_carries_a_people_count() -> None:
+    """The story sentence says "together with 1 other person" (a track count). The label is built from
+    fields and says "with other people", no number; the honest range (#2781) stays with the rollups,
+    because it exists only hours after the chronicle reads the story."""
+    together = story("s1", at(0), companion_kinds=["person", "stroller"], together_story_ids=["s0"],
+                     sentence="A person with a stroller walked left to right, together with 1 other person.")
     e = S.street_event(together)
     assert e.label == ("Outside (walkway camera): a person walked left to right, away from the house, "
                        "with a stroller, with other people")
-    assert not any(ch.isdigit() for ch in e.label)  # no track count ("together with 1 other person")
-    rollup = {"rules_version": 2, "kinds": {"person": {"passings": 7, "count_range": {
-        "low": 2, "high": 7, "method_low": "most_in_one_window", "method_high": "appearance_clusters"}}}}
-    e = S.street_event(dict(together, hour_rollup=rollup))
-    assert e.label.endswith("; that hour, people: at least 2, at most 7 (the camera splits one person into several)")
-    assert e.payload["people_range"]["low"] == 2 and e.payload["people_range"]["high"] == 7
-    # A pre-v2 rollup row has no stored range: derived from its fields, still a range.
-    old = {"rules_version": 1, "peak_at_once": {"person": 1}, "kinds": {"person": {"passings": 4}}}
-    assert "people: at least 1, at most 4" in S.street_event(dict(together, hour_rollup=old)).label
-    # A dog story says nothing about people.
-    assert "people" not in S.street_event(story("d1", at(0), kind="dog", hour_rollup=rollup)).label
+    assert not any(ch.isdigit() for ch in e.label)
+    assert "people_range" not in e.payload
 
 
 # --------------------------------------------------------------------------- cap
@@ -197,3 +194,20 @@ def test_recent_arcs_shows_only_the_latest_street_line() -> None:
     lines = block.text.splitlines()[1:]
     assert sum("saw Outside (walkway camera)" in ln for ln in lines) == 1
     assert any("a curiosity run" in ln for ln in lines)
+
+
+def test_a_busy_street_never_pushes_orions_own_arcs_out_of_the_frame() -> None:
+    """build_frame keeps ARCS_IN_FRAME_CAP arcs. Street arcs fill leftover slots (ranked with reverie),
+    so a day full of Orion's own arcs keeps all of them; only today's latest street arc is pinned."""
+    from orion.schemas.temporal_self import ARCS_IN_FRAME_CAP
+
+    own = [ev("curiosity_run", f"r{i}", at(i), ended=at(i) + timedelta(seconds=30), subject=f"curiosity:{i}",
+              label="probe") for i in range(ARCS_IN_FRAME_CAP)]
+    now = at(ARCS_IN_FRAME_CAP + 30)
+    cfg = ReducerConfig(street_arcs_per_day=12)
+    streets = [story(f"s{i:02d}", at(ARCS_IN_FRAME_CAP + i)) for i in range(12)]  # all newer than own arcs
+    f = build_frame(_state(streets, now, cfg, extra=own), now, cfg)
+    kinds = [a.kind for a in f.arcs_today]
+    assert len(kinds) == ARCS_IN_FRAME_CAP and kinds.count("street") == 1
+    assert [a.subject_ref for a in f.arcs_today if a.kind == "street"] == ["street:story:s11"]
+    assert kinds.count("curiosity") == ARCS_IN_FRAME_CAP - 1  # only the oldest one gave its slot to the pin

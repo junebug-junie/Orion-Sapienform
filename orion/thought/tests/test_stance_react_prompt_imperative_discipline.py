@@ -65,6 +65,7 @@ def _render_stance(stance_inputs: dict) -> str:
         personality_cue=None,
         chat_attention_frame=None,
         autonomy_slice=None,
+        self_prediction_enabled=False,
     )
 
 

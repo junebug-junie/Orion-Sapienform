@@ -500,6 +500,10 @@ def build_cortex_chat_request(
     llm_route_norm = normalize_llm_route(llm_route_raw)
     if llm_route_norm:
         options["llm_route"] = llm_route_norm
+    else:
+        # A refused route must not ride on in the copied options: cortex-exec accepts
+        # orion.llm.routes.CORTEX_OVERRIDE_SYSTEM_ROUTES as an override (2026-10-23).
+        options.pop("llm_route", None)
 
     workflow_match = None
     workflow_management = None

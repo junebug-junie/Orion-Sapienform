@@ -240,3 +240,93 @@ def test_a_hold_the_pool_refuses_fails_the_run_with_the_pool_reason():
         assert result["status"] == "failed" and world.calls == []
         assert result["last_error"] == "gpu_pool_unavailable:backlog_max_age"
     asyncio.run(scenario())
+
+
+# --- shared failed-attempt policy (2026-10-23) -------------------------------------------------
+
+def _policy_admission(releases, max_attempts=3):
+    async def release(state, reason, keep_requeued=False):
+        releases.append((reason, keep_requeued))
+        return {"lease": None, "hold": None}
+
+    async def noop(*args, **kwargs):
+        return {}
+
+    return AdmissionDeps(noop, noop, noop, release, noop,
+                         now=lambda: datetime(2026, 10, 23, tzinfo=timezone.utc), max_attempts=max_attempts)
+
+
+def test_failed_attempt_retries_transient_errors_and_fails_deterministic_ones_at_once():
+    from pydantic import BaseModel
+
+    from app.admitted_graph import failed_attempt, is_deterministic
+
+    class Strict(BaseModel):
+        n: int
+
+    try:
+        Strict.model_validate({"n": "not a number"})
+    except Exception as exc:  # noqa: BLE001
+        validation_error = exc
+
+    for transient in (TimeoutError(), ConnectionError("bus"), RuntimeError("turn failed")):
+        assert not is_deterministic(transient)
+    for deterministic in (ValueError("x"), validation_error, TypeError("x"), KeyError("x")):
+        assert is_deterministic(deterministic)
+
+    async def scenario():
+        releases = []
+        waiting = {"status": "retrying", "retry_node": None}
+        update = await failed_attempt(_policy_admission(releases), {"attempt": 0}, TimeoutError(), waiting=waiting,
+                                      extra={"last_turn": {"turn_correlation_id": "t-1"}})
+        assert update["status"] == "retrying" and update["attempt"] == 1 and update["retry_at"]
+        assert update["last_turn"] == {"turn_correlation_id": "t-1"}
+        assert releases == [("attempt_failed", True)]
+
+        releases.clear()
+        update = await failed_attempt(_policy_admission(releases), {"attempt": 0}, ValueError("bad"), waiting=waiting)
+        assert update["status"] == "failed" and update["last_error"] == "deterministic: ValueError: bad"
+        assert releases == [("attempt_failed", False)]
+
+        releases.clear()
+        update = await failed_attempt(_policy_admission(releases), {"attempt": 2}, TimeoutError(), waiting=waiting)
+        assert update["status"] == "failed" and update["attempt"] == 3
+        assert releases == [("attempt_failed", False)]
+
+    asyncio.run(scenario())
+
+
+def test_an_immediate_retry_is_not_refused_for_a_backoff_it_never_waits():
+    """Reflect/compaction re-queue at once (no retry_wait node): the deadline check uses now."""
+    from app.admitted_graph import failed_attempt
+
+    async def scenario():
+        releases = []
+        now = datetime(2026, 10, 23, tzinfo=timezone.utc)
+        # 100 s left, attempt 100 s: an immediate retry fits; one after a 30 s backoff would not.
+        state = {"attempt": 0, "brief": {"timeout_sec": 100},
+                 "admission": {"deadline_at": (now + timedelta(seconds=100)).isoformat()}}
+        waiting = {"status": "waiting_resource"}
+        update = await failed_attempt(_policy_admission(releases), state, TimeoutError(), waiting=waiting, backoff=False)
+        assert update["status"] == "waiting_resource" and "retry_at" not in update
+        update = await failed_attempt(_policy_admission(releases), state, TimeoutError(), waiting=waiting)
+        assert update["status"] == "failed" and update["last_error"].startswith("retry_skipped_insufficient_time")
+
+    asyncio.run(scenario())
+
+
+def test_the_curiosity_graph_fails_a_deterministic_harness_error_without_retrying():
+    async def scenario():
+        world, saver = World(), InMemorySaver()
+        world.grant()
+
+        async def broken_turn(req):
+            world.calls.append(req.attempt)
+            raise TypeError("turn wiring broken")
+
+        world.turn = broken_turn
+        result = await asyncio.wait_for(world.graph(saver).ainvoke(initial(), CFG), 2)
+        assert result["status"] == "failed" and world.calls == [1]
+        assert result["last_error"] == "deterministic: TypeError: turn wiring broken"
+        assert (await world.graph(saver).aget_state(CFG)).next == ()
+    asyncio.run(scenario())

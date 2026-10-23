@@ -74,7 +74,7 @@ from orion.schemas.compactor_digest_run import COMPACTOR_DIGEST_WORKFLOW
 from orion.schemas.reading_turn import READING_WORKFLOW
 from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW, reverie_visual_run_id
 from orion.schemas.orion_day import ORION_DAY_WORKFLOW, OrionDayRunBriefV1
-from app.self_sense_graph import finish_detail as self_sense_finish_detail
+from app.self_sense_graph import finish_detail as self_sense_finish_detail, next_unanswered, question_turn_id
 from orion.durable_runs.registry_store import (
     ABANDON_ACKED_EVENT,
     ABANDON_GIVE_UP_SEC,
@@ -601,12 +601,16 @@ class AdmissionRuntime:
             # Joinable to the pool's child leases (acceptance check 2: no un-attached agent lease
             # under a turn whose run holds a hold).
             detail["turn_correlation_id"] = turn_correlation_id(state)
-        elif state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, DREAM_CARRY_WORKFLOW) \
+        elif state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, DREAM_CARRY_WORKFLOW, SELF_SENSE_WORKFLOW) \
                 and state.get("step_correlation_id"):
+            # The step's own turn identity, on the event log BEFORE the turn runs: a turn that hangs
+            # or a worker that dies mid-step is still traceable by it (self-sense: the question's).
             detail["step_correlation_id"] = state["step_correlation_id"]
         await self.event(state, "run.started", detail)
         work = asyncio.create_task(node(state))
-        timeout = float(state["brief"]["timeout_sec"])
+        # ``node_timeout_sec``: a node whose attempt is a slice of the brief's budget (self-sense:
+        # one question's share), so one hung step cannot hold the GPU for the whole run's budget.
+        timeout = float(state.get("node_timeout_sec") or state["brief"]["timeout_sec"])
         deadline = state["admission"].get("deadline_at")
         if deadline:
             timeout = min(timeout, max(0, (datetime.fromisoformat(deadline)-self.now()).total_seconds()))
@@ -982,6 +986,12 @@ class AdmissionRuntime:
         inflight = state.get("_inflight_turn_correlation_ids")
         if isinstance(inflight, list):
             ids.extend(c for c in inflight if isinstance(c, str) and c)
+        if state.get("workflow") == SELF_SENSE_WORKFLOW and isinstance(state.get("brief"), dict):
+            # The question turn a dead worker left running: its id derives from the checkpoint
+            # (the in-memory in-flight list above died with that worker).
+            pending = next_unanswered(state)
+            if pending is not None:
+                ids.append(question_turn_id(state, pending[0]))
         seen: set[str] = set()
         for correlation_id in ids:
             if not correlation_id or correlation_id in seen:

@@ -475,8 +475,16 @@ Journal-entry notifications (email + in-app) are dispatched from exactly one pla
 post-persist consumer for `journal.entry.created.v1` (`_handle_journal_created`),
 after the SQL write is confirmed. It resolves policy from
 `orion.journaler.dispatch_registry.JOURNAL_DISPATCH_REGISTRY`, keyed on the journal
-entry's `trigger_kind` (`daily_summary`, `metacog_digest`, `world_pulse_digest`,
+entry's `trigger_kind` (`daily_summary`, `world_pulse_digest`,
 `notify_summary`, `autonomy_episode`, `collapse_response`, `town_episode`, `manual`).
+
+**Removed 2026-10-23: `metacog_digest`.** This service used to subscribe to
+`orion:equilibrium:metacog:trigger` and write one LLM journal per trigger (~140/day),
+which retold telemetry with no grounding and emailed it as "Journal Pass". The handler,
+`build_metacog_trigger`, and `ACTIONS_JOURNAL_METACOG_RECALL_PROFILE` are gone. The
+trigger itself still feeds cortex-orch and sql-writer. Old `metacog` rows stay in
+`journal_entries`. `daily_summary` and `notify_summary` still write but no longer email:
+they had only stayed out of the inbox because metacog won the shared daily slot.
 
 ### What this replaced
 

@@ -444,6 +444,12 @@ def validate_zelda_choice(raw: Any, decision: dict) -> ZeldaChoice:
     """Parse and check the model's answer against what this decision allows. Raises PlannerRejected.
     Mirrors Retro's own GoalV2 checks so a doomed goal is never posted."""
     from pydantic import ValidationError
+    pred = raw.get('prediction') if isinstance(raw, dict) else None
+    if isinstance(pred, dict) and pred.get('kind') != 'reach_room' and 'value' in pred:
+        # Only reach_room carries a number. Live 2026-10-23: Orion answered "fight nearest,
+        # enemies_cleared, value 1" 13 times in a room with 4 enemies, and every answer was refused.
+        # The number adds nothing to the claim, so drop it instead of refusing the move.
+        raw = dict(raw, prediction={k: v for k, v in pred.items() if k != 'value'})
     try:
         choice = ZeldaChoice.model_validate(raw)
     except ValidationError as exc:
@@ -484,6 +490,7 @@ def refusal_note(exc: 'PlannerRejected') -> str:
     text = {'planner_side_closed': f'exit {d.get("dir")}: Link cannot reach that edge from here',
             'planner_repeats_no_effect': f'{d.get("goal")}: the same goal just left Link where he was',
             'planner_unparseable': 'the reply was not one JSON object',
+            'planner_prediction_value_mismatch': 'reach_room needs "value": the room id you expect to reach',
             'planner_no_enemies': 'fight: there is no enemy in the room',
             'planner_unknown_target': f'fight {d.get("target")}: no enemy has that slot',
             'planner_unsupported_goal': f'{d.get("goal")}: not a supported goal for this decision'}.get(exc.reason)

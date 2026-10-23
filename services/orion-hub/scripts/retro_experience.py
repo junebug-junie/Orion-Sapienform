@@ -261,7 +261,9 @@ def _n(x: float) -> str:
 
 
 def _counts(quote: ActionBetQuoteV1) -> dict[str, tuple[str, str]]:
-    return {c.level: (_n(c.successes), _n(c.successes + c.failures)) for c in quote.counts}
+    # A level with less than one unit of evidence ("0.5 of 0.5") reads as noise to the model: omit it.
+    return {c.level: (_n(c.successes), _n(c.successes + c.failures)) for c in quote.counts
+            if c.successes + c.failures >= 1}
 
 
 def counts_phrase(skill: str, quote: ActionBetQuoteV1) -> str:
@@ -273,7 +275,7 @@ def counts_phrase(skill: str, quote: ActionBetQuoteV1) -> str:
         return f'{c["place"][0]} of {c["place"][1]} here' + (f'; {tail}' if tail else '')
     if quote.level == 'situation' and 'situation' in c:
         return f'{c["situation"][0]} of {c["situation"][1]} in this situation' + (f'; {tail}' if tail else '')
-    if quote.level == 'skill' and tail:
+    if tail:
         return tail
     return 'no tries yet'
 

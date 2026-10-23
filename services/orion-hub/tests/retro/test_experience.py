@@ -616,3 +616,13 @@ def test_a_cave_never_bets_on_the_room_above_and_hearts_count_as_a_pickup():
     start = X.start_facts(dict(d['observation'], hearts={'current': 2, 'containers': 3}))
     after = dict(d['observation'], hearts={'current': 3, 'containers': 3})
     assert X._gained(start, after)
+
+
+def test_menu_counts_below_one_unit_are_not_shown():
+    d, atlas = live_decision()
+    o = {x.option_id: x for x in X.build_options(d, atlas)}['exit:E']
+    q = X.ActionBetQuoteV1(option_id='exit:E', model='m', p=0.74, p_baseline=0.7, interval80=(0.5, 0.9), eig_nats=0.05,
+                           level='situation', counts=[dict(level='skill', successes=7.5, failures=2.5),
+                                                      dict(level='situation', successes=0.5, failures=0.0),
+                                                      dict(level='place', successes=0, failures=0)])
+    assert X.counts_phrase('traverse', q) == 'moving overall 7.5 of 10'   # live 10-23: "0.5 of 0.5 in this situation"

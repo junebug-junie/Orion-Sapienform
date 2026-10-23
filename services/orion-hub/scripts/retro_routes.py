@@ -228,6 +228,9 @@ def create_router(config, presence=None, experience=None):
         except retro_planner.PlannerRejected as exc:
             if exc.reason not in ('decision_pending', 'observation_unknown'):
                 bump('rejections')
+                import logging
+                logging.getLogger('orion-hub.retro').info('retro_plan_rejected sid=%s decision_id=%s reason=%s details=%s',
+                                                          sid, (decision or {}).get('decision_id'), exc.reason, exc.details)
             return JSONResponse(exc.public(), status_code=409 if exc.reason in ('decision_pending', 'observation_unknown') else 422)
         except retro_planner.PlannerError as exc:
             return JSONResponse(exc.public(), status_code=503)

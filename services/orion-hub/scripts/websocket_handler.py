@@ -1659,6 +1659,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     source_label="hub_ws",
                     prompt=prompt_with_ctx,
                     messages=continuity_messages,
+                    utterance_origin="juniper",
                 )
             except HubRequestValidationError as exc:
                 await websocket.send_json(

@@ -545,6 +545,11 @@ def build_mind_run_request(
     trigger = meta.get("mind_trigger")
     if trigger not in ("user_turn", "scheduled", "operator", "replay"):
         trigger = "user_turn"
+    # Who is waiting: Hub's build_chat_request writes metadata.utterance_origin="juniper" on a
+    # browser chat turn. orion-mind lifts only a "juniper" run to the interactive (never-shed)
+    # tier (engine.carries_live_turn); anything else stays sheddable.
+    raw_origin = meta.get("utterance_origin")
+    utterance_origin = raw_origin if raw_origin in ("juniper", "orion") else None
     user_text = (
         (client_request.context.user_message or client_request.context.raw_user_text or "") or ""
     ).strip()
@@ -629,6 +634,7 @@ def build_mind_run_request(
         trigger=trigger,  # type: ignore[arg-type]
         snapshot_inputs=snapshot,
         policy=policy,
+        utterance_origin=utterance_origin,
     )
 
 

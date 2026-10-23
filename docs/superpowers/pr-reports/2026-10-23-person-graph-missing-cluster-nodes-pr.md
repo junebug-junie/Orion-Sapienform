@@ -70,6 +70,6 @@ Expected first pass: `clusters_written=7 claims=7 waiting=0`.
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2897
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

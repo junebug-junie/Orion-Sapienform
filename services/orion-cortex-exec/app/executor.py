@@ -23,7 +23,12 @@ from jinja2 import Environment
 
 from pydantic import BaseModel, ValidationError
 
-from orion.llm.routes import LLM_ROUTE_ALIASES, METACOG_LLM_ROUTES, normalize_llm_route
+from orion.llm.routes import (
+    CORTEX_OVERRIDE_SYSTEM_ROUTES,
+    LLM_ROUTE_ALIASES,
+    METACOG_LLM_ROUTES,
+    normalize_llm_route,
+)
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import AttachmentRefV1, BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 from orion.core.bus.rpc_degraded import note_degraded
@@ -2112,13 +2117,13 @@ def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Opt
         GpuLeaseRefV1.model_validate(ref_value)
         resolved = str(raw or "").strip().lower()
         attempted = LLM_ROUTE_ALIASES.get(resolved, resolved) or None
-        return normalize_llm_route(raw) or GPU_LEASE_ROUTE, attempted
+        return normalize_llm_route(raw, allow_system=CORTEX_OVERRIDE_SYSTEM_ROUTES) or GPU_LEASE_ROUTE, attempted
     # `attempted` keeps the alias-resolved spelling even when it is rejected, so a rejected
     # override stays visible in the llm_route_selected log line (see docstring).
     resolved = str(raw or "").strip().lower()
     resolved = LLM_ROUTE_ALIASES.get(resolved, resolved)
     attempted = resolved or None
-    accepted = normalize_llm_route(raw)
+    accepted = normalize_llm_route(raw, allow_system=CORTEX_OVERRIDE_SYSTEM_ROUTES)
     return accepted, attempted
 
 

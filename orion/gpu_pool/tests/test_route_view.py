@@ -66,7 +66,8 @@ def test_view_from_state_uses_the_config_the_pool_sent():
 
 ROUTES_ADDED_AFTER_GOLDEN = {"agent-deep",          # hecate, 2026-10-08
                              "metacog_perception",  # Orion's sight, 2026-10-23 (pinned below)
-                             "quick_turn"}          # repair-pressure probe, 2026-10-23 (pinned below)
+                             "quick_turn",          # repair-pressure probe, 2026-10-23 (pinned below)
+                             "quick_embodied"}      # Orion's town speech, 2026-10-23
 _GOLDEN = json.loads((Path(__file__).parent / "fixtures_routes_compat_golden.json").read_text())
 
 

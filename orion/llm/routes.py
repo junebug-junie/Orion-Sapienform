@@ -107,6 +107,9 @@ ACCEPTED_LLM_ROUTES: FrozenSet[str] = frozenset(
         # (cortex-exec REPAIR_PRESSURE_PROBE_ROUTE). Interactive, never shed by heat.
         # System-only: see SYSTEM_LLM_ROUTES.
         "quick_turn",
+        # Orion's own speech in AI Town (2026-10-23): fast class, interactive. System-only, but
+        # cortex-exec accepts it as a caller override: see CORTEX_OVERRIDE_SYSTEM_ROUTES.
+        "quick_embodied",
         # Orion's sight (2026-10-23, body-economy design A0): vision-council at pool priority
         # `perception`, never shed by heat. System-only: see SYSTEM_LLM_ROUTES.
         "metacog_perception",
@@ -146,6 +149,7 @@ LLM_ROUTE_DISPLAY_ORDER: tuple[str, ...] = (
     "memory_distill",
     "metacog_turn",
     "quick_turn",
+    "quick_embodied",
     "metacog_perception",
 )
 
@@ -244,9 +248,23 @@ SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset(
         "memory_distill",
         "metacog_turn",
         "quick_turn",
+        "quick_embodied",
         "metacog_perception",
     }
 )
+
+#: System-only routes cortex-exec still accepts as a caller-supplied `ctx["llm_route"]`.
+#: This is the explicit decision SYSTEM_LLM_ROUTES asks for: Hub (its picker and its raw
+#: POST /api/chat body) and orion-actions keep refusing these, so no human Compute choice
+#: reaches them; only a bus caller that names one does. `quick_embodied` (2026-10-23):
+#: orion-embodiment's town speech arrives at cortex-exec only as this override.
+CORTEX_OVERRIDE_SYSTEM_ROUTES: FrozenSet[str] = frozenset({"quick_embodied"})
+
+if not CORTEX_OVERRIDE_SYSTEM_ROUTES <= SYSTEM_LLM_ROUTES:
+    raise RuntimeError(
+        "CORTEX_OVERRIDE_SYSTEM_ROUTES must be system-only routes: "
+        f"{sorted(CORTEX_OVERRIDE_SYSTEM_ROUTES - SYSTEM_LLM_ROUTES)}"
+    )
 
 if not SYSTEM_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
     raise RuntimeError(
@@ -263,7 +281,7 @@ if SYSTEM_LLM_ROUTES & BACKGROUND_LLM_ROUTES:
     )
 
 
-def normalize_llm_route(raw: object) -> Optional[str]:
+def normalize_llm_route(raw: object, *, allow_system: FrozenSet[str] = frozenset()) -> Optional[str]:
     """Canonical route name for `raw`, or None if it is absent, unrecognised, or system-only.
 
     None is deliberately the same answer for "nothing was asked for" and "what was asked for is
@@ -287,7 +305,7 @@ def normalize_llm_route(raw: object) -> Optional[str]:
     if not route:
         return None
     route = LLM_ROUTE_ALIASES.get(route, route)
-    if route not in ACCEPTED_LLM_ROUTES or route in SYSTEM_LLM_ROUTES:
+    if route not in ACCEPTED_LLM_ROUTES or (route in SYSTEM_LLM_ROUTES and route not in allow_system):
         return None
     return route
 

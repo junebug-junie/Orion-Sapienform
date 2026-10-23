@@ -144,3 +144,20 @@ def test_every_accepted_route_is_a_pool_route() -> None:
     from orion.gpu_pool.config import load_pool_config
 
     assert ACCEPTED_LLM_ROUTES <= set(load_pool_config().routes)
+
+
+def test_quick_embodied_is_system_only_but_cortex_may_override_with_it():
+    from orion.llm.routes import (
+        CORTEX_OVERRIDE_SYSTEM_ROUTES,
+        SYSTEM_LLM_ROUTES,
+        normalize_llm_route,
+    )
+
+    assert "quick_embodied" in SYSTEM_LLM_ROUTES
+    # Hub and orion-actions call without allow_system: still refused there.
+    assert normalize_llm_route("quick_embodied") is None
+    assert normalize_llm_route("quick_embodied", allow_system=CORTEX_OVERRIDE_SYSTEM_ROUTES) == "quick_embodied"
+    # The exception is exactly one route; other system routes stay refused even for cortex.
+    assert CORTEX_OVERRIDE_SYSTEM_ROUTES == {"quick_embodied"}
+    for route in SYSTEM_LLM_ROUTES - CORTEX_OVERRIDE_SYSTEM_ROUTES:
+        assert normalize_llm_route(route, allow_system=CORTEX_OVERRIDE_SYSTEM_ROUTES) is None

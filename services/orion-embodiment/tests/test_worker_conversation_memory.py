@@ -446,3 +446,10 @@ def test_request_utterance_quick_marks_surface_as_aitown():
     asyncio.run(w._request_utterance_quick("prompt text", correlation_id="11111111-1111-1111-1111-111111111111"))
     env = bus.rpc_request.call_args.args[1]
     assert env.payload["context"]["metadata"]["surface"] == "aitown"
+
+
+def test_town_speech_defaults_to_the_interactive_fast_route():
+    from app.settings import Settings
+
+    assert Settings.model_fields["speech_quick_llm_route"].default == "quick_embodied"
+

@@ -36,6 +36,7 @@ from uuid import uuid4
 
 from orion.schemas.grammar import (
     ActCostV1,
+    ActCostV2,
     ActExpectV1,
     ActLevel,
     ActOutcomeV1,
@@ -150,7 +151,7 @@ def act_closed_event(
     source_service: str,
     source_component: str,
     note: str = "",
-    cost: ActCostV1 | None = None,
+    cost: ActCostV1 | ActCostV2 | None = None,
     correlation_id: str | None = None,
     session_id: str | None = None,
     at: datetime | None = None,

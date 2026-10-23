@@ -379,3 +379,100 @@ def test_outreach_ask_resolves_from_turn_start_too(session):
     _chat(session, at=t0 + timedelta(seconds=36500), corr="c-answer")
     assert resolve_due_acts(session, now=now).closed_replied == 1
     assert _row(session, act.act_id)["outcome_value"] == 1.0
+
+
+# --- body economy Patch A2: the ledger fills ActCostV2 on close -----------------------------------
+
+_GPU_EVENTS_DDL = """
+CREATE TABLE gpu_pool_events (event_id VARCHAR PRIMARY KEY, generated_at TIMESTAMPTZ NOT NULL,
+    event VARCHAR NOT NULL, lease_id VARCHAR, role VARCHAR, turn_correlation_id VARCHAR,
+    held_ms DOUBLE PRECISION)
+"""
+
+
+def _lease(session, *, eid, at, event, lease, role, corr, held_ms):
+    session.execute(text(
+        "INSERT INTO gpu_pool_events (event_id, generated_at, event, lease_id, role, turn_correlation_id, held_ms) "
+        "VALUES (:e, :at, :ev, :l, :r, :c, :h)"),
+        {"e": eid, "at": at, "ev": event, "l": lease, "r": role, "c": corr, "h": held_ms})
+
+
+def test_close_fills_wall_seconds_and_gpu_slot_seconds(session):
+    """Regression: grammar_acts.cost_json was NULL on every close (214/214 rows, 2026-10-23)."""
+    session.execute(text(_GPU_EVENTS_DDL))
+    t0 = datetime.now(timezone.utc) - timedelta(minutes=10)
+    act = _make_act("gpu-run")
+    corr = "corr-gpu-run"
+    # The turn's leases: two on fast (one expired then released: counted once, max held), one on
+    # metacog released before the act opened (inside the lookback), and another turn's lease.
+    _lease(session, eid="e1", at=t0 + timedelta(seconds=30), event="released", lease="L1", role="fast",
+           corr=corr, held_ms=4000.0)
+    _lease(session, eid="e2", at=t0 + timedelta(seconds=40), event="expired", lease="L2", role="fast",
+           corr=corr, held_ms=1000.0)
+    _lease(session, eid="e3", at=t0 + timedelta(seconds=45), event="released", lease="L2", role="fast",
+           corr=corr, held_ms=6000.0)
+    _lease(session, eid="e4", at=t0 - timedelta(seconds=60), event="released", lease="L3", role="metacog",
+           corr=corr, held_ms=2500.0)
+    _lease(session, eid="e5", at=t0 + timedelta(seconds=30), event="released", lease="L4", role="fast",
+           corr="someone-else", held_ms=99000.0)
+    apply_grammar_trace_batch(session, [act_opened_event(
+        act, source_service="orion-thought", source_component="t", correlation_id=corr, at=t0)])
+    apply_grammar_trace_batch(session, [act_closed_event(
+        act, produced=True, source_service="orion-thought", source_component="t", correlation_id=corr,
+        at=t0 + timedelta(seconds=90))])
+    cost = _row(session, act.act_id)["cost_json"]
+    assert cost is not None
+    assert cost["seconds"] == pytest.approx(90.0)
+    assert cost["gpu_slot_s_by_lane"] == {"fast": pytest.approx(10.0), "metacog": pytest.approx(2.5)}
+    # Not measured stays unknown, never 0.
+    assert cost["wh_by_host"] is None and cost["juniper_msgs"] is None and cost["claude_limit_events"] is None
+    # L10's latency_ms still comes only from a producer-reported cost (none here).
+    assert session.execute(text("SELECT latency_ms FROM substrate_action_outcomes")).scalar() is None
+
+
+def test_close_fills_seconds_when_gpu_events_cannot_be_read(session):
+    """No gpu_pool_events table: the GPU join fails in its own savepoint and the close still lands."""
+    t0 = datetime.now(timezone.utc) - timedelta(minutes=10)
+    act = _make_act("no-gpu-table")
+    apply_grammar_trace_batch(session, [act_opened_event(
+        act, source_service="orion-thought", source_component="t", correlation_id="c-x", at=t0)])
+    apply_grammar_trace_batch(session, [act_closed_event(
+        act, produced=True, source_service="orion-thought", source_component="t", correlation_id="c-x",
+        at=t0 + timedelta(seconds=42))])
+    row = _row(session, act.act_id)
+    assert row["outcome_value"] == 1.0
+    assert row["cost_json"]["seconds"] == pytest.approx(42.0) and row["cost_json"]["gpu_slot_s_by_lane"] is None
+
+
+def test_resolver_close_fills_seconds_too(session):
+    now = datetime.now(timezone.utc)
+    act = _say_act("c-resolved", horizon=60.0)
+    opened = now - timedelta(seconds=300)
+    apply_grammar_trace_batch(session, [act_opened_event(
+        act, source_service="orion-hub", source_component="t", correlation_id="c-resolved", at=opened)])
+    assert resolve_due_acts(session, now=now).closed_not_replied == 1
+    row = _row(session, act.act_id)
+    # Closed at the horizon: wall = horizon (it includes the wait for Juniper).
+    assert row["cost_json"]["seconds"] == pytest.approx(60.0, abs=0.01)
+
+
+def test_close_before_open_has_no_wall_time(session):
+    act = _make_act("close-first")
+    apply_grammar_trace_batch(session, [act_closed_event(
+        act, produced=True, source_service="orion-thought", source_component="t")])
+    assert _row(session, act.act_id)["cost_json"] is None
+
+
+def test_producer_cost_wins_and_v2_fields_are_kept(session):
+    from orion.schemas.grammar import ActCostV2
+
+    t0 = datetime.now(timezone.utc) - timedelta(minutes=10)
+    act = _make_act("producer-cost")
+    apply_grammar_trace_batch(session, [act_opened_event(
+        act, source_service="orion-thought", source_component="t", at=t0)])
+    apply_grammar_trace_batch(session, [act_closed_event(
+        act, produced=True, source_service="orion-thought", source_component="t", at=t0 + timedelta(seconds=90),
+        cost=ActCostV2(seconds=7.0, juniper_msgs=1))])
+    cost = _row(session, act.act_id)["cost_json"]
+    assert cost["seconds"] == 7.0 and cost["juniper_msgs"] == 1
+    assert session.execute(text("SELECT latency_ms FROM substrate_action_outcomes")).scalar() == pytest.approx(7000.0)

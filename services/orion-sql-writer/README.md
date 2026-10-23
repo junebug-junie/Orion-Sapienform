@@ -992,6 +992,16 @@ Producers today: orion-thought paintings (`make`), hub chat reply (`say`), hub o
 Kill switch: `SQL_WRITER_ACT_LEDGER_ENABLED=false` (events still land in `grammar_events`).
 Eval: `python evals/act_ledger_calibration.py [--live]`.
 
+**Cost filled on close (body economy Patch A2, 2026-10-23).** `ActV1.cost` accepts `ActCostV1` or
+`ActCostV2` (V1 plus `gpu_slot_s_by_lane`, `wh_by_host`, `juniper_msgs`, `claude_limit_events`; all
+optional, None = not measured, never 0). On every close the ledger fills what it can measure and
+the producer left unset, into `grammar_acts.cost_json`: `seconds` = closed_at - opened_at (needs
+the open), and `gpu_slot_s_by_lane` = lease time per pool role from `gpu_pool_events` whose
+`turn_correlation_id` is the act's correlation_id (window: open - 1 h .. close + 120 s; each lease
+once; the read runs in its own savepoint). Producer values win. `substrate_action_outcomes.latency_ms`
+still comes only from a producer-reported `seconds`. Rollout is consumer-first: producers keep
+sending V1 until every reader of `orion:grammar:event` / `grammar_events` runs V2-aware code.
+
 **Rung 3: acts bound to the workspace winner (2026-10-21).** At open, an act whose actor answers a
 world-first workspace source is stamped with the winning loop it was opened under
 (`grammar_acts.workspace_ref` = the broadcast's selected open loop id), through the same binding

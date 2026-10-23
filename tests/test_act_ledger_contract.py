@@ -129,3 +129,50 @@ def test_non_binary_outcome_refused_by_grader():
 
 def test_act_dispatch_kind_cannot_collide_with_template_kinds():
     assert act_dispatch_kind("say") == "act:say"
+
+
+# --- body economy Patch A2: ActCostV2, consumer-first ------------------------------------------------
+
+def test_act_cost_v1_payload_still_parses_as_v1():
+    from orion.schemas.grammar import ActCostV1
+
+    closed = act_closed_event(_act(), produced=True, source_service="orion-hub", source_component="t",
+                              cost=ActCostV1(seconds=3.0))
+    again = GrammarEventV1.model_validate(closed.model_dump(mode="json"))
+    assert type(again.act.cost) is ActCostV1 and again.act.cost.seconds == 3.0
+
+
+def test_act_cost_v2_payload_round_trips_with_new_fields():
+    from orion.schemas.grammar import ActCostV2
+
+    cost = ActCostV2(seconds=1.0, gpu_slot_s_by_lane={"fast": 2.5}, wh_by_host={"athena": 0.4},
+                     juniper_msgs=1, claude_limit_events=0)
+    closed = act_closed_event(_act(), produced=True, source_service="orion-hub", source_component="t", cost=cost)
+    again = GrammarEventV1.model_validate(closed.model_dump(mode="json"))
+    assert again.act.cost == cost
+
+
+def test_act_cost_v2_rejects_negative_and_unknown_fields():
+    from orion.schemas.grammar import ActCostV2
+
+    with pytest.raises(ValidationError):
+        ActCostV2(gpu_slot_s_by_lane={"fast": -1.0})
+    with pytest.raises(ValidationError):
+        ActV1.model_validate({**_act().model_dump(mode="json"), "cost": {"seconds": 1.0, "dollars": 3}})
+
+
+def test_act_cost_v2_from_v1_keeps_every_v1_field_and_unknown_stays_none():
+    from orion.schemas.grammar import ActCostV1, ActCostV2
+
+    v2 = ActCostV2.from_any(ActCostV1(seconds=1.0, gpu_seconds=2.0, tokens=3, watts=4.0))
+    assert (v2.seconds, v2.gpu_seconds, v2.tokens, v2.watts) == (1.0, 2.0, 3, 4.0)
+    assert v2.gpu_slot_s_by_lane is None and v2.juniper_msgs is None
+    assert ActCostV2.from_any(None) is None
+
+
+def test_v1_reader_model_rejects_v2_fields_which_is_why_producers_wait():
+    """The consumer-first hazard, pinned: V1 alone is extra="forbid"."""
+    from orion.schemas.grammar import ActCostV1
+
+    with pytest.raises(ValidationError):
+        ActCostV1.model_validate({"seconds": 1.0, "gpu_slot_s_by_lane": {"fast": 1.0}})

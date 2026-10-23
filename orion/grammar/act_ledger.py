@@ -49,7 +49,7 @@ from orion.autonomy.prediction import (
     score_act_outcome,
 )
 from orion.regulation.juniper_turns import JUNIPER_INGRESS_PREDICATE, JUNIPER_TURN_PREDICATE
-from orion.schemas.grammar import ActExpectV1, ActOutcomeV1, ActV1, GrammarEventV1
+from orion.schemas.grammar import ActCostV2, ActExpectV1, ActOutcomeV1, ActV1, GrammarEventV1
 
 logger = logging.getLogger("orion.grammar.act_ledger")
 
@@ -343,6 +343,63 @@ def open_act(conn: Any, event: GrammarEventV1) -> None:
     conn.execute(_INSERT_OPEN_SQL, params)
 
 
+# --- body economy Patch A2: fill ActCostV2 on close ----------------------------------------------
+#
+# What the act spent, measured by the writer when the producer left it unset. Never 0 for
+# "unknown": a field with no measurement stays None, and a cost with nothing measured stays NULL.
+# * seconds: closed_at - opened_at (needs the open; a close-before-open has no wall time).
+# * gpu_slot_s_by_lane: GPU pool lease time per lane for the act's turn. gpu_pool_events carries
+#   the caller's turn_correlation_id on every lease; the act's correlation_id is that turn. A chat
+#   reply's leases are released BEFORE its act opens (live 10-21: ~1 min), hence the lookback.
+#   Each lease counts once (an expired-then-released lease carries held_ms twice: the max wins).
+#   Known overcount: a durable-run hold and its child calls share one slot but are separate leases.
+GPU_COST_LOOKBACK_SEC = 3600.0
+GPU_COST_CLOSE_GRACE_SEC = 120.0
+_GPU_LEASES_FOR_TURN_SQL = text(
+    """
+    SELECT role, SUM(held_ms) AS held_ms FROM (
+        SELECT lease_id, max(role) AS role, max(held_ms) AS held_ms
+          FROM gpu_pool_events
+         WHERE turn_correlation_id = :corr
+           AND generated_at >= :since AND generated_at <= :until
+           AND event IN ('released', 'expired', 'aborted')
+           AND held_ms IS NOT NULL AND role IS NOT NULL
+         GROUP BY lease_id
+    ) leases
+    GROUP BY role
+    """
+)
+
+
+def _gpu_slot_seconds(conn: Any, corr: str, since: datetime, until: datetime) -> dict[str, float] | None:
+    rows = conn.execute(_GPU_LEASES_FOR_TURN_SQL, {"corr": corr, "since": since, "until": until}).fetchall()
+    out = {str(r[0]): round(float(r[1]) / 1000.0, 3) for r in rows if r[0] is not None and r[1] is not None}
+    return out or None
+
+
+def fill_close_cost(conn: Any, act: ActV1, *, opened_at: datetime | None, closed_at: datetime,
+                    correlation_id: str | None) -> ActCostV2 | None:
+    """The producer's cost with every unset field the writer can measure filled in. Producer
+    values win. None when nothing is measured at all."""
+    cost = ActCostV2.from_any(act.cost) or ActCostV2()
+    update: dict[str, Any] = {}
+    if cost.seconds is None and opened_at is not None:
+        wall = (closed_at - _aware(opened_at)).total_seconds()
+        if wall >= 0:
+            update["seconds"] = round(wall, 3)
+    if cost.gpu_slot_s_by_lane is None and correlation_id:
+        anchor = _aware(opened_at) if opened_at is not None else closed_at
+        lanes = _isolated(conn, "gpu_cost", act.act_id, lambda: _gpu_slot_seconds(
+            conn, str(correlation_id), anchor - timedelta(seconds=GPU_COST_LOOKBACK_SEC),
+            closed_at + timedelta(seconds=GPU_COST_CLOSE_GRACE_SEC)))
+        if lanes:
+            update["gpu_slot_s_by_lane"] = lanes
+    if update:
+        cost = cost.model_copy(update=update)
+    measured = any(v is not None for v in cost.model_dump().values())
+    return cost if measured else None
+
+
 @dataclass(frozen=True)
 class CloseResult:
     act_id: str
@@ -364,7 +421,7 @@ def close_act(
     """Close one act by act_id and grade it into L10. First close wins."""
     row = conn.execute(
         text(
-            "SELECT closed_at, predicted, opened_at, horizon_at, workspace_ref FROM grammar_acts "
+            "SELECT closed_at, predicted, opened_at, horizon_at, workspace_ref, correlation_id FROM grammar_acts "
             "WHERE act_id = :a FOR UPDATE"
         ),
         {"a": act.act_id},
@@ -389,10 +446,12 @@ def close_act(
         predicted_at_open = stamp.mean if stamp else None
         workspace_ref = params.get("workspace_ref")
         opened_at_row = None
+        correlation_id = params.get("correlation_id")
     else:
         predicted_at_open = None if row[1] is None else float(row[1])
         workspace_ref = row[4]
         opened_at_row = row[2]
+        correlation_id = row[5] or (event.correlation_id if event is not None else None)
 
     value = float(outcome.value)
     observed_at = _aware(outcome.observed_at)
@@ -491,6 +550,8 @@ def close_act(
                 {"p": predicted, "n": prior.n, "c": prior.n == 0, "a": act.act_id},
             )
 
+    cost = fill_close_cost(conn, act, opened_at=opened_at_row, closed_at=observed_at,
+                           correlation_id=correlation_id)
     conn.execute(
         text(
             """
@@ -512,7 +573,7 @@ def close_act(
             "row_id": outcome_row_id,
             "closed_at": observed_at,
             "close_event_id": close_event_id,
-            "cost_json": json.dumps(act.cost.model_dump(mode="json")) if act.cost else None,
+            "cost_json": json.dumps(cost.model_dump(mode="json")) if cost is not None else None,
             "now": _utc_now(),
             "act_id": act.act_id,
         },

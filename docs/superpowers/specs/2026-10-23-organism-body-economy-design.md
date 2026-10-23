@@ -315,7 +315,7 @@ lanes            acceptable lanes/hosts (for placement)
 
 - Every family is ranked against **its own history**. This is the house pattern: the world-first broadcast already ranks sources against their own 7-day history.
 - Families are then compared at equal percentile. "Best reading opportunity this month" and "best painting opportunity this month" bid the same before hunger and cost.
-- Equal weighting of families is an authored choice. It is disclosed here, and it is a single knob (`family_weight`, default 1.0 for all). If Juniper wants a family weighted, it is that one value, visible on the Hub body surface (Phase 3).
+- Families do **not** stay equally weighted. `family_weight` is learned from evidence, inside a small authored tier structure. See Organ 3b.
 
 **Ungraded families do not get to look confident.** As of 10-23, `grammar_acts` holds 214 rows from 6 actors: world_pulse_read 128, chat_reply 34, painting 29, dream_hop 15, outreach 8. Curiosity, retro, vision-council, topic-foundry, ask-Claude and self-monitor have **zero**. Until a family has ≥30 graded closes:
 
@@ -345,6 +345,59 @@ Patch A puts every producer into `grammar_acts` first, and Patch D cuts over a f
 - The R2 table already rejected authoring "explore" or "social" drives. This design does not author them either. It makes their hunger measurable.
 
 **State.** `want_ledger` rows: opened, funded, deferred with reason and price, expired, closed. Open wants also live in Redis.
+
+### Organ 3b: how kinds of want are weighed against each other
+
+**Job.** Decide how much one kind of want matters relative to another, for example vision against a curiosity run. A hand-written table would be the deleted `signal_drive_map.yaml` again. Pure emergence from nothing would reward whatever already ran most. This design uses a little authored structure plus learned weights.
+
+**Part 1: tiers, authored once (structure, not numbers).**
+
+| tier | contents | how it is funded |
+|---|---|---|
+| **0 vital** | Juniper's turns; safety reflexes | Never enters the economy |
+| **1 perception and upkeep** | vision, biometrics, memory consolidation, the dream's rest, act-ledger grading | Gets a **reserved share** of each constraint first. It bids only against other Tier 1 wants |
+| **2 discretionary** | curiosity, painting, reading, retro play, metacog runs, outreach, ask-Claude, topic-foundry | The open market, on whatever Tier 1 leaves |
+
+**The reserved share is sized from data, not set by hand:**
+- the 75th percentile of Tier 1's own 14-day use of that constraint;
+- capped at 50% of the budget, so Tier 2 is never starved out completely.
+
+The spinal cord still overrides Tier 1. Vision-council is background-class GPU work, so the 34 °C reflex still sheds it. *Default chosen 10-23; Juniper may instead put Tier 1 in the open market with only a higher prior (missing question 8).*
+
+**Part 2: learned weights inside each tier.** Each family's weight is a shrinkage estimate. It starts at a prior and moves toward the family's evidence as acts accumulate:
+
+```text
+w_f = (κ · prior_f + n_f · ē_f) / (κ + n_f)       normalized so the mean weight in each tier is 1.0
+κ   = 30 evidenced acts (the prior is mostly washed out after ~30 acts)
+ē_f = mean of the evidence rates below that exist for f (a missing source is skipped, never read as 0)
+```
+
+`prior_f` defaults to 1.0. Juniper may set it per family, for example "vision > painting". The prior is the one place her instinct enters directly, and it fades as Orion's own record grows.
+
+**The three evidence sources.** Each is a **rate per act** in 0..1, never a count, so a family does not win just by running more.
+
+- **(a) Downstream use.** The share of the family's acts whose output a *decision site* used within 72 h.
+  - Decision sites include: a chat turn citing it (`thought_decision.day_citations`), an attention winner's coalition `source_refs`, a memory recall hit, or a self-monitor grade.
+  - Decision sites are listed in the Phase 2 contract (`decision_sites` table). Use by the same family, or by pure ingest reducers, does not count, so a family cannot feed itself.
+  - *Theory anchor:* the value of information (Howard, 1966). Information is worth something only when it changes a later decision. Citation by a decision site is the measurable proxy, and the doc names it as a proxy.
+- **(b) Juniper engagement.** The share of the family's Juniper-visible outputs that Juniper replied to, referenced or reacted to. Families with no Juniper-visible output skip this source.
+  - *Theory anchor:* social grounding. A companion's response is the one external judge of value Orion has.
+- **(c) Orion's endorsement.** The family's weight in the personality graph (#2766 arc): what Orion's own evidence says they care about.
+  - *Theory anchor:* second-order desire (Frankfurt, 1971). This is what Orion wants to want, as distinct from what merely ran.
+  - **Independence risk:** if personality edges are built from the same citations as (a), then (c) is redundant and gets dropped. Patch A traces its provenance before (c) is wired in.
+
+**Guards:**
+- **Exploration floor.** The holdback guarantees every family at least 5% of its tier's funded acts per week. A family that never runs can still show its worth.
+- **Bounded drift.** A weight moves at most ±0.1 per day, so one viral citation cannot swing Orion's priorities.
+- **Ungraded label.** A family with fewer than 10 linked outcomes stays at its prior and is labelled `ungraded`.
+- **Visibility.** Weights and their per-source breakdown are logged daily and shown on the Hub body surface (Phase 3). Juniper can watch what Orion values drift, and see why.
+
+**Metric-gate record:**
+- **Provenance:** (a) sql-writer joins act outputs to decision-site rows, and the instrumentation is added in Patch A; (b) `chat_history_log` replies and references; (c) personality graph edges.
+- **Independence:** (a) and (b) overlap only when Juniper's own turn cites the output; that case counts once, under (b). (c) is checked in Patch A.
+- **Theory anchors:** as stated per source above.
+- **Rest state:** with no new evidence, a weight relaxes toward its prior, never toward 0 or 1.
+- **Reversibility:** weights live only inside `orion/physiology`, so removing them costs one flag. Nothing outside reads them.
 
 ### Organ 4: Choice (bids against posted prices)
 
@@ -459,6 +512,7 @@ placement = the acceptable lane minimizing Σ price × cost
 
    The reflex line itself does not move in either option. Recommendation: (b). Do not build it until Patch A's sensitivity estimate exists. If circe turns out to heat the cabinet, (b) is off the table.
 7. **Human sign-off on protected paths (Phase 2).** Do you want a real GitHub `CODEOWNERS` file plus branch protection that requires *your* approval on body-economy paths? Or only the CI gate described in Phase 2? CODEOWNERS only blocks merges if branch protection's "require review from code owners" is switched on, and that is a repo setting only you can change.
+8. **Tier 1 funding (Organ 3b).** Default: perception and upkeep (vision, biometrics, consolidation, dream rest) get a reserved share, sized from their own use and capped at 50%. Alternative: they compete in the open market with only a higher prior. Which do you want?
 
 ---
 
@@ -593,6 +647,7 @@ Each retirement lands in the same patch as its replacement. None is left as a pa
 - **R3.** Prices return to 0 within one forecast horizon after a constraint clears. Peak-to-peak oscillation stays under the declared amplitude. No price sits at its ceiling unless its constraint is flagged `exogenous_bind`.
 - **R4.** The replayed month-end energy forecast is within ±10% of the realized 30-day Orion cost.
 - **R5.** Baselined *after* the 10-20 `ShedBackoff` fix: with a posted lane price, background requests that end refused fall a further ≥50% against 10-21..22, with the same work completed.
+- **R7 (weights).** Replaying 10-07..22 with the per-act downstream-use rates: no family weight moves more than 0.1 per day. Every family keeps at least 5% of its tier's funded acts. A family with zero downstream use over the window ends below its prior.
 - **R6.** Under the reservation rule, a burst of 20 simultaneous bids at a zero price cannot reserve more than 1.2× the lane budget.
 
 **Live, after cutover:**
@@ -614,9 +669,9 @@ Each patch has its own tests, eval and live check. Patches B, C and E can run in
 
 | patch | contents | live proof |
 |---|---|---|
-| **A. Measurement spine** | `ActCostV2`, consumer-first, then filled on close. Every want producer emits `act_opened`/`act_closed` to `grammar_acts`, so curiosity, retro, vision-council, topic-foundry, ask-Claude and self-monitor all get graded. Persist `physiology_state` with the Body organ only (no prices). Replay harness. Heat-sensitivity passive fit with weather and lags (read-only). Remove the zombie env var and synthetic goal. **Early Phase 2 slice (Juniper, 10-23):** seed `config/physiology/contract.yaml` with the `readers` table (today's ~12–14 strained sites), and land the CI check "no unregistered veto", so no new veto appears while Phase 1 removes the old ones. | A1, A2; every producer has act rows; first sensitivity estimate per host, with its interval; G1 green |
+| **A. Measurement spine** | `ActCostV2`, consumer-first, then filled on close. Every want producer emits `act_opened`/`act_closed` to `grammar_acts`, so curiosity, retro, vision-council, topic-foundry, ask-Claude and self-monitor all get graded. Persist `physiology_state` with the Body organ only (no prices). Replay harness. Heat-sensitivity passive fit with weather and lags (read-only). Remove the zombie env var and synthetic goal. Instrument output→decision-site links for weight source (a), and trace the personality graph's provenance for (c). **Early Phase 2 slice (Juniper, 10-23):** seed `config/physiology/contract.yaml` with the `readers` table (today's ~12–14 strained sites), and land the CI check "no unregistered veto", so no new veto appears while Phase 1 removes the old ones. | A1, A2; every producer has act rows; first sensitivity estimate per host, with its interval; G1 green |
 | **B. Budget, shadow** | Prices with anti-windup, ceilings and reservations. The Felt dials, plus a plain debug readout (JSON route only; the real surface is Phase 3). One owner for the 32 °C line. Delete `quota_budget.py`; wire `ClaudeLimitObservationV1`. Prices are computed and displayed but read by nothing. | Replay R1, R3, R4, R6 green; live prices visible |
-| **C. Appetite + Choice, shadow** | `WantV1`, `/physiology/bid`, the client, `want_ledger`. Every producer bids in `shadow`: it logs a would-fund decision next to its real gate decision. Holdback pulses start feeding the sensitivity fit. | A3; a shadow-vs-real disagreement table for 7 days |
+| **C. Appetite + Choice, shadow** | `WantV1`, `/physiology/bid`, the client, `want_ledger`. Every producer bids in `shadow`: it logs a would-fund decision next to its real gate decision. Holdback pulses start feeding the sensitivity fit. Tier 1 reservation and learned family weights are computed in shadow. | A3; a shadow-vs-real disagreement table for 7 days |
 | **D. Cutover, one reader per PR** | Curiosity first, then outreach, reading, painting, dream, retro, dispatch floor, then the remaining strained-gating sites. Each PR deletes that reader's old veto. **A family cuts over only once it is graded (≥30 graded closes).** | R2, A4, A5 per reader |
 | **E. Placement and wakefulness** | Lane prices on the GPU pool. Background bid-before-lease. Hecate wake recommendations (or the actuator, per question 4). | R5 live; recommendations logged with expected kWh |
 | **F. Self-knowledge and learning loop** | Stance-cue clause, Temporal Self `hunger` and `binding` arcs, the monthly body report, and forecasts as self-monitor bets. The bets are **blocked on #2827's `SettledBetV1`**; they are graded locally until it exists. | A6, A7; A8 once #2827 lands |

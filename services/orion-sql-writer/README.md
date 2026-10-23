@@ -839,6 +839,47 @@ new identity. Design: `docs/superpowers/specs/2026-10-16-walkway-motion-stories-
   `rules_version` stays 1: walkway stories (all verdicts so far) read exactly as before. Without the
   migration the loop logs `[MOTION_STORY] missing columns ...` each tick and writes the older columns.
 
+### Caption motion cross-check (2026-10-23, spec PR #2763 item 3 patch C)
+
+A camera caption describes one frame, so a claim like "A car is driving" is a
+guess. `app/vision_caption_motion.py` checks it against the motion stories,
+inside the motion-story tick, after the stories close (a story closes minutes
+after its caption is written).
+
+- Claims: the moving speed classes of `vision_motion.SPEED_CLASSES` (walking,
+  running, riding, creeping, driving, pushed) and their verb forms. No second
+  word list: "passing" or "mowing" are not checked.
+- Match: the caption's own `box:` and `crop:` refs to the detector crops of its
+  frame (`frame_ts`), best IoU >= `VISION_CAPTION_MOTION_MIN_IOU` (0.5). Never
+  every crop in the frame.
+- Local motion, not the story average: each matched crop is judged by its own
+  track's boxes within 10 s of the frame (`local_motion`: net travel over box
+  height, classed by the story reducer's own `kinematics`/`speed_class`, clipped
+  boxes skipped). Moving needs 2 boxes. Still needs 3 boxes, one at least 4 s
+  before and one at least 4 s after the frame, the story rule's still class,
+  and net travel and total path both <= 0.25 body heights; anything else ->
+  no evidence. A story's `speed_class` averages the whole passage, so
+  a car that drove in and then parked would read `parked` and wrongly contradict
+  a true "driving" caption.
+- Verdict per claim: any matched crop of the claimed kind clearly moving near
+  the frame -> supported; clearly still and no matched crop without evidence ->
+  contradicted; otherwise nothing. One contradicted claim makes the row contradicted.
+- Known limits: Negations ("not driving") still count as claims; "moving", "drove", "rode"
+  are not checked. A caption row re-written with the same event_id (redelivery,
+  `worker.py` `sess.merge`) loses its tags; inside the lookback the step tags it again.
+- Writes tags only (no column): `motion_contradicted` or `motion_supported`, plus
+  `motion_check:<kind>:<word>:<speed_class>`. Readers
+  (`orion/situational/street_material.py` `label_camera_caption`: chat brief,
+  reverie, curiosity) then say "caption said driving; the vehicle did not move".
+- Only rows written in the last `VISION_CAPTION_MOTION_LOOKBACK_SEC` (6 h) are
+  read; older rows stay untagged. A frame is final once the story cursor is
+  `window + close gap` (911 s) past it.
+- Trace: `[CAPTION_MOTION] stream=.. checked=.. tagged=.. contradicted=..
+  supported=.. undecided=.. pending=.. no_claim=..`.
+- Kill switch: `VISION_CAPTION_MOTION_CHECK_ENABLED=false`.
+- Replay (read only, prints counts):
+  `PYTHONPATH=. python services/orion-sql-writer/evals/run_caption_motion_crosscheck_eval.py --hours 72`.
+
 ### Walkway story pictures of the moment (2026-10-17)
 
 `app/vision_story_strip.py`, run inside the motion loop when

@@ -150,6 +150,6 @@ To verify after the first act closes: `SELECT actor, outcome_source, cost_json F
 
 ## PR link
 
-<link>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2864
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

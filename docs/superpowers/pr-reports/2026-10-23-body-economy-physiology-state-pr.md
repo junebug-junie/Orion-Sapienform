@@ -181,6 +181,6 @@ Deploy order: sql-writer first (consumer), then durable-runs (producer); the rev
 
 ## PR link
 
-<link>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2863 (stacked on #2862; GitHub retargets it to main when #2862 merges)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

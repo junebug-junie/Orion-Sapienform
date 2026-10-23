@@ -150,6 +150,13 @@ The code review subagent ran on the whole branch, including the counting fix.
   - Exit and explore duplicates took 2 of 5 menu slots. Fix: one option per side.
   - The spec's rest-state bound was wrong (0.44 × the situation mean). Fix: corrected in the spec.
 
+## CI findings fixed
+
+- `Static repo gates`: `test_schema_skew_discovery` required a declared writer for `ActionBetCountsV1`, `ActionBetQuoteV1` and `ActionBetV1`. Each is now declared as `orion-prediction` in `orion/schema_skew_discovery.py`.
+- `prediction`: the job had no `httpx` for FastAPI's `TestClient`. Added to the workflow's install line.
+- `native-boundary`: that job has no numpy/scipy, so the offline-replay pytest wrapper skips there (`importorskip('scipy')`). The eval still runs standalone, and in any venv with scipy.
+- All 18 checks pass. The prediction job runs the full suite with real `statsmodels`/`prophet`, which confirms the 8 local failures are environment-only.
+
 ## Restart required
 
 ```bash

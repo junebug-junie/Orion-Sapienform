@@ -111,6 +111,6 @@ Expected log line: `person_graph synced persons=12 nodes_written=10 nodes_retire
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2858
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

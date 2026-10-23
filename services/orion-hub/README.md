@@ -924,7 +924,7 @@ once per tick; each loop decides what a level means for its own dial:
 |---|---|---|---|---|
 | Curiosity investigation line | held, `arousal_strained` | cooldown x `HUB_CURIOSITY_AROUSAL_ENGAGED_COOLDOWN_MULTIPLIER` (2.0), `arousal_engaged_cooldown` | as today | as today |
 | Curiosity self-inquiry | held, `arousal_strained` | held, `arousal_engaged` | as today | as today |
-| Background outreach | refused, `arousal_strained` | as today | as today | as today |
+| Background outreach | refused, `arousal_strained` (one strain report per long episode may pass, see below) | as today | as today | as today |
 | Scheduled self-modification proposals (R3 reader 6) | no new proposal; pressure kept, traced `mutation_proposal_held` | as today | as today | as today |
 
 Every arousal hold is checked last, so it only ever adds a hold after every other
@@ -937,6 +937,34 @@ the producer's own `unknown`, or a Redis error changes nothing. Off switches:
 `HUB_ENDOGENOUS_OUTREACH_AROUSAL_ENABLED`. The rest drive (above) stays a separate
 input: tired and strained are different facts and both can hold. The outreach
 status endpoint shows `arousal`. Eval: `scripts/analysis/measure_arousal_reader_replay.py`.
+
+**Strain report door (strain loop part 3, `scripts/strain_report.py`).** While strained,
+background outreach stays refused, with one exception: when the current strained episode has
+lasted `ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC` (3600), Orion may send Juniper ONE
+report about it. Rules:
+
+- It passes only the `arousal_strained` refusal. Disabled, turn-in-flight, recent-chat, quiet
+  hours, the daily cap, the cooldowns all still hold. Inside quiet hours it waits, and goes out
+  after quiet hours if the same episode is still open.
+- One per episode (keyed on the episode start, `arousal.since`) and one per local day
+  (`ORION_SITUATION_TIMEZONE`). Both are rebuilt from `endogenous_outreach_decisions` on first
+  use, so a restart does not re-send; if that read fails the door stays shut
+  (`strain_report=history_unknown`). A PASS from Orion closes the episode; a failed compose may
+  retry after 30 min.
+- Grounding is the live regulation reading (since, causes now, cabinet temp, GPU jobs waiting)
+  plus the open `strain` arc from durable-runs `GET /temporal-self/frame` when it is this
+  episode (causes seen, `[arc:<id>]`). What strain holds back comes from the
+  `regulation.state.v1` readers in `orion/inner_state_registry.py` (a test keeps the list in
+  step). No reading, no message (`strain_report=no_grounding`). Orion writes the message through
+  the normal unified turn; a deterministic "Strain record" line with the citation is appended.
+- Trace: every row of this door has `door=strain_report` and `strain_episode_since`; composed
+  rows also have `source=strain_report`. Non-sending ticks keep `reason=arousal_strained` and say
+  why in `strain_report` (`episode_too_short`, `already_reported_episode`,
+  `already_reported_today`, ...). Count live sends:
+  `SELECT count(*) FROM endogenous_outreach_decisions WHERE reason='sent' AND result_json->>'source'='strain_report';`
+- Off switch: `ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED=false` (old refusal, unchanged).
+  Eval: `python3 services/orion-hub/evals/run_strain_report_replay.py` (read-only replay of
+  `arousal_transition` level rows; reports per local day).
 
 The self-modification reader is different in one way: the mutation cycle runs 60-90 s
 off the event loop, so it reads Redis itself (one blocking GET, 2 s timeout) at the

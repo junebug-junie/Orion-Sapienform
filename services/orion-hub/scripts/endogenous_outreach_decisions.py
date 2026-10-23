@@ -319,3 +319,57 @@ def fetch_recently_used_outreach_content_ids(
             "endogenous_outreach_used_content_ids_failed days=%s err=%s", days, exc
         )
         return empty
+
+
+def fetch_strain_report_history(*, lookback_days: int = 30) -> Optional[List[Dict[str, Any]]]:
+    """Every composed strain-report outcome in the lookback, for the strain report door.
+
+    Rows written by ``EndogenousOutreach._strain_report_once`` carry
+    ``result_json.source='strain_report'``, ``strain_episode_since`` (the episode start) and
+    ``strain_composed=true`` (a compose ran). Returns ``[{"episode", "reason", "decided_at"}]``,
+    or ``None`` -- UNKNOWN, never "nothing sent" -- when the log is off, the engine is missing,
+    or the query fails. The door refuses on ``None`` (fail closed): reading a failure as
+    "no report yet" would re-send the episode's report after every restart, the bug the
+    once-per-episode rule exists to prevent.
+
+    30 days, not 7: one report per episode is keyed on the episode start, and a strain episode
+    has already run 5 days (2026-10-18 .. 10-23); a lookback shorter than the longest episode
+    would forget the report and send it again.
+    """
+    if not decision_log_enabled():
+        return None
+    days = max(1, int(lookback_days))
+    try:
+        from scripts.pg_engine import get_engine
+        from sqlalchemy import text
+
+        engine = get_engine()
+        if engine is None:
+            return None
+        with engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT result_json->>'strain_episode_since' AS episode,
+                               reason,
+                               decided_at
+                        FROM endogenous_outreach_decisions
+                        WHERE result_json->>'source' = 'strain_report'
+                          AND result_json->>'strain_composed' = 'true'
+                          AND decided_at >= now() - make_interval(days => :days)
+                        ORDER BY decided_at
+                        """
+                    ),
+                    {"days": days},
+                )
+                .mappings()
+                .all()
+            )
+        return [
+            {"episode": r.get("episode"), "reason": r.get("reason"), "decided_at": r.get("decided_at")}
+            for r in rows
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("endogenous_outreach_strain_history_failed days=%s err=%s", days, exc)
+        return None

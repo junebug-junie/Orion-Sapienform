@@ -413,7 +413,7 @@ def test_three_consecutive_sheds_end_the_session_and_post_no_goal(world):
     assert len(sheds) == 3 and sheds[0]['reason'] == 'shed:cabinet_hot'
     assert len(world.plans) == 3                              # one probe per retry window, no hammering
     ops = [p.rsplit('/', 1)[-1] for m, p, _ in world.retro.calls if m == 'POST']
-    assert ops[-3:] == ['scripted', 'save', 'stop']
+    assert ops[-2:] == ['scripted', 'stop'] and 'save' not in ops   # no goal played: no save
 
 
 def test_long_shed_lets_retro_drop_the_policy_and_the_orphan_game_is_closed(world):
@@ -422,7 +422,7 @@ def test_long_shed_lets_retro_drop_the_policy_and_the_orphan_game_is_closed(worl
     out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
     assert out.ended.end_reason == 'shed_wait_policy_lost' and world.retro.goals == []
     ops = [p.rsplit('/', 1)[-1] for m, p, _ in world.retro.calls if m == 'POST']
-    assert ops[-2:] == ['save', 'stop'] and ops.count('scripted') == 1   # paused orphan, no human: closed
+    assert ops[-1] == 'stop' and 'save' not in ops and ops.count('scripted') == 1   # orphan closed; no goal: no save
     assert world.retro.session['state'] == 'stopped'
 
 

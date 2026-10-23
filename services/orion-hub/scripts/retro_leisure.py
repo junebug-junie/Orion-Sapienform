@@ -715,6 +715,11 @@ async def _finish(deps: LeisureDeps, run: _Run, reason: str, *, mode: str,
         if started and run.epoch is not None:
             if human:
                 save_error = 'skipped:human_may_be_in_control'
+            elif not run.planned:
+                # No goal ever reached play (a title or menu screen the planner never steers).
+                # Saving here would make that screen the newest save, and the next session would
+                # load it and stall the same way (live 2026-10-23: a frame-10 title save).
+                save_error = 'skipped:no_goal_played'
             elif reason != 'retro_session_ended':
                 status, saved = await _call(deps, 'save', 'POST', f'sessions/{run.session_id}/save', {})
                 if status == 200 and isinstance(saved, dict):

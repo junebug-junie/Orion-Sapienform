@@ -626,3 +626,17 @@ def test_menu_counts_below_one_unit_are_not_shown():
                                                       dict(level='situation', successes=0.5, failures=0.0),
                                                       dict(level='place', successes=0, failures=0)])
     assert X.counts_phrase('traverse', q) == 'moving overall 7.5 of 10'   # live 10-23: "0.5 of 0.5 in this situation"
+
+
+def test_gateway_registers_the_coplay_exporter():
+    # Live 2026-10-23: the gateway relays every handoff (watch_coplay runs there) but only Hub's
+    # main.py registered the exporter, so 7 co-play handoffs wrote 0 session rows.
+    from scripts import retro_gateway as G
+    app = SimpleNamespace(state=SimpleNamespace())
+    async def create_pool(**kw):
+        return 'pool'
+    asyncio.run(G.register_session_end_sink(app, SimpleNamespace(RECALL_PG_DSN='postgresql://x'), create_pool=create_pool))
+    assert callable(app.state.retro_session_end_sink) and app.state.memory_pg_pool == 'pool'
+    bare = SimpleNamespace(state=SimpleNamespace())
+    asyncio.run(G.register_session_end_sink(bare, SimpleNamespace(RECALL_PG_DSN='')))
+    assert not hasattr(bare.state, 'retro_session_end_sink') and bare.state.memory_pg_pool is None

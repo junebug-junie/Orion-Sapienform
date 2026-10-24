@@ -666,6 +666,8 @@ class RetinaService:
             m.ring_events_ignored = int(src.events_ignored)
             m.ring_bursts_started = int(src.bursts_started)
             m.ring_bursts_failed = int(src.bursts_failed)
+            m.ring_consecutive_failed_bursts = int(src.consecutive_failed_bursts)
+            m.ring_blind = bool(src.blind)
             m.ring_last_event_kind = src.last_event_kind
             m.ring_last_event_ts = src.last_event_ts
             m.ring_dings_total = int(src.dings_total)

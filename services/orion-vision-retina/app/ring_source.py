@@ -57,6 +57,50 @@ SUPERVISE_SECONDS = 60.0
 RECONNECT_EVERY_SECONDS = 12 * 3600.0
 # Seconds to wait for Ring's SDP answer to our live-view offer.
 ANSWER_TIMEOUT_SECONDS = 10.0
+# aiortc buffers at most 128 RTP packets per video stream. A frame bigger
+# than that loses its head to make room, and the tail goes to the decoder,
+# which cannot decode it. Since ~2026-10-21 Ring sends this doorbell's
+# 1920x1920 H.264 with keyframes of ~250 packets, so no keyframe ever
+# decoded and every live view ended "no frame within 15s" while ~7,000 good
+# video packets arrived (measured 2026-10-23; 512 decoded 261 frames in 12 s).
+# 512 (the size verified live) is 2x headroom, and a packet NACK cannot
+# recover stalls decoding for ~1 s at ~470 packets/s, not ~2 s at 1024.
+# Must be a power of 2 (aiortc asserts it).
+VIDEO_JITTER_CAPACITY = 512
+# This many live views in a row with no frame = the doorbell is blind.
+BLIND_AFTER_FAILED_BURSTS = 3
+
+
+def ensure_video_jitter_capacity(video_capacity: int = VIDEO_JITTER_CAPACITY) -> None:
+    """Make aiortc's video receivers buffer ``video_capacity`` packets (idempotent).
+
+    aiortc hard-codes ``JitterBuffer(capacity=128, is_video=True)`` in
+    RTCRtpReceiver; swap the class it looks up for one that raises a video
+    capacity. Audio is untouched."""
+    try:
+        import aiortc.jitterbuffer as jb
+        import aiortc.rtcrtpreceiver as rr
+    except ImportError as exc:  # an aiortc without these modules (or a test double)
+        logger.warning(f"[RETINA] ring video buffer not raised: {exc}")
+        return
+
+    current = rr.JitterBuffer
+    if getattr(current, "_orion_video_capacity", None) == video_capacity:
+        return
+    base = getattr(current, "_orion_base", current)
+
+    class _VideoJitterBuffer(base):  # type: ignore[misc,valid-type]
+        _orion_video_capacity = video_capacity
+        _orion_base = base
+
+        # Same parameter names as aiortc: RTCRtpReceiver passes them by keyword.
+        def __init__(self, capacity: int, prefetch: int = 0, is_video: bool = False) -> None:
+            if is_video:
+                capacity = max(capacity, video_capacity)
+            super().__init__(capacity=capacity, prefetch=prefetch, is_video=is_video)
+
+    assert base is jb.JitterBuffer or issubclass(base, jb.JitterBuffer)
+    rr.JitterBuffer = _VideoJitterBuffer
 # A ring during an open live view extends it, up to this many burst lengths
 # in total (a stuck button must not stream all day).
 MAX_BURST_FACTOR = 4.0
@@ -228,6 +272,8 @@ class RingEventFrameSource:
         self.events_ignored = 0
         self.bursts_started = 0
         self.bursts_failed = 0
+        # Live views in a row that delivered no frame; 0 after any frame.
+        self.consecutive_failed_bursts = 0
         self.last_event_kind: str | None = None
         self.last_event_ts: float | None = None
         # Every recorded push, whatever happened to the live view.
@@ -493,6 +539,7 @@ class RingEventFrameSource:
         from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
         from aiortc.sdp import candidate_from_sdp
 
+        ensure_video_jitter_capacity()
         self.bursts_started += 1
         self._event_kind = kind
         started = time.time()
@@ -503,7 +550,15 @@ class RingEventFrameSource:
         remote_set = False
         pending: set[asyncio.Task] = set()
         video_track: asyncio.Future = loop.create_future()
-        pc = RTCPeerConnection(RTCConfiguration(iceServers=[RTCIceServer(urls=device.get_ice_servers())]))
+        try:
+            pc = RTCPeerConnection(RTCConfiguration(iceServers=[RTCIceServer(urls=device.get_ice_servers())]))
+        except Exception as exc:  # noqa: BLE001 -- counts toward blind like any failed view
+            self.bursts_failed += 1
+            self.consecutive_failed_bursts += 1
+            self.last_error = f"ring {kind} live view failed (setup: {type(exc).__name__}: {exc})"
+            logger.warning(f"[RETINA] {self.last_error}")
+            self._last_burst_end = time.time()
+            return
         session_id = uuid.uuid4().hex
 
         def on_message(msg: Any) -> None:
@@ -581,12 +636,14 @@ class RingEventFrameSource:
                     raise
                 self._frame = frame
                 self._frame_ts = time.time()
+                self.consecutive_failed_bursts = 0
             self._frames_open = False
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 -- incl. TimeoutError and aiortc MediaStreamError
             if self._frame_ts < started:
                 self.bursts_failed += 1
+                self.consecutive_failed_bursts += 1
                 if phase == "answer" and isinstance(exc, asyncio.TimeoutError):
                     why = f"no answer from Ring within {ANSWER_TIMEOUT_SECONDS:.0f}s"
                 elif phase == "frames" and isinstance(exc, asyncio.TimeoutError):
@@ -618,6 +675,11 @@ class RingEventFrameSource:
                 else:
                     self.events_ignored += 1
                     logger.info(f"[RETINA] ring ding queued corr={corr}: reopen refused (ding quota)")
+
+    @property
+    def blind(self) -> bool:
+        """Ring events arrive but live views keep delivering no picture."""
+        return self.consecutive_failed_bursts >= BLIND_AFTER_FAILED_BURSTS
 
     async def read(self) -> FrameReadResult | None:
         """Newest live-view frame not yet served, else None."""

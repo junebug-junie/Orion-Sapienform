@@ -97,6 +97,6 @@ git pull --ff-only && scripts/safe_docker_build.sh orion-vision-retina up -d --f
 
 ## PR link
 
-<link>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2902
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

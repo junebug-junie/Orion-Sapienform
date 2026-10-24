@@ -344,6 +344,7 @@ def test_burst_delivers_frames_and_always_closes_the_session(tmp_path, fake_aior
 
     async def run():
         src = _burst_src(tmp_path, dev)
+        src.consecutive_failed_bursts = 2  # earlier views failed; a frame clears it
         seen = []
         task = asyncio.create_task(src._burst("ding"))
         while not task.done():
@@ -355,6 +356,7 @@ def test_burst_delivers_frames_and_always_closes_the_session(tmp_path, fake_aior
 
     src, seen = asyncio.run(run())
     assert seen and src.bursts_failed == 0 and src.last_error is None
+    assert src.consecutive_failed_bursts == 0 and src.blind is False
     assert dev.closed == dev.opened and len(dev.opened) == 1  # registered before Ring talks, closed after
     assert dev.keep_alive_timeout >= 30  # Ring keeps the view open for the whole burst
     pc = fake_aiortc.instances[0]
@@ -367,6 +369,10 @@ def test_no_answer_is_named_failed_and_still_closed(tmp_path, fake_aiortc):
     src = _burst_src(tmp_path, dev)
     asyncio.run(src._burst("motion"))
     assert src.bursts_failed == 1 and "no answer from Ring" in src.last_error
+    assert src.consecutive_failed_bursts == 1
+    asyncio.run(src._burst("motion"))
+    asyncio.run(src._burst("motion"))
+    assert src.consecutive_failed_bursts == 3 and src.blind is True
     assert dev.closed == dev.opened and fake_aiortc.instances[0].closed
 
 
@@ -941,3 +947,14 @@ def test_blind_after_three_failed_live_views_and_clears_on_a_frame(tmp_path):
     payload = env.payload if isinstance(env.payload, dict) else env.payload.model_dump()
     assert payload["status"] == "degraded"
     assert payload["details"]["ring_blind"] is True
+
+
+def test_a_setup_failure_counts_toward_blind(tmp_path, fake_aiortc):
+    class _BadIce(_Device):
+        def get_ice_servers(self):
+            raise RuntimeError("no ice servers")
+
+    src = _burst_src(tmp_path, _BadIce())
+    asyncio.run(src._burst("motion"))
+    assert src.bursts_failed == 1 and src.consecutive_failed_bursts == 1
+    assert "setup: RuntimeError" in src.last_error

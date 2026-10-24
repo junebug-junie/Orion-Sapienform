@@ -63,8 +63,10 @@ ANSWER_TIMEOUT_SECONDS = 10.0
 # 1920x1920 H.264 with keyframes of ~250 packets, so no keyframe ever
 # decoded and every live view ended "no frame within 15s" while ~7,000 good
 # video packets arrived (measured 2026-10-23; 512 decoded 261 frames in 12 s).
-# 1024 gives 4x headroom; must be a power of 2 (aiortc asserts it).
-VIDEO_JITTER_CAPACITY = 1024
+# 512 (the size verified live) is 2x headroom, and a packet NACK cannot
+# recover stalls decoding for ~1 s at ~470 packets/s, not ~2 s at 1024.
+# Must be a power of 2 (aiortc asserts it).
+VIDEO_JITTER_CAPACITY = 512
 # This many live views in a row with no frame = the doorbell is blind.
 BLIND_AFTER_FAILED_BURSTS = 3
 
@@ -548,7 +550,15 @@ class RingEventFrameSource:
         remote_set = False
         pending: set[asyncio.Task] = set()
         video_track: asyncio.Future = loop.create_future()
-        pc = RTCPeerConnection(RTCConfiguration(iceServers=[RTCIceServer(urls=device.get_ice_servers())]))
+        try:
+            pc = RTCPeerConnection(RTCConfiguration(iceServers=[RTCIceServer(urls=device.get_ice_servers())]))
+        except Exception as exc:  # noqa: BLE001 -- counts toward blind like any failed view
+            self.bursts_failed += 1
+            self.consecutive_failed_bursts += 1
+            self.last_error = f"ring {kind} live view failed (setup: {type(exc).__name__}: {exc})"
+            logger.warning(f"[RETINA] {self.last_error}")
+            self._last_burst_end = time.time()
+            return
         session_id = uuid.uuid4().hex
 
         def on_message(msg: Any) -> None:

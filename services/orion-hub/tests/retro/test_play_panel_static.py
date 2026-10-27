@@ -54,6 +54,7 @@ def test_gamepad_uses_the_nes_layout_and_skips_empty_or_nonstandard_pads():
 {pick}
 const pad=(pressed,axes=[0,0])=>({{id:'8BitDo Pro 2',connected:true,mapping:'standard',axes,
   buttons:Array.from({{length:16}},(_,i)=>({{pressed:pressed.includes(i)}}))}});
+const el=()=>({{value:'0'}});
 const out={{A:padMask(pad([1])),B:padMask(pad([0])),start:padMask(pad([9])),select:padMask(pad([8])),
   stickLeftUp:padMask(pad([],[-1,-1])),dpadRight:padMask(pad([15]))}};
 globalThis.navigator={{getGamepads:()=>[null,{{...pad([]),mapping:''}},pad([1])]}};

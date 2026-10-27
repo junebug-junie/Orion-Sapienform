@@ -62,11 +62,13 @@
     if (pad && (document.activeElement===screen || document.fullscreenElement===stage)) m |= padMask(pad);
     if((m&48)===48)m&=~48;if((m&192)===192)m&=~192;return m;
   }
-  // The first connected pad in the browser's standard mapping. getGamepads() lists empty slots
-  // as null, and over plain HTTP some browsers throw: the keyboard still works then.
+  // Connected pads in the browser's standard mapping: this player's (Player 2 takes the second
+  // pad), else the first. getGamepads() lists empty slots as null, and over plain HTTP some
+  // browsers throw: the keyboard still works then.
   function gamepad() {
     let pads=[];try { pads=Array.from(navigator.getGamepads?.() || []); } catch (_) { return null; }
-    return pads.find(p=>p && p.connected!==false && p.mapping==='standard') || null;
+    const std=pads.filter(p=>p && p.connected!==false && p.mapping==='standard');
+    return std[Number(el('port').value)] || std[0] || null;
   }
   // Standard mapping is by position. NES layout: the right face button is A, the bottom one B
   // (8BitDo Pro 2: its A and B labels match). Left stick or D-pad move; Select/Start in the middle.
@@ -78,10 +80,10 @@
     return m;
   }
   function padStatus() {
-    let pads=[];try { pads=Array.from(navigator.getGamepads?.() || []).filter(Boolean); } catch (_) { /* no API */ }
+    let pads=[];try { pads=Array.from(navigator.getGamepads?.() || []).filter(p=>p && p.connected!==false); } catch (_) { /* no API */ }
     const pad=gamepad(), other=pads.find(p=>p.mapping!=='standard');
     el('padInfo').textContent = pad ? `Controller: ${pad.id}. Click the game, then play.`
-      : other ? `Controller ${other.id} is not in standard mode. On an 8BitDo Pro 2, set the mode switch on the back to X and reconnect.`
+      : other ? `Controller ${other.id} is not in standard mode. On an 8BitDo Pro 2, set the mode switch on the back to X and reconnect (a USB cable if Bluetooth still says this).`
       : 'No controller found. Connect it, then press any button.';
   }
   function send() {

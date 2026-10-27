@@ -2,7 +2,7 @@
 
 - Juniper will play through the Hub from the carbon-x1 with an 8BitDo Pro 2, plus the keyboard.
 - Fixed the face buttons. The standard gamepad mapping is positional, and the page sent the bottom button as NES A (the Xbox layout). Now the right face button is A and the bottom one is B, as on an NES pad and as labelled on the 8BitDo.
-- The page picks the first connected pad in standard mapping. It skips empty slots, which browsers report as `null`, and non-standard pads. Before, it took `pads[port] || pads[0]`, which could be an empty slot or the wrong device.
+- The page picks this player's connected standard pad (Player 2 takes the second one), else the first. It skips empty slots, which browsers report as `null`, and non-standard pads. Before, it took `pads[port] || pads[0]`, which could be an empty slot.
 - New controller status line (`#padInfo`):
   - with a standard pad: it names the controller;
   - with a pad in another mapping: it says to set the 8BitDo mode switch to X;
@@ -60,7 +60,13 @@ No build. The post-pull rebuild covers orion-hub.
 
 ## Review findings fixed
 
-(filled in after review)
+- Finding (low): Player 2 in a second window now picked Player 1's pad.
+  - Fix: the page takes the port's standard pad, else the first one.
+- Finding (nit): a pad that was disconnecting could show the "not standard mode" message.
+  - Fix: pads that are not connected are filtered out.
+- Finding (info): over Bluetooth, X mode may read as non-standard in Firefox.
+  - Fix: the status line and the runbook say to use a USB cable then.
+- Checked, no change needed: `stage` has no temporal-dead-zone risk, `#padInfo` exists before load, and the P2 eval still passes.
 
 ## Restart required
 

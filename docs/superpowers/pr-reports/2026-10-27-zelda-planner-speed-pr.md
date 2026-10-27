@@ -121,6 +121,6 @@ git pull   # post-pull rebuild of orion-hub (Hub + retro gateway); reload the Re
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2905
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

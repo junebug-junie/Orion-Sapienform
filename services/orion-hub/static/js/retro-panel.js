@@ -58,15 +58,31 @@
   function neutral() { closeConnections(); report('Paused. Click the game to keep playing.'); }
   function mask() {
     let m=0; for(const code of keys) m |= bits[code] || 0;
-    let pads=[];try { pads=navigator.getGamepads?.() || []; } catch (_) { /* Keyboard remains available over HTTP. */ }
-    const pad = pads[Number(el('port').value)] || pads[0];
-    if (pad && pad.mapping==='standard' && document.activeElement===screen) {
-      const b=pad.buttons;
-      if(b[0]?.pressed)m|=256;if(b[1]?.pressed)m|=1;if(b[8]?.pressed)m|=4;if(b[9]?.pressed)m|=8;
-      if(b[12]?.pressed||pad.axes[1]<-.5)m|=16;if(b[13]?.pressed||pad.axes[1]>.5)m|=32;
-      if(b[14]?.pressed||pad.axes[0]<-.5)m|=64;if(b[15]?.pressed||pad.axes[0]>.5)m|=128;
-    }
+    const pad = gamepad();
+    if (pad && (document.activeElement===screen || document.fullscreenElement===stage)) m |= padMask(pad);
     if((m&48)===48)m&=~48;if((m&192)===192)m&=~192;return m;
+  }
+  // The first connected pad in the browser's standard mapping. getGamepads() lists empty slots
+  // as null, and over plain HTTP some browsers throw: the keyboard still works then.
+  function gamepad() {
+    let pads=[];try { pads=Array.from(navigator.getGamepads?.() || []); } catch (_) { return null; }
+    return pads.find(p=>p && p.connected!==false && p.mapping==='standard') || null;
+  }
+  // Standard mapping is by position. NES layout: the right face button is A, the bottom one B
+  // (8BitDo Pro 2: its A and B labels match). Left stick or D-pad move; Select/Start in the middle.
+  function padMask(pad) {
+    const b=pad.buttons, a=pad.axes||[]; let m=0;
+    if(b[1]?.pressed)m|=256;if(b[0]?.pressed)m|=1;if(b[8]?.pressed)m|=4;if(b[9]?.pressed)m|=8;
+    if(b[12]?.pressed||a[1]<-.5)m|=16;if(b[13]?.pressed||a[1]>.5)m|=32;
+    if(b[14]?.pressed||a[0]<-.5)m|=64;if(b[15]?.pressed||a[0]>.5)m|=128;
+    return m;
+  }
+  function padStatus() {
+    let pads=[];try { pads=Array.from(navigator.getGamepads?.() || []).filter(Boolean); } catch (_) { /* no API */ }
+    const pad=gamepad(), other=pads.find(p=>p.mapping!=='standard');
+    el('padInfo').textContent = pad ? `Controller: ${pad.id}. Click the game, then play.`
+      : other ? `Controller ${other.id} is not in standard mode. On an 8BitDo Pro 2, set the mode switch on the back to X and reconnect.`
+      : 'No controller found. Connect it, then press any button.';
   }
   function send() {
     if(!lease || input?.readyState!==WebSocket.OPEN)return;
@@ -423,9 +439,11 @@
   // so blur keeps it: closing the socket would end Orion's turn (Retro cancels a grant whose
   // sponsor disconnects). A hidden tab or closed page still ends the handoff: nobody can watch.
   window.addEventListener('blur',()=>{away=true;if(!scriptedMode)neutral();});window.addEventListener('pagehide',neutral);
-  window.addEventListener('gamepaddisconnected',()=>{if(!scriptedMode)neutral();});
+  window.addEventListener('gamepaddisconnected',()=>{padStatus();if(!scriptedMode)neutral();});
+  window.addEventListener('gamepadconnected',padStatus);
   document.addEventListener('visibilitychange',()=>{if(document.hidden){away=true;neutral();}else{away=false;heal();}});
   window.addEventListener('focus',()=>{away=false;heal();});
   screen.addEventListener('pointerdown',()=>{away=false;if(scriptedMode)return;if(sid)wanted=true;heals=0;heal();});
+  padStatus();
   void load().catch(err=>{el('player').hidden=false;report(err.message);});
 })();

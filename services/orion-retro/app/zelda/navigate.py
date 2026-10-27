@@ -93,16 +93,23 @@ def edge_tiles(walls, blocked, start, direction):
     return [t for t in area if sign * t[axis] == best], best
 
 
-def on_screen_edge(tile, direction):
+DOOR_DEPTH = 2   # tiles: a dungeon doorway's outer frame is collision, yet the game walks Link through
+
+
+def on_screen_edge(tile, direction, slack=0):
     c, r = tile
-    return {'N': r == MIN_ROW, 'S': r == MAX_ROW, 'W': c == 0, 'E': c == MAX_COL}[direction]
+    return {'N': r <= MIN_ROW + slack, 'S': r >= MAX_ROW - slack,
+            'W': c <= slack, 'E': c >= MAX_COL - slack}[direction]
 
 
-def open_sides(walls, blocked, start):
+def open_sides(walls, blocked, start, dungeon=False):
     """Sides whose screen edge Link can walk to from `start` (the only sides an exit can use).
-    Computed by the motor's own search, so the planner never has to read the map to know."""
+    Computed by the motor's own search, so the planner never has to read the map to know.
+    In a dungeon a side is open when the floor reaches its doorway (DOOR_DEPTH from the edge);
+    a locked or shuttered door has no gap there, so it stays closed."""
     area = reachable(walls, blocked, start) | {start}
-    return [d for d in DIRS if any(on_screen_edge(t, d) for t in area)]
+    slack = DOOR_DEPTH if dungeon else 0
+    return [d for d in DIRS if any(on_screen_edge(t, d, slack) for t in area)]
 
 
 def terrain(obs, learned=(), caves=()):
@@ -202,14 +209,17 @@ class ZeldaGoals:
                                       if self.atlas and observation['mode'] == 'play' else ())
         sides = None
         if (observation.get('status') == 'observed' and observation['mode'] == 'play'
-                and observation['level'] == 0 and 'walls' in observation):
-            # Overworld only: dungeon doorways and locked doors are not verified against the
-            # wall grid. Only the atlas's per-room learned blocks count; the last goal's own
-            # bump set (self.blocked) may belong to the room Link just left.
+                and 'walls' in observation):
+            # Dungeons too (doorways by DOOR_DEPTH). Live 2026-10-27: with no sides in a dungeon
+            # room the planner chose "explore N" 32 times, hugging the top wall; its doors were
+            # south and west.
+            # Only the atlas's per-room learned blocks count; the last goal's own bump set
+            # (self.blocked) may belong to the room Link just left.
             learned = (self.atlas.blocked(observation['level'], observation['room'], observation['mode'],
                                           observation.get('walls_hash')) if self.atlas else set())
             link = observation['link']
-            sides = open_sides(observation['walls'], learned, tile_of(link['x'], link['y']))
+            sides = open_sides(observation['walls'], learned, tile_of(link['x'], link['y']),
+                               dungeon=observation['level'] != 0)
         self.attempt = dict(decision_id=f'{epoch}:{self.counter}', port=port, expected_epoch=epoch,
                             observation_frame=frame, observation=view,
                             supported_goals=list(GOALS), supported_predictions=list(PREDICTIONS),

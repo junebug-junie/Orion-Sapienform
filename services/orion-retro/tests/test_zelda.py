@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 from app.zelda import observe
 from app.zelda.observe import decode, ZeldaObserver, tile_of, ROMS, CORES
-from app.zelda.navigate import ZeldaGoals, astar, judge, tile_xy, UP, DOWN, LEFT, RIGHT, A, STUCK_FRAMES
+from app.zelda.navigate import ZeldaGoals, astar, judge, tile_xy, UP, DOWN, LEFT, RIGHT, A, STUCK_FRAMES, open_sides
 from app.zelda.atlas import Atlas, load, neighbourhood, path_for, MAX_BYTES
 from app.contracts import GoalV2, LeisureControl
 from app.control import Arbiter
@@ -666,14 +666,14 @@ def test_offer_lists_only_sides_link_can_walk_off():
     assert g.attempt['open_sides'] == []
 
 
-def test_open_sides_ignore_the_last_goals_bumps_and_skip_dungeons():
+def test_open_sides_ignore_the_last_goals_bumps_and_cover_dungeons():
     g = ZeldaGoals(lambda kind, **f: None)
     g.blocked = {(c, r) for c in range(32) for r in range(1, 10)}   # bumps left over from another room
     g.observe_frame(0, 2, 1, World().obs(), 0)
     assert g.attempt['open_sides'] == ['N', 'W', 'E']
     g = ZeldaGoals(lambda kind, **f: None)
-    g.observe_frame(0, 2, 1, World(level=1).obs(), 0)                # doorways not verified: no claim
-    assert g.attempt['open_sides'] is None
+    g.observe_frame(0, 2, 1, World(level=1).obs(), 0)                # same grid, same motor: same sides
+    assert g.attempt['open_sides'] == ['N', 'W', 'E']
 
 
 def test_learned_blocked_tile_heals_once_link_stands_on_it(tmp_path):
@@ -711,3 +711,43 @@ def test_learned_blocked_tile_heals_in_the_cave_key_only(tmp_path):
     a.observe(cave, 2)
     assert a.blocked(0, 0x77, 'cave', cave['walls_hash']) == set()
     assert a.blocked(0, 0x77, 'play', cave['walls_hash']) == {(15, 11)}   # overworld entry untouched
+
+
+# Live 2026-10-27, dungeon room 124 (RAM-derived collision grid): doors S (cols 15-16) and W
+# (rows 10-11); N and E have no gap. Each doorway's outer two tiles read as collision.
+ROOM_124 = [
+    '################################',
+    '################################',
+    '################################',
+    '################################',
+    '####........................####',
+    '####........................####',
+    '####..##....##....##....##..####',
+    '####..##....##....##....##..####',
+    '####........................####',
+    '####........................####',
+    '##....##....##....##....##..####',
+    '##....##....##....##....##..####',
+    '####........................####',
+    '####........................####',
+    '####..##....##....##....##..####',
+    '####..##....##....##....##..####',
+    '####........................####',
+    '####........................####',
+    '###############..###############',
+    '###############..###############',
+    '################################',
+    '################################',
+]
+
+
+def test_dungeon_sides_count_doorways_two_tiles_short_of_the_edge():
+    walls = [[ch == '#' for ch in row] for row in ROOM_124]
+    assert sorted(open_sides(walls, set(), (15, 17), dungeon=True)) == ['S', 'W']
+    assert open_sides(walls, set(), (15, 17)) == []          # the overworld rule finds no exit here
+    blocked = {(c, r) for r, row in enumerate(ROOM_124) for c, ch in enumerate(row) if ch == '#'}
+    g = ZeldaGoals(lambda kind, **f: None)
+    room = World(level=1, blocked=blocked, x=120, y=191).obs()
+    assert room['level'] == 'unknown' and room['link']['tile'] == [15, 17]   # as live: dungeon level unsettled
+    g.observe_frame(0, 2, 1, room, 0)
+    assert sorted(g.attempt['open_sides']) == ['S', 'W']

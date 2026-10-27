@@ -57,8 +57,11 @@ const pad=(pressed,axes=[0,0])=>({{id:'8BitDo Pro 2',connected:true,mapping:'sta
 const el=()=>({{value:'0'}});
 const out={{A:padMask(pad([1])),B:padMask(pad([0])),start:padMask(pad([9])),select:padMask(pad([8])),
   stickLeftUp:padMask(pad([],[-1,-1])),dpadRight:padMask(pad([15]))}};
-globalThis.navigator={{getGamepads:()=>[null,{{...pad([]),mapping:''}},pad([1])]}};
+Object.defineProperty(globalThis,'navigator',{{configurable:true,
+  value:{{getGamepads:()=>[null,{{...pad([]),mapping:''}},pad([1])]}}}});   // Node 21+ has a read-only navigator
 out.picked=padMask(gamepad());
 console.log(JSON.stringify(out));'''
-    got = json.loads(subprocess.run(['node', '-e', probe], capture_output=True, text=True, check=True).stdout)
+    run = subprocess.run(['node', '-e', probe], capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    got = json.loads(run.stdout)
     assert got == dict(A=256, B=1, start=8, select=4, stickLeftUp=64 | 16, dpadRight=128, picked=256)

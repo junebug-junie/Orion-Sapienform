@@ -2713,6 +2713,28 @@ Safety posture:
 
 ---
 
+## Body economy shadow bids (Patch C3b, 2026-10-27)
+
+Three Hub producers ask the body economy whether it would fund them, then ignore the answer.
+The answer is only logged, next to what Hub really did. Nothing changes what Hub does.
+
+| producer | family | where it bids | want_id (= the act's correlation id) | real outcome logged |
+|---|---|---|---|---|
+| endogenous outreach | `hub.outreach` | at compose (before `_generate`), and on a tick held by strain alone | the compose correlation id (fresh id on a strain-held tick, no act) | `ran` (sent) or `blocked:<reason>` (orion_passed, `*_after_generation`, arousal_strained, ...) |
+| retro leisure | `hub.retro_leisure` | `RetroLeisureListener.start` | the dispatch id | `ran` (started) or `blocked:<refusal>` |
+| retro co-play | `hub.retro_coplay` | the session-start sink | the handoff row key | `ran` (co-play has no gate) |
+
+One log line per bid: `physiology_shadow_bid family=... want_id=... shadow=funded|deferred|none
+reason=... lane=... real=ran|blocked:<reason> act_correlation_id=...` (`act_correlation_id` is set only
+when outreach's agent-lane fallback moved the act to a new id). The decision itself is written by
+durable-runs into `want_ledger`. A funded shadow decision whose act was blocked releases its
+reservation. Code: `scripts/physiology_shadow.py`. Switch: `HUB_PHYSIOLOGY_SHADOW_BID_ENABLED`
+(default true). Hub runs on the host network, so `ORION_PHYSIOLOGY_BID_URL` points at durable-runs'
+host port `http://127.0.0.1:8124/physiology/bid`.
+
+Reading pull does not bid here: a read runs as a `reading.turn` durable run, and that bid is left
+to durable-runs admission (a separate patch), so a read is never bid twice.
+
 ## 🧵 Philosophy
 
 Hub is intentionally thin:

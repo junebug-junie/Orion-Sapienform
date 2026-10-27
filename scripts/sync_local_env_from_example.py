@@ -442,6 +442,8 @@ SYNC_EXACT = frozenset(
         "CHANNEL_PEER_BRIEF",
         # Mind run artifact channel (reused by unified-turn enrichment, mode=orion)
         "CHANNEL_MIND_ARTIFACT",
+        # Body economy Patch C3b: hub's shadow-bid switch (no HUB_PHYSIOLOGY_ prefix is synced).
+        "HUB_PHYSIOLOGY_SHADOW_BID_ENABLED",
         "SQL_WRITER_EMIT_MEMORY_TURN_PERSISTED",
         # bus_fallback_log backlog watcher (orion-sql-writer). NOTIFY_API_TOKEN is
         # deliberately absent: it is a credential, .env_example carries it empty, and

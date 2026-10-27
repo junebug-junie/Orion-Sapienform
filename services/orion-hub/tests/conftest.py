@@ -141,6 +141,13 @@ def _no_live_transport_threshold_state(monkeypatch):
     monkeypatch.setenv("TRANSPORT_THRESHOLDS_DERIVED_ENABLED", "false")
 
 
+@pytest.fixture(autouse=True)
+def _no_live_physiology_bid(monkeypatch):
+    """Unit tests must never POST a shadow bid to the live body economy (Patch C3b): the client
+    returns None without a call. Tests of the shadow seam stub scripts.physiology_shadow.abid."""
+    monkeypatch.setenv("ORION_PHYSIOLOGY_BID_CLIENT_ENABLED", "false")
+
+
 @pytest.fixture
 def pre_turn_appraisal_off(monkeypatch, request):
     """Pin ENABLE_PRE_TURN_APPRAISAL off for tests that drive the chat path with

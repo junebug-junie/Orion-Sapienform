@@ -138,6 +138,10 @@ readers:
   - module: services/orion-hub/scripts/temporal_self_routes.py
     role: display
     reason: Hub temporal-self routes proxy the regulation state and arousal_level for display.
+  - module: services/orion-hub/scripts/physiology_shadow.py
+    role: display
+    reason: SHADOW bids (outreach, retro co-play, retro leisure) logged beside the real gate; never obeyed.
+    note: Patch C3b; becomes the bid site when Patch D cuts each producer over
   - module: services/orion-substrate-runtime/app/worker.py
     role: display
     reason: cabinet-heat tick (prediction error that feeds attention competition) and strain-news tick write substrate nodes; vetoes nothing.

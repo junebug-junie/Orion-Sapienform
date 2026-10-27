@@ -445,6 +445,8 @@ SYNC_EXACT = frozenset(
         # Body economy Patch C3b: hub's shadow-bid switch (no HUB_PHYSIOLOGY_ prefix is synced).
         "HUB_PHYSIOLOGY_SHADOW_BID_ENABLED",
         "SQL_WRITER_EMIT_MEMORY_TURN_PERSISTED",
+        # Body economy Patch C3b: orion-thought's shadow-bid switch (no THOUGHT_PHYSIOLOGY_ prefix).
+        "THOUGHT_PHYSIOLOGY_SHADOW_BID_ENABLED",
         # bus_fallback_log backlog watcher (orion-sql-writer). NOTIFY_API_TOKEN is
         # deliberately absent: it is a credential, .env_example carries it empty, and
         # the settings default of "" already makes the key optional.

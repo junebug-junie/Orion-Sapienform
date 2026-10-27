@@ -72,3 +72,7 @@ Live check after deploy:
 - Severity: info. Background outreach turns on the 27B lane sometimes time out after 210 s while reading turns hold its single slot, then fall back to chat. That is by design; changing it is a policy call.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/2912

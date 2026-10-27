@@ -435,6 +435,8 @@ SYNC_EXACT = frozenset(
         "AUTONOMY_CHAT_STANCE_DEFER_ORION_DRIVES",
         "AUTONOMY_GRAPH_QUERY_URL",
         "AUTONOMY_GRAPH_UPDATE_URL",
+        # Body economy Patch C3b: orion-topic-foundry's shadow-bid switch.
+        "TOPIC_FOUNDRY_PHYSIOLOGY_SHADOW_BID_ENABLED",
         "AUTONOMY_GRAPH_TIMEOUT_SEC",
         "CHANNEL_MEMORY_TURN_PERSISTED",
         "CHANNEL_CHAT_HISTORY_SPARK_META_PATCH",
@@ -580,6 +582,9 @@ DEFAULT_SERVICES = (
     # Energy watcher (2026-09-27). Same dual-half blind spot: absent here and no
     # ENERGY_ prefix, so the default run added none of its 14 plan-2 keys.
     "orion-energy",
+    # Body economy Patch C3b (2026-10-27): its shadow-bid switch is an exact key; without this
+    # entry the default run never visited the service at all.
+    "orion-topic-foundry",
 )
 
 

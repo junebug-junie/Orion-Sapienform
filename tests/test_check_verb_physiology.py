@@ -7,11 +7,13 @@ exposes the block without changing the plan it builds.
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 import textwrap
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("check_verb_physiology", REPO / "scripts" / "check_verb_physiology.py")
@@ -125,7 +127,7 @@ def test_tier0_must_be_turn_or_autonomic(tmp_path: Path) -> None:
     rc, errors = _run(tmp_path, {"v": text})
     assert rc == 1 and "tier 0" in errors[0]
     for family in ("turn", "autonomic"):
-        ok = text.replace("thought.painting", family)
+        ok = text.replace("thought.painting", family).replace("deferrable_window_s: 5400", "deferrable_window_s: 0")
         assert gate.check(*_dirs(tmp_path / family, {"v": ok}))[0] == []
 
 
@@ -147,19 +149,44 @@ def test_real_repo_passes() -> None:
     assert len(parsed) == len(verb_files) > 100
 
 
+def _const(path: str, name: str) -> str:
+    """A module-level string constant, read from source (the services are not importable here)."""
+    match = re.search(rf'^{name}\s*=\s*"([^"]+)"', (REPO / path).read_text(encoding="utf-8"), re.M)
+    assert match, f"{name} not found in {path}"
+    return match.group(1)
+
+
 def test_families_match_act_ledger_actors() -> None:
     # Patch C3 joins bids to acts by family, so where an act actor exists the verb must use it.
+    # Actor names are read from the producers, so renaming one without the verb fails here.
     _, parsed = gate.check(gate.DEFAULT_VERBS_DIR, gate.DEFAULT_POOL)
     expected = {
-        "daily_metacog_v1": "actions.daily_metacog",
-        "journal.compose": "actions.journal",
-        "dream_cycle": "dream.cycle",
-        "skills.imagination.render_scene.v1": "thought.painting",
-        "visual_context_interpret": "thought.painting",
+        "daily_metacog_v1": _const("services/orion-actions/app/act_emit.py", "DAILY_METACOG_ACTOR"),
+        "journal.compose": _const("services/orion-actions/app/act_emit.py", "JOURNAL_ACTOR"),
+        "dream_cycle": _const("services/orion-dream/app/act_emit.py", "ACTOR"),
     }
+    policy = yaml.safe_load((REPO / "config/execution_dispatch/execution_dispatch_policy.v1.yaml").read_text())
+    routes = {**(policy.get("proposal_kind_to_cortex") or {}), **(policy.get("template_to_cortex") or {})}
+    with_yaml = 0
+    for route in routes.values():
+        actor = (route.get("act") or {}).get("actor")
+        verb = route.get("cortex_verb")
+        if not actor or verb not in parsed:  # orion.* verbs are code-registered, no YAML to check
+            continue
+        with_yaml += 1
+        expected[verb] = actor
+    assert with_yaml >= 1, "no dispatch route with an act actor maps to a verb YAML any more"
     assert {verb: parsed[verb].family for verb in expected} == expected
     assert parsed["chat_general"].tier == 0 and parsed["chat_general"].family == "turn"
     assert parsed["stance_react"].tier == 0
+
+
+def test_tier0_window_must_be_zero(tmp_path: Path) -> None:
+    text = VALID.format(name="v").replace("tier: 2", "tier: 0").replace("thought.painting", "turn")
+    rc, errors = _run(tmp_path, {"v": text})
+    assert rc == 1 and "deferrable_window_s" in errors[0]
+    ok = text.replace("deferrable_window_s: 5400", "deferrable_window_s: 0")
+    assert gate.check(*_dirs(tmp_path / "ok", {"v": ok}))[0] == []
 
 
 def test_plan_loader_exposes_block_without_changing_the_plan() -> None:

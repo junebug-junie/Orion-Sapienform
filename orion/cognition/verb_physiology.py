@@ -16,7 +16,15 @@ cortex-orch read it at dispatch and bid for tier 1/2 verbs. Tier 0 never bids, s
 runs only on Juniper's turn, or as autonomic plumbing, declares ``tier: 0`` with family
 ``turn`` or ``autonomic``; that keeps the gate total without letting tier 0 become an escape
 hatch for an Orion-chosen act (a tier-0 verb with any other family is rejected, and so is a
-``turn``/``autonomic`` verb on tier 1 or 2).
+``turn``/``autonomic`` verb on tier 1 or 2). Tier 0 is never deferred, so its window is 0.
+
+Lanes: each name is a class in ``config/gpu_pool.yaml`` when one of that name exists (``fast`` the
+class spans every role that may serve fast work), otherwise a single role (``agent-gpu2``,
+``diffusion``). Class names come first because a verb reaches the pool through a route, and a
+route names a class.
+
+Non-zero windows are authored priors (the act horizon where one exists, e.g. painting 5400 s),
+not measurements. C3 should calibrate them from the act ledger before pricing on them.
 """
 
 from __future__ import annotations
@@ -84,6 +92,8 @@ class VerbPhysiologyV1(BaseModel):
             )
         if self.tier != 0 and self.family in TIER0_FAMILIES:
             raise ValueError(f"family {self.family!r} is reserved for tier 0, got tier {self.tier}")
+        if self.tier == 0 and self.deferrable_window_s != 0:
+            raise ValueError(f"tier 0 is never deferred, so deferrable_window_s must be 0, got {self.deferrable_window_s}")
         return self
 
 
@@ -110,7 +120,10 @@ def parse_verb_physiology(
 
 
 def load_pool_lanes(pool_path: Path) -> frozenset[str]:
-    """Every role and class name in ``config/gpu_pool.yaml``: the names a verb's lanes may use."""
+    """Every role and class name in ``config/gpu_pool.yaml``: the names a verb's lanes may use.
+
+    One namespace on purpose: a name that is both a class and a role reads as the class (see the
+    module docstring)."""
     data = yaml.safe_load(pool_path.read_text(encoding="utf-8")) or {}
     roles = data.get("roles") or {}
     classes = data.get("classes") or {}

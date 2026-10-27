@@ -47,6 +47,6 @@ plan:
 # checked by scripts/check_verb_physiology.py. Tier 0 never bids (turn/autonomic).
 physiology:
   tier: 2
-  family: execution_dispatch.observe
+  family: execution_dispatch.inspect
   lanes: []
   deferrable_window_s: 300

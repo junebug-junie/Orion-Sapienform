@@ -5,7 +5,7 @@ personality_file: orion/cognition/personality/orion_identity.yaml
 # Body economy (Patch C2): who pays for this verb. Parsed by plan_loader.load_verb_physiology;
 # checked by scripts/check_verb_physiology.py. Tier 0 never bids (turn/autonomic).
 physiology:
-  tier: 2
+  tier: 1
   family: self_study
   lanes: []
   deferrable_window_s: 21600

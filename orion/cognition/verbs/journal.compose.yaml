@@ -33,6 +33,9 @@ steps:
 
 # Body economy (Patch C2): who pays for this verb. Parsed by plan_loader.load_verb_physiology;
 # checked by scripts/check_verb_physiology.py. Tier 0 never bids (turn/autonomic).
+# Two act actors compose through this verb: orion-actions in-process (actions.journal, the
+# common path) and admitted durable journal.compose runs (durable.journal_compose, e.g.
+# world_pulse_digest). The family names the first; C3 must take the actor from the caller.
 physiology:
   tier: 1
   family: actions.journal

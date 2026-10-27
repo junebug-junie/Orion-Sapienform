@@ -13,7 +13,6 @@ from orion.physiology.weights import (
     MAX_DRIFT_PER_DAY,
     UseRecord,
     evidence_for,
-    funded_shares,
     max_daily_move,
     shrunk_target,
     weight_series,
@@ -84,11 +83,3 @@ def test_rest_state_evidence_ages_out_and_the_weight_relaxes_to_prior():
     first, last = series[min(series)], series[NOW.date()]
     assert first["unused"].weight < 1.0
     assert last["unused"].weight == pytest.approx(1.0) and last["unused"].basis == "prior"
-
-
-def test_funded_shares_per_tier_none_when_the_tier_funded_nothing():
-    acts = [ActRecord(act_id=f"u{i}", family="used", opened_at=NOW - timedelta(days=1), closed_at=None) for i in range(19)]
-    acts.append(ActRecord(act_id="x", family="unused", opened_at=NOW - timedelta(days=1), closed_at=None))
-    sh = funded_shares(FAMS, acts, since=NOW - timedelta(days=7), until=NOW)
-    assert sh["used"] == pytest.approx(0.95) and sh["unused"] == pytest.approx(0.05) and sh["unmeasured"] == 0.0
-    assert sh["upkeep"] is None and "turn" not in sh

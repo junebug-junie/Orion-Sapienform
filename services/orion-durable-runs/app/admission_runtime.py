@@ -60,6 +60,7 @@ from app.pool_hold import (
 )
 from app.reflect_graph import finish_detail as reflect_finish_detail
 from app.run_acts import RunActEmitter
+from app.run_bids import RunBidder
 from app.orion_day_graph import (
     OrionDayDeps, build_orion_day_graph, finish_detail as orion_day_finish_detail, slim_brief as orion_day_slim_brief,
 )
@@ -157,7 +158,7 @@ TAKEBACK_RELEASE_REASONS = frozenset({HoldLost.release_reason, URGENT_PREEMPT})
 
 
 class AdmissionRuntime:
-    def __init__(self, settings, runner, pool, *, store=None, clock=None, holds=None):
+    def __init__(self, settings, runner, pool, *, store=None, clock=None, holds=None, market_getter=None):
         self.settings, self.runner, self.pool = settings, runner, pool
         self.store = store or DurableRunRegistryStore(pool)
         self.now = clock or (lambda: datetime.now(timezone.utc))
@@ -167,6 +168,11 @@ class AdmissionRuntime:
             enabled=bool(getattr(settings, "durable_act_emit_enabled", True)), store=self.store,
             publish=lambda *args: runner._publish(*args), corr_for=lambda c: runner._corr_for_admission(c),
             now=self.now)
+        # Body economy C3a (SHADOW): want-family runs bid at submit, open at first grant, release at
+        # terminal. Logged to want_ledger, never obeyed: admission below is unchanged.
+        self.bids = RunBidder(
+            enabled=bool(getattr(settings, "physiology_shadow_bids_enabled", True)),
+            market_getter=market_getter or (lambda: None))
         if settings.lease_heartbeat_sec * 2 > self.holds.hold_ttl_sec:
             # Two missed beats must still land inside the pool's TTL, or a slow bus expires a
             # healthy run's hold mid-turn.
@@ -379,8 +385,11 @@ class AdmissionRuntime:
         if request.workflow == DREAM_CARRY_WORKFLOW and request.admission.deadline_at is None:
             # Text/finish retries never spend attempts: the deadline is the carry's only bound.
             raise ValueError("dream.carry runs require admission.deadline_at")
-        row = await self.store.submit(request.model_dump(mode="json"))
+        payload = request.model_dump(mode="json")
+        row = await self.store.submit(payload)
         self._wake.set()
+        if not row.get("terminal") and (bids := getattr(self, "bids", None)) is not None:
+            bids.on_submit(payload)   # background task; never raises, never delays the receipt
         return {"run_id": request.run_id, "status": row.get("terminal") or "waiting_resource",
                 "workflow_kind": request.workflow, "requested_resource": request.admission.resource}
 
@@ -498,6 +507,8 @@ class AdmissionRuntime:
                                           event_id=f"assigned:{ref['lease_id']}:{ref['generation']}")
             if (acts := getattr(self, "acts", None)) is not None:   # absent on bare test runtimes
                 await acts.on_grant(state, granted)
+            if (bids := getattr(self, "bids", None)) is not None:
+                bids.on_grant(run_id, self.now())
             return GRANTED, {"status": "admitted", "lease": ref, "hold": _without_backoff(hold)}
         if reply.status in POOL_WAITING:
             self._checked[run_id] = time.monotonic()   # just read: the poll fallback starts from here
@@ -1190,6 +1201,8 @@ class AdmissionRuntime:
             # raise before it (a later step failing would leave the act to the ledger's expiry).
             # on_terminal never raises.
             await acts.on_terminal({**state, "run_id": run_id, "workflow": wf}, actual)
+        if actual is not None and (bids := getattr(self, "bids", None)) is not None:
+            bids.on_terminal(run_id)   # never raises
         if actual is not None and actual != status:
             await self._graph_for(wf).aupdate_state(self.config(run_id), {"status": actual}, as_node="finish")
         if actual is not None and actual != "completed" and run_id in self.outreach:

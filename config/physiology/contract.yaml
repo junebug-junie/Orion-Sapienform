@@ -210,6 +210,14 @@ readers:
   - module: scripts/analysis/replay_body_economy.py
     role: display
     reason: "read-only replay of the body-economy price rules over live history (PR #2861); gates nothing"
+  # Body economy Patch C3a, SHADOW bid sites: they bid and LOG the decision; nothing they dispatch or
+  # admit changes with it (display until Patch D cuts a reader over and that PR changes the row).
+  - module: services/orion-cortex-orch/app/physiology_bid.py
+    role: display
+    reason: "shadow bid at cortex-orch dispatch for tier 1/2 verbs off Juniper's turn (orion.physiology.client); the decision id is logged, dispatch is unchanged; gates nothing"
+  - module: scripts/analysis/body_economy_shadow_vs_real.py
+    role: display
+    reason: "read-only shadow-vs-real disagreement report (want_ledger + replayed admissions vs grammar_acts); gates nothing"
 
 sources:
   - module: scripts/analysis/sample_body_economy_bids.py

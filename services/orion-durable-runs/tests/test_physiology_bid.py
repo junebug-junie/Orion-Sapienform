@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(REPO_ROOT), str(SERVICE_ROOT)]
 
-from app.physiology_market import ACTS_SQL, USES_SQL, Market, read_history  # noqa: E402
+from app.physiology_market import ACTS_SQL, FUNDED_SQL, USES_SQL, Market, read_funded, read_history  # noqa: E402
 from orion.physiology.families import load_families  # noqa: E402
 from orion.schemas.physiology import PhysiologyConstraintReadingV1 as R, PhysiologyStateV1  # noqa: E402
 from orion.schemas.physiology_want import WantDecisionV1, WantV1  # noqa: E402
@@ -55,12 +55,17 @@ class _Conn:
         self.pool.calls += 1
         if self.pool.fail:
             raise RuntimeError("db down")
+        if "want_ledger" in sql:
+            if self.pool.ledger_fail:
+                raise RuntimeError("want_ledger missing")
+            return _Cursor(self.pool.funded)
         return _Cursor(self.pool.acts if "grammar_acts" in sql else self.pool.uses)
 
 
 class _Pool:
-    def __init__(self, acts=(), uses=(), fail=False):
+    def __init__(self, acts=(), uses=(), fail=False, funded=(), ledger_fail=False):
         self.acts, self.uses, self.fail, self.calls = list(acts), list(uses), fail, 0
+        self.funded, self.ledger_fail = list(funded), ledger_fail
 
     def connection(self):
         pool = self
@@ -118,6 +123,33 @@ def test_bid_prices_against_the_latest_state_publishes_and_caches_history():
     asyncio.run(m.bid(_want(1), NOW + timedelta(seconds=10)))
     assert pool.calls == calls                  # history cached inside the TTL
     assert m.health(NOW)["reservations"] == 2 and m.release("w0") == 1
+
+
+def test_the_weekly_floor_is_seeded_from_want_ledger_and_a_ledger_failure_does_not_fail_the_bid():
+    """Patch C3a: the floor counts funded wants from want_ledger (rolling 7 days), re-read with the
+    history; the context keeps tier1_recent_use (C1 dropped it rebuilding the context by hand)."""
+    funded = [{"decision_id": f"x{i}@t", "family": "durable.curiosity_investigate", "tier": 2,
+               "decided_at": NOW - timedelta(days=1)} for i in range(99)]
+    funded.append({"decision_id": "y@t", "family": "durable.self_inquiry", "tier": 2, "decided_at": NOW - timedelta(days=2)})
+    m = _market(_state().model_dump_json(), _Pool(acts=_acts(), funded=funded), [])
+    d = asyncio.run(m.bid(_want(), NOW))
+    assert m.book.funded_seeded is True and m.health(NOW)["funded_seeded"] is True
+    # 1 of 100 before this bid; the bid itself was funded and counted once.
+    assert m.book.funded_share("durable.self_inquiry", 2, NOW) == pytest.approx(2 / 101 if d.outcome == "funded" else 1 / 100)
+    ctx = asyncio.run(m.context(_state(), NOW))
+    assert ctx.stale_after_sec == m._stale and isinstance(ctx.tier1_recent_use, dict)
+    bad = _market(_state().model_dump_json(), _Pool(acts=_acts(), ledger_fail=True), [])
+    d2 = asyncio.run(bad.bid(_want(), NOW))
+    assert d2.reason != "physiology_unavailable" and bad.book.funded_seeded is False
+
+
+def test_mark_opened_and_release_follow_the_act():
+    m = _market(_state().model_dump_json(), _Pool(acts=_acts()), [])
+    d = asyncio.run(m.bid(_want(), NOW))
+    assert d.outcome == "funded"
+    assert m.mark_opened("w0", NOW + timedelta(seconds=30)) == 1
+    assert m.book.snapshot(NOW + timedelta(seconds=31))[0]["opened"] is True
+    assert m.release("w0") == 1 and m.book.snapshot(NOW + timedelta(seconds=31)) == []
 
 
 def test_never_funded_on_a_missing_market():
@@ -198,6 +230,20 @@ def test_history_sql_on_postgres():
                                            "VALUES (%s, %s, %s, %s, %s)", (aid, actor, o, c, json.dumps({"seconds": 1.0})))
                     await conn.execute("INSERT INTO act_downstream_use VALUES ('new', 'x', %s, 'linked', true, true)",
                                        (NOW - timedelta(days=1),))
+                    # want_ledger's real columns (services/orion-sql-db/manual_migration_want_ledger_v1.sql).
+                    await conn.execute("""CREATE TABLE want_ledger (decision_id text PRIMARY KEY, want_id text NOT NULL,
+                        family text NOT NULL, producer text NOT NULL, verb text NOT NULL, tier integer NOT NULL,
+                        decided_at timestamptz NOT NULL, outcome text NOT NULL, reason text NOT NULL, lane text,
+                        net double precision, binding_constraint text, shadow boolean NOT NULL, correlation_id text,
+                        decision jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now())""")
+                    for did, outcome, at in (("f1", "funded", NOW - timedelta(days=1)), ("d1", "deferred", NOW),
+                                             ("old", "funded", NOW - timedelta(days=9))):
+                        await conn.execute("INSERT INTO want_ledger (decision_id, want_id, family, producer, verb, tier, "
+                                           "decided_at, outcome, reason, shadow, decision) VALUES "
+                                           "(%s, 'w', 'durable.self_inquiry', 'p', 'ask', 2, %s, %s, 'r', true, '{}')",
+                                           (did, at, outcome))
+                funded = await read_funded(pool, NOW)
+                assert [f.decision_id for f in funded] == ["f1"] and funded[0].tier == 2
                 acts, uses = await read_history(pool, NOW)
                 assert sorted(a.act_id for a in acts) == ["new", "old2"]   # y's newest close survives the window
                 assert acts[0].cost == {"seconds": 1.0} or acts[1].cost == {"seconds": 1.0}
@@ -206,5 +252,5 @@ def test_history_sql_on_postgres():
             async with await AsyncConnection.connect(DSN, autocommit=True) as conn:
                 await conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
-    assert "UNION" in ACTS_SQL and "act_downstream_use" in USES_SQL
+    assert "UNION" in ACTS_SQL and "act_downstream_use" in USES_SQL and "want_ledger" in FUNDED_SQL
     asyncio.run(run())

@@ -22,18 +22,33 @@ What is charged in C1, and what is not (said in every decision's warnings, never
   as ``unpriced:<constraint>`` instead of charged at 0. The spinal heat reflex still applies.
 
 Reservations (Organ 2, replay R6). Each funded bid reserves its cost on the constraints it would
-use until the act closes (``release``) or the reservation expires (the act's expected seconds,
-120 s .. one lane window). A later bid on a CAPACITY line (a lane, Juniper's cap) is admitted only
-if ``forecast use + reservations + its cost <= the line``: forecast use is the trailing measured
-use (persistence, as the price itself). Heat, energy and claude are not capacity lines: they are
-never reserved against, so a hot room cannot become a veto here (anti-windup).
+use. A later bid on a CAPACITY line (a lane, Juniper's cap) is admitted only if
+``forecast use + reservations + its cost <= the line``: forecast use is the trailing measured use
+(persistence, as the price itself). Heat, energy and claude are not capacity lines: they are never
+reserved against, so a hot room cannot become a veto here (anti-windup).
+
+Reservation lifetime (Patch C3a). In shadow a funded want's real act may never run (today's gate
+vetoes it), and a reservation nobody uses biases every later bid toward deferral. So a reservation
+lives only as long as the act it stands for:
+
+* released when the act closes (``release``: durable runs at their terminal, cortex-orch when the
+  dispatch returns);
+* before the act opens, it expires at the earlier of one act-length (the family's expected seconds,
+  120 s .. one lane window) and the END OF THE WANT'S WINDOW: no act by then, no reservation;
+* when the producer reports the act opened (``mark_opened``: durable runs at their first pool
+  grant), it is re-anchored to one act-length from the open, then released at the close.
 
 Tier 1 reserved share: per lane, the p75 of Tier 1's own hourly use over 14 days, as a share of
 the lane, capped at 50%. Tier 1 pays no lane price while its reservations fit inside that share;
 Tier 2's capacity line on that lane is the rest.
 
-Exploration floor: a family under 5% of its tier's funded acts this week is funded anyway when
-only the PRICE said defer (never past a capacity line).
+Exploration floor, a weekly quota (Patch C3a). A Tier 2 family under 5% of Tier 2's FUNDED WANTS
+over the rolling 7 days is funded anyway when only the PRICE said defer (never past a capacity
+line, never with zero hunger). Funded wants are counted from ``want_ledger`` (``seed_funded``) plus
+this process's own funded decisions the ledger has not caught up with, deduplicated by
+``decision_id``. Each floor fund raises the family's share, so the floor stops by itself at 5%;
+there is no per-window rate limit (C1's once-per-lane-window rule starved families: R7 failed).
+No ledger read yet (``funded_seeded`` false): no floor.
 
 Holdback stays the allocator's own; Choice does not randomize.
 
@@ -77,6 +92,8 @@ TIER1_SHARE_Q = 0.75
 TIER1_LOOKBACK = timedelta(days=14)
 RESERVATION_MIN_SEC = 120.0
 DISPLACED_LOOKBACK = timedelta(hours=1)
+FLOOR_WINDOW = timedelta(days=7)
+FLOOR_TIER = 2
 MAX_LISTED = 10
 CAPACITY_CONSTRAINTS_PREFIX = (LANE_PREFIX, ATTENTION_JUNIPER)
 UNMEASURED = {HEAT: "wh_by_host", ENERGY: "wh_by_host", CLAUDE: "claude_limit_events"}
@@ -93,6 +110,17 @@ class Reservation:
     amount: float               # in the constraint's own unit (slot-s, messages)
     expires_at: datetime
     net: float
+    ttl_sec: float = RESERVATION_MIN_SEC   # one act-length: re-anchored from the open (mark_opened)
+    opened: bool = False
+
+
+@dataclass(frozen=True)
+class FundedWant:
+    """One funded decision, as the exploration floor counts it (a want_ledger row or this process's own)."""
+    decision_id: str
+    at: datetime
+    family: str
+    tier: int
 
 
 class ReservationBook:
@@ -103,8 +131,9 @@ class ReservationBook:
     def __init__(self) -> None:
         self._r: list[Reservation] = []
         self._deferred: deque[tuple[datetime, str, Optional[str], float]] = deque(maxlen=500)
-        # family -> when the exploration floor last funded it here (its act history lags the book).
-        self._floor: dict[str, datetime] = {}
+        # decision_id -> funded want, the rolling FLOOR_WINDOW: want_ledger rows + this process's own.
+        self._funded: dict[str, FundedWant] = {}
+        self.funded_seeded = False
 
     def _prune(self, now: datetime) -> None:
         self._r = [r for r in self._r if r.expires_at > now]
@@ -123,16 +152,51 @@ class ReservationBook:
         self._r.append(r)
 
     def release(self, want_id: str) -> int:
+        """The want's act closed (or will never run): its reservations end now."""
         n = len(self._r)
         self._r = [r for r in self._r if r.want_id != want_id]
         return n - len(self._r)
 
-    def floor_used_since(self, family: str, since: datetime) -> bool:
-        at = self._floor.get(family)
-        return at is not None and at >= since
+    def mark_opened(self, want_id: str, at: datetime) -> int:
+        """The want's act opened at ``at``: its reservations now run one act-length from the open
+        (no longer capped by the want's window). A reservation that already lapsed stays gone."""
+        self._prune(at)
+        n = 0
+        out = []
+        for r in self._r:
+            if r.want_id == want_id and not r.opened:
+                r = Reservation(r.want_id, r.family, r.tier, r.constraint, r.amount,
+                                at + timedelta(seconds=r.ttl_sec), r.net, r.ttl_sec, True)
+                n += 1
+            out.append(r)
+        self._r = out
+        return n
 
-    def note_floor(self, family: str, now: datetime) -> None:
-        self._floor[family] = now
+    # --- the exploration floor's weekly count ----------------------------------------------------
+    def seed_funded(self, rows: "Sequence[FundedWant]", now: datetime) -> None:
+        """Merge the ledger's funded wants of the rolling week. This process's own decisions the
+        ledger has not written yet stay; the same decision is never counted twice (decision_id)."""
+        for r in rows:
+            self._funded[r.decision_id] = r
+        self.funded_seeded = True
+        self._prune_funded(now)
+
+    def note_funded(self, decision_id: str, family: str, tier: int, at: datetime) -> None:
+        self._funded[decision_id] = FundedWant(decision_id, at, family, tier)
+
+    def _prune_funded(self, now: datetime) -> None:
+        since = now - FLOOR_WINDOW
+        for k in [k for k, r in self._funded.items() if r.at < since]:
+            del self._funded[k]
+
+    def funded_share(self, family: str, tier: int, now: datetime) -> Optional[float]:
+        """``family``'s share of its tier's funded wants over the rolling week; None when the tier
+        funded nothing (no share to defend: every hungry family is under the floor)."""
+        self._prune_funded(now)
+        in_tier = [r for r in self._funded.values() if r.tier == tier and r.at <= now]
+        if not in_tier:
+            return None
+        return sum(1 for r in in_tier if r.family == family) / len(in_tier)
 
     def note_deferred(self, now: datetime, want_id: str, lane: Optional[str], net: float) -> None:
         self._deferred.append((now, want_id, lane, net))
@@ -144,7 +208,8 @@ class ReservationBook:
     def snapshot(self, now: datetime) -> list[dict]:
         self._prune(now)
         return [{"want_id": r.want_id, "family": r.family, "tier": r.tier, "constraint": r.constraint,
-                 "amount": round(r.amount, 3), "expires_at": r.expires_at.isoformat()} for r in self._r]
+                 "amount": round(r.amount, 3), "expires_at": r.expires_at.isoformat(), "opened": r.opened}
+                for r in self._r]
 
 
 # --- market context ---------------------------------------------------------------------------------
@@ -158,7 +223,6 @@ class MarketContext:
     # lane role -> Tier 1's own slot-seconds in the last window (acts closed inside it). Part of the
     # lane's measured level: Tier 2's line subtracts only the UNUSED rest of Tier 1's share.
     tier1_recent_use: Mapping[str, float] = field(default_factory=dict)
-    funded_share: Mapping[str, Optional[float]] = field(default_factory=dict)
     lane_window_sec: float = 3600.0
     stale_after_sec: float = STALE_AFTER_SEC
 
@@ -197,14 +261,14 @@ def tier1_reserved_share(acts: Sequence[ActRecord], families: FamiliesConfig, la
 def build_context(families: FamiliesConfig, acts: Sequence[ActRecord], uses: Sequence[Any],
                   state: Optional[PhysiologyStateV1], now: datetime, *, lane_window_sec: float = 3600.0,
                   weights: Optional[Mapping[str, FamilyWeight]] = None) -> MarketContext:
-    """Everything a bid reads besides the want and the prices: per-family appetite, today's
-    weights, this week's funded shares and Tier 1's reserved share per lane."""
+    """Everything a bid reads besides the want, the prices and the book: per-family appetite,
+    today's weights and Tier 1's reserved share per lane. (The floor's weekly funded shares live on
+    the ReservationBook: they come from want_ledger, not act history.)"""
     from orion.physiology.appetite import build_family_appetite
-    from orion.physiology.weights import funded_shares, weights_now
+    from orion.physiology.weights import weights_now
 
     app = {f: build_family_appetite(c, acts, now) for f, c in families.families.items() if c.bids}
     w = dict(weights) if weights is not None else weights_now(families, acts, uses, now)
-    shares = funded_shares(families, acts, since=now - timedelta(days=7), until=now)
     t1: dict[str, float] = {}
     t1_use: dict[str, float] = {}
     for a in acts:
@@ -223,7 +287,7 @@ def build_context(families: FamiliesConfig, acts: Sequence[ActRecord], uses: Seq
                 t1[r.constraint[len(LANE_PREFIX):]] = tier1_reserved_share(
                     acts, families, r.constraint[len(LANE_PREFIX):], r.budget, now, window_sec=lane_window_sec)
     return MarketContext(families=families, appetite=app, weights=w, tier1_share=t1, tier1_recent_use=t1_use,
-                         funded_share=shares, lane_window_sec=lane_window_sec)
+                         lane_window_sec=lane_window_sec)
 
 
 
@@ -494,33 +558,41 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
                          warnings=_window_warn(want, cfg, now, retry, warnings), **common,
                          why=f"{head}; {k} is full: forecast use + {len(holders)} reservation(s) + this cost exceed its line by {frac_over:.0%}")
 
-    # The floor applies only where the funded shares were read (a family absent from the map: no floor).
-    floor_known = want.family in ctx.funded_share
-    floor_share = ctx.funded_share.get(want.family)
+    # The weekly quota: a Tier 2 family under 5% of Tier 2's funded wants over the rolling 7 days
+    # (want_ledger + this process's own), counted only once the ledger was read...
+    floor_share = book.funded_share(want.family, tier, now) if book.funded_seeded else None
     # ...and only for a want with some hunger: the floor guarantees a share to families that want,
-    # it does not fund a family whose drive just discharged (intensity 0).
-    # ...and at most once per family per lane window: the shares come from act history, which lags
-    # the book, so without this a starved family would be floor-funded on every bid until it ran.
-    under_floor = (floor_known and inten > 0 and (floor_share is None or floor_share < EXPLORATION_FLOOR)
-                   and not book.floor_used_since(want.family, now - timedelta(seconds=ctx.lane_window_sec)))
+    # it does not fund a family whose drive just discharged (intensity 0). Each floor fund raises
+    # the family's share, so the quota limits itself (no per-window rate limit).
+    under_floor = (tier == FLOOR_TIER and book.funded_seeded and inten > 0
+                   and (floor_share is None or floor_share < EXPLORATION_FLOOR))
     if net > 0 or under_floor:
         reason = "net_positive" if net > 0 else "exploration_floor"
         if reason == "exploration_floor":
-            book.note_floor(want.family, now)
-            fs = "nothing funded in its tier this week" if floor_share is None else f"{floor_share:.1%} of its tier's funded acts this week"
-            head += f"; under the 5% exploration floor ({fs})"
+            fs = ("nothing funded in its tier this week" if floor_share is None
+                  else f"{floor_share:.1%} of Tier {tier}'s funded wants over 7 days")
+            head += f"; under the 5% weekly exploration quota ({fs})"
         secs = cost.scalars.get("seconds")
         ttl = min(ctx.lane_window_sec, max(RESERVATION_MIN_SEC, secs if secs else RESERVATION_MIN_SEC))
         expires = now + timedelta(seconds=ttl)
+        # Before the act opens, a reservation lasts no longer than the want's own window.
+        latest = _window_end(want, cfg)
+        if latest is not None and latest < expires:
+            expires = latest
         reserved: dict[str, float] = {}
-        for k, (_frac, amount, line) in items.items():
-            if line is not None and k.startswith(CAPACITY_CONSTRAINTS_PREFIX) and amount > 0:
-                book.add(Reservation(want.want_id, want.family, tier, k, amount, expires, net))
-                reserved[k] = round(amount, 3)
+        if expires > now:
+            for k, (_frac, amount, line) in items.items():
+                if line is not None and k.startswith(CAPACITY_CONSTRAINTS_PREFIX) and amount > 0:
+                    book.add(Reservation(want.want_id, want.family, tier, k, amount, expires, net, ttl))
+                    reserved[k] = round(amount, 3)
+        else:
+            warnings.append("window_passed:no_reservation")
         displaced = book.displaced_on(chosen, net, now)
-        return _decision(want, now, tier=tier, outcome="funded", reason=reason, reserved=reserved,
-                         reservation_expires_at=expires if reserved else None, displaced=displaced,
-                         warnings=warnings, **common, why=head)
+        decision = _decision(want, now, tier=tier, outcome="funded", reason=reason, reserved=reserved,
+                             reservation_expires_at=expires if reserved else None, displaced=displaced,
+                             warnings=warnings, **common, why=head)
+        book.note_funded(decision.decision_id, want.family, tier, now)
+        return decision
 
     if charge <= 0.0:
         # Nothing to pay and nothing wanted: the family just acted (hunger ~0), so its value is 0.
@@ -548,8 +620,19 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
                      why=f"{head}; {k or 'no constraint'} binds")
 
 
+def _window_end(want: WantV1, cfg: FamilyConfig) -> Optional[datetime]:
+    """The end of the want's useful window: its own ``window.latest``, else ``opened_at`` + the
+    family's deferrable window, else unknown (None). A perishable family (window 0) without an
+    explicit ``latest`` is treated as unknown here, not as already over."""
+    if want.window.latest is not None:
+        return want.window.latest
+    if want.opened_at is not None and cfg.deferrable_window_s:
+        return want.opened_at + timedelta(seconds=cfg.deferrable_window_s)
+    return None
+
+
 def _window_warn(want: WantV1, cfg: FamilyConfig, now: datetime, retry: Optional[float], warnings: list[str]) -> list[str]:
-    latest = want.window.latest or (want.opened_at + timedelta(seconds=cfg.deferrable_window_s) if want.opened_at else None)
+    latest = _window_end(want, cfg)
     if retry is not None and latest is not None and now + timedelta(seconds=retry) > latest:
         return warnings + ["expires_before_relief"]
     return warnings
@@ -557,6 +640,9 @@ def _window_warn(want: WantV1, cfg: FamilyConfig, now: datetime, retry: Optional
 
 __all__ = [
     "EXPLORATION_FLOOR",
+    "FLOOR_TIER",
+    "FLOOR_WINDOW",
+    "FundedWant",
     "MarketContext",
     "Reservation",
     "ReservationBook",

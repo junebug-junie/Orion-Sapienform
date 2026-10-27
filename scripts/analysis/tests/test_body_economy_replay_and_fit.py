@@ -296,3 +296,28 @@ def test_reflex_arms_at_34_and_rearms_below_33():
     hours = {t0 + timedelta(hours=i): {"cabinet_c": c} for i, c in enumerate(temps)}
     armed = rep.reflex_armed(hours, t0, t0 + timedelta(hours=5))
     assert [armed[t0 + timedelta(hours=i)] for i in range(5)] == [False, True, True, False, False]
+
+
+def test_weekly_floor_report_counts_only_hungry_price_deferrals_under_the_quota():
+    """Patch C3a R7: graded literally from the replay's own funded wants, trailing 7 days."""
+    from orion.physiology.families import load_families
+
+    fams, _ = load_families(_ANALYSIS.parents[1] / "config" / "physiology" / "families.yaml")
+    t0 = datetime(2026, 10, 20, tzinfo=timezone.utc)
+
+    def row(i, fam, outcome, reason, intensity=0.5):
+        return {"t": (t0 + timedelta(minutes=i)).isoformat(), "family": fam, "tier": 2, "outcome": outcome,
+                "reason": reason, "intensity": intensity}
+
+    rows = [row(i, "durable.curiosity_investigate", "funded", "net_positive") for i in range(40)]
+    rows += [row(41, "durable.self_inquiry", "deferred", "price", intensity=0.0),   # sated: not a miss
+             row(42, "durable.self_inquiry", "deferred", "capacity_reserved"),    # capacity: not a miss
+             row(43, "durable.self_inquiry", "deferred", "price")]                # hungry, under 5%: a miss
+    rep_ = rep.weekly_floor_report(rows, fams, tier=2)
+    si = rep_["durable.self_inquiry"]
+    assert (si["quota_misses"], si["deferred_price_sated"], si["deferred_capacity"]) == (1, 1, 1)
+    assert si["final_week_share"] == 0.0 and rep_["durable.curiosity_investigate"]["quota_misses"] == 0
+    # Once the family is floor-funded up to 5% (3 of 43 = 7%), a later price deferral is not a miss.
+    rows2 = rows[:-1] + [row(50 + i, "durable.self_inquiry", "funded", "exploration_floor") for i in range(3)] + [
+        row(60, "durable.self_inquiry", "deferred", "price")]
+    assert rep.weekly_floor_report(rows2, fams, tier=2)["durable.self_inquiry"]["quota_misses"] == 0

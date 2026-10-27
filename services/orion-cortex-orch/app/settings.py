@@ -11,6 +11,11 @@ _logger = logging.getLogger("orion.cortex.orch.settings")
 class Settings(BaseSettings):
     durable_admission_enabled: bool = Field(False, alias="CORTEX_DURABLE_ADMISSION_ENABLED")
     durable_receipt_timeout_sec: float = Field(10.0, gt=0, alias="CORTEX_DURABLE_RECEIPT_TIMEOUT_SEC")
+    # Body economy Patch C3a, SHADOW: a tier 1/2 verb dispatched off Juniper's turn bids first
+    # (orion.physiology.client.bid -> orion-durable-runs POST /physiology/bid, 0.5 s timeout). The
+    # decision is logged on the dispatch trace and lands in want_ledger; dispatch is unchanged.
+    # The client itself reads ORION_PHYSIOLOGY_BID_URL / ORION_PHYSIOLOGY_BID_TIMEOUT_SEC.
+    physiology_shadow_bids_enabled: bool = Field(True, alias="ORION_PHYSIOLOGY_SHADOW_BIDS_ENABLED")
     # Service identity
     service_name: str = Field("cortex-orch", alias="SERVICE_NAME")
     service_version: str = Field("0.2.0", alias="SERVICE_VERSION")

@@ -243,3 +243,56 @@ def test_smoke_rebuilds_the_leases_open_at_a_past_tick():
     assert sorted((e.lease_id, e.event) for e in ev) == [("a", "released"), ("b", "granted")]
     b = next(e for e in ev if e.lease_id == "b")
     assert b.at == tick - timedelta(minutes=30)
+
+
+# --- Patch C1 wants replay (R2, R6, R7) on synthetic act history ----------------------------------
+
+def _acts_extract(t0: datetime, days: int = 8):
+    acts, uses = [], []
+    for d in range(days):
+        for h in (2, 9, 16):
+            o = t0 + timedelta(days=d, hours=h)
+            acts.append({"act_id": f"r{d}{h}", "actor": "hub.world_pulse_read", "opened_at": o.isoformat(),
+                         "closed_at": (o + timedelta(minutes=10)).isoformat(), "outcome_value": 1.0,
+                         "outcome_source": "producer", "signal_id": None, "cost_json": {"seconds": 600.0}})
+            acts.append({"act_id": f"s{d}{h}", "actor": "durable.self_inquiry", "opened_at": o.isoformat(),
+                         "closed_at": (o + timedelta(hours=1)).isoformat(), "outcome_value": 1.0,
+                         "outcome_source": "producer", "signal_id": None,
+                         "cost_json": {"seconds": 3600.0, "gpu_slot_s_by_lane": {"agent": 3000.0}}})
+            uses.append({"act_id": f"s{d}{h}", "actor": "durable.self_inquiry", "started_at": o.isoformat(),
+                         "link_status": "linked", "used": False, "window_closed": True})
+    return {"acts": acts, "uses": uses, "lane_prices": [], "background_refusals": []}
+
+
+def test_wants_replay_r6_bounds_a_zero_price_burst_and_r7_caps_drift():
+    from orion.physiology.families import load_families
+
+    t0 = datetime(2026, 10, 16, tzinfo=timezone.utc)
+    fams, err = load_families(_ANALYSIS.parents[1] / "config" / "physiology" / "families.yaml")
+    assert err is None
+    acts, uses = rep.acts_from_extract(_acts_extract(t0))
+    r6 = rep.eval_r6(acts, fams, now=t0 + timedelta(days=8))
+    assert r6["pass"] and r6["worst_reserved_over_budget"] <= 1.2
+    assert r6["by_family"]["durable.self_inquiry"]["deferred_capacity"] > 0
+    hours = {t0 + timedelta(hours=i): {"cabinet_c": 35.0 if 48 <= i < 72 else 29.0} for i in range(8 * 24)}
+    armed = rep.reflex_armed(hours, t0, t0 + timedelta(days=8))
+    rows, series = rep._replay_decisions(acts, uses, fams, start=t0 + timedelta(days=1), end=t0 + timedelta(days=8),
+                                         heat_by_hour={}, cabinet={t: v["cabinet_c"] for t, v in hours.items()},
+                                         armed=armed)
+    held = [r for r in rows if r["reason"] == "spinal:heat_reflex"]
+    assert held and all(r["gpu"] for r in held)                 # the reflex holds GPU wants only
+    r2 = rep.eval_r2(rows, heat_start=t0 + timedelta(days=2), heat_end=t0 + timedelta(days=3))
+    assert r2["non_gpu_hot_wants"] > 0 and r2["nonzero"]
+    stress, _ = rep._replay_decisions(acts, uses, fams, start=t0 + timedelta(days=1), end=t0 + timedelta(days=8),
+                                      heat_by_hour={}, cabinet={}, armed={}, lane_price=1.0)
+    r7 = rep.eval_r7(stress, series, acts, uses, fams)
+    assert r7["max_daily_move"] <= 0.1 + 1e-9 and r7["floor_violations"] == 0
+    assert r7["final_weights"]["durable.self_inquiry"]["use"] == 0.0
+
+
+def test_reflex_arms_at_34_and_rearms_below_33():
+    t0 = datetime(2026, 10, 18, tzinfo=timezone.utc)
+    temps = [33.5, 34.1, 33.5, 32.9, 33.5]
+    hours = {t0 + timedelta(hours=i): {"cabinet_c": c} for i, c in enumerate(temps)}
+    armed = rep.reflex_armed(hours, t0, t0 + timedelta(hours=5))
+    assert [armed[t0 + timedelta(hours=i)] for i in range(5)] == [False, True, True, False, False]

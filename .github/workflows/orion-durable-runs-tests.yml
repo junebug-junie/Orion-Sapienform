@@ -15,6 +15,8 @@ on:
       - "orion/schemas/regulation.py"
       - "orion/physiology/**"
       - "orion/schemas/physiology.py"
+      - "orion/schemas/physiology_want.py"
+      - "config/physiology/**"
       - "services/orion-sql-db/manual_migration_physiology_state_v1.sql"
       - "orion/autonomy/cabinet_heat.py"
       - "services/orion-sql-db/manual_migration_temporal_self_event_v1.sql"

@@ -167,3 +167,70 @@ def load_or_fetch(start: str, end: str, cache: str | None) -> dict:
         Path(cache).parent.mkdir(parents=True, exist_ok=True)
         Path(cache).write_text(json.dumps(data))
     return data
+
+
+# --- Patch C1: act history for the wants replay (R2, R5, R6, R7) ------------------------------------
+
+def _acts_sql(start: str, end: str) -> str:
+    return f"""
+select coalesce(json_agg(r order by r.opened_at), '[]'::json) from (
+  select act_id, actor, opened_at, closed_at, outcome_value, outcome_source, signal_id, cost_json
+  from grammar_acts
+  where coalesce(opened_at, closed_at, created_at) >= timestamptz '{start}'
+    and coalesce(opened_at, closed_at, created_at) < timestamptz '{end}'
+) r;"""
+
+
+def _uses_sql(start: str, end: str) -> str:
+    return f"""
+select coalesce(json_agg(r order by r.started_at), '[]'::json) from (
+  select act_id, actor, started_at, link_status, used, window_closed
+  from act_downstream_use
+  where started_at >= timestamptz '{start}' and started_at < timestamptz '{end}'
+) r;"""
+
+
+def _lane_prices_sql(start: str, end: str) -> str:
+    # One row per physiology tick: the largest lane price that tick (R5's "is there a posted lane price").
+    return f"""
+select coalesce(json_agg(r order by r.t), '[]'::json) from (
+  select to_char(generated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as t,
+         max((c->'price'->>'value')::float) filter (where c->>'constraint' like 'lane:%') as max_lane_price
+  from physiology_state, jsonb_array_elements(constraints) c
+  where generated_at >= timestamptz '{start}' and generated_at < timestamptz '{end}'
+  group by generated_at
+) r;"""
+
+
+def _refusals_sql(start: str, end: str) -> str:
+    # Background lease requests that ended refused: the pool's terminal 'unavailable' event (reason
+    # shed:<why> or deadline:<...>; live 10-20..27: 14,973 shed:cabinet_hot), per day.
+    return f"""
+select coalesce(json_agg(r order by r.day), '[]'::json) from (
+  select to_char(date_trunc('day', generated_at at time zone 'UTC'), 'YYYY-MM-DD') as day,
+         count(*) filter (where event = 'unavailable') as refused,
+         count(*) filter (where event = 'unavailable' and reason like 'shed:%') as shed,
+         count(*) filter (where event = 'granted') as granted
+  from gpu_pool_events
+  where priority = 'background' and generated_at >= timestamptz '{start}' and generated_at < timestamptz '{end}'
+  group by 1
+) r;"""
+
+
+def fetch_acts(start: str, end: str) -> dict:
+    start, end = _validate_ts(start), _validate_ts(end)
+    return {"window": {"start": start, "end": end}, "acts": run_query(_acts_sql(start, end)),
+            "uses": run_query(_uses_sql(start, end)), "lane_prices": run_query(_lane_prices_sql(start, end)),
+            "background_refusals": run_query(_refusals_sql(start, end))}
+
+
+def load_or_fetch_acts(start: str, end: str, cache: str | None) -> dict:
+    if cache and Path(cache).exists():
+        data = json.loads(Path(cache).read_text())
+        if data.get("window") == {"start": start, "end": end} and "acts" in data:
+            return data
+    data = fetch_acts(start, end)
+    if cache:
+        Path(cache).parent.mkdir(parents=True, exist_ok=True)
+        Path(cache).write_text(json.dumps(data))
+    return data

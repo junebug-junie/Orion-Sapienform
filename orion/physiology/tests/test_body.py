@@ -258,14 +258,22 @@ def test_lane_two_slots_count_two_concurrent_holds_and_cap_the_third():
     assert out[0].level == 3600.0 and out[0].detail["lent_overlap_s"] == 1800.0
 
 
-def test_lane_zero_slot_seat_still_shows_its_held_lease():
-    """lane:diffusion read 546 s against capacity 0 live: the seat had no live slot but a lease
-    held it. Uncapped, flagged, never hidden."""
+def test_lane_zero_slot_seat_with_only_closed_leases_served_them_while_loaded():
+    """lane:diffusion read 546 s against capacity 0 live: a swap seat (diffusion / agent-gpu2 share
+    gpu2) that ran a painting while loaded and has been swapped out since. Uncapped, never hidden,
+    and NOT flagged as held without a slot (Patch C1: live 10-27 04:31 painting, then unloaded)."""
     ev = [_close("d", "diffusion", NOW - timedelta(minutes=1), 546.479)]
     out, _ = _lanes(ev, {"diffusion": 0})
     d = out["lane:diffusion"]
-    assert abs(d.level - 546.479) < 1e-6 and d.detail["held_without_live_slot"] is True
-    assert "lent_overlap_s" not in d.detail
+    assert abs(d.level - 546.479) < 1e-6 and d.detail["served_while_loaded"] is True
+    assert "held_without_live_slot" not in d.detail and "lent_overlap_s" not in d.detail
+
+
+def test_lane_zero_slot_seat_with_an_open_lease_is_really_held_without_a_live_slot():
+    ev = [LeaseEvent("d", "diffusion", "granted", NOW - timedelta(minutes=5))]
+    out, _ = lane_readings(LaneInput(True, ev, {"diffusion": 0}, newest_event_at=NOW), NOW, CFG)
+    d = {r.constraint: r for r in out}["lane:diffusion"]
+    assert d.detail["held_without_live_slot"] is True and "served_while_loaded" not in d.detail
 
 
 def test_occupied_seconds_end_and_start_at_the_same_instant_is_one_slot():

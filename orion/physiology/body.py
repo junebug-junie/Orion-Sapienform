@@ -500,7 +500,15 @@ def lane_readings(inp: LaneInput, now: datetime, cfg: BodyConfig,
             if slots >= 1:
                 detail["lent_overlap_s"] = round(lease_s - held, 3)
             elif held > 0:
-                detail["held_without_live_slot"] = True
+                # 0 live slots NOW, held time in the trailing window. Two different facts (Patch C1):
+                # a lease still open on the seat (the pool's slot count and its own lease table
+                # disagree: really held without a live slot), or only closed leases: a swap seat
+                # (diffusion / agent-gpu2 share gpu2) that served them while loaded and has been
+                # swapped out since. Capacity is an instant; the use is the trailing hour.
+                if any(end >= now for _, end in intervals.get(role, [])):
+                    detail["held_without_live_slot"] = True
+                else:
+                    detail["served_while_loaded"] = True
         if capacity is None:
             detail["capacity"] = "pool_state_unread"
         detail.update(_hunger(role))

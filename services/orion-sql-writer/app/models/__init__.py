@@ -56,6 +56,7 @@ from .durable_run_state import DurableRunStateSQL
 from .gpu_pool_event import GpuPoolEventSQL
 from .gpu_pool_state import GpuPoolStateSQL
 from .physiology_state import PhysiologyStateSQL
+from .want_ledger import WantLedgerSQL
 from .transport_baseline_hourly import TransportBaselineHourlySQL
 from .orion_energy_hourly import OrionEnergyHourlySQL
 from .act_downstream_use import ActDownstreamUseSQL
@@ -162,6 +163,7 @@ __all__ = [
     "GpuPoolEventSQL",
     "GpuPoolStateSQL",
     "PhysiologyStateSQL",
+    "WantLedgerSQL",
     "TransportBaselineHourlySQL",
     "OrionEnergyHourlySQL",
     "ActDownstreamUseSQL",

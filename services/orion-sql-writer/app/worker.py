@@ -73,6 +73,7 @@ from app.models import (
     GpuPoolEventSQL,
     GpuPoolStateSQL,
     PhysiologyStateSQL,
+    WantLedgerSQL,
     TransportBaselineHourlySQL,
     SelfSignalHourSQL,
     SelfSignalOutcomeAssociationSQL,
@@ -131,6 +132,8 @@ from orion.schemas.gpu_pool import GpuPoolEventV1, GpuPoolStateV1
 from app.models.gpu_pool_state import state_history_row
 from app.models.physiology_state import physiology_state_row
 from orion.schemas.physiology import PhysiologyStateV1
+from app.models.want_ledger import want_ledger_row
+from orion.schemas.physiology_want import WantDecisionV1
 from orion.schemas.telemetry.transport_baseline_hourly import TransportBaselineHourlyV1
 from orion.schemas.self_signal_outcome import SelfSignalHourV1, SelfSignalOutcomeAssociationV1
 from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
@@ -269,6 +272,7 @@ INSERT_ONLY_MODELS = {
     GpuPoolEventSQL,
     GpuPoolStateSQL,
     PhysiologyStateSQL,
+    WantLedgerSQL,
     TransportBaselineHourlySQL,
     SelfSignalOutcomeAssociationSQL,
     FieldChannelAnomalyScoreSQL,
@@ -555,6 +559,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "GpuPoolEventSQL": (GpuPoolEventSQL, GpuPoolEventV1),
     "GpuPoolStateSQL": (GpuPoolStateSQL, GpuPoolStateV1),
     "PhysiologyStateSQL": (PhysiologyStateSQL, PhysiologyStateV1),
+    "WantLedgerSQL": (WantLedgerSQL, WantDecisionV1),
     "TransportBaselineHourlySQL": (TransportBaselineHourlySQL, TransportBaselineHourlyV1),
     "SelfSignalHourSQL": (SelfSignalHourSQL, SelfSignalHourV1),
     "SelfSignalOutcomeAssociationSQL": (SelfSignalOutcomeAssociationSQL, SelfSignalOutcomeAssociationV1),
@@ -2169,6 +2174,7 @@ async def _write(
             raise
         data = (state_history_row(obj) if sql_model_cls is GpuPoolStateSQL else
                 physiology_state_row(obj) if sql_model_cls is PhysiologyStateSQL else
+                want_ledger_row(obj) if sql_model_cls is WantLedgerSQL else
                 obj.model_dump() if hasattr(obj, "model_dump") else obj.dict())
         if sql_model_cls is DispositionNamingSQL:
             # jsonb columns hold the nested packet (datetimes inside); the engine's serializer is

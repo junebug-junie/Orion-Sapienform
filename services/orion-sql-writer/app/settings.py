@@ -70,6 +70,8 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "gpu_pool.state.v1": "GpuPoolStateSQL",
     # Body economy Patch A3: one row per Body-organ tick (durable-runs physiology node).
     "physiology.state.v1": "PhysiologyStateSQL",
+    # Body economy Patch C1: one row per shadow bid decision (durable-runs POST /physiology/bid).
+    "physiology.want.decision.v1": "WantLedgerSQL",
     "transport_baseline.hourly.v1": "TransportBaselineHourlySQL",
     "self_signal.hour.v1": "SelfSignalHourSQL",
     "self_signal.outcome_association.v1": "SelfSignalOutcomeAssociationSQL",
@@ -206,6 +208,7 @@ class Settings(BaseSettings):
             "orion:gpu_pool:event",
             "orion:gpu_pool:state",
             "orion:physiology:state",
+            "orion:physiology:want:decision",
             "orion:equilibrium:transport_baseline:hourly",
             "orion:equilibrium:self_signal:hour",
             "orion:equilibrium:self_signal:outcome_association",
@@ -1002,6 +1005,10 @@ class Settings(BaseSettings):
         # channel the physiology_state table stays empty while the producer looks healthy).
         if "orion:physiology:state" not in channels:
             channels.append("orion:physiology:state")
+        # Same guarantee, same reason (physiology.want.decision.v1 is a code-default route, Patch C1;
+        # without the channel want_ledger stays empty while /physiology/bid looks healthy).
+        if "orion:physiology:want:decision" not in channels:
+            channels.append("orion:physiology:want:decision")
         # Same guarantee, same reason (transport_baseline.hourly.v1 is a
         # code-default route; SQL_WRITER_SUBSCRIBE_CHANNELS replaces).
         if "orion:equilibrium:transport_baseline:hourly" not in channels:

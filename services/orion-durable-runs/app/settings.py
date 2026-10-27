@@ -242,6 +242,21 @@ class Settings(BaseSettings):
     hub_endogenous_outreach_daily_cap: int = Field(4, ge=0, alias="HUB_ENDOGENOUS_OUTREACH_DAILY_CAP")
     # The claude constraint listens here (producer orion-cocreation-signals).
     claude_limit_channel: str = Field("orion:substrate:claude_limit", alias="CHANNEL_CLAUDE_LIMIT")
+    # Body economy Patch C1 (Organ 3 Appetite + Organ 4 Choice), SHADOW: POST /physiology/bid takes a
+    # WantV1 and returns a WantDecisionV1 (funded/deferred, lane, prices seen, net, binding constraint,
+    # displaced, retry_after, shadow=true) priced against the latest physiology state, and publishes it
+    # on CHANNEL_PHYSIOLOGY_WANT_DECISION (sql-writer table want_ledger). Nobody obeys it yet.
+    # false -> the route answers 503 and the client returns None (callers keep their own gates).
+    physiology_bid_enabled: bool = Field(True, alias="ORION_PHYSIOLOGY_BID_ENABLED")
+    physiology_want_decision_channel: str = Field(
+        "orion:physiology:want:decision", alias="CHANNEL_PHYSIOLOGY_WANT_DECISION")
+    # Want families (tier, prior weight, deferrable window, lanes); baked into the image.
+    physiology_families_path: str = Field(
+        "/app/config/physiology/families.yaml", alias="ORION_PHYSIOLOGY_FAMILIES_PATH")
+    # The act history (grammar_acts, act_downstream_use) is re-read at most this often.
+    physiology_bid_history_ttl_sec: float = Field(300.0, gt=0.0, alias="ORION_PHYSIOLOGY_BID_HISTORY_TTL_SEC")
+    # A body state older than this is stale: the bid answers physiology_unavailable (never funded).
+    physiology_bid_stale_after_sec: float = Field(360.0, gt=0.0, alias="ORION_PHYSIOLOGY_BID_STALE_AFTER_SEC")
 
     @field_validator("physiology_energy_monthly_envelope_usd", mode="before")
     @classmethod

@@ -11,8 +11,8 @@ particulate, VL53L1X lidar, BNO085 IMU/vibration), already read today by
 `/api/cabinet/sensors/latest` route. This section reuses that exact same
 shared `orion.telemetry.cabinet_sensors`/`cabinet_snapshot_merge` machinery
 for the chat-turn situation brief -- a new `CabinetContextV1`, not an
-extension of `LabContextV1` (which stays its own distinct, still-unwired
-concept).
+extension of `LabContextV1` (that stub was removed outright on
+2026-10-27).
 
 Mirrors `test_situation_curiosity_reverie_context.py`'s framing: the
 properties that matter are (1) ON by default in orion-hub, the only process
@@ -120,7 +120,7 @@ def _write_snapshot(path: Path, *, received_at: str | None = None, status: str =
 
 
 def test_cabinet_disabled_by_default_generically() -> None:
-    """Conservative generic default (like lab/perception) -- the file read
+    """Conservative generic default (like perception) -- the file read
     only works where the sensor-file mount actually exists, which is
     orion-hub specifically, wired via hub_settings_to_runtime_namespace."""
     assert settings_from_runtime(SimpleNamespace()).cabinet_enabled is False
@@ -365,7 +365,7 @@ def test_available_cabinet_renders_measurements() -> None:
 
 
 def test_unavailable_cabinet_renders_no_line_at_all() -> None:
-    """Same omission behavior as curiosity/reverie (not weather/lab/
+    """Same omission behavior as curiosity/reverie (not weather/
     perception's always-on placeholder) -- see _build_prompt_fragment's own
     comment for why: unlike perception/affect, an absent cabinet read
     carries no confabulation risk, and an always-on line here already

@@ -854,8 +854,10 @@ defer; each floor fund raises its share, so the floor stops by itself. No ledger
 journal compose -- the set `app/run_acts.py` opens acts for) bids in-process when `submit` accepts
 it: `want_id` = run id, `object_ref` = `durable_run:<run_id>`, `correlation_id` = the run's
 correlation id (the act's), window `latest` = the admission deadline. The bid is a background task:
-`submit` returns its usual receipt whatever the market says. The first grant calls
-`Market.mark_opened`, the terminal calls `Market.release`. A duplicate submit bids once. Log line:
+`submit` returns its usual receipt whatever the market says. The bid reserves PENDING (runs wait
+~1.5 h in the pool's queue): the first grant calls `Market.mark_opened`, which starts the
+reservation, and the terminal calls `Market.release`. A grant or terminal that beats the background
+bid is applied when the bid lands. A duplicate submit bids once. Log line:
 `physiology_shadow_bid run=... corr=... decision_id=... obeyed=false`. Off:
 `ORION_PHYSIOLOGY_SHADOW_BIDS_ENABLED=false`.
 

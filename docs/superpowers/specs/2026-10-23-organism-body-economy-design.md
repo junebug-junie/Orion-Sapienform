@@ -1019,7 +1019,12 @@ PR report: `docs/superpowers/pr-reports/2026-10-27-patch-c3a-bid-sites-pr.md`.
   correlation id. Live, the run id is NOT the act's correlation id (they differ on every durable act);
   the act carries the run's correlation id and `object_ref = durable_run:<run_id>`. The report joins on both.
 - **Reservation lifetime.** Released when the act closes; before the act opens it lasts at most to the
-  end of the want's window; re-anchored to one act-length at the open.
+  end of the want's window; re-anchored to one act-length at the open. Durable runs queue a median
+  1.3-1.6 h for a grant (longer than one act-length), so they reserve PENDING: nothing is held until
+  the first grant, and a pending reservation lapses at the window's end if the run never starts.
+- **Turn safety.** cortex-orch never bids on cortex-gateway ingress, chat verbs or lane, interactive or
+  urgent priority, or nested calls from cortex-exec (its capability bridge runs inside Juniper's turn)
+  or orion-durable-runs (the run bid at admission). Hand-run probes never count toward the floor.
 - **Exploration floor is a weekly quota** (Tier 2 only, counted from `want_ledger`). R7 now passes on a
   literal weekly check: 0 hungry price deferrals while a Tier 2 family sat under 5%. Between bids a
   family's trailing share can still dip under 5% (curiosity investigate and dream hop end the stress

@@ -133,6 +133,6 @@ Run from the clean primary `main` checkout after merge. The first tick after res
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2909
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

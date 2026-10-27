@@ -255,8 +255,11 @@ def test_osnet_columns_round_trip(pg) -> None:
 def _street(engine, n_frames: int) -> None:
     """Two people walk side by side for n_frames, 2.5 s apart. SigLIP sees them as
     near-identical (same clothes colour); OSNet keeps them apart."""
+    # Relative to the real clock: the eval's --live window is "last 8 days from now", so a
+    # fixed date here silently aged out of it on 2026-10-24 and failed every branch's CI.
+    start = datetime.now(timezone.utc) - timedelta(hours=2)
     for k in range(n_frames):
-        t = NOW - timedelta(hours=2) + timedelta(seconds=2.5 * k)
+        t = start + timedelta(seconds=2.5 * k)
         jitter = 0.02 * (k % 3)
         crops = [
             _crop((100 + 10 * k, 300, 200 + 10 * k, 600), emb=_unitv(0.10 + jitter, 1152), osnet=_unitv(0.0 + jitter, 512)),

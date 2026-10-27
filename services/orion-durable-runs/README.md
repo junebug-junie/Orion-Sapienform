@@ -51,9 +51,11 @@ crash or timeout resumes from the checkpoint instead of ending the run. Used by
   that is a recorded empty answer (the per-question contract), not a retry.
 - **Deterministic** (`ValueError` incl. pydantic `ValidationError`, `TypeError`,
   `LookupError`, `AttributeError`, ...; `is_deterministic`, by type, never by error text):
-  fails at once with `last_error = "deterministic: ..."`. A rejected answer changes nothing,
-  so a retry re-sends the same prompt to the same validator (14 days to 2026-10-23:
-  curiosity.compaction: 24 runs, 0 completed, 22 ended on these after up to 3 attempts each).
+  fails at once with `last_error = "deterministic: ..."`: a code or input bug a retry cannot fix.
+- **Rejected model answer** (`orion.cognition.model_output.ModelOutputRejected`, a `ValueError`
+  subclass raised only where an LLM answer is parsed/validated, e.g. `record_answer` in
+  `orion/curiosity/compaction.py`): treated as **transient** -- the next sample differs. Failing
+  these fast (#2899) stopped curiosity.compaction: 0 batches saved 2026-10-24..27 over 9 runs.
 - **Budget spent** (`DURABLE_RUNS_RETRY_MAX_ATTEMPTS`; urgent runs 2) or a retry that cannot
   get a whole attempt before the deadline: `failed`.
 
@@ -1151,9 +1153,16 @@ crash between artifact commit and LangGraph checkpoint. The checkpoint itself st
 small: source material is stored once in `curiosity_compaction`, not in every LangGraph
 state. A SQL write checks the run generation to fence delayed old workers.
 
+Each call sends a JSON schema for its answer as `structured_output_schema`
+(`output_schema` in `orion/curiosity/compaction.py`; the gateway turns it into llama.cpp's
+`response_format`): topic body `maxLength` 1200, `refs` `minItems` 1 and an enum of the batch's
+aliases, at most 6 topics; the overall body `maxLength` 2400. The prompt asks for about 120-150
+words per topic so the cap is rarely reached; a body that fills the cap without ending a sentence
+was cut by the grammar and is rejected.
+
 The final journal contains content-derived topic summaries with dated sources plus an
 overall synthesis. Missing/invented topic references, empty text and malformed JSON
-are rejected. Empty input skips the GPU. Finalization releases the hold before journal
+are rejected (`ModelOutputRejected`: a bounded retry, each accepted batch already saved). Empty input skips the GPU. Finalization releases the hold before journal
 publication; delivery failure retries without regeneration, and the dream-side
 reconciler repairs missed journal delivery using the same ID. Every source survives.
 See the dream README and the 2026-10-14 PR report for activation and migration order.

@@ -274,7 +274,10 @@ def test_switch_off_refuses_before_any_io(world):
 
 # --- runner sessions ------------------------------------------------------------------------------
 
-def test_session_plays_loads_latest_save_and_ends_at_the_cap(world):
+def test_session_plays_loads_latest_save_and_ends_at_the_cap(world, monkeypatch):
+    # Lifecycle, not cadence: at the 0.25 s poll the fake world's instant goals overflow the
+    # 200-row journal within 120 s, trimming the 'started' row this test checks.
+    monkeypatch.setattr(L, 'POLL_SEC', 1.0)
     world.retro.saves = [dict(save_id='b' * 32, compatible=True), dict(save_id='c' * 32, compatible=True)]
     out = asyncio.run(L.run_leisure_session(config(RETRO_LEISURE_SESSION_MAX_SEC=120), act_id='act-7', deps=world.deps))
     assert out.started and out.ended.end_reason == 'session_cap'
@@ -487,3 +490,16 @@ def test_human_frames_in_the_record_mark_the_session_and_spare_the_game(world):
     assert out.ended.human_may_be_in_control is True and out.ended.controller_frames['human'] == 40
     ops = [p.rsplit('/', 1)[-1] for m, p, _ in world.retro.calls if m == 'POST']
     assert 'stop' not in ops and 'save' not in ops
+
+
+
+def test_a_five_second_retro_outage_still_gives_up_after_about_five_seconds(world):
+    # Review 2026-10-24: at the 0.25 s play poll, 5 failures would give up on Retro in ~1.25 s.
+    began = {}
+    def outage(r):
+        if world.clock.t > 1_000_003 and 'at' not in began:
+            began['at'] = world.clock.t; r.fail_gets = 10
+    world.retro.on_tick = outage
+    out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
+    assert out.ended.end_reason == 'retro_unreachable'
+    assert world.clock.t - began['at'] >= (L.MAX_TRANSPORT_FAILURES - 1) * L.FAILURE_POLL_SEC

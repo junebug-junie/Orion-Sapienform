@@ -294,13 +294,27 @@ class CycleActTrace:
             act_emit.reset_lease_correlation(token)
 
 
-def _cycle_shadow(cycle_id: str):
-    """The sleep's shadow want (Tier 1, family dream.cycle). want_id = the act's correlation id."""
-    from app.physiology_shadow import ShadowBid
+class _NoShadow:
+    """Stands in when the shadow could not be built: the sleep never depends on it."""
 
-    return ShadowBid(family=act_emit.ACTOR, verb=act_emit.VERB, tier=1,
-                     want_id=act_emit.cycle_correlation_id(cycle_id), object_ref=f"dream_cycle:{cycle_id}",
-                     component="dream_cycle")
+    def settle(self, real: str, **_kw) -> None:
+        return None
+
+
+def _cycle_shadow(cycle_id: str):
+    """The sleep's shadow want (Tier 1, family dream.cycle), placed. want_id = the act's
+    correlation id. Never raises."""
+    try:
+        from app.physiology_shadow import ShadowBid
+
+        shadow = ShadowBid(family=act_emit.ACTOR, verb=act_emit.VERB, tier=1,
+                           want_id=act_emit.cycle_correlation_id(cycle_id), object_ref=f"dream_cycle:{cycle_id}",
+                           component="dream_cycle")
+        shadow.place()
+        return shadow
+    except Exception:  # noqa: BLE001 -- shadow only
+        logger.info("dream_cycle_shadow_bid_not_built cycle_id=%s", cycle_id)
+        return _NoShadow()
 
 
 def drive_reading_for(
@@ -416,11 +430,14 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
     # so the bid carries the sleep act's correlation id; a held check simply never uses it.
     cycle_id = f"dc-{uuid4().hex[:12]}"
     shadow = _cycle_shadow(cycle_id)
-    shadow.place()
     if not force:
         # Read only when the dream would otherwise sleep: one Redis GET per would-be
         # sleep, and the log names exactly the sleeps arousal held. Forced runs skip it.
-        arousal = await read_arousal_view(deps, started)
+        try:
+            arousal = await read_arousal_view(deps, started)
+        except BaseException:  # a cancel mid-read: the want did not run
+            shadow.settle("blocked:cancelled")
+            raise
         if arousal_holds_sleep(arousal, started):
             deps.hold_reason = f"arousal_{arousal.level}"
             shadow.settle(f"blocked:{deps.hold_reason}")

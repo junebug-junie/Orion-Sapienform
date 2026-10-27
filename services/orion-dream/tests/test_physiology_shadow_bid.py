@@ -87,31 +87,42 @@ def _cycle_view(cycle) -> dict:
     return view | {"n_hypotheses": len(cycle.hypotheses)}
 
 
-def test_a_sleep_is_identical_for_every_answer_and_joins_its_act(economy, caplog):
-    from app import act_emit
+def _act_view(event) -> tuple:
+    outcome = event.act.outcome
+    return (event.event_kind, event.act.actor, event.act.verb,
+            None if outcome is None else (outcome.value, outcome.note))
 
+
+def test_a_sleep_is_identical_for_every_answer_and_joins_its_act(economy, caplog, monkeypatch):
     caplog.set_level(logging.INFO, logger="orion-dream.physiology_shadow")
     seen = []
     for answer in ANSWERS + ["off"]:
         if answer == "off":
-            economy.ps._enabled = lambda: False
+            monkeypatch.setattr(economy.ps, "_enabled", lambda: False)
         economy.answer = answer
         economy.wants.clear()
         caplog.clear()
         f = _Fakes(_rows())
         deps, _ = _deps(f, _state("idle"))
+        events = []
+
+        async def publish(event):
+            events.append(event)
+
+        deps.publish_act = publish
         cycle = _run(deps)
         assert cycle is not None and cycle.status == "completed"
+        assert [e.event_kind for e in events] == ["act_opened", "act_closed"]
         if answer == "off":
             assert economy.wants == [] and _lines(caplog) == []
         else:
             (want,) = economy.wants
-            corr = act_emit.cycle_correlation_id(cycle.cycle_id)
-            assert (want.want_id, want.correlation_id, want.family, want.verb, want.tier) == (
-                corr, corr, "dream.cycle", "make", 1)
+            # The join: want_id == the emitted act_opened event's correlation id.
+            assert want.want_id == want.correlation_id == events[0].correlation_id
+            assert (want.family, want.verb, want.tier) == ("dream.cycle", "make", 1)
             (line,) = _lines(caplog)
-            assert (line["want_id"], line["real"]) == (corr, "ran")
-        seen.append((_cycle_view(cycle), len(f.persisted), len(f.prompts)))
+            assert (line["want_id"], line["real"]) == (events[0].correlation_id, "ran")
+        seen.append((_cycle_view(cycle), len(f.persisted), len(f.prompts), [_act_view(e) for e in events]))
     for s in seen[1:]:
         diff = {k: (seen[0][0].get(k), s[0].get(k)) for k in s[0] if s[0].get(k) != seen[0][0].get(k)}
         assert s == seen[0], (diff, s[1:], seen[0][1:])
@@ -128,7 +139,7 @@ def test_an_arousal_hold_is_unchanged_and_logged_blocked(economy, caplog, answer
     assert deps.hold_reason == "arousal_strained"
     (line,) = _lines(caplog)
     assert (line["family"], line["real"]) == ("dream.cycle", "blocked:arousal_strained")
-    assert economy.released == (["%s" % economy.wants[0].want_id] if answer == "funded" else [])
+    assert economy.released == ([economy.wants[0].want_id] if answer == "funded" else [])
 
 
 def test_a_check_that_is_not_due_never_bids(economy):
@@ -165,3 +176,14 @@ def test_a_slow_economy_never_holds_the_sleep(economy, caplog):
 
     asyncio.run(go())
     assert _lines(caplog)[0]["real"] == "ran"
+
+
+def test_a_shadow_that_cannot_be_built_never_stops_a_sleep(economy, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("bad deploy")
+
+    monkeypatch.setattr(economy.ps, "ShadowBid", boom)
+    f = _Fakes(_rows())
+    deps, _ = _deps(f, _state("idle"))
+    cycle = _run(deps)
+    assert cycle is not None and cycle.status == "completed" and economy.wants == []

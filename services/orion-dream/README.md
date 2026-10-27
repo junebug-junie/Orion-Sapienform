@@ -273,8 +273,12 @@ cycle does.
 - Family `dream.cycle` (Tier 1), verb `make`. `want_id` = `act_emit.cycle_correlation_id(cycle_id)`,
   the sleep act's correlation id. The cycle id is now minted before the arousal read, so a held
   check has an id too; it opens no act.
-- Real outcome: `ran` (the act opens), `blocked:arousal_<level>` (arousal held the sleep), or
-  `blocked:nothing_to_replay` (the `empty` cycle, which opens no act).
+- Real outcome: `ran` (the gates passed and the sleep's act is opened; a sleep that then fails
+  still ran, and its act closes at 0), `blocked:arousal_<level>` (arousal held the sleep),
+  `blocked:nothing_to_replay` (the `empty` cycle, which opens no act), or `blocked:cancelled`.
+  With `DREAM_ACT_EMIT_ENABLED=false` a `ran` line has no act to join.
+- Volume: every held check is a new want with a new `want_id` (a new cycle id). A long hold at
+  the default 600 s check interval writes about 6 rows an hour; count holds per episode, not per row.
 - Log line: `physiology_shadow_bid family=dream.cycle want_id=... shadow=funded|deferred|none ... real=...`.
   durable-runs writes the decision into `want_ledger`. A funded decision whose sleep was held
   releases its reservation.

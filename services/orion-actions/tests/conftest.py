@@ -16,3 +16,7 @@ os.environ.setdefault("NODE_NAME", "athena")
 os.environ.setdefault("ORION_BUS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("ORION_BUS_ENABLED", "false")
 os.environ.setdefault("ORION_BUS_ENFORCE_CATALOG", "false")
+
+# Unit tests must never POST a shadow bid to the live body economy (Patch C3b): the client
+# returns None without a call. Tests of the shadow seam stub app.physiology_shadow.abid.
+os.environ["ORION_PHYSIOLOGY_BID_CLIENT_ENABLED"] = "false"

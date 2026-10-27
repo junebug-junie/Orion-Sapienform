@@ -1474,6 +1474,31 @@ async def lifespan(app: FastAPI):
             "orch_payload": orch_payload,
         }
 
+    def _journal_shadow(dedupe_key: str, parent: BaseEnvelope, trigger: Any):
+        """The journal compose's shadow want (actions.journal, Tier 1), placed. None if it could not
+        be built: the compose never depends on it."""
+        try:
+            from .physiology_shadow import ShadowBid
+
+            shadow = ShadowBid(
+                family=act_emit.JOURNAL_ACTOR, verb="make", tier=1,
+                want_id=act_emit.compose_correlation_id(dedupe_key, str(parent.correlation_id)),
+                object_ref=f"journal_trigger:{str(getattr(trigger, 'trigger_kind', '') or 'unknown')}",
+                component="journal",
+            )
+            shadow.place()
+            return shadow
+        except Exception:  # noqa: BLE001 -- shadow only
+            logger.info("journal_shadow_bid_not_built dedupe_key=%s", dedupe_key)
+            return None
+
+    def _settle_shadow(shadow: Any, real: str) -> None:
+        try:
+            if shadow is not None:
+                shadow.settle(real)
+        except Exception:  # noqa: BLE001 -- shadow only
+            logger.info("journal_shadow_settle_failed")
+
     async def _dispatch_journal(
         parent: BaseEnvelope,
         *,
@@ -1492,6 +1517,10 @@ async def lifespan(app: FastAPI):
         acquired = False
         t0 = time.monotonic()
         compose_corr = act_emit.compose_correlation_id(dedupe_key, str(parent.correlation_id)) if _act_publish else None
+        # Body economy Patch C3b: the point this journal would compose. A SHADOW bid, logged beside
+        # the real outcome and never obeyed (app/physiology_shadow.py). want_id = the compose
+        # correlation id, which is the journal act's correlation id.
+        jshadow = _journal_shadow(dedupe_key, parent, trigger)
         jact = act_emit.ActTrace(
             _act_publish,
             act_emit.journal_act(
@@ -1505,6 +1534,7 @@ async def lifespan(app: FastAPI):
         try:
             await sem.acquire()
             acquired = True
+            _settle_shadow(jshadow, "ran")
             await jact.open()
             result = await _run_journal(
                 parent,
@@ -1535,6 +1565,7 @@ async def lifespan(app: FastAPI):
             return True
         except Exception as exc:
             dt_ms = int((time.monotonic() - t0) * 1000)
+            _settle_shadow(jshadow, f"blocked:raised:{type(exc).__name__}")  # no-op once settled "ran"
             # Close first: a cancel during the audit await must not leave the act open.
             await jact.close(False, f"raised:{type(exc).__name__}:{str(exc)[:200]}")
             await _audit(
@@ -1548,6 +1579,7 @@ async def lifespan(app: FastAPI):
             logger.exception("Journal dispatch failed action=%s corr=%s", audit_action, parent.correlation_id)
             return False
         except BaseException as exc:  # cancellation: close at 0, then re-raise
+            _settle_shadow(jshadow, f"blocked:raised:{type(exc).__name__}")  # no-op once settled "ran"
             await jact.close(False, f"raised:{type(exc).__name__}")
             raise
         finally:

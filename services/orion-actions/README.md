@@ -107,6 +107,27 @@ Incremental trim after concept-induction publishes goals: enable `AUTONOMY_GOAL_
 
 Verify in logs: `autonomy_goal_archive_scheduler_result` or `autonomy_goal_archive_drain`.
 
+### Body economy shadow bid (Patch C3b, 2026-10-27)
+
+Each in-process journal compose asks the body economy "would you fund this?", then ignores the
+answer. The answer is only logged, next to what the compose really did. Nothing changes what the
+compose does.
+
+- Where: `_dispatch_journal`, after the journaling switch and the dedupe cooldown let the trigger
+  through (the point it would compose). A cooldown skip is not a want and does not bid.
+- Family `actions.journal`, Tier 1 (Tier 1 still bids; only Tier 0 never bids), verb `make`.
+  `want_id` = `act_emit.compose_correlation_id(dedupe_key, trigger correlation id)`, the journal
+  act's correlation id.
+- Real outcome: `ran` once the semaphore is acquired and the act opens (a compose that then fails
+  still ran: its act closes at 0); `blocked:raised:<Exception>` if it was cancelled or raised
+  before that.
+- Log line: `physiology_shadow_bid family=actions.journal want_id=... shadow=... real=...`.
+  durable-runs writes the decision into `want_ledger`.
+- Durable `journal.compose` runs (world_pulse_digest) do not bid here; durable-runs admission
+  covers them. Daily metacog (`actions.daily_metacog`) is off live and has no shadow bid.
+- Switch: `ACTIONS_PHYSIOLOGY_SHADOW_BID_ENABLED` (default on). The bid is a background task; the
+  compose never waits on it. Code: `app/physiology_shadow.py`.
+
 ### Act ledger producers (2026-10-23, body economy A5)
 
 Two activities publish one act per attempt on `orion:grammar:event`, persisted to `grammar_acts`

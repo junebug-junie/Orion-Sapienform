@@ -439,6 +439,8 @@ SYNC_EXACT = frozenset(
         "CHANNEL_MEMORY_TURN_PERSISTED",
         "CHANNEL_CHAT_HISTORY_SPARK_META_PATCH",
         "CHANNEL_HELP_REQUEST",
+        # Body economy Patch C3b: orion-actions' shadow-bid switch (no ACTIONS_PHYSIOLOGY_ prefix).
+        "ACTIONS_PHYSIOLOGY_SHADOW_BID_ENABLED",
         "CHANNEL_PEER_BRIEF",
         # Mind run artifact channel (reused by unified-turn enrichment, mode=orion)
         "CHANNEL_MIND_ARTIFACT",

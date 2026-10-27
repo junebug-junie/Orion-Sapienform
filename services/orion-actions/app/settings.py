@@ -107,6 +107,10 @@ class Settings(BaseSettings):
     # act producer (not shipped yet), so a journal is never counted twice.
     # Off = no acts. app/act_emit.py.
     actions_act_emit_enabled: bool = Field(True, alias="ACTIONS_ACT_EMIT_ENABLED")
+    # Body economy Patch C3b: each in-process journal compose places a SHADOW bid (actions.journal,
+    # Tier 1; orion.physiology.client -> durable-runs POST /physiology/bid) and logs it beside the
+    # real outcome. Never obeyed; off = no bid, no log line. app/physiology_shadow.py.
+    actions_physiology_shadow_bid_enabled: bool = Field(True, alias="ACTIONS_PHYSIOLOGY_SHADOW_BID_ENABLED")
     # RPC wait for a SCHEDULED compactor workflow dispatch (LONG_RUNNING_SCHEDULED_WORKFLOWS in main.py).
     # Covers only the synchronous part: the fetch (GitHub PR walk <=300s) and registering the
     # compactor.digest durable run (<=10s receipt per generation). The LLM digest runs in that durable

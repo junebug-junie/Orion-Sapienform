@@ -113,6 +113,11 @@ class Settings(BaseSettings):
     # LLM call keeps its own correlation id. app/act_emit.py.
     DREAM_ACT_EMIT_ENABLED: bool = Field(default=True)
 
+    # Body economy Patch C3b: a check that would sleep places a SHADOW bid (orion.physiology.client
+    # -> durable-runs POST /physiology/bid) and logs it beside the real outcome (held, empty, ran).
+    # Never obeyed; off = no bid, no log line. app/physiology_shadow.py.
+    DREAM_PHYSIOLOGY_SHADOW_BID_ENABLED: bool = Field(default=True)
+
     # Weekly/monthly Curiosity write-up summaries after a persisted successful sleep.
     DREAM_CURIOSITY_COMPACTION_ENABLED: bool = Field(default=False)
 

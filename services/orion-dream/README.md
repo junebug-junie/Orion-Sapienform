@@ -261,6 +261,29 @@ at 0 and is re-raised. A check that is not due, held, or `empty` opens nothing.
   the cycle id, so the GPU pool's leases carry it and the ledger charges the cycle for them.
 - Cost `seconds` = wall time from open to close.
 - Flag: `DREAM_ACT_EMIT_ENABLED` (default on). Off = no act, and each LLM call keeps its own id.
+
+### Body economy shadow bid (Patch C3b, 2026-10-27)
+
+A check that would sleep asks the body economy "would you fund this sleep?", then ignores the
+answer. The answer is only logged, next to what the cycle really did. Nothing changes what the
+cycle does.
+
+- Where: `run_cycle_once`, once the check would sleep (pressure due, the overdue backstop, or
+  forced), before the arousal read. A check that is too soon or not due is not a want: no bid.
+- Family `dream.cycle` (Tier 1), verb `make`. `want_id` = `act_emit.cycle_correlation_id(cycle_id)`,
+  the sleep act's correlation id. The cycle id is now minted before the arousal read, so a held
+  check has an id too; it opens no act.
+- Real outcome: `ran` (the gates passed and the sleep's act is opened; a sleep that then fails
+  still ran, and its act closes at 0), `blocked:arousal_<level>` (arousal held the sleep),
+  `blocked:nothing_to_replay` (the `empty` cycle, which opens no act), or `blocked:cancelled`.
+  With `DREAM_ACT_EMIT_ENABLED=false` a `ran` line has no act to join.
+- Volume: every held check is a new want with a new `want_id` (a new cycle id). A long hold at
+  the default 600 s check interval writes about 6 rows an hour; count holds per episode, not per row.
+- Log line: `physiology_shadow_bid family=dream.cycle want_id=... shadow=funded|deferred|none ... real=...`.
+  durable-runs writes the decision into `want_ledger`. A funded decision whose sleep was held
+  releases its reservation.
+- Switch: `DREAM_PHYSIOLOGY_SHADOW_BID_ENABLED` (default on). The bid is a background task; the
+  cycle never waits on it. Code: `app/physiology_shadow.py`.
 - Code: `app/act_emit.py`, `CycleActTrace` in `app/cycle.py`. Tests: `tests/test_dream_cycle_act.py`.
 
 ### HTTP / bus behavior

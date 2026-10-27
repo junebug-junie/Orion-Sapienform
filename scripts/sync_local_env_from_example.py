@@ -451,6 +451,8 @@ SYNC_EXACT = frozenset(
         # deliberately absent: it is a credential, .env_example carries it empty, and
         # the settings default of "" already makes the key optional.
         "NOTIFY_SERVICE_URL",
+        # Body economy Patch C3b: orion-dream's shadow-bid switch (no DREAM_ prefix is synced).
+        "DREAM_PHYSIOLOGY_SHADOW_BID_ENABLED",
         "MEMORY_CONSOLIDATION_ENABLED",
         "LLM_LOGPROB_SUMMARY_ENABLED",
         "LLM_GATEWAY_OPENAI_PASSTHROUGH_ENABLED",

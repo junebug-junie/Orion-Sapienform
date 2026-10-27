@@ -46,6 +46,7 @@ path of a file with the full result; read only what you need from that file.
   inventory <date|now>   services, modules, channels, verbs, schemas in that checkout.
   compare <date> [<date|now>]   what was added / removed between two checkouts.
   history <start> <end>  merged PRs (title + number) and commits in [start, end].
+  history <days>         the same for the last <days> days, today included (2 = since yesterday).
   body [<date>]          your body atlas: parts -> circulation -> organs. No date = live bus now;
                          a date = that export's channel catalog only (exists from 2026-01).
   notes [append <text>]  this dig's shared notes (episode hops / turns read each other).
@@ -97,6 +98,15 @@ def _parse_day(text: str) -> date:
     if day > datetime.now(ZONE).date():
         raise DigError(f"{day} is in the future")
     return day
+
+
+def _last_days(text: str) -> tuple[date, date]:
+    """``history <days>``: the window that ends today (Denver), so Orion need not work out dates."""
+    if not (text.isascii() and text.isdigit()) or int(text) < 1:
+        raise DigError(f"not a day count: {text!r} (want a whole number, 1 = today)")
+    today = datetime.now(ZONE).date()
+    days = min(int(text), (today - FIRST_DAY).days + 1)  # clamp first: huge counts overflow timedelta
+    return today - timedelta(days=days - 1), today
 
 
 def _end_of_day_utc(day: date) -> datetime:
@@ -464,6 +474,8 @@ def main(argv: list[str] | None = None) -> int:
             text = cmd_compare(a[0], a[1] if len(a) == 2 else "now", out)
         elif ns.command == "history" and len(a) == 2:
             text = cmd_history(_parse_day(a[0]), _parse_day(a[1]), out)
+        elif ns.command == "history" and len(a) == 1:
+            text = cmd_history(*_last_days(a[0]), out)
         elif ns.command == "body" and len(a) <= 1:
             text = cmd_body(a[0] if a else None, out)
         elif ns.command == "notes" and (not a or a[0] == "append"):

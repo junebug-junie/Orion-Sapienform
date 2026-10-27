@@ -102,3 +102,22 @@ def test_strict_inventory_fails_loudly_on_a_wrong_root(tmp_path):
         self_inventory.services(tmp_path, strict=True)
     with pytest.raises(FileNotFoundError):
         self_inventory.schemas(tmp_path, strict=True)
+
+
+def test_history_by_day_count_ends_today(world, capsys, monkeypatch):  # noqa: F811
+    # 2026-10-27 live turn: "a few cool PRs came out" went to the GitHub tool (2 compactions)
+    seen = []
+    monkeypatch.setattr(dig, "_gh_merged", lambda s, e: seen.append((s, e)) or [])
+    assert run(capsys, "history", "2")[0] == 0
+    today = dig.datetime.now(dig.ZONE).date()
+    assert seen[0] == (today - dig.timedelta(days=1), today)
+    assert dig._last_days("99999999999") == (dig.FIRST_DAY, today)  # clamped, no OverflowError
+    for bad in ("0", "-1", "two", "²", "٣"):
+        code, _, err = run(capsys, "history", bad)
+        assert code == 1 and "day count" in err
+
+
+def test_brief_points_recent_prs_at_the_capped_command():
+    from orion.dig.brief import DIG_BRIEF_LINE
+
+    assert "orion.dig history 2" in DIG_BRIEF_LINE and "not the GitHub tool" in DIG_BRIEF_LINE

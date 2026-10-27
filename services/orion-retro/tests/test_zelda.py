@@ -99,8 +99,10 @@ def test_observer_reads_memory_without_writing():
 class World:
     """Tiny deterministic stand-in for the game: 2 px/frame, exits at the screen edge."""
 
-    def __init__(self, hidden=(), **kw):
-        self.kw = dict(kw); self.hidden = set(hidden)
+    def __init__(self, hidden=(), passable=(), **kw):
+        # hidden: open on the grid, solid in play. passable: solid on the grid, open in play
+        # (a dungeon doorway's frame).
+        self.kw = dict(kw); self.hidden = set(hidden); self.passable = set(passable)
 
     def step(self, mask):
         k = self.kw; x, y = k.get('x', 120), k.get('y', 141)
@@ -115,7 +117,7 @@ class World:
         c, r = min(max(px // 8, 0), 31), (py - 64) // 8
         walls = k.get('blocked')
         walls = {(c, r) for c in range(32) for r in range(18, 22)} if walls is None else walls
-        if (c, r) not in self.hidden and (c, r) not in walls:
+        if (c, r) not in self.hidden and ((c, r) not in walls or (c, r) in self.passable):
             k.update(x=x + dx, y=y + dy)
 
     def obs(self):
@@ -781,3 +783,13 @@ def test_dungeon_exit_walks_to_the_doorway_and_pushes_through_without_learning_a
     walls = [[ch == '#' for ch in row] for row in ROOM_124]
     tiles, col = edge_tiles(walls, set(), (15, 17), 'W')
     assert col == -2 and set(tiles) == {(2, 10), (2, 11)}
+
+
+def test_dungeon_door_push_keeps_pushing_past_the_last_floor_tile():
+    # Live 2026-10-27 (session 0b1d8ce8): the frame tiles are solid on the grid but the game walks
+    # Link through. Exact y-alignment on the last floor tile undid every push (y 205 <-> 206).
+    door = {(c, r) for c in (15, 16) for r in (20, 21)}
+    world = World(level=1, blocked=_room_124_blocked(), passable=door, x=120, y=191)
+    done, rows, _ = run_goal({'kind': 'exit', 'dir': 'S'}, {'kind': 'unknown'}, world=world, frames=25)   # 2 px/frame: past the frame, still on screen
+    assert world.kw['y'] > 213 and world.kw['x'] == 120       # walked into the doorway, still lined up
+    assert not [r for r in rows if r['kind'] == 'bump']

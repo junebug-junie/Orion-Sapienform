@@ -466,8 +466,11 @@ class ZeldaGoals:
         if here in self.goal_tiles:
             # The last tile is approached exactly: pickups need real overlap (live:
             # stopping 2 px, or 1 px from the left, short of the cave sword never took it).
-            if tx != x: return RIGHT if tx > x else LEFT
-            if ty != y: return DOWN if ty > y else UP
+            # A push (exit, enter) aligns only across its direction: live 2026-10-27 a dungeon
+            # door push moved Link 1 px past the tile, the y-alignment pulled him back, and he
+            # shook between y 205 and 206 for the whole budget.
+            if tx != x and self.push not in ('W', 'E'): return RIGHT if tx > x else LEFT
+            if ty != y and self.push not in ('N', 'S'): return DOWN if ty > y else UP
         kind = self.accepted['goal']['kind']
         if kind == 'explore' and not on_screen_edge(here, self.push):
             self.arrived = True; return 0

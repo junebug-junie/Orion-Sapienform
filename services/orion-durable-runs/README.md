@@ -770,8 +770,8 @@ the dial on the state (`PhysiologyStateV1.strain`). Same Redis key, same bus cha
 |---|---|---|
 | `heat` | Orion's own share in C: short-run sensitivity x watts above baseline, per host, against the room's headroom (soft line - (cabinet - sensor offset - Orion's share)); forecast = the newest reading | room over the line even with Orion's share at 0 (0.5 C hysteresis) |
 | `energy` | month-end Orion cost forecast vs the $ envelope | the always-on floor alone reaches the envelope (5% hysteresis) |
-| `lane:<role>` | lease-seconds asked of the seat (`detail.lease_s`) vs slots x window; waiting work is NOT an input | the seat has no live slot but a lease holds it |
-| `attention:juniper` | today's cap-counted sends paced to the end of the local day vs the cap | never |
+| `lane:<role>` | lease-seconds asked of the seat (`detail.lease_s`) vs slots x window; waiting work is NOT an input | never (Patch C1). A seat with 0 live slots now whose window use already ran (`served_while_loaded`: a swap seat, diffusion / agent-gpu2) is slack; one with a lease still open (`held_without_live_slot`) is `no_reading` |
+| `attention:juniper` | today's cap-counted sends paced to the end of the local day vs the cap | never. Self-spent (Patch C1): Orion's own outreach fills it, so it is listed in `strain.self_spent` and does not move the dial; its price still charges outreach wants |
 | `claude` | `clear` = 0 use | `limited` |
 
 Rules (`orion/physiology/prices.py`, Patch B): bounded ramp into bind (never a jump to the ceiling),
@@ -797,6 +797,48 @@ Known limits (review, 10-27):
   kept for a day for a constraint missing from a tick. Warnings `heat_sensitivity_stale_in_days:<host>:<d>`
   (7 days ahead) and `heat_sensitivity_stale:<host>` say when to refit.
 - `attention:juniper` paces the day only after 6 h of it; before that the use is the count itself.
+
+### Appetite + Choice: `POST /physiology/bid` (2026-10-27, body economy Patch C1, SHADOW)
+
+A producer sends a `WantV1` (`orion/schemas/physiology_want.py`) and gets a `WantDecisionV1` back:
+funded or deferred, the lane, the prices it saw, its cost as a share of each budget, the net, the
+binding constraint, what it displaced, `retry_after_sec`, and `shadow=true`. **Nobody obeys the
+decision yet** (design Patch D cuts over one reader per PR). Every decision is published on
+`orion:physiology:want:decision` and sql-writer stores it in `want_ledger`.
+
+```text
+net       = family_weight x value_rank - sum_k price_k x cost_k      (cost_k = share of constraint k's budget)
+funded    = net > 0, or the family is under 5% of its tier's funded acts this week (never past a capacity line)
+placement = the cheapest acceptable lane with room; a seat with 0 live slots is a last resort
+```
+
+- **Families** (`config/physiology/families.yaml`, one per act-ledger actor): tier 0 never bids
+  (`hub.chat_reply`, `vision.council`, `perception`), tier 1 upkeep (`actions.journal`, `dream.cycle`,
+  `durable.journal_compose`), tier 2 the rest. Unknown family: deferred `unknown_family`.
+- **Appetite** (`orion/physiology/appetite.py`): intensity `1 - exp(-t/tau)`, `t` = time since the
+  family's last act closed (floored by B1's waiting deferrable work beside its lanes); `tau` = the
+  family's median close-to-close gap (>= 5 gaps), else its `deferrable_window_s`. `value_rank` =
+  percentile of intensity x outcome within the family's 30 days; `graded` = >= 30 graded closes
+  (expired closes are not grades); ungraded families rank on intensity alone.
+- **Weights** (`orion/physiology/weights.py`): shrinkage (kappa 30) from the prior toward the mean of
+  the evidence rates that exist: downstream use (`act_downstream_use`, linked + window closed) and
+  Juniper replies (resolver closes of `juniper_replied` acts). A missing source is skipped, never 0;
+  under 10 evidenced acts stays at prior; 0.1/day drift cap (replayed day by day, stateless).
+  Personality endorsement is excluded.
+- **Reservations**: a funded bid reserves its cost on capacity lines (lanes, Juniper's cap) until
+  `POST /physiology/bid/{want_id}/release` or expiry (its expected seconds, 120 s .. 1 h). Later
+  bids must fit `forecast use + reservations + cost <= line`. In memory: a restart releases them.
+  Tier 1 pays no lane price inside its reserved share (p75 of its 14-day hourly use, cap 50%).
+- **Unpriced, said so**: heat, energy and claude are listed `unpriced:<constraint>` on every
+  decision: per-act watt-hours and limit events are not measured yet (`ActCostV2.wh_by_host` null).
+- **Never fail open**: no fresh body state (> `ORION_PHYSIOLOGY_BID_STALE_AFTER_SEC`), no act history
+  or no families config is `physiology_unavailable`. The client (`orion/physiology/client.py`,
+  0.5 s timeout) returns `None` on any failure and the caller keeps its own gate.
+
+Reads: Redis `orion:physiology:latest`, and `grammar_acts` + `act_downstream_use` (30 days, cached
+`ORION_PHYSIOLOGY_BID_HISTORY_TTL_SEC`). Debug: `GET /physiology/reservations`; `/health` ->
+`physiology_market`. Off: `ORION_PHYSIOLOGY_BID_ENABLED=false` (the route answers 503). Read-only
+sample against live prices: `scripts/analysis/sample_body_economy_bids.py`.
 
 Live smoke (read-only, replays the node over stored ticks): `ORION_ANALYSIS_DSN=... python
 scripts/analysis/smoke_body_economy_prices.py --hours 24`.

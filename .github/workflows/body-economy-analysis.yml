@@ -9,7 +9,11 @@ on:
   pull_request:
     paths:
       - "orion/physiology/**"
+      - "orion/schemas/physiology.py"
+      - "orion/schemas/physiology_want.py"
+      - "config/physiology/**"
       - "scripts/analysis/_body_economy_data.py"
+      - "scripts/analysis/sample_body_economy_bids.py"
       - "scripts/analysis/fit_heat_sensitivity.py"
       - "scripts/analysis/replay_body_economy.py"
       - "scripts/analysis/tests/test_body_economy_replay_and_fit.py"

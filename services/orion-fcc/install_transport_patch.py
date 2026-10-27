@@ -29,7 +29,12 @@ def patch_routes(path):
     text = _replace(
         text,
         "from . import dependencies",
-        "from orion_fcc_messages_transport import adapt_message_response, prepare_request\n\n"
+        "from orion_fcc_messages_transport import (\n"
+        "    adapt_message_response,\n"
+        "    guard_local_optimizations,\n"
+        "    prepare_request,\n"
+        ")\n\n"
+        "guard_local_optimizations()\n\n"
         "from . import dependencies",
     )
     text = _replace(

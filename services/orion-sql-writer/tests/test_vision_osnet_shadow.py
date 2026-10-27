@@ -255,8 +255,11 @@ def test_osnet_columns_round_trip(pg) -> None:
 def _street(engine, n_frames: int) -> None:
     """Two people walk side by side for n_frames, 2.5 s apart. SigLIP sees them as
     near-identical (same clothes colour); OSNet keeps them apart."""
+    # The live eval reads a window back from the real clock (--since-hours, 8 days), so these
+    # rows are stamped from it too; a fixed NOW went out of the window on 2026-10-24.
+    start = datetime.now(timezone.utc) - timedelta(hours=2)
     for k in range(n_frames):
-        t = NOW - timedelta(hours=2) + timedelta(seconds=2.5 * k)
+        t = start + timedelta(seconds=2.5 * k)
         jitter = 0.02 * (k % 3)
         crops = [
             _crop((100 + 10 * k, 300, 200 + 10 * k, 600), emb=_unitv(0.10 + jitter, 1152), osnet=_unitv(0.0 + jitter, 512)),

@@ -503,3 +503,58 @@ test('a missing face says so instead of a broken image', () => {
 test('a refused free-text answer to a same-person card explains the buttons', () => {
   assert.match(asks.errorLine(422, 'answer_must_be_yes_or_no'), /Same person/);
 });
+
+// "I don't know" (2026-10-27): typed non-answers ("no", "unsure") were being saved
+// as names. The who-is-this card has an explicit button instead of a word list.
+test('submitAction dismiss with dontKnow sends {reason: dont_know}', async () => {
+  const calls = [];
+  const fetchFn = async (url, init) => {
+    calls.push({ url, init });
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  await asks.submitAction(fetchFn, 'a3', 'dismiss', '', undefined, { dontKnow: true });
+  assert.equal(calls[0].url, '/api/asks/a3/dismiss');
+  assert.deepEqual(JSON.parse(calls[0].init.body), { reason: 'dont_know' });
+});
+
+test('a who-is-this card has an I don\'t know button; other cards do not', () => {
+  const doc = fakeDoc();
+  const who = asks.renderAsk(doc, { ask_id: 'w9', question: 'Do you know whose vehicle this is?',
+    source_kind: 'vision_individual', image_refs: ['thumb:' + 'c4'.repeat(32)] }, () => {});
+  const btn = find(who, (n) => n.attrs && n.attrs['data-ask-action'] === 'dont-know');
+  assert.ok(btn);
+  assert.equal(btn.textContent, "I don't know");
+  assert.ok(find(who, (n) => n.attrs && n.attrs['data-ask-action'] === 'dismiss'));
+  const other = asks.renderAsk(doc, { ask_id: 'o1', question: 'Anything?', source_kind: 'something_else' }, () => {});
+  assert.equal(find(other, (n) => n.attrs && n.attrs['data-ask-action'] === 'dont-know'), null);
+});
+
+test('I don\'t know posts a dont_know dismissal, ignores the typed box, and refreshes', async () => {
+  const doc = fakeDoc();
+  let open = [{ ask_id: 'v1', question: 'Do you know whose vehicle this is?', image_ref: '/mnt/x.jpg',
+    source_kind: 'vision_individual', source_ref: 'ind-v1' }];
+  const posts = [];
+  const fetchFn = async (url, init) => {
+    if (init && init.method === 'POST') {
+      posts.push({ url, body: init.body });
+      open = [];
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ asks: open }) };
+  };
+  const handle = asks.mount(doc, fetchFn);
+  await handle.refresh();
+  const card = doc.byId.visionAsksList.children[0];
+  // Whatever is in the box is not a name when she presses I don't know.
+  find(card, (n) => n.attrs && n.attrs['data-ask-input'] === 'v1').value = 'unsure';
+  const btn = find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'dont-know');
+  const pending = btn.listeners.click();
+  assert.equal(btn.disabled, true);
+  await pending;
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, '/api/asks/v1/dismiss');
+  assert.deepEqual(JSON.parse(posts[0].body), { reason: 'dont_know' });
+  assert.equal(doc.byId.visionAsksStatus.textContent, 'Orion has no open questions for you.');
+  handle.stop();
+});

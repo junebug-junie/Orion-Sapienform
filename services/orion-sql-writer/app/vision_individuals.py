@@ -2088,10 +2088,15 @@ CONFIRM_ASKED_TODAY_SQL = (
 )
 
 # An earlier ask about the same subject blocks a new one: open, answered or
-# dismissed for good; expired only for the cooldown.
+# dismissed for good; expired only for the cooldown. "I don't know" (a dismissal
+# with answer_detail.dont_know, Hub /dismiss {reason: dont_know}, 2026-10-27) is
+# also only for the cooldown, counted from when she said it: she may know later.
+DONT_KNOW_SQL = "coalesce((a.answer_detail ->> 'dont_know')::boolean, false)"
 _NOT_ASKED_SQL = (
     "NOT EXISTS (SELECT 1 FROM orion_ask a WHERE a.source_kind={kind} AND a.source_ref={ref} "
-    "AND (a.status IN ('open','answered','dismissed') OR (a.status = 'expired' AND a.created_at > :cool)))"
+    "AND ((a.status IN ('open','answered') OR (a.status = 'dismissed' AND NOT " + DONT_KNOW_SQL + ")) "
+    "OR (a.status = 'expired' AND a.created_at > :cool) "
+    "OR (a.status = 'dismissed' AND " + DONT_KNOW_SQL + " AND coalesce(a.answered_at, a.created_at) > :cool)))"
 )
 
 

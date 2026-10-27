@@ -754,7 +754,10 @@ frames. `VISION_CROP_THUMB_RETENTION_DAYS=0` (default since 2026-10-20; the
 same key the host reads) keeps thumbnails forever, so any sighting's thumbnail
 may be offered; a positive value limits asks to sightings recent enough that
 the thumbnail outlives the ask (asks expire after 7 days); an
-unanswered expired ask is not repeated for `VISION_ASK_COOLDOWN_DAYS`; a window
+unanswered expired ask, or one Juniper answered with **I don't know** (Hub
+`/dismiss {"reason": "dont_know"}`, `answer_detail.dont_know`, no label; counted
+from when she pressed it), is not repeated for `VISION_ASK_COOLDOWN_DAYS`; a
+plain Dismiss is never repeated; a window
 is `missed` only if census coverage (5 s windows bridged across gaps up to
 30 s) is at least `VISION_RHYTHM_MIN_COVERAGE`, and an individual's window is
 not graded until the individuals cursor has passed its end; the Redis expect

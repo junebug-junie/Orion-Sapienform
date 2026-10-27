@@ -37,6 +37,8 @@ Where reads come from:
 - `services/orion-hub/evals/run_reading_finding_replay.py`: the replay attaches and prints the chain.
 - Tests: `orion/world_pulse_read/tests/test_finding_prompt_origin.py` (new), `services/orion-hub/tests/test_reading_finding_outreach.py`, `services/orion-hub/tests/test_reading_postgres.py` (real-SQL chain), and `services/orion-hub/evals/test_reading_finding_eval.py`.
 
+- `services/orion-sql-writer/tests/test_vision_osnet_shadow.py`: an unrelated time bomb that blocked this PR's CI. Its rows were stamped from a fixed 2026-10-16 date, but the live eval looks back 8 days from the real clock. Since 10-24 the two Postgres tests found 0 pairs. Rows are now stamped from the real clock. Verified: 16 passed on a throwaway Postgres 16 with CI's migrations.
+
 ## Schema / bus / API changes
 
 - Added: `ReadingOriginStepV1` and `ReadingFindingBundleV1.origin` (default `[]`).

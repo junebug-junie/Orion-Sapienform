@@ -62,8 +62,9 @@ def prepare_request(request_data):
     """Compaction requests go upstream with no tools, so the model can only answer in text.
 
     Earlier tool calls in the history stay as they are; only the offer of new ones is removed.
-    Side effect: upstream FCC's no-tools request intercepts (api/detection.py) now see this
-    request; they only match title/filepath/safety-classifier shapes, never a CLI transcript.
+    Side effect: upstream FCC's no-tools local shortcuts (api/optimization_handlers.py) now see
+    this request, and its title detector DOES match the CLI's system prompt -- see
+    `guard_local_optimizations`, which must be installed alongside this.
     Every other request is returned unchanged (same object)."""
     if not is_compaction_request(request_data) or not getattr(request_data, "tools", None):
         return request_data
@@ -72,6 +73,30 @@ def prepare_request(request_data):
         getattr(request_data, "model", None), len(request_data.tools), len(request_data.messages),
     )
     return request_data.model_copy(update={"tools": None, "tool_choice": None})
+
+
+def guard_local_optimizations():
+    """Keep FCC's local shortcuts away from compaction requests.
+
+    Once `prepare_request` strips their tools, the CLI's own system prompt satisfies FCC's
+    title-generation detector, which answers "Conversation" in ~20 ms instead of calling the
+    model. That one word became every compaction summary from 2026-10-21 (19 of 19 live), so
+    each long turn lost its task after compacting. Idempotent; fails loudly if upstream moves
+    the hook, so a pin bump cannot silently drop the guard."""
+    import api.handlers.messages as handlers
+
+    original = handlers.try_optimizations
+    if getattr(original, "orion_compaction_guard", False):
+        return
+
+    def guarded(request_data, settings):
+        if is_compaction_request(request_data):
+            logger.info("fcc_compaction_local_shortcut_skipped model=%s", getattr(request_data, "model", None))
+            return None
+        return original(request_data, settings)
+
+    guarded.orion_compaction_guard = True
+    handlers.try_optimizations = guarded
 
 
 async def with_heartbeats(body, interval=15.0):

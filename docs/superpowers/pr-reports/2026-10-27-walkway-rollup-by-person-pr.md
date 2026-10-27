@@ -33,6 +33,7 @@ Orion's day letter reads only `walkway_day.line`. That line now names people, no
 - `services/orion-substrate-runtime/app/walkway_seen_loop.py` + its tests: belongings are linked.
 - `services/orion-hub/scripts/walkway_rollup_routes.py` + test: the panel shows belongings (ids stripped).
 - `services/orion-actions/app/walkway_forecast.py` + test: forecast facts carry belongings.
+- `services/orion-sql-writer/tests/test_vision_osnet_shadow.py`: unrelated date-dependent failure that also broke CI on main. The eval looks back 8 days from the wall clock, and the fixture rows are dated 2026-10-16, so the test started to fail on 2026-10-24. The test now passes `--since-hours` that reaches the fixture rows. Reproduced on origin/main (2 failed), fixed here (16 passed).
 
 ## Schema / bus / API changes
 
@@ -66,6 +67,7 @@ Consumers of walkway_rollup: test_walkway_forecast 24, test_curiosity_street_day
   test_walkway_rollup_routes 7, test_reverie_street_day 17, test_reverie_thin_import_boundary 6,
   test_street_people_range 14 -- all passed
 PYTHONPATH=. pytest tests/test_no_personal_terms.py orion/orion_day  112 passed
+CI "visual confirmation asks Postgres tests" file list, local throwaway Postgres + CI migrations: 306 passed
 ```
 
 ## Evals run

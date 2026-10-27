@@ -59,7 +59,8 @@ class ReadingOriginStepV1(BaseModel):
     title: str = ""
     requested_by: str = ""  # request_json.requested_by; empty on rows stored before requests existed
     invocation_context: str = ""
-    why_now: str = ""
+    why_now: str = ""  # the requester's note: Juniper's on an operator request, Orion's own otherwise
+    parent_request_id: str = ""  # the read this one hopped from; empty at a chain's start
 
 
 class ReadingFindingBundleV1(BaseModel):

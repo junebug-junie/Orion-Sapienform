@@ -57,10 +57,11 @@ TEXTS = {"p:a": [{"prior_id": "p:a", "claim": "A claim", "why": "per example.org
 
 ORIGIN_ROWS = [
     {"leaf": "reading:a", "depth": 1, "seed_id": "digest_item:p", "kind": "digest_item",
-     "url": "https://example.org/p", "title": "", "requested_by": None, "invocation_context": None, "why_now": None},
+     "url": "https://example.org/p", "title": "", "requested_by": None, "invocation_context": None, "why_now": None,
+     "parent_request_id": None},
     {"leaf": "reading:a", "depth": 0, "seed_id": "reading:a", "kind": "reading",
      "url": "https://example.org/a/page", "title": "", "requested_by": "world_pulse",
-     "invocation_context": "world_pulse", "why_now": ""},
+     "invocation_context": "world_pulse", "why_now": "", "parent_request_id": "req-p"},
 ]
 
 
@@ -96,7 +97,8 @@ def test_replay_counts_one_message_per_read_per_tick_and_holds_unprojected_links
     a = out["messages"][0]
     assert a["appendix"].endswith("Piece A says X. It also says Y. And Z.")
     assert "Piece A says X." in a["prompt"] and "Belief moved (0.50 -> 0.70): A claim" in a["prompt"]
-    assert a["origin"][1] == "2. While reading that, you chose to follow its link to https://example.org/a/page. This is the read below."
+    assert a["origin"][1] == ("2. After that read, you chose to read https://example.org/a/page next "
+                              "(a link you came across while working on it). This is the read below.")
     assert "1. Your daily world-pulse news run put https://example.org/p in your reading queue." in a["prompt"]
     assert out["messages"][1]["origin"] == ["How this read started was not recorded."]
     d = [r for r in out["letter"] if r["seed_id"] == "reading:d"][0]

@@ -22,38 +22,57 @@ _KIND_LABEL = {
 }
 
 
+MAX_WHY_CHARS = 200
+
+
 def _ref(step: ReadingOriginStepV1) -> str:
     return step.url or step.title or "an untitled source"
 
 
-def _why(step: ReadingOriginStepV1) -> str:
-    return f' (the reason given: "{step.why_now}")' if step.why_now else ""
+def _note(step: ReadingOriginStepV1) -> str:
+    """The requester's own note. Juniper writes it only on an operator request; a chat-turn or
+    curiosity request is Orion's own tool call (orion/world_pulse_read/tools.py), so it is Orion's."""
+    if not step.why_now:
+        return ""
+    why = step.why_now if len(step.why_now) <= MAX_WHY_CHARS else step.why_now[:MAX_WHY_CHARS].rstrip() + "…"
+    whose = "her" if step.invocation_context == "operator" else "your"
+    return f' ({whose} note: "{why}")'
 
 
 def _start_line(step: ReadingOriginStepV1) -> str:
     """How the first read of a chain entered the queue, from its own row."""
-    if step.kind in ("digest_item", "finding"):
+    if step.kind in ("digest_item", "finding") or step.requested_by == "world_pulse":
         return f"Your daily world-pulse news run put {_ref(step)} in your reading queue."
-    if step.requested_by == "juniper":
-        where = " in chat" if step.invocation_context == "unified_chat" else ""
-        return f"Juniper asked you{where} to read {_ref(step)}{_why(step)}."
-    if step.requested_by == "orion":
-        return f"A curiosity run of yours asked to read {_ref(step)}{_why(step)}."
-    if step.requested_by == "world_pulse":
-        return f"Your daily world-pulse news run put {_ref(step)} in your reading queue."
+    if step.invocation_context == "operator":
+        return f"Juniper asked you to read {_ref(step)}{_note(step)}."
+    if step.invocation_context == "unified_chat":
+        # requested_by is "juniper" for every chat-turn tool call, including Orion's own.
+        return f"During a chat with Juniper, you queued {_ref(step)} to read{_note(step)}."
+    if step.invocation_context == "curiosity":
+        return f"A curiosity run of yours queued {_ref(step)} to read{_note(step)}."
     return f"{_ref(step)} entered your reading queue; the record does not say who asked."
+
+
+def _hop_line(step: ReadingOriginStepV1) -> str:
+    return f"After that read, you chose to read {_ref(step)} next (a link you came across while working on it)."
 
 
 def origin_lines(origin: list[ReadingOriginStepV1]) -> list[str]:
     """The chain as plain numbered lines, oldest first; the last one is this read. Pure.
 
-    A later step exists only because the read before it listed the URL to follow
-    (``need_stage1_urls``) and it was a link that read had seen, so "you chose" is the record."""
+    A later step exists only because the read before it listed the URL (``need_stage1_urls``)
+    and the URL was one that read's work had seen (``_hop_allowlist``: its own text, a page its
+    Stage 2 fetched, or a URL a fetch reached), so "you chose" is the record. A first step that
+    still has a parent is a chain whose start is missing (or past MAX_ORIGIN_DEPTH): it is a hop,
+    and its inherited requester fields say nothing about how it began."""
     if not origin:
         return ["How this read started was not recorded."]
-    lines = [f"1. {_start_line(origin[0])}"]
-    for n, step in enumerate(origin[1:], start=2):
-        lines.append(f"{n}. While reading that, you chose to follow its link to {_ref(step)}.")
+    if origin[0].parent_request_id:
+        steps = ["This continues a chain from an earlier read whose record is missing."]
+        steps += [_hop_line(s) for s in origin]
+    else:
+        steps = [_start_line(origin[0])] + [_hop_line(s) for s in origin[1:]]
+    lines = [f"{n}. {text}" for n, text in enumerate(steps, start=1)]
     lines[-1] += " This is the read below."
     lines.append("Your reading pipeline ran each of these reads on its own timer.")
     return lines

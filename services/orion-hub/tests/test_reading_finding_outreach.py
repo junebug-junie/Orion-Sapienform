@@ -56,7 +56,7 @@ PRIOR_TEXTS = {"world:nasa_outreach_is_spectacle": [{
 # The read's own row: a world-pulse digest item, so the chain is the read alone.
 ORIGIN_ROWS = [{"leaf": SEED, "depth": 0, "seed_id": SEED, "kind": "digest_item", "url": URL,
                 "title": READ_ROW["title"], "requested_by": "world_pulse",
-                "invocation_context": "world_pulse", "why_now": ""}]
+                "invocation_context": "world_pulse", "why_now": "", "parent_request_id": None}]
 
 
 class _Conn:
@@ -80,6 +80,8 @@ class _Conn:
             return self.s["decisions"]
         if sql == origin.ORIGIN_SQL:
             self.s["origin_asked"].append(args[0])
+            if self.s.get("origin_fails"):
+                raise RuntimeError("statement timeout")
             return [r for r in self.s["origin"] if r["leaf"] in args[0]]
         raise AssertionError(sql[:60])
 
@@ -315,3 +317,11 @@ def test_no_origin_lookup_when_nothing_to_send(monkeypatch):
     loop, _, state, _, composed, _ = _setup(monkeypatch, links=[])
     asyncio.run(loop.tick())
     assert composed == [] and state["origin_asked"] == []
+
+
+def test_a_failed_origin_lookup_still_sends_the_message(monkeypatch):
+    loop, _, state, _, composed, delivered = _setup(monkeypatch)
+    state["origin_fails"] = True
+    summary = asyncio.run(loop.tick())
+    assert [r["reason"] for r in summary["results"]] == ["sent"] and len(delivered) == 1
+    assert "How this read started was not recorded." in composed[0]

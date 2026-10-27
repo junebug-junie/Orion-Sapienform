@@ -33,7 +33,8 @@ WITH RECURSIVE chain AS (
 SELECT leaf, depth, seed_id, kind, url, title,
        request_json->>'requested_by' AS requested_by,
        request_json->>'invocation_context' AS invocation_context,
-       request_json->>'why_now' AS why_now
+       request_json->>'why_now' AS why_now,
+       request_json->>'parent_request_id' AS parent_request_id
 FROM chain
 ORDER BY leaf, depth DESC
 """
@@ -47,6 +48,7 @@ def origins_from_rows(rows: list[Any]) -> dict[str, list[ReadingOriginStepV1]]:
             seed_id=r["seed_id"], kind=r["kind"], url=r["url"] or "", title=r["title"] or "",
             requested_by=r["requested_by"] or "", invocation_context=r["invocation_context"] or "",
             why_now=" ".join((r["why_now"] or "").split()),
+            parent_request_id=r["parent_request_id"] or "",
         ))
     return out
 

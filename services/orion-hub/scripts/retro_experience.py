@@ -171,7 +171,7 @@ def option_for_goal(goal: dict, decision: dict, atlas: Optional[dict]) -> Option
         side = side_state(decision, atlas, d)
         a = ((here or {}).get('adjacent') or {}).get(d) if here else None
         level, room = obs.get('level'), obs.get('room')
-        # Overworld only: no dungeon place beliefs until open_sides is verified in dungeons (spec).
+        # Overworld only: dungeon levels decode as 'unknown' (one place key would mix every dungeon).
         place = (f'zelda:{level}:{room}:{d}' if level == 0 and isinstance(room, int) and obs.get('mode') == 'play'
                  else None)   # overworld rooms only: never a cave, which reports the room above it
         value = VALUE['visited_room'] if isinstance(a, dict) and a.get('known') else VALUE['new_room']

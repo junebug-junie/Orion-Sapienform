@@ -19,6 +19,7 @@ import yaml
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDF, XSD
 
+from orion import self_inventory
 from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
 from orion.core.bus.bus_schemas import BaseEnvelope, LLMMessage, ServiceRef
 from orion.journaler.schemas import JournalEntryWriteV1
@@ -120,8 +121,6 @@ INDUCED_TRUST_TIER = "induced"
 REFLECTIVE_TRUST_TIER = "reflective"
 _AUTHOR = "orion"
 _SCAN_ROOTS: tuple[str, ...] = ("services", "orion")
-_VERB_DECORATOR_RE = re.compile(r'@verb\([\"\']([^\"\']+)[\"\']\)')
-_REGISTRY_KEY_RE = re.compile(r'^\s+\"([^\"]+)\":', re.MULTILINE)
 _ENV_FIELD_RE = re.compile(r'^(?P<name>[A-Z0-9_]+)\s*:\s*[^=]+=\s*Field\([^\n]*?(?:alias|env|validation_alias)="(?P<alias>[A-Z0-9_]+)"', re.MULTILINE)
 _ENV_FALLBACK_RE = re.compile(r'^(?P<name>[A-Z0-9_]+)\s*:\s*', re.MULTILINE)
 
@@ -362,130 +361,41 @@ def _item(
     )
 
 
-def _service_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:
-    services_dir = REPO_ROOT / "services"
-    items: list[SelfKnowledgeItemV1] = []
-    for service_dir in sorted(p for p in services_dir.iterdir() if p.is_dir()):
-        main_py = service_dir / "app" / "main.py"
-        settings_py = service_dir / "app" / "settings.py"
-        docker_compose = service_dir / "docker-compose.yml"
-        source = settings_py if settings_py.exists() else main_py if main_py.exists() else docker_compose if docker_compose.exists() else service_dir
-        items.append(
-            _item(
-                run_id=run_id,
-                observed_at=observed_at,
-                category="service",
-                name=service_dir.name,
-                source_path=_rel(source),
-                origin_kind="service",
-                origin_name=service_dir.name,
-                metadata={
-                    "has_app_main": main_py.exists(),
-                    "has_app_settings": settings_py.exists(),
-                    "has_docker_compose": docker_compose.exists(),
-                },
-            )
+def _inventory_items(records: list[dict], *, run_id: str, observed_at: str, category: str) -> list[SelfKnowledgeItemV1]:
+    """Wrap orion.self_inventory records (scanned at REPO_ROOT) as self-knowledge items."""
+    return [
+        _item(
+            run_id=run_id,
+            observed_at=observed_at,
+            category=category,
+            name=rec["name"],
+            source_path=rec["source_path"],
+            origin_kind=category,
+            origin_name=rec["name"],
+            metadata=rec["metadata"] or None,
         )
-    return items
+        for rec in records
+    ]
+
+
+def _service_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:
+    return _inventory_items(self_inventory.services(REPO_ROOT), run_id=run_id, observed_at=observed_at, category="service")
 
 
 def _module_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:
-    package_root = REPO_ROOT / "orion"
-    items: list[SelfKnowledgeItemV1] = []
-    for path in sorted(package_root.iterdir()):
-        if not path.is_dir():
-            continue
-        init_py = path / "__init__.py"
-        if not init_py.exists():
-            continue
-        items.append(
-            _item(
-                run_id=run_id,
-                observed_at=observed_at,
-                category="module",
-                name=f"orion.{path.name}",
-                source_path=_rel(init_py),
-                origin_kind="module",
-                origin_name=f"orion.{path.name}",
-            )
-        )
-    return items
+    return _inventory_items(self_inventory.modules(REPO_ROOT), run_id=run_id, observed_at=observed_at, category="module")
 
 
 def _channel_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:
-    path = REPO_ROOT / "orion" / "bus" / "channels.yaml"
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    raw_channels = data.get("channels") or []
-    items: list[SelfKnowledgeItemV1] = []
-    for channel in raw_channels:
-        if not isinstance(channel, dict):
-            continue
-        name = str(channel.get("name") or "")
-        items.append(
-            _item(
-                run_id=run_id,
-                observed_at=observed_at,
-                category="channel",
-                name=name,
-                source_path=_rel(path),
-                origin_kind="channel",
-                origin_name=name,
-                metadata={
-                    "kind": channel.get("kind"),
-                    "schema_id": channel.get("schema_id"),
-                    "message_kind": channel.get("message_kind"),
-                    "producer_services": list(channel.get("producer_services") or []),
-                    "consumer_services": list(channel.get("consumer_services") or []),
-                },
-            )
-        )
-    return sorted(items, key=lambda item: item.name)
+    return _inventory_items(self_inventory.channels(REPO_ROOT), run_id=run_id, observed_at=observed_at, category="channel")
 
 
 def _yaml_verb_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:
-    verbs_dir = REPO_ROOT / "orion" / "cognition" / "verbs"
-    items: list[SelfKnowledgeItemV1] = []
-    for path in sorted(verbs_dir.glob("*.yaml")):
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        name = str(data.get("name") or path.stem)
-        items.append(
-            _item(
-                run_id=run_id,
-                observed_at=observed_at,
-                category="verb",
-                name=name,
-                source_path=_rel(path),
-                origin_kind="verb",
-                origin_name=name,
-                metadata={
-                    "source_type": "yaml",
-                    "recall_profile": data.get("recall_profile"),
-                },
-            )
-        )
-    return items
+    return _inventory_items(self_inventory.yaml_verbs(REPO_ROOT), run_id=run_id, observed_at=observed_at, category="verb")
 
 
 def _runtime_verb_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:
-    app_dir = REPO_ROOT / "services" / "orion-cortex-exec" / "app"
-    items: list[SelfKnowledgeItemV1] = []
-    for path in sorted(app_dir.glob("*.py")):
-        text = path.read_text(encoding="utf-8")
-        for match in _VERB_DECORATOR_RE.finditer(text):
-            trigger = match.group(1)
-            items.append(
-                _item(
-                    run_id=run_id,
-                    observed_at=observed_at,
-                    category="verb",
-                    name=trigger,
-                    source_path=_rel(path),
-                    origin_kind="verb",
-                    origin_name=trigger,
-                    metadata={"source_type": "runtime"},
-                )
-            )
-    return sorted(items, key=lambda item: (item.name, item.source_path))
+    return _inventory_items(self_inventory.runtime_verbs(REPO_ROOT), run_id=run_id, observed_at=observed_at, category="verb")
 
 
 def _verb_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:
@@ -496,21 +406,7 @@ def _verb_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:
 
 
 def _schema_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:
-    path = REPO_ROOT / "orion" / "schemas" / "registry.py"
-    text = path.read_text(encoding="utf-8")
-    names = sorted(set(_REGISTRY_KEY_RE.findall(text)))
-    return [
-        _item(
-            run_id=run_id,
-            observed_at=observed_at,
-            category="schema",
-            name=name,
-            source_path=_rel(path),
-            origin_kind="schema",
-            origin_name=name,
-        )
-        for name in names
-    ]
+    return _inventory_items(self_inventory.schemas(REPO_ROOT), run_id=run_id, observed_at=observed_at, category="schema")
 
 
 def _touchpoint_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:

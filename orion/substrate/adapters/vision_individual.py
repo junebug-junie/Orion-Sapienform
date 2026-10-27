@@ -147,6 +147,43 @@ MAX_SUMMARY_LENGTH = 600
 WALKWAY_DAY_EVIDENCE_TYPE = "walkway_day"
 
 
+MAX_ALIASES = 20
+
+
+def relabelled_individual_entity(existing: EntityNodeV1, node: EntityNodeV1) -> EntityNodeV1:
+    """``existing`` cluster node updated to ``node``'s name, kind and newest ask.
+
+    Explicit update, not the materializer: merge_node() keeps the existing label and
+    lets existing metadata win, so a rename (even a capitalization-only one) and the
+    newest label_ask_id would both be silently dropped. The old name is kept as an
+    alias so recall by it still works. The caller upserts the result."""
+    aliases: list[str] = []
+    for alias in [*existing.aliases, existing.label]:
+        if alias and alias != node.label and alias not in aliases:
+            aliases.append(alias)
+    metadata = {**existing.metadata}
+    for key, value in node.metadata.items():
+        if value is not None:
+            metadata[key] = value
+    return existing.model_copy(
+        update={
+            "label": node.label,
+            "aliases": aliases[-MAX_ALIASES:],
+            "entity_type": node.entity_type if node.entity_type != "unknown" else existing.entity_type,
+            "provenance": node.provenance.model_copy(
+                update={"evidence_refs": sorted({*existing.provenance.evidence_refs, *node.provenance.evidence_refs})}
+            ),
+            "temporal": existing.temporal.model_copy(
+                update={"observed_at": max(existing.temporal.observed_at, node.temporal.observed_at)}
+            ),
+            "signals": existing.signals.model_copy(
+                update={"confidence": max(existing.signals.confidence, node.signals.confidence)}
+            ),
+            "metadata": metadata,
+        }
+    )
+
+
 def walkway_day_content_ref(stream_id: str, day: date) -> str:
     return f"vision_rollup:{stream_id}:day:{day.isoformat()}"
 

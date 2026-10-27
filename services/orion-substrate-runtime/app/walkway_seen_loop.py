@@ -24,6 +24,12 @@ on the name alone: two people Juniper gave the same name (the Adeline and Esme t
 live 2026-10-22) each got every day either of them was seen. Entity nodes are never
 created here.
 
+Since rollup rules_version 3 (2026-10-24) ``named`` is keyed by the person record's
+display name, and a named thing that belongs to a person (a bicycle linked by
+``vision_belonging``) moves to ``belongings``; its individuals are linked too, under
+"<name>'s <kind>", so a named bicycle keeps its day link. Clusters linked to a
+``not_a_person`` row and unlinked named things are in neither, so they get no link.
+
 Trace: ``walkway_seen linked day=... stream=... people=... edges_created=...``.
 Fail-open: a missing table, store or DB error is logged; the loop keeps going.
 """
@@ -39,7 +45,7 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger("orion.substrate.runtime.walkway_seen")
 
 DAYS_SQL = (
-    "SELECT stream_id, period_start, label, line, rollup->'named' AS named, rollup FROM vision_rollup "
+    "SELECT stream_id, period_start, label, line, rollup->'named' AS named, rollup->'belongings' AS belongings, rollup FROM vision_rollup "
     "WHERE grain = 'day' AND complete AND stream_id = ANY(:streams) AND period_start > :since "
     "ORDER BY period_start"
 )
@@ -65,6 +71,13 @@ def _named(raw: Any) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _get(row: Any, key: str) -> Any:
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
 def _line(row: Any) -> str:
     """People as a range: a row from before rules_version 2 is re-rendered, never stored bare."""
     from orion.vision.walkway_rollup import display_line
@@ -88,6 +101,7 @@ def link_recent_days(*, engine: Any, store: Any, streams: tuple[str, ...], lookb
     )
     from orion.substrate.materializer import SubstrateGraphMaterializer
     from orion.substrate.reconcile import SubstrateIdentityResolver
+    from orion.vision.walkway_rollup import belonging_name
 
     ts = now or datetime.now(timezone.utc)
     out: list[dict[str, Any]] = []
@@ -98,7 +112,9 @@ def link_recent_days(*, engine: Any, store: Any, streams: tuple[str, ...], lookb
             day = date.fromisoformat(str(row["label"]))
             key = (row["stream_id"], day)
             seen: list[tuple[str, str, Optional[str]]] = []
-            named = _named(row["named"])
+            named = dict(_named(row["named"]))
+            for owner, entry in _named(_get(row, "belongings")).items():
+                named.setdefault(belonging_name(owner, entry or {}), entry)
             sighted = sorted({i for e in named.values() for i in ((e or {}).get("individual_ids") or [])})
             sources: dict[str, set[str]] = {}
             if sighted:

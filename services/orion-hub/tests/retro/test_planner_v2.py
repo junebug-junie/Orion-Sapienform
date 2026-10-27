@@ -259,7 +259,7 @@ def _state(**cognition):
 
 def test_route_shed_returns_reason_and_retry_and_posts_no_goal(tmp_path, monkeypatch, planner):
     posted = []
-    async def shed(config, prompt, *, max_tokens): return SHED, 'c'
+    async def shed(config, prompt, *, max_tokens, route=None): return SHED, 'c'
     monkeypatch.setattr(planner, '_gateway_chat', shed)
     with TestClient(_app(tmp_path, monkeypatch, _state(), posted)) as c:
         r = c.post(PATH, json=BODY, headers=H)
@@ -270,7 +270,9 @@ def test_route_shed_returns_reason_and_retry_and_posts_no_goal(tmp_path, monkeyp
 
 def test_route_posts_goal_v2_with_browser_sponsor_and_marks_human(tmp_path, monkeypatch, planner):
     posted = []; store = FakeStore()
-    async def good(config, prompt, *, max_tokens): return dict(content=json.dumps(GOOD)), 'c9'
+    async def good(config, prompt, *, max_tokens, route=None):
+        assert route == planner.COPLAY_ROUTE     # a watched co-play decision is a live turn
+        return dict(content=json.dumps(GOOD)), 'c9'
     monkeypatch.setattr(planner, '_gateway_chat', good)
     with TestClient(_app(tmp_path, monkeypatch, _state(), posted, store=store)) as c:
         r = c.post(PATH, json=BODY, headers=H)
@@ -283,7 +285,7 @@ def test_route_posts_goal_v2_with_browser_sponsor_and_marks_human(tmp_path, monk
 
 def test_route_rejection_and_unknown_observation_post_nothing(tmp_path, monkeypatch, planner):
     posted = []
-    async def junk(config, prompt, *, max_tokens): return dict(content='{"goal":"walk_right"}'), 'c'
+    async def junk(config, prompt, *, max_tokens, route=None): return dict(content='{"goal":"walk_right"}'), 'c'
     monkeypatch.setattr(planner, '_gateway_chat', junk)
     with TestClient(_app(tmp_path, monkeypatch, _state(), posted)) as c:
         assert c.post(PATH, json=BODY, headers=H).status_code == 422
@@ -561,3 +563,59 @@ def test_a_stray_value_on_a_non_room_prediction_is_dropped_not_refused(planner):
         asyncio.run(planner.plan_zelda(None, decision(), ATLAS, [], chat=reply(dict(content=json.dumps(room)))))
     assert exc.value.reason == 'planner_prediction_value_mismatch'
     assert 'reach_room needs "value"' in planner.refusal_note(exc.value)
+
+
+MENU = [{'rank': 1, 'goal': {'kind': 'exit', 'dir': 'W'}, 'line': '1. exit W -> room 118 (never visited).',
+         'prediction': {'kind': 'reach_room', 'value': 118}, 'budget_seconds': 15},
+        {'rank': 2, 'goal': {'kind': 'fight', 'target': 'nearest'}, 'line': '2. fight the nearest enemy.',
+         'prediction': {'kind': 'enemies_cleared'}, 'budget_seconds': 20}]
+
+
+def test_a_menu_pick_by_number_is_short_and_uses_the_options_plan(planner):
+    # 2026-10-24: decoding ~180 reply tokens was ~90 % of the planner's time; a number + one sentence
+    # is ~30 tokens. The option carries goal, prediction and budget.
+    seen = []
+    async def chat(config, prompt, *, max_tokens):
+        seen.append(max_tokens)
+        return dict(content=json.dumps({'option': 2, 'why': 'enemy close'})), 'c1'
+    goal = asyncio.run(planner.plan_zelda(None, decision(), ATLAS, [], chat=chat, menu=MENU))
+    assert goal['goal'] == {'kind': 'fight', 'target': 'nearest'} and goal['budget_seconds'] == 20
+    assert goal['prediction'] == {'kind': 'enemies_cleared', 'value': None} and goal['rationale'] == 'enemy close'
+    assert goal['chosen_rank'] == 2 and seen == [planner.MENU_MAX_TOKENS]
+    full = []
+    async def chat_full(config, prompt, *, max_tokens):
+        full.append(max_tokens); return dict(content=json.dumps(GOOD)), 'c2'
+    asyncio.run(planner.plan_zelda(None, decision(), ATLAS, [], chat=chat_full))
+    assert full == [planner.FULL_MAX_TOKENS]
+
+
+def test_an_unknown_option_number_is_refused_with_a_plain_retry_note(planner):
+    chat = reply(lambda n: dict(content=json.dumps({'option': 9, 'why': 'x'} if n == 1 else {'option': 1, 'why': 'west'})))
+    goal = asyncio.run(planner.plan_zelda(None, decision(), ATLAS, [], chat=chat, menu=MENU))
+    assert goal['goal'] == {'kind': 'exit', 'dir': 'W'} and len(chat.calls) == 2
+    assert 'option 9: pick a number from the scored options list' in chat.calls[1]
+
+
+def test_the_prompt_starts_with_the_same_fixed_block_every_decision(planner):
+    # llama.cpp reuses a cached prompt prefix: everything fixed comes before any game state.
+    a = planner.build_zelda_prompt(decision(), ATLAS, [], MENU).split('\n')
+    other = decision(previous=dict(goal={'kind': 'wait'}, outcome='completed'), decision_id='3:9')
+    b = planner.build_zelda_prompt(other, None, HISTORY, MENU).split('\n')
+    fixed = a.index('--- Current game state ---')
+    assert fixed >= len(planner.STATIC_RULES) and a[:fixed + 1] == b[:fixed + 1]
+    assert not any('Why a decision now' in line for line in a[:fixed])
+
+
+def test_option_picks_tolerate_loose_types_and_the_retry_gets_full_room(planner):
+    seen = []
+    async def chat(config, prompt, *, max_tokens):
+        seen.append(max_tokens)
+        if len(seen) == 1:
+            return dict(content=json.dumps({'option': 'zero'})), 'c1'       # refused -> retry
+        return dict(content=json.dumps({'option': '1', 'why': 'west', 'budget_seconds': None})), 'c2'
+    goal = asyncio.run(planner.plan_zelda(None, decision(), ATLAS, [], chat=chat, menu=MENU))
+    assert goal['goal'] == {'kind': 'exit', 'dir': 'W'} and goal['budget_seconds'] == 15
+    assert seen == [planner.MENU_MAX_TOKENS, planner.FULL_MAX_TOKENS]
+    both = planner.choice_from_option({'option': 2, 'goal': GOOD['goal'], 'prediction': GOOD['prediction'],
+                                       'rationale': 'r', 'budget_seconds': 9}, MENU)
+    assert 'option' not in both and both['goal'] == GOOD['goal']

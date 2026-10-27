@@ -26,12 +26,18 @@ endpoint. A cluster normally gets its node when the interlocutor names it
 (app/ask_answered_listener.py, from the bus). That event is not replayed: 7 linked clusters
 named 10-15..10-21 never got a node (the listener was not hearing at the time). So a linked
 cluster with no node gets one here, built from its ``vision_individual`` row with the same
-adapter the listener uses. An existing cluster node is never touched, and a cluster whose
+adapter the listener uses. An existing cluster node whose name differs from the typed
+name (a rename the listener also missed, or one written straight to Postgres) is renamed
+the way the listener renames (old name kept as an alias), but only when the row's
+``labeled_at`` is at least as new as the node: the listener writes a rename from the bus
+before orion-sql-writer applies it to Postgres, and a pass in that gap must not undo it.
+A hand-edited label therefore needs ``labeled_at`` bumped too (the typed-name path does).
+A cluster whose
 name was copied along a "same person" group (``label_copied``) never gets one: the
 interlocutor did not name it, and walkway_seen_loop.py relies on copied clusters having none.
 
 Trace: ``person_graph synced persons=... nodes_written=... nodes_retired=... clusters_written=... claims=...
-retired=... waiting=... replayed=... stuck=... applied=... held=... failed=...``. Fail-open: an error is logged; the loop keeps going.
+clusters_relabelled=... retired=... waiting=... replayed=... stuck=... applied=... held=... failed=...``. Fail-open: an error is logged; the loop keeps going.
 Kill switch: PERSON_GRAPH_ENABLED=false.
 """
 
@@ -55,7 +61,7 @@ _NAMESPACE = uuid.UUID("2d8f5f0e-7c4b-5a39-9e61-4b3a8c1d7e25")
 PERSONS_SQL = "SELECT person_id, display_name, status, created_at FROM person"
 LINKS_SQL = (
     "SELECT l.link_id, l.person_id, l.source_ref, l.evidence_ref, l.decided_by, "
-    "v.label, v.kind, v.label_ask_id, v.stream_id, v.label_copied, o.answered_at "
+    "v.label, v.kind, v.label_ask_id, v.stream_id, v.label_copied, o.answered_at, v.labeled_at "
     "FROM person_link l LEFT JOIN vision_individual v ON v.individual_id = l.source_ref "
     "LEFT JOIN orion_ask o ON o.ask_id = v.label_ask_id "
     "WHERE l.source_kind = 'vision_individual' AND l.revoked_at IS NULL"
@@ -84,6 +90,7 @@ class LinkRow:
     stream_id: Optional[str] = None
     answered_at: Optional[datetime] = None
     label_copied: bool = False
+    labeled_at: Optional[datetime] = None
 
 
 @dataclass
@@ -92,6 +99,7 @@ class SyncReport:
     nodes_written: int = 0
     nodes_retired: int = 0
     clusters_written: int = 0
+    clusters_relabelled: int = 0
     claims: int = 0
     retired: int = 0
     waiting: int = 0
@@ -213,7 +221,7 @@ async def sync_person_graph(*, persons: list[PersonRow], links: list[LinkRow], j
             report.nodes_written += 1
         else:
             report.nodes_retired += 1
-    report.clusters_written = await _ensure_cluster_nodes(persons, links, store=store, materializer=materializer,
+    report.clusters_written, report.clusters_relabelled = await _ensure_cluster_nodes(persons, links, store=store, materializer=materializer,
                                                          now=ts)
     latest = await journal.latest_decisions(PRODUCER)
     events, report.claims, report.retired, report.waiting = plan_events(
@@ -226,35 +234,59 @@ async def sync_person_graph(*, persons: list[PersonRow], links: list[LinkRow], j
     report.applied, report.held, report.failed = len(result.applied), len(result.waiting), dict(result.failed)
     if result.blocked is not None:
         report.failed["readers_not_ready"] = result.blocked.reason
-    logger.info("person_graph synced persons=%d nodes_written=%d nodes_retired=%d clusters_written=%d claims=%d "
-                "retired=%d waiting=%d replayed=%d stuck=%d applied=%d held=%d failed=%s",
+    logger.info("person_graph synced persons=%d nodes_written=%d nodes_retired=%d clusters_written=%d "
+                "clusters_relabelled=%d claims=%d retired=%d waiting=%d replayed=%d stuck=%d applied=%d held=%d "
+                "failed=%s",
                 report.persons, report.nodes_written, report.nodes_retired, report.clusters_written,
+                report.clusters_relabelled,
                 report.claims, report.retired,
                 report.waiting, report.replayed, report.stuck, report.applied, report.held, report.failed)
     return report
 
 
 async def _ensure_cluster_nodes(persons: list[PersonRow], links: list[LinkRow], *, store: Any, materializer: Any,
-                                now: datetime) -> int:
+                                now: datetime) -> tuple[int, int]:
     """A linked cluster of a live person with no node gets the node the ask listener would have
-    written. Returns how many were written."""
+    written; one whose node carries a stale name is renamed. Returns (written, relabelled)."""
+    from orion.core.schemas.cognitive_substrate import EntityNodeV1
     from orion.substrate.adapters.vision_individual import (
         entity_node_id_for_individual,
         map_vision_individual_label_to_substrate,
+        relabelled_individual_entity,
     )
+    from orion.substrate.falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
+    from orion.substrate.reconcile import SubstrateIdentityResolver
 
     live = {p.person_id for p in persons if p.status != "not_a_person"}
-    written = 0
+    written = relabelled = 0
     for link in links:
         if link.person_id not in live or link.label_copied or not link.label.strip():
             continue
-        if await asyncio.to_thread(store.get_node_by_id, entity_node_id_for_individual(link.individual_id)):
-            continue
+        existing = await asyncio.to_thread(store.get_node_by_id, entity_node_id_for_individual(link.individual_id))
         record = map_vision_individual_label_to_substrate(
             individual_id=link.individual_id, label=link.label, kind=link.kind,
             ask_id=link.label_ask_id or link.evidence_ref or f"person_link:{link.link_id}",
             answered_at=link.answered_at or now, stream_id=link.stream_id)
         if record is None:
+            continue
+        if existing is not None:
+            node = record.nodes[0]
+            if not isinstance(existing, EntityNodeV1) or existing.label == node.label:
+                continue
+            if link.labeled_at is None or existing.temporal.observed_at > link.labeled_at:
+                continue  # the node is newer than Postgres: a rename the writer has not applied yet
+            updated = relabelled_individual_entity(existing, node)
+            try:
+                await asyncio.to_thread(store.upsert_node,
+                                        identity_key=SubstrateIdentityResolver().canonical_node_key(updated),
+                                        node=updated, skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS)
+            except Exception as exc:  # noqa: BLE001 -- one cluster must not stop every claim this pass
+                logger.warning("person_graph cluster_relabel_failed individual=%s err=%s", link.individual_id,
+                               type(exc).__name__)
+                continue
+            logger.info("person_graph cluster_relabelled individual=%s old=%r new=%r", link.individual_id,
+                        existing.label, node.label)
+            relabelled += 1
             continue
         try:
             await asyncio.to_thread(materializer.apply_record, record)
@@ -263,7 +295,7 @@ async def _ensure_cluster_nodes(persons: list[PersonRow], links: list[LinkRow], 
                            type(exc).__name__)
             continue
         written += 1
-    return written
+    return written, relabelled
 
 
 async def _recover(latest: dict[str, Any], *, journal: Any, store: Any, projector: Any, report: SyncReport) -> None:
@@ -294,7 +326,7 @@ async def read_rows(pool: Any) -> tuple[list[PersonRow], list[LinkRow]]:
                    for r in await conn.fetch(PERSONS_SQL)]
         links = [LinkRow(r["link_id"], r["person_id"], r["source_ref"], r["evidence_ref"], r["decided_by"],
                          r["label"] or "", r["kind"], r["label_ask_id"], r["stream_id"], r["answered_at"],
-                         bool(r["label_copied"]))
+                         bool(r["label_copied"]), r["labeled_at"])
                  for r in await conn.fetch(LINKS_SQL)]
     return persons, links
 

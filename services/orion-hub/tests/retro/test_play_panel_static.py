@@ -8,7 +8,7 @@ HUB = Path(__file__).resolve().parents[2]
 def test_template_has_play_panel_and_current_asset():
     html = (HUB / 'templates/retro.html').read_text()
     for marker in ('id="play"', 'id="atlas"', 'id="leisure"', 'id="zgoal"', 'id="zprediction"',
-                   'id="verdicts"', 'id="takeover"', '/static/js/retro-panel.js?v=9'):
+                   'id="verdicts"', 'id="takeover"', '/static/js/retro-panel.js?v=10'):
         assert marker in html, marker
 
 
@@ -29,3 +29,10 @@ def test_blur_keeps_a_handoff_but_a_hidden_tab_ends_it():
     assert "if(document.hidden){away=true;neutral();}" in js   # nobody can watch a hidden tab
     # Once the handed-off grant is gone, the page leaves handoff mode.
     assert '!mine || mine.epoch!==handoffGrant.epoch' in js
+
+
+def test_policy_poll_is_fast_while_orion_holds_the_controller():
+    # 2026-10-24: a 1 s poll added up to 1 s to every decision while Link stood still.
+    js = (HUB / 'static/js/retro-panel.js').read_text()
+    assert "if(!(scriptedMode && cognitivePort!==null) && now-lastPolicyPoll<1000)return;" in js
+    assert "finally{pollingPolicy=false;}},250);" in js

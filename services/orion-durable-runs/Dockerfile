@@ -23,6 +23,8 @@ COPY config/field /app/config/field
 COPY config/gpu_pool.yaml /app/config/gpu_pool.yaml
 # Body economy Patch B2: heat sensitivities as data (written by fit_heat_sensitivity.py --write-config).
 COPY config/physiology/heat_sensitivity.yaml /app/config/physiology/heat_sensitivity.yaml
+# Body economy Patch C1: want families (tier, prior weight, deferrable window, lanes) for /physiology/bid.
+COPY config/physiology/families.yaml /app/config/physiology/families.yaml
 COPY services/orion-durable-runs /app
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8121"]

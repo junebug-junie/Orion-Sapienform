@@ -71,7 +71,7 @@ class PhysiologyPriceV1(BaseModel):
 
 class PhysiologyStrainV1(BaseModel):
     """Organ 5 Felt state, the ``strain`` dial (Patch B2, SHADOW): the largest price / its ceiling
-    over constraints that are live (not exogenous_bind, not no_reading), and which one it is.
+    over constraints that are live (not exogenous_bind, not no_reading, not self-spent), and which one it is.
     A monotonic rendering of the prices, not new signal. ``value`` None: no constraint priced live."""
 
     model_config = ConfigDict(extra="forbid")
@@ -80,6 +80,11 @@ class PhysiologyStrainV1(BaseModel):
     constraint: Optional[str] = None
     # Out of Orion's hands (anti-windup clamp), listed apart and NOT in the dial.
     exogenous_bind: List[str] = Field(default_factory=list)
+    # Patch C1: constraints whose use is Orion spending its OWN budget (attention:juniper: the
+    # sends are Orion's own outreach against Juniper's cap). Strain is the world pushing back, so
+    # these are listed apart and NOT in the dial; their price still charges wants (Appetite /
+    # Choice). Consumer-first: sql-writer must run code with this field before durable-runs emits it.
+    self_spent: List[str] = Field(default_factory=list)
     stuck: List[str] = Field(default_factory=list)
     no_reading: List[str] = Field(default_factory=list)
     why: str = ""

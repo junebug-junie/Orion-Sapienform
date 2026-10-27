@@ -178,11 +178,47 @@ def test_lane_prices_lease_demand_not_the_waiting_backlog():
     assert by["lane:agent"].price.bind_state == "binding" and by["lane:agent"].price.value > 0
 
 
-def test_lane_with_no_live_slot_still_holding_is_exogenous():
-    r = R(constraint="lane:diffusion", unit="slot_s", level=546.5, budget=0.0, budget_kind="capacity",
-          detail={"lease_s": 546.5, "slots": 0, "window_sec": 3600.0, "held_without_live_slot": True})
-    by, _, _ = run([r])
-    assert by["lane:diffusion"].price.bind_state == "exogenous_bind"
+def test_swapped_out_seat_that_served_its_leases_while_loaded_is_slack_and_decays():
+    """Patch C1 fix (b). Live 10-27 05:42: lane:diffusion at exogenous_bind 0.095 from a painting
+    that ran 04:31 while the seat was loaded; gpu2 was swapped back to agent-gpu2 since, so the
+    pool read 0 slots. That is Orion's own finished work, not the world pushing back: no price
+    rise, no strain, and an old price decays."""
+    r = R(constraint="lane:diffusion", unit="slot_s", level=54.7, budget=0.0, budget_kind="capacity",
+          detail={"lease_s": 54.7, "slots": 0, "window_sec": 3600.0, "served_while_loaded": True})
+    carry = {"lane:diffusion": {"price": 0.095254, "bind": True, "ceiling_since": None,
+                                "at": (NOW - timedelta(seconds=120)).isoformat()}}
+    by, out, _ = run([r], carry=carry)
+    p = by["lane:diffusion"].price
+    assert p.bind_state == "slack" and p.value < 0.095254 and "ran while it was loaded" in p.why
+    # The old (buggy) price only decays: the dial never rises from it.
+    assert out.strain.exogenous_bind == [] and out.strain.value <= 0.095254
+    carry2 = {"lane:diffusion": {"price": 0.0, "bind": False, "ceiling_since": None,
+                                 "at": (NOW - timedelta(seconds=120)).isoformat()}}
+    by, out, _ = run([r], carry=carry2)
+    assert by["lane:diffusion"].price.value == 0.0 and out.strain.value == 0.0
+
+
+def test_open_lease_on_a_zero_slot_seat_is_no_reading_never_strain():
+    r = R(constraint="lane:diffusion", unit="slot_s", level=300.0, budget=0.0, budget_kind="capacity",
+          detail={"lease_s": 300.0, "slots": 0, "window_sec": 3600.0, "held_without_live_slot": True})
+    by, out, _ = run([r])
+    p = by["lane:diffusion"].price
+    assert p.bind_state == "no_reading" and p.value == 0.0
+    assert out.strain.no_reading == ["lane:diffusion"] and out.strain.exogenous_bind == []
+
+
+def test_juniper_cap_filled_by_orions_own_outreach_is_self_spent_not_strain():
+    """Patch C1 fix (a). Live 10-27 05:42: strain named attention:juniper (4 of 4 sends, all Orion's
+    own outreach). Orion spending its own budget is not the world pushing back: the price stays
+    (Choice charges it), the dial skips it and lists it apart."""
+    r = R(constraint="attention:juniper", unit="messages", level=4.0, budget=4.0, budget_kind="daily_cap")
+    late = datetime(2026, 10, 27, 5, 42, tzinfo=timezone.utc)           # 23:42 MDT
+    carry = {"attention:juniper": {"price": 0.3, "bind": False, "ceiling_since": None,
+                                   "at": (late - timedelta(seconds=120)).isoformat()}}
+    by, out, _ = run([r, lane("agent", held=600.0, lease=600.0, slots=1)], carry=carry, now=late)
+    assert by["attention:juniper"].price.value > 0.0
+    assert out.strain.self_spent == ["attention:juniper"]
+    assert out.strain.constraint is None and out.strain.value == 0.0 and "my own spending" in out.strain.why
 
 
 def test_juniper_day_end_pace_over_the_cap_binds():

@@ -54,6 +54,7 @@ from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.drive_reading import DriveReadingV1
 from orion.schemas.regulation import RegulationStateV1
 from orion.schemas.physiology import PhysiologyStateV1
+from orion.schemas.physiology_want import WantDecisionV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.repair_pressure_appraisal import RepairPressureAppraisalV1
@@ -1569,6 +1570,47 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "reflex -- a mirror in a different unit, not a new signal. Known overcount: "
             "lane slot-seconds count a durable-run hold and its child calls (which run in "
             "the hold's slot) separately, because gpu_pool_events carry no hold_lease_id."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="physiology.want.decision.v1",
+        schema=WantDecisionV1,
+        producer_service="orion-durable-runs",
+        cadence=Cadence.EVENT_GATED,
+        composition_status=CompositionStatus.REHEARSAL,
+        cognition_consumers=(),
+        semantics=(
+            # orion/physiology/choice.py decide(): one decision per POST /physiology/bid (want ->
+            # funded/deferred). net = family_weight x value_rank - sum(price x cost_frac).
+            (
+                "",
+                MetricSemantics(
+                    value_kind="bucket",
+                    rest=(
+                        "With every price at 0 a want's net is family_weight x value_rank >= 0, "
+                        "so a want with any hunger is funded (reason net_positive). intensity "
+                        "rests at 0 right after the family's act closes (the discharge resets it)."
+                    ),
+                    sparsity="event_gated",
+                    absent_means=(
+                        "No bid was made (Patch C1 wires no producer: rows come only from "
+                        "explicit POST /physiology/bid calls). A decision with reason "
+                        "physiology_unavailable means the body state or act history was "
+                        "unread: unknown, never a fund."
+                    ),
+                ),
+            ),
+        ),
+        notes=(
+            "Body economy Patch C1 (Organ 3 Appetite + Organ 4 Choice), SHADOW: nobody obeys "
+            "the decision. Transport: bus orion:physiology:want:decision -> sql-writer "
+            "want_ledger. Inputs are NOT new signal: the prices are physiology.state.v1's "
+            "(a rendering of the Body readings), intensity is a transform of grammar_acts "
+            "close times, value_rank a within-family percentile of the same acts' outcomes, "
+            "family_weight a shrinkage of act_downstream_use and Juniper-reply rates. "
+            "Personality endorsement (source c) is excluded until it is independent of (a). "
+            "Heat, energy and claude are listed unpriced per decision: per-act watt-hours and "
+            "limit events are not measured yet."
         ),
     ),
 )

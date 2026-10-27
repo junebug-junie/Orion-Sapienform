@@ -46,6 +46,7 @@ _reconcile_task: asyncio.Task | None = None
 situation: Any = None
 temporal_self: Any = None
 claude_limits: Any = None   # app.physiology_store.ClaudeLimitCache while the physiology node runs
+market: Any = None          # app.physiology_market.Market while ORION_PHYSIOLOGY_BID_ENABLED (Patch C1)
 chronicle: Any = None
 personality: Any = None
 rpc_health_publisher: RpcHealthPublisher | None = None
@@ -428,6 +429,34 @@ def _build_physiology():
     return read_body, project_physiology, cfg, price_body
 
 
+def _build_market():
+    """Body economy Patch C1 (SHADOW): the bid market. History reads on the checkpointer's pool; the
+    latest prices from Redis orion:physiology:latest; decisions published on the long-lived rpc_bus."""
+    from uuid import uuid4
+
+    from app.physiology_market import Market
+    from orion.physiology.families import load_families
+    from orion.schemas.physiology_want import WANT_DECISION_KIND
+
+    s = _settings
+    families, err = load_families(s.physiology_families_path)
+    if err:
+        logger.warning("physiology_families_unavailable reason=%s", err)
+    source = ServiceRef(name=s.service_name, version=s.service_version, node=s.node_name)
+
+    async def publish(decision) -> None:
+        if rpc_bus is None:
+            raise RuntimeError("no bus")
+        await rpc_bus.publish(s.physiology_want_decision_channel, BaseEnvelope(
+            kind=WANT_DECISION_KIND, source=source, correlation_id=uuid4(),
+            payload=decision.model_dump(mode="json")))
+
+    return Market(families=families, families_error=err, pool_getter=lambda: _checkpointer_cm,
+                  redis_getter=lambda: rpc_bus.redis if rpc_bus is not None else None, publish=publish,
+                  history_ttl_sec=s.physiology_bid_history_ttl_sec, lane_window_sec=s.physiology_lane_window_sec,
+                  stale_after_sec=s.physiology_bid_stale_after_sec)
+
+
 def _build_chronicle():
     """Temporal Self patch 3: the chronology reducer, live, on the checkpointer's pool."""
     from datetime import datetime, timezone
@@ -475,7 +504,7 @@ def _build_personality():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task, _reconcile_task
-    global rpc_health_publisher, situation, temporal_self, personality
+    global rpc_health_publisher, situation, temporal_self, personality, market
     from app.runner import DurableRunner
 
     try:
@@ -517,6 +546,8 @@ async def lifespan(app: FastAPI):
         if _settings.personality_enabled:
             personality = _build_personality()
             await personality.start(_stop)
+        if _settings.physiology_bid_enabled:
+            market = _build_market()
         if admission is not None:
             _admission_task = asyncio.create_task(admission.run(_stop))
             if _settings.memory_episode_writer_enabled:
@@ -599,6 +630,7 @@ async def health() -> dict[str, Any]:
         "temporal_self": temporal_self.health() if temporal_self is not None else None,
         "temporal_self_chronicle": chronicle.health() if chronicle is not None else None,
         "personality": personality.health() if personality is not None else None,
+        "physiology_market": market.health() if market is not None else None,
     }
 
 
@@ -624,6 +656,45 @@ async def physiology_state() -> dict:
     return {"ok": True, "shadow": True, "age_sec": round(age, 1), "strain": state.strain.model_dump(mode="json") if state.strain else None,
             "prices": {c.constraint: (c.price.model_dump(mode="json") if c.price else None) for c in state.constraints},
             "state": state.model_dump(mode="json")}
+
+
+@app.post("/physiology/bid")
+async def physiology_bid(want: dict):
+    """Body economy Patch C1, SHADOW: one ``WantV1`` -> one ``WantDecisionV1`` (funded/deferred, lane,
+    prices seen, net, binding constraint, displaced, retry_after, ``shadow=true``), priced against the
+    latest physiology state and published to ``orion:physiology:want:decision`` (want_ledger). Callers
+    must not obey it yet. A missing or stale body is ``physiology_unavailable`` -- never funded."""
+    from pydantic import ValidationError
+
+    from orion.schemas.physiology_want import WantV1
+
+    if market is None:
+        raise HTTPException(503, "the bid market is disabled (ORION_PHYSIOLOGY_BID_ENABLED)")
+    try:
+        parsed = WantV1.model_validate(want)
+    except ValidationError as exc:
+        raise HTTPException(422, exc.errors(include_url=False, include_context=False)) from exc
+    decision = await market.bid(parsed)
+    return decision.model_dump(mode="json")
+
+
+@app.post("/physiology/bid/{want_id}/release")
+async def physiology_bid_release(want_id: str):
+    """The want's act closed (or will not run): release its reservations now instead of at expiry."""
+    if market is None:
+        raise HTTPException(503, "the bid market is disabled (ORION_PHYSIOLOGY_BID_ENABLED)")
+    return {"want_id": want_id, "released": market.release(want_id)}
+
+
+@app.get("/physiology/reservations")
+async def physiology_reservations():
+    """Read-only debug: the reservation book (funded shadow bids still holding cost)."""
+    from datetime import datetime, timezone
+
+    if market is None:
+        raise HTTPException(503, "the bid market is disabled (ORION_PHYSIOLOGY_BID_ENABLED)")
+    now = datetime.now(timezone.utc)
+    return {"shadow": True, "reservations": market.book.snapshot(now), "market": market.health(now)}
 
 
 @app.get("/regulation/state")

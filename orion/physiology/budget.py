@@ -245,8 +245,20 @@ def lane_ask(reading: PhysiologyConstraintReadingV1, now: datetime, cfg: BudgetC
     hunger = d.get("deferrable_queued")
     tail = f"; {hunger} deferrable waiting (hunger, not priced)" if isinstance(hunger, int) and hunger else ""
     if reading.budget <= 0.0:
-        bind = use > 0.0
-        return _Ask(use, 0.0, bind, f"seat has no live slot{'; a lease still holds it' if bind else ''}{tail}")
+        # A seat with 0 live slots right now (Patch C1 fix: this used to read "a lease still holds
+        # it" and clamp as exogenous_bind whenever the trailing hour had any use, which put a
+        # swapped-out diffusion seat's own paintings into the price as if the world pushed back).
+        if d.get("held_without_live_slot"):
+            # A lease is open on a seat the pool says has no slot: the two pool facts disagree, so
+            # the seat's capacity is unknown. Unknown is no_reading (price held), never strain.
+            return _Ask(None, None, None, f"a lease is open on a seat with 0 live slots (pool state and leases disagree){tail}",
+                        no_reading="capacity_inconsistent:open_lease_on_unloaded_seat")
+        served = (f"; its {use:.0f} lease-s this window ran while it was loaded (swap seat, unloaded since)"
+                  if use > 0.0 else "")
+        # Nothing waits on a live slot here and Orion's own use already ran: slack, the price
+        # decays. The swap cost (evicting the seat that took the card) is placement's, not this
+        # lane's price (design Patch E).
+        return _Ask(0.0, 0.0, False, f"seat has no live slot now{served}{tail}")
     lent = d.get("lent_overlap_s")
     lent_s = f", {float(lent):.0f} s of it lent into idle holds" if isinstance(lent, (int, float)) and lent else ""
     why = f"{use:.0f} lease-s asked of {int(d.get('slots') or 0)} slot(s) in {window_min:.0f} min{lent_s}{tail}"
@@ -334,17 +346,29 @@ def price_constraint(reading: PhysiologyConstraintReadingV1, ask: _Ask, prev: Ma
     return price, carry
 
 
+# Constraints whose use is Orion spending its OWN budget, not the world pushing back (Patch C1).
+# attention:juniper: the level is Orion's own cap-counted outreach against Juniper's daily cap;
+# nothing but Orion's own choice draws on it, so a full cap is a budget fact (Appetite / Choice
+# still pay its price), never strain. Heat, energy, lanes and claude are not here: the room, the
+# always-on floor, Juniper's turns, perception and Claude's own clock all draw on them too.
+SELF_SPENT_CONSTRAINTS = frozenset({ATTENTION_JUNIPER})
+
+
 def strain_dial(constraints: list[PhysiologyConstraintReadingV1]) -> PhysiologyStrainV1:
-    """Organ 5: the largest live price / its ceiling, and which constraint. exogenous_bind and
-    no_reading constraints are listed apart and do not move the dial. A pure function of the
-    stored prices, so it can be recomputed from any physiology_state row."""
-    exo, stuck, none_ = [], [], []
+    """Organ 5: the largest live price / its ceiling, and which constraint. exogenous_bind,
+    no_reading and self-spent constraints are listed apart and do not move the dial. A pure
+    function of the stored prices, so it can be recomputed from any physiology_state row."""
+    exo, stuck, none_, self_ = [], [], [], []
     best: Optional[tuple[float, str, PhysiologyPriceV1]] = None
     for c in constraints:
         p = c.price
         if p is None:
             if c.no_reading is not None:
                 none_.append(c.constraint)   # e.g. the bare "lane" placeholder: unknown, never calm
+            continue
+        if c.constraint in SELF_SPENT_CONSTRAINTS:
+            # Strain is the world pushing back; Orion filling its own budget is hunger's business.
+            self_.append(c.constraint)
             continue
         if p.bind_state == "exogenous_bind":
             exo.append(c.constraint)
@@ -359,14 +383,16 @@ def strain_dial(constraints: list[PhysiologyConstraintReadingV1]) -> PhysiologyS
             best = (ratio, c.constraint, p)
     if best is None:
         return PhysiologyStrainV1(value=None, constraint=None, exogenous_bind=exo, stuck=stuck, no_reading=none_,
-                                  why="no constraint priced live")
+                                  self_spent=self_, why="no constraint priced live")
     ratio, name, p = best
     why = (f"strain {ratio:.2f}: {name} at {p.value:.3f} of a {p.ceiling_source} ceiling {p.ceiling:g} ({p.bind_state})"
            if ratio > 0 else "strain 0: every live constraint is slack")
     if exo:
         why += f"; out of my hands: {', '.join(exo)}"
+    if self_:
+        why += f"; my own spending, not strain: {', '.join(self_)}"
     return PhysiologyStrainV1(value=round(ratio, 6), constraint=name if ratio > 0 else None, exogenous_bind=exo,
-                              stuck=stuck, no_reading=none_, why=why)
+                              stuck=stuck, no_reading=none_, self_spent=self_, why=why)
 
 
 def price_state(state: PhysiologyStateV1, body: BodyInputs, carry: Optional[Mapping[str, Any]], now: datetime,
@@ -411,6 +437,7 @@ __all__ = [
     "BudgetConfig",
     "DEFAULT_SPECS",
     "PriceSpec",
+    "SELF_SPENT_CONSTRAINTS",
     "energy_ask",
     "heat_ask",
     "juniper_ask",

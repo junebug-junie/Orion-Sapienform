@@ -48,7 +48,7 @@ from scripts.retro_session_end import RetroSessionEnded, atlas_session_fields, h
 logger = logging.getLogger('orion-hub.retro.leisure')
 
 RECHECK_SEC = 30.0
-POLL_SEC = 1.0
+POLL_SEC = 0.25   # a finished goal is noticed within 0.25 s (Link stands still until the next one)
 HUMAN_QUIET_SEC = 600.0
 MAX_CONSECUTIVE_SHEDS = 3
 MAX_CONSECUTIVE_FAILURES = 3

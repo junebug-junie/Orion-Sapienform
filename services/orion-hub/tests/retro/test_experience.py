@@ -446,7 +446,7 @@ def _route_app(tmp_path, monkeypatch, goal_status, posted, exp):
 @pytest.mark.parametrize('goal_status', [200, 409])
 def test_route_places_only_after_retro_accepts_and_strips_chosen_rank(tmp_path, monkeypatch, planner, goal_status):
     from fastapi.testclient import TestClient
-    async def chat(config, prompt, *, max_tokens):
+    async def chat(config, prompt, *, max_tokens, route=None):
         assert 'Choose one of these unless the facts above show it cannot work.' in prompt
         return {'content': json.dumps(dict(goal={'kind': 'exit', 'dir': 'W'}, prediction={'kind': 'reach_room', 'value': 118},
                                            rationale='west is new', budget_seconds=12))}, 'c9'
@@ -703,3 +703,15 @@ def test_each_handoff_card_counts_only_its_own_bets():
     assert [b['place'] for b in bets_since({'bets': old + new}, since)] == [b['place'] for b in new]
     assert 'worked 0 of 3 times.' in learned_lines_from(bets_since(old + new, since), {})[0]
     assert bets_since(old, None) == old
+
+
+def test_menu_entries_carry_the_plan_a_number_pick_uses():
+    d, atlas = live_decision()
+    opts = {o.option_id: o for o in X.build_options(d, atlas)}
+    assert opts['exit:W'].default_plan == ({'kind': 'reach_room', 'value': 118}, 15)   # the room on that side
+    assert opts['wait'].default_plan == ({'kind': 'survive'}, 5)
+    q = X.ActionBetQuoteV1(option_id='x', model='m', p=0.5, p_baseline=0.5, interval80=(0.1, 0.9), eig_nats=0.1,
+                           level='prior', counts=[dict(level='skill', successes=0, failures=0)])
+    menu = X.build_menu(list(opts.values()), {o: q.model_copy(update={'option_id': o}) for o in opts})
+    entry = next(m for m in menu.for_planner() if m['goal'] == {'kind': 'exit', 'dir': 'W'})
+    assert entry['prediction'] == {'kind': 'reach_room', 'value': 118} and entry['budget_seconds'] == 15

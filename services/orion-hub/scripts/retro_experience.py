@@ -53,6 +53,11 @@ SKILL_WORDS = {'traverse': 'moving', 'engage': 'fighting', 'withdraw': 'retreati
 VALUE = {'new_room': 1.0, 'visited_room': 0.3, 'drop': 0.7, 'fight': 0.6,
          'withdraw_hurt': 0.4, 'withdraw': 0.1, 'cave': 0.5, 'hold': 0.05}
 
+# Prediction and budget for a menu pick by number (traverse is computed from the side's room).
+DEFAULT_PLANS = {'engage': ({'kind': 'enemies_cleared'}, 20), 'acquire': ({'kind': 'item_gained'}, 10),
+                 'enter': ({'kind': 'enter_cave'}, 10), 'withdraw': ({'kind': 'survive'}, 8),
+                 'hold': ({'kind': 'survive'}, 5)}
+
 Http = Callable[..., Awaitable[tuple[int, Any]]]
 
 
@@ -67,6 +72,16 @@ class Option:
     place: Optional[str]
     value: float
     text: str
+    target_room: Optional[int] = None   # traverse: the room on that side, when the atlas knows it
+
+    @property
+    def default_plan(self) -> tuple[dict, int]:
+        """(prediction, budget_seconds) used when the model answers with just this option's number:
+        the checkable claim this move makes, and a time box that fits it."""
+        if self.skill == 'traverse':
+            return ({'kind': 'reach_room', 'value': self.target_room} if isinstance(self.target_room, int)
+                    else {'kind': 'unknown'}), 15
+        return DEFAULT_PLANS.get(self.skill, ({'kind': 'unknown'}, 10))
 
     def wire(self) -> ActionBetOptionV1:
         return ActionBetOptionV1(option_id=self.option_id, skill=self.skill, context=self.context,
@@ -156,8 +171,9 @@ def option_for_goal(goal: dict, decision: dict, atlas: Optional[dict]) -> Option
         place = (f'zelda:{level}:{room}:{d}' if level == 0 and isinstance(room, int) and obs.get('mode') == 'play'
                  else None)   # overworld rooms only: never a cave, which reports the room above it
         value = VALUE['visited_room'] if isinstance(a, dict) and a.get('known') else VALUE['new_room']
+        room = a.get('room') if isinstance(a, dict) and isinstance(a.get('room'), int) else None
         return Option(f'{kind}:{d}', dict(goal), skill, skill_context(side=side, threat=threat, health=health),
-                      place, value, _traverse_text(kind, d, side, a))
+                      place, value, _traverse_text(kind, d, side, a), room)
     if skill == 'engage':
         n = len(_enemies(obs))
         target = goal.get('target')
@@ -236,8 +252,14 @@ class Menu:
     entries: tuple
 
     def for_planner(self) -> list[dict]:
-        """What retro_planner.plan_zelda takes: rank, goal (for matching) and the prompt line."""
-        return [{'rank': e.rank, 'goal': e.option.goal, 'line': e.line} for e in self.entries]
+        """What retro_planner.plan_zelda takes: rank, goal, the prompt line, and the prediction and
+        budget a pick by number uses."""
+        out = []
+        for e in self.entries:
+            prediction, budget = e.option.default_plan
+            out.append({'rank': e.rank, 'goal': e.option.goal, 'line': e.line,
+                        'prediction': prediction, 'budget_seconds': budget})
+        return out
 
     def rank_of(self, goal: Any) -> Optional[int]:
         return next((e.rank for e in self.entries if e.option.goal == goal), None)

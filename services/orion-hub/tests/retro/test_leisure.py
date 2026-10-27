@@ -274,7 +274,10 @@ def test_switch_off_refuses_before_any_io(world):
 
 # --- runner sessions ------------------------------------------------------------------------------
 
-def test_session_plays_loads_latest_save_and_ends_at_the_cap(world):
+def test_session_plays_loads_latest_save_and_ends_at_the_cap(world, monkeypatch):
+    # Lifecycle, not cadence: at the 0.25 s poll the fake world's instant goals overflow the
+    # 200-row journal within 120 s, trimming the 'started' row this test checks.
+    monkeypatch.setattr(L, 'POLL_SEC', 1.0)
     world.retro.saves = [dict(save_id='b' * 32, compatible=True), dict(save_id='c' * 32, compatible=True)]
     out = asyncio.run(L.run_leisure_session(config(RETRO_LEISURE_SESSION_MAX_SEC=120), act_id='act-7', deps=world.deps))
     assert out.started and out.ended.end_reason == 'session_cap'

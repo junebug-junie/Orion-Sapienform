@@ -5,7 +5,8 @@
               Juniper's `~/.claude/projects` tree, read-only)
     consumer: orion-hub (budget surface + the ask_claude dry-run gate)
 
-WHY THIS AND NOT DOLLARS. `orion/autonomy/quota_budget.py` denominates
+WHY THIS AND NOT DOLLARS. `orion/autonomy/quota_budget.py` (deleted in body
+economy Patch B, 2026-10-27) denominated
 Claude scarcity in dollars against an operator allowance. That denominator
 was measured and refuted -- no dollar threshold separates limited from
 not-limited (`docs/superpowers/specs/2026-08-27-quota-window-calibration-

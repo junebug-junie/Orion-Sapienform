@@ -2966,7 +2966,8 @@ channels:
   # rate_limit_events.py reads the constraint's own first-party announcement
   # ("You've hit your session limit - resets 3:30am (UTC)") including the reset
   # time, and had ZERO consumers from the day it shipped until this channel.
-  # It replaces the dollar-denominated quota_budget.py allowance, whose
+  # It replaced the dollar-denominated quota_budget.py allowance (deleted in
+  # body economy Patch B), whose
   # denominator was measured and refuted (2026-08-27-quota-window-calibration-
   # finding.md): no dollar threshold separates limited from not-limited.
   # Produced here rather than in orion-hub because this service already mounts

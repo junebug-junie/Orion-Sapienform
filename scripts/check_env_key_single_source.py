@@ -25,6 +25,7 @@ Usage:
 """
 from __future__ import annotations
 
+import ast
 import re
 import sys
 from pathlib import Path
@@ -46,6 +47,34 @@ OWNERS: dict[str, str] = {
     # the attention:juniper line of the Body organ (body economy Patch A3). One owner.
     "HUB_ENDOGENOUS_OUTREACH_DAILY_CAP": "services/orion-hub/.env_example",
 }
+
+# Lines owned by a Python MODULE, not an env file (body economy Patch B, 2026-10-27).
+# The rule is stricter than OWNERS: there may be no copy at all, equal or not. A consumer
+# imports the constant (or calls the owner's function and takes its defaults). The values
+# are read from the owner by AST, never hardcoded here.
+#
+# Measured before Patch B: the 32 C hot line lived in thermal_gate.py AND as
+# ORION_THERMAL_HOT_C / ORION_THERMAL_HOT_REARM_C in orion-thought (settings default, .env_example,
+# live .env) AND as `value: 32.0` / `value: 34.0` in config/prediction/series.v1.yaml.
+MODULE_OWNED_LINES: dict[str, tuple[str, ...]] = {
+    "orion/autonomy/thermal_gate.py": (
+        "DEFAULT_HOT_C", "DEFAULT_HOT_REARM_C",
+        "DEFAULT_ELEVATED_C", "DEFAULT_ELEVATED_REARM_C",
+        "DEFAULT_CRITICAL_C", "DEFAULT_CRITICAL_REARM_C",
+    ),
+}
+# A name that reads as a room-temperature line: a thermal word, and a Celsius suffix. Both the
+# name AND an owned value must match, so GPU/CPU ceilings (80/85 C) and unrelated `_c` knobs pass.
+_THERMAL_LINE_NAME = re.compile(r"(?i)(hot|crit|elevat|rearm|re_arm|thermal|cabinet|room)\w*_c$")
+# Env keys deleted by Patch B. Refused anywhere they reappear (including a live `.env`, which the
+# sync script never prunes -- that is exactly where a dead key lingers).
+RETIRED_KEYS: dict[str, str] = {
+    "ORION_THERMAL_HOT_C": "orion/autonomy/thermal_gate.py DEFAULT_HOT_C",  # env-key-single-source: sample
+    "ORION_THERMAL_HOT_REARM_C": "orion/autonomy/thermal_gate.py DEFAULT_HOT_REARM_C",  # env-key-single-source: sample
+}
+_THERMAL_NAME_IN_TEXT = re.compile(r"(?i)(hot|crit|elevat|rearm|re_arm|thermal|cabinet|room)\w*_c\b")
+_ENV_KEY = re.compile(r"^\s*-?\s*([A-Za-z_][A-Za-z0-9_]*)\s*[:=]")
+_ENV_ASSIGN = re.compile(r"^\s*-?\s*([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*(?:\$\{[A-Za-z0-9_]+:-)?[\"']?([0-9]+(?:\.[0-9]+)?)")
 
 # Line-level opt-out for text that quotes a value deliberately.
 SAMPLE_MARKER = "env-key-single-source: sample"
@@ -89,6 +118,18 @@ def _iter_files() -> Iterator[Path]:
             yield path
 
 
+def _read_tree() -> list[tuple[Path, str, str]]:
+    """(path, rel, text) for every scanned file, read once and shared by both checks."""
+    out: list[tuple[Path, str, str]] = []
+    for path in _iter_files():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        out.append((path, path.relative_to(REPO_ROOT).as_posix(), text))
+    return out
+
+
 def _is_local_env(rel: str) -> bool:
     return rel == ".env" or rel.endswith("/.env")
 
@@ -125,8 +166,124 @@ def _literals(text: str, key: str) -> Iterator[tuple[int, str]]:
             yield line, match.group(1)
 
 
-def main() -> int:
+def _owned_line_values() -> tuple[dict[float, str], list[str]]:
+    """value -> "owner NAME", read from each owner module by AST."""
+    values: dict[float, str] = {}
     failures: list[str] = []
+    for owner_rel, names in MODULE_OWNED_LINES.items():
+        owner = REPO_ROOT / owner_rel
+        if not owner.is_file():
+            failures.append(f"module owner {owner_rel} does not exist")
+            continue
+        found: dict[str, float] = {}
+        for node in ast.parse(owner.read_text(encoding="utf-8")).body:
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+                for t in node.targets:
+                    if isinstance(t, ast.Name) and t.id in names and isinstance(node.value.value, (int, float)):
+                        found[t.id] = float(node.value.value)
+        for name in names:
+            if name not in found:
+                failures.append(f"module owner {owner_rel} defines no numeric {name}")
+            else:
+                values.setdefault(found[name], f"{owner_rel} {name}")
+    return values, failures
+
+
+def _number(node: ast.AST | None) -> float | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+        return float(node.value)
+    return None
+
+
+def _py_line_copies(text: str) -> Iterator[tuple[int, str, float]]:
+    """(line, name, value) for every place Python binds a thermal-looking name to a number:
+    assignments, annotated assignments, parameter defaults, and pydantic `Field(<n>, alias=KEY)`."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return
+    for node in ast.walk(tree):
+        pairs: list[tuple[str, ast.AST | None, int]] = []
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                name = t.id if isinstance(t, ast.Name) else t.attr if isinstance(t, ast.Attribute) else None
+                if name:
+                    pairs.append((name, node.value, node.lineno))
+        elif isinstance(node, ast.AnnAssign):
+            t = node.target
+            name = t.id if isinstance(t, ast.Name) else t.attr if isinstance(t, ast.Attribute) else None
+            if name:
+                pairs.append((name, node.value, node.lineno))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            a = node.args
+            pos = a.posonlyargs + a.args
+            for arg, default in zip(pos[len(pos) - len(a.defaults):], a.defaults):
+                pairs.append((arg.arg, default, default.lineno))
+            for arg, default in zip(a.kwonlyargs, a.kw_defaults):
+                if default is not None:
+                    pairs.append((arg.arg, default, default.lineno))
+        for name, value, line in pairs:
+            if isinstance(value, ast.Call) and getattr(value.func, "id", getattr(value.func, "attr", "")) == "Field":
+                alias = next((k.value for k in value.keywords if k.arg == "alias"), None)
+                default = value.args[0] if value.args else next(
+                    (k.value for k in value.keywords if k.arg == "default"), None)
+                if isinstance(alias, ast.Constant) and isinstance(alias.value, str) and _THERMAL_LINE_NAME.search(alias.value):
+                    name = alias.value
+                value = default
+            num = _number(value)
+            if num is not None and _THERMAL_LINE_NAME.search(name):
+                yield line, name, num
+
+
+def _module_owned_failures(tree: list[tuple[Path, str, str]] | None = None) -> list[str]:
+    values, failures = _owned_line_values()
+    owners = set(MODULE_OWNED_LINES)
+    for path, rel, text in (tree if tree is not None else _read_tree()):
+        if rel in owners:
+            continue
+        lines = text.splitlines()
+
+        def opted_out(line: int) -> bool:
+            return 0 < line <= len(lines) and SAMPLE_MARKER in lines[line - 1]
+
+        for key, owner in RETIRED_KEYS.items():
+            if key not in text:
+                continue
+            # A retired key is refused where it is SET or READ, not where prose names it: an env/compose
+            # assignment, or the key as a Python string literal (alias=, os.getenv, environ[...]).
+            hits: list[int] = []
+            if path.suffix == ".py":
+                try:
+                    hits = [n.lineno for n in ast.walk(ast.parse(text))
+                            if isinstance(n, ast.Constant) and n.value == key]
+                except SyntaxError:
+                    hits = []
+            else:
+                hits = [i for i, ln in enumerate(lines, 1)
+                        if (m := _ENV_KEY.match(ln)) and m.group(1) == key]
+            for i in hits:
+                if not opted_out(i):
+                    failures.append(f"{rel}:{i}: {key} was retired; the line is owned by {owner} -- import it")
+        copies: list[tuple[int, str, float]] = []
+        # Cheap prefilter before any AST parse: a copy needs a thermal-looking `_c` name in the text.
+        if not _THERMAL_NAME_IN_TEXT.search(text):
+            continue
+        if path.suffix == ".py":
+            copies = list(_py_line_copies(text))
+        elif path.suffix in {".yml", ".yaml"} or path.name in SCANNED_NAMES:
+            for i, ln in enumerate(lines, 1):
+                m = _ENV_ASSIGN.match(ln)
+                if m and _THERMAL_LINE_NAME.search(m.group(1)):
+                    copies.append((i, m.group(1), float(m.group(2))))
+        for line, name, num in copies:
+            if num in values and not opted_out(line) and name not in RETIRED_KEYS:
+                failures.append(f"{rel}:{line}: {name} = {num:g} copies the line owned by {values[num]} -- import it")
+    return failures
+
+
+def main() -> int:
+    tree = _read_tree()
+    failures: list[str] = _module_owned_failures(tree)
     for key, owner_rel in OWNERS.items():
         owner = REPO_ROOT / owner_rel
         if not owner.is_file():
@@ -138,13 +295,8 @@ def main() -> int:
             continue
         expected = owned[0][1]
 
-        for path in _iter_files():
-            rel = path.relative_to(REPO_ROOT).as_posix()
+        for path, rel, text in tree:
             if rel == owner_rel:
-                continue
-            try:
-                text = path.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, OSError):
                 continue
             if key not in text:
                 continue
@@ -173,7 +325,9 @@ def main() -> int:
         )
         return 1
 
-    print(f"OK: {len(OWNERS)} owned env key(s), no drifted copies.")
+    n_lines = sum(len(v) for v in MODULE_OWNED_LINES.values())
+    print(f"OK: {len(OWNERS)} owned env key(s), no drifted copies; "
+          f"{n_lines} module-owned line(s), no copies.")
     return 0
 
 

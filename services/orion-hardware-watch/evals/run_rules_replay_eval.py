@@ -49,6 +49,9 @@ for p in (str(ROOT), str(SERVICE)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+# The room lines are owned by thermal_gate.py (body economy Patch B); the eval holds no copy.
+from orion.autonomy.thermal_gate import DEFAULT_CRITICAL_C as CRITICAL_C  # noqa: E402
+from orion.autonomy.thermal_gate import DEFAULT_ELEVATED_C as ELEVATED_C  # noqa: E402
 from orion.hardware_watch.rules import (  # noqa: E402
     CoolingPoint, ShedRuleConfig, TempPoint, cabinet_rise_c, shed_verdict,
 )
@@ -361,8 +364,6 @@ def injection_stats(cooling, temps, cutoff) -> list[dict]:
 
 V2_FIXTURE = HERE / "fixtures" / "thermal_v2_replay.csv.gz"
 REFLEX_SHED_CHANNEL_FALLBACK = "orion:hardware:watch:reflex_shed"
-CRITICAL_C = 34.0
-ELEVATED_C = 29.5
 EMAIL_WINDOW = timedelta(hours=6)
 # The real week never reached 34 C (peak 33.5 C, 10-05 19:00). So the >= 34 C assertion is not
 # vacuous, a second replay shifts 10-05's cabinet readings up by this much (peak 34.5 C).

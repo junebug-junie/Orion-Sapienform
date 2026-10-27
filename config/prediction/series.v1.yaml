@@ -27,10 +27,11 @@ series:
     exclude: []
     horizons: [5min, 15min, 1h, 6h, 24h]
     thresholds:
-      # hardware-watch's reflex sheds at 34 C (HARDWARE_WATCH_HEAT_CONTROLLER=v2).
-      - {name: shed, value: 34.0, window: 30min}
-      # Switchback experiments may start only while this probability is under max_probability.
-      - {name: experiment_guard, value: 32.0, window: 30min, max_probability: 0.05}
+      # Cabinet lines are owned by orion/autonomy/thermal_gate.py (body economy Patch B); a literal
+      # value here is refused by app/series.py. shed = hardware-watch's reflex line (critical, 34 C).
+      - {name: shed, value_from: thermal_gate.critical, window: 30min}
+      # Switchback experiments may start only while this probability is under max_probability (hot, 32 C).
+      - {name: experiment_guard, value_from: thermal_gate.hot, window: 30min, max_probability: 0.05}
     # The three machines in the cabinet, the portable AC, and the central-AC proxy (metric gate in the spec).
     covariates: [athena.chassis_watts, circe.chassis_watts, hecate.chassis_watts, athena.cabinet_cooling_watts,
                  athena.central_ac_proxy]

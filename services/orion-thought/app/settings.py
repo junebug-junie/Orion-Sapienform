@@ -356,13 +356,9 @@ class ThoughtSettings(BaseSettings):
     cabinet_sensors_timeout_sec: float = Field(
         3.0, alias="ORION_CABINET_SENSORS_TIMEOUT_SEC"
     )
-    # Trip and re-arm. Re-arm is deliberately COOLER than the trip: a bare
-    # threshold on a wandering reading flaps every tick, and a gate that flaps
-    # is worse than no gate. 32.0 sits below the ~34C Juniper reported on
-    # 2026-08-30 so it can actually fire; a threshold nothing crosses is a
-    # switch that changes nothing.
-    thermal_hot_c: float = Field(32.0, alias="ORION_THERMAL_HOT_C")
-    thermal_hot_rearm_c: float = Field(30.5, alias="ORION_THERMAL_HOT_REARM_C")
+    # Trip and re-arm lines are NOT settings: they are owned by
+    # orion/autonomy/thermal_gate.py (DEFAULT_HOT_C / DEFAULT_HOT_REARM_C) and read
+    # from there by visual_chain.py (body economy Patch B: one owner for the hot line).
     # 30s (this field's original value) was tuned for sdxl-turbo's
     # single-step, near-instant generation. Real bug, caught live
     # 2026-08-28 the same day orion-diffusion-host swapped to

@@ -13,7 +13,7 @@ Spec: `docs/superpowers/specs/2026-10-15-orion-prediction-service-design.md`.
    baselines and whose error ranges are calibrated. If none does, serve the baseline there.
 2. **Issue** (every completed 5-minute bucket). Fit the chosen models, stitch their forecasts,
    attach error ranges built from their own past errors (split-conformal), and compute the chance
-   of crossing each declared threshold (34 °C shed, 32 °C experiment guard). Store it, publish it.
+   of crossing each declared threshold (34 °C shed, 32 °C experiment guard; the cabinet lines are read from `orion/autonomy/thermal_gate.py` via `value_from`, never restated in the registry). Store it, publish it.
 3. **Score**. When the real bucket arrives, write the actual value, the error, and whether it fell
    inside the 80 % and 95 % ranges. A bucket with no readings is scored `missing`, never guessed.
 4. **Monitor**. Alerts in `/health` and `/series/{id}/live` (and one log line when they change):

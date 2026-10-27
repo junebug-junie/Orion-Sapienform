@@ -16,6 +16,7 @@ on:
       - 'orion/autonomy/act_episodes.py'
       - 'orion/autonomy/evals/run_rung3_reading_replay_eval.py'
       - 'orion/world_pulse_read/pull.py'
+      - 'orion/autonomy/thermal_gate.py'
       - 'orion/schemas/world_pulse_read_pull.py'
       - 'orion/schemas/retro_leisure.py'
       - 'orion/schemas/grammar.py'
@@ -59,7 +60,7 @@ jobs:
       - name: Binding fix + act-backed allocator candidates + holdback draw
         run: python -m pytest -q tests/test_rung3_world_first_action_floor.py tests/test_rung3_act_candidates.py tests/test_motor_allocator.py
       - name: Reading pull + holdback rule
-        run: python -m pytest -q tests/test_rung3_reading_pull.py
+        run: python -m pytest -q tests/test_rung3_reading_pull.py tests/test_rung3_reading_pull_thermal_pin.py
       - name: Retro leisure route (Orion plays Zelda, section E)
         run: python -m pytest -q tests/test_rung3_retro_leisure.py
       - name: Reading pull against Postgres (must not skip)

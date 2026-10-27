@@ -62,3 +62,28 @@ def test_bad_registry_refused(over, msg):
 def test_version_must_be_one():
     with pytest.raises(SeriesConfigError):
         parse_registry({"version": 2, "series": []})
+
+
+def test_cabinet_thresholds_are_pinned_to_the_thermal_owner():
+    """Body economy Patch B: the cabinet lines come from orion/autonomy/thermal_gate.py, not literals.
+    Values written by hand: a moved owner line or a registry that stops reading it fails here."""
+    t = load_registry(REGISTRY_PATH).get("athena.cabinet_temp_c")
+    assert (t.threshold("shed").value, t.threshold("shed").window_min) == (34.0, 30)
+    assert (t.threshold("experiment_guard").value, t.threshold("experiment_guard").window_min) == (32.0, 30)
+
+
+def test_a_literal_cabinet_line_is_refused():
+    doc = spec_doc(source={"kind": "biometrics", "node": "athena", "key": "cabinet_temp_c"},
+                   thresholds=[{"name": "shed", "value": 34.0, "window": "30min"}])
+    with pytest.raises(SeriesConfigError, match="value_from"):
+        parse_registry(doc)
+
+
+@pytest.mark.parametrize("bad", [
+    {"name": "x", "window": "30min"},
+    {"name": "x", "value": 1.0, "value_from": "thermal_gate.hot", "window": "30min"},
+    {"name": "x", "value_from": "thermal_gate.nope", "window": "30min"},
+])
+def test_value_from_is_exactly_one_known_owner(bad):
+    with pytest.raises(SeriesConfigError):
+        parse_registry(spec_doc(thresholds=[bad]))

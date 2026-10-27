@@ -13,6 +13,10 @@ Read-only, bounded, each read failing on its own: a failed read turns only its o
   of any kind (feed freshness). Capacity per role comes from the pool's own state RPC
   (``orion.gpu_pool.placement.fetch_pool_state``). Read-only, like field-digester's and
   proposal-runtime's reads of the same table.
+* backlog -- ``gpu_pool_state_history.deferrable_depth`` (#2873): the newest snapshot per pool host,
+  and per (host, work class) waiting there, the newest snapshot inside the lookback where that
+  class's queue was empty (``idx_gpu_pool_state_generated`` (host, generated_at) bounds both).
+  Hunger beside each lane, not strain.
 * juniper -- ``endogenous_outreach_decisions``: sends today (local date), and the newest decision
   of any outcome, so a stopped decision log reads stale instead of "0 sent".
 * claude  -- not a table: the latest ``ClaudeLimitObservationV1`` per kind, held in memory by
@@ -21,6 +25,7 @@ Read-only, bounded, each read failing on its own: a failed read turns only its o
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -28,6 +33,8 @@ from zoneinfo import ZoneInfo
 
 from orion.physiology.body import (
     LEASE_CLOSE_EVENTS,
+    BacklogInput,
+    BacklogSnapshot,
     ClaudeObservation,
     EnergyHour,
     EnergyInput,
@@ -73,6 +80,21 @@ FROM gpu_pool_leases
 WHERE status IN ('granted', 'recalling') AND status <> 'released' AND granted_at IS NOT NULL
 """
 LANE_NEWEST_SQL = "SELECT max(generated_at) AS newest FROM gpu_pool_events"
+BACKLOG_LOOKBACK_SEC = 6 * 3600.0
+BACKLOG_NEWEST_SQL = """
+SELECT DISTINCT ON (host) host, generated_at, deferrable_depth
+FROM gpu_pool_state_history
+WHERE generated_at >= %(since)s
+ORDER BY host, generated_at DESC
+"""
+# deferrable_depth is a json column: a class absent from it has nothing waiting; NULL (a row from
+# before #2873) is unknown, so it ends the waiting run too (the age never claims more than it saw).
+BACKLOG_LAST_EMPTY_SQL = """
+SELECT max(generated_at) AS last_empty
+FROM gpu_pool_state_history
+WHERE host = %(host)s AND generated_at >= %(since)s AND generated_at <= %(until)s
+  AND (deferrable_depth IS NULL OR coalesce((deferrable_depth->>%(wc)s)::int, 0) = 0)
+"""
 JUNIPER_SENT_SQL = """
 SELECT count(*) FILTER (WHERE reason = 'sent') AS sent,
        count(*) FILTER (WHERE reason = 'sent'
@@ -158,6 +180,45 @@ async def read_lanes(pool: Any, now: datetime, window_sec: float, pool_state: Op
     ok, events, newest = await read_lane_events(pool, now, window_sec)
     return LaneInput(events_read_ok=ok, events=events, capacity=capacity_from_pool_state(pool_state),
                      newest_event_at=newest)
+
+
+async def read_backlog(pool: Any, now: datetime, *, lookback_sec: float = BACKLOG_LOOKBACK_SEC
+                       ) -> BacklogInput:
+    since = now - timedelta(seconds=lookback_sec)
+    try:
+        async with pool.connection() as conn:
+            newest = await (await conn.execute(BACKLOG_NEWEST_SQL, {"since": since})).fetchall()
+            snaps: list[BacklogSnapshot] = []
+            last_empty: dict[tuple[str, str], Optional[datetime]] = {}
+            for r in newest:
+                depth = _json_field(r.get("deferrable_depth"))
+                if depth is not None and not isinstance(depth, dict):
+                    depth = None
+                at = _utc(r["generated_at"])
+                snap = BacklogSnapshot(str(r["host"]), at,
+                                       None if depth is None else {str(k): int(v or 0) for k, v in depth.items()})
+                snaps.append(snap)
+                for wc, n in (snap.deferrable or {}).items():
+                    if n <= 0:
+                        continue
+                    row = await (await conn.execute(BACKLOG_LAST_EMPTY_SQL, {
+                        "host": snap.host, "since": since, "until": r["generated_at"], "wc": wc})).fetchone()
+                    le = (row or {}).get("last_empty")
+                    last_empty[(snap.host, wc)] = _utc(le) if le is not None else None
+    except Exception:  # noqa: BLE001
+        logger.warning("physiology_backlog_read_failed", exc_info=True)
+        return BacklogInput(read_ok=False, lookback_sec=lookback_sec)
+    return BacklogInput(read_ok=True, snapshots=snaps, last_empty_at=last_empty, lookback_sec=lookback_sec)
+
+
+def _json_field(value: Any) -> Any:
+    """A psycopg ``json`` column arrives decoded; a text one (or a test double) as a string."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return None
+    return value
 
 
 async def read_juniper(pool: Any, now: datetime, tz: ZoneInfo) -> JuniperInput:

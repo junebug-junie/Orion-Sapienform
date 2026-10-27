@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from orion.physiology.body import (
+    BacklogInput,
+    BacklogSnapshot,
     BodyConfig,
     BodyInputs,
     ClaudeObservation,
@@ -21,6 +23,7 @@ from orion.physiology.body import (
     heat_reading,
     juniper_reading,
     lane_readings,
+    occupied_seconds,
 )
 from orion.schemas.physiology import PhysiologyStateV1, parse_physiology_state
 
@@ -187,6 +190,137 @@ def test_lane_no_reading_cases():
     assert reasons(LaneInput(True, [], {"fast": 4}, newest_event_at=None)) == [("lane:fast", "no_rows:gpu_pool_events")]
     # Fresh feed, nothing held, pool state unread: the lanes do not vanish silently.
     assert reasons(LaneInput(True, [], None, newest_event_at=NOW)) == [("lane", "read_failed:gpu_pool_state")]
+
+
+def _ts(hms: str) -> datetime:
+    h, m, sec = hms.split(":")
+    return datetime(2026, 10, 23, int(h), int(m), tzinfo=timezone.utc) + timedelta(seconds=float(sec))
+
+
+def test_lane_lease_replaced_on_another_seat_is_charged_per_seat_live_2026_10_23():
+    """The live over-count (lane:agent read 5,985.9 slot-s in a 3,600 s window on 1 slot,
+    tick 2026-10-23 10:14:12). Real span shapes from gpu_pool_events/gpu_pool_leases:
+
+    * f4126f56 hold on agent, released 09:40:15.760 after 2,085.868 s;
+    * 720191b9 hold on agent, released 10:14:07.759 after 2,031.875 s;
+    * 3e2aaebf hold, ABORTED twice on agent-gpu2 (09:41:27.480 after 1,718.778 s, 10:05:16.052
+      after 755.122 s), then re-granted on agent at 10:14:07.766 and still open.
+
+    The old reducer kept one role per lease (the last row it saw: the open row, agent), so both
+    agent-gpu2 spans landed on lane:agent: 1,635.3 + 755.1 = 2,390.4 s extra."""
+    now = _ts("10:14:12.168727")
+    ev = [
+        LeaseEvent("f4126f56", "agent", "released", _ts("09:40:15.760344"), 2085.867939e3),
+        LeaseEvent("720191b9", "agent", "released", _ts("10:14:07.758557"), 2031.87485e3),
+        LeaseEvent("3e2aaebf", "agent-gpu2", "aborted", _ts("09:41:27.479759"), 1718.777638e3),
+        LeaseEvent("3e2aaebf", "agent-gpu2", "aborted", _ts("10:05:16.052205"), 755.121794e3),
+        LeaseEvent("3e2aaebf", "agent", "granted", _ts("10:14:07.766452")),
+    ]
+    out, warnings = lane_readings(LaneInput(True, ev, {"agent": 1, "agent-gpu2": 2}, newest_event_at=now), now, CFG)
+    by = {r.constraint: r for r in out}
+    agent, gpu2 = by["lane:agent"], by["lane:agent-gpu2"]
+    assert agent.level <= agent.budget == 3600.0
+    # agent: 09:14:12.17..09:40:15.76 + 09:40:15.88..10:14:07.76 + the re-grant's 4.4 s open.
+    assert abs(agent.level - (1563.59 + 2031.87 + 4.40)) < 0.5
+    # agent-gpu2 gets its own 2,390 s, which the old reducer gave to agent.
+    assert abs(gpu2.level - 2390.4) < 0.5
+    assert "lane_leases_held_on_two_seats:1" in warnings
+
+
+def test_lane_gap_lending_is_reported_apart_not_counted_as_held():
+    """Live 10-23 06:09: a cortex-exec request (system priority, no hold_lease_id) ran 123 s in the
+    gap of an idle background hold on the 1-slot agent lane (scheduler H3). Both leases are real;
+    the slot was occupied once."""
+    now = _ts("06:30:00")
+    ev = [LeaseEvent("b8964820", "agent", "granted", _ts("03:10:21.633747")),       # still held
+          LeaseEvent("54397698", "agent", "released", _ts("06:11:30.35888"), 123.132188e3),
+          LeaseEvent("df6083a6", "agent", "released", _ts("06:24:42.562854"), 270.567544e3)]
+    out, _ = lane_readings(LaneInput(True, ev, {"agent": 1}, newest_event_at=now), now, CFG)
+    agent = out[0]
+    assert agent.level == 3600.0 == agent.budget
+    assert abs(agent.detail["lease_s"] - (3600 + 123.132 + 270.568)) < 0.01
+    assert abs(agent.detail["lent_overlap_s"] - (123.132 + 270.568)) < 0.01
+
+
+def test_lane_two_slots_count_two_concurrent_holds_and_cap_the_third():
+    now = NOW
+    ev = [LeaseEvent(x, "agent-gpu2", "granted", NOW - timedelta(minutes=30)) for x in ("a", "b", "c")]
+    out, _ = lane_readings(LaneInput(True, ev, {"agent-gpu2": 2}, newest_event_at=now), now, CFG)
+    assert out[0].level == 3600.0 and out[0].detail["lent_overlap_s"] == 1800.0
+
+
+def test_lane_zero_slot_seat_still_shows_its_held_lease():
+    """lane:diffusion read 546 s against capacity 0 live: the seat had no live slot but a lease
+    held it. Uncapped, flagged, never hidden."""
+    ev = [_close("d", "diffusion", NOW - timedelta(minutes=1), 546.479)]
+    out, _ = _lanes(ev, {"diffusion": 0})
+    d = out["lane:diffusion"]
+    assert abs(d.level - 546.479) < 1e-6 and d.detail["held_without_live_slot"] is True
+    assert "lent_overlap_s" not in d.detail
+
+
+def test_occupied_seconds_end_and_start_at_the_same_instant_is_one_slot():
+    t = NOW
+    spans = [(t - timedelta(seconds=100), t - timedelta(seconds=50)), (t - timedelta(seconds=50), t)]
+    assert occupied_seconds(spans, t - timedelta(hours=1), t, 1) == (100.0, 100.0, 2)
+
+
+# --- deferrable backlog (hunger) -----------------------------------------------------------------
+
+def _backlog(depth, *, at=NOW - timedelta(seconds=5), last_empty=None, host="circe"):
+    return BacklogInput(True, [BacklogSnapshot(host, at, depth)],
+                        last_empty_at={(host, wc): last_empty for wc in (depth or {})})
+
+
+def test_backlog_sits_beside_its_lane_with_count_and_age():
+    """Live 10-23 23:58: deferrable_depth {"agent": 4} (curiosity readings, background holds)."""
+    bl = _backlog({"agent": 4}, last_empty=NOW - timedelta(minutes=26))
+    out, warnings = lane_readings(LaneInput(True, [], {"agent": 1, "fast": 4}, newest_event_at=NOW), NOW, CFG, bl)
+    by = {r.constraint: r for r in out}
+    assert by["lane:agent"].detail["deferrable_queued"] == 4
+    assert by["lane:agent"].detail["deferrable_waiting_sec"] == 26 * 60.0
+    # A fresh read with nothing waiting is a real 0.
+    assert by["lane:fast"].detail["deferrable_queued"] == 0
+    # Hunger is not strain: the level (held slot-seconds) does not move.
+    assert by["lane:agent"].level == 0.0 and not warnings
+
+
+def test_backlog_non_empty_for_the_whole_lookback_reads_capped():
+    bl = _backlog({"agent": 2}, last_empty=None)
+    out, _ = lane_readings(LaneInput(True, [], {"agent": 1}, newest_event_at=NOW), NOW, CFG, bl)
+    assert out[0].detail["deferrable_waiting_sec"] == 6 * 3600.0
+    assert out[0].detail["deferrable_waiting_capped"] is True
+
+
+def test_backlog_unknown_is_never_zero():
+    def reason(bl):
+        out, _ = lane_readings(LaneInput(True, [], {"agent": 1}, newest_event_at=NOW), NOW, CFG, bl)
+        assert "deferrable_queued" not in out[0].detail
+        return out[0].detail["deferrable_no_reading"]
+
+    assert reason(None) == "not_read"
+    assert reason(BacklogInput(False)) == "read_failed:gpu_pool_state_history"
+    assert reason(BacklogInput(True)) == "no_rows:gpu_pool_state_history"
+    assert reason(_backlog({"agent": 1}, at=NOW - timedelta(minutes=5))) == "stale:gpu_pool_state_history"
+    # A snapshot from before #2873 (deferrable_depth NULL) is unknown, not "nothing waiting".
+    assert reason(_backlog(None)) == "unrecorded:deferrable_depth"
+
+
+def test_backlog_class_without_a_lane_of_its_name_is_a_warning_not_lost():
+    bl = _backlog({"memory_distill": 3})
+    _, warnings = lane_readings(LaneInput(True, [], {"agent": 1}, newest_event_at=NOW), NOW, CFG, bl)
+    assert "lane_deferrable_unplaced:memory_distill:3" in warnings
+
+
+def test_backlog_detail_survives_the_schema_and_the_stored_row():
+    bl = _backlog({"agent": 4}, last_empty=NOW - timedelta(minutes=1))
+    inputs = BodyInputs(heat=HeatInput(False), energy=EnergyInput(False),
+                        lanes=LaneInput(True, [], {"agent": 1}, newest_event_at=NOW),
+                        juniper=JuniperInput(False), backlog=bl)
+    state = build_physiology_state(NOW, inputs)
+    again = parse_physiology_state(state.model_dump_json())
+    lane = [c for c in again.constraints if c.constraint == "lane:agent"][0]
+    assert lane.detail["deferrable_queued"] == 4
 
 
 # --- attention:juniper --------------------------------------------------------------------------

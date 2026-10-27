@@ -389,7 +389,8 @@ def _build_physiology():
             energy=await physiology_store.read_energy(_checkpointer_cm, now, tz),
             lanes=await physiology_store.read_lanes(_checkpointer_cm, now, s.physiology_lane_window_sec, pool_state),
             juniper=await physiology_store.read_juniper(_checkpointer_cm, now, tz),
-            claude=claude_limits.snapshot() if claude_limits is not None else ())
+            claude=claude_limits.snapshot() if claude_limits is not None else (),
+            backlog=await physiology_store.read_backlog(_checkpointer_cm, now))
         return body, warnings
 
     async def project_physiology(model) -> None:

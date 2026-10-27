@@ -249,6 +249,6 @@ sources:
   - module: orion/physiology/body.py
     reason: the pure Body reducer; builds PhysiologyStateV1 from raw source reads.
   - module: services/orion-durable-runs/app/physiology_store.py
-    reason: producer; reads the Body organ's sources (energy, GPU leases, outreach, claude limits).
+    reason: producer; reads the Body organ's sources (energy, GPU leases, deferrable backlog, outreach, claude limits).
   - module: services/orion-sql-writer/app/worker.py
     reason: persists PhysiologyStateV1 to physiology_state (route + schema map); gates nothing.

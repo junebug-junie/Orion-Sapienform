@@ -275,6 +275,40 @@ def test_store_reads_on_postgres():
 
 
 @pytest.mark.skipif(not DSN, reason="isolated ORION_ADMISSION_TEST_DSN required")
+def test_store_reads_the_deferrable_backlog_on_postgres():
+    """gpu_pool_state_history as sql-writer writes it (json columns): the newest snapshot per host,
+    and how long each waiting class has been non-empty. A NULL deferrable_depth ends the run."""
+    now = datetime.now(timezone.utc)
+
+    async def scenario(pool):
+        async with pool.connection() as conn:
+            await conn.execute("""CREATE TABLE gpu_pool_state_history (snapshot_id varchar PRIMARY KEY,
+                                  generated_at timestamptz NOT NULL, host varchar NOT NULL,
+                                  queue_depth json NOT NULL, deferrable_depth json)""")
+            rows = [("s1", now - timedelta(minutes=40), "circe", '{"agent": 1}', "{}"),
+                    ("s2", now - timedelta(minutes=30), "circe", '{"agent": 2}', '{"agent": 2}'),
+                    ("s3", now - timedelta(seconds=5), "circe", '{"agent": 4}', '{"agent": 4, "diffusion": 1}'),
+                    ("h1", now - timedelta(minutes=20), "hecate", '{}', None),
+                    ("h2", now - timedelta(seconds=3), "hecate", '{}', '{"diffusion": 2}')]
+            for r in rows:
+                await conn.execute("INSERT INTO gpu_pool_state_history VALUES (%s, %s, %s, %s, %s)", r)
+        bl = await physiology_store.read_backlog(pool, now)
+        assert bl.read_ok
+        assert {s.host: dict(s.deferrable) for s in bl.snapshots} == {
+            "circe": {"agent": 4, "diffusion": 1}, "hecate": {"diffusion": 2}}
+        le = bl.last_empty_at
+        assert abs((le[("circe", "agent")] - (now - timedelta(minutes=40))).total_seconds()) < 1
+        assert abs((le[("circe", "diffusion")] - (now - timedelta(minutes=30))).total_seconds()) < 1
+        assert abs((le[("hecate", "diffusion")] - (now - timedelta(minutes=20))).total_seconds()) < 1
+        from orion.physiology.body import BodyConfig, deferrable_backlog
+        hunger, missing = deferrable_backlog(bl, now, BodyConfig())
+        assert missing is None and hunger["agent"][0] == 4 and hunger["diffusion"][0] == 3
+        assert abs(hunger["agent"][1] - 2400) < 2 and abs(hunger["diffusion"][1] - 1800) < 2
+
+    asyncio.run(_with_schema(scenario))
+
+
+@pytest.mark.skipif(not DSN, reason="isolated ORION_ADMISSION_TEST_DSN required")
 def test_store_missing_tables_read_failed_not_zero():
     tz = ZoneInfo("America/Denver")
     now = datetime.now(timezone.utc)
@@ -283,5 +317,6 @@ def test_store_missing_tables_read_failed_not_zero():
         assert not (await physiology_store.read_energy(pool, now, tz)).read_ok
         assert not (await physiology_store.read_lanes(pool, now, 3600.0, None)).events_read_ok
         assert not (await physiology_store.read_juniper(pool, now, tz)).read_ok
+        assert not (await physiology_store.read_backlog(pool, now)).read_ok
 
     asyncio.run(_with_schema(scenario))

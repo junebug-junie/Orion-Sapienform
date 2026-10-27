@@ -719,7 +719,7 @@ between are skipped), the node reads every constraint Orion lives under and writ
 |---|---|---|---|
 | `heat` | cabinet C | soft line `ORION_PHYSIOLOGY_HEAT_SOFT_LINE_C` (31) | this step's own regulate inputs (no second query) |
 | `energy` | Orion month-to-date USD (local month) | `ORION_PHYSIOLOGY_ENERGY_MONTHLY_ENVELOPE_USD` (unset: no line) | `orion_energy_hourly` x `energy_cost_accrued` next-kWh rate (newest `computed_at`; unpriced recent hours carry the newest rate) |
-| `lane:<role>` | GPU slot-seconds held in the last `ORION_PHYSIOLOGY_LANE_WINDOW_SEC` | discovered slots x window (pool state RPC) | `gpu_pool_events` closes (`held_ms`) + open grants |
+| `lane:<role>` | GPU slot-seconds occupied in the last `ORION_PHYSIOLOGY_LANE_WINDOW_SEC` (at most `slots` leases count at once; the rest is `detail.lent_overlap_s`) | discovered slots x window (pool state RPC) | `gpu_pool_events` closes (`held_ms`, each on its own seat) + open grants |
 | `attention:juniper` | outreach messages sent today | `HUB_ENDOGENOUS_OUTREACH_DAILY_CAP` (owner: Hub) | `endogenous_outreach_decisions` |
 | `claude` | limit events, plus `state` | not limited | `orion:substrate:claude_limit` (`ClaudeLimitObservationV1`), latest per kind in memory |
 
@@ -730,9 +730,25 @@ sql-writer `physiology_state` (one row per tick). `/health` -> `temporal_self.ph
 last tick id and every `no_reading`. Own 30 s timeout; a failure is the step warning
 `physiology_failed` and never touches the regulation reading. Off: `ORION_PHYSIOLOGY_ENABLED=false`.
 
-Known limits: lane slot-seconds count a durable-run hold and its child calls separately (pool events
-carry no `hold_lease_id`); `claude` reads `no_observation` while orion-cocreation-signals'
-`COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED` is false.
+Lanes (Patch B1, 2026-10-27):
+- **Each held span is charged to the seat its own event names.** A lease the pool re-placed (aborted
+  on `agent-gpu2`, re-granted on `agent`) used to be charged in full to its last seat. That is how
+  `lane:agent` read 5,985.9 slot-s in a 3,600 s window on one slot (10-23 10:14:12; 747 of 2,778
+  ticks over capacity by 10-27). Warning: `lane_leases_held_on_two_seats:<n>`.
+- **Gap lending is real overlap, reported apart.** The pool lets a higher-priority one-off call run
+  in an idle background hold's gap (scheduler H3). Both leases are live; the slot is occupied once.
+  `level` caps concurrent leases at `slots`; `detail.lease_s` is the raw sum and
+  `detail.lent_overlap_s` the difference. A seat with 0 live slots that still holds a lease is left
+  uncapped and flagged `held_without_live_slot`.
+- **Waiting self-work (hunger) sits beside each lane**, from `gpu_pool_state_history.deferrable_depth`
+  (#2873): `deferrable_queued` (queued background durable-run holds of the work class named like
+  the lane, summed over fresh pool hosts) and `deferrable_waiting_sec` (how long that queue has been
+  non-empty; `deferrable_waiting_capped` = the whole 6 h lookback). Unknown is
+  `deferrable_no_reading`, never 0. It is not strain and nothing prices it; it seeds Appetite.
+
+Known limits: `lent_overlap_s` uses the seat's slots now, not as they were earlier in the window;
+`claude` reads `no_observation` while orion-cocreation-signals' `COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED`
+is false.
 
 ## Runtime immune sweep: the `immune` node (2026-10-13, Temporal Self R4)
 

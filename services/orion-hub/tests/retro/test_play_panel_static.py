@@ -77,7 +77,9 @@ def test_select_chords_save_and_load_and_never_leak_select_into_the_game():
     if not shutil.which('node'):
         pytest.skip('node not installed')
     body = re.search(r'function selectChord\(st, pad, m, now, fire\) \{.*?\n  \}', js, re.S).group(0)
+    reset = re.search(r'function resetChord\(st\) \{.*?\}', js).group(0)
     probe = f'''{body}
+{reset}
 const pad=(...down)=>({{buttons:Array.from({{length:16}},(_,i)=>({{pressed:down.includes(i)}}))}});
 const st={{held:false,chorded:false,pulseUntil:0}}, fired=[], fire=c=>fired.push(c), seen=[];
 const SEL=8,L2=6,R2=7, step=(t,...d)=>seen.push(selectChord(st,pad(...d),d.includes(SEL)?4:0,t,fire)&4);
@@ -85,11 +87,14 @@ step(0,SEL); step(50,SEL,L2); step(100,SEL,L2); step(150,SEL); step(200);      /
 step(400,SEL); step(450);                                                      // Select alone
 const tap=[selectChord(st,pad(),0,500,fire)&4, selectChord(st,pad(),0,700,fire)&4];
 step(1000,SEL); step(1050,SEL,R2); step(1100);                                  // load chord
-console.log(JSON.stringify({{fired,seen,tap}}));'''
+step(2000,SEL); resetChord(st); step(2100,SEL); step(2150);                     // focus lost mid-hold
+const after=[selectChord(st,pad(),0,2200,fire)&4];
+console.log(JSON.stringify({{fired,seen,tap,after}}));'''
     run = subprocess.run(['node', '-e', probe], capture_output=True, text=True)
     assert run.returncode == 0, run.stderr
     got = json.loads(run.stdout)
     assert got['fired'] == ['F7', 'F10']                         # each chord fires once
     assert got['seen'][:5] == [0, 0, 0, 0, 0]                    # a save chord never sends Select
     assert got['seen'][5:7] == [0, 4] and got['tap'] == [4, 0]   # a lone Select taps on release, 150 ms
-    assert got['seen'][7:] == [0, 0, 0]
+    assert got['seen'][7:10] == [0, 0, 0]
+    assert got['seen'][10:] == [0, 0, 0] and got['after'] == [0]  # no stray tap after a lost hold

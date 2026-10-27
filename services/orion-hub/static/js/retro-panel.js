@@ -53,7 +53,7 @@
     scriptedMode=false;cognitivePort=null;handoffGrant=null;watching=false;
     transportEpoch++; clearInterval(timer); keys.clear(); lease=null; outstanding.clear();
     if (input) { input.onclose=null; input.close(); } if (media) { media.onclose=null; media.close(); }
-    input=null;media=null; pendingPacket=null; flushAudio();
+    input=null;media=null; pendingPacket=null; flushAudio(); resetChord(chord);
   }
   function neutral() { closeConnections(); report('Paused. Click the game to keep playing.'); }
   function mask() {
@@ -61,15 +61,21 @@
     const pad = gamepad();
     if (pad && (document.activeElement===screen || document.fullscreenElement===stage))
       m |= selectChord(chord, pad, padMask(pad), performance.now(), code=>runHotkey(code));
+    else resetChord(chord);
     if((m&48)===48)m&=~48;if((m&192)===192)m&=~192;return m;
   }
   // Pad Select + L2 saves, Select + R2 loads the newest save (the F7 / F10 hotkeys). Select is a
   // game button (Zelda: pause and map), so the pad's Select is held back until it is released:
   // used in a chord, the game never sees it; released alone, the game gets a 150 ms tap.
-  const chord={held:false, chorded:false, pulseUntil:0};
+  const chord={held:false, chorded:false, pulseUntil:0, waitUp:false};
+  // Focus or connection lost: forget the hold, and ignore a Select still down until it is
+  // released, so coming back never taps a Select nobody pressed (review 2026-10-27).
+  function resetChord(st) { st.waitUp=st.waitUp || st.held; st.held=false; st.chorded=false; st.pulseUntil=0; }
   function selectChord(st, pad, m, now, fire) {
-    const b=pad.buttons, sel=!!b[8]?.pressed, l2=!!b[6]?.pressed, r2=!!b[7]?.pressed;
+    const b=pad.buttons, sel=!!b[8]?.pressed;
+    const l2=!!(b[6]?.pressed || b[6]?.value>.5), r2=!!(b[7]?.pressed || b[7]?.value>.5);
     m&=~4;
+    if(st.waitUp){if(!sel)st.waitUp=false;return m;}
     if(sel){
       if(!st.held){st.held=true;st.chorded=false;}
       if((l2||r2) && !st.chorded){st.chorded=true;fire(l2?'F7':'F10');}

@@ -41,7 +41,7 @@ None.
 ```text
 cd services/orion-hub && pytest tests/retro -q -> 193 passed
 node --check (Node 20 and 22)                  -> ok
-Mutations: Select not held back -> fails; chord fires every frame -> fails
+Mutations: Select not held back -> fails; chord fires every frame -> fails; no wait-for-release after reset -> fails
 ```
 
 ## Evals run
@@ -58,7 +58,14 @@ No build. The post-pull rebuild covers orion-hub.
 
 ## Review findings fixed
 
-(filled in after review)
+- Finding (should): the chord state was never reset when focus or the connection dropped. A Select held across a focus loss sent a stray Select tap on return, which pauses Zelda.
+  - Fix: `resetChord` runs when the focus gate closes and in `closeConnections`. A Select still down after a reset is ignored until it is released.
+  - Evidence: a lost-hold step in the Node test; it fails without the guard.
+- Finding (should): the chords need the game focused, which was undocumented.
+  - Fix: the help text and the runbook say so, and that it is one chord per Select hold.
+- Finding (info): L2 and R2 may be analog on some pads.
+  - Fix: a trigger counts when `pressed` or `value > 0.5`.
+- Checked, no change needed: no re-entry from `click()` inside `send()`; the guard behaves as before; no regression to the keyboard Shift/Select or to Start; the 150 ms tap matches the Start button's tap.
 
 ## Restart required
 

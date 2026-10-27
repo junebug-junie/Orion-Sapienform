@@ -275,6 +275,6 @@ Live check after deploy:
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2923
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

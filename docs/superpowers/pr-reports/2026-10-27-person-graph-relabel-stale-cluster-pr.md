@@ -69,6 +69,6 @@ Expected log line: `person_graph cluster_relabelled individual=f5242d40... old='
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2907
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

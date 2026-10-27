@@ -165,7 +165,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"    last why: {last.why}")
     strain = [s.strain for s in path if s.strain is not None]
     sv = [x.value for x in strain if x.value is not None]
-    print(f"- strain: min {min(sv) if sv else None} max {max(sv) if sv else None}; last {strain[-1].why if strain else None}")
+    drivers = Counter((x.constraint or "none(rest)") for x in strain if x.value is not None)
+    at_rest = sum(1 for v in sv if v == 0.0)
+    print(f"- strain: min {min(sv) if sv else None} max {max(sv) if sv else None}; at rest (0) {at_rest}/{len(sv)} ticks; "
+          f"driven by {dict(drivers)}; exogenous listed apart: {dict(Counter(n for x in strain for n in x.exogenous_bind))}")
+    print(f"    last: {strain[-1].why if strain else None}")
 
     checks = {}
     heat_under = [(t, p) for t, c, p in by.get("heat", []) if c.level is not None

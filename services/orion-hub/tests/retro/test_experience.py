@@ -29,9 +29,10 @@ def live_decision(**over):
 
 
 def watched_decision():
-    """The room 119 decision with one far enemy on screen, so waiting is offered."""
+    """The room 119 decision with an enemy next to Link, so waiting is offered."""
     d, atlas = live_decision()
-    d['observation']['enemies'] = [dict(slot=2, x=10, y=70)]
+    link = d['observation']['link']
+    d['observation']['enemies'] = [dict(slot=2, x=link['x'] + 16, y=link['y'])]
     return d, atlas
 
 
@@ -104,8 +105,8 @@ def test_options_for_the_live_room_119_decision():
     # No wait: the room is empty, so waiting cannot change anything.
     assert [o.option_id for o in opts] == ['exit:N', 'exit:E', 'exit:W']
     watched = X.build_options(*watched_decision())
-    assert [o.option_id for o in watched] == ['exit:N', 'exit:E', 'exit:W', 'fight:nearest', 'wait']
-    by = {o.option_id: o for o in watched}
+    assert [o.option_id for o in watched] == ['exit:N', 'exit:E', 'exit:W', 'fight:nearest', 'retreat', 'wait']
+    by = {o.option_id: o for o in opts + watched[-1:]}   # the calm room's exits, the watched room's wait
     assert by['exit:N'].context == {'health': 'full', 'side': 'open_visited', 'threat': 'none'}
     assert by['exit:W'].context == {'health': 'full', 'side': 'open_unvisited', 'threat': 'none'}
     assert by['exit:W'].place == 'zelda:0:119:W' and by['exit:W'].skill == 'traverse'
@@ -743,5 +744,9 @@ def test_wait_is_offered_only_when_something_on_screen_can_change():
     d, atlas = live_decision()
     assert 'wait' not in [o.option_id for o in X.build_options(d, atlas)]
     assert 'wait' in [o.option_id for o in X.build_options(*watched_decision())]
+    far = dict(d, observation=dict(d['observation'], enemies=[dict(slot=2, x=10, y=70)]))
+    assert 'wait' not in [o.option_id for o in X.build_options(far, atlas)]    # a far enemy keeps it met forever
+    frozen = dict(d, observation=dict(d['observation'], link=dict(d['observation']['link'], controllable=False)))
+    assert 'wait' in [o.option_id for o in X.build_options(frozen, atlas)]     # the only goal Retro accepts then
     boxed = dict(d, open_sides=[], supported_goals=['exit', 'wait'])   # nothing else to offer: wait stays
     assert [o.option_id for o in X.build_options(boxed, atlas)] == ['wait']

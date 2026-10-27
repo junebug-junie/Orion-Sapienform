@@ -229,10 +229,12 @@ def build_options(decision: dict, atlas: Optional[dict]) -> list[Option]:
                 goals.append({'kind': 'enter', 'tile': {'x': xy[0], 'y': xy[1]}})
     if 'retreat' in allowed and threat_band(_enemy_distances(obs), NEAR_PX) == 'near':
         goals.append({'kind': 'retreat'})
-    # Waiting only helps when something on screen can change. Live 2026-10-27: an empty room,
-    # sides unknown; "wait ... Predicts survive" read as the safe pick, was met every time, and
-    # its chance climbed to 37 of 37 while Link stood still for five minutes.
-    if 'wait' in allowed and (_enemies(obs) or not goals):
+    # Wait only when an enemy is close, Link cannot move, or nothing else is possible. Live
+    # 2026-10-27: an empty room, sides unknown; "wait ... Predicts survive" read as the safe pick,
+    # was met every time, and its chance climbed to 37 of 37 while Link stood still for five
+    # minutes. A far enemy is no reason either: it keeps the wait met without ending the loop.
+    stuck = not (obs.get('link') or {}).get('controllable', True)
+    if 'wait' in allowed and (threat_band(_enemy_distances(obs), NEAR_PX) == 'near' or stuck or not goals):
         goals.append({'kind': 'wait'})
     out = [o for o in (option_for_goal(g, decision, atlas) for g in goals) if o is not None]
     if len(out) > ACTION_BET_MAX_OPTIONS:   # keep wait (always last when offered) inside the cap

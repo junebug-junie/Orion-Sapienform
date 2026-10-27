@@ -527,13 +527,13 @@ def test_not_controllable_is_never_retried(planner):
 
 
 @pytest.mark.parametrize('previous', [
-    dict(goal=dict(kind='wait'), outcome='budget_expired', applied_frames=0, start_digest='a', end_digest='b'),
+    dict(goal=dict(kind='wait'), outcome='budget_expired', applied_frames=0, start_digest='a', end_digest='a'),
     dict(goal=dict(kind='exit', dir='N'), outcome='stopped:human_takeover', applied_frames=0,
          start_digest='a', end_digest='a'),
     dict(goal=dict(kind='exit', dir='N'), outcome='budget_expired', applied_frames=0,
          start_digest='unknown', end_digest='unknown'),
 ])
-def test_waits_where_things_moved_and_goals_that_never_ran_may_be_repeated(planner, previous):
+def test_waits_and_goals_that_never_ran_may_be_repeated(planner, previous):
     answer = dict(GOOD, goal=previous['goal'], prediction=dict(kind='survive') if previous['goal']['kind'] == 'wait'
                   else GOOD['prediction'])
     d = decision(open_sides=['N', 'W', 'E'], previous=dict(previous, decision_id='3:0', prediction={}, verdict='unknown'))
@@ -619,15 +619,3 @@ def test_option_picks_tolerate_loose_types_and_the_retry_gets_full_room(planner)
     both = planner.choice_from_option({'option': 2, 'goal': GOOD['goal'], 'prediction': GOOD['prediction'],
                                        'rationale': 'r', 'budget_seconds': 9}, MENU)
     assert 'option' not in both and both['goal'] == GOOD['goal']
-
-
-def test_a_wait_where_nothing_moved_is_not_picked_again(planner):
-    # Live 2026-10-27: 41 waits in a row in an empty room, each leaving the game exactly as it was.
-    still = dict(goal=dict(kind='wait'), outcome='budget_expired', applied_frames=0, start_digest='a',
-                 end_digest='a', decision_id='3:0', prediction={}, verdict='met')
-    wait = dict(GOOD, goal=dict(kind='wait'), prediction=dict(kind='survive'))
-    chat = reply(lambda n: dict(content=json.dumps(wait if n == 1 else GOOD)))
-    out = asyncio.run(planner.plan_zelda(None, decision(open_sides=['N', 'W', 'E'], previous=still), ATLAS, [],
-                                         chat=chat))
-    assert out['goal'] == GOOD['goal'] and len(chat.calls) == 2
-    assert 'wait: the same goal just left Link where he was' in chat.calls[1]

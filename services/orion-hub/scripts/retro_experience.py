@@ -49,9 +49,15 @@ SKILL_OF = {'exit': 'traverse', 'explore': 'traverse', 'fight': 'engage', 'retre
 SKILL_WORDS = {'traverse': 'moving', 'engage': 'fighting', 'withdraw': 'retreating',
                'acquire': 'picking up', 'enter': 'entering', 'hold': 'waiting'}
 
-# Hand-set v1 value table (spec "Scoring"). Learning it is out of scope for v1.
+# Hand-set v1 value table (spec "Scoring"). Learning it is out of scope for v1. visited_room is
+# divided by the room's visit count (room_value).
 VALUE = {'new_room': 1.0, 'visited_room': 0.3, 'drop': 0.7, 'fight': 0.6,
          'withdraw_hurt': 0.4, 'withdraw': 0.1, 'cave': 0.5, 'hold': 0.05}
+
+# Options the planner model sees. Live 2026-10-27: shown the full menu, the 8B model took the
+# highest chance 10 of 10 times (a 115 <-> 99 round trip ranked 3rd); shown the top 2, it left by a
+# less-seen side 10 of 10 times.
+PLANNER_SHORTLIST = 2
 
 # Prediction and budget for a menu pick by number (traverse is computed from the side's room).
 DEFAULT_PLANS = {'engage': ({'kind': 'enemies_cleared'}, 20), 'acquire': ({'kind': 'item_gained'}, 10),
@@ -147,13 +153,29 @@ def side_state(decision: dict, atlas: Optional[dict], d: str) -> str:
     return 'unknown'
 
 
-def _traverse_text(kind: str, d: str, side: str, a: Optional[dict]) -> str:
+def _traverse_text(kind: str, d: str, side: str, a: Optional[dict], visits: Optional[int] = None) -> str:
     text = f'{kind} {d}'
     if isinstance(a, dict) and a.get('room') is not None:
-        text += f' -> room {a.get("room")} ({"visited" if a.get("known") else "never visited"})'
+        seen = 'never visited' if not a.get('known') else (
+            f'visited {visits} time{"" if visits == 1 else "s"}' if isinstance(visits, int) else 'visited')
+        text += f' -> room {a.get("room")} ({seen})'
     if side == 'closed':
         text += ' (no way out found on this side)'
     return text
+
+
+def room_value(atlas: Optional[dict], level: Any, room: Optional[int]) -> float:
+    """A known room's worth falls as 1/visits (count-based novelty; visits from the atlas map).
+    Live 2026-10-27: with every known room worth the same 0.3, the round trip 115 <-> 99 (28 of 28
+    met each way) outranked every other side, and Link crossed it 30 times."""
+    visits = room_visits(atlas, level, room)
+    return VALUE['visited_room'] / max(1, visits) if isinstance(visits, int) else VALUE['visited_room']
+
+
+def room_visits(atlas: Optional[dict], level: Any, room: Optional[int]) -> Optional[int]:
+    entry = ((atlas or {}).get('map') or {}).get(f'{level}:{room}') if room is not None else None
+    visits = entry.get('visits') if isinstance(entry, dict) else None
+    return visits if isinstance(visits, int) else None
 
 
 def option_for_goal(goal: dict, decision: dict, atlas: Optional[dict]) -> Optional[Option]:
@@ -174,10 +196,11 @@ def option_for_goal(goal: dict, decision: dict, atlas: Optional[dict]) -> Option
         # Overworld only: dungeon levels decode as 'unknown' (one place key would mix every dungeon).
         place = (f'zelda:{level}:{room}:{d}' if level == 0 and isinstance(room, int) and obs.get('mode') == 'play'
                  else None)   # overworld rooms only: never a cave, which reports the room above it
-        value = VALUE['visited_room'] if isinstance(a, dict) and a.get('known') else VALUE['new_room']
         room = a.get('room') if isinstance(a, dict) and isinstance(a.get('room'), int) else None
+        value = (room_value(atlas, level, room) if isinstance(a, dict) and a.get('known')
+                 else VALUE['new_room'])
         return Option(f'{kind}:{d}', dict(goal), skill, skill_context(side=side, threat=threat, health=health),
-                      place, value, _traverse_text(kind, d, side, a), room)
+                      place, value, _traverse_text(kind, d, side, a, room_visits(atlas, level, room)), room)
     if skill == 'engage':
         n = len(_enemies(obs))
         target = goal.get('target')
@@ -261,11 +284,21 @@ class Entry:
 class Menu:
     entries: tuple
 
-    def for_planner(self) -> list[dict]:
+    def for_planner(self, limit: Optional[int] = PLANNER_SHORTLIST) -> list[dict]:
         """What retro_planner.plan_zelda takes: rank, goal, the prompt line, and the prediction and
-        budget a pick by number uses."""
+        budget a pick by number uses. Only a shortlist of ``limit`` (None = all): the score decides
+        what is in the running, the model picks between them and can still refuse them on facts.
+        The shortlist keeps the best traverse and the best other move, so a way out is always shown
+        (review: fight and retreat, never discounted by visits, could fill both slots)."""
+        entries = list(self.entries)
+        if limit is not None:
+            moves = [e for e in entries if e.option.skill == 'traverse'][:1]
+            others = [e for e in entries if e.option.skill != 'traverse'][:1]
+            keep = moves + others if moves and others else entries[:limit]
+            entries = sorted(keep + [e for e in entries if e not in keep][:max(0, limit - len(keep))],
+                             key=lambda e: e.rank)
         out = []
-        for e in self.entries:
+        for e in entries:
             prediction, budget = e.option.default_plan
             out.append({'rank': e.rank, 'goal': e.option.goal, 'line': e.line,
                         'prediction': prediction, 'budget_seconds': budget})
@@ -513,7 +546,10 @@ class ZeldaExperience:
             if option is None:
                 return None
             decision_id = str(goal.get('decision_id') or decision.get('decision_id'))
-            rank = goal.get('chosen_rank') if 'chosen_rank' in goal else menu.rank_of(goal.get('goal'))
+            # The planner ranks against the shortlist it saw; a pick outside it still has a full-menu rank.
+            rank = goal.get('chosen_rank')
+            if rank is None:
+                rank = menu.rank_of(goal.get('goal'))
             bet = ActionBetPlaceV1(bet_id=bet_id_for(retro_session_id, decision_id), domain=DOMAIN, body=BODY,
                                    skill=option.skill, context=option.context, place=option.place,
                                    action={'goal': goal.get('goal'), 'prediction': goal.get('prediction'),

@@ -124,7 +124,10 @@ class ShadowBid:
         if self._task is None or self._settled:
             return
         self._settled = True
-        real = self.real or real
+        if self.real:
+            # The producer named the outcome itself (a hold this want never got past): no act of
+            # this want opened, so any act id the caller saw belongs to something else.
+            real, act_correlation_id = self.real, None
         act_corr = str(act_correlation_id) if act_correlation_id and str(act_correlation_id) != self.want_id else ""
         try:
             self._task.add_done_callback(lambda t: self._log(t, real, act_corr))

@@ -206,6 +206,15 @@ async def test_outreach_sent_path_is_identical_for_every_answer_and_joins_the_ac
         assert (f["family"], f["want_id"], f["real"], f["act_correlation_id"]) == (
             "hub.outreach", want.want_id, "ran", "-")
         results.append(_stable(result))
+    # Baseline: the same tick with the shadow switched off (no bid at all) answers the same.
+    from scripts.settings import settings
+
+    monkeypatch.setattr(settings, "HUB_PHYSIOLOGY_SHADOW_BID_ENABLED", False, raising=False)
+    economy.wants.clear()
+    _stub_tick(monkeypatch, [])
+    off = await _tick(_outreach())
+    assert economy.wants == []
+    results.append(_stable(off))
     assert all(r == results[0] for r in results)
 
 
@@ -310,3 +319,92 @@ async def test_coplay_open_is_unchanged_and_bids_on_the_row_key(economy, caplog,
     (want,) = economy.wants
     assert (want.want_id, want.family) == ("retro-1:1792699320.000", "hub.retro_coplay")
     assert _fields(_shadow_lines(caplog)[0])["real"] == "ran"
+
+
+@pytest.mark.asyncio
+async def test_strain_report_door_never_claims_its_report_as_this_want(economy, caplog, monkeypatch) -> None:
+    """Strain holds the want; the strain report door sends its own message on its own act id."""
+    from scripts.endogenous_outreach import AROUSAL_STRAINED_REASON, EndogenousOutreach
+
+    caplog.set_level(logging.INFO, logger="orion-hub.physiology_shadow")
+    _stub_tick(monkeypatch, [])
+    monkeypatch.setattr("scripts.endogenous_outreach.outreach_block_reason",
+                        lambda inputs, **kw: AROUSAL_STRAINED_REASON)
+
+    async def fake_report(self, *, force, compose_started_at):
+        return {"outreach": True, "reason": "sent", "correlation_id": "strain-report-act"}
+
+    monkeypatch.setattr(EndogenousOutreach, "_strain_report_once", fake_report)
+    result = await _tick(_outreach(strain_report_enabled=True))
+    assert result["correlation_id"] == "strain-report-act"
+    f = _fields(_shadow_lines(caplog)[0])
+    assert (f["real"], f["act_correlation_id"]) == (f"blocked:{AROUSAL_STRAINED_REASON}", "-")
+
+
+@pytest.mark.asyncio
+async def test_a_slow_economy_never_holds_a_producer(economy, caplog, monkeypatch) -> None:
+    """The bid runs beside the producer: an answer that has not come back yet holds nothing,
+    and the line is logged when it does come back."""
+    import scripts.physiology_shadow as ps
+
+    caplog.set_level(logging.INFO, logger="orion-hub.physiology_shadow")
+    gate = asyncio.Event()
+
+    async def slow_abid(want):
+        economy.wants.append(want)
+        await gate.wait()
+        return _decision(want, "deferred")
+
+    monkeypatch.setattr(ps, "abid", slow_abid)
+    _stub_tick(monkeypatch, [])
+    result = await asyncio.wait_for(_tick(_outreach()), timeout=5.0)
+    assert result["reason"] == "sent" and len(economy.wants) == 1
+    assert _shadow_lines(caplog) == []          # still waiting on the economy; the tick is done
+    gate.set()
+    await _drain()
+    assert _fields(_shadow_lines(caplog)[0])["shadow"] == "deferred"
+
+
+@pytest.mark.asyncio
+async def test_leisure_start_logs_ran_on_the_dispatch_id(economy, caplog, monkeypatch) -> None:
+    from orion.schemas.retro_leisure import RetroLeisureStartRequestV1
+    from scripts import act_emit
+    from scripts import retro_leisure_listener as rl
+
+    caplog.set_level(logging.INFO, logger="orion-hub.physiology_shadow")
+    monkeypatch.setattr(rl, "START_GRACE_SEC", 0.01)
+    opened = []
+
+    async def fake_open(bus, *, dispatch_id, session_id):
+        opened.append(dispatch_id)
+        return True
+
+    monkeypatch.setattr(act_emit, "publish_play_opened", fake_open)
+    hold = asyncio.Event()
+
+    class _Runner:
+        async def should_start(self, config):
+            return None
+
+        async def run_leisure_session(self, config, *, act_id=None):
+            await hold.wait()
+
+    listener = rl.RetroLeisureListener(None, config_provider=lambda: None, pool_provider=lambda: None,
+                                       runner_provider=lambda: _Runner())
+    out = await listener.start(RetroLeisureStartRequestV1(dispatch_id="dispatch:t2", correlation={}))
+    await _drain()
+    assert out.state == "started" and opened == ["dispatch:t2"]
+    f = _fields(_shadow_lines(caplog)[0])
+    assert (f["want_id"], f["real"]) == ("dispatch:t2", "ran")
+    listener.session_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_coplay_without_a_bus_is_logged_blocked(economy, caplog) -> None:
+    from scripts import retro_memory_export as rx
+
+    caplog.set_level(logging.INFO, logger="orion-hub.physiology_shadow")
+    sink = rx.make_session_start_sink(bus_provider=lambda: None)
+    assert await sink("retro-2", 5.0) is False
+    await _drain()
+    assert _fields(_shadow_lines(caplog)[0])["real"] == "blocked:no_bus"

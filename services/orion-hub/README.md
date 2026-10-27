@@ -2732,6 +2732,16 @@ reservation. Code: `scripts/physiology_shadow.py`. Switch: `HUB_PHYSIOLOGY_SHADO
 (default true). Hub runs on the host network, so `ORION_PHYSIOLOGY_BID_URL` points at durable-runs'
 host port `http://127.0.0.1:8124/physiology/bid`.
 
+Known gaps, on purpose:
+
+- When outreach's agent lane times out and the chat lane retries, the act opens on the retry's
+  new id. `want_ledger.want_id` then differs from `grammar_acts.correlation_id`; the log line's
+  `act_correlation_id` is the only link. A join must use it.
+- Only the endogenous tick bids. `offer_message` (curiosity Door-A) and reading-finding outreach
+  also open `hub.outreach` acts, and those acts have no shadow want.
+- A refused leisure dispatch that the dispatch runtime retries bids again under the same
+  `want_id` (one `want_ledger` row per decision). Take the last decision per `want_id`.
+
 Reading pull does not bid here: a read runs as a `reading.turn` durable run, and that bid is left
 to durable-runs admission (a separate patch), so a read is never bid twice.
 

@@ -103,6 +103,10 @@ Not run. The change is Hub Python plus a static asset.
   - Evidence: `test_option_picks_tolerate_loose_types_and_the_retry_gets_full_room`.
 - **Not changed (L4):** a menu can still offer the move that just did nothing; the validator refuses it and the retry handles it. **L5:** the prefix-cache reuse is UNVERIFIED live.
 
+## CI findings fixed
+
+- `service-container` failed once: `retro_browser.mjs` "acknowledged wait never applied". The test read the evidence journal a single time, in the gap between goal acceptance and its first applied frame. It now waits up to 5 s for that row. It passed locally 3 of 3 with `--ack-delay-ms 350` before and after the change, and passes in CI.
+
 ## Restart required
 
 ```bash

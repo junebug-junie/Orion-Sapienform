@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 from app.zelda import observe
 from app.zelda.observe import decode, ZeldaObserver, tile_of, ROMS, CORES
-from app.zelda.navigate import ZeldaGoals, astar, judge, tile_xy, UP, DOWN, LEFT, RIGHT, A, STUCK_FRAMES, open_sides
+from app.zelda.navigate import ZeldaGoals, astar, judge, tile_xy, UP, DOWN, LEFT, RIGHT, A, STUCK_FRAMES, open_sides, edge_tiles
 from app.zelda.atlas import Atlas, load, neighbourhood, path_for, MAX_BYTES
 from app.contracts import GoalV2, LeisureControl
 from app.control import Arbiter
@@ -751,3 +751,33 @@ def test_dungeon_sides_count_doorways_two_tiles_short_of_the_edge():
     assert room['level'] == 'unknown' and room['link']['tile'] == [15, 17]   # as live: dungeon level unsettled
     g.observe_frame(0, 2, 1, room, 0)
     assert sorted(g.attempt['open_sides']) == ['S', 'W']
+
+
+def _room_124_blocked(extra_open=()):
+    return {(c, r) for r, row in enumerate(ROOM_124) for c, ch in enumerate(row) if ch == '#'} - set(extra_open)
+
+
+def test_dungeon_sides_find_north_and_east_doors_mirrored_from_the_live_ones():
+    # Synthetic: N and E doors placed like the live S and W ones (outer two tiles still collision).
+    north = {(c, r) for c in (15, 16) for r in (2, 3)}
+    east = {(c, r) for c in (28, 29) for r in (10, 11)}
+    walls = [[(c, r) in _room_124_blocked(north | east) for c in range(32)] for r in range(22)]
+    assert sorted(open_sides(walls, set(), (15, 17), dungeon=True)) == ['E', 'N', 'S', 'W']
+
+
+def test_dungeon_exit_walks_to_the_doorway_and_pushes_through_without_learning_a_wall():
+    # The stand-in cannot scroll rooms, so the goal ends stuck; what matters is the motor reaches the
+    # doorway's last floor tile, holds DOWN into the frame, and records no bump there.
+    world = World(level=1, blocked=_room_124_blocked(), x=120, y=191)
+    masks = []
+    orig = world.step
+    world.step = lambda m: (masks.append(m), orig(m))[1]
+    done, rows, _ = run_goal({'kind': 'exit', 'dir': 'S'}, {'kind': 'unknown'}, world=world)
+    assert tile_of(world.kw['x'], world.kw['y']) == (15, 19)
+    assert masks[-1] == DOWN and not [r for r in rows if r['kind'] == 'bump']
+    assert done['outcome'] == 'interrupted:stuck'
+    # West: the motor's own plan targets the doorway's last floor column (the stand-in's pillar
+    # collision is coarser than the game's, so it is not walked here).
+    walls = [[ch == '#' for ch in row] for row in ROOM_124]
+    tiles, col = edge_tiles(walls, set(), (15, 17), 'W')
+    assert col == -2 and set(tiles) == {(2, 10), (2, 11)}

@@ -9,6 +9,13 @@
 3. the pure decision (``orion.physiology.choice.decide``) against the in-memory reservation book;
 4. the decision published on ``orion:physiology:want:decision`` (sql-writer -> ``want_ledger``).
 
+The exploration floor's weekly quota (Patch C3a) counts funded wants from ``want_ledger`` over the
+rolling 7 days, re-read with the act history; a failed ledger read leaves the last count (and no
+floor until a first read succeeds), it never fails the bid.
+
+Bid sites in this process (Patch C3a): durable-runs' own admission (``app.run_bids``) calls
+``Market.bid`` in-process, ``mark_opened`` at the run's first grant and ``release`` at its terminal.
+
 Read-only on Postgres. A failed history read is ``physiology_unavailable`` for that bid, never a
 fund. SHADOW: the decision is returned and logged; nobody obeys it yet.
 """
@@ -18,12 +25,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import dataclasses
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from orion.physiology.appetite import ActRecord
-from orion.physiology.choice import MarketContext, ReservationBook, build_context, decide, unavailable
+from orion.physiology.choice import (
+    FLOOR_WINDOW,
+    FundedWant,
+    MarketContext,
+    ReservationBook,
+    SYNTHETIC_PRODUCERS,
+    build_context,
+    decide,
+    unavailable,
+)
 from orion.physiology.families import FamiliesConfig
 from orion.physiology.weights import UseRecord, weights_now
 from orion.schemas.physiology import PhysiologyStateV1, parse_physiology_state
@@ -48,6 +65,13 @@ USES_SQL = """
 SELECT act_id, actor, started_at, link_status, used, window_closed
   FROM act_downstream_use
  WHERE started_at >= %(since)s
+"""
+
+
+FUNDED_SQL = """
+SELECT decision_id, family, tier, decided_at
+  FROM want_ledger
+ WHERE outcome = 'funded' AND decided_at >= %(since)s AND NOT (producer = ANY(%(synthetic)s))
 """
 
 
@@ -83,6 +107,14 @@ async def read_history(pool: Any, now: datetime) -> tuple[list[ActRecord], list[
         acts = [act_from_row(r) for r in await (await conn.execute(ACTS_SQL, {"since": since})).fetchall()]
         uses = [use_from_row(r) for r in await (await conn.execute(USES_SQL, {"since": since})).fetchall()]
     return acts, uses
+
+
+async def read_funded(pool: Any, now: datetime) -> list[FundedWant]:
+    """want_ledger's funded wants over the floor's rolling week. Raises on a failed read."""
+    async with pool.connection() as conn:
+        rows = await (await conn.execute(FUNDED_SQL, {"since": now - FLOOR_WINDOW,
+                                                      "synthetic": sorted(SYNTHETIC_PRODUCERS)})).fetchall()
+    return [FundedWant(str(r["decision_id"]), _utc(r["decided_at"]), str(r["family"]), int(r["tier"])) for r in rows]
 
 
 @dataclass
@@ -123,6 +155,10 @@ class Market:
                 # An act ledger read that returns nothing is not "no hunger anywhere": unknown.
                 raise RuntimeError("grammar_acts returned no rows")
             self._cache = _Cached(at=now, acts=acts, uses=uses)
+            try:
+                self.book.seed_funded(await read_funded(self._pool_getter(), now), now)
+            except Exception:  # noqa: BLE001 -- keep the last count; no floor until a first read succeeds
+                logger.warning("physiology_bid_funded_read_failed", exc_info=True)
             return self._cache
 
     async def _state(self) -> Optional[PhysiologyStateV1]:
@@ -150,11 +186,11 @@ class Market:
             self._weights = (key, weights_now(self.families, hist.acts, hist.uses, now))
         ctx = build_context(self.families, hist.acts, hist.uses, state, now, lane_window_sec=self._lane_window,
                             weights=self._weights[1])
-        return MarketContext(families=ctx.families, appetite=ctx.appetite, weights=ctx.weights,
-                             tier1_share=ctx.tier1_share, funded_share=ctx.funded_share,
-                             lane_window_sec=ctx.lane_window_sec, stale_after_sec=self._stale)
+        # dataclasses.replace keeps every field (C1 rebuilt the context by hand and dropped
+        # tier1_recent_use, so Tier 2's line forgot Tier 1's measured use).
+        return dataclasses.replace(ctx, stale_after_sec=self._stale)
 
-    async def bid(self, want: WantV1, now: Optional[datetime] = None) -> WantDecisionV1:
+    async def bid(self, want: WantV1, now: Optional[datetime] = None, *, reserve_at_open: bool = False) -> WantDecisionV1:
         now = now or datetime.now(timezone.utc)
         state = await self._state()
         ctx = await self.context(state, now)
@@ -164,7 +200,7 @@ class Market:
             # Never fund on a missing market: physiology_unavailable.
             decision = unavailable(want, now, why=why, state=state)
         else:
-            decision = decide(want, state, ctx, self.book, now)
+            decision = decide(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open)
         self.counts[decision.outcome] = self.counts.get(decision.outcome, 0) + 1
         try:
             await self._publish(decision)
@@ -179,11 +215,14 @@ class Market:
     def release(self, want_id: str) -> int:
         return self.book.release(want_id)
 
+    def mark_opened(self, want_id: str, at: Optional[datetime] = None) -> int:
+        return self.book.mark_opened(want_id, at or datetime.now(timezone.utc))
+
     def health(self, now: Optional[datetime] = None) -> dict:
         now = now or datetime.now(timezone.utc)
         return {"families": len(self.families.families) if self.families else 0,
                 "families_error": self.families_error, "history_cached_at": self._cache.at.isoformat() if self._cache else None,
-                "reservations": len(self.book.snapshot(now)), **self.counts}
+                "reservations": len(self.book.snapshot(now)), "funded_seeded": self.book.funded_seeded, **self.counts}
 
 
-__all__ = ["Market", "act_from_row", "read_history", "use_from_row"]
+__all__ = ["Market", "act_from_row", "read_funded", "read_history", "use_from_row"]

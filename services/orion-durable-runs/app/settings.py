@@ -257,6 +257,10 @@ class Settings(BaseSettings):
     physiology_bid_history_ttl_sec: float = Field(300.0, gt=0.0, alias="ORION_PHYSIOLOGY_BID_HISTORY_TTL_SEC")
     # A body state older than this is stale: the bid answers physiology_unavailable (never funded).
     physiology_bid_stale_after_sec: float = Field(360.0, gt=0.0, alias="ORION_PHYSIOLOGY_BID_STALE_AFTER_SEC")
+    # Body economy Patch C3a, SHADOW: want-family durable runs (curiosity investigate, self-inquiry,
+    # self-sense eval, journal compose) bid in-process at submit, mark their act opened at the first
+    # grant and release at terminal. Decisions go to want_ledger; admission is unchanged.
+    physiology_shadow_bids_enabled: bool = Field(True, alias="ORION_PHYSIOLOGY_SHADOW_BIDS_ENABLED")
 
     @field_validator("physiology_energy_monthly_envelope_usd", mode="before")
     @classmethod

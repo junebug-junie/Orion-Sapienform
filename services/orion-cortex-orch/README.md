@@ -116,3 +116,16 @@ or invalid receipt returns `AdmissionUnconfirmed`; retry the same run ID or
 inspect it at the runner, because registration may already have committed.
 Requests without admission retain the existing synchronous/legacy behavior.
 See `docs/architecture/durable-resource-admission.md` for ownership and rollout.
+
+## Body economy shadow bid at dispatch (2026-10-27, Patch C3a, SHADOW)
+
+`app/physiology_bid.py`. Before a verb is dispatched, a tier 1/2 verb (its `physiology` block in
+`orion/cognition/verbs/*.yaml`) bids through `orion.physiology.client.abid` (0.5 s timeout, `None`
+on failure) to orion-durable-runs `POST /physiology/bid`. The dispatch is unchanged whatever the
+answer; the decision id is logged on the dispatch trace (`orch_physiology_shadow_bid corr=...
+decision_id=... obeyed=false`), and a funded decision's reservation is released after the dispatch
+returns. Never bids: cortex-gateway ingress (Juniper's turn), chat verbs or the pinned `chat` lane,
+`interactive`/`urgent` priority, nested calls from cortex-exec (its capability bridge inside a turn,
+self-study's nested reflect), calls from orion-durable-runs (the run bid at admission), tier 0 or
+undeclared verbs. Env: `ORION_PHYSIOLOGY_SHADOW_BIDS_ENABLED` (default true), `ORION_PHYSIOLOGY_BID_URL`,
+`ORION_PHYSIOLOGY_BID_TIMEOUT_SEC`.

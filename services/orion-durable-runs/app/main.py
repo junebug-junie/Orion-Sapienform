@@ -524,7 +524,8 @@ async def lifespan(app: FastAPI):
         runner = DurableRunner(_settings, bus=rpc_bus, checkpointer=saver)
         if _settings.admission_enabled:
             from app.admission_runtime import AdmissionRuntime
-            admission = AdmissionRuntime(_settings, runner, _checkpointer_cm)
+            # market is built below; the bidder reads the module global at call time.
+            admission = AdmissionRuntime(_settings, runner, _checkpointer_cm, market_getter=lambda: market)
             # Admission migration is operator-managed, unlike saver migrations.
             # Fail startup if it has not been applied; never accept into memory.
             await admission.store.list_pending(limit=1)

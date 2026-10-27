@@ -688,7 +688,9 @@ def _replay_decisions(acts, uses, families, *, start, end, heat_by_hour, cabinet
     tz = ZoneInfo("America/Denver")
     series = weight_series(families, acts, uses, start=(start - timedelta(days=1)).date(), end=end.date())
     book = ReservationBook()
-    funded_log: list[tuple[datetime, str]] = []
+    # The weekly floor counts THIS replay's own funded wants (closed loop), exactly as live counts
+    # want_ledger: an empty ledger at the start, then every funded decision (Patch C3a).
+    book.seed_funded([], start)
     rows = []
     wants = sorted((a for a in acts if a.opened_at is not None and start <= a.opened_at < end
                     and families.get(a.family) is not None and families.get(a.family).bids), key=lambda a: a.opened_at)
@@ -714,24 +716,16 @@ def _replay_decisions(acts, uses, families, *, start, end, heat_by_hour, cabinet
             continue
         ctx = build_context(families, before, [u for u in uses if u.started_at and u.started_at < t], st, t,
                             weights=series.get(t.date(), {}))
-        # Funded shares from THIS replay's own funded wants (closed loop), not from the real acts.
-        week = [f for (ft, f) in funded_log if t - timedelta(days=7) <= ft < t]
-        shares = {}
-        for f, c in families.families.items():
-            if c.bids:
-                tier_n = sum(1 for g in week if families.get(g).tier == c.tier)
-                shares[f] = (sum(1 for g in week if g == f) / tier_n) if tier_n else None
-        ctx = type(ctx)(families=ctx.families, appetite=ctx.appetite, weights=ctx.weights, tier1_share=ctx.tier1_share,
-                        funded_share=shares)
-        w = WantV1(want_id=f"replay:{a.act_id}", family=a.family, producer="replay", verb="replay", tier=cfg.tier,
+        share = book.funded_share(a.family, cfg.tier, t)
+        # Not "replay": that producer name marks hand-run probes, which the floor never counts.
+        w = WantV1(want_id=f"replay:{a.act_id}", family=a.family, producer="replay.act_history", verb="replay", tier=cfg.tier,
                    opened_at=t)
         d = decide(w, st, ctx, book, t)
         if d.outcome == "funded":
-            funded_log.append((t, a.family))
             book.release(w.want_id)   # the real act ran and closed; its use is history now
-        rows.append({"t": t.isoformat(), "family": a.family, "gpu": gpu, "hot": hot, "outcome": d.outcome,
-                     "reason": d.reason, "net": d.net, "floor_share": shares.get(a.family),
-                     "binding": d.binding_constraint})
+        rows.append({"t": t.isoformat(), "family": a.family, "tier": cfg.tier, "gpu": gpu, "hot": hot,
+                     "outcome": d.outcome, "reason": d.reason, "net": d.net, "floor_share": share,
+                     "intensity": d.intensity, "binding": d.binding_constraint})
     return rows, series
 
 
@@ -834,18 +828,59 @@ def eval_r6(acts, families, *, now: datetime, burst: int = 20) -> dict:
                      "check, so this confirms the code enforces the rule; it cannot find a pricing failure.")}
 
 
+def weekly_floor_report(rows, families, *, floor: float = 0.05, tier: int = 2) -> dict:
+    """The literal weekly clause, per family of ``tier``, over a decided replay: at every want time,
+    the family's share of the tier's funded wants over the trailing 7 days. A family passes when that
+    share never sat under ``floor`` while the family had an unfunded, HUNGRY bid (intensity > 0)
+    deferred on PRICE in that same week -- i.e. demand-limited families (everything they asked for
+    was funded) and capacity-only deferrals do not count against the quota, a price deferral does."""
+    fund = [(_ts_any(r["t"]), r["family"]) for r in rows if r["outcome"] == "funded" and r.get("tier") == tier]
+    out = {}
+    for f, c in sorted(families.families.items()):
+        if not c.bids or c.tier != tier:
+            continue
+        mine = [r for r in rows if r["family"] == f]
+        worst, misses = None, []
+        for r in mine:
+            t = _ts_any(r["t"])
+            week = [g for (ft, g) in fund if t - timedelta(days=7) <= ft <= t]
+            share = (sum(1 for g in week if g == f) / len(week)) if week else None
+            if share is not None:
+                worst = share if worst is None else min(worst, share)
+            if (r["outcome"] == "deferred" and r["reason"] == "price" and (r.get("intensity") or 0) > 0
+                    and (share is None or share < floor)):
+                misses.append(r["t"])
+        end = mine[-1] if mine else None
+        last_t = _ts_any(rows[-1]["t"]) if rows else None
+        week = [g for (ft, g) in fund if last_t and last_t - timedelta(days=7) <= ft <= last_t]
+        out[f] = {"bids": len(mine), "funded": sum(1 for r in mine if r["outcome"] == "funded"),
+                  "floor_funded": sum(1 for r in mine if r["reason"] == "exploration_floor"),
+                  "deferred_price_hungry": sum(1 for r in mine if r["outcome"] == "deferred" and r["reason"] == "price"
+                                               and (r.get("intensity") or 0) > 0),
+                  "deferred_price_sated": sum(1 for r in mine if r["outcome"] == "deferred" and r["reason"] == "price"
+                                              and not (r.get("intensity") or 0) > 0),
+                  "deferred_capacity": sum(1 for r in mine if r["reason"] == "capacity_reserved"),
+                  "min_trailing_week_share": round(worst, 4) if worst is not None else None,
+                  "final_week_share": round(sum(1 for g in week if g == f) / len(week), 4) if week else None,
+                  "quota_misses": len(misses), "first_miss": misses[0] if misses else None,
+                  "last_bid": end["t"] if end else None}
+    return out
+
+
 def eval_r7(rows_stress, series, acts, uses, families) -> dict:
-    """R7: drift <= 0.1/day; every family keeps >= 5% of its tier's funded acts (graded as: the floor
-    never failed to fire for a family under 5% that bid); a zero-use family ends below its prior."""
+    """R7: drift <= 0.1/day; every Tier 2 family keeps >= 5% of Tier 2's funded wants per rolling
+    7 days (Patch C3a's weekly quota, graded literally by ``weekly_floor_report``: no hungry price
+    deferral while the family sat under 5%); a zero-use family ends below its prior. Tier 1 has no
+    floor (its reserved lane share is its guarantee): its shares are reported, not graded."""
     from orion.physiology.weights import MAX_DRIFT_PER_DAY, max_daily_move, weight_series
 
     drift = max_daily_move(series)
     last = series[max(series)]
-    under_floor = [r for r in rows_stress if r["reason"] != "spinal:heat_reflex"
-                   and (r.get("floor_share") is None or r["floor_share"] < 0.05)]
-    violations = [r for r in under_floor if r["outcome"] == "deferred" and r["reason"] == "price"]
     floor_fired = sum(1 for r in rows_stress if r["reason"] == "exploration_floor")
-    # Literal weekly shares in the stress run.
+    weekly = weekly_floor_report(rows_stress, families, tier=2)
+    weekly_t1 = weekly_floor_report(rows_stress, families, tier=1)
+    violations = [f for f, x in weekly.items() if x["quota_misses"]]
+    # Literal whole-window shares in the stress run.
     shares = {}
     for f, c in families.families.items():
         if not c.bids:
@@ -867,12 +902,16 @@ def eval_r7(rows_stress, series, acts, uses, families) -> dict:
              "final_weight": round(w2.weight, 4), "prior": prior, "below_prior": w2.weight < prior}
     live_ok = all(v["final"] < 1.0 for v in live_zero.values() if v["basis"] == "evidence")
     return {"pass": bool(drift <= MAX_DRIFT_PER_DAY + 1e-9 and not violations and synth["below_prior"] and live_ok),
-            "max_daily_move": round(drift, 4), "floor_violations": len(violations), "floor_fired": floor_fired,
+            "max_daily_move": round(drift, 4), "floor_violations": len(violations), "floor_violation_families": violations,
+            "floor_fired": floor_fired, "weekly_quota_tier2": weekly, "weekly_shares_tier1_ungraded": weekly_t1,
             "stress_lane_price": 1.0, "funded_share_in_tier_stress": shares,
             "zero_use_live": live_zero,
-            "by_construction_note": ("floor_violations is 0 by construction (the floor branch runs before the price "
-                                     "branch) and the drift cap is applied inside weight_series: both confirm the code, "
-                                     "not the economics. The synthetic zero-use clause is the part that could fail."),
+            "by_construction_note": ("The weekly-quota clause confirms the code, not the economics: the grader recomputes "
+                                     "the same trailing-7-day Tier 2 share the floor branch reads, from the same replay "
+                                     "rows, and the floor branch runs before the price branch, so a hungry price deferral "
+                                     "under 5% can only appear if that bookkeeping is broken. The drift cap is applied "
+                                     "inside weight_series (also by construction). The synthetic zero-use clause is the "
+                                     "part that could fail. Sated and capacity deferrals are listed, never counted."),
             "zero_use_live_note": ("A zero-use family under 10 evidenced acts stays at its prior by the ungraded rule; "
                                    "the 'ends below prior' clause can only bite at n >= 10."),
             "zero_use_synthetic": synth,
@@ -949,9 +988,10 @@ def render_wants_md(w: dict) -> str:
          f"{r6['note']} "
          + "; ".join(f"{k}: {d['funded']} funded, {d['deferred_capacity']} deferred on capacity, {d['reserved_over_budget']}"
                      for k, d in r6["by_family"].items()),
-         f"- **R7 {v(r7['pass'])}**: max weight move {r7['max_daily_move']:.3f}/day (cap 0.1); exploration floor with every "
-         f"lane price at 1.0: {r7['floor_fired']} wants funded by the floor, {r7['floor_violations']} under-floor wants deferred on "
-         f"price; synthetic zero-use family {r7['zero_use_synthetic']['family']} (n {r7['zero_use_synthetic']['n']}) ends at "
+         f"- **R7 {v(r7['pass'])}**: max weight move {r7['max_daily_move']:.3f}/day (cap 0.1); weekly exploration quota with every "
+         f"lane price at 1.0: {r7['floor_fired']} wants funded by the floor, "
+         f"{r7['floor_violations']} Tier 2 families with a hungry price deferral while under 5% of the trailing week "
+         f"({', '.join(r7['floor_violation_families']) or 'none'}); synthetic zero-use family {r7['zero_use_synthetic']['family']} (n {r7['zero_use_synthetic']['n']}) ends at "
          f"{r7['zero_use_synthetic']['final_weight']} vs prior {r7['zero_use_synthetic']['prior']} (below: "
          f"{r7['zero_use_synthetic']['below_prior']}); live zero-use families: {r7['zero_use_live'] or 'none'}. "
          f"{r7['zero_use_live_note']} {r7['by_construction_note']}", "",
@@ -960,6 +1000,16 @@ def render_wants_md(w: dict) -> str:
     for fam, x in r7["final_weights"].items():
         L.append(f"| {fam} | {x['weight']:.3f} | {x['target']:.3f} | {x['basis']} | {f(x['use'])} ({x['use_n']}) | "
                  f"{f(x['engagement'])} ({x['engagement_n']}) | {f(r7['funded_share_in_tier_stress'].get(fam))} |")
+    L += ["", "Weekly quota, Tier 2, stress run (trailing-7-day share of Tier 2's funded wants):", "",
+          "| family | bids | funded | by floor | price-deferred hungry | price-deferred sated | capacity | min week share | final week share | quota misses |",
+          "|---|---|---|---|---|---|---|---|---|---|"]
+    for fam, x in r7["weekly_quota_tier2"].items():
+        L.append(f"| {fam} | {x['bids']} | {x['funded']} | {x['floor_funded']} | {x['deferred_price_hungry']} | "
+                 f"{x['deferred_price_sated']} | {x['deferred_capacity']} | {f(x['min_trailing_week_share'])} | "
+                 f"{f(x['final_week_share'])} | {x['quota_misses']} |")
+    L += ["", "Tier 1 (no floor by design; its reserved lane share is its guarantee), stress run: "
+          + "; ".join(f"{fam} final week share {f(x['final_week_share'])} ({x['funded']}/{x['bids']} funded)"
+                      for fam, x in r7["weekly_shares_tier1_ungraded"].items())]
     L += ["", "Replay decision reasons: " + ", ".join(f"{k} {n}" for k, n in w["reasons"].items()), ""]
     return "\n".join(L) + "\n"
 

@@ -27,6 +27,7 @@ from .workflow_runtime import (
     has_workflow_schedule_management_request,
 )
 from .durable_runs import dispatch_durable_run, has_durable_run_request
+from .physiology_bid import release as physiology_shadow_release, shadow_bid as physiology_shadow_bid
 from orion.spark.concept_induction.profile_repository import concept_profile_parity_evidence_snapshot
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.cortex.schemas import StepExecutionResult
@@ -162,6 +163,19 @@ def _runtime_identity() -> dict[str, str]:
         "process_started_at": PROCESS_STARTED_AT_UTC.isoformat(),
         "now_utc": datetime.now(timezone.utc).isoformat(),
     }
+
+
+_shadow_release_tasks: set[asyncio.Task] = set()
+
+
+def _release_shadow_reservation(sent) -> None:
+    """The dispatch returned (its act closed): release the shadow want's reservation in the
+    background, so the reply never waits on the economy."""
+    if sent is None:
+        return
+    task = asyncio.get_running_loop().create_task(physiology_shadow_release(sent))
+    _shadow_release_tasks.add(task)
+    task.add_done_callback(_shadow_release_tasks.discard)
 
 
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
@@ -402,18 +416,28 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             payload=failure.model_dump(mode="json"),
          )
 
+    # Body economy Patch C3a, SHADOW: a tier 1/2 verb that is not on Juniper's turn bids before it is
+    # dispatched (app/physiology_bid.py). The decision id lands on this dispatch's trace (log line
+    # with corr); the dispatch below is unchanged whatever it says.
+    shadow_decision = await physiology_shadow_bid(
+        req, source_name=(env.source.name if env.source else None), correlation_id=str(env.correlation_id),
+        enabled=bool(getattr(get_settings(), "physiology_shadow_bids_enabled", False)))
+
     # 3. Execution
     try:
-        verb_result = await call_verb_runtime(
-            _bus_for_rpc(),
-            source=sref,
-            client_request=req,
-            correlation_id=str(env.correlation_id),
-            causality_chain=env.causality_chain,
-            trace=env.trace,
-            timeout_sec=float(req.options.get("timeout_sec", 900.0)),
-            router_metadata=route_meta,
-        )
+        try:
+            verb_result = await call_verb_runtime(
+                _bus_for_rpc(),
+                source=sref,
+                client_request=req,
+                correlation_id=str(env.correlation_id),
+                causality_chain=env.causality_chain,
+                trace=env.trace,
+                timeout_sec=float(req.options.get("timeout_sec", 900.0)),
+                router_metadata=route_meta,
+            )
+        finally:
+            _release_shadow_reservation(shadow_decision)
 
         result_payload = verb_result.output if isinstance(verb_result.output, dict) else {}
         orch_route_metadata = result_payload.get("_route_metadata")

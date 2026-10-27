@@ -13,6 +13,7 @@ import pytest
 from orion.physiology import client
 from orion.physiology.appetite import ActRecord
 from orion.physiology.choice import (
+    FundedWant,
     MarketContext,
     ReservationBook,
     build_context,
@@ -57,16 +58,24 @@ def history(family, n=12, *, gap_h=2.0, slot=None, last_h=3.0):
     return out
 
 
-def ctx_for(acts, state, *, shares=None, weights=None):
-    c = build_context(FAMS, acts, [], state, NOW, weights=weights or {})
-    if shares is not None:
-        c = MarketContext(families=c.families, appetite=c.appetite, weights=c.weights, tier1_share=c.tier1_share,
-                          funded_share=shares)
-    return c
+def ctx_for(acts, state, *, weights=None):
+    return build_context(FAMS, acts, [], state, NOW, weights=weights or {})
+
+
+def seeded_book(counts, *, at=NOW - timedelta(days=1)):
+    """A book whose rolling week of funded wants (as read from want_ledger) holds ``counts`` per family."""
+    book = ReservationBook()
+    rows = [FundedWant(f"{f}:{i}@x", at, f, FAMS.get(f).tier) for f, n in counts.items() for i in range(n)]
+    book.seed_funded(rows, NOW)
+    return book
+
+
+# Tier 2 funded 100 wants this week; self_inquiry got 1 of them (1%: under the 5% quota).
+STARVED = {"durable.self_inquiry": 1, "durable.curiosity_investigate": 99}
 
 
 def want(family="durable.self_inquiry", tier=2, i=0, verb="ask", **kw):
-    return WantV1(want_id=f"w{i}", family=family, producer="test", verb=verb, tier=tier, **kw)
+    return WantV1(want_id=f"w{i}", family=family, producer="unit-producer", verb=verb, tier=tier, **kw)
 
 
 SELF = history("durable.self_inquiry", slot={"agent": 1800.0})
@@ -93,24 +102,24 @@ def test_placement_picks_the_cheapest_acceptable_lane():
 def test_price_deferral_names_the_binding_constraint_and_when_to_retry():
     st = body(lane("agent", p=1.0, state="slack"))
     w = {"durable.self_inquiry": FamilyWeight("durable.self_inquiry", 2, 0.2, 0.2, "evidence", Evidence(0.0, 40, None, 0))}
-    d = decide(want(), st, ctx_for(SELF, st, shares={"durable.self_inquiry": 0.5}, weights=w), ReservationBook(), NOW)
+    d = decide(want(), st, ctx_for(SELF, st, weights=w), ReservationBook(), NOW)
     assert d.outcome == "deferred" and d.reason == "price" and d.binding_constraint == "lane:agent"
     # A slack price decays at least ceiling / horizon: 1.0 -> needed price within the hour.
     assert d.net < 0 and d.retry_after_sec is not None and 0 < d.retry_after_sec <= 3600
     assert d.prices_seen["lane:agent"] == 1.0
     # A binding price is not falling: no retry time is promised (review finding 7).
     st2 = body(lane("agent", p=1.0, state="binding"))
-    d2 = decide(want(), st2, ctx_for(SELF, st2, shares={"durable.self_inquiry": 0.5}, weights=w), ReservationBook(), NOW)
+    d2 = decide(want(), st2, ctx_for(SELF, st2, weights=w), ReservationBook(), NOW)
     assert d2.reason == "price" and d2.retry_after_sec is None
 
 
 def test_exploration_floor_funds_a_starved_family_on_price_but_never_past_capacity():
     st = body(lane("agent", p=1.0, state="binding"))
     w = {"durable.self_inquiry": FamilyWeight("durable.self_inquiry", 2, 0.2, 0.2, "evidence", Evidence(0.0, 40, None, 0))}
-    d = decide(want(), st, ctx_for(SELF, st, shares={"durable.self_inquiry": 0.01}, weights=w), ReservationBook(), NOW)
+    d = decide(want(), st, ctx_for(SELF, st, weights=w), seeded_book(STARVED), NOW)
     assert d.outcome == "funded" and d.reason == "exploration_floor" and d.net < 0
     full = body(lane("agent", level=3500.0, p=1.0, state="binding"))
-    d2 = decide(want(), full, ctx_for(SELF, full, shares={"durable.self_inquiry": 0.01}, weights=w), ReservationBook(), NOW)
+    d2 = decide(want(), full, ctx_for(SELF, full, weights=w), seeded_book(STARVED), NOW)
     assert d2.outcome == "deferred" and d2.reason == "capacity_reserved"
 
 
@@ -233,7 +242,7 @@ def test_a_family_that_just_acted_is_sated_not_price_deferred():
     """Zero prices and zero hunger: net 0 is not > 0, but nothing binds. Named 'sated', never 'price'."""
     fresh = history("durable.self_inquiry", slot={"agent": 600.0}, last_h=0.0)
     st = body(lane("agent"))
-    d = decide(want(), st, ctx_for(fresh, st, shares={"durable.self_inquiry": 0.5}), ReservationBook(), NOW)
+    d = decide(want(), st, ctx_for(fresh, st), ReservationBook(), NOW)
     assert d.outcome == "deferred" and d.reason == "sated" and d.binding_constraint is None and d.intensity == 0.0
 
 
@@ -253,7 +262,7 @@ def test_a_gpu_family_with_no_slot_history_is_priced_at_one_window_never_free():
     """Finding 1: no measured slot time used to skip placement, charge and capacity entirely."""
     bare = history("durable.self_inquiry")          # acts with seconds only, no gpu_slot_s_by_lane
     full = body(lane("agent", level=3600.0, p=1.0, state="binding"), lane("agent-gpu2", slots=2, level=7200.0, p=1.0))
-    d = decide(want(), full, ctx_for(bare, full, shares={"durable.self_inquiry": 0.5}), ReservationBook(), NOW)
+    d = decide(want(), full, ctx_for(bare, full), ReservationBook(), NOW)
     assert d.outcome == "deferred" and d.reason == "capacity_reserved"
     assert "lane_cost_unmeasured:priced_at_one_window" in d.warnings
 
@@ -271,7 +280,7 @@ def test_full_live_seat_does_not_spill_onto_an_unloaded_swap_seat():
     """Finding 3: agent full, agent-gpu2 unloaded -> was funded on agent-gpu2 (evicting diffusion)."""
     st = body(lane("agent", level=3600.0), R(constraint="lane:agent-gpu2", unit="slot_s", level=0.0, budget=0.0,
                                             budget_kind="capacity", detail={"slots": 0}, price=price(0.0)))
-    d = decide(want(), st, ctx_for(SELF, st, shares={"durable.self_inquiry": 0.5}), ReservationBook(), NOW)
+    d = decide(want(), st, ctx_for(SELF, st), ReservationBook(), NOW)
     assert d.outcome == "deferred" and d.reason == "capacity_reserved"
 
 
@@ -283,28 +292,101 @@ def test_tier2_line_does_not_subtract_tier1_share_twice():
     st = body(lane("metacog", slots=4, level=7200.0))
     c = build_context(FAMS, tf, [], st, NOW, weights={})
     c = MarketContext(families=c.families, appetite=c.appetite, weights={}, tier1_share={"metacog": 0.5},
-                      tier1_recent_use={"metacog": 7200.0}, funded_share={})
+                      tier1_recent_use={"metacog": 7200.0})
     d = decide(want("topic_foundry.run", verb="maintain"), st, c, ReservationBook(), NOW)
     assert d.outcome == "funded" and d.lane == "metacog"
     # With Tier 1 idle, Tier 2 must leave Tier 1's 7,200 s free: 7,200 measured + 600 > 7,200 line.
     c2 = MarketContext(families=c.families, appetite=c.appetite, weights={}, tier1_share={"metacog": 0.5},
-                       tier1_recent_use={}, funded_share={})
+                       tier1_recent_use={})
     d2 = decide(want("topic_foundry.run", verb="maintain", i=2), st, c2, ReservationBook(), NOW)
     assert d2.reason == "capacity_reserved"
 
 
-def test_exploration_floor_funds_a_family_at_most_once_per_window():
-    """Finding 6: act history lags the book, so the floor would fund every bid."""
-    st = body(lane("agent", p=1.0, state="binding"))
+def test_exploration_floor_is_a_weekly_quota_not_once_per_window():
+    """C1's R7 failure: one floor fund per lane window could not hold 5%. Now the floor funds a
+    starved Tier 2 family on every hungry bid until its rolling-week share of Tier 2's funded wants
+    reaches 5%, then stops by itself."""
+    st = body(lane("agent", p=1.0, state="binding"), lane("agent-gpu2", slots=2, p=1.0, state="binding"),
+              lane("agent-deep", p=1.0, state="binding"))
     w = {"durable.self_inquiry": FamilyWeight("durable.self_inquiry", 2, 0.2, 0.2, "evidence", Evidence(0.0, 40, None, 0))}
-    ctx = ctx_for(SELF, st, shares={"durable.self_inquiry": 0.01}, weights=w)
+    ctx = ctx_for(SELF, st, weights=w)
+    book = seeded_book(STARVED)
+    reasons = []
+    for i in range(8):
+        t = NOW + timedelta(seconds=30 * i)   # inside one fresh body tick
+        d = decide(want(i=i), st, ctx, book, t)
+        book.release(d.want_id)          # the act ran and closed: capacity is not what binds here
+        reasons.append(d.reason)
+    # 1/100 -> 2/101 -> 3/102 -> 4/103 -> 5/104 (4.8%) -> 6/105 (5.7%): five floor funds, then price.
+    assert reasons[:5] == ["exploration_floor"] * 5 and reasons[5:] == ["price"] * 3
+    assert book.funded_share("durable.self_inquiry", 2, NOW + timedelta(hours=1)) == pytest.approx(6 / 105)
+
+
+def test_exploration_floor_counts_the_rolling_week_and_dedups_ledger_rows():
     book = ReservationBook()
-    first = decide(want(i=1), st, ctx, book, NOW)
-    book.release("w1")
-    second = decide(want(i=2), st, ctx, book, NOW + timedelta(minutes=5))
-    assert first.reason == "exploration_floor" and second.reason == "price"
+    old = NOW - timedelta(days=8)
+    book.seed_funded([FundedWant("a@1", old, "durable.self_inquiry", 2),
+                      FundedWant("b@1", NOW - timedelta(days=1), "durable.curiosity_investigate", 2)], NOW)
+    # The 8-day-old row fell out of the week; self_inquiry has 0 of Tier 2's 1.
+    assert book.funded_share("durable.self_inquiry", 2, NOW) == 0.0
+    # The process's own decision, then the ledger catching up with the same decision_id: counted once.
+    book.note_funded("c@1", "durable.self_inquiry", 2, NOW)
+    book.seed_funded([FundedWant("c@1", NOW, "durable.self_inquiry", 2)], NOW)
+    assert book.funded_share("durable.self_inquiry", 2, NOW) == pytest.approx(0.5)
+    # Tier 1 never counts toward Tier 2, and a tier with no funded wants has no share.
+    assert book.funded_share("actions.journal", 1, NOW) is None
 
 
+def test_exploration_floor_is_tier2_only_and_off_until_the_ledger_was_read():
+    st = body(lane("agent", p=1.0, state="binding"), lane("agent-gpu2", slots=2, p=1.0, state="binding"),
+              lane("agent-deep", p=1.0, state="binding"))
+    w = {"durable.self_inquiry": FamilyWeight("durable.self_inquiry", 2, 0.2, 0.2, "evidence", Evidence(0.0, 40, None, 0))}
+    unread = decide(want(), st, ctx_for(SELF, st, weights=w), ReservationBook(), NOW)
+    assert unread.reason == "price"
+    journal = history("actions.journal", slot={"metacog": 900.0})
+    st1 = body(lane("metacog", slots=4, p=1.0, state="binding"), lane("fast", slots=4, p=1.0, state="binding"),
+               lane("agent", p=1.0, state="binding"), lane("agent-gpu2", slots=2, p=1.0, state="binding"))
+    wj = {"actions.journal": FamilyWeight("actions.journal", 1, 0.01, 0.01, "evidence", Evidence(0.0, 40, None, 0))}
+    d = decide(want("actions.journal", tier=1, verb="make"), st1, ctx_for(journal, st1, weights=wj),
+               seeded_book({"durable.journal_compose": 50}), NOW)
+    assert d.reason != "exploration_floor"
+
+
+def test_reservation_ends_at_the_wants_window_if_no_act_opens():
+    """C1 concern: a shadow-funded want whose real act never runs must not hold capacity for an hour."""
+    st = body(lane("agent"), lane("agent-gpu2", slots=2))
+    book = ReservationBook()
+    latest = NOW + timedelta(minutes=10)
+    d = decide(want(window={"latest": latest}), st, ctx_for(SELF, st), book, NOW)
+    assert d.outcome == "funded" and d.reservation_expires_at == latest
+    assert book.total("lane:agent", NOW + timedelta(minutes=9)) > 0
+    assert book.total("lane:agent", NOW + timedelta(minutes=10, seconds=1)) == 0.0
+
+
+def test_reservation_reanchors_at_the_open_and_releases_at_the_close():
+    st = body(lane("agent"), lane("agent-gpu2", slots=2))
+    book = ReservationBook()
+    d = decide(want(window={"latest": NOW + timedelta(minutes=10)}), st, ctx_for(SELF, st), book, NOW)
+    ttl = (book.holders("lane:agent", NOW)[0].ttl_sec)
+    assert ttl == pytest.approx(1000.0)        # one act-length: the family's p90 act seconds (history: 1,000 s)
+    opened_at = NOW + timedelta(minutes=8)
+    assert book.mark_opened(d.want_id, opened_at) == 1
+    # Past the want's window, but the act is running: the reservation stays one act-length from the open.
+    assert book.total("lane:agent", NOW + timedelta(minutes=20)) > 0
+    assert book.holders("lane:agent", NOW + timedelta(minutes=20))[0].opened is True
+    assert book.release(d.want_id) == 1
+    assert book.total("lane:agent", NOW + timedelta(minutes=20)) == 0.0
+    # A reservation that already lapsed is not revived by a late open.
+    d2 = decide(want(i=9, window={"latest": NOW + timedelta(minutes=1)}), st, ctx_for(SELF, st), book, NOW)
+    assert book.mark_opened(d2.want_id, NOW + timedelta(minutes=5)) == 0
+
+
+def test_a_want_whose_window_already_passed_reserves_nothing():
+    st = body(lane("agent"), lane("agent-gpu2", slots=2))
+    book = ReservationBook()
+    d = decide(want(window={"latest": NOW - timedelta(seconds=1)}), st, ctx_for(SELF, st), book, NOW)
+    assert d.outcome == "funded" and d.reserved == {} and "window_passed:no_reservation" in d.warnings
+    assert book.total("lane:agent", NOW) == 0.0
 def test_client_returns_none_on_a_broken_http_response():
     """Finding 5: an http.client error on read (bad status line) must not raise into a producer."""
     import socket
@@ -323,3 +405,55 @@ def test_client_returns_none_on_a_broken_http_response():
     threading.Thread(target=serve, daemon=True).start()
     assert client.bid(want(), url=f"http://127.0.0.1:{port}/physiology/bid", timeout_sec=2.0) is None
     srv.close()
+
+
+def test_client_release_posts_to_the_want_and_returns_none_on_any_failure(monkeypatch):
+    """Patch C3a: a dispatch that returned releases its want's reservation (the act closed)."""
+    seen = {}
+
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            seen["path"] = self.path
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"want_id": "x", "released": 2}')
+
+        def log_message(self, *a):  # noqa: D401
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.handle_request, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_address[1]}/physiology/bid"
+    assert client.release("orch:c/1:dream_cycle", url=url, timeout_sec=2.0) == 2
+    srv.server_close()
+    assert seen["path"] == "/physiology/bid/orch%3Ac%2F1%3Adream_cycle/release"
+    assert client.release("w", url="http://127.0.0.1:9/physiology/bid", timeout_sec=0.2) is None
+    monkeypatch.setenv("ORION_PHYSIOLOGY_BID_CLIENT_ENABLED", "false")
+    assert client.release("w", url=url) is None
+
+
+def test_reserve_at_open_holds_nothing_until_the_act_opens():
+    """Review finding 3: durable runs queue ~1.5 h for a grant, longer than one act-length. A pending
+    reservation holds no line while the run waits, starts at the open, and lapses at the window end."""
+    st = body(lane("agent"), lane("agent-gpu2", slots=2))
+    book = ReservationBook()
+    latest = NOW + timedelta(hours=6)
+    d = decide(want(window={"latest": latest}), st, ctx_for(SELF, st), book, NOW, reserve_at_open=True)
+    assert d.outcome == "funded" and d.reserved and d.reservation_expires_at == latest
+    assert book.total("lane:agent", NOW + timedelta(hours=2)) == 0.0          # waiting: holds nothing
+    assert book.snapshot(NOW)[0]["pending"] is True
+    opened = NOW + timedelta(hours=2)
+    assert book.mark_opened(d.want_id, opened) == 1
+    assert book.total("lane:agent", opened + timedelta(minutes=10)) > 0       # running: holds its lane
+    assert book.total("lane:agent", opened + timedelta(seconds=1001)) == 0.0  # one act-length (1,000 s)
+    never = decide(want(i=5, window={"latest": latest}), st, ctx_for(SELF, st), book, NOW, reserve_at_open=True)
+    assert never.outcome == "funded" and book.mark_opened(never.want_id, latest + timedelta(seconds=1)) == 0
+
+
+def test_probe_bids_never_count_toward_the_floor():
+    st = body(lane("agent"), lane("agent-gpu2", slots=2))
+    book = seeded_book({})
+    d = decide(WantV1(want_id="p", family="durable.self_inquiry", producer="deploy-verification", verb="ask", tier=2),
+               st, ctx_for(SELF, st), book, NOW)
+    assert d.outcome == "funded" and book.funded_share("durable.self_inquiry", 2, NOW) is None

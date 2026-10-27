@@ -25,7 +25,7 @@ Guards (the replay's R7 checks them):
 * rest: with no new evidence the evidence ages out of the 30-day window and the weight relaxes
   to its (normalized) prior, never toward 0 or 1.
 
-The 5% exploration floor is applied in Choice (it needs the funded shares), not here.
+The 5% exploration floor is applied in Choice, on want_ledger's funded wants (Patch C3a), not here.
 
 Pure: the caller passes the act and use history and the day range.
 """
@@ -35,7 +35,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Iterable, Mapping, Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 from orion.physiology.appetite import ActRecord
 from orion.physiology.families import FamiliesConfig
@@ -170,24 +170,6 @@ def max_daily_move(series: Mapping[date, Mapping[str, FamilyWeight]]) -> float:
     return worst
 
 
-def funded_shares(families: FamiliesConfig, acts: Iterable[ActRecord], *, since: datetime, until: datetime
-                  ) -> dict[str, Optional[float]]:
-    """Each bidding family's share of its tier's funded acts (acts opened in [since, until)). In
-    shadow every real act was funded by today's gates, so act counts are the funded counts. None:
-    the tier funded nothing in the window (no share to defend)."""
-    counts: dict[str, int] = {f: 0 for f, c in families.families.items() if c.bids}
-    for a in acts:
-        t = a.opened_at or a.closed_at
-        if a.family in counts and t is not None and since <= t < until:
-            counts[a.family] += 1
-    out: dict[str, Optional[float]] = {}
-    for f, n in counts.items():
-        tier = families.families[f].tier
-        total = sum(m for g, m in counts.items() if families.families[g].tier == tier)
-        out[f] = (n / total) if total > 0 else None
-    return out
-
-
 __all__ = [
     "Evidence",
     "FamilyWeight",
@@ -196,7 +178,6 @@ __all__ = [
     "MIN_EVIDENCED",
     "UseRecord",
     "evidence_for",
-    "funded_shares",
     "max_daily_move",
     "shrunk_target",
     "weight_series",

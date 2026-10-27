@@ -23,6 +23,7 @@ from typing import Any, Awaitable, Callable
 
 from app.graph import CuriosityRunState, Deps, failed_turn_meta, is_urgent, make_nodes
 from app.pool_hold import URGENT_PREEMPT
+from orion.cognition.model_output import ModelOutputRejected
 from orion.schemas.durable_run import CURIOSITY_NODES
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,12 @@ def retry_budget(admission: AdmissionDeps, state: dict) -> tuple[int, float]:
 #   reduction budget"; no JSON parse errors) after up to 3 attempts each. A graph whose parse failures DO recover on a fresh sample
 #   (journal.compose, memory.episode_distill: explicit minimum attempts) keeps its own policy.
 #
+# EXCEPT ``ModelOutputRejected`` (a ValueError subclass, ``orion/cognition/model_output.py``): the
+# node's own parser says the MODEL's answer broke the contract, and a fresh sample can pass. It is a
+# bounded attempt like a transport error. Failing it fast (#2899) stopped curiosity.compaction dead:
+# 0 batches saved from 2026-10-24 00:42Z over 9 runs, where the old retries had been saving
+# batches. Only code that parses an LLM answer raises it; any other ValueError still fails at once.
+#
 # Everything else -- TimeoutError, OSError/ConnectionError, RuntimeError from a failed turn or
 # transport (HarnessTurnFailed, SelfSenseAskFailed, ReflectLlmCallFailed) -- is transient: a
 # bounded, backed-off attempt.
@@ -150,7 +157,10 @@ DETERMINISTIC_ERRORS: tuple[type[BaseException], ...] = (
 
 
 def is_deterministic(exc: BaseException) -> bool:
-    """True when retrying ``exc`` cannot help (see ``DETERMINISTIC_ERRORS``)."""
+    """True when retrying ``exc`` cannot help (see ``DETERMINISTIC_ERRORS``). A rejected model
+    answer (``ModelOutputRejected``) is never deterministic: the next sample differs."""
+    if isinstance(exc, ModelOutputRejected):
+        return False
     return isinstance(exc, DETERMINISTIC_ERRORS)
 
 

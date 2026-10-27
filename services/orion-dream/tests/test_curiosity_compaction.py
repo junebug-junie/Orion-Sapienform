@@ -100,9 +100,59 @@ def test_failed_empty_or_ungrounded_generation_does_not_change_checkpoint(raw):
     from orion.curiosity.compaction import record_answer
     r = row()
     before = copy.deepcopy(r)
-    with pytest.raises(ValueError):
+    from orion.cognition.model_output import ModelOutputRejected
+    with pytest.raises(ModelOutputRejected):   # the model's fault, so a durable run retries it
         record_answer(r, raw)
     assert r == before
+
+
+def _topic_answer(body, refs=("s0",)):
+    return json.dumps({"topics": [{"topic": "Delivery reliability", "body": body, "refs": list(refs)}]})
+
+
+def test_body_over_the_cap_is_a_rejected_model_answer_not_a_code_error():
+    """Live 2026-10-24..27: bodies written just past 1200 chars failed the run outright."""
+    from orion.cognition.model_output import ModelOutputRejected
+    from orion.curiosity.compaction import record_answer
+    with pytest.raises(ModelOutputRejected, match="body"):
+        record_answer(row(), _topic_answer(BODY + " more." * 200))
+    assert issubclass(ModelOutputRejected, ValueError)   # existing `except ValueError` callers still catch it
+
+
+def test_body_cut_off_by_the_length_cap_is_rejected_but_a_finished_one_at_the_cap_is_kept():
+    from orion.cognition.model_output import ModelOutputRejected
+    from orion.curiosity.compaction import TOPIC_BODY_CHARS, record_answer
+    stump = (BODY + " ") * 20
+    with pytest.raises(ModelOutputRejected, match="cut off"):
+        record_answer(row(), _topic_answer(stump[:TOPIC_BODY_CHARS]))
+    finished = stump[:TOPIC_BODY_CHARS - 1] + "."
+    assert len(finished) == TOPIC_BODY_CHARS
+    assert record_answer(row(), _topic_answer(finished))["state"]["phase"] == "overall"
+
+
+def test_output_schema_encodes_the_limits_and_this_batchs_refs():
+    from orion.curiosity.compaction import Topic, TopicPass, output_schema
+    r = row([{"ref": str(i), "body": f"evidence {i} " * 20, "sources": ["j1"]} for i in range(3)])
+    name, schema = output_schema(r)
+    assert name == "CuriosityCompactionTopicPassV1"
+    topics = schema["properties"]["topics"]
+    item = topics["items"]["properties"]
+    assert (topics["minItems"], topics["maxItems"]) == (1, TopicPass.model_fields["topics"].metadata[1].max_length)
+    assert item["body"]["maxLength"] == 1200 == Topic.model_fields["body"].metadata[1].max_length
+    assert item["body"]["minLength"] == 80 and "pattern" not in item["body"] and "enum" not in item["body"]
+    assert item["refs"]["minItems"] == 1
+    assert item["refs"]["items"]["enum"] == [f"s{i}" for i in range(len(r["state"]["batches"][0]))]
+    assert topics["items"]["additionalProperties"] is False
+    r["state"]["phase"] = "overall"
+    name, schema = output_schema(r)
+    assert name == "CuriosityCompactionSummaryV1" and schema["properties"]["body"]["maxLength"] == 2400
+
+
+def test_prompt_asks_for_words_not_a_character_count_at_the_cap():
+    from orion.curiosity.compaction import next_prompt
+    prompt = next_prompt(row())
+    assert "about 120 to 150 words" in prompt and "hard limit: 1200 characters" in prompt
+    assert "80 to 1200 characters" not in prompt
 
 
 def test_journal_contract_is_idempotent_indexable_and_silent():

@@ -740,6 +740,7 @@ class DurableRunner:
         gpu_lease: GpuLeaseRefV1 | None = None,
         timeout_sec: float,
         user_text: str,
+        options: dict[str, Any] | None = None,
     ) -> str:
         """One cortex verb call returning the model's final answer text (no JSON parsing), over
         ``_cortex_orch_rpc`` (shared with compactor.digest).
@@ -755,12 +756,17 @@ class DurableRunner:
         switch): these are prose verbs whose answer IS the output, and hidden reasoning counts
         against ``max_tokens``. Live 2026-09-30, the first orion_day note spent all 12000 tokens
         (32k chars) planning and emitted no note -> ``verb_truncated_at_max`` on every attempt.
-        A future caller that needs reasoning must not reuse this helper as is."""
+        A future caller that needs reasoning must not reuse this helper as is.
+
+        ``options``: extra cortex options merged in, e.g. ``structured_output_*`` (cortex-exec
+        forwards them to the gateway, which builds llama.cpp's ``response_format``). They cannot
+        override thinking, the route or the lease."""
         request = CortexClientRequest(
             mode="brain",
             route_intent="none",
             verb=verb,
             options={
+                **(options or {}),
                 "policy_dispatch_only": True,
                 "chat_template_kwargs": {"enable_thinking": False},
                 **({"llm_route": llm_route} if llm_route else {}),

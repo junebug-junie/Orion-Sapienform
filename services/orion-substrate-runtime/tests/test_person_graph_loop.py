@@ -314,3 +314,16 @@ def test_no_cluster_node_for_a_not_a_person_row_an_unnamed_or_a_copied_cluster()
     assert store.get_node_by_id(entity_node_id_for_individual("c9")) is None
     assert store.get_node_by_id(entity_node_id_for_individual("c7")) is None
     assert store.get_node_by_id(entity_node_id_for_individual("c8")) is None
+
+
+def test_a_stale_cluster_name_is_renamed_with_the_old_name_kept_as_alias():
+    """A rename nobody heard on the bus (missed event, or a direct Postgres fix) still reaches the graph."""
+    from app.person_graph_loop import LinkRow, PersonRow
+
+    store, journal, projector = _world("c1")   # node labelled "Sam" by the listener
+    links = [LinkRow("l1", ROBIN, "c1", "ask-new", label="Robin", kind="person", label_ask_id="ask-new")]
+    report = _sync(store, journal, projector, [PersonRow(ROBIN, "Robin")], links)
+    node = store.get_node_by_id(entity_node_id_for_individual("c1"))
+    assert (report.clusters_relabelled, report.clusters_written) == (1, 0)
+    assert node.label == "Robin" and "Sam" in node.aliases and node.metadata["label_ask_id"] == "ask-new"
+    assert _sync(store, journal, projector, [PersonRow(ROBIN, "Robin")], links).clusters_relabelled == 0

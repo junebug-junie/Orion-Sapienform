@@ -208,6 +208,10 @@ def test_a_new_thermal_env_key_with_an_owned_value_is_refused(gate, monkeypatch)
     ("CRITICAL_C: float = 34", True),  # env-key-single-source: sample
     ("def f(*, hot_rearm_c: float = 30.5): ...", True),  # env-key-single-source: sample
     ("class S:\n    room_hot_c: float = Field(default=32.0)", True),  # env-key-single-source: sample
+    ("thermal_state(temp_c=t, age_sec=a, hot_c=32.0, hot_rearm_c=30.5)", True),  # env-key-single-source: sample
+    ("cfg = {'hot_c': 32.0}", True),  # env-key-single-source: sample
+    ("HOT_C = -32.0 * -1", False),            # an expression, not a restated literal
+    ("thermal_state(temp_c=32.0, age_sec=1.0)", False),  # a reading, not a line
     ("GPU_CEILING_REARM_C = 80.0", False),   # a chip ceiling, not a room line
     ("x = 32.0", False),                      # a 32 that is not named as a temperature line
     ("THERMAL_MIN_C = 50.0", False),          # thermal name, unowned value
@@ -218,6 +222,35 @@ def test_python_copy_shapes(gate, src, caught) -> None:
     assert bool([c for c in gate._py_line_copies(src) if c[2] in values]) is caught
 
 
+def _one_file_tree(rel: str, text: str):
+    return [(REPO_ROOT / rel, rel, text)]
+
+
 def test_prose_naming_a_retired_key_is_not_a_copy(gate) -> None:
-    """Docstrings and comments may still name the deleted key (history); only setting or reading it fails."""
-    assert list(gate._py_line_copies('"""ORION_THERMAL_HOT_C was deleted."""')) == []  # env-key-single-source: sample
+    """Docstrings and comments may still name the deleted key (history); only setting or reading it fails.
+    Exercises the retired-key check itself, not the numeric-copy scan."""
+    prose = '"""ORION_THERMAL_HOT_C was deleted in Patch B."""\n# ORION_THERMAL_HOT_REARM_C too\n'  # env-key-single-source: sample
+    assert gate._module_owned_failures(_one_file_tree("x/prose.py", prose)) == []
+    env_prose = "# ORION_THERMAL_HOT_C was deleted\n"  # env-key-single-source: sample
+    assert gate._module_owned_failures(_one_file_tree("x/.env_example", env_prose)) == []
+
+
+@pytest.mark.parametrize("rel,text", [
+    ("x/settings.py", 'v = os.getenv("ORION_THERMAL_HOT_C")\n'),  # env-key-single-source: sample
+    ("x/.env_example", "ORION_THERMAL_HOT_REARM_C=29.0\n"),  # env-key-single-source: sample
+    ("x/docker-compose.yml", '      - ORION_THERMAL_HOT_C=${ORION_THERMAL_HOT_C:-1}\n'),  # env-key-single-source: sample
+])
+def test_setting_or_reading_a_retired_key_is_refused(gate, rel, text) -> None:
+    failures = gate._module_owned_failures(_one_file_tree(rel, text))
+    assert any("was retired" in f for f in failures), failures
+
+
+@pytest.mark.parametrize("line,caught", [
+    ('      KEY_HOT_C: "${KEY_HOT_C:-32.0}"', True),  # env-key-single-source: sample
+    ("export ROOM_HOT_C=32.0", True),  # env-key-single-source: sample
+    ("      - CABINET_CRITICAL_C=${CABINET_CRITICAL_C:-34}", True),  # env-key-single-source: sample
+    ("HARDWARE_WATCH_GPU_CEILING_REARM_C=80", False),
+])
+def test_env_and_compose_shapes(gate, line, caught) -> None:
+    failures = gate._module_owned_failures(_one_file_tree("x/.env_example", line + "\n"))
+    assert bool(failures) is caught, failures

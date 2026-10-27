@@ -63,18 +63,20 @@ MODULE_OWNED_LINES: dict[str, tuple[str, ...]] = {
         "DEFAULT_CRITICAL_C", "DEFAULT_CRITICAL_REARM_C",
     ),
 }
-# A name that reads as a room-temperature line: a thermal word, and a Celsius suffix. Both the
+# A name that reads as a temperature LINE (not a reading): a line word, and a Celsius suffix.
+# `cabinet_temp_c=32.0` is a reading and passes; `hot_c=32.0` / `ROOM_LIMIT_C=32` are lines. Both the
 # name AND an owned value must match, so GPU/CPU ceilings (80/85 C) and unrelated `_c` knobs pass.
-_THERMAL_LINE_NAME = re.compile(r"(?i)(hot|crit|elevat|rearm|re_arm|thermal|cabinet|room)\w*_c$")
+_THERMAL_LINE_NAME = re.compile(r"(?i)(hot|crit|elevat|rearm|re_arm|trip|limit|threshold|line)\w*_c$")
 # Env keys deleted by Patch B. Refused anywhere they reappear (including a live `.env`, which the
 # sync script never prunes -- that is exactly where a dead key lingers).
 RETIRED_KEYS: dict[str, str] = {
     "ORION_THERMAL_HOT_C": "orion/autonomy/thermal_gate.py DEFAULT_HOT_C",  # env-key-single-source: sample
     "ORION_THERMAL_HOT_REARM_C": "orion/autonomy/thermal_gate.py DEFAULT_HOT_REARM_C",  # env-key-single-source: sample
 }
-_THERMAL_NAME_IN_TEXT = re.compile(r"(?i)(hot|crit|elevat|rearm|re_arm|thermal|cabinet|room)\w*_c\b")
+_THERMAL_NAME_IN_TEXT = re.compile(r"(?i)(hot|crit|elevat|rearm|re_arm|trip|limit|threshold|line)\w*_c\b")
 _ENV_KEY = re.compile(r"^\s*-?\s*([A-Za-z_][A-Za-z0-9_]*)\s*[:=]")
-_ENV_ASSIGN = re.compile(r"^\s*-?\s*([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*(?:\$\{[A-Za-z0-9_]+:-)?[\"']?([0-9]+(?:\.[0-9]+)?)")
+_ENV_ASSIGN = re.compile(
+    r"^\s*-?\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*[\"']?(?:\$\{[A-Za-z0-9_]+:-)?[\"']?(-?[0-9]+(?:\.[0-9]+)?)")
 
 # Line-level opt-out for text that quotes a value deliberately.
 SAMPLE_MARKER = "env-key-single-source: sample"
@@ -190,6 +192,9 @@ def _owned_line_values() -> tuple[dict[float, str], list[str]]:
 
 
 def _number(node: ast.AST | None) -> float | None:
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        inner = _number(node.operand)
+        return None if inner is None else (-inner if isinstance(node.op, ast.USub) else inner)
     if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
         return float(node.value)
     return None
@@ -214,6 +219,16 @@ def _py_line_copies(text: str) -> Iterator[tuple[int, str, float]]:
             name = t.id if isinstance(t, ast.Name) else t.attr if isinstance(t, ast.Attribute) else None
             if name:
                 pairs.append((name, node.value, node.lineno))
+        elif isinstance(node, ast.Call):
+            # `thermal_state(..., hot_c=32.0)`: the most direct way to bypass the owner.
+            for kw in node.keywords:
+                if kw.arg:
+                    pairs.append((kw.arg, kw.value, getattr(kw.value, "lineno", node.lineno)))
+        elif isinstance(node, ast.Dict):
+            # `{"hot_c": 32.0}` -- a config dict restating a line.
+            for k, v in zip(node.keys, node.values):
+                if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                    pairs.append((k.value, v, getattr(v, "lineno", node.lineno)))
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             a = node.args
             pos = a.posonlyargs + a.args

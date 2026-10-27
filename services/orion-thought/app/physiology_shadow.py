@@ -19,6 +19,11 @@ What a producer does:
    scripts/analysis/body_economy_shadow_vs_real.py can join the shadow decision (want_ledger) to
    the real act. ``act_correlation_id`` is set only when the act ended up on a different id.
 
+Producer here: the ``generate`` step of a ``reverie.visual`` run (app/visual_steps.py), the one
+GPU stage, whose first real generation opens the run's ``make`` act. Family ``thought.painting``,
+or ``thought.dream_hop`` for a dream-carry image hop. want_id = the generate step's correlation id,
+which is the act's correlation id when this step opens it.
+
 SHADOW means byte-identical behaviour: nothing here returns a value the producer reads, and every
 failure is swallowed. A funded shadow decision whose real act was blocked releases its
 reservation (``POST /physiology/bid/<want_id>/release``), so a want that never ran does not hold

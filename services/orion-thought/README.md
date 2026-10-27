@@ -966,12 +966,20 @@ what the step really did. Nothing changes what the step does.
 - Where: `generate_step`, after the replay, adoption and in-flight checks (those are not a new
   want) and before the thermal gate. `prepare`, `caption` and `abandon` never bid.
 - Family: `thought.painting`, or `thought.dream_hop` for a dream-carry image hop. Verb `make`, tier 2.
-- `want_id`: the generate step's correlation id. When this step opens the run's `make` act (its
-  first real generation), that is the act's `grammar_acts.correlation_id`. A later generate of the
-  same attempt (after a failed render) bids under its own step id and does not join an act.
+- `want_id`: the generate step's correlation id (one per RPC). When this step opens the run's
+  `make` act (its first real generation), that is the act's `grammar_acts.correlation_id`. A later
+  generate of the same attempt (after a failed render) runs under the act an earlier step opened:
+  its line carries `act_correlation_id=<that step's id>`, read from `stage_json.act_correlation_id`,
+  which the opening write now stores beside `act_opened_at`.
 - Real outcome: `ran` once the real gates (thermal, single-flight, stage) passed and the GPU call
   started, whatever the render's fate; else `blocked:<the step's reason>` (`thermal_refused`,
-  `deferred_busy`, `stage_changed`, ...).
+  `deferred_busy`, `stage_changed`, ...). A step that returns before its work decides (deadline,
+  cancel) logs when the work ends, so a late start is not logged blocked.
+- Volume: every generate retry is a new RPC and a new bid. A run held by the thermal gate bids once
+  per retry (`_THERMAL_RETRY_AFTER_SEC`, 300 s). Group by `object_ref=durable_run:<run_id>` to count
+  wants per painting, not per retry.
+- A lost `act_opened` publish (not retried) leaves the act row built from its close, on a different
+  correlation id, so that `ran` line joins nothing.
 - Log line: `physiology_shadow_bid family=... want_id=... shadow=funded|deferred|none reason=...
   lane=... real=...`. durable-runs writes the decision into `want_ledger`. A funded decision whose
   step was blocked releases its reservation.

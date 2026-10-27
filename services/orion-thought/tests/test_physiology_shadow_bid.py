@@ -67,7 +67,8 @@ async def _drain() -> None:
 
 
 def _stable(result) -> dict:
-    return result.model_dump(exclude={"elapsed_sec"})
+    """The step result minus wall time and the attempt id (a fresh claim per round)."""
+    return result.model_dump(exclude={"elapsed_sec", "attempt_id"})
 
 
 @pytest.mark.asyncio
@@ -96,8 +97,22 @@ async def test_generate_is_identical_for_every_answer_and_joins_the_act(env, eco
         (line,) = _lines(caplog)
         assert (line["want_id"], line["real"]) == ("gen-corr", "ran")
         assert economy.released == []       # it ran: the reservation stands until the act closes
-        seen.append((_stable(out).keys(), out.status, out.artifact_sha256))
-    assert all(s == seen[0] for s in seen)
+        events = [{k: v for k, v in p.items() if k not in ("emitted_at", "observed_at", "event_id")}
+                  for p in opened]
+        seen.append((_stable(out), events, env.generate_calls[:]))
+    # Baseline: the same step with the shadow switched off answers and publishes the same.
+    monkeypatch.setattr(economy.ps, "_enabled", lambda: False)
+    economy.wants.clear()
+    env.store.rows.clear()
+    env.generate_calls.clear()
+    bus = _GrammarBus()
+    prepared = await _run_on(env, bus, _req("prepare"))
+    out = await _run_on(env, bus, _req("generate", attempt_id=prepared.attempt_id, correlation_id="gen-corr"))
+    assert economy.wants == []
+    events = [{k: v for k, v in e.payload.items() if k not in ("emitted_at", "observed_at", "event_id")}
+              for ch, e in bus.sent if ch == "orion:grammar:event"]
+    seen.append((_stable(out), events, env.generate_calls[:]))
+    assert all(x == seen[0] for x in seen)
 
 
 @pytest.mark.asyncio
@@ -150,3 +165,76 @@ async def test_flag_off_never_bids(env, economy, monkeypatch):
     out = await _run_on(env, bus, _req("generate", attempt_id=prepared.attempt_id))
     await _drain()
     assert out.status == "done" and economy.wants == []
+
+
+@pytest.mark.asyncio
+async def test_a_later_generate_names_the_act_it_ran_under(env, economy, caplog, monkeypatch):
+    """The act opens on the first generate. A re-generate after a failed render runs under that act,
+    so its line names the act's correlation id for the join."""
+    caplog.set_level(logging.INFO, logger="orion-thought.physiology_shadow")
+    bus = _GrammarBus()
+    prepared = await _run_on(env, bus, _req("prepare"))
+    real_generate = env.vc.call_diffusion_generate
+
+    def broken(*a, **kw):
+        raise env.vc.DiffusionGenerationError("HTTP 500")
+
+    monkeypatch.setattr(env.vc, "call_diffusion_generate", broken)
+    first = await _run_on(env, bus, _req("generate", attempt_id=prepared.attempt_id, correlation_id="gen-1"))
+    assert first.status == "retry"
+    monkeypatch.setattr(env.vc, "call_diffusion_generate", real_generate)
+    second = await _run_on(env, bus, _req("generate", attempt_id=prepared.attempt_id, correlation_id="gen-2"))
+    await _drain()
+    assert second.status == "done"
+    lines = _lines(caplog)
+    assert [(x["want_id"], x["real"], x["act_correlation_id"]) for x in lines] == [
+        ("gen-1", "ran", "-"), ("gen-2", "ran", "gen-1")]
+
+
+@pytest.mark.asyncio
+async def test_a_step_that_returns_before_its_work_starts_settles_when_the_work_does(env, economy, caplog,
+                                                                                    monkeypatch):
+    """Deadline before the generating mark lands: the line waits for the work, so a render that
+    starts late is logged ran and its funded reservation is kept."""
+    import time as _time
+
+    caplog.set_level(logging.INFO, logger="orion-thought.physiology_shadow")
+    bus = _GrammarBus()
+    prepared = await _run_on(env, bus, _req("prepare"))
+    monkeypatch.setattr(env.steps, "visual_step_generate_deadline_sec", lambda: 0.05)
+    real_update = env.store.update_visual_stage
+
+    def slow_update(*a, **kw):
+        _time.sleep(0.3)
+        return real_update(*a, **kw)
+
+    monkeypatch.setattr(env.steps.store, "update_visual_stage", slow_update)
+    out = await _run_on(env, bus, _req("generate", attempt_id=prepared.attempt_id))
+    assert (out.status, out.reason) == ("retry", "generate_deadline_exceeded")
+    await _drain()
+    assert _lines(caplog) == []                 # the work has not decided yet
+    await asyncio.gather(*list(env.steps._generate_tasks))
+    await _drain()
+    (line,) = _lines(caplog)
+    assert line["real"] == "ran" and economy.released == []
+
+
+@pytest.mark.asyncio
+async def test_a_slow_economy_never_holds_the_step(env, economy, caplog, monkeypatch):
+    caplog.set_level(logging.INFO, logger="orion-thought.physiology_shadow")
+    gate = asyncio.Event()
+
+    async def slow_abid(want):
+        economy.wants.append(want)
+        await gate.wait()
+        return _decision(want, "funded")
+
+    monkeypatch.setattr(economy.ps, "abid", slow_abid)
+    bus = _GrammarBus()
+    prepared = await _run_on(env, bus, _req("prepare"))
+    out = await asyncio.wait_for(_run_on(env, bus, _req("generate", attempt_id=prepared.attempt_id)), timeout=5.0)
+    assert out.status == "done" and len(economy.wants) == 1
+    assert _lines(caplog) == []
+    gate.set()
+    await _drain()
+    assert _lines(caplog)[0]["shadow"] == "funded"

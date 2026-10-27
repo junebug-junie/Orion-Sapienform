@@ -98,8 +98,9 @@ try{
   await page.click('#join');await pause(500);
   // Verify gamepad mapping through the actual authority's applied-action journal.
   await page.evaluate(()=>{
-    const buttons=Array.from({length:16},()=>({pressed:false}));buttons[0].pressed=true;buttons[15].pressed=true;
-    Object.defineProperty(navigator,'getGamepads',{configurable:true,value:()=>[{mapping:'standard',buttons,axes:[0,0]}]});
+    // NES layout by position: right face button (standard index 1) is A; slot 0 empty as browsers report it.
+    const buttons=Array.from({length:16},()=>({pressed:false}));buttons[1].pressed=true;buttons[15].pressed=true;
+    Object.defineProperty(navigator,'getGamepads',{configurable:true,value:()=>[null,{id:'8BitDo Pro 2',connected:true,mapping:'standard',buttons,axes:[0,0]}]});
   });
   await pause(250);
   const state=await page.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session);

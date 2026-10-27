@@ -64,7 +64,14 @@ new game. Click the screen. Arrow keys move; Z jumps/flies; X is B; Enter is Sta
 Shift is Select. The Start button also sends Start. Sound begins after a click.
 
 A second window can connect to the current game using Player 2. Both windows share the Hub operator. Select the player before connecting. Standard gamepad
-buttons map to the same controls. A competing controller is refused until explicit
+buttons map to the same controls, by position in the NES layout: right face button A, bottom
+face button B, D-pad or left stick to move, Start and Select in the middle. An 8BitDo Pro 2
+works in X-input mode (mode switch on the back set to X); the page names the controller it
+found, or says to switch modes when a controller is not in the browser's standard mapping.
+Over Bluetooth some Linux browsers still report X mode as non-standard: use a USB cable then.
+Two pads on one machine: Player 1 takes the first standard pad, Player 2 the second.
+Press any controller button once after connecting it: browsers only list a pad after input.
+Fullscreen play takes pad input without clicking the game first. A competing controller is refused until explicit
 Take this controller; the previous lease then becomes invalid. Focus loss, hidden
 tab, gamepad removal and disconnect release control. The last controller leaving
 pauses the game. Connect / resume reacquires a new lease. Restart never resumes play.

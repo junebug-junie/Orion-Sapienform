@@ -28,6 +28,7 @@ live: without it `orion.__path__` is `/mnt/orion-fcc/repo/orion`, with it `/app/
 | `inventory <date\|now>` | Services, modules, channels, verbs, schemas, from `orion/self_inventory.py` (the same scanner self-study uses). |
 | `compare <date> [<date\|now>]` | Added / removed / kept per category. |
 | `history <start> <end>` | Merged PRs (`gh pr list --search merged:…`) and commits. PR bodies go to the file only. |
+| `history <days>` | The same for the last `<days>` days, today included. The dig line points "recent PRs" here instead of the GitHub tool, which on 2026-10-27 filled half the window per call. |
 | `body [<date>]` | Body atlas (`orion/body_atlas`). No date: the live bus. A date: that export's catalog only (the catalog starts 2026-01). |
 | `notes [append <text>]` | Shared notes for one `--dig`, so episode hops or turns can read each other. |
 

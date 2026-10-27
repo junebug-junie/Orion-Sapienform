@@ -17,12 +17,13 @@ from typing import Any
 import torch
 from torch import nn
 
-SKILLS = ('traverse', 'engage', 'acquire', 'withdraw', 'hold', 'enter')
+from orion.embodiment.skills import SKILLS   # traverse, engage, withdraw, acquire, enter, hold
+
 SKILL_OF = {'exit': 'traverse', 'explore': 'traverse', 'fight': 'engage', 'collect': 'acquire',
             'retreat': 'withdraw', 'wait': 'hold', 'enter': 'enter'}
 DIRS = 'NSWE'
 HEADS = ('place_changed', 'health_lost', 'item_gained', 'died')
-N_FEATURES = len(SKILLS) + len(DIRS) + len(DIRS) + 6
+N_FEATURES = len(SKILLS) + len(DIRS) + len(DIRS) + 8
 
 
 def zelda_features(before: dict, goal: dict, open_sides: Any) -> list[float]:
@@ -39,7 +40,8 @@ def zelda_features(before: dict, goal: dict, open_sides: Any) -> list[float]:
     return ([float(skill == s) for s in SKILLS] + [float(d == x) for x in DIRS]
             + [float(x in sides) for x in DIRS]
             + [health, float(health < 0.5), min(len(enemies), 6) / 6,
-               (min(dists) / 40 if dists else 1.0), math.log1p(items) / 5, float(open_sides is None)])
+               (min(dists) / 40 if dists else 1.0), math.log1p(items) / 5, float(open_sides is None),
+               float(before.get('mode') == 'cave'), float(before.get('level') not in (0, None))])
 
 
 def zelda_targets(row: dict) -> list[float] | None:
@@ -50,8 +52,9 @@ def zelda_targets(row: dict) -> list[float] | None:
     hb, ha = (before.get('hearts') or {}).get('current', 0), (after.get('hearts') or {}).get('current', 0)
     ib = {k: v for k, v in (before.get('items') or {}).items() if isinstance(v, int)}
     ia = {k: v for k, v in (after.get('items') or {}).items() if isinstance(v, int)}
-    gained = any(ia.get(k, 0) > v for k, v in ib.items()) or any(k not in ib for k in ia)
-    return [float((after.get('level'), after.get('room')) != (before.get('level'), before.get('room'))),
+    gained = any(ia[k] > ib[k] for k in ib.keys() & ia.keys())     # only items read as numbers both times
+    place = lambda f: (f.get('mode'), f.get('level'), f.get('room'))   # leaving a cave keeps the room id
+    return [float(place(after) != place(before)),
             float(ha < hb), float(gained), float(bool(row.get('died'))),
             math.log1p(row.get('frames') or 0) / 8]
 

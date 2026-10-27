@@ -38,10 +38,11 @@ GOAL_BUDGET = 10  # seconds of game time per goal
 
 
 def cell_key(obs):
+    """Place, coarse Link tile, hearts, and which items are held (not how many rupees)."""
     link = obs['link']
-    items = sum(v for v in obs['items'].values() if isinstance(v, int))
+    held = tuple(sorted(k for k, v in obs['items'].items() if isinstance(v, int) and v > 0))
     return (obs['mode'], str(obs['level']), obs['room'], link['tile'][0] // 8, link['tile'][1] // 6,
-            obs['hearts']['current'], items)
+            obs['hearts']['current'], held)
 
 
 def facts(obs):
@@ -65,6 +66,16 @@ def options(decision):
 
 
 class Dojo(Harness):
+    rng = random.Random(0)
+
+    def rewind(self, state):
+        """Restore a state, forget the frame before it, and idle a random 0-60 frames so a cell
+        chosen again does not replay the same rows (the core is deterministic from a snapshot)."""
+        self.core.restore(state)
+        self.runtime.on_load(self.runtime.lineage_id())     # same lineage: clears the atlas's last frame
+        self.rows.clear()
+        for _ in range(self.rng.randrange(61)): self.step()
+
     def fresh_motor(self):
         self.authority = Arbiter([0])
         self.scripted = Scripted(self.authority, self.record, goals_factory=self.runtime.goals)
@@ -72,26 +83,30 @@ class Dojo(Harness):
 
     def decision_at(self, state):
         """Restore a state and wait for the decision the motor offers there."""
-        self.core.restore(state); self.fresh_motor()
+        self.rewind(state); self.fresh_motor()
         for _ in range(600):
             if self.goals.attempt: return self.goals.attempt
             self.tick()
         return None
 
     def try_goal(self, state, goal):
-        self.core.restore(state); self.fresh_motor()
-        self.rows.clear()
-        start = self.frame
+        """Run one goal from ``state``. Returns (goal_finished row, offer used, state after) or a
+        ``dojo:*`` outcome with no state: the goal never ran cleanly, so it says nothing."""
+        self.rewind(state); self.fresh_motor()
         try:
             row = self.goal_once(goal, {'kind': 'unknown'}, GOAL_BUDGET, 'dojo')
         except AssertionError as exc:
-            return dict(outcome=f'dojo:{exc}'), None, self.frame - start
-        return row, self.core.snapshot(), self.frame - start
+            return dict(outcome=f'dojo:{exc}'), None, None
+        except ValueError as exc:       # Retro refused the goal (e.g. no_enemies_present)
+            return dict(outcome=f'dojo:rejected:{exc}'), None, None
+        offer = next((r for r in self.rows if r['kind'] == 'decision_offered'), {})
+        return row, offer, self.core.snapshot()
 
 
 def run(args):
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     rng = random.Random(args.seed)
+    Dojo.rng = random.Random(args.seed + 1)
     progress = (out / 'progress.log').open('a')
     h = Dojo(args.core, args.rom, Path(tempfile.mkdtemp(prefix='zelda-dojo-')), f'dojo-{args.seed}')
     h.boot()
@@ -123,12 +138,20 @@ def run(args):
                 continue
             before = facts(decision['observation'])
             for goal in options(decision):
-                row, state, used = h.try_goal(cell['state'], goal)
-                tried += 1; frames += used
-                after = facts(h.obs) if h.obs.get('status') == 'observed' else None
-                died = bool(after) and (after['hearts']['current'] == 0 or h.obs['mode'] not in ('play', 'cave', 'transition'))
-                sink.write(json.dumps(dict(seed=args.seed, before=before, open_sides=decision.get('open_sides'),
-                                           goal=goal, outcome=row.get('outcome'), verdict=row.get('verdict'),
+                row, offer, state = h.try_goal(cell['state'], goal)
+                tried += 1
+                ran = state is not None and h.obs.get('status') == 'observed'
+                after = facts(h.obs) if ran else None
+                used = (row['end_frame'] - row['start_frame']) if ran and isinstance(row.get('start_frame'), int) \
+                    and isinstance(row.get('end_frame'), int) else None
+                frames += used or 0
+                died = row.get('outcome') == 'death' or bool(after and after['mode'] in ('death', 'menu'))
+                # The offer this goal committed against (atlas blocks learned in an earlier branch
+                # can change it), and its observation as "before".
+                offered = (offer or {}).get('observation') or decision['observation']
+                sink.write(json.dumps(dict(seed=args.seed, before=facts(offered) if offered.get('status') == 'observed' else before,
+                                           open_sides=(offer or decision).get('open_sides'), goal=goal,
+                                           outcome=row.get('outcome'), verdict=row.get('verdict'),
                                            frames=used, after=after, died=died), default=str) + '\n')
                 if state is not None and after and not died and h.obs['mode'] in ('play', 'cave'):
                     add(h.obs, state)

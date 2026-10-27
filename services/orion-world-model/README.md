@@ -42,6 +42,33 @@ change.
 (rhythm) model on the same held-out days and beats it. Until then: no
 deploy, no new requester, no new consumer.
 
+## Transition model: trained offline, not served (2026-10-27)
+
+The service's `WorldModel` has no action input, so it cannot say what an action will do. `app/transition.py::TransitionModel` can.
+
+**What it is.** A small MLP. Its inputs are body-level facts in the `orion/embodiment/skills.py` vocabulary: skill, direction, open sides, health, threats, items, cave and dungeon. For each move it predicts:
+- whether the place changes;
+- whether health is lost;
+- whether an item is gained;
+- whether the body dies;
+- the move's duration.
+
+Each game needs its own adapter. Zelda's adapter is `zelda_features` and `zelda_targets`.
+
+**Training.** `scripts/train_transition.py` trains it on dojo rows (`services/orion-retro/evals/zelda_dojo.py`) and gates each prediction against a count baseline:
+- rows are deduplicated;
+- whole dojo workers are held out, and test rows come only from states that training never saw;
+- the baseline is a Beta backoff, the same shape as orion-prediction's `action_beta_backoff`;
+- the significance test is a bootstrap over (worker, room) clusters.
+
+Run it in the service image, on CPU:
+
+```bash
+docker run --rm --cpus 4 -v "$PWD":/repo:ro -v <dojo out>:/dojo -w /repo --entrypoint python3   orion-world-model-world-model services/orion-world-model/scripts/train_transition.py   --data /dojo/<run> --out /dojo/<model>
+```
+
+Weights stay in `--out` and are never committed. Nothing serves this model or consumes its predictions yet. The next step is to score it live as a model in orion-prediction.
+
 ## Status: untrained inference-capable scaffolding
 
 **This service does a real forward pass through real, randomly-initialized

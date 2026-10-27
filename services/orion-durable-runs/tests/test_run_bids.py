@@ -44,7 +44,8 @@ class _Market:
         self.bids, self.opened, self.released = [], [], []
         self.delay, self.fail = delay, fail
 
-    async def bid(self, want):
+    async def bid(self, want, *, reserve_at_open=False):
+        assert reserve_at_open is True       # durable runs reserve from the open, not the decision
         if self.delay:
             await asyncio.sleep(self.delay)
         if self.fail:
@@ -123,6 +124,21 @@ def test_submit_returns_before_a_slow_market_and_a_broken_one_never_raises():
         assert RunBidder(enabled=True, market_getter=boom).on_submit(_req()) is None
         return slow
     assert len(asyncio.run(go()).bids) == 1
+
+
+def test_a_run_that_opens_or_ends_before_its_bid_lands_does_not_leak_a_reservation():
+    """Review finding 5: the bid is a background task; the grant or terminal can come first."""
+    async def go():
+        m = _Market(delay=0.05)
+        b = RunBidder(enabled=True, market_getter=lambda: m)
+        t1 = b.on_submit(_req(run_id="run-ended"))
+        b.on_terminal("run-ended")                   # ended before the bid landed
+        t2 = b.on_submit(_req(run_id="run-open"))
+        b.on_grant("run-open", T0)                   # opened before the bid landed
+        await asyncio.gather(t1, t2)
+        return m
+    m = asyncio.run(go())
+    assert "run-ended" in m.released and "run-open" in m.opened
 
 
 def test_grant_and_terminal_follow_the_run():

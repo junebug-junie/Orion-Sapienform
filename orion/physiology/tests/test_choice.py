@@ -75,7 +75,7 @@ STARVED = {"durable.self_inquiry": 1, "durable.curiosity_investigate": 99}
 
 
 def want(family="durable.self_inquiry", tier=2, i=0, verb="ask", **kw):
-    return WantV1(want_id=f"w{i}", family=family, producer="test", verb=verb, tier=tier, **kw)
+    return WantV1(want_id=f"w{i}", family=family, producer="unit-producer", verb=verb, tier=tier, **kw)
 
 
 SELF = history("durable.self_inquiry", slot={"agent": 1800.0})
@@ -431,3 +431,29 @@ def test_client_release_posts_to_the_want_and_returns_none_on_any_failure(monkey
     assert client.release("w", url="http://127.0.0.1:9/physiology/bid", timeout_sec=0.2) is None
     monkeypatch.setenv("ORION_PHYSIOLOGY_BID_CLIENT_ENABLED", "false")
     assert client.release("w", url=url) is None
+
+
+def test_reserve_at_open_holds_nothing_until_the_act_opens():
+    """Review finding 3: durable runs queue ~1.5 h for a grant, longer than one act-length. A pending
+    reservation holds no line while the run waits, starts at the open, and lapses at the window end."""
+    st = body(lane("agent"), lane("agent-gpu2", slots=2))
+    book = ReservationBook()
+    latest = NOW + timedelta(hours=6)
+    d = decide(want(window={"latest": latest}), st, ctx_for(SELF, st), book, NOW, reserve_at_open=True)
+    assert d.outcome == "funded" and d.reserved and d.reservation_expires_at == latest
+    assert book.total("lane:agent", NOW + timedelta(hours=2)) == 0.0          # waiting: holds nothing
+    assert book.snapshot(NOW)[0]["pending"] is True
+    opened = NOW + timedelta(hours=2)
+    assert book.mark_opened(d.want_id, opened) == 1
+    assert book.total("lane:agent", opened + timedelta(minutes=10)) > 0       # running: holds its lane
+    assert book.total("lane:agent", opened + timedelta(seconds=1001)) == 0.0  # one act-length (1,000 s)
+    never = decide(want(i=5, window={"latest": latest}), st, ctx_for(SELF, st), book, NOW, reserve_at_open=True)
+    assert never.outcome == "funded" and book.mark_opened(never.want_id, latest + timedelta(seconds=1)) == 0
+
+
+def test_probe_bids_never_count_toward_the_floor():
+    st = body(lane("agent"), lane("agent-gpu2", slots=2))
+    book = seeded_book({})
+    d = decide(WantV1(want_id="p", family="durable.self_inquiry", producer="deploy-verification", verb="ask", tier=2),
+               st, ctx_for(SELF, st), book, NOW)
+    assert d.outcome == "funded" and book.funded_share("durable.self_inquiry", 2, NOW) is None

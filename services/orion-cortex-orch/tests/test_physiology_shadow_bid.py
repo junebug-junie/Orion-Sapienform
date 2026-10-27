@@ -43,6 +43,12 @@ def _req(verb, **kw) -> CortexClientRequest:
     ("actions", "dream_cycle", {"priority": "interactive"}, "interactive_priority"),
     ("actions", "dream_cycle", {"priority": "urgent"}, "interactive_priority"),
     ("orion-durable-runs", "journal.compose", {}, "inside_durable_run"),      # already bid at admission
+    # cortex-exec's capability bridge inside Juniper's turn, and its nested self-study call (review 1, 2)
+    ("cortex-exec", "skills.perception.look_at_camera.v1",
+     {"policy_dispatch_only": True, "source": "cortex_exec_capability_bridge"}, "nested_exec_call"),
+    ("cortex-exec", "self_study.reflect", {"policy_dispatch_only": True}, "nested_exec_call"),
+    ("cortex-exec", "skills.runtime.image_prune.v1", {}, "nested_exec_call"),
+    ("actions", "dream_cycle", {"policy_dispatch_only": True}, "nested_exec_call"),
     ("actions", "dream_cycle", {}, None),
     ("dream", "dream_cycle", {"execution_lane": "background"}, None),
 ])
@@ -115,6 +121,7 @@ def _handle(source, verb, **kw):
     ("cortex-gateway", "skills.imagination.render_scene.v1", {}),  # a tier-2 verb on Juniper's turn
     ("actions", "chat_general", {}),                             # tier 0 chat verb
     ("actions", "dream_cycle", {"priority": "interactive"}),
+    ("cortex-exec", "skills.perception.look_at_camera.v1", {"policy_dispatch_only": True}),
 ])
 def test_turn_and_interactive_dispatches_never_bid_end_to_end(harness, source, verb, options):
     calls, _ = harness
@@ -136,8 +143,9 @@ def test_self_initiated_tier1_verb_bids_and_dispatch_is_unchanged(harness, outco
     assert (want.family, want.tier, want.correlation_id) == ("dream.cycle", 1, CORR)
     # Dispatched exactly once more, byte-identical to the no-bid dispatch (nothing leaks into it).
     assert len(calls["dispatched"]) == 2 and calls["dispatched"][1] == baseline
-    # Only a funded decision holds a reservation; it is released once the dispatch returned.
-    assert calls["released"] == ([want.want_id] if outcome == "funded" else [])
+    # A funded decision holds a reservation, and so may a bid the client gave up on: both are
+    # released by want id once the dispatch returned. A deferral holds none.
+    assert calls["released"] == ([] if outcome == "deferred" else [want.want_id])
 
 
 def test_disabled_flag_bids_nothing(harness):
@@ -152,6 +160,7 @@ def test_a_verb_with_no_or_tier0_physiology_never_bids(harness):
     for verb in ("chat_general", "no_such_verb_anywhere"):
         assert asyncio.run(pb.shadow_bid(_req(verb), source_name="actions", correlation_id=CORR, enabled=True)) is None
     assert calls["bids"] == []
+    assert pb._physiology("no_such_verb_anywhere") == (None, "no_physiology")   # not "physiology_invalid"
 
 
 def test_flag_ships_on():

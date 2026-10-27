@@ -168,12 +168,12 @@ def _runtime_identity() -> dict[str, str]:
 _shadow_release_tasks: set[asyncio.Task] = set()
 
 
-def _release_shadow_reservation(decision) -> None:
+def _release_shadow_reservation(sent) -> None:
     """The dispatch returned (its act closed): release the shadow want's reservation in the
     background, so the reply never waits on the economy."""
-    if decision is None:
+    if sent is None:
         return
-    task = asyncio.get_running_loop().create_task(physiology_shadow_release(decision))
+    task = asyncio.get_running_loop().create_task(physiology_shadow_release(sent))
     _shadow_release_tasks.add(task)
     task.add_done_callback(_shadow_release_tasks.discard)
 

@@ -36,6 +36,7 @@ from orion.physiology.choice import (
     FundedWant,
     MarketContext,
     ReservationBook,
+    SYNTHETIC_PRODUCERS,
     build_context,
     decide,
     unavailable,
@@ -70,7 +71,7 @@ SELECT act_id, actor, started_at, link_status, used, window_closed
 FUNDED_SQL = """
 SELECT decision_id, family, tier, decided_at
   FROM want_ledger
- WHERE outcome = 'funded' AND decided_at >= %(since)s
+ WHERE outcome = 'funded' AND decided_at >= %(since)s AND NOT (producer = ANY(%(synthetic)s))
 """
 
 
@@ -111,7 +112,8 @@ async def read_history(pool: Any, now: datetime) -> tuple[list[ActRecord], list[
 async def read_funded(pool: Any, now: datetime) -> list[FundedWant]:
     """want_ledger's funded wants over the floor's rolling week. Raises on a failed read."""
     async with pool.connection() as conn:
-        rows = await (await conn.execute(FUNDED_SQL, {"since": now - FLOOR_WINDOW})).fetchall()
+        rows = await (await conn.execute(FUNDED_SQL, {"since": now - FLOOR_WINDOW,
+                                                      "synthetic": sorted(SYNTHETIC_PRODUCERS)})).fetchall()
     return [FundedWant(str(r["decision_id"]), _utc(r["decided_at"]), str(r["family"]), int(r["tier"])) for r in rows]
 
 
@@ -188,7 +190,7 @@ class Market:
         # tier1_recent_use, so Tier 2's line forgot Tier 1's measured use).
         return dataclasses.replace(ctx, stale_after_sec=self._stale)
 
-    async def bid(self, want: WantV1, now: Optional[datetime] = None) -> WantDecisionV1:
+    async def bid(self, want: WantV1, now: Optional[datetime] = None, *, reserve_at_open: bool = False) -> WantDecisionV1:
         now = now or datetime.now(timezone.utc)
         state = await self._state()
         ctx = await self.context(state, now)
@@ -198,7 +200,7 @@ class Market:
             # Never fund on a missing market: physiology_unavailable.
             decision = unavailable(want, now, why=why, state=state)
         else:
-            decision = decide(want, state, ctx, self.book, now)
+            decision = decide(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open)
         self.counts[decision.outcome] = self.counts.get(decision.outcome, 0) + 1
         try:
             await self._publish(decision)

@@ -717,7 +717,8 @@ def _replay_decisions(acts, uses, families, *, start, end, heat_by_hour, cabinet
         ctx = build_context(families, before, [u for u in uses if u.started_at and u.started_at < t], st, t,
                             weights=series.get(t.date(), {}))
         share = book.funded_share(a.family, cfg.tier, t)
-        w = WantV1(want_id=f"replay:{a.act_id}", family=a.family, producer="replay", verb="replay", tier=cfg.tier,
+        # Not "replay": that producer name marks hand-run probes, which the floor never counts.
+        w = WantV1(want_id=f"replay:{a.act_id}", family=a.family, producer="replay.act_history", verb="replay", tier=cfg.tier,
                    opened_at=t)
         d = decide(w, st, ctx, book, t)
         if d.outcome == "funded":
@@ -905,10 +906,12 @@ def eval_r7(rows_stress, series, acts, uses, families) -> dict:
             "floor_fired": floor_fired, "weekly_quota_tier2": weekly, "weekly_shares_tier1_ungraded": weekly_t1,
             "stress_lane_price": 1.0, "funded_share_in_tier_stress": shares,
             "zero_use_live": live_zero,
-            "by_construction_note": ("The weekly quota is checked literally from the replay's own funded wants (trailing "
-                                     "7 days at every want), not from the floor branch's own bookkeeping; the drift cap is "
-                                     "applied inside weight_series (confirms the code). Sated (intensity 0) price deferrals "
-                                     "and capacity deferrals are listed but do not count: the floor never funds either."),
+            "by_construction_note": ("The weekly-quota clause confirms the code, not the economics: the grader recomputes "
+                                     "the same trailing-7-day Tier 2 share the floor branch reads, from the same replay "
+                                     "rows, and the floor branch runs before the price branch, so a hungry price deferral "
+                                     "under 5% can only appear if that bookkeeping is broken. The drift cap is applied "
+                                     "inside weight_series (also by construction). The synthetic zero-use clause is the "
+                                     "part that could fail. Sated and capacity deferrals are listed, never counted."),
             "zero_use_live_note": ("A zero-use family under 10 evidenced acts stays at its prior by the ungraded rule; "
                                    "the 'ends below prior' clause can only bite at n >= 10."),
             "zero_use_synthetic": synth,

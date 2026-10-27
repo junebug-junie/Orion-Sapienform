@@ -13,8 +13,10 @@ process bids for them itself, in-process (no HTTP call to its own ``/physiology/
   market (``Market.bid``, which publishes the decision to ``want_ledger``). The bid runs as a
   background task: ``submit`` returns exactly as before, whatever the market says or however long
   it takes.
-* **first grant** (the act opens): ``Market.mark_opened`` re-anchors the want's reservation to one
-  act-length from the real start.
+* **first grant** (the act opens): ``Market.mark_opened`` starts the want's reservation, one
+  act-length from the real start. The bid reserves PENDING (``reserve_at_open``): runs wait a median
+  1.3-1.6 h in the pool's queue, longer than one act-length, so a reservation from the decision
+  would hold the lane while the run waits and lapse before it runs.
 * **terminal** (the act closes, or the run ends without ever running): ``Market.release`` ends the
   reservation, so a shadow-funded want no real act uses stops biasing later bids toward deferral.
 
@@ -83,6 +85,9 @@ class RunBidder:
         self._timeout = timeout_sec
         self._tasks: set[asyncio.Task] = set()
         self._seen: OrderedDict[str, None] = OrderedDict()
+        # Runs whose bid is still in flight, and what happened to them meanwhile: an open (its time)
+        # or the terminal. Applied when the bid lands, so a fast run never leaks a reservation.
+        self._inflight: dict[str, dict[str, Any]] = {}
         self.counts = {"bid": 0, "skipped": 0, "failed": 0, "opened": 0, "released": 0}
 
     def _market_or_none(self) -> Any:
@@ -115,6 +120,7 @@ class RunBidder:
             self._seen[run_id] = None
             while len(self._seen) > SEEN_MAX:
                 self._seen.popitem(last=False)
+            self._inflight[run_id] = {}
             task = asyncio.get_running_loop().create_task(self._bid(market, want))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
@@ -126,22 +132,41 @@ class RunBidder:
 
     async def _bid(self, market: Any, want: WantV1) -> Any:
         try:
-            decision = await asyncio.wait_for(market.bid(want), self._timeout)
+            decision = await asyncio.wait_for(market.bid(want, reserve_at_open=True), self._timeout)
         except Exception:  # noqa: BLE001 -- incl. timeout: the run proceeds exactly as before
             self.counts["failed"] += 1
             logger.warning("physiology_shadow_bid_failed run=%s family=%s", want.want_id, want.family, exc_info=True)
+            # A timed-out bid may still land in the book: release it, it will never be opened.
+            self._inflight.pop(want.want_id, None)
+            self._safe(market.release, want.want_id)
             return None
         self.counts["bid"] += 1
+        seen = self._inflight.pop(want.want_id, {})
+        if seen.get("ended"):
+            self.counts["released"] += self._safe(market.release, want.want_id)
+        elif seen.get("opened_at") is not None:
+            self.counts["opened"] += self._safe(market.mark_opened, want.want_id, seen["opened_at"])
         logger.info("physiology_shadow_bid run=%s corr=%s family=%s decision_id=%s outcome=%s reason=%s "
                     "binding=%s shadow=true obeyed=false", want.want_id, want.correlation_id, want.family,
                     decision.decision_id, decision.outcome, decision.reason, decision.binding_constraint)
         return decision
 
+    @staticmethod
+    def _safe(fn: Callable[..., Any], *args: Any) -> int:
+        try:
+            return int(fn(*args) or 0)
+        except Exception:  # noqa: BLE001
+            logger.warning("physiology_shadow_bid_book_call_failed", exc_info=True)
+            return 0
+
     def on_grant(self, run_id: str, at: Optional[datetime] = None) -> int:
-        """The run got a pool grant (its act opens at the first one): re-anchor its reservation."""
+        """The run got a pool grant (its act opens at the first one): start its reservation."""
         market = self._market_or_none()
         if market is None or not run_id:
             return 0
+        pending = self._inflight.get(str(run_id))
+        if pending is not None and pending.get("opened_at") is None:
+            pending["opened_at"] = at or datetime.now(timezone.utc)   # applied when the bid lands
         try:
             n = market.mark_opened(str(run_id), at)
         except Exception:  # noqa: BLE001
@@ -155,6 +180,8 @@ class RunBidder:
         market = self._market_or_none()
         if market is None or not run_id:
             return 0
+        if str(run_id) in self._inflight:
+            self._inflight[str(run_id)]["ended"] = True              # applied when the bid lands
         try:
             n = market.release(str(run_id))
         except Exception:  # noqa: BLE001

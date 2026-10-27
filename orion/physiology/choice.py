@@ -36,7 +36,10 @@ lives only as long as the act it stands for:
 * before the act opens, it expires at the earlier of one act-length (the family's expected seconds,
   120 s .. one lane window) and the END OF THE WANT'S WINDOW: no act by then, no reservation;
 * when the producer reports the act opened (``mark_opened``: durable runs at their first pool
-  grant), it is re-anchored to one act-length from the open, then released at the close.
+  grant), it is re-anchored to one act-length from the open, then released at the close;
+* a producer that reports opens and queues long (``reserve_at_open``: durable runs wait a median
+  ~1.3-1.6 h for a grant) reserves PENDING: nothing is held until the open, and a pending
+  reservation lapses at the end of the want's window if the act never opens.
 
 Tier 1 reserved share: per lane, the p75 of Tier 1's own hourly use over 14 days, as a share of
 the lane, capped at 50%. Tier 1 pays no lane price while its reservations fit inside that share;
@@ -94,6 +97,8 @@ RESERVATION_MIN_SEC = 120.0
 DISPLACED_LOOKBACK = timedelta(hours=1)
 FLOOR_WINDOW = timedelta(days=7)
 FLOOR_TIER = 2
+# Hand-run verification bids (deploy checks, probes, replays): never counted by the floor.
+SYNTHETIC_PRODUCERS = frozenset({"deploy-verification", "probe", "replay", "test"})
 MAX_LISTED = 10
 CAPACITY_CONSTRAINTS_PREFIX = (LANE_PREFIX, ATTENTION_JUNIPER)
 UNMEASURED = {HEAT: "wh_by_host", ENERGY: "wh_by_host", CLAUDE: "claude_limit_events"}
@@ -112,6 +117,10 @@ class Reservation:
     net: float
     ttl_sec: float = RESERVATION_MIN_SEC   # one act-length: re-anchored from the open (mark_opened)
     opened: bool = False
+    # A producer that reports its act's open (``reserve_at_open``: durable runs, which wait in the
+    # pool's queue for hours) holds nothing until the open: pending reservations count against no
+    # line, and lapse at the end of the want's window if the act never opens.
+    pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -142,11 +151,12 @@ class ReservationBook:
 
     def total(self, constraint: str, now: datetime, *, tier: Optional[int] = None) -> float:
         self._prune(now)
-        return sum(r.amount for r in self._r if r.constraint == constraint and (tier is None or r.tier == tier))
+        return sum(r.amount for r in self._r if r.constraint == constraint and not r.pending
+                   and (tier is None or r.tier == tier))
 
     def holders(self, constraint: str, now: datetime) -> list[Reservation]:
         self._prune(now)
-        return sorted((r for r in self._r if r.constraint == constraint), key=lambda r: r.expires_at)
+        return sorted((r for r in self._r if r.constraint == constraint and not r.pending), key=lambda r: r.expires_at)
 
     def add(self, r: Reservation) -> None:
         self._r.append(r)
@@ -159,14 +169,15 @@ class ReservationBook:
 
     def mark_opened(self, want_id: str, at: datetime) -> int:
         """The want's act opened at ``at``: its reservations now run one act-length from the open
-        (no longer capped by the want's window). A reservation that already lapsed stays gone."""
+        (no longer capped by the want's window); a pending one starts holding now. A reservation
+        that already lapsed stays gone."""
         self._prune(at)
         n = 0
         out = []
         for r in self._r:
             if r.want_id == want_id and not r.opened:
                 r = Reservation(r.want_id, r.family, r.tier, r.constraint, r.amount,
-                                at + timedelta(seconds=r.ttl_sec), r.net, r.ttl_sec, True)
+                                at + timedelta(seconds=r.ttl_sec), r.net, r.ttl_sec, True, False)
                 n += 1
             out.append(r)
         self._r = out
@@ -208,7 +219,8 @@ class ReservationBook:
     def snapshot(self, now: datetime) -> list[dict]:
         self._prune(now)
         return [{"want_id": r.want_id, "family": r.family, "tier": r.tier, "constraint": r.constraint,
-                 "amount": round(r.amount, 3), "expires_at": r.expires_at.isoformat(), "opened": r.opened}
+                 "amount": round(r.amount, 3), "expires_at": r.expires_at.isoformat(), "opened": r.opened,
+                 "pending": r.pending}
                 for r in self._r]
 
 
@@ -319,7 +331,7 @@ def unavailable(want: WantV1, now: datetime, *, why: str, state: Optional[Physio
 
 
 def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext, book: ReservationBook,
-           now: datetime) -> WantDecisionV1:
+           now: datetime, *, reserve_at_open: bool = False) -> WantDecisionV1:
     """One shadow bid. Never raises on market data: every unknown is a named deferral or warning."""
     cfg: Optional[FamilyConfig] = ctx.families.get(want.family)
     if cfg is None:
@@ -574,16 +586,22 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
             head += f"; under the 5% weekly exploration quota ({fs})"
         secs = cost.scalars.get("seconds")
         ttl = min(ctx.lane_window_sec, max(RESERVATION_MIN_SEC, secs if secs else RESERVATION_MIN_SEC))
-        expires = now + timedelta(seconds=ttl)
-        # Before the act opens, a reservation lasts no longer than the want's own window.
         latest = _window_end(want, cfg)
-        if latest is not None and latest < expires:
-            expires = latest
+        if reserve_at_open:
+            # The producer reports the open: hold nothing until then, lapse at the window's end
+            # (one lane window past the decision when the want names no window).
+            expires = latest if latest is not None else now + timedelta(seconds=ctx.lane_window_sec)
+        else:
+            # Before the act opens, a reservation lasts no longer than the want's own window.
+            expires = now + timedelta(seconds=ttl)
+            if latest is not None and latest < expires:
+                expires = latest
         reserved: dict[str, float] = {}
         if expires > now:
             for k, (_frac, amount, line) in items.items():
                 if line is not None and k.startswith(CAPACITY_CONSTRAINTS_PREFIX) and amount > 0:
-                    book.add(Reservation(want.want_id, want.family, tier, k, amount, expires, net, ttl))
+                    book.add(Reservation(want.want_id, want.family, tier, k, amount, expires, net, ttl,
+                                         pending=reserve_at_open))
                     reserved[k] = round(amount, 3)
         else:
             warnings.append("window_passed:no_reservation")
@@ -591,7 +609,8 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
         decision = _decision(want, now, tier=tier, outcome="funded", reason=reason, reserved=reserved,
                              reservation_expires_at=expires if reserved else None, displaced=displaced,
                              warnings=warnings, **common, why=head)
-        book.note_funded(decision.decision_id, want.family, tier, now)
+        if want.producer not in SYNTHETIC_PRODUCERS:
+            book.note_funded(decision.decision_id, want.family, tier, now)
         return decision
 
     if charge <= 0.0:
@@ -644,6 +663,7 @@ __all__ = [
     "FLOOR_WINDOW",
     "FundedWant",
     "MarketContext",
+    "SYNTHETIC_PRODUCERS",
     "Reservation",
     "ReservationBook",
     "STALE_AFTER_SEC",

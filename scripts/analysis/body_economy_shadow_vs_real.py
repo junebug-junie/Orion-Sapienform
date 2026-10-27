@@ -34,7 +34,7 @@ Two sources (``--source``):
   self-sense eval, journal compose -- the runs ``app/run_bids.py`` bids for), re-decided by the live
   Choice code against the ``physiology_state`` row in force at each admission, the act history
   before it and one reservation book (opened at each act's open, released at each run's terminal),
-  in time order. This is the table the bid site would have produced had it been live; it sees only
+  in time order (reserving from each act's open, as the live bid site does). This is the table the bid site would have produced had it been live; it sees only
   runs Hub already let through (a Hub veto never reaches admission -- the veto log covers those).
 
 Writes nothing to any database (read-only psql session, ``_body_economy_data.run_query``).
@@ -61,8 +61,8 @@ sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_ROOT))
 
 NO_MARKET = ("physiology_unavailable", "unknown_family", "family_never_bids")
-# Hand-run verification bids (deploy checks, probes, replays) are not producers' wants.
-SYNTHETIC_PRODUCERS = frozenset({"deploy-verification", "probe", "replay", "test"})
+# Hand-run verification bids (deploy checks, probes, replays) are not producers' wants (the floor's own list).
+from orion.physiology.choice import SYNTHETIC_PRODUCERS  # noqa: E402
 OPEN_SLACK = timedelta(seconds=60)    # an act may be stamped a moment before the decision row
 CELLS = ("funded_ran", "funded_not_run", "deferred_ran", "deferred_not_run")
 CELL_LABEL = {"funded_ran": "funded & ran (agree)", "funded_not_run": "funded & not run (old veto stricter)",
@@ -241,7 +241,7 @@ def fetch(start: datetime, end: datetime, *, history_days: int = 30) -> dict:
                    decision->'want'->'window'->>'latest' as window_latest, decision->'want'->>'opened_at' as want_opened_at
               from want_ledger where decided_at >= '{s}' and decided_at < '{e}') r;"""),
         "ledger_funded_before": _q(f"""select coalesce(json_agg(r), '[]'::json) from (
-            select decision_id, family, tier, decided_at from want_ledger
+            select decision_id, family, tier, decided_at, producer from want_ledger
              where outcome = 'funded' and decided_at >= '{_iso(start - timedelta(days=7))}' and decided_at < '{s}') r;"""),
         "acts": _q(f"""select coalesce(json_agg(r), '[]'::json) from (
             select act_id, actor, opened_at, closed_at, outcome_value, outcome_source, signal_id, cost_json,
@@ -344,7 +344,7 @@ def replay_admissions(ex: dict, fams) -> tuple[list[Decision], dict]:
     series = weight_series(fams, acts, uses, start=(start - timedelta(days=1)).date(), end=end.date())
     book = ReservationBook()
     book.seed_funded([FundedWant(str(r["decision_id"]), _ts(r["decided_at"]), str(r["family"]), int(r["tier"]))
-                      for r in ex.get("ledger_funded_before") or []], start)
+                      for r in ex.get("ledger_funded_before") or [] if r.get("producer") not in SYNTHETIC_PRODUCERS], start)
     act_by_ref = {}
     for r in ex["acts"]:
         if r.get("object_ref") and r.get("opened_at"):
@@ -383,7 +383,7 @@ def replay_admissions(ex: dict, fams) -> tuple[list[Decision], dict]:
         before = [a for a in acts if (a.closed_at or a.opened_at) is not None and (a.closed_at or a.opened_at) < t]
         ctx = build_context(fams, before, [u for u in uses if u.started_at and u.started_at < t], current, t,
                             weights=series.get(t.date(), {}))
-        d = decide(want, current, ctx, book, t)
+        d = decide(want, current, ctx, book, t, reserve_at_open=True)   # as app/run_bids.py bids
         stats[d.reason] += 1
         out.append(Decision(d.decision_id, d.family, want.producer, t, d.outcome, d.reason, d.binding_constraint,
                             want.correlation_id, want.object_ref,
@@ -441,7 +441,7 @@ def build_report(ex: dict, *, sources: Iterable[str], vetoes: Optional[dict], ve
         rows = classify(decs, join_acts)
         report["sources"]["replay"] = {
             "note": ("Real durable admissions in the window, re-decided by the live Choice code against the "
-                     "physiology_state in force at each admission (in time order, one reservation book opened at "
+                     "physiology_state in force at each admission (in time order, one reservation book held from "
                      "each act's open and released at each run's terminal). Every one of these runs had already "
                      "passed Hub's gates: a Hub veto never reaches admission, so the 'old veto stricter' cell here "
                      "is pool refusals / failures, and Hub's own vetoes are the logged reasons column. "

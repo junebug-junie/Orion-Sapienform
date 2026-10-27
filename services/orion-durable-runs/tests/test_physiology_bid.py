@@ -108,7 +108,7 @@ def _market(raw, pool, published):
 
 
 def _want(i=0, family="durable.self_inquiry"):
-    return WantV1(want_id=f"w{i}", family=family, producer="test", verb="ask", tier=2)
+    return WantV1(want_id=f"w{i}", family=family, producer="unit-producer", verb="ask", tier=2)
 
 
 def test_bid_prices_against_the_latest_state_publishes_and_caches_history():
@@ -236,12 +236,14 @@ def test_history_sql_on_postgres():
                         decided_at timestamptz NOT NULL, outcome text NOT NULL, reason text NOT NULL, lane text,
                         net double precision, binding_constraint text, shadow boolean NOT NULL, correlation_id text,
                         decision jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now())""")
-                    for did, outcome, at in (("f1", "funded", NOW - timedelta(days=1)), ("d1", "deferred", NOW),
-                                             ("old", "funded", NOW - timedelta(days=9))):
+                    for did, outcome, at, producer in (("f1", "funded", NOW - timedelta(days=1), "p"),
+                                                       ("d1", "deferred", NOW, "p"),
+                                                       ("old", "funded", NOW - timedelta(days=9), "p"),
+                                                       ("probe1", "funded", NOW, "deploy-verification")):
                         await conn.execute("INSERT INTO want_ledger (decision_id, want_id, family, producer, verb, tier, "
                                            "decided_at, outcome, reason, shadow, decision) VALUES "
-                                           "(%s, 'w', 'durable.self_inquiry', 'p', 'ask', 2, %s, %s, 'r', true, '{}')",
-                                           (did, at, outcome))
+                                           "(%s, 'w', 'durable.self_inquiry', %s, 'ask', 2, %s, %s, 'r', true, '{}')",
+                                           (did, producer, at, outcome))
                 funded = await read_funded(pool, NOW)
                 assert [f.decision_id for f in funded] == ["f1"] and funded[0].tier == 2
                 acts, uses = await read_history(pool, NOW)

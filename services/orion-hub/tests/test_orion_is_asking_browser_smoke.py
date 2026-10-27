@@ -4,7 +4,8 @@ The REAL panel markup (cut out of templates/index.html by its id) and the REAL
 static/js/vision-asks.js in Chromium, with the Hub API intercepted (no Hub process). Covers the
 changed interactions: memory cards render Confirm / Revise / Reject, each button POSTs the right
 body to /api/asks/{id}/resolve and the card leaves the list, Revise is prefilled and cannot be
-sent empty, a vision card still gets Answer / Dismiss, and database text stays inert.
+sent empty, a vision card still gets Answer / Dismiss plus "I don't know", and database text
+stays inert.
 """
 from __future__ import annotations
 
@@ -228,5 +229,19 @@ def test_orion_is_asking_panel_browser_smoke():
         page.wait_for_selector('[data-ask-id="m-reject"]', state="detached")
         assert posted[-1] == ("m-reject/resolve", {"resolution": "rejected", "note": ""})
         page.wait_for_function("document.getElementById('visionAsksStatus').textContent.includes('1 question')")
+
+        # "I don't know" (2026-10-27): the who-is-this card's own button, inside the
+        # card at phone width, closes it as a dont_know dismissal; the typed box is not sent.
+        page.set_viewport_size({"width": 360, "height": 800})
+        dk = page.locator('[data-ask-id="v1"] [data-ask-action="dont-know"]')
+        assert dk.inner_text() == "I don't know"
+        v1_box = page.locator('[data-ask-id="v1"]').bounding_box()
+        for action in ("answer", "dont-know", "dismiss"):
+            b = page.locator(f'[data-ask-id="v1"] [data-ask-action="{action}"]').bounding_box()
+            assert b["x"] + b["width"] <= v1_box["x"] + v1_box["width"] + 1, (action, b, v1_box)
+        page.fill('[data-ask-id="v1"] [data-ask-input="v1"]', "unsure")
+        dk.click()
+        page.wait_for_selector('[data-ask-id="v1"]', state="detached")
+        assert posted[-1] == ("v1/dismiss", {"reason": "dont_know"})
         assert errors == [], errors
         browser.close()

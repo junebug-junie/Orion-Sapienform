@@ -162,6 +162,10 @@ readers:
   - module: services/orion-prediction/app/series.py
     role: display
     reason: series registry loader; resolves the cabinet series' `value_from` thresholds (shed = critical, experiment_guard = hot) from thermal_gate.py so the lines have one owner (Patch B); gates nothing itself.
+  - module: services/orion-actions/app/physiology_shadow.py
+    role: display
+    reason: SHADOW bid (in-process journal compose) logged beside the real gate; never obeyed.
+    note: Patch C3b; becomes the bid site when Patch D cuts each producer over
   - module: services/orion-proposal-runtime/app/store.py
     role: display
     reason: loads cabinet temperature points for the proposal worker.

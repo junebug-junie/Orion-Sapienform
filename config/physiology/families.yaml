@@ -105,3 +105,96 @@ families:
     tier: 2
     deferrable_window_s: 3600
     lanes: []
+
+  # --- Verb families (Patch C3 follow-up, 2026-10-27). Mirrors each cortex verb's own
+  # `physiology:` block (orion/cognition/verbs/*.yaml, Patch C2), so a cortex-orch dispatch bid
+  # no longer comes back `unknown_family`. Tier/lanes/window are copied from the verbs, not
+  # re-decided here; the window is the smallest any member verb declares. ---
+  actions.daily_metacog:
+    tier: 1
+    deferrable_window_s: 21600
+    # verbs: daily_metacog_v1
+    lanes: [metacog]
+    placement: one_of
+  actions.daily_pulse:
+    tier: 1
+    deferrable_window_s: 21600
+    # verbs: daily_pulse_v1
+    lanes: [metacog]
+    placement: one_of
+  compactor.digest:
+    tier: 1
+    deferrable_window_s: 86400
+    # verbs: chat_history_compactor_digest_v1, github_compactor_digest_v1
+    lanes: [agent]
+    placement: one_of
+  curiosity.compaction:
+    tier: 1
+    deferrable_window_s: 86400
+    # verbs: curiosity_compactor_digest_v1
+    lanes: [agent]
+    placement: one_of
+  curiosity.supervisor:
+    tier: 1
+    deferrable_window_s: 86400
+    # verbs: curiosity_hop_reading
+    lanes: [chat]
+    placement: one_of
+  execution_dispatch.maintain:
+    tier: 1
+    deferrable_window_s: 21600
+    # verbs: skills.runtime.builder_prune.v1, skills.runtime.docker_prune_stopped_containers.v1, skills.runtime.image_prune.v1
+    lanes: []
+  memory.consolidation:
+    tier: 1
+    deferrable_window_s: 3600
+    # verbs: memory_graph_suggest
+    lanes: [fast]
+    placement: one_of
+  metacog.log:
+    tier: 1
+    deferrable_window_s: 3600
+    # verbs: log_collapse_mirror, log_orion_metacognition
+    lanes: [metacog]
+    placement: one_of
+  orion_day.letter:
+    tier: 1
+    deferrable_window_s: 21600
+    # verbs: orion_day_carry_forward_v1, orion_day_note_v1
+    lanes: [agent]
+    placement: one_of
+  self_study:
+    tier: 1
+    deferrable_window_s: 21600
+    # verbs: self_concept_induce, self_concept_reflect, self_repo_inspect, self_retrieve, self_study.reflect, skills.self_study.analyze.v1
+    lanes: [agent]
+    placement: one_of
+  spark.introspect:
+    tier: 1
+    deferrable_window_s: 600
+    # verbs: introspect_spark
+    lanes: [fast]
+    placement: one_of
+  concept_induction:
+    tier: 2
+    deferrable_window_s: 86400
+    # verbs: concept_induction, concept_induction_journal_synthesize
+    lanes: [fast, agent]
+    placement: one_of
+  execution_dispatch.inspect:
+    tier: 2
+    deferrable_window_s: 300
+    # verbs: skills.perception.look_at_camera.v1
+    lanes: []
+  execution_dispatch.substrate:
+    tier: 2
+    deferrable_window_s: 1800
+    # verbs: substrate.inspect, substrate.observe, substrate.summarize
+    lanes: [fast]
+    placement: one_of
+  thought.reverie:
+    tier: 2
+    deferrable_window_s: 900
+    # verbs: reverie_expectation_judge, reverie_narrate
+    lanes: [metacog]
+    placement: one_of

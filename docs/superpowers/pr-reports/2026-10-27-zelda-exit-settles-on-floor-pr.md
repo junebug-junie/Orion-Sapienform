@@ -77,6 +77,6 @@ git pull   # rebuilds orion-retro; a running game ends
 
 ## PR link
 
-(added after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2934
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

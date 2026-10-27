@@ -308,6 +308,10 @@ class ThoughtSettings(BaseSettings):
     # ``make`` act (act_opened on prepare, act_closed on produced/terminal/abandon) to
     # orion:grammar:event; orion-sql-writer persists and grades it into L10.
     thought_act_ledger_enabled: bool = Field(True, alias="THOUGHT_ACT_LEDGER_ENABLED")
+    # Body economy Patch C3b: the painting / dream-hop generate step places a SHADOW bid
+    # (orion.physiology.client -> durable-runs POST /physiology/bid) and logs it beside the step's
+    # real outcome (app/physiology_shadow.py). Never obeyed; off = no bid, no log line.
+    thought_physiology_shadow_bid_enabled: bool = Field(True, alias="THOUGHT_PHYSIOLOGY_SHADOW_BID_ENABLED")
     # Slower than the text chain's ~90s cadence (design doc §4: "slower cadence
     # than the text chain"). Real cadence is max(this, actual run duration) --
     # intentional, not a bug (design doc §4).

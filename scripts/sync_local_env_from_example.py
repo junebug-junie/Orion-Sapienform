@@ -443,6 +443,8 @@ SYNC_EXACT = frozenset(
         # Mind run artifact channel (reused by unified-turn enrichment, mode=orion)
         "CHANNEL_MIND_ARTIFACT",
         "SQL_WRITER_EMIT_MEMORY_TURN_PERSISTED",
+        # Body economy Patch C3b: orion-thought's shadow-bid switch (no THOUGHT_PHYSIOLOGY_ prefix).
+        "THOUGHT_PHYSIOLOGY_SHADOW_BID_ENABLED",
         # bus_fallback_log backlog watcher (orion-sql-writer). NOTIFY_API_TOKEN is
         # deliberately absent: it is a credential, .env_example carries it empty, and
         # the settings default of "" already makes the key optional.

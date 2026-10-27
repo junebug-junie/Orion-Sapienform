@@ -956,3 +956,24 @@ GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the
 and [consumer-first rollout and rollback](../../docs/runbooks/gpu2-elastic-admission.md)
 for this service's exact flags, HTTP contracts and operator commands.
 No production env sync, migration, GPU transition or deployment was performed.
+
+## Body economy shadow bid (Patch C3b, 2026-10-27)
+
+The `generate` step of a `reverie.visual` run (`app/visual_steps.py`) asks the body economy
+whether it would fund the GPU work, then ignores the answer. The answer is only logged, next to
+what the step really did. Nothing changes what the step does.
+
+- Where: `generate_step`, after the replay, adoption and in-flight checks (those are not a new
+  want) and before the thermal gate. `prepare`, `caption` and `abandon` never bid.
+- Family: `thought.painting`, or `thought.dream_hop` for a dream-carry image hop. Verb `make`, tier 2.
+- `want_id`: the generate step's correlation id. When this step opens the run's `make` act (its
+  first real generation), that is the act's `grammar_acts.correlation_id`. A later generate of the
+  same attempt (after a failed render) bids under its own step id and does not join an act.
+- Real outcome: `ran` once the real gates (thermal, single-flight, stage) passed and the GPU call
+  started, whatever the render's fate; else `blocked:<the step's reason>` (`thermal_refused`,
+  `deferred_busy`, `stage_changed`, ...).
+- Log line: `physiology_shadow_bid family=... want_id=... shadow=funded|deferred|none reason=...
+  lane=... real=...`. durable-runs writes the decision into `want_ledger`. A funded decision whose
+  step was blocked releases its reservation.
+- Switch: `THOUGHT_PHYSIOLOGY_SHADOW_BID_ENABLED` (default true). The bid runs as a background task
+  and never delays the step.

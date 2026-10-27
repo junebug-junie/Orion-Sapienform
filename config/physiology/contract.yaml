@@ -135,6 +135,10 @@ readers:
   - module: services/orion-thought/app/visual_chain_health_monitor.py
     role: display
     reason: diagnostic read that explains a baseline deferral; its own comment says it gates nothing.
+  - module: services/orion-thought/app/physiology_shadow.py
+    role: display
+    reason: SHADOW bids (painting and dream-hop generate step) logged beside the real gate; never obeyed.
+    note: Patch C3b; becomes the bid site when Patch D cuts each producer over
   - module: services/orion-hub/scripts/temporal_self_routes.py
     role: display
     reason: Hub temporal-self routes proxy the regulation state and arousal_level for display.

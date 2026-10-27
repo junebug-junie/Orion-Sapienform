@@ -407,8 +407,10 @@ def _mark_generating(observed: dict, started_at: datetime, opened: list | None =
 
 
 async def _generate_work(attempt_id: str, plan: vc.VisualPlan, observed: dict, hold: GpuLeaseRefV1, bus: Any,
-                         thermal_gate: dict, now_fn: Any, *, on_act_open: Any = None) -> tuple[str, Any, float | None]:
-    """("generated", StoredVisualArtifact, work_sec) or ("retry", reason, work_sec|None)."""
+                         thermal_gate: dict, now_fn: Any, *, on_act_open: Any = None,
+                         work_started: list | None = None) -> tuple[str, Any, float | None]:
+    """("generated", StoredVisualArtifact, work_sec) or ("retry", reason, work_sec|None).
+    ``work_started`` (if given) gets True appended once the GPU call is next (the real gates passed)."""
     async with vc.visual_chain_single_flight(deadline_sec=_in_flight_window_sec()) as held:
         if not held:
             await _record_deferral(attempt_id, "generate", "deferred_busy", now_fn())
@@ -420,6 +422,8 @@ async def _generate_work(attempt_id: str, plan: vc.VisualPlan, observed: dict, h
         if (marked is None or marked["stage_json"].get("stage") != "generating"
                 or marked["stage_json"].get("generating_started_at") != started_at.isoformat()):
             return "retry", "stage_changed", None
+        if work_started is not None:
+            work_started.append(True)
         if on_act_open is not None and opened:
             await on_act_open()
         work_started = time.monotonic()
@@ -570,6 +574,36 @@ async def generate_step(bus, req: ReverieVisualStepRequestV1, *, now_fn: Any = _
             # overlap it on the card.
             return step.retry("generate_in_flight", retry_after_sec=max(0.0, window - age))
 
+    # Body economy Patch C3b: a SHADOW bid at the point this step would spend GPU work. Logged
+    # beside the real outcome, never obeyed (app/physiology_shadow.py). Replays, adoptions and the
+    # in-flight guard above return before it: they are not a new want.
+    shadow = _painting_shadow(req)
+    shadow.place()
+    work_started: list = []
+    result: ReverieVisualStepResultV1 | None = None
+    try:
+        result = await _generate_gated(bus, req, step, attempt_id, stage, plan, window, now_fn, work_started)
+        return result
+    finally:
+        # ran: the real gates (thermal, single-flight, stage) passed and the GPU call started,
+        # whatever the render's own fate. Else the refusal this step answered with.
+        shadow.settle("ran" if work_started else f"blocked:{getattr(result, 'reason', None) or 'error'}")
+
+
+def _painting_shadow(req: ReverieVisualStepRequestV1):
+    """The generate step's shadow want. want_id = this step's correlation id: the act's correlation
+    id when this step opens the act (grammar_acts keeps the first correlation id it sees)."""
+    from .physiology_shadow import ShadowBid
+
+    return ShadowBid(family="thought.painting" if req.dream_hop is None else "thought.dream_hop", verb="make",
+                     tier=2, want_id=req.correlation_id, object_ref=f"durable_run:{req.run_id}",
+                     component="visual_steps.generate")
+
+
+async def _generate_gated(bus, req: ReverieVisualStepRequestV1, step: _Step, attempt_id: str, stage: dict,
+                          plan: vc.VisualPlan, window: float, now_fn: Any,
+                          work_started: list) -> ReverieVisualStepResultV1:
+    """generate_step from the thermal gate on. ``work_started`` gets True when the GPU call starts."""
     thermal_gate = await vc.thermal_gate_snapshot()
     if not thermal_gate["allows_gpu_work"]:
         await _record_deferral(attempt_id, "generate", "thermal_refused", now_fn())
@@ -577,7 +611,8 @@ async def generate_step(bus, req: ReverieVisualStepRequestV1, *, now_fn: Any = _
 
     observed = {"stage": stage.get("stage"), "generating_started_at": stage.get("generating_started_at")}
     task = asyncio.create_task(_generate_work(attempt_id, plan, observed, req.gpu_lease, bus, thermal_gate, now_fn,
-                                              on_act_open=lambda: _publish_painting_open(bus, req)))
+                                              on_act_open=lambda: _publish_painting_open(bus, req),
+                                              work_started=work_started))
     _generate_tasks.add(task)
     task.add_done_callback(_generate_task_done)
     done, _ = await asyncio.wait({task}, timeout=visual_step_generate_deadline_sec())

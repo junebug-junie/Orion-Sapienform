@@ -2091,7 +2091,9 @@ CONFIRM_ASKED_TODAY_SQL = (
 # dismissed for good; expired only for the cooldown. "I don't know" (a dismissal
 # with answer_detail.dont_know, Hub /dismiss {reason: dont_know}, 2026-10-27) is
 # also only for the cooldown, counted from when she said it: she may know later.
-DONT_KNOW_SQL = "coalesce((a.answer_detail ->> 'dont_know')::boolean, false)"
+# Containment, not a ::boolean cast: one malformed row cannot break the opener query.
+# (No braces: _NOT_ASKED_SQL goes through str.format.)
+DONT_KNOW_SQL = "coalesce(a.answer_detail @> jsonb_build_object('dont_know', true), false)"
 _NOT_ASKED_SQL = (
     "NOT EXISTS (SELECT 1 FROM orion_ask a WHERE a.source_kind={kind} AND a.source_ref={ref} "
     "AND ((a.status IN ('open','answered') OR (a.status = 'dismissed' AND NOT " + DONT_KNOW_SQL + ")) "

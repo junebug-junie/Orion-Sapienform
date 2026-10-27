@@ -184,6 +184,7 @@
     if (detail === "answer_must_be_yes_or_no") return "Press Same person, Different people, or Not sure.";
     if (detail === "same_person_takes_one_name") return "Same person takes one name.";
     if (detail === "name_too_long") return "That name is too long (120 characters at most).";
+    if (detail === "dont_know_only_on_who_is_this_cards") return "I don't know is only for \"who is this?\" questions.";
     if (detail === "pick_an_answer") return "Pick Same person, Different people, or Not sure first.";
     if (status === 409) return "Someone already answered this one, or it expired.";
     if (status === 404) return "That question no longer exists.";
@@ -664,6 +665,8 @@
       dontKnowBtn.setAttribute("title", "No name is saved. Orion may ask again later.");
     }
     const note = el(doc, "div", "text-[11px] text-amber-300 hidden");
+    // An empty Answer points at the button that says what she means.
+    if (dontKnowBtn) note.setAttribute("data-empty-hint", "Type a name first, or press I don't know.");
     // Every button is locked while a request is in flight, so a double
     // click cannot send a second POST and flash a spurious 409.
     const buttons = dontKnowBtn ? [answerBtn, dontKnowBtn, dismissBtn] : [answerBtn, dismissBtn];
@@ -683,6 +686,7 @@
       return run("dismiss", "");
     });
     if (dontKnowBtn) {
+      // Closes the whole card: any per-picture choices are not sent (she does not know who it is).
       dontKnowBtn.addEventListener("click", function () {
         return run("dismiss", "", { dontKnow: true });
       });
@@ -792,7 +796,7 @@
 
     async function onAction(askId, action, answerText, note, resolution, extra) {
       if (action === "answer" && !String(answerText || "").trim()) {
-        note.textContent = "Type an answer first, or press Dismiss.";
+        note.textContent = (note.getAttribute && note.getAttribute("data-empty-hint")) || "Type an answer first, or press Dismiss.";
         note.classList.remove("hidden");
         return;
       }

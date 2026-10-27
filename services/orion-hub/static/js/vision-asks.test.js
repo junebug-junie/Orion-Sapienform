@@ -558,3 +558,19 @@ test('I don\'t know posts a dont_know dismissal, ignores the typed box, and refr
   assert.equal(doc.byId.visionAsksStatus.textContent, 'Orion has no open questions for you.');
   handle.stop();
 });
+
+test('an empty Answer on a who-is-this card points at I don\'t know', async () => {
+  const doc = fakeDoc();
+  let posted = false;
+  const fetchFn = async (url, init) => {
+    if (init && init.method === 'POST') posted = true;
+    return { ok: true, status: 200, json: async () => ({ asks: [{ ask_id: 'w2', question: 'q', source_kind: 'vision_individual' }] }) };
+  };
+  const handle = asks.mount(doc, fetchFn);
+  await handle.refresh();
+  const card = doc.byId.visionAsksList.children[0];
+  await handle.onAction('w2', 'answer', '  ', card.children[card.children.length - 1]);
+  assert.equal(posted, false);
+  assert.match(card.children[card.children.length - 1].textContent, /press I don't know/);
+  handle.stop();
+});

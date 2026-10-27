@@ -103,6 +103,8 @@ class ReservationBook:
     def __init__(self) -> None:
         self._r: list[Reservation] = []
         self._deferred: deque[tuple[datetime, str, Optional[str], float]] = deque(maxlen=500)
+        # family -> when the exploration floor last funded it here (its act history lags the book).
+        self._floor: dict[str, datetime] = {}
 
     def _prune(self, now: datetime) -> None:
         self._r = [r for r in self._r if r.expires_at > now]
@@ -125,6 +127,13 @@ class ReservationBook:
         self._r = [r for r in self._r if r.want_id != want_id]
         return n - len(self._r)
 
+    def floor_used_since(self, family: str, since: datetime) -> bool:
+        at = self._floor.get(family)
+        return at is not None and at >= since
+
+    def note_floor(self, family: str, now: datetime) -> None:
+        self._floor[family] = now
+
     def note_deferred(self, now: datetime, want_id: str, lane: Optional[str], net: float) -> None:
         self._deferred.append((now, want_id, lane, net))
 
@@ -146,6 +155,9 @@ class MarketContext:
     appetite: Mapping[str, FamilyAppetite]
     weights: Mapping[str, FamilyWeight]
     tier1_share: Mapping[str, float] = field(default_factory=dict)   # lane role -> reserved share 0..0.5
+    # lane role -> Tier 1's own slot-seconds in the last window (acts closed inside it). Part of the
+    # lane's measured level: Tier 2's line subtracts only the UNUSED rest of Tier 1's share.
+    tier1_recent_use: Mapping[str, float] = field(default_factory=dict)
     funded_share: Mapping[str, Optional[float]] = field(default_factory=dict)
     lane_window_sec: float = 3600.0
     stale_after_sec: float = STALE_AFTER_SEC
@@ -194,13 +206,24 @@ def build_context(families: FamiliesConfig, acts: Sequence[ActRecord], uses: Seq
     w = dict(weights) if weights is not None else weights_now(families, acts, uses, now)
     shares = funded_shares(families, acts, since=now - timedelta(days=7), until=now)
     t1: dict[str, float] = {}
+    t1_use: dict[str, float] = {}
+    for a in acts:
+        cfg = families.get(a.family)
+        if (cfg is None or cfg.tier != 1 or a.closed_at is None
+                or not (now - timedelta(seconds=lane_window_sec) <= a.closed_at <= now)):
+            continue
+        by_lane = (a.cost or {}).get("gpu_slot_s_by_lane")
+        if isinstance(by_lane, dict):
+            for ln, v in by_lane.items():
+                if isinstance(v, (int, float)) and math.isfinite(v) and v > 0:
+                    t1_use[str(ln)] = t1_use.get(str(ln), 0.0) + min(float(v), lane_window_sec)
     if state is not None:
         for r in state.constraints:
             if r.constraint.startswith(LANE_PREFIX) and r.budget:
                 t1[r.constraint[len(LANE_PREFIX):]] = tier1_reserved_share(
                     acts, families, r.constraint[len(LANE_PREFIX):], r.budget, now, window_sec=lane_window_sec)
-    return MarketContext(families=families, appetite=app, weights=w, tier1_share=t1, funded_share=shares,
-                         lane_window_sec=lane_window_sec)
+    return MarketContext(families=families, appetite=app, weights=w, tier1_share=t1, tier1_recent_use=t1_use,
+                         funded_share=shares, lane_window_sec=lane_window_sec)
 
 
 
@@ -308,13 +331,26 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
             unloaded.add(role)
         return in_window(slot_s) / budget, budget, warn
 
-    def tier_line(constraint: str, budget: float) -> float:
-        share = ctx.tier1_share.get(constraint[len(LANE_PREFIX):], 0.0) if constraint.startswith(LANE_PREFIX) else 0.0
-        return budget * (1.0 - share) if tier == 2 else budget
+    def tier1_unused(k: str, budget: float) -> float:
+        """The part of Tier 1's reserved share it is not using now (measured + reserved)."""
+        if not k.startswith(LANE_PREFIX):
+            return 0.0
+        role = k[len(LANE_PREFIX):]
+        share = ctx.tier1_share.get(role, 0.0) * budget
+        return max(0.0, share - ctx.tier1_recent_use.get(role, 0.0) - book.total(k, now, tier=1))
 
-    def lane_level(role: str) -> float:
+    def tier_line(k: str, budget: float) -> float:
+        # Tier 2 may use the lane minus what Tier 1's share still holds free; the measured level
+        # already contains Tier 1's own use, so the share is not subtracted twice.
+        return budget - tier1_unused(k, budget) if tier == 2 else budget
+
+    def lane_level(role: str) -> Optional[float]:
         r = readings.get(f"{LANE_PREFIX}{role}")
-        return float(r.level) if r is not None and r.level is not None else 0.0
+        return float(r.level) if r is not None and r.level is not None else None
+
+    def lane_unread(role: str) -> bool:
+        # A lane with no reading (stale pool events): its use is unknown, so it is never "empty".
+        return role not in unloaded and lane_level(role) is None
 
     # charges: constraint -> (cost_frac, amount in own unit, line in own unit or None)
     base: dict[str, tuple[float, float, Optional[float]]] = {}
@@ -339,8 +375,10 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
             if p is None:
                 continue
             if tier == 1 and k.startswith(LANE_PREFIX):
-                share = ctx.tier1_share.get(k[len(LANE_PREFIX):], 0.0)
-                if share > 0 and book.total(k, now, tier=1) + amount <= share * (_line or 0.0):
+                role = k[len(LANE_PREFIX):]
+                share = ctx.tier1_share.get(role, 0.0)
+                used = ctx.tier1_recent_use.get(role, 0.0) + book.total(k, now, tier=1)
+                if share > 0 and used + amount <= share * (_line or 0.0):
                     parts[k] = 0.0      # inside Tier 1's reserved share: upkeep pays no lane price
                     continue
             parts[k] = p * frac
@@ -354,26 +392,42 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
                 continue
             if k.startswith(LANE_PREFIX):
                 role = k[len(LANE_PREFIX):]
-                level = 0.0 if role in unloaded else lane_level(role)
+                lv = lane_level(role)
+                level = 0.0 if role in unloaded else (lv if lv is not None else float("inf"))
             else:
                 level = float(jr.level) if jr is not None and jr.level is not None else 0.0
             over = level + book.total(k, now) + amount - tier_line(k, line)
-            if over > 1e-9 and (worst is None or over / line > worst[1]):
+            if over > 1e-9 and (worst is None or over / line > worst[1]) and math.isfinite(over):
                 worst = (k, over / line)
         return worst
 
     chosen: Optional[str] = None
     candidates: list[tuple[float, str, dict]] = []
-    if cfg.placement == "one_of" and lanes and cost.one_of_slot_s is not None:
+    one_of_slot = cost.one_of_slot_s
+    if lanes and one_of_slot is None and not cost.lane_slot_s:
+        # A GPU family with no measured slot time: never "free". Priced at its upper bound, one
+        # whole window on whichever lane it lands (an act holds at most one slot), and placed.
+        one_of_slot = ctx.lane_window_sec
+        warnings.append("lane_cost_unmeasured:priced_at_one_window")
+    if (cfg.placement == "one_of" or not cost.lane_slot_s) and lanes and one_of_slot is not None:
         for role in lanes:
-            frac, line, warn = lane_frac(role, cost.one_of_slot_s)
+            frac, line, warn = lane_frac(role, one_of_slot)
             if frac is None:
                 continue
+            if lane_unread(role):
+                lane_warn.append(f"lane_no_reading:{role}")
+                continue
             items = dict(base)
-            items[f"{LANE_PREFIX}{role}"] = (frac, in_window(cost.one_of_slot_s), line)
+            items[f"{LANE_PREFIX}{role}"] = (frac, in_window(one_of_slot), line)
             ch, _ = charge_of(items)
             candidates.append((ch, role, {"items": items, "warn": warn}))
         if not candidates:
+            if any(w.startswith("lane_no_reading:") for w in lane_warn):
+                return _decision(want, now, tier=tier, outcome="deferred", reason="physiology_unavailable",
+                                 binding_constraint="physiology_unavailable", prices_seen=prices_seen,
+                                 state_tick_id=state.tick_id, state_age_sec=round(age, 1),
+                                 retry_after_sec=UNAVAILABLE_RETRY_SEC, warnings=warnings + sorted(set(lane_warn)),
+                                 why=f"none of {lanes} has a reading: their use is unknown, never empty")
             return _decision(want, now, tier=tier, outcome="deferred", reason="no_acceptable_lane",
                              binding_constraint="no_acceptable_lane", intensity=round(inten, 6), value_rank=round(rank, 6),
                              graded=app.graded, value_basis=vbasis, family_weight=round(weight, 6), weight_basis=wbasis,
@@ -383,14 +437,27 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
         # Placement: the cheapest lane that still has room; else the cheapest lane (deferred on it).
         # A seat with no live slot now (swap seat unloaded, hecate asleep) is a last resort: loading
         # or waking it has a cost this patch does not price (Patch E), so a live seat wins any tie.
-        fits = [c for c in candidates if capacity_overflow(c[2]["items"]) is None]
-        pick = min(fits or candidates, key=lambda c: (c[1] in unloaded, c[0], lanes.index(c[1])))
+        # An unloaded seat satisfies capacity only when it is the want's ONLY lane (its home seat,
+        # e.g. painting on diffusion: the pool loads it for this work). Otherwise landing there
+        # would evict the seat sharing its card, which nobody pays for yet (Patch E).
+        only = len(candidates) == 1
+        fits = [c for c in candidates if capacity_overflow(c[2]["items"]) is None
+                and (only or c[1] not in unloaded)]
+        live = [c for c in candidates if c[1] not in unloaded] or candidates
+        pick = min(fits or live, key=lambda c: (c[1] in unloaded, c[0], lanes.index(c[1])))
         chosen = pick[1]
         items = pick[2]["items"]
         if pick[2]["warn"]:
             lane_warn.append(pick[2]["warn"])
     else:
         items = dict(base)
+        unread = [k for k in items if k.startswith(LANE_PREFIX) and lane_unread(k[len(LANE_PREFIX):])]
+        if unread:
+            return _decision(want, now, tier=tier, outcome="deferred", reason="physiology_unavailable",
+                             binding_constraint="physiology_unavailable", prices_seen=prices_seen,
+                             state_tick_id=state.tick_id, state_age_sec=round(age, 1),
+                             retry_after_sec=UNAVAILABLE_RETRY_SEC, warnings=warnings + [f"lane_no_reading:{k}" for k in unread],
+                             why=f"{', '.join(unread)} has no reading: its use is unknown, never empty")
         if len(cost.lane_slot_s) == 1:
             chosen = next(iter(cost.lane_slot_s))
     warnings += sorted(set(lane_warn))
@@ -406,6 +473,11 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
             f"{hunger_s}) - charge {charge:.3f} = net {net:+.3f}")
 
     over = capacity_overflow(items)
+    if over is None and chosen in unloaded and cfg.placement == "one_of" and len(lanes) > 1:
+        # Every live seat is full; the only room is a seat that would have to be loaded (evicting
+        # its card-mate). Not funded on that alone until placement prices the swap (Patch E).
+        over = (f"{LANE_PREFIX}{chosen}", 0.0)
+        warnings.append(f"only_room_on_unloaded_seat:{chosen}")
     if over is not None:
         k, frac_over = over
         holders = book.holders(k, now)
@@ -427,10 +499,14 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     floor_share = ctx.funded_share.get(want.family)
     # ...and only for a want with some hunger: the floor guarantees a share to families that want,
     # it does not fund a family whose drive just discharged (intensity 0).
-    under_floor = floor_known and inten > 0 and (floor_share is None or floor_share < EXPLORATION_FLOOR)
+    # ...and at most once per family per lane window: the shares come from act history, which lags
+    # the book, so without this a starved family would be floor-funded on every bid until it ran.
+    under_floor = (floor_known and inten > 0 and (floor_share is None or floor_share < EXPLORATION_FLOOR)
+                   and not book.floor_used_since(want.family, now - timedelta(seconds=ctx.lane_window_sec)))
     if net > 0 or under_floor:
         reason = "net_positive" if net > 0 else "exploration_floor"
         if reason == "exploration_floor":
+            book.note_floor(want.family, now)
             fs = "nothing funded in its tier this week" if floor_share is None else f"{floor_share:.1%} of its tier's funded acts this week"
             head += f"; under the 5% exploration floor ({fs})"
         secs = cost.scalars.get("seconds")
@@ -460,8 +536,10 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
         p = r.price
         rest = charge - parts[k]
         needed = max(0.0, (value - rest) / items[k][0])
+        # Only a slack price falls. Its guaranteed decay is the slack floor (ceiling / horizon), so
+        # this is an upper bound on the wait. binding / exogenous_bind / stuck prices do not fall.
         rate = p.ceiling / p.horizon_sec if p.horizon_sec else None
-        if rate:
+        if rate and p.bind_state == "slack":
             retry = max(0.0, (p.value - needed) / rate)
     book.note_deferred(now, want.want_id, chosen, net)
     return _decision(want, now, tier=tier, outcome="deferred", reason="price", binding_constraint=k,

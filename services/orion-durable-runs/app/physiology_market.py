@@ -119,6 +119,9 @@ class Market:
             if c is not None and 0 <= (now - c.at).total_seconds() <= self._ttl:
                 return c
             acts, uses = await read_history(self._pool_getter(), now)
+            if not acts:
+                # An act ledger read that returns nothing is not "no hunger anywhere": unknown.
+                raise RuntimeError("grammar_acts returned no rows")
             self._cache = _Cached(at=now, acts=acts, uses=uses)
             return self._cache
 

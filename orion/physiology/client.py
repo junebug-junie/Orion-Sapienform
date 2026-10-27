@@ -58,7 +58,7 @@ def bid(want: WantV1, *, url: Optional[str] = None, timeout_sec: Optional[float]
                 logger.info("physiology_bid_non_200 status=%s family=%s", resp.status, want.family)
                 return None
             raw = resp.read()
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 -- ANY failure (incl. http.client errors on read) is None
         logger.info("physiology_bid_unavailable family=%s err=%s", want.family, type(exc).__name__)
         return None
     try:

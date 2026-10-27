@@ -764,6 +764,7 @@ def eval_r2(rows, *, heat_start, heat_end) -> dict:
             "non_gpu_hot_reasons": {k: sum(1 for r in hot_ng if r["reason"] == k) for k in sorted({r["reason"] for r in hot_ng})},
             "non_gpu_cool_reasons": {k: sum(1 for r in cool_ng if r["reason"] == k) for k in sorted({r["reason"] for r in cool_ng})},
             "juniper_turns_funded": "100% by construction: Tier 0 (hub.chat_reply) never bids and is never deferred",
+            "structural": "In C1 heat is unpriced per act, so heat cannot reduce a non-GPU want: this FAIL is structural, not a tuning miss.",
             "note": ("Non-GPU here = families whose families.yaml lanes are empty (their acts record no pool lease). "
                      "Heat is UNPRICED per act in C1 (wh_by_host is null on every act), so the heat price cannot "
                      "touch a non-GPU want; only Juniper's cap and the weights can.")}
@@ -807,7 +808,30 @@ def eval_r6(acts, families, *, now: datetime, burst: int = 20) -> dict:
         worst = max([worst, *per_lane.values()])
         out[f] = {"slot_s_p90": round(app.total_slot_s_q, 1), "funded": sum(d.outcome == "funded" for d in ds),
                   "deferred_capacity": sum(d.reason == "capacity_reserved" for d in ds), "reserved_over_budget": per_lane}
-    return {"pass": worst <= 1.2, "worst_reserved_over_budget": worst, "by_family": out}
+    # Mixed burst: every placeable family interleaved, lanes already half used, diffusion unloaded.
+    half = st.model_copy(update={"constraints": [
+        (c.model_copy(update={"level": 0.0, "budget": 0.0, "detail": {**c.detail, "slots": 0}})
+         if c.constraint == "lane:diffusion" else
+         c.model_copy(update={"level": 0.5 * c.budget}) if c.constraint.startswith("lane:") else c)
+        for c in st.constraints]})
+    ctx2 = build_context(families, acts, [], half, now, weights={})
+    book = ReservationBook()
+    fams = [f for f, c in sorted(families.families.items()) if c.bids]
+    for i in range(burst):
+        for f in fams:
+            decide(WantV1(want_id=f"r6m:{f}:{i}", family=f, producer="replay", verb="burst", tier=families.get(f).tier),
+                   half, ctx2, book, now)
+    mixed = {}
+    for c in half.constraints:
+        if c.constraint.startswith("lane:"):
+            budget = c.budget if c.budget else 3600.0
+            mixed[c.constraint] = round(((c.level or 0.0) + book.total(c.constraint, now)) / budget, 4)
+    worst_mixed = max(mixed.values()) if mixed else 0.0
+    return {"pass": worst <= 1.2 and worst_mixed <= 1.2, "worst_reserved_over_budget": worst,
+            "mixed_burst_worst_use_plus_reserved_over_budget": worst_mixed, "mixed_burst": mixed,
+            "by_family": out,
+            "note": ("A design property: reservations are only added after the forecast + reservations + cost <= line "
+                     "check, so this confirms the code enforces the rule; it cannot find a pricing failure.")}
 
 
 def eval_r7(rows_stress, series, acts, uses, families) -> dict:
@@ -846,6 +870,9 @@ def eval_r7(rows_stress, series, acts, uses, families) -> dict:
             "max_daily_move": round(drift, 4), "floor_violations": len(violations), "floor_fired": floor_fired,
             "stress_lane_price": 1.0, "funded_share_in_tier_stress": shares,
             "zero_use_live": live_zero,
+            "by_construction_note": ("floor_violations is 0 by construction (the floor branch runs before the price "
+                                     "branch) and the drift cap is applied inside weight_series: both confirm the code, "
+                                     "not the economics. The synthetic zero-use clause is the part that could fail."),
             "zero_use_live_note": ("A zero-use family under 10 evidenced acts stays at its prior by the ungraded rule; "
                                    "the 'ends below prior' clause can only bite at n >= 10."),
             "zero_use_synthetic": synth,
@@ -911,13 +938,15 @@ def render_wants_md(w: dict) -> str:
          f"the heat {r2['non_gpu_cool_wants']} wants, funded {f(r2['non_gpu_cool_funded_rate'])} (reduced: {r2['reduced']}). "
          f"Reasons in the heat {r2['non_gpu_hot_reasons']}, outside {r2['non_gpu_cool_reasons']}. "
          f"GPU wants in the heat: {r2['gpu_hot_wants']}, funded {f(r2['gpu_hot_funded_rate'])}, held by the reflex "
-         f"{r2['gpu_hot_held_by_reflex']}. Juniper's turns: {r2['juniper_turns_funded']}. {r2['note']}",
+         f"{r2['gpu_hot_held_by_reflex']}. Juniper's turns: {r2['juniper_turns_funded']}. {r2['note']} {r2['structural']}",
          f"- **R5 {v(r5['pass'])}**: {r5['reason']} Baseline 10-21..22: {r5['baseline_10_21_22_background_refused']} background "
          f"requests ended unavailable ({r5['baseline_10_21_22_background_shed']} shed) vs {r5['baseline_10_21_22_background_granted']} "
          f"granted. Since 10-23, {r5['ticks_any_lane_price_positive']} of {r5['physiology_ticks_with_lane_price']} ticks had any lane "
          f"price > 0 (max {f(r5['max_lane_price_seen'])}).",
          f"- **R6 {v(r6['pass'])}**: 20 simultaneous bids at price 0 on an empty lane: worst reserved / lane budget "
-         f"{r6['worst_reserved_over_budget']:.2f} (limit 1.2). "
+         f"{r6['worst_reserved_over_budget']:.2f} (limit 1.2); mixed burst (all families x20, lanes half used, "
+         f"diffusion unloaded): worst (use + reserved) / budget {r6['mixed_burst_worst_use_plus_reserved_over_budget']:.2f}. "
+         f"{r6['note']} "
          + "; ".join(f"{k}: {d['funded']} funded, {d['deferred_capacity']} deferred on capacity, {d['reserved_over_budget']}"
                      for k, d in r6["by_family"].items()),
          f"- **R7 {v(r7['pass'])}**: max weight move {r7['max_daily_move']:.3f}/day (cap 0.1); exploration floor with every "
@@ -925,7 +954,7 @@ def render_wants_md(w: dict) -> str:
          f"price; synthetic zero-use family {r7['zero_use_synthetic']['family']} (n {r7['zero_use_synthetic']['n']}) ends at "
          f"{r7['zero_use_synthetic']['final_weight']} vs prior {r7['zero_use_synthetic']['prior']} (below: "
          f"{r7['zero_use_synthetic']['below_prior']}); live zero-use families: {r7['zero_use_live'] or 'none'}. "
-         f"{r7['zero_use_live_note']}", "",
+         f"{r7['zero_use_live_note']} {r7['by_construction_note']}", "",
          "| family | weight | target | basis | use rate (n) | Juniper reply rate (n) | funded share in tier (stress) |",
          "|---|---|---|---|---|---|---|"]
     for fam, x in r7["final_weights"].items():

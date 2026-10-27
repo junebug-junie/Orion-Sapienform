@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -107,7 +108,7 @@ def test_cost_estimate_want_then_fixed_then_p90_then_unpriced_never_zero():
 
 
 def test_live_families_config_parses_and_keeps_the_tier_decision():
-    fams, err = load_families("config/physiology/families.yaml")
+    fams, err = load_families(Path(__file__).resolve().parents[3] / "config/physiology/families.yaml")
     assert err is None
     assert fams.get("hub.chat_reply").tier == 0 and fams.get("vision.council").tier == 0
     assert not fams.get("hub.chat_reply").bids

@@ -123,6 +123,7 @@ def test_bid_prices_against_the_latest_state_publishes_and_caches_history():
 def test_never_funded_on_a_missing_market():
     for raw, pool in ((None, _Pool(acts=_acts())), (b"{bad", _Pool(acts=_acts())),
                       (_state().model_dump_json(), _Pool(fail=True)),
+                      (_state().model_dump_json(), _Pool(acts=[])),   # an empty act read is unknown
                       (_state(NOW - timedelta(seconds=900)).model_dump_json(), _Pool(acts=_acts()))):
         d = asyncio.run(_market(raw, pool, []).bid(_want(), NOW))
         assert d.outcome == "deferred" and d.reason == "physiology_unavailable", (raw, pool.fail)

@@ -25,7 +25,9 @@ from orion.schemas.physiology import PhysiologyConstraintReadingV1 as R, Physiol
 from orion.schemas.physiology_want import WantDecisionV1, WantV1
 
 NOW = datetime(2026, 10, 27, 6, 0, tzinfo=timezone.utc)
-FAMS, _ = load_families("config/physiology/families.yaml")
+from pathlib import Path
+
+FAMS, _ = load_families(Path(__file__).resolve().parents[3] / "config/physiology/families.yaml")
 
 
 def price(v, state="slack", horizon=3600.0):
@@ -89,12 +91,17 @@ def test_placement_picks_the_cheapest_acceptable_lane():
 
 
 def test_price_deferral_names_the_binding_constraint_and_when_to_retry():
-    st = body(lane("agent", p=1.0, state="binding"))
+    st = body(lane("agent", p=1.0, state="slack"))
     w = {"durable.self_inquiry": FamilyWeight("durable.self_inquiry", 2, 0.2, 0.2, "evidence", Evidence(0.0, 40, None, 0))}
     d = decide(want(), st, ctx_for(SELF, st, shares={"durable.self_inquiry": 0.5}, weights=w), ReservationBook(), NOW)
     assert d.outcome == "deferred" and d.reason == "price" and d.binding_constraint == "lane:agent"
-    assert d.net < 0 and d.retry_after_sec is not None and d.retry_after_sec > 0
+    # A slack price decays at least ceiling / horizon: 1.0 -> needed price within the hour.
+    assert d.net < 0 and d.retry_after_sec is not None and 0 < d.retry_after_sec <= 3600
     assert d.prices_seen["lane:agent"] == 1.0
+    # A binding price is not falling: no retry time is promised (review finding 7).
+    st2 = body(lane("agent", p=1.0, state="binding"))
+    d2 = decide(want(), st2, ctx_for(SELF, st2, shares={"durable.self_inquiry": 0.5}, weights=w), ReservationBook(), NOW)
+    assert d2.reason == "price" and d2.retry_after_sec is None
 
 
 def test_exploration_floor_funds_a_starved_family_on_price_but_never_past_capacity():
@@ -144,7 +151,7 @@ def test_tier0_never_bids_unknown_family_and_missing_market_are_never_funded():
 
 def test_tier1_pays_no_lane_price_inside_its_reserved_share():
     journal = []
-    for h in range(14 * 24):
+    for h in range(1, 14 * 24):
         closed = NOW - timedelta(hours=h, minutes=30)
         journal.append(ActRecord(act_id=f"j{h}", family="actions.journal", opened_at=closed - timedelta(seconds=10),
                                  closed_at=closed, outcome_value=0.0, outcome_source="producer",
@@ -238,3 +245,81 @@ def test_a_live_seat_wins_over_an_unloaded_one_even_when_the_unloaded_one_is_che
                                       price=price(0.0)))
     d = decide(want(), st, ctx_for(SELF, st), ReservationBook(), NOW)
     assert d.lane == "agent" and d.outcome == "funded"
+
+
+# --- review findings (C1 code review, 2026-10-27) ------------------------------------------------
+
+def test_a_gpu_family_with_no_slot_history_is_priced_at_one_window_never_free():
+    """Finding 1: no measured slot time used to skip placement, charge and capacity entirely."""
+    bare = history("durable.self_inquiry")          # acts with seconds only, no gpu_slot_s_by_lane
+    full = body(lane("agent", level=3600.0, p=1.0, state="binding"), lane("agent-gpu2", slots=2, level=7200.0, p=1.0))
+    d = decide(want(), full, ctx_for(bare, full, shares={"durable.self_inquiry": 0.5}), ReservationBook(), NOW)
+    assert d.outcome == "deferred" and d.reason == "capacity_reserved"
+    assert "lane_cost_unmeasured:priced_at_one_window" in d.warnings
+
+
+def test_a_lane_with_no_reading_is_never_an_empty_lane():
+    """Finding 2: a no_reading lane kept a budget and counted as level 0."""
+    r = R(constraint="lane:agent", unit="slot_s", no_reading="stale:gpu_pool_events", budget=3600.0,
+          budget_kind="capacity", detail={"slots": 1}, price=price(0.0, "no_reading"))
+    st = body(r)
+    d = decide(want(), st, ctx_for(SELF, st), ReservationBook(), NOW)
+    assert d.outcome == "deferred" and d.reason == "physiology_unavailable" and "lane_no_reading:agent" in d.warnings
+
+
+def test_full_live_seat_does_not_spill_onto_an_unloaded_swap_seat():
+    """Finding 3: agent full, agent-gpu2 unloaded -> was funded on agent-gpu2 (evicting diffusion)."""
+    st = body(lane("agent", level=3600.0), R(constraint="lane:agent-gpu2", unit="slot_s", level=0.0, budget=0.0,
+                                            budget_kind="capacity", detail={"slots": 0}, price=price(0.0)))
+    d = decide(want(), st, ctx_for(SELF, st, shares={"durable.self_inquiry": 0.5}), ReservationBook(), NOW)
+    assert d.outcome == "deferred" and d.reason == "capacity_reserved"
+
+
+def test_tier2_line_does_not_subtract_tier1_share_twice():
+    """Finding 4: metacog 4 slots, Tier 1 share 0.5 and Tier 1 already using its share in the measured
+    level: Tier 2 may still use the free other half."""
+    from orion.physiology.choice import MarketContext
+    tf = history("topic_foundry.run", slot={"metacog": 600.0})
+    st = body(lane("metacog", slots=4, level=7200.0))
+    c = build_context(FAMS, tf, [], st, NOW, weights={})
+    c = MarketContext(families=c.families, appetite=c.appetite, weights={}, tier1_share={"metacog": 0.5},
+                      tier1_recent_use={"metacog": 7200.0}, funded_share={})
+    d = decide(want("topic_foundry.run", verb="maintain"), st, c, ReservationBook(), NOW)
+    assert d.outcome == "funded" and d.lane == "metacog"
+    # With Tier 1 idle, Tier 2 must leave Tier 1's 7,200 s free: 7,200 measured + 600 > 7,200 line.
+    c2 = MarketContext(families=c.families, appetite=c.appetite, weights={}, tier1_share={"metacog": 0.5},
+                       tier1_recent_use={}, funded_share={})
+    d2 = decide(want("topic_foundry.run", verb="maintain", i=2), st, c2, ReservationBook(), NOW)
+    assert d2.reason == "capacity_reserved"
+
+
+def test_exploration_floor_funds_a_family_at_most_once_per_window():
+    """Finding 6: act history lags the book, so the floor would fund every bid."""
+    st = body(lane("agent", p=1.0, state="binding"))
+    w = {"durable.self_inquiry": FamilyWeight("durable.self_inquiry", 2, 0.2, 0.2, "evidence", Evidence(0.0, 40, None, 0))}
+    ctx = ctx_for(SELF, st, shares={"durable.self_inquiry": 0.01}, weights=w)
+    book = ReservationBook()
+    first = decide(want(i=1), st, ctx, book, NOW)
+    book.release("w1")
+    second = decide(want(i=2), st, ctx, book, NOW + timedelta(minutes=5))
+    assert first.reason == "exploration_floor" and second.reason == "price"
+
+
+def test_client_returns_none_on_a_broken_http_response():
+    """Finding 5: an http.client error on read (bad status line) must not raise into a producer."""
+    import socket
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+
+    def serve():
+        conn, _ = srv.accept()
+        conn.recv(65536)
+        conn.sendall(b"NOT-HTTP garbage\r\n\r\n")
+        conn.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    assert client.bid(want(), url=f"http://127.0.0.1:{port}/physiology/bid", timeout_sec=2.0) is None
+    srv.close()

@@ -53,6 +53,12 @@ PRIOR_TEXTS = {"world:nasa_outreach_is_spectacle": [{
            "the administrator himself flies a jet over an NFL game", "last_run_id": "e5eb9cfcf7ea"}]}
 
 
+# The read's own row: a world-pulse digest item, so the chain is the read alone.
+ORIGIN_ROWS = [{"leaf": SEED, "depth": 0, "seed_id": SEED, "kind": "digest_item", "url": URL,
+                "title": READ_ROW["title"], "requested_by": "world_pulse",
+                "invocation_context": "world_pulse", "why_now": ""}]
+
+
 class _Conn:
     def __init__(self, state):
         self.s = state
@@ -60,6 +66,7 @@ class _Conn:
     async def fetch(self, sql, *args):
         from orion.world_pulse_read import findings as wf
         from orion.world_pulse_read import introspect
+        from orion.world_pulse_read import origin
 
         from scripts import reading_finding_outreach as rfo
 
@@ -71,6 +78,9 @@ class _Conn:
             return self.s["moves"]
         if sql == rfo.DECISIONS_SQL:
             return self.s["decisions"]
+        if sql == origin.ORIGIN_SQL:
+            self.s["origin_asked"].append(args[0])
+            return [r for r in self.s["origin"] if r["leaf"] in args[0]]
         raise AssertionError(sql[:60])
 
 
@@ -124,7 +134,8 @@ def _setup(monkeypatch, *, links=None, moves=None, decisions=None, text="I read 
     base.update(outreach_kw)
     outreach = eo.EndogenousOutreach(**base)
     state = {"reads": [READ_ROW], "links": [_link_row()] if links is None else links,
-             "moves": [] if moves is None else moves, "decisions": decisions or []}
+             "moves": [] if moves is None else moves, "decisions": decisions or [],
+             "origin": ORIGIN_ROWS, "origin_asked": []}
 
     async def lookup(ids):
         return {i: PRIOR_TEXTS.get(i, []) for i in ids}
@@ -287,3 +298,20 @@ def test_a_restart_does_not_resend_a_told_read(monkeypatch):
     told = [{"reason": "sent", "finding_ids": json.dumps(["link:assertion-f29721db-52ae-5017-8b26-107fceafbd0d"])}]
     loop, _, _, _, composed, delivered = _setup(monkeypatch, decisions=told)  # fresh process, empty memory
     assert asyncio.run(loop.tick())["pending"] == 0 and composed == [] and delivered == []
+
+
+def test_the_prompt_says_how_the_read_started_from_the_queue_record(monkeypatch):
+    # Live 2026-10-26: the old prompt asserted "Nobody asked you to read it" and Orion wrote
+    # "not because a process scheduled it" about a read the daily digest had started.
+    loop, _, state, _, composed, _ = _setup(monkeypatch)
+    asyncio.run(loop.tick())
+    prompt = composed[0]
+    assert f"1. Your daily world-pulse news run put {URL} in your reading queue. This is the read below." in prompt
+    assert "Nobody asked" not in prompt and "it changed you" not in prompt
+    assert state["origin_asked"] == [[SEED]]  # looked up only for reads with a message to send
+
+
+def test_no_origin_lookup_when_nothing_to_send(monkeypatch):
+    loop, _, state, _, composed, _ = _setup(monkeypatch, links=[])
+    asyncio.run(loop.tick())
+    assert composed == [] and state["origin_asked"] == []

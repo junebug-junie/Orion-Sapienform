@@ -38,6 +38,7 @@ from orion.world_pulse_read.findings import (
     first_sentences,
 )
 from orion.world_pulse_read.introspect import reading_items_between
+from orion.world_pulse_read.origin import read_origins
 
 logger = logging.getLogger("orion-hub.reading_finding_outreach")
 
@@ -179,6 +180,13 @@ class ReadingFindingOutreach:
             by_seed = {seed: [f for f in fs if f.observed_at >= since] for seed, fs in result.by_seed.items()}
             rows = await conn.fetch(DECISIONS_SQL, now - timedelta(days=READ_WINDOW_DAYS + 7),
                                     sorted(TOLD_REASONS | FAILED_REASONS))
+            bundles = self._bundles(reads, by_seed, rows)
+            # How each read started, so the prompt states it from the record instead of asserting it.
+            origins = await read_origins(conn, [b.seed_id for b in bundles]) if bundles else {}
+        return [b.model_copy(update={"origin": origins.get(b.seed_id, [])}) for b in bundles]
+
+    def _bundles(self, reads: list[ReadRefV1], by_seed: dict[str, list[ReadingFindingV1]],
+                 rows: list[Any]) -> list[ReadingFindingBundleV1]:
         told, logged_failures = set(self._told), {}
         for row in rows:
             for fid in _ids(row["finding_ids"]):

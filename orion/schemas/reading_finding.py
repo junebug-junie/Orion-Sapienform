@@ -48,6 +48,20 @@ class ReadingFindingV1(BaseModel):
     confidence_after: float | None = None
 
 
+class ReadingOriginStepV1(BaseModel):
+    """One read in the chain that led to a read (orion/world_pulse_read/origin.py)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    seed_id: str = Field(min_length=1)
+    kind: str  # world_pulse_read_seed.kind: digest_item | finding | reading
+    url: str = ""
+    title: str = ""
+    requested_by: str = ""  # request_json.requested_by; empty on rows stored before requests existed
+    invocation_context: str = ""
+    why_now: str = ""
+
+
 class ReadingFindingBundleV1(BaseModel):
     """Every unreported finding of one read: one outreach message per bundle."""
 
@@ -62,6 +76,8 @@ class ReadingFindingBundleV1(BaseModel):
     # leaves it to the consumer, which reads it from the seed row like every other read field.
     article_summary: str = ""
     findings: list[ReadingFindingV1] = Field(min_length=1)
+    # How the read started, oldest first, ending with the read itself. Empty: not looked up.
+    origin: list[ReadingOriginStepV1] = Field(default_factory=list)
 
     @property
     def finding_ids(self) -> list[str]:

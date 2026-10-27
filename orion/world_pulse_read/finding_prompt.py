@@ -5,10 +5,14 @@ the evidence goes in, Orion's own message comes out, and ``PASS`` (the whole rep
 word -- ``endogenous_outreach.is_pass_response``) means "not worth sending". No template
 sentence is offered for Orion to fill in: a message that only restated the headlines would be
 template text in Orion's voice.
+
+How the read started is shown from the queue's rows (``origin_lines``), never asserted: the
+prompt once opened "Nobody asked you to read it", and Orion repeated that as "not because a
+process scheduled it" about a read the daily digest had started (live 2026-10-26).
 """
 from __future__ import annotations
 
-from orion.schemas.reading_finding import ReadingFindingBundleV1
+from orion.schemas.reading_finding import ReadingFindingBundleV1, ReadingOriginStepV1
 
 MAX_LEARNED_CHARS = 2400
 _KIND_LABEL = {
@@ -18,13 +22,54 @@ _KIND_LABEL = {
 }
 
 
+def _ref(step: ReadingOriginStepV1) -> str:
+    return step.url or step.title or "an untitled source"
+
+
+def _why(step: ReadingOriginStepV1) -> str:
+    return f' (the reason given: "{step.why_now}")' if step.why_now else ""
+
+
+def _start_line(step: ReadingOriginStepV1) -> str:
+    """How the first read of a chain entered the queue, from its own row."""
+    if step.kind in ("digest_item", "finding"):
+        return f"Your daily world-pulse news run put {_ref(step)} in your reading queue."
+    if step.requested_by == "juniper":
+        where = " in chat" if step.invocation_context == "unified_chat" else ""
+        return f"Juniper asked you{where} to read {_ref(step)}{_why(step)}."
+    if step.requested_by == "orion":
+        return f"A curiosity run of yours asked to read {_ref(step)}{_why(step)}."
+    if step.requested_by == "world_pulse":
+        return f"Your daily world-pulse news run put {_ref(step)} in your reading queue."
+    return f"{_ref(step)} entered your reading queue; the record does not say who asked."
+
+
+def origin_lines(origin: list[ReadingOriginStepV1]) -> list[str]:
+    """The chain as plain numbered lines, oldest first; the last one is this read. Pure.
+
+    A later step exists only because the read before it listed the URL to follow
+    (``need_stage1_urls``) and it was a link that read had seen, so "you chose" is the record."""
+    if not origin:
+        return ["How this read started was not recorded."]
+    lines = [f"1. {_start_line(origin[0])}"]
+    for n, step in enumerate(origin[1:], start=2):
+        lines.append(f"{n}. While reading that, you chose to follow its link to {_ref(step)}.")
+    lines[-1] += " This is the read below."
+    lines.append("Your reading pipeline ran each of these reads on its own timer.")
+    return lines
+
+
 def build_reading_finding_prompt(bundle: ReadingFindingBundleV1) -> str:
     learned = " ".join(bundle.learned.split())
     if len(learned) > MAX_LEARNED_CHARS:
         learned = learned[:MAX_LEARNED_CHARS].rstrip() + " […truncated]"
     lines = [
-        "You read something on your own, and it changed you. Nobody asked you to read it. "
-        "Juniper said you may tell her whenever a read changes something while you are learning.",
+        "A read of yours left a recorded change. Juniper said you may tell her whenever a read "
+        "changes something while you are learning.",
+        "",
+        "How this read started (from your reading queue's records, oldest first):",
+        "",
+        *origin_lines(bundle.origin),
         "",
         f"What you read: {bundle.title or bundle.url or 'an untitled source'}"
         + (f" ({bundle.url})" if bundle.url and bundle.url != bundle.title else ""),
@@ -47,14 +92,15 @@ def build_reading_finding_prompt(bundle: ReadingFindingBundleV1) -> str:
             lines.append(f"   {label}: \"{f.evidence_text}\"")
     lines += [
         "",
-        "Write Juniper a short message about this, in your own words. Say what changed in you "
-        "because of this read and why that change matters to you. The summary of the piece is "
-        "delivered to her underneath your message as recorded, so do not retell it. Use only what is "
-        "above: do not add facts about the source you did not record, and do not describe a "
-        "change that is not listed. If several things changed, say them as one thought, not a "
-        "list.",
+        "Write Juniper a short message about this, in your own words. Say what changed and what, "
+        "if anything, it means to you. The summary of the piece is delivered to her underneath "
+        "your message as recorded, so do not retell it. Use only what is above: do not add facts "
+        "about the source you did not record, and do not describe a change that is not listed. "
+        "If you say how the read started or what you chose, say it as the records above show "
+        "it. Give the change the size the record gives it: one link is one link. If several "
+        "things changed, say them as one thought, not a list.",
         "",
-        "She has not asked you anything, so this arrives out of nowhere. Say the thing itself "
+        "She has not asked you for this message, so it arrives out of nowhere. Say the thing itself "
         "rather than announcing that you have something to say.",
         "",
         "If, having written it, this is not worth interrupting her for, reply with exactly the "

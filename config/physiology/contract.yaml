@@ -212,6 +212,9 @@ readers:
     reason: "read-only replay of the body-economy price rules over live history (PR #2861); gates nothing"
 
 sources:
+  - module: scripts/analysis/sample_body_economy_bids.py
+    role: display
+    reason: read-only live sample (Patch C1); decides one want per family locally against the live prices and act history. Publishes, reserves and writes nothing.
   - module: scripts/analysis/smoke_body_economy_prices.py
     role: display
     reason: read-only live smoke; replays the Budget organ over stored physiology_state ticks and prints the prices. Gates nothing.
@@ -264,3 +267,16 @@ sources:
     reason: loads config/physiology/heat_sensitivity.yaml (written by fit_heat_sensitivity.py --write-config) for the heat price. Gates nothing.
   - module: services/orion-sql-writer/app/worker.py
     reason: persists PhysiologyStateV1 to physiology_state (route + schema map); gates nothing.
+  # Body economy Patch C1 (Organ 3 Appetite + Organ 3b weights + Organ 4 Choice), SHADOW: they compute
+  # a WantDecisionV1 per bid and publish it; NOTHING obeys it yet (Patch D moves each `bidder` above to
+  # bid(), one reader per PR, and that PR changes its row). orion/physiology/families.py and client.py
+  # import no watched module (the checker does not see them as readers) and gate nothing either: a
+  # failed bid returns None and the caller keeps its own gate.
+  - module: orion/physiology/appetite.py
+    reason: pure Appetite; intensity from time unfunded (act closes), value_rank within family, cost estimate. Gates nothing.
+  - module: orion/physiology/weights.py
+    reason: pure learned family weights (shrinkage toward act_downstream_use / Juniper-reply rates, 0.1/day drift cap). Gates nothing.
+  - module: orion/physiology/choice.py
+    reason: pure Choice; prices a want against the posted prices with reservations and returns a SHADOW decision. Nobody obeys it yet.
+  - module: services/orion-durable-runs/app/physiology_market.py
+    reason: producer; POST /physiology/bid reads act history + the latest physiology state, decides (shadow) and publishes the decision. Gates nothing.

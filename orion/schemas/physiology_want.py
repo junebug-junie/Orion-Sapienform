@@ -40,6 +40,7 @@ DECISION_REASONS = (
     "net_positive",           # funded: family_weight x value_rank beat the charge
     "exploration_floor",      # funded: price said defer, but the family is under 5% of its tier's funded acts
     "price",                  # deferred: the charge (sum price x cost) beat the value
+    "sated",                  # deferred: nothing charged, but value 0 (the family just acted: hunger ~0)
     "capacity_reserved",      # deferred: forecast use + reservations + this cost exceed a capacity line
     "no_acceptable_lane",     # deferred: none of the want's lanes is known to the body
     "physiology_unavailable", # deferred: no fresh body state (absent, malformed, older than the stale limit)
@@ -112,7 +113,7 @@ class WantDecisionV1(BaseModel):
     outcome: Literal["funded", "deferred"]
     shadow: Literal[True] = True
     reason: Literal[
-        "net_positive", "exploration_floor", "price", "capacity_reserved", "no_acceptable_lane",
+        "net_positive", "exploration_floor", "price", "sated", "capacity_reserved", "no_acceptable_lane",
         "physiology_unavailable", "unknown_family", "family_never_bids",
     ]
     # The lane Choice placed it on (pool role), or None (no GPU lane, or not placed).

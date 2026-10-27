@@ -211,3 +211,30 @@ def test_client_parses_a_decision_and_refuses_malformed_or_foreign_answers():
     srv, url = _serve(d.model_dump_json().encode())
     assert client.bid(want(i=7), url=url, timeout_sec=2.0) is None   # an answer for another want
     srv.server_close()
+
+
+def test_a_hold_longer_than_the_window_costs_one_window_and_fits_an_empty_one_slot_lane():
+    """Replay finding: a 5,600 s curiosity hold priced at 1.6 of a 1-slot lane's hour could never fit
+    an empty lane. One act holds one slot: inside the window it costs at most that window."""
+    long = history("durable.curiosity_investigate", slot={"agent": 5600.0})
+    st = body(lane("agent"))
+    d = decide(want("durable.curiosity_investigate", verb="infer"), st, ctx_for(long, st), ReservationBook(), NOW)
+    assert d.outcome == "funded" and d.reserved == {"lane:agent": 3600.0} and d.cost_frac["lane:agent"] == 1.0
+
+
+def test_a_family_that_just_acted_is_sated_not_price_deferred():
+    """Zero prices and zero hunger: net 0 is not > 0, but nothing binds. Named 'sated', never 'price'."""
+    fresh = history("durable.self_inquiry", slot={"agent": 600.0}, last_h=0.0)
+    st = body(lane("agent"))
+    d = decide(want(), st, ctx_for(fresh, st, shares={"durable.self_inquiry": 0.5}), ReservationBook(), NOW)
+    assert d.outcome == "deferred" and d.reason == "sated" and d.binding_constraint is None and d.intensity == 0.0
+
+
+def test_a_live_seat_wins_over_an_unloaded_one_even_when_the_unloaded_one_is_cheaper():
+    """Live 10-27 06:11 sample: curiosity was placed on agent-deep (hecate asleep, 0 slots) because its
+    stale price was 0. Waking or loading a seat is not priced in C1, so a live seat that fits wins."""
+    st = body(lane("agent", p=0.2), R(constraint="lane:agent-deep", unit="slot_s", level=0.0, budget=0.0,
+                                      budget_kind="capacity", detail={"slots": 0, "window_sec": 3600.0},
+                                      price=price(0.0)))
+    d = decide(want(), st, ctx_for(SELF, st), ReservationBook(), NOW)
+    assert d.lane == "agent" and d.outcome == "funded"

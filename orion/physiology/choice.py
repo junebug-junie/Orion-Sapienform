@@ -288,6 +288,12 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
 
     unloaded: set[str] = set()
 
+    def in_window(slot_s: float) -> float:
+        # A lane's line is slots x ONE window (the trailing hour). An act holds at most one slot, so
+        # inside any window it can use at most one window of slot-seconds: a 5,600 s curiosity hold
+        # costs a 1-slot lane its whole hour, not 1.6 hours it does not have.
+        return min(slot_s, ctx.lane_window_sec)
+
     def lane_frac(role: str, slot_s: float) -> tuple[Optional[float], float, Optional[str]]:
         """(cost as a share of the lane, the lane's line in slot-s, warning)."""
         r = readings.get(f"{LANE_PREFIX}{role}")
@@ -300,7 +306,7 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
             # held against it (what ran there ran while it was loaded).
             budget, warn = ctx.lane_window_sec, f"swap_seat_unloaded:{role}"
             unloaded.add(role)
-        return slot_s / budget, budget, warn
+        return in_window(slot_s) / budget, budget, warn
 
     def tier_line(constraint: str, budget: float) -> float:
         share = ctx.tier1_share.get(constraint[len(LANE_PREFIX):], 0.0) if constraint.startswith(LANE_PREFIX) else 0.0
@@ -324,7 +330,7 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
             continue
         if warn:
             lane_warn.append(warn)
-        base[f"{LANE_PREFIX}{role}"] = (frac, slot_s, line)
+        base[f"{LANE_PREFIX}{role}"] = (frac, in_window(slot_s), line)
 
     def charge_of(items: Mapping[str, tuple[float, float, Optional[float]]]) -> tuple[float, dict[str, float]]:
         total, parts = 0.0, {}
@@ -364,7 +370,7 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
             if frac is None:
                 continue
             items = dict(base)
-            items[f"{LANE_PREFIX}{role}"] = (frac, cost.one_of_slot_s, line)
+            items[f"{LANE_PREFIX}{role}"] = (frac, in_window(cost.one_of_slot_s), line)
             ch, _ = charge_of(items)
             candidates.append((ch, role, {"items": items, "warn": warn}))
         if not candidates:
@@ -375,8 +381,10 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
                              warnings=warnings + [f"lanes:{','.join(lanes)}"], retry_after_sec=UNAVAILABLE_RETRY_SEC,
                              why=f"none of {lanes} is a lane the body reads")
         # Placement: the cheapest lane that still has room; else the cheapest lane (deferred on it).
+        # A seat with no live slot now (swap seat unloaded, hecate asleep) is a last resort: loading
+        # or waking it has a cost this patch does not price (Patch E), so a live seat wins any tie.
         fits = [c for c in candidates if capacity_overflow(c[2]["items"]) is None]
-        pick = min(fits or candidates, key=lambda c: (c[0], lanes.index(c[1])))
+        pick = min(fits or candidates, key=lambda c: (c[1] in unloaded, c[0], lanes.index(c[1])))
         chosen = pick[1]
         items = pick[2]["items"]
         if pick[2]["warn"]:
@@ -436,6 +444,12 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
                          reservation_expires_at=expires if reserved else None, displaced=displaced,
                          warnings=warnings, **common, why=head)
 
+    if charge <= 0.0:
+        # Nothing to pay and nothing wanted: the family just acted (hunger ~0), so its value is 0.
+        book.note_deferred(now, want.want_id, chosen, net)
+        return _decision(want, now, tier=tier, outcome="deferred", reason="sated", binding_constraint=None,
+                         retry_after_sec=None, warnings=warnings, **common,
+                         why=f"{head}; nothing charged, but no hunger to fund (the family's last act just closed)")
     # Deferred on price: the constraint with the largest price x cost binds.
     k = max(parts, key=lambda x: parts[x]) if parts else None
     retry = None

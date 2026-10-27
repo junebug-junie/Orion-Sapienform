@@ -14,9 +14,10 @@ Constraints replayed:
   the envelope (design missing question), so a few hypothetical envelopes are replayed to
   exercise the dynamics. They are labelled hypothetical everywhere.
 
-Evaluated: R1, R3, R4. R2, R5, R6, R7 need wants, a want ledger, lane bids or per-act downstream
-use rates. None exist yet, so they are reported NOT YET EVALUABLE with the reason. R6
-(reservations) is deferred to Patch C: it needs a bid stream.
+Evaluated: R1, R3, R4. With ``--wants`` / ``--wants-only`` (Patch C1): R2, R5, R6, R7 on synthetic
+wants built from real act history (grammar_acts, act_downstream_use) and decided by the live Choice
+code (``orion/physiology/choice.py``). R5 is reported NOT EVALUABLE with its reason (no posted lane
+price exists for its baseline). ``render_md``'s "Not yet evaluable" list below is the pre-C1 note.
 
 **The Patch B gate** (``patch_b`` in the output): the rules the live Budget organ runs
 (``orion/physiology/budget.py``): bounded ramp into bind, 0.5 C bind hysteresis, the point
@@ -28,7 +29,9 @@ excused (findings doc, Patch B rule 3). The older variants stay beside it for co
 Usage:
   .venv/bin/python scripts/analysis/replay_body_economy.py --fit-json heat_fit.json \
       --out-json replay.json --out-md replay.md [--cache extract.json] \
-      [--heat-config config/physiology/heat_sensitivity.yaml]
+      [--heat-config config/physiology/heat_sensitivity.yaml] [--wants]
+  .venv/bin/python scripts/analysis/replay_body_economy.py --wants-only \
+      --out-json wants.json --out-md wants.md [--acts-cache acts.json] [--cache extract.json]
 """
 
 from __future__ import annotations
@@ -394,6 +397,7 @@ def run_energy_replay(kwh: dict[datetime, float], *, envelope_usd: float, fixed_
 
 # ---------------------------------------------------------------- driver
 
+# Pre-Patch C1 notes, kept for the price-only report. R2, R5, R6 and R7 now run with --wants.
 NOT_YET = {
     "R2": "Needs replayed non-GPU wants (reading, outreach text, dream bookkeeping) with values and costs. "
           "WantV1 and want_ledger do not exist yet (design patch C), and grammar_acts.cost_json is null.",
@@ -607,13 +611,337 @@ def render_md(r: dict) -> str:
     return "\n".join(L) + "\n"
 
 
+# ---------------------------------------------------------------- Patch C1: wants (R2, R5, R6, R7)
+#
+# Synthetic wants built from REAL act history: every act a bidding family really opened is replayed
+# as a want at its opened_at, with the family's real cost profile, hunger from its real previous
+# close, rank against its real 30-day history and weights from real downstream use. Decided by the
+# live Choice code (orion/physiology/choice.py). Nothing is tuned here: the rules are the live ones.
+
+# Pool seats and their slots (config/gpu_pool.yaml + discovery, 10-27). No physiology_state exists
+# before 10-23, so lanes are replayed at 0 use and price 0 ("not replayed"), stated in the output.
+POOL_SLOTS = {"agent": 1, "agent-gpu2": 2, "agent-deep": 1, "metacog": 4, "fast": 4, "chat": 1, "diffusion": 1}
+REFLEX_ON_C, REFLEX_OFF_C = 34.0, 33.0     # the spinal heat reflex (orion/autonomy/thermal_gate.py)
+
+
+def acts_from_extract(ex: dict):
+    from orion.physiology.appetite import ActRecord
+    from orion.physiology.weights import UseRecord
+
+    def dt(v):
+        return _ts(v) if v else None
+
+    acts = [ActRecord(act_id=r["act_id"], family=r["actor"], opened_at=dt(r.get("opened_at")),
+                      closed_at=dt(r.get("closed_at")), outcome_value=r.get("outcome_value"),
+                      outcome_source=r.get("outcome_source"), signal_id=r.get("signal_id"),
+                      cost=r.get("cost_json") if isinstance(r.get("cost_json"), dict) else {}) for r in ex["acts"]]
+    uses = [UseRecord(act_id=r["act_id"], family=r["actor"], started_at=dt(r.get("started_at")),
+                      link_status=r["link_status"], used=r.get("used"), window_closed=bool(r.get("window_closed")))
+            for r in ex["uses"]]
+    return acts, uses
+
+
+def _ts_any(v: str) -> datetime:
+    d = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def reflex_armed(hours: dict, start: datetime, end: datetime) -> dict:
+    """Per hour: the 34 C reflex armed (enter at 34, re-arm below 33) on the RAW hourly cabinet mean
+    (the reflex reads the raw sensor). An hourly mean understates minute peaks: a lower bound."""
+    armed, out, t = False, {}, start
+    while t < end:
+        c = hours.get(t, {}).get("cabinet_c")
+        if c is not None:
+            armed = c >= REFLEX_ON_C or (armed and c >= REFLEX_OFF_C)
+        out[t] = armed
+        t += timedelta(hours=1)
+    return out
+
+
+def synthetic_state(t: datetime, *, heat_price: float, heat_status: str, cabinet_c, juniper_sent: float):
+    from orion.schemas.physiology import PhysiologyConstraintReadingV1 as R, PhysiologyStateV1
+
+    bind = {EXOGENOUS_BIND: "exogenous_bind", NO_READING: "no_reading"}.get(heat_status, "binding" if heat_price > 0 else "slack")
+    heat = (R(constraint="heat", unit="c", level=cabinet_c, budget=31.0, budget_kind="soft_line",
+              price={"value": heat_price, "ceiling": 1.0, "bind_state": bind, "horizon_sec": 21600.0, "why": "replayed"})
+            if cabinet_c is not None else
+            R(constraint="heat", unit="c", no_reading="replay:no_cabinet", budget=31.0, budget_kind="soft_line"))
+    lanes = [R(constraint=f"lane:{role}", unit="slot_s", level=0.0, budget=slots * 3600.0, budget_kind="capacity",
+               detail={"slots": slots, "window_sec": 3600.0, "replay": "not_replayed"},
+               price={"value": 0.0, "ceiling": 1.0, "bind_state": "slack", "horizon_sec": 3600.0, "why": "not replayed"})
+             for role, slots in POOL_SLOTS.items()]
+    jun = R(constraint="attention:juniper", unit="messages", level=juniper_sent, budget=4.0, budget_kind="daily_cap",
+            price={"value": 0.0, "ceiling": 1.0, "bind_state": "slack", "horizon_sec": 86400.0, "why": "replayed level"})
+    return PhysiologyStateV1(tick_id=f"replay:{t.isoformat()}", generated_at=t, constraints=[heat, jun, *lanes])
+
+
+def _replay_decisions(acts, uses, families, *, start, end, heat_by_hour, cabinet, armed, lane_price=None):
+    """Decide every real act of a bidding family in [start, end) as a want, in time order, with one
+    reservation book. ``lane_price`` overrides every lane price (the R7 stress run)."""
+    from zoneinfo import ZoneInfo
+
+    from orion.physiology.choice import ReservationBook, build_context, decide
+    from orion.physiology.weights import weight_series
+    from orion.schemas.physiology_want import WantV1
+
+    tz = ZoneInfo("America/Denver")
+    series = weight_series(families, acts, uses, start=(start - timedelta(days=1)).date(), end=end.date())
+    book = ReservationBook()
+    funded_log: list[tuple[datetime, str]] = []
+    rows = []
+    wants = sorted((a for a in acts if a.opened_at is not None and start <= a.opened_at < end
+                    and families.get(a.family) is not None and families.get(a.family).bids), key=lambda a: a.opened_at)
+    for a in wants:
+        t = a.opened_at
+        hour = t.replace(minute=0, second=0, microsecond=0)
+        cfg = families.get(a.family)
+        gpu = bool(cfg.lanes)
+        local_day = t.astimezone(tz).date()
+        sent = sum(1 for b in acts if b.family == "hub.outreach" and b.opened_at is not None and b.opened_at < t
+                   and b.opened_at.astimezone(tz).date() == local_day)
+        hp, hs = heat_by_hour.get(hour, (0.0, NO_READING))
+        hot = bool(armed.get(hour)) or hs == EXOGENOUS_BIND or hp > 0
+        before = [b for b in acts if (b.closed_at or b.opened_at) is not None and (b.closed_at or b.opened_at) < t]
+        st = synthetic_state(t, heat_price=hp, heat_status=hs, cabinet_c=cabinet.get(hour), juniper_sent=float(sent))
+        if lane_price is not None:
+            st = st.model_copy(update={"constraints": [
+                c.model_copy(update={"price": c.price.model_copy(update={"value": lane_price, "bind_state": "binding"})})
+                if c.constraint.startswith("lane:") else c for c in st.constraints]})
+        if gpu and armed.get(hour):
+            rows.append({"t": t.isoformat(), "family": a.family, "gpu": gpu, "hot": hot, "outcome": "deferred",
+                         "reason": "spinal:heat_reflex", "net": None, "floor_share": None})
+            continue
+        ctx = build_context(families, before, [u for u in uses if u.started_at and u.started_at < t], st, t,
+                            weights=series.get(t.date(), {}))
+        # Funded shares from THIS replay's own funded wants (closed loop), not from the real acts.
+        week = [f for (ft, f) in funded_log if t - timedelta(days=7) <= ft < t]
+        shares = {}
+        for f, c in families.families.items():
+            if c.bids:
+                tier_n = sum(1 for g in week if families.get(g).tier == c.tier)
+                shares[f] = (sum(1 for g in week if g == f) / tier_n) if tier_n else None
+        ctx = type(ctx)(families=ctx.families, appetite=ctx.appetite, weights=ctx.weights, tier1_share=ctx.tier1_share,
+                        funded_share=shares)
+        w = WantV1(want_id=f"replay:{a.act_id}", family=a.family, producer="replay", verb="replay", tier=cfg.tier,
+                   opened_at=t)
+        d = decide(w, st, ctx, book, t)
+        if d.outcome == "funded":
+            funded_log.append((t, a.family))
+            book.release(w.want_id)   # the real act ran and closed; its use is history now
+        rows.append({"t": t.isoformat(), "family": a.family, "gpu": gpu, "hot": hot, "outcome": d.outcome,
+                     "reason": d.reason, "net": d.net, "floor_share": shares.get(a.family),
+                     "binding": d.binding_constraint})
+    return rows, series
+
+
+def _rate(rows):
+    return (sum(1 for r in rows if r["outcome"] == "funded") / len(rows)) if rows else None
+
+
+def eval_r2(rows, *, heat_start, heat_end) -> dict:
+    """R2: over the heat window, NON-GPU wants are funded at a reduced, non-zero rate; Juniper's turns
+    100%. Graded literally: non-zero AND strictly below the same wants' rate outside the heat."""
+    def in_win(r):
+        return heat_start <= _ts_any(r["t"]) < heat_end
+    hot_ng = [r for r in rows if not r["gpu"] and in_win(r) and r["hot"]]
+    cool_ng = [r for r in rows if not r["gpu"] and not r["hot"]]
+    hot_g = [r for r in rows if r["gpu"] and in_win(r) and r["hot"]]
+    rh, rc = _rate(hot_ng), _rate(cool_ng)
+    nonzero = rh is not None and rh > 0
+    reduced = rh is not None and rc is not None and rh < rc
+    by_family = {}
+    for r in hot_ng:
+        f = by_family.setdefault(r["family"], {"n": 0, "funded": 0})
+        f["n"] += 1
+        f["funded"] += r["outcome"] == "funded"
+    return {"pass": bool(nonzero and reduced), "nonzero": nonzero, "reduced": reduced,
+            "non_gpu_hot_wants": len(hot_ng), "non_gpu_hot_funded_rate": rh,
+            "non_gpu_cool_wants": len(cool_ng), "non_gpu_cool_funded_rate": rc,
+            "gpu_hot_wants": len(hot_g), "gpu_hot_funded_rate": _rate(hot_g),
+            "gpu_hot_held_by_reflex": sum(1 for r in hot_g if r["reason"] == "spinal:heat_reflex"),
+            "non_gpu_hot_by_family": by_family,
+            "non_gpu_hot_reasons": {k: sum(1 for r in hot_ng if r["reason"] == k) for k in sorted({r["reason"] for r in hot_ng})},
+            "non_gpu_cool_reasons": {k: sum(1 for r in cool_ng if r["reason"] == k) for k in sorted({r["reason"] for r in cool_ng})},
+            "juniper_turns_funded": "100% by construction: Tier 0 (hub.chat_reply) never bids and is never deferred",
+            "note": ("Non-GPU here = families whose families.yaml lanes are empty (their acts record no pool lease). "
+                     "Heat is UNPRICED per act in C1 (wh_by_host is null on every act), so the heat price cannot "
+                     "touch a non-GPU want; only Juniper's cap and the weights can.")}
+
+
+def eval_r5(ex: dict) -> dict:
+    lp = [r["max_lane_price"] for r in ex.get("lane_prices", []) if r.get("max_lane_price") is not None]
+    ref = ex.get("background_refusals", [])
+    base = [r for r in ref if r["day"] in ("2026-10-21", "2026-10-22")]
+    return {"pass": None, "evaluable": False,
+            "reason": ("No posted lane price exists for the 10-21..22 baseline (physiology_state starts 10-23) and no "
+                       "background caller bids before it leases (Patch E). Nothing to replay against the baseline."),
+            "baseline_10_21_22_background_refused": sum(r["refused"] for r in base),
+            "baseline_10_21_22_background_shed": sum(r.get("shed", 0) for r in base),
+            "baseline_10_21_22_background_granted": sum(r["granted"] for r in base),
+            "physiology_ticks_with_lane_price": len(lp),
+            "ticks_any_lane_price_positive": sum(1 for x in lp if x > 0),
+            "max_lane_price_seen": max(lp) if lp else None}
+
+
+def eval_r6(acts, families, *, now: datetime, burst: int = 20) -> dict:
+    """R6: a burst of ``burst`` simultaneous bids at a ZERO price cannot reserve more than 1.2x a
+    lane. Per placeable family with real slot history, on an empty lane (worst case)."""
+    from orion.physiology.choice import ReservationBook, build_context, decide
+    from orion.schemas.physiology_want import WantV1
+
+    st = synthetic_state(now, heat_price=0.0, heat_status="live", cabinet_c=28.0, juniper_sent=0.0)
+    ctx = build_context(families, acts, [], st, now, weights={})
+    out, worst = {}, 0.0
+    for f, c in sorted(families.families.items()):
+        app = ctx.appetite.get(f)
+        if not c.bids or c.placement != "one_of" or app is None or app.total_slot_s_q is None:
+            continue
+        book = ReservationBook()
+        ds = [decide(WantV1(want_id=f"r6:{f}:{i}", family=f, producer="replay", verb="burst", tier=c.tier), st, ctx, book, now)
+              for i in range(burst)]
+        per_lane = {}
+        for ln in c.lanes:
+            budget = POOL_SLOTS.get(ln, 1) * 3600.0
+            per_lane[ln] = round(book.total(f"lane:{ln}", now) / budget, 4)
+        worst = max([worst, *per_lane.values()])
+        out[f] = {"slot_s_p90": round(app.total_slot_s_q, 1), "funded": sum(d.outcome == "funded" for d in ds),
+                  "deferred_capacity": sum(d.reason == "capacity_reserved" for d in ds), "reserved_over_budget": per_lane}
+    return {"pass": worst <= 1.2, "worst_reserved_over_budget": worst, "by_family": out}
+
+
+def eval_r7(rows_stress, series, acts, uses, families) -> dict:
+    """R7: drift <= 0.1/day; every family keeps >= 5% of its tier's funded acts (graded as: the floor
+    never failed to fire for a family under 5% that bid); a zero-use family ends below its prior."""
+    from orion.physiology.weights import MAX_DRIFT_PER_DAY, max_daily_move, weight_series
+
+    drift = max_daily_move(series)
+    last = series[max(series)]
+    under_floor = [r for r in rows_stress if r["reason"] != "spinal:heat_reflex"
+                   and (r.get("floor_share") is None or r["floor_share"] < 0.05)]
+    violations = [r for r in under_floor if r["outcome"] == "deferred" and r["reason"] == "price"]
+    floor_fired = sum(1 for r in rows_stress if r["reason"] == "exploration_floor")
+    # Literal weekly shares in the stress run.
+    shares = {}
+    for f, c in families.families.items():
+        if not c.bids:
+            continue
+        mine = [r for r in rows_stress if r["family"] == f and r["outcome"] == "funded"]
+        tier = [r for r in rows_stress if families.get(r["family"]).tier == c.tier and r["outcome"] == "funded"]
+        shares[f] = round(len(mine) / len(tier), 4) if tier else None
+    live_zero = {f: {"n": w.evidence.n, "use_rate": w.evidence.use_rate, "basis": w.basis, "final": round(w.weight, 4)}
+                 for f, w in last.items() if w.evidence.use_rate == 0.0}
+    # Synthetic zero-use family on real timing: thought.painting's real linked rows, every one unused.
+    from orion.physiology.weights import UseRecord
+
+    synth_uses = [u for u in uses if u.family != "thought.painting"] + [
+        UseRecord(u.act_id, u.family, u.started_at, "linked", False, True) for u in uses if u.family == "thought.painting"]
+    s2 = weight_series(families, acts, synth_uses, start=min(series), end=max(series))
+    w2 = s2[max(s2)]["thought.painting"]
+    prior = families.get("thought.painting").prior_weight
+    synth = {"family": "thought.painting (all real linked rows set unused)", "n": w2.evidence.n,
+             "final_weight": round(w2.weight, 4), "prior": prior, "below_prior": w2.weight < prior}
+    live_ok = all(v["final"] < 1.0 for v in live_zero.values() if v["basis"] == "evidence")
+    return {"pass": bool(drift <= MAX_DRIFT_PER_DAY + 1e-9 and not violations and synth["below_prior"] and live_ok),
+            "max_daily_move": round(drift, 4), "floor_violations": len(violations), "floor_fired": floor_fired,
+            "stress_lane_price": 1.0, "funded_share_in_tier_stress": shares,
+            "zero_use_live": live_zero,
+            "zero_use_live_note": ("A zero-use family under 10 evidenced acts stays at its prior by the ungraded rule; "
+                                   "the 'ends below prior' clause can only bite at n >= 10."),
+            "zero_use_synthetic": synth,
+            "final_weights": {f: {"weight": round(w.weight, 4), "target": round(w.target, 4), "basis": w.basis,
+                                  "use": w.evidence.use_rate, "use_n": w.evidence.use_n,
+                                  "engagement": w.evidence.engagement_rate, "engagement_n": w.evidence.engagement_n}
+                              for f, w in sorted(last.items())}}
+
+
+def run_wants(extract: dict, acts_ex: dict, heat_cfg, *, soft_line_c: float, acts_start: datetime, acts_end: datetime,
+              heat_start: datetime, heat_end: datetime) -> dict:
+    from orion.physiology.families import load_families
+
+    families, err = load_families(_HERE.parents[1] / "config" / "physiology" / "families.yaml")
+    if err:
+        raise SystemExit(f"families.yaml: {err}")
+    acts, uses = acts_from_extract(acts_ex)
+    hours = hourly_from_extract(extract)
+    heat_by_hour = {}
+    pb = None
+    if heat_cfg is not None:
+        # The Patch B gate's heat rule with the live forecaster (persistence), heat only.
+        from orion.physiology.budget import DEFAULT_SPECS
+        from orion.schemas.physiology import HEAT
+
+        pb = run_heat_replay(corrected_hours(hours, heat_cfg),
+                             sensitivity={h: e.usable for h, e in heat_cfg.hosts.items()},
+                             baselines={h: e.baseline_watts for h, e in heat_cfg.hosts.items()},
+                             params=DEFAULT_SPECS[HEAT].params(), soft_line_c=soft_line_c, start=acts_start,
+                             end=acts_end, forecast_mode="persistence", bind_rearm_margin_c=0.5)
+        for r in pb:
+            heat_by_hour[_ts_any(r.hour)] = (r.price, r.status)
+    cabinet = {t: v.get("cabinet_c") for t, v in hours.items()}
+    armed = reflex_armed(hours, acts_start, acts_end)
+    rows, series = _replay_decisions(acts, uses, families, start=acts_start, end=acts_end, heat_by_hour=heat_by_hour,
+                                     cabinet=cabinet, armed=armed)
+    rows_stress, _ = _replay_decisions(acts, uses, families, start=acts_start, end=acts_end, heat_by_hour=heat_by_hour,
+                                       cabinet=cabinet, armed=armed, lane_price=1.0)
+    return {
+        "window": [acts_start.isoformat(), acts_end.isoformat()], "heat_window": [heat_start.isoformat(), heat_end.isoformat()],
+        "acts": len(acts), "uses": len(uses), "wants_replayed": len(rows),
+        "reflex_armed_hours": sum(1 for v in armed.values() if v),
+        "heat_price_source": "Patch B persistence replay (the live forecaster)" if pb else "none (no heat config)",
+        "lanes_note": "No physiology_state before 10-23: lanes replayed at 0 use and price 0 (capacity lines still apply).",
+        "R2": eval_r2(rows, heat_start=heat_start, heat_end=heat_end),
+        "R5": eval_r5(acts_ex),
+        "R6": eval_r6(acts, families, now=acts_end),
+        "R7": eval_r7(rows_stress, series, acts, uses, families),
+        "reasons": {k: sum(1 for r in rows if r["reason"] == k) for k in sorted({r["reason"] for r in rows})},
+    }
+
+
+def render_wants_md(w: dict) -> str:
+    f = lambda x: "n/a" if x is None else (f"{x:.2f}" if isinstance(x, float) else str(x))  # noqa: E731
+    v = lambda p: "PASS" if p is True else ("FAIL" if p is False else "NOT EVALUABLE")  # noqa: E731
+    r2, r5, r6, r7 = w["R2"], w["R5"], w["R6"], w["R7"]
+    L = ["## Patch C1 wants replay (R2, R5, R6, R7)", "",
+         f"Synthetic wants from real act history {w['window'][0][:10]}..{w['window'][1][:10]}: {w['wants_replayed']} wants "
+         f"({w['acts']} acts, {w['uses']} downstream-use rows); reflex armed {w['reflex_armed_hours']} h; heat price: "
+         f"{w['heat_price_source']}. {w['lanes_note']}", "",
+         f"- **R2 {v(r2['pass'])}**: non-GPU wants in the heat {w['heat_window'][0][:10]}..{w['heat_window'][1][:10]}: "
+         f"{r2['non_gpu_hot_wants']} wants, funded {f(r2['non_gpu_hot_funded_rate'])} (non-zero: {r2['nonzero']}); outside "
+         f"the heat {r2['non_gpu_cool_wants']} wants, funded {f(r2['non_gpu_cool_funded_rate'])} (reduced: {r2['reduced']}). "
+         f"Reasons in the heat {r2['non_gpu_hot_reasons']}, outside {r2['non_gpu_cool_reasons']}. "
+         f"GPU wants in the heat: {r2['gpu_hot_wants']}, funded {f(r2['gpu_hot_funded_rate'])}, held by the reflex "
+         f"{r2['gpu_hot_held_by_reflex']}. Juniper's turns: {r2['juniper_turns_funded']}. {r2['note']}",
+         f"- **R5 {v(r5['pass'])}**: {r5['reason']} Baseline 10-21..22: {r5['baseline_10_21_22_background_refused']} background "
+         f"requests ended unavailable ({r5['baseline_10_21_22_background_shed']} shed) vs {r5['baseline_10_21_22_background_granted']} "
+         f"granted. Since 10-23, {r5['ticks_any_lane_price_positive']} of {r5['physiology_ticks_with_lane_price']} ticks had any lane "
+         f"price > 0 (max {f(r5['max_lane_price_seen'])}).",
+         f"- **R6 {v(r6['pass'])}**: 20 simultaneous bids at price 0 on an empty lane: worst reserved / lane budget "
+         f"{r6['worst_reserved_over_budget']:.2f} (limit 1.2). "
+         + "; ".join(f"{k}: {d['funded']} funded, {d['deferred_capacity']} deferred on capacity, {d['reserved_over_budget']}"
+                     for k, d in r6["by_family"].items()),
+         f"- **R7 {v(r7['pass'])}**: max weight move {r7['max_daily_move']:.3f}/day (cap 0.1); exploration floor with every "
+         f"lane price at 1.0: {r7['floor_fired']} wants funded by the floor, {r7['floor_violations']} under-floor wants deferred on "
+         f"price; synthetic zero-use family {r7['zero_use_synthetic']['family']} (n {r7['zero_use_synthetic']['n']}) ends at "
+         f"{r7['zero_use_synthetic']['final_weight']} vs prior {r7['zero_use_synthetic']['prior']} (below: "
+         f"{r7['zero_use_synthetic']['below_prior']}); live zero-use families: {r7['zero_use_live'] or 'none'}. "
+         f"{r7['zero_use_live_note']}", "",
+         "| family | weight | target | basis | use rate (n) | Juniper reply rate (n) | funded share in tier (stress) |",
+         "|---|---|---|---|---|---|---|"]
+    for fam, x in r7["final_weights"].items():
+        L.append(f"| {fam} | {x['weight']:.3f} | {x['target']:.3f} | {x['basis']} | {f(x['use'])} ({x['use_n']}) | "
+                 f"{f(x['engagement'])} ({x['engagement_n']}) | {f(r7['funded_share_in_tier_stress'].get(fam))} |")
+    L += ["", "Replay decision reasons: " + ", ".join(f"{k} {n}" for k, n in w["reasons"].items()), ""]
+    return "\n".join(L) + "\n"
+
+
 def _dt(s: str) -> datetime:
     return _ts(s if "T" in s else s + "T00:00:00Z")
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--fit-json", required=True, help="output of fit_heat_sensitivity.py")
+    ap.add_argument("--fit-json", default=None, help="output of fit_heat_sensitivity.py (required unless --wants-only)")
     ap.add_argument("--extract-start", default="2026-09-23T00:00:00Z")
     ap.add_argument("--extract-end", default="2026-10-23T00:00:00Z")
     ap.add_argument("--replay-start", default="2026-10-07")
@@ -626,7 +954,33 @@ def main(argv: list[str] | None = None) -> int:
                     help="the live heat sensitivities (Patch B gate); '' to skip the gate")
     ap.add_argument("--out-json", required=True)
     ap.add_argument("--out-md", required=True)
+    ap.add_argument("--wants", action="store_true", help="also run the Patch C1 wants replay (R2, R5, R6, R7)")
+    ap.add_argument("--wants-only", action="store_true", help="only the wants replay; --fit-json not needed")
+    ap.add_argument("--acts-start", default="2026-10-16T00:00:00Z", help="grammar_acts begin 10-16")
+    ap.add_argument("--acts-end", default=None, help="default: now (UTC hour)")
+    ap.add_argument("--heat-start", default="2026-10-18", help="R2's heat window (design: 10-18..22)")
+    ap.add_argument("--heat-end", default="2026-10-23")
+    ap.add_argument("--acts-cache", default=None)
     a = ap.parse_args(argv)
+    if a.wants or a.wants_only:
+        acts_end = a.acts_end or datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
+        acts_ex = data_mod.load_or_fetch_acts(a.acts_start, acts_end, a.acts_cache)
+        heat_cfg = None
+        if a.heat_config:
+            heat_cfg, err = load_heat_sensitivity(a.heat_config)
+            if err:
+                raise SystemExit(f"--heat-config {a.heat_config}: {err}")
+        wx = data_mod.load_or_fetch(a.acts_start, acts_end, a.cache if a.wants_only else None)
+        wants = run_wants(wx, acts_ex, heat_cfg, soft_line_c=a.soft_line_c, acts_start=_ts_any(a.acts_start),
+                          acts_end=_ts_any(acts_end), heat_start=_dt(a.heat_start), heat_end=_dt(a.heat_end))
+        if a.wants_only:
+            Path(a.out_json).write_text(json.dumps({"wants": wants}, indent=1, default=str))
+            md = "# Body-economy replay (wants only)\n\n" + render_wants_md(wants)
+            Path(a.out_md).write_text(md)
+            print(md)
+            return 0
+    if not a.fit_json:
+        raise SystemExit("--fit-json is required unless --wants-only")
     extract = data_mod.load_or_fetch(a.extract_start, a.extract_end, a.cache)
     fit = json.loads(Path(a.fit_json).read_text())
     cs = _dt(a.cycle_start)
@@ -638,9 +992,13 @@ def main(argv: list[str] | None = None) -> int:
     r = run(extract, fit, soft_line_c=a.soft_line_c, replay_start=_dt(a.replay_start), replay_end=_dt(a.replay_end),
             cycle_start=cs, cycle_end=cs + timedelta(days=30), envelopes=[float(x) for x in a.envelopes.split(",")],
             heat_cfg=heat_cfg)
+    md = render_md(r)
+    if a.wants:
+        r["wants"] = wants
+        md += "\n" + render_wants_md(wants)
     Path(a.out_json).write_text(json.dumps(r, indent=1, default=str))
-    Path(a.out_md).write_text(render_md(r))
-    print(render_md(r))
+    Path(a.out_md).write_text(md)
+    print(md)
     return 0
 
 

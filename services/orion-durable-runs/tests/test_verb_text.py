@@ -98,3 +98,20 @@ def test_call_verb_text_raises_on_a_not_ok_result():
     runner = _runner(_payload(NOTE, ok=False))
     with pytest.raises(RuntimeError, match="verb_not_ok"):
         asyncio.run(runner._call_verb_text("orion_day_note_v1", {}, "agent", timeout_sec=10.0, user_text="x"))
+
+
+def test_call_verb_text_forwards_structured_output_options_but_never_lets_them_override_thinking():
+    runner = _runner(_payload('{"body": "x"}'))
+    schema = {"type": "object", "properties": {"body": {"type": "string", "maxLength": 1200}}}
+    asyncio.run(runner._call_verb_text(
+        "curiosity_compactor_digest_v1", {}, "agent", timeout_sec=10.0, user_text="x",
+        options={"structured_output_schema": schema, "structured_output_method": "json_object_schema",
+                 "chat_template_kwargs": {"enable_thinking": True}, "policy_dispatch_only": False,
+                 "llm_route": "chat", "gpu_lease": {"lease_id": "someone-else"}}))
+    ((request, _, _),) = runner.sent
+    assert request["options"]["structured_output_schema"] == schema
+    assert request["options"]["structured_output_method"] == "json_object_schema"
+    assert request["options"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert request["options"]["policy_dispatch_only"] is True
+    # No route/lease passed to _call_verb_text: the options may not smuggle one in either.
+    assert "gpu_lease" not in request["options"] and request["options"]["llm_route"] == "agent"

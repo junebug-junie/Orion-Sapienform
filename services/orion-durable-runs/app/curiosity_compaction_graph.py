@@ -15,7 +15,7 @@ from app.admitted_graph import (
     AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, failed_attempt,
     replay_if_requeued, resource_nodes, taken_back,
 )
-from orion.curiosity.compaction import journal_entry, next_prompt, record_answer
+from orion.curiosity.compaction import journal_entry, next_prompt, output_schema, record_answer
 from orion.schemas.curiosity_compaction import CURIOSITY_COMPACTION_VERB, CuriosityCompactionBriefV1
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 
@@ -43,6 +43,19 @@ def finish_detail(state):
     return {"line": "compactor", "compaction_id": state["brief"]["compaction_id"], **(state.get("result") or {})}
 
 
+def structured_output_options(row) -> dict:
+    """Cortex options that make the gateway constrain the answer to ``output_schema(row)``
+    (llama.cpp ``response_format``). Same method as curiosity's reading batch and memory-graph
+    suggest (``json_object_schema``); thinking is already off for ``call_verb_text``."""
+    name, schema = output_schema(row)
+    return {
+        "structured_output_schema_name": name,
+        "structured_output_schema": schema,
+        "structured_output_method": "json_object_schema",
+        "structured_output_thinking_policy": "disabled_for_artifact",
+    }
+
+
 def build_curiosity_compaction_graph(store, call_verb_text, publish_journal, admission: AdmissionDeps, checkpointer: Any):
     from langgraph.graph import END, START, StateGraph
     resource_request, resource_wait, after_wait = resource_nodes(admission)
@@ -68,6 +81,7 @@ def build_curiosity_compaction_graph(store, call_verb_text, publish_journal, adm
                 CURIOSITY_COMPACTION_VERB, {"curiosity_compaction_prompt": next_prompt(row)}, brief.llm_route,
                 gpu_lease=GpuLeaseRefV1.model_validate(held["lease"]), timeout_sec=brief.timeout_sec - 30,
                 user_text="Consolidate the dated Curiosity evidence.",
+                options=structured_output_options(row),
             )
             return {"artifact": record_answer(row, raw)}
         try:
@@ -89,10 +103,10 @@ def build_curiosity_compaction_graph(store, call_verb_text, publish_journal, adm
             replay = await replay_if_requeued(admission, dict(state), {"status": "waiting_resource"})
             if replay is not None:
                 return replay
-            # Shared policy: transport/timeouts are bounded attempts, re-queued at once. A rejected
-            # answer (``record_answer``'s ValueError/ValidationError) changes nothing, so the retry
-            # would re-send the same prompt: it fails now (14 days to 2026-10-23: 22 runs ended on
-            # these after up to 3 attempts, 0 recovered; none were JSON parse errors).
+            # Shared policy, re-queued at once: transport/timeouts AND a rejected answer
+            # (``record_answer``'s ``ModelOutputRejected``: body over the cap, bad refs, over budget)
+            # are bounded attempts -- the next sample differs, and each accepted batch is already
+            # saved, so a retry makes progress. Any other ValueError/TypeError is a bug: fails now.
             return await failed_attempt(admission, dict(state), exc, waiting={"status": "waiting_resource"},
                                         backoff=False)
 

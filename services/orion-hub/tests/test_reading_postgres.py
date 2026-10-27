@@ -891,3 +891,28 @@ def test_reader_blocked_seed_with_submitted_turn_is_left_to_finish(local_pg, mon
         assert not await queue.has_pending_durable_turn(conn, seed.seed_id, 2)
         await conn.close()
     asyncio.run(run())
+
+
+def test_read_origin_walks_parent_requests_to_the_root(local_pg):
+    """The reading-finding prompt's chain (orion/world_pulse_read/origin.py) on real rows: a
+    re-entry two hops below a Juniper request, oldest first, ending at the read itself."""
+    from orion.world_pulse_read.origin import read_origins
+
+    async def run():
+        conn, _ = await db(local_pg)
+        root = request("https://example.org/root")
+        hop = ReadingRequestedV1(url="https://example.org/hop", requested_by="juniper", invocation_context="unified_chat",
+                                 why_now=root.why_now, root_request_id=root.request_id, parent_request_id=root.request_id)
+        leaf = ReadingRequestedV1(url="https://example.org/leaf", requested_by="juniper", invocation_context="unified_chat",
+                                  why_now=root.why_now, root_request_id=root.request_id, parent_request_id=hop.request_id)
+        for r in (root, hop, leaf):
+            await queue.enqueue_reading(conn, r)
+        leaf_seed, root_seed = f"reading:{leaf.request_id}", f"reading:{root.request_id}"
+        async with conn.transaction(readonly=True):
+            got = await read_origins(conn, [leaf_seed, root_seed])
+        assert [s.url for s in got[leaf_seed]] == ["https://example.org/root", "https://example.org/hop",
+                                                   "https://example.org/leaf"]
+        assert got[leaf_seed][0].requested_by == "juniper" and got[leaf_seed][0].why_now == "A new context"
+        assert [s.seed_id for s in got[root_seed]] == [root_seed]
+        await conn.close()
+    asyncio.run(run())

@@ -142,6 +142,7 @@ def test_turn_rules_header_absent_when_nothing_follows_the_guidance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("HARNESS_FCC_MCP_ENABLED", raising=False)
+    monkeypatch.setenv("HARNESS_FCC_DIG_BRIEF_ENABLED", "false")
     prompt = compile_harness_prefix(
         make_thought(),
         repair_overlay=HarnessRepairOverlayV1(),

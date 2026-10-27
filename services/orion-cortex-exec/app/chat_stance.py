@@ -2495,7 +2495,6 @@ def _situation_summary_from_ctx(ctx: Dict[str, Any]) -> dict[str, Any]:
     time_ctx = brief.get("time") if isinstance(brief.get("time"), dict) else {}
     place = brief.get("place") if isinstance(brief.get("place"), dict) else {}
     environment = brief.get("environment") if isinstance(brief.get("environment"), dict) else {}
-    lab = brief.get("lab") if isinstance(brief.get("lab"), dict) else {}
     surface = brief.get("surface") if isinstance(brief.get("surface"), dict) else {}
     affordances_raw = brief.get("affordances") if isinstance(brief.get("affordances"), list) else []
     affordances = []
@@ -2584,15 +2583,6 @@ def _situation_summary_from_ctx(ctx: Dict[str, Any]) -> dict[str, Any]:
             "physical_location": _compact(place.get("physical_location"), limit=96),
         },
         "environment": environment_summary,
-        "lab": {
-            "available": bool(lab.get("available", False)),
-            "thermal_risk": _compact(lab.get("thermal_risk"), limit=20),
-            "power_risk": _compact(lab.get("power_risk"), limit=20),
-            "summary": _compact(
-                f"thermal={_compact(lab.get('thermal_risk'), limit=20)} power={_compact(lab.get('power_risk'), limit=20)}",
-                limit=80,
-            ),
-        },
         "surface": {
             "surface": _compact(surface.get("surface"), limit=40),
             "input_modality": _compact(surface.get("input_modality"), limit=24),
@@ -3074,7 +3064,6 @@ def build_chat_stance_debug_payload(
                 "time": situation.get("time") if isinstance(situation.get("time"), dict) else {},
                 "place": situation.get("place") if isinstance(situation.get("place"), dict) else {},
                 "environment": situation.get("environment") if isinstance(situation.get("environment"), dict) else {},
-                "lab": situation.get("lab") if isinstance(situation.get("lab"), dict) else {},
                 "surface": situation.get("surface") if isinstance(situation.get("surface"), dict) else {},
                 "affordances": list(situation.get("affordances") or []),
             },
@@ -3257,7 +3246,6 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
         temporal_context=_compact((situation.get("conversation_phase") or {}).get("phase_change"), limit=40) or None,
         audience_context=_compact((situation.get("presence") or {}).get("audience_mode"), limit=60) or None,
         environmental_context=_environmental_context(situation.get("environment") or {}),
-        operational_context=_compact((situation.get("lab") or {}).get("summary"), limit=120) or None,
         situation_response_guidance=_unique(situation_guidance, limit=6),
         answer_strategy=answer_strategy,
         stance_summary=(

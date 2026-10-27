@@ -56,7 +56,6 @@ from orion.schemas.situation import (
     CuriosityPriorContextV1,
     CuriosityPriorSummaryV1,
     EnvironmentContextV1,
-    LabContextV1,
     PerceptionContextV1,
     PlaceContextV1,
     PresenceContextV1,
@@ -183,8 +182,6 @@ class SituationSettings:
     high_wind_mph_threshold: int
     hot_car_temp_f_threshold: int
     agenda_enabled: bool
-    lab_enabled: bool
-    lab_provider: str
     cabinet_enabled: bool
     cabinet_ttl_seconds: int
     cabinet_sensors_path: str
@@ -277,7 +274,6 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         high_wind_mph_threshold=int(getattr(settings, "orion_situation_high_wind_mph_threshold", 25)),
         hot_car_temp_f_threshold=int(getattr(settings, "orion_situation_hot_car_temp_f_threshold", 80)),
         agenda_enabled=bool(getattr(settings, "orion_situation_agenda_enabled", False)),
-        lab_enabled=bool(getattr(settings, "orion_situation_lab_context_enabled", True)),
         # Default OFF: this puts camera-derived content about a private home
         # into the prompt, so it is opt-in rather than opt-out.
         perception_enabled=bool(
@@ -392,8 +388,7 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         reverie_ttl_seconds=int(
             getattr(settings, "orion_situation_reverie_ttl_seconds", 180)
         ),
-        lab_provider=str(getattr(settings, "orion_situation_lab_provider", "stub")),
-        # Conservative generic default (False), same as lab/perception above
+        # Conservative generic default (False), same as perception above
         # -- the file-based read below only works where `cabinet_sensors_
         # path` is actually mounted (orion-hub's `network_mode: host` +
         # `/run/orion-sensors:ro` bind), which
@@ -457,9 +452,6 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     but no place and Orion resolved "the camera outside" against a travel
     city in recent chat (correlation 5063fb71).
 
-    Lab is turned off here on purpose (it has no real provider anywhere), not
-    left to `settings_from_runtime`'s own defaults to silently decide.
-
     Perception (2026-10-07) IS enabled here now, via Hub's own
     ORION_SITUATION_PERCEPTION_ENABLED (default ON, Juniper's standing flag
     rule). It was a literal False while Hub had no vetted DB path for its
@@ -508,7 +500,7 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     no new sensor-path keys, just a new `ORION_SITUATION_CABINET_*` on/off +
     TTL pair. This is Orion's own physical housing, not private-home
     content, same "no new dependency, no privacy concern" shape as affect/
-    curiosity/reverie above -- unlike lab, which stays off.
+    curiosity/reverie above.
     """
     return SimpleNamespace(
         orion_situation_enabled=bool(getattr(cfg, "ORION_SITUATION_ENABLED", True)),
@@ -540,8 +532,6 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_high_wind_mph_threshold=25,
         orion_situation_hot_car_temp_f_threshold=80,
         orion_situation_agenda_enabled=False,
-        orion_situation_lab_context_enabled=False,
-        orion_situation_lab_provider="stub",
         # 2026-08-31, same "no private-home content" call as curiosity/
         # reverie: default ON. Reuses Hub's EXISTING CABINET_SENSORS_PATH/
         # CABINET_SENSORS_B_PATH/CABINET_SENSORS_STALE_AFTER_SEC (already
@@ -602,8 +592,8 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_affect_max_age_seconds=int(
             getattr(cfg, "ORION_SITUATION_AFFECT_MAX_AGE_SECONDS", 300)
         ),
-        # 2026-08-30, Juniper's explicit call: default ON, unlike perception/
-        # lab above -- carries no private-home content. Reuses Hub's
+        # 2026-08-30, Juniper's explicit call: default ON, unlike perception
+        # above -- carries no private-home content. Reuses Hub's
         # EXISTING HUB_CURIOSITY_GRAPH_* connection config (already asserted
         # against `orion_worldview` by curiosity_investigation.py) rather
         # than a second, parallel set of graph keys.
@@ -856,7 +846,6 @@ async def build_situation_for_ctx(
     place_ctx = _build_place_context(cfg)
     env_ctx = await _build_environment_context(cfg, diagnostics)
     agenda_ctx = AgendaContextV1(available=False, source="stub")
-    lab_ctx = _build_lab_context(cfg)
     cabinet_ctx = await _build_cabinet_context(cfg, diagnostics)
     # Only a turn Juniper actually took may spend the shared identity-ask
     # cooldown (review finding, 2026-10-07): Hub also builds briefs for turns
@@ -873,7 +862,7 @@ async def build_situation_for_ctx(
         cfg, diagnostics
     )
     surface_ctx = _build_surface_context(ctx)
-    affordances = _build_affordances(ctx, presence, phase_ctx, env_ctx, lab_ctx, surface_ctx, time_ctx)
+    affordances = _build_affordances(ctx, presence, phase_ctx, env_ctx, surface_ctx, time_ctx)
     diagnostics.relevance_reasons = [a.kind for a in affordances if a.trigger_relevance == "active"]
 
     brief = SituationBriefV1(
@@ -898,7 +887,6 @@ async def build_situation_for_ctx(
         place=place_ctx,
         environment=env_ctx,
         agenda=agenda_ctx,
-        lab=lab_ctx,
         cabinet=cabinet_ctx,
         perception=perception_ctx,
         affect=affect_ctx,
@@ -1244,9 +1232,13 @@ def _fetch_weather(cfg: SituationSettings) -> EnvironmentContextV1:
     )
     current = payload.get("current") or {}
     hourly = payload.get("hourly") or {}
-    probs = hourly.get("precipitation_probability") or []
-    temps = hourly.get("temperature_2m") or []
-    winds = hourly.get("wind_speed_10m") or []
+    # Hourly arrays start at local midnight today, not now -- without this
+    # offset "next 6h" read 00:00-05:00 of the current day (seen live
+    # 2026-10-27: a 21:00 turn reported the overnight low as its window).
+    start = _current_hour_index(hourly.get("time") or [], current.get("time"))
+    probs = (hourly.get("precipitation_probability") or [])[start:]
+    temps = (hourly.get("temperature_2m") or [])[start:]
+    winds = (hourly.get("wind_speed_10m") or [])[start:]
     flag = WeatherPracticalFlagsV1(
         take_umbrella=_window_max(probs, 6) >= cfg.umbrella_prob_threshold,
         take_jacket=(current.get("temperature_2m") or 999) <= cfg.jacket_temp_f_threshold,
@@ -1296,6 +1288,19 @@ def _fetch_weather(cfg: SituationSettings) -> EnvironmentContextV1:
     return out
 
 
+def _current_hour_index(times: list[Any], current_time: Any) -> int:
+    """Index of the hourly slot containing `current_time` (both local ISO
+    strings from the same Open-Meteo response, e.g. "2026-10-26T21:15" vs
+    "2026-10-26T21:00"); 0 when either is missing."""
+    hour = str(current_time or "")[:13]
+    if not hour:
+        return 0
+    for i, t in enumerate(times):
+        if str(t)[:13] >= hour:
+            return i
+    return 0
+
+
 def _window_max(values: list[Any], count: int) -> int:
     nums = [_to_float(v) for v in values[:count] if _to_float(v) is not None]
     return int(max(nums)) if nums else 0
@@ -1316,10 +1321,6 @@ def _to_float(value: Any) -> float | None:
     return out
 
 
-def _build_lab_context(cfg: SituationSettings) -> LabContextV1:
-    if not cfg.lab_enabled:
-        return LabContextV1(available=False, source="disabled")
-    return LabContextV1(available=False, source=cfg.lab_provider, thermal_risk="unknown", power_risk="unknown")
 
 
 def _parse_cabinet_received_at(value: str) -> Optional[datetime]:
@@ -1494,9 +1495,8 @@ def _record_cabinet_sound_status(ctx: CabinetContextV1, diagnostics: SituationDi
 async def _build_cabinet_context(
     cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
 ) -> CabinetContextV1:
-    """Orion's own physical cabinet sensors -- the real read `LabContextV1`
-    was always a stub stand-in for. `LabContextV1` itself is untouched
-    (still its own distinct, still-unwired GPU-cluster concept).
+    """Orion's own physical cabinet sensors -- the real read the old lab
+    stub (removed 2026-10-27) was a stand-in for.
 
     Fail-open like every other provider here -- a missing/unreadable
     snapshot file, a stale frame, or an empty measurement set all yield
@@ -2060,7 +2060,6 @@ def _build_affordances(
     presence: PresenceContextV1,
     phase: ConversationPhaseContextV1,
     env: EnvironmentContextV1,
-    lab: LabContextV1,
     surface: SurfaceContextV1,
     time_ctx: TimeContextV1,
 ) -> list[SituationAffordanceV1]:
@@ -2439,14 +2438,14 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
     elif brief.surface.input_modality not in ("typed", "unknown"):
         lines.append(f"Input modality: {brief.surface.input_modality}.")
     if brief.environment.available:
+        now = brief.environment.current_weather
+        if now.temperature_f is not None:
+            feels = f" (feels like {now.feels_like_f:.0f}F)" if now.feels_like_f is not None else ""
+            lines.append(f"Outside temperature now: {now.temperature_f:.0f}F{feels}.")
         rain = brief.environment.forecast_next_6h.precipitation_probability_pct
         lines.append(f"Weather next 6h: precip_prob={rain}%, summary={brief.environment.forecast_next_6h.summary}.")
     else:
         lines.append("Weather: unavailable or low-confidence; do not infer.")
-    if brief.lab.available:
-        lines.append(f"Lab risk: thermal={brief.lab.thermal_risk}, power={brief.lab.power_risk}.")
-    else:
-        lines.append("Lab: unavailable/stub; do not infer.")
     # Cabinet sensors are deliberately OMITTED rather than rendered as an
     # "unavailable; do not infer" placeholder when there is nothing to show
     # -- same reasoning curiosity/reverie below already document, and the
@@ -2573,7 +2572,7 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         lines.append(runtime_line)
     # Curiosity/reverie are deliberately OMITTED rather than rendered as an
     # "unavailable; do not infer" placeholder when there is nothing to show
-    # (unlike weather/lab/perception/affect/runtime above, which always emit
+    # (unlike weather/perception/affect/runtime above, which always emit
     # a line). Two reasons: (1) both are genuinely optional color, not a
     # standing claim about the world Orion needs reminding it lacks every
     # single turn -- unlike "I cannot see you", "I don't have an open prior

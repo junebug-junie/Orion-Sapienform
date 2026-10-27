@@ -11,6 +11,7 @@ from orion.harness.operator_brief import (
     HARNESS_UNIFIED_OPERATOR_BRIEF,
     harness_motor_instruction as _stance_motor_instruction,
 )
+from orion.dig.brief import append_dig_harness_brief
 from orion.harness.situation_brief import append_situation_block_harness_brief
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import HarnessRepairOverlayV1
@@ -369,6 +370,7 @@ def compile_harness_prefix(
         trailing,
         situation_prompt_fragment=situation_prompt_fragment,
     )
+    append_dig_harness_brief(trailing, reading_only=reading_only)
 
     if trailing and user_message.strip():
         parts.append(HARNESS_TURN_RULES_HEADER)

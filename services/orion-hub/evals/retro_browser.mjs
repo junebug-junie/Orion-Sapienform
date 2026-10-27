@@ -146,8 +146,13 @@ try{
     const s=(await (await fetch('/api/retro/health/ready')).json()).session;
     return s.scripted.some(p=>p.cognition?.goal?.planner_id==='browser-fixture');
   });
-  const cognitiveActions=await page.evaluate(async sid=>(await (await fetch(`/api/retro/sessions/${sid}/evidence`)).json()).applied,state.session_id);
-  assert(cognitiveActions.some(a=>a.policy_id==='goal-motor-v1' && a.goal_attempt_id && a.mask===0),'acknowledged wait never applied');
+  // The goal is accepted before its first applied frame is journaled: wait for that row (CI
+  // 2026-10-27 read the journal in the gap once) instead of reading it a single time.
+  const appliedWait=await page.waitForFunction(async sid=>{
+    const applied=(await (await fetch(`/api/retro/sessions/${sid}/evidence`)).json()).applied;
+    return applied.some(a=>a.policy_id==='goal-motor-v1' && a.goal_attempt_id && a.mask===0);
+  },{timeout:5000},state.session_id).then(()=>true,()=>false);
+  assert(appliedWait,'acknowledged wait never applied');
   await page.click('#takeover');
   await page.waitForFunction(()=>document.activeElement===document.querySelector('#screen'));
   await page.keyboard.down('ArrowLeft');await pause(200);await page.keyboard.up('ArrowLeft');

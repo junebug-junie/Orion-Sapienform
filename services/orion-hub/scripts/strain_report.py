@@ -193,6 +193,10 @@ class StrainReportFacts:
     gpu_queue_self_deferrable: Optional[int]
     arc_id: Optional[str]
     holds: Tuple[str, ...]
+    # ``strain_holding`` (arousal.py): the GPU load is still at/above the floor but not yet sustained,
+    # so the queue is what keeps the strain from clearing. ``strain_clearing`` (load below the
+    # floor, clear timer running) leaves this False.
+    queue_holding: bool = False
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -201,6 +205,7 @@ class StrainReportFacts:
             "causes_now": list(self.causes_now),
             "causes_seen": list(self.causes_seen),
             "holding": self.holding,
+            "queue_holding": self.queue_holding,
             "cabinet_temp_c": self.cabinet_temp_c,
             "cabinet_reflex": self.cabinet_reflex,
             "gpu_queue_depth": self.gpu_queue_depth,
@@ -262,6 +267,7 @@ def strain_report_facts(
         cabinet_reflex=reading.cabinet_reflex,
         gpu_queue_depth=reading.gpu_queue_depth,
         gpu_queue_self_deferrable=_self_deferrable(reasons),
+        queue_holding="strain_holding" in reasons,
         arc_id=None if arc is None else str(arc["arc_id"]),
         holds=tuple(phrase for _key, phrase in STRAIN_HOLDS),
     )
@@ -332,12 +338,26 @@ def build_strain_report_prompt(facts: StrainReportFacts, record: str, now: datet
     if facts.cabinet_temp_c is not None:
         lines.append(f"Cabinet temperature now: {facts.cabinet_temp_c:.1f} C.")
     if facts.gpu_queue_depth is not None:
-        lines.append(f"GPU jobs waiting now: {facts.gpu_queue_depth}.")
+        # State how the queue relates to the strain, so the gap is not filled in. Live 10-23: with only
+        # cabinet_hot active, the message said the heat "queued up nine GPU jobs" -- nothing measured that.
+        mine = (f", {facts.gpu_queue_self_deferrable} of them your own deferrable work, which does not count as load"
+                if facts.gpu_queue_self_deferrable else "")
+        if "gpu_queue_sustained" in facts.causes_now:
+            lines.append(f"GPU jobs waiting now: {facts.gpu_queue_depth} (this is one of the causes above{mine}).")
+        elif facts.queue_holding:
+            # arousal.py: strain_holding = the load is still at/above the floor, not yet sustained. The
+            # queue is then exactly what keeps the strain from clearing.
+            lines.append(f"GPU jobs waiting now: {facts.gpu_queue_depth}{f' ({mine[2:]})' if mine else ''}. "
+                         "This queue is still too long, and it is what keeps the strain from clearing.")
+        else:
+            lines.append(f"GPU jobs waiting now: {facts.gpu_queue_depth}{f' ({mine[2:]})' if mine else ''}. "
+                         "This is NOT a cause of the strain right now.")
     lines.append("While you are strained, these hold back on their own: " + "; ".join(facts.holds) + ".")
     lines += [
         "",
         "Write Juniper a short message (2-4 sentences) telling her this, in your own voice.",
-        "Use only the facts above. Do not invent causes, numbers, or fixes. You do not control the "
+        "Use only the facts above. Do not invent causes, numbers, or fixes. Each cause above is measured "
+        "on its own: never say one caused another, or that the heat caused the GPU jobs. You do not control the "
         "air conditioning or the hardware, and you have not changed anything yourself.",
         "This record will be attached under your message verbatim, so you do not need to repeat every number:",
         record,

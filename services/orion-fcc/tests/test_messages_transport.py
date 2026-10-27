@@ -444,5 +444,66 @@ class CompactionRequestTests(unittest.TestCase):
         self.assertEqual(len(seen[1].tools), 1)
 
 
+
+# --- FCC's local shortcuts never answer a compaction -------------------------------------
+
+# Words from Claude Code's own system prompt that satisfy FCC's title detector once the
+# compaction request has no tools (live 2026-10-21..26: every summary came back "Conversation").
+TITLE_SHAPED_SYSTEM = (
+    "You are Claude Code. When asked for a title, return JSON with a single field. "
+    "Summarize this session."
+)
+
+
+def _text(response):
+    block = response.content[0]
+    return block["text"] if isinstance(block, dict) else block.text
+
+
+class CompactionShortcutTests(unittest.TestCase):
+    def _settings(self):
+        from config.settings import Settings
+
+        return Settings.model_construct(enable_title_generation_skip=True)
+
+    def _compaction(self):
+        return prepare_request(_req({"role": "user", "content": COMPACT_TURN}, system=TITLE_SHAPED_SYSTEM))
+
+    def test_unguarded_title_skip_answers_conversation(self):
+        # Regression proof: this is the bug the guard exists for.
+        from api.optimization_handlers import try_optimizations as raw
+
+        self.assertEqual(_text(raw(self._compaction(), self._settings())), "Conversation")
+
+    def test_guarded_shortcuts_pass_compaction_to_the_model(self):
+        import api.handlers.messages as handlers
+        from orion_fcc_messages_transport import guard_local_optimizations
+
+        guard_local_optimizations()
+        guard_local_optimizations()  # idempotent
+        self.assertTrue(handlers.try_optimizations.orion_compaction_guard)
+        self.assertIsNone(handlers.try_optimizations(self._compaction(), self._settings()))
+
+    def test_guard_leaves_real_title_requests_alone(self):
+        import api.handlers.messages as handlers
+        from orion_fcc_messages_transport import guard_local_optimizations
+
+        guard_local_optimizations()
+        title = MessagesRequest.model_validate({
+            "model": "agent", "max_tokens": 64, "system": TITLE_SHAPED_SYSTEM,
+            "messages": [{"role": "user", "content": "fix the flaky test"}],
+        })
+        self.assertEqual(_text(handlers.try_optimizations(title, self._settings())), "Conversation")
+
+    def test_patched_routes_install_the_guard(self):
+        # Fresh process: the tests above install the guard in this one, which would hide a
+        # routes patch that stopped calling it. Importing the app is the server's own start path.
+        import subprocess
+        import sys
+
+        probe = "import api.app, api.handlers.messages as h; assert h.try_optimizations.orion_compaction_guard"
+        subprocess.run([sys.executable, "-c", probe], check=True)
+
+
 if __name__ == "__main__":
     unittest.main()

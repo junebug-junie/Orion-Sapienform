@@ -241,6 +241,46 @@ def test_dismiss_sets_status_and_publishes_without_answer(env):
     assert published[0].status == "dismissed" and published[0].answer is None
 
 
+def test_dont_know_dismisses_a_who_is_this_card_without_a_name(env):
+    """2026-10-27: "I don't know" is a dismissal that says why. No answer is stored
+    (so sql-writer never makes it a label) and answer_detail marks it dont_know."""
+    client, rows, published = env
+    r = client.post("/api/asks/a2/dismiss", json={"reason": "dont_know"})
+    assert r.status_code == 200, r.text
+    assert rows["a2"]["status"] == "dismissed"
+    assert rows["a2"]["answer"] is None
+    assert rows["a2"]["answer_detail"] == {"dont_know": True}
+    assert published[0].status == "dismissed" and published[0].answer is None
+
+
+def test_plain_dismiss_carries_no_dont_know(env):
+    client, rows, _pub = env
+    assert client.post("/api/asks/a2/dismiss").status_code == 200
+    assert rows["a2"].get("answer_detail") is None
+
+
+def test_dont_know_only_on_who_is_this_cards(env):
+    client, rows, published = env
+    rows["p2"] = _pair_row("p2")
+    r = client.post("/api/asks/p2/dismiss", json={"reason": "dont_know"})
+    assert r.status_code == 422
+    assert r.json()["detail"] == "dont_know_only_on_who_is_this_cards"
+    assert rows["p2"]["status"] == "open" and published == []
+
+
+def test_dismiss_refuses_an_unknown_reason(env):
+    client, rows, _pub = env
+    assert client.post("/api/asks/a2/dismiss", json={"reason": "never"}).status_code == 422
+    assert rows["a2"]["status"] == "open"
+
+
+def test_dont_know_on_a_closed_card_is_409(env):
+    client, rows, _pub = env
+    r = client.post("/api/asks/done/dismiss", json={"reason": "dont_know"})
+    assert r.status_code == 409
+    assert rows["done"]["status"] == "answered"
+
+
 def test_blank_answer_rejected_without_touching_row(env):
     client, rows, published = env
     assert client.post("/api/asks/a1/answer", json={"answer": "   "}).status_code == 422
@@ -723,6 +763,12 @@ def test_close_ask_sql_runs_on_real_postgres():
             assert await run("sqltest-p2", "answered", "maybe") is None
             assert (await run("sqltest-p3", "dismissed", None))["status"] == "dismissed"
             assert (await run("sqltest-w1", "answered", "Bob"))["answer"] == "Bob"
+            await conn.execute("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref) "
+                               "VALUES ('sqltest-w3', 'q', 'vision_individual', 'sqltest-w3')")
+            dk = await run("sqltest-w3", "dismissed", None, '{"dont_know": true}')
+            assert (dk["status"], dk["answer"]) == ("dismissed", None)
+            stored = await conn.fetchval("SELECT answer_detail::text FROM orion_ask WHERE ask_id = 'sqltest-w3'")
+            assert json.loads(stored) == {"dont_know": True}
             assert await run("sqltest-c1", "answered", "maybe Bob") is None
             assert (await run("sqltest-c2", "answered", "no"))["answer"] == "no"
             await conn.execute("UPDATE orion_ask SET status='open' WHERE ask_id = 'sqltest-p1'")

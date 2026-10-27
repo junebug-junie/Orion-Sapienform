@@ -381,7 +381,9 @@ def _build_physiology():
         warnings: list[str] = []
         pool_state = None
         if rpc_bus is not None:
-            pool_state = await fetch_pool_state(rpc_bus, source=s.service_name, timeout_sec=2.0)
+            # include_config: the class -> seats map that places waiting self-work beside its lanes.
+            pool_state = await fetch_pool_state(rpc_bus, source=s.service_name, timeout_sec=2.0,
+                                                include_config=True)
         if pool_state is None:
             warnings.append("lane_capacity:pool_state_unread")
         body = BodyInputs(
@@ -389,7 +391,8 @@ def _build_physiology():
             energy=await physiology_store.read_energy(_checkpointer_cm, now, tz),
             lanes=await physiology_store.read_lanes(_checkpointer_cm, now, s.physiology_lane_window_sec, pool_state),
             juniper=await physiology_store.read_juniper(_checkpointer_cm, now, tz),
-            claude=claude_limits.snapshot() if claude_limits is not None else ())
+            claude=claude_limits.snapshot() if claude_limits is not None else (),
+            backlog=await physiology_store.read_backlog(_checkpointer_cm, now))
         return body, warnings
 
     async def project_physiology(model) -> None:

@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from orion.physiology.body import (
+    BacklogInput,
+    BacklogSnapshot,
     BodyConfig,
     BodyInputs,
     ClaudeObservation,
@@ -21,6 +23,7 @@ from orion.physiology.body import (
     heat_reading,
     juniper_reading,
     lane_readings,
+    occupied_seconds,
 )
 from orion.schemas.physiology import PhysiologyStateV1, parse_physiology_state
 
@@ -187,6 +190,180 @@ def test_lane_no_reading_cases():
     assert reasons(LaneInput(True, [], {"fast": 4}, newest_event_at=None)) == [("lane:fast", "no_rows:gpu_pool_events")]
     # Fresh feed, nothing held, pool state unread: the lanes do not vanish silently.
     assert reasons(LaneInput(True, [], None, newest_event_at=NOW)) == [("lane", "read_failed:gpu_pool_state")]
+
+
+def _ts(hms: str) -> datetime:
+    h, m, sec = hms.split(":")
+    return datetime(2026, 10, 23, int(h), int(m), tzinfo=timezone.utc) + timedelta(seconds=float(sec))
+
+
+def test_lane_lease_replaced_on_another_seat_is_charged_per_seat_live_2026_10_23():
+    """The live over-count (lane:agent read 5,985.9 slot-s in a 3,600 s window on 1 slot,
+    tick 2026-10-23 10:14:12). Real span shapes from gpu_pool_events/gpu_pool_leases:
+
+    * f4126f56 hold on agent, released 09:40:15.760 after 2,085.868 s;
+    * 720191b9 hold on agent, released 10:14:07.759 after 2,031.875 s;
+    * 3e2aaebf hold, ABORTED twice on agent-gpu2 (09:41:27.480 after 1,718.778 s, 10:05:16.052
+      after 755.122 s), then re-granted on agent at 10:14:07.766 and still open.
+
+    The old reducer kept one role per lease (the last row it saw: the open row, agent), so both
+    agent-gpu2 spans landed on lane:agent: 1,635.3 + 755.1 = 2,390.4 s extra."""
+    now = _ts("10:14:12.168727")
+    ev = [
+        LeaseEvent("f4126f56", "agent", "released", _ts("09:40:15.760344"), 2085.867939e3),
+        LeaseEvent("720191b9", "agent", "released", _ts("10:14:07.758557"), 2031.87485e3),
+        LeaseEvent("3e2aaebf", "agent-gpu2", "aborted", _ts("09:41:27.479759"), 1718.777638e3),
+        LeaseEvent("3e2aaebf", "agent-gpu2", "aborted", _ts("10:05:16.052205"), 755.121794e3),
+        LeaseEvent("3e2aaebf", "agent", "granted", _ts("10:14:07.766452")),
+    ]
+    out, warnings = lane_readings(LaneInput(True, ev, {"agent": 1, "agent-gpu2": 2}, newest_event_at=now), now, CFG)
+    by = {r.constraint: r for r in out}
+    agent, gpu2 = by["lane:agent"], by["lane:agent-gpu2"]
+    assert agent.level <= agent.budget == 3600.0
+    # agent: 09:14:12.17..09:40:15.76 + 09:40:15.88..10:14:07.76 + the re-grant's 4.4 s open.
+    assert abs(agent.level - (1563.59 + 2031.87 + 4.40)) < 0.5
+    # agent-gpu2 gets its own 2,390 s, which the old reducer gave to agent.
+    assert abs(gpu2.level - 2390.4) < 0.5
+    assert "lane_leases_held_on_two_seats:1" in warnings
+
+
+def test_lane_gap_lending_is_reported_apart_not_counted_as_held():
+    """Live 10-23 06:09: a cortex-exec request (system priority, no hold_lease_id) ran 123 s in the
+    gap of an idle background hold on the 1-slot agent lane (scheduler H3). Both leases are real;
+    the slot was occupied once."""
+    now = _ts("06:30:00")
+    ev = [LeaseEvent("b8964820", "agent", "granted", _ts("03:10:21.633747")),       # still held
+          LeaseEvent("54397698", "agent", "released", _ts("06:11:30.35888"), 123.132188e3),
+          LeaseEvent("df6083a6", "agent", "released", _ts("06:24:42.562854"), 270.567544e3)]
+    out, _ = lane_readings(LaneInput(True, ev, {"agent": 1}, newest_event_at=now), now, CFG)
+    agent = out[0]
+    assert agent.level == 3600.0 == agent.budget
+    assert abs(agent.detail["lease_s"] - (3600 + 123.132 + 270.568)) < 0.01
+    assert abs(agent.detail["lent_overlap_s"] - (123.132 + 270.568)) < 0.01
+
+
+def test_lane_projection_still_granted_after_a_close_is_not_held_to_now():
+    """Review finding: the pool's projection row lags its own close event. The close (newer
+    fact) wins: the lease held 600 s, not the whole window."""
+    ev = [LeaseEvent("L", "fast", "granted", NOW - timedelta(minutes=60)),
+          _close("L", "fast", NOW - timedelta(minutes=50), 600)]
+    out, warnings = _lanes(ev, {"fast": 1})
+    assert out["lane:fast"].level == 600.0 and not any(w.startswith("lane_open_leases") for w in warnings)
+
+
+def test_lane_two_slots_count_two_concurrent_holds_and_cap_the_third():
+    now = NOW
+    ev = [LeaseEvent(x, "agent-gpu2", "granted", NOW - timedelta(minutes=30)) for x in ("a", "b", "c")]
+    out, _ = lane_readings(LaneInput(True, ev, {"agent-gpu2": 2}, newest_event_at=now), now, CFG)
+    assert out[0].level == 3600.0 and out[0].detail["lent_overlap_s"] == 1800.0
+
+
+def test_lane_zero_slot_seat_still_shows_its_held_lease():
+    """lane:diffusion read 546 s against capacity 0 live: the seat had no live slot but a lease
+    held it. Uncapped, flagged, never hidden."""
+    ev = [_close("d", "diffusion", NOW - timedelta(minutes=1), 546.479)]
+    out, _ = _lanes(ev, {"diffusion": 0})
+    d = out["lane:diffusion"]
+    assert abs(d.level - 546.479) < 1e-6 and d.detail["held_without_live_slot"] is True
+    assert "lent_overlap_s" not in d.detail
+
+
+def test_occupied_seconds_end_and_start_at_the_same_instant_is_one_slot():
+    t = NOW
+    spans = [(t - timedelta(seconds=100), t - timedelta(seconds=50)), (t - timedelta(seconds=50), t)]
+    assert occupied_seconds(spans, t - timedelta(hours=1), t, 1) == (100.0, 100.0, 2)
+
+
+# --- deferrable backlog (hunger) -----------------------------------------------------------------
+
+# config/gpu_pool.yaml ``classes`` (subset), as the state RPC returns it.
+CLASSES = {"agent": ["agent", "agent-gpu2", "agent-deep", "chat"], "memory_distill": ["agent"],
+           "diffusion": ["diffusion"], "world": ["world"]}
+
+
+def _backlog(depth, *, at=NOW - timedelta(seconds=5), last_empty=None, host="circe"):
+    return BacklogInput(True, [BacklogSnapshot(host, at, depth)],
+                        last_empty_at={(host, wc): last_empty for wc in (depth or {})})
+
+
+def _hungry(bl, capacity, classes=CLASSES):
+    out, warnings = lane_readings(LaneInput(True, [], capacity, newest_event_at=NOW, class_roles=classes),
+                                  NOW, CFG, bl)
+    return {r.constraint: r for r in out}, warnings
+
+
+def test_backlog_sits_beside_every_seat_its_class_may_use():
+    """Live 10-23 23:58: deferrable_depth {"agent": 4} (curiosity readings, background holds). The
+    agent class may run on agent, agent-gpu2, agent-deep and chat, so it sits beside each of them;
+    a seat it cannot use reads a real 0."""
+    bl = _backlog({"agent": 4}, last_empty=NOW - timedelta(minutes=26))
+    by, warnings = _hungry(bl, {"agent": 1, "agent-gpu2": 2, "fast": 4})
+    for lane in ("lane:agent", "lane:agent-gpu2"):
+        assert by[lane].detail["deferrable_queued"] == 4
+        assert by[lane].detail["deferrable_waiting_sec"] == 26 * 60.0
+    assert by["lane:fast"].detail["deferrable_queued"] == 0
+    # Hunger is not strain: the level (held slot-seconds) does not move.
+    assert by["lane:agent"].level == 0.0 and not warnings
+
+
+def test_backlog_classes_add_on_a_shared_seat():
+    bl = _backlog({"agent": 2, "memory_distill": 3})
+    by, _ = _hungry(bl, {"agent": 1, "agent-gpu2": 2})
+    assert by["lane:agent"].detail["deferrable_queued"] == 5
+    assert by["lane:agent-gpu2"].detail["deferrable_queued"] == 2
+
+
+def test_backlog_non_empty_for_the_whole_lookback_reads_capped():
+    by, _ = _hungry(_backlog({"agent": 2}, last_empty=None), {"agent": 1})
+    assert by["lane:agent"].detail["deferrable_waiting_sec"] == 6 * 3600.0
+    assert by["lane:agent"].detail["deferrable_waiting_capped"] is True
+
+
+def test_backlog_unknown_is_never_zero():
+    def reason(bl, classes=CLASSES):
+        by, _ = _hungry(bl, {"agent": 1}, classes)
+        assert "deferrable_queued" not in by["lane:agent"].detail
+        return by["lane:agent"].detail["deferrable_no_reading"]
+
+    assert reason(None) == "not_read"
+    assert reason(BacklogInput(False)) == "read_failed:gpu_pool_state_history"
+    assert reason(BacklogInput(True)) == "no_rows:gpu_pool_state_history"
+    assert reason(_backlog({"agent": 1}, at=NOW - timedelta(minutes=5))) == "stale:gpu_pool_state_history"
+    # A snapshot from before #2873 (deferrable_depth NULL) is unknown, not "nothing waiting".
+    assert reason(_backlog(None)) == "unrecorded:deferrable_depth"
+    # The pool's class map was not read: the seat cannot be told, so it is not a 0.
+    assert reason(_backlog({"agent": 1}), classes=None) == "unread:gpu_pool_classes"
+
+
+def test_backlog_snapshot_slightly_ahead_of_our_clock_is_fresh():
+    by, _ = _hungry(_backlog({"agent": 1}, at=NOW + timedelta(seconds=3)), {"agent": 1})
+    assert by["lane:agent"].detail["deferrable_queued"] == 1
+
+
+def test_backlog_stale_host_is_named_not_silently_dropped():
+    bl = BacklogInput(True, [BacklogSnapshot("circe", NOW - timedelta(seconds=5), {"agent": 1}),
+                             BacklogSnapshot("hecate", NOW - timedelta(minutes=4), {"agent": 7})],
+                      last_empty_at={("circe", "agent"): NOW - timedelta(minutes=1)})
+    by, warnings = _hungry(bl, {"agent": 1})
+    assert by["lane:agent"].detail["deferrable_queued"] == 1
+    assert by["lane:agent"].detail["deferrable_hosts_stale"] == "hecate"
+    assert "lane_backlog_hosts_stale:hecate" in warnings
+
+
+def test_backlog_class_with_no_seat_on_the_pool_is_a_warning_not_lost():
+    _, warnings = _hungry(_backlog({"world": 3}), {"agent": 1})
+    assert "lane_deferrable_unplaced:world:3" in warnings
+
+
+def test_backlog_detail_survives_the_schema_and_the_stored_row():
+    bl = _backlog({"agent": 4}, last_empty=NOW - timedelta(minutes=1))
+    inputs = BodyInputs(heat=HeatInput(False), energy=EnergyInput(False),
+                        lanes=LaneInput(True, [], {"agent": 1}, newest_event_at=NOW, class_roles=CLASSES),
+                        juniper=JuniperInput(False), backlog=bl)
+    state = build_physiology_state(NOW, inputs)
+    again = parse_physiology_state(state.model_dump_json())
+    lane = [c for c in again.constraints if c.constraint == "lane:agent"][0]
+    assert lane.detail["deferrable_queued"] == 4
 
 
 # --- attention:juniper --------------------------------------------------------------------------

@@ -1944,7 +1944,6 @@ def api_situation_status():
             "location": "configured",
             "weather": settings.ORION_SITUATION_WEATHER_PROVIDER,
             "agenda": "stub",
-            "lab": "stub",
             "presence": "hub_manual",
         },
         "ttl_seconds": int(settings.ORION_SITUATION_TTL_SECONDS),

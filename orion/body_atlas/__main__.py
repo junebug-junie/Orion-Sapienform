@@ -77,7 +77,7 @@ def summarize(atlas: BodyAtlasV1, *, out: str | None) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="python -m orion.body_atlas", description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(prog="python -P -m orion.body_atlas", description=__doc__.splitlines()[0])
     ap.add_argument("--root", type=Path, default=_REPO_ROOT, help="repo checkout to read the catalog from")
     ap.add_argument("--no-live", action="store_true", help="catalog only (e.g. a past checkout)")
     ap.add_argument("--falkor-uri", default=os.environ.get("FALKORDB_URI"), help="default: $FALKORDB_URI")

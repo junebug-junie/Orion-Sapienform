@@ -302,14 +302,15 @@ def test_face_cap_is_separate_from_the_slow_rule_cap(pg) -> None:
         assert len(vi._open_asks(conn, NOW + timedelta(days=1), TZ, cfg)) == 1
 
 
-def _add_regular(conn, iid: str, visits: int, *, thumbs: bool) -> None:
+def _add_regular(conn, iid: str, visits: int, *, thumbs: bool, kind: str = "person") -> None:
     """A body-only regular: one sighting a day for ``visits`` days (the slow rule)."""
     from sqlalchemy import text
 
     conn.execute(text(
         "INSERT INTO vision_individual (individual_id, stream_id, kind, centroid, centroid_n, first_seen_at, "
-        "last_seen_at, sighting_count, distinct_days) VALUES (:i, 'walkway', 'person', :c, :n, :a, :b, :n, :n)"),
-        {"i": iid, "c": list(_vec(1)), "n": visits, "a": NOW - timedelta(days=visits), "b": NOW - timedelta(hours=1)})
+        "last_seen_at, sighting_count, distinct_days) VALUES (:i, 'walkway', :k, :c, :n, :a, :b, :n, :n)"),
+        {"i": iid, "k": kind, "c": list(_vec(1)), "n": visits, "a": NOW - timedelta(days=visits),
+         "b": NOW - timedelta(hours=1)})
     for d in range(visits):
         t = NOW - timedelta(days=d, hours=1)
         conn.execute(text(
@@ -337,6 +338,52 @@ def test_no_picture_no_who_is_this_and_it_does_not_block_the_next(pg) -> None:
                           "WHERE individual_id='blank'"))
         later = vi._open_asks(conn, NOW + timedelta(days=1), TZ, cfg)
     assert [a["source_ref"] for a in later] == ["blank"]
+
+
+def _hub_dismiss(conn, ask_id: str, *, dont_know: bool, at=NOW) -> None:
+    """What the Hub's POST /api/asks/{id}/dismiss does to the row (CLOSE_ASK_SQL):
+    no answer; ``{"reason": "dont_know"}`` adds answer_detail.dont_know."""
+    from sqlalchemy import text
+
+    conn.execute(text("UPDATE orion_ask SET status='dismissed', answer=NULL, answered_at=:t, "
+                      "answer_detail=CAST(:d AS jsonb) WHERE ask_id=:i"),
+                 {"t": at, "i": ask_id, "d": json.dumps({"dont_know": True}) if dont_know else None})
+
+
+@needs_pg
+def test_i_dont_know_stores_no_name_and_asks_again_only_after_the_cooldown(pg) -> None:
+    """2026-10-27: "I don't know" on "Do you know whose vehicle this is?" closes the
+    card without a label (live: four vehicles were named "no" / "unsure" / "I do not
+    know whose vehicle this is." because typing was the only way to say it). It is
+    re-asked after the cooldown, counted from when she said it; plain Dismiss never."""
+    from sqlalchemy import text
+
+    cfg = vi.IndividualsConfig(ask_face_min_faces=0, ask_daily_cap=5)
+    with pg.begin() as conn:
+        _add_regular(conn, "car1", 10, thumbs=True, kind="vehicle")
+        _add_regular(conn, "car2", 10, thumbs=True, kind="vehicle")
+        opened = {a["source_ref"]: a for a in vi._open_asks(conn, NOW, TZ, cfg)}
+        assert sorted(opened) == ["car1", "car2"]
+        assert opened["car1"]["question"].endswith("Do you know whose vehicle this is?")
+        said_at = NOW + timedelta(days=5)   # answered late in the card's life
+        _hub_dismiss(conn, opened["car1"]["ask_id"], dont_know=True, at=said_at)
+        _hub_dismiss(conn, opened["car2"]["ask_id"], dont_know=False, at=said_at)
+        vi._apply_answers(conn, said_at)
+        assert _labels(conn) == {"car1": (None, False), "car2": (None, False)}
+
+        def reopened(at):
+            # Thumbs must still be young enough: move the sightings forward with the clock.
+            conn.execute(text("UPDATE vision_individual SET last_seen_at=:t"), {"t": at})
+            conn.execute(text("UPDATE vision_individual_sighting SET ended_at=:t, started_at=:t - "
+                              "(CAST(split_part(sighting_id, '-', 3) AS int) * interval '1 day')"), {"t": at})
+            return [a["source_ref"] for a in vi._open_asks(conn, at, TZ, cfg)]
+
+        assert reopened(said_at + timedelta(days=1)) == []
+        # Cooldown counted from created_at would have reopened it here; from the answer it does not.
+        assert reopened(NOW + timedelta(days=cfg.ask_cooldown_days + 1)) == []
+        assert reopened(said_at + timedelta(days=cfg.ask_cooldown_days + 1)) == ["car1"]
+        assert conn.execute(text(
+            "SELECT count(*) FROM orion_ask WHERE source_ref='car2' AND status='open'")).scalar() == 0
 
 
 @needs_pg

@@ -136,17 +136,23 @@ def test_a_shadow_that_cannot_be_built_never_fails_the_run(harness, economy, mon
     assert harness.events[1].act.outcome.value == 1.0
 
 
-def test_helper_blocked_funded_releases():
-    """The helper's release rule, used by a producer whose real gate blocks."""
-    released = []
-    orig_bid, orig_release = ps.bid, ps.release
-    try:
-        ps.bid = lambda want: _decision(want, "funded")
-        ps.release = lambda want_id: released.append(want_id)
-        s = ps.ShadowBid(family="topic_foundry.run", verb="maintain", tier=2, want_id="w-1", enabled=True)
-        s.place()
-        s.join(5.0)
-        s.settle("blocked:test")
-    finally:
-        ps.bid, ps.release = orig_bid, orig_release
-    assert released == ["w-1"]
+def test_helper_blocked_funded_releases_off_the_caller_thread(monkeypatch):
+    """The helper's release rule, used by a producer whose real gate blocks. The release runs on
+    its own thread, so settle() returns at once."""
+    released = threading.Event()
+    got = []
+
+    def slow_release(want_id):
+        time.sleep(0.3)
+        got.append(want_id)
+        released.set()
+
+    monkeypatch.setattr(ps, "bid", lambda want: _decision(want, "funded"))
+    monkeypatch.setattr(ps, "release", slow_release)
+    s = ps.ShadowBid(family="topic_foundry.run", verb="maintain", tier=2, want_id="w-1", enabled=True)
+    s.place()
+    s.join(5.0)
+    t0 = time.monotonic()
+    s.settle("blocked:test")
+    assert time.monotonic() - t0 < 0.2
+    assert released.wait(5.0) and got == ["w-1"]

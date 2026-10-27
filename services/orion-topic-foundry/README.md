@@ -243,7 +243,8 @@ answer. The answer is only logged. Nothing changes what the run does.
 
 - Where: `_run_training`, right after the run's act opens. Family `topic_foundry.run` (Tier 2),
   verb `maintain`. `want_id` = `act_emit.run_correlation_id(run_id)`, the run act's correlation id.
-- Real outcome: always `ran`. The run has no gate of its own at that point (the `/runs/train`
+- Real outcome: always `ran`, meaning admitted, not completed (a run that later fails still
+  logged `ran`; its act closes at 0). The run has no gate of its own at that point (the `/runs/train`
   route already created it), so the comparison is "would the economy have deferred a run that ran".
 - Log line: `physiology_shadow_bid family=topic_foundry.run want_id=... shadow=... real=ran`.
   durable-runs writes the decision into `want_ledger`.

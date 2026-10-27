@@ -7,7 +7,7 @@ any failure).
 
 Producer here: a training run (app/services/training.py ``_run_training``), at run start. The run
 has no gate of its own at that point (the route already created it), so the real outcome is
-``ran``. want_id = ``act_emit.run_correlation_id(run_id)``, the run's ``maintain`` act correlation
+``ran``, meaning admitted, not completed: a run that later fails still logged ``ran``. want_id = ``act_emit.run_correlation_id(run_id)``, the run's ``maintain`` act correlation
 id, so scripts/analysis/body_economy_shadow_vs_real.py can join the decision (want_ledger) to the
 act (grammar_acts).
 
@@ -140,7 +140,9 @@ class ShadowBid:
                 getattr(decision, "lane", None) or "-", real, act_corr or "-",
             )
             if outcome == "funded" and real.startswith("blocked"):
-                release(self.want_id)
+                # Own thread: the caller of settle() never waits on the release POST.
+                threading.Thread(target=release, args=(self.want_id,), name="physiology-shadow-release",
+                                 daemon=True).start()
         except Exception as exc:  # noqa: BLE001
             logger.info("physiology_shadow_log_failed family=%s err=%s", self.family, type(exc).__name__)
 

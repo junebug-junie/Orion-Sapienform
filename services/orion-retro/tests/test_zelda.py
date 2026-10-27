@@ -793,3 +793,29 @@ def test_dungeon_door_push_keeps_pushing_past_the_last_floor_tile():
     done, rows, _ = run_goal({'kind': 'exit', 'dir': 'S'}, {'kind': 'unknown'}, world=world, frames=25)   # 2 px/frame: past the frame, still on screen
     assert world.kw['y'] > 213 and world.kw['x'] == 120       # walked into the doorway, still lined up
     assert not [r for r in rows if r['kind'] == 'bump']
+
+
+def test_exit_walks_off_a_passage_the_grid_calls_solid_before_the_next_decision():
+    # Live 2026-10-27 (session 88a0a869): room 85 entered from the north put Link at tile row 1
+    # of a passage the grid marks solid; the exit ended there, the next offer saw only 'N', and
+    # Link crossed 69 <-> 85 29 times. Here: an eastward entry band (cols 0-3) solid on the grid.
+    band = {(c, r) for c in range(4) for r in range(18)}
+    world = World(blocked=band | {(c, r) for c in range(32) for r in range(18, 22)}, passable=band, x=200, y=141)
+    rows = []
+    g = ZeldaGoals(lambda kind, **f: rows.append(dict(kind=kind, **f)))
+    g.observe_frame(0, 2, 1, world.obs(), 0)
+    g.accept(dict(port=0, expected_epoch=2, decision_id=g.attempt['decision_id'], goal={'kind': 'exit', 'dir': 'E'},
+                  prediction={'kind': 'reach_room', 'value': 0x78}, rationale='t', planner_id='t', budget_seconds=20), 0)
+    for f in range(600):
+        mask = g.mask(0, f)
+        if g.accepted: g.note_applied(g.accepted['decision_id'], mask)
+        world.step(mask)
+        g.observe_frame(0, 2, f + 2, world.obs(), (f + 2) / 60)
+        if [r for r in rows if r['kind'] == 'goal_finished']: break
+    done = [r for r in rows if r['kind'] == 'goal_finished'][-1]
+    assert done['outcome'] == 'prediction_met' and world.kw['room'] == 0x78
+    assert tile_of(world.kw['x'], world.kw['y'])[0] >= 4                # on open floor, not in the band
+    for f in range(600, 640):                                           # the next offer
+        g.observe_frame(0, 2, f + 2, world.obs(), (f + 2) / 60)
+        if g.attempt and g.attempt['decision_id'] != done['decision_id']: break
+    assert set(g.attempt['open_sides']) - {'W'}                         # more than the way back

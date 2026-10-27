@@ -135,6 +135,18 @@ def gained(start, obs):
             or obs['hearts']['containers'] > start['hearts']['containers'])
 
 
+SETTLE_FRAMES = 90   # frames an exit may keep walking into the new room to reach open floor
+
+
+def on_floor(obs):
+    """Link stands on a tile the wall grid calls open. Not true for a moment after some room
+    entries: live 2026-10-27, room 85 entered from the north put Link at tile row 1 of a passage
+    the grid marks solid down to row 8; a decision there saw only the side he came from."""
+    if 'walls' not in obs: return True
+    c, r = tile_of(obs['link']['x'], obs['link']['y'])
+    return open_tile(obs['walls'], (), c, r)
+
+
 def changed_place(start, obs):
     return (obs['room'] != start['room'] or obs['level'] != start['level']
             or start['mode'] != 'play')
@@ -253,7 +265,7 @@ class ZeldaGoals:
             raise ValueError('target_not_present')
         self.accepted = dict(data, attempt_id=data['decision_id'])
         self.deadline = self.until = now + data['budget_seconds']
-        self.start_obs = None; self.start_frame = None
+        self.start_obs = None; self.start_frame = None; self.settle_ticks = 0
         self.applied = 0; self.idle_offers = 0
         self._reset_motor()
         self.record('goal_committed', **data)
@@ -318,8 +330,19 @@ class ZeldaGoals:
             self.offer(port, epoch, frame, obs, now)
 
     # ---- end conditions ----------------------------------------------------------
+    def _settling(self, obs):
+        """An exit that crossed into a new room keeps walking until Link stands on open floor."""
+        g = self.accepted['goal']
+        if (g['kind'] not in ('exit', 'explore') or obs.get('status') != 'observed' or obs['mode'] != 'play'
+                or not changed_place(self.start_obs, obs) or on_floor(obs)):
+            return False
+        self.settle_ticks = getattr(self, 'settle_ticks', 0) + 1
+        return self.settle_ticks <= SETTLE_FRAMES
+
     def _evaluate(self, obs, now):
         g = self.accepted; start = self.start_obs
+        if now < self.deadline and self._settling(obs):   # only in play mode: never delays a death
+            return
         verdict = judge(g['prediction'], start, obs)
         if verdict == 'met': return self._finish('prediction_met', 'met', obs)
         if obs.get('status') == 'observed' and obs['mode'] == 'death':
@@ -404,11 +427,13 @@ class ZeldaGoals:
             if self.last_pos != pos: self.still = 0
             self.bump_count = 0
         self.last_pos = pos
-        if self.bump_count >= BUMP_FRAMES:
-            self._bump(obs)
+        if self.bump_count >= BUMP_FRAMES and not getattr(self, 'settle_ticks', 0):
+            self._bump(obs)   # a blind walk-in push is no evidence about a planned tile
         kind = self.accepted['goal']['kind']
         if kind == 'wait': return 0
         if kind in ('fight', 'retreat'): return self._combat(obs, kind)
+        if getattr(self, 'settle_ticks', 0) and not on_floor(obs):
+            return DIRS[self.accepted['goal']['dir']][2]   # keep walking in, the way the exit went
         return self._navigate(obs, kind)
 
     def _bump(self, obs):

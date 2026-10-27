@@ -59,8 +59,23 @@
   function mask() {
     let m=0; for(const code of keys) m |= bits[code] || 0;
     const pad = gamepad();
-    if (pad && (document.activeElement===screen || document.fullscreenElement===stage)) m |= padMask(pad);
+    if (pad && (document.activeElement===screen || document.fullscreenElement===stage))
+      m |= selectChord(chord, pad, padMask(pad), performance.now(), code=>runHotkey(code));
     if((m&48)===48)m&=~48;if((m&192)===192)m&=~192;return m;
+  }
+  // Pad Select + L2 saves, Select + R2 loads the newest save (the F7 / F10 hotkeys). Select is a
+  // game button (Zelda: pause and map), so the pad's Select is held back until it is released:
+  // used in a chord, the game never sees it; released alone, the game gets a 150 ms tap.
+  const chord={held:false, chorded:false, pulseUntil:0};
+  function selectChord(st, pad, m, now, fire) {
+    const b=pad.buttons, sel=!!b[8]?.pressed, l2=!!b[6]?.pressed, r2=!!b[7]?.pressed;
+    m&=~4;
+    if(sel){
+      if(!st.held){st.held=true;st.chorded=false;}
+      if((l2||r2) && !st.chorded){st.chorded=true;fire(l2?'F7':'F10');}
+    } else if(st.held){st.held=false;if(!st.chorded)st.pulseUntil=now+150;}
+    if(now<st.pulseUntil)m|=4;
+    return m;
   }
   // Connected pads in the browser's standard mapping: this player's (Player 2 takes the second
   // pad), else the first. getGamepads() lists empty slots as null, and over plain HTTP some
@@ -417,11 +432,14 @@
   const typing=t=>t instanceof HTMLTextAreaElement || t?.isContentEditable ||
     (t instanceof HTMLInputElement && !['checkbox','radio','button','submit','reset','range','color','file'].includes(t.type));
   const HOTKEYS={F7:()=>el('save').click(),F10:()=>{el('saves').selectedIndex=0;hotkeyLoad=true;el('load').click();}};
+  function runHotkey(code) {   // keyboard F7/F10 and the pad's Select chords
+    if(!el('saveBar').hidden && !el('save').disabled && !el('load').disabled)HOTKEYS[code]();
+  }
   document.addEventListener('keydown',e=>{
     if(HOTKEYS[e.code] && !typing(e.target) && !(e.shiftKey || e.ctrlKey || e.altKey || e.metaKey)){
       e.preventDefault();
       // Wait out a save or load in flight, so F10 never loads the save F7 is replacing.
-      if(!e.repeat && !el('saveBar').hidden && !el('save').disabled && !el('load').disabled)HOTKEYS[e.code]();
+      if(!e.repeat)runHotkey(e.code);
       return;
     }
     if(document.activeElement!==screen && (document.fullscreenElement!==stage || field(e.target)))return;

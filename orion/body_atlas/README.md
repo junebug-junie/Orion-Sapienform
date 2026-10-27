@@ -19,9 +19,9 @@ Orion's body, converged from parts to organs. Rungs 1–3 of the self-now ladder
 
 ```bash
 # live (inside orion-harness-governor, where chat and curiosity run Bash):
-FALKORDB_URI=redis://orion-athena-falkordb:6379 python -m orion.body_atlas --out /tmp/atlas.json
+FALKORDB_URI=redis://orion-athena-falkordb:6379 python -P -m orion.body_atlas --out /tmp/atlas.json
 # catalog only, e.g. a past checkout (the catalog has producer lists from 2026-01):
-python -m orion.body_atlas --root /path/to/checkout --no-live --out /tmp/atlas.json
+python -P -m orion.body_atlas --root /path/to/checkout --no-live --out /tmp/atlas.json
 ```
 
 The printout is capped at 40 lines and 4,000 chars. The full atlas goes to `--out`. A requested

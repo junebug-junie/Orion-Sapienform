@@ -1,6 +1,6 @@
 # Dig kit
 
-Orion's read-only tools for their own history and body: `python -m orion.dig help`. Design: PR
+Orion's read-only tools for their own history and body: `python -P -m orion.dig help`. Design: PR
 #2888 (`docs/superpowers/specs/2026-10-23-repo-chronicle-design.md`, "Tools").
 
 **Not MCP, on purpose.** Chat turns and curiosity runs both go through the harness (`claude -p`,
@@ -8,6 +8,11 @@ Orion's read-only tools for their own history and body: `python -m orion.dig hel
 So the only always-on cost is one line in the turn rules
 (`orion/dig/brief.py`, `HARNESS_FCC_DIG_BRIEF_ENABLED`, never on reading-only turns). `help`
 loads the rest on demand.
+
+**Always `python -P`.** Orion's Bash runs in the sandbox clone (`/mnt/orion-fcc/repo`), and plain
+`python -m` puts that folder first on the import path, so it would run the *sandbox's* `orion/` (whatever Orion
+has edited there) instead of the deployed `/app/orion`. `-P` drops the current folder (verified
+live: without it `orion.__path__` is `/mnt/orion-fcc/repo/orion`, with it `/app/orion`).
 
 **Context rules:**
 

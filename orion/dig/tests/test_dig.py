@@ -52,7 +52,7 @@ def run(capsys, *argv):
 
 def test_open_takes_the_last_commit_of_the_denver_day_as_plain_files(world, capsys):
     code, out, _ = run(capsys, "open", "2025-07-01")
-    assert code == 0 and "late on" not in out
+    assert code == 0 and "of 2025-07-02T05:00:00" in out  # the 23:00-Denver commit, by its UTC date
     snap = world / "home" / "past" / "2025-07-01"
     assert (snap / "orion" / "bus" / "channels.yaml").exists()  # the 23:00 Denver commit
     assert not (snap / "services" / "orion-b").exists()          # 07-03 not included
@@ -102,13 +102,13 @@ def test_compare_names_what_was_added_since(world, capsys):
 
 def test_inventory_needs_an_open_export(world, capsys):
     code, _, err = run(capsys, "inventory", "2025-07-01")
-    assert code == 1 and "python -m orion.dig open 2025-07-01" in err
+    assert code == 1 and "python -P -m orion.dig open 2025-07-01" in err
     code, out, _ = run(capsys, "inventory", "now")
     assert code == 0 and "services: 2" in out
 
 
 def test_history_lists_commits_and_prs(world, capsys, monkeypatch):
-    monkeypatch.setattr(dig, "_prs", lambda s, e: [{"number": 7, "title": "add b", "mergedAt": "2025-07-03T18:00:00Z", "body": "x" * 9000}])
+    monkeypatch.setattr(dig, "_gh_merged", lambda s, e: [{"number": 7, "title": "add b", "mergedAt": "2025-07-03T18:00:00Z", "body": "x" * 9000}])
     code, out, _ = run(capsys, "history", "2025-07-01", "2025-07-03")
     assert code == 0 and "1 merged PRs, 3 commits" in out and "#7 2025-07-03 add b" in out
     assert "x" * 100 not in out  # bodies only in the file

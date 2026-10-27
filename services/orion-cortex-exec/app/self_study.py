@@ -379,15 +379,15 @@ def _inventory_items(records: list[dict], *, run_id: str, observed_at: str, cate
 
 
 def _service_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:
-    return _inventory_items(self_inventory.services(REPO_ROOT), run_id=run_id, observed_at=observed_at, category="service")
+    return _inventory_items(self_inventory.services(REPO_ROOT, strict=True), run_id=run_id, observed_at=observed_at, category="service")
 
 
 def _module_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:
-    return _inventory_items(self_inventory.modules(REPO_ROOT), run_id=run_id, observed_at=observed_at, category="module")
+    return _inventory_items(self_inventory.modules(REPO_ROOT, strict=True), run_id=run_id, observed_at=observed_at, category="module")
 
 
 def _channel_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:
-    return _inventory_items(self_inventory.channels(REPO_ROOT), run_id=run_id, observed_at=observed_at, category="channel")
+    return _inventory_items(self_inventory.channels(REPO_ROOT, strict=True), run_id=run_id, observed_at=observed_at, category="channel")
 
 
 def _yaml_verb_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:
@@ -406,7 +406,7 @@ def _verb_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:
 
 
 def _schema_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:
-    return _inventory_items(self_inventory.schemas(REPO_ROOT), run_id=run_id, observed_at=observed_at, category="schema")
+    return _inventory_items(self_inventory.schemas(REPO_ROOT, strict=True), run_id=run_id, observed_at=observed_at, category="schema")
 
 
 def _touchpoint_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:

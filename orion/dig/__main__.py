@@ -1,4 +1,4 @@
-"""``python -m orion.dig``: Orion's read-only kit for digging into their own history.
+"""``python -P -m orion.dig``: Orion's read-only kit for digging into their own history.
 
 Run through Bash from a chat turn or a curiosity run (orion-harness-governor). Every subcommand
 prints at most ``MAX_LINES`` lines / ``MAX_CHARS`` chars and writes its full result to a file
@@ -9,13 +9,17 @@ git link back.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
+from contextlib import contextmanager
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -27,6 +31,9 @@ MAX_CHARS = 4000
 MAX_OPEN = 2
 SNAPSHOT_TTL_SEC = 24 * 3600
 MARKER = ".dig_snapshot.json"
+PARTIAL_PREFIX = ".partial-"
+DIG_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
+GH_SEARCH_CAP = 1000  # GitHub search never returns more than this for one query
 ZONE = ZoneInfo("America/Denver")
 FIRST_DAY = date(2025, 6, 24)  # first commit in the repo
 
@@ -170,58 +177,91 @@ def _remove(path: Path) -> None:
     shutil.rmtree(path)
 
 
-def sweep(now_epoch: float | None = None) -> list[str]:
-    now_epoch = time.time() if now_epoch is None else now_epoch
+@contextmanager
+def _past_lock():
+    """One exclusive lock for open/close/sweep. Concurrent harness turns are the common case
+    (orion/fcc/turn_lock.py); without this, two `open`s of one date raced into one temp folder and
+    left an export marked complete holding 1..286 of 301 files (review, 2026-10-27)."""
+    past_dir().mkdir(parents=True, exist_ok=True)
+    with (past_dir() / ".lock").open("w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def _sweep_locked(now_epoch: float) -> list[str]:
     gone = []
     for path, meta in _snapshots():
         if now_epoch - float(meta.get("opened_epoch", 0)) > SNAPSHOT_TTL_SEC:
             _remove(path)
             gone.append(path.name)
+    # Under the lock no export is in flight, so any temp folder is a leftover from a killed run.
+    for path in past_dir().glob(f"{PARTIAL_PREFIX}*"):
+        if path.is_dir() and path.parent == past_dir():
+            shutil.rmtree(path)
+            gone.append(path.name)
     return gone
+
+
+def sweep(now_epoch: float | None = None) -> list[str]:
+    with _past_lock():
+        return _sweep_locked(time.time() if now_epoch is None else now_epoch)
 
 
 def snapshot_root(day: date) -> Path:
     path = past_dir() / day.isoformat()
     if not (path / MARKER).exists():
-        raise DigError(f"{day} is not open; run: python -m orion.dig open {day}")
+        raise DigError(f"{day} is not open; run: python -P -m orion.dig open {day}")
     return path
 
 
+def _export(sha: str, target: Path, meta: dict) -> None:
+    """Extract into a private temp folder, mark it, then rename into place; never half a target."""
+    partial = Path(tempfile.mkdtemp(prefix=PARTIAL_PREFIX, dir=past_dir()))
+    try:
+        proc = subprocess.Popen(["git", "-C", str(repo()), "archive", "--format=tar", sha],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        with tarfile.open(fileobj=proc.stdout, mode="r|") as tar:
+            tar.extractall(partial, filter="data")
+        if proc.wait() != 0:
+            raise DigError(f"git archive {sha[:10]} failed: {proc.stderr.read().decode()[:300]}")
+        (partial / MARKER).write_text(json.dumps(meta), encoding="utf-8")
+        partial.rename(target)
+    except (OSError, tarfile.TarError) as exc:
+        raise DigError(f"export of {sha[:10]} failed: {exc}") from exc
+    finally:
+        if partial.exists():
+            shutil.rmtree(partial)
+
+
 def cmd_open(day: date, out: Out) -> str:
-    swept = sweep()
     target = past_dir() / day.isoformat()
-    if (target / MARKER).exists():
-        meta = json.loads((target / MARKER).read_text(encoding="utf-8"))
-        return f"{day} already open at {target} (commit {meta['commit'][:10]} of {meta['commit_date']})"
-    open_now = _snapshots()
-    if len(open_now) >= MAX_OPEN:
-        names = ", ".join(p.name for p, _ in open_now)
-        raise DigError(f"{MAX_OPEN} exports already open ({names}); close one first")
-    sha, when = commit_at(day)
-    partial = past_dir() / f".partial-{day.isoformat()}"
-    if partial.exists():
-        shutil.rmtree(partial)
-    partial.mkdir(parents=True)
-    proc = subprocess.Popen(["git", "-C", str(repo()), "archive", "--format=tar", sha], stdout=subprocess.PIPE)
-    with tarfile.open(fileobj=proc.stdout, mode="r|") as tar:
-        tar.extractall(partial, filter="data")
-    if proc.wait() != 0:
-        shutil.rmtree(partial)
-        raise DigError(f"git archive {sha[:10]} failed")
-    meta = {"date": day.isoformat(), "commit": sha, "commit_date": when, "opened_epoch": time.time()}
-    (partial / MARKER).write_text(json.dumps(meta), encoding="utf-8")
-    partial.rename(target)
+    with _past_lock():
+        swept = _sweep_locked(time.time())
+        if (target / MARKER).exists():
+            meta = json.loads((target / MARKER).read_text(encoding="utf-8"))
+            return f"{day} already open at {target} (commit {meta['commit'][:10]} of {meta['commit_date']})"
+        open_now = _snapshots()
+        if len(open_now) >= MAX_OPEN:
+            names = ", ".join(p.name for p, _ in open_now)
+            raise DigError(f"{MAX_OPEN} exports already open ({names}); close one first")
+        sha, when = commit_at(day)
+        _export(sha, target, {"date": day.isoformat(), "commit": sha, "commit_date": when,
+                              "opened_epoch": time.time()})
     msg = [f"opened {day} at {target}", f"commit {sha[:10]} of {when} (last main commit that day)"]
     if swept:
-        msg.append(f"swept exports older than 24 h: {', '.join(swept)}")
+        msg.append(f"swept: {', '.join(swept)}")
     return "\n".join(msg)
 
 
 def cmd_close(day: date) -> str:
     path = past_dir() / day.isoformat()
-    if not (path / MARKER).exists():
-        return f"{day} was not open"
-    _remove(path)
+    with _past_lock():
+        if not (path / MARKER).exists():
+            return f"{day} was not open"
+        _remove(path)
     return f"closed {day}"
 
 
@@ -290,18 +330,34 @@ def cmd_compare(a: str, b: str, out: Out) -> str:
 
 # --- history --------------------------------------------------------------------------------
 
-def _prs(start: date, end: date) -> list[dict]:
+def _gh_merged(start: date, end: date) -> list[dict]:
+    """One GitHub search for PRs merged in [start, end] (Denver days). Capped at GH_SEARCH_CAP."""
     lo = datetime.combine(start, dtime(0), tzinfo=ZONE).astimezone(timezone.utc)
     hi = _end_of_day_utc(end)
     query = f"merged:{lo.strftime('%Y-%m-%dT%H:%M:%SZ')}..{hi.strftime('%Y-%m-%dT%H:%M:%SZ')}"
     proc = subprocess.run(
         ["gh", "pr", "list", "--repo", os.environ.get("ORION_DIG_GITHUB_REPO", "junebug-junie/Orion-Sapienform"),
-         "--state", "merged", "--search", query, "--limit", "1000",
+         "--state", "merged", "--search", query, "--limit", str(GH_SEARCH_CAP),
          "--json", "number,title,mergedAt,body"],
         capture_output=True, text=True)
     if proc.returncode != 0:
         raise DigError(f"gh pr list failed: {proc.stderr.strip()[:300]}")
-    return sorted(json.loads(proc.stdout or "[]"), key=lambda p: p["mergedAt"])
+    return json.loads(proc.stdout or "[]")
+
+
+def _prs(start: date, end: date) -> tuple[list[dict], list[str]]:
+    """Every PR merged in [start, end]: a window that hits the search cap is split in half and
+    re-asked (live: one query over the whole history returned the newest 1000 of 2802). Returns
+    (prs, days still capped) -- a single day at the cap is reported, never passed off as whole."""
+    got = _gh_merged(start, end)
+    if len(got) < GH_SEARCH_CAP:
+        return got, []
+    if start == end:
+        return got, [str(start)]
+    mid = start + (end - start) // 2
+    left, capped_l = _prs(start, mid)
+    right, capped_r = _prs(mid + timedelta(days=1), end)
+    return left + right, capped_l + capped_r
 
 
 def cmd_history(start: date, end: date, out: Out) -> str:
@@ -311,10 +367,15 @@ def cmd_history(start: date, end: date, out: Out) -> str:
     log = _git("log", "--first-parent", _main_ref(), f"--since={lo.isoformat()}",
                f"--until={_end_of_day_utc(end).isoformat()}", "--format=%h%x09%cI%x09%s")
     commits = [dict(zip(("sha", "date", "subject"), row.split("\t", 2))) for row in log.splitlines() if row]
-    prs = _prs(start, end)
-    path = out.write(f"history-{start}-{end}", {"start": str(start), "end": str(end), "prs": prs, "commits": commits})
+    found, capped_days = _prs(start, end)
+    prs = sorted({p["number"]: p for p in found}.values(), key=lambda p: p["mergedAt"])
+    path = out.write(f"history-{start}-{end}", {"start": str(start), "end": str(end), "prs": prs,
+                                                "commits": commits, "capped_days": capped_days})
     lines = [f"{start} .. {end}: {len(prs)} merged PRs, {len(commits)} commits on main"
              " (PR text = the builders' words: a secondary source)"]
+    if capped_days:
+        lines.append(f"INCOMPLETE: GitHub search returned its {GH_SEARCH_CAP}-result cap on "
+                     f"{', '.join(capped_days)}; PRs beyond it are missing")
     for pr in prs[:25]:
         lines.append(f"#{pr['number']} {pr['mergedAt'][:10]} {pr['title'][:110]}")
     if len(prs) > 25:
@@ -331,16 +392,22 @@ def cmd_body(arg: str | None, out: Out) -> str:
     from orion.body_atlas.__main__ import _RoGraphReader, summarize
     from orion.body_atlas.build import build_atlas, fetch_observed, load_catalog
 
+    graph = os.environ.get("FALKORDB_BUS_GRAPH", "orion_bus_synapse")
     if arg is None:
-        root, observed = now_root(), None
+        root = now_root()
         uri = os.environ.get("FALKORDB_URI")
         if not uri:
             raise DigError("live body needs $FALKORDB_URI (orion-harness-governor .env)")
-        reader = _RoGraphReader(uri, os.environ.get("FALKORDB_BUS_GRAPH", "orion_bus_synapse"))
         try:
-            observed = fetch_observed(reader)
-        finally:
-            reader.close()
+            reader = _RoGraphReader(uri, graph)
+            try:
+                observed = fetch_observed(reader)
+            finally:
+                reader.close()
+        except Exception as exc:  # report the real failure; never a quiet catalog-only "live" body
+            raise DigError(f"live read of {graph} at {uri} failed: {str(exc)[:300]}") from exc
+        if not observed.publishes:
+            raise DigError(f"live graph {graph} has no PUBLISHES edges; is orion-bus-mirror writing it?")
         when = datetime.now(timezone.utc)
     else:
         day = _parse_day(arg)
@@ -348,7 +415,7 @@ def cmd_body(arg: str | None, out: Out) -> str:
     catalog = load_catalog(root)
     if not catalog:
         raise DigError(f"no channel catalog in {root} (the catalog starts 2026-01)")
-    atlas = build_atlas(catalog, observed, now=when, live_graph="orion_bus_synapse" if observed else None)
+    atlas = build_atlas(catalog, observed, now=when, live_graph=graph if observed else None)
     path = out.write(f"body-{arg or 'now'}", json.loads(atlas.model_dump_json()))
     return summarize(atlas, out=str(path))
 
@@ -364,15 +431,23 @@ def cmd_notes(text: str | None, out: Out) -> str:
         return f"appended to {path}"
     if not path.exists():
         return f"no notes yet for dig {out.dig}"
-    return capped(path.read_text(encoding="utf-8").strip().splitlines(), tail=f"notes: {path}")
+    # newest last and always shown: shared notes are read for what was just added
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    keep = MAX_LINES - 2
+    if len(lines) > keep:
+        lines = [f"(showing the newest {keep} of {len(lines)} lines; older ones are in the file)", *lines[-keep:]]
+    return capped(lines, tail=f"notes: {path}")
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="python -m orion.dig", add_help=False)
+    ap = argparse.ArgumentParser(prog="python -P -m orion.dig", add_help=False)
     ap.add_argument("--dig", default=datetime.now(ZONE).date().isoformat())
     ap.add_argument("command", nargs="?", default="help")
     ap.add_argument("args", nargs="*")
     ns = ap.parse_args(argv)
+    if not DIG_ID_RE.fullmatch(ns.dig) or ".." in ns.dig:
+        print(f"dig: --dig must be a plain name (letters, digits, . _ -), got {ns.dig!r}", file=sys.stderr)
+        return 2
     out, a = Out(ns.dig), ns.args
     try:
         if ns.command in ("help", "-h", "--help"):

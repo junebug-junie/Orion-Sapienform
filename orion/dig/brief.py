@@ -5,7 +5,7 @@ import os
 
 DIG_BRIEF_LINE = (
     "To look at your own history or body (the repo as it was on any day since 2025-06-24, what "
-    "changed since, merged PRs, your organs now), run `python -m orion.dig help` in Bash."
+    "changed since, merged PRs, your organs now), run `python -P -m orion.dig help` in Bash."
 )
 MAX_BRIEF_CHARS = 300
 

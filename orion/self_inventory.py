@@ -19,13 +19,21 @@ REGISTRY_KEY_RE = re.compile(r'^\s+\"([^\"]+)\":', re.MULTILINE)
 CATEGORIES = ("service", "module", "channel", "verb", "schema")
 
 
+def _absent(path: Path, strict: bool) -> bool:
+    if path.exists():
+        return False
+    if strict:
+        raise FileNotFoundError(f"self inventory: {path} does not exist")
+    return True
+
+
 def _rec(root: Path, name: str, path: Path, metadata: dict | None = None) -> dict:
     return {"name": name, "source_path": path.relative_to(root).as_posix(), "metadata": metadata or {}}
 
 
-def services(root: Path) -> list[dict]:
+def services(root: Path, *, strict: bool = False) -> list[dict]:
     services_dir = root / "services"
-    if not services_dir.is_dir():
+    if _absent(services_dir, strict):
         return []
     out = []
     # "_"/"." folders are build or tool junk (live 2026-10-26: a services/__pycache__ "service"
@@ -44,18 +52,18 @@ def services(root: Path) -> list[dict]:
     return out
 
 
-def modules(root: Path) -> list[dict]:
+def modules(root: Path, *, strict: bool = False) -> list[dict]:
     package_root = root / "orion"
-    if not package_root.is_dir():
+    if _absent(package_root, strict):
         return []
     return [_rec(root, f"orion.{path.name}", path / "__init__.py")
             for path in sorted(package_root.iterdir())
             if path.is_dir() and (path / "__init__.py").exists()]
 
 
-def channels(root: Path) -> list[dict]:
+def channels(root: Path, *, strict: bool = False) -> list[dict]:
     path = root / "orion" / "bus" / "channels.yaml"
-    if not path.exists():
+    if _absent(path, strict):
         return []
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     out = []
@@ -72,20 +80,20 @@ def channels(root: Path) -> list[dict]:
     return sorted(out, key=lambda r: r["name"])
 
 
-def yaml_verbs(root: Path) -> list[dict]:
+def yaml_verbs(root: Path, *, strict: bool = False) -> list[dict]:
     verbs_dir = root / "orion" / "cognition" / "verbs"
     out = []
-    for path in sorted(verbs_dir.glob("*.yaml")) if verbs_dir.is_dir() else []:
+    for path in [] if _absent(verbs_dir, strict) else sorted(verbs_dir.glob("*.yaml")):
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         out.append(_rec(root, str(data.get("name") or path.stem), path,
                         {"source_type": "yaml", "recall_profile": data.get("recall_profile")}))
     return out
 
 
-def runtime_verbs(root: Path) -> list[dict]:
+def runtime_verbs(root: Path, *, strict: bool = False) -> list[dict]:
     app_dir = root / "services" / "orion-cortex-exec" / "app"
     out = []
-    for path in sorted(app_dir.glob("*.py")) if app_dir.is_dir() else []:
+    for path in [] if _absent(app_dir, strict) else sorted(app_dir.glob("*.py")):
         for match in VERB_DECORATOR_RE.finditer(path.read_text(encoding="utf-8")):
             out.append(_rec(root, match.group(1), path, {"source_type": "runtime"}))
     return sorted(out, key=lambda r: (r["name"], r["source_path"]))
@@ -98,9 +106,9 @@ def verbs(root: Path) -> list[dict]:
     return sorted(merged.values(), key=lambda r: (r["name"], r["source_path"]))
 
 
-def schemas(root: Path) -> list[dict]:
+def schemas(root: Path, *, strict: bool = False) -> list[dict]:
     path = root / "orion" / "schemas" / "registry.py"
-    if not path.exists():
+    if _absent(path, strict):
         return []
     names = sorted(set(REGISTRY_KEY_RE.findall(path.read_text(encoding="utf-8"))))
     return [_rec(root, name, path) for name in names]

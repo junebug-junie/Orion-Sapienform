@@ -1,3 +1,11 @@
 name: self_repo_inspect
 description: Inspect the Orion repo and publish a factual authoritative self snapshot.
 recall_profile: self.factual.v1
+
+# Body economy (Patch C2): who pays for this verb. Parsed by plan_loader.load_verb_physiology;
+# checked by scripts/check_verb_physiology.py. Tier 0 never bids (turn/autonomic).
+physiology:
+  tier: 2
+  family: self_study
+  lanes: []
+  deferrable_window_s: 21600

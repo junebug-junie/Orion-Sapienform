@@ -202,6 +202,14 @@ jobs:
           python scripts/check_body_economy_contract.py
           python -m pytest tests/test_check_body_economy_contract.py -q -p no:cacheprovider
 
+      # Body economy "every verb declares its physiology" (Patch C2): every
+      # orion/cognition/verbs/*.yaml carries a valid physiology block (tier, family, pool
+      # lanes, deferrable window) so Patch C3's cortex-orch bid site has no untiered verb.
+      - name: Body economy verb physiology (every verb declares tier/family/lanes)
+        run: |
+          python scripts/check_verb_physiology.py
+          python -m pytest tests/test_check_verb_physiology.py -q -p no:cacheprovider
+
       # One owner per tuned env key, and no copy at all of a module-owned line (body economy
       # Patch B: the room's 32/30.5/34/33 C lines live only in orion/autonomy/thermal_gate.py).
       # Repo-wide on purpose: a new copy can land in any service, so a path filter would miss it.

@@ -1,4 +1,4 @@
-.PHONY: check-body-economy-contract check-async-routes-not-blocking check-chat-route-poachers check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees check-sql-migrations-applied check-sql-migrations-applied-quiet check-system-health-producers postgres-headroom postgres-headroom-watch substrate-ladder-check substrate-ladder-watch
+.PHONY: check-body-economy-contract check-verb-physiology check-async-routes-not-blocking check-chat-route-poachers check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees check-sql-migrations-applied check-sql-migrations-applied-quiet check-system-health-producers postgres-headroom postgres-headroom-watch substrate-ladder-check substrate-ladder-watch
 
 SERVICE ?=
 ARGS ?=
@@ -102,6 +102,12 @@ check-env-key-single-source:
 # Static AST scan, no live data, under 2 s. --inventory prints every hit with evidence.
 check-body-economy-contract:
 	@$(METRIC_PYTHON) scripts/check_body_economy_contract.py $(ARGS)
+
+# Body economy Patch C2: every orion/cognition/verbs/*.yaml declares a valid `physiology`
+# block (tier 0/1/2, family, GPU pool lanes, deferrable_window_s). Structural, no live data.
+# --summary prints counts by tier and family.
+check-verb-physiology:
+	@$(METRIC_PYTHON) scripts/check_verb_physiology.py $(ARGS)
 
 # Metric semantic layer (phases 1+2 of docs/superpowers/specs/
 # 2026-08-12-metric-semantic-layer-design.md). Joins the four metric-bearing

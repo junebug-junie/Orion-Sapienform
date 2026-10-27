@@ -255,8 +255,8 @@ def test_osnet_columns_round_trip(pg) -> None:
 def _street(engine, n_frames: int) -> None:
     """Two people walk side by side for n_frames, 2.5 s apart. SigLIP sees them as
     near-identical (same clothes colour); OSNet keeps them apart."""
-    # The live eval reads a window back from the real clock (--since-hours, 8 days), so these
-    # rows are stamped from it too; a fixed NOW went out of the window on 2026-10-24.
+    # Relative to the real clock: the eval's --live window is "last 8 days from now", so a
+    # fixed date here silently aged out of it on 2026-10-24 and failed every branch's CI.
     start = datetime.now(timezone.utc) - timedelta(hours=2)
     for k in range(n_frames):
         t = start + timedelta(seconds=2.5 * k)
@@ -268,18 +268,25 @@ def _street(engine, n_frames: int) -> None:
         _write(engine, _obs(crops, oid=f"obs-{k}", t=t))
 
 
+def _since_fixtures() -> list:
+    """The eval looks back --since-hours from the wall clock (default 8 days), but the
+    fixtures are pinned at NOW: without this the test broke for every branch on 10-24."""
+    hours = (datetime.now(timezone.utc) - NOW).total_seconds() / 3600 + 48
+    return ["--since-hours", f"{hours:.0f}"]
+
+
 @needs_pg
 def test_eval_insufficient_then_scored_on_real_postgres(pg, capsys) -> None:
     ev = _eval_module()
     _street(pg, 3)
-    assert ev.main(["--live", PG, "--min-pairs", "50"]) == 2
+    assert ev.main(["--live", PG, *_since_fixtures(), "--min-pairs", "50"]) == 2
     assert "INSUFFICIENT DATA" in capsys.readouterr().out
     from sqlalchemy import text
 
     with pg.begin() as conn:
         conn.execute(text("TRUNCATE vision_crop_observation"))
     _street(pg, 30)
-    assert ev.main(["--live", PG, "--min-pairs", "20", "--json"]) == 0
+    assert ev.main(["--live", PG, *_since_fixtures(), "--min-pairs", "20", "--json"]) == 0
     import json
 
     rep = json.loads(capsys.readouterr().out)
@@ -306,7 +313,7 @@ def test_eval_scores_juniper_verdict_pairs(pg, capsys) -> None:
                 "INSERT INTO vision_ask_picture_verdict (ask_id, image_ref, picture_index, individual_id, verdict, "
                 "name, crop_id, answered_at) VALUES ('ask-1', :r, :i, 'ind', :v, :n, :c, now())"),
                 {"r": f"thumb:{idx}", "i": idx, "v": verdict, "n": name, "c": crop})
-    assert ev.main(["--live", PG, "--min-pairs", "1000", "--json"]) == 2
+    assert ev.main(["--live", PG, *_since_fixtures(), "--min-pairs", "1000", "--json"]) == 2
     import json
 
     rep = json.loads(capsys.readouterr().out)

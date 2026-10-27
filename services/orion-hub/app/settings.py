@@ -1835,8 +1835,7 @@ class Settings(BaseSettings):
     # node -- BME680 climate, LTR390 UV, magnetometer, PMSA003I particulate,
     # VL53L1X lidar, BNO085 IMU/vibration), folded into the same unified-turn
     # chat prompt via orion.situational.context.build_situation_for_ctx. The
-    # real thing LabContextV1's thermal/power framing above was always a
-    # stub stand-in for. Default ON, same "no private-home content" call as
+    # real thing the old lab stub (removed 2026-10-27) stood in for. Default ON, same "no private-home content" call as
     # curiosity/reverie above. Reuses the EXISTING CABINET_SENSORS_PATH/
     # CABINET_SENSORS_B_PATH/CABINET_SENSORS_STALE_AFTER_SEC config further
     # up this file (already wired for cabinet_sensors_routes.py's own

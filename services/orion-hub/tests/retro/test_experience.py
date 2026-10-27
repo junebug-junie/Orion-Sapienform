@@ -217,7 +217,7 @@ def test_menu_line_matches_the_spec_style():
                                    dict(level='situation', successes=4, failures=1),
                                    dict(level='place', successes=2, failures=0)])
     assert X.menu_line(1, w, q) == ('1. explore W -> room 118 (never visited). Chance it works 0.71 '
-                                    '(2 of 2 here; moving overall 9 of 14). Learning value medium.')
+                                    '(2 of 2 here; moving overall 9 of 14). Learning value medium. Predicts reach_room 118, 15 s.')
     prior = X.ActionBetQuoteV1.model_validate(q.model_dump() | dict(level='prior', eig_nats=0.193,
                                             counts=[dict(level='skill', successes=0, failures=0)]))
     assert X.counts_phrase('traverse', prior) == 'no tries yet' and X.learning_word(0.193) == 'high'
@@ -446,7 +446,7 @@ def _route_app(tmp_path, monkeypatch, goal_status, posted, exp):
 @pytest.mark.parametrize('goal_status', [200, 409])
 def test_route_places_only_after_retro_accepts_and_strips_chosen_rank(tmp_path, monkeypatch, planner, goal_status):
     from fastapi.testclient import TestClient
-    async def chat(config, prompt, *, max_tokens):
+    async def chat(config, prompt, *, max_tokens, route=None):
         assert 'Choose one of these unless the facts above show it cannot work.' in prompt
         return {'content': json.dumps(dict(goal={'kind': 'exit', 'dir': 'W'}, prediction={'kind': 'reach_room', 'value': 118},
                                            rationale='west is new', budget_seconds=12))}, 'c9'
@@ -703,3 +703,25 @@ def test_each_handoff_card_counts_only_its_own_bets():
     assert [b['place'] for b in bets_since({'bets': old + new}, since)] == [b['place'] for b in new]
     assert 'worked 0 of 3 times.' in learned_lines_from(bets_since(old + new, since), {})[0]
     assert bets_since(old, None) == old
+
+
+def test_menu_entries_carry_the_plan_a_number_pick_uses():
+    d, atlas = live_decision()
+    opts = {o.option_id: o for o in X.build_options(d, atlas)}
+    assert opts['exit:W'].default_plan == ({'kind': 'reach_room', 'value': 118}, 15)   # the room on that side
+    assert opts['wait'].default_plan == ({'kind': 'survive'}, 5)
+    q = X.ActionBetQuoteV1(option_id='x', model='m', p=0.5, p_baseline=0.5, interval80=(0.1, 0.9), eig_nats=0.1,
+                           level='prior', counts=[dict(level='skill', successes=0, failures=0)])
+    menu = X.build_menu(list(opts.values()), {o: q.model_copy(update={'option_id': o}) for o in opts})
+    entry = next(m for m in menu.for_planner() if m['goal'] == {'kind': 'exit', 'dir': 'W'})
+    assert entry['prediction'] == {'kind': 'reach_room', 'value': 118} and entry['budget_seconds'] == 15
+
+
+def test_a_fight_with_several_enemies_predicts_survival_not_a_clear_room():
+    # Retro ends fight-nearest when that enemy dies; "enemies_cleared" with 2+ would be refuted.
+    d, atlas = live_decision()
+    many = dict(d, observation=dict(d['observation'], enemies=[dict(slot=1, x=40, y=100), dict(slot=2, x=200, y=150)]))
+    one = dict(d, observation=dict(d['observation'], enemies=[dict(slot=1, x=40, y=100)]))
+    fight = {'kind': 'fight', 'target': 'nearest'}
+    assert X.option_for_goal(fight, many, atlas).default_plan == ({'kind': 'survive'}, 20)
+    assert X.option_for_goal(fight, one, atlas).default_plan == ({'kind': 'enemies_cleared'}, 20)

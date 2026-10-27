@@ -337,3 +337,60 @@ def test_strain_report_spends_a_daily_cap_slot(monkeypatch):
     before = h.o._sent_today
     assert h.tick()["reason"] == "sent"
     assert h.o._sent_today == before + 1
+
+
+# ---- the prompt states how the GPU queue relates to the strain (live 10-23 invented "heat queued jobs")
+
+
+def _prompt_facts(causes_now, *, holding=False, queue_holding=False, deferrable=None):
+    from zoneinfo import ZoneInfo
+
+    from scripts.strain_report import StrainReportFacts
+
+    since = datetime(2026, 10, 23, 19, 47, tzinfo=timezone.utc)
+    facts = StrainReportFacts(
+        episode_since=since, observed_at=since + timedelta(hours=3), causes_now=tuple(causes_now),
+        causes_seen=("gpu_queue_sustained", "cabinet_hot"), holding=holding, cabinet_temp_c=33.6,
+        cabinet_reflex="cabinet_hot", gpu_queue_depth=9, gpu_queue_self_deferrable=deferrable,
+        arc_id="26011418aad1aaa2", holds=("curiosity investigations wait",), queue_holding=queue_holding,
+    )
+    return facts, since + timedelta(hours=3), ZoneInfo("America/Denver")
+
+
+def test_prompt_says_a_waiting_queue_is_not_a_cause_when_only_heat_is_active():
+    from scripts.strain_report import build_strain_report_prompt
+
+    facts, now, tz = _prompt_facts(["cabinet_hot"])
+    prompt = build_strain_report_prompt(facts, "Strain record", now, tz)
+    assert "GPU jobs waiting now: 9. This is NOT a cause of the strain right now." in prompt
+    assert "never say one caused another" in prompt
+
+
+def test_prompt_marks_the_queue_as_a_cause_when_it_is_one():
+    from scripts.strain_report import build_strain_report_prompt
+
+    facts, now, tz = _prompt_facts(["gpu_queue_sustained"])
+    prompt = build_strain_report_prompt(facts, "Strain record", now, tz)
+    assert "GPU jobs waiting now: 9 (this is one of the causes above)." in prompt
+    assert "NOT a cause" not in prompt
+
+
+def test_prompt_says_the_queue_keeps_a_holding_strain_from_clearing():
+    """strain_holding: no active cause, but the load is still at/above the floor -- the queue IS what
+    holds the strain, so 'not a cause' would be a new invented fact (review 10-24)."""
+    from scripts.strain_report import build_strain_report_prompt
+
+    facts, now, tz = _prompt_facts([], holding=True, queue_holding=True)
+    prompt = build_strain_report_prompt(facts, "Strain record", now, tz)
+    assert "it is what keeps the strain from clearing" in prompt and "NOT a cause" not in prompt
+    # strain_clearing (load below the floor): the queue is not what holds it.
+    facts, now, tz = _prompt_facts([], holding=True, queue_holding=False)
+    assert "NOT a cause of the strain right now" in build_strain_report_prompt(facts, "Strain record", now, tz)
+
+
+def test_prompt_names_deferrable_self_work_in_the_count():
+    from scripts.strain_report import build_strain_report_prompt
+
+    facts, now, tz = _prompt_facts(["gpu_queue_sustained"], deferrable=4)
+    prompt = build_strain_report_prompt(facts, "Strain record", now, tz)
+    assert "9 (this is one of the causes above, 4 of them your own deferrable work, which does not count as load)" in prompt

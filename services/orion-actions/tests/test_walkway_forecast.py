@@ -370,3 +370,12 @@ def test_days_watched_counts_frame_minutes_not_sightings_or_rollup_rows() -> Non
     assert "FROM vision_scene_inventory" in sql and "vision_individual_sighting" not in sql
     assert "vision_rollup" not in sql  # independent of how far the rollups were backfilled
     assert "up_minutes >= %(min_up)s" in sql and wf.WATCHED_MIN_UP_MINUTES == 60
+
+
+def test_compact_facts_carry_belongings_without_ids() -> None:
+    facts = wf.compact_rollup_facts({
+        "label": "2026-10-17", "named": {"Robin": {"times": ["09:03"], "individual_ids": ["r1"]}},
+        "belongings": {"Sam": {"times": ["17:09"], "sightings": 1, "kinds": ["bicycle"],
+                               "individual_ids": ["bike"], "person_ids": ["person-sam"]}}})
+    assert facts["belongings"] == {"Sam": {"times": ["17:09"], "sightings": 1, "kinds": ["bicycle"]}}
+    assert "bike" not in json.dumps(facts)

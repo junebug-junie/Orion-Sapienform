@@ -17,6 +17,9 @@ Checks (exit 1 on failure):
   ``kinds.person.count_range`` with ``low <= high``; an hour's low is its most people in
   one window (less a person-kind prop sighted that hour, never below 1); a parent's low is
   the largest low of its children; and no line states one bare number of people.
+- named people come from the person record (rules_version 3): when an hour read the
+  record, every individual under ``named`` is a person-kind individual (a named vehicle or
+  bicycle is never a named person; a linked belonging goes under ``belongings``).
 
 Names are printed (this is Juniper's own eval on her own machine) unless
 ``--redact``.
@@ -70,6 +73,12 @@ def check(store: MemoryStore, stream: str) -> list[str]:
             if child_sum != int(r["total"]["passings"]):
                 fails.append(f"{grain} {r['label']}: passings {r['total']['passings']} != children {child_sum}")
         fails.extend(_range_fails(store, s, grain, start, r))
+        if grain == "hour" and (r.get("person_record") or {}).get("available"):
+            inds = r.get("individuals") or {}
+            for name, entry in (r.get("named") or {}).items():
+                bad = [i for i in entry.get("individual_ids") or [] if (inds.get(i) or {}).get("kind") != "person"]
+                if bad:
+                    fails.append(f"hour {r['label']}: non-person individuals {bad} named as a person")
         stories = r.get("stories") or {}
         if not stories.get("gate_passed") and (stories.get("sentences") or stories.get("count")):
             fails.append(f"{grain} {r['label']}: story content with the gate closed")
@@ -128,7 +137,7 @@ def main() -> int:
     def show(text: str, row: dict) -> str:
         if not args.redact:
             return text
-        for name in (row.get("named") or {}):
+        for name in sorted([*(row.get("named") or {}), *(row.get("belongings") or {})], key=len, reverse=True):
             text = text.replace(name, "<named>")
         return text
 
@@ -164,7 +173,8 @@ def main() -> int:
             print(" ", f)
         return 1
     print("\nPASS: day = sum of hours, week/month = sum of days, down hours read 'camera was down', "
-          "story content only behind the gate, people always a range (low <= high, no bare count).")
+          "story content only behind the gate, people always a range (low <= high, no bare count), "
+          "named people are person-kind individuals.")
     return 0
 
 

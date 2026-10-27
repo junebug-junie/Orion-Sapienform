@@ -7152,7 +7152,6 @@ let chatTurnTimer = null;
     addSection('time_place', 'Time/place', { time: (meta.situation_brief || {}).time, place: (meta.situation_brief || {}).place });
     addSection('weather', 'Weather/environment', (meta.situation_brief || {}).environment);
     addSection('agenda', 'Agenda', (meta.situation_brief || {}).agenda);
-    addSection('lab', 'Lab context', (meta.situation_brief || {}).lab);
     addSection('surface', 'Surface', (meta.situation_brief || {}).surface);
     addSection('affordances', 'Affordances', meta.situation_affordances || (meta.situation_brief || {}).affordances);
     addSection('provider_diagnostics', 'Provider diagnostics', (meta.situation_brief || {}).diagnostics);

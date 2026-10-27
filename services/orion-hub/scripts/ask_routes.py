@@ -25,6 +25,16 @@ A named pair answer also closes, in the same transaction, any open "who is
 this?" card for a named individual (``answer`` = the name, ``answer_detail`` =
 ``{"resolved_by": <pair ask_id>}``), so Juniper is not asked again.
 
+**"I don't know"** (2026-10-27). ``POST /api/asks/{id}/dismiss`` takes an
+optional body ``{"reason": "dont_know"}``, only on a "who is this?" card
+(``vision_individual``; 422 ``dont_know_only_on_who_is_this_cards`` otherwise).
+It is a dismissal: ``status='dismissed'``, ``answer`` NULL, so no name is ever
+stored, and ``answer_detail = {"dont_know": true}``. sql-writer treats that
+like an expired card (asked again after ``VISION_ASK_COOLDOWN_DAYS``); a plain
+dismissal still blocks that individual for good. Typed answers are never
+filtered by a word list: the explicit button is the fix for non-answers
+("no", "unsure") that used to be saved as names.
+
 There is no "ask opened" bus event: the Hub has no push channel for panels,
 so the card polls ``GET /api/asks`` and Postgres stays the only truth.
 
@@ -169,6 +179,11 @@ class PictureAnswer(BaseModel):
     image_ref: str = Field(min_length=1, max_length=500)
     verdict: Literal["same", "different", "unsure"]
     name: str = Field(default="", max_length=MAX_ANSWER_CHARS)
+
+
+class AskDismissBody(BaseModel):
+    # "dont_know": Juniper does not know who it is (who-is-this cards only).
+    reason: Optional[Literal["dont_know"]] = None
 
 
 class AskAnswerBody(BaseModel):
@@ -452,10 +467,11 @@ def _event_from_row(row: Any, names: Optional[dict[str, str]] = None) -> OrionAs
 
 
 async def _answer_detail(conn: Any, ask_id: str, answer: Optional[str], names: dict[str, str],
-                         pictures: list[PictureAnswer]) -> Optional[dict[str, Any]]:
+                         pictures: list[PictureAnswer], dont_know: bool = False) -> Optional[dict[str, Any]]:
     """Validate typed names against the card (locks the row) and build ``answer_detail``.
-    Raises 422 for names on a card that cannot take them; None when nothing was typed."""
-    if not names and not pictures:
+    Raises 422 for names on a card that cannot take them, or "I don't know" on a
+    card that is not "who is this?"; None when nothing was typed."""
+    if not names and not pictures and not dont_know:
         return None
     card = await conn.fetchrow(
         "SELECT source_kind, source_ref, image_ref, image_refs, status, expires_at FROM orion_ask "
@@ -468,6 +484,10 @@ async def _answer_detail(conn: Any, ask_id: str, answer: Optional[str], names: d
     if card is None or card["status"] != "open" or (expires is not None and expires <= datetime.now(timezone.utc)):
         return None  # CLOSE_ASK_SQL moves nothing either: the usual 404 / 409 below
     detail: dict[str, Any] = {}
+    if dont_know:
+        if card["source_kind"] != WHO_IS_THIS_KIND:
+            raise HTTPException(status_code=422, detail="dont_know_only_on_who_is_this_cards")
+        detail["dont_know"] = True
     if names:
         if card["source_kind"] != SAME_INDIVIDUAL_KIND:
             raise HTTPException(status_code=422, detail="names_only_on_same_person_cards")
@@ -492,6 +512,7 @@ async def _close_ask(
     answer: Optional[str],
     names: Optional[dict[str, str]] = None,
     pictures: Optional[list[PictureAnswer]] = None,
+    dont_know: bool = False,
 ) -> dict[str, Any]:
     pool = _pool(request)
     row: Any = None
@@ -501,7 +522,7 @@ async def _close_ask(
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
-                detail = await _answer_detail(conn, ask_id, answer, names or {}, pictures or [])
+                detail = await _answer_detail(conn, ask_id, answer, names or {}, pictures or [], dont_know)
                 row = await conn.fetchrow(
                     CLOSE_ASK_SQL,
                     ask_id,
@@ -542,13 +563,15 @@ async def _close_ask(
     event = _event_from_row(row, (detail or {}).get("names"))
     published = await _publish_answered(event)
     logger.info(
-        "ask_closed ask_id=%s status=%s source_kind=%s source_ref=%s names=%d pictures=%d published=%s",
+        "ask_closed ask_id=%s status=%s source_kind=%s source_ref=%s names=%d pictures=%d dont_know=%s "
+        "published=%s",
         event.ask_id,
         event.status,
         event.source_kind,
         event.source_ref,
         len(event.names),
         len((detail or {}).get("pictures") or []),
+        bool((detail or {}).get("dont_know")),
         published,
     )
     closed_ids = []
@@ -575,8 +598,9 @@ async def answer_ask(request: Request, ask_id: str, body: AskAnswerBody) -> dict
 
 
 @router.post("/api/asks/{ask_id}/dismiss")
-async def dismiss_ask(request: Request, ask_id: str) -> dict[str, Any]:
-    return await _close_ask(request, ask_id, new_status="dismissed", answer=None)
+async def dismiss_ask(request: Request, ask_id: str, body: Optional[AskDismissBody] = None) -> dict[str, Any]:
+    dont_know = body is not None and body.reason == "dont_know"
+    return await _close_ask(request, ask_id, new_status="dismissed", answer=None, dont_know=dont_know)
 
 
 _INSERT_OUTCOME = """

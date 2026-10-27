@@ -43,7 +43,6 @@ _ASK_ANSWERED_KIND = "orion.ask.answered.v1"
 _VISION_INDIVIDUAL = "vision_individual"
 _VISION_SAME_INDIVIDUAL = "vision_same_individual"
 _VISION_PERSON_CONFIRM = "vision_person_confirm"
-_MAX_ALIASES = 20
 
 StoreGetter = Callable[[], Any]
 EngineGetter = Callable[[], Any]
@@ -118,7 +117,10 @@ def _write_individual_entity(
 ) -> Optional[dict[str, Any]]:
     """One user-asserted entity for ``individual_id`` named ``label`` by ``event``."""
     from orion.core.schemas.cognitive_substrate import EntityNodeV1
-    from orion.substrate.adapters.vision_individual import map_vision_individual_label_to_substrate
+    from orion.substrate.adapters.vision_individual import (
+        map_vision_individual_label_to_substrate,
+        relabelled_individual_entity,
+    )
     from orion.substrate.falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
     from orion.substrate.materializer import SubstrateGraphMaterializer
     from orion.substrate.reconcile import SubstrateIdentityResolver
@@ -142,38 +144,8 @@ def _write_individual_entity(
     node = record.nodes[0]
     existing = store.get_node_by_id(node.node_id)
     if isinstance(existing, EntityNodeV1):
-        # Explicit update, not the materializer: merge_node() keeps the
-        # existing label and lets existing metadata win, so a rename (even a
-        # capitalization-only one) and the newest label_ask_id would both be
-        # silently dropped. The old name is kept as an alias so recall by it
-        # still works.
         renamed = existing.label != node.label
-        aliases: list[str] = []
-        for alias in [*existing.aliases, existing.label]:
-            if alias and alias != node.label and alias not in aliases:
-                aliases.append(alias)
-        aliases = aliases[-_MAX_ALIASES:]
-        metadata = {**existing.metadata}
-        for key, value in node.metadata.items():
-            if value is not None:
-                metadata[key] = value
-        updated = existing.model_copy(
-            update={
-                "label": node.label,
-                "aliases": aliases,
-                "entity_type": node.entity_type if node.entity_type != "unknown" else existing.entity_type,
-                "provenance": node.provenance.model_copy(
-                    update={"evidence_refs": sorted({*existing.provenance.evidence_refs, *node.provenance.evidence_refs})}
-                ),
-                "temporal": existing.temporal.model_copy(
-                    update={"observed_at": max(existing.temporal.observed_at, node.temporal.observed_at)}
-                ),
-                "signals": existing.signals.model_copy(
-                    update={"confidence": max(existing.signals.confidence, node.signals.confidence)}
-                ),
-                "metadata": metadata,
-            }
-        )
+        updated = relabelled_individual_entity(existing, node)
         identity_key = SubstrateIdentityResolver().canonical_node_key(updated)
         store.upsert_node(identity_key=identity_key, node=updated, skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS)
         outcome = "relabelled" if renamed else "updated"

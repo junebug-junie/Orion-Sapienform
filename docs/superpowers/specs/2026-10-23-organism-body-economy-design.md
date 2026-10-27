@@ -972,6 +972,38 @@ Patch A is low-risk: it writes new rows and decides nothing. It also settles the
 
 ---
 
+## Patch C1 results (2026-10-27) — Appetite + Choice core, shadow
+
+PR report: `docs/superpowers/pr-reports/2026-10-27-patch-c1-want-bid-core-pr.md`.
+
+- **Built.** `WantV1` / `WantDecisionV1`, `POST /physiology/bid` on durable-runs, the client (returns
+  `None` on any failure), `want_ledger` via `orion:physiology:want:decision`, and
+  `config/physiology/families.yaml` (one family per act-ledger actor; Tier 0 never bids). No producer
+  bids yet: that is C2 (cortex-orch dispatch) and Patch D.
+- **Cost unit, decided.** A posted price is want-value per unit of BUDGET (dual ascent runs on the
+  normalized excess), so a want's cost is its share of each constraint's budget. A hold longer than
+  the lane window costs at most one window.
+- **Unpriced, said so.** Heat, energy and claude are listed `unpriced:<constraint>` on every
+  decision. No act carries `wh_by_host` or `claude_limit_events` yet. Until Organ 6 measures per-act
+  heat, the heat price cannot touch a want, and only the spinal reflex holds GPU work in heat.
+- **Two strain fixes.** (a) `attention:juniper` is self-spent: Orion's own outreach fills it, so it
+  is listed in `strain.self_spent` and does not move the dial. (b) A lane with 0 live slots whose
+  window use already ran (a swap seat, diffusion / agent-gpu2) no longer clamps `exogenous_bind`.
+  A lease still open on such a seat reads `no_reading`.
+- **Replay on synthetic wants from real act history (10-16..10-27, 601 wants):**
+  - R2 **FAIL**. Non-GPU wants in the 10-18..22 heat were funded at 100% (52 of 52), which is non-zero
+    but not reduced (90% outside the heat, where the gaps are `sated` wants). With heat unpriced per
+    act, nothing in C1 can reduce a non-GPU want in heat.
+  - R5 **not evaluable**. No lane price exists for the 10-21..22 baseline, and nothing bids before it
+    leases (Patch E).
+  - R6 **PASS** (1.00x the lane at most, limit 1.2x). This holds by construction of the capacity
+    rule, and the check confirms the code enforces it.
+  - R7 **PASS**. Drift 0.100/day at most; 0 floor violations under a stressed lane price of 1.0; a
+    synthetic zero-use family ends at 0.43 against a prior of 1.0. The only live zero-use family
+    (`hub.retro_leisure`) has 1 evidenced act, so it stays at its prior.
+- **Weights are mostly priors today.** Only `hub.outreach` has evidence: Juniper replied to 63% of
+  43. Downstream use reaches 10 closed-window rows for no family. Most families are `no_link_path`.
+
 ## Review findings fixed (independent adversarial review, 2026-10-23)
 
 The reviewer spot-checked 12 facts against live data and code. 8 were confirmed. The rest are corrected above: the share range, the timing of the grants drop, the cabinet daily means, and correlations not reproducible exactly. Mechanism findings:

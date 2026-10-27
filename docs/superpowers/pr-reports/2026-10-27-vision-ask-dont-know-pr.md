@@ -26,6 +26,7 @@ The Hub card (`static/js/vision-asks.js`) posts to `POST /api/asks/{id}/answer` 
 - `services/orion-hub/scripts/ask_routes.py`: `AskDismissBody`, and validation and storage of dont_know.
 - `services/orion-sql-writer/app/vision_individuals.py`: `DONT_KNOW_SQL`, so a dont_know dismissal is asked again after the cooldown.
 - `services/orion-hub/static/js/vision-asks.test.js`, `services/orion-hub/tests/test_ask_routes.py`, `services/orion-hub/tests/test_orion_is_asking_browser_smoke.py`, `services/orion-sql-writer/tests/test_vision_confirm_asks.py`: tests.
+- `services/orion-sql-writer/tests/test_vision_osnet_shadow.py`: removes the date dependency that failed CI (see below).
 - `services/orion-hub/README.md`, `services/orion-sql-writer/README.md`, `services/orion-sql-writer/.env_example` (comment only): docs.
 
 ## Schema / bus / API changes
@@ -116,6 +117,10 @@ The rollup does not recompute `named` for past periods.
 - A dry run of `scripts/backfill_vision_rollups.py --days 8` produced 0 lines that name "no" or "unsure". I did not apply it, for two reasons:
   - It is outside the approved write.
   - Another agent is changing the rollup code.
+
+## CI fix bundled (pre-existing, not caused by this change)
+
+- `services/orion-sql-writer/tests/test_vision_osnet_shadow.py`: 2 tests started failing on every branch on 10-24. The eval looks back `--since-hours` (default 8 days) from the wall clock, but the test fixtures are pinned at 2026-10-16. The test now passes a `--since-hours` that reaches the fixtures. Evidence: the CI Postgres step, replicated locally with the same migrations and test files, gives 298 passed.
 
 ## Review findings fixed
 

@@ -63,3 +63,7 @@ Rebuild orion-hub and orion-cortex-exec after merge (post-pull rebuild covers bo
 - Severity: low. Concern: `_current_hour_index` falls back to 0 if the current hour is past the array end. Mitigation: cannot happen with `forecast_days=2`.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/2908

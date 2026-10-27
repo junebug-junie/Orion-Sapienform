@@ -381,7 +381,9 @@ def _build_physiology():
         warnings: list[str] = []
         pool_state = None
         if rpc_bus is not None:
-            pool_state = await fetch_pool_state(rpc_bus, source=s.service_name, timeout_sec=2.0)
+            # include_config: the class -> seats map that places waiting self-work beside its lanes.
+            pool_state = await fetch_pool_state(rpc_bus, source=s.service_name, timeout_sec=2.0,
+                                                include_config=True)
         if pool_state is None:
             warnings.append("lane_capacity:pool_state_unread")
         body = BodyInputs(

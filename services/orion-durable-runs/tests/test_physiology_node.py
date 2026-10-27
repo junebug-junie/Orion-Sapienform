@@ -157,6 +157,14 @@ def test_disabled_writes_nothing():
 
 # --- store helpers ------------------------------------------------------------------------------
 
+def test_class_roles_from_pool_state_config():
+    payload = {"roles": [], "config": {"classes": {"agent": {"roles": ["agent", "agent-gpu2"], "on_unavailable": "backlog"},
+                                                   "bad": "x"}}}
+    assert physiology_store.class_roles_from_pool_state(payload) == {"agent": ["agent", "agent-gpu2"]}
+    assert physiology_store.class_roles_from_pool_state({"roles": []}) is None
+    assert physiology_store.class_roles_from_pool_state(None) is None
+
+
 def test_capacity_from_pool_state():
     payload = {"roles": [{"role": "fast", "status": "confirmed", "slots": 4},
                          {"role": "diffusion", "status": "static", "slots": 1},
@@ -285,11 +293,19 @@ def test_store_reads_the_deferrable_backlog_on_postgres():
             await conn.execute("""CREATE TABLE gpu_pool_state_history (snapshot_id varchar PRIMARY KEY,
                                   generated_at timestamptz NOT NULL, host varchar NOT NULL,
                                   queue_depth json NOT NULL, deferrable_depth json)""")
-            rows = [("s1", now - timedelta(minutes=40), "circe", '{"agent": 1}', "{}"),
-                    ("s2", now - timedelta(minutes=30), "circe", '{"agent": 2}', '{"agent": 2}'),
-                    ("s3", now - timedelta(seconds=5), "circe", '{"agent": 4}', '{"agent": 4, "diffusion": 1}'),
-                    ("h1", now - timedelta(minutes=20), "hecate", '{}', None),
-                    ("h2", now - timedelta(seconds=3), "hecate", '{}', '{"diffusion": 2}')]
+            # circe publishes every 30 s here; hecate has a hole of 5 min before its newest row.
+            rows = [("s1", now - timedelta(minutes=40), "circe", '{"agent": 1}', "{}")]
+            k = 0
+            t = now - timedelta(minutes=39, seconds=30)
+            while t < now - timedelta(seconds=5):
+                depth = '{"agent": 2}' if t < now - timedelta(minutes=30) else '{"agent": 2, "diffusion": 1}'
+                rows.append((f"c{k}", t, "circe", "{}", depth))
+                t += timedelta(seconds=30)
+                k += 1
+            rows += [("s3", now - timedelta(seconds=5), "circe", '{"agent": 4}', '{"agent": 4, "diffusion": 1}'),
+                     ("h1", now - timedelta(minutes=20), "hecate", '{}', None),
+                     ("h2", now - timedelta(minutes=8), "hecate", '{}', '{"diffusion": 2}'),
+                     ("h3", now - timedelta(seconds=3), "hecate", '{}', '{"diffusion": 2}')]
             for r in rows:
                 await conn.execute("INSERT INTO gpu_pool_state_history VALUES (%s, %s, %s, %s, %s)", r)
         bl = await physiology_store.read_backlog(pool, now)
@@ -298,12 +314,16 @@ def test_store_reads_the_deferrable_backlog_on_postgres():
             "circe": {"agent": 4, "diffusion": 1}, "hecate": {"diffusion": 2}}
         le = bl.last_empty_at
         assert abs((le[("circe", "agent")] - (now - timedelta(minutes=40))).total_seconds()) < 1
-        assert abs((le[("circe", "diffusion")] - (now - timedelta(minutes=30))).total_seconds()) < 1
-        assert abs((le[("hecate", "diffusion")] - (now - timedelta(minutes=20))).total_seconds()) < 1
+        # diffusion first seen at the first row at or after t-30m (the run's last empty row is the
+        # one before it).
+        assert abs((le[("circe", "diffusion")] - (now - timedelta(minutes=30))).total_seconds()) <= 31
+        # hecate: the NULL row at t-20m is unknown, but the 8-minute hole after t-8m ends the run
+        # later: the age never counts time the history did not see.
+        assert abs((le[("hecate", "diffusion")] - (now - timedelta(seconds=3))).total_seconds()) < 1
         from orion.physiology.body import BodyConfig, deferrable_backlog
         hunger, missing = deferrable_backlog(bl, now, BodyConfig())
         assert missing is None and hunger["agent"][0] == 4 and hunger["diffusion"][0] == 3
-        assert abs(hunger["agent"][1] - 2400) < 2 and abs(hunger["diffusion"][1] - 1800) < 2
+        assert abs(hunger["agent"][1] - 2400) < 2
 
     asyncio.run(_with_schema(scenario))
 

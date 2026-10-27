@@ -26,9 +26,10 @@ Constraints and their sources (design doc, Organ 1 table; A3 scope, no forecast,
   higher-priority one-off call runs in an idle durable-run hold's gap), so lease-seconds above
   the slots are reported apart as ``lent_overlap_s``, not as held. Line: the role's discovered
   slots x window, from the pool's own state RPC. The events feed going quiet reads stale, never 0.
-  Beside each lane, in ``detail``: Orion's own deferrable self-work waiting for it (queued
-  background durable-run holds, ``gpu_pool_state_history.deferrable_depth``) and how long that
-  queue has been non-empty. That is hunger, the seed of Appetite; it is not strain and not a
+  Beside each lane, in ``detail``: Orion's own deferrable self-work that may run on it (queued
+  background durable-run holds, ``gpu_pool_state_history.deferrable_depth``, per work class,
+  placed on every seat the pool's class map lets that class use; do not sum across lanes) and
+  how long that queue has been non-empty. That is hunger, the seed of Appetite; it is not strain and not a
   price input.
 * ``attention:juniper``: Orion's outreach messages today (local date) that the Hub's daily cap
   counts (curiosity and reading-finding outreach are exempt from the cap; their sends are in
@@ -84,6 +85,8 @@ class BodyConfig:
     # A pool host's newest gpu_pool_state_history snapshot older than this is not read (the pool
     # publishes every ~5 s; arousal's S2 uses the same 30 s).
     backlog_max_age_sec: float = 30.0
+    # generated_at is the pool host's clock: a snapshot this far in the future is still fresh.
+    backlog_clock_skew_sec: float = 10.0
 
 
 # --- inputs (filled by the host's reads) --------------------------------------------------------
@@ -138,6 +141,10 @@ class LaneInput:
     capacity: Optional[Mapping[str, int]] = None
     # Newest gpu_pool_events row of any kind (freshness of the feed). None: table empty.
     newest_event_at: Optional[datetime] = None
+    # work class -> the seats that may serve it (the pool's own config/gpu_pool.yaml ``classes``,
+    # from the same state RPC). None: not read. Places waiting self-work beside every seat it
+    # could run on.
+    class_roles: Optional[Mapping[str, Sequence[str]]] = None
 
 
 @dataclass(frozen=True)
@@ -287,10 +294,12 @@ def _lease_intervals(events: Iterable[LeaseEvent], now: datetime
     for e in events:
         if not e.lease_id:
             continue
-        rec = by_lease.setdefault(e.lease_id, {"role": None, "spans": [], "open": None, "child": False})
+        rec = by_lease.setdefault(e.lease_id, {"role": None, "spans": [], "open": None, "child": False,
+                                               "closes": []})
         if e.hold_lease_id:
             rec["child"] = True
         if e.event in LEASE_CLOSE_EVENTS:
+            rec["closes"].append(e.at)
             if e.held_ms is not None and e.held_ms >= 0:
                 rec["spans"].append((e.role, e.at - timedelta(milliseconds=float(e.held_ms)), e.at))
             if e.role and rec["role"] is None:
@@ -310,6 +319,10 @@ def _lease_intervals(events: Iterable[LeaseEvent], now: datetime
             role = role or fallback
             if role:
                 per_role.setdefault(role, []).append((start, end))
+        # The projection row is open, but a close of this lease landed at or after that grant:
+        # the projection is behind (the close is the newer fact), so the lease is not held now.
+        if rec["open"] is not None and any(at >= rec["open"][1] for at in rec["closes"]):
+            rec["open"] = None
         if rec["open"] is not None and (rec["open"][0] or fallback):
             counts["open"] += 1
             per_role.setdefault(rec["open"][0] or fallback, []).append((rec["open"][1], now))
@@ -351,6 +364,13 @@ def occupied_seconds(spans: Iterable[tuple[datetime, datetime]], w_start: dateti
     return occupied, lease, n_spans
 
 
+def stale_backlog_hosts(inp: Optional[BacklogInput], now: datetime, cfg: BodyConfig) -> list[str]:
+    """Pool hosts whose newest snapshot is too old to read: their queue is NOT in the total."""
+    if inp is None or not inp.read_ok:
+        return []
+    return sorted(s.host for s in inp.snapshots if (now - s.at).total_seconds() > cfg.backlog_max_age_sec)
+
+
 def deferrable_backlog(inp: Optional[BacklogInput], now: datetime, cfg: BodyConfig
                        ) -> tuple[Optional[dict[str, tuple[int, float, bool]]], Optional[str]]:
     """Orion's own deferrable self-work waiting for a GPU seat, per work class:
@@ -363,7 +383,8 @@ def deferrable_backlog(inp: Optional[BacklogInput], now: datetime, cfg: BodyConf
         return None, "not_read"
     if not inp.read_ok:
         return None, "read_failed:gpu_pool_state_history"
-    fresh = [s for s in inp.snapshots if 0 <= (now - s.at).total_seconds() <= cfg.backlog_max_age_sec]
+    fresh = [s for s in inp.snapshots
+             if -cfg.backlog_clock_skew_sec <= (now - s.at).total_seconds() <= cfg.backlog_max_age_sec]
     if not fresh:
         return None, ("stale:gpu_pool_state_history" if inp.snapshots else "no_rows:gpu_pool_state_history")
     if any(s.deferrable is None for s in fresh):
@@ -391,15 +412,27 @@ def lane_readings(inp: LaneInput, now: datetime, cfg: BodyConfig,
     roles_known = sorted(capacity) if capacity else []
     hunger, hunger_missing = deferrable_backlog(backlog, now, cfg)
 
+    class_roles = ({str(k): [str(r) for r in (v or ())] for k, v in inp.class_roles.items()}
+                   if inp.class_roles is not None else None)
+    stale_hosts = stale_backlog_hosts(backlog, now, cfg)
+
     def _hunger(role: str) -> dict:
-        # Keyed by work class; a class's queue sits beside the lane of the same name (agent ->
-        # lane:agent, diffusion -> lane:diffusion). A class with no such lane is a warning.
+        # Queued work has no seat yet: it counts beside EVERY seat its work class may run on
+        # (the pool's own class -> roles map). The same item can sit beside several lanes, so the
+        # lanes must not be summed. Unknown map or backlog: no_reading, never 0.
         if hunger is None:
             return {"deferrable_no_reading": hunger_missing}
-        q, w, c = hunger.get(role, (0, 0.0, False))
+        if class_roles is None:
+            return {"deferrable_no_reading": "unread:gpu_pool_classes"}
+        q, w, c = 0, 0.0, False
+        for wc, (n, waited, capped) in hunger.items():
+            if role in class_roles.get(wc, ()):
+                q, w, c = q + n, max(w, waited), c or capped
         d: dict = {"deferrable_queued": q, "deferrable_waiting_sec": round(w, 1)}
         if c:
             d["deferrable_waiting_capped"] = True
+        if stale_hosts:
+            d["deferrable_hosts_stale"] = ",".join(stale_hosts)
         return d
 
     def _cap(role: str) -> dict:
@@ -453,9 +486,12 @@ def lane_readings(inp: LaneInput, now: datetime, cfg: BodyConfig,
         warnings.append(f"lane_child_leases_in_hold_slots:{counts['child_skipped']}")
     if counts["cross_role"]:
         warnings.append(f"lane_leases_held_on_two_seats:{counts['cross_role']}")
-    if hunger:
-        for wc in sorted(set(hunger) - set(roles)):
-            warnings.append(f"lane_deferrable_unplaced:{wc}:{hunger[wc][0]}")
+    if hunger and class_roles is not None:
+        for wc in sorted(hunger):
+            if not set(class_roles.get(wc, ())) & set(roles):
+                warnings.append(f"lane_deferrable_unplaced:{wc}:{hunger[wc][0]}")
+    if stale_hosts and hunger is not None:
+        warnings.append(f"lane_backlog_hosts_stale:{','.join(stale_hosts)}")
     return out, warnings
 
 
@@ -553,4 +589,5 @@ __all__ = [
     "juniper_reading",
     "lane_readings",
     "occupied_seconds",
+    "stale_backlog_hosts",
 ]

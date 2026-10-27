@@ -13,9 +13,11 @@ Read-only, bounded, each read failing on its own: a failed read turns only its o
   of any kind (feed freshness). Capacity per role comes from the pool's own state RPC
   (``orion.gpu_pool.placement.fetch_pool_state``). Read-only, like field-digester's and
   proposal-runtime's reads of the same table.
-* backlog -- ``gpu_pool_state_history.deferrable_depth`` (#2873): the newest snapshot per pool host,
-  and per (host, work class) waiting there, the newest snapshot inside the lookback where that
-  class's queue was empty (``idx_gpu_pool_state_generated`` (host, generated_at) bounds both).
+* backlog -- ``gpu_pool_state_history.deferrable_depth`` (#2873): the newest snapshot per pool host
+  (last 10 min), and per (host, work class) waiting there, the newest snapshot inside the 6 h
+  lookback where that class's queue was empty, unknown, or after a hole in the history
+  (``idx_gpu_pool_state_generated`` (host, generated_at) bounds both). The class -> seats map
+  comes from the pool state RPC's config.
   Hunger beside each lane, not strain.
 * juniper -- ``endogenous_outreach_decisions``: sends today (local date), and the newest decision
   of any outcome, so a stopped decision log reads stale instead of "0 sent".
@@ -81,19 +83,28 @@ WHERE status IN ('granted', 'recalling') AND status <> 'released' AND granted_at
 """
 LANE_NEWEST_SQL = "SELECT max(generated_at) AS newest FROM gpu_pool_events"
 BACKLOG_LOOKBACK_SEC = 6 * 3600.0
+# Hosts that published in the last 10 min (a host quiet longer is not on the pool any more).
+BACKLOG_HOST_WINDOW_SEC = 600.0
+# The pool publishes every ~5 s. A longer hole means the history did not see the queue then.
+BACKLOG_MAX_GAP_SEC = 60.0
 BACKLOG_NEWEST_SQL = """
 SELECT DISTINCT ON (host) host, generated_at, deferrable_depth
 FROM gpu_pool_state_history
 WHERE generated_at >= %(since)s
 ORDER BY host, generated_at DESC
 """
-# deferrable_depth is a json column: a class absent from it has nothing waiting; NULL (a row from
-# before #2873) is unknown, so it ends the waiting run too (the age never claims more than it saw).
+# deferrable_depth is a json column: a class absent from it has nothing waiting. The waiting run
+# ends at the newest row that saw the class empty, OR that is unknown (NULL: a row from before
+# #2873), OR that follows a hole in the history: the age only counts what the history saw.
 BACKLOG_LAST_EMPTY_SQL = """
-SELECT max(generated_at) AS last_empty
-FROM gpu_pool_state_history
-WHERE host = %(host)s AND generated_at >= %(since)s AND generated_at <= %(until)s
-  AND (deferrable_depth IS NULL OR coalesce((deferrable_depth->>%(wc)s)::int, 0) = 0)
+SELECT max(generated_at) AS last_empty FROM (
+  SELECT generated_at, deferrable_depth,
+         generated_at - lag(generated_at) OVER (ORDER BY generated_at) AS gap
+  FROM gpu_pool_state_history
+  WHERE host = %(host)s AND generated_at >= %(since)s AND generated_at <= %(until)s
+) s
+WHERE deferrable_depth IS NULL OR coalesce((deferrable_depth->>%(wc)s)::int, 0) = 0
+   OR gap > make_interval(secs => %(max_gap)s)
 """
 JUNIPER_SENT_SQL = """
 SELECT count(*) FILTER (WHERE reason = 'sent') AS sent,
@@ -176,10 +187,26 @@ def capacity_from_pool_state(payload: Optional[dict]) -> Optional[dict[str, int]
     return out
 
 
+def class_roles_from_pool_state(payload: Optional[dict]) -> Optional[dict[str, list[str]]]:
+    """work class -> the seats that may serve it, from the state RPC's ``config`` (asked for with
+    ``include_config``; ``config/gpu_pool.yaml`` ``classes``). None: not in the payload."""
+    if not isinstance(payload, dict):
+        return None
+    classes = (payload.get("config") or {}).get("classes") if isinstance(payload.get("config"), dict) else None
+    if not isinstance(classes, dict):
+        return None
+    out: dict[str, list[str]] = {}
+    for name, spec in classes.items():
+        roles = spec.get("roles") if isinstance(spec, dict) else None
+        if isinstance(roles, list):
+            out[str(name)] = [str(r) for r in roles]
+    return out
+
+
 async def read_lanes(pool: Any, now: datetime, window_sec: float, pool_state: Optional[dict]) -> LaneInput:
     ok, events, newest = await read_lane_events(pool, now, window_sec)
     return LaneInput(events_read_ok=ok, events=events, capacity=capacity_from_pool_state(pool_state),
-                     newest_event_at=newest)
+                     newest_event_at=newest, class_roles=class_roles_from_pool_state(pool_state))
 
 
 async def read_backlog(pool: Any, now: datetime, *, lookback_sec: float = BACKLOG_LOOKBACK_SEC
@@ -187,7 +214,8 @@ async def read_backlog(pool: Any, now: datetime, *, lookback_sec: float = BACKLO
     since = now - timedelta(seconds=lookback_sec)
     try:
         async with pool.connection() as conn:
-            newest = await (await conn.execute(BACKLOG_NEWEST_SQL, {"since": since})).fetchall()
+            newest = await (await conn.execute(BACKLOG_NEWEST_SQL, {
+                "since": now - timedelta(seconds=BACKLOG_HOST_WINDOW_SEC)})).fetchall()
             snaps: list[BacklogSnapshot] = []
             last_empty: dict[tuple[str, str], Optional[datetime]] = {}
             for r in newest:
@@ -202,7 +230,8 @@ async def read_backlog(pool: Any, now: datetime, *, lookback_sec: float = BACKLO
                     if n <= 0:
                         continue
                     row = await (await conn.execute(BACKLOG_LAST_EMPTY_SQL, {
-                        "host": snap.host, "since": since, "until": r["generated_at"], "wc": wc})).fetchone()
+                        "host": snap.host, "since": since, "until": r["generated_at"], "wc": wc,
+                        "max_gap": BACKLOG_MAX_GAP_SEC})).fetchone()
                     le = (row or {}).get("last_empty")
                     last_empty[(snap.host, wc)] = _utc(le) if le is not None else None
     except Exception:  # noqa: BLE001

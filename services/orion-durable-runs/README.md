@@ -741,12 +741,17 @@ Lanes (Patch B1, 2026-10-27):
   `detail.lent_overlap_s` the difference. A seat with 0 live slots that still holds a lease is left
   uncapped and flagged `held_without_live_slot`.
 - **Waiting self-work (hunger) sits beside each lane**, from `gpu_pool_state_history.deferrable_depth`
-  (#2873): `deferrable_queued` (queued background durable-run holds of the work class named like
-  the lane, summed over fresh pool hosts) and `deferrable_waiting_sec` (how long that queue has been
-  non-empty; `deferrable_waiting_capped` = the whole 6 h lookback). Unknown is
-  `deferrable_no_reading`, never 0. It is not strain and nothing prices it; it seeds Appetite.
+  (#2873): `deferrable_queued` (queued background durable-run holds, summed over fresh pool hosts,
+  of every work class the pool's own class map lets run on this seat) and `deferrable_waiting_sec`
+  (how long that queue has been non-empty as far as the history saw it; a hole in the history
+  restarts the count; `deferrable_waiting_capped` = the whole 6 h lookback). Queued work has no
+  seat yet, so one item sits beside every seat it may use: **do not sum lanes**. Unknown is
+  `deferrable_no_reading` (backlog unread, stale, unrecorded, or the class map unread), never 0. A
+  stale pool host is named in `deferrable_hosts_stale`. It is not strain and nothing prices it; it
+  seeds Appetite. The class map comes from the pool state RPC (`include_config`).
 
-Known limits: `lent_overlap_s` uses the seat's slots now, not as they were earlier in the window;
+Known limits: `lent_overlap_s` uses the seat's slots now, not as they were earlier in the window (a
+seat that is down now is uncapped for the whole window);
 `claude` reads `no_observation` while orion-cocreation-signals' `COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED`
 is false.
 

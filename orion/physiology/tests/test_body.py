@@ -242,6 +242,15 @@ def test_lane_gap_lending_is_reported_apart_not_counted_as_held():
     assert abs(agent.detail["lent_overlap_s"] - (123.132 + 270.568)) < 0.01
 
 
+def test_lane_projection_still_granted_after_a_close_is_not_held_to_now():
+    """Review finding: the pool's projection row lags its own close event. The close (newer
+    fact) wins: the lease held 600 s, not the whole window."""
+    ev = [LeaseEvent("L", "fast", "granted", NOW - timedelta(minutes=60)),
+          _close("L", "fast", NOW - timedelta(minutes=50), 600)]
+    out, warnings = _lanes(ev, {"fast": 1})
+    assert out["lane:fast"].level == 600.0 and not any(w.startswith("lane_open_leases") for w in warnings)
+
+
 def test_lane_two_slots_count_two_concurrent_holds_and_cap_the_third():
     now = NOW
     ev = [LeaseEvent(x, "agent-gpu2", "granted", NOW - timedelta(minutes=30)) for x in ("a", "b", "c")]
@@ -267,36 +276,54 @@ def test_occupied_seconds_end_and_start_at_the_same_instant_is_one_slot():
 
 # --- deferrable backlog (hunger) -----------------------------------------------------------------
 
+# config/gpu_pool.yaml ``classes`` (subset), as the state RPC returns it.
+CLASSES = {"agent": ["agent", "agent-gpu2", "agent-deep", "chat"], "memory_distill": ["agent"],
+           "diffusion": ["diffusion"], "world": ["world"]}
+
+
 def _backlog(depth, *, at=NOW - timedelta(seconds=5), last_empty=None, host="circe"):
     return BacklogInput(True, [BacklogSnapshot(host, at, depth)],
                         last_empty_at={(host, wc): last_empty for wc in (depth or {})})
 
 
-def test_backlog_sits_beside_its_lane_with_count_and_age():
-    """Live 10-23 23:58: deferrable_depth {"agent": 4} (curiosity readings, background holds)."""
+def _hungry(bl, capacity, classes=CLASSES):
+    out, warnings = lane_readings(LaneInput(True, [], capacity, newest_event_at=NOW, class_roles=classes),
+                                  NOW, CFG, bl)
+    return {r.constraint: r for r in out}, warnings
+
+
+def test_backlog_sits_beside_every_seat_its_class_may_use():
+    """Live 10-23 23:58: deferrable_depth {"agent": 4} (curiosity readings, background holds). The
+    agent class may run on agent, agent-gpu2, agent-deep and chat, so it sits beside each of them;
+    a seat it cannot use reads a real 0."""
     bl = _backlog({"agent": 4}, last_empty=NOW - timedelta(minutes=26))
-    out, warnings = lane_readings(LaneInput(True, [], {"agent": 1, "fast": 4}, newest_event_at=NOW), NOW, CFG, bl)
-    by = {r.constraint: r for r in out}
-    assert by["lane:agent"].detail["deferrable_queued"] == 4
-    assert by["lane:agent"].detail["deferrable_waiting_sec"] == 26 * 60.0
-    # A fresh read with nothing waiting is a real 0.
+    by, warnings = _hungry(bl, {"agent": 1, "agent-gpu2": 2, "fast": 4})
+    for lane in ("lane:agent", "lane:agent-gpu2"):
+        assert by[lane].detail["deferrable_queued"] == 4
+        assert by[lane].detail["deferrable_waiting_sec"] == 26 * 60.0
     assert by["lane:fast"].detail["deferrable_queued"] == 0
     # Hunger is not strain: the level (held slot-seconds) does not move.
     assert by["lane:agent"].level == 0.0 and not warnings
 
 
+def test_backlog_classes_add_on_a_shared_seat():
+    bl = _backlog({"agent": 2, "memory_distill": 3})
+    by, _ = _hungry(bl, {"agent": 1, "agent-gpu2": 2})
+    assert by["lane:agent"].detail["deferrable_queued"] == 5
+    assert by["lane:agent-gpu2"].detail["deferrable_queued"] == 2
+
+
 def test_backlog_non_empty_for_the_whole_lookback_reads_capped():
-    bl = _backlog({"agent": 2}, last_empty=None)
-    out, _ = lane_readings(LaneInput(True, [], {"agent": 1}, newest_event_at=NOW), NOW, CFG, bl)
-    assert out[0].detail["deferrable_waiting_sec"] == 6 * 3600.0
-    assert out[0].detail["deferrable_waiting_capped"] is True
+    by, _ = _hungry(_backlog({"agent": 2}, last_empty=None), {"agent": 1})
+    assert by["lane:agent"].detail["deferrable_waiting_sec"] == 6 * 3600.0
+    assert by["lane:agent"].detail["deferrable_waiting_capped"] is True
 
 
 def test_backlog_unknown_is_never_zero():
-    def reason(bl):
-        out, _ = lane_readings(LaneInput(True, [], {"agent": 1}, newest_event_at=NOW), NOW, CFG, bl)
-        assert "deferrable_queued" not in out[0].detail
-        return out[0].detail["deferrable_no_reading"]
+    def reason(bl, classes=CLASSES):
+        by, _ = _hungry(bl, {"agent": 1}, classes)
+        assert "deferrable_queued" not in by["lane:agent"].detail
+        return by["lane:agent"].detail["deferrable_no_reading"]
 
     assert reason(None) == "not_read"
     assert reason(BacklogInput(False)) == "read_failed:gpu_pool_state_history"
@@ -304,18 +331,34 @@ def test_backlog_unknown_is_never_zero():
     assert reason(_backlog({"agent": 1}, at=NOW - timedelta(minutes=5))) == "stale:gpu_pool_state_history"
     # A snapshot from before #2873 (deferrable_depth NULL) is unknown, not "nothing waiting".
     assert reason(_backlog(None)) == "unrecorded:deferrable_depth"
+    # The pool's class map was not read: the seat cannot be told, so it is not a 0.
+    assert reason(_backlog({"agent": 1}), classes=None) == "unread:gpu_pool_classes"
 
 
-def test_backlog_class_without_a_lane_of_its_name_is_a_warning_not_lost():
-    bl = _backlog({"memory_distill": 3})
-    _, warnings = lane_readings(LaneInput(True, [], {"agent": 1}, newest_event_at=NOW), NOW, CFG, bl)
-    assert "lane_deferrable_unplaced:memory_distill:3" in warnings
+def test_backlog_snapshot_slightly_ahead_of_our_clock_is_fresh():
+    by, _ = _hungry(_backlog({"agent": 1}, at=NOW + timedelta(seconds=3)), {"agent": 1})
+    assert by["lane:agent"].detail["deferrable_queued"] == 1
+
+
+def test_backlog_stale_host_is_named_not_silently_dropped():
+    bl = BacklogInput(True, [BacklogSnapshot("circe", NOW - timedelta(seconds=5), {"agent": 1}),
+                             BacklogSnapshot("hecate", NOW - timedelta(minutes=4), {"agent": 7})],
+                      last_empty_at={("circe", "agent"): NOW - timedelta(minutes=1)})
+    by, warnings = _hungry(bl, {"agent": 1})
+    assert by["lane:agent"].detail["deferrable_queued"] == 1
+    assert by["lane:agent"].detail["deferrable_hosts_stale"] == "hecate"
+    assert "lane_backlog_hosts_stale:hecate" in warnings
+
+
+def test_backlog_class_with_no_seat_on_the_pool_is_a_warning_not_lost():
+    _, warnings = _hungry(_backlog({"world": 3}), {"agent": 1})
+    assert "lane_deferrable_unplaced:world:3" in warnings
 
 
 def test_backlog_detail_survives_the_schema_and_the_stored_row():
     bl = _backlog({"agent": 4}, last_empty=NOW - timedelta(minutes=1))
     inputs = BodyInputs(heat=HeatInput(False), energy=EnergyInput(False),
-                        lanes=LaneInput(True, [], {"agent": 1}, newest_event_at=NOW),
+                        lanes=LaneInput(True, [], {"agent": 1}, newest_event_at=NOW, class_roles=CLASSES),
                         juniper=JuniperInput(False), backlog=bl)
     state = build_physiology_state(NOW, inputs)
     again = parse_physiology_state(state.model_dump_json())

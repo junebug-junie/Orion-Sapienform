@@ -808,7 +808,7 @@ decision yet** (design Patch D cuts over one reader per PR). Every decision is p
 
 ```text
 net       = family_weight x value_rank - sum_k price_k x cost_k      (cost_k = share of constraint k's budget)
-funded    = net > 0, or the family is under 5% of its tier's funded acts this week (never past a capacity line)
+funded    = net > 0, or a hungry Tier 2 family under 5% of Tier 2's funded wants over the rolling 7 days (never past a capacity line)
 placement = the cheapest acceptable lane with room; a seat with 0 live slots is a last resort
 ```
 
@@ -826,7 +826,10 @@ placement = the cheapest acceptable lane with room; a seat with 0 live slots is 
   under 10 evidenced acts stays at prior; 0.1/day drift cap (replayed day by day, stateless).
   Personality endorsement is excluded.
 - **Reservations**: a funded bid reserves its cost on capacity lines (lanes, Juniper's cap) until
-  `POST /physiology/bid/{want_id}/release` or expiry (its expected seconds, 120 s .. 1 h). Later
+  `POST /physiology/bid/{want_id}/release` (the act closed) or expiry. Before the act opens, expiry is
+  the earlier of one act-length (its expected seconds, 120 s .. 1 h) and the end of the want's window
+  (Patch C3a: no act by then, no reservation); once the producer reports the open (durable runs: the
+  first grant) it is one act-length from the open. Later
   bids must fit `forecast use + reservations + cost <= line`. In memory: a restart releases them.
   Tier 1 pays no lane price inside its reserved share (p75 of its 14-day hourly use, cap 50%).
 - **Unpriced, said so**: heat, energy and claude are listed `unpriced:<constraint>` on every
@@ -839,6 +842,25 @@ Reads: Redis `orion:physiology:latest`, and `grammar_acts` + `act_downstream_use
 `ORION_PHYSIOLOGY_BID_HISTORY_TTL_SEC`). Debug: `GET /physiology/reservations`; `/health` ->
 `physiology_market`. Off: `ORION_PHYSIOLOGY_BID_ENABLED=false` (the route answers 503). Read-only
 sample against live prices: `scripts/analysis/sample_body_economy_bids.py`.
+
+**Exploration floor, weekly quota (Patch C3a).** Funded wants are counted from `want_ledger` (rolling 7
+days, re-read with the history) plus this process's own funded decisions, deduplicated by
+`decision_id`. A Tier 2 family under 5% of Tier 2's funded wants is funded when only the price said
+defer; each floor fund raises its share, so the floor stops by itself. No ledger read yet: no floor.
+
+### Admission bids (2026-10-27, body economy Patch C3a, SHADOW)
+
+`app/run_bids.py`: a run in a want family (curiosity investigate, self-inquiry, self-sense eval,
+journal compose -- the set `app/run_acts.py` opens acts for) bids in-process when `submit` accepts
+it: `want_id` = run id, `object_ref` = `durable_run:<run_id>`, `correlation_id` = the run's
+correlation id (the act's), window `latest` = the admission deadline. The bid is a background task:
+`submit` returns its usual receipt whatever the market says. The first grant calls
+`Market.mark_opened`, the terminal calls `Market.release`. A duplicate submit bids once. Log line:
+`physiology_shadow_bid run=... corr=... decision_id=... obeyed=false`. Off:
+`ORION_PHYSIOLOGY_SHADOW_BIDS_ENABLED=false`.
+
+Disagreement report (read-only): `scripts/analysis/body_economy_shadow_vs_real.py --days 7` (the
+four-cell shadow-vs-real table per family; `--source replay` re-decides the real admissions).
 
 Live smoke (read-only, replays the node over stored ticks): `ORION_ANALYSIS_DSN=... python
 scripts/analysis/smoke_body_economy_prices.py --hours 24`.

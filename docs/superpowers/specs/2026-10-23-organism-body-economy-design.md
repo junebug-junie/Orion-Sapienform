@@ -1008,6 +1008,27 @@ PR report: `docs/superpowers/pr-reports/2026-10-27-patch-c1-want-bid-core-pr.md`
 - **Weights are mostly priors today.** Only `hub.outreach` has evidence: Juniper replied to 63% of
   43. Downstream use reaches 10 closed-window rows for no family. Most families are `no_link_path`.
 
+## Patch C3a results (2026-10-27) — bid sites, shadow
+
+PR report: `docs/superpowers/pr-reports/2026-10-27-patch-c3a-bid-sites-pr.md`.
+
+- **Two bid sites, both shadow.** orion-durable-runs bids for its own want-family runs at admission
+  (in-process, `app/run_bids.py`), and cortex-orch bids before dispatching a tier 1/2 verb that is not
+  on Juniper's turn (`app/physiology_bid.py`). Neither changes what is admitted or dispatched.
+- **Join keys.** A durable want's `want_id` is the run id and its `correlation_id` is the run's
+  correlation id. Live, the run id is NOT the act's correlation id (they differ on every durable act);
+  the act carries the run's correlation id and `object_ref = durable_run:<run_id>`. The report joins on both.
+- **Reservation lifetime.** Released when the act closes; before the act opens it lasts at most to the
+  end of the want's window; re-anchored to one act-length at the open.
+- **Exploration floor is a weekly quota** (Tier 2 only, counted from `want_ledger`). R7 now passes on a
+  literal weekly check: 0 hungry price deferrals while a Tier 2 family sat under 5%. Between bids a
+  family's trailing share can still dip under 5% (curiosity investigate and dream hop end the stress
+  window at 4%): the quota is enforced when the family bids, not continuously.
+- **First disagreement table** (replayed real admissions, 10-20..10-27): the agent lane read >= 90% full
+  in 88% of physiology ticks, so most want-family runs are deferred on `lane:agent` capacity, and most
+  of those ran anyway after a median ~1.3-1.6 h wait in the pool's queue. That cell is the pool's queue,
+  not a veto disagreement. The live ledger holds only 2 hand-run probes until the bid sites deploy.
+
 ## Review findings fixed (independent adversarial review, 2026-10-23)
 
 The reviewer spot-checked 12 facts against live data and code. 8 were confirmed. The rest are corrected above: the share range, the timing of the grants drop, the cabinet daily means, and correlations not reproducible exactly. Mechanism findings:

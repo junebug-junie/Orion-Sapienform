@@ -28,6 +28,12 @@ so a rules change (2026-10-20: people as a range) reaches the recent rows withou
 backfill. Older rows keep their version; readers re-render them
 (``walkway_rollup.display_line``), and ``scripts/backfill_vision_rollups.py``
 rebuilds them for good.
+
+Named people (rules_version 3): the hour build groups named individuals by the person
+record (``person`` / ``person_link``, read once per tick by ``Reader.person_links``). An
+hour inside ``catchup_hours`` whose stored ``person_record.digest`` differs from the
+current links is rebuilt too, so a rename or a new link reaches the recent days without a
+backfill. Person tables missing or unreadable: fail-open to label grouping, logged once.
 """
 
 from __future__ import annotations
@@ -44,6 +50,7 @@ from orion.vision.walkway_rollup import (
     CaptionRow,
     HourInputs,
     Period,
+    PersonRef,
     SightingRow,
     StoryRow,
     build_hour,
@@ -62,6 +69,7 @@ from orion.vision.walkway_rollup import (
     MONTH_BASELINE_MONTHS,
     RULES_VERSION,
     WEEK_BASELINE_WEEKS,
+    person_record_digest,
 )
 
 logger = logging.getLogger("sql-writer.vision_rollup")
@@ -95,6 +103,7 @@ class Reader(Protocol):
     def captions(self, stream_id: str, lo: datetime, hi: datetime) -> List[CaptionRow]: ...
     def story_gate(self) -> Dict[str, Any]: ...
     def stories(self, stream_id: str, lo: datetime, hi: datetime, rules_version: Optional[int]) -> List[StoryRow]: ...
+    def person_links(self) -> Optional[Dict[str, PersonRef]]: ...
 
 
 class Store(Protocol):
@@ -147,6 +156,7 @@ class _Raw:
     peaks: Dict[datetime, Dict[str, int]]
     captions: List[CaptionRow]
     stories: List[StoryRow]
+    persons: Optional[Dict[str, PersonRef]] = None
 
 
 def build_hours(reader: Reader, store: Store, stream_id: str, hours: Sequence[Period], tz: ZoneInfo,
@@ -166,6 +176,7 @@ def build_hours(reader: Reader, store: Store, stream_id: str, hours: Sequence[Pe
             parked_ids=parked_vehicle_ids(trailing, cfg.parked_min_hours),
             prop_ids=prop,
             baseline=_hour_baseline(store, stream_id, h, tz),
+            persons=raw.persons,
         ), tz)
         store.put(stream_id, h, rollup, render_line(rollup))
         written += 1
@@ -186,14 +197,25 @@ def build_parent_row(store: Store, stream_id: str, period: Period, tz: ZoneInfo,
     return rollup
 
 
-def _stale(row: Optional[Mapping[str, Any]]) -> bool:
-    """Missing, or written under older counting rules."""
+def _stale(row: Optional[Mapping[str, Any]], digest: Optional[str] = None) -> bool:
+    """Missing, written under older counting rules, or grouped by other person links than
+    ``digest`` (the current ones). ``digest`` None: the record is unreadable now, so a row
+    is not rebuilt just for that (it would only lose its person grouping)."""
     if row is None:
         return True
     try:
-        return int(row.get("rules_version") or 1) < RULES_VERSION
+        if int(row.get("rules_version") or 1) < RULES_VERSION:
+            return True
     except (TypeError, ValueError):
         return True
+    if digest is not None and (row.get("person_record") or {}).get("digest") != digest:
+        return True
+    return False
+
+
+def _person_links(reader: Any) -> Optional[Dict[str, PersonRef]]:
+    fn = getattr(reader, "person_links", None)
+    return fn() if callable(fn) else None
 
 
 def ready_until(reader: Reader, stream_id: str, now: datetime, cfg: RollupConfig) -> Optional[datetime]:
@@ -218,6 +240,9 @@ def refresh_stream(reader: Reader, store: Store, stream_id: str, now: datetime, 
         summary["skipped"] = "individuals cursor missing"
         return summary
     summary["ready_until"] = ready.isoformat()
+    persons = _person_links(reader)
+    digest = person_record_digest(persons)
+    summary["person_record"] = "ok" if persons is not None else "unavailable"
     if since is not None:
         # Never before the camera's first frame record: earlier hours would read "camera
         # down" (no inventory) while sightings exist, which is the record missing, not the camera.
@@ -237,7 +262,7 @@ def refresh_stream(reader: Reader, store: Store, stream_id: str, now: datetime, 
         recompute_from = ready - timedelta(hours=cfg.recompute_hours)
         while t < ready:
             per = Period("hour", t, t + timedelta(hours=1))
-            if t >= recompute_from or _stale(store.get(stream_id, "hour", t)):
+            if t >= recompute_from or _stale(store.get(stream_id, "hour", t), digest):
                 todo.append(per)
             t += timedelta(hours=1)
     gate = reader.story_gate()
@@ -250,9 +275,10 @@ def refresh_stream(reader: Reader, store: Store, stream_id: str, now: datetime, 
             peaks=reader.peaks(stream_id, lo, hi),
             captions=reader.captions(stream_id, lo, hi),
             stories=(reader.stories(stream_id, lo, hi, gate.get("rules_version")) if gate_passed(gate) else []),
+            persons=persons,
         )
     else:
-        raw = _Raw([], {}, {}, [], [])
+        raw = _Raw([], {}, {}, [], [], persons)
     by_date: Dict[date, List[Period]] = {}
     for h in todo:
         by_date.setdefault(local_date(h.start, tz), []).append(h)
@@ -286,6 +312,9 @@ def is_missing_relation(exc: BaseException) -> bool:
     text = str(exc).lower()
     return "undefinedtable" in type(getattr(exc, "orig", exc)).__name__.lower() or (
         "relation" in text and "does not exist" in text)
+
+
+_PERSON_RECORD_WARNED = False
 
 
 class DbReader:
@@ -382,6 +411,33 @@ class DbReader:
             {"s": stream_id, "v": rules_version, "lo": lo, "hi": hi})
         return [StoryRow(story_id=r["story_id"], started_at=_aware(r["started_at"]), kind=r["kind"] or "other",
                          sentence=r["sentence"] or "", name_label=r["name_label"]) for r in rows]
+
+
+    def person_links(self) -> Optional[Dict[str, PersonRef]]:
+        """individual_id -> its active camera link (``vision_individual`` or
+        ``vision_belonging``) with the person row. None when the person tables are missing
+        or unreadable: the rollup then groups by label (logged once per process)."""
+        global _PERSON_RECORD_WARNED
+        try:
+            with self.conn.begin_nested():
+                rows = self._rows(
+                    "SELECT l.source_ref, l.source_kind, p.person_id, p.display_name, p.status "
+                    "FROM person_link l JOIN person p ON p.person_id = l.person_id "
+                    "WHERE l.revoked_at IS NULL AND l.source_kind IN ('vision_individual', 'vision_belonging') "
+                    "ORDER BY l.source_ref, l.source_kind DESC", {})
+        except Exception as exc:  # noqa: BLE001 -- fail-open to label grouping
+            if not _PERSON_RECORD_WARNED:
+                _PERSON_RECORD_WARNED = True
+                logger.warning("vision_rollup_person_record_unavailable error=%s missing=%s -- named grouped by label",
+                               type(exc).__name__, is_missing_relation(exc))
+            return None
+        out: Dict[str, PersonRef] = {}
+        for r in rows:
+            # vision_individual sorts before vision_belonging (DESC): an individual link wins.
+            out.setdefault(str(r["source_ref"]), PersonRef(
+                person_id=str(r["person_id"]), display_name=" ".join(str(r["display_name"] or "").split()),
+                status=str(r["status"] or "active"), source_kind=str(r["source_kind"])))
+        return out
 
 
 class DbStore:

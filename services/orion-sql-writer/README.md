@@ -963,6 +963,18 @@ no model. Design: `docs/superpowers/plans/2026-10-18-walkway-rollups-design.md`.
   rebuilds the hours inside `VISION_ROLLUP_CATCHUP_HOURS`; older rows keep v1 and
   every reader re-renders them (`walkway_rollup.display_line`), or run the backfill
   with `--apply` to rebuild them for good.
+- **Named = people, by the person record** (`rules_version` 3, 2026-10-24). A
+  sighted individual with an active `vision_individual` link (`person_link`) to an
+  active `person` counts under that person's `display_name`; several clusters of one
+  person merge into one entry (`times`/`sightings` unioned, `individual_ids` kept,
+  `person_ids` added). Linked to a `not_a_person` row: not named. A labelled
+  non-person cluster is not named either; with an active `vision_belonging` link it
+  goes under `belongings` and the line says "<name>'s bicycle". An unlinked person
+  cluster keeps its typed label. Person tables missing or unreadable: label grouping
+  as before, logged once (`vision_rollup_person_record_unavailable`). Each hour stores
+  `person_record.digest`; when the links change, the hours inside
+  `VISION_ROLLUP_CATCHUP_HOURS` are rebuilt once. Rows older than that keep their v2
+  line (readable as is).
 - **Camera minutes** = minutes with a `vision_scene_inventory` row. An hour with
   fewer than 15 seen minutes reads "camera was down", never "nobody passed"; a
   child period with no row reads "No record".

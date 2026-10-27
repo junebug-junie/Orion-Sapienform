@@ -6,7 +6,7 @@
 
 ## Outcome moved
 
-Before this change, a rename the listener never heard left the graph node on the old name forever. That covers a missed bus event, and also a direct database correction. The live case: on 10-27 the mixed cluster was given back the typed name "Teddy" directly in the database. Its graph node still says "Juniper" until this PR is deployed.
+Before this change, a rename the listener never heard left the graph node on the old name forever. That covers a missed bus event, and also a direct database correction. The live case: on 10-27 the mixed cluster was given back its typed name directly in the database. Its graph node still says "Juniper" until this PR is deployed.
 
 ## Current architecture
 
@@ -61,7 +61,7 @@ No new dependency.
 
 Merge and pull. The post-pull rebuild redeploys orion-substrate-runtime.
 
-Expected log line: `person_graph cluster_relabelled individual=f5242d40... old='Juniper' new='Teddy'`.
+Expected log line: `person_graph cluster_relabelled individual=f5242d40... old=<adult name> new=<child name>`.
 
 ## Risks / concerns
 

@@ -343,9 +343,10 @@ def sides_line(decision: dict, atlas: Optional[dict] = None) -> str:
 
 def did_nothing(row: Any) -> bool:
     """A finished goal that ran and left the game exactly as it found it (same digest: room,
-    Link's position and facing, hearts, items, enemies). A wait, or a goal stopped before it
-    could act (takeover, pause, sponsor loss), never counts: repeating those can still help."""
-    if not isinstance(row, dict) or (row.get('goal') or {}).get('kind') == 'wait':
+    Link's position and facing, hearts, items, enemies). A wait counts too: if nothing moved in
+    the whole wait, waiting again changes nothing. A goal stopped before it could act (takeover,
+    pause, sponsor loss) never counts: repeating that can still help."""
+    if not isinstance(row, dict):
         return False
     if str(row.get('outcome', '')).startswith('stopped:'):
         return False

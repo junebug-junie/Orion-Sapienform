@@ -28,6 +28,13 @@ def live_decision(**over):
     return d, copy.deepcopy(WALL['atlas'])
 
 
+def watched_decision():
+    """The room 119 decision with one far enemy on screen, so waiting is offered."""
+    d, atlas = live_decision()
+    d['observation']['enemies'] = [dict(slot=2, x=10, y=70)]
+    return d, atlas
+
+
 # Real goal_finished rows (evidence c6041e2d, 2026-10-23) and Retro's _finish shape for the rest.
 def finished(outcome, goal=None, prediction=None, verdict='unknown', decision_id='15:2'):
     return dict(decision_id=decision_id, goal=goal or {'kind': 'explore', 'dir': 'S'},
@@ -94,8 +101,11 @@ def test_options_for_the_live_room_119_decision():
     d, atlas = live_decision()
     opts = X.build_options(d, atlas)
     # One option per side: exit and explore toward one side are the same bet.
-    assert [o.option_id for o in opts] == ['exit:N', 'exit:E', 'exit:W', 'wait']
-    by = {o.option_id: o for o in opts}
+    # No wait: the room is empty, so waiting cannot change anything.
+    assert [o.option_id for o in opts] == ['exit:N', 'exit:E', 'exit:W']
+    watched = X.build_options(*watched_decision())
+    assert [o.option_id for o in watched] == ['exit:N', 'exit:E', 'exit:W', 'fight:nearest', 'wait']
+    by = {o.option_id: o for o in watched}
     assert by['exit:N'].context == {'health': 'full', 'side': 'open_visited', 'threat': 'none'}
     assert by['exit:W'].context == {'health': 'full', 'side': 'open_unvisited', 'threat': 'none'}
     assert by['exit:W'].place == 'zelda:0:119:W' and by['exit:W'].skill == 'traverse'
@@ -227,13 +237,13 @@ def test_menu_line_matches_the_spec_style():
 def test_scoring_is_p_times_value_plus_two_eig_and_keeps_the_top_five():
     d, atlas = live_decision()
     opts = X.build_options(d, atlas)
-    ps = {'exit:N': 0.9, 'exit:W': 0.4, 'exit:E': 0.1, 'wait': 0.99}
+    ps = {'exit:N': 0.9, 'exit:W': 0.4, 'exit:E': 0.1}
     fake = FakePrediction(p=lambda o: ps[o['option_id']], eig=0.0, level='skill')
     quotes = asyncio.run(experience(fake).quote(opts))
     menu = X.build_menu(opts, quotes)
-    # 0.4 * 1.0 (new room) beats 0.9 * 0.3 (visited); wait 0.99 * 0.05 is last.
-    assert [e.option.option_id for e in menu.entries] == ['exit:W', 'exit:N', 'exit:E', 'wait']
-    assert [e.rank for e in menu.entries] == [1, 2, 3, 4]
+    # 0.4 * 1.0 (new room) beats 0.9 * 0.3 (visited).
+    assert [e.option.option_id for e in menu.entries] == ['exit:W', 'exit:N', 'exit:E']
+    assert [e.rank for e in menu.entries] == [1, 2, 3]
     assert menu.entries[0].score == pytest.approx(0.4)
     # value x (p + 2 EIG): learning is worth only as much as the action.
     assert X.score(opts[0], quotes['exit:N'].model_copy(update={'eig_nats': 0.1})) == pytest.approx(0.3 * (0.9 + 0.2))
@@ -243,7 +253,7 @@ def test_scoring_is_p_times_value_plus_two_eig_and_keeps_the_top_five():
 def test_an_untried_wait_does_not_outrank_a_likely_exit_on_curiosity():
     # Review 2026-10-23: under p*value + 2*EIG an untried wait (p 0.5, EIG 0.193) scored 0.41 and
     # beat exits that had started failing (0.29). Learning value is now scaled by the action's value.
-    d, atlas = live_decision()
+    d, atlas = watched_decision()
     opts = {o.option_id: o for o in X.build_options(d, atlas)}
     untried = X.ActionBetQuoteV1(option_id='wait', model='m', p=0.5, p_baseline=0.5, interval80=(0.2, 0.8),
                                  eig_nats=0.193, level='prior', counts=[dict(level='skill', successes=0, failures=0)])
@@ -706,7 +716,7 @@ def test_each_handoff_card_counts_only_its_own_bets():
 
 
 def test_menu_entries_carry_the_plan_a_number_pick_uses():
-    d, atlas = live_decision()
+    d, atlas = watched_decision()
     opts = {o.option_id: o for o in X.build_options(d, atlas)}
     assert opts['exit:W'].default_plan == ({'kind': 'reach_room', 'value': 118}, 15)   # the room on that side
     assert opts['wait'].default_plan == ({'kind': 'survive'}, 5)
@@ -725,3 +735,13 @@ def test_a_fight_with_several_enemies_predicts_survival_not_a_clear_room():
     fight = {'kind': 'fight', 'target': 'nearest'}
     assert X.option_for_goal(fight, many, atlas).default_plan == ({'kind': 'survive'}, 20)
     assert X.option_for_goal(fight, one, atlas).default_plan == ({'kind': 'enemies_cleared'}, 20)
+
+
+def test_wait_is_offered_only_when_something_on_screen_can_change():
+    # Live 2026-10-27 (session 6c359e66): empty room 124, sides unknown. "wait" was picked 41 of 41
+    # times, met every time, and its chance climbed to 37 of 37 while Link never left the room.
+    d, atlas = live_decision()
+    assert 'wait' not in [o.option_id for o in X.build_options(d, atlas)]
+    assert 'wait' in [o.option_id for o in X.build_options(*watched_decision())]
+    boxed = dict(d, open_sides=[], supported_goals=['exit', 'wait'])   # nothing else to offer: wait stays
+    assert [o.option_id for o in X.build_options(boxed, atlas)] == ['wait']

@@ -229,11 +229,15 @@ def build_options(decision: dict, atlas: Optional[dict]) -> list[Option]:
                 goals.append({'kind': 'enter', 'tile': {'x': xy[0], 'y': xy[1]}})
     if 'retreat' in allowed and threat_band(_enemy_distances(obs), NEAR_PX) == 'near':
         goals.append({'kind': 'retreat'})
-    if 'wait' in allowed:
+    # Waiting only helps when something on screen can change. Live 2026-10-27: an empty room,
+    # sides unknown; "wait ... Predicts survive" read as the safe pick, was met every time, and
+    # its chance climbed to 37 of 37 while Link stood still for five minutes.
+    if 'wait' in allowed and (_enemies(obs) or not goals):
         goals.append({'kind': 'wait'})
     out = [o for o in (option_for_goal(g, decision, atlas) for g in goals) if o is not None]
-    if len(out) > ACTION_BET_MAX_OPTIONS:   # keep wait (always last) inside the cap
-        out = out[:ACTION_BET_MAX_OPTIONS - 1] + [out[-1]]
+    if len(out) > ACTION_BET_MAX_OPTIONS:   # keep wait (always last when offered) inside the cap
+        keep_last = out[-1].goal == {'kind': 'wait'}
+        out = out[:ACTION_BET_MAX_OPTIONS - 1] + [out[-1]] if keep_last else out[:ACTION_BET_MAX_OPTIONS]
     return out
 
 

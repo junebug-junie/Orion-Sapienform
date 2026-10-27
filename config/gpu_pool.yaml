@@ -163,6 +163,9 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
   # Calls on a human's critical path (spec 2026-10-06-thermal-controller-redesign D4): same class
   # as metacog, but interactive, so a heat shed never holds a live Hub turn (orion-mind on a Hub
   # turn, MIND_TURN_MODEL_ROUTE). metacog stays system: it also carries background callers.
+  # Also Hub's Zelda co-play planner (2026-10-24, retro_planner.COPLAY_ROUTE): Link stands still on
+  # screen while Juniper watches each decision; ~30 reply tokens per call. Solo leisure stays on
+  # metacog_background (nobody waiting, shed under heat).
   # agent_turn (spec D4, Q4) is NOT added: no live-turn caller sends agent today (Hub Agent mode
   # runs through the FCC harness). Add it with the caller that uses it, not before.
   metacog_turn: {class: metacog, priority: interactive}

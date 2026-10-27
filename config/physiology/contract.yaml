@@ -147,6 +147,9 @@ readers:
   - module: orion/introspect/power_attribution.py
     role: display
     reason: heat archaeology for the power_attribution introspect tool; reads hourly watts/leases read-only and returns a correlational answer to Orion; gates nothing.
+  - module: services/orion-prediction/app/series.py
+    role: display
+    reason: series registry loader; resolves the cabinet series' `value_from` thresholds (shed = critical, experiment_guard = hot) from thermal_gate.py so the lines have one owner (Patch B); gates nothing itself.
   - module: services/orion-proposal-runtime/app/store.py
     role: display
     reason: loads cabinet temperature points for the proposal worker.

@@ -34,7 +34,7 @@ router = APIRouter(tags=["walkway-rollups"])
 GRAINS = ("hour", "day", "week", "month")
 MAX_LIMIT = {"hour": 72, "day": 62, "week": 26, "month": 24}
 _STREAM_RE = re.compile(r"[a-z0-9_-]{1,32}")
-_PANEL_KEYS = ("total", "kinds", "named", "regulars", "busiest", "quietest", "baseline", "camera", "captions",
+_PANEL_KEYS = ("total", "kinds", "named", "belongings", "regulars", "busiest", "quietest", "baseline", "camera", "captions",
                "stories", "excluded", "children", "covered_until", "local")
 
 _LIST_SQL = """
@@ -66,6 +66,9 @@ def panel_row(row: Any) -> dict[str, Any]:
     named = parts.get("named") or {}
     parts["named"] = {name: {k: v for k, v in (entry or {}).items() if k != "individual_ids"}
                       for name, entry in named.items()}
+    if "belongings" in parts:  # rules_version 3: a named thing linked to its owner ("<name>'s bicycle")
+        parts["belongings"] = {name: {k: v for k, v in (entry or {}).items() if k != "individual_ids"}
+                               for name, entry in (parts.get("belongings") or {}).items()}
     reg = parts.get("regulars") or {}
     parts["regulars"] = {"count": reg.get("count", 0), "by_kind": reg.get("by_kind", {})}
     stories = parts.get("stories") or {}

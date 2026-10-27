@@ -220,7 +220,7 @@ from orion.gpu_pool.client import LeaseUnavailable, PoolRpcTimeout
 from orion.reverie.visual_storage import StoredVisualArtifact, store_visual_artifact
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.gpu_pool import GpuLeaseRefV1
-from orion.autonomy.thermal_gate import ThermalVerdict, thermal_state
+from orion.autonomy.thermal_gate import DEFAULT_HOT_C, DEFAULT_HOT_REARM_C, ThermalVerdict, thermal_state
 from orion.schemas.reverie_visual import (
     ReverieVisualArtifactV1,
     ReverieVisualChainV1,
@@ -359,7 +359,7 @@ async def thermal_gate_snapshot() -> dict[str, Any]:
             verdict.reason,
         )
     return {"state": verdict.state, "temp_c": verdict.temp_c, "age_sec": verdict.age_sec,
-            "hot_c": settings.thermal_hot_c, "hot_rearm_c": settings.thermal_hot_rearm_c,
+            "hot_c": DEFAULT_HOT_C, "hot_rearm_c": DEFAULT_HOT_REARM_C,
             "reason": verdict.reason, "allows_gpu_work": verdict.allows_gpu_work,
             "degraded": verdict.degraded}
 
@@ -371,8 +371,8 @@ def _apply_thermal_reading(temp_c: float | None, age_sec: float | None) -> Therm
         temp_c=temp_c,
         age_sec=age_sec,
         previous_state=_thermal_state,  # type: ignore[arg-type]
-        hot_c=settings.thermal_hot_c,
-        hot_rearm_c=settings.thermal_hot_rearm_c,
+        hot_c=DEFAULT_HOT_C,  # the owner's line (thermal_gate.py); no local copy
+        hot_rearm_c=DEFAULT_HOT_REARM_C,
     )
     # `unknown` must not overwrite the last real state. Otherwise one failed
     # read drops the hysteresis, and the next good reading re-decides from

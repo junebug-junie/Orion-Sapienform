@@ -754,7 +754,10 @@ frames. `VISION_CROP_THUMB_RETENTION_DAYS=0` (default since 2026-10-20; the
 same key the host reads) keeps thumbnails forever, so any sighting's thumbnail
 may be offered; a positive value limits asks to sightings recent enough that
 the thumbnail outlives the ask (asks expire after 7 days); an
-unanswered expired ask is not repeated for `VISION_ASK_COOLDOWN_DAYS`; a window
+unanswered expired ask, or one Juniper answered with **I don't know** (Hub
+`/dismiss {"reason": "dont_know"}`, `answer_detail.dont_know`, no label; counted
+from when she pressed it), is not repeated for `VISION_ASK_COOLDOWN_DAYS`; a
+plain Dismiss is never repeated; a window
 is `missed` only if census coverage (5 s windows bridged across gaps up to
 30 s) is at least `VISION_RHYTHM_MIN_COVERAGE`, and an individual's window is
 not graded until the individuals cursor has passed its end; the Redis expect
@@ -963,6 +966,18 @@ no model. Design: `docs/superpowers/plans/2026-10-18-walkway-rollups-design.md`.
   rebuilds the hours inside `VISION_ROLLUP_CATCHUP_HOURS`; older rows keep v1 and
   every reader re-renders them (`walkway_rollup.display_line`), or run the backfill
   with `--apply` to rebuild them for good.
+- **Named = people, by the person record** (`rules_version` 3, 2026-10-24). A
+  sighted individual with an active `vision_individual` link (`person_link`) to an
+  active `person` counts under that person's `display_name`; several clusters of one
+  person merge into one entry (`times`/`sightings` unioned, `individual_ids` kept,
+  `person_ids` added). Linked to a `not_a_person` row: not named. A labelled
+  non-person cluster is not named either; with an active `vision_belonging` link it
+  goes under `belongings` and the line says "<name>'s bicycle". An unlinked person
+  cluster keeps its typed label. Person tables missing or unreadable: label grouping
+  as before, logged once (`vision_rollup_person_record_unavailable`). Each hour stores
+  `person_record.digest`; when the links change, the hours inside
+  `VISION_ROLLUP_CATCHUP_HOURS` are rebuilt once. Rows older than that keep their v2
+  line (readable as is).
 - **Camera minutes** = minutes with a `vision_scene_inventory` row. An hour with
   fewer than 15 seen minutes reads "camera was down", never "nobody passed"; a
   child period with no row reads "No record".

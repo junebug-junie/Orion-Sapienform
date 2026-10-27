@@ -46,14 +46,6 @@ OSNET = "osnet_ain_x1_0:ms_d_c:34c24e98b6b7"
 NOW = datetime(2026, 10, 16, 3, 0, tzinfo=timezone.utc)
 
 
-def _since_fixture() -> list[str]:
-    """The live eval looks back from the REAL clock (default 8 days). The fixture rows sit at the
-    fixed NOW, so without this the test broke once NOW was 8 days old (a clock time bomb, first
-    failing 2026-10-24 ~03:00Z). Look back far enough to always include NOW."""
-    hours = (datetime.now(timezone.utc) - NOW).total_seconds() / 3600.0 + 24.0
-    return ["--since-hours", f"{hours:.0f}"]
-
-
 def _eval_module():
     spec = importlib.util.spec_from_file_location("run_osnet_vs_siglip_eval",
                                                   SERVICE / "evals" / "run_osnet_vs_siglip_eval.py")
@@ -263,8 +255,11 @@ def test_osnet_columns_round_trip(pg) -> None:
 def _street(engine, n_frames: int) -> None:
     """Two people walk side by side for n_frames, 2.5 s apart. SigLIP sees them as
     near-identical (same clothes colour); OSNet keeps them apart."""
+    # Relative to the real clock: the eval's --live window is "last 8 days from now", so a
+    # fixed date here silently aged out of it on 2026-10-24 and failed every branch's CI.
+    start = datetime.now(timezone.utc) - timedelta(hours=2)
     for k in range(n_frames):
-        t = NOW - timedelta(hours=2) + timedelta(seconds=2.5 * k)
+        t = start + timedelta(seconds=2.5 * k)
         jitter = 0.02 * (k % 3)
         crops = [
             _crop((100 + 10 * k, 300, 200 + 10 * k, 600), emb=_unitv(0.10 + jitter, 1152), osnet=_unitv(0.0 + jitter, 512)),
@@ -273,18 +268,25 @@ def _street(engine, n_frames: int) -> None:
         _write(engine, _obs(crops, oid=f"obs-{k}", t=t))
 
 
+def _since_fixtures() -> list:
+    """The eval looks back --since-hours from the wall clock (default 8 days), but the
+    fixtures are pinned at NOW: without this the test broke for every branch on 10-24."""
+    hours = (datetime.now(timezone.utc) - NOW).total_seconds() / 3600 + 48
+    return ["--since-hours", f"{hours:.0f}"]
+
+
 @needs_pg
 def test_eval_insufficient_then_scored_on_real_postgres(pg, capsys) -> None:
     ev = _eval_module()
     _street(pg, 3)
-    assert ev.main(["--live", PG, *_since_fixture(), "--min-pairs", "50"]) == 2
+    assert ev.main(["--live", PG, *_since_fixtures(), "--min-pairs", "50"]) == 2
     assert "INSUFFICIENT DATA" in capsys.readouterr().out
     from sqlalchemy import text
 
     with pg.begin() as conn:
         conn.execute(text("TRUNCATE vision_crop_observation"))
     _street(pg, 30)
-    assert ev.main(["--live", PG, *_since_fixture(), "--min-pairs", "20", "--json"]) == 0
+    assert ev.main(["--live", PG, *_since_fixtures(), "--min-pairs", "20", "--json"]) == 0
     import json
 
     rep = json.loads(capsys.readouterr().out)
@@ -311,7 +313,7 @@ def test_eval_scores_juniper_verdict_pairs(pg, capsys) -> None:
                 "INSERT INTO vision_ask_picture_verdict (ask_id, image_ref, picture_index, individual_id, verdict, "
                 "name, crop_id, answered_at) VALUES ('ask-1', :r, :i, 'ind', :v, :n, :c, now())"),
                 {"r": f"thumb:{idx}", "i": idx, "v": verdict, "n": name, "c": crop})
-    assert ev.main(["--live", PG, *_since_fixture(), "--min-pairs", "1000", "--json"]) == 2
+    assert ev.main(["--live", PG, *_since_fixtures(), "--min-pairs", "1000", "--json"]) == 2
     import json
 
     rep = json.loads(capsys.readouterr().out)

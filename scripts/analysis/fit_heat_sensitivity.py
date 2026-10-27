@@ -127,6 +127,10 @@ def central_ac_proxy_spec() -> dict:
     registry parser so the lag / threshold / hold here cannot drift from the service's."""
     import importlib.util
 
+    # series.py imports orion.autonomy.thermal_gate (the cabinet lines' one owner, Patch B).
+    root = str(Path(__file__).resolve().parents[2])
+    if root not in sys.path:
+        sys.path.insert(0, root)
     mod_spec = importlib.util.spec_from_file_location("orion_prediction_series", PREDICTION_SERIES_PY)
     mod = importlib.util.module_from_spec(mod_spec)
     sys.modules["orion_prediction_series"] = mod  # dataclasses need the module registered

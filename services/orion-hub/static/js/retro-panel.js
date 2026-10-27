@@ -277,10 +277,15 @@
       }).finally(()=>{planning=false;});
   }
   // Read-only ownership display also tells a second window which port is scripted.
-  let pollingPolicy=false;
-  setInterval(async()=>{if(document.hidden || pollingPolicy)return;pollingPolicy=true;
+  // Every 250 ms while Orion holds the controller (Link stands still from the end of one goal until
+  // the next is planned; a 1 s poll added up to 1 s to every decision), else once a second.
+  let pollingPolicy=false, lastPolicyPoll=0;
+  setInterval(async()=>{if(document.hidden || pollingPolicy)return;
+    const now=performance.now();
+    if(!(scriptedMode && cognitivePort!==null) && now-lastPolicyPoll<1000)return;
+    pollingPolicy=true;lastPolicyPoll=now;
     try{await showPolicy();}catch(_){el('policy').textContent='Controller status unavailable.';}
-    finally{pollingPolicy=false;}},1000);
+    finally{pollingPolicy=false;}},250);
   // --- Orion's play: Zelda goals, atlas and solo leisure (spec 2026-10-22, D/E) ------------------
   const waitingText = reason => 'Orion is waiting: '+String(reason||'GPU busy').replace(/^shed:/,'').replace(/_/g,' ');
   const goalText = g => !g ? 'wait' : g.kind+(g.dir?' '+g.dir:'')+(g.tile?` (${g.tile.x},${g.tile.y})`:'')+(g.target!==undefined?' '+g.target:'');

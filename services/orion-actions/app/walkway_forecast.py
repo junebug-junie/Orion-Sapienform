@@ -405,6 +405,11 @@ def compact_rollup_facts(rollup: dict[str, Any]) -> dict[str, Any]:
         name: {k: v for k, v in (entry or {}).items() if k in ("times", "days", "sightings")}
         for name, entry in (rollup.get("named") or {}).items()
     }
+    # rules_version 3: a named thing linked to its owner, keyed by the owner's name.
+    belongings = {
+        name: {k: v for k, v in (entry or {}).items() if k in ("times", "days", "sightings", "kinds")}
+        for name, entry in (rollup.get("belongings") or {}).items()
+    }
     # People are a range (2026-10-20): at least the most in one frame, at most the clusters.
     # Their bare passings/distinct (cluster counts) never reach the entry.
     kinds: dict[str, Any] = {}
@@ -426,6 +431,7 @@ def compact_rollup_facts(rollup: dict[str, Any]) -> dict[str, Any]:
         "kinds": kinds,
         "excluded_not_counted": rollup.get("excluded"),
         "named": named,
+        "belongings": belongings,
         "unnamed_regulars": {"count": reg.get("count", 0), "by_kind": reg.get("by_kind", {})},
         "busiest": _point_facts(rollup.get("busiest")),
         "quietest": _point_facts(rollup.get("quietest")),

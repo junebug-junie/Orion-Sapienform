@@ -88,7 +88,11 @@ from collections import deque
 from orion.gpu_pool.shed_backoff import ShedBackoff, gateway_error_reason, gateway_shed_refusal
 
 ZELDA_POLICY_ID = 'zelda-navigator-v1'
-ZELDA_ROUTE = 'metacog_background'
+ZELDA_ROUTE = 'metacog_background'   # solo leisure: nobody waiting, shed under heat
+# Co-play: Juniper is watching the game wait for each decision, a live turn like chat
+# (config/gpu_pool.yaml metacog_turn: interactive, never held by a heat shed).
+COPLAY_ROUTE = 'metacog_turn'
+MENU_MAX_TOKENS, FULL_MAX_TOKENS = 96, 320
 ZELDA_GOALS = ('exit', 'enter', 'fight', 'retreat', 'collect', 'explore', 'wait')
 PREDICTION_KINDS = ('reach_room', 'enter_cave', 'item_gained', 'enemies_cleared', 'survive', 'unknown')
 HISTORY_LIMIT = 5
@@ -403,6 +407,33 @@ def menu_rank(menu: Any, goal: dict) -> Optional[int]:
     return next((m.get('rank') for m in menu or [] if isinstance(m, dict) and _same_bet(m.get('goal'), goal)), None)
 
 
+# The prompt puts everything that never changes FIRST, so llama.cpp's prompt cache can reuse it
+# across decisions (spec item 4, 2026-10-24); the game state follows. With a menu the reply is just
+# an option number and one short sentence (~30 tokens instead of ~180: decoding the reply was ~90 %
+# of the planner's time, 50-63 tokens/s on the metacog lane).
+STATIC_RULES = [
+    'You are Orion, playing The Legend of Zelda (NES) through a navigator that turns one goal into input.',
+    'Choose ONE goal for the next 3-30 seconds from the observed facts only. Do not use outside knowledge of the game map.',
+    'Room map legend (22 rows x 32 tiles of 8 px, row 0 = top of the play area; tile x = column, y = row): '
+    '# blocked, . walkable, x blocked (Link bumped into it here before), C a cave you entered, '
+    '? terrain not known, L Link, 1-9/a/b enemy slot, d item drop.',
+    'Goal JSON shapes: {"kind":"exit","dir":"N|S|E|W"} {"kind":"enter","tile":{"x":0-31,"y":0-21}} '
+    '{"kind":"fight","target":"nearest" or enemy slot 1-11} {"kind":"retreat"} '
+    '{"kind":"collect","tile":{"x":0-31,"y":0-21}} {"kind":"explore","dir":"N|S|E|W"} {"kind":"wait"}.',
+    'Prediction kinds: reach_room (value = the room id you expect to reach; required), '
+    'enter_cave, item_gained, enemies_cleared, survive, unknown (no value for these).',
+    'Make the prediction checkable: Retro grades it met/refuted from RAM.',
+    'Items inside caves are not in the observation: to collect one, give the tile yourself.',
+    'fight needs at least one enemy in the observation.',
+]
+REPLY_FULL = ('Reply only JSON: {"goal":{...},"prediction":{"kind":"..."[, "value":int]},'
+              '"rationale":"brief, grounded in the facts","budget_seconds":3-30}')
+REPLY_MENU = ('Reply only JSON: {"option": <the number of one scored option>, "why": "one short sentence"}. '
+              'Each option carries its goal and the prediction and time limit shown on its line; add '
+              '"prediction":{...} only to bet something different. Only if no option fits, use the full '
+              'shape instead (keep the rationale to one short sentence): ' + REPLY_FULL[len('Reply only JSON: '):])
+
+
 def build_zelda_prompt(decision: dict, atlas: Optional[dict], history: Any, menu: Any = None) -> str:
     obs = decision['observation']
     previous = decision.get('previous')
@@ -411,33 +442,46 @@ def build_zelda_prompt(decision: dict, atlas: Optional[dict], history: Any, menu
     if isinstance(previous, dict) and previous.get('outcome') == 'death':
         # Retro recovers through the Continue screen itself; death is only why we decide again.
         why += ' (Link died; Retro already chose Continue and play has resumed)'
+    scored = menu_lines(menu)
     return '\n'.join([
-        'You are Orion, playing The Legend of Zelda (NES) through a navigator that turns one goal into input.',
-        'Choose ONE goal for the next 3-30 seconds from the observed facts only. Do not use outside knowledge of the game map.',
+        *STATIC_RULES,
+        REPLY_MENU if scored else REPLY_FULL,
+        '--- Current game state ---',
         f'Why a decision now: {why}.',
-        'Room map (22 rows x 32 tiles of 8 px, row 0 = top of the play area; tile x = column, y = row): '
-        '# blocked, . walkable, x blocked (Link bumped into it here before), C a cave you entered, '
-        '? terrain not known, L Link, 1-9/a/b enemy slot, d item drop.',
+        'Supported goals: ' + ', '.join(decision['supported_goals']) + '.',
+        'Room map:',
         render_room_map(obs, atlas),
         sides_line(decision, atlas),
-        *menu_lines(menu),
+        *scored,
         'Observation (zelda-1-ram-v1): ' + json.dumps(observation_facts(obs), separators=(',', ':')),
         'Atlas (only what you observed before):',
         atlas_neighbourhood(atlas),
         'Last decisions and verdicts (oldest first):',
         history_lines(history),
-        'Supported goals: ' + ', '.join(decision['supported_goals']) + '.',
-        'Goal JSON shapes: {"kind":"exit","dir":"N|S|E|W"} {"kind":"enter","tile":{"x":0-31,"y":0-21}} '
-        '{"kind":"fight","target":"nearest" or enemy slot 1-11} {"kind":"retreat"} '
-        '{"kind":"collect","tile":{"x":0-31,"y":0-21}} {"kind":"explore","dir":"N|S|E|W"} {"kind":"wait"}.',
-        'Prediction kinds: reach_room (value = the room id you expect to reach; required), '
-        'enter_cave, item_gained, enemies_cleared, survive, unknown (no value for these).',
-        'Make the prediction checkable: Retro grades it met/refuted from RAM.',
-        'Items inside caves are not in the observation: to collect one, give the tile yourself.',
-        'fight needs at least one enemy in the observation.',
-        'Reply only JSON: {"goal":{...},"prediction":{"kind":"..."[, "value":int]},'
-        '"rationale":"brief, grounded in the facts above","budget_seconds":3-30}',
+        'Reply now with the JSON only.',
     ])
+
+
+def choice_from_option(raw: Any, menu: Any) -> Any:
+    """A reply that picks a scored option by number -> the full ZeldaChoice shape (goal, prediction
+    and budget from the option; the model may still override the prediction). Anything else is
+    returned unchanged."""
+    if not menu or not isinstance(raw, dict) or 'option' not in raw:
+        return raw
+    if 'goal' in raw:   # a full goal wins; the stray pick would only fail extra='forbid'
+        return {k: v for k, v in raw.items() if k != 'option'}
+    pick = raw.get('option')
+    if isinstance(pick, str) and pick.strip().isdigit():
+        pick = int(pick.strip())
+    elif isinstance(pick, float) and pick.is_integer():
+        pick = int(pick)
+    entry = next((m for m in menu if isinstance(m, dict) and isinstance(pick, int) and not isinstance(pick, bool)
+                  and m.get('rank') == pick), None)
+    if entry is None:
+        raise PlannerRejected('planner_unknown_option', option=str(pick)[:20])
+    why = raw.get('why') or raw.get('rationale') or entry.get('line') or 'scored option'
+    return {'goal': entry['goal'], 'prediction': raw.get('prediction') or entry['prediction'],
+            'rationale': str(why)[:512], 'budget_seconds': raw.get('budget_seconds') or entry['budget_seconds']}
 
 
 def validate_zelda_choice(raw: Any, decision: dict) -> ZeldaChoice:
@@ -493,6 +537,7 @@ def refusal_note(exc: 'PlannerRejected') -> str:
     text = {'planner_side_closed': f'exit {d.get("dir")}: Link cannot reach that edge from here',
             'planner_repeats_no_effect': f'{d.get("goal")}: the same goal just left Link where he was',
             'planner_unparseable': 'the reply was not one JSON object',
+            'planner_unknown_option': f'option {d.get("option")}: pick a number from the scored options list',
             'planner_prediction_value_mismatch': 'reach_room needs "value": the room id you expect to reach',
             'planner_no_enemies': 'fight: there is no enemy in the room',
             'planner_unknown_target': f'fight {d.get("target")}: no enemy has that slot',
@@ -518,7 +563,7 @@ def check_decision(decision: Any) -> dict:
     return decision
 
 
-async def _gateway_chat(config, prompt: str, *, max_tokens: int) -> tuple[dict, str]:
+async def _gateway_chat(config, prompt: str, *, max_tokens: int, route: str = ZELDA_ROUTE) -> tuple[dict, str]:
     """One llm.chat.request on the local GPU route. Returns (result payload, correlation id)."""
     from orion.core.bus.async_service import OrionBusAsync
     from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
@@ -528,7 +573,7 @@ async def _gateway_chat(config, prompt: str, *, max_tokens: int) -> tuple[dict, 
         await bus.connect()
         reply = f'orion:exec:result:{config.LLM_GATEWAY_SERVICE_NAME}:{correlation}'
         payload = ChatRequestPayload(messages=[LLMMessage(role='user', content=prompt)],
-            route=ZELDA_ROUTE, options={'max_tokens': max_tokens, 'purpose': 'retro_goal_v2',
+            route=route, options={'max_tokens': max_tokens, 'purpose': 'retro_goal_v2',
                 'skip_spark_candidate_publish': True,
                 'chat_template_kwargs': {'enable_thinking': False}})
         envelope = BaseEnvelope(kind='llm.chat.request',
@@ -546,7 +591,7 @@ async def _gateway_chat(config, prompt: str, *, max_tokens: int) -> tuple[dict, 
 
 
 async def plan_zelda(config, decision: Any, atlas: Optional[dict], history: Any, *, chat=None,
-                     menu: Any = None) -> dict:
+                     menu: Any = None, route: str = ZELDA_ROUTE) -> dict:
     """Answer one Retro decision with a GoalV2 body (without sponsor/generation/port/epoch).
 
     ``menu``: scored options from scripts.retro_experience (``Menu.for_planner()``), listed after the
@@ -561,7 +606,7 @@ async def plan_zelda(config, decision: Any, atlas: Optional[dict], history: Any,
     decision = check_decision(decision)
     if _in_flight:
         raise PlannerBusy('planner_busy')
-    key = ZELDA_ROUTE
+    key = route
     wait, token = SHED_BACKOFF.admit(key)
     if wait is not None:
         raise PlannerShed('gpu_pool_unavailable', reason=SHED_BACKOFF.reason(key) or 'shed:unknown',
@@ -574,7 +619,10 @@ async def plan_zelda(config, decision: Any, atlas: Optional[dict], history: Any,
         started = _now()
         for attempt in (1, 2):
             try:
-                data, correlation = await (chat or _gateway_chat)(config, prompt, max_tokens=320)
+                # The retry asks for a different goal and may need the full shape: give it room.
+                limit = MENU_MAX_TOKENS if menu_lines(menu) and attempt == 1 else FULL_MAX_TOKENS
+                data, correlation = await (chat(config, prompt, max_tokens=limit) if chat else
+                                           _gateway_chat(config, prompt, max_tokens=limit, route=route))
             except PlannerError:
                 outcome = 'pool_unreachable'
                 raise
@@ -604,6 +652,7 @@ async def plan_zelda(config, decision: Any, atlas: Optional[dict], history: Any,
                     raw = parse_json_object(text)
                 except ValueError:
                     raise PlannerRejected('planner_unparseable')
+                raw = choice_from_option(raw, menu)
                 choice = validate_zelda_choice(raw, decision)
                 break
             except PlannerRejected as exc:
@@ -612,7 +661,7 @@ async def plan_zelda(config, decision: Any, atlas: Optional[dict], history: Any,
                 prompt += f'\nYour previous answer was refused: {refusal_note(exc)}. Choose a different goal.'
         result = choice.model_dump(mode='json') | {
             'decision_id': decision['decision_id'],
-            'planner_id': 'llm-gateway:metacog_background:' + correlation}
+            'planner_id': f'llm-gateway:{route}:' + correlation}
         if menu:
             result['chosen_rank'] = menu_rank(menu, result['goal'])
         return result

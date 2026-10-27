@@ -4147,6 +4147,7 @@ Walkway camera idea 3 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-wo
 
 - `GET /api/asks?status=open` -- open, unexpired `orion_ask` rows, newest first.
 - `POST /api/asks/{ask_id}/answer` with `{"answer": "..."}` and `POST /api/asks/{ask_id}/dismiss` -- only an open, unexpired row moves (409 otherwise, 404 if unknown). Sets `status`, `answer`, `answered_at`, then publishes `OrionAskAnsweredV1` on `orion:ask:answered` (consumed by `orion-substrate-runtime`). If the publish fails the answer is still saved (`published: false` in the response); `orion-sql-writer` applies labels from the row itself.
+- **"I don't know"** (2026-10-27): a "who is this?" card (`vision_individual`, people and vehicles) has an **I don't know** button next to Answer / Dismiss. It posts `POST /api/asks/{ask_id}/dismiss` with `{"reason": "dont_know"}` (422 `dont_know_only_on_who_is_this_cards` on any other card). The row becomes `status='dismissed'`, `answer` NULL, `answer_detail={"dont_know": true}`, so no name is ever stored. `orion-sql-writer` may ask again after `VISION_ASK_COOLDOWN_DAYS`, counted from when she pressed it; a plain Dismiss still blocks that individual for good. Typed answers are not filtered by a word list: before this button, non-answers typed in the box ("no", "unsure") were saved as names.
 
 Asks are opened by `orion-sql-writer`'s individuals loop (row insert only, no bus event); the card polls every 60s.
 

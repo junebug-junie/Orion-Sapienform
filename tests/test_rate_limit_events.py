@@ -184,7 +184,7 @@ def test_no_events_with_activity_is_clear(tmp_path):
 
 def test_nothing_observed_is_unknown_not_clear(tmp_path):
     """The distinction that matters: an unobservable window is not an empty
-    road. Same contract as quota_budget.WindowSpend.observed.
+    road. (The deleted quota_budget.WindowSpend.observed drew the same line.)
     """
     root = transcript(tmp_path, line(T - timedelta(days=3), text="old turn"))
     o = observe(now=T, window_hours=1.0, root=root)

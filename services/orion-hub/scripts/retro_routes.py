@@ -234,6 +234,7 @@ def create_router(config, presence=None, experience=None):
         menu = await experience.prepare(retro_sid, decision, atlas)
         try:
             goal = await retro_planner.plan_zelda(config, decision, atlas, list(history),
+                                                  route=retro_planner.COPLAY_ROUTE,
                                                   **({'menu': menu.for_planner()} if menu else {}))
         except retro_planner.PlannerShed as exc:
             bump('sheds')

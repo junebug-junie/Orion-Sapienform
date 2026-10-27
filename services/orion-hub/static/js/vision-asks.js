@@ -29,6 +29,13 @@
   // it is the same person (the default), someone else (optionally named) or
   // not sure; that rides along as {pictures: [...]}. The main box still names
   // the first picture, which is the one the question is about.
+  //
+  // "I don't know" on "who is this?" cards (2026-10-27, Juniper): typed
+  // non-answers ("no", "unsure") were being saved as names. The card now has an
+  // explicit "I don't know" button. It is a dismissal that says why
+  // (POST /dismiss {reason: "dont_know"}): no name is stored, and Orion may ask
+  // again after the cooldown. Plain Dismiss still means "never ask again".
+  // There is no word list on typed answers: the button is the fix.
   const RESOLVABLE_KINDS = ["memory_confirmation", "open_question"];
 
   function isResolvable(ask) {
@@ -177,6 +184,7 @@
     if (detail === "answer_must_be_yes_or_no") return "Press Same person, Different people, or Not sure.";
     if (detail === "same_person_takes_one_name") return "Same person takes one name.";
     if (detail === "name_too_long") return "That name is too long (120 characters at most).";
+    if (detail === "dont_know_only_on_who_is_this_cards") return "I don't know is only for \"who is this?\" questions.";
     if (detail === "pick_an_answer") return "Pick Same person, Different people, or Not sure first.";
     if (status === 409) return "Someone already answered this one, or it expired.";
     if (status === 404) return "That question no longer exists.";
@@ -648,10 +656,20 @@
     const dismissBtn = el(doc, "button", "text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded px-3 py-1 border border-gray-700", "Dismiss");
     dismissBtn.setAttribute("type", "button");
     dismissBtn.setAttribute("data-ask-action", "dismiss");
+    // "I don't know": closes the card without a name (see the header comment).
+    let dontKnowBtn = null;
+    if (vm.whoIsThis) {
+      dontKnowBtn = el(doc, "button", "text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-3 py-1 border border-gray-600", "I don't know");
+      dontKnowBtn.setAttribute("type", "button");
+      dontKnowBtn.setAttribute("data-ask-action", "dont-know");
+      dontKnowBtn.setAttribute("title", "No name is saved. Orion may ask again later.");
+    }
     const note = el(doc, "div", "text-[11px] text-amber-300 hidden");
-    // Both buttons are locked while a request is in flight, so a double
+    // An empty Answer points at the button that says what she means.
+    if (dontKnowBtn) note.setAttribute("data-empty-hint", "Type a name first, or press I don't know.");
+    // Every button is locked while a request is in flight, so a double
     // click cannot send a second POST and flash a spurious 409.
-    const buttons = [answerBtn, dismissBtn];
+    const buttons = dontKnowBtn ? [answerBtn, dontKnowBtn, dismissBtn] : [answerBtn, dismissBtn];
     function run(action, text, extra) {
       buttons.forEach(function (b) { b.disabled = true; });
       return Promise.resolve(onAction(vm.askId, action, text, note, undefined, extra)).finally(function () {
@@ -667,8 +685,15 @@
     dismissBtn.addEventListener("click", function () {
       return run("dismiss", "");
     });
+    if (dontKnowBtn) {
+      // Closes the whole card: any per-picture choices are not sent (she does not know who it is).
+      dontKnowBtn.addEventListener("click", function () {
+        return run("dismiss", "", { dontKnow: true });
+      });
+    }
     row.appendChild(input);
     row.appendChild(answerBtn);
+    if (dontKnowBtn) row.appendChild(dontKnowBtn);
     row.appendChild(dismissBtn);
     card.appendChild(row);
     card.appendChild(note);
@@ -687,6 +712,9 @@
     }
     if (action === "resolve") {
       init.body = JSON.stringify({ resolution: String(resolution || ""), note: String(answerText || "").trim() });
+    }
+    if (action === "dismiss" && extra && extra.dontKnow) {
+      init.body = JSON.stringify({ reason: "dont_know" });
     }
     const resp = await fetchFn(url, init);
     let body = null;
@@ -768,7 +796,7 @@
 
     async function onAction(askId, action, answerText, note, resolution, extra) {
       if (action === "answer" && !String(answerText || "").trim()) {
-        note.textContent = "Type an answer first, or press Dismiss.";
+        note.textContent = (note.getAttribute && note.getAttribute("data-empty-hint")) || "Type an answer first, or press Dismiss.";
         note.classList.remove("hidden");
         return;
       }

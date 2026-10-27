@@ -1474,22 +1474,22 @@ async def lifespan(app: FastAPI):
             "orch_payload": orch_payload,
         }
 
-    def _journal_shadow(dedupe_key: str, parent: BaseEnvelope, trigger: Any):
-        """The journal compose's shadow want (actions.journal, Tier 1), placed. None if it could not
-        be built: the compose never depends on it."""
+    def _journal_shadow(want_id: str, parent: BaseEnvelope, trigger: Any):
+        """The journal compose's shadow want (actions.journal, Tier 1), placed. ``want_id`` is the
+        act's correlation id (the compose id; the trigger's id when acts are off and no act exists).
+        None if it could not be built: the compose never depends on it."""
         try:
             from .physiology_shadow import ShadowBid
 
             shadow = ShadowBid(
-                family=act_emit.JOURNAL_ACTOR, verb="make", tier=1,
-                want_id=act_emit.compose_correlation_id(dedupe_key, str(parent.correlation_id)),
+                family=act_emit.JOURNAL_ACTOR, verb="make", tier=1, want_id=want_id,
                 object_ref=f"journal_trigger:{str(getattr(trigger, 'trigger_kind', '') or 'unknown')}",
                 component="journal",
             )
             shadow.place()
             return shadow
         except Exception:  # noqa: BLE001 -- shadow only
-            logger.info("journal_shadow_bid_not_built dedupe_key=%s", dedupe_key)
+            logger.info("journal_shadow_bid_not_built want_id=%s", want_id)
             return None
 
     def _settle_shadow(shadow: Any, real: str) -> None:
@@ -1520,7 +1520,7 @@ async def lifespan(app: FastAPI):
         # Body economy Patch C3b: the point this journal would compose. A SHADOW bid, logged beside
         # the real outcome and never obeyed (app/physiology_shadow.py). want_id = the compose
         # correlation id, which is the journal act's correlation id.
-        jshadow = _journal_shadow(dedupe_key, parent, trigger)
+        jshadow = _journal_shadow(compose_corr or str(parent.correlation_id), parent, trigger)
         jact = act_emit.ActTrace(
             _act_publish,
             act_emit.journal_act(

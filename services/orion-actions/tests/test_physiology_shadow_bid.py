@@ -161,3 +161,28 @@ def test_a_shadow_that_cannot_be_built_never_fails_the_compose(tmp_path, economy
     _, events = _journal_once(tmp_path, monkeypatch, _journal_env(), orch_payload={"ok": True})
     assert [e["event_kind"] for e in events] == ["act_opened", "act_closed"]
     assert events[1]["act"]["outcome"]["value"] == 1.0
+
+
+def test_a_compose_that_never_got_its_slot_is_blocked_and_releases(tmp_path, economy, caplog, monkeypatch):
+    """Raised before the act opened: real=blocked, and a funded shadow reservation is released."""
+    from app import main as actions_main
+
+    caplog.set_level(logging.INFO, logger="orion-actions.physiology_shadow")
+
+    class _BrokenSemaphore:
+        def __init__(self, *a, **k):
+            pass
+
+        async def acquire(self):
+            raise RuntimeError("no slot")
+
+        def release(self):
+            raise AssertionError("never acquired")
+
+    monkeypatch.setattr(actions_main.asyncio, "Semaphore", _BrokenSemaphore)
+    _, events = _journal_once(tmp_path, monkeypatch, _journal_env(), orch_payload={"ok": True})
+    assert events == []                       # unchanged: no slot, no act
+    (want,) = economy.wants
+    (line,) = _lines(caplog)
+    assert line["real"] == "blocked:raised:RuntimeError"
+    assert economy.released == [want.want_id]

@@ -118,9 +118,10 @@ compose does.
 - Family `actions.journal`, Tier 1 (Tier 1 still bids; only Tier 0 never bids), verb `make`.
   `want_id` = `act_emit.compose_correlation_id(dedupe_key, trigger correlation id)`, the journal
   act's correlation id.
-- Real outcome: `ran` once the semaphore is acquired and the act opens (a compose that then fails
-  still ran: its act closes at 0); `blocked:raised:<Exception>` if it was cancelled or raised
-  before that.
+- Real outcome: `ran` once the semaphore is acquired and the act opens. `ran` means the real
+  gates let it run, not that it produced: a compose that then fails still ran, and its act closes
+  at 0. `blocked:raised:<Exception>` if it was cancelled or raised before that (a funded shadow
+  decision is then released).
 - Log line: `physiology_shadow_bid family=actions.journal want_id=... shadow=... real=...`.
   durable-runs writes the decision into `want_ledger`.
 - Durable `journal.compose` runs (world_pulse_digest) do not bid here; durable-runs admission

@@ -148,6 +148,6 @@ Run it from the clean primary main checkout after merge. orion-dream imports `or
 
 ## PR link
 
-(filled in after opening)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2919
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

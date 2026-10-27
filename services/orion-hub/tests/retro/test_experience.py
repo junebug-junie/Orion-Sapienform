@@ -777,3 +777,33 @@ def test_the_planner_sees_only_the_two_best_options():
     assert [m['rank'] for m in menu.for_planner()] == [1, 2] and len(menu.entries) == 3
     assert len(menu.for_planner(limit=None)) == 3
     assert menu.rank_of({'kind': 'exit', 'dir': 'E'}) == 3        # an off-shortlist pick still gets its rank
+
+
+def test_the_shortlist_always_keeps_a_way_out_next_to_a_fight():
+    # Review: near enemy, every side heavily visited -> fight and retreat outscore every exit.
+    d, atlas = watched_decision()
+    atlas = dict(atlas, map={k: dict(visits=50) for k in ('0:103', '0:118', '0:120')},
+                 adjacent={k: dict(v, known=True) for k, v in atlas['adjacent'].items()})
+    opts = X.build_options(d, atlas)
+    ps = {o.option_id: 0.9 for o in opts}
+    menu = X.build_menu(opts, asyncio.run(experience(FakePrediction(p=lambda o: ps[o['option_id']], eig=0.0,
+                                                                    level='skill')).quote(opts)))
+    top = [e.option.skill for e in menu.entries[:2]]
+    assert 'traverse' not in top                                     # a plain top 2 would hide every exit
+    shown = menu.for_planner()
+    assert len(shown) == 2 and {menu.entries[r['rank'] - 1].option.skill == 'traverse' for r in shown} == {True, False}
+    assert [r['rank'] for r in shown] == sorted(r['rank'] for r in shown)
+
+
+def test_a_pick_outside_the_shortlist_is_placed_with_its_full_menu_rank():
+    d, atlas = live_decision()
+    opts = X.build_options(d, atlas)
+    ps = {'exit:N': 0.9, 'exit:W': 0.4, 'exit:E': 0.1}
+    fake = FakePrediction(p=lambda o: ps[o['option_id']], eig=0.0, level='skill')
+    exp = experience(fake)
+    menu = X.build_menu(opts, asyncio.run(exp.quote(opts)))
+    third = menu.entries[2].option.goal
+    asyncio.run(exp.placed('s1', d, atlas, dict(goal=third, prediction={'kind': 'unknown'}, decision_id='15:9',
+                                                chosen_rank=None), menu))
+    placed = [c for c in fake.calls if c[0] == 'POST' and c[1] == '/action-bets']
+    assert placed and placed[-1][2]['chosen_rank'] == 3

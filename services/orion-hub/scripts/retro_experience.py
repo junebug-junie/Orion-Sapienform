@@ -286,10 +286,19 @@ class Menu:
 
     def for_planner(self, limit: Optional[int] = PLANNER_SHORTLIST) -> list[dict]:
         """What retro_planner.plan_zelda takes: rank, goal, the prompt line, and the prediction and
-        budget a pick by number uses. Only the top ``limit`` (None = all): the score decides what is
-        in the running, the model picks between the best and can still refuse them on facts."""
+        budget a pick by number uses. Only a shortlist of ``limit`` (None = all): the score decides
+        what is in the running, the model picks between them and can still refuse them on facts.
+        The shortlist keeps the best traverse and the best other move, so a way out is always shown
+        (review: fight and retreat, never discounted by visits, could fill both slots)."""
+        entries = list(self.entries)
+        if limit is not None:
+            moves = [e for e in entries if e.option.skill == 'traverse'][:1]
+            others = [e for e in entries if e.option.skill != 'traverse'][:1]
+            keep = moves + others if moves and others else entries[:limit]
+            entries = sorted(keep + [e for e in entries if e not in keep][:max(0, limit - len(keep))],
+                             key=lambda e: e.rank)
         out = []
-        for e in self.entries[:limit]:
+        for e in entries:
             prediction, budget = e.option.default_plan
             out.append({'rank': e.rank, 'goal': e.option.goal, 'line': e.line,
                         'prediction': prediction, 'budget_seconds': budget})
@@ -537,7 +546,10 @@ class ZeldaExperience:
             if option is None:
                 return None
             decision_id = str(goal.get('decision_id') or decision.get('decision_id'))
-            rank = goal.get('chosen_rank') if 'chosen_rank' in goal else menu.rank_of(goal.get('goal'))
+            # The planner ranks against the shortlist it saw; a pick outside it still has a full-menu rank.
+            rank = goal.get('chosen_rank')
+            if rank is None:
+                rank = menu.rank_of(goal.get('goal'))
             bet = ActionBetPlaceV1(bet_id=bet_id_for(retro_session_id, decision_id), domain=DOMAIN, body=BODY,
                                    skill=option.skill, context=option.context, place=option.place,
                                    action={'goal': goal.get('goal'), 'prediction': goal.get('prediction'),

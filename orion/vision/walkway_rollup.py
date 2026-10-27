@@ -306,14 +306,18 @@ class PersonRef:
     source_kind: str = SOURCE_INDIVIDUAL
 
 
-def person_record_digest(persons: Optional[Mapping[str, PersonRef]]) -> Optional[str]:
-    """Short digest of the links the rollup grouped by; None when the record was unreadable."""
+def person_record_digest(persons: Optional[Mapping[str, PersonRef]],
+                         ids: Optional[Iterable[str]] = None) -> Optional[str]:
+    """Short digest of the links the rollup grouped by; None when the record was unreadable.
+    ``ids``: only the links of these individuals (an hour's own), so a link change for
+    someone the hour never saw does not make that hour stale."""
     if persons is None:
         return None
     import hashlib
 
+    keep = None if ids is None else set(ids)
     raw = "\n".join(f"{iid}|{r.person_id}|{r.display_name}|{r.status}|{r.source_kind}"
-                    for iid, r in sorted(persons.items()))
+                    for iid, r in sorted(persons.items()) if keep is None or iid in keep)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -593,13 +597,17 @@ def build_hour(inp: HourInputs, tz: ZoneInfo) -> dict[str, Any]:
         n["individual_ids"].append(iid)
         if pid:
             n.setdefault("person_ids", set()).add(pid)
+        elif inp.persons is not None:
+            # Typed but not (yet) linked: kept under its label, and listed so an entry that
+            # shares a person's name never reads as wholly confirmed by the record.
+            n.setdefault("unlinked_individual_ids", []).append(iid)
         if bucket == "belongings":
             n.setdefault("kinds", set()).add(ind["kind"])
     for group in buckets.values():
         for n in group.values():
             n["times"] = sorted(dict.fromkeys(n["times"]))[:MAX_NAMED_TIMES]
             n["individual_ids"] = sorted(n["individual_ids"])
-            for k in ("person_ids", "kinds"):
+            for k in ("person_ids", "kinds", "unlinked_individual_ids"):
                 if k in n:
                     n[k] = sorted(n[k])
     named, belongings = buckets["named"], buckets["belongings"]
@@ -631,7 +639,8 @@ def build_hour(inp: HourInputs, tz: ZoneInfo) -> dict[str, Any]:
         "kinds": kinds, "total": _totals(kinds), "excluded": excluded,
         "peak_at_once": peaks,
         "named": named, "belongings": belongings, "individuals": individuals,
-        "person_record": {"available": inp.persons is not None, "digest": person_record_digest(inp.persons)},
+        "person_record": {"available": inp.persons is not None,
+                          "digest": person_record_digest(inp.persons, per_ind.keys())},
         "camera": {"up_minutes": up, "expected_minutes": 60, "status": status,
                    "down_spans": [f"{hhmm(p.start, tz)}–{hhmm(p.end, tz)}"] if status == "down" else []},
         "captions": captions,
@@ -681,23 +690,73 @@ def _merge_spans(children: Sequence[tuple[Period, Optional[Mapping[str, Any]]]],
     return out
 
 
+def _label_grouped(row: Mapping[str, Any]) -> bool:
+    """A row whose ``named`` is keyed by typed label: written before rules_version 3, or
+    built while the person record was unreadable."""
+    try:
+        if int(row.get("rules_version") or 1) < PERSON_RECORD_RULES_VERSION:
+            return True
+    except (TypeError, ValueError):
+        return True
+    return (row.get("person_record") or {}).get("available") is False
+
+
+def _regroup(row: Mapping[str, Any], persons: Mapping[str, PersonRef]) -> dict[str, dict[str, dict[str, Any]]]:
+    """A label-grouped child's entries re-keyed through the person record, from each listed
+    individual's kind and label. An entry whose individuals land in several places gives
+    each place its own ids and the entry's times (times are not kept per individual)."""
+    inds = row.get("individuals") or row.get("individual_days") or {}
+    out: dict[str, dict[str, dict[str, Any]]] = {"named": {}, "belongings": {}}
+    for label, v in (row.get("named") or {}).items():
+        v = v or {}
+        places: dict[tuple[str, str], dict[str, Any]] = {}
+        for iid in v.get("individual_ids") or []:
+            info = inds.get(iid) or {}
+            hit = _name_bucket(iid, _kind(info.get("kind") or "person"), info.get("label") or label, persons)
+            if hit is None:
+                continue
+            bucket, name, pid = hit
+            e = places.setdefault((bucket, name), {"individual_ids": [], "person_ids": set(), "kinds": set(),
+                                                   "unlinked_individual_ids": []})
+            e["individual_ids"].append(iid)
+            if pid:
+                e["person_ids"].add(pid)
+            else:
+                e["unlinked_individual_ids"].append(iid)
+            if bucket == "belongings":
+                e["kinds"].add(_kind(info.get("kind")))
+        for (bucket, name), e in places.items():
+            entry = {k: v[k] for k in ("times", "days", "sightings") if k in v}
+            entry.update({k: sorted(x) for k, x in e.items() if x})
+            out[bucket][name] = entry
+    return out
+
+
 def _merge_named(covered: Sequence[tuple[Period, Optional[Mapping[str, Any]]]], key: str, grain: str,
-                 tz: ZoneInfo) -> dict[str, dict[str, Any]]:
+                 tz: ZoneInfo, persons: Optional[Mapping[str, PersonRef]] = None) -> dict[str, dict[str, Any]]:
     """Union the children's ``named`` (or ``belongings``) entries by name: sightings summed,
-    individual ids, person ids and kinds unioned; times (day) or days (week/month)."""
+    individual ids, person ids and kinds unioned; times (day) or days (week/month). With
+    ``persons``, a label-grouped child (older rules, or record unreadable then) is re-keyed
+    through the record first, so one parent never mixes labels and people."""
     merged: dict[str, dict[str, Any]] = {}
     for per, r in covered:
         if r is None:
             continue
         day_key = local_date(per.start, tz).isoformat()
-        for label, v in (r.get(key) or {}).items():
+        entries = (_regroup(r, persons)[key] if persons is not None and _label_grouped(r)
+                   else (r.get(key) or {}))
+        for label, v in entries.items():
             v = v or {}
             n = merged.setdefault(label, {"sightings": 0, "individual_ids": set(), "person_ids": set(),
-                                          "kinds": set(), "times": [], "days": []})
+                                          "kinds": set(), "unlinked_individual_ids": set(), "times": [],
+                                          "days": []})
             n["sightings"] += int(v.get("sightings", 0) or 0)
             n["individual_ids"].update(v.get("individual_ids") or [])
             n["person_ids"].update(v.get("person_ids") or [])
             n["kinds"].update(v.get("kinds") or [])
+            n["unlinked_individual_ids"].update(v.get("unlinked_individual_ids") or [])
+            # Deduplicated by the "HH:MM" string; a repeated fall-back hour carries its zone
+            # name ("01:30 MDT" / "01:30 MST", hhmm), so those stay apart.
             if grain == "day":
                 n["times"].extend(t for t in (v.get("times") or []) if t not in n["times"])
             else:
@@ -707,18 +766,18 @@ def _merge_named(covered: Sequence[tuple[Period, Optional[Mapping[str, Any]]]], 
     out: dict[str, dict[str, Any]] = {}
     for label, n in sorted(merged.items()):
         entry: dict[str, Any] = {"sightings": n["sightings"], "individual_ids": sorted(n["individual_ids"])}
-        for k in ("person_ids", "kinds"):
+        for k in ("person_ids", "kinds", "unlinked_individual_ids"):
             if n[k]:
                 entry[k] = sorted(n[k])
         if grain == "day":
-            entry["times"] = n["times"][:MAX_NAMED_TIMES]
+            entry["times"] = sorted(n["times"])[:MAX_NAMED_TIMES]
         else:
             entry["days"] = sorted(n["days"])[:MAX_NAMED_DAYS]
         out[label] = entry
     return out
 
 
-def _belonging_name(name: str, v: Mapping[str, Any]) -> str:
+def belonging_name(name: str, v: Mapping[str, Any]) -> str:
     """"Emerald's bicycle"."""
     kinds = [KIND_SINGULAR.get(k, str(k)) for k in (v.get("kinds") or [])] or ["thing"]
     return f"{name}'s {' and '.join(kinds)}"
@@ -737,6 +796,7 @@ def build_parent(
     covered_until: Optional[datetime] = None,
     history: Sequence[Mapping[str, Any]] = (),
     story_gate: Optional[Mapping[str, Any]] = None,
+    persons: Optional[Mapping[str, PersonRef]] = None,
 ) -> dict[str, Any]:
     """Combine child rollups. ``children`` lists every child period of ``period`` up to
     ``covered_until`` (a partial parent stops there), each with its row or None when the
@@ -783,8 +843,8 @@ def build_parent(
         if int((kinds.get(k) or {}).get("passings", 0)) > 0:
             kinds[k]["count_range"] = _parent_range(rows, kinds[k]["passings"], k)
 
-    named_out = _merge_named(covered, "named", grain, tz)
-    belongings_out = _merge_named(covered, "belongings", grain, tz)
+    named_out = _merge_named(covered, "named", grain, tz, persons)
+    belongings_out = _merge_named(covered, "belongings", grain, tz, persons)
 
     # Regulars: unnamed individuals seen on 2+ days (day: this day plus an earlier day of
     # the trailing week, from earlier day rows; week/month: 2+ days inside the period).
@@ -919,6 +979,7 @@ def build_parent(
         "kinds": kinds, "total": _totals(kinds), "excluded": excluded,
         "peak_at_once": _max_peaks(rows),
         "named": named_out, "belongings": belongings_out, individuals_key: ind_out,
+        "person_record": {"available": persons is not None},
         "regulars": {"count": len(regular_ids), "by_kind": reg_by_kind, "ids": regular_ids},
         "camera": {"up_minutes": up, "expected_minutes": expected, "status": status,
                    "up_hours": round(up / 60.0, 1), "expected_hours": round(expected / 60.0, 1),
@@ -1007,7 +1068,7 @@ def render_line(rollup: Mapping[str, Any]) -> str:
                 segs.append(peak)
             body = "; ".join(x for x in segs if x)
         named = [(name, v) for name, v in (rollup.get("named") or {}).items()]
-        named += [(_belonging_name(name, v), v) for name, v in (rollup.get("belongings") or {}).items()]
+        named += [(belonging_name(name, v), v) for name, v in (rollup.get("belongings") or {}).items()]
         if named:
             body += "; " + ", ".join(f"{name} at {', '.join(v.get('times') or [])}" for name, v in named)
         base = (rollup.get("baseline") or {}).get("mean_passings")
@@ -1028,7 +1089,7 @@ def render_line(rollup: Mapping[str, Any]) -> str:
         others = _count_phrase(kinds, skip=RANGE_KINDS, with_distinct=True)
         parts = [x for x in (range_phrase(person_count_range(rollup)), f"{others} passing" if others else "") if x]
     named = [(name, v) for name, v in (rollup.get("named") or {}).items()]
-    named += [(_belonging_name(name, v), v) for name, v in (rollup.get("belongings") or {}).items()]
+    named += [(belonging_name(name, v), v) for name, v in (rollup.get("belongings") or {}).items()]
     if named:
         if grain == "day":
             parts.append("named: " + ", ".join(f"{n} ({', '.join((v.get('times') or [])[:4])})"

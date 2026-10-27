@@ -101,6 +101,7 @@ def link_recent_days(*, engine: Any, store: Any, streams: tuple[str, ...], lookb
     )
     from orion.substrate.materializer import SubstrateGraphMaterializer
     from orion.substrate.reconcile import SubstrateIdentityResolver
+    from orion.vision.walkway_rollup import belonging_name
 
     ts = now or datetime.now(timezone.utc)
     out: list[dict[str, Any]] = []
@@ -113,8 +114,7 @@ def link_recent_days(*, engine: Any, store: Any, streams: tuple[str, ...], lookb
             seen: list[tuple[str, str, Optional[str]]] = []
             named = dict(_named(row["named"]))
             for owner, entry in _named(_get(row, "belongings")).items():
-                kinds = " and ".join((entry or {}).get("kinds") or ["thing"])
-                named.setdefault(f"{owner}'s {kinds}", entry)
+                named.setdefault(belonging_name(owner, entry or {}), entry)
             sighted = sorted({i for e in named.values() for i in ((e or {}).get("individual_ids") or [])})
             sources: dict[str, set[str]] = {}
             if sighted:

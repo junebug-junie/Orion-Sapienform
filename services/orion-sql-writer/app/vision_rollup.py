@@ -33,7 +33,9 @@ Named people (rules_version 3): the hour build groups named individuals by the p
 record (``person`` / ``person_link``, read once per tick by ``Reader.person_links``). An
 hour inside ``catchup_hours`` whose stored ``person_record.digest`` differs from the
 current links is rebuilt too, so a rename or a new link reaches the recent days without a
-backfill. Person tables missing or unreadable: fail-open to label grouping, logged once.
+backfill. Person tables missing or unreadable: fail-open to label grouping, logged once (and once on recovery).
+Day, week and month rows re-key label-grouped children (older rows) through the record,
+so a parent never mixes cluster labels and people.
 """
 
 from __future__ import annotations
@@ -184,7 +186,7 @@ def build_hours(reader: Reader, store: Store, stream_id: str, hours: Sequence[Pe
 
 
 def build_parent_row(store: Store, stream_id: str, period: Period, tz: ZoneInfo, covered_until: datetime,
-                     gate: Mapping[str, Any]) -> Dict[str, Any]:
+                     gate: Mapping[str, Any], persons: Optional[Mapping[str, PersonRef]] = None) -> Dict[str, Any]:
     grain = {"day": "hour", "week": "day", "month": "day"}[period.grain]
     children = [(c, store.get(stream_id, grain, c.start)) for c in child_periods(period, tz)]
     lookback = {"day": max(DAY_BASELINE_DAYS, HOUR_BASELINE_DAYS), "week": WEEK_BASELINE_WEEKS,
@@ -192,15 +194,15 @@ def build_parent_row(store: Store, stream_id: str, period: Period, tz: ZoneInfo,
     history = store.recent(stream_id, period.grain, period.start, lookback)
     rollup = build_parent(stream_id, period, children, tz,
                           covered_until=None if covered_until >= period.end else covered_until,
-                          history=history, story_gate=gate)
+                          history=history, story_gate=gate, persons=persons)
     store.put(stream_id, period, rollup, render_line(rollup))
     return rollup
 
 
-def _stale(row: Optional[Mapping[str, Any]], digest: Optional[str] = None) -> bool:
-    """Missing, written under older counting rules, or grouped by other person links than
-    ``digest`` (the current ones). ``digest`` None: the record is unreadable now, so a row
-    is not rebuilt just for that (it would only lose its person grouping)."""
+def _stale(row: Optional[Mapping[str, Any]], persons: Optional[Mapping[str, PersonRef]] = None) -> bool:
+    """Missing, written under older counting rules, or grouped by other links than the
+    current ``persons`` hold for the individuals the hour saw. ``persons`` None: the record is
+    unreadable now, so a row is not rebuilt just for that (it would only lose its grouping)."""
     if row is None:
         return True
     try:
@@ -208,7 +210,8 @@ def _stale(row: Optional[Mapping[str, Any]], digest: Optional[str] = None) -> bo
             return True
     except (TypeError, ValueError):
         return True
-    if digest is not None and (row.get("person_record") or {}).get("digest") != digest:
+    if persons is not None and (row.get("person_record") or {}).get("digest") != person_record_digest(
+            persons, (row.get("individuals") or {}).keys()):
         return True
     return False
 
@@ -241,7 +244,6 @@ def refresh_stream(reader: Reader, store: Store, stream_id: str, now: datetime, 
         return summary
     summary["ready_until"] = ready.isoformat()
     persons = _person_links(reader)
-    digest = person_record_digest(persons)
     summary["person_record"] = "ok" if persons is not None else "unavailable"
     if since is not None:
         # Never before the camera's first frame record: earlier hours would read "camera
@@ -262,7 +264,7 @@ def refresh_stream(reader: Reader, store: Store, stream_id: str, now: datetime, 
         recompute_from = ready - timedelta(hours=cfg.recompute_hours)
         while t < ready:
             per = Period("hour", t, t + timedelta(hours=1))
-            if t >= recompute_from or _stale(store.get(stream_id, "hour", t), digest):
+            if t >= recompute_from or _stale(store.get(stream_id, "hour", t), persons):
                 todo.append(per)
             t += timedelta(hours=1)
     gate = reader.story_gate()
@@ -286,13 +288,13 @@ def refresh_stream(reader: Reader, store: Store, stream_id: str, now: datetime, 
     months_done: set = set()
     for d in dates:
         summary["hours"] += build_hours(reader, store, stream_id, by_date.get(d, []), tz, cfg, gate, raw)
-        build_parent_row(store, stream_id, day_period(d, tz), tz, ready, gate)
+        build_parent_row(store, stream_id, day_period(d, tz), tz, ready, gate, persons)
         summary["days"] += 1
         # A week/month is rebuilt after each of its days, so its history and today's
         # partial day are both current; only the last rebuild per tick matters.
         wk, mo = week_period(d, tz), month_period(d, tz)
-        build_parent_row(store, stream_id, wk, tz, ready, gate)
-        build_parent_row(store, stream_id, mo, tz, ready, gate)
+        build_parent_row(store, stream_id, wk, tz, ready, gate, persons)
+        build_parent_row(store, stream_id, mo, tz, ready, gate, persons)
         weeks_done.add(wk.start)
         months_done.add(mo.start)
     summary["weeks"] = len(weeks_done)
@@ -431,6 +433,9 @@ class DbReader:
                 logger.warning("vision_rollup_person_record_unavailable error=%s missing=%s -- named grouped by label",
                                type(exc).__name__, is_missing_relation(exc))
             return None
+        if _PERSON_RECORD_WARNED:
+            _PERSON_RECORD_WARNED = False
+            logger.info("vision_rollup_person_record_available -- named grouped by person again")
         out: Dict[str, PersonRef] = {}
         for r in rows:
             # vision_individual sorts before vision_belonging (DESC): an individual link wins.

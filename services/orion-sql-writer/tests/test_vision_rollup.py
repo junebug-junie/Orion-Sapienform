@@ -718,7 +718,7 @@ def test_named_is_by_person_and_clusters_of_one_person_merge():
     assert r["named"] == {
         "Robin": {"times": ["15:05", "15:40"], "sightings": 2, "individual_ids": ["r1", "r2"],
                   "person_ids": ["person-robin"]},
-        "Kit": {"times": ["15:30"], "sightings": 1, "individual_ids": ["u1"]},
+        "Kit": {"times": ["15:30"], "sightings": 1, "individual_ids": ["u1"], "unlinked_individual_ids": ["u1"]},
     }
     assert r["belongings"] == {"Sam": {"times": ["15:20"], "sightings": 1, "individual_ids": ["bike"],
                                        "person_ids": ["person-sam"], "kinds": ["bicycle"]}}
@@ -786,7 +786,7 @@ def test_a_changed_person_link_rebuilds_the_recent_hours_once():
     assert refresh_stream(reader, store, "walkway", now, cfg)["person_record"] == "ok"
     assert refresh_stream(reader, store, "walkway", now, cfg)["hours"] == 3   # nothing changed
     reader.persons = {"regular": P_ROBIN}                                      # a rename
-    assert refresh_stream(reader, store, "walkway", now, cfg)["hours"] == 6
+    assert refresh_stream(reader, store, "walkway", now, cfg)["hours"] == 4   # + the older hour that saw them
     assert refresh_stream(reader, store, "walkway", now, cfg)["hours"] == 3
     # The record turning unreadable does not rebuild (it would only lose the grouping).
     reader.persons = None
@@ -818,9 +818,14 @@ def test_postgres_named_by_person_record_and_fail_open_without_it(pg, caplog):
         with pg.connect() as conn:
             return conn.execute(text("SELECT rollup->'named' FROM vision_rollup WHERE grain='day'")).scalar()
 
-    # No person tables: label grouping, logged once, and the rollup transaction survives.
+    # No person tables: label grouping, logged once, and the rollup transaction survives,
+    # in the READ ONLY replay too.
     vr._PERSON_RECORD_WARNED = False
-    with caplog.at_level("WARNING", logger="sql-writer.vision_rollup"):
+    with caplog.at_level("INFO", logger="sql-writer.vision_rollup"):
+        mem = MemoryStore()
+        run_one_rollup_cycle(postgres_uri=_schema_uri(), cfg=cfg, now=now, since=day0, write=False, memory=mem)
+        assert any(set((r.get("named") or {})) == {"Robin", "Rob", "Parcel", "no"}
+                   for k, r in mem.rows.items() if k[1] == "day")
         run_one_rollup_cycle(postgres_uri=_schema_uri(), cfg=cfg, now=now, since=day0)
         run_one_rollup_cycle(postgres_uri=_schema_uri(), cfg=cfg, now=now, since=day0)
     assert sum("person_record_unavailable" in r.message for r in caplog.records) == 1
@@ -835,8 +840,9 @@ def test_postgres_named_by_person_record_and_fail_open_without_it(pg, caplog):
             conn.execute(text("INSERT INTO person_link (link_id, person_id, source_kind, source_ref, decided_by, "
                               "revoked_at) VALUES (:l, :p, 'vision_individual', :r, 'camera_name', :rv)"),
                          {"l": f"{ref}-{pid}", "p": pid, "r": ref, "rv": revoked})
-    with pg.connect() as conn:
+    with pg.connect() as conn, caplog.at_level("INFO", logger="sql-writer.vision_rollup"):
         links = DbReader(conn).person_links()
+    assert any("person_record_available" in r.message for r in caplog.records)
     assert links == {"r1": wr.PersonRef("p-robin", "Robin"), "r2": wr.PersonRef("p-robin", "Robin"),
                      "d1": wr.PersonRef("p-parcel", "Parcel", status="not_a_person")}
     run_one_rollup_cycle(postgres_uri=_schema_uri(), cfg=cfg, now=now, since=day0)
@@ -845,3 +851,67 @@ def test_postgres_named_by_person_record_and_fail_open_without_it(pg, caplog):
     with pg.connect() as conn:
         line = conn.execute(text("SELECT line FROM vision_rollup WHERE grain='day'")).scalar()
     assert "named: Robin (08:05, 17:05)" in line and "Parcel" not in line and "no (" not in line
+
+
+def _v2_hour(t, rows):
+    """An hour as rules_version 2 wrote it: named by typed label, any kind."""
+    r = hour(t, rows, persons=None)
+    r["rules_version"] = 2
+    r.pop("person_record", None)
+    r.pop("belongings", None)
+    return r
+
+
+def test_review_mixed_v2_and_v3_children_never_name_labels_next_to_people():
+    """Review 2026-10-27: a day at the edge of the catch-up window (and every week holding
+    older days) merged v2 label keys with v3 person keys: 'Rob', 'Robin', 'no'."""
+    d = date(2026, 10, 17)
+    dp = wr.day_period(d, TZ)
+    children = []
+    for h in wr.child_periods(dp, TZ):
+        local = h.start.astimezone(TZ).hour
+        if local == 9:
+            row = _v2_hour(h.start, [sight("r2", h.start + timedelta(minutes=3), label="Rob"),
+                                     sight("car", h.start + timedelta(minutes=4), kind="vehicle", label="no"),
+                                     sight("bike", h.start + timedelta(minutes=5), kind="bicycle", label="Sam")])
+        elif local == 17:
+            row = hour(h.start, [sight("r1", h.start + timedelta(minutes=8), label="Robin")], persons=PERSONS)
+        else:
+            row = hour(h.start, [], persons=PERSONS)
+        children.append((h, row))
+    day = wr.build_parent("walkway", dp, children, TZ, persons=PERSONS)
+    assert set(day["named"]) == {"Robin"}
+    assert day["named"]["Robin"]["individual_ids"] == ["r1", "r2"]
+    assert day["named"]["Robin"]["times"] == ["09:03", "17:08"]
+    assert day["belongings"]["Sam"]["individual_ids"] == ["bike"]
+    line = wr.render_line(day)
+    assert "named: Robin (09:03, 17:08), Sam's bicycle (09:05)" in line and "no (" not in line
+    # A week holding an old v2 day row re-keys it the same way.
+    old_day = wr.build_parent("walkway", dp, [(p, _v2_hour(p.start, []) if r is None else r)
+                                              for p, r in children], TZ)  # no record: label grouping
+    old_day["rules_version"] = 2
+    old_day.pop("person_record", None)
+    assert set(old_day["named"]) >= {"Rob", "no"}
+    week = wr.build_parent("walkway", wr.week_period(d, TZ), [(dp, old_day)], TZ, persons=PERSONS)
+    assert set(week["named"]) == {"Robin"} and set(week["belongings"]) == {"Sam"}
+    # Without the record now, the parent keeps the children as they are.
+    assert set(wr.build_parent("walkway", dp, children, TZ)["named"]) >= {"Rob", "Robin", "no"}
+
+
+def test_review_an_unlinked_label_sharing_a_persons_name_is_listed_as_unlinked():
+    t = utc(2026, 10, 17, 21, 0)
+    r = hour(t, [sight("r1", t + timedelta(minutes=5), label="Robin"),
+                 sight("c1", t + timedelta(minutes=6), label="Robin")], persons={"r1": P_ROBIN})
+    assert r["named"]["Robin"]["person_ids"] == ["person-robin"]
+    assert r["named"]["Robin"]["unlinked_individual_ids"] == ["c1"]
+
+
+def test_review_a_link_change_for_someone_the_hour_never_saw_does_not_rebuild_it():
+    now = utc(2026, 10, 18, 3, 30)
+    base = _fake(date(2026, 10, 16), 2, now)
+    reader = _PersonFake(base._s, base._m, base._c, persons={"regular": P_SAM})
+    store = MemoryStore()
+    cfg = RollupConfig(settle_sec=60, recompute_hours=3, catchup_hours=6)
+    refresh_stream(reader, store, "walkway", now, cfg)
+    reader.persons = {"regular": P_SAM, "never-seen": P_ROBIN}
+    assert refresh_stream(reader, store, "walkway", now, cfg)["hours"] == 3

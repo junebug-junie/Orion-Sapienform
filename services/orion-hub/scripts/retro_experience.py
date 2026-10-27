@@ -81,6 +81,10 @@ class Option:
         if self.skill == 'traverse':
             return ({'kind': 'reach_room', 'value': self.target_room} if isinstance(self.target_room, int)
                     else {'kind': 'unknown'}), 15
+        if self.skill == 'engage' and self.context.get('threat') != 'one':
+            # Retro ends a fight-nearest goal when that one enemy dies; "all cleared" would be
+            # refuted almost every time with 2+ enemies (review 2026-10-24).
+            return {'kind': 'survive'}, 20
         return DEFAULT_PLANS.get(self.skill, ({'kind': 'unknown'}, 10))
 
     def wire(self) -> ActionBetOptionV1:
@@ -308,8 +312,10 @@ def learning_word(eig_nats: float) -> str:
 
 
 def menu_line(rank: int, option: Option, quote: ActionBetQuoteV1) -> str:
+    prediction, budget = option.default_plan
+    claim = prediction['kind'] + (f' {prediction["value"]}' if prediction.get('value') is not None else '')
     return (f'{rank}. {option.text}. Chance it works {quote.p:.2f} ({counts_phrase(option.skill, quote)}). '
-            f'Learning value {learning_word(quote.eig_nats)}.')
+            f'Learning value {learning_word(quote.eig_nats)}. Predicts {claim}, {budget} s.')
 
 
 # --- settle rules ------------------------------------------------------------------------------------

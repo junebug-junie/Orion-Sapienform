@@ -490,3 +490,16 @@ def test_human_frames_in_the_record_mark_the_session_and_spare_the_game(world):
     assert out.ended.human_may_be_in_control is True and out.ended.controller_frames['human'] == 40
     ops = [p.rsplit('/', 1)[-1] for m, p, _ in world.retro.calls if m == 'POST']
     assert 'stop' not in ops and 'save' not in ops
+
+
+
+def test_a_five_second_retro_outage_still_gives_up_after_about_five_seconds(world):
+    # Review 2026-10-24: at the 0.25 s play poll, 5 failures would give up on Retro in ~1.25 s.
+    began = {}
+    def outage(r):
+        if world.clock.t > 1_000_003 and 'at' not in began:
+            began['at'] = world.clock.t; r.fail_gets = 10
+    world.retro.on_tick = outage
+    out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
+    assert out.ended.end_reason == 'retro_unreachable'
+    assert world.clock.t - began['at'] >= (L.MAX_TRANSPORT_FAILURES - 1) * L.FAILURE_POLL_SEC

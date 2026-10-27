@@ -217,7 +217,7 @@ def test_menu_line_matches_the_spec_style():
                                    dict(level='situation', successes=4, failures=1),
                                    dict(level='place', successes=2, failures=0)])
     assert X.menu_line(1, w, q) == ('1. explore W -> room 118 (never visited). Chance it works 0.71 '
-                                    '(2 of 2 here; moving overall 9 of 14). Learning value medium.')
+                                    '(2 of 2 here; moving overall 9 of 14). Learning value medium. Predicts reach_room 118, 15 s.')
     prior = X.ActionBetQuoteV1.model_validate(q.model_dump() | dict(level='prior', eig_nats=0.193,
                                             counts=[dict(level='skill', successes=0, failures=0)]))
     assert X.counts_phrase('traverse', prior) == 'no tries yet' and X.learning_word(0.193) == 'high'
@@ -715,3 +715,13 @@ def test_menu_entries_carry_the_plan_a_number_pick_uses():
     menu = X.build_menu(list(opts.values()), {o: q.model_copy(update={'option_id': o}) for o in opts})
     entry = next(m for m in menu.for_planner() if m['goal'] == {'kind': 'exit', 'dir': 'W'})
     assert entry['prediction'] == {'kind': 'reach_room', 'value': 118} and entry['budget_seconds'] == 15
+
+
+def test_a_fight_with_several_enemies_predicts_survival_not_a_clear_room():
+    # Retro ends fight-nearest when that enemy dies; "enemies_cleared" with 2+ would be refuted.
+    d, atlas = live_decision()
+    many = dict(d, observation=dict(d['observation'], enemies=[dict(slot=1, x=40, y=100), dict(slot=2, x=200, y=150)]))
+    one = dict(d, observation=dict(d['observation'], enemies=[dict(slot=1, x=40, y=100)]))
+    fight = {'kind': 'fight', 'target': 'nearest'}
+    assert X.option_for_goal(fight, many, atlas).default_plan == ({'kind': 'survive'}, 20)
+    assert X.option_for_goal(fight, one, atlas).default_plan == ({'kind': 'enemies_cleared'}, 20)

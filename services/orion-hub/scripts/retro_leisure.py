@@ -49,6 +49,7 @@ logger = logging.getLogger('orion-hub.retro.leisure')
 
 RECHECK_SEC = 30.0
 POLL_SEC = 0.25   # a finished goal is noticed within 0.25 s (Link stands still until the next one)
+FAILURE_POLL_SEC = 1.0   # after a transport failure: MAX_TRANSPORT_FAILURES still spans ~5 s, not 1.25 s
 HUMAN_QUIET_SEC = 600.0
 MAX_CONSECUTIVE_SHEDS = 3
 MAX_CONSECUTIVE_FAILURES = 3
@@ -538,7 +539,7 @@ async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int,
                 transport_failures += 1
                 if transport_failures >= MAX_TRANSPORT_FAILURES:
                     return 'retro_unreachable', NORMAL
-                await deps.sleep(POLL_SEC)
+                await deps.sleep(FAILURE_POLL_SEC)
                 continue
             detail = session.get('detail') if isinstance(session, dict) else None
             if status != 200 and detail not in ENDED_DETAILS:
@@ -546,7 +547,7 @@ async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int,
                 transport_failures += 1
                 if transport_failures >= MAX_TRANSPORT_FAILURES:
                     return f'retro_unreachable:{status}', NORMAL
-                await deps.sleep(POLL_SEC)
+                await deps.sleep(FAILURE_POLL_SEC)
                 continue
             transport_failures = 0
             if (status != 200 or session.get('session_id') != run.session_id

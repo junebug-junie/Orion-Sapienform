@@ -604,3 +604,18 @@ def test_the_prompt_starts_with_the_same_fixed_block_every_decision(planner):
     fixed = a.index('--- Current game state ---')
     assert fixed >= len(planner.STATIC_RULES) and a[:fixed + 1] == b[:fixed + 1]
     assert not any('Why a decision now' in line for line in a[:fixed])
+
+
+def test_option_picks_tolerate_loose_types_and_the_retry_gets_full_room(planner):
+    seen = []
+    async def chat(config, prompt, *, max_tokens):
+        seen.append(max_tokens)
+        if len(seen) == 1:
+            return dict(content=json.dumps({'option': 'zero'})), 'c1'       # refused -> retry
+        return dict(content=json.dumps({'option': '1', 'why': 'west', 'budget_seconds': None})), 'c2'
+    goal = asyncio.run(planner.plan_zelda(None, decision(), ATLAS, [], chat=chat, menu=MENU))
+    assert goal['goal'] == {'kind': 'exit', 'dir': 'W'} and goal['budget_seconds'] == 15
+    assert seen == [planner.MENU_MAX_TOKENS, planner.FULL_MAX_TOKENS]
+    both = planner.choice_from_option({'option': 2, 'goal': GOOD['goal'], 'prediction': GOOD['prediction'],
+                                       'rationale': 'r', 'budget_seconds': 9}, MENU)
+    assert 'option' not in both and both['goal'] == GOOD['goal']

@@ -429,8 +429,9 @@ STATIC_RULES = [
 REPLY_FULL = ('Reply only JSON: {"goal":{...},"prediction":{"kind":"..."[, "value":int]},'
               '"rationale":"brief, grounded in the facts","budget_seconds":3-30}')
 REPLY_MENU = ('Reply only JSON: {"option": <the number of one scored option>, "why": "one short sentence"}. '
-              'Each option already carries its goal, prediction and time limit. Only if no option fits, '
-              'use the full shape instead: ' + REPLY_FULL[len('Reply only JSON: '):])
+              'Each option carries its goal and the prediction and time limit shown on its line; add '
+              '"prediction":{...} only to bet something different. Only if no option fits, use the full '
+              'shape instead (keep the rationale to one short sentence): ' + REPLY_FULL[len('Reply only JSON: '):])
 
 
 def build_zelda_prompt(decision: dict, atlas: Optional[dict], history: Any, menu: Any = None) -> str:
@@ -465,16 +466,22 @@ def choice_from_option(raw: Any, menu: Any) -> Any:
     """A reply that picks a scored option by number -> the full ZeldaChoice shape (goal, prediction
     and budget from the option; the model may still override the prediction). Anything else is
     returned unchanged."""
-    if not menu or not isinstance(raw, dict) or 'option' not in raw or 'goal' in raw:
+    if not menu or not isinstance(raw, dict) or 'option' not in raw:
         return raw
+    if 'goal' in raw:   # a full goal wins; the stray pick would only fail extra='forbid'
+        return {k: v for k, v in raw.items() if k != 'option'}
     pick = raw.get('option')
+    if isinstance(pick, str) and pick.strip().isdigit():
+        pick = int(pick.strip())
+    elif isinstance(pick, float) and pick.is_integer():
+        pick = int(pick)
     entry = next((m for m in menu if isinstance(m, dict) and isinstance(pick, int) and not isinstance(pick, bool)
                   and m.get('rank') == pick), None)
     if entry is None:
         raise PlannerRejected('planner_unknown_option', option=str(pick)[:20])
     why = raw.get('why') or raw.get('rationale') or entry.get('line') or 'scored option'
     return {'goal': entry['goal'], 'prediction': raw.get('prediction') or entry['prediction'],
-            'rationale': str(why)[:512], 'budget_seconds': raw.get('budget_seconds', entry['budget_seconds'])}
+            'rationale': str(why)[:512], 'budget_seconds': raw.get('budget_seconds') or entry['budget_seconds']}
 
 
 def validate_zelda_choice(raw: Any, decision: dict) -> ZeldaChoice:
@@ -612,7 +619,8 @@ async def plan_zelda(config, decision: Any, atlas: Optional[dict], history: Any,
         started = _now()
         for attempt in (1, 2):
             try:
-                limit = MENU_MAX_TOKENS if menu_lines(menu) else FULL_MAX_TOKENS
+                # The retry asks for a different goal and may need the full shape: give it room.
+                limit = MENU_MAX_TOKENS if menu_lines(menu) and attempt == 1 else FULL_MAX_TOKENS
                 data, correlation = await (chat(config, prompt, max_tokens=limit) if chat else
                                            _gateway_chat(config, prompt, max_tokens=limit, route=route))
             except PlannerError:

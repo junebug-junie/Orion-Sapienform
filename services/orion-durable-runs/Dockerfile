@@ -21,6 +21,8 @@ COPY config/field /app/config/field
 # Stage 4.5: a run's GPU pool hold is placed by its route's class (orion.gpu_pool.config reads
 # /app/config/gpu_pool.yaml: routes -> class, and hold_lease_ttl_sec for the heartbeat check).
 COPY config/gpu_pool.yaml /app/config/gpu_pool.yaml
+# Body economy Patch B2: heat sensitivities as data (written by fit_heat_sensitivity.py --write-config).
+COPY config/physiology/heat_sensitivity.yaml /app/config/physiology/heat_sensitivity.yaml
 COPY services/orion-durable-runs /app
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8121"]

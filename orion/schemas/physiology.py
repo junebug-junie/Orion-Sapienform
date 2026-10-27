@@ -1,8 +1,9 @@
 """Orion's body: one reading of every constraint Orion lives under, in its own unit.
 
 Body economy design, Organ 1 "Body" (docs/superpowers/specs/2026-10-23-organism-body-economy-
-design.md, PR #2855), Patch A3: the Body organ only. No prices, no forecasts, and no reader
-decides anything from it yet.
+design.md, PR #2855), Patch A3: the Body organ. Patch B2 adds, per reading, an optional SHADOW
+``price`` (Organ 2 Budget) and on the state an optional ``strain`` dial (Organ 5). No reader
+decides anything from either yet.
 
 One writer: the ``physiology`` node of the ``temporal_self.update`` durable graph in
 orion-durable-runs, at the regulation thread's cadence (every ~120 s; chat-turn steps inside
@@ -39,6 +40,51 @@ LANE_PREFIX = "lane:"
 DetailValue = Union[float, int, str, bool, None]
 
 
+BIND_STATES = ("slack", "binding", "exogenous_bind", "stuck_at_ceiling", "no_reading")
+
+
+class PhysiologyPriceV1(BaseModel):
+    """Organ 2 Budget (Patch B2), SHADOW: computed and published, read by nothing that decides.
+
+    The price says what one unit of this constraint is worth giving up right now, in want-value
+    per unit (``orion/physiology/prices.py``, dual ascent with anti-windup). ``value`` is held where
+    it was while the constraint has no reading (unknown is not "nothing used")."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: float = Field(ge=0.0)
+    ceiling: float = Field(gt=0.0)
+    # provisional until Appetite (Patch C) has graded wants to size it against (prices.ceiling_for).
+    ceiling_source: Literal["provisional", "sized"] = "provisional"
+    # slack: use <= budget (the price decays toward 0). binding: forecast use > budget.
+    # exogenous_bind: over the line even with Orion's share at 0; clamped at a bounded ceiling.
+    # stuck_at_ceiling: at the ceiling, unflagged, longer than one horizon (R3; a defect signal).
+    # no_reading: the use or the budget is unknown; the value is the last known one.
+    bind_state: Literal["slack", "binding", "exogenous_bind", "stuck_at_ceiling", "no_reading"]
+    # The price's own inputs, in the reading's unit (heat: Orion's share in C vs the room's headroom).
+    use: Optional[float] = None
+    budget: Optional[float] = None
+    excess: Optional[float] = None
+    horizon_sec: Optional[float] = None
+    why: str = ""
+
+
+class PhysiologyStrainV1(BaseModel):
+    """Organ 5 Felt state, the ``strain`` dial (Patch B2, SHADOW): the largest price / its ceiling
+    over constraints that are live (not exogenous_bind, not no_reading), and which one it is.
+    A monotonic rendering of the prices, not new signal. ``value`` None: no constraint priced live."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    constraint: Optional[str] = None
+    # Out of Orion's hands (anti-windup clamp), listed apart and NOT in the dial.
+    exogenous_bind: List[str] = Field(default_factory=list)
+    stuck: List[str] = Field(default_factory=list)
+    no_reading: List[str] = Field(default_factory=list)
+    why: str = ""
+
+
 class PhysiologyConstraintReadingV1(BaseModel):
     """One constraint at one tick. ``level`` and ``budget`` share ``unit``."""
 
@@ -59,6 +105,8 @@ class PhysiologyConstraintReadingV1(BaseModel):
     # Why there is no level: "read_failed:<source>", "stale:<source>", "no_observation", ...
     no_reading: Optional[str] = None
     detail: Dict[str, DetailValue] = Field(default_factory=dict)
+    # Patch B2 shadow price (additive, optional; None before B2 or with prices off).
+    price: Optional[PhysiologyPriceV1] = None
 
     @model_validator(mode="after")
     def _no_reading_means_no_level(self) -> "PhysiologyConstraintReadingV1":
@@ -81,6 +129,10 @@ class PhysiologyStateV1(BaseModel):
     generated_at: AwareDatetime
     constraints: List[PhysiologyConstraintReadingV1] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
+    # Patch B2 shadow strain dial (additive, optional). Not a table column: it is a pure function
+    # of the stored prices (orion.physiology.budget.strain_dial), so the physiology_state row's
+    # ``constraints`` carries everything needed to recompute it.
+    strain: Optional[PhysiologyStrainV1] = None
 
 
 def parse_physiology_state(raw: object) -> Optional[PhysiologyStateV1]:
@@ -103,6 +155,9 @@ def parse_physiology_state(raw: object) -> Optional[PhysiologyStateV1]:
 
 __all__ = [
     "ATTENTION_JUNIPER",
+    "BIND_STATES",
+    "PhysiologyPriceV1",
+    "PhysiologyStrainV1",
     "CLAUDE",
     "ENERGY",
     "HEAT",

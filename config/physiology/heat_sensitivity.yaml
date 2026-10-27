@@ -1,0 +1,32 @@
+# WRITTEN by scripts/analysis/fit_heat_sensitivity.py --write-config. Do not hand-edit.
+# Read by orion/physiology/heat_config.py (body economy Patch B2). A host entry older
+# than 30 days reads as no_reading for that host's heat cost, never 0.
+schema: heat_sensitivity.v1
+fitted_at: '2026-10-27T03:33:28+00:00'
+window: ['2026-09-26T00:00:00Z', '2026-10-27T00:00:00Z']
+model: 'hourly first differences: degC per 100 W step within 2 h (day-block bootstrap 95% CI)'
+hosts:
+  athena:
+    point: 0.6863
+    ci95: [0.2336, 1.0596]
+    horizon: 2h
+    n: 707
+    fitted_at: '2026-10-27T03:33:28+00:00'
+    regressor: compute_watts
+    baseline_watts_p10: 223.6
+    fit_command: scripts/analysis/fit_heat_sensitivity.py --start 2026-09-26T00:00:00Z --end 2026-10-27T00:00:00Z
+      --reps 1000 --seed 20261023 --write-config
+  circe:
+    point: 0.2985
+    ci95: [0.1448, 0.4491]
+    horizon: 2h
+    n: 707
+    fitted_at: '2026-10-27T03:33:28+00:00'
+    regressor: compute_watts
+    baseline_watts_p10: 263.1
+    fit_command: scripts/analysis/fit_heat_sensitivity.py --start 2026-09-26T00:00:00Z --end 2026-10-27T00:00:00Z
+      --reps 1000 --seed 20261023 --write-config
+measurement_offsets:
+- {series: athena.cabinet_temp_c, since: '2026-10-17T00:35:00+00:00', offset_c: 2.0, change_event: cabinet sensor
+    geometry changed (vision bring-up), source: 'prediction_change_event note (#2780: ''cabinet reads ~2 C higher
+    after''); fixed, not estimated'}

@@ -168,6 +168,16 @@ class BacklogInput:
 
 
 @dataclass(frozen=True)
+class HostWattsInput:
+    """Per host, mean watts over the last hour from ``orion_biometrics_cluster``: CPU+GPU compute
+    watts for athena and circe (the heat fit's regressor), chassis watts for hecate (it reports no
+    split). Not a Body reading: Organ 2's heat price charges Orion's share from it."""
+    read_ok: bool
+    watts: Mapping[str, Optional[float]] = field(default_factory=dict)
+    newest_at: Optional[datetime] = None
+
+
+@dataclass(frozen=True)
 class JuniperInput:
     read_ok: bool
     sent_today: Optional[int] = None
@@ -196,6 +206,8 @@ class BodyInputs:
     claude: Sequence[ClaudeObservation] = field(default_factory=tuple)
     # Waiting deferrable self-work (hunger). None: the host did not read it.
     backlog: Optional[BacklogInput] = None
+    # Per-host watts for the Budget organ's heat price (Patch B2). None: not read.
+    host_watts: Optional[HostWattsInput] = None
 
 
 # --- one function per constraint ----------------------------------------------------------------
@@ -221,6 +233,30 @@ def heat_reading(inp: HeatInput, cfg: BodyConfig) -> PhysiologyConstraintReading
         **line)
 
 
+def priced_hours(hours: Sequence[EnergyHour], prices: Sequence[EnergyPrice]
+                 ) -> list[tuple[EnergyHour, Optional[float], str]]:
+    """Each hour (in order) with the rate it is priced at and how: ``priced`` (its own hour's
+    rate), ``carried`` (the newest earlier rate; RMP prices arrive about a day late) or
+    ``unpriced`` (no rate at or before it; rate None)."""
+    prices = sorted(prices, key=lambda p: p.hour_start)
+    by_hour = {p.hour_start: p.marginal_usd_per_kwh for p in prices}
+    out: list[tuple[EnergyHour, Optional[float], str]] = []
+    idx = 0
+    last_rate: Optional[float] = None
+    for h in sorted(hours, key=lambda x: x.hour_start):
+        while idx < len(prices) and prices[idx].hour_start <= h.hour_start:
+            last_rate = prices[idx].marginal_usd_per_kwh
+            idx += 1
+        rate = by_hour.get(h.hour_start)
+        if rate is not None:
+            out.append((h, rate, "priced"))
+        elif last_rate is not None:
+            out.append((h, last_rate, "carried"))
+        else:
+            out.append((h, None, "unpriced"))
+    return out
+
+
 def energy_reading(inp: EnergyInput, now: datetime, cfg: BodyConfig) -> PhysiologyConstraintReadingV1:
     env = cfg.energy_monthly_envelope_usd
     line = dict(budget=env, budget_kind="envelope" if env is not None else None)
@@ -239,21 +275,13 @@ def energy_reading(inp: EnergyInput, now: datetime, cfg: BodyConfig) -> Physiolo
     prices = sorted(inp.prices, key=lambda p: p.hour_start)
     if not prices:
         return _no(ENERGY, "usd", "no_rate:energy_cost_accrued", source_at=newest, **line)
-    by_hour = {p.hour_start: p.marginal_usd_per_kwh for p in prices}
     usd = kwh_total = priced_kwh = carried_kwh = 0.0
     unpriced_kwh = 0.0
-    idx = 0
-    last_rate: Optional[float] = None
-    for h in sorted(hours, key=lambda x: x.hour_start):
+    for h, rate, how in priced_hours(hours, prices):
         kwh_total += h.kwh
-        while idx < len(prices) and prices[idx].hour_start <= h.hour_start:
-            last_rate = prices[idx].marginal_usd_per_kwh
-            idx += 1
-        rate = by_hour.get(h.hour_start)
-        if rate is not None:
+        if how == "priced":
             priced_kwh += h.kwh
-        elif last_rate is not None:
-            rate = last_rate
+        elif how == "carried":
             carried_kwh += h.kwh
         else:
             unpriced_kwh += h.kwh
@@ -578,6 +606,7 @@ __all__ = [
     "EnergyInput",
     "EnergyPrice",
     "HeatInput",
+    "HostWattsInput",
     "JuniperInput",
     "LaneInput",
     "LeaseEvent",
@@ -589,5 +618,6 @@ __all__ = [
     "juniper_reading",
     "lane_readings",
     "occupied_seconds",
+    "priced_hours",
     "stale_backlog_hosts",
 ]

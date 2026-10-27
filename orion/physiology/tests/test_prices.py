@@ -11,16 +11,21 @@ from orion.physiology.prices import (
     LIVE,
     NO_READING,
     PriceParams,
+    bind_with_hysteresis,
+    ceiling_for,
+    ceiling_run_since,
     heat_budget,
     heat_contribution,
     hours_to_rest,
+    is_stuck,
     month_end_forecast,
     size_ceiling,
     step_price,
+    upper_bound_if_spans_zero,
     usable_sensitivity,
 )
 
-P = PriceParams(eta=0.5, ceiling=2.0, max_step=0.5, budget_floor=0.25)
+P = PriceParams(eta=0.5, ceiling=2.0, max_step=0.5, budget_floor=0.25, bind_ramp=True)  # Patch B default, explicit
 
 
 def _run(prices0, seq, params=P):
@@ -59,7 +64,14 @@ def test_pure_rule_lingers_near_the_boundary_and_decay_floor_fixes_it():
 def test_anti_windup_freezes_at_ceiling_instead_of_integrating():
     steps = _run(0.0, [(5.0, 0.0, True)] * 48)
     assert all(s.status == EXOGENOUS_BIND for s in steps)
-    assert all(s.price == P.ceiling for s in steps)
+    # Rule A (Patch B default): ramps at max_step, then holds AT the ceiling, never past it.
+    assert [s.price for s in steps[:5]] == [0.5, 1.0, 1.5, 2.0, 2.0]
+    assert all(s.price == P.ceiling for s in steps[3:])
+    assert all(abs(s.delta) <= P.max_step + 1e-12 for s in steps)
+    # The old design rule (a one-tick jump to the ceiling) is still available for the replay.
+    jump = _run(0.0, [(5.0, 0.0, True)] * 3, PriceParams(eta=0.5, ceiling=2.0, max_step=0.5, budget_floor=0.25,
+                                                         bind_ramp=False))
+    assert jump[0].price == P.ceiling
     # Without the flag, a zero budget would be a huge excess. The ceiling still bounds it.
     raw = _run(0.0, [(5.0, 0.0, False)] * 48)
     assert max(s.price for s in raw) == P.ceiling
@@ -101,11 +113,66 @@ def test_heat_budget_and_exogenous_bind():
     assert heat_budget(soft_line_c=31.0, forecast_cabinet_c=None, own_contribution_c=0.5) == (None, None)
 
 
-def test_usable_sensitivity_uses_upper_bound_when_interval_spans_zero():
-    assert usable_sensitivity(0.05, -0.1, 0.2) == 0.2
-    assert usable_sensitivity(0.3, 0.1, 0.5) == 0.3
+def test_usable_sensitivity_is_the_point_floored_at_zero():
+    """Rule C. The 10-27 short-run fit: athena 0.686 (0.234..1.060), circe 0.298 (0.145..0.449)."""
+    assert usable_sensitivity(0.686, 0.234, 1.060) == 0.686
+    # An interval spanning 0 no longer jumps to its upper bound (the 3-4x that pinned R3).
+    assert usable_sensitivity(0.05, -0.1, 0.2) == 0.05
     assert usable_sensitivity(-0.3, -0.5, -0.1) == 0.0
+    assert usable_sensitivity(0.9, 0.1, 0.5) == 0.5   # a point above its own interval is clipped
     assert usable_sensitivity(None, 0.0, 1.0) is None
+    # The superseded rule, kept for the replay comparison.
+    assert upper_bound_if_spans_zero(0.05, -0.1, 0.2) == 0.2
+
+
+def test_bind_hysteresis_enters_at_the_line_and_leaves_only_under_the_margin():
+    """Rule B. Generic in units: degC for heat (room without Orion vs soft line), USD for energy."""
+    seq = [30.8, 31.0, 30.8, 30.6, 30.49, 30.8, 31.2]
+    prev, out = False, []
+    for x in seq:
+        prev = bind_with_hysteresis(prev, floor_use=x, budget=31.0, rearm_margin=0.5)
+        out.append(prev)
+    assert out == [False, True, True, True, False, False, True]
+    assert bind_with_hysteresis(True, floor_use=None, budget=31.0, rearm_margin=0.5) is None
+    # Energy: the always-on floor already spends the $100 envelope -> bound until $95.
+    assert bind_with_hysteresis(False, floor_use=100.0, budget=100.0, rearm_margin=5.0) is True
+    assert bind_with_hysteresis(True, floor_use=96.0, budget=100.0, rearm_margin=5.0) is True
+    assert bind_with_hysteresis(True, floor_use=94.9, budget=100.0, rearm_margin=5.0) is False
+
+
+def test_per_tick_scaling_follows_the_same_path_per_hour():
+    hourly = PriceParams(eta=0.25, ceiling=1.0, max_step=0.25, budget_floor=0.25, slack_decay_floor=1 / 6)
+    tick = hourly.per_tick(120.0)
+    assert tick.max_step == pytest.approx(0.25 / 30) and tick.ceiling == 1.0 and tick.budget_floor == 0.25
+    # Bound for an hour: 30 ticks of 120 s reach the same price as one 1 h step.
+    p = 0.0
+    for _ in range(30):
+        p = step_price(p, use=5.0, budget=0.0, exogenous_bind=True, params=tick).price
+    assert p == pytest.approx(step_price(0.0, use=5.0, budget=0.0, exogenous_bind=True, params=hourly).price)
+    with pytest.raises(ValueError):
+        hourly.per_tick(0.0)
+
+
+def test_ceiling_for_is_sized_only_from_real_wants_otherwise_provisional():
+    """Rule D. No graded wants exist before Patch C: every live ceiling is provisional."""
+    assert ceiling_for(1.0) == (1.0, "provisional")
+    vals = [i / 100 for i in range(101)]
+    assert ceiling_for(1.0, vals, [0.5, 1.0, 2.0]) == (pytest.approx(0.9), "sized")
+    assert ceiling_for(1.0, vals, [0.0]) == (1.0, "provisional")
+    with pytest.raises(ValueError):
+        ceiling_for(0.0)
+
+
+def test_stuck_check_counts_only_unflagged_runs_at_the_ceiling():
+    """Rule E (R3): at the ceiling past one horizon without exogenous_bind is stuck."""
+    since = None
+    seen = []
+    for t, (price, status) in enumerate([(0.5, LIVE), (1.0, LIVE), (1.0, LIVE), (1.0, LIVE),
+                                         (1.0, EXOGENOUS_BIND), (1.0, LIVE), (0.9, LIVE)]):
+        since = ceiling_run_since(since, price=price, ceiling=1.0, status=status, now=float(t))
+        seen.append((since, is_stuck(since, now=float(t), horizon_sec=1.5)))
+    assert seen == [(None, False), (1.0, False), (1.0, False), (1.0, True),
+                    (None, False), (5.0, False), (None, False)]
 
 
 def test_size_ceiling():

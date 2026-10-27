@@ -943,6 +943,35 @@ Patch A is low-risk: it writes new rows and decides nothing. It also settles the
 
 ---
 
+## Patch B results (2026-10-27) — Track 1: Body fixes (B1) and shadow prices (B2)
+
+- **The lane over-count was a double count, now fixed (B1, PR #2911).** `lane:agent` read 5,985.9
+  slot-s in a 3,600 s hour on one slot. A lease the pool moved from agent-gpu2 to agent was charged in
+  full to its last seat. The remaining over-capacity time is real by design: scheduler H3 lends an
+  idle background hold's gap to a higher-priority call. It is now capped at the slots and reported as
+  `lent_overlap_s`. Waiting deferrable self-work (hunger) sits beside each lane. It is not priced.
+- **Shadow prices are live-ready (B2).** Every tick prices heat, energy, each lane, Juniper's
+  attention and Claude, and renders `strain`. Nothing that decides reads them.
+- **Heat sensitivities are data.** `config/physiology/heat_sensitivity.yaml`, refit 10-27 on 09-26..10-27:
+  athena +0.686 C/100 W (CI +0.234..+1.060), circe +0.298 (CI +0.145..+0.449), both short-run, n 707.
+- **Replay gate, 10-07..10-23, with the live rules:**
+  - R1 PASS with the live forecaster (persistence). Oracle fails exogenous recall (49/62).
+  - R4 PASS (worst −6.1%).
+  - R3 **FAIL**: 0 windup hours, but the price sits at its ceiling unflagged for up to 9 h
+    (persistence) or 17 h (oracle). Every one of those hours was **binding**: Orion's own share was
+    the margin over the line.
+  - The cause is the #2780 sensor correction. The corrected cabinet sat at 31.0–31.9 C on 10-18..20,
+    so those hours moved from "the room is too hot, not my load" to "my load is what crosses the
+    line". The same rules without the offset pass R3 in oracle mode (3 h run).
+  - An open-loop replay cannot lower Orion's load when the price rises. Closing the loop needs bids
+    (Patch C). Live, the stuck check flags such a run `stuck_at_ceiling` after one horizon.
+  - Persistence also fails R3's oscillation test (window peak-to-peak 0.69 vs 0.5): the bind flag
+    dithers when the room sits on the line.
+  - R6 (reservations) is deferred to Patch C: it needs bids.
+- **Ceilings stay provisional** (1.0) until Appetite has graded wants. `ceiling_for` sizes them once wants exist.
+
+---
+
 ## Review findings fixed (independent adversarial review, 2026-10-23)
 
 The reviewer spot-checked 12 facts against live data and code. 8 were confirmed. The rest are corrected above: the share range, the timing of the grants drop, the cabinet daily means, and correlations not reproducible exactly. Mechanism findings:

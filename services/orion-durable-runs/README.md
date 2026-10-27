@@ -708,7 +708,7 @@ deploy). Kill switch: `TEMPORAL_SELF_CHRONICLE_ENABLED=false`. Health: `/health`
 `temporal_self_chronicle`. Eval: `evals/temporal_self_live_replay.py` runs this code path over the
 10-09 fixture on a disposable Postgres (`--source-dsn` reads real tables read-only instead).
 
-## Body: the `physiology` node (2026-10-23, body economy Patch A3, no reader yet)
+## Body: the `physiology` node (2026-10-23, body economy Patch A3, no reader yet; prices Patch B2)
 
 Organ 1 of the body economy (`docs/superpowers/specs/2026-10-23-organism-body-economy-design.md`).
 After `regulate`, at most once per `ORION_PHYSIOLOGY_MIN_INTERVAL_SEC` (100 s; chat-turn steps in
@@ -754,6 +754,50 @@ Known limits: `lent_overlap_s` uses the seat's slots now, not as they were earli
 seat that is down now is uncapped for the whole window);
 `claude` reads `no_observation` while orion-cocreation-signals' `COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED`
 is false.
+
+### Budget: shadow prices and the strain dial (2026-10-27, body economy Patch B2)
+
+Organ 2 Budget and Organ 5's `strain` dial, **shadow only**. Every physiology tick, after the Body
+readings, `orion/physiology/budget.py` puts a price on each reading (`PhysiologyConstraintReadingV1.price`:
+`value`, `ceiling`, `ceiling_source`, `bind_state`, `use`, `budget`, `excess`, `horizon_sec`, `why`) and
+the dial on the state (`PhysiologyStateV1.strain`). Same Redis key, same bus channel, same
+`physiology_state` row (prices live inside `constraints`; `strain` is recomputable from them with
+`strain_dial`). **Nothing that decides reads them.** Debug readout for humans: `GET /physiology/state`.
+
+| constraint | what the price charges (use vs budget) | `exogenous_bind` (clamped, listed apart from strain) |
+|---|---|---|
+| `heat` | Orion's own share in C: short-run sensitivity x watts above baseline, per host, against the room's headroom (soft line - (cabinet - sensor offset - Orion's share)); forecast = the newest reading | room over the line even with Orion's share at 0 (0.5 C hysteresis) |
+| `energy` | month-end Orion cost forecast vs the $ envelope | the always-on floor alone reaches the envelope (5% hysteresis) |
+| `lane:<role>` | lease-seconds asked of the seat (`detail.lease_s`) vs slots x window; waiting work is NOT an input | the seat has no live slot but a lease holds it |
+| `attention:juniper` | today's cap-counted sends paced to the end of the local day vs the cap | never |
+| `claude` | `clear` = 0 use | `limited` |
+
+Rules (`orion/physiology/prices.py`, Patch B): bounded ramp into bind (never a jump to the ceiling),
+bind hysteresis, the point sensitivity (not the upper bound), ceilings `provisional` until Appetite has
+graded wants to size them, and the stuck check: at the ceiling, unflagged, past one horizon reads
+`stuck_at_ceiling` plus the warning `price_stuck_at_ceiling:<constraint>`. Rates are per hour, scaled
+to the real tick. Unknown is `no_reading` and the price is held at its last value, never set to 0.
+
+Heat sensitivities are data: `config/physiology/heat_sensitivity.yaml`, written only by
+`scripts/analysis/fit_heat_sensitivity.py --write-config` and baked into the image
+(`ORION_PHYSIOLOGY_HEAT_SENSITIVITY_PATH`). A host entry older than 30 days, a missing file, a
+fitted host with no watts, or an awake host with no fit makes the heat price `no_reading`. Refit and
+rebuild to refresh it. Off: `ORION_PHYSIOLOGY_PRICES_ENABLED=false` (Body readings only).
+
+Known limits (review, 10-27):
+- Orion's heat share uses the 2 h step-response sensitivity, so it is a **short-run lower bound**
+  for load held for hours. `exogenous_bind` ("not my load") is therefore biased toward excusing
+  Orion. No reader may decide on it before the sensitivity is calibrated (design Organ 6).
+- The sensor offset comes from the yaml (written by the fit from `prediction_change_event`), not
+  from a live read of that table: a new sensor move counts only after a refit.
+- hecate counts as asleep below a 150 W 1 h mean, so a short burst can be missed.
+- The carry (price, bind flag, ceiling run) crosses the daily graph thread (`CARRIED_KEYS`) and is
+  kept for a day for a constraint missing from a tick. Warnings `heat_sensitivity_stale_in_days:<host>:<d>`
+  (7 days ahead) and `heat_sensitivity_stale:<host>` say when to refit.
+- `attention:juniper` paces the day only after 6 h of it; before that the use is the count itself.
+
+Live smoke (read-only, replays the node over stored ticks): `ORION_ANALYSIS_DSN=... python
+scripts/analysis/smoke_body_economy_prices.py --hours 24`.
 
 ## Runtime immune sweep: the `immune` node (2026-10-13, Temporal Self R4)
 

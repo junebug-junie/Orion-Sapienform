@@ -24,7 +24,13 @@ settle the circe 0.10 vs 0.22 discrepancy.
 
 Usage:
   .venv/bin/python scripts/analysis/fit_heat_sensitivity.py \
-      --out-json /tmp/heat_fit.json --out-md /tmp/heat_fit.md [--cache extract.json]
+      --out-json /tmp/heat_fit.json --out-md /tmp/heat_fit.md [--cache extract.json] [--write-config]
+
+``--write-config`` also writes ``config/physiology/heat_sensitivity.yaml`` (Patch B2): per host the
+short-run (2 h step response) sensitivity, its interval, n, fitted_at, the fit command and the
+host's baseline watts, plus the recorded sensor measurement offsets. The live Budget organ
+(``orion/physiology/heat_config.py``) reads that file; an entry older than 30 days reads as
+no_reading. That file is only ever written here.
 """
 
 from __future__ import annotations
@@ -737,6 +743,7 @@ def run(extract: dict, *, reps: int, seed: int, with_corr: bool) -> dict:
                 "house_meter_ac", "house_meter_ac_offset_fixed", "house_meter_ac_offset_fixed_no_steps"):
         if models[key].get("status") == "ok":
             decomp[key] = decompose(models[key], frame3, base=DECOMP_BASE, target=DECOMP_TARGET, reps=reps, seed=seed + 7)
+    baselines = baseline_watts_p10(frame3, comp2)
     diag = host_diagnostics(frame3, comp3)
     daily = daily_levels(frame3)
     diag["_chassis"] = host_diagnostics(frame3, chas2)
@@ -761,6 +768,7 @@ def run(extract: dict, *, reps: int, seed: int, with_corr: bool) -> dict:
         "daily_levels": daily,
         "headline": headline(models, diag, decomp),
         "replay_sensitivity": {},
+        "baseline_watts_p10": baselines,
         "queries": extract.get("queries", {}),
     }
     for h, r in models["primary"]["hosts"].items():
@@ -776,6 +784,62 @@ def run(extract: dict, *, reps: int, seed: int, with_corr: bool) -> dict:
     return result
 
 
+CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "physiology" / "heat_sensitivity.yaml"
+
+
+def baseline_watts_p10(frame: dict, spec: dict[str, str]) -> dict[str, float]:
+    """Per host, the p10 of HOURLY mean regressor watts over the fit window: Orion's heat share is
+    charged on watts above it (the replay's baseline, same index rule)."""
+    out = {}
+    for h, series in regressors(frame, spec).items():
+        buckets: dict[datetime, list[float]] = {}
+        for t, v in zip(frame["times"], series):
+            if np.isfinite(v):
+                buckets.setdefault(t.replace(minute=0), []).append(float(v))
+        hourly = sorted(float(np.mean(v)) for v in buckets.values() if len(v) >= 3)
+        if hourly:
+            out[h] = hourly[int(0.1 * (len(hourly) - 1))]
+    return out
+
+
+def config_document(result: dict, *, command: str) -> dict:
+    """The heat_sensitivity.v1 document from a fit result. Short-run model only: the 2 h step
+    response is the robust number (its interval clears 0 for both GPU hosts); the day-level fit's
+    intervals span 0 and its upper bounds held the replayed price at the ceiling."""
+    fd = result["models"]["first_diff"]
+    if fd.get("status") != "ok":
+        raise SystemExit(f"short-run fit status {fd.get('status')!r}: refusing to write the config")
+    fitted_at = result["generated_at"]
+    hosts = {}
+    for h, r in fd["hosts"].items():
+        base = result["baseline_watts_p10"].get(h)
+        if base is None:
+            raise SystemExit(f"no baseline watts for {h}: refusing to write the config")
+        lo, hi = r["ci95_block_bootstrap"]
+        hosts[h] = {"point": round(r["c_per_100w_step_2h"], 4), "ci95": [round(lo, 4), round(hi, 4)],
+                    "horizon": "2h", "n": int(fd["n"]), "fitted_at": fitted_at,
+                    "regressor": f"{fd['regressor'][h]}_watts", "baseline_watts_p10": round(base, 1),
+                    "fit_command": command}
+    offsets = [{"series": "athena.cabinet_temp_c", "since": b["at"], "offset_c": SENSOR_OFFSET_C,
+                "change_event": b["title"],
+                "source": "prediction_change_event note (#2780: 'cabinet reads ~2 C higher after'); fixed, not estimated"}
+               for b in result["method"]["change_event_breaks"] if "sensor" in b["title"].lower()]
+    return {"schema": "heat_sensitivity.v1", "fitted_at": fitted_at,
+            "window": [result["window"]["start"], result["window"]["end"]],
+            "model": "hourly first differences: degC per 100 W step within 2 h (day-block bootstrap 95% CI)",
+            "hosts": hosts, "measurement_offsets": offsets}
+
+
+def write_config(doc: dict, path: Path = CONFIG_PATH) -> None:
+    import yaml
+
+    header = ("# WRITTEN by scripts/analysis/fit_heat_sensitivity.py --write-config. Do not hand-edit.\n"
+              "# Read by orion/physiology/heat_config.py (body economy Patch B2). A host entry older\n"
+              "# than 30 days reads as no_reading for that host's heat cost, never 0.\n")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(header + yaml.safe_dump(doc, sort_keys=False, default_flow_style=None, width=110))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--start", default="2026-09-26T00:00:00Z", help="weather history starts 09-26")
@@ -786,9 +850,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-correlation-audit", action="store_true")
     ap.add_argument("--out-json", required=True)
     ap.add_argument("--out-md", required=True)
+    ap.add_argument("--write-config", action="store_true",
+                    help=f"also write {CONFIG_PATH.relative_to(CONFIG_PATH.parents[2])} (live Budget organ reads it)")
     a = ap.parse_args(argv)
     extract = data_mod.load_or_fetch(a.start, a.end, a.cache)
     result = run(extract, reps=a.reps, seed=a.seed, with_corr=not a.no_correlation_audit)
+    if a.write_config:
+        command = (f"scripts/analysis/fit_heat_sensitivity.py --start {a.start} --end {a.end} "
+                   f"--reps {a.reps} --seed {a.seed} --write-config")
+        write_config(config_document(result, command=command))
+        print(f"wrote {CONFIG_PATH}")
     Path(a.out_json).write_text(json.dumps(result, indent=1, default=str))
     Path(a.out_md).write_text(render_md(result))
     print("\n".join(result["headline"]))

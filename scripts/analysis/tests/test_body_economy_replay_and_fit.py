@@ -107,7 +107,8 @@ def _hours(temps: list, watts: float = 600.0) -> dict:
 def test_heat_replay_flags_unmeetable_hours_and_returns_to_rest():
     temps = [28.0] * 10 + [34.0] * 10 + [28.0] * 14
     hours = _hours(temps)
-    params = PriceParams(eta=0.25, ceiling=1.0, max_step=0.25, budget_floor=0.25, slack_decay_floor=1 / 6)
+    params = PriceParams(eta=0.25, ceiling=1.0, max_step=0.25, budget_floor=0.25, slack_decay_floor=1 / 6,
+                         bind_ramp=False)   # the pre-Patch B jump rule, explicitly (this test predates the ramp)
     res = rep.run_heat_replay(hours, sensitivity={"circe": 0.1}, baselines={"circe": 500.0}, params=params,
                               soft_line_c=31.0, start=T0, end=T0 + timedelta(hours=len(temps)), forecast_mode="persistence")
     statuses = [r.status for r in res]
@@ -125,13 +126,15 @@ def test_heat_replay_flags_unmeetable_hours_and_returns_to_rest():
 def test_heat_replay_no_reading_hours_hold_price():
     temps = [34.0] * 3 + [None] * 3 + [34.0] * 2
     hours = _hours(temps)
-    params = PriceParams(eta=0.25, ceiling=1.0, max_step=0.25, budget_floor=0.25)
+    params = PriceParams(eta=0.25, ceiling=1.0, max_step=0.25, budget_floor=0.25, bind_ramp=True)
     res = rep.run_heat_replay(hours, sensitivity={"circe": 0.1}, baselines={"circe": 500.0}, params=params,
                               soft_line_c=31.0, start=T0, end=T0 + timedelta(hours=8), forecast_mode="oracle")
-    nr = [r for r in res if r.status == NO_READING]
+    nr = [i for i, r in enumerate(res) if r.status == NO_READING]
     assert nr, "hours with no cabinet or watts reading must be no_reading"
-    for r in nr:
-        assert r.price == 1.0  # held at the bound value, not dropped to 0
+    held = res[nr[0] - 1].price
+    assert held > 0   # bound and ramping (Patch B rule A: bounded ramp, not a jump)
+    for i in nr:
+        assert res[i].price == held  # held at the last value, not dropped to 0
 
 
 def test_r3_flags_oscillation_and_ignores_small_wiggles():
@@ -223,3 +226,20 @@ def test_decomposition_adds_up_and_reports_the_fixed_offset():
     assert d["contributions"]["fixed_offset:cabinet sensor geometry changed"]["degC"] == pytest.approx(2.0)
     total = sum(v["degC"] for v in d["contributions"].values()) + d["residual_c"]
     assert total == pytest.approx(d["rise_c"])
+
+
+def test_smoke_rebuilds_the_leases_open_at_a_past_tick():
+    """The live smoke re-reads lanes at past ticks: a lease whose close came after the tick was
+    open at the tick (from its span start), not absent; a close inside the window is as-is."""
+    import smoke_body_economy_prices as smoke
+
+    tick = T0 + timedelta(hours=5)
+    closes = [
+        {"lease_id": "a", "role": "agent", "event": "released", "at": tick - timedelta(minutes=10), "held_ms": 600_000, "hold_lease_id": None},
+        {"lease_id": "b", "role": "agent", "event": "released", "at": tick + timedelta(minutes=30), "held_ms": 3_600_000, "hold_lease_id": None},
+        {"lease_id": "c", "role": "agent", "event": "released", "at": tick + timedelta(minutes=30), "held_ms": 60_000, "hold_lease_id": None},
+    ]
+    ev = smoke.lease_events_at(closes, [], tick, timedelta(hours=1))
+    assert sorted((e.lease_id, e.event) for e in ev) == [("a", "released"), ("b", "granted")]
+    b = next(e for e in ev if e.lease_id == "b")
+    assert b.at == tick - timedelta(minutes=30)

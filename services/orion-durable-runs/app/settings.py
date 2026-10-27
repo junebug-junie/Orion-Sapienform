@@ -219,7 +219,7 @@ class Settings(BaseSettings):
     # Body): a `physiology` node after `regulate` reads every constraint (heat, energy, GPU lanes,
     # Juniper's attention, Claude limits) in its own unit with an explicit no_reading, and writes
     # PhysiologyStateV1 to Redis orion:physiology:latest + bus orion:physiology:state (sql-writer
-    # table physiology_state). No prices; nothing decides from it yet. false -> no node.
+    # table physiology_state). Nothing decides from it yet. false -> no node.
     physiology_enabled: bool = Field(True, alias="ORION_PHYSIOLOGY_ENABLED")
     physiology_min_interval_sec: float = Field(100.0, gt=0.0, alias="ORION_PHYSIOLOGY_MIN_INTERVAL_SEC")
     physiology_redis_ttl_sec: int = Field(360, gt=0, alias="ORION_PHYSIOLOGY_REDIS_TTL_SEC")
@@ -229,6 +229,14 @@ class Settings(BaseSettings):
     physiology_energy_monthly_envelope_usd: Optional[float] = Field(
         None, ge=0.0, alias="ORION_PHYSIOLOGY_ENERGY_MONTHLY_ENVELOPE_USD")
     physiology_lane_window_sec: float = Field(3600.0, gt=0.0, alias="ORION_PHYSIOLOGY_LANE_WINDOW_SEC")
+    # Body economy Patch B2 (Organ 2 Budget + Organ 5 strain dial), SHADOW: one price per constraint
+    # every physiology tick, published on PhysiologyStateV1 and read by nothing that decides.
+    # false -> the Body readings only (Patch A3 behaviour).
+    physiology_prices_enabled: bool = Field(True, alias="ORION_PHYSIOLOGY_PRICES_ENABLED")
+    # Written by scripts/analysis/fit_heat_sensitivity.py --write-config (baked into the image).
+    # Missing, malformed, or a host entry older than 30 days -> the heat price is no_reading.
+    physiology_heat_sensitivity_path: str = Field(
+        "/app/config/physiology/heat_sensitivity.yaml", alias="ORION_PHYSIOLOGY_HEAT_SENSITIVITY_PATH")
     # The attention:juniper line is the Hub's own outreach daily cap (owner services/orion-hub/
     # .env_example; scripts/check_env_key_single_source.py fails if this copy drifts).
     hub_endogenous_outreach_daily_cap: int = Field(4, ge=0, alias="HUB_ENDOGENOUS_OUTREACH_DAILY_CAP")

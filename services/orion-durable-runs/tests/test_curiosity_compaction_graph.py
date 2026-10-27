@@ -241,7 +241,7 @@ def test_each_call_sends_the_phase_output_schema_to_the_gateway():
         item = topics["structured_output_schema"]["properties"]["topics"]["items"]["properties"]
         assert item["body"]["maxLength"] == 1200 and item["refs"]["minItems"] == 1
         assert item["refs"]["items"]["enum"] == ["s0"]
-        assert topics["structured_output_schema"]["properties"]["topics"]["maxItems"] == 6
+        assert topics["structured_output_schema"]["properties"]["topics"]["maxItems"] == 4
         assert overall["structured_output_schema_name"] == "CuriosityCompactionSummaryV1"
         assert overall["structured_output_schema"]["properties"]["body"]["maxLength"] == 2400
     asyncio.run(run())

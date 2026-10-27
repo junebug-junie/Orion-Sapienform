@@ -204,6 +204,10 @@ def strict_final_text(payload: dict[str, Any], verb: str) -> str:
         raise RuntimeError(f"verb_truncated_at_max_tokens:{verb}")
     return text
 
+# Options ``_call_verb_text`` owns; a caller's ``options`` can never set them (even when unset here).
+_VERB_TEXT_FIXED_OPTIONS = frozenset({"policy_dispatch_only", "chat_template_kwargs", "llm_route", "gpu_lease"})
+
+
 class DurableRunner:
     _corr_for_admission = staticmethod(_corr_uuid)
     def __init__(self, settings: Settings, *, bus: OrionBusAsync | None, checkpointer: Any) -> None:
@@ -766,7 +770,7 @@ class DurableRunner:
             route_intent="none",
             verb=verb,
             options={
-                **(options or {}),
+                **{k: v for k, v in (options or {}).items() if k not in _VERB_TEXT_FIXED_OPTIONS},
                 "policy_dispatch_only": True,
                 "chat_template_kwargs": {"enable_thinking": False},
                 **({"llm_route": llm_route} if llm_route else {}),

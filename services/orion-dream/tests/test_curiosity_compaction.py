@@ -126,6 +126,9 @@ def test_body_cut_off_by_the_length_cap_is_rejected_but_a_finished_one_at_the_ca
     with pytest.raises(ModelOutputRejected, match="cut off"):
         record_answer(row(), _topic_answer(stump[:TOPIC_BODY_CHARS]))
     finished = stump[:TOPIC_BODY_CHARS - 1] + "."
+    with pytest.raises(ModelOutputRejected, match="cut off"):   # trailing space does not hide a cut
+        record_answer(row(), _topic_answer(stump[:TOPIC_BODY_CHARS - 1] + " "))
+    assert record_answer(row(), _topic_answer(stump[:TOPIC_BODY_CHARS - 1] + "\u201d"))["state"]["phase"] == "overall"
     assert len(finished) == TOPIC_BODY_CHARS
     assert record_answer(row(), _topic_answer(finished))["state"]["phase"] == "overall"
 
@@ -137,7 +140,7 @@ def test_output_schema_encodes_the_limits_and_this_batchs_refs():
     assert name == "CuriosityCompactionTopicPassV1"
     topics = schema["properties"]["topics"]
     item = topics["items"]["properties"]
-    assert (topics["minItems"], topics["maxItems"]) == (1, TopicPass.model_fields["topics"].metadata[1].max_length)
+    assert (topics["minItems"], topics["maxItems"]) == (1, TopicPass.model_fields["topics"].metadata[1].max_length) == (1, 4)
     assert item["body"]["maxLength"] == 1200 == Topic.model_fields["body"].metadata[1].max_length
     assert item["body"]["minLength"] == 80 and "pattern" not in item["body"] and "enum" not in item["body"]
     assert item["refs"]["minItems"] == 1
@@ -152,7 +155,7 @@ def test_prompt_asks_for_words_not_a_character_count_at_the_cap():
     from orion.curiosity.compaction import next_prompt
     prompt = next_prompt(row())
     assert "about 120 to 150 words" in prompt and "hard limit: 1200 characters" in prompt
-    assert "80 to 1200 characters" not in prompt
+    assert "80 to 1200 characters" not in prompt and "1 to 4 topic areas" in prompt
 
 
 def test_journal_contract_is_idempotent_indexable_and_silent():
@@ -297,3 +300,38 @@ def test_distinct_topic_areas_keep_their_own_sources_before_overall_synthesis():
     r = record_answer(r, json.dumps({"body": BODY}))
     journal = journal_entry(r).body
     assert "## Delivery reliability" in journal and "## Self-understanding" in journal
+
+
+def test_overall_body_cut_off_at_its_cap_is_rejected():
+    from orion.cognition.model_output import ModelOutputRejected
+    from orion.curiosity.compaction import OUTPUT_CHARS, record_answer
+    r = row()
+    r["state"]["phase"] = "overall"
+    with pytest.raises(ModelOutputRejected, match="cut off"):
+        record_answer(r, json.dumps({"body": ((BODY + " ") * 30)[:OUTPUT_CHARS]}))
+
+
+def test_a_full_pass_the_schema_allows_fits_the_pass_budget():
+    """Review finding: 6 x 1200-char topics could only ever be rejected as over budget."""
+    from orion.curiosity.compaction import MAX_TOPICS, PASS_BUDGET, TOPIC_BODY_CHARS
+    from orion.cognition.compactor.chunking import json_char_len
+    full = {"topics": [{"topic": "t" * 100, "body": "b" * TOPIC_BODY_CHARS, "refs": ["s0", "s1", "s2"]}
+                       for _ in range(MAX_TOPICS)]}
+    assert MAX_TOPICS >= 1 and json_char_len(full) <= PASS_BUDGET
+
+
+def test_reduction_that_does_not_shrink_is_not_a_retryable_model_rejection():
+    from orion.cognition.model_output import ModelOutputRejected
+    from orion.curiosity import compaction
+    r = row()
+    r["state"]["batches"] = r["state"]["batches"] * 2
+    r["state"]["partials"] = [[{"topic": "T", "body": BODY, "sources": ["j1"],
+                                "first_at": NOW.isoformat(), "last_at": NOW.isoformat()}]]
+    orig = compaction.batches
+    compaction.batches = lambda material: [[m] for m in material] * 3
+    try:
+        with pytest.raises(ValueError, match="did not shrink") as exc:
+            compaction.record_answer(r, answer_for(r))
+        assert not isinstance(exc.value, ModelOutputRejected)
+    finally:
+        compaction.batches = orig

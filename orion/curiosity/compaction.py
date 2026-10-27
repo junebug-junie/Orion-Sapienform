@@ -26,7 +26,10 @@ Cadence = Literal["weekly", "monthly"]
 INPUT_BUDGET = 14000
 OUTPUT_CHARS = 2400
 TOPIC_BODY_CHARS = 1200   # hard cap per topic body (Topic.body, the output schema's maxLength)
-MAX_TOPICS = 6
+PASS_BUDGET = 6000        # whole topic pass, ASCII-escaped JSON chars (record_answer)
+# Topics per pass, sized so a pass of capped bodies (+~200 chars of name/refs/JSON each) fits
+# PASS_BUDGET: 4. Six capped topics (7200+) could only ever be rejected, burning an attempt.
+MAX_TOPICS = PASS_BUDGET // (TOPIC_BODY_CHARS + 200)
 
 
 
@@ -163,6 +166,8 @@ def output_schema(row) -> tuple[str, dict]:
             "properties": {"body": {"type": "string", "minLength": 80, "maxLength": OUTPUT_CHARS}},
         }
     batch = row["state"]["batches"][len(row["state"]["partials"])]
+    if not batch:   # an empty enum is an unsatisfiable grammar; `prepare` marks a batchless row empty
+        raise ValueError("cannot build an output schema for an empty batch")
     return "CuriosityCompactionTopicPassV1", {
         "type": "object", "additionalProperties": False, "required": ["topics"],
         "properties": {"topics": {
@@ -188,12 +193,12 @@ def prompt_for(row, batch=None):
         'Explain what changed across this period, what persisted, and what remains open. '
         if overall else
         'Return JSON only: {"topics":[{"topic":"content-derived area", "body":"...", "refs":["s0"]}]}. '
-        'Create 1 to 6 topic areas grounded in these records, not a fixed taxonomy. '
+        f'Create 1 to {MAX_TOPICS} topic areas grounded in these records, not a fixed taxonomy. '
         'For each, write about 120 to 150 words (hard limit: 1200 characters) tracing earlier to later observations: '
         'what was explored, evidence that changed understanding, contradictions, and questions still open. '
         'Keep explicit dates attached to changes; do not infer a change just from the date range. '
         'Merge overlapping areas when reading prior topic summaries. Every input ref must appear '
-        'in at least one topic, and use only the given refs. Keep the complete response under 6000 ASCII JSON characters. '
+        f'in at least one topic, and use only the given refs. Keep the complete response under {PASS_BUDGET} ASCII JSON characters. '
     )
     records = ([{k: t[k] for k in ("topic", "body", "first_at", "last_at")} for t in row["state"]["topics"]]
                if overall else [{"ref": f"s{i}", "body": item["body"],
@@ -222,11 +227,15 @@ def _parse(raw, model_cls):
         raise ModelOutputRejected(f"{type(exc).__name__}: {exc}") from exc
 
 
+_SENTENCE_ENDS = (".", "!", "?", '"', "'", ")", "]", "\u201d", "\u2019", "\u2026", "*", "`")
+
+
 def _cut_off(body: str, cap: int) -> bool:
-    """A body that fills the hard cap exactly and does not end a sentence was cut by the
-    output grammar's maxLength mid-thought (seen in the 2026-10-27 probe: "...shape the"), not
-    finished by the model. Rejected so a fresh sample is drawn instead of saving a stump."""
-    return len(body) >= cap and not body.rstrip().endswith((".", "!", "?", '"', "'", ")", "]"))
+    """A body that fills the hard cap (pydantic already refuses longer) and does not end a
+    sentence was cut by the output grammar's maxLength mid-thought (seen in the 2026-10-27 probe:
+    "...shape the"), not finished by the model. Rejected so a fresh sample is drawn instead of
+    saving a stump. Heuristic: a cut landing right after "e.g." or "3." still reads as finished."""
+    return len(body) >= cap and not body.rstrip().endswith(_SENTENCE_ENDS)
 
 
 def record_answer(row, raw):
@@ -246,7 +255,7 @@ def record_answer(row, raw):
         result["status"] = "completed"
         return result
     parsed = _parse(raw, TopicPass)
-    if json_char_len(parsed.model_dump()) > 6000:
+    if json_char_len(parsed.model_dump()) > PASS_BUDGET:
         raise ModelOutputRejected("topic pass exceeds reduction budget")
     batch = state["batches"][len(state["partials"])]
     allowed = {f"s{i}": item for i, item in enumerate(batch)}
@@ -277,7 +286,9 @@ def record_answer(row, raw):
             material.sort(key=lambda item: (item["first_at"], item["last_at"], item["ref"]))
             reduced = batches(material)
             if len(reduced) >= len(state["batches"]):
-                raise ModelOutputRejected("topic reduction did not shrink; retry with shorter summaries")
+                # Plain ValueError on purpose: this depends on EVERY saved partial, and a retry
+                # only re-samples the last batch, so it would mostly burn attempts.
+                raise ValueError("topic reduction did not shrink; retry with shorter summaries")
             state["batches"] = reduced
             state["partials"] = []
     return result

@@ -135,18 +135,18 @@ def retry_budget(admission: AdmissionDeps, state: dict) -> tuple[int, float]:
 # * TypeError / LookupError / AttributeError / NameError / NotImplementedError / AssertionError:
 #   programming errors.
 # * ValueError (pydantic ``ValidationError`` and ``json.JSONDecodeError`` are subclasses): the
-#   attempt's input or answer cannot satisfy the contract. A "rejected answer changes nothing", so
-#   the retry re-sends the same prompt to the same validator. Live 14 days to 2026-10-23:
-#   curiosity.compaction ran 24 times and completed 0; 22 ended on ValueError/ValidationError
-#   (17 TopicPass body too long, 5 "topic references omit or invent source records" / "exceeds
-#   reduction budget"; no JSON parse errors) after up to 3 attempts each. A graph whose parse failures DO recover on a fresh sample
-#   (journal.compose, memory.episode_distill: explicit minimum attempts) keeps its own policy.
+#   attempt's input cannot satisfy the contract -- a code or input bug, and the same checkpointed
+#   input raises it again. A graph whose parse failures recover on a fresh sample without this
+#   policy (journal.compose, memory.episode_distill: explicit minimum attempts) keeps its own.
 #
 # EXCEPT ``ModelOutputRejected`` (a ValueError subclass, ``orion/cognition/model_output.py``): the
 # node's own parser says the MODEL's answer broke the contract, and a fresh sample can pass. It is a
-# bounded attempt like a transport error. Failing it fast (#2899) stopped curiosity.compaction dead:
-# 0 batches saved from 2026-10-24 00:42Z over 9 runs, where the old retries had been saving
-# batches. Only code that parses an LLM answer raises it; any other ValueError still fails at once.
+# bounded attempt like a transport error. #2899 classed these as deterministic on 14 days of data
+# to 2026-10-23 (curiosity.compaction: 22 runs ended on TopicPass body too long / bad refs / over
+# budget); failing them fast then stopped compaction dead -- 0 batches saved from 2026-10-24 00:42Z
+# over 9 runs -- since each accepted batch is saved before the next call and a retry is what got
+# the next batch through. Compaction now also constrains its answers with a JSON schema. Only code
+# that parses an LLM answer raises it; any other ValueError still fails at once.
 #
 # Everything else -- TimeoutError, OSError/ConnectionError, RuntimeError from a failed turn or
 # transport (HarnessTurnFailed, SelfSenseAskFailed, ReflectLlmCallFailed) -- is transient: a

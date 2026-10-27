@@ -34,3 +34,11 @@ output_schema:
     selected_skill_family: { type: string }
     selected_skill: { type: string }
     execution_summary: { type: string }
+
+# Body economy (Patch C2): who pays for this verb. Parsed by plan_loader.load_verb_physiology;
+# checked by scripts/check_verb_physiology.py. Tier 0 never bids (turn/autonomic).
+physiology:
+  tier: 0
+  family: turn
+  lanes: []
+  deferrable_window_s: 0

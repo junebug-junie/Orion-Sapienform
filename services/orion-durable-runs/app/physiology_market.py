@@ -25,7 +25,7 @@ from typing import Any, Optional
 from orion.physiology.appetite import ActRecord
 from orion.physiology.choice import MarketContext, ReservationBook, build_context, decide, unavailable
 from orion.physiology.families import FamiliesConfig
-from orion.physiology.weights import UseRecord
+from orion.physiology.weights import UseRecord, weights_now
 from orion.schemas.physiology import PhysiologyStateV1, parse_physiology_state
 from orion.schemas.physiology_want import WantDecisionV1, WantV1
 
@@ -107,18 +107,20 @@ class Market:
         self._lane_window = lane_window_sec
         self._stale = stale_after_sec
         self._cache: Optional[_Cached] = None
+        # Weights are a 30-day daily replay: computed once per history snapshot and UTC day.
+        self._weights: Optional[tuple[tuple[datetime, Any], dict]] = None
         self._lock = asyncio.Lock()
         self.book = ReservationBook()
         self.counts = {"funded": 0, "deferred": 0, "publish_failed": 0}
 
-    async def _history(self, now: datetime) -> tuple[list[ActRecord], list[UseRecord]]:
+    async def _history(self, now: datetime) -> _Cached:
         async with self._lock:
             c = self._cache
             if c is not None and 0 <= (now - c.at).total_seconds() <= self._ttl:
-                return c.acts, c.uses
+                return c
             acts, uses = await read_history(self._pool_getter(), now)
             self._cache = _Cached(at=now, acts=acts, uses=uses)
-            return acts, uses
+            return self._cache
 
     async def _state(self) -> Optional[PhysiologyStateV1]:
         from orion.schemas.physiology import PHYSIOLOGY_STATE_REDIS_KEY
@@ -136,11 +138,15 @@ class Market:
         if self.families is None:
             return None
         try:
-            acts, uses = await self._history(now)
+            hist = await self._history(now)
         except Exception:  # noqa: BLE001
             logger.warning("physiology_bid_history_read_failed", exc_info=True)
             return None
-        ctx = build_context(self.families, acts, uses, state, now, lane_window_sec=self._lane_window)
+        key = (hist.at, now.astimezone(timezone.utc).date())
+        if self._weights is None or self._weights[0] != key:
+            self._weights = (key, weights_now(self.families, hist.acts, hist.uses, now))
+        ctx = build_context(self.families, hist.acts, hist.uses, state, now, lane_window_sec=self._lane_window,
+                            weights=self._weights[1])
         return MarketContext(families=ctx.families, appetite=ctx.appetite, weights=ctx.weights,
                              tier1_share=ctx.tier1_share, funded_share=ctx.funded_share,
                              lane_window_sec=ctx.lane_window_sec, stale_after_sec=self._stale)

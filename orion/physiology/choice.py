@@ -425,7 +425,9 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     # The floor applies only where the funded shares were read (a family absent from the map: no floor).
     floor_known = want.family in ctx.funded_share
     floor_share = ctx.funded_share.get(want.family)
-    under_floor = floor_known and (floor_share is None or floor_share < EXPLORATION_FLOOR)
+    # ...and only for a want with some hunger: the floor guarantees a share to families that want,
+    # it does not fund a family whose drive just discharged (intensity 0).
+    under_floor = floor_known and inten > 0 and (floor_share is None or floor_share < EXPLORATION_FLOOR)
     if net > 0 or under_floor:
         reason = "net_positive" if net > 0 else "exploration_floor"
         if reason == "exploration_floor":

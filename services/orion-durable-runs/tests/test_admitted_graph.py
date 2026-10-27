@@ -273,6 +273,8 @@ def test_failed_attempt_retries_transient_errors_and_fails_deterministic_ones_at
         assert not is_deterministic(transient)
     for deterministic in (ValueError("x"), validation_error, TypeError("x"), KeyError("x")):
         assert is_deterministic(deterministic)
+    from orion.cognition.model_output import ModelOutputRejected
+    assert not is_deterministic(ModelOutputRejected("topic body too long"))   # a fresh sample may pass
 
     async def scenario():
         releases = []
@@ -287,6 +289,13 @@ def test_failed_attempt_retries_transient_errors_and_fails_deterministic_ones_at
         update = await failed_attempt(_policy_admission(releases), {"attempt": 0}, ValueError("bad"), waiting=waiting)
         assert update["status"] == "failed" and update["last_error"] == "deterministic: ValueError: bad"
         assert releases == [("attempt_failed", False)]
+
+        releases.clear()
+        update = await failed_attempt(_policy_admission(releases), {"attempt": 0}, ModelOutputRejected("refs"),
+                                      waiting=waiting)
+        assert update["status"] == "retrying" and update["attempt"] == 1
+        assert update["last_error"] == "ModelOutputRejected: refs"
+        assert releases == [("attempt_failed", True)]
 
         releases.clear()
         update = await failed_attempt(_policy_admission(releases), {"attempt": 2}, TimeoutError(), waiting=waiting)

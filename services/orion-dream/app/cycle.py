@@ -294,6 +294,15 @@ class CycleActTrace:
             act_emit.reset_lease_correlation(token)
 
 
+def _cycle_shadow(cycle_id: str):
+    """The sleep's shadow want (Tier 1, family dream.cycle). want_id = the act's correlation id."""
+    from app.physiology_shadow import ShadowBid
+
+    return ShadowBid(family=act_emit.ACTOR, verb=act_emit.VERB, tier=1,
+                     want_id=act_emit.cycle_correlation_id(cycle_id), object_ref=f"dream_cycle:{cycle_id}",
+                     component="dream_cycle")
+
+
 def drive_reading_for(
     pressure: SleepPressureV1, *, now: datetime, check_id: str, last_start: Optional[datetime],
     last_end: Optional[datetime], has_candidates: bool, source_errors,
@@ -400,11 +409,21 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
                 pressure.idle_required_minutes, pressure.new_counts, pressure.counts,
             )
             return None
+
+    # The check would sleep (due, overdue backstop, or forced): that is the want. Body economy
+    # Patch C3b places a SHADOW bid here, logged beside the real outcome and never obeyed
+    # (app/physiology_shadow.py). The cycle id is minted here instead of after the arousal gate
+    # so the bid carries the sleep act's correlation id; a held check simply never uses it.
+    cycle_id = f"dc-{uuid4().hex[:12]}"
+    shadow = _cycle_shadow(cycle_id)
+    shadow.place()
+    if not force:
         # Read only when the dream would otherwise sleep: one Redis GET per would-be
         # sleep, and the log names exactly the sleeps arousal held. Forced runs skip it.
         arousal = await read_arousal_view(deps, started)
         if arousal_holds_sleep(arousal, started):
             deps.hold_reason = f"arousal_{arousal.level}"
+            shadow.settle(f"blocked:{deps.hold_reason}")
             logger.info(
                 "dream_cycle held reason=arousal_%s since=%s pressure=%.2f/%.2f idle=%s/%s backstop=%s",
                 arousal.level, arousal.since, pressure.pressure, pressure.threshold,
@@ -412,8 +431,9 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
             )
             return None
 
-    cycle_id = f"dc-{uuid4().hex[:12]}"
     if not candidates:
+        # Nothing to replay: the cycle is recorded `empty` and opens no act.
+        shadow.settle("blocked:nothing_to_replay")
         cycle = DreamCycleV1(
             cycle_id=cycle_id, trigger=trigger, status="empty",  # type: ignore[arg-type]
             started_at=started, ended_at=datetime.now(timezone.utc), pressure=pressure,
@@ -424,6 +444,7 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
         return cycle
 
     act = CycleActTrace(deps, cycle_id)
+    shadow.settle("ran")
     lease_token = None
     try:
         # Inside the try: a cancel while the open is being published still closes the act at 0.

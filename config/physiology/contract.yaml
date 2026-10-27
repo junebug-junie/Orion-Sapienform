@@ -144,6 +144,10 @@ readers:
   - module: services/orion-substrate-runtime/app/store.py
     role: display
     reason: loads cabinet temperature points for the cabinet-heat tick.
+  - module: services/orion-dream/app/physiology_shadow.py
+    role: display
+    reason: SHADOW bid (a dream check that would sleep) logged beside the real gate; never obeyed.
+    note: Patch C3b; becomes the bid site when Patch D cuts each producer over
   - module: orion/introspect/power_attribution.py
     role: display
     reason: heat archaeology for the power_attribution introspect tool; reads hourly watts/leases read-only and returns a correlational answer to Orion; gates nothing.

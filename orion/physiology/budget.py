@@ -110,7 +110,13 @@ class BudgetConfig:
     energy_rearm_frac: float = 0.05
     energy_min_hours: int = 24
     energy_trailing_hours: int = 168
-    juniper_min_elapsed_h: float = 1.0
+    # Pace the day only after this much of it: one early message is not a day's rate (review).
+    juniper_min_elapsed_h: float = 6.0
+    # Warn this many days before a heat sensitivity entry goes stale (it then reads no_reading).
+    heat_stale_warn_days: float = 7.0
+    # A constraint absent from a tick keeps its carry this long (a lane missing for a tick is
+    # unknown, not reset to 0).
+    carry_keep_sec: float = 24 * 3600.0
     nominal_tick_sec: float = 120.0
     max_tick_sec: float = 600.0     # after a restart or a gap, never step more than 10 min at once
     specs: Mapping[str, PriceSpec] = field(default_factory=lambda: dict(DEFAULT_SPECS))
@@ -183,7 +189,7 @@ def heat_ask(reading: PhysiologyConstraintReadingV1, body: BodyInputs, now: date
     bind = bind_with_hysteresis(prev_bind, floor_use=room, budget=cfg.heat_soft_line_c, rearm_margin=cfg.heat_rearm_c)
     budget = max(0.0, cfg.heat_soft_line_c - room)
     sensor = f" (sensor offset -{off:.1f} C, {rec.change_event})" if rec is not None else ""
-    why = (f"cabinet {raw:.1f} C{sensor} -> {cabinet:.1f} C; Orion's share {share:.2f} C "
+    why = (f"cabinet {raw:.1f} C{sensor} -> {cabinet:.1f} C; Orion's share {share:.2f} C (2 h step response: a short-run lower bound) "
            f"[{'; '.join(parts) or 'no host'}]; room without Orion {room:.1f} C vs line {cfg.heat_soft_line_c:.1f} C")
     if bind:
         why = "room over the line without Orion's load (not my load); " + why
@@ -202,10 +208,12 @@ def energy_ask(reading: PhysiologyConstraintReadingV1, body: BodyInputs, now: da
     env = reading.budget
     if reading.level is None:
         return _Ask(None, env, None, f"no energy reading ({reading.no_reading})", no_reading=reading.no_reading)
-    if env is None:
+    if env is None or env <= 0:
         return _Ask(None, None, None, "no monthly envelope set", no_reading="no_envelope")
     month_start, month_end = _local_month_bounds(now, ZoneInfo(cfg.tz))
-    hours = [h for h in body.energy.hours if h.hour_start >= month_start]
+    # Complete hours only: the hour still filling has partial kWh and would drag the rate and floor.
+    hours = [h for h in body.energy.hours
+             if h.hour_start >= month_start and (now - h.hour_start).total_seconds() >= 3600.0]
     usd = [h.kwh * rate for h, rate, how in priced_hours(hours, body.energy.prices) if rate is not None]
     if len(usd) < cfg.energy_min_hours:
         return _Ask(None, env, None, f"{len(usd)} priced hours this month (< {cfg.energy_min_hours})",
@@ -250,7 +258,9 @@ def juniper_ask(reading: PhysiologyConstraintReadingV1, now: datetime, cfg: Budg
         return _Ask(None, reading.budget, None, f"no outreach reading ({reading.no_reading})", no_reading=reading.no_reading)
     tz = ZoneInfo(cfg.tz)
     local = now.astimezone(tz)
-    elapsed_h = (local - datetime(local.year, local.month, local.day, tzinfo=tz)).total_seconds() / 3600.0
+    # Through UTC: same-tzinfo subtraction is wall-clock and is 1 h off on DST days.
+    midnight = datetime(local.year, local.month, local.day, tzinfo=tz).astimezone(timezone.utc)
+    elapsed_h = (now.astimezone(timezone.utc) - midnight).total_seconds() / 3600.0
     sent = float(reading.level)
     pace = sent * 24.0 / elapsed_h if elapsed_h >= cfg.juniper_min_elapsed_h else sent
     return _Ask(pace, reading.budget, False,
@@ -260,7 +270,7 @@ def juniper_ask(reading: PhysiologyConstraintReadingV1, now: datetime, cfg: Budg
 def claude_ask(reading: PhysiologyConstraintReadingV1) -> _Ask:
     st = reading.state
     if reading.level is None or st not in ("clear", "limited"):
-        return _Ask(None, 0.0, None, f"claude limit state {st or 'unknown'} ({reading.no_reading or 'not both kinds read fresh'})",
+        return _Ask(None, None, None, f"claude limit state {st or 'unknown'} ({reading.no_reading or 'not both kinds read fresh'})",
                     no_reading=reading.no_reading or "state_unknown")
     if st == "limited":
         resets = [f"{k} resets {v}" for k, v in reading.detail.items() if k.endswith("_resets_at")]
@@ -333,6 +343,8 @@ def strain_dial(constraints: list[PhysiologyConstraintReadingV1]) -> PhysiologyS
     for c in constraints:
         p = c.price
         if p is None:
+            if c.no_reading is not None:
+                none_.append(c.constraint)   # e.g. the bare "lane" placeholder: unknown, never calm
             continue
         if p.bind_state == "exogenous_bind":
             exo.append(c.constraint)
@@ -362,7 +374,13 @@ def price_state(state: PhysiologyStateV1, body: BodyInputs, carry: Optional[Mapp
     """One Budget tick. Returns the state with a price on every priceable reading and the strain
     dial, plus the carry for the next tick ({constraint: {price, bind, ceiling_since, at}})."""
     carry = dict(carry or {})
+    # Start from the last carry: a constraint absent this tick (a lane with no reading) keeps its
+    # price, bind flag and ceiling run instead of restarting at 0. Entries unseen for a day expire.
     out_carry: dict = {}
+    for name, prev in carry.items():
+        at = _parse_dt((prev or {}).get("at"))
+        if at is not None and 0 <= (now - at).total_seconds() <= cfg.carry_keep_sec:
+            out_carry[name] = prev
     readings: list[PhysiologyConstraintReadingV1] = []
     warnings = list(state.warnings)
     for r in state.constraints:
@@ -378,6 +396,13 @@ def price_state(state: PhysiologyStateV1, body: BodyInputs, carry: Optional[Mapp
         if price.bind_state == "stuck_at_ceiling":
             warnings.append(f"price_stuck_at_ceiling:{r.constraint}")
         readings.append(r.model_copy(update={"price": price}))
+    if cfg.heat_config is not None:
+        for host, e in sorted(cfg.heat_config.hosts.items()):
+            left = cfg.heat_max_age_days - (now - e.fitted_at).total_seconds() / 86400.0
+            if left <= 0:
+                warnings.append(f"heat_sensitivity_stale:{host}")
+            elif left <= cfg.heat_stale_warn_days:
+                warnings.append(f"heat_sensitivity_stale_in_days:{host}:{left:.1f}")
     priced = state.model_copy(update={"constraints": readings, "warnings": warnings})
     return priced.model_copy(update={"strain": strain_dial(readings)}), out_carry
 

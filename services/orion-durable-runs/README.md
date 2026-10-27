@@ -784,6 +784,18 @@ Heat sensitivities are data: `config/physiology/heat_sensitivity.yaml`, written 
 fitted host with no watts, or an awake host with no fit makes the heat price `no_reading`. Refit and
 rebuild to refresh it. Off: `ORION_PHYSIOLOGY_PRICES_ENABLED=false` (Body readings only).
 
+Known limits (review, 10-27):
+- Orion's heat share uses the 2 h step-response sensitivity, so it is a **short-run lower bound**
+  for load held for hours. `exogenous_bind` ("not my load") is therefore biased toward excusing
+  Orion. No reader may decide on it before the sensitivity is calibrated (design Organ 6).
+- The sensor offset comes from the yaml (written by the fit from `prediction_change_event`), not
+  from a live read of that table: a new sensor move counts only after a refit.
+- hecate counts as asleep below a 150 W 1 h mean, so a short burst can be missed.
+- The carry (price, bind flag, ceiling run) crosses the daily graph thread (`CARRIED_KEYS`) and is
+  kept for a day for a constraint missing from a tick. Warnings `heat_sensitivity_stale_in_days:<host>:<d>`
+  (7 days ahead) and `heat_sensitivity_stale:<host>` say when to refit.
+- `attention:juniper` paces the day only after 6 h of it; before that the use is the count itself.
+
 Live smoke (read-only, replays the node over stored ticks): `ORION_ANALYSIS_DSN=... python
 scripts/analysis/smoke_body_economy_prices.py --hours 24`.
 

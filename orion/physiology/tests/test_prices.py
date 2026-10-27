@@ -25,7 +25,7 @@ from orion.physiology.prices import (
     usable_sensitivity,
 )
 
-P = PriceParams(eta=0.5, ceiling=2.0, max_step=0.5, budget_floor=0.25)
+P = PriceParams(eta=0.5, ceiling=2.0, max_step=0.5, budget_floor=0.25, bind_ramp=True)  # Patch B default, explicit
 
 
 def _run(prices0, seq, params=P):

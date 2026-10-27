@@ -6,9 +6,11 @@ stored), re-derives what the live node would also have had at each tick, and run
 ``orion.physiology.budget.price_state`` over them in order, carrying the state tick to tick exactly
 as the node does. Prints the price path per constraint and checks the Patch B sanity rules:
 
-- the heat price is ~0 whenever the cabinet (sensor offset removed) is under the soft line;
-- energy is ``exogenous_bind``;
-- no price sits at its ceiling unflagged (``stuck_at_ceiling`` is the flag).
+- the heat price is ~0 whenever the cabinet (sensor offset removed) is under the soft line, except
+  the decay tail within one horizon after the price was last above 0.05 (as R1 excuses it);
+- no price sits at its ceiling unflagged for longer than its horizon (consecutive, by timestamp);
+- energy's bind state is REPORTED (expected ``exogenous_bind`` while the envelope is $100), not gated:
+  it describes today's world, not a rule.
 
 What is re-derived per tick (the stored rows predate these inputs):
 - host watts: the 1 h mean of ``orion_biometrics_cluster`` ending at the tick;
@@ -141,7 +143,8 @@ def main(argv: list[str] | None = None) -> int:
         win = [m for t, m in mins if tick - window <= t <= tick]
         watts = {h: (sum(m[h] for m in win if m[h] is not None) / max(1, sum(1 for m in win if m[h] is not None))
                      if any(m[h] is not None for m in win) else None) for h in ("athena", "circe", "hecate")}
-        body = BodyInputs(heat=HeatInput(True), energy=EnergyInput(True, hours=[h for h in ehours if h.hour_start <= tick],
+        # Complete hours only (no look-ahead into the hour that was still filling at the tick).
+        body = BodyInputs(heat=HeatInput(True), energy=EnergyInput(True, hours=[h for h in ehours if h.hour_start + timedelta(hours=1) <= tick],
                                                                        prices=[p for p in rates if p.hour_start <= tick]),
                           lanes=LaneInput(True), juniper=JuniperInput(True), host_watts=HostWattsInput(bool(win), watts))
         priced, carry = price_state(st, body, carry, tick, cfg)
@@ -172,23 +175,33 @@ def main(argv: list[str] | None = None) -> int:
     print(f"    last: {strain[-1].why if strain else None}")
 
     checks = {}
-    heat_under = [(t, p) for t, c, p in by.get("heat", []) if c.level is not None
-                  and c.level - offset_at(heat_cfg, CABINET_SERIES, t)[0] < cfg.heat_soft_line_c]
-    checks["heat_~0_when_cabinet_under_line"] = {
-        "ticks_under_line": len(heat_under),
-        "ticks_priced_over_0.05": sum(1 for _, p in heat_under if p.value > 0.05),
-        "ok": all(p.value <= 0.05 for _, p in heat_under)}
+    tail = timedelta(seconds=cfg.spec("heat").horizon_sec)
+    last_hot = None
+    bad = under = 0
+    for t, c, p in by.get("heat", []):
+        if p.value > 0.05 and (c.level is None or c.level - offset_at(heat_cfg, CABINET_SERIES, t)[0] >= cfg.heat_soft_line_c):
+            last_hot = t
+        if c.level is not None and c.level - offset_at(heat_cfg, CABINET_SERIES, t)[0] < cfg.heat_soft_line_c:
+            under += 1
+            if p.value > 0.05 and not (last_hot is not None and t - last_hot <= tail):
+                bad += 1
+    checks["heat_~0_when_cabinet_under_line"] = {"ticks_under_line": under, "ticks_priced_over_0.05_outside_decay_tail": bad,
+                                                 "ok": bad == 0}
     e_states = Counter(p.bind_state for _, _, p in by.get("energy", []))
-    checks["energy_exogenous_bind"] = {"states": dict(e_states), "ok": e_states.get("exogenous_bind", 0) == sum(e_states.values()) > 0}
-    unflagged = [(n, t) for n, pts in by.items() for t, _, p in pts
-                 if p.value >= p.ceiling * (1 - 1e-6) and p.bind_state not in ("exogenous_bind", "stuck_at_ceiling")]
-    runs = defaultdict(int)
-    for n, _ in unflagged:
-        runs[n] += 1
-    checks["no_price_stuck_at_ceiling_unflagged"] = {
-        "ticks_at_ceiling_unflagged_by_constraint": dict(runs),
-        "stuck_flagged": {n: sum(1 for _, _, p in pts if p.bind_state == "stuck_at_ceiling") for n, pts in by.items()},
-        "ok": all(v * 120 <= cfg.spec(n).horizon_sec for n, v in runs.items())}
+    checks["energy_bind_state (reported, not gated)"] = {"states": dict(e_states), "ok": True}
+    longest: dict = {}
+    for n, pts in by.items():
+        start = None
+        for t, _, p in pts:
+            if p.value >= p.ceiling * (1 - 1e-6) and p.bind_state not in ("exogenous_bind", "stuck_at_ceiling"):
+                start = start or t
+                longest[n] = max(longest.get(n, 0.0), (t - start).total_seconds())
+            else:
+                start = None
+    checks["no_price_at_ceiling_unflagged_past_its_horizon"] = {
+        "longest_unflagged_ceiling_run_sec": {n: round(v) for n, v in longest.items()},
+        "stuck_flagged_ticks": {n: sum(1 for _, _, p in pts if p.bind_state == "stuck_at_ceiling") for n, pts in by.items()},
+        "ok": all(v <= cfg.spec(n).horizon_sec for n, v in longest.items())}
     print("checks:", json.dumps(checks, indent=1, default=str))
     if a.out_json:
         Path(a.out_json).write_text(json.dumps({"summary": summary, "checks": checks,

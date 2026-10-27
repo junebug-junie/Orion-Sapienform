@@ -197,6 +197,21 @@ def test_prices_ride_on_the_state_and_the_carry_crosses_ticks():
     assert seen[0] is None and set(seen[1]) >= {"lane:fast", "heat"}   # the checkpointed carry came back
 
 
+def test_the_price_carry_crosses_local_midnight():
+    """Review blocker: the graph runs one thread per local day and seeds the next day from
+    CARRIED_KEYS. Without physiology_prices there, every price restarted at 0 at midnight."""
+    from app.temporal_self_driver import CARRIED_KEYS
+
+    assert "physiology_prices" in CARRIED_KEYS
+    w = World()
+    d, seen = _priced_driver(w)
+    w.now = datetime(2026, 10, 24, 5, 50, tzinfo=timezone.utc)      # 23:50 MDT
+    tick(d)
+    w.now = datetime(2026, 10, 24, 6, 2, tzinfo=timezone.utc)       # 00:02 MDT: a new day thread
+    tick(d)
+    assert seen[1] is not None and "lane:fast" in seen[1]
+
+
 def test_a_price_failure_keeps_the_body_readings():
     w = World()
     d, _ = _priced_driver(w, fail=True)

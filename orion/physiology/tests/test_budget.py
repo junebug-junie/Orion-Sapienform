@@ -250,3 +250,55 @@ def test_priced_state_round_trips_the_schema_and_the_stored_row_keeps_the_prices
     assert {c.constraint: c.price.bind_state for c in again.constraints} == {"heat": "slack", "lane:agent": "slack"}
     # sql-writer persists ``constraints`` only; the dial is recomputable from them.
     assert strain_dial(again.constraints) == again.strain
+
+
+# --- review fixes -------------------------------------------------------------------------------
+
+def test_a_constraint_absent_for_a_tick_keeps_its_price():
+    """Review: the pool state unread -> only the bare 'lane' placeholder. lane:fast must come back
+    at its old price, not 0 (unknown is not reset)."""
+    _, _, carry = run([lane("fast", held=3600.0, lease=9000.0, slots=1, lent=5400.0)],
+                      carry={"lane:fast": {"price": 0.9, "bind": False, "ceiling_since": None,
+                                           "at": (NOW - timedelta(seconds=120)).isoformat()}})
+    t1 = NOW + timedelta(seconds=120)
+    by, out, carry = run([R(constraint="lane", unit="slot_s", level=None, no_reading="read_failed:gpu_pool_events")],
+                         carry=carry, now=t1)
+    assert carry["lane:fast"]["price"] > 0.9
+    assert "lane" in out.strain.no_reading            # unknown lanes are named, not hidden as calm
+    by, _, _ = run([lane("fast", held=1000.0, lease=1000.0, slots=1)], carry=carry, now=t1 + timedelta(seconds=120))
+    assert by["lane:fast"].price.value > 0.85         # resumed from where it was, decaying
+
+
+def test_juniper_one_early_message_is_not_a_days_pace_and_dst_elapsed_is_real():
+    r = R(constraint="attention:juniper", unit="messages", level=1.0, budget=4.0, budget_kind="daily_cap")
+    early = datetime(2026, 10, 26, 7, 6, tzinfo=timezone.utc)                 # 01:06 MDT
+    by, _, _ = run([r], now=early)
+    assert by["attention:juniper"].price.use == 1.0 and by["attention:juniper"].price.bind_state == "slack"
+    # 2026-11-01 (DST ends): 12:00 MST is 13 real hours after local midnight (06:00Z).
+    dst = datetime(2026, 11, 1, 19, 0, tzinfo=timezone.utc)
+    by, _, _ = run([R(constraint="attention:juniper", unit="messages", level=13.0, budget=40.0, budget_kind="daily_cap")], now=dst)
+    assert by["attention:juniper"].price.use == pytest.approx(13.0 * 24 / 13.0)
+
+
+def test_heat_config_near_its_age_limit_warns_before_going_no_reading():
+    _, out, _ = run([heat(30.0)], now=datetime(2026, 11, 21, tzinfo=timezone.utc))
+    assert any(w.startswith("heat_sensitivity_stale_in_days:athena") for w in out.warnings)
+    by, out, _ = run([heat(30.0)], now=datetime(2026, 11, 27, tzinfo=timezone.utc))
+    assert "heat_sensitivity_stale:athena" in out.warnings and by["heat"].price.bind_state == "no_reading"
+
+
+def test_energy_zero_envelope_is_no_reading_and_the_filling_hour_is_left_out():
+    zero = R(constraint="energy", unit="usd", level=5.0, budget=0.0, budget_kind="envelope")
+    assert run([zero], b=body(energy=_energy(10, 1.0)))[0]["energy"].price.bind_state == "no_reading"
+    # 24 complete hours + the hour still filling at a tenth of the rate: the floor is not dragged down.
+    start = datetime(2026, 10, 1, 6, 0, tzinfo=timezone.utc)
+    hours = [EnergyHour(start + timedelta(hours=i), 1.0) for i in range(24)] + [EnergyHour(start + timedelta(hours=24), 0.1)]
+    e = EnergyInput(True, month_start=start, hours=hours, prices=[EnergyPrice(start, 0.1)])
+    reading = R(constraint="energy", unit="usd", level=2.41, budget=1000.0, budget_kind="envelope")
+    by, _, _ = run([reading], b=body(energy=e), now=start + timedelta(hours=24, minutes=10))
+    assert "$0.100/h" in by["energy"].price.why and "floor alone ($0.100/h)" in by["energy"].price.why
+
+
+def test_claude_unknown_shows_no_budget_not_zero():
+    unk = R(constraint="claude", unit="limit_events", level=0.0, state="unknown", budget=0.0, budget_kind="not_limited")
+    assert run([unk])[0]["claude"].price.budget is None

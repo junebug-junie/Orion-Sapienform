@@ -107,7 +107,8 @@ def _hours(temps: list, watts: float = 600.0) -> dict:
 def test_heat_replay_flags_unmeetable_hours_and_returns_to_rest():
     temps = [28.0] * 10 + [34.0] * 10 + [28.0] * 14
     hours = _hours(temps)
-    params = PriceParams(eta=0.25, ceiling=1.0, max_step=0.25, budget_floor=0.25, slack_decay_floor=1 / 6)
+    params = PriceParams(eta=0.25, ceiling=1.0, max_step=0.25, budget_floor=0.25, slack_decay_floor=1 / 6,
+                         bind_ramp=False)   # the pre-Patch B jump rule, explicitly (this test predates the ramp)
     res = rep.run_heat_replay(hours, sensitivity={"circe": 0.1}, baselines={"circe": 500.0}, params=params,
                               soft_line_c=31.0, start=T0, end=T0 + timedelta(hours=len(temps)), forecast_mode="persistence")
     statuses = [r.status for r in res]
@@ -125,7 +126,7 @@ def test_heat_replay_flags_unmeetable_hours_and_returns_to_rest():
 def test_heat_replay_no_reading_hours_hold_price():
     temps = [34.0] * 3 + [None] * 3 + [34.0] * 2
     hours = _hours(temps)
-    params = PriceParams(eta=0.25, ceiling=1.0, max_step=0.25, budget_floor=0.25)
+    params = PriceParams(eta=0.25, ceiling=1.0, max_step=0.25, budget_floor=0.25, bind_ramp=True)
     res = rep.run_heat_replay(hours, sensitivity={"circe": 0.1}, baselines={"circe": 500.0}, params=params,
                               soft_line_c=31.0, start=T0, end=T0 + timedelta(hours=8), forecast_mode="oracle")
     nr = [i for i, r in enumerate(res) if r.status == NO_READING]

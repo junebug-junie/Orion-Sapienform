@@ -117,8 +117,8 @@ Live rules: point short-run sensitivities (athena 0.686, circe 0.298 °C/100 W),
 ## Tests run
 
 ```text
-orion/physiology/tests + scripts/analysis/tests/test_body_economy_replay_and_fit.py + tests/test_check_body_economy_contract.py: 152 passed
-services/orion-durable-runs/tests (isolated Postgres 16):   629 passed, 1 skipped
+orion/physiology/tests + scripts/analysis/tests/test_body_economy_replay_and_fit.py + tests/test_check_body_economy_contract.py: 157 passed
+services/orion-durable-runs/tests (isolated Postgres 16):   630 passed, 1 skipped
 services/orion-sql-writer/tests/test_physiology_state_sql_shape.py: 5 passed (incl. priced payload accepted + persisted, strain recomputable)
 make check-body-economy-contract: OK (71 modules)
 check_definition_drift --gate, check_metric_lineage --gate, check_sentience_instruments --static-only,
@@ -144,11 +144,12 @@ Live smoke (read-only; scripts/analysis/smoke_body_economy_prices.py --hours 24;
 - heat: slack 720/720, price 0.000 throughout. Last tick: cabinet 31.1 C -> 29.1 C after the sensor offset;
   Orion's share 0.85 C (athena +38 W x 0.69, circe +199 W x 0.30, hecate asleep); room 28.2 C vs line 31.0 C.
 - energy: exogenous_bind 720/720. Month to date $166.69, forecast $197.17, always-on floor alone $192.07 vs $100.
-- attention:juniper: binding from 12:18 local (4 of 4 cap-counted sends), at the ceiling 108 ticks (3.6 h, under its 24 h horizon).
+- attention:juniper: binding from 12:18 local (4 of 4 cap-counted sends). Longest run at the ceiling: 3.9 h, under its 24 h horizon.
 - lane:agent: binding 187 ticks, max 0.105 (gap borrowers over 1 slot). lane:diffusion: exogenous_bind 193 (no live slot, lease held).
   lane:agent-gpu2: exogenous_bind 73.
-- Checks: heat ~0 under the line (0 of 720 over 0.05) OK; energy exogenous_bind OK; no unflagged ceiling run past a horizon OK.
-- strain: at rest 151/720; drivers attention:juniper 316, lane:diffusion 174, lane:agent-gpu2 49, lane:agent 30.
+- Checks (rerun after the review fixes, 720 ticks to 10-27 04:03Z): heat ~0 under the line (0 of 720 over 0.05 outside the decay tail) OK;
+  energy exogenous_bind on 720/720 (reported); no unflagged ceiling run past its horizon OK.
+- strain: at rest 151/720; drivers attention:juniper 318, lane:diffusion 174, lane:agent-gpu2 47, lane:agent 30.
 ```
 
 ## Metric gate: the `strain` dial and the prices
@@ -169,7 +170,40 @@ Live smoke (read-only; scripts/analysis/smoke_body_economy_prices.py --hours 24;
 
 ## Review findings fixed
 
-(see below; filled after review)
+Independent review subagent (orion-repo-agent, read-only) on 69e7cf718. All material findings are fixed in the follow-up commit.
+
+- Finding (**blocker**): the price carry was wiped at every local midnight. The graph runs one thread per local day, and `physiology_prices` was not in `CARRIED_KEYS`. Every price, bind flag and ceiling run restarted at 0 at 00:00.
+  - Fix: added to `CARRIED_KEYS` in `temporal_self_driver.py`.
+  - Evidence: `test_the_price_carry_crosses_local_midnight` (23:50 → 00:02 MDT).
+- Finding: a constraint missing for one tick lost its price. With the pool state unread there is only the bare `lane` placeholder, and `lane:fast` came back at 0.03 instead of 0.94.
+  - Fix: the carry starts from the previous carry. An absent constraint keeps its entry for a day.
+  - Evidence: `test_a_constraint_absent_for_a_tick_keeps_its_price`.
+- Finding: the strain dial hid unknown lanes. The bare `lane` placeholder never reached `strain.no_reading`.
+  - Fix: an unpriced reading with `no_reading` is listed.
+  - Evidence: the same test.
+- Finding: one early-day message pinned `attention:juniper` (pace 21.8 at 01:06). DST-day elapsed time was off by 1 h (wall-clock subtraction).
+  - Fix: pace only after 6 h of the day, and compute elapsed time through UTC.
+  - Evidence: `test_juniper_one_early_message_is_not_a_days_pace_and_dst_elapsed_is_real`.
+- Finding: "not my load" claims more than a 2 h step response supports.
+  - Fix: the `why` text and the README now call Orion's share a short-run lower bound. The README says no reader may decide on `exogenous_bind` before calibration.
+  - Evidence: the README "Known limits" section, and the smoke `why` text.
+- Finding: the heat config would go stale silently on 11-26.
+  - Fix: the warnings `heat_sensitivity_stale_in_days:<host>:<d>` (7 days ahead) and `heat_sensitivity_stale:<host>`.
+  - Evidence: `test_heat_config_near_its_age_limit_warns_before_going_no_reading`.
+- Finding: the smoke checks would fail on correct behaviour. The decay tail was not excused, energy's state was gated, ceiling ticks were summed rather than counted as runs, and the energy hours had look-ahead.
+  - Fix: decay tail excused, energy reported not gated, consecutive runs measured by timestamp, complete hours only.
+  - Evidence: smoke rerun, all checks ok.
+- Finding (nit): a zero envelope crashed the whole price pass; the hour still filling dragged the energy floor; claude's unknown state showed `budget=0`.
+  - Fix: zero or negative envelope reads no_reading, complete hours only, and claude's budget is None.
+  - Evidence: `test_energy_zero_envelope_is_no_reading_and_the_filling_hour_is_left_out`, `test_claude_unknown_shows_no_budget_not_zero`.
+- Finding (nit): two older tests picked up the new `bind_ramp` default silently.
+  - Fix: `bind_ramp` is now explicit in `test_prices.P` and the replay tests.
+- Not fixed, recorded in the README and the risks below:
+  - the offset is read from the yaml, not live from `prediction_change_event`;
+  - the hecate sleep check misses short bursts;
+  - the replay does not model hecate or RMP marginal rates;
+  - `run_patch_b`, `config_document` and `baseline_watts_p10` have no direct unit tests (they are exercised by the replay and fit runs);
+  - the inner-state registry text for `physiology.state.v1` does not describe `price`/`strain` yet.
 
 ## Restart required
 
@@ -198,6 +232,9 @@ curl -fsS http://localhost:8124/physiology/state | python3 -m json.tool | head -
 - Severity: low.
   - Concern: ceilings are provisional (1.0). Strain saturates on any binding constraint.
   - Mitigation: labelled `ceiling_source: provisional` on every price. `ceiling_for` sizes them once wants exist.
+- Severity: medium.
+  - Concern: Orion's heat share is a short-run lower bound (2 h step response), so `exogenous_bind` leans toward "not my load".
+  - Mitigation: documented. No reader decides on it (shadow). Calibration is design Organ 6.
 - Severity: low.
   - Concern: the heat forecast is persistence (the newest reading), not the design's 6 h forecast.
   - Mitigation: stated in `why` and in the README. The replay graded persistence as the live forecaster.
@@ -207,6 +244,6 @@ curl -fsS http://localhost:8124/physiology/state | python3 -m json.tool | head -
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2917 (base: `fix/patch-b1-body-readings`, #2911; retarget to `main` after #2911 merges)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

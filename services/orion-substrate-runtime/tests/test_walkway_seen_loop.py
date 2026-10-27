@@ -319,3 +319,25 @@ def test_sql_runs_against_postgres():
     with admin.begin() as conn:
         conn.execute(text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
     admin.dispose()
+
+
+def test_rules_v3_named_person_and_belonging_both_link_by_their_individual_ids():
+    """Rollup rules_version 3 keys ``named`` by the person record and moves a named bicycle
+    to ``belongings``; the bicycle's own entity node keeps its day link."""
+    store = _store_with(("ind-robin-a", "Robin"), ("ind-robin-b", "Robin"), ("ind-bike", "Sam"))
+    named = {"Robin": {"times": ["09:03", "17:08"], "individual_ids": ["ind-robin-a", "ind-robin-b"],
+                       "person_ids": ["person-robin"]}}
+    row = dict(_day_row(named))
+    row["belongings"] = json.dumps({"Sam": {"times": ["17:09"], "individual_ids": ["ind-bike"],
+                                            "person_ids": ["person-sam"], "kinds": ["bicycle"]}})
+    assert "rollup->'belongings' AS belongings" in wsl.DAYS_SQL
+    out = wsl.link_recent_days(engine=_Engine([row]), store=store, streams=("walkway",), lookback_days=3, done={})
+    assert out[0]["people"] == ["Robin", "Sam's bicycle"] and out[0]["edges_created"] == 3
+
+
+def test_a_row_without_belongings_still_links():
+    store = _store_with(("ind-robin", "Robin"))
+    row = _day_row({"Robin": {"times": ["13:33"], "individual_ids": ["ind-robin"]}})
+    assert "belongings" not in row
+    out = wsl.link_recent_days(engine=_Engine([row]), store=store, streams=("walkway",), lookback_days=3, done={})
+    assert out[0]["people"] == ["Robin"]

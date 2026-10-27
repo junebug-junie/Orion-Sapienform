@@ -1,8 +1,8 @@
 """2026-08-31: Orion's own physical cabinet sensors in the situation brief.
 
-`LabContextV1` (`orion/schemas/situation.py`) has always been a stub -- a
-hand-waved GPU-cluster thermal/power framing that never wired to a real
-producer (`_build_lab_context` unconditionally returns `available=False`).
+`LabContextV1` (`orion/schemas/situation.py`, removed 2026-10-27) was always
+a stub -- a hand-waved GPU-cluster thermal/power framing that never wired to a
+real producer (`_build_lab_context` unconditionally returned `available=False`).
 Juniper: "we had stubbed these as lab, but it is much richer!" -- Orion
 already has a real, live physical sensor array on its own cabinet (Athena
 Nano ESP32 node: BME680 climate, LTR390 UV/ALS, magnetometer, PMSA003I

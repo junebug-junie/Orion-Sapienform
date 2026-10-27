@@ -209,6 +209,9 @@ readers:
     reason: "read-only replay of the body-economy price rules over live history (PR #2861); gates nothing"
 
 sources:
+  - module: scripts/analysis/smoke_body_economy_prices.py
+    role: display
+    reason: read-only live smoke; replays the Budget organ over stored physiology_state ticks and prints the prices. Gates nothing.
   - module: orion/autonomy/thermal_gate.py
     reason: defines ThermalState / thermal_state() and the 32/34 C lines (protected path).
   - module: orion/autonomy/cabinet_heat.py
@@ -249,6 +252,12 @@ sources:
   - module: orion/physiology/body.py
     reason: the pure Body reducer; builds PhysiologyStateV1 from raw source reads.
   - module: services/orion-durable-runs/app/physiology_store.py
-    reason: producer; reads the Body organ's sources (energy, GPU leases, deferrable backlog, outreach, claude limits).
+    reason: producer; reads the Body organ's sources (energy, GPU leases, deferrable backlog, host watts, outreach, claude limits).
+  # Body economy Patch B2 (Organ 2 Budget + Organ 5 strain dial), SHADOW: computes and publishes a
+  # price per constraint on PhysiologyStateV1; nothing that decides reads it.
+  - module: orion/physiology/budget.py
+    reason: the pure Budget reducer; prices each Body reading (dual ascent, anti-windup) and the strain dial. Gates nothing.
+  - module: orion/physiology/heat_config.py
+    reason: loads config/physiology/heat_sensitivity.yaml (written by fit_heat_sensitivity.py --write-config) for the heat price. Gates nothing.
   - module: services/orion-sql-writer/app/worker.py
     reason: persists PhysiologyStateV1 to physiology_state (route + schema map); gates nothing.

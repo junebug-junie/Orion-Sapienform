@@ -108,3 +108,28 @@ def test_write_path_persists_one_row_per_tick_and_redelivery_is_a_no_op(monkeypa
     # A missing reading is stored as missing, never 0.
     assert by["claude"]["level"] is None and by["claude"]["no_reading"] == "no_observation"
     assert rows[0].warnings == ["lane_capacity:pool_state_unread"]
+
+
+def test_patch_b2_prices_and_strain_are_accepted_and_the_prices_persist(monkeypatch) -> None:
+    """Consumer-first (Patch B2): a state carrying the additive ``price`` per reading and the
+    ``strain`` dial validates here (extra=forbid models) and the prices land inside the stored
+    ``constraints``. ``strain`` has no column; it is recomputable from them (budget.strain_dial)."""
+    from orion.physiology.budget import strain_dial
+
+    session = _session(monkeypatch)
+    st = _state()
+    heat = PhysiologyConstraintReadingV1.model_validate({**st.constraints[0].model_dump(), "price": {
+        "value": 0.0, "ceiling": 1.0, "ceiling_source": "provisional", "bind_state": "slack",
+        "use": 0.75, "budget": 2.8, "excess": -0.73, "horizon_sec": 21600.0, "why": "room 28.3 C vs line 31.0 C"}})
+    claude = PhysiologyConstraintReadingV1.model_validate({**st.constraints[1].model_dump(), "price": {
+        "value": 0.0, "ceiling": 1.0, "bind_state": "no_reading", "why": "state unknown"}})
+    priced = st.model_copy(update={"constraints": [heat, claude]})
+    priced = priced.model_copy(update={"strain": strain_dial(priced.constraints)})
+    payload = json.loads(priced.model_dump_json())
+    assert asyncio.run(worker._write(PhysiologyStateSQL, PhysiologyStateV1, payload, kind=PHYSIOLOGY_STATE_KIND))
+    row = session.query(PhysiologyStateSQL).one()
+    by = {c["constraint"]: c for c in row.constraints}
+    assert by["heat"]["price"]["bind_state"] == "slack" and by["heat"]["price"]["use"] == 0.75
+    assert by["claude"]["price"]["bind_state"] == "no_reading"
+    again = [PhysiologyConstraintReadingV1.model_validate(c) for c in row.constraints]
+    assert strain_dial(again) == priced.strain

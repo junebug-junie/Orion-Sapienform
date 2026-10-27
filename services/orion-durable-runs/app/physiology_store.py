@@ -19,6 +19,9 @@ Read-only, bounded, each read failing on its own: a failed read turns only its o
   (``idx_gpu_pool_state_generated`` (host, generated_at) bounds both). The class -> seats map
   comes from the pool state RPC's config.
   Hunger beside each lane, not strain.
+* host watts (Patch B2, the Budget organ's heat price) -- ``orion_biometrics_cluster``: mean
+  CPU+GPU compute watts per host over the last hour for athena and circe (the heat fit's
+  regressor) and hecate's chassis watts (it reports no split). ``idx`` on observed_at; ~10 ms live.
 * juniper -- ``endogenous_outreach_decisions``: sends today (local date), and the newest decision
   of any outcome, so a stopped decision log reads stale instead of "0 sent".
 * claude  -- not a table: the latest ``ClaudeLimitObservationV1`` per kind, held in memory by
@@ -41,6 +44,7 @@ from orion.physiology.body import (
     EnergyHour,
     EnergyInput,
     EnergyPrice,
+    HostWattsInput,
     JuniperInput,
     LaneInput,
     LeaseEvent,
@@ -105,6 +109,18 @@ SELECT max(generated_at) AS last_empty FROM (
 ) s
 WHERE deferrable_depth IS NULL OR coalesce((deferrable_depth->>%(wc)s)::int, 0) = 0
    OR gap > make_interval(secs => %(max_gap)s)
+"""
+HOST_WATTS_WINDOW_SEC = 3600.0
+# Same expressions as scripts/analysis/_body_economy_data.py (the fit's regressors).
+HOST_WATTS_SQL = """
+SELECT avg((measurements_by_node->'athena'->>'cpu_watts_total')::float
+           + (measurements_by_node->'athena'->>'gpu_watts_total')::float) AS athena,
+       avg((measurements_by_node->'circe'->>'cpu_watts_total')::float
+           + (measurements_by_node->'circe'->>'gpu_watts_total')::float) AS circe,
+       avg((measurements_by_node->'hecate'->>'chassis_watts')::float) AS hecate,
+       max(observed_at) AS newest
+FROM orion_biometrics_cluster
+WHERE observed_at >= %(since)s
 """
 JUNIPER_SENT_SQL = """
 SELECT count(*) FILTER (WHERE reason = 'sent') AS sent,
@@ -248,6 +264,22 @@ def _json_field(value: Any) -> Any:
         except ValueError:
             return None
     return value
+
+
+async def read_host_watts(pool: Any, now: datetime, *, window_sec: float = HOST_WATTS_WINDOW_SEC) -> HostWattsInput:
+    try:
+        async with pool.connection() as conn:
+            row = await (await conn.execute(HOST_WATTS_SQL, {"since": now - timedelta(seconds=window_sec)})).fetchone()
+    except Exception:  # noqa: BLE001
+        logger.warning("physiology_host_watts_read_failed", exc_info=True)
+        return HostWattsInput(read_ok=False)
+    row = row or {}
+    newest = row.get("newest")
+    if newest is None:
+        # No biometrics row this hour: every host unknown (not 0 W).
+        return HostWattsInput(read_ok=True, watts={"athena": None, "circe": None, "hecate": None})
+    return HostWattsInput(read_ok=True, newest_at=_utc(newest),
+                          watts={h: (None if row.get(h) is None else float(row[h])) for h in ("athena", "circe", "hecate")})
 
 
 async def read_juniper(pool: Any, now: datetime, tz: ZoneInfo) -> JuniperInput:

@@ -327,8 +327,8 @@ def _build_temporal_self(saver: Any):
         return await regulation_store.record_immune_findings(
             _checkpointer_cm, [regulation_store.immune_finding_row(f, day_id, now) for f in findings])
 
-    read_body, project_physiology, body_config = (_build_physiology() if s.physiology_enabled
-                                                  else (None, None, None))
+    read_body, project_physiology, body_config, price_body = (_build_physiology() if s.physiology_enabled
+                                                              else (None, None, None, None))
 
     global chronicle
     chronicle = _build_chronicle() if s.temporal_self_chronicle_enabled else None
@@ -348,6 +348,7 @@ def _build_temporal_self(saver: Any):
         max_prev_gap_sec=3.0 * s.temporal_self_tick_sec,
         read_body=read_body, project_physiology=project_physiology,
         physiology_min_interval_sec=s.physiology_min_interval_sec,
+        price_body=price_body,
     )
     if body_config is not None:
         deps = dataclasses.replace(deps, body_config=body_config)
@@ -392,7 +393,9 @@ def _build_physiology():
             lanes=await physiology_store.read_lanes(_checkpointer_cm, now, s.physiology_lane_window_sec, pool_state),
             juniper=await physiology_store.read_juniper(_checkpointer_cm, now, tz),
             claude=claude_limits.snapshot() if claude_limits is not None else (),
-            backlog=await physiology_store.read_backlog(_checkpointer_cm, now))
+            backlog=await physiology_store.read_backlog(_checkpointer_cm, now),
+            host_watts=(await physiology_store.read_host_watts(_checkpointer_cm, now)
+                        if price_body is not None else None))
         return body, warnings
 
     async def project_physiology(model) -> None:
@@ -406,7 +409,23 @@ def _build_physiology():
             kind=PHYSIOLOGY_STATE_KIND, source=source, correlation_id=uuid4(),
             payload=model.model_dump(mode="json")))
 
-    return read_body, project_physiology, cfg
+    price_body = None
+    if s.physiology_prices_enabled:
+        # Patch B2 (SHADOW): the Budget organ. The heat sensitivities are data, baked into the image
+        # and loaded once; their 30-day age is judged every tick against ``now``.
+        from orion.physiology.budget import BudgetConfig, price_state
+        from orion.physiology.heat_config import load_heat_sensitivity
+
+        heat_cfg, heat_err = load_heat_sensitivity(s.physiology_heat_sensitivity_path)
+        if heat_err:
+            logger.warning("physiology_heat_sensitivity_unavailable reason=%s", heat_err)
+        budget_cfg = BudgetConfig(tz=s.orion_situation_timezone, heat_soft_line_c=s.physiology_heat_soft_line_c,
+                                  heat_config=heat_cfg, heat_config_error=heat_err)
+
+        def price_body(model, body, carry, now):
+            return price_state(model, body, carry, now, budget_cfg)
+
+    return read_body, project_physiology, cfg, price_body
 
 
 def _build_chronicle():
@@ -581,6 +600,30 @@ async def health() -> dict[str, Any]:
         "temporal_self_chronicle": chronicle.health() if chronicle is not None else None,
         "personality": personality.health() if personality is not None else None,
     }
+
+
+@app.get("/physiology/state")
+async def physiology_state() -> dict:
+    """Read-only debug readout for humans (body economy Patch B2, SHADOW): the latest
+    ``PhysiologyStateV1`` (Body readings, a price per constraint, the strain dial) from Redis
+    ``orion:physiology:latest``. Nothing that decides reads this route or those prices."""
+    from datetime import datetime, timezone
+
+    from orion.schemas.physiology import PHYSIOLOGY_STATE_REDIS_KEY, parse_physiology_state
+
+    if rpc_bus is None:
+        return {"ok": False, "reason": "bus_unavailable", "state": None}
+    try:
+        raw = await rpc_bus.redis.get(PHYSIOLOGY_STATE_REDIS_KEY)
+    except Exception as exc:  # noqa: BLE001 - a debug route reports, never raises
+        return {"ok": False, "reason": f"redis_read_failed:{type(exc).__name__}", "state": None}
+    state = parse_physiology_state(raw)
+    if state is None:
+        return {"ok": False, "reason": "absent_or_expired" if raw is None else "malformed", "state": None}
+    age = (datetime.now(timezone.utc) - state.generated_at).total_seconds()
+    return {"ok": True, "shadow": True, "age_sec": round(age, 1), "strain": state.strain.model_dump(mode="json") if state.strain else None,
+            "prices": {c.constraint: (c.price.model_dump(mode="json") if c.price else None) for c in state.constraints},
+            "state": state.model_dump(mode="json")}
 
 
 @app.get("/regulation/state")

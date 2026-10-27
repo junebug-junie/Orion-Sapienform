@@ -83,6 +83,8 @@ class TemporalSelfGraphState(TypedDict, total=False):
     strain_causes_now: Optional[list]  # the strain causes present at that row
     physiology_at: Optional[str]     # when the physiology node last produced a state (ISO)
     physiology: Optional[dict]       # its one-line summary: tick_id, no_reading, error
+    # Patch B2: the Budget organ's carry between ticks {constraint: {price, bind, ceiling_since, at}}.
+    physiology_prices: Optional[dict]
 
 
 @dataclass
@@ -124,6 +126,10 @@ class TemporalSelfDeps:
     # tick and skips turn-driven steps in between.
     physiology_min_interval_sec: float = 100.0
     physiology_timeout_sec: float = 30.0
+    # Patch B2 (SHADOW): (state, body inputs, last carry, now) -> (priced state, carry). None =
+    # ORION_PHYSIOLOGY_PRICES_ENABLED off: the Body readings are published unpriced.
+    price_body: Optional[Callable[[PhysiologyStateV1, BodyInputs, Optional[dict], datetime],
+                                  tuple[PhysiologyStateV1, dict]]] = None
 
 
 def _dt(v: Any) -> Optional[datetime]:
@@ -270,9 +276,18 @@ def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
                           thermal_state=inputs.cabinet_thermal_state, observed_at=inputs.observed_at)
                 if inputs is not None else HeatInput(read_ok=False))
 
+        prices_out: dict = {}
+
         async def run() -> PhysiologyStateV1:
             body, read_warnings = await deps.read_body(now, heat)
             model = build_physiology_state(now, body, deps.body_config, warnings=read_warnings)
+            if deps.price_body is not None:
+                try:
+                    model, carry = deps.price_body(model, body, state.get("physiology_prices"), now)
+                    prices_out["carry"] = carry
+                except Exception:  # noqa: BLE001 - a price bug must not cost the Body readings
+                    logger.warning("physiology_prices_failed", exc_info=True)
+                    model = model.model_copy(update={"warnings": list(model.warnings) + ["prices_failed"]})
             await deps.project_physiology(model)
             return model
 
@@ -292,9 +307,14 @@ def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
                     "physiology": {"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
                     "warnings": warnings + ["physiology_failed"]}
         missing = [f"{c.constraint}:{c.no_reading}" for c in model.constraints if c.no_reading]
-        return {"physiology_at": now.isoformat(),
-                "physiology": {"tick_id": model.tick_id, "constraints": len(model.constraints),
-                               "no_reading": missing, "error": None}}
+        out = {"physiology_at": now.isoformat(),
+               "physiology": {"tick_id": model.tick_id, "constraints": len(model.constraints),
+                              "no_reading": missing, "error": None,
+                              "strain": None if model.strain is None else model.strain.value,
+                              "strain_constraint": None if model.strain is None else model.strain.constraint}}
+        if "carry" in prices_out:
+            out["physiology_prices"] = prices_out["carry"]
+        return out
 
     async def immune(state: TemporalSelfGraphState) -> dict:
         if deps.read_immune_series is None:

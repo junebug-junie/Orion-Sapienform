@@ -165,6 +165,80 @@ def test_class_roles_from_pool_state_config():
     assert physiology_store.class_roles_from_pool_state(None) is None
 
 
+# --- Patch B2: the Budget organ in the node (shadow prices) --------------------------------------
+
+def _priced_driver(w, *, fail=False):
+    from orion.physiology.budget import BudgetConfig, price_state
+
+    seen = []
+
+    def price_body(model, body, carry, now):
+        seen.append(carry)
+        if fail:
+            raise RuntimeError("price bug")
+        return price_state(model, body, carry, now, BudgetConfig(heat_config=None, heat_config_error="missing:test"))
+
+    return w.driver(price_body=price_body), seen
+
+
+def test_prices_ride_on_the_state_and_the_carry_crosses_ticks():
+    w = World()
+    d, seen = _priced_driver(w)
+    out = tick(d)
+    st = w.states[0]
+    by = {c.constraint: c for c in st.constraints}
+    assert by["lane:fast"].price is not None and by["lane:fast"].price.bind_state == "slack"
+    # No heat config: the heat price is no_reading, never 0-and-calm.
+    assert by["heat"].price.bind_state == "no_reading" and "missing:test" in by["heat"].price.why
+    assert st.strain is not None and st.strain.constraint is None and "heat" in st.strain.no_reading
+    assert out["physiology"]["strain"] == st.strain.value
+    w.now += timedelta(seconds=120)
+    tick(d)
+    assert seen[0] is None and set(seen[1]) >= {"lane:fast", "heat"}   # the checkpointed carry came back
+
+
+def test_a_price_failure_keeps_the_body_readings():
+    w = World()
+    d, _ = _priced_driver(w, fail=True)
+    tick(d)
+    st = w.states[0]
+    assert "prices_failed" in st.warnings and all(c.price is None for c in st.constraints)
+
+
+def test_physiology_route_reads_the_latest_state_and_reports_absence(monkeypatch):
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://unused/unused")
+    from app import main as app_main
+
+    class Redis:
+        def __init__(self, raw):
+            self.raw = raw
+
+        async def get(self, key):
+            assert key == "orion:physiology:latest"
+            return self.raw
+
+    class Bus:
+        def __init__(self, raw):
+            self.redis = Redis(raw)
+
+    w = World()
+    d, _ = _priced_driver(w)
+    tick(d)
+    raw = w.states[0].model_dump_json()
+    old = app_main.rpc_bus
+    try:
+        app_main.rpc_bus = Bus(raw)
+        out = asyncio.run(app_main.physiology_state())
+        assert out["ok"] and out["shadow"] and out["prices"]["lane:fast"]["bind_state"] == "slack"
+        assert "heat" in out["strain"]["no_reading"]
+        app_main.rpc_bus = Bus(None)
+        assert asyncio.run(app_main.physiology_state()) == {"ok": False, "reason": "absent_or_expired", "state": None}
+        app_main.rpc_bus = Bus(b"{not json")
+        assert asyncio.run(app_main.physiology_state())["reason"] == "malformed"
+    finally:
+        app_main.rpc_bus = old
+
+
 def test_capacity_from_pool_state():
     payload = {"roles": [{"role": "fast", "status": "confirmed", "slots": 4},
                          {"role": "diffusion", "status": "static", "slots": 1},
@@ -338,5 +412,30 @@ def test_store_missing_tables_read_failed_not_zero():
         assert not (await physiology_store.read_lanes(pool, now, 3600.0, None)).events_read_ok
         assert not (await physiology_store.read_juniper(pool, now, tz)).read_ok
         assert not (await physiology_store.read_backlog(pool, now)).read_ok
+        assert not (await physiology_store.read_host_watts(pool, now)).read_ok
+
+    asyncio.run(_with_schema(scenario))
+
+
+@pytest.mark.skipif(not DSN, reason="isolated ORION_ADMISSION_TEST_DSN required")
+def test_store_reads_host_watts_on_postgres():
+    now = datetime.now(timezone.utc)
+
+    async def scenario(pool):
+        async with pool.connection() as conn:
+            await conn.execute("""CREATE TABLE orion_biometrics_cluster (id varchar PRIMARY KEY,
+                                  observed_at timestamptz NOT NULL, measurements_by_node jsonb)""")
+        w = await physiology_store.read_host_watts(pool, now)
+        assert w.read_ok and w.watts == {"athena": None, "circe": None, "hecate": None}   # no row: unknown
+        async with pool.connection() as conn:
+            for i, (a, c) in enumerate(((240.0, 460.0), (250.0, 470.0))):
+                await conn.execute("INSERT INTO orion_biometrics_cluster VALUES (%s, %s, %s)", (
+                    f"b{i}", now - timedelta(minutes=10 * (i + 1)),
+                    __import__("json").dumps({"athena": {"cpu_watts_total": a - 40, "gpu_watts_total": 40},
+                                              "circe": {"cpu_watts_total": 100, "gpu_watts_total": c - 100},
+                                              "hecate": {"chassis_watts": 0}})))
+            await conn.execute("INSERT INTO orion_biometrics_cluster VALUES ('old', %s, '{}')", (now - timedelta(hours=2),))
+        w = await physiology_store.read_host_watts(pool, now)
+        assert w.read_ok and w.watts == {"athena": 245.0, "circe": 465.0, "hecate": 0.0}
 
     asyncio.run(_with_schema(scenario))

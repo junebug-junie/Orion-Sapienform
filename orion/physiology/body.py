@@ -18,8 +18,19 @@ Constraints and their sources (design doc, Organ 1 table; A3 scope, no forecast,
   (each close's ``held_ms`` interval, merged per lease, clipped to the window); open leases from
   the pool's own projection ``gpu_pool_leases`` (status granted/recalling), held up to now. A
   child call (``hold_lease_id`` set) runs inside its durable-run hold's slot and is not counted
-  again. Line: the role's discovered slots x window, from the pool's own state RPC. The events
-  feed going quiet reads stale, never 0.
+  again. Each held span is charged to the role ITS OWN event names: a lease the pool re-placed
+  on another seat (aborted on agent-gpu2, re-granted on agent) is not charged to its last seat
+  for time it held elsewhere (Patch B1: that put 2,390 s of agent-gpu2 time on a 1-slot
+  lane:agent, 2026-10-23 10:14). The level is slot-seconds OCCUPIED: at most ``slots`` leases
+  count at any instant. More can be live at once by design (gpu_pool scheduler H3: a
+  higher-priority one-off call runs in an idle durable-run hold's gap), so lease-seconds above
+  the slots are reported apart as ``lent_overlap_s``, not as held. Line: the role's discovered
+  slots x window, from the pool's own state RPC. The events feed going quiet reads stale, never 0.
+  Beside each lane, in ``detail``: Orion's own deferrable self-work that may run on it (queued
+  background durable-run holds, ``gpu_pool_state_history.deferrable_depth``, per work class,
+  placed on every seat the pool's class map lets that class use; do not sum across lanes) and
+  how long that queue has been non-empty. That is hunger, the seed of Appetite; it is not strain and not a
+  price input.
 * ``attention:juniper``: Orion's outreach messages today (local date) that the Hub's daily cap
   counts (curiosity and reading-finding outreach are exempt from the cap; their sends are in
   ``detail``). Line: that cap (``HUB_ENDOGENOUS_OUTREACH_DAILY_CAP``, 4).
@@ -71,6 +82,11 @@ class BodyConfig:
     # A claude observation received longer ago than this is stale (the producer's slowest
     # window, weekly, emits every 3600 s).
     claude_max_age_sec: float = 3 * 3600.0
+    # A pool host's newest gpu_pool_state_history snapshot older than this is not read (the pool
+    # publishes every ~5 s; arousal's S2 uses the same 30 s).
+    backlog_max_age_sec: float = 30.0
+    # generated_at is the pool host's clock: a snapshot this far in the future is still fresh.
+    backlog_clock_skew_sec: float = 10.0
 
 
 # --- inputs (filled by the host's reads) --------------------------------------------------------
@@ -125,6 +141,30 @@ class LaneInput:
     capacity: Optional[Mapping[str, int]] = None
     # Newest gpu_pool_events row of any kind (freshness of the feed). None: table empty.
     newest_event_at: Optional[datetime] = None
+    # work class -> the seats that may serve it (the pool's own config/gpu_pool.yaml ``classes``,
+    # from the same state RPC). None: not read. Places waiting self-work beside every seat it
+    # could run on.
+    class_roles: Optional[Mapping[str, Sequence[str]]] = None
+
+
+@dataclass(frozen=True)
+class BacklogSnapshot:
+    host: str
+    at: datetime
+    # work_class -> queued deferrable self-work (orion.gpu_pool.shed.deferrable_queued).
+    # None: this snapshot did not record it (a pool or sql-writer older than #2873) -> unknown.
+    deferrable: Optional[Mapping[str, int]]
+
+
+@dataclass(frozen=True)
+class BacklogInput:
+    read_ok: bool
+    # The newest snapshot per pool host.
+    snapshots: Sequence[BacklogSnapshot] = ()
+    # (host, work_class) -> the newest snapshot inside the lookback where that class's deferrable
+    # queue was empty (or unrecorded). None: non-empty for the whole lookback.
+    last_empty_at: Mapping[tuple[str, str], Optional[datetime]] = field(default_factory=dict)
+    lookback_sec: float = 6 * 3600.0
 
 
 @dataclass(frozen=True)
@@ -154,6 +194,8 @@ class BodyInputs:
     juniper: JuniperInput
     # Latest observation per kind. Empty: nothing received since the host started.
     claude: Sequence[ClaudeObservation] = field(default_factory=tuple)
+    # Waiting deferrable self-work (hunger). None: the host did not read it.
+    backlog: Optional[BacklogInput] = None
 
 
 # --- one function per constraint ----------------------------------------------------------------
@@ -238,62 +280,171 @@ def _merge(intervals: list[tuple[datetime, datetime]]) -> list[tuple[datetime, d
     return out
 
 
-def _lease_intervals(events: Iterable[LeaseEvent], now: datetime) -> tuple[dict[str, list[tuple[datetime, datetime]]], dict]:
-    """Per role, the held intervals of every non-child lease. A lease's closes each carry their
-    own held_ms interval; overlapping ones merge (expired then released is one hold), disjoint
-    ones stay apart (a retried lease's wait is not held). A lease still open (granted, no close)
-    holds from its grant up to ``now``."""
+def _lease_intervals(events: Iterable[LeaseEvent], now: datetime
+                     ) -> tuple[dict[str, list[tuple[datetime, datetime]]], dict]:
+    """Per role, the held intervals of every non-child lease.
+
+    Each close carries its own held_ms interval ON ITS OWN ROLE (the seat that event names): a
+    lease the pool re-placed (aborted on one seat, re-granted on another) holds on each seat only
+    for its time there. Overlapping spans of one lease on one role merge (expired then released is
+    one hold); disjoint ones stay apart (a retried lease's wait is not held). A lease still open
+    (granted/recalling in the pool's projection) holds from its CURRENT grant up to ``now`` on its
+    current role, as well as any closed spans it already had (re-granted after an abort)."""
     by_lease: dict[str, dict] = {}
     for e in events:
         if not e.lease_id:
             continue
-        rec = by_lease.setdefault(e.lease_id, {"role": None, "spans": [], "granted_at": None, "closed": False,
-                                               "child": False})
-        if e.role:
-            rec["role"] = e.role
+        rec = by_lease.setdefault(e.lease_id, {"role": None, "spans": [], "open": None, "child": False,
+                                               "closes": []})
         if e.hold_lease_id:
             rec["child"] = True
         if e.event in LEASE_CLOSE_EVENTS:
-            rec["closed"] = True
+            rec["closes"].append(e.at)
             if e.held_ms is not None and e.held_ms >= 0:
-                rec["spans"].append((e.at - timedelta(milliseconds=float(e.held_ms)), e.at))
+                rec["spans"].append((e.role, e.at - timedelta(milliseconds=float(e.held_ms)), e.at))
+            if e.role and rec["role"] is None:
+                rec["role"] = e.role
         elif e.event in LEASE_OPEN_EVENTS:
-            rec["granted_at"] = e.at if rec["granted_at"] is None else min(rec["granted_at"], e.at)
+            rec["open"] = (e.role, e.at) if rec["open"] is None or e.at > rec["open"][1] else rec["open"]
     out: dict[str, list[tuple[datetime, datetime]]] = {}
-    counts = {"open": 0, "child_skipped": 0}
+    counts = {"open": 0, "child_skipped": 0, "cross_role": 0}
     for rec in by_lease.values():
-        role = rec["role"]
-        if not role:
-            continue
         if rec["child"]:
-            counts["child_skipped"] += 1
+            if rec["spans"] or rec["open"]:
+                counts["child_skipped"] += 1
             continue
-        if rec["closed"]:
-            spans = _merge(rec["spans"])
-        elif rec["granted_at"] is not None:
+        fallback = rec["role"] or (rec["open"][0] if rec["open"] else None)
+        per_role: dict[str, list[tuple[datetime, datetime]]] = {}
+        for role, start, end in rec["spans"]:
+            role = role or fallback
+            if role:
+                per_role.setdefault(role, []).append((start, end))
+        # The projection row is open, but a close of this lease landed at or after that grant:
+        # the projection is behind (the close is the newer fact), so the lease is not held now.
+        if rec["open"] is not None and any(at >= rec["open"][1] for at in rec["closes"]):
+            rec["open"] = None
+        if rec["open"] is not None and (rec["open"][0] or fallback):
             counts["open"] += 1
-            spans = [(rec["granted_at"], now)]
-        else:
-            continue
-        out.setdefault(role, []).extend(spans)
+            per_role.setdefault(rec["open"][0] or fallback, []).append((rec["open"][1], now))
+        if len(per_role) > 1:
+            counts["cross_role"] += 1
+        for role, spans in per_role.items():
+            out.setdefault(role, []).extend(_merge(spans))
     return out, counts
 
 
-def lane_readings(inp: LaneInput, now: datetime, cfg: BodyConfig) -> tuple[list[PhysiologyConstraintReadingV1], list[str]]:
+def occupied_seconds(spans: Iterable[tuple[datetime, datetime]], w_start: datetime, w_end: datetime,
+                     slots: Optional[int]) -> tuple[float, float, int]:
+    """(slot-seconds occupied, lease-seconds, spans in window) for one role's lease spans.
+
+    Lease-seconds sum every span. Occupied caps the number of leases counted at any instant at
+    ``slots``: one slot cannot be held twice, and the pool lends an idle hold's slot to a one-off
+    call by design (scheduler H3), so the excess is lending, not extra slot time. ``slots`` None
+    (pool state unread) or 0 (a seat with no live slot still holding a lease): uncapped, so a held
+    lease is never hidden."""
+    marks: list[tuple[datetime, int]] = []
+    n_spans = 0
+    for start, end in spans:
+        s0, e0 = max(start, w_start), min(end, w_end)
+        if e0 > s0:
+            marks += [(s0, 1), (e0, -1)]
+            n_spans += 1
+    marks.sort(key=lambda m: (m[0], m[1]))   # an end before a start at the same instant
+    cap = slots if slots is not None and slots >= 1 else None
+    occupied = lease = 0.0
+    live = 0
+    prev: Optional[datetime] = None
+    for at, d in marks:
+        if prev is not None and live > 0:
+            dt = (at - prev).total_seconds()
+            lease += dt * live
+            occupied += dt * (live if cap is None else min(live, cap))
+        live += d
+        prev = at
+    return occupied, lease, n_spans
+
+
+def stale_backlog_hosts(inp: Optional[BacklogInput], now: datetime, cfg: BodyConfig) -> list[str]:
+    """Pool hosts whose newest snapshot is too old to read: their queue is NOT in the total."""
+    if inp is None or not inp.read_ok:
+        return []
+    return sorted(s.host for s in inp.snapshots if (now - s.at).total_seconds() > cfg.backlog_max_age_sec)
+
+
+def deferrable_backlog(inp: Optional[BacklogInput], now: datetime, cfg: BodyConfig
+                       ) -> tuple[Optional[dict[str, tuple[int, float, bool]]], Optional[str]]:
+    """Orion's own deferrable self-work waiting for a GPU seat, per work class:
+    ``{work_class: (queued, waiting_sec, waiting_capped)}``, or ``(None, reason)`` when unknown.
+
+    Count: the newest fresh snapshot of every pool host, summed. Waiting: how long that class's
+    queue has been non-empty on the host where it has waited longest (``waiting_capped``: the
+    whole lookback, so at least that long). Hunger, not strain: nothing prices it."""
+    if inp is None:
+        return None, "not_read"
+    if not inp.read_ok:
+        return None, "read_failed:gpu_pool_state_history"
+    fresh = [s for s in inp.snapshots
+             if -cfg.backlog_clock_skew_sec <= (now - s.at).total_seconds() <= cfg.backlog_max_age_sec]
+    if not fresh:
+        return None, ("stale:gpu_pool_state_history" if inp.snapshots else "no_rows:gpu_pool_state_history")
+    if any(s.deferrable is None for s in fresh):
+        return None, "unrecorded:deferrable_depth"
+    out: dict[str, tuple[int, float, bool]] = {}
+    for snap in fresh:
+        for wc, n in (snap.deferrable or {}).items():
+            n = int(n or 0)
+            if n <= 0:
+                continue
+            since = inp.last_empty_at.get((snap.host, wc))
+            capped = since is None
+            waited = inp.lookback_sec if capped else max(0.0, (now - since).total_seconds())
+            q, w, c = out.get(wc, (0, 0.0, False))
+            out[wc] = (q + n, max(w, waited), c or capped)
+    return out, None
+
+
+def lane_readings(inp: LaneInput, now: datetime, cfg: BodyConfig,
+                  backlog: Optional[BacklogInput] = None
+                  ) -> tuple[list[PhysiologyConstraintReadingV1], list[str]]:
     """One reading per lane, plus warnings for the whole state."""
     window = cfg.lane_window_sec
     capacity = dict(inp.capacity) if inp.capacity is not None else None
     roles_known = sorted(capacity) if capacity else []
+    hunger, hunger_missing = deferrable_backlog(backlog, now, cfg)
+
+    class_roles = ({str(k): [str(r) for r in (v or ())] for k, v in inp.class_roles.items()}
+                   if inp.class_roles is not None else None)
+    stale_hosts = stale_backlog_hosts(backlog, now, cfg)
+
+    def _hunger(role: str) -> dict:
+        # Queued work has no seat yet: it counts beside EVERY seat its work class may run on
+        # (the pool's own class -> roles map). The same item can sit beside several lanes, so the
+        # lanes must not be summed. Unknown map or backlog: no_reading, never 0.
+        if hunger is None:
+            return {"deferrable_no_reading": hunger_missing}
+        if class_roles is None:
+            return {"deferrable_no_reading": "unread:gpu_pool_classes"}
+        q, w, c = 0, 0.0, False
+        for wc, (n, waited, capped) in hunger.items():
+            if role in class_roles.get(wc, ()):
+                q, w, c = q + n, max(w, waited), c or capped
+        d: dict = {"deferrable_queued": q, "deferrable_waiting_sec": round(w, 1)}
+        if c:
+            d["deferrable_waiting_capped"] = True
+        if stale_hosts:
+            d["deferrable_hosts_stale"] = ",".join(stale_hosts)
+        return d
 
     def _cap(role: str) -> dict:
         if capacity is None or role not in capacity:
             return {}
         return {"budget": float(capacity[role]) * window, "budget_kind": "capacity"}
 
-    def all_no(reason: str, **kw) -> list[PhysiologyConstraintReadingV1]:
+    def all_no(reason: str, detail: Optional[dict] = None, **kw) -> list[PhysiologyConstraintReadingV1]:
         if not roles_known:
-            return [_no(LANE_PREFIX.rstrip(":"), "slot_s", reason, **kw)]
-        return [_no(f"{LANE_PREFIX}{r}", "slot_s", reason, **_cap(r), **kw) for r in roles_known]
+            return [_no(LANE_PREFIX.rstrip(":"), "slot_s", reason, detail=dict(detail or {}), **kw)]
+        return [_no(f"{LANE_PREFIX}{r}", "slot_s", reason, detail={**(detail or {}), **_hunger(r)},
+                    **_cap(r), **kw) for r in roles_known]
 
     if not inp.events_read_ok:
         return all_no("read_failed:gpu_pool_events"), []
@@ -311,19 +462,20 @@ def lane_readings(inp: LaneInput, now: datetime, cfg: BodyConfig) -> tuple[list[
         return [_no(LANE_PREFIX.rstrip(":"), "slot_s", "read_failed:gpu_pool_state", source_at=newest)], []
     out: list[PhysiologyConstraintReadingV1] = []
     for role in roles:
-        held = 0.0
-        spans = 0
-        # Leases are NOT merged across each other: concurrent leases hold separate slots.
-        for start, end in intervals.get(role, []):
-            s0, e0 = max(start, w_start), min(end, now)
-            if e0 > s0:
-                held += (e0 - s0).total_seconds()
-                spans += 1
-        detail: dict = {"held_spans": spans, "window_sec": window}
-        if capacity is not None and role in capacity:
-            detail["slots"] = int(capacity[role])
+        slots = int(capacity[role]) if capacity is not None and role in capacity else None
+        # Leases are NOT merged across each other: concurrent leases hold separate slots, up to
+        # the role's slots (occupied_seconds).
+        held, lease_s, spans = occupied_seconds(intervals.get(role, []), w_start, now, slots)
+        detail: dict = {"held_spans": spans, "window_sec": window, "lease_s": round(lease_s, 3)}
+        if slots is not None:
+            detail["slots"] = slots
+            if slots >= 1:
+                detail["lent_overlap_s"] = round(lease_s - held, 3)
+            elif held > 0:
+                detail["held_without_live_slot"] = True
         if capacity is None:
             detail["capacity"] = "pool_state_unread"
+        detail.update(_hunger(role))
         out.append(PhysiologyConstraintReadingV1(
             constraint=f"{LANE_PREFIX}{role}", unit="slot_s", level=round(held, 3), source_at=newest,
             detail=detail, **_cap(role)))
@@ -332,6 +484,14 @@ def lane_readings(inp: LaneInput, now: datetime, cfg: BodyConfig) -> tuple[list[
         warnings.append(f"lane_open_leases:{counts['open']}")
     if counts["child_skipped"]:
         warnings.append(f"lane_child_leases_in_hold_slots:{counts['child_skipped']}")
+    if counts["cross_role"]:
+        warnings.append(f"lane_leases_held_on_two_seats:{counts['cross_role']}")
+    if hunger and class_roles is not None:
+        for wc in sorted(hunger):
+            if not set(class_roles.get(wc, ())) & set(roles):
+                warnings.append(f"lane_deferrable_unplaced:{wc}:{hunger[wc][0]}")
+    if stale_hosts and hunger is not None:
+        warnings.append(f"lane_backlog_hosts_stale:{','.join(stale_hosts)}")
     return out, warnings
 
 
@@ -400,7 +560,7 @@ def build_physiology_state(now: datetime, inputs: BodyInputs, cfg: BodyConfig = 
     energy = energy_reading(inputs.energy, now, cfg)
     if energy.level is not None and (energy.detail.get("unpriced_kwh") or 0) > 0:
         warnings.append("energy_partial:unpriced_kwh")
-    lanes, lane_warnings = lane_readings(inputs.lanes, now, cfg)
+    lanes, lane_warnings = lane_readings(inputs.lanes, now, cfg, inputs.backlog)
     warnings += lane_warnings
     constraints = [heat_reading(inputs.heat, cfg), energy, *lanes,
                    juniper_reading(inputs.juniper, now, cfg), claude_reading(inputs.claude, now, cfg)]
@@ -409,6 +569,8 @@ def build_physiology_state(now: datetime, inputs: BodyInputs, cfg: BodyConfig = 
 
 
 __all__ = [
+    "BacklogInput",
+    "BacklogSnapshot",
     "BodyConfig",
     "BodyInputs",
     "ClaudeObservation",
@@ -421,8 +583,11 @@ __all__ = [
     "LeaseEvent",
     "build_physiology_state",
     "claude_reading",
+    "deferrable_backlog",
     "energy_reading",
     "heat_reading",
     "juniper_reading",
     "lane_readings",
+    "occupied_seconds",
+    "stale_backlog_hosts",
 ]

@@ -70,6 +70,10 @@ works in X-input mode (mode switch on the back set to X); the page names the con
 found, or says to switch modes when a controller is not in the browser's standard mapping.
 Over Bluetooth some Linux browsers still report X mode as non-standard: use a USB cable then.
 Two pads on one machine: Player 1 takes the first standard pad, Player 2 the second.
+Pad save and load: hold Select and press L2 to save (like F7), or R2 to load the newest save
+(like F10). The pad's Select is held back until it is released, so a chord never pauses Zelda;
+Select pressed and released alone reaches the game as a 150 ms tap. The chords work only while
+the game is connected and has focus (or is fullscreen); one chord per Select hold.
 Press any controller button once after connecting it: browsers only list a pad after input.
 Fullscreen play takes pad input without clicking the game first. A competing controller is refused until explicit
 Take this controller; the previous lease then becomes invalid. Focus loss, hidden

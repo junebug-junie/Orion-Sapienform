@@ -8,7 +8,7 @@ HUB = Path(__file__).resolve().parents[2]
 def test_template_has_play_panel_and_current_asset():
     html = (HUB / 'templates/retro.html').read_text()
     for marker in ('id="play"', 'id="atlas"', 'id="leisure"', 'id="zgoal"', 'id="zprediction"',
-                   'id="verdicts"', 'id="takeover"', '/static/js/retro-panel.js?v=11'):
+                   'id="verdicts"', 'id="takeover"', '/static/js/retro-panel.js?v=12'):
         assert marker in html, marker
 
 
@@ -65,3 +65,36 @@ console.log(JSON.stringify(out));'''
     assert run.returncode == 0, run.stderr
     got = json.loads(run.stdout)
     assert got == dict(A=256, B=1, start=8, select=4, stickLeftUp=64 | 16, dpadRight=128, picked=256)
+
+
+def test_select_chords_save_and_load_and_never_leak_select_into_the_game():
+    # Juniper 2026-10-27: Select + L2 saves, Select + R2 loads. Zelda's Select pauses, so a chord
+    # must never reach the game; Select alone still does, as a tap on release.
+    import json, re, shutil, subprocess
+    import pytest
+    js = (HUB / 'static/js/retro-panel.js').read_text()
+    assert "fire(l2?'F7':'F10')" in js and 'function runHotkey(code)' in js
+    if not shutil.which('node'):
+        pytest.skip('node not installed')
+    body = re.search(r'function selectChord\(st, pad, m, now, fire\) \{.*?\n  \}', js, re.S).group(0)
+    reset = re.search(r'function resetChord\(st\) \{.*?\}', js).group(0)
+    probe = f'''{body}
+{reset}
+const pad=(...down)=>({{buttons:Array.from({{length:16}},(_,i)=>({{pressed:down.includes(i)}}))}});
+const st={{held:false,chorded:false,pulseUntil:0}}, fired=[], fire=c=>fired.push(c), seen=[];
+const SEL=8,L2=6,R2=7, step=(t,...d)=>seen.push(selectChord(st,pad(...d),d.includes(SEL)?4:0,t,fire)&4);
+step(0,SEL); step(50,SEL,L2); step(100,SEL,L2); step(150,SEL); step(200);      // save chord
+step(400,SEL); step(450);                                                      // Select alone
+const tap=[selectChord(st,pad(),0,500,fire)&4, selectChord(st,pad(),0,700,fire)&4];
+step(1000,SEL); step(1050,SEL,R2); step(1100);                                  // load chord
+step(2000,SEL); resetChord(st); step(2100,SEL); step(2150);                     // focus lost mid-hold
+const after=[selectChord(st,pad(),0,2200,fire)&4];
+console.log(JSON.stringify({{fired,seen,tap,after}}));'''
+    run = subprocess.run(['node', '-e', probe], capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    got = json.loads(run.stdout)
+    assert got['fired'] == ['F7', 'F10']                         # each chord fires once
+    assert got['seen'][:5] == [0, 0, 0, 0, 0]                    # a save chord never sends Select
+    assert got['seen'][5:7] == [0, 4] and got['tap'] == [4, 0]   # a lone Select taps on release, 150 ms
+    assert got['seen'][7:10] == [0, 0, 0]
+    assert got['seen'][10:] == [0, 0, 0] and got['after'] == [0]  # no stray tap after a lost hold

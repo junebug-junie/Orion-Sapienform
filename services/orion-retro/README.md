@@ -278,3 +278,36 @@ Octoroks and recover through Continue, then a second session
 on the same lineage from the save state. `evals/zelda_http_smoke.py --core <so>
 --catalog <catalog.json>` drives the real HTTP app and a spawned worker at real time,
 including the leisure preemption check. Both write evidence under `/tmp/zelda-play/`.
+
+## Zelda dojo: practice without a browser (`evals/zelda_dojo.py`)
+
+The dojo plays Zelda headless to make training data for a world model. It uses the real core, the real reader and the real goal motor, with no LLM and no Hub.
+
+**How it works.** The dojo keeps an archive of cells. A cell is the place, a coarse Link tile, the hearts and the items held; each cell stores a core snapshot. Each round it:
+1. picks a cell that has rarely been chosen;
+2. restores the cell's snapshot and idles a random 0-60 frames;
+3. waits for the decision the motor offers;
+4. runs every goal that decision supports (exit per open side, fight, wait, collect);
+5. writes one row per goal and adds each new cell to the archive.
+
+This is the Go-Explore method (Ecoffet et al. 2019).
+
+**Speed.** One process runs at about 12x real time. A restore takes about 0.04 ms. The start comes from power-on plus the sword opening from `zelda_play.py`.
+
+**Output.** In `--out`:
+- `transitions.jsonl`: `before`, `open_sides`, `goal`, `outcome`, `frames` and `after` (RAM-derived facts only), and `died`;
+- `archive.json`;
+- `progress.log`.
+
+A `dojo:*` outcome means the goal never ran cleanly. Such a row has no `after`.
+
+**Run.** Use the retro image, read-only catalog, one CPU per worker:
+
+```bash
+docker run --rm --cpus 1 -v "$PWD":/repo:ro -v <catalog>:/catalog:ro -v <out>:/out \
+  -e PYTHONPATH=/repo:/repo/services/orion-retro -w /repo --entrypoint python3 orion-retro-retro \
+  services/orion-retro/evals/zelda_dojo.py --core /opt/retro/core.so \
+  --rom /catalog/the-legend-of-zelda-prg1.nes --minutes 20 --out /out/w0 --seed 0
+```
+
+The ROM is operator-supplied and is never copied or printed. Train on the output with `services/orion-world-model/scripts/train_transition.py`.

@@ -85,6 +85,6 @@ git pull   # rebuilds orion-hub; then reload /retro (v=11)
 
 ## PR link
 
-(added after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2935
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

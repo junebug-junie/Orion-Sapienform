@@ -496,10 +496,13 @@ class CompactionShortcutTests(unittest.TestCase):
         self.assertEqual(_text(handlers.try_optimizations(title, self._settings())), "Conversation")
 
     def test_patched_routes_install_the_guard(self):
-        import api.handlers.messages as handlers
-        import api.routes  # noqa: F401  (patched at image build; importing installs the guard)
+        # Fresh process: the tests above install the guard in this one, which would hide a
+        # routes patch that stopped calling it. Importing the app is the server's own start path.
+        import subprocess
+        import sys
 
-        self.assertTrue(getattr(handlers.try_optimizations, "orion_compaction_guard", False))
+        probe = "import api.app, api.handlers.messages as h; assert h.try_optimizations.orion_compaction_guard"
+        subprocess.run([sys.executable, "-c", probe], check=True)
 
 
 if __name__ == "__main__":

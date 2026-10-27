@@ -298,7 +298,7 @@ def test_flag_off_touches_nothing_and_the_prompt_is_the_2870_prompt():
     asyncio.run(exp.end_session(SID, [finished('completed')], None))
     assert asyncio.run(exp.learned_lines(SID)) == [] and fake.calls == []
     assert P.build_zelda_prompt(d, atlas, []) == P.build_zelda_prompt(d, atlas, [], None)
-    assert 'Choose one of these' not in P.build_zelda_prompt(d, atlas, [])
+    assert P.MENU_INSTRUCTION not in P.build_zelda_prompt(d, atlas, [])
     # A config without the key is off (Settings ships it on).
     assert X.ZeldaExperience.from_config(SimpleNamespace()).enabled is False
     assert X.ZeldaExperience.from_config(SimpleNamespace(HUB_ACTION_BETS_ENABLED=True)).enabled is True
@@ -331,7 +331,7 @@ def test_menu_goes_after_the_sides_line_and_the_choice_carries_its_rank(planner)
     lines = prompt.split('\n')
     sides = next(i for i, l in enumerate(lines) if l.startswith('Sides Link can walk off'))
     assert lines[sides + 2].startswith('1. exit E -> room 120 (never visited). Chance it works 0.50')
-    assert lines[sides + 2 + len(menu.entries)] == 'Choose one of these unless the facts above show it cannot work.'
+    assert lines[sides + 2 + len(menu.for_planner())] == P.MENU_INSTRUCTION
     calls = []
     async def chat(config, prompt, *, max_tokens):
         calls.append(prompt)
@@ -458,7 +458,7 @@ def _route_app(tmp_path, monkeypatch, goal_status, posted, exp):
 def test_route_places_only_after_retro_accepts_and_strips_chosen_rank(tmp_path, monkeypatch, planner, goal_status):
     from fastapi.testclient import TestClient
     async def chat(config, prompt, *, max_tokens, route=None):
-        assert 'Choose one of these unless the facts above show it cannot work.' in prompt
+        assert P.MENU_INSTRUCTION in prompt
         return {'content': json.dumps(dict(goal={'kind': 'exit', 'dir': 'W'}, prediction={'kind': 'reach_room', 'value': 118},
                                            rationale='west is new', budget_seconds=12))}, 'c9'
     monkeypatch.setattr(planner, '_gateway_chat', chat)
@@ -724,7 +724,7 @@ def test_menu_entries_carry_the_plan_a_number_pick_uses():
     q = X.ActionBetQuoteV1(option_id='x', model='m', p=0.5, p_baseline=0.5, interval80=(0.1, 0.9), eig_nats=0.1,
                            level='prior', counts=[dict(level='skill', successes=0, failures=0)])
     menu = X.build_menu(list(opts.values()), {o: q.model_copy(update={'option_id': o}) for o in opts})
-    entry = next(m for m in menu.for_planner() if m['goal'] == {'kind': 'exit', 'dir': 'W'})
+    entry = next(m for m in menu.for_planner(limit=None) if m['goal'] == {'kind': 'exit', 'dir': 'W'})
     assert entry['prediction'] == {'kind': 'reach_room', 'value': 118} and entry['budget_seconds'] == 15
 
 
@@ -750,3 +750,30 @@ def test_wait_is_offered_only_when_something_on_screen_can_change():
     assert 'wait' in [o.option_id for o in X.build_options(frozen, atlas)]     # the only goal Retro accepts then
     boxed = dict(d, open_sides=[], supported_goals=['exit', 'wait'])   # nothing else to offer: wait stays
     assert [o.option_id for o in X.build_options(boxed, atlas)] == ['wait']
+
+
+def test_a_room_crossed_many_times_is_worth_less_than_a_rarely_seen_one():
+    # Live 2026-10-27 (session bae052c0): 115 <-> 99 thirty times. Room 99's sides: S to 115 (41
+    # visits, met 28 of 28), W to 98 (4 visits, never tried here).
+    d, atlas = live_decision()
+    atlas = dict(atlas, adjacent=dict(atlas['adjacent'], W=dict(room=118, known=True, seen_exit=None)),
+                 map=dict(atlas['map'], **{'0:103': dict(visits=41), '0:118': dict(visits=4)}))
+    opts = {o.option_id: o for o in X.build_options(d, atlas)}
+    assert opts['exit:N'].value == pytest.approx(0.3 / 41) and opts['exit:W'].value == pytest.approx(0.3 / 4)
+    assert opts['exit:E'].value == 1.0                                    # never seen: full worth
+    q = lambda p, eig: X.ActionBetQuoteV1(option_id='x', model='m', p=p, p_baseline=p, interval80=(0.1, 0.9),
+                                          eig_nats=eig, level='place', counts=[dict(level='place', successes=28, failures=0)])
+    assert X.score(opts['exit:W'], q(0.25, 0.02)) > X.score(opts['exit:N'], q(0.91, 0.0))
+    assert 'exit N -> room 103 (visited 41 times)' in opts['exit:N'].text   # the model sees why it ranks low
+    assert X.room_value(None, 0, 103) == 0.3 and X.room_value(atlas, 0, None) == 0.3   # no counts: base worth
+
+
+def test_the_planner_sees_only_the_two_best_options():
+    d, atlas = live_decision()
+    opts = X.build_options(d, atlas)
+    ps = {'exit:N': 0.9, 'exit:W': 0.4, 'exit:E': 0.1}
+    menu = X.build_menu(opts, asyncio.run(experience(FakePrediction(p=lambda o: ps[o['option_id']], eig=0.0,
+                                                                    level='skill')).quote(opts)))
+    assert [m['rank'] for m in menu.for_planner()] == [1, 2] and len(menu.entries) == 3
+    assert len(menu.for_planner(limit=None)) == 3
+    assert menu.rank_of({'kind': 'exit', 'dir': 'E'}) == 3        # an off-shortlist pick still gets its rank

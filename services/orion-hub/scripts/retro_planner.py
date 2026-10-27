@@ -372,7 +372,9 @@ def observation_facts(observation: dict) -> dict:
     return {k: v for k, v in observation.items() if k not in ('walls', 'terrain')}
 
 
-MENU_INSTRUCTION = 'Choose one of these unless the facts above show it cannot work.'
+# Live 2026-10-27: told "choose one of these", the model took the highest chance 10 of 10 times,
+# even ranked 3rd behind rooms seen 10x less; the order is the decision, the model is the check.
+MENU_INSTRUCTION = 'Take option 1 unless the facts above show it cannot work; then take the next one that can.'
 # Keys plan_zelda adds for its callers that Retro's GoalV2 (extra='forbid') would reject.
 NON_GOAL_V2_KEYS = ('chosen_rank',)
 
@@ -387,8 +389,9 @@ def menu_lines(menu: Any) -> list[str]:
     lines = [m['line'] for m in menu or [] if isinstance(m, dict) and isinstance(m.get('line'), str)]
     if not lines:
         return []
-    return (['Options scored from how often each move worked before (best first; chance = how often '
-             'this kind of move worked, learning value = how much trying it would teach):']
+    return (['Options, best first. The order already weighs three things: chance = how often this kind '
+             'of move worked; how new the room is (a room seen many times is worth less); learning value = '
+             'how much trying it would teach. A high chance alone does not make a move best:']
             + lines + [MENU_INSTRUCTION])
 
 

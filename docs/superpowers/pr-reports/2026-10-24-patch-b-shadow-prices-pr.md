@@ -205,6 +205,12 @@ Independent review subagent (orion-repo-agent, read-only) on 69e7cf718. All mate
   - `run_patch_b`, `config_document` and `baseline_watts_p10` have no direct unit tests (they are exercised by the replay and fit runs);
   - the inner-state registry text for `physiology.state.v1` does not describe `price`/`strain` yet.
 
+## Unrelated CI fix carried here
+
+- `services/orion-sql-writer/tests/test_vision_osnet_shadow.py` had a clock time bomb. Its fixture rows sit at a fixed `NOW` (10-16 03:00Z), but the live eval looks back 8 days from the real clock. From about 10-24 03:00Z the rows fell outside the window, and "SQL writer — Postgres grammar integration" failed on every branch that runs it (also `chore/patch-b-thermal-single-owner`).
+- The test now passes a `--since-hours` that always reaches `NOW`. The eval code is unchanged.
+- Evidence, on the CI migration set against a local Postgres 16: the original test fails 2 (the same 2 as CI); the fixed test passes 16/16.
+
 ## Restart required
 
 Deploy order: **B1 (#2911) first, then this PR. Rebuild sql-writer BEFORE durable-runs** (consumer-first). Both commands run from the clean primary `main` checkout after each merge:

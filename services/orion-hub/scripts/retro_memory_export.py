@@ -624,10 +624,19 @@ def make_session_start_sink(*, bus_provider):
         from scripts.act_emit import publish_coplay_opened
 
         key, bus = coplay_key(retro_session_id, started_at), bus_provider()
+        # Body economy Patch C3b: SHADOW bid, never obeyed. want_id = the handoff key, the play act's
+        # correlation id. Co-play has no gate of its own (Juniper handed over): it ran when its act opened.
+        from scripts.physiology_shadow import ShadowBid
+
+        shadow = ShadowBid(family="hub.retro_coplay", verb="play", tier=2, want_id=key,
+                           object_ref=f"retro_session:{retro_session_id}", component="retro_coplay")
+        shadow.place()
         if bus is None:
+            shadow.settle("blocked:no_bus")
             logger.warning("coplay_act_open_skipped key=%s reason=no_bus", key)
             return False
         ok = await publish_coplay_opened(bus, key=key, retro_session_id=str(retro_session_id), started_at=started_at)
+        shadow.settle("ran" if ok else "blocked:act_open_failed")
         if ok:
             _remember_opened(key)
         return ok

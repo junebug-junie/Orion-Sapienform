@@ -2126,7 +2126,20 @@ class EndogenousOutreach:
                 {"outreach": False, "reason": "already_sending"}, forced=force, tension_reason=None
             )
         async with self._send_lock:
-            return await self._outreach_once(force=force)
+            # Body economy Patch C3b: a SHADOW bid, logged beside this tick's real outcome and
+            # never obeyed (scripts/physiology_shadow.py). Placed only where the tick would
+            # compose (or where strain alone holds it); settled here with the real outcome.
+            from scripts.physiology_shadow import ShadowBid, real_from_result
+
+            shadow = ShadowBid(family="hub.outreach", verb="say", tier=2, object_ref="juniper",
+                               component="endogenous_outreach")
+            try:
+                result = await self._outreach_once(force=force, shadow=shadow)
+            except BaseException:
+                shadow.settle("blocked:error")
+                raise
+            shadow.settle(real_from_result(result), act_correlation_id=result.get("correlation_id"))
+            return result
 
     async def _spoke_ago(self) -> Optional[float]:
         self._last_spoke_read_at = time.time()
@@ -2136,7 +2149,7 @@ class EndogenousOutreach:
             logger.warning("endogenous_outreach_last_spoke_read_failed err=%s", exc)
             return None
 
-    async def _outreach_once(self, *, force: bool) -> Dict[str, Any]:
+    async def _outreach_once(self, *, force: bool, shadow: Any = None) -> Dict[str, Any]:
         compose_started_at = time.time()
         if self.rest_drive_reader is not None:
             await self.rest_drive_reader.refresh(self._bus)
@@ -2147,6 +2160,12 @@ class EndogenousOutreach:
         if not blocked:
             self._last_spoke_ago = await self._spoke_ago()
             blocked = outreach_block_reason(self._gate_inputs())
+        if blocked == AROUSAL_STRAINED_REASON and shadow is not None:
+            # Strain alone holds this tick: the gate the economy is meant to replace. Bid, and
+            # record the real outcome as the strain hold whatever the strain report door does
+            # (that door's message is a report about strain, not this want).
+            shadow.place()
+            shadow.real = f"blocked:{AROUSAL_STRAINED_REASON}"
         if blocked == AROUSAL_STRAINED_REASON and self.strain_report_enabled:
             # Strain is the only gate holding (it is checked last), so every other gate passed.
             # The strain report door may pass this one refusal, once per long episode.
@@ -2278,7 +2297,13 @@ class EndogenousOutreach:
         # `OutreachContext` -- would inherit whatever the last cycle left.
         grounding = grounding_summary(ctx)
 
-        correlation_id = str(uuid4())
+        # The compose point. The shadow want's id IS this compose's correlation id, so the
+        # shadow decision joins the outreach act (grammar_acts.correlation_id).
+        if shadow is not None:
+            correlation_id = shadow.want_id
+            shadow.place()
+        else:
+            correlation_id = str(uuid4())
         retrieval_query = outreach_retrieval_query(ctx)
         raw_text, gen_debug = await self._generate(
             prompt, session_id, correlation_id,

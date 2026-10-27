@@ -1286,6 +1286,11 @@ class Settings(BaseSettings):
     # (orion/grammar/acts.py) that orion-sql-writer persists and grades into L10.
     HUB_ACT_LEDGER_ENABLED: bool = Field(default=True, alias="HUB_ACT_LEDGER_ENABLED")
 
+    # Body economy Patch C3b: outreach, retro co-play and retro leisure place a SHADOW bid
+    # (orion.physiology.client -> durable-runs POST /physiology/bid) and log the decision beside
+    # their real gate (scripts/physiology_shadow.py). Never obeyed; off = no bid, no log line.
+    HUB_PHYSIOLOGY_SHADOW_BID_ENABLED: bool = Field(default=True, alias="HUB_PHYSIOLOGY_SHADOW_BID_ENABLED")
+
     HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(
         default=True, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"
     )

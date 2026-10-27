@@ -108,7 +108,19 @@ class RetroLeisureListener:
             prior = self._seen.get(req.dispatch_id)
             if prior is not None:
                 return prior
-            out = await self._start(req)
+            # Body economy Patch C3b: SHADOW bid, never obeyed. want_id = the dispatch id, which is
+            # the play act's correlation id (scripts/act_emit.py publish_play_opened).
+            from scripts.physiology_shadow import ShadowBid
+
+            shadow = ShadowBid(family="hub.retro_leisure", verb="play", tier=2, want_id=req.dispatch_id,
+                               object_ref=retro_leisure_object_ref(req.dispatch_id), component="retro_leisure")
+            shadow.place()
+            try:
+                out = await self._start(req)
+            except BaseException:
+                shadow.settle("blocked:error")
+                raise
+            shadow.settle("ran" if out.state == "started" else f"blocked:{out.refusal or out.state}")
             if out.state == "started":
                 self._seen[req.dispatch_id] = out
                 while len(self._seen) > REPLAY_CACHE:

@@ -70,6 +70,7 @@ jobs:
           python -m pytest -q services/orion-thought/tests/test_visual_activity.py
           services/orion-thought/tests/test_store.py services/orion-thought/tests/test_visual_chain.py
           services/orion-thought/tests/test_visual_chain_thermal_gate.py
+          services/orion-thought/tests/test_thermal_line_pin.py
           services/orion-thought/tests/test_visual_chain_gpu_lease.py
           services/orion-thought/tests/test_visual_chain_run_deadline.py
           services/orion-thought/tests/test_visual_steps.py

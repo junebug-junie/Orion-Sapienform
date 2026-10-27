@@ -202,6 +202,12 @@ jobs:
           python scripts/check_body_economy_contract.py
           python -m pytest tests/test_check_body_economy_contract.py -q -p no:cacheprovider
 
+      # One owner per tuned env key, and no copy at all of a module-owned line (body economy
+      # Patch B: the room's 32/30.5/34/33 C lines live only in orion/autonomy/thermal_gate.py).
+      # Repo-wide on purpose: a new copy can land in any service, so a path filter would miss it.
+      - name: Env key / thermal line single owner
+        run: python scripts/check_env_key_single_source.py
+
       - name: scripts/ must not shadow a stdlib module
         run: python scripts/check_scripts_dir_no_stdlib_shadow.py
 

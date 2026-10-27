@@ -4,8 +4,8 @@ WHY THIS ONE IS DIFFERENT
 -------------------------
 Every other budget in this repo meters a resource Orion spends on itself, and
 grades the result itself. `orion/autonomy/budget.py` meters motor-seconds and
-`quota_budget.py` meters dollars; both are real, but the *value* side of each is
-Orion's own estimate of what it learned. That is the wireheading shape the
+`quota_budget.py` (deleted in body economy Patch B) metered dollars; both were
+real, but the *value* side of each is Orion's own estimate of what it learned. That is the wireheading shape the
 self-calibration roadmap names directly: Orion sets the weights, the weights
 decide what Orion does, Orion scores the outcome, and nothing outside settles it.
 

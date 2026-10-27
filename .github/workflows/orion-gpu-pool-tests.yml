@@ -7,6 +7,9 @@ on:
       - "services/orion-vllm-host/**"
       - "orion/gpu_pool/**"
       - "orion/schemas/gpu_pool.py"
+      # the swap guard's thermal line is owned here (test_guard_thermal_line_pin.py)
+      - "orion/autonomy/thermal_gate.py"
+      - "orion/autonomy/cabinet_heat.py"
       # the controller-health alert builds orion-notify's ChatAttentionRequest
       - "orion/schemas/notify.py"
       # U4 shed lever: the pool consumes hardware-watch incidents (cooling_incident)
@@ -86,6 +89,9 @@ on:
       - "services/orion-vllm-host/**"
       - "orion/gpu_pool/**"
       - "orion/schemas/gpu_pool.py"
+      # the swap guard's thermal line is owned here (test_guard_thermal_line_pin.py)
+      - "orion/autonomy/thermal_gate.py"
+      - "orion/autonomy/cabinet_heat.py"
       # the controller-health alert builds orion-notify's ChatAttentionRequest
       - "orion/schemas/notify.py"
       # U4 shed lever: the pool consumes hardware-watch incidents (cooling_incident)

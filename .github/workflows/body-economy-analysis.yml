@@ -17,6 +17,7 @@ on:
       # the fit reads orion-prediction's central-AC proxy definition through its own parser
       - "config/prediction/series.v1.yaml"
       - "services/orion-prediction/app/series.py"
+      - "orion/autonomy/thermal_gate.py"
   workflow_dispatch:
 
 permissions:

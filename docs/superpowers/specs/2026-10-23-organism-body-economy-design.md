@@ -996,11 +996,15 @@ PR report: `docs/superpowers/pr-reports/2026-10-27-patch-c1-want-bid-core-pr.md`
     act, nothing in C1 can reduce a non-GPU want in heat.
   - R5 **not evaluable**. No lane price exists for the 10-21..22 baseline, and nothing bids before it
     leases (Patch E).
-  - R6 **PASS** (1.00x the lane at most, limit 1.2x). This holds by construction of the capacity
-    rule, and the check confirms the code enforces it.
-  - R7 **PASS**. Drift 0.100/day at most; 0 floor violations under a stressed lane price of 1.0; a
-    synthetic zero-use family ends at 0.43 against a prior of 1.0. The only live zero-use family
-    (`hub.retro_leisure`) has 1 evidenced act, so it stays at its prior.
+  - R6 **PASS** (1.00x the lane at most, limit 1.2x; also 1.00x in a mixed burst of every family x20
+    on half-used lanes). This holds by construction of the capacity rule, and the check confirms the
+    code enforces it.
+  - R7 **FAIL** on the floor clause. Drift is 0.100/day at most (capped by construction), and a
+    synthetic zero-use family ends at 0.43 against a prior of 1.0. Under a stressed lane price of 1.0,
+    the floor funded 47 wants, but 22 wants of under-5% families were deferred on price. They were
+    deferred because the floor now funds a family at most once per lane window (a review fix: act
+    history lags the book). One floor fund an hour does not hold 5% for every family. The only live
+    zero-use family (`hub.retro_leisure`) has 1 evidenced act, so it stays at its prior.
 - **Weights are mostly priors today.** Only `hub.outreach` has evidence: Juniper replied to 63% of
   43. Downstream use reaches 10 closed-window rows for no family. Most families are `no_link_path`.
 

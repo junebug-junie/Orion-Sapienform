@@ -474,3 +474,14 @@ def test_success_p_maps_heads_onto_each_skills_settle_rule():
     assert success_p('traverse', heads) == 0.7 and success_p('acquire', heads) == 0.1
     assert success_p('hold', heads) == pytest.approx(0.8)
     assert all(success_p(s, heads) is None for s in ('engage', 'withdraw', 'enter'))   # settle on 'completed'
+
+def test_bet_rows_drop_columns_this_code_does_not_know():
+    # A later migration adds a column before the service rebuilds; ActionBetV1 forbids extras.
+    from app.store import ACTION_BET_COLS, PostgresStore
+    from orion.schemas.prediction import ActionBetV1
+    row = {c: None for c in ACTION_BET_COLS}
+    row.update(bet_id="b1", domain="retro:zelda", body="retro", skill="traverse", context={}, action={},
+               model=MODEL, p=0.5, p_baseline=0.5, level="prior", counts=[], placed_at=T0, future_column={"x": 1})
+    out = PostgresStore._bet(row)
+    assert "future_column" not in out
+    ActionBetV1.model_validate(out)

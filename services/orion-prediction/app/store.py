@@ -385,7 +385,9 @@ class PostgresStore:
     def _bet(row: dict | None) -> dict | None:
         if row is None:
             return None
-        row = dict(row)
+        # Only the columns this code knows: a column added by a later migration (applied before this
+        # service rebuilds) must not reach ActionBetV1 (extra=forbid) and turn every call into a 500.
+        row = {k: v for k, v in dict(row).items() if k in ACTION_BET_COLS}
         row["detail"] = row.get("detail") or {}
         row["context"] = row.get("context") or {}
         row["action"] = row.get("action") or {}

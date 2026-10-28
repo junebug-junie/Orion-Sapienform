@@ -83,6 +83,7 @@ jobs:
             orion/core/bus/tests/test_hunter_intake_log_quiet.py \
             services/orion-sql-writer/tests/test_consumer_resilience.py \
             services/orion-sql-writer/tests/test_route_map_completeness.py \
+            services/orion-sql-writer/tests/test_office_env_sample_sql_shape.py \
             services/orion-sql-writer/tests/test_world_pulse_routing.py \
             services/orion-sql-writer/tests/test_grammar_event_routing.py \
             services/orion-sql-writer/tests/test_grammar_ledger_sql_shape.py \

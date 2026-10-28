@@ -1,19 +1,11 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 768,
+  "metric_count": 769,
   "_last_change": {
-    "change_count": 9,
+    "change_count": 1,
     "high_severity_count": 0,
     "changes": [
-      "medium added metric://bus_channel/orion-durable-runs/orion:physiology:want:decision",
-      "medium added metric://inner_state/orion-durable-runs/physiology.want.decision.v1",
-      "medium added metric://inner_state/orion-durable-runs/physiology.want.decision.v1#charge",
-      "medium added metric://inner_state/orion-durable-runs/physiology.want.decision.v1#family_weight",
-      "medium added metric://inner_state/orion-durable-runs/physiology.want.decision.v1#intensity",
-      "medium added metric://inner_state/orion-durable-runs/physiology.want.decision.v1#net",
-      "medium added metric://inner_state/orion-durable-runs/physiology.want.decision.v1#retry_after_sec",
-      "medium added metric://inner_state/orion-durable-runs/physiology.want.decision.v1#state_age_sec",
-      "medium added metric://inner_state/orion-durable-runs/physiology.want.decision.v1#value_rank"
+      "medium added metric://bus_channel/orion-office-env/orion:office:env:sample"
     ]
   },
   "definitions": {
@@ -2737,6 +2729,17 @@
         "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-office-env/orion:office:env:sample": {
+      "schema_id": "OfficeEnvSampleV1",
+      "all_producers": [
+        "orion-office-env"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=telemetry stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-prediction/orion:prediction:forecast": {

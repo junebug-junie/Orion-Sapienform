@@ -3004,6 +3004,16 @@ API: `GET /api/cabinet/sensors/latest`, `GET /api/cabinet/sensors/history?window
 (`scripts/cabinet_sensors_routes.py`, `/static/js/cabinet-sensors.js`). Latest polls ~1s only
 while `#cabinet` is visible; sensor history fetches on tab activation, window toggle, or Refresh.
 
+**Office strip** (Biometrics → *Cabinet / Office*, below Cooling): office temperature and
+humidity from pan-1's SHT40, read from Postgres `office_env_sample` (written by sql-writer from
+`orion:office:env:sample`, produced by `orion-office-env`). Routes: `GET /api/office/env/latest`
+and `GET /api/office/env/history?window=24h|3d|7d` (`scripts/office_env_routes.py`). Node comes
+from `OFFICE_ENV_NODE` (default `pan-1`); `OFFICE_ENV_STALE_AFTER_SEC` (default 90 = three missed
+30 s publishes) decides when the strip reads "no recent publish". A stale sensor shows
+"stale"/gaps, never 0. Frontend: `static/js/office-env.js` (own script; polls every 30 s only
+while `#cabinet` is visible). Tests: `tests/test_office_env_routes.py`,
+`tests/test_office_env_panel.py`, `static/js/office-env.test.js` (`node --test`).
+
 **Sensor history** (below live tiles on the Cabinet tab) charts temperature, humidity, lidar,
 ALS, and climate/proximity/UV activity from `orion_biometrics_summary` at ~30s grain. Requires
 biometrics → sql-writer rows with `cabinet_temp_c` and related keys on node

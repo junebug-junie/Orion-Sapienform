@@ -2134,6 +2134,16 @@ channels:
     since: "2026-09-25"
     description: "Read-only portable AC / cabinet cooling watts from Athena Z-Wave Shelly Wave plug."
 
+  - name: "orion:office:env:sample"
+    kind: "telemetry"
+    schema_id: "OfficeEnvSampleV1"
+    message_kind: "office.env.sample.v1"
+    producer_services: ["orion-office-env"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-10-27"
+    description: "Read-only office temperature/humidity (SHT40 on a pan-1 Nano ESP32). Absent is not zero; stale samples carry no measurements."
+
   # House-level electricity (docs/superpowers/specs/2026-09-26-orion-energy-watcher-design.md).
   # Whole-house Green Button intervals, priced by a versioned tariff, joined to settled
   # power intents. Unknown is never zero: run cost carries a gap reason instead.

@@ -389,3 +389,16 @@ def test_backoff_p_matches_backoff_on_many_count_shapes():
         for has_place in (True, False):
             assert backoff_p(sk, si, pl, has_place=has_place) == pytest.approx(
                 backoff(sk, si, pl, has_place=has_place)["p"])
+
+
+
+def test_bet_rows_drop_columns_this_code_does_not_know():
+    # A later migration adds a column before the service rebuilds; ActionBetV1 forbids extras.
+    from app.store import ACTION_BET_COLS, PostgresStore
+    from orion.schemas.prediction import ActionBetV1
+    row = {c: None for c in ACTION_BET_COLS}
+    row.update(bet_id="b1", domain="retro:zelda", body="retro", skill="traverse", context={}, action={},
+               model=MODEL, p=0.5, p_baseline=0.5, level="prior", counts=[], placed_at=T0, future_column={"x": 1})
+    out = PostgresStore._bet(row)
+    assert "future_column" not in out
+    ActionBetV1.model_validate(out)

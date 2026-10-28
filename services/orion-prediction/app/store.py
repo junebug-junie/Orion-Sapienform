@@ -32,7 +32,7 @@ TABLES = {
     "prediction_shadow_forecast": ("shadow_id", "model", "origin_ts", "horizon_min", "point", "abs_error"),
     "prediction_weather_hourly": ("hour_ts", "temp_f", "is_forecast", "source", "fetched_at"),
     "prediction_exceedance": ("exceedance_id", "probability", "window_start", "window_end", "hit_raw", "hit_mean"),
-    "prediction_action_bet": ("bet_id", "skill", "context", "place", "p", "p_baseline", "counts", "result"),
+    "prediction_action_bet": ("bet_id", "skill", "context", "place", "p", "p_baseline", "counts", "result", "shadow"),
 }
 ACTION_BET_COLS = ("bet_id", "domain", "body", "skill", "context", "place", "action", "model", "p", "p_baseline",
                    "level", "counts", "chosen_rank", "session_id", "placed_at", "settled_at", "result", "outcome",
@@ -451,7 +451,9 @@ class PostgresStore:
         sql = (f"INSERT INTO prediction_action_bet ({', '.join(cols)}) VALUES "
                f"({', '.join('%s::jsonb' if c in _ACTION_BET_JSONB else '%s' for c in cols)}) "
                "ON CONFLICT (bet_id) DO NOTHING RETURNING *")
-        rows = self._all(sql, [(_j(row[c]) if c in _ACTION_BET_JSONB else row[c]) for c in cols])
+        # A missing shadow is SQL NULL, not jsonb 'null' (so WHERE shadow IS NULL finds it).
+        rows = self._all(sql, [(_j(row[c]) if c in _ACTION_BET_JSONB and row[c] is not None else
+                                None if c in _ACTION_BET_JSONB else row[c]) for c in cols])
         return self._bet(rows[0]) if rows else None
 
     def settle_action_bet(self, bet_id: str, result: str, outcome: str, detail: dict, now: datetime) -> dict | None:

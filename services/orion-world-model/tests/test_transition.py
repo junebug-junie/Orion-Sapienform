@@ -24,11 +24,26 @@ def row(before, after, **over):
     return {**dict(before=before, after=after, goal={'kind': 'exit', 'dir': 'N'}, frames=120, died=False), **over}
 
 
-def test_labels_count_a_cave_exit_as_a_new_place_and_ignore_unread_items():
+def test_labels_follow_the_hubs_settle_rules():
+    # Review 2026-10-28: a death changed the (mode, room) tuple and read as "place changed"; a heart
+    # pickup did not read as a gain. The labels now use the Hub's own rules (orion.embodiment.transition).
+    i = HEADS.index
+    died = zelda_targets(row(facts(), facts(mode='death', hearts=dict(current=0, containers=3)), died=True, outcome='death'))
+    assert died[i('place_changed')] == 0.0 and died[i('died')] == 1.0 and died[i('health_lost')] == 1.0
+    hit = zelda_targets(row(facts(), facts(room=120), outcome='interrupted:hit'))
+    assert hit[i('place_changed')] == 0.0                                # traverse settles an interruption failure
+    heart = zelda_targets(row(facts(hearts=dict(current=2, containers=3)), facts(hearts=dict(current=3, containers=3))))
+    assert heart[i('item_gained')] == 1.0 and heart[i('health_lost')] == 0.0
+    into_cave = zelda_targets(row(facts(), facts(mode='cave')))
+    assert into_cave[i('place_changed')] == 0.0                          # same room, as the Hub settles it
+    assert zelda_targets(row(facts(), facts(room=120)))[i('place_changed')] == 1.0
+
+
+def test_labels_count_a_cave_exit_as_a_new_place_and_a_newly_read_item_as_a_gain():
     out_of_cave = zelda_targets(row(facts(mode='cave'), facts()))
     assert out_of_cave[HEADS.index('place_changed')] == 1.0            # same room id, different mode
     read_later = zelda_targets(row(facts(), facts(items=dict(sword=1, rupees=4, bombs=3))))
-    assert read_later[HEADS.index('item_gained')] == 0.0                # 'unknown' -> 3 is not a gain
+    assert read_later[HEADS.index('item_gained')] == 1.0                # the Hub's rule: a new item read counts
     rupee = zelda_targets(row(facts(), facts(items=dict(sword=1, rupees=5, bombs='unknown'))))
     assert rupee[HEADS.index('item_gained')] == 1.0
     hurt = zelda_targets(row(facts(), facts(hearts=dict(current=2.5, containers=3)), died=True))

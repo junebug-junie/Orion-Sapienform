@@ -27,7 +27,7 @@ and new bets serve the baseline.
 World-model shadow ``transition_mlp`` (WorldModelShadow): when a bet carries body-level ``features``
 whose ``feature_version`` matches the loaded weights (orion/embodiment/transition.py), its p of the
 skill's success is stored on the bet as ``shadow``. It is never served. ``shadow_verdict`` grades it
-against the served model on the same settled bets, with the same per-session paired test.
+against the p each bet was served, on the same settled bets, with the same per-session paired test.
 """
 from __future__ import annotations
 
@@ -156,10 +156,11 @@ def live_verdict(rows: Iterable[dict]) -> dict:
 
 
 def shadow_verdict(rows: Iterable[dict]) -> dict:
-    """The world-model shadow vs the served model, on settled bets that carry a shadow p."""
+    """The world-model shadow vs the p each bet was actually served (the counts model, or the baseline
+    while the gate serves it), on settled bets that carry a shadow p."""
     rows = [r for r in rows if isinstance(r.get("shadow"), dict) and r["shadow"].get("p") is not None]
-    out = _paired_verdict(rows, lambda r: float(r["shadow"]["p"]), lambda r: model_p_from_counts(r["counts"]),
-                          SHADOW_MODEL, MODEL)
+    out = _paired_verdict(rows, lambda r: float(r["shadow"]["p"]), lambda r: float(r["p"]),
+                          SHADOW_MODEL, "served")
     out["tags"] = sorted({str(r["shadow"].get("tag")) for r in rows})[-3:]
     return out
 

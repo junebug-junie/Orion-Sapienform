@@ -427,8 +427,9 @@ def test_a_bet_with_features_stores_the_world_model_p_of_its_skill_success(tmp_p
     assert row["shadow"]["model"] == SHADOW_MODEL and row["shadow"]["tag"] == 'test-tag'
     assert row["shadow"]["p"] == pytest.approx(sig(2.0))                 # traverse: place changed
     hold = _shadow_bet(svc, skill='hold')
-    assert hold["shadow"]["p"] == pytest.approx((1 - sig(-1.0)) * (1 - sig(-4.0)))
+    assert hold["shadow"]["p"] == pytest.approx(1 - sig(-1.0))           # no heart lost (a death loses all)
     assert _shadow_bet(svc, skill='engage')["shadow"] is None             # no head says "completed"
+    assert _shadow_bet(svc, skill='enter')["shadow"] is None
     assert row["model"] == MODEL and row["p"] != row["shadow"]["p"]       # never served
 
 
@@ -462,7 +463,7 @@ def test_shadow_verdict_pairs_the_world_model_with_the_served_model_per_session(
         for _ in range(3):
             _shadow_bet(svc, session=f"s{i}", result='success')
     v = shadow_verdict(svc.store.settled_action_bets(limit=5000))
-    assert v["model"] == SHADOW_MODEL and v["baseline"] == MODEL and v["n_independent"] == MIN_INDEPENDENT + 2
+    assert v["model"] == SHADOW_MODEL and v["baseline"] == "served" and v["n_independent"] == MIN_INDEPENDENT + 2
     assert v["verdict"] == "worse" and v["tags"] == ['test-tag'] and v["rel_mse"] > 1
     assert shadow_verdict([])["verdict"] == "pending"
     assert svc.live("retro:zelda", "retro")["shadow_verdict"]["n_scored"] == v["n_scored"]
@@ -470,7 +471,6 @@ def test_shadow_verdict_pairs_the_world_model_with_the_served_model_per_session(
 
 def test_success_p_maps_heads_onto_each_skills_settle_rule():
     heads = dict(place_changed=0.7, health_lost=0.2, item_gained=0.1, died=0.05)
-    assert success_p('traverse', heads) == 0.7 and success_p('enter', heads) == 0.7
-    assert success_p('acquire', heads) == 0.1
-    assert success_p('hold', heads) == pytest.approx(0.8 * 0.95)
-    assert success_p('engage', heads) is None and success_p('withdraw', heads) is None
+    assert success_p('traverse', heads) == 0.7 and success_p('acquire', heads) == 0.1
+    assert success_p('hold', heads) == pytest.approx(0.8)
+    assert all(success_p(s, heads) is None for s in ('engage', 'withdraw', 'enter'))   # settle on 'completed'

@@ -7,16 +7,15 @@ One definition, used by every side so they cannot drift:
 - orion-prediction runs the exported weights on those numbers (``TransitionWeights``, numpy only).
 
 Inputs are body facts, never game RAM: skill (orion/embodiment/skills.py), direction, open sides,
-health, threats, items, cave / dungeon. Outputs (HEADS) are what happened. ``success_p`` maps them onto
-the success each skill's action bet settles on; skills whose success the heads do not describe get
-None, never a guess.
+health, threats, items, cave / dungeon. Outputs (HEADS) are what happened, labelled with the same
+settle rules the Hub's action bets use (start_facts, place_changed, gained live here and the Hub
+imports them). ``success_p`` maps them onto each skill's success; skills whose success the heads do
+not describe get None, never a guess. numpy is imported only to run weights (the dojo has none).
 """
 from __future__ import annotations
 
 import math
 from typing import Any
-
-import numpy as np
 
 from orion.embodiment.skills import SKILLS   # traverse, engage, withdraw, acquire, enter, hold
 
@@ -54,47 +53,76 @@ def zelda_features(before: dict, goal: dict, open_sides: Any) -> list[float]:
                float(before.get('mode') == 'cave'), float(before.get('level') not in (0, None))])
 
 
+# --- the Hub's settle rules (services/orion-hub/scripts/retro_experience.py settle_body uses these) ---
+def start_facts(obs: Any) -> dict:
+    """What a settle rule compares against: where Link was and what he had. Takes a Retro observation
+    or zelda_facts (same keys)."""
+    obs = obs if isinstance(obs, dict) else {}
+    hearts = obs.get('hearts') if isinstance(obs.get('hearts'), dict) else {}
+    items = obs.get('items') if isinstance(obs.get('items'), dict) else {}
+    return {'level': obs.get('level'), 'room': obs.get('room'), 'mode': obs.get('mode'),
+            'hearts': hearts.get('current'), 'containers': hearts.get('containers'),
+            'items': {k: v for k, v in items.items() if isinstance(v, int) and not isinstance(v, bool)}}
+
+
+def place_changed(start: dict, obs: dict) -> bool:
+    """navigate.py changed_place(): room or level differs, or the goal started outside play."""
+    return (obs.get('room') != start.get('room') or obs.get('level') != start.get('level')
+            or (start.get('mode') not in (None, 'play') and obs.get('mode') == 'play'))
+
+
+def gained(start: dict, obs: dict) -> bool:
+    """An item count went up, a new item appeared, a heart container was added, or hearts rose
+    (a heart drop raises only hearts.current)."""
+    after = start_facts(obs)
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+    return (any(after['items'].get(k, 0) > v for k, v in start['items'].items())
+            or any(k not in start['items'] and v > 0 for k, v in after['items'].items())
+            or (num(after['containers']) and num(start.get('containers')) and after['containers'] > start['containers'])
+            or (num(after['hearts']) and num(start.get('hearts')) and after['hearts'] > start['hearts']))
+
+
 def zelda_targets(row: dict) -> list[float] | None:
-    """What happened, from one dojo row; None when the row says nothing (no after state)."""
+    """What happened, from one dojo row, labelled with the Hub's settle rules so a head means what a
+    bet settles on. None when the row says nothing (no after state)."""
     before, after = row.get('before') or {}, row.get('after')
     if not after:
         return None
-    hb, ha = (before.get('hearts') or {}).get('current', 0), (after.get('hearts') or {}).get('current', 0)
-    ib = {k: v for k, v in (before.get('items') or {}).items() if isinstance(v, int)}
-    ia = {k: v for k, v in (after.get('items') or {}).items() if isinstance(v, int)}
-    gained = any(ia[k] > ib[k] for k in ib.keys() & ia.keys())     # only items read as numbers both times
-    place = lambda f: (f.get('mode'), f.get('level'), f.get('room'))   # leaving a cave keeps the room id
-    return [float(place(after) != place(before)),
-            float(ha < hb), float(gained), float(bool(row.get('died'))),
+    start, outcome = start_facts(before), str(row.get('outcome') or '')
+    died = bool(row.get('died')) or outcome == 'death'
+    hb, ha = start['hearts'], start_facts(after)['hearts']
+    lost = died or (isinstance(ha, (int, float)) and isinstance(hb, (int, float)) and ha < hb)
+    # traverse settles failure on death and on an interruption, whatever the room did
+    moved = place_changed(start, after) and not died and not outcome.startswith('interrupted:')
+    return [float(moved), float(lost), float(gained(start, after)), float(died),
             math.log1p(row.get('frames') or 0) / 8]
 
 
 def success_p(skill: str, heads: dict[str, float]) -> float | None:
-    """The chance the skill's action bet settles success, from the heads (Hub settle_body rules):
-    traverse/enter succeed when the place changes; acquire when an item is gained; hold when no heart
-    is lost and the body lives. engage/withdraw settle on the motor's own 'completed', which no head
-    describes: None."""
-    if skill in ('traverse', 'enter'):
+    """The chance the skill's action bet settles success (heads are labelled with settle_body's rules):
+    traverse when the place changes (not by dying, not interrupted); acquire when an item is gained;
+    hold when no heart is lost (a death loses them all). engage, withdraw and enter settle on the
+    motor's own 'completed', which no head describes: None."""
+    if skill == 'traverse':
         return heads['place_changed']
     if skill == 'acquire':
         return heads['item_gained']
     if skill == 'hold':
-        return (1 - heads['health_lost']) * (1 - heads['died'])
+        return 1 - heads['health_lost']
     return None
 
 
-_erf = np.vectorize(math.erf)
-
-
-def _gelu(x: np.ndarray) -> np.ndarray:
-    return 0.5 * x * (1 + _erf(x / math.sqrt(2)))
+def _gelu(x):
+    import numpy as np
+    return 0.5 * x * (1 + np.vectorize(math.erf)(x / math.sqrt(2)))
 
 
 class TransitionWeights:
     """The trained TransitionModel's MLP, exported to numpy (services/orion-world-model/scripts/
     train_transition.py writes the .npz): body Linear-GELU-Linear-GELU, then an events Linear."""
 
-    def __init__(self, arrays: dict[str, np.ndarray]):
+    def __init__(self, arrays: dict):
+        import numpy as np   # only weight loading needs numpy: the dojo's retro image has none
         self.w = {k: np.asarray(v, dtype=np.float64) for k, v in arrays.items() if k.startswith(('body', 'events'))}
         self.version = str(arrays.get('feature_version', ''))
         self.tag = str(arrays.get('tag', ''))
@@ -103,10 +131,12 @@ class TransitionWeights:
 
     @classmethod
     def load(cls, path) -> 'TransitionWeights':
+        import numpy as np
         with np.load(path, allow_pickle=False) as z:
             return cls({k: z[k] for k in z.files})
 
     def heads(self, x: list[float]) -> dict[str, float]:
+        import numpy as np
         h = np.asarray(x, dtype=np.float64)
         h = _gelu(self.w['body.0.weight'] @ h + self.w['body.0.bias'])
         h = _gelu(self.w['body.2.weight'] @ h + self.w['body.2.bias'])

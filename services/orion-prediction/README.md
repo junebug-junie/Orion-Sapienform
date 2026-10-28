@@ -181,7 +181,7 @@ n >= 50; `reportable` false under 10 bets).
 - hold: no heart is lost and the body lives;
 - engage and withdraw: no shadow, because no head predicts "completed".
 
-The weights are `PREDICTION_WORLD_MODEL_WEIGHTS` (default `/models/transition.npz`). The host directory `PREDICTION_WORLD_MODEL_DIR` is mounted read-only there, and the file is reloaded when it changes. A missing or bad file means no shadow; `/health` shows it under `action_bets.world_model_shadow`. `/action-bets/live` carries `shadow_verdict`: the shadow's p against the served model's p on the same settled bets, with the same per-session paired test as the gate. Kill switch: `PREDICTION_WORLD_MODEL_SHADOW_ENABLED`. Migration: `manual_migration_prediction_action_bet_shadow_v1.sql` adds the nullable `shadow` column.
+The weights are `PREDICTION_WORLD_MODEL_WEIGHTS` (default `/models/transition.npz`). The host directory `PREDICTION_WORLD_MODEL_DIR` is mounted read-only there, and the file is reloaded when it changes. A missing or bad file means no shadow; `/health` shows it under `action_bets.world_model_shadow`. `/action-bets/live` carries `shadow_verdict`: the shadow's p against the p each bet was actually served, on the same settled bets, with the same per-session paired test as the gate. Kill switch: `PREDICTION_WORLD_MODEL_SHADOW_ENABLED`. Migration: `manual_migration_prediction_action_bet_shadow_v1.sql` adds the nullable `shadow` column.
 
 **Expiry**: a bet still open 1 h after placing is closed `void` with outcome `never_settled` (checked
 at most every 30 s, on quote / place / live). Never graded; counted in `/health`

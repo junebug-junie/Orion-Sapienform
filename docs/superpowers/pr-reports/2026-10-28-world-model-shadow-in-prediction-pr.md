@@ -15,7 +15,7 @@
 
 - **Before:** the world model could not affect or be judged on live play.
 - **After:** every traverse, acquire and hold bet carries its shadow p, and the verdict will say better, worse or unclear after 20 sessions.
-- Published weights (`zelda-body-v1:581932rows:20261028T221311Z`): 774,062 deduplicated dojo goals. On 7,695 held-out goals from unseen states (3,468 clusters), against counts:
+- Published weights (`zelda-body-v1:581932rows:20261028T222311Z`): 774,062 deduplicated dojo goals. On 7,695 held-out goals from unseen states (3,468 clusters), against counts:
   - PASS: item gained, died;
   - FAIL: place changed, health lost (95% intervals cross 0 barely).
 

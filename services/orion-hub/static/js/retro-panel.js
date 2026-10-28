@@ -17,6 +17,10 @@
   // an older connect or pending heal can never override a newer choice.
   let wanted = false, away = false, connecting = 0, intent = 0, healPending = false, heals = 0, healWindow = 0;
   let scriptedMode = false, cognitivePort = null, planning = false, plannedAttempt = null;
+  // "Let Orion play": hand-overs of ORION_PLAY_SEC (Retro's limit), renewed when one ends, until the
+  // player takes the game back (click, a game key, a pad button, Take this controller) or the tab hides.
+  const ORION_PLAY_SEC = 1800;
+  let orionPlay = false, orionRenewing = false;
   // The grant this page handed off ({port, epoch}); epoch latches on the first status that shows it.
   let handoffGrant = null;
   // Zelda (planner v2): one plan per Retro decision; a heat shed waits out retry_after_sec.
@@ -55,7 +59,7 @@
     if (input) { input.onclose=null; input.close(); } if (media) { media.onclose=null; media.close(); }
     input=null;media=null; pendingPacket=null; flushAudio(); resetChord(chord);
   }
-  function neutral() { closeConnections(); report('Paused. Click the game to keep playing.'); }
+  function neutral() { orionPlay = false; closeConnections(); report('Paused. Click the game to keep playing.'); }
   function mask() {
     let m=0; for(const code of keys) m |= bits[code] || 0;
     const pad = gamepad();
@@ -259,27 +263,63 @@
   });
   action('join',connect);
   action('pause',async()=>{++intent;wanted=false;try{if(sid)await api(`sessions/${sid}/pause`,{});}finally{neutral();}report('Paused. Click the game to keep playing.');});
-  action('stop',async()=>{++intent;wanted=false;try{if(sid)await api(`sessions/${sid}/stop`,{});}finally{neutral();}sid=null;report('Game stopped.');});
+  action('stop',async()=>{orionPlay=false;++intent;wanted=false;try{if(sid)await api(`sessions/${sid}/stop`,{});}finally{neutral();}sid=null;report('Game stopped.');});
   action('takeover',async()=>{
+    orionPlay=false;
     if(input?.readyState!==WebSocket.OPEN){await connect();return;}
     const epoch=transportEpoch;await api(`sessions/${sid}/resume`,{});
     if(epoch!==transportEpoch || document.hidden)return;
     await grant('takeover');wanted=true;report('Playing.');
   });
-  async function handoff(cognition=false){
+  async function handoff(cognition=false, seconds=60){
     if(!lease || input?.readyState!==WebSocket.OPEN)throw Error('Connect to this player before handing it to the script.');
     const port=lease.port, expected_epoch=lease.epoch, epoch=transportEpoch;
     ++intent;wanted=false;scriptedMode=true;handoffGrant=null;lease=null;keys.clear();outstanding.clear();clearInterval(timer);
     try{
-      await api(`sessions/${sid}/scripted`,{connection_id:connection,generation,port,expected_epoch,action:'start',duration_seconds:60,cognition});
+      await api(`sessions/${sid}/scripted`,{connection_id:connection,generation,port,expected_epoch,action:'start',duration_seconds:seconds,cognition});
     }catch(err){scriptedMode=false;cognitivePort=null;throw Error(`Handoff failed: ${err.message}. Use Take this controller to return.`);}
     if(epoch!==transportEpoch)return;
     cognitivePort=cognition?port:null;handoffGrant={port,epoch:null};plannedAttempt=null;plannedDecision=null;planRetryAt=0;
-    report(cognition?'Orion goal experiment — 60 seconds. Take this controller to interrupt.':'Scripted right/jump baseline — 60 seconds. Take this controller to interrupt.');
+    report(orionPlay?'Orion is playing. Click the game, or press any key or controller button, to take it back.'
+      :cognition?'Orion goal experiment — 60 seconds. Take this controller to interrupt.':'Scripted right/jump baseline — 60 seconds. Take this controller to interrupt.');
     await showPolicy();
   }
   action('scripted',()=>handoff());
-  action('cognitive',()=>handoff(true));
+  action('cognitive',()=>{orionPlay=false;return handoff(true);});
+  // Take the controller (connect if needed), then hand it to Orion for a long turn.
+  async function orionTurn(){
+    if(!lease || input?.readyState!==WebSocket.OPEN){
+      if(input?.readyState!==WebSocket.OPEN)await connect();   // the grant arrives on the socket's first message
+      else {await api(`sessions/${sid}/resume`,{});await grant('takeover');}
+      for(let i=0;i<50 && orionPlay && !(lease && input?.readyState===WebSocket.OPEN);i++)
+        await new Promise(r=>setTimeout(r,100));
+    }
+    if(!orionPlay)return;
+    await handoff(true, ORION_PLAY_SEC);
+  }
+  action('orionplay',async()=>{
+    if(!sid)throw Error('Start or load a game first.');
+    orionPlay=true;
+    try{await orionTurn();}catch(err){orionPlay=false;throw err;}
+  });
+  function renewOrion(){
+    if(!orionPlay || orionRenewing || document.hidden)return;
+    orionRenewing=true;
+    void orionTurn().catch(err=>{orionPlay=false;report(`Orion stopped: ${err.message}`);})
+      .finally(()=>{orionRenewing=false;});
+  }
+  // The player takes the game back from Orion: stop renewing, then take the controller.
+  function takeBack(){
+    if(!orionPlay)return false;
+    orionPlay=false;
+    if(scriptedMode)el('takeover').click();
+    return true;
+  }
+  setInterval(()=>{   // a pad press while Orion plays takes the game back (no input socket is polling then)
+    if(!orionPlay || !scriptedMode)return;
+    const pad=gamepad();
+    if(pad && pad.buttons.some(b=>b?.pressed))takeBack();
+  },100);
   async function showPolicy(){
     if(!sid)return;
     const current=sid, grantAsked=handoffGrant, state=await api(`sessions/${sid}`);
@@ -292,7 +332,7 @@
     if(scriptedMode && handoffGrant && handoffGrant===grantAsked){
       const mine=(state.scripted||[]).find(p=>p.port===handoffGrant.port);
       if(handoffGrant.epoch===null){if(mine)handoffGrant.epoch=mine.epoch;}
-      else if(!mine || mine.epoch!==handoffGrant.epoch){scriptedMode=false;cognitivePort=null;handoffGrant=null;}
+      else if(!mine || mine.epoch!==handoffGrant.epoch){scriptedMode=false;cognitivePort=null;handoffGrant=null;renewOrion();}
     }
     el('policy').textContent=(state.scripted||[]).length
       ? state.scripted.map(p=>`Player ${p.port+1}: ${p.policy_id} (${p.cognition?'goal experiment':'scripted'}, ${p.duration_seconds}s limit)`).join(' · ')
@@ -448,6 +488,7 @@
       if(!e.repeat)runHotkey(e.code);
       return;
     }
+    if(orionPlay && scriptedMode && bits[e.code] && !field(e.target)){e.preventDefault();takeBack();return;}
     if(document.activeElement!==screen && (document.fullscreenElement!==stage || field(e.target)))return;
     if(bits[e.code] || SCROLL_KEYS.has(e.code))e.preventDefault();
     if(bits[e.code] && !keys.has(e.code)){keys.add(e.code);send();}
@@ -469,7 +510,7 @@
   window.addEventListener('gamepadconnected',padStatus);
   document.addEventListener('visibilitychange',()=>{if(document.hidden){away=true;neutral();}else{away=false;heal();}});
   window.addEventListener('focus',()=>{away=false;heal();});
-  screen.addEventListener('pointerdown',()=>{away=false;if(scriptedMode)return;if(sid)wanted=true;heals=0;heal();});
+  screen.addEventListener('pointerdown',()=>{away=false;if(takeBack())return;if(scriptedMode)return;if(sid)wanted=true;heals=0;heal();});
   padStatus();
   void load().catch(err=>{el('player').hidden=false;report(err.message);});
 })();

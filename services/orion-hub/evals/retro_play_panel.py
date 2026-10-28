@@ -79,6 +79,12 @@ async def fake_retro(path, log):
         log.append(dict(op=request.match_info['op'], body=json.loads(body) if body else None))
         if request.match_info['op'] == 'control':
             return web.json_response(dict(lease='l' * 40, epoch=9, port=0))
+        data = json.loads(body) if body else {}
+        if request.match_info['op'] == 'scripted' and data.get('action') == 'start':
+            # Like Retro: a started hand-over is a new grant (new epoch) with the asked duration.
+            base = zelda_session()['scripted'][0]
+            n = sum(1 for r in log if r['op'] == 'scripted')
+            session['scripted'] = [dict(base, epoch=100 + n, duration_seconds=data.get('duration_seconds', 60))]
         return web.json_response({'state': 'running'})
     async def ws(request):
         sock = web.WebSocketResponse(); await sock.prepare(request)

@@ -116,3 +116,11 @@ pan-1 (after installing the compose plugin, flashing the Nano, and creating `.en
 ## PR link
 
 (pending)
+
+## Update 2026-10-28: bench test on pan-1
+
+- Nano flashed from a container (`arduino-cli`, `arduino:esp32:nano_nora`). ArduinoJson pinned to 6.21.5.
+- First scan found a device at `0x70` and nothing at `0x44`. It is a TCA9548A multiplexer. The SHT40 is on channel 3.
+- Firmware now selects the multiplexer channel (`MUX_CHANNEL`) before each read.
+- Serial smoke: `PASS temp_c=24.455 humidity_pct=33.13`. 11 frames, 0 rejected lines.
+- Bus publish, SQL write and Hub strip are still UNVERIFIED. The metric gate live-data check is still open until stored data exists.

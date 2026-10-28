@@ -8,7 +8,8 @@
  * `environment` object is omitted from that frame entirely. The heater is never
  * enabled (it would bias the temperature reading).
  *
- * I2C: Wire on the Nano ESP32 default pins, SDA=A4, SCL=A5. SHT40 address 0x44.
+ * I2C: Wire on the Nano ESP32 default pins, SDA=A4, SCL=A5. SHT40 address 0x44,
+ * behind a TCA9548A multiplexer (0x70) on channel 3; see MUX_CHANNEL.
  *
  * Libraries: ArduinoJson (v6), Adafruit SHT4x (pulls Adafruit BusIO / Unified Sensor).
  */
@@ -21,12 +22,27 @@ static constexpr uint32_t USB_BAUD = 115200;
 static constexpr uint32_t FRAME_INTERVAL_MS = 1000;
 static constexpr uint32_t SHT_REINIT_INTERVAL_MS = 10000;
 
+// SHT40 sits behind a TCA9548A I2C multiplexer (STEMMA QT board) at 0x70, on channel 3
+// (found with an I2C scan 2026-10-28). Set MUX_CHANNEL to -1 if the sensor is wired directly.
+static constexpr int MUX_CHANNEL = 3;
+static constexpr uint8_t MUX_ADDR = 0x70;
+
 static Adafruit_SHT4x sht4;
 static bool sht_ok = false;
 static uint32_t seq = 0;
 
+// Point the multiplexer at the SHT40's channel. Called before every sensor access.
+static bool select_sensor_channel() {
+  if (MUX_CHANNEL < 0) {
+    return true;
+  }
+  Wire.beginTransmission(MUX_ADDR);
+  Wire.write(static_cast<uint8_t>(1 << MUX_CHANNEL));
+  return Wire.endTransmission() == 0;
+}
+
 static bool init_sht40() {
-  if (!sht4.begin()) {
+  if (!select_sensor_channel() || !sht4.begin()) {
     return false;
   }
   sht4.setPrecision(SHT4X_HIGH_PRECISION);
@@ -66,7 +82,7 @@ void loop() {
 
   if (sht_ok) {
     sensors_event_t humidity, temp;
-    if (sht4.getEvent(&humidity, &temp)) {
+    if (select_sensor_channel() && sht4.getEvent(&humidity, &temp)) {
       JsonObject env = doc.createNestedObject("environment");
       env["temp_c"] = temp.temperature;
       env["humidity_pct"] = humidity.relative_humidity;

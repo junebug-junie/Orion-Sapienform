@@ -23,6 +23,12 @@ retried every 10 s, so plugging it in late still works. The heater is never enab
 
 I2C address `0x44`.
 
+**Bench setup (verified 2026-10-28):** the SHT40 is plugged into a TCA9548A I2C multiplexer
+(STEMMA QT board, address `0x70`) on **channel 3**. The firmware selects that channel before every
+sensor access (`MUX_CHANNEL` in the sketch). For a sensor wired directly to the Nano, set
+`MUX_CHANNEL = -1`. If the sensor moves to another channel, change the constant and reflash.
+To find it, scan each channel of the multiplexer for a device at `0x44`.
+
 ## Build and flash (run on the machine the Nano is plugged into)
 
 ```bash

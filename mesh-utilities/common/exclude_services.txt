@@ -58,3 +58,9 @@ orion-world-model
 # post-merge rebuild uses include_services_circe.txt and ignores this file;
 # up_all_services*.sh does read it on every host, like the other circe services.
 orion-kev
+
+# pan-1 office sensor (Nano ESP32 + SHT40 on USB). Runs on pan-1 only, deployed by hand there
+# (README: services/orion-office-env). Keep it off athena's pull/rebuild and every bring-up
+# sweep. circe needs no entry: its positive allowlist (include_services_circe.txt) already
+# omits it. pan-1 has no rebuild hook.
+orion-office-env

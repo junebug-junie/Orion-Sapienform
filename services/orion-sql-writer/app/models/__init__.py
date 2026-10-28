@@ -17,6 +17,7 @@ from .biometrics_cluster import BiometricsClusterSQL
 from .power_intent_settled import PowerIntentSettledSQL
 from .cabinet_ambient_spike import CabinetAmbientSpikeSQL
 from .home_cooling_sample import HomeCoolingSampleSQL
+from .office_env_sample import OfficeEnvSampleSQL
 from .energy import (
     EnergyBillActualSQL,
     EnergyBillForecastSQL,
@@ -134,6 +135,7 @@ __all__ = [
     "PowerIntentSettledSQL",
     "CabinetAmbientSpikeSQL",
     "HomeCoolingSampleSQL",
+    "OfficeEnvSampleSQL",
     "EnergyUsageIntervalSQL",
     "EnergyCostAccruedSQL",
     "EnergyRunCostSQL",

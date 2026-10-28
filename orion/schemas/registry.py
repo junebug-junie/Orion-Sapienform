@@ -452,6 +452,7 @@ from orion.schemas.telemetry.biometrics import (
 )
 from orion.schemas.telemetry.cabinet_ambient_spike import CabinetAmbientSpikeV1
 from orion.schemas.telemetry.home_cooling import HomeCoolingSampleV1
+from orion.schemas.telemetry.office_env import OfficeEnvSampleV1
 from orion.schemas.energy import (
     EnergyBillActualV1,
     EnergyBillForecastV1,
@@ -1391,6 +1392,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "BiometricsClusterV1": BiometricsClusterV1,
     "CabinetAmbientSpikeV1": CabinetAmbientSpikeV1,
     "HomeCoolingSampleV1": HomeCoolingSampleV1,
+    "OfficeEnvSampleV1": OfficeEnvSampleV1,
     "EnergyUsageIntervalV1": EnergyUsageIntervalV1,
     "EnergyCostAccruedV1": EnergyCostAccruedV1,
     "EnergyRunCostEstimatedV1": EnergyRunCostEstimatedV1,
@@ -1706,6 +1708,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "HomeCoolingSampleV1": SchemaRegistration(
         model=HomeCoolingSampleV1,
         kind="home.cooling.sample.v1",
+    ),
+    "OfficeEnvSampleV1": SchemaRegistration(
+        model=OfficeEnvSampleV1,
+        kind="office.env.sample.v1",
     ),
     "EnergyUsageIntervalV1": SchemaRegistration(
         model=EnergyUsageIntervalV1,

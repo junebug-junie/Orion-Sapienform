@@ -206,6 +206,7 @@ from .chat_cockpit_routes import router as chat_cockpit_router
 from .cabinet_sensors_routes import router as cabinet_sensors_router
 from .cabinet_ambient_routes import router as cabinet_ambient_router
 from .cabinet_cooling_routes import router as cabinet_cooling_router
+from .office_env_routes import router as office_env_router
 from .energy_routes import router as energy_router
 from .biometrics_preview_routes import router as biometrics_preview_router
 from .reverie_routes import router as reverie_router
@@ -234,6 +235,7 @@ router.include_router(cocreation_signals_router)
 router.include_router(cabinet_sensors_router)
 router.include_router(cabinet_ambient_router)
 router.include_router(cabinet_cooling_router)
+router.include_router(office_env_router)
 router.include_router(energy_router)
 router.include_router(biometrics_preview_router)
 router.include_router(reverie_router)

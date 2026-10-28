@@ -115,7 +115,7 @@ pan-1 (after installing the compose plugin, flashing the Nano, and creating `.en
 
 ## PR link
 
-(pending)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2937
 
 ## Update 2026-10-28: bench test on pan-1
 

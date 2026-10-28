@@ -26,6 +26,8 @@ _STATUS: dict[str, Any] = {
     "serial_open": False,
     "frames_ok": 0,
     "lines_rejected": 0,
+    "frames_repeated": 0,
+    "reader_alive": False,
 }
 
 
@@ -67,6 +69,7 @@ def make_sample(
         serial_open=store.serial_open,
         frames_ok=store.frames_ok,
         lines_rejected=store.lines_rejected,
+        frames_repeated=store.frames_repeated,
     )
     return sample
 
@@ -110,20 +113,29 @@ async def publish_loop() -> None:
         await bus.connect()
 
     stop = threading.Event()
-    reader = threading.Thread(
-        target=run_reader,
-        kwargs=dict(
-            store=_STORE,
-            port=settings.OFFICE_SERIAL_PORT,
-            baud=settings.OFFICE_SERIAL_BAUD,
-            stop=stop,
-        ),
-        name="office-serial-reader",
-        daemon=True,
-    )
-    reader.start()
+    def start_reader() -> threading.Thread:
+        t = threading.Thread(
+            target=run_reader,
+            kwargs=dict(
+                store=_STORE,
+                port=settings.OFFICE_SERIAL_PORT,
+                baud=settings.OFFICE_SERIAL_BAUD,
+                stop=stop,
+            ),
+            name="office-serial-reader",
+            daemon=True,
+        )
+        t.start()
+        return t
+
+    reader = start_reader()
     try:
         while True:
+            if not reader.is_alive():
+                # A dead reader must be loud and restarted, not a silent stale forever.
+                logger.error("office serial reader thread died; restarting")
+                reader = start_reader()
+            _STATUS["reader_alive"] = reader.is_alive()
             try:
                 await publish_sample(bus, settings, make_sample(_STORE, settings))
             except Exception:

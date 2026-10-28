@@ -108,7 +108,10 @@ def test_rows_to_points_never_zero_fills():
 
 
 def test_downsample_averages_buckets_and_skips_absent_fields():
-    pts = [{"t": f"t{i}", "office_temp_c": float(i)} for i in range(10)]
+    pts = [
+        {"t": (SAMPLE_TS + timedelta(seconds=30 * i)).isoformat().replace("+00:00", "Z"), "office_temp_c": float(i)}
+        for i in range(10)
+    ]
     out = office_env_routes.downsample_points(pts, 2)
     assert [p["office_temp_c"] for p in out] == [2.0, 7.0]
     assert all("office_humidity_pct" not in p for p in out)
@@ -179,3 +182,40 @@ def test_history_db_failure_is_ok_false_not_empty_success(client, monkeypatch):
     assert body["ok"] is False
     assert body["error"] == "office_env_history_unavailable"
     assert body["points"] == []
+
+
+def test_latest_publisher_dead_hides_the_old_reading(client, monkeypatch):
+    """Publisher down 2h: the API must not hand the UI a temperature it could show as live."""
+    async def latest(*, node: str):
+        return _row(ts=datetime(2026, 10, 27, 18, 0, 0, tzinfo=timezone.utc))
+
+    monkeypatch.setattr(office_env_routes, "_latest_query", latest)
+    body = client.get("/api/office/env/latest").json()
+    assert body["ok"] is False
+    assert body["publisher_stale"] is True
+    assert "office_temp_c" not in body["sample"]
+    assert "office_humidity_pct" not in body["sample"]
+
+
+def test_latest_db_failure_is_flagged_as_an_error(client, monkeypatch):
+    async def boom(*, node: str):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(office_env_routes, "_latest_query", boom)
+    body = client.get("/api/office/env/latest").json()
+    assert body["ok"] is False
+    assert body["error"] == "office_env_latest_unavailable"
+
+
+def test_downsample_never_averages_across_an_outage():
+    from datetime import timedelta as td
+
+    start = datetime(2026, 10, 27, 0, 0, 0, tzinfo=timezone.utc)
+    iso = lambda s: (start + td(seconds=s)).isoformat().replace("+00:00", "Z")
+    before = [{"t": iso(30 * i), "office_temp_c": 20.0} for i in range(100)]
+    after = [{"t": iso(30 * i + 3 * 3600), "office_temp_c": 30.0} for i in range(100)]
+    out = office_env_routes.downsample_points(before + after, 20)
+    assert not any(p["office_temp_c"] not in (20.0, 30.0) for p in out)  # no 25.0 blend
+    assert [p.get("gap") for p in out].count(True) == 1
+    first_after = next(p for p in out if p.get("gap"))
+    assert first_after["office_temp_c"] == 30.0

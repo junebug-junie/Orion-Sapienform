@@ -76,3 +76,18 @@ def test_reader_retries_when_port_missing_then_stops() -> None:
     assert len(attempts) == 3
     assert store.latest() == (None, None)
     assert store.serial_open is False
+
+
+def test_repeated_identical_frame_does_not_refresh_the_clock() -> None:
+    from datetime import timedelta
+
+    store = FrameStore()
+    f = parse_line(GOOD)
+    store.put(f, NOW)
+    store.put(parse_line(GOOD), NOW + timedelta(seconds=30))  # same seq + uptime: buffer replay
+    _, received = store.latest()
+    assert received == NOW
+    assert store.frames_ok == 1 and store.frames_repeated == 1
+    newer = parse_line(GOOD.replace(b'"seq":1', b'"seq":2'))
+    store.put(newer, NOW + timedelta(seconds=31))
+    assert store.latest()[1] == NOW + timedelta(seconds=31)

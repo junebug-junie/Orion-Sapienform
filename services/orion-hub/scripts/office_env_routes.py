@@ -67,15 +67,40 @@ def rows_to_points(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return points
 
 
-def downsample_points(points: Sequence[Mapping[str, Any]], max_points: int) -> list[dict[str, Any]]:
-    """Bucket-average ordered points to at most ``max_points``."""
-    if max_points < 1:
-        raise ValueError("max_points must be positive")
-    if len(points) <= max_points:
+GAP_FACTOR = 3.0
+
+
+def _ts(point: Mapping[str, Any]) -> float:
+    return datetime.fromisoformat(str(point["t"]).replace("Z", "+00:00")).timestamp()
+
+
+def _split_at_gaps(points: Sequence[Mapping[str, Any]]) -> list[Sequence[Mapping[str, Any]]]:
+    """Split ordered points into segments wherever the raw spacing exceeds
+    ``GAP_FACTOR`` x the median raw spacing (a sensor outage)."""
+    if len(points) < 3:
+        return [points]
+    times = [_ts(p) for p in points]
+    gaps = [b - a for a, b in zip(times, times[1:])]
+    median = sorted(gaps)[len(gaps) // 2]
+    if median <= 0:
+        return [points]
+    limit = median * GAP_FACTOR
+    segments: list[Sequence[Mapping[str, Any]]] = []
+    start = 0
+    for i, gap in enumerate(gaps, start=1):
+        if gap > limit:
+            segments.append(points[start:i])
+            start = i
+    segments.append(points[start:])
+    return segments
+
+
+def _bucket(points: Sequence[Mapping[str, Any]], n: int) -> list[dict[str, Any]]:
+    if len(points) <= n:
         return [dict(p) for p in points]
-    sampled: list[dict[str, Any]] = []
-    for i in range(max_points):
-        bucket = points[i * len(points) // max_points : (i + 1) * len(points) // max_points]
+    out_points: list[dict[str, Any]] = []
+    for i in range(n):
+        bucket = points[i * len(points) // n : (i + 1) * len(points) // n]
         if not bucket:
             continue
         out: dict[str, Any] = {"t": bucket[0]["t"]}
@@ -83,7 +108,28 @@ def downsample_points(points: Sequence[Mapping[str, Any]], max_points: int) -> l
             values = [float(p[field]) for p in bucket if p.get(field) is not None]
             if values:
                 out[field] = sum(values) / len(values)
-        sampled.append(out)
+        out_points.append(out)
+    return out_points
+
+
+def downsample_points(points: Sequence[Mapping[str, Any]], max_points: int) -> list[dict[str, Any]]:
+    """Bucket-average ordered points to about ``max_points``, never across an outage.
+
+    Averaging is done per contiguous segment, and the first point after an outage carries
+    ``gap: true`` so the chart breaks its line there even when buckets are wide. The
+    result can exceed ``max_points`` by at most the number of segments.
+    """
+    if max_points < 1:
+        raise ValueError("max_points must be positive")
+    segments = _split_at_gaps(points)
+    total = sum(len(s) for s in segments) or 1
+    sampled: list[dict[str, Any]] = []
+    for index, segment in enumerate(segments):
+        share = max(1, round(max_points * len(segment) / total))
+        chunk = _bucket(segment, share)
+        if index > 0 and chunk:
+            chunk[0]["gap"] = True
+        sampled.extend(chunk)
     return sampled
 
 
@@ -163,11 +209,20 @@ def _load_latest(
     received_at = _parse_db_timestamp(row["ts"])
     age_sec = (now.astimezone(timezone.utc) - received_at).total_seconds()
     sensor_stale = bool(row.get("stale"))
+    publisher_stale = age_sec > stale_after_sec
+    sample = row_to_sample(row)
+    if publisher_stale:
+        # The publisher stopped: the newest row is history, not a current reading. Do not
+        # hand the UI a number it could show as live.
+        for field in _FIELDS:
+            sample.pop(field, None)
+        sample["sensor_online"] = False
     out: dict[str, Any] = {
-        "ok": age_sec <= stale_after_sec and not sensor_stale,
+        "ok": not publisher_stale and not sensor_stale,
         "age_sec": age_sec,
-        "sample": row_to_sample(row),
+        "sample": sample,
         "sensor_stale": sensor_stale,
+        "publisher_stale": publisher_stale,
     }
     sample_age = row.get("sample_age_sec")
     if isinstance(sample_age, (int, float)) and not isinstance(sample_age, bool):
@@ -182,7 +237,7 @@ async def api_office_env_latest() -> dict[str, Any]:
         row = await _latest_query(node=node)
     except Exception as exc:
         logger.warning("Office env latest unavailable: %s", exc)
-        return {"ok": False, "age_sec": None, "sample": None}
+        return {"ok": False, "age_sec": None, "sample": None, "error": "office_env_latest_unavailable"}
     return _load_latest(
         row, stale_after_sec=float(settings.OFFICE_ENV_STALE_AFTER_SEC), now=_now_utc()
     )
@@ -196,7 +251,7 @@ async def api_office_env_history(window: str = Query("24h")) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     node = str(settings.OFFICE_ENV_NODE)
-    max_points = int(settings.CABINET_AMBIENT_HISTORY_MAX_POINTS)
+    max_points = int(settings.OFFICE_ENV_HISTORY_MAX_POINTS)
     base = {"node": node, "window": window}
     try:
         rows = await _history_query(node=node, hours=hours)

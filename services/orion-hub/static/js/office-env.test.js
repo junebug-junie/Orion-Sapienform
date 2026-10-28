@@ -32,3 +32,10 @@ test("splitRuns skips points that lack the field (absent is not zero)", () => {
 test("splitRuns on empty input yields no runs", () => {
   assert.deepEqual(splitRuns([], "office_temp_c"), []);
 });
+
+test("splitRuns breaks at a server-flagged gap even when spacing looks normal", () => {
+  const a = pt(0, 20), b = pt(10, 21), c = Object.assign(pt(20, 30), { gap: true }), d = pt(30, 31);
+  const runs = splitRuns([a, b, c, d], "office_temp_c");
+  assert.equal(runs.length, 2);
+  assert.equal(runs[1][0].v, 30);
+});

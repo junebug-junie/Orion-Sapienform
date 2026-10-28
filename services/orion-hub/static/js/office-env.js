@@ -43,7 +43,8 @@
     var runs = [[{ ms: times[0], v: pts[0][field] }]];
     for (var j = 1; j < pts.length; j++) {
       var point = { ms: times[j], v: pts[j][field] };
-      if (gaps[j - 1] > limit) runs.push([point]);
+      // `gap` is set server-side where the raw series had an outage inside a wide bucket.
+      if (pts[j].gap === true || gaps[j - 1] > limit) runs.push([point]);
       else runs[runs.length - 1].push(point);
     }
     return runs;
@@ -99,11 +100,13 @@
       setText(els.live, "no samples yet");
       return;
     }
-    var t = num(sample.office_temp_c, 2), h = num(sample.office_humidity_pct, 1);
+    // Never show a number the API did not vouch for as current.
+    var t = payload.ok ? num(sample.office_temp_c, 2) : null;
+    var h = payload.ok ? num(sample.office_humidity_pct, 1) : null;
     setText(els.temp, t === null ? "stale" : t);
     setText(els.humidity, h === null ? "stale" : h);
     setText(els.age, typeof payload.age_sec === "number" ? Math.round(payload.age_sec) + "s" : "—");
-    setText(els.live, payload.ok ? "fresh" : (payload.sensor_stale ? "sensor stale" : "no recent publish"));
+    setText(els.live, payload.ok ? "fresh" : (payload.publisher_stale ? "no recent publish" : "sensor stale"));
   }
 
   async function pollLatest() {
@@ -112,7 +115,9 @@
     try {
       var resp = await fetch(LATEST_URL, { headers: { Accept: "application/json" } });
       if (!resp.ok) throw new Error("HTTP " + resp.status);
-      renderLatest(await resp.json());
+      var payload = await resp.json();
+      if (payload.error) throw new Error(payload.error);
+      renderLatest(payload);
       setText(els.status, "Live updated " + new Date().toLocaleTimeString());
     } catch (err) {
       setText(els.status, "live error — keeping last good values (" + (err.message || err) + ")");

@@ -501,6 +501,7 @@ class Settings(BaseSettings):
     )
     # Office SHT40 (pan-1 Nano ESP32) -> orion-office-env -> Postgres office_env_sample.
     OFFICE_ENV_NODE: str = Field(default="pan-1", alias="OFFICE_ENV_NODE")
+    OFFICE_ENV_HISTORY_MAX_POINTS: int = Field(default=800, ge=1, alias="OFFICE_ENV_HISTORY_MAX_POINTS")
     # Publisher cadence is 30 s; 3 missed publishes => the Office strip reads stale.
     OFFICE_ENV_STALE_AFTER_SEC: float = Field(default=90.0, alias="OFFICE_ENV_STALE_AFTER_SEC")
     CABINET_AMBIENT_HISTORY_MAX_POINTS: int = Field(

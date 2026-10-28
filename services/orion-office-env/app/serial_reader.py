@@ -42,10 +42,17 @@ class FrameStore:
         self._received_at: Optional[datetime] = None
         self.serial_open = False
         self.frames_ok = 0
+        self.frames_repeated = 0
         self.lines_rejected = 0
 
     def put(self, frame: OfficeEnvFrameV1, at: datetime) -> None:
         with self._lock:
+            prev = self._frame
+            if prev is not None and frame.seq == prev.seq and frame.uptime_ms == prev.uptime_ms:
+                # Same firmware tick delivered again (buffer replay / stuck firmware): the
+                # sensor did not advance, so this is not fresh evidence. Keep the old time.
+                self.frames_repeated += 1
+                return
             self._frame, self._received_at = frame, at
             self.frames_ok += 1
 
@@ -70,8 +77,11 @@ def run_reader(
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> None:
     if open_port is None:
-        import serial  # pyserial; imported lazily so tests need no hardware
-
+        try:
+            import serial  # pyserial; imported lazily so tests need no hardware
+        except ImportError:
+            logger.exception("pyserial_import_failed")
+            raise
         open_port = serial.Serial
     while not stop.is_set():
         try:

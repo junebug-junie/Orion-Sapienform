@@ -120,6 +120,6 @@ python scripts/sync_local_env_from_example.py
 
 ## PR link
 
-(added after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2939
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

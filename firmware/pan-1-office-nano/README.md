@@ -27,7 +27,7 @@ I2C address `0x44`.
 
 ```bash
 arduino-cli core install arduino:esp32
-arduino-cli lib install "ArduinoJson@6" "Adafruit SHT4x Library" "Adafruit BusIO" "Adafruit Unified Sensor"
+arduino-cli lib install "ArduinoJson@6.21.5" "Adafruit SHT4x Library" "Adafruit BusIO" "Adafruit Unified Sensor"
 arduino-cli compile --fqbn arduino:esp32:nano_nora firmware/pan-1-office-nano
 ls /dev/serial/by-id/          # find the stable path; never use /dev/ttyACM0 directly
 arduino-cli upload --fqbn arduino:esp32:nano_nora -p /dev/serial/by-id/<nano> firmware/pan-1-office-nano

@@ -130,6 +130,10 @@ class ActionBetPlaceV1(BaseModel):
     action: dict = Field(default_factory=dict)       # the body's own goal, for inspection only
     chosen_rank: int | None = Field(None, ge=1, le=ACTION_BET_MAX_OPTIONS)
     session_id: str | None = Field(None, max_length=128)
+    # Body-level transition inputs (orion/embodiment/transition.py, zelda_features) for the world-model
+    # shadow; the service scores them only when feature_version matches its loaded weights.
+    features: list[float] | None = Field(None, max_length=64)
+    feature_version: str | None = Field(None, max_length=64)
 
 
 class ActionBetSettleV1(BaseModel):
@@ -161,5 +165,6 @@ class ActionBetV1(BaseModel):
     placed_at: AwareDatetime
     settled_at: AwareDatetime | None = None
     result: ActionBetResult | None = None
+    shadow: dict | None = None       # world-model shadow at placing: {model, tag, p, heads}; never served
     outcome: str | None = None
     detail: dict = Field(default_factory=dict)

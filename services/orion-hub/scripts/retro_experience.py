@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 from orion.embodiment.skills import context as skill_context, count_band, health_band, threat_band
+from orion.embodiment.transition import FEATURE_VERSION, zelda_facts, zelda_features
 from orion.schemas.prediction import (ACTION_BET_MAX_OPTIONS, ActionBetOptionV1, ActionBetPlaceV1,
                                       ActionBetQuoteRequestV1, ActionBetQuoteV1, ActionBetSettleV1)
 
@@ -176,6 +177,16 @@ def room_visits(atlas: Optional[dict], level: Any, room: Optional[int]) -> Optio
     entry = ((atlas or {}).get('map') or {}).get(f'{level}:{room}') if room is not None else None
     visits = entry.get('visits') if isinstance(entry, dict) else None
     return visits if isinstance(visits, int) else None
+
+
+def transition_features(decision: dict, goal: Any) -> dict:
+    """The world-model inputs for this bet (orion/embodiment/transition.py), scored in orion-prediction's
+    shadow. Empty when the observation is not a read play state: no features, no shadow, never a guess."""
+    obs = decision.get('observation') or {}
+    if obs.get('status') != 'observed' or not isinstance(goal, dict) or not (obs.get('link') or {}).get('tile'):
+        return {}
+    return {'features': zelda_features(zelda_facts(obs), goal, decision.get('open_sides')),
+            'feature_version': FEATURE_VERSION}
 
 
 def option_for_goal(goal: dict, decision: dict, atlas: Optional[dict]) -> Optional[Option]:
@@ -554,7 +565,8 @@ class ZeldaExperience:
                                    skill=option.skill, context=option.context, place=option.place,
                                    action={'goal': goal.get('goal'), 'prediction': goal.get('prediction'),
                                            'decision_id': decision_id, 'planner_id': goal.get('planner_id')},
-                                   chosen_rank=rank, session_id=retro_session_id)
+                                   chosen_rank=rank, session_id=retro_session_id,
+                                   **transition_features(decision, goal.get('goal')))
             status, data = await self._call('POST', '/action-bets', json=bet.model_dump(mode='json'))
             if status != 200:
                 logger.warning('action_bet_place_failed bet_id=%s status=%s', bet.bet_id, status)

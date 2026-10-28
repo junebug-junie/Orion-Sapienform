@@ -25,7 +25,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 
-from app.action_bets import ActionBets, ConflictError
+from app.action_bets import ActionBets, ConflictError, WorldModelShadow
 from app.causal import CausalError
 from app.effects import Effects
 from app.engine import Engine
@@ -94,7 +94,8 @@ async def lifespan(app: FastAPI):
                              and _settings.weather_lon is not None else None),
                     shadow_enabled=_settings.shadow_enabled)
     effects = Effects(engine)
-    action_bets = ActionBets(_store)
+    action_bets = ActionBets(_store, shadow=(WorldModelShadow(_settings.world_model_weights)
+                                             if _settings.world_model_shadow_enabled else None))
     logger.info("prediction_ready enabled=%s publish=%s targets=%s", _settings.enabled, _settings.publish_enabled,
                 [s.series_id for s in registry.targets()])
     _stop.clear()

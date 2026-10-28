@@ -389,3 +389,88 @@ def test_backoff_p_matches_backoff_on_many_count_shapes():
         for has_place in (True, False):
             assert backoff_p(sk, si, pl, has_place=has_place) == pytest.approx(
                 backoff(sk, si, pl, has_place=has_place)["p"])
+
+
+# --- world-model shadow ------------------------------------------------------------------------------
+import numpy as np  # noqa: E402
+
+from app.action_bets import SHADOW_MODEL, WorldModelShadow, shadow_verdict  # noqa: E402
+from orion.embodiment.transition import FEATURE_VERSION, HEADS, N_FEATURES, success_p  # noqa: E402
+
+
+def _weights(path, logits=(2.0, -1.0, -3.0, -4.0), version=FEATURE_VERSION):
+    """A weights file whose heads ignore the input: sigmoid(logits) for every bet."""
+    h = 8
+    np.savez(path, feature_version=np.array(version), tag=np.array('test-tag'),
+             **{'body.0.weight': np.zeros((h, N_FEATURES)), 'body.0.bias': np.zeros(h),
+                'body.2.weight': np.zeros((h, h)), 'body.2.bias': np.zeros(h),
+                'events.weight': np.zeros((len(HEADS), h)), 'events.bias': np.array(logits)})
+    return path
+
+
+def _shadow_bet(svc, skill='traverse', features=True, version=FEATURE_VERSION, **kw):
+    _n[0] += 1
+    body = {"bet_id": f"w{_n[0]}", "domain": "retro:zelda", "body": "retro", "skill": skill,
+            "context": {"side": "open_unvisited"}, "place": None, "action": {}, "session_id": kw.get('session', 's1')}
+    if features:
+        body.update(features=[0.0] * N_FEATURES, feature_version=version)
+    row, _ = svc.place(body)
+    if kw.get('result'):
+        svc.settle(row["bet_id"], kw['result'], "x", {})
+    return row
+
+
+def test_a_bet_with_features_stores_the_world_model_p_of_its_skill_success(tmp_path):
+    svc = ActionBets(FakeStore(), shadow=WorldModelShadow(str(_weights(tmp_path / 'w.npz'))))
+    sig = lambda z: 1 / (1 + np.exp(-z))
+    row = _shadow_bet(svc)
+    assert row["shadow"]["model"] == SHADOW_MODEL and row["shadow"]["tag"] == 'test-tag'
+    assert row["shadow"]["p"] == pytest.approx(sig(2.0))                 # traverse: place changed
+    hold = _shadow_bet(svc, skill='hold')
+    assert hold["shadow"]["p"] == pytest.approx((1 - sig(-1.0)) * (1 - sig(-4.0)))
+    assert _shadow_bet(svc, skill='engage')["shadow"] is None             # no head says "completed"
+    assert row["model"] == MODEL and row["p"] != row["shadow"]["p"]       # never served
+
+
+def test_no_shadow_without_features_a_matching_version_or_a_weights_file(tmp_path):
+    svc = ActionBets(FakeStore(), shadow=WorldModelShadow(str(_weights(tmp_path / 'w.npz'))))
+    assert _shadow_bet(svc, features=False)["shadow"] is None
+    assert _shadow_bet(svc, version='other-v9')["shadow"] is None
+    missing = ActionBets(FakeStore(), shadow=WorldModelShadow(str(tmp_path / 'none.npz')))
+    assert _shadow_bet(missing)["shadow"] is None
+    assert missing.health()["world_model_shadow"] == dict(model=SHADOW_MODEL, path=str(tmp_path / 'none.npz'),
+                                                         loaded=False, tag=None, error='missing')
+    (tmp_path / 'bad.npz').write_bytes(b'not a weights file')
+    bad = ActionBets(FakeStore(), shadow=WorldModelShadow(str(tmp_path / 'bad.npz')))
+    assert _shadow_bet(bad)["shadow"] is None and bad.health()["world_model_shadow"]["error"].startswith('unreadable')
+
+
+def test_new_weights_are_picked_up_when_the_file_changes(tmp_path):
+    path = _weights(tmp_path / 'w.npz')
+    shadow = WorldModelShadow(str(path))
+    svc = ActionBets(FakeStore(), shadow=shadow)
+    first = _shadow_bet(svc)["shadow"]["p"]
+    import os
+    _weights(path, logits=(-2.0, -1.0, -3.0, -4.0)); os.utime(path, (1, 1))   # a new publish, new mtime
+    assert _shadow_bet(svc)["shadow"]["p"] < first
+
+
+def test_shadow_verdict_pairs_the_world_model_with_the_served_model_per_session(tmp_path):
+    # Every traverse succeeds; the shadow says p ~ 0.02, so it must lose to the served counts.
+    svc = ActionBets(FakeStore(), shadow=WorldModelShadow(str(_weights(tmp_path / 'w.npz', logits=(-4.0, -9, -9, -9)))))
+    for i in range(MIN_INDEPENDENT + 2):
+        for _ in range(3):
+            _shadow_bet(svc, session=f"s{i}", result='success')
+    v = shadow_verdict(svc.store.settled_action_bets(limit=5000))
+    assert v["model"] == SHADOW_MODEL and v["baseline"] == MODEL and v["n_independent"] == MIN_INDEPENDENT + 2
+    assert v["verdict"] == "worse" and v["tags"] == ['test-tag'] and v["rel_mse"] > 1
+    assert shadow_verdict([])["verdict"] == "pending"
+    assert svc.live("retro:zelda", "retro")["shadow_verdict"]["n_scored"] == v["n_scored"]
+
+
+def test_success_p_maps_heads_onto_each_skills_settle_rule():
+    heads = dict(place_changed=0.7, health_lost=0.2, item_gained=0.1, died=0.05)
+    assert success_p('traverse', heads) == 0.7 and success_p('enter', heads) == 0.7
+    assert success_p('acquire', heads) == 0.1
+    assert success_p('hold', heads) == pytest.approx(0.8 * 0.95)
+    assert success_p('engage', heads) is None and success_p('withdraw', heads) is None

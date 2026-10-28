@@ -36,6 +36,11 @@ services:
       - PREDICTION_WEATHER_REFRESH_SEC=${PREDICTION_WEATHER_REFRESH_SEC:-3600}
       - ORION_SITUATION_WEATHER_LAT=${ORION_SITUATION_WEATHER_LAT:-}
       - ORION_SITUATION_WEATHER_LON=${ORION_SITUATION_WEATHER_LON:-}
+      - PREDICTION_WORLD_MODEL_SHADOW_ENABLED=${PREDICTION_WORLD_MODEL_SHADOW_ENABLED:-true}
+      - PREDICTION_WORLD_MODEL_WEIGHTS=${PREDICTION_WORLD_MODEL_WEIGHTS:-/models/transition.npz}
+    volumes:
+      # Exported world-model weights (services/orion-world-model/scripts/train_transition.py --publish).
+      - ${PREDICTION_WORLD_MODEL_DIR:-/mnt/storage-warm/orion-dojo/models}:/models:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8132/health', timeout=3)\""]
       interval: 30s

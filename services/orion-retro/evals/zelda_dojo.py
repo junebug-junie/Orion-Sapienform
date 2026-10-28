@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from zelda_play import FPS, Harness  # noqa: E402
 from app.control import Arbiter  # noqa: E402
 from app.scripted import Scripted  # noqa: E402
+from orion.embodiment.transition import zelda_facts  # noqa: E402
 
 GOAL_BUDGET = 10  # seconds of game time per goal
 
@@ -46,10 +47,7 @@ def cell_key(obs):
 
 
 def facts(obs):
-    return dict(mode=obs['mode'], level=obs['level'], room=obs['room'], tile=obs['link']['tile'],
-                hearts=obs['hearts'], items=obs['items'],
-                enemies=[dict(type=e.get('type'), tile=e.get('tile')) for e in obs['enemies']],
-                drops=[d['tile'] for d in obs['drops']])
+    return zelda_facts(obs)   # the shared transition contract (orion/embodiment/transition.py)
 
 
 def options(decision):

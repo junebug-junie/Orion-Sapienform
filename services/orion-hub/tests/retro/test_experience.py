@@ -807,3 +807,20 @@ def test_a_pick_outside_the_shortlist_is_placed_with_its_full_menu_rank():
                                                 chosen_rank=None), menu))
     placed = [c for c in fake.calls if c[0] == 'POST' and c[1] == '/action-bets']
     assert placed and placed[-1][2]['chosen_rank'] == 3
+
+
+def test_a_placed_bet_carries_the_world_model_inputs():
+    # orion-prediction scores these in its world-model shadow (orion/embodiment/transition.py).
+    from orion.embodiment.transition import FEATURE_VERSION, N_FEATURES
+    d, atlas = live_decision()
+    f = X.transition_features(d, {'kind': 'exit', 'dir': 'W'})
+    assert f['feature_version'] == FEATURE_VERSION and len(f['features']) == N_FEATURES
+    assert X.transition_features(dict(d, observation={'status': 'unknown'}), {'kind': 'wait'}) == {}
+    fake = FakePrediction()
+    exp = experience(fake)
+    opts = X.build_options(d, atlas)
+    menu = X.build_menu(opts, asyncio.run(exp.quote(opts)))
+    asyncio.run(exp.placed('s1', d, atlas, dict(goal={'kind': 'exit', 'dir': 'W'}, prediction={'kind': 'unknown'},
+                                                decision_id='15:9', chosen_rank=1), menu))
+    sent = [c[2] for c in fake.calls if c[0] == 'POST' and c[1] == '/action-bets'][-1]
+    assert sent['feature_version'] == FEATURE_VERSION and len(sent['features']) == N_FEATURES

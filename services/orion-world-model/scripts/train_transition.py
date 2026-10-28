@@ -8,22 +8,27 @@ threat x health, backing off to skill, then to the global rate, below K rows), w
 over (seed, room) clusters. PASS only when the 95% interval of (count - model) is above 0.
 
   python services/orion-world-model/scripts/train_transition.py --data <dojo run dir> --out <dir>
-Weights go to <out>/transition.pt (never committed); the report to <out>/report.json.
+Weights go to <out>/transition.pt and <out>/transition.npz (never committed); the report to
+<out>/report.json. --publish <path> also replaces the numpy weights orion-prediction shadow-scores.
 """
 import argparse
 from collections import defaultdict
+from datetime import datetime, timezone
 import glob
 import json
 import math
+import os
 from pathlib import Path
 import random
 import sys
+import zlib
 
+import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from app.transition import HEADS, TransitionModel, loss, zelda_features, zelda_targets  # noqa: E402
+from app.transition import FEATURE_VERSION, HEADS, TransitionModel, loss, zelda_features, zelda_targets  # noqa: E402
 
 K = 4   # rows a count key needs before it is trusted over its parent (action_beta_backoff's k)
 
@@ -34,10 +39,14 @@ def state_key(before, goal):
             (before.get('hearts') or {}).get('current'), json.dumps(goal, sort_keys=True))
 
 
-def load(data):
+def load(data, keep=1.0):
+    """``keep`` < 1: a deterministic sample (by line hash), so a big dojo run trains in minutes."""
     rows, seen = [], set()
+    cut = int(keep * 2**32)
     for f in sorted(glob.glob(str(Path(data) / '**' / 'transitions.jsonl'), recursive=True)):
         for line in open(f):
+            if keep < 1 and zlib.crc32(line.encode()) >= cut:
+                continue
             r = json.loads(line)
             if str(r.get('outcome', '')).startswith('dojo:'):
                 continue
@@ -90,10 +99,16 @@ def cluster_ci(diffs, clusters, rng, n=1000):
     return means[int(n * 0.025)], means[int(n * 0.975) - 1], len(groups)
 
 
+def export(model, path, tag):
+    """numpy weights for orion.embodiment.transition.TransitionWeights (orion-prediction has no torch)."""
+    arrays = {k: v.detach().cpu().numpy() for k, v in model.state_dict().items() if k.startswith(('body', 'events'))}
+    np.savez(path, feature_version=np.array(FEATURE_VERSION), tag=np.array(tag), **arrays)
+
+
 def main(args):
     torch.manual_seed(0); rng = random.Random(0)
     torch.set_num_threads(args.threads)   # a CPU-capped container still reports every host core
-    rows = load(args.data)
+    rows = load(args.data, args.keep)
     seeds = sorted({r['seed'] for r in rows})
     held = set(seeds[::4]) if len(seeds) >= 4 else set(seeds[-1:])
     train = [r for r in rows if r['seed'] not in held]
@@ -107,8 +122,8 @@ def main(args):
     opt = torch.optim.AdamW(model.parameters(), lr=3e-3, weight_decay=1e-4)
     for _ in range(args.epochs):
         perm = torch.randperm(len(X))
-        for i in range(0, len(X), 256):
-            b = perm[i:i + 256]
+        for i in range(0, len(X), args.batch):
+            b = perm[i:i + args.batch]
             opt.zero_grad(); loss(model, X[b], Y[b]).backward(); opt.step()
     model.eval()
     base = count_baseline(train)
@@ -127,7 +142,15 @@ def main(args):
                                      verdict='PASS' if lo > 0 else 'FAIL')
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), out / 'transition.pt')
+    tag = f"{FEATURE_VERSION}:{len(train)}rows:{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    report['tag'] = tag
+    export(model, out / 'transition.npz', tag)
     (out / 'report.json').write_text(json.dumps(report, indent=1))
+    if args.publish:
+        # Shadow scoring in orion-prediction reads this file; replace it atomically.
+        dest = Path(args.publish); dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix('.tmp.npz'); export(model, tmp, tag); os.replace(tmp, dest)
+        (dest.parent / 'report.json').write_text(json.dumps(report, indent=1))
     print(json.dumps(report, indent=1))
 
 
@@ -136,4 +159,7 @@ if __name__ == '__main__':
     p.add_argument('--data', required=True); p.add_argument('--out', required=True)
     p.add_argument('--epochs', type=int, default=40)
     p.add_argument('--threads', type=int, default=4)
+    p.add_argument('--keep', type=float, default=1.0, help='fraction of rows to sample (deterministic)')
+    p.add_argument('--batch', type=int, default=256)
+    p.add_argument('--publish', help='also write the numpy weights here (atomic), e.g. <dojo>/models/transition.npz')
     main(p.parse_args())

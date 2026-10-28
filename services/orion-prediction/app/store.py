@@ -36,8 +36,8 @@ TABLES = {
 }
 ACTION_BET_COLS = ("bet_id", "domain", "body", "skill", "context", "place", "action", "model", "p", "p_baseline",
                    "level", "counts", "chosen_rank", "session_id", "placed_at", "settled_at", "result", "outcome",
-                   "detail")
-_ACTION_BET_JSONB = {"context", "action", "counts", "detail"}
+                   "detail", "shadow")
+_ACTION_BET_JSONB = {"context", "action", "counts", "detail", "shadow"}
 _SETTLED = "result IN ('success', 'failure')"
 
 
@@ -478,7 +478,7 @@ class PostgresStore:
         """Most recent settled success/failure bets (the grading + verdict input)."""
         where, args = self._bet_where(domain, body)
         where.append(_SETTLED)
-        return self._all("SELECT bet_id, session_id, placed_at, p, p_baseline, counts, result "
+        return self._all("SELECT bet_id, session_id, placed_at, skill, p, p_baseline, counts, result, shadow "
                          f"FROM prediction_action_bet WHERE {' AND '.join(where)} "
                          "ORDER BY settled_at DESC LIMIT %s", (*args, limit))
 

@@ -66,3 +66,20 @@ def test_model_outputs_one_probability_per_head():
     out = TransitionModel().predict(torch.zeros(3, N_FEATURES))
     assert set(out) == set(HEADS) | {'frames'} and all(v.shape == (3,) for v in out.values())
     assert all(0 <= float(p) <= 1 for h in HEADS for p in out[h])
+
+
+def test_numpy_export_matches_the_torch_model(tmp_path):
+    # orion-prediction has no torch: it runs the exported weights through
+    # orion.embodiment.transition.TransitionWeights. Same input, same heads.
+    from orion.embodiment.transition import TransitionWeights
+    torch.manual_seed(3)
+    model = TransitionModel()
+    train.export(model, tmp_path / 'w.npz', 'tag-x')
+    w = TransitionWeights.load(tmp_path / 'w.npz')
+    assert w.tag == 'tag-x' and w.version == 'zelda-body-v1'
+    x = zelda_features(facts(enemies=[dict(tile=[16, 11])]), {'kind': 'exit', 'dir': 'W'}, ['W', 'N'])
+    with torch.no_grad():
+        want = model.predict(torch.tensor([x]))
+    got = w.heads(x)
+    for h in HEADS:
+        assert abs(got[h] - float(want[h][0])) < 1e-5, h

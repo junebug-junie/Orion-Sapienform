@@ -2,7 +2,7 @@
 
 - orion-prediction now keeps only the action-bet columns it knows when it reads a bet row (`PostgresStore._bet`).
 - Why: the post-pull rebuild applies a migration before it rebuilds the service. The next PR adds a `shadow` column to `prediction_action_bet`. With `RETURNING *` / `SELECT *` and `ActionBetV1(extra="forbid")`, the old service would have answered every place, settle and list call with a 500 until its rebuild finished, or for good if the rebuild failed.
-- Ship this first. The world-model shadow PR (#2938 follow-up) then adds the column safely.
+- Ship this first. The world-model shadow PR (next PR) then adds the column safely.
 
 ## Outcome moved
 
@@ -64,6 +64,6 @@ git pull   # rebuilds orion-prediction
 
 ## PR link
 
-(added after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2938
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

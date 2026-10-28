@@ -1038,6 +1038,12 @@ through the emitter and reducer: `python services/orion-sql-writer/evals/storage
 
 ## Orion energy hourly rollup (2026-10-22)
 
+`office_env_sample` holds office temperature/humidity from `orion:office:env:sample`
+(`office.env.sample.v1`, produced by `orion-office-env` on pan-1). The table is created by
+`create_all`; `_normalize_office_env_sample_payload` flattens the nested payload. A stale sample
+(no fresh Nano frame) is stored with NULL `office_temp_c` / `office_humidity_pct` and
+`stale=true` -- never 0.0. No retention is configured yet (~2,880 rows/day).
+
 `orion_energy_hourly` holds Orion's own kWh per UTC hour per source, written only by
 `app/orion_energy_rollup.py` and read by the Hub Orion Energy tab. Raw cluster watts are pruned
 after `ORION_BIOMETRICS_CLUSTER_RETENTION_DAYS` (30); this table has no retention, so months and

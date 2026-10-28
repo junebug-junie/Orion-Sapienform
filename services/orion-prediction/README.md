@@ -175,6 +175,14 @@ When the model is live-`worse`, quotes and new bets serve the baseline (`model` 
 `action_skill_rate`). Grading of served and baseline p uses `app/grading.py` `grade` (`enough` at
 n >= 50; `reportable` false under 10 bets).
 
+**World-model shadow** `transition_mlp` (never served). A bet can carry body-level `features` and a `feature_version`, from `orion/embodiment/transition.py`; the Hub sends them for every Zelda bet. When the version matches the loaded weights, the service runs the trained TransitionModel in numpy and stores the result on the bet as `shadow` = `{model, tag, p, heads}`. `p` is the model's chance of the skill's success:
+- traverse and enter: the place changes;
+- acquire: an item is gained;
+- hold: no heart is lost and the body lives;
+- engage and withdraw: no shadow, because no head predicts "completed".
+
+The weights are `PREDICTION_WORLD_MODEL_WEIGHTS` (default `/models/transition.npz`). The host directory `PREDICTION_WORLD_MODEL_DIR` is mounted read-only there, and the file is reloaded when it changes. A missing or bad file means no shadow; `/health` shows it under `action_bets.world_model_shadow`. `/action-bets/live` carries `shadow_verdict`: the shadow's p against the p each bet was actually served, on the same settled bets, with the same per-session paired test as the gate. Kill switch: `PREDICTION_WORLD_MODEL_SHADOW_ENABLED`. Migration: `manual_migration_prediction_action_bet_shadow_v1.sql` adds the nullable `shadow` column.
+
 **Expiry**: a bet still open 1 h after placing is closed `void` with outcome `never_settled` (checked
 at most every 30 s, on quote / place / live). Never graded; counted in `/health`
 (`action_bets: {open, never_settled_24h, served_model}`) and `/live`. Log lines: `action_bet_placed`,

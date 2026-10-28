@@ -36,3 +36,21 @@ def test_cells_fold_nearby_tiles_and_split_on_health_held_items_and_room():
     assert dojo.cell_key(obs(items=dict(sword=1, rupees=9))) == a              # more rupees: same cell
     assert dojo.cell_key(obs(items=dict(sword=0, rupees=4))) != a              # a new item held: new cell
     assert dojo.cell_key(obs(room=120)) != a
+
+
+def test_the_dojo_and_its_shared_contract_import_without_numpy():
+    # The live dojo runs in the retro image, which has no numpy (review 2026-10-28): only running
+    # weights (orion-prediction) may need it.
+    import subprocess
+    root = Path(__file__).resolve().parents[3]
+    probe = ("import sys; sys.modules['numpy'] = None\n"
+             "from orion.embodiment import transition as t\n"
+             "x = t.zelda_features(t.zelda_facts({'mode': 'play', 'level': 0, 'room': 119, 'link': {'tile': [15, 11]},"
+             " 'hearts': {'current': 3, 'containers': 3}, 'items': {}, 'enemies': [], 'drops': []}), {'kind': 'exit', 'dir': 'N'}, ['N'])\n"
+             "assert len(x) == t.N_FEATURES\n"
+             "import importlib.util\n"
+             f"spec = importlib.util.spec_from_file_location('d', {str(EVALS / 'zelda_dojo.py')!r})\n"
+             "print('ok')\n")
+    run = subprocess.run([sys.executable, '-c', probe], capture_output=True, text=True,
+                         env={'PYTHONPATH': f'{root}:{root / "services/orion-retro"}', 'PATH': '/usr/bin:/bin'})
+    assert run.returncode == 0 and run.stdout.strip() == 'ok', run.stderr

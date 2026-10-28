@@ -23,11 +23,17 @@ every bet even while the gate serves the baseline (the shadow never goes dark).
 Gate: per bet, squared error of the model's p vs the baseline's; one pair per session (the session's
 mean), >= 20 sessions, the overlap-aware paired test from backtest.paired_win_p. ``worse`` -> quotes
 and new bets serve the baseline.
+
+World-model shadow ``transition_mlp`` (WorldModelShadow): when a bet carries body-level ``features``
+whose ``feature_version`` matches the loaded weights (orion/embodiment/transition.py), its p of the
+skill's success is stored on the bet as ``shadow``. It is never served. ``shadow_verdict`` grades it
+against the p each bet was served, on the same settled bets, with the same per-session paired test.
 """
 from __future__ import annotations
 
 import logging
 import math
+import os
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -37,6 +43,7 @@ import numpy as np
 from scipy import special, stats
 
 from app.backtest import paired_win_p
+from orion.embodiment.transition import TransitionWeights, success_p
 from app.grading import grade
 from app.live import LIVE_ALPHA, MIN_INDEPENDENT
 
@@ -44,6 +51,7 @@ logger = logging.getLogger("orion-prediction.action_bets")
 
 MODEL = "action_beta_backoff"
 BASELINE = "action_skill_rate"
+SHADOW_MODEL = "transition_mlp"
 K = 4.0
 EXPIRY = timedelta(hours=1)
 NEVER_SETTLED = "never_settled"
@@ -143,14 +151,30 @@ def live_verdict(rows: Iterable[dict]) -> dict:
     One pair per session (mean squared error of the model vs the baseline); a bet without a session
     is its own unit. Same words and rule as app/live.py: better (p < LIVE_ALPHA; one test, so Holm is
     the identity), worse (reverse p < LIVE_ALPHA), unclear, pending (< MIN_INDEPENDENT units)."""
+    return _paired_verdict(rows, lambda r: model_p_from_counts(r["counts"]), lambda r: float(r["p_baseline"]),
+                           MODEL, BASELINE)
+
+
+def shadow_verdict(rows: Iterable[dict]) -> dict:
+    """The world-model shadow vs the p each bet was actually served (the counts model, or the baseline
+    while the gate serves it), on settled bets that carry a shadow p."""
+    rows = [r for r in rows if isinstance(r.get("shadow"), dict) and r["shadow"].get("p") is not None]
+    out = _paired_verdict(rows, lambda r: float(r["shadow"]["p"]), lambda r: float(r["p"]),
+                          SHADOW_MODEL, "served")
+    out["tags"] = sorted({str(r["shadow"].get("tag")) for r in rows})[-3:]
+    return out
+
+
+def _paired_verdict(rows: Iterable[dict], p_a: Callable[[dict], float], p_b: Callable[[dict], float],
+                    name_a: str, name_b: str) -> dict:
     units: dict[str, list] = defaultdict(list)
     first: dict[str, datetime] = {}
     for r in rows:
         if r.get("result") not in ("success", "failure"):
             continue
         y = 1.0 if r["result"] == "success" else 0.0
-        e_m = (model_p_from_counts(r["counts"]) - y) ** 2
-        e_b = (float(r["p_baseline"]) - y) ** 2
+        e_m = (p_a(r) - y) ** 2
+        e_b = (p_b(r) - y) ** 2
         key = f"s:{r['session_id']}" if r.get("session_id") else f"b:{r['bet_id']}"
         units[key].append((e_m, e_b))
         t = r.get("placed_at")
@@ -160,7 +184,7 @@ def live_verdict(rows: Iterable[dict]) -> dict:
     m = np.array([np.mean([e[0] for e in units[k]]) for k in keys], dtype=float)
     b = np.array([np.mean([e[1] for e in units[k]]) for k in keys], dtype=float)
     n_bets = sum(len(v) for v in units.values())
-    out = {"model": MODEL, "baseline": BASELINE, "n_scored": n_bets, "n_independent": len(keys),
+    out = {"model": name_a, "baseline": name_b, "n_scored": n_bets, "n_independent": len(keys),
            "rel_mse": float(m.mean() / b.mean()) if len(keys) and b.mean() > 0 else None,
            "p_better": None, "p_worse": None, "verdict": "pending"}
     if len(keys) >= MIN_INDEPENDENT:
@@ -199,6 +223,54 @@ def index_counts(rows: Iterable[dict]) -> dict:
     return idx
 
 
+class WorldModelShadow:
+    """The exported TransitionModel weights at ``path``, reloaded when the file changes. A missing
+    or unreadable file means no shadow (logged once per change), never a fake p."""
+
+    def __init__(self, path: str | None):
+        self.path = path
+        self._mtime: float | None = None
+        self.weights: TransitionWeights | None = None
+        self.error: str | None = None
+
+    def _refresh(self) -> None:
+        if not self.path:
+            return
+        try:
+            mtime = os.stat(self.path).st_mtime
+        except OSError:
+            if self.weights is not None or self.error != "missing":
+                logger.info("world_model_shadow_unavailable path=%s reason=missing", self.path)
+            self.weights, self.error, self._mtime = None, "missing", None
+            return
+        if mtime == self._mtime:
+            return
+        self._mtime = mtime
+        try:
+            self.weights, self.error = TransitionWeights.load(self.path), None
+            logger.info("world_model_shadow_loaded path=%s tag=%s", self.path, self.weights.tag)
+        except Exception as exc:  # noqa: BLE001 -- a bad file must not stop bets
+            self.weights, self.error = None, f"unreadable: {exc}"
+            logger.warning("world_model_shadow_unavailable path=%s reason=%s", self.path, self.error)
+
+    def score(self, bet: dict) -> dict | None:
+        self._refresh()
+        w, x = self.weights, bet.get("features")
+        if w is None or not x or bet.get("feature_version") != w.version:
+            return None
+        heads = w.heads(x)
+        p = success_p(bet["skill"], heads)
+        if p is None:
+            return None
+        return {"model": SHADOW_MODEL, "tag": w.tag, "p": min(max(p, 0.0), 1.0),
+                "heads": {k: round(v, 4) for k, v in heads.items()}}
+
+    def status(self) -> dict:
+        self._refresh()
+        return {"model": SHADOW_MODEL, "path": self.path, "loaded": self.weights is not None,
+                "tag": self.weights.tag if self.weights else None, "error": self.error}
+
+
 # --- service ------------------------------------------------------------------------------------------
 class ConflictError(Exception):
     def __init__(self, bet: dict):
@@ -210,8 +282,10 @@ class ActionBets:
     """Quote / place / settle / expire / live over a store (app/store.py PostgresStore or a fake)."""
 
     def __init__(self, store, clock: Callable[[], datetime] | None = None, *, expire_every_sec: float = 30.0,
-                 verdict_ttl_sec: float = 60.0, monotonic: Callable[[], float] = time.monotonic):
+                 verdict_ttl_sec: float = 60.0, monotonic: Callable[[], float] = time.monotonic,
+                 shadow: WorldModelShadow | None = None):
         self.store = store
+        self.shadow = shadow
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.expire_every_sec = expire_every_sec
         self.verdict_ttl_sec = verdict_ttl_sec
@@ -280,7 +354,8 @@ class ActionBets:
                "context": dict(sorted((bet.get("context") or {}).items())), "place": bet.get("place"),
                "action": bet.get("action") or {}, "model": q["model"], "p": q["p"], "p_baseline": q["p_baseline"],
                "level": q["level"], "counts": q["counts"], "chosen_rank": bet.get("chosen_rank"),
-               "session_id": bet.get("session_id"), "placed_at": self.clock()}
+               "session_id": bet.get("session_id"), "placed_at": self.clock(),
+               "shadow": self.shadow.score(bet) if self.shadow else None}
         stored = self.store.insert_action_bet(row)
         created = stored is not None
         if stored is None:                      # lost a race with the same bet_id
@@ -313,7 +388,8 @@ class ActionBets:
 
     def health(self) -> dict:
         st = self.store.action_bet_status(None, None, self.clock() - timedelta(hours=24))
-        return {"open": st["open"], "never_settled_24h": st["never_settled"], "served_model": self.served_model()}
+        return {"open": st["open"], "never_settled_24h": st["never_settled"], "served_model": self.served_model(),
+                "world_model_shadow": self.shadow.status() if self.shadow else None}
 
     def live(self, domain: str | None, body: str | None) -> dict:
         self.maybe_expire()
@@ -352,6 +428,8 @@ class ActionBets:
                 "grading": grade_bets(settled), "live_verdict": self.verdict(),
                 "live_verdict_scope": "all domains (the gate is global)",
                 "domain_verdict": live_verdict(settled),
+                "shadow_verdict": shadow_verdict(settled),
+                "world_model_shadow": self.shadow.status() if self.shadow else None,
                 "open": st["open"], "never_settled_24h": st["never_settled"], "void_24h": st["void"],
                 "settled_24h": st["settled"],
                 "last_bets": self.store.action_bets(domain=domain, body=body, limit=LIVE_LAST)}

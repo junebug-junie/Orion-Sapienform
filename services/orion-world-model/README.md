@@ -67,7 +67,7 @@ Run it in the service image, on CPU:
 docker run --rm --cpus 4 -v "$PWD":/repo:ro -v <dojo out>:/dojo -w /repo --entrypoint python3   orion-world-model-world-model services/orion-world-model/scripts/train_transition.py   --data /dojo/<run> --out /dojo/<model>
 ```
 
-Weights stay in `--out` and are never committed. Nothing serves this model or consumes its predictions yet. The next step is to score it live as a model in orion-prediction.
+Weights stay in `--out` and are never committed. `--publish <dojo>/models/transition.npz` also writes the numpy export (atomic replace). orion-prediction scores that file in its world-model shadow (see its README, "World-model shadow"): it stores the chance on every Zelda action bet and grades it against the served counts. It never chooses a move. `--keep 0.15` samples rows deterministically, so a multi-million-row dojo run trains in minutes.
 
 ## Status: untrained inference-capable scaffolding
 

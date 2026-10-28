@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     # Forecast every contender model in the shadow and grade it live; the gate uses the live verdicts.
     shadow_enabled: bool = Field(True, alias="PREDICTION_SHADOW_ENABLED")
 
+    # World-model shadow for action bets: the exported TransitionModel weights (written by
+    # services/orion-world-model/scripts/train_transition.py --publish). Scored, stored, graded; never served.
+    world_model_shadow_enabled: bool = Field(True, alias="PREDICTION_WORLD_MODEL_SHADOW_ENABLED")
+    world_model_weights: str = Field("/models/transition.npz", alias="PREDICTION_WORLD_MODEL_WEIGHTS")
+
     # --- weather covariates (shared Open-Meteo client, orion/weather/openmeteo.py) ---
     weather_enabled: bool = Field(True, alias="PREDICTION_WEATHER_ENABLED")
     weather_refresh_sec: float = Field(3600.0, ge=300, alias="PREDICTION_WEATHER_REFRESH_SEC")

@@ -29,7 +29,8 @@ live: without it `orion.__path__` is `/mnt/orion-fcc/repo/orion`, with it `/app/
 | `compare <date> [<date\|now>]` | Added / removed / kept per category. |
 | `history <start> <end>` | Merged PRs (`gh pr list --search merged:…`) and commits. PR bodies go to the file only. |
 | `history <days>` | The same for the last `<days>` days, today included. The dig line points "recent PRs" here instead of the GitHub tool, which on 2026-10-27 filled half the window per call. |
-| `body [<date>]` | Body atlas (`orion/body_atlas`). No date: the live bus. A date: that export's catalog only (the catalog starts 2026-01). |
+| `body [<date>]` | Body atlas (`orion/body_atlas`): machines ("bodies"), services, cameras, stores and processes, grouped into organs. No date: the live body (bus, docker, Postgres, Chroma, FalkorDB; a source that fails is listed as UNREAD). A date: that export's declared files only (the channel catalog starts 2026-01). |
+| `body <organ_id>` | Every member of one organ of the live body, by kind, with status, host and facts. Capped like every command; the full atlas is in the file. |
 | `name <organ_id> <name> because <reason>` | Orion names one organ of their live body. Code checks the floor: 1–5 words, and the reason must cite one of that organ's parts by its full name. A reason that only lists part names passes; whether it says what the organ takes in and gives out is not code-checkable. Appended to `$ORION_DIG_HOME/self/organ_names.jsonl` (`orion/body_atlas/names.py`). |
 | `notes [append <text>]` | Shared notes for one `--dig`, so episode hops or turns can read each other. |
 
@@ -45,7 +46,8 @@ live: without it `orion.__path__` is `/mnt/orion-fcc/repo/orion`, with it `/app/
 - `ORION_DIG_REPO=/mnt/orion-fcc/repo` (the full-history sandbox clone)
 - `ORION_DIG_NOW_ROOT=/mnt/scripts/Orion-Sapienform` (deployed main, mounted read-only)
 
-`body` with no date needs `FALKORDB_URI` (in `services/orion-harness-governor/.env_example`).
+`body` with no date needs `FALKORDB_URI` (in `services/orion-harness-governor/.env_example`), and
+reads Postgres as `orion_readonly` through `docker exec orion-athena-sql-db psql` (no env needed).
 
 Live check, 2026-10-27, in orion-athena-harness-governor:
 

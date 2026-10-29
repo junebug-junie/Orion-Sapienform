@@ -25,5 +25,16 @@ def test_a_fully_connected_body_fails_on_q_count_and_blob_share():
 
 
 def test_the_frozen_real_bus_graph_passes():
-    catalog, observed, now = _EVAL._fixture_inputs(_EVAL.FIXTURE)
+    catalog, observed, now, body = _EVAL._fixture_inputs(_EVAL.FIXTURE)
+    assert body is None
     assert _EVAL.evaluate(build_atlas(catalog, observed, now=now)) == []
+
+
+def test_the_frozen_whole_body_passes_and_keeps_its_new_kinds():
+    catalog, observed, now, body = _EVAL._fixture_inputs(_EVAL.WHOLE_BODY_FIXTURE)
+    atlas = build_atlas(catalog, observed, now=now, body=body)
+    assert _EVAL.evaluate(atlas) == []
+    kinds = {p.kind for p in atlas.parts if p.status != "transient"}
+    assert {"host", "sensor", "store", "process"} <= kinds
+    in_organs = {m for o in atlas.organs for m in o.members}
+    assert not any(m.startswith("part:host:") for m in in_organs)

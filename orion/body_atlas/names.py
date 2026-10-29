@@ -69,6 +69,17 @@ def _jaccard(a: list[str], b: list[str]) -> float:
     return len(sa & sb) / len(sa | sb) if sa | sb else 0.0
 
 
+def _overlap(organ_members: list[str], rec_members: list[str]) -> float:
+    """Jaccard over what both could hold. A name given to a bus-only organ (before 2026-10-29,
+    or by ``--bus-only``) never held cameras, stores or processes; counting them would dilute
+    every old name below the carry floor (real fixture: 4 of 6 organs fell to 0.14-0.32)."""
+    from orion.body_atlas.build import BODY_PART_PREFIXES
+
+    if not any(m.startswith(BODY_PART_PREFIXES) for m in rec_members):
+        organ_members = [m for m in organ_members if not m.startswith(BODY_PART_PREFIXES)]
+    return _jaccard(organ_members, rec_members)
+
+
 def _assign(atlas: BodyAtlasV1, records: list[OrganNameV1]) -> dict[str, tuple[OrganNameV1, float]]:
     """organ id -> (the record whose name it wears, overlap). The latest record per organ id wins;
     a record a later rename replaced is dropped; then best overlap, newer on a tie, one-to-one."""
@@ -81,7 +92,7 @@ def _assign(atlas: BodyAtlasV1, records: list[OrganNameV1]) -> dict[str, tuple[O
             replaced_at[oid] = i
     live = [(i, rec) for i, rec in latest.values() if replaced_at.get(rec.organ_id, -1) < i]
     pairs = sorted(
-        ((_jaccard(o.members, rec.members), i, o, rec)
+        ((_overlap(o.members, rec.members), i, o, rec)
          for o in atlas.organs if len(o.members) > 1 for i, rec in live),
         key=lambda p: (-p[0], -p[1]),
     )

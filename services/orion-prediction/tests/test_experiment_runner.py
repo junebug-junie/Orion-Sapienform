@@ -12,8 +12,10 @@ import pytest
 from app.causal import CausalError, design_switchback
 from app.effects import Effects
 from app.experiment_runner import (
+    ACTIVE_KEY,
     GPU_SPEC,
     LOCK_KEY,
+    LUA_REFRESH,
     RUNNER_SOURCE,
     ExperimentRunner,
     RunnerRefused,
@@ -93,6 +95,15 @@ class FakeRedis:
     async def delete(self, k):
         return 1 if self.data.pop(k, None) else 0
 
+    async def eval(self, script, numkeys, key, owner, *args):
+        """The two compare-and-set scripts the runner uses (LUA_REFRESH / LUA_RELEASE)."""
+        cur = self._live(key)
+        if not cur or cur[0] != owner:
+            return None if script == LUA_REFRESH else 0
+        if script == LUA_REFRESH:
+            return await self.set(key, owner, ex=int(args[0]))
+        return await self.delete(key)
+
     def ttl(self, k):
         v = self._live(k)
         return None if not v else (v[1] - self.clock()).total_seconds() if v[1] else -1
@@ -169,6 +180,20 @@ def test_guard_refusal_starts_nothing():
     assert exc.value.status == 409 and not store.exps and not redis.data
 
 
+def test_every_key_write_carries_the_ttl():
+    runner, fx, store, redis, *_ = _world()
+    writes = []
+    real_set = redis.set
+
+    async def spy(k, v, **kw):
+        if k == KEY:
+            writes.append(kw.get("ex"))
+        return await real_set(k, v, **kw)
+    redis.set = spy
+    asyncio.run(_run(runner))
+    assert writes and all(ex == 120 for ex in writes)
+
+
 def test_full_run_logs_every_block_with_its_arm_and_finds_the_planted_effect():
     runner, fx, store, redis, clock, design, _ = _world(effect=0.6, gpu_effect=25.0)
     out = asyncio.run(_run(runner))
@@ -213,10 +238,7 @@ def test_key_is_held_with_a_ttl_and_lapses_if_the_runner_dies():
         except asyncio.CancelledError:
             pass
     asyncio.run(go())
-    # ... and even if nothing had cleaned up, an un-refreshed key expires by itself.
-    redis.data[KEY] = ("on", clock() + timedelta(seconds=120))
-    clock.t = clock.t + timedelta(seconds=121)
-    assert redis._live(KEY) is None
+    assert KEY not in redis.data and ACTIVE_KEY not in redis.data
 
 
 def test_heat_crossing_the_hot_line_aborts_and_clears_focus():
@@ -339,3 +361,91 @@ def test_http_run_refusals_and_status(monkeypatch):
     assert r.status_code == 409 and r.json()["detail"]["error"] == "guard refused"
     assert c.get("/experiments/runner").json()["running"] is False
     assert c.post("/experiments/runner/abort").status_code == 409
+
+
+def test_unknown_stream_is_refused_before_anything_is_designed():
+    runner, fx, store, redis, *_ = _world()
+    runner.probe.snapshot = lambda stream: {"tier_counts": {}, "override_active": False, "override_enabled": True}
+    with pytest.raises(RunnerRefused, match="dispatched nothing"):
+        asyncio.run(runner.start("vision.focus:walkwya", "test.temp", 20, 12, 10, 7, 2))
+    assert not store.exps
+
+
+def test_override_that_never_takes_effect_aborts_after_the_first_on_block():
+    runner, fx, store, redis, *_ = _world()
+    probe = runner.probe
+    probe.snapshot = lambda stream: {"tier_counts": {"baseline:-": 10 * (len(store.ivs) + 1)},
+                                     "override_active": True, "override_enabled": True}
+    asyncio.run(_run(runner))
+    st = runner.status()
+    assert st["status"] == "aborted" and "not taking effect" in st["abort_reason"]
+
+
+def test_another_run_taking_the_lock_aborts_this_one_and_is_not_overwritten():
+    runner, fx, store, redis, clock, *_ = _world()
+
+    async def go():
+        await runner.start(ACTION, "test.temp", 20, 12, 10, 7, 2)
+        await asyncio.sleep(0)
+        redis.data[LOCK_KEY] = ("other-run", clock() + timedelta(seconds=500))   # lock expired, someone took it
+        await runner._task
+    asyncio.run(go())
+    assert "lost the runner lock" in runner.status()["abort_reason"]
+    assert redis.data[LOCK_KEY][0] == "other-run"   # released only by its owner
+
+
+def test_a_stall_longer_than_the_ttl_inside_an_on_block_aborts_instead_of_logging_it():
+    runner, fx, store, redis, clock, design, _ = _world()
+    first_on = next(b for b in design["blocks"] if b["arm"] == "on")
+    real = runner._check_heat
+    stalled = {"done": False}
+
+    async def slow_heat(spec, hot):
+        if redis._live(KEY) and not stalled["done"]:
+            stalled["done"] = True
+            clock.t = clock.t + timedelta(seconds=200)   # e.g. a stuck DB read
+        await real(spec, hot)
+    runner._check_heat = slow_heat
+    asyncio.run(_run(runner))
+    st = runner.status()
+    assert st["status"] == "aborted" and "without a refresh" in st["abort_reason"]
+    assert not any(r["arm"] == "on" and r["started_at"] == pd.Timestamp(first_on["start"]) for r in store.ivs)
+
+
+def test_analysis_failure_after_all_blocks_keeps_the_experiment_analyzable():
+    runner, fx, store, redis, *_ = _world()
+
+    def boom(eid):
+        raise ValueError("scipy fell over")
+    fx.analyze_experiment = boom
+    out = asyncio.run(_run(runner))
+    eid = out["experiment"]["experiment_id"]
+    st = runner.status()
+    assert st["status"] == "completed" and "analysis failed" in st["result"]["error"]
+    assert store.exps[eid]["status"] == "designed" and not any(r["arm"] is None for r in store.ivs)
+    assert ACTIVE_KEY not in redis.data and LOCK_KEY not in redis.data
+
+
+def test_crash_before_the_first_block_is_still_recovered_after_the_lock_expired():
+    runner, fx, store, redis, clock, *_ = _world()
+
+    async def go():
+        out = await runner.start(ACTION, "test.temp", 20, 12, 10, 7, 2)
+        runner._task.cancel()   # stand-in for SIGKILL: drop the task, skip every cleanup
+        runner._task = None
+        return out["experiment"]["experiment_id"]
+    eid = asyncio.run(go())
+    redis.data.pop(LOCK_KEY, None)   # restart took longer than the lock TTL
+    assert redis.data[ACTIVE_KEY][0] == eid
+    assert asyncio.run(recover(fx, redis, _direct)) == [eid]
+    assert store.exps[eid]["status"] == "cancelled" and ACTIVE_KEY not in redis.data
+
+
+def test_settings_refuse_a_ttl_shorter_than_two_ticks(monkeypatch):
+    from pydantic import ValidationError
+
+    from app.settings import Settings
+    monkeypatch.setenv("PREDICTION_EXPERIMENT_OVERRIDE_TTL_SEC", "30")
+    monkeypatch.setenv("PREDICTION_EXPERIMENT_TICK_SEC", "30")
+    with pytest.raises(ValidationError, match="2 x"):
+        Settings()

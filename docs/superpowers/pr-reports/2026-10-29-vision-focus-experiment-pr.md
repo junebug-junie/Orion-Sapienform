@@ -86,7 +86,7 @@
 cd services/orion-vision-frame-router && python -m pytest tests -q -p no:cacheprovider
   123 passed
 cd services/orion-prediction && PYTHONPATH=../..:. python -m pytest tests -q -p no:cacheprovider
-  179 passed (15 new in tests/test_experiment_runner.py)
+  187 passed (23 new in tests/test_experiment_runner.py)
 python scripts/check_env_template_parity.py  -> PASS
 ```
 
@@ -113,7 +113,31 @@ Live path of the runner: UNVERIFIED until deploy + first run.
 
 ## Review findings fixed
 
-See the section appended after review.
+A code review subagent reviewed `origin/main...HEAD`. It found no must-fix bugs and six should-fix items. All six and three of the nits are fixed.
+
+- Finding: the lock refresh did not check who owned the lock. After a stall longer than 180 s, a second run could take the lock, and the first run would then overwrite it.
+  - Fix: refresh and release are now Lua compare-and-set operations (`LUA_REFRESH` / `LUA_RELEASE`). "Not mine" aborts the run.
+  - Evidence: `test_another_run_taking_the_lock_aborts_this_one_and_is_not_overwritten`.
+- Finding: a hard crash before block 0 was logged could leave an experiment in `designed` status forever once the lock had expired.
+  - Fix: a no-TTL Redis record, `orion:prediction:experiment:active`, holds the run's id. It is deleted only once the run's status is final. `recover()` reads it. If anything fails during `start()` after the design is stored, the experiment is marked cancelled.
+  - Evidence: `test_crash_before_the_first_block_is_still_recovered_after_the_lock_expired`.
+- Finding: a failure after all blocks had run could mark a complete experiment `cancelled`.
+  - Fix: the end-of-run analysis is now outside the abort path. On failure the error goes into the result and the DB status stays `designed`, so `POST /experiments/{id}/analyze` still works.
+  - Evidence: `test_analysis_failure_after_all_blocks_keeps_the_experiment_analyzable`.
+- Finding: an ON block could be logged as performed even though focus had lapsed (a stall longer than the TTL) or the block had started late.
+  - Fix: the runner aborts if the key goes a full TTL without a refresh, and aborts if an ON block would start more than 2 min late.
+  - Evidence: `test_a_stall_longer_than_the_ttl_inside_an_on_block_aborts_instead_of_logging_it`.
+- Finding: a mistyped stream id, or a stream with no triggered tier, would run 4 hours as a no-op.
+  - Fix: the runner refuses at start if the router has never dispatched for that stream. It aborts after the first ON block if that block produced no `triggered:experiment` dispatches.
+  - Evidence: `test_unknown_stream_is_refused_before_anything_is_designed`, `test_override_that_never_takes_effect_aborts_after_the_first_on_block`.
+- Finding: a TTL shorter than two ticks raised an error inside lifespan, so the whole service failed to boot.
+  - Fix: a settings validator now rejects that config up front, with a clear message.
+  - Evidence: `test_settings_refuse_a_ttl_shorter_than_two_ticks`.
+- Nits fixed:
+  - The guard no longer runs twice back to back before an ON block.
+  - Cleanup now survives a second cancel.
+  - The router replaces the outer `dispatch_tier_counts` dict, so `/healthz` cannot hit a "dict changed size" error.
+  - The fake-only TTL test half was replaced by `test_every_key_write_carries_the_ttl`.
 
 ## Restart required
 

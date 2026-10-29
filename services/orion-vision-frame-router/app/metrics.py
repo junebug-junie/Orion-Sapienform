@@ -59,7 +59,9 @@ class RouterMetrics:
             per = dict(self.dispatch_tier_counts.get(stream_id) or {})
             key = f"{tier}:{triggered_by or '-'}"
             per[key] = per.get(key, 0) + 1
-            self.dispatch_tier_counts[stream_id] = per
+            # Replace the outer dict too: inserting a new stream key while asdict() iterates
+            # it from the heartbeat thread would raise "dictionary changed size".
+            self.dispatch_tier_counts = {**self.dispatch_tier_counts, stream_id: per}
 
     def record_identity_dispatch(self) -> None:
         self.identity_dispatched_total += 1

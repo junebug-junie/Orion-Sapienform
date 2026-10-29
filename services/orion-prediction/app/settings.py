@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     experiment_tick_sec: float = Field(30.0, ge=5, le=60, alias="PREDICTION_EXPERIMENT_TICK_SEC")
     # Re-run the experiment guard (a forecast build) this often during a run, and before every ON block.
     experiment_guard_every_sec: float = Field(300.0, ge=60, le=1800, alias="PREDICTION_EXPERIMENT_GUARD_EVERY_SEC")
+
+    @model_validator(mode="after")
+    def _ttl_covers_two_ticks(self) -> "Settings":
+        # The runner refreshes the focus key once per tick; a TTL under two ticks lets it lapse mid-block.
+        if self.experiment_override_ttl_sec < 2 * self.experiment_tick_sec:
+            raise ValueError("PREDICTION_EXPERIMENT_OVERRIDE_TTL_SEC must be >= 2 x PREDICTION_EXPERIMENT_TICK_SEC")
+        return self
 
 
 @lru_cache(maxsize=1)

@@ -46,6 +46,15 @@ logger = logging.getLogger("orion-prediction.experiment_runner")
 
 RUNNER_SOURCE = "orion-prediction.experiment-runner"
 LOCK_KEY = "orion:prediction:experiment:runner"
+# The run in flight, NO TTL: survives any crash so boot-time recover() always finds it. Deleted only
+# once the run has ended and its status is final (completed / cancelled).
+ACTIVE_KEY = "orion:prediction:experiment:active"
+MAX_START_LAG = timedelta(minutes=2)   # an ON block that starts later than this is aborted, not mislabelled
+# Compare-and-set on the lock: only the owner may refresh or release it.
+LUA_REFRESH = ("if redis.call('get', KEYS[1]) == ARGV[1] then "
+               "return redis.call('set', KEYS[1], ARGV[1], 'EX', ARGV[2]) else return nil end")
+LUA_RELEASE = ("if redis.call('get', KEYS[1]) == ARGV[1] then "
+               "return redis.call('del', KEYS[1]) else return 0 end")
 OVERRIDE_PREFIX = "orion:vision:experiment:"   # read by orion-vision-frame-router app/expectation.py
 ACTION_RE = re.compile(r"^vision\.focus:([a-z0-9_-]{1,40})$")
 READING_MAX_AGE = timedelta(minutes=10)
@@ -172,16 +181,31 @@ class ExperimentRunner:
         guard = await self._to_thread(self._guard, spec)
         if not guard.get("safe"):
             raise RunnerRefused(409, {"error": "guard refused", "guard": guard})
-        if not await self.redis.set(LOCK_KEY, "starting", nx=True, ex=self.lock_ttl):
+        snap = await self._to_thread(self.probe.snapshot, stream)
+        if snap is not None and not snap["tier_counts"]:
+            raise RunnerRefused(422, f"the vision router has dispatched nothing for stream {stream!r} since boot; "
+                                     "check the stream id (an unknown stream would make every ON block a no-op)")
+        if await self.redis.get(ACTIVE_KEY):
+            raise RunnerRefused(409, f"{ACTIVE_KEY} names an unfinished run; restart the service to recover it")
+        token = f"starting-{id(self)}-{self.clock().timestamp()}"
+        if not await self.redis.set(LOCK_KEY, token, nx=True, ex=self.lock_ttl):
             holder = await self.redis.get(LOCK_KEY)
             raise RunnerRefused(409, f"another runner holds {LOCK_KEY} ({holder!r})")
+        row = None
         try:
             start_at = _ceil_to(self.clock() + timedelta(minutes=start_delay_min), ALIGN_MIN)
             row = await self._to_thread(self.effects.design_experiment, action, series_id, start_at, block_min,
                                         n_blocks, burn_in_min, seed)
-            await self.redis.set(LOCK_KEY, row["experiment_id"], xx=True, ex=self.lock_ttl)
+            await self.redis.set(ACTIVE_KEY, row["experiment_id"])
+            await self.redis.eval(LUA_RELEASE, 1, LOCK_KEY, token)
+            if not await self.redis.set(LOCK_KEY, row["experiment_id"], nx=True, ex=self.lock_ttl):
+                raise RunnerRefused(409, "lost the runner lock while designing")
         except BaseException:
-            await self.redis.delete(LOCK_KEY)
+            await self._safe(self.redis.eval(LUA_RELEASE, 1, LOCK_KEY, token))
+            if row is not None:   # never leave a designed-but-unrun experiment looking alive
+                await self._safe(self._to_thread(self.effects.store.set_experiment_status,
+                                                 row["experiment_id"], "cancelled"))
+                await self._safe(self.redis.delete(ACTIVE_KEY))
             raise
         self.state = RunState(row["experiment_id"], action, stream, series_id, n_blocks=n_blocks,
                               started_at=self.clock().isoformat(), last_guard=guard)
@@ -205,10 +229,14 @@ class ExperimentRunner:
             # Cancelled before its first step: _run's own cleanup never ran.
             key = override_key(st.stream_id)
             await self._abort(key, self.clock(), reason)
-            await self._safe(self.redis.delete(key))
-            if await self._safe(self.redis.get(LOCK_KEY)) in (st.experiment_id, st.experiment_id.encode()):
-                await self._safe(self.redis.delete(LOCK_KEY))
+            await self._release(key)
         return True
+
+    async def _release(self, key: str) -> None:
+        await self._safe(self.redis.delete(key))
+        await self._safe(self.redis.eval(LUA_RELEASE, 1, LOCK_KEY, self.state.experiment_id))
+        if self.state.status != "running":   # status is final in the DB (or recorded as not)
+            await self._safe(self.redis.delete(ACTIVE_KEY))
 
     # --- the loop ------------------------------------------------------------------------------
     async def _run(self, exp: dict, spec: SeriesSpec, hot: float) -> None:
@@ -220,16 +248,20 @@ class ExperimentRunner:
             for b in exp["design"]["blocks"]:
                 b0, b1 = _ts(b["start"]), _ts(b["end"])
                 st.block_index, st.arm = None, None
-                await self._hold(b0, spec, hot, None)          # waiting: watch heat, keep the lock
+                on = b["arm"] == "on"
+                # waiting: watch heat, keep the lock (the guard runs just below for an ON block)
+                await self._hold(b0, spec, hot, None, guard_now=not on)
                 st.block_index, st.arm = b["index"], b["arm"]
                 segment_start = self.clock()
-                if b["arm"] == "on":
+                if on:
                     await self._check_guard(spec)              # never start an ON block on a stale "safe"
                 snap0 = await self._to_thread(self.probe.snapshot, st.stream_id)
-                if b["arm"] == "on":
-                    await self.redis.set(key, "on", ex=self.ttl)
                 actual_start = self.clock()
-                await self._hold(b1, spec, hot, key if b["arm"] == "on" else None, guard_now=b["arm"] != "on")
+                if on and actual_start - b0 > MAX_START_LAG:
+                    raise _Abort(f"ON block {b['index']} would start {actual_start - b0} late; not mislabelling it")
+                if on:
+                    await self.redis.set(key, "on", ex=self.ttl)
+                await self._hold(b1, spec, hot, key if on else None, guard_now=not on)
                 snap1 = await self._to_thread(self.probe.snapshot, st.stream_id)   # before clearing
                 if b["arm"] == "on":
                     await self.redis.delete(key)
@@ -241,33 +273,55 @@ class ExperimentRunner:
                 logged.append({**b, "notes": notes})
                 st.blocks_logged += 1
                 segment_start = self.clock()
+                delta = notes["router_dispatch_delta"]
+                if on and delta is not None and not delta.get("triggered:experiment"):
+                    raise _Abort(f"ON block {b['index']} produced no triggered:experiment dispatches; "
+                                 "the override is not taking effect")
             st.block_index, st.arm = None, None
-            st.result = await self._finish(exp, logged)
-            st.status = "completed"
-            logger.info("experiment_completed id=%s", st.experiment_id)
         except asyncio.CancelledError:
             await self._abort(key, segment_start, self._cancel_reason or "runner cancelled")
+            await self._release(key)
             raise
         except _Abort as exc:
             await self._abort(key, segment_start, str(exc))
+            await self._release(key)
+            return
         except Exception as exc:  # noqa: BLE001 -- any failure ends the run safely, never leaves focus on
             logger.exception("experiment_runner_failed")
             await self._abort(key, segment_start, f"runner error: {type(exc).__name__}: {exc}"[:300])
-        finally:
-            await self._safe(self.redis.delete(key))
-            if await self._safe(self.redis.get(LOCK_KEY)) in (st.experiment_id, st.experiment_id.encode()):
-                await self._safe(self.redis.delete(LOCK_KEY))
+            await self._release(key)
+            return
+        # Every block ran: from here a failure must not cancel a complete experiment. DB status stays
+        # 'designed' (or 'analyzed'), so POST /experiments/{id}/analyze still applies.
+        await self._safe(self.redis.delete(key))
+        try:
+            st.result = await self._finish(exp, logged)
+        except BaseException as exc:  # noqa: BLE001 -- including a cancel while analysing
+            st.result = {"error": f"analysis failed after all blocks ran: {type(exc).__name__}: {exc}"[:300]}
+            if isinstance(exc, asyncio.CancelledError):
+                st.status = "completed"
+                await self._release(key)
+                raise
+        st.status = "completed"
+        await self._release(key)
+        logger.info("experiment_completed id=%s", st.experiment_id)
 
     async def _hold(self, until: datetime, spec: SeriesSpec, hot: float, key: str | None,
                     guard_now: bool = True) -> None:
         """Sleep until ``until`` in ticks; each tick refreshes the key (ON) and lock, checks the heat.
         The guard (a forecast build) runs every ``guard_every`` seconds."""
         next_guard = self.clock() + (timedelta(0) if guard_now else timedelta(seconds=self.guard_every))
+        last_refresh = self.clock()
         while True:
             if key is not None:
+                now = self.clock()
+                if (now - last_refresh).total_seconds() >= self.ttl:
+                    raise _Abort(f"focus key went {now - last_refresh} without a refresh (TTL {self.ttl}s); "
+                                 "the block was not held")
                 await self.redis.set(key, "on", ex=self.ttl)
-            if not await self.redis.set(LOCK_KEY, self.state.experiment_id, xx=True, ex=self.lock_ttl):
-                raise _Abort("lost the runner lock (it expired or someone deleted it)")
+                last_refresh = now
+            if not await self.redis.eval(LUA_REFRESH, 1, LOCK_KEY, self.state.experiment_id, self.lock_ttl):
+                raise _Abort("lost the runner lock (it expired, or another run took it)")
             await self._check_heat(spec, hot)
             now = self.clock()
             if now >= next_guard:
@@ -312,8 +366,8 @@ class ExperimentRunner:
     async def _safe(aw):
         try:
             return await aw
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("experiment_runner_redis_error %s: %s", type(exc).__name__, exc)
+        except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001 -- cleanup must finish
+            logger.warning("experiment_runner_cleanup_error %s: %s", type(exc).__name__, exc)
             return None
 
     # --- end of run ----------------------------------------------------------------------------
@@ -382,10 +436,11 @@ async def recover(effects: Any, redis: Any, to_thread=asyncio.to_thread) -> list
     cancelled with an abort row, and its override key deleted. Nothing is resumed."""
     found: set[str] = set()
     held = await ExperimentRunner._safe(redis.get(LOCK_KEY))
-    if isinstance(held, bytes):
-        held = held.decode()
-    if held and held != "starting":
-        found.add(held)
+    active = await ExperimentRunner._safe(redis.get(ACTIVE_KEY))
+    held, active = [v.decode() if isinstance(v, bytes) else v for v in (held, active)]
+    for v in (held, active):
+        if v and not v.startswith("starting"):
+            found.add(v)
     rows = await to_thread(effects.store.interventions, None, None, 500)
     found |= {str(r["experiment_id"]) for r in rows if r.get("source") == RUNNER_SOURCE and r.get("experiment_id")}
     cancelled = []
@@ -407,6 +462,8 @@ async def recover(effects: Any, redis: Any, to_thread=asyncio.to_thread) -> list
         await to_thread(effects.store.set_experiment_status, eid, "cancelled")
         cancelled.append(eid)
         logger.warning("experiment_interrupted_marked_cancelled id=%s", eid)
-    if held and held in cancelled:
+    if held and held in found:
         await ExperimentRunner._safe(redis.delete(LOCK_KEY))
+    if active:   # whatever it named is now final (cancelled, or complete and awaiting analysis)
+        await ExperimentRunner._safe(redis.delete(ACTIVE_KEY))
     return cancelled

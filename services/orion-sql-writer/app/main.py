@@ -43,6 +43,16 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE IF EXISTS orion_biometrics_summary "
                 "ADD COLUMN IF NOT EXISTS measurements JSONB;"
             )
+            # Same hazard again: BiometricsSummarySQL declares the binding-constraint pair, so
+            # both columns enter every biometrics-summary INSERT.
+            conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS orion_biometrics_summary "
+                "ADD COLUMN IF NOT EXISTS peak_pressure DOUBLE PRECISION;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS orion_biometrics_summary "
+                "ADD COLUMN IF NOT EXISTS peak_pressure_channel TEXT;"
+            )
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS orion_biometrics_summary_node_ts_idx "
                 "ON orion_biometrics_summary (node, timestamp);"

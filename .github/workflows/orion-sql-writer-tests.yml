@@ -8,6 +8,10 @@ name: orion-sql-writer-tests
 on:
   pull_request:
     paths:
+      # orion/** and config/**: the job runs the whole sql-writer tests folder,
+      # which imports far more of orion than the narrow list below named.
+      - "orion/**"
+      - "config/**"
       - "orion/bus/channels.yaml"
       - "orion/core/bus/**"
       - "orion/grammar/**"
@@ -31,6 +35,10 @@ on:
   push:
     branches: [main]
     paths:
+      # orion/** and config/**: the job runs the whole sql-writer tests folder,
+      # which imports far more of orion than the narrow list below named.
+      - "orion/**"
+      - "config/**"
       - "orion/bus/channels.yaml"
       - "orion/core/bus/**"
       - "orion/grammar/**"
@@ -66,7 +74,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r services/orion-sql-writer/requirements.txt
           python -m pip install -r requirements-dev.txt
-          python -m pip install pytest-asyncio
+          # httpx: starlette.testclient (test_notify_attention_*); test-only.
+          python -m pip install pytest-asyncio "httpx>=0.27,<1"
       - name: Run transport reducer unit tests
         run: |
           PYTHONPATH=. python -m pytest -q \
@@ -77,43 +86,20 @@ jobs:
             tests/test_energy_bus_catalog.py \
             tests/test_storage_write_substrate_reducer.py
       - name: Run sql-writer unit tests
+        # The whole services/orion-sql-writer/tests folder, not a hand-kept list:
+        # the list let 14 tests rot unseen (2026-10-29). Tests needing a live
+        # Postgres skip here and run in sql-writer-integration.
         run: |
           PYTHONPATH=.:services/orion-sql-writer python -m pytest -q \
             orion/grammar/tests/test_ledger.py \
             orion/core/bus/tests/test_hunter_intake_log_quiet.py \
-            services/orion-sql-writer/tests/test_consumer_resilience.py \
-            services/orion-sql-writer/tests/test_route_map_completeness.py \
-            services/orion-sql-writer/tests/test_office_env_sample_sql_shape.py \
-            services/orion-sql-writer/tests/test_world_pulse_routing.py \
-            services/orion-sql-writer/tests/test_grammar_event_routing.py \
-            services/orion-sql-writer/tests/test_grammar_ledger_sql_shape.py \
-            services/orion-sql-writer/tests/test_juniper_multimodal_affect_sql_shape.py \
-            services/orion-sql-writer/tests/test_vision_walkway_persist.py \
-            services/orion-sql-writer/tests/test_vision_individuals.py \
-            services/orion-sql-writer/tests/test_vision_split.py \
-            services/orion-sql-writer/tests/test_vision_body_match.py \
-            services/orion-sql-writer/tests/test_vision_reanchor.py \
-            services/orion-sql-writer/tests/test_vision_osnet_shadow.py \
-            services/orion-sql-writer/tests/test_vision_walkway_faces_stationary.py \
-            services/orion-sql-writer/tests/test_vision_rollup.py \
-            services/orion-sql-writer/tests/test_vision_hourly_frames.py \
-            services/orion-sql-writer/tests/test_act_downstream_use.py \
+            services/orion-sql-writer/tests \
             orion/vision/tests \
-            services/orion-sql-writer/tests/test_vision_rhythm.py \
-            services/orion-sql-writer/tests/test_vision_walkway_zones_thumbs_cursor.py \
-            services/orion-sql-writer/tests/test_vision_expect_refresh.py \
-            services/orion-sql-writer/tests/test_vision_handoff.py \
             services/orion-sql-writer/evals/test_vision_handoff_replay_eval.py \
             tests/test_street_event_bus_catalog.py \
-            services/orion-sql-writer/tests/test_vision_event_sql_shape.py \
-            services/orion-sql-writer/tests/test_energy_sql_shape.py \
-            services/orion-sql-writer/tests/test_physiology_state_sql_shape.py \
-            services/orion-sql-writer/tests/test_want_ledger_sql_shape.py \
             services/orion-sql-writer/evals/test_walkway_reducers_eval.py \
             services/orion-sql-writer/evals/test_walkway_count_estimator_eval.py \
-            services/orion-sql-writer/tests/test_write_health.py \
             services/orion-sql-writer/evals/test_storage_write_replay_eval.py \
-            services/orion-sql-writer/tests/test_act_ledger_wiring.py \
             services/orion-sql-writer/evals/test_act_ledger_calibration_eval.py \
             tests/test_act_ledger_contract.py
 

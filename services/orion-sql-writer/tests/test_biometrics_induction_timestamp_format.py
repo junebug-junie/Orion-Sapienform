@@ -160,12 +160,23 @@ def test_writer_does_not_serialise_the_timestamp_as_iso_json() -> None:
     # model_dump(mode="json") ~10 times elsewhere for BUS payloads, where ISO
     # strings are correct -- a file-wide assertion here is a false positive,
     # which is how the first version of this test failed.
-    marker = 'data = obj.model_dump() if hasattr(obj, "model_dump") else obj.dict()'
+    # The generic fallback arm of the `data = (... if ... else ...)` chain that
+    # builds the row. A few models (GPU pool state, physiology, want ledger)
+    # get their own row builder in front of it; biometrics induction does not,
+    # so it lands here -- and this arm must stay a plain `model_dump()`.
+    marker = 'obj.model_dump() if hasattr(obj, "model_dump") else obj.dict())'
     assert marker in src, (
         "the SQL persistence path in worker.py no longer looks the way this "
         "gate expects -- re-derive how the timestamp reaches the varchar column "
         "before assuming the ordering invariant still holds"
     )
-    # And the row actually goes to Postgres from there.
+    assert src.count(marker) == 1, "more than one generic SQL dump arm -- re-derive which one is live"
     idx = src.index(marker)
+    # The chain this arm belongs to assigns `data`, and no row builder in that
+    # chain is specific to biometrics induction.
+    chain_start = src.rindex("data = (", 0, idx)
+    chain = src[chain_start:idx]
+    assert "BiometricsInduction" not in chain, chain
+    assert 'mode="json"' not in chain, chain
+    # And the row actually goes to Postgres from there.
     assert "_write_row" in src[idx : idx + 800], src[idx : idx + 200]

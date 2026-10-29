@@ -61,7 +61,11 @@ def test_app_js_deactivates_biometrics_view_when_leaving_the_hub_tab() -> None:
     accompanying OrionBiometricsView.deactivate() call (every sibling panel,
     e.g. isFieldAttention/isReverie, already had this pair)."""
     toggle_idx = APP_JS.index('hubTabPanel.classList.toggle("hidden", !isHub);')
-    nearby = APP_JS[toggle_idx : toggle_idx + 700]
+    # Bounded by the next top-level panel toggle rather than a fixed character
+    # count: the graph-workbench block and the explanatory comment between the
+    # two lines grew past the old 700-char window without changing behavior.
+    end_idx = APP_JS.index('topicStudioPanel.classList.toggle("hidden"', toggle_idx)
+    nearby = APP_JS[toggle_idx:end_idx]
     assert "window.OrionBiometricsView" in nearby
     assert "window.OrionBiometricsView.deactivate()" in nearby
 

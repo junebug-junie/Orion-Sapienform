@@ -9,9 +9,13 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SQL_WRITER_ROOT = Path(__file__).resolve().parents[1]
-for mod_name in list(sys.modules):
-    if mod_name == "app" or mod_name.startswith("app."):
-        sys.modules.pop(mod_name, None)
+# No `sys.modules.pop("app...")` here. A bare pop at import time strands every
+# `app.*` module object that earlier-collected tests already bound, so their
+# monkeypatches land on a fresh copy while their routers and class references
+# still point at the old one (see grammar_integration_helpers
+# .load_biometrics_substrate_store_class for the full story). It made
+# test_notify_attention_* reach a real Postgres host and
+# test_gpu_pool_state_history compare two different GpuPoolStateSQL classes.
 if str(SQL_WRITER_ROOT) not in sys.path:
     sys.path.insert(0, str(SQL_WRITER_ROOT))
 if str(REPO_ROOT) not in sys.path:

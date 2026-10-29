@@ -3679,7 +3679,7 @@ channels:
     schema_id: "HelpRequestV1"
     message_kind: "curiosity.help.request.v1"
     producer_services: ["orion-hub"]
-    consumer_services: ["orion-curiosity-peer", "orion-sql-writer"]
+    consumer_services: ["orion-curiosity-peer"]
     description: "Orion-authored HelpRequest after a curiosity/self-inquiry run; optional expectation is committed before contractor invocation when episodes are enabled. Deploy the peer consumer before the Hub producer. docs/peer-ask-episodes.md"
 
   - name: "orion:curiosity:peer:brief"

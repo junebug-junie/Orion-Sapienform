@@ -1,0 +1,50 @@
+# Workflow: the WHOLE services/orion-hub/tests folder.
+#
+# Every other hub workflow runs a hand-picked list of files. That let 33 hub
+# tests rot unseen on main (found 2026-10-29). This job runs the folder, so a
+# test that breaks anywhere in it fails a PR.
+#
+# Triggers on orion/** too: hub tests import most of the shared package, and the
+# rot came from changes outside services/orion-hub as often as inside it.
+
+name: orion-hub-full-suite
+
+on:
+  pull_request:
+    paths:
+      - "services/orion-hub/**"
+      - "orion/**"
+      - "config/**"
+      - "requirements-dev.txt"
+      - ".github/workflows/orion-hub-full-suite.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/orion-hub/**"
+      - "orion/**"
+      - "config/**"
+      - "requirements-dev.txt"
+      - ".github/workflows/orion-hub-full-suite.yml"
+
+jobs:
+  hub-tests:
+    name: Hub — full tests folder
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        # faster-whisper is left out: its pinned `av` has no build for this
+        # runner, and no hub test imports it (speech runs in its own container).
+        run: |
+          python -m pip install --upgrade pip
+          grep -v '^faster-whisper' services/orion-hub/requirements.txt > /tmp/hub-requirements.txt
+          python -m pip install -r /tmp/hub-requirements.txt -r requirements-dev.txt \
+            "fakeredis[lua]>=2.23,<3" "mcp>=1,<2"
+      - name: Run services/orion-hub/tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/services/orion-hub
+        run: python -m pytest -q -p no:cacheprovider services/orion-hub/tests

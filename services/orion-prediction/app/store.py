@@ -471,12 +471,13 @@ class PostgresStore:
         each with its turn record's run_artifact (None until the turn has finished). The naive
         timestamps in both tables are UTC."""
         return self._all(
-            "SELECT d.correlation_id, d.session_id, d.created_at AT TIME ZONE 'UTC' AS created_at, "
-            "d.self_prediction, h.run_artifact FROM thought_decision d "
-            "LEFT JOIN harness_turn_trace h ON h.correlation_id = d.correlation_id "
+            # DISTINCT ON: correlation_id is not unique in thought_decision; keep its first stance row.
+            "SELECT * FROM (SELECT DISTINCT ON (d.correlation_id) d.correlation_id, d.session_id, "
+            "d.created_at AT TIME ZONE 'UTC' AS created_at, d.self_prediction, h.run_artifact "
+            "FROM thought_decision d LEFT JOIN harness_turn_trace h ON h.correlation_id = d.correlation_id "
             "WHERE d.self_prediction IS NOT NULL AND d.created_at >= %s AND NOT EXISTS ("
             "SELECT 1 FROM prediction_turn_self_bet b WHERE b.correlation_id = d.correlation_id) "
-            "ORDER BY d.created_at LIMIT %s",
+            "ORDER BY d.correlation_id, d.created_at) first ORDER BY created_at LIMIT %s",
             (since.astimezone(timezone.utc).replace(tzinfo=None), limit))
 
     def insert_turn_self_bets(self, rows: Sequence[dict]) -> int:

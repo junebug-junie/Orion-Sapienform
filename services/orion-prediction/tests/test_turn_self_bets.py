@@ -84,7 +84,28 @@ def test_caller_is_the_session_prefix():
     assert caller_of("orion_world_pulse_read:2026-10-29") == "orion_world_pulse_read"
     assert caller_of("orion_world_pulse_read_stage_7") == "orion_world_pulse_read_stage"
     assert caller_of("self-abc") == "self"
-    assert caller_of(None) == "none" and caller_of("") == "none"
+    assert caller_of(None) == "unknown" and caller_of("") == "unknown" and caller_of("___") == "unknown"
+
+
+@pytest.mark.parametrize("sid", ["f9e8d7c6-1a2b-4c3d-8e9f-0a1b2c3d4e5f", "ab047634-0000-4000-8000-000000000000",
+                                 "9c91d646-0000-4000-8000-000000000000"])
+def test_a_chat_session_uuid_is_one_caller_not_split_by_its_hex_letters(sid):
+    # Review finding: 'f9e8...' became caller 'f', 'ab04...' caller 'ab', '9c91...' caller 'none'.
+    assert caller_of(sid) == "chat"
+
+
+def test_a_cut_short_notice_is_void_not_a_graded_reply():
+    # Review finding: exit_code null + the harness's stop notice was graded as a 230-step reply.
+    from orion.harness.cut_short import CUT_SHORT_MARKER
+
+    art = _art(text=CUT_SHORT_MARKER + " This turn was stopped after 230 steps.", steps=230, code=None)
+    assert {r["void_reason"] for r in settle(_bet(), art, NOW)} == {"failed_to_execute"}
+
+
+@pytest.mark.parametrize("bet_pred,art", [("not an object", _art()), (PRED, ["not", "an", "object"])])
+def test_a_malformed_row_settles_void_instead_of_stalling_every_pass(bet_pred, art):
+    rows = settle(_bet(pred=bet_pred), art, NOW)
+    assert {r["void_reason"] for r in rows} == {"ungradeable_bad_record"}
 
 
 def _p_rows(caller, ps_hits):
@@ -95,34 +116,34 @@ def _p_rows(caller, ps_hits):
 def test_knowing_only_the_caller_earns_no_skill_against_the_caller_base_rate():
     # curiosity fetches 90% of the time, chat 10%; Orion states exactly the caller's rate, every turn.
     rows = (_p_rows("orion_curiosity", [(0.9, True)] * 27 + [(0.9, False)] * 3)
-            + _p_rows("none", [(0.1, True)] * 3 + [(0.1, False)] * 27))
+            + _p_rows("chat", [(0.1, True)] * 3 + [(0.1, False)] * 27))
     g = grade_faculty("turn.self.fetches_outside", rows)
     assert g["skill"] == pytest.approx(0.64)       # against one global base rate it looks skilled
     assert g["skill_vs_caller"] == pytest.approx(0.0, abs=1e-9)   # against each caller's own rate: nothing
 
 
 def test_knowing_which_turns_inside_a_caller_fetch_earns_skill():
-    hits = [True, False] * 20
+    hits = [True, False] * 30
     rows = _p_rows("orion_curiosity", [(0.9 if h else 0.1, h) for h in hits])
     g = grade_faculty("turn.self.fetches_outside", rows)
     assert g["skill_vs_caller"] == pytest.approx(1 - 0.01 / 0.25)
 
 
-def _r_rows(lo, hi, observed, n=25):
+def _r_rows(lo, hi, observed, n=60):
     return [{"faculty": "turn.self.steps", "caller": "self", "status": "upheld" if lo <= x <= hi else "broken",
              "void_reason": None, "stated_lo": lo, "stated_hi": hi, "observed": x, "hit": lo <= x <= hi,
              "coverage": 0.8} for x in observed[:n]]
 
 
 def test_a_huge_always_right_range_reads_too_wide_and_scores_its_width():
-    rows = _r_rows(1, 100, [4] * 25)
+    rows = _r_rows(1, 100, [4] * 60)
     g = grade_faculty("turn.self.steps", rows)
     assert g["realized_coverage"] == 1.0 and g["reads"] == "too_wide"
     assert g["interval_score"] == pytest.approx(99.0)
 
 
 def test_misses_are_penalised_by_distance():
-    rows = _r_rows(3, 5, [3, 4, 5, 9] * 7, n=28)
+    rows = _r_rows(3, 5, [3, 4, 5, 9] * 15)
     g = grade_faculty("turn.self.steps", rows)
     assert g["realized_coverage"] == pytest.approx(0.75) and g["reads"] == "calibrated"
     # width 2, plus 2/0.2 * (9 - 5) = 40 on each miss (1 in 4)
@@ -132,14 +153,16 @@ def test_misses_are_penalised_by_distance():
 def test_below_the_floor_there_is_a_count_but_no_grade():
     g = grade_faculty("turn.self.steps", _r_rows(3, 5, [4] * 5, n=5))
     assert g == {"n": 5, "enough": False}
+    # Same floor for probabilities: grading.grade() reports numbers from 1 row, this does not below 50.
+    assert grade_faculty("turn.self.fetches_outside", _p_rows("self", [(0.5, True)] * 49)) == {"n": 49, "enough": False}
 
 
 def test_void_rows_are_counted_but_never_graded():
-    rows = [dict(r, status="happened") for r in _p_rows("self", [(0.5, True)] * 25)]
+    rows = [dict(r, status="happened") for r in _p_rows("self", [(0.5, True)] * 55)]
     rows += [dict(r, status="void", void_reason="failed_to_execute", hit=None) for r in _p_rows("self", [(0.5, False)] * 9)]
     out = live_summary(rows)["faculties"]["turn.self.fetches_outside"]
-    assert out["counts"] == {"happened": 25, "failed_to_execute": 9}
-    assert out["overall"]["n"] == 25
+    assert out["counts"] == {"happened": 55, "failed_to_execute": 9}
+    assert out["overall"]["n"] == 55
 
 
 class FakeStore:

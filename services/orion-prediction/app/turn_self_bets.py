@@ -21,11 +21,15 @@ grow into a word list.
 Status: a probability bet records the event (``happened`` / ``not_happened``); it is never "broken" by a
 low-p event that did not happen -- the Brier score grades the number. A range bet is ``upheld`` (the
 outcome fell inside) or ``broken``. Void rows never count toward a grade:
-    failed_to_execute       the turn ran but errored or was cut short (exit_code != 0, or no final_text)
+    failed_to_execute       the turn ran but errored or was cut short (exit_code != 0, no final_text, or
+                            the harness's cut-short notice in place of a reply)
+    ungradeable_bad_record  the bet or the turn record is not a JSON object (one bad row must not stall
+                            every later pass, so it settles void instead of raising)
     expired_unsettled       no turn record EXPIRY after the bet
     ungradeable_no_stated   stance stated nothing for this faculty (A1 never fills a value in)
 
-Grades, per faculty and per caller (session_id prefix: world-pulse, curiosity, self, ...):
+Grades, per faculty and per caller (session_id prefix: world-pulse, curiosity, self, ...; a bare UUID
+session is a chat session, ``chat``; no session id is ``unknown``):
     p faculties     Brier, and skill against the per-caller base rate. Callers differ a lot (curiosity
                     fetches, chat mostly does not), so a single base rate would credit Orion for knowing
                     who called. The per-caller rate is computed on the same rows (in-sample), which
@@ -45,6 +49,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable
 
 from app.grading import grade
+from orion.harness.cut_short import CUT_SHORT_MARKER
 
 logger = logging.getLogger("orion-prediction.turn_self_bets")
 
@@ -52,7 +57,7 @@ EXPIRY = timedelta(hours=6)
 LOOKBACK = timedelta(days=30)   # bets older than this are never settled (they predate A1 anyway)
 PENDING_LIMIT = 2000            # bets read per settle pass
 QUESTION_TAIL = 300
-MIN_REPORTED = 20               # no grade below this many settled bets in a cell
+MIN_REPORTED = 50               # no grade below this many settled bets in a cell (= grading.MIN_GRADED)
 VERDICT_ROWS = 20000
 # The live grade reads bets placed in this window. Rolling, so a prompt change ages its old bets out:
 # 2026-10-29 the stance prompt stopped counting repo files as "outside" and dropped a "3 to 7 steps"
@@ -64,12 +69,19 @@ RANGE_FACULTIES = {"turn.self.steps": ("steps_lo", "steps_hi"),
                    "turn.self.reply_length": ("reply_chars_lo", "reply_chars_hi")}
 FACULTIES = tuple(P_FACULTIES) + tuple(RANGE_FACULTIES)
 _CALLER = re.compile(r"^[a-z_]+")
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
 def caller_of(session_id: str | None) -> str:
-    """The turn's caller from its session id prefix ('orion_curiosity:...' -> 'orion_curiosity')."""
-    m = _CALLER.match(session_id or "")
-    return m.group(0).rstrip("_") if m else "none"
+    """The turn's caller from its session id: a bare UUID is a chat session ('chat'), else the prefix
+    ('orion_curiosity:...' -> 'orion_curiosity'); nothing usable -> 'unknown'. A UUID must never fall
+    to the prefix rule: its first hex letters would split chat into dozens of one-session 'callers'."""
+    sid = (session_id or "").strip()
+    if _UUID.match(sid):
+        return "chat"
+    m = _CALLER.match(sid)
+    prefix = m.group(0).rstrip("_") if m else ""
+    return prefix or "unknown"
 
 
 def _num(v) -> float | None:
@@ -83,9 +95,12 @@ def observe(artifact: dict | None) -> tuple[str | None, dict]:
     """(void reason or None, observed values) from a run_artifact. None artifact = no record yet."""
     if artifact is None:
         return "no_record", {}
+    if not isinstance(artifact, dict):
+        return "ungradeable_bad_record", {}
     text = artifact.get("final_text")
     code = artifact.get("exit_code")
-    if code not in (0, None) or not isinstance(text, str) or not text.strip():
+    if (code not in (0, None) or not isinstance(text, str) or not text.strip()
+            or text.lstrip().startswith(CUT_SHORT_MARKER)):
         return "failed_to_execute", {"exit_code": code}
     fetches = artifact.get("source_fetches")
     steps = _num(artifact.get("step_count"))
@@ -103,6 +118,8 @@ def settle(bet: dict, artifact: dict | None, now: datetime) -> list[dict] | None
     ``bet``: correlation_id, session_id, created_at (aware), self_prediction (dict)."""
     pred = bet.get("self_prediction") or {}
     void, obs = observe(artifact)
+    if not isinstance(pred, dict):
+        pred, void = {}, "ungradeable_bad_record"
     if void == "no_record":
         if now - bet["created_at"] < EXPIRY:
             return None

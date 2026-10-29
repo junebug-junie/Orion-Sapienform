@@ -177,3 +177,17 @@ def test_upstream_5xx_after_grant_is_recorded_with_no_tokens(client, monkeypatch
     (ev,) = _events()
     assert ev.outcome == "upstream_http_5xx" and ev.prompt_tokens is None and ev.token_source == "none"
     assert ev.duration_ms is not None  # the GPU was held: a model call, even if it failed
+
+
+def test_an_overlong_correlation_header_is_clipped_not_refused(client, monkeypatch):
+    """The header now feeds the pool lease's turn_correlation_id (max 128): a longer id must not
+    make the lease request fail validation and refuse the call."""
+    async def _post(self: Any, url: str, **kwargs: Any) -> httpx.Response:
+        return httpx.Response(200, json={"usage": {"prompt_tokens": 1, "completion_tokens": 1}})
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", _post)
+    r = client.post("/v1/chat/completions", headers={"X-Orion-Correlation-Id": "t" * 300},
+                    json={"model": "quick", "messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200
+    (ev,) = _events()
+    assert ev.correlation_id == "t" * 128

@@ -2001,10 +2001,6 @@ channels:
     stability: "experimental"
     since: "2026-10-23"
 
-  # Body economy Patch C1 (Organ 3 Appetite + Organ 4 Choice), SHADOW: one WantDecisionV1 per
-  # POST /physiology/bid on durable-runs -- funded/deferred, lane, prices seen, net, binding
-  # constraint, displaced, retry_after, shadow=true. sql-writer persists one row per decision to
-  # `want_ledger`. Nobody obeys the decision yet (Patch D cuts over one reader per PR).
   # Per-call token ledger (2026-10-29): one LlmCallUsageV1 per LLM call that reached a model --
   # prompt/cached/completion tokens, route, served_by, pool role, model time, correlation id.
   # llm-gateway records every call it places (recorder=gateway); the harness governor's warm FCC
@@ -2019,6 +2015,10 @@ channels:
     stability: "experimental"
     since: "2026-10-29"
 
+  # Body economy Patch C1 (Organ 3 Appetite + Organ 4 Choice), SHADOW: one WantDecisionV1 per
+  # POST /physiology/bid on durable-runs -- funded/deferred, lane, prices seen, net, binding
+  # constraint, displaced, retry_after, shadow=true. sql-writer persists one row per decision to
+  # `want_ledger`. Nobody obeys the decision yet (Patch D cuts over one reader per PR).
   - name: "orion:physiology:want:decision"
     kind: "event"
     schema_id: "WantDecisionV1"

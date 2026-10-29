@@ -141,17 +141,22 @@ def _json_error(status: int, message: str, *, error_type: str = "api_error"):
     return JSONResponse({"type": "error", "error": {"type": error_type, "message": message}}, status_code=status)
 
 
-_USAGE_SINK = None
+from orion.llm.call_usage import UsageSink  # noqa: E402  (stdlib-only module)
+
+# The relay's per-call token ledger queue, drained by the governor onto the bus. Created at import
+# (no lazy init race with the relay thread). Recording is OFF until the governor turns it on
+# (``set_usage_recording``), so a disabled ledger or bus never fills the queue.
+_USAGE_SINK = UsageSink()
+_USAGE_RECORDING = False
 
 
-def get_usage_sink():
-    """The relay's per-call token ledger queue (drained by the governor onto the bus)."""
-    global _USAGE_SINK
-    if _USAGE_SINK is None:
-        from orion.llm.call_usage import UsageSink
-
-        _USAGE_SINK = UsageSink()
+def get_usage_sink() -> UsageSink:
     return _USAGE_SINK
+
+
+def set_usage_recording(enabled: bool) -> None:
+    global _USAGE_RECORDING
+    _USAGE_RECORDING = bool(enabled)
 
 
 # A non-streamed JSON reply is kept whole up to this size (its ``usage`` is at the end).
@@ -209,7 +214,10 @@ def record_relay_call(
 ):
     """One ``llm.call.usage.v1`` (recorder ``harness_relay``). Never raises. ``duration_ms`` here is
     request sent -> reply end, so it includes the gateway pool's line; the gateway's own row for
-    the same call (correlation_id NULL) has the model-only time."""
+    the same call (correlation_id NULL) has the model-only time. A no-op until the governor
+    turns recording on."""
+    if not _USAGE_RECORDING:
+        return None
     try:
         import json
         import os
@@ -352,13 +360,16 @@ def build_relay_app(registry: RelayRegistry, default_upstream: RelayUpstream, *,
                     yield chunk
                 completed = True
             finally:
-                await resp.aclose()
-                if ledger:
-                    record_relay_call(
-                        correlation_id=corr, request_body=body_bytes, status=resp.status_code,
-                        completed=completed, head=bytes(head), tail=bytes(tail),
-                        duration_ms=int((time.monotonic() - started) * 1000),
-                    )
+                try:
+                    await resp.aclose()
+                finally:
+                    # Recorded even when aclose raises or is cancelled (a client that went away).
+                    if ledger:
+                        record_relay_call(
+                            correlation_id=corr, request_body=body_bytes, status=resp.status_code,
+                            completed=completed, head=bytes(head), tail=bytes(tail),
+                            duration_ms=int((time.monotonic() - started) * 1000),
+                        )
 
         return StreamingResponse(body(), status_code=resp.status_code, headers=out_headers)
 
@@ -452,6 +463,7 @@ __all__ = [
     "CORRELATION_HEADER",
     "get_usage_sink",
     "record_relay_call",
+    "set_usage_recording",
     "RelayRegistry",
     "RelayServer",
     "RelayTurnBinding",

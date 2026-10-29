@@ -19,6 +19,13 @@ Join rules (no double count under either):
 * Tokens for one turn or act: every row with that ``correlation_id``. The FCC-path call the
   relay recorded is also a gateway row, but that gateway row has ``correlation_id`` NULL.
 
+Known attribution gaps (the call is still in the totals, but no row carries the turn id):
+
+* A per-turn FCC spawn (not the warm pool) with NO GPU lease goes straight to the FCC proxy; the
+  proxy drops ``X-Orion-Correlation-Id`` and the relay is not in that path. Rare: lease-less
+  harness turns were ~8 calls in 48 h on 2026-10-29, warm and spawned together.
+* HTTP callers that send no ``X-Orion-Correlation-Id`` (AI Town NPCs, other OpenAI clients).
+
 Token fields, normalized across the two wire formats llama.cpp speaks:
 
 * ``prompt_tokens`` -- ALL prompt tokens, including the ones reused from the KV cache.

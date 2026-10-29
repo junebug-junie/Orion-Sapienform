@@ -26,6 +26,16 @@ FIX = Path(__file__).resolve().parents[2] / "llm/tests/fixtures/call_usage"
 SSE = (FIX / "anthropic_stream.sse").read_bytes()
 
 
+@pytest.fixture(autouse=True)
+def _recording_on():
+    """The governor turns relay recording on at boot (HARNESS_LLM_CALL_USAGE_ENABLED + bus)."""
+    relay.set_usage_recording(True)
+    relay.get_usage_sink().drain(limit=10_000)
+    yield
+    relay.set_usage_recording(False)
+    relay.get_usage_sink().drain(limit=10_000)
+
+
 def test_spawn_env_carries_the_turn_correlation_id(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Trace: t\nX-Orion-Correlation-Id: stale-turn")
     env = _build_subprocess_env(fcc_server_url="http://fcc:8082", auth_token="tok", correlation_id="turn-1")
@@ -118,3 +128,10 @@ def test_record_relay_call_never_raises_on_garbage():
                                  head=b"\x00\x01", tail=b"", duration_ms=5)
     assert ev is not None and ev.outcome == "http_500" and ev.token_source == "none"
     relay.get_usage_sink().drain(limit=10_000)
+
+
+def test_relay_records_nothing_until_the_governor_turns_recording_on():
+    relay.set_usage_recording(False)
+    assert _relay_call(lease=False) == []
+    assert relay.record_relay_call(correlation_id="t", request_body=b"{}", status=200, completed=True,
+                                   head=b"", tail=b"", duration_ms=1) is None

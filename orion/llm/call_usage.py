@@ -207,7 +207,14 @@ def _envelope_correlation(corr: Optional[str]) -> Optional[uuid.UUID]:
         return None
 
 
+class PublishError(Exception):
+    def __init__(self, sent: int, cause: BaseException) -> None:
+        super().__init__(str(cause))
+        self.sent = sent
+
+
 async def publish_batch(bus: Any, events: list, *, source: Any, channel: str) -> int:
+    """Publish each event; on a failure raise PublishError carrying how many were already sent."""
     from orion.core.bus.bus_schemas import BaseEnvelope
     from orion.schemas.llm_call_usage import LLM_CALL_USAGE_KIND
 
@@ -215,9 +222,12 @@ async def publish_batch(bus: Any, events: list, *, source: Any, channel: str) ->
     for event in events:
         corr = _envelope_correlation(getattr(event, "correlation_id", None))
         kwargs = {"correlation_id": corr} if corr is not None else {}
-        envelope = BaseEnvelope(kind=LLM_CALL_USAGE_KIND, source=source,
-                                payload=event.model_dump(mode="json"), **kwargs)
-        await bus.publish(channel, envelope)
+        try:
+            envelope = BaseEnvelope(kind=LLM_CALL_USAGE_KIND, source=source,
+                                    payload=event.model_dump(mode="json"), **kwargs)
+            await bus.publish(channel, envelope)
+        except Exception as exc:  # noqa: BLE001
+            raise PublishError(sent, exc) from exc
         sent += 1
     return sent
 
@@ -247,8 +257,9 @@ async def run_usage_publisher(
                 break
             try:
                 await publish_batch(bus, batch, source=source, channel=channel)
-            except Exception:  # noqa: BLE001
-                logger.warning("llm_call_usage_publish_failed dropped=%d", len(batch), exc_info=True)
+            except PublishError as exc:
+                logger.warning("llm_call_usage_publish_failed sent=%d dropped=%d", exc.sent,
+                               len(batch) - exc.sent, exc_info=True)
                 break
         if sink.dropped != reported_dropped:
             logger.warning("llm_call_usage_sink_overflow dropped_total=%d", sink.dropped)

@@ -3131,6 +3131,12 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                 write_ok = await _write(sql_model, None, data_to_process, {}, kind=env.kind)
             elif sql_model is CockpitTurnSightingSQL:
                 write_ok = await _write(sql_model, CockpitHopV1, data_to_process, {}, kind=env.kind)
+            elif sql_model is LlmCallUsageSQL:
+                # extra_fields={}: the generic extras carry the ENVELOPE correlation_id, which is a
+                # fresh uuid4 whenever the producer had none (or a non-UUID turn id). Merging it
+                # would overwrite the payload's correlation_id -- NULL is meaningful here (the
+                # FCC-path gateway row) and the per-turn join reads the payload's value.
+                write_ok = await _write(sql_model, schema_model, data_to_process, {}, kind=env.kind)
             else:
                 write_ok = await _write(sql_model, schema_model, data_to_process, extra_sql_fields, kind=env.kind)
             if env.kind == JOURNAL_WRITE_KIND and write_ok:

@@ -106,3 +106,21 @@ def test_a_call_with_no_tokens_still_lands(monkeypatch) -> None:
     assert asyncio.run(worker._write(LlmCallUsageSQL, LlmCallUsageV1, payload, kind=LLM_CALL_USAGE_KIND))
     row = session.query(LlmCallUsageSQL).one()
     assert row.prompt_tokens is None and row.outcome == "upstream_http_5xx"
+
+
+def test_envelope_path_keeps_the_payload_correlation_id_not_the_envelope_one(monkeypatch) -> None:
+    """Review finding (2026-10-29): the generic extras carry the ENVELOPE correlation_id, a fresh
+    uuid4 when the producer had none or a non-UUID turn id. It must not overwrite the payload's:
+    NULL means "no turn id" and the per-turn join reads the payload value."""
+    from uuid import uuid4
+
+    from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+
+    session = _session(monkeypatch)
+    for call_id, corr in (("n1", None), ("n2", "harness-turn-7")):
+        ev = _event(call_id=call_id, correlation_id=corr)
+        env = BaseEnvelope(kind=LLM_CALL_USAGE_KIND, source=ServiceRef(name="orion-llm-gateway"),
+                           correlation_id=uuid4(), payload=ev.model_dump(mode="json"))
+        asyncio.run(worker.handle_envelope(env))
+    rows = {r.call_id: r.correlation_id for r in session.query(LlmCallUsageSQL).all()}
+    assert rows == {"n1": None, "n2": "harness-turn-7"}

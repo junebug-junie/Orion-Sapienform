@@ -240,8 +240,10 @@ def _extract_correlation_id(request: Request) -> Optional[str]:
     harness call logged ``corr=-``."""
     for header in ("x-orion-correlation-id", "x-request-id", "request-id"):
         value = request.headers.get(header)
-        if value:
-            return value.strip()
+        if value and value.strip():
+            # 128: GpuLeaseRequestV1.turn_correlation_id's limit -- a longer id would make the
+            # pool lease request fail validation and refuse the call.
+            return value.strip()[:128]
     return None
 
 

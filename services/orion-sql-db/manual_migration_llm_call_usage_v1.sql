@@ -9,6 +9,8 @@
 -- Join rules (no double count):
 --   totals over time (tokens/hour, joules/token): WHERE recorder = 'gateway'
 --   one turn or act:                              WHERE correlation_id = <corr>
+-- Attribution gaps (counted in totals, no turn id on any row): per-turn FCC spawns with no GPU lease
+-- (the FCC proxy drops the header) and HTTP callers that send no X-Orion-Correlation-Id.
 -- prompt_tokens INCLUDES cached_prompt_tokens (prompt tokens reused from the KV cache).
 -- duration_ms: gateway = grant -> reply (model time, queue excluded); harness_relay = request -> reply end.
 -- sql-writer's create_all makes the same table at boot; this file is the operator contract.

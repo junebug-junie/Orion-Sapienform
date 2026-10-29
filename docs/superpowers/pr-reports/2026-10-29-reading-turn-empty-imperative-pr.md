@@ -146,6 +146,6 @@ Run from the clean primary `main` checkout after merge. Hub owns the prompt buil
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2966
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

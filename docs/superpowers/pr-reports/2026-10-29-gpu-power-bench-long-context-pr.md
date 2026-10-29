@@ -117,6 +117,6 @@ sudo python3 /mnt/scripts/Orion-Sapienform/scripts/gpu_power_bench.py --gpu 2 --
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/2963
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -286,6 +286,14 @@ def test_a_ring_joins_a_story_only_within_the_gap_and_two_unlinked_stories_never
         ["vision_events:r1", "vision_motion_story:a"], ["vision_motion_story:b"]]
     (visit, _) = _street(chain)
     assert len(visit.segments) == len(visit.evidence_refs) and visit.cumulative_dwell_sec == 10.0
+    # Review finding: a passer-by P (written first) and a doorbell visitor V (written after the ring)
+    # are both within 84 s of the ring. The ring may join one of them; P and V never share an arc.
+    pv = _state([story("P", t, ended_at=t + timedelta(seconds=10), created_at=t + timedelta(seconds=30)),
+                 ring("r1", t + timedelta(seconds=40)),
+                 story("V", t + timedelta(seconds=30), ended_at=t + timedelta(seconds=45), stream_id="doorbell",
+                       created_at=t + timedelta(seconds=100))], at(10))
+    stories = [sorted(r for r in a.evidence_refs if r.startswith("vision_motion_story:")) for a in _street(pv)]
+    assert sorted(stories) == [["vision_motion_story:P"], ["vision_motion_story:V"]]
 
 
 def test_linked_stories_merge_at_any_distance_the_same_day_and_a_graded_handoff_joins_its_story() -> None:

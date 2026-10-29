@@ -126,7 +126,7 @@ paired / met / early / late the two stories, or a graded handoff names the story
 `street:story:<id>` / `street:ring:<id>` in `related_refs`), at any distance in the day; (2) a ring and a
 story at most `ReducerConfig.street_visit_gap_sec` (84 s, the handoff loop's own walkway-to-door bound,
 read from `config/vision_topology.yaml` by a test) apart, measured part to part. Two stories with no link
-never merge. A merged arc keeps every row as evidence (`segments[i]` is `evidence_refs[i]`'s interval),
+never merge, not even through a ring: an arc holds at most one story joined by time. A merged arc keeps every row as evidence (`segments[i]` is `evidence_refs[i]`'s interval),
 spans all parts, and its label joins the parts: "Outside (walkway camera and doorbell camera): a person
 walked toward the house; someone rang the doorbell". A visit lives in one local day.
 

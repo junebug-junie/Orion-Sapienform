@@ -479,11 +479,15 @@ def test_one_visit_is_one_arc_late_written_stories_fold_and_names_say_where_they
                 {"event_id": "ring-1", "stream_id": "doorbell", "event_type": "doorbell_ring",
                  "entities": [], "created_at": start + timedelta(seconds=40)}])
             # orion_ask's columns the read uses (the table lives outside the temporal-self export).
-            await conn.execute("CREATE TABLE orion_ask (ask_id text, source_kind text, status text, "
+            await conn.execute("CREATE TABLE orion_ask (ask_id text, source_kind text, source_ref text, status text, "
                                "answer_detail jsonb, answered_at timestamptz, created_at timestamptz)")
             await fdb.insert(conn, "orion_ask", [
-                {"ask_id": "a1", "source_kind": "vision_story_person", "status": "answered",
+                {"ask_id": "a1", "source_kind": "vision_story_person", "source_ref": "ind-1", "status": "answered",
                  "answer_detail": {"story_id": "late", "action": "name", "name": "Ana"},
+                 "answered_at": start, "created_at": start},
+                # About a companion on the "named" story's card: never names its walker.
+                {"ask_id": "a2", "source_kind": "vision_story_person", "source_ref": "companion-9",
+                 "status": "answered", "answer_detail": {"story_id": "named", "action": "name", "name": "Zed"},
                  "answered_at": start, "created_at": start}])
 
         w = scenario()

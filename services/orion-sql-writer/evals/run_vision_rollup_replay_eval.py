@@ -43,7 +43,7 @@ sys.path.insert(0, str(HERE.parents[1]))
 sys.path.insert(0, str(HERE.parents[3]))
 
 from app.vision_rollup import MemoryStore, RollupConfig, run_one_rollup_cycle  # noqa: E402
-from orion.vision.walkway_rollup import bare_people_counts, child_periods, Period, _parse  # noqa: E402
+from orion.vision.walkway_rollup import bare_living_counts, child_periods, Period, _parse  # noqa: E402
 from zoneinfo import ZoneInfo  # noqa: E402
 
 DEFAULT_PG = "postgresql://postgres:postgres@localhost:55432/conjourney"
@@ -88,9 +88,9 @@ def check(store: MemoryStore, stream: str) -> list[str]:
 def _range_fails(store: MemoryStore, s: str, grain: str, start: datetime, r: dict) -> list[str]:
     out: list[str] = []
     line = store.lines[(s, grain, start)]
-    bare = bare_people_counts(line)
+    bare = bare_living_counts(line)
     if bare:
-        out.append(f"{grain} {r['label']}: bare people count {bare} in {line!r}")
+        out.append(f"{grain} {r['label']}: bare people or dog count {bare} in {line!r}")
     person = (r.get("kinds") or {}).get("person") or {}
     if int(person.get("passings", 0) or 0) <= 0:
         return out

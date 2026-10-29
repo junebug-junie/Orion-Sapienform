@@ -218,7 +218,7 @@ SELECT 'motion_story' AS origin, s.story_id, s.stream_id, s.kind, s.started_at, 
   s.dir_lateral, s.dir_depth, s.name_label, s.individual_id, s.companion_kinds, s.together_story_ids,
   s.published, s.clean, s.rules_version, s.created_at, gate.v AS gate_rules_version, counts.c AS gate_counts
 FROM vision_motion_story s CROSS JOIN gate CROSS JOIN counts
-WHERE s.published AND s.clean AND s.started_at >= %(lo)s::timestamptz - interval '1 day'
+WHERE s.published AND s.clean AND s.started_at >= %(lo)s::timestamptz - interval '1 day' AND s.started_at < %(hi)s
   AND greatest(s.ended_at, coalesce(s.created_at, s.ended_at)) >= %(lo)s
   AND greatest(s.ended_at, coalesce(s.created_at, s.ended_at)) < %(hi)s
   AND s.stream_id <> ALL(%(room_streams)s) AND s.kind = ANY(%(story_kinds)s)
@@ -261,13 +261,19 @@ STREET_STORY_VERDICT_SQL = """
 SELECT story_id, CASE WHEN cant_tell THEN 'cant_tell' ELSE verdict END AS verdict
 FROM vision_motion_story_verdict WHERE story_id = ANY(%(ids)s)
 """
-# The answers the Hub story card writes (motion_story_routes._STORY_ACTIONS_SQL), oldest first.
+# The answers the Hub story card writes (motion_story_routes._STORY_ACTIONS_SQL), oldest first, about
+# the story's walker only (its individual_id or an id on its own crops), as the card's story_display
+# keeps them: a name given to a companion never names the walker.
 STREET_STORY_ANSWERS_SQL = """
-SELECT answer_detail->>'story_id' AS story_id, answer_detail->>'action' AS action, answer_detail->>'name' AS name
-FROM orion_ask
-WHERE source_kind IN ('vision_individual', 'vision_story_person') AND status = 'answered'
-  AND answer_detail->>'story_id' = ANY(%(ids)s)
-ORDER BY answered_at, created_at, ask_id
+SELECT a.answer_detail->>'story_id' AS story_id, a.answer_detail->>'action' AS action,
+  a.answer_detail->>'name' AS name
+FROM orion_ask a JOIN vision_motion_story s ON s.story_id = a.answer_detail->>'story_id'
+WHERE a.source_kind IN ('vision_individual', 'vision_story_person') AND a.status = 'answered'
+  AND a.answer_detail->>'story_id' = ANY(%(ids)s)
+  AND (a.source_ref = s.individual_id OR a.source_ref IN (
+    SELECT e->>'individual_id' FROM jsonb_array_elements(
+      CASE WHEN jsonb_typeof(s.evidence) = 'array' THEN s.evidence ELSE '[]'::jsonb END) e))
+ORDER BY a.answered_at, a.created_at, a.ask_id
 """
 
 REVERIE_CHAINS_SQL = """

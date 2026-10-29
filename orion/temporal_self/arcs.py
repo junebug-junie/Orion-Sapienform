@@ -793,8 +793,10 @@ def _street_visit(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: Reduc
     same story), at any distance in the day. Timed: a ring at most ``street_visit_gap_sec`` from one of
     the arc's stories, or a story that close to one of the arc's rings, measured part to part (a street
     arc's ``segments[i]`` is the interval of ``evidence_refs[i]``), so a busy street never chains
-    story after story onto one ring. A link beats time; then the nearest, then the arc id, so the pick
-    never depends on dict order."""
+    story after story onto one ring. A story never joins by time an arc that already holds a story
+    (two unlinked stories never merge, even through a ring). A link beats time; then the nearest,
+    then the arc id, so the pick never depends on dict order. An event linked to two visit arcs
+    joins the first by that order; the two arcs stay separate."""
     own = _visit_refs(e.related_refs) | {e.subject_ref or ""}
     other = {"doorbell_ring": "vision_motion_story:", "motion_story": "vision_events:"}.get(
         str(e.payload.get("origin") or ""))
@@ -807,6 +809,11 @@ def _street_visit(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: Reduc
         if own & (_visit_refs(arc.related_refs) | {arc.subject_ref}):
             key = (0, 0.0, arc.arc_id)
         elif other is not None:
+            if e.payload.get("origin") == "motion_story" and any(
+                    r.startswith("vision_motion_story:") for r in arc.evidence_refs):
+                # The arc already holds a story this one is not linked to: two stories never
+                # merge on time alone, not even through a ring between them (review finding).
+                continue
             gaps = [max(0.0, _secs(s.ended_at or s.began_at, start), _secs(end, s.began_at))
                     for ref, s in zip(arc.evidence_refs, arc.segments) if ref.startswith(other)]
             if not gaps or min(gaps) > cfg.street_visit_gap_sec:

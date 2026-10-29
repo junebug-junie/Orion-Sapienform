@@ -31,6 +31,18 @@ experiment dispatcher. Where the build departs from the design below, the build 
   max residual once (n+1)·q ≥ n, so at the default 40 windows the 95 % upper bound is the max
   observed error (conservative); at 14 the 80 % and 95 % ranges coincide.
 
+## Switchback runner (2026-10-29, follow-up PR)
+
+The first dispatched experiment lives in orion-prediction itself (`app/experiment_runner.py`,
+`POST /experiments/run`), not orion-self-experiments: this service already owns the design, the
+guard, the intervention log and the analysis, and already has the bus Redis URL. The only actuator
+is `vision.focus:<stream_id>` (Redis key `orion:vision:experiment:<stream_id>` read by the vision
+frame router). The runner adds a manipulation check (router dispatch tiers per arm, GPU and chassis
+watts ON minus OFF) beside the temperature effect, so "no effect" can be told apart from "the
+switch did nothing". Abort = status `cancelled` plus an intervention row with `arm` NULL. Disable:
+`PREDICTION_EXPERIMENT_RUNNER_ENABLED=false` (the spec's earlier `PREDICTION_EXPERIMENTS_ENABLED`
+name was never built). PR report: `docs/superpowers/pr-reports/2026-10-29-vision-focus-experiment-pr.md`.
+
 ## Shadow scoring (2026-10-22, follow-up PR)
 
 Live 2026-10-21/22: direct_arx served 15 min for 18 h (backtest p 0.041-0.049) and beat the baseline

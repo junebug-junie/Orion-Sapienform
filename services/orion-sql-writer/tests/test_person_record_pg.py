@@ -302,3 +302,13 @@ def test_a_name_joined_as_the_same_person_moves_its_clusters_and_is_not_asked_ab
     assert all(not a["source_ref"].startswith(persons["Sam"]) for a in opened)
     assert [a["source_ref"] for a in opened if a["source_ref"].startswith(persons["Sam Lee"])] == [
         f"{persons['Sam Lee']}|relationship"]
+    # An answer to a question about the joined name that was already in when she
+    # joined (review 2026-10-29) lands on the person kept, not on the hidden row.
+    with pg.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, answer, answered_at, created_at) "
+            "VALUES ('ask-late', 'How do you know Sam?', 'person_fact', :r, 'answered', 'my neighbor', :t, :t)"),
+            {"r": f"{persons['Sam']}|relationship", "t": NOW})
+    _run(pg, NOW + timedelta(minutes=2))
+    assert _rows(pg, "SELECT person_id, value_text FROM person_fact WHERE fact_id = 'ask-late'") == [
+        (persons["Sam Lee"], "my neighbor")]

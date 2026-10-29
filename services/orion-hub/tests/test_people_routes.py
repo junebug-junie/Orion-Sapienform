@@ -233,17 +233,27 @@ def test_same_person_joins_two_names_moves_facts_and_closes_the_question() -> No
         people = (await client.get("/api/people")).json()["people"]
         assert [p["name"] for p in people].count("Sam Lee") == 0
         sam = next(p for p in people if p["person_id"] == "p-sam")
-        assert sam["also_called"] == ["Sam Lee"] and sam["open_question"]["ask_id"] == "ask-sam"
+        assert sam["also_called"] == [{"person_id": "p-sam2", "name": "Sam Lee"}]
+        assert sam["open_question"]["ask_id"] == "ask-sam"
+        # A fact typed on a joined name lands on the person kept.
+        fid = (await client.post("/api/people/p-sam2/facts", json={"category": "age", "value": "ten"})).json()["fact_id"]
+        assert await pool.fetchval("SELECT person_id FROM person_fact WHERE fact_id = $1", fid) == "p-sam"
         # Refused: itself, an unknown person, Orion, or a name already joined to someone.
         assert (await client.post("/api/people/p-sam/same-as", json={"into": "p-sam"})).status_code == 422
         assert (await client.post("/api/people/p-sam/same-as", json={"into": "nobody"})).status_code == 404
         assert (await client.post("/api/people/p-sam/same-as", json={"into": "r-self"})).status_code == 404
-        assert (await client.post("/api/people/r-you/same-as", json={"into": "p-sam2"})).status_code == 422
+        r = await client.post("/api/people/r-you/same-as", json={"into": "p-sam"})
+        assert r.status_code == 422 and r.json()["detail"] == "interlocutor_is_kept"   # her own card is kept
+        r = await client.post("/api/people/p-ups/same-as", json={"into": "p-sam2"})
+        assert r.status_code == 422 and r.json()["detail"] == "into_is_merged"
+        await pool.execute("UPDATE person SET status = 'not_a_person' WHERE person_id = 'p-typo'")
+        r = await client.post("/api/people/p-ups/same-as", json={"into": "p-typo"})
+        assert r.status_code == 422 and r.json()["detail"] == "into_is_not_a_person"
         # Joining the kept person into someone else carries the earlier name along.
         assert (await client.post("/api/people/p-sam/same-as", json={"into": "r-you"})).status_code == 200
         assert dict(await pool.fetch("SELECT person_id, merged_into FROM person WHERE person_id IN ('p-sam', 'p-sam2')")) == {
             "p-sam": "r-you", "p-sam2": "r-you"}
-        assert await pool.fetchval("SELECT person_id FROM person_fact WHERE fact_id = 'f1'") == "r-you"
+        assert await pool.fetchval("SELECT count(*) FROM person_fact WHERE person_id = 'r-you'") == 2
         # Undo: the name is its own person again.
         assert (await client.post("/api/people/p-sam2/same-as", json={"into": None})).status_code == 200
         assert await pool.fetchval("SELECT merged_into FROM person WHERE person_id = 'p-sam2'") is None

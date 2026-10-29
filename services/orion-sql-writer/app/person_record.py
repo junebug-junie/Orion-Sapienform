@@ -125,8 +125,10 @@ def apply_fact_answers(conn, now: datetime) -> int:
         if parsed and value:
             person_id, category = parsed
             n = conn.execute(text(
+                # A name joined to another person ("same person") after the question was
+                # asked: the answer belongs to the person kept.
                 "INSERT INTO person_fact (fact_id, person_id, category, value_text, voice, source_ref) "
-                "SELECT :f, :p, :c, :v, :voice, :src WHERE EXISTS (SELECT 1 FROM person WHERE person_id = :p) "
+                "SELECT :f, coalesce(merged_into, person_id), :c, :v, :voice, :src FROM person WHERE person_id = :p "
                 "ON CONFLICT DO NOTHING"),
                 {"f": ask_id, "p": person_id, "c": category, "v": value, "voice": pf.VOICE_ASK_ANSWER,
                  "src": f"ask:{ask_id}"}).rowcount or 0

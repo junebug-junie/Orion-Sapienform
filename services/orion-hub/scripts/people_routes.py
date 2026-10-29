@@ -74,7 +74,8 @@ _THUMB_SQL = confirmed_pictures_sql("$1::text[]")
 
 # Names she said are the same person as someone shown ("Also called ...").
 _ALIASES_SQL = """
-SELECT merged_into, display_name FROM person WHERE merged_into = ANY($1::text[]) ORDER BY lower(display_name)
+SELECT merged_into, person_id, display_name FROM person WHERE merged_into = ANY($1::text[])
+ORDER BY lower(display_name), person_id
 """
 
 _FACTS_SQL = """
@@ -127,7 +128,8 @@ async def list_people(request: Request) -> dict[str, Any]:
             asks = {r["person_id"]: r for r in await conn.fetch(_OPEN_ASK_SQL, ids, SOURCE_KIND_PERSON_FACT)}
             aliases: dict[str, list] = {}
             for r in await conn.fetch(_ALIASES_SQL, ids):
-                aliases.setdefault(r["merged_into"], []).append(r["display_name"])
+                aliases.setdefault(r["merged_into"], []).append(
+                    {"person_id": r["person_id"], "name": r["display_name"]})
     except Exception as exc:
         ask_routes._raise_store_http(exc)
     facts: dict[str, list] = {}
@@ -168,9 +170,11 @@ async def add_fact(request: Request, person_id: str, body: FactBody) -> dict[str
     try:
         async with pool.acquire() as conn:
             await _person_exists(conn, person_id)
+            # A joined name's facts belong to the person kept.
             await conn.execute(
                 "INSERT INTO person_fact (fact_id, person_id, category, value_text, voice, source_ref) "
-                "VALUES ($1, $2, $3, $4, $5, 'hub')", fact_id, person_id, category, value, VOICE_HUB_EDIT)
+                "SELECT $1, coalesce(merged_into, person_id), $3, $4, $5, 'hub' FROM person WHERE person_id = $2",
+                fact_id, person_id, category, value, VOICE_HUB_EDIT)
     except HTTPException:
         raise
     except Exception as exc:
@@ -231,19 +235,31 @@ async def same_as(request: Request, person_id: str, body: SameAsBody) -> dict[st
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
-                await _person_exists(conn, person_id)
+                # Lock this row and anyone joined to it, so two joins at once cannot
+                # leave a two-step chain.
+                me = await conn.fetchrow(
+                    "SELECT role FROM person WHERE person_id = $1 AND role <> 'self' FOR UPDATE", person_id)
+                if me is None:
+                    raise HTTPException(status_code=404, detail="person_not_found")
+                await conn.execute("SELECT 1 FROM person WHERE merged_into = $1 FOR UPDATE", person_id)
                 if into is None:
                     await conn.execute("UPDATE person SET merged_into = NULL, updated_at = now() WHERE person_id = $1",
                                        person_id)
                 else:
                     if into == person_id:
                         raise HTTPException(status_code=422, detail="same_as_itself")
+                    # The interlocutor's own card is always the one kept.
+                    if me["role"] == "interlocutor":
+                        raise HTTPException(status_code=422, detail="interlocutor_is_kept")
                     target = await conn.fetchrow(
-                        "SELECT merged_into FROM person WHERE person_id = $1 AND role <> 'self' FOR UPDATE", into)
+                        "SELECT merged_into, status FROM person WHERE person_id = $1 AND role <> 'self' FOR UPDATE",
+                        into)
                     if target is None:
                         raise HTTPException(status_code=404, detail="person_not_found")
                     if target["merged_into"] is not None:
                         raise HTTPException(status_code=422, detail="into_is_merged")
+                    if target["status"] != "active":
+                        raise HTTPException(status_code=422, detail="into_is_not_a_person")
                     # Anyone already merged into this person follows it, so a chain stays one step.
                     await conn.execute(
                         "UPDATE person SET merged_into = $2, updated_at = now() WHERE person_id = $1 OR merged_into = $1",

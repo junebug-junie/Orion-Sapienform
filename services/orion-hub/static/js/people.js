@@ -66,9 +66,19 @@
     const title = el(doc, "div", "min-w-0");
     title.appendChild(el(doc, "div", "text-sm font-semibold text-gray-100", p.name));
     title.appendChild(el(doc, "div", "text-[11px] text-gray-400", active ? seenLine(p) : "Not a person (Orion will not ask about this name)"));
-    if ((p.also_called || []).length) {
-      title.appendChild(el(doc, "div", "text-[11px] text-gray-400", "Also called " + p.also_called.join(", ")));
-    }
+    // "Also called": each joined name, with Undo (it becomes its own person again).
+    (p.also_called || []).forEach(function (a) {
+      const line = el(doc, "div", "text-[11px] text-gray-400 flex items-center gap-2");
+      line.appendChild(el(doc, "span", "", "Also called " + String(a.name || "")));
+      const undo = el(doc, "button", "text-[11px] text-gray-400 underline hover:text-gray-200", "Undo");
+      undo.setAttribute("type", "button");
+      undo.setAttribute("data-person-action", "split");
+      undo.setAttribute("aria-label", "Undo: " + String(a.name || "") + " is not the same person as " + String(p.name || ""));
+      buttons.push(undo);
+      undo.addEventListener("click", function () { onAction(a.person_id, "same-as", { into: null }); });
+      line.appendChild(undo);
+      title.appendChild(line);
+    });
     head.appendChild(title);
     card.appendChild(head);
 
@@ -122,12 +132,12 @@
     }
     let sameRow = null;
     const others = (people || []).filter(function (o) { return o.person_id !== p.person_id && o.status === "active"; });
-    if (active && others.length) {
+    if (active && p.role !== "interlocutor" && others.length) {
       sameRow = el(doc, "div", "flex flex-wrap items-center gap-2");
       const sameSelect = el(doc, "select", "bg-gray-900 text-gray-100 text-xs rounded px-1 py-1 border border-gray-700");
       sameSelect.setAttribute("aria-label", "Same person as");
       sameSelect.setAttribute("data-person-field", "same-as");
-      const none = el(doc, "option", "", "Same person as...");
+      const none = el(doc, "option", "", "Same person as... (joins " + String(p.name || "this name") + " into them)");
       none.setAttribute("value", "");
       sameSelect.appendChild(none);
       others.forEach(function (o) {

@@ -123,7 +123,8 @@ def test_same_person_join_browser_smoke() -> None:
                 continue
             out.append({"person_id": pid, "name": name, "status": "active", "days": 1, "clusters": 1,
                         "belongings": 0, "image_ref": None, "facts": [], "open_question": None,
-                        "also_called": ["Sam"] if pid == "p-full" and "p-first" in merged else []})
+                        "also_called": [{"person_id": "p-first", "name": "Sam"}]
+                        if pid == "p-full" and "p-first" in merged else []})
         return out
 
     def handle(route):
@@ -138,7 +139,10 @@ def test_same_person_join_browser_smoke() -> None:
         if route.request.method == "POST" and url.endswith("/same-as"):
             body = json.loads(route.request.post_data or "{}")
             posted.append((url.split("hub.test")[1], body))
-            merged[url.split("/")[-2]] = body["into"]
+            if body["into"] is None:
+                merged.pop(url.split("/")[-2], None)
+            else:
+                merged[url.split("/")[-2]] = body["into"]
             return route.fulfill(body=json.dumps({"ok": True}), content_type="application/json")
         return route.fulfill(status=404, body="")
 
@@ -157,7 +161,7 @@ def test_same_person_join_browser_smoke() -> None:
         page.click(f'{first} [data-person-action="same-as"]')
         assert posted == []
         opts = page.locator(f'{first} [data-person-field="same-as"] option').all_inner_texts()
-        assert opts == ["Same person as...", "Sam Lee"]
+        assert opts == ["Same person as... (joins Sam into them)", "Sam Lee"]
         box = page.locator(f'{first} [data-person-field="same-as"]').bounding_box()
         assert box["x"] + box["width"] <= 360 + 1
         page.select_option(f'{first} [data-person-field="same-as"]', "p-full")
@@ -165,6 +169,11 @@ def test_same_person_join_browser_smoke() -> None:
         page.wait_for_selector(first, state="detached")
         assert "Also called Sam" in page.inner_text('[data-person-id="p-full"]')
         assert page.inner_text("#peopleStatus") == "Orion knows 1 person by name."
+        # Undo: the joined name is its own person again.
+        page.click('[data-person-id="p-full"] [data-person-action="split"]')
+        page.wait_for_selector(first)
+        assert "Also called" not in page.inner_text('[data-person-id="p-full"]')
         browser.close()
-    assert posted == [("/api/people/p-first/same-as", {"into": "p-full"})]
+    assert posted == [("/api/people/p-first/same-as", {"into": "p-full"}),
+                      ("/api/people/p-first/same-as", {"into": None})]
     assert errors == []

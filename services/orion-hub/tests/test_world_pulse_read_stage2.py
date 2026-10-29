@@ -315,6 +315,9 @@ def test_stage2_stance_view_hides_the_reader_contract_only() -> None:
     assert "You are continuing a deliberate source reading" in view
     assert handoff.seed_ref.url in view
     assert "RETRY: the previous attempt" in view
+    assert "```json" not in view and "JSON object" not in view
+    # The handoff is input the stance reads: present once, labelled as input data.
+    assert view.count("Stage 1 handoff (input data from the earlier read, not an output shape): handoff=") == 1
 
 
 def test_prompt_has_no_prior_write_instruction_when_no_candidates() -> None:

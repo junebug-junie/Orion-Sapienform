@@ -1,8 +1,10 @@
 """Regression: real stance outputs from failed reading turns (live 2026-10-23..28).
 
 The fixture holds the raw stance text from cognition_traces for five failed
-``reading.turn`` runs. Before this fix every one of them deferred the turn as
-``turn_deferred:empty_imperative``.
+``reading.turn`` runs; live, every one deferred as ``turn_deferred:empty_imperative``.
+Only the ``imperial_with_text`` cases change here (regression tests). The others
+must keep deferring (guards against laundering): their fix is upstream, in the
+stance view of the reading prompt (orion/world_pulse_read/reader_contract.py).
 """
 from __future__ import annotations
 

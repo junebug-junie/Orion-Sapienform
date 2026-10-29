@@ -108,7 +108,26 @@ Not run. No dependency, compose, or env change. Live path UNVERIFIED until deplo
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+A code-review subagent reviewed commit a23fd1722. No blockers. Fixed:
+
+- Finding: the Stage 2 stance view still showed the Stage 1 handoff, a reader-shaped dict (`'what_i_learned': ..., 'candidate_priors': ...`).
+  - Fix: the handoff stays (the stance must read it). It is now on one line labelled "Stage 1 handoff (input data from the earlier read, not an output shape)".
+  - Evidence: the eval exempts only that labelled line. With the label removed, the eval finds 4 leaked keys (mutation check run by hand).
+- Finding: the eval matched only double-quoted keys, so it could not see a dict-repr leak. Its Stage 2 case had no claim context.
+  - Fix: the eval also matches single-quoted keys (the template escapes `'` as `\u0027`). It now builds a claim context, so the relationship-claims fence is rendered and checked.
+  - Evidence: `test_reading_stance_prompt_eval.py` stage2 `reader_keys_before=9 after=0`.
+- Finding: the reader's format orders ("return ONLY one fenced ```json block", "ONE JSON object", "say in summary") were outside the fence.
+  - Fix: moved into the fenced contract. The retry note now says "say what could not be read".
+  - Evidence: the eval asserts the view holds no "```json", "JSON object", or "Juniper-facing prose".
+- Finding: a marker string in untrusted text made the view fail back to the full prompt with no record.
+  - Fix: the handoff and retained excerpts are passed through `defuse_fence_markers`. Document text is not changed (the reader must get the exact snapshot bytes, which `_generate` checks). The listener logs `reading_stance_view_unavailable reason=damaged_fence` when fences exist but do not pair.
+  - Evidence: `test_damaged_fence_falls_back_to_full_prompt_and_logs`, `test_defused_source_text_cannot_break_or_hide_behind_the_fence`.
+- Finding (nit): the `harness_user_message` comment no longer matched the code. Fix: comment rewritten.
+- Finding (nit): the regression-test docstring overstated which cases change. Fix: docstring says which are regressions and which are guards.
+
+Not fixed:
+
+- Finding (nit): mark the `imperial` repair in `disposition_reasons`. Not done: `evaluate_thought_disposition` replaces the reasons with `[]` on proceed, so the marker would be lost on exactly the repaired turns. The repair is visible in the WARNING log `stance_react_imperative_key_repaired`, and the raw text in `cognition_traces` keeps `imperial`.
 
 ## Restart required
 

@@ -64,7 +64,7 @@ from orion.schemas.world_pulse_read import (
 )
 from orion.substrate.adapters.world_pulse_read import map_world_pulse_read_handoff_to_substrate
 from orion.substrate.assertion_projector import assertion_node_id
-from orion.world_pulse_read.reader_contract import fence_reader_contract
+from orion.world_pulse_read.reader_contract import defuse_fence_markers, fence_reader_contract
 from orion.substrate.graph_journal import RevisionConflict
 from orion.substrate.reconcile import SubstrateIdentityResolver, is_identity_fenced
 
@@ -249,7 +249,9 @@ def claim_prompt_section(ctx: ClaimContextV1) -> str:
             break
         shown = t.text[:budget]
         budget -= len(shown)
-        excerpts.append(f"--- retained {t.representation} of {t.url} (sha256 {t.sha256[:12]}) ---\n{shown}")
+        excerpts.append(
+            f"--- retained {t.representation} of {t.url} (sha256 {t.sha256[:12]}) ---\n{defuse_fence_markers(shown)}"
+        )
 
     def listing(items) -> str:
         return "\n".join(f"  {e.node_id} = {e.label!r} ({e.kind})" for e in items)

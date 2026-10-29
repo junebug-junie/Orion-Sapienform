@@ -3,7 +3,8 @@
 Renders the real ``stance_react.j2`` the way a reading turn feeds it (the stance
 view as ``user_message`` and ``stance_inputs.user_message``) for Stage 1, a
 document Stage 1, and a Stage 2 with a retry note and claim context. The only
-output keys the stance may see are its own (ThoughtEventV1). Live 2026-10-27/28
+output keys the stance may see are its own (ThoughtEventV1); the one exception is the
+labelled Stage 1 handoff, which is input the stance must read. Live 2026-10-27/28
 the reader's keys in this prompt were what Qwen3.6-35B wrote instead (6 of 6
 reading stances on that model) and what Bonsai-2-27B spent its whole token
 budget weighing (empty stance replies).
@@ -46,11 +47,22 @@ DOC_SEED = WorldPulseReadSeedV1(
 def _stage2_prompt() -> str:
     from datetime import datetime, timezone
 
+    from orion.world_pulse_read.assertions import ClaimContextV1, EndpointV1
+    from orion.world_pulse_read.fetch_text import RetainedTextV1
+
     handoff = WorldPulseReadHandoffV1(
         seed_ref=SEED, what_i_learned="Stage 1 read the abstract only.", trace_id="tr-1",
         created_at=datetime.now(timezone.utc),
     )
-    return _build_stage2_prompt(handoff, "tr-2", prior_error="turn_exception:TimeoutError: ")
+    claims = ClaimContextV1(
+        subjects=(EndpointV1(node_id="sub-1", kind="concept", label="heat pump"),),
+        objects=(EndpointV1(node_id="obj-1", kind="concept", label="refrigeration cycle"),),
+        texts=(RetainedTextV1(sha256="c" * 64, url=SEED.url, representation="tool_digest",
+                              text="A heat pump uses a refrigeration cycle."),),
+    )
+    return _build_stage2_prompt(
+        handoff, "tr-2", claim_context=claims, prior_error="turn_exception:TimeoutError: ",
+    )
 
 
 PROMPTS = {
@@ -67,9 +79,23 @@ def _render(task: str) -> str:
     )
 
 
+# Stage 2 shows the stance the Stage 1 handoff (a dict repr, single-quoted keys). It is
+# input the stance must read, so it stays, on one line, labelled as input data. Only
+# that line is exempt from the single-quoted check.
+HANDOFF_LABEL = "Stage 1 handoff (input data from the earlier read, not an output shape): handoff="
+
+
 def _reader_keys_in(rendered: str) -> list[str]:
-    # The template renders user_message with |tojson, so a key arrives as \"summary\".
-    return [k for k in READER_KEYS if k in rendered or k.replace('"', '\\"') in rendered]
+    # The template renders user_message with |tojson: a key arrives as \"summary\",
+    # a newline as \n, a single quote as \u0027. A dict repr would carry 'summary'.
+    lines = rendered.replace("\\n", "\n").replace("\\u0027", "'").split("\n")
+    outside_handoff = "\n".join(line for line in lines if HANDOFF_LABEL not in line)
+    found = []
+    for k in READER_KEYS:
+        bare = k.strip('"')
+        if k in rendered or k.replace('"', '\\"') in rendered or f"'{bare}'" in outside_handoff:
+            found.append(k)
+    return found
 
 
 @pytest.mark.parametrize("name", sorted(PROMPTS))
@@ -84,3 +110,10 @@ def test_reading_stance_prompt_holds_only_the_stance_contract(name):
     assert after == [], f"{name}: reader keys leak into the stance prompt: {after}"
     rendered = _render(view)
     assert "REQUIRED JSON FIELDS" in rendered and "- imperative:" in rendered
+    # The reader's output-format orders are a second contract too.
+    for order in ("```json", "JSON object", "Juniper-facing prose"):
+        assert order not in view, f"{name}: {order!r} outside the fence"
+    if name == "stage2":
+        assert view.count(HANDOFF_LABEL) == 1
+        assert "relationship_claims" in full and "relationship_claims" not in view
+        assert "A heat pump uses a refrigeration cycle." in view  # retained source text stays

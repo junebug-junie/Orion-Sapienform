@@ -35,6 +35,17 @@ STANCE_CONTRACT_PLACEHOLDER = (
 )
 
 
+def defuse_fence_markers(untrusted: str) -> str:
+    """Untrusted text (a page, a document, a Stage 1 echo) must not carry a fence
+    marker: one would make the stance view fail closed (full two-contract prompt) or
+    hide that text from the stance. Swaps the marker's ``<<<`` for look-alike
+    guillemets; nothing else changes."""
+    text = str(untrusted or "")
+    for marker in (READER_CONTRACT_BEGIN, READER_CONTRACT_END):
+        text = text.replace(marker, marker.replace("<<<", "\u2039\u2039\u2039"))
+    return text
+
+
 def fence_reader_contract(contract: str) -> str:
     """Wrap the reader's output contract in the fences. Ends with a newline."""
     body = str(contract or "").strip("\n")

@@ -1233,8 +1233,9 @@ async def execute_unified_turn(
     if utterance_origin in ("juniper", "orion"):
         stance_inputs["utterance_origin"] = utterance_origin
     if appraisal:
-        # Motor/harness still sees the full prompt; stance_inputs["user_message"]
-        # must match StanceReactRequestV1.user_message (Mind snapshot user_text).
+        # The task the motor gets, as the stance may read it (the stance view when one
+        # was given). stance_inputs["user_message"] must match
+        # StanceReactRequestV1.user_message (Mind snapshot user_text).
         stance_inputs["harness_user_message"] = stance_view or user_message
     if recent_turns:
         # The stance pass writes the imperative and tone the motor follows, so

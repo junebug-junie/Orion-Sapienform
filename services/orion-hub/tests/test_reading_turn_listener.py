@@ -243,3 +243,34 @@ def test_fenced_brief_gives_the_stance_a_view_without_the_reader_contract(monkey
         await listener.stop()
 
     asyncio.run(run())
+
+
+def test_damaged_fence_falls_back_to_full_prompt_and_logs(monkeypatch, caplog):
+    from orion.world_pulse_read.reader_contract import READER_CONTRACT_END, fence_reader_contract
+
+    monkeypatch.setitem(ReadingTurnListener.handle.__globals__, "validate_hold_ref", AsyncMock())
+    turn = AsyncMock(return_value=[{"type": "final", "llm_response": "{}", "harness_source_fetches": []}])
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", turn)
+    # A document that quotes the end marker: the view cannot be trusted.
+    prompt = "Read it.\n" + fence_reader_contract('{"what_i_learned": "x"}') + f"doc: {READER_CONTRACT_END}"
+
+    async def run():
+        listener = ReadingTurnListener(ServiceRef(name="orion-hub"))
+        listener.bus = AsyncMock()
+        listener.rpc_bus = listener.bus
+        req = request()
+        req.brief.prompt = prompt
+        envelope = BaseEnvelope(
+            kind="reading.turn.request.v1",
+            source=ServiceRef(name="orion-durable-runs"),
+            correlation_id=req.correlation_id,
+            reply_to=f"orion:reading:turn:reply:{req.correlation_id}",
+            payload=req.model_dump(),
+        )
+        with caplog.at_level("WARNING"):
+            await listener.handle(envelope)
+        assert turn.call_args.kwargs["stance_view_message"] is None
+        assert "reading_stance_view_unavailable reason=damaged_fence" in caplog.text
+        await listener.stop()
+
+    asyncio.run(run())

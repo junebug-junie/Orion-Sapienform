@@ -1,6 +1,7 @@
 ## Summary
 
 - Orion's town speech now reads only the model's answer. On an empty answer it no longer falls back to the model's reasoning.
+- `is_injectable` (`orion/embodiment/speech.py`) now requires at least one letter. Live 2026-10-29 (`c:609091`), Orion posted `[]`, an empty structured answer that passed the whitespace-only check.
 - Both speech paths in `services/orion-embodiment/app/worker.py` move from `extract_cortex_payload_text` (reasoning fallback on by default) to `extract_cortex_answer_text`. That module's own docstring says text shown as Orion's words must use the latter.
 - Live 2026-10-29 01:38 UTC (`c:608777`, Orion↔Sofia): Orion opened a chat, so there was no partner line yet, and the prompt allows an empty reply. The model reasoned its way to empty. The gateway separated `reasoning_content` (1,890 chars) correctly. Embodiment's extractor then posted that reasoning, which quotes the full speech prompt, as Orion's line.
 
@@ -14,11 +15,13 @@ Failure mode: model reasoning posted into AI Town as Orion speaking. It also wen
 
 ## Architecture touched
 
-`services/orion-embodiment/app/worker.py` only.
+`services/orion-embodiment/app/worker.py` and `orion/embodiment/speech.py` (`is_injectable`).
 
 ## Files changed
 
 - `services/orion-embodiment/app/worker.py`: both call sites use `extract_cortex_answer_text`.
+- `orion/embodiment/speech.py`: `is_injectable` requires a letter.
+- `orion/embodiment/tests/test_speech.py`: `test_letterless_replies_are_not_speech`.
 - `services/orion-embodiment/tests/test_worker_conversation_memory.py`: `test_request_utterance_quick_never_speaks_the_reasoning` (empty content plus reasoning gives `""`).
 
 ## Schema / bus / API changes
@@ -44,6 +47,7 @@ Operator note: the live `services/orion-embodiment/.env` was set back to `EMBODI
 
 ```text
 pytest services/orion-embodiment/tests -> 102 passed
+pytest orion/embodiment -> 101 passed
 mutation: old extractor restored -> test_request_utterance_quick_never_speaks_the_reasoning fails
 ```
 

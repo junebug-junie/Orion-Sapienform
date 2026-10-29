@@ -113,3 +113,13 @@ def test_is_self_repeat_detects_exact_orion_line():
     assert is_self_repeat("Hi there!", p, "orion") is True
     assert is_self_repeat("something new entirely", p, "orion") is False
     assert is_self_repeat("how are you?", p, "orion") is False  # partner line, not own
+
+
+def test_letterless_replies_are_not_speech():
+    # Live 2026-10-29: Orion posted "[]" (an empty structured answer).
+    from orion.embodiment.speech import is_injectable
+
+    for junk in ("[]", "{}", "  ", "...", '""', "—", "", None):
+        assert not is_injectable(junk), junk
+    for line in ("Hi.", "I hear it.", "Já!", "好"):
+        assert is_injectable(line), line

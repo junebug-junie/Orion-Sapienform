@@ -119,6 +119,29 @@ camera): ..."). The spot-check gate is read as of the read, not as of the story.
 Proof on the live rail: `temporal_self_arc` rows with `kind = 'street'`, and the chronicle's
 `temporal_self_street_episode arc_id=... source=vision_motion_story:...` log line.
 
+**One visit, one arc (2026-10-29, follow-up to PR #2876).** One visit used to spend up to 3 daily slots
+(walkway story, doorbell story, ring). `arcs._fold_street` now folds a street event into today's street
+arc of the same visit, without spending a slot: (1) linked: the handoff loop (`vision_handoff`, PR #2828)
+paired / met / early / late the two stories, or a graded handoff names the story (refs
+`street:story:<id>` / `street:ring:<id>` in `related_refs`), at any distance in the day; (2) a ring and a
+story at most `ReducerConfig.street_visit_gap_sec` (84 s, the handoff loop's own walkway-to-door bound,
+read from `config/vision_topology.yaml` by a test) apart, measured part to part. Two stories with no link
+never merge. A merged arc keeps every row as evidence (`segments[i]` is `evidence_refs[i]`'s interval),
+spans all parts, and its label joins the parts: "Outside (walkway camera and doorbell camera): a person
+walked toward the house; someone rang the doorbell". A visit lives in one local day.
+
+**Late rows fold.** A street event is available when its row was WRITTEN (`payload.available_at`, the
+later of its end and `created_at`; `arcs.event_available_at`), so a story written after the chronicle's
+read lag is read in the window it was written in instead of being stored late and never folded. The
+arc keeps the real times. A story ending just before midnight and written after it lands in the next
+day's arcs.
+
+**Names say where they came from.** A story's written name (`name_label`) is the recognizer matching its
+crops to a cluster Juniper named: the label says "Robin (a guess)", like a handoff's person guess. It
+says "Robin (named by Juniper)" only when she vouched for that story: her latest name answer on it (the
+Hub story card), or her spot-check verdict "right" on it (`sources.story_name`). Payload `name_source`:
+`juniper` | `recognizer`. Read as of the read, like the gate.
+
 ### Thread arc ids and the truth eval (2026-10-12)
 
 `OpenThreadV1.arc_id` names the concern arc a thread is, so the cue cites every open thread

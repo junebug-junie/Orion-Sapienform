@@ -169,15 +169,23 @@ class ChronicleStore:
 
     async def stored_available(self, event_ids: Iterable[str]) -> dict[str, datetime]:
         """Already-stored events -> the available time they were stored with (ended_at, else
-        occurred_at). Absent ids were never stored (the late probe's test)."""
+        occurred_at; a street event's ``available_at`` when later, the same rule as
+        ``arcs.event_available_at``). Absent ids were never stored (the late probe's test)."""
         ids = sorted(set(event_ids))
         if not ids:
             return {}
         async with self._pool.connection() as conn:
             rows = await (await conn.execute(
-                "SELECT event_id, occurred_at, payload_json->>'ended_at' AS ended_at FROM temporal_self_event "
+                "SELECT event_id, occurred_at, source_kind, payload_json->>'ended_at' AS ended_at, "
+                "payload_json->>'available_at' AS written FROM temporal_self_event "
                 "WHERE event_id = ANY(%(ids)s)", {"ids": ids})).fetchall()
-        return {r["event_id"]: (datetime.fromisoformat(r["ended_at"]) if r["ended_at"] else r["occurred_at"]) for r in rows}
+        out: dict[str, datetime] = {}
+        for r in rows:
+            t = datetime.fromisoformat(r["ended_at"]) if r["ended_at"] else r["occurred_at"]
+            if r["source_kind"] == "street_event" and r["written"]:
+                t = max(t, datetime.fromisoformat(r["written"]))
+            out[r["event_id"]] = t
+        return out
 
     async def deferrals(self, lo: datetime, hi: datetime) -> list[TemporalSelfEventV1]:
         """Stored visual deferrals in ``[lo, hi]`` (the body summary's ``thermal_refusals``)."""

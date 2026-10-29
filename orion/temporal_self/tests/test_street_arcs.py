@@ -82,11 +82,29 @@ def test_ring_and_low_p_handoff_are_episodes() -> None:
                       "never arrived (p 0.01)"]
 
 
-def test_named_story_uses_the_name_and_doorbell_camera() -> None:
-    e = S.street_event(story("s2", at(0), stream_id="doorbell", name_label="Robin", dir_lateral=0, dir_depth=1))
-    assert e.label == "Outside (doorbell camera): Robin walked toward the house"
-    assert e.payload["named"] is True and e.payload["individual_id"] == "ind-1"
-    assert S.street_event(story("s3", at(0)), ).payload["individual_id"] is None  # unnamed: no id carried
+def test_named_story_says_where_the_name_came_from() -> None:
+    """The written name is the recognizer matching crops to a cluster Juniper named: a guess, said the
+    same way a handoff's person guess is. Only Juniper vouching for THIS story makes it hers."""
+    row = story("s2", at(0), stream_id="doorbell", name_label="Robin", dir_lateral=0, dir_depth=1)
+    e = S.street_event(row)
+    assert e.label == "Outside (doorbell camera): Robin (a guess) walked toward the house"
+    assert (e.payload["named"], e.payload["name_source"], e.payload["individual_id"]) == (True, "recognizer", "ind-1")
+    # Her spot-check verdict "right" on this story vouches for the written name.
+    right = S.street_event(dict(row, story_verdict="right"))
+    assert right.label == "Outside (doorbell camera): Robin (named by Juniper) walked toward the house"
+    assert right.payload["name_source"] == "juniper"
+    assert "(a guess)" in S.street_event(dict(row, story_verdict="wrong_name")).label
+    # Her latest answer on the story wins: a name, a correction, or "someone else" with no name.
+    answers = [{"action": "name", "name": "Robin"}, {"action": "unsure"}, {"action": "name", "name": "Sam"}]
+    assert S.street_event(dict(row, story_answers=answers)).label.startswith(
+        "Outside (doorbell camera): Sam (named by Juniper) walked")
+    gone = S.street_event(dict(row, story_verdict="right", story_answers=[{"action": "someone_else", "name": None}]))
+    assert gone.label.startswith("Outside (doorbell camera): a person walked")
+    assert (gone.payload["named"], gone.payload["name_source"], gone.payload["individual_id"]) == (False, None, None)
+    # She can name an unnamed story too.
+    assert S.street_event(story("s4", at(0), story_answers=[{"action": "name", "name": "Ana"}])).label.startswith(
+        "Outside (walkway camera): Ana (named by Juniper) walked")
+    assert S.street_event(story("s3", at(0))).payload["individual_id"] is None  # unnamed: no id carried
 
 
 # --------------------------------------------------------------------------- ordinary -> nothing
@@ -177,7 +195,8 @@ def test_room_company_is_unchanged_and_street_binds_no_room_context() -> None:
     assert strip(with_street) == strip(without)  # room arcs identical, field for field
     (company,) = [a for a in with_street.arcs.values() if a.kind == "company"]
     assert company.subject_ref == "cam0"
-    assert len(_street(with_street)) == 2
+    (visit,) = _street(with_street)  # the ring and the story are one visit
+    assert sorted(visit.evidence_refs) == ["vision_events:r1", "vision_motion_story:s1"]
     for arc in _street(with_street):
         assert arc.percept_entities == [] and arc.context_event_ids == []  # the room percept is not the street's
     # A walkway presence row or walkway percept still never reaches the room lanes.
@@ -211,3 +230,113 @@ def test_a_busy_street_never_pushes_orions_own_arcs_out_of_the_frame() -> None:
     assert len(kinds) == ARCS_IN_FRAME_CAP and kinds.count("street") == 1
     assert [a.subject_ref for a in f.arcs_today if a.kind == "street"] == ["street:story:s11"]
     assert kinds.count("curiosity") == ARCS_IN_FRAME_CAP - 1  # only the oldest one gave its slot to the pin
+
+
+# --------------------------------------------------------------------------- one visit (follow-up to #2876)
+
+
+def test_visit_gap_is_the_handoff_loops_walk_to_the_door() -> None:
+    """84 s = approach_door's prior window end plus the handoff loop's late margin (2 x the window)."""
+    from orion.vision.topology import load_topology
+
+    lo, hi = load_topology().by_id("approach_door").prior_sec
+    assert ReducerConfig().street_visit_gap_sec == hi + 2 * (hi - lo)
+
+
+def test_walkway_story_doorbell_story_and_ring_of_one_visit_are_one_arc() -> None:
+    """Live 10-24 20:47:57-20:48:07: a doorbell story, a ring inside it, and the walkway story the
+    handoff loop paired with it. Before: up to 3 slots. Now one arc, one slot, all three rows as evidence."""
+    t = at(0)
+    rows = [
+        story("door", t, stream_id="doorbell", ended_at=t + timedelta(seconds=10), dir_lateral=0, dir_depth=1,
+              created_at=t + timedelta(seconds=60), visit_story_ids=["walk"]),
+        story("walk", t + timedelta(seconds=2), ended_at=t + timedelta(seconds=8),
+              created_at=t + timedelta(seconds=55), visit_story_ids=["door"]),
+        ring("r1", t + timedelta(seconds=9)),
+    ]
+    cfg = ReducerConfig(street_arcs_per_day=2)
+    state = _state(rows + [story("later", at(30))], at(60), cfg)
+    visit, later = _street(state)
+    assert sorted(visit.evidence_refs) == ["vision_events:r1", "vision_motion_story:door", "vision_motion_story:walk"]
+    assert (visit.began_at, visit.ended_at, visit.status) == (t, t + timedelta(seconds=10), "closed")
+    assert visit.subject_label == (
+        "Outside (doorbell camera and walkway camera): a person walked toward the house; a person walked "
+        "left to right, away from the house; someone rang the doorbell")
+    assert later.subject_ref == "street:story:later"  # the visit spent 1 of the 2 slots, not 3
+    # Replay identity: any input order gives the same state.
+    assert _state(list(reversed(rows)) + [story("later", at(30))], at(60), cfg) == state
+
+
+def test_a_ring_joins_a_story_only_within_the_gap_and_two_unlinked_stories_never_merge() -> None:
+    near = _state([story("s1", at(0)), ring("r1", at(0) + timedelta(seconds=15 + 80))], at(10))
+    assert len(_street(near)) == 1  # ring 80 s after the story ended: the walk to the door
+    far = _state([story("s1", at(0)), ring("r1", at(0) + timedelta(seconds=15 + 90))], at(10))
+    assert len(_street(far)) == 2
+    before = _state([ring("r1", at(0)), story("s1", at(0) + timedelta(seconds=60))], at(10))
+    assert len(_street(before)) == 1  # rang, then walked away on the walkway
+    # Two passers-by 10 s apart with no handoff link are two arcs, and two rings are two visits.
+    assert len(_street(_state([story("s1", at(0)), story("s2", at(0) + timedelta(seconds=10))], at(10)))) == 2
+    assert len(_street(_state([ring("r1", at(0)), ring("r2", at(0.5))], at(10)))) == 2
+    # Measured from the ring itself, never the visit's growing span: a busy walkway cannot chain story
+    # after story onto one ring. B starts 80 s after A ended but 150 s after the ring.
+    t = at(0)
+    chain = _state([ring("r1", t), story("a", t + timedelta(seconds=60), ended_at=t + timedelta(seconds=70)),
+                    story("b", t + timedelta(seconds=150), ended_at=t + timedelta(seconds=160))], at(10))
+    assert [sorted(a.evidence_refs) for a in _street(chain)] == [
+        ["vision_events:r1", "vision_motion_story:a"], ["vision_motion_story:b"]]
+    (visit, _) = _street(chain)
+    assert len(visit.segments) == len(visit.evidence_refs) and visit.cumulative_dwell_sec == 10.0
+
+
+def test_linked_stories_merge_at_any_distance_the_same_day_and_a_graded_handoff_joins_its_story() -> None:
+    # walkway_to_door "met" with a 372 s transit (live 10-25 21:50): beyond the time gap, linked anyway.
+    rows = [story("a", at(0), visit_story_ids=["b"]), story("b", at(6.2), stream_id="doorbell"),
+            handoff("e1", at(7), kind="handoff_met", p=0.01, evidence_refs=["handoff:h", "story:a", "story:b"])]
+    (visit,) = _street(_state(rows, at(30)))
+    assert sorted(visit.evidence_refs) == [
+        "vision_handoff_street_outbox:e1", "vision_motion_story:a", "vision_motion_story:b"]
+    # A visit lives in one local day: a link across midnight leaves two arcs, one per day.
+    night = at(14 * 60 + 59)  # 23:59 local
+    s = _state([story("a", night, visit_story_ids=["b"]), story("b", night + timedelta(minutes=3))],
+               night + timedelta(minutes=30))
+    assert [a.subject_ref for a in _street(s)] == ["street:story:b"]
+    (closed,) = s.pending_closed_days
+    assert [a.subject_ref for a in closed.arcs if a.kind == "street"] == ["street:story:a"]
+
+
+def test_a_merged_event_never_spends_a_slot_even_when_the_day_is_full() -> None:
+    cfg = ReducerConfig(street_arcs_per_day=1)
+    rows = [story("s1", at(0)), ring("r1", at(0) + timedelta(seconds=30)), story("s2", at(10))]
+    (arc,) = _street(_state(rows, at(30), cfg))
+    assert sorted(arc.evidence_refs) == ["vision_events:r1", "vision_motion_story:s1"]  # s2 capped out
+
+
+# --------------------------------------------------------------------------- late rows fold
+
+
+def test_a_story_written_after_the_read_lag_still_folds_once() -> None:
+    """A story is available when it is WRITTEN (created_at), not when it ended: 1 in 54 used to land
+    after the chronicle's 300 s read lag and was stored late, never folded."""
+    from orion.temporal_self.arcs import event_available_at
+
+    t = at(0)
+    e = S.street_event(story("late", t, created_at=t + timedelta(minutes=20)))
+    assert event_available_at(e) == t + timedelta(minutes=20)
+    # Never before its end (a write-clock skew cannot pull it earlier).
+    assert event_available_at(S.street_event(story("x", t, created_at=t))) == t + timedelta(seconds=15)
+    # The chronicle's clock passed t + 10 min before the row existed; it still folds when read.
+    cfg = ReducerConfig()
+    s = advance_clock(initial_state(), t + timedelta(minutes=10), cfg)
+    s = advance_clock(fold(s, events=[e], cfg=cfg), t + timedelta(minutes=25), cfg)
+    (arc,) = _street(s)
+    assert (arc.began_at, arc.ended_at) == (t, t + timedelta(seconds=15))  # the real times, not the write time
+    # The same row read again (a re-read window) is skipped: never a second arc.
+    again = advance_clock(fold(s, events=[e], cfg=cfg), t + timedelta(minutes=30), cfg)
+    assert len(_street(again)) == 1 and again.skipped_today == s.skipped_today + 1
+    # Other kinds ignore a payload key of that name.
+    other = ev("curiosity_run", "c1", t, ended=t + timedelta(seconds=5), subject="curiosity:1",
+               payload={"available_at": (t + timedelta(hours=1)).isoformat()})
+    assert event_available_at(other) == t + timedelta(seconds=5)
+    # A handoff's outbox row is written after its occurred_at: available when written too.
+    h = S.street_event(handoff("e9", t))
+    assert event_available_at(h) == t + timedelta(seconds=60)

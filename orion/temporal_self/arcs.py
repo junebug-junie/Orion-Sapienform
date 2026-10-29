@@ -49,6 +49,7 @@ from orion.schemas.temporal_self import (
 )
 from orion.temporal_self.broadcast import BroadcastTickView
 from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for, day_window
+from orion.temporal_self.sources import VISIT_REF_PREFIX, merge_street_labels
 
 INTERRUPTIONS_CAP = 64
 DAY_LIST_CAP = 256
@@ -115,6 +116,11 @@ class ReducerConfig:
     # the rest are never folded (the chronicle logs them per window). 0 admits none. Live 72 h to
     # 2026-10-23: 25 events passed (7 to 10 a day), so 12 binds only on an unusually busy day.
     street_arcs_per_day: int = 12
+    # One visit (follow-up to PR #2876): a doorbell ring and a story this close in time are the same
+    # visit and share one street arc. 84 s is the handoff loop's own bound for a walk from the walkway
+    # camera to the door: config/vision_topology.yaml approach_door prior_sec [3, 30] plus its late
+    # margin 2 x (30 - 3) (orion-sql-writer vision_handoff.py); test_street_arcs.py reads the yaml.
+    street_visit_gap_sec: float = 84.0
 
 
 LANE_RULES = {
@@ -127,9 +133,10 @@ LANE_RULES = {
     "imagery": "one visual reverie chain",
     "sleep": "one completed dream cycle",
     "play": "one finished Retro session (retro_play_sessions); label = its deterministic summary",
-    "street": ("one notable outside event (street_event: a spot-check-gated motion story, a doorbell ring, "
-               "or a handoff with p < 0.05); label starts 'Outside (<camera>)'; nothing binds to it by time; "
-               "at most street_arcs_per_day a day"),
+    "street": ("one notable outside visit (street_event: a spot-check-gated motion story, a doorbell ring, "
+               "or a handoff with p < 0.05); events the handoff loop linked, or a ring and a story within "
+               "street_visit_gap_sec, share one arc; label starts 'Outside (<camera>)'; nothing binds to it "
+               "by time; at most street_arcs_per_day a day"),
     "company": ("presence_transition presence_id (room camera); opens on present, recent is the grace "
                 "period, same-state keepalives only refresh; closes on absent (process_ended, at the last "
                 "sighting), unknown / a producer restart / no row for company_stale_sec (source_stale); "
@@ -189,8 +196,24 @@ def _add_context(arc: TemporalSelfArcV1, event_id: str) -> None:
         arc.context_event_ids.append(event_id)
 
 
-def _event_available_at(e: TemporalSelfEventV1) -> datetime:
-    return e.ended_at or e.occurred_at
+def event_available_at(e: TemporalSelfEventV1) -> datetime:
+    """When the event could first be read: its end (a process event is emitted once complete), or
+    later when the adapter says the row was written later (``payload.available_at``, street events
+    only: a story is written a median 49 s after it ends, p99 20 min on 10-23). Ordering by the write
+    time is what lets a row written after the chronicle's read lag still fold, never arrive late."""
+    base = e.ended_at or e.occurred_at
+    written = e.payload.get("available_at") if e.source_kind == "street_event" else None
+    if written:
+        try:
+            t = as_utc(written)
+        except (TypeError, ValueError):
+            t = None
+        if t is not None and t > base:
+            return t
+    return base
+
+
+_event_available_at = event_available_at
 
 
 def _ref(e: TemporalSelfEventV1) -> str:
@@ -730,6 +753,11 @@ def _fold_process(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: Reduc
     arc_id = arc_id_for(state.day_id, kind, e.subject_ref, evidence[0])
     if arc_id in state.arcs:
         return
+    if kind == "street":
+        visit = _street_visit(state, e, cfg)
+        if visit is not None:
+            _merge_street(visit, e)  # the same visit: no new arc, no daily slot spent
+            return
     if kind == "street" and sum(
             1 for a in state.arcs.values() if a.kind == "street" and a.day_id == state.day_id) >= cfg.street_arcs_per_day:
         return  # over the daily street cap: never folded (the chronicle logs the count per window)
@@ -752,6 +780,72 @@ def _fold_process(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: Reduc
     # Bind what happened inside the process, inclusive of its end, then close it.
     _retro_bind(state, arc, start, end + timedelta(microseconds=1))
     _close(arc, "process_ended", end)
+
+
+def _visit_refs(refs: Iterable[str]) -> set[str]:
+    return {r for r in refs if r.startswith(VISIT_REF_PREFIX)}
+
+
+def _street_visit(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: ReducerConfig) -> TemporalSelfArcV1 | None:
+    """Today's street arc ``e`` belongs to as the same visit (sources.py, "one visit"), else None.
+
+    Linked: ``e`` and the arc share a ``street:`` ref (one names the other's subject, or both name the
+    same story), at any distance in the day. Timed: a ring at most ``street_visit_gap_sec`` from one of
+    the arc's stories, or a story that close to one of the arc's rings, measured part to part (a street
+    arc's ``segments[i]`` is the interval of ``evidence_refs[i]``), so a busy street never chains
+    story after story onto one ring. A link beats time; then the nearest, then the arc id, so the pick
+    never depends on dict order."""
+    own = _visit_refs(e.related_refs) | {e.subject_ref or ""}
+    other = {"doorbell_ring": "vision_motion_story:", "motion_story": "vision_events:"}.get(
+        str(e.payload.get("origin") or ""))
+    start, end = e.occurred_at, e.ended_at or e.occurred_at
+    best: tuple[int, float, str] | None = None
+    pick = None
+    for arc in state.arcs.values():
+        if arc.kind != "street" or arc.day_id != state.day_id or _ref(e) in arc.evidence_refs:
+            continue
+        if own & (_visit_refs(arc.related_refs) | {arc.subject_ref}):
+            key = (0, 0.0, arc.arc_id)
+        elif other is not None:
+            gaps = [max(0.0, _secs(s.ended_at or s.began_at, start), _secs(end, s.began_at))
+                    for ref, s in zip(arc.evidence_refs, arc.segments) if ref.startswith(other)]
+            if not gaps or min(gaps) > cfg.street_visit_gap_sec:
+                continue
+            key = (1, min(gaps), arc.arc_id)
+        else:
+            continue
+        if best is None or key < best:
+            best, pick = key, arc
+    return pick
+
+
+def _merge_street(arc: TemporalSelfArcV1, e: TemporalSelfEventV1) -> None:
+    """Fold ``e`` into its visit's arc: its evidence and its interval as a pair (``segments[i]`` is
+    ``evidence_refs[i]``'s interval, in fold order), its refs, and its words. Dwell is the union of
+    the parts. The arc stays closed (process_ended)."""
+    start, end = e.occurred_at, e.ended_at or e.occurred_at
+    if len(arc.evidence_refs) >= min(EVIDENCE_CAP, SEGMENTS_CAP):
+        arc.evidence_overflow += 1  # never reached live (a visit is a handful of rows); keeps the pairs aligned
+        return
+    arc.subject_label = (merge_street_labels(e.label, arc.subject_label) if start < arc.began_at
+                         else merge_street_labels(arc.subject_label, e.label))
+    arc.evidence_refs.append(_ref(e))
+    arc.segments.append(ArcSegmentV1(began_at=start, ended_at=end))
+    union, cur = 0.0, None
+    for s0, s1 in sorted((s.began_at, s.ended_at or s.began_at) for s in arc.segments):
+        if cur is not None and s0 <= cur[1]:
+            cur[1] = max(cur[1], s1)
+            continue
+        if cur is not None:
+            union += _secs(cur[0], cur[1])
+        cur = [s0, s1]
+    arc.cumulative_dwell_sec = union + (_secs(cur[0], cur[1]) if cur else 0.0)
+    arc.began_at = min(arc.began_at, start)
+    arc.last_seen_at = max(arc.last_seen_at, end)
+    arc.ended_at = max(arc.ended_at or end, end)
+    for r in [e.subject_ref or "", *e.related_refs]:
+        if r and r not in arc.related_refs and len(arc.related_refs) < CORRELATION_CAP:
+            arc.related_refs.append(r)
 
 
 def _attach_by_ref(state: TemporalSelfStateV1, kind: str, e: TemporalSelfEventV1) -> None:

@@ -521,6 +521,12 @@ remain evidence of unfinished work, not claims of completion.
 - A busy GPU pool is a durable wait. Each accepted topic/overall answer is saved before
   advancing the graph. Failed durable runs retry their saved progress on a later sleep
   using a fenced generation; operator-cancelled/abandoned windows are not resurrected.
+  Retries are bounded: when 3 failed generations in a row end at the same saved cursor
+  (`MAX_STALLED_GENERATIONS`, `state.stall`), the window is set `cancelled` and the next window
+  can run. A generation that saves a batch resets the count. An operator can re-open a given-up
+  window: set its row back to `pending` and remove `state.stall`.
+- A source record longer than half the input budget is split into near-equal pieces at a
+  word boundary (no tiny tail pieces).
 - Empty windows are explicitly `empty`, with no model call or fabricated journal.
 - Completed topic+overall summaries enter the existing journal/index path with stable
   IDs and no notification trigger. Sleep retries journal delivery until the SQL row exists.

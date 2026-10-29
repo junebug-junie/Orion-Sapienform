@@ -67,12 +67,12 @@ class Model:
             return ""
         if self.too_long and phase == "topics":
             self.too_long -= 1
-            return json.dumps({"topics": [{"topic": "Delivery reliability", "body": BODY * 8, "refs": ["s0"]}]})
+            return json.dumps({"record_topics": {"s0": 0}, "topics": [{"topic": "Delivery reliability", "body": BODY * 8}]})
         if phase == "overall":
             return json.dumps({"body": BODY})
         records = json.loads(prompt.split("SOURCE RECORDS:\n")[1])
-        return json.dumps({"topics": [{"topic": "Delivery reliability", "body": BODY,
-                                       "refs": [r["ref"] for r in records]}]})
+        return json.dumps({"record_topics": {r["ref"]: 0 for r in records},
+                           "topics": [{"topic": "Delivery reliability", "body": BODY}]})
     async def publish(self, entry):
         self.entries.append(entry)
         return entry.entry_id if self.publish_ok else None
@@ -237,10 +237,10 @@ def test_each_call_sends_the_phase_output_schema_to_the_gateway():
         topics, overall = model.options
         assert topics["structured_output_method"] == overall["structured_output_method"] == "json_object_schema"
         assert topics["structured_output_thinking_policy"] == "disabled_for_artifact"
-        assert topics["structured_output_schema_name"] == "CuriosityCompactionTopicPassV1"
+        assert topics["structured_output_schema_name"] == "CuriosityCompactionTopicPassV2"
         item = topics["structured_output_schema"]["properties"]["topics"]["items"]["properties"]
-        assert item["body"]["maxLength"] == 1200 and item["refs"]["minItems"] == 1
-        assert item["refs"]["items"]["enum"] == ["s0"]
+        assert item["body"]["maxLength"] == 1200 and "refs" not in item
+        assert topics["structured_output_schema"]["properties"]["record_topics"]["required"] == ["s0"]
         assert topics["structured_output_schema"]["properties"]["topics"]["maxItems"] == 4
         assert overall["structured_output_schema_name"] == "CuriosityCompactionSummaryV1"
         assert overall["structured_output_schema"]["properties"]["body"]["maxLength"] == 2400

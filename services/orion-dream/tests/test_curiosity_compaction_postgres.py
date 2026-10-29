@@ -52,7 +52,7 @@ def _answer(row):
     if row["state"]["phase"] == "overall":
         return json.dumps({"body": BODY})
     records = json.loads(next_prompt(row).split("SOURCE RECORDS:\n")[1])
-    return json.dumps({"topics": [{"topic": "Delivery", "body": BODY, "refs": [r["ref"] for r in records]}]})
+    return json.dumps({"record_topics": {r["ref"]: 0 for r in records}, "topics": [{"topic": "Delivery", "body": BODY}]})
 
 
 def test_real_checkpoint_locks_delivery_ack_and_no_duplicate_windows(store):
@@ -116,6 +116,42 @@ def test_failed_run_retries_saved_topics_and_fences_old_generation(store):
         store.load(row["compaction_id"], row["run_id"])
     store.persist(record_answer(resumed, _answer(resumed)))
     assert store.recent()[0]["status"] == "completed"
+
+
+def test_window_failing_at_one_cursor_is_given_up_after_bounded_generations(store):
+    """Live 2026-10-14..28: weekly 2026-10-05 reached r21 and monthly 2026-09-01 r20 -- every
+    sleep re-admitted a failed run with no limit. Generations that save no batch are now bounded;
+    one that saves a batch resets the count."""
+    from orion.curiosity.compaction import MAX_STALLED_GENERATIONS, record_answer
+    store, db, _ = store
+
+    def fail_and_resume(run_id):
+        with db.begin() as conn:
+            conn.execute(text("INSERT INTO durable_admission_runs VALUES (:id, 'failed')"), {"id": run_id})
+        session = store.acquire("weekly")
+        try:
+            return session.prepare(NOW, "dc-retry")
+        finally:
+            session.close()
+
+    session = store.acquire("weekly")
+    row = session.prepare(NOW, "dc-original")
+    session.close()
+    row = fail_and_resume(row["run_id"])
+    assert row["run_id"].endswith(":r1") and row["state"]["stall"]["count"] == 1
+    store.persist(record_answer(row, _answer(row)))         # this generation saved a batch
+    row = fail_and_resume(row["run_id"])
+    assert row["state"]["stall"]["count"] == 1 and row["state"]["phase"] == "overall"
+    for _ in range(MAX_STALLED_GENERATIONS - 2):
+        row = fail_and_resume(row["run_id"])
+    assert row["state"]["stall"]["count"] == MAX_STALLED_GENERATIONS - 1
+    assert fail_and_resume(row["run_id"]) is None             # same cursor again: given up
+    assert store.recent()[0]["status"] == "cancelled"
+    session = store.acquire("weekly")
+    try:
+        assert session.prepare(NOW, "dc-after") is None       # not resurrected
+    finally:
+        session.close()
 
 
 def test_cancelled_window_is_not_resurrected(store):

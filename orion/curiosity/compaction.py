@@ -77,6 +77,23 @@ def due_window(now: datetime, cadence: Cadence, latest: dict | None):
     return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
 
 
+# A failed durable run is re-admitted under a new generation (``:rN``) on the next sleep. That
+# is useful while each generation saves at least one batch; a window whose generations keep
+# failing at the SAME cursor is given up (status ``cancelled``) after this many, so it stops
+# using the agent lane and the later windows queued behind it can run.
+MAX_STALLED_GENERATIONS = 3
+
+
+def note_failed_generation(state: dict) -> int:
+    """Record one failed generation in ``state["stall"]``; return how many failed in a row at
+    this cursor. The cursor is (phase, batch count, saved partials): any accepted answer moves it."""
+    cursor = [state.get("phase"), len(state.get("batches") or []), len(state.get("partials") or [])]
+    stall = state.get("stall") or {}
+    count = stall.get("count", 0) + 1 if stall.get("cursor") == cursor else 1
+    state["stall"] = {"cursor": cursor, "count": count}
+    return count
+
+
 def window_id(cadence, start):
     return f"curiosity-compaction:{cadence}:{start.astimezone(ZONE).date()}"
 
@@ -119,6 +136,21 @@ def source_material(journals: list[dict], weeks: list[dict]) -> tuple[list[dict]
     return material, sources
 
 
+def _piece_len(text: str, cap: int) -> int:
+    """Length of the next piece of an over-long body: equal pieces, cut at whitespace.
+
+    Live 2026-10-28: slicing at a fixed 7000 left tail pieces like "elfDefinition 1, TurnOutcome
+    1.)" (32 chars, mid-word) as their own source record, and run r20 failed on that batch with
+    "references omit ... source records". Now an N-piece body is cut into N near-equal pieces,
+    so no piece is a stump."""
+    if len(text) <= cap:
+        return len(text)
+    pieces = -(-len(text) // cap)            # ceil: fewest pieces that each fit the cap
+    target = -(-len(text) // pieces)         # near-equal share, always <= cap
+    space = max(text.rfind(" ", 0, target), text.rfind("\n", 0, target))
+    return space + 1 if space >= target * 4 // 5 else target
+
+
 def batches(material: list[dict]) -> list[list[dict]]:
     """Lossless split; count only the alias + body actually shown to the model.
 
@@ -128,7 +160,7 @@ def batches(material: list[dict]) -> list[list[dict]]:
     for item in material:
         remaining = item["body"]
         while remaining:
-            n = min(len(remaining), INPUT_BUDGET // 2)
+            n = _piece_len(remaining, INPUT_BUDGET // 2)
             dates = {k: item[k] for k in ("first_at", "last_at") if k in item}
             while json_char_len({"ref": "s00000", "body": remaining[:n], **dates}) > INPUT_BUDGET:
                 n //= 2
@@ -143,11 +175,13 @@ class Topic(BaseModel):
     model_config = ConfigDict(extra="forbid")
     topic: str = Field(min_length=3, max_length=100)
     body: str = Field(min_length=80, max_length=TOPIC_BODY_CHARS)
-    refs: list[str] = Field(min_length=1)
 
 
 class TopicPass(BaseModel):
+    """``record_topics`` maps EVERY record alias (s0, s1, ...) to the 0-based index of the topic
+    that covers it. It comes first, so the model groups the records before it writes."""
     model_config = ConfigDict(extra="forbid")
+    record_topics: dict[str, int] = Field(min_length=1)
     topics: list[Topic] = Field(min_length=1, max_length=MAX_TOPICS)
 
 
@@ -156,49 +190,62 @@ def output_schema(row) -> tuple[str, dict]:
     ``structured_output_schema`` so llama.cpp constrains decoding to it.
 
     Encodes the limits the model kept missing: a topic body's maxLength (it writes right at the
-    cap and cannot count characters), at least one ref per topic, at most six topics, and refs
-    drawn ONLY from this batch's aliases (an enum, so an invented ref cannot be sampled). Bodies
-    stay free strings -- no pattern, no enum -- so the grammar bounds length, not wording.
-    "Every input ref appears somewhere" is not expressible here; ``record_answer`` still checks it."""
+    cap and cannot count characters), at most ``MAX_TOPICS`` topics, and -- since V2 -- full
+    coverage: ``record_topics`` has one REQUIRED key per alias of this batch and no other key,
+    so the grammar can neither skip a record nor invent one. Live 2026-10-25..28, V1 (a free
+    ``refs`` list per topic, enum-bounded) still lost every retry of a 13-record reduction batch
+    to "references omit ... source records": the model dropped refs it was not forced to write.
+    Bodies stay free strings -- no pattern, no enum -- so the grammar bounds length, not wording.
+    ``record_answer`` still checks every rule, including that each topic index is used."""
     if row["state"].get("phase") == "overall":
         return "CuriosityCompactionSummaryV1", {
             "type": "object", "additionalProperties": False, "required": ["body"],
             "properties": {"body": {"type": "string", "minLength": 80, "maxLength": OUTPUT_CHARS}},
         }
     batch = row["state"]["batches"][len(row["state"]["partials"])]
-    if not batch:   # an empty enum is an unsatisfiable grammar; `prepare` marks a batchless row empty
+    if not batch:   # an empty object is an unsatisfiable mapping; `prepare` marks a batchless row empty
         raise ValueError("cannot build an output schema for an empty batch")
-    return "CuriosityCompactionTopicPassV1", {
-        "type": "object", "additionalProperties": False, "required": ["topics"],
-        "properties": {"topics": {
-            "type": "array", "minItems": 1, "maxItems": MAX_TOPICS,
-            "items": {
-                "type": "object", "additionalProperties": False, "required": ["topic", "body", "refs"],
-                "properties": {
-                    "topic": {"type": "string", "minLength": 3, "maxLength": 100},
-                    "body": {"type": "string", "minLength": 80, "maxLength": TOPIC_BODY_CHARS},
-                    "refs": {"type": "array", "minItems": 1,
-                             "items": {"type": "string", "enum": [f"s{i}" for i in range(len(batch))]}},
+    aliases = [f"s{i}" for i in range(len(batch))]
+    index = {"type": "integer", "enum": list(range(MAX_TOPICS))}
+    return "CuriosityCompactionTopicPassV2", {
+        "type": "object", "additionalProperties": False, "required": ["record_topics", "topics"],
+        "properties": {
+            # Order matters: llama.cpp emits required properties in schema order (and
+            # "record_topics" also sorts first), so every record is assigned before any topic.
+            "record_topics": {"type": "object", "additionalProperties": False, "required": aliases,
+                              "properties": {alias: index for alias in aliases}},
+            "topics": {
+                "type": "array", "minItems": 1, "maxItems": MAX_TOPICS,
+                "items": {
+                    "type": "object", "additionalProperties": False, "required": ["topic", "body"],
+                    "properties": {
+                        "topic": {"type": "string", "minLength": 3, "maxLength": 100},
+                        "body": {"type": "string", "minLength": 80, "maxLength": TOPIC_BODY_CHARS},
+                    },
                 },
             },
-        }},
+        },
     }
 
 
 def prompt_for(row, batch=None):
     overall = row["state"].get("phase") == "overall"
     task = (
-        'Return JSON only: {"body":"..."}, 80 to 2400 characters. '
+        'Return JSON only: {"body":"..."}. Write about 180 to 240 words (hard limit: 2400 characters). '
         'Write the overall chronological synthesis FROM these topic summaries. '
         'Explain what changed across this period, what persisted, and what remains open. '
         if overall else
-        'Return JSON only: {"topics":[{"topic":"content-derived area", "body":"...", "refs":["s0"]}]}. '
+        'Return JSON only: {"record_topics":{"s0":0,"s1":0,"s2":1}, '
+        '"topics":[{"topic":"content-derived area", "body":"..."}, {"topic":"...", "body":"..."}]}. '
         f'Create 1 to {MAX_TOPICS} topic areas grounded in these records, not a fixed taxonomy. '
-        'For each, write about 120 to 150 words (hard limit: 1200 characters) tracing earlier to later observations: '
+        'First, in record_topics, map EVERY record ref to the 0-based index of the topic that covers it. '
+        'A short record or a piece of a longer record joins the topic of its neighbours. '
+        'Then write the topics in index order; every topic must cover at least one record. '
+        'For each topic, write about 80 to 110 words (hard limit: 1200 characters) tracing earlier to later observations: '
         'what was explored, evidence that changed understanding, contradictions, and questions still open. '
         'Keep explicit dates attached to changes; do not infer a change just from the date range. '
-        'Merge overlapping areas when reading prior topic summaries. Every input ref must appear '
-        f'in at least one topic, and use only the given refs. Keep the complete response under {PASS_BUDGET} ASCII JSON characters. '
+        'Merge overlapping areas when reading prior topic summaries. '
+        f'Keep the complete response under {PASS_BUDGET} ASCII JSON characters. '
     )
     records = ([{k: t[k] for k in ("topic", "body", "first_at", "last_at")} for t in row["state"]["topics"]]
                if overall else [{"ref": f"s{i}", "body": item["body"],
@@ -255,13 +302,16 @@ def record_answer(row, raw):
         result["status"] = "completed"
         return result
     parsed = _parse(raw, TopicPass)
-    if json_char_len(parsed.model_dump()) > PASS_BUDGET:
+    # The budget bounds the prose carried into the next pass; the record map is not carried.
+    if json_char_len({"topics": [t.model_dump() for t in parsed.topics]}) > PASS_BUDGET:
         raise ModelOutputRejected("topic pass exceeds reduction budget")
     batch = state["batches"][len(state["partials"])]
     allowed = {f"s{i}": item for i, item in enumerate(batch)}
-    actual = {ref for t in parsed.topics for ref in t.refs}
-    if actual != allowed.keys():
+    if parsed.record_topics.keys() != allowed.keys():
         raise ModelOutputRejected("topic references omit or invent source records")
+    if set(parsed.record_topics.values()) != set(range(len(parsed.topics))):
+        raise ModelOutputRejected("topic references point at a missing topic or leave a topic without records")
+    refs_of = [[ref for ref, index in parsed.record_topics.items() if index == i] for i in range(len(parsed.topics))]
     if any(_cut_off(t.body, TOPIC_BODY_CHARS) for t in parsed.topics):
         raise ModelOutputRejected("topic body cut off at the length cap")
     try:
@@ -269,8 +319,8 @@ def record_answer(row, raw):
     except ValueError as exc:
         raise ModelOutputRejected(f"{type(exc).__name__}: {exc}") from exc
     topics = [{"topic": t.topic, "body": body,
-               "sources": sorted({source for ref in t.refs for source in allowed[ref]["sources"]})}
-              for t, body in zip(parsed.topics, bodies)]
+               "sources": sorted({source for ref in refs for source in allowed[ref]["sources"]})}
+              for t, body, refs in zip(parsed.topics, bodies, refs_of)]
     topics = [{"topic": t["topic"], **{k: v for k, v in dated_item(
         "", t["body"], t["sources"], state["sources"]).items() if k != "ref"}} for t in topics]
     topics.sort(key=lambda t: (t["first_at"], t["last_at"], t["topic"]))

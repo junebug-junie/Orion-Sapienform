@@ -184,6 +184,28 @@ profiles:
       # Per-frame counts remain approximate; do not read narrative plurals as
       # inventory. See the PR report for the full sweep.
       score_threshold: 0.35     # alias honoured as box_threshold by the runner
+      # Per-camera, per-label cut-offs (2026-10-29,
+      # services/orion-vision-host/app/box_thresholds.py). Keyed by the
+      # request's stream_id; a label not listed gets the stream's `default`,
+      # else score_threshold above. The detector runs once at the lowest
+      # cut-off that applies, then each box must reach its own label's.
+      # Values below are TODAY'S values, written out so a calibrated change is
+      # a one-line edit. Evidence for walkway (PR report
+      # docs/superpowers/pr-reports/2026-10-29-vision-blind-detector-watch-pr.md):
+      # - person: Juniper's Hub verdicts (67 right / 2 wrong walkway person
+      #   stories) are all >= 0.35, so nothing says what lies below; raising it
+      #   would drop real people (p05 of right detections 0.362) and would not
+      #   remove the 2 wrong stories (their best boxes 0.43 / 0.47). Kept.
+      # - vehicle: on the half-blind days (10-22..23) the two parked-car spots
+      #   scored a median ~0.36 (0.40 on 10-28) and were seen in 0-32 % of
+      #   frames (96 % on 10-28). Stored crops start at 0.35, so the
+      #   false-positive cost of a lower cut-off cannot be measured from them.
+      #   Kept until the hourly frame samples are re-scored at a low cut-off.
+      # cam0 is not listed on purpose (stays on score_threshold).
+      box_threshold_by_stream:
+        walkway:
+          person: 0.35
+          vehicle: 0.35
       nms_iou: 0.6
       label_mode: open_vocab           # open_vocab | closed_set
       labels_hint: []                  # optional label shortlist per request

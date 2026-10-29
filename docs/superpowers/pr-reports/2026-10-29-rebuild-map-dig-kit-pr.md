@@ -58,6 +58,12 @@ None. Takes effect on the next post-pull rebuild.
 The change is 3 YAML lines in an existing, documented override slot, and the test above shows it
 works. I judged a separate review subagent not useful for it.
 
+- Finding (CI): the organ-names partition gate (#2951) failed on this PR's new test.
+  - Cause: its pattern `body_atlas.names` is a regex, and `.` also matches `/`, so it matched the
+    path string `orion/body_atlas/names.py` in the test.
+  - Fix: `git grep -F` (exact text).
+  - Evidence: the gate passes locally.
+
 ## Restart required
 
 ```text

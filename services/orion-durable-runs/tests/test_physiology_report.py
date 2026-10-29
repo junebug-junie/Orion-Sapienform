@@ -91,7 +91,11 @@ def full_rows() -> dict:
         pr.CLAUDE_TOKENS_SQL: [{"input": 198, "output": 38899, "cache_read": 7253496, "cache_write": 721749,
                                 "usd": 9.11, "priced": 5, "unpriced": 0, "ticks": 96, "newest": NOW}],
         pr.VRAM_SQL: [{"node": "circe", "ts": (NOW - timedelta(minutes=1)).isoformat(),
-                       "measurements": {"gpu_count": 4.0, "gpu1_mem_used_mb": 30000.0, "gpu1_mem_total_mb": 32768.0}}],
+                       "measurements": {"gpu_count": 4.0, "gpu1_mem_used_mb": 30000.0, "gpu1_mem_total_mb": 32768.0,
+                                        "gpu1_watts": 210.0, "cpu_busy_cores": 9.0, "cpu_idle_watts": 100.0,
+                                        "container_cpu_watts.orion-circe-atlas-agent": 18.5,
+                                        "container_cpu_watts.orion-circe-vision-host": 4.25,
+                                        "container_cpu_watts_small": 1.0, "cpu_watts_host_other": 2.0}}],
         pr.SERVICES_SQL: [{"created_at": (NOW - timedelta(hours=2)).replace(tzinfo=None),
                            "context": {"event": "stopped_container", "service_id": "orion-kev/kev",
                                        "containers": ["orion-athena-kev"], "states": ["exited"],
@@ -172,7 +176,7 @@ def test_full_report_fills_every_section_from_rows():
     assert units["1 kWh"].status == "derived" and units["1 kWh"].usd == 0.1255
     assert units["100 W for 2 h on athena"].heat_c == pytest.approx(0.6425, abs=1e-3)
     assert units["one reverie_diffusion run"].status == "measured"
-    assert units["one hub.outreach act"].wh == 2.0 and units["one hub.outreach act"].usd == 0.0003
+    assert units["one hub.outreach act (estimate: family mean)"].wh == 2.0 and units["one hub.outreach act (estimate: family mean)"].usd == 0.0003
     assert units["per 1k tokens"].status == "not_measured" and "token" in units["per 1k tokens"].source
     assert rep.waste.failed_lease_s_by_lane["agent"] == 8858.2 and rep.waste.top[0].reason == "attempt_failed"
     assert rep.queue_wait[0].p90_s == 5275.0
@@ -180,7 +184,12 @@ def test_full_report_fills_every_section_from_rows():
     assert rep.claude.window_tokens.output == 38899 and rep.claude.usd_est == 9.11
     assert "no_observation" in rep.claude.status and "harness sessions are not in this count" in rep.claude.status
     gpu1 = next(c for c in rep.vram if c.card == "gpu1")
-    assert gpu1.headroom_mb == 2768.0 and "agent" in gpu1.roles
+    assert gpu1.headroom_mb == 2768.0 and "agent" in gpu1.roles and gpu1.watts == 210.0
+    assert [(p.name, p.watts) for p in rep.processes] == [
+        ("orion-circe-atlas-agent", 18.5), ("orion-circe-vision-host", 4.2), ("(host, not in a container)", 2.0),
+        ("(small containers)", 1.0)]
+    assert all(p.host == "circe" and p.cores is None for p in rep.processes)
+    assert "family total 2 W·h over 1 acts" in units["one hub.outreach act (estimate: family mean)"].source
     vpc = rep.value_per_cost
     assert [v.family for v in vpc] == ["hub.outreach"] and vpc[0].value == 0.63
     assert vpc[0].usd_per_act == 0.0003 and vpc[0].status == "measured"
@@ -384,7 +393,7 @@ def test_report_sql_on_postgres():
                 assert rep.claude.window_tokens.cache_write == 3 and rep.claude.usd_est == 0.5
                 assert next(c for c in rep.vram if c.card == "gpu0").headroom_mb == 32668.0
                 assert rep.services.down[0].name == "orion-kev/kev"
-                assert any(u.unit == "one hub.outreach act" and u.wh == 2.0 for u in rep.unit_costs)
+                assert any(u.unit == "one hub.outreach act (estimate: family mean)" and u.wh == 2.0 for u in rep.unit_costs)
                 tok = next(u for u in rep.unit_costs if u.unit == "per 1k tokens")
                 # act corr-1: 2.0 Wh over 1,500 tokens (every recorder); totals: gateway only (2 calls, 1,100)
                 assert tok.status == "measured" and tok.wh == pytest.approx(2.0 * 1000 / 1500, abs=1e-3)
@@ -487,3 +496,11 @@ def test_per_1k_tokens_joins_act_energy_to_the_token_ledger():
     rows[pr.TOKENS_ACT_JOIN_SQL] = [{"acts_with_energy": 3, "joined": 2, "wh": 4.0, "usd": 0.002, "tokens": 2000}]
     rep = _build(rows)
     assert next(u for u in rep.unit_costs if u.unit == "per 1k tokens").status == "measured"
+
+
+def test_processes_below_idle_floor_is_a_reason_not_zero():
+    rows = full_rows()
+    rows[pr.VRAM_SQL] = [{"node": "athena", "ts": NOW.isoformat(), "measurements": {"cpu_busy_cores": 3.0}}]
+    rep = _build(rows, q=pr.parse_query("24h", "processes", None, None, None))
+    assert rep.processes == []
+    assert any("below the fitted idle floor" in r for r in _reasons(rep, "processes"))

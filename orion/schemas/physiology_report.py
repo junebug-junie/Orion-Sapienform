@@ -31,7 +31,7 @@ REPORT_WINDOWS = ("24h", "7d", "30d")
 #: Every section key a caller may ask for with ``sections=``. ``missing`` is always returned.
 REPORT_SECTIONS = (
     "limits", "wants", "rhythm", "money", "unit_costs", "waste", "queue_wait", "decisions",
-    "claude", "vram", "value_per_cost", "services",
+    "claude", "vram", "value_per_cost", "services", "processes",
 )
 
 
@@ -178,6 +178,18 @@ class VramCardV1(BaseModel):
     total_mb: Optional[float] = None
     headroom_mb: Optional[float] = None
     roles: List[str] = Field(default_factory=list)
+    watts: Optional[float] = Field(default=None, description="the card's draw now (gpuN_watts)")
+
+
+class ProcessV1(BaseModel):
+    """One container's share of its host's CPU package watts ABOVE IDLE (linear utilisation model,
+    orion-biometrics ``container_cpu_watts.<name>``). Two pseudo-names: ``(small containers)`` and
+    ``(host, not in a container)``. ``cores`` is None: busy cores are not published per container."""
+
+    host: str
+    name: str
+    watts: float
+    cores: Optional[float] = None
 
 
 class ValuePerCostV1(BaseModel):
@@ -226,6 +238,7 @@ class PhysiologyReportV1(BaseModel):
     vram: List[VramCardV1] = Field(default_factory=list)
     value_per_cost: List[ValuePerCostV1] = Field(default_factory=list)
     services: ServicesV1 = Field(default_factory=ServicesV1)
+    processes: List[ProcessV1] = Field(default_factory=list)
     missing: List[MissingV1] = Field(default_factory=list)
     query: Dict[str, Any] = Field(default_factory=dict, description="the window, sections, family, outcome, limit asked")
     timing_ms: Dict[str, float] = Field(default_factory=dict, description="per-section read time, for H5")
@@ -247,6 +260,7 @@ __all__ = [
     "MissingV1",
     "MoneyV1",
     "PhysiologyReportV1",
+    "ProcessV1",
     "QueueWaitV1",
     "ReportWindowV1",
     "RhythmCellV1",

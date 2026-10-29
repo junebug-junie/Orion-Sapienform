@@ -944,12 +944,13 @@ off answers 503.
 | `wants{families, hourly}` | `want_ledger`, hand-run probes left out |
 | `rhythm[]` (local day x hour) | `gpu_pool_events` lease closes, each lease spread over the hours it was held: background vs all lease-seconds |
 | `money` | newest `energy` reading; `floor_usd` from its `why`; `orion_energy_hourly` per local day |
-| `unit_costs[]` | tariff rate, `config/physiology/heat_sensitivity.yaml`, `energy_run_cost`, `grammar_acts.cost_json` (`wh_by_host`/`usd`/`heat_c_by_host` when filled). Per 1k tokens: per-act energy / that act's tokens in `llm_call_usage` joined on `correlation_id` (every recorder); totals count `recorder='gateway'` only. Table absent or empty -> `not_measured` with the reason |
+| `unit_costs[]` | tariff rate, `config/physiology/heat_sensitivity.yaml`, `energy_run_cost`, `grammar_acts.cost_json` (`wh_by_host`/`usd`/`heat_c_by_host` when filled; `basis` text alone is not measured; GPU above idle only; one act is labelled an estimate, the family total is the honest number). Per 1k tokens: per-act energy / that act's tokens in `llm_call_usage` joined on `correlation_id` (every recorder); totals count `recorder='gateway'` only. Table absent or empty -> `not_measured` with the reason |
 | `waste` | lease closes whose reason is not `ok`/`completed`/`generated`/`text_done`/`operator:*`; the `released` twin of an expiry/abort is counted once |
 | `queue_wait[]` | `waited_ms` on granted leases; family from `want_ledger` for durable runs, else the holder's service |
 | `decisions[]` | `want_ledger`, newest first |
 | `claude` | `dev_economics_ledger_log` (Claude Code sessions on athena, not Orion's harness) + the `claude` constraint |
-| `vram[]` | `orion_biometrics_summary.measurements` `gpuN_mem_used_mb`/`gpuN_mem_total_mb`; card -> roles from `config/gpu_pool.yaml` |
+| `vram[]` | `orion_biometrics_summary.measurements` `gpuN_mem_used_mb`/`gpuN_mem_total_mb`/`gpuN_watts`; card -> roles from `config/gpu_pool.yaml` |
+| `processes[]` | the same newest biometrics row: `container_cpu_watts.<name>`, `container_cpu_watts_small`, `cpu_watts_host_other` (CPU watts above idle, PR #2977); top 12; `cores` is None (not published per container) |
 | `value_per_cost[]` | the market's own family-weight evidence (`Market.family_weights`) |
 | `services` | mesh-guardian `stopped_container` cards in `notify_requests` (no recovery event: a listed service may be up again) |
 

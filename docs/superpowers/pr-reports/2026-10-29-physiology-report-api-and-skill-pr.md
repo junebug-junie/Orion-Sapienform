@@ -94,6 +94,17 @@ The waste lines show today's incident: curiosity holds of about 8,500 s that end
 - Removed: none.
 - Renamed: none.
 - Behavior changed: none for existing routes.
+- **Hub contract additions after the first push** (additive; tell the Hub agent):
+  - new top-level `processes[{host, name, watts, cores}]`: CPU watts above idle per container, from
+    #2977's `container_cpu_watts.<name>`, plus `(small containers)` and `(host, not in a container)`. Top
+    12. `cores` is always null, because busy cores are not published per container.
+  - `vram[].watts` (`gpuN_watts`).
+  - `queue_wait[].family_source` (`want_ledger` | `holder`).
+  - `money.daily_kwh[].partial`.
+  - `claude.window_tokens.*` is null (not 0) when no token row exists.
+  - `query{window, sections, family, outcome, limit}` echoes the request.
+  - Per-act `unit_costs` rows are now named `one <family> act (estimate: family mean)`. The source text
+    carries the family total, which is the honest number.
 - Compatibility notes:
   - The top-level keys match the Hub contract. The additions beyond the base ask (`claude`, `vram`,
     `value_per_cost`, `services`) were approved by Juniper on 2026-10-29.
@@ -183,8 +194,9 @@ PYTHONPATH=. python orion/physiology/evals/physiology_state_skill_eval.py -> pas
 
 ```text
 Live DB timing (read-only, the real build_report on the live conjourney DB, concurrency 3, final code):
-  24h 0.39-0.42 s, 7d 0.77 s, 30d 0.94-1.02 s   (H5: under 2 s)
-  slowest reads at 30d: rhythm 0.80-0.94 s (per-hour spread), queue_wait 0.45 s, limits 0.44 s, waste 0.41 s.
+  24h 0.31-0.42 s, 7d 0.77 s, 30d 0.83-1.02 s   (H5: under 2 s)
+  slowest reads at 30d: rhythm 0.78-0.94 s (per-hour spread), queue_wait 0.40-0.45 s, waste 0.35-0.41 s,
+  limits 0.30-0.44 s. Token ledger, act costs, biometrics: under 20 ms each.
 The reviewer also ran it on the live DB inside a forced read-only session: 24h 245 ms, 30d 743 ms (before
 the rhythm spread).
 Network: orion-athena-harness-governor -> http://orion-athena-durable-runs:8121 reachable (0.018 s);
@@ -247,6 +259,16 @@ session. It found no blockers, 8 should-fix findings and 9 nits. All the materia
   (`correlation_id`, every recorder), and counts totals on `recorder='gateway'` only. Each gap has a
   reason: table absent, no calls, no act energy, or no join. Evidence: `test_per_1k_tokens_joins_act_energy_to_the_token_ledger`
   and the Postgres test (2.0 Wh over 1,500 tokens; gateway totals 2 calls / 1,100 tokens).
+- **Coordinator follow-up (#2977 act energy):**
+  - A `cost_json` that holds only `basis` text is not counted as measured: only numeric
+    `wh_by_host` / `usd` / `heat_c_by_host` count.
+  - Per-act rows say "estimate: family mean" and carry the family total.
+  - New `processes` section; `vram` carries `gpuN_watts`.
+  - Evidence: `test_full_report_fills_every_section_from_rows` (processes order, family total text) and
+    `test_processes_below_idle_floor_is_a_reason_not_zero`.
+- **The eval caught a real problem.** With `all`, the dig cap cut the last section (processes) out of the
+  text. Fix: with more sections than the overview, each section gets one summary line, and the text ends
+  "ask for one or two sections by name". `all` is now 17 lines.
 - **Not changed, on purpose:** `Market.family_weights` reuses the bid path's history cache, so a report
   read can warm that cache. That is the same read the bid path does. It gates nothing.
 
@@ -280,8 +302,9 @@ docker exec orion-athena-harness-governor python -P -m orion.dig body-economy
   - Mitigation: `basis` says this.
   - Follow-up: a guardian endpoint for the current stopped list.
 - Severity: low.
-  - Concern: `vram`, per-act `unit_costs` and `per 1k tokens` read fields and tables that sibling PRs add now:
-    `gpuN_mem_*_mb`, `cost_json.wh_by_host` / `usd` / `heat_c_by_host`, and `llm_call_usage` (#2974, not merged).
+  - Concern: `vram`, `processes`, per-act `unit_costs` and `per 1k tokens` read fields and tables that sibling
+    PRs add now: `gpuN_mem_*_mb`/`gpuN_watts` and `container_cpu_watts.*` (#2977), `cost_json.wh_by_host` /
+    `usd` / `heat_c_by_host` (#2977), and `llm_call_usage` (#2974). Neither is merged.
     Until each one lands, its row says "not measured" with the exact reason. Live today:
     "llm_call_usage does not exist yet".
   - Mitigation: the per-1k-token SQL is tested on Postgres against #2974's migration columns. It sums

@@ -152,3 +152,18 @@ def test_cap_text_keeps_replies_turn_sized():
     out = rt.cap_text(text)
     assert len(out.splitlines()) <= 40 and len(out) <= 4000 and "fewer sections" in out
     assert rt.cap_text("short") == "short"
+
+
+def test_all_sections_give_one_line_each_and_fit_a_turn():
+    text = rt.render_report_text(live(), rt.SECTIONS)
+    assert len(text.splitlines()) <= 20 and len(text) <= 4000
+    assert "processes: no data. per-container CPU watts are not reported yet" in text
+    assert text.splitlines()[-1].startswith("(One line per section.")
+
+
+def test_processes_render_largest_first():
+    rep = live()
+    rep["processes"] = [{"host": "circe", "name": "orion-circe-atlas-agent", "watts": 18.5, "cores": None},
+                        {"host": "circe", "name": "(host, not in a container)", "watts": 2.0, "cores": None}]
+    text = rt.render_report_text(rep, ("processes",))
+    assert "- circe orion-circe-atlas-agent: 18.5 W" in text and "CPU watts above idle" in text

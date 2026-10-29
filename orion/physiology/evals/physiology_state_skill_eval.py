@@ -30,7 +30,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "physiology_report_live_2026-10-29_24h.json"
 SECTIONS = ("limits", "wants", "rhythm", "money", "unit_costs", "waste", "queue_wait", "decisions",
-            "claude", "vram", "value_per_cost", "services")
+            "claude", "vram", "value_per_cost", "services", "processes")
 BINDING = ("binding", "exogenous_bind", "stuck_at_ceiling")
 
 

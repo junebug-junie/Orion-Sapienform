@@ -25,7 +25,7 @@ REPORT_URL_ENV = "ORION_PHYSIOLOGY_REPORT_URL"
 DEFAULT_REPORT_URL = "http://orion-athena-durable-runs:8121"
 SECTIONS = (
     "limits", "wants", "rhythm", "money", "unit_costs", "waste", "queue_wait", "decisions",
-    "claude", "vram", "value_per_cost", "services",
+    "claude", "vram", "value_per_cost", "services", "processes",
 )
 #: What "how is my body" reads when no section is named: the headline constraints, money, wants,
 #: waste, and anything down. Small enough for a chat turn.
@@ -328,7 +328,19 @@ def render_vram(report: Mapping) -> list[str]:
     out = ["GPU memory headroom:"]
     for c in cards:
         roles = f" ({', '.join(c['roles'])})" if c.get("roles") else ""
-        out.append(f"- {c['host']} {c['card']}{roles}: {_n(c.get('headroom_mb'), 0)} MB free of {_n(c.get('total_mb'), 0)} MB")
+        watts = f", drawing {_n(c['watts'], 0)} W" if c.get("watts") is not None else ""
+        out.append(f"- {c['host']} {c['card']}{roles}: {_n(c.get('headroom_mb'), 0)} MB free of "
+                   f"{_n(c.get('total_mb'), 0)} MB{watts}")
+    return out
+
+
+def render_processes(report: Mapping, *, full: bool) -> list[str]:
+    rows = report.get("processes") or []
+    if not rows:
+        return []
+    out = ["CPU watts above idle by container, now (largest first):"]
+    for r in rows[: (len(rows) if full else 6)]:
+        out.append(f"- {r['host']} {r['name']}: {_n(r.get('watts'), 1)} W")
     return out
 
 
@@ -370,6 +382,7 @@ _RENDER = {
     "vram": lambda r, full: render_vram(r),
     "value_per_cost": lambda r, full: render_value_per_cost(r),
     "services": lambda r, full: render_services(r),
+    "processes": lambda r, full: render_processes(r, full=full),
 }
 assert set(_RENDER) == set(SECTIONS)
 
@@ -393,10 +406,10 @@ def headline(report: Mapping) -> Optional[str]:
 
 def render_report_text(report: Mapping, sections: Iterable[str] = OVERVIEW) -> str:
     """Plain text, first person, one paragraph per asked section. A section with nothing to show
-    prints its ``missing`` reason. A full section (named on its own) shows every row; the
-    overview shows the top rows."""
+    prints its ``missing`` reason. One or two named sections show every row; more show the top rows."""
     secs = tuple(sections)
-    full = secs != OVERVIEW
+    # Every row only when one or two sections are asked; the overview and "all" stay turn-sized.
+    full = len(secs) <= 2
     win = report.get("window") or {}
     fam = (report.get("query") or {}).get("family")
     scope = f", family {fam} (narrows wants, decisions, queue wait, value per cost, per-act costs)" if fam else ""
@@ -406,17 +419,26 @@ def render_report_text(report: Mapping, sections: Iterable[str] = OVERVIEW) -> s
         h = headline(report)
         if h:
             lines.append(h)
+    # More sections than the overview (e.g. "all"): one summary line each, so every section fits.
+    brief = len(secs) > len(OVERVIEW)
     for s in secs:
         body = _RENDER[s](report, full)
         reasons = _missing_for(report, s)
-        if body:
+        if body and brief:
+            head = body[0] if len(body) == 1 or not body[0].endswith(":") else f"{body[0]} {body[1].lstrip('- ')}"
+            more = len(body) - (1 if head == body[0] else 2)
+            lines.append(head + (f" (+{more} more lines)" if more > 0 else "")
+                         + (f" [{len(reasons)} note(s)]" if reasons else ""))
+        elif body:
             lines.extend(body)
             for r in reasons:
                 lines.append(f"- note ({s}): {r}")
         elif reasons:
-            lines.append(f"{s}: no data. " + " ".join(reasons))
+            lines.append(f"{s}: no data. " + "; ".join(reasons))
         else:
             lines.append(f"{s}: no data, and the report gave no reason (treat as unknown).")
+    if brief:
+        lines.append("(One line per section. Ask for one or two sections by name for every row and note.)")
     failed = [m for m in report.get("missing") or [] if m.get("section") not in secs and m.get("section") not in ("*",)
               and str(m.get("reason", "")).startswith("read failed")]
     for m in failed:

@@ -24,7 +24,7 @@ input_schema:
       description: >
         Which sections to read. Omit (or "overview") for limits, money, wants, waste and
         services; "all" for every section; or any of limits, wants, rhythm, money, unit_costs,
-        waste, queue_wait, decisions, claude, vram, value_per_cost, services.
+        waste, queue_wait, decisions, claude, vram, value_per_cost, services, processes.
       oneOf:
         - type: string
         - type: array

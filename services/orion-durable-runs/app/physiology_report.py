@@ -523,7 +523,7 @@ def act_costs_by_family(rows: Sequence[Mapping]) -> dict[str, dict]:
         n = max(len(a["wh"]), len(a["usd"]), len(a["heat"]))
         if n == 0:
             continue
-        out[actor] = {"n": n,
+        out[actor] = {"n": n, "wh_total": sum(a["wh"]) if a["wh"] else None, "wh_n": len(a["wh"]),
                       "wh": sum(a["wh"]) / len(a["wh"]) if a["wh"] else None,
                       "usd": sum(a["usd"]) / len(a["usd"]) if a["usd"] else None,
                       "heat_c": sum(a["heat"]) / len(a["heat"]) if a["heat"] else None}
@@ -578,9 +578,12 @@ def shape_unit_costs(rate: Optional[float], heat_hosts: Sequence[HeatHost], heat
                      "source": "energy_run_cost has no run in the window (only reverie diffusion is measured today)"})
     for actor in sorted(act_costs or {}):
         a = act_costs[actor]
-        rows.append({"unit": f"one {actor} act", "usd": _r(a["usd"], 6), "wh": _r(a["wh"], 3),
+        total = f"family total {a['wh_total']:.3g} W·h over {a['wh_n']} acts" if a.get("wh_total") is not None \
+            else f"{a['n']} acts"
+        rows.append({"unit": f"one {actor} act (estimate: family mean)", "usd": _r(a["usd"], 6), "wh": _r(a["wh"], 3),
                      "heat_c": _r(a["heat_c"], 4), "status": "measured",
-                     "source": f"grammar_acts.cost_json mean over {a['n']} acts in the window"})
+                     "source": f"grammar_acts.cost_json, GPU watts above idle only; {total} in the window. The "
+                               "family total is the honest number; one act is an estimate"})
     if act_costs is not None and not act_costs:
         rows.append({"unit": "one act (any family)", "usd": None, "wh": None, "heat_c": None,
                      "status": "not_measured",
@@ -764,10 +767,11 @@ def shape_vram(gpu_pool_doc: Optional[Mapping], pool_err: Optional[str], bio_row
         m = meas.get(host) or {}
         used = _f(m.get(f"gpu{idx}_mem_used_mb"))
         total = _f(m.get(f"gpu{idx}_mem_total_mb"))
+        watts = _f(m.get(f"gpu{idx}_watts"))
         reported += used is not None and total is not None
         out.append({"host": host, "card": card, "used_mb": used, "total_mb": total,
                     "headroom_mb": (total - used) if (used is not None and total is not None) else None,
-                    "roles": roles})
+                    "roles": roles, "watts": _r(watts, 1)})
     if pool_err:
         missing.append({"section": "vram", "reason": f"card -> role map unavailable ({pool_err})"})
     if reported == 0:
@@ -781,6 +785,48 @@ def shape_vram(gpu_pool_doc: Optional[Mapping], pool_err: Optional[str], bio_row
         missing.append({"section": "vram", "reason": f"no biometrics row in the last 15 min for "
                         f"{', '.join(sorted(stale))} (asleep or its reporter is down): its cards read unknown"})
     return out, missing
+
+
+CONTAINER_CPU_PREFIX = "container_cpu_watts."
+PROCESSES_TOP_N = 12
+
+
+def shape_processes(bio_rows: Sequence[Mapping], now: datetime) -> tuple[list[dict], list[dict]]:
+    """Top containers by CPU watts above idle, per host, from the newest fresh biometrics row
+    (orion-biometrics container_cpu_measurements, PR #2977). Absent keys are a reason, never 0 W."""
+    rows: list[dict] = []
+    notes: list[str] = []
+    for r in bio_rows:
+        host = str(r.get("node"))
+        ts = _utc(r.get("ts"))
+        m = _json(r.get("measurements"))
+        if not isinstance(m, dict) or ts is None or now - ts > BIOMETRICS_FRESH:
+            continue
+        named = {k[len(CONTAINER_CPU_PREFIX):]: _f(v) for k, v in m.items() if k.startswith(CONTAINER_CPU_PREFIX)}
+        named = {k: v for k, v in named.items() if v is not None}
+        if not named and m.get("container_cpu_watts_small") is None:
+            if m.get("cpu_busy_cores") is not None:
+                notes.append(f"{host}: CPU below the fitted idle floor this sample, so no honest split")
+            continue
+        for name, w in named.items():
+            rows.append({"host": host, "name": name, "watts": round(w, 1), "cores": None})
+        for key, label in (("container_cpu_watts_small", "(small containers)"),
+                           ("cpu_watts_host_other", "(host, not in a container)")):
+            w = _f(m.get(key))
+            if w is not None:
+                rows.append({"host": host, "name": label, "watts": round(w, 1), "cores": None})
+    rows.sort(key=lambda x: -x["watts"])
+    missing: list[dict] = []
+    if not rows:
+        missing.append({"section": "processes", "reason": "per-container CPU watts are not reported yet: no fresh "
+                        "orion_biometrics_summary row carries container_cpu_watts.* (orion-biometrics, PR #2977)"
+                        + ("; " + "; ".join(notes) if notes else "")})
+    elif notes:
+        missing.append({"section": "processes", "reason": "partial: " + "; ".join(notes)})
+    if len(rows) > PROCESSES_TOP_N:
+        missing.append({"section": "processes", "reason": f"top {PROCESSES_TOP_N} of {len(rows)} shown"})
+        rows = rows[:PROCESSES_TOP_N]
+    return rows, missing
 
 
 def shape_value_per_cost(weights: Optional[Mapping[str, Any]], weights_err: Optional[str],
@@ -992,8 +1038,9 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
             **base, "synthetic": syn, "family": q.family, "outcome": q.outcome, "limit": q.limit}), ("decisions",))
     if "claude" in wanted:
         tasks["claude"] = timed("claude", lambda: _rows(pool, CLAUDE_TOKENS_SQL, base), ("claude",))
-    if "vram" in wanted:
-        tasks["vram"] = timed("vram", lambda: _rows(pool, VRAM_SQL, {"hosts": list(VRAM_HOSTS)}), ("vram",))
+    if wanted & {"vram", "processes"}:
+        tasks["vram"] = timed("biometrics", lambda: _rows(pool, VRAM_SQL, {"hosts": list(VRAM_HOSTS)}),
+                              ("vram", "processes"))
     if "services" in wanted:
         tasks["services"] = timed("services", lambda: _rows(pool, SERVICES_SQL, {
             "since_naive": (now - SERVICES_LOOKBACK).replace(tzinfo=None)}), ("services",))
@@ -1056,6 +1103,8 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
             doc, perr = _load_yaml(deps.gpu_pool_path)
             return shape_vram(doc, perr, results["vram"], now)
         add("vram", _vram)
+    if "processes" in wanted and results.get("vram") is not None:
+        add("processes", lambda: shape_processes(results["vram"], now))
     if "value_per_cost" in wanted:
         if deps.family_weights is None:
             add("value_per_cost", lambda: shape_value_per_cost(

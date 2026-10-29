@@ -84,7 +84,8 @@ async def fake_retro(path, log):
             # Like Retro: a started hand-over is a new grant (new epoch) with the asked duration.
             base = zelda_session()['scripted'][0]
             n = sum(1 for r in log if r['op'] == 'scripted')
-            session['scripted'] = [dict(base, epoch=100 + n, duration_seconds=data.get('duration_seconds', 60))]
+            session['scripted'] = [dict(base, epoch=100 + n, duration_seconds=data.get('duration_seconds', 60),
+                                        started_frame=session.get('frame', 0))]
         return web.json_response({'state': 'running'})
     async def ws(request):
         sock = web.WebSocketResponse(); await sock.prepare(request)
@@ -134,8 +135,12 @@ async def serve(output: Path, port: int, sock: str):
         store.value = dict(store.value, state='waiting', waiting=dict(reason='shed:cabinet_hot', retry_after_sec=60))
         return {}
     @app.post('/__fixture/end_grant')
-    async def end_grant():
-        # The handed-off grant is gone while the game keeps running (e.g. leisure took the port).
+    async def end_grant(expired: int = 0):
+        # The handed-off grant is gone while the game keeps running: taken by another controller,
+        # or (expired=1) because its time ran out (the session frame passes its budget).
+        if expired and session['scripted']:
+            g = session['scripted'][0]
+            session['frame'] = g.get('started_frame', 0) + int((g.get('duration_seconds', 60) + 1) * 60.0988)
         session['scripted'] = []
         return {}
     @app.get('/__fixture/log')

@@ -107,6 +107,8 @@ def test_let_orion_play_renews_until_taken_back():
     js = (HUB / 'static/js/retro-panel.js').read_text()
     assert '<button id="orionplay"' in html
     assert 'const ORION_PLAY_SEC = 1800;' in js and "action('orionplay'" in js
-    assert 'handoffGrant=null;renewOrion();}' in js           # an ended turn is renewed
+    assert 'if(orionPlay && ranOut)renewOrion();' in js       # only a turn that ran out its time is renewed
+    assert "Someone else took the controller" in js           # never taken back from someone else
     assert "if(takeBack())return;" in js                      # a click on the game takes it back
-    assert 'function neutral() { orionPlay = false;' in js    # a hidden tab or lost socket ends it
+    assert 'function neutral() { setOrion(false);' in js      # a hidden tab or lost socket ends it
+    assert 'aria-pressed="false"' in html

@@ -47,6 +47,7 @@ Claude Code (per-turn spawn, no lease) -> FCC proxy :8082 -> llm-gateway `/v1/me
 - `orion/harness/tests/test_call_usage_harness.py`: the relay tests are removed. The spawn-header tests stay.
 - `orion/schemas/llm_call_usage.py`, `orion/llm/call_usage.py`, the sql-writer model docstring and README: `harness_relay` is marked retired, and the join rules are updated. The value stays in the schema so old rows still validate.
 - `orion/bus/channels.yaml`, `orion/llm/tests/test_call_usage.py`: the only producer is now orion-llm-gateway.
+- `services/orion-durable-runs/app/physiology_report.py`: the per-act token join counts gateway rows only (review finding).
 - `config/metrics/metric_definitions.lock.json`: re-locked for the producer change.
 
 ## Schema / bus / API changes
@@ -94,15 +95,23 @@ Live after deploy: UNVERIFIED.
 
 ## Review findings fixed
 
-Pending (see PR comments).
+A code review ran in a subagent. It found no blocking issues. It checked that the turn-id value cannot leak between requests, that it reaches stream mode, non-stream mode, retries and recovery, and that the governor restore removed only the ledger lines.
+
+- Finding (low): if FCC is deployed before the governor, the old governor's relay keeps writing `harness_relay` rows for lease-less warm turns. The matching gateway row now has the same turn id. The physiology report's per-act join had no recorder filter, so it would count those calls twice.
+  - Fix: the per-act token join in `services/orion-durable-runs/app/physiology_report.py` now counts `recorder = 'gateway'` only. The restart section below deploys the governor before FCC.
+  - Evidence: `pytest services/orion-durable-runs/tests/test_physiology_report.py` passes.
+- Finding (low): a comment in `physiology_report.py` still described the retired relay recorder.
+  - Fix: the comment is updated.
+  - The applied migration's comments are left unchanged on purpose, so the migration file is not changed after it was applied.
 
 ## Restart required
 
 After merge, from the clean primary `main` checkout:
 
 ```bash
-scripts/safe_docker_build.sh orion-fcc up -d --build
 scripts/safe_docker_build.sh orion-harness-governor up -d --build
+scripts/safe_docker_build.sh orion-durable-runs up -d --build
+scripts/safe_docker_build.sh orion-fcc up -d --build
 ```
 
 Check after deploy:

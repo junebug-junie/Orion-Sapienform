@@ -257,8 +257,9 @@ WHERE opened_at >= %(since)s AND opened_at < %(until)s AND cost_json IS NOT NULL
 """
 
 # Per-call token ledger (llm_call_usage, PR #2974; services/orion-sql-db/manual_migration_llm_call_usage_v1.sql).
-# Totals over time count recorder='gateway' only (a harness_relay row is an FCC turn whose gateway row has
-# no correlation_id, so counting both would count that call twice). One act: correlation_id, every recorder.
+# Count recorder='gateway' only, for totals AND per act. The warm relay's harness_relay recorder is retired
+# (2026-10-29): the FCC adapter now forwards X-Orion-Correlation-Id, so the gateway row of an FCC turn carries
+# the turn id and a leftover relay row would count that call twice.
 TOKENS_PRESENT_SQL = "SELECT to_regclass('llm_call_usage') IS NOT NULL AS present"
 TOKENS_TOTAL_SQL = """
 SELECT COUNT(*) AS calls, COALESCE(SUM(prompt_tokens), 0) AS prompt, COALESCE(SUM(completion_tokens), 0) AS completion,
@@ -278,7 +279,7 @@ WITH acts AS (
 ), tok AS (
   SELECT correlation_id, SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)) AS tokens
   FROM llm_call_usage
-  WHERE correlation_id IN (SELECT correlation_id FROM acts)
+  WHERE recorder = 'gateway' AND correlation_id IN (SELECT correlation_id FROM acts)
   GROUP BY 1
 )
 SELECT (SELECT COUNT(*) FROM acts) AS acts_with_energy, COUNT(*) AS joined, SUM(a.wh) AS wh, SUM(a.usd) AS usd,

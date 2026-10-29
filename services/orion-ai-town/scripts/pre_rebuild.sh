@@ -7,9 +7,9 @@
 # the Convex functions once the stack is up.
 #
 # 1. Save upstream/'s changes (tracked vs HEAD, plus untracked file contents).
-# 2. Reset tracked files to the pin and delete files the patches create, so
-#    the chain applies from scratch every time (re-applying on a patched tree
-#    stops at orion-conversation-proximity.patch).
+# 2. Reset tracked files to the pin and delete files the patches create and
+#    the overlay copies, so the chain applies from scratch every time
+#    (re-applying on a patched tree stops at orion-conversation-proximity.patch).
 # 3. Apply the chain.
 #
 # Override: AITOWN_ALLOW_EXAMPLE_CARDS=1 (deploy with the redacted example
@@ -60,5 +60,18 @@ for patch in "${ROOT}"/patches/*.patch; do
 done | while read -r created; do
   rm -f -- "${UPSTREAM:?}/${created}"
 done
+# Overlay files, plus any overlay directory the pin does not have (convex/sim/)
+# as a whole, so a file later dropped from overlay/ does not linger and deploy.
+if [[ -d "${ROOT}/overlay" ]]; then
+  (cd "${ROOT}/overlay" && find . -mindepth 1 -type d | sort) | while read -r dir; do
+    dir="${dir#./}"
+    if ! git -C "${UPSTREAM}" cat-file -e "${REF}:${dir}" 2>/dev/null; then
+      rm -rf -- "${UPSTREAM:?}/${dir:?}"
+    fi
+  done
+  (cd "${ROOT}/overlay" && find . -type f) | while read -r file; do
+    rm -f -- "${UPSTREAM:?}/${file#./}"
+  done
+fi
 bash "${ROOT}/scripts/apply_upstream_patches.sh"
 echo "pre_rebuild: upstream/ is the pin plus the patch chain"

@@ -37,7 +37,7 @@ def town(tmp_path):
             pytest.fail("no upstream clone available")
         pytest.skip("no upstream clone available (set AITOWN_UPSTREAM_GIT)")
     svc = tmp_path / "orion-ai-town"
-    for name in ("patches", "scripts", "cards"):
+    for name in ("patches", "scripts", "cards", "overlay"):
         shutil.copytree(_SERVICE / name, svc / name)
     shutil.copy2(_SERVICE / ".env_example", svc / ".env_example")
     shutil.copy2(svc / "cards" / "town_cards.yaml", svc / "cards" / "town_cards.local.yaml")
@@ -78,9 +78,14 @@ def test_rebuilds_a_hand_edited_tree_to_the_fresh_chain(town, tmp_path):
     subprocess.run(["git", "-C", str(town / "upstream"), "add", "convex/agent/conversation.ts"], check=True)
     hub = town / "upstream" / "src" / "lib" / "hubEmbed.ts"
     hub.write_text(hub.read_text() + "\n// untracked hand edit\n")
+    # Overlay files are reset too, and a file no longer in overlay/ is removed.
+    core = town / "upstream" / "convex" / "sim" / "core.ts"
+    core.write_text(core.read_text() + "\n// overlay hand edit\n")
+    (town / "upstream" / "convex" / "sim" / "dropped.ts").write_text("export const stale = 1;\n")
     second = _run(town, tmp_path)
     assert second.returncode == 0, second.stdout + second.stderr
     assert _tree(town) == fresh
+    assert "convex/sim/core.ts" in fresh and "convex/sim/dropped.ts" not in fresh
     backup = sorted((tmp_path / "backups").glob("aitown-upstream-backup-*"))[-1]
     assert "// staged hand edit" in (backup / "tracked.diff").read_text()
     assert "// untracked hand edit" in (backup / "untracked" / "src" / "lib" / "hubEmbed.ts").read_text()

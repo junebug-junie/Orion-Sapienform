@@ -82,19 +82,90 @@ A producer that sends `<kind>_cleared` has declared that `<kind>` is a condition
 
 ## Tests run
 
-(filled in below)
+```text
+node --test (all 26 Hub *.test.js files, as CI runs them)          381 passed
+  incl. static/js/orion-message-tray.test.js                         13 passed
+pytest services/orion-notify/tests                                  68 passed
+pytest services/orion-sql-writer/tests/test_notify_chat_messages_open_filter.py   3 passed
+pytest services/orion-hub/tests/test_outreach_durable_notify.py \
+       test_orion_message_tray_wiring.py test_hub_ui_layout_pass.py \
+       test_endogenous_outreach.py                                  280 passed
+pytest services/orion-hub/tests (whole dir, local)   4355 passed, 33 failed
+  -> the same 33 also fail on a clean origin/main checkout on this host
+     (checked by running exactly those 33 there: 33 failed). Not from this patch.
+pytest services/orion-sql-writer/tests (whole dir, local)   14 failed
+  -> the same 14 fail with the new test file excluded. Not from this patch;
+     CI runs an explicit file list, not the whole directory.
+python scripts/check_env_template_parity.py                         PASS
+git diff --check                                                    clean
+```
 
 ## Evals run
 
-(filled in below)
+```text
+python services/orion-hub/evals/orion_message_tray_browser.py   (real Chromium, real index.html + app.js)
+PASS two open Orion messages pinned
+PASS newest Orion message is first
+PASS badge reads 'Orion 2'
+PASS flapping raise/clear pair folded away
+PASS ordinary notification still shown
+PASS self-cleared note shown
+PASS Reply switched the chat session
+PASS Reply put the message in the chat window
+PASS Reply focused the chat input
+PASS Reply saved opened + dismissed receipts
+PASS badge dropped to 'Orion 1'
+PASS Dismiss saved a dismissed receipt
+PASS badge hidden at zero
+PASS after reload, dismissed messages stay gone
+PASS after reload, badge still hidden
+PASS no tray page errors ([])
+```
+
+Mutation check: with the reload fix removed, the two "after reload" checks fail. The fix was then restored.
+
+Live-data check of the self-clearing rule (read-only, the last 3 days of `notify_requests`): 1,046 rows. After the rule, 80 rows are visible and 966 are hidden. All 966 hidden rows are dispatch alert kinds.
+
+Live SQL check (read-only): the compiled `status=open` query runs on the live database. It returns 96 open "actions" chat messages and 0 outreach rows, which is expected before deploy. The `tag` filter returns 0 rows, so the 96 old actions messages do not leak into the tray.
 
 ## Docker/build/smoke checks
 
-(filled in below)
+```text
+No docker build or deploy was run (task rule: no deploys).
+Live endpoint reachability (read-only): orion-notify /health ok; /chat/messages returns rows.
+UNVERIFIED: the post-deploy live path (a real outreach writes a notify_requests row with
+tags @> ["endogenous_outreach"], and a tray Dismiss writes a 'dismissed' notify_receipts row).
+Check after deploy:
+  docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "select message_id, created_at from notify_requests where tags @> '[\"endogenous_outreach\"]' order by created_at desc limit 5"
+```
 
 ## Review findings fixed
 
-(filled in below)
+A code-review subagent reviewed commit 2ef8bc325.
+
+- Finding (blocker): a dismissed message came back after a page reload. Hub's memory cache still held the live in-app event.
+  - Fix: `closedByDurable()`. If orion-notify published a message but no longer lists it as open, the message stays closed. Messages from the fallback direct publish were never saved, so the saved list does not judge them.
+  - Evidence: the browser eval checks "after reload, dismissed messages stay gone" (it fails when the fix is removed), plus a node test.
+- Finding: with the wrong deploy order, an older orion-notify drops the `tag` filter. The tray then fills with every chat message.
+  - Fix: saved rows must carry the outreach tag. The deploy order is written down in this report.
+  - Evidence: node test "durable rows without the outreach tag are ignored".
+- Finding: server timestamps without a timezone were read as browser-local time. That broke the sort order and the clear-after-raise comparison.
+  - Fix: `parseTime()` adds `Z`, the same rule as `formatHubLocalTime`.
+  - Evidence: two node tests.
+- Finding: Reply switched the session while the old thread was still on screen.
+  - Fix: when the message is not on screen and the thread changes, a one-line System note says so. When the message is already on screen, the session does not change.
+- Finding (nit): orion-notify `/chat/message` returned 200 without a bus, so Hub skipped its fallback.
+  - Fix: it now returns 503.
+  - Evidence: an orion-notify test.
+- Finding (nit): the prefix rule could fold a critical alert.
+  - Fix: critical items are never folded. The "`_cleared` means one global condition" contract is written in the code.
+  - Evidence: a node test.
+- Finding (nit): the receipt dedupe returned `true` while the first request was still in flight.
+  - Fix: a second caller now gets the same pending result.
+- Finding: Hub `/api/chat/messages` returned `[]` on failure, which reads as "nothing open".
+  - Fix: it now returns 502.
+  - Evidence: a wiring test.
+- Noted, no change: outreach now gets an automatic `seen` receipt on arrival (it is `orion.chat.message` now). This is harmless, because "open" ignores `seen`.
 
 ## Restart required
 
@@ -108,8 +179,20 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 
 ## Risks / concerns
 
-(filled in below)
+- Severity: medium.
+  - Concern: deploy order. If Hub goes first, an old sql-writer ignores `status=open`, so dismissed outreach can still show.
+  - Mitigation: restart sql-writer, then orion-notify, then Hub (commands above). Before sql-writer is updated, the tag check keeps non-outreach rows out.
+- Severity: low.
+  - Concern: when Reply changes thread, Hub cannot load that thread's older history.
+  - Mitigation: a System line in the chat says the turns above belong to another thread.
+- Severity: low.
+  - Concern: the self-clearing rule relies on the `<kind>_cleared` naming convention.
+  - Mitigation: critical items are never folded. The hidden count shows in the tray. Raw items stay in `/api/notifications` and `notify_requests`.
+- Severity: low.
+  - Concern: if orion-notify is down when Orion speaks, that one message is live-only. It is not saved, and it disappears when Hub's cache drops it.
+  - Mitigation: the `endogenous_outreach_durable_notify_failed` log line records each case.
+- Collision: this PR does not touch `is_pass_response`, `reading_finding_outreach.py`, `offer_message`, or `_deliver`. `git merge-tree` against `origin/fix/outreach-pass-leak-and-morning-burst` (#2942) is clean.
 
 ## PR link
 
-(filled in below)
+(added after the PR opened)

@@ -135,8 +135,12 @@ def build_speech_prompt(perception: WorldPerceptionV1, own_player_id: str) -> st
 
 
 def is_injectable(reply_text: Optional[str]) -> bool:
-    """Anti empty-shell guard: only non-empty, non-whitespace replies are injectable."""
-    return bool(reply_text and str(reply_text).strip())
+    """Anti empty-shell guard: a reply is speech only if it holds at least one letter.
+
+    Live 2026-10-29 (c:609091) Orion posted ``[]``: an empty structured answer is a
+    non-empty string, so a bare whitespace check let it through.
+    """
+    return any(ch.isalpha() for ch in str(reply_text or ""))
 
 
 def _normalize_spoken_line(text: str) -> str:

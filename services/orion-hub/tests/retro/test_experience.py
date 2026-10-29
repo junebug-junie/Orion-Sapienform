@@ -457,7 +457,7 @@ def _route_app(tmp_path, monkeypatch, goal_status, posted, exp):
 @pytest.mark.parametrize('goal_status', [200, 409])
 def test_route_places_only_after_retro_accepts_and_strips_chosen_rank(tmp_path, monkeypatch, planner, goal_status):
     from fastapi.testclient import TestClient
-    async def chat(config, prompt, *, max_tokens, route=None):
+    async def chat(config, prompt, *, max_tokens, route=None, turn_id=None):
         assert P.MENU_INSTRUCTION in prompt
         return {'content': json.dumps(dict(goal={'kind': 'exit', 'dir': 'W'}, prediction={'kind': 'reach_room', 'value': 118},
                                            rationale='west is new', budget_seconds=12))}, 'c9'

@@ -100,7 +100,11 @@ families:
   hub.retro_coplay:
     tier: 2
     deferrable_window_s: 3600
-    lanes: []
+    # Each planner decision is one metacog_turn call on the GPU pool (live 10-28: 83 metacog
+    # leases held by orion-hub-retro in 2 h). The act is charged them from 2026-10-29 (the
+    # planner calls carry the act's correlation id, scripts/act_emit.py coplay_turn_id).
+    lanes: [metacog]
+    placement: one_of
   hub.retro_leisure:
     tier: 2
     deferrable_window_s: 3600

@@ -299,7 +299,7 @@ async def test_leisure_refusal_is_unchanged_and_logged_by_dispatch_id(economy, c
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("answer", ANSWERS)
-async def test_coplay_open_is_unchanged_and_bids_on_the_row_key(economy, caplog, monkeypatch, answer) -> None:
+async def test_coplay_open_is_unchanged_and_bids_on_the_act_id(economy, caplog, monkeypatch, answer) -> None:
     from scripts import act_emit
     from scripts import retro_memory_export as rx
 
@@ -317,7 +317,8 @@ async def test_coplay_open_is_unchanged_and_bids_on_the_row_key(economy, caplog,
     await _drain()
     assert opened == ["retro-1:1792699320.000"]
     (want,) = economy.wants
-    assert (want.want_id, want.family) == ("retro-1:1792699320.000", "hub.retro_coplay")
+    # want_id is the play act's correlation id: the handoff key's stable UUID (coplay_turn_id).
+    assert (want.want_id, want.family) == (act_emit.coplay_turn_id("retro-1:1792699320.000"), "hub.retro_coplay")
     assert _fields(_shadow_lines(caplog)[0])["real"] == "ran"
 
 

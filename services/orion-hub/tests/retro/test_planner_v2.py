@@ -259,7 +259,7 @@ def _state(**cognition):
 
 def test_route_shed_returns_reason_and_retry_and_posts_no_goal(tmp_path, monkeypatch, planner):
     posted = []
-    async def shed(config, prompt, *, max_tokens, route=None): return SHED, 'c'
+    async def shed(config, prompt, *, max_tokens, route=None, turn_id=None): return SHED, 'c'
     monkeypatch.setattr(planner, '_gateway_chat', shed)
     with TestClient(_app(tmp_path, monkeypatch, _state(), posted)) as c:
         r = c.post(PATH, json=BODY, headers=H)
@@ -270,7 +270,7 @@ def test_route_shed_returns_reason_and_retry_and_posts_no_goal(tmp_path, monkeyp
 
 def test_route_posts_goal_v2_with_browser_sponsor_and_marks_human(tmp_path, monkeypatch, planner):
     posted = []; store = FakeStore()
-    async def good(config, prompt, *, max_tokens, route=None):
+    async def good(config, prompt, *, max_tokens, route=None, turn_id=None):
         assert route == planner.COPLAY_ROUTE     # a watched co-play decision is a live turn
         return dict(content=json.dumps(GOOD)), 'c9'
     monkeypatch.setattr(planner, '_gateway_chat', good)
@@ -285,7 +285,7 @@ def test_route_posts_goal_v2_with_browser_sponsor_and_marks_human(tmp_path, monk
 
 def test_route_rejection_and_unknown_observation_post_nothing(tmp_path, monkeypatch, planner):
     posted = []
-    async def junk(config, prompt, *, max_tokens, route=None): return dict(content='{"goal":"walk_right"}'), 'c'
+    async def junk(config, prompt, *, max_tokens, route=None, turn_id=None): return dict(content='{"goal":"walk_right"}'), 'c'
     monkeypatch.setattr(planner, '_gateway_chat', junk)
     with TestClient(_app(tmp_path, monkeypatch, _state(), posted)) as c:
         assert c.post(PATH, json=BODY, headers=H).status_code == 422
@@ -334,18 +334,18 @@ def test_retro_terrain_is_the_map_and_entities_overlay_it(planner):
 
 # --- co-play session end -> app.state.retro_session_end_sink ----------------------------------
 
-def _coplay_app(tmp_path, monkeypatch, frames, sink=True):
+def _coplay_app(tmp_path, monkeypatch, frames, sink=True, attempt=None, alive=4):
     import time as _t
     routes = _routes()
     monkeypatch.setattr(routes, 'COPLAY_POLL_SEC', 0.01)
     (tmp_path / 'hub.token').write_text('x' * 48)
     cfg = SimpleNamespace(HUB_RETRO_ENABLED=True, HUB_RETRO_COGNITION_ENABLED=True,
         HUB_RETRO_ORIGIN='http://testserver', HUB_RETRO_AUTH_DIR=str(tmp_path), HUB_RETRO_SOCKET='/unused')
-    world = SimpleNamespace(polls=0, ended=[])
+    world = SimpleNamespace(polls=0, ended=[], alive=alive)   # the policy is gone from poll `alive`
     def status():
         world.polls += 1
         policy = dict(port=0, epoch=7, policy_id='zelda-navigator-v1', cognition=dict(
-            policy_id='zelda-navigator-v1', attempt=None,
+            policy_id='zelda-navigator-v1', attempt=attempt,
             goal=dict(decision_id=f'7:{world.polls}', goal=dict(kind='exit', dir='N')),
             last_finished=dict(decision_id=f'7:{world.polls - 1}', verdict='met' if world.polls % 2 else 'refuted',
                                outcome='prediction_met')))
@@ -353,7 +353,7 @@ def _coplay_app(tmp_path, monkeypatch, frames, sink=True):
         rec = dict(rooms_new=10 + 2 * world.polls, deaths=world.polls // 3)
         if frames is not None: rec['frames_by_controller'] = frames(world.polls)
         return dict(session_id='a' * 36, state='running', game_id='the-legend-of-zelda', loaded_save=None,
-                    scripted=[policy] if world.polls < 4 else [],
+                    generation='g' * 36, scripted=[policy] if world.polls < world.alive else [],
                     zelda=dict(atlas=dict(lineage_id='lin-c', session=rec)))
     class Response:
         def __init__(self, data, status=200): self.data = data; self.status = status
@@ -365,6 +365,7 @@ def _coplay_app(tmp_path, monkeypatch, frames, sink=True):
         async def __aenter__(self): return self
         async def __aexit__(self, *a): pass
         def get(self, url, **kw): return Response(status())
+        def post(self, url, **kw): return Response({'accepted': True})
         def request(self, method, url, **kw):
             return Response({'scripted': [dict(port=0, epoch=7, policy_id='zelda-navigator-v1')]})
     monkeypatch.setattr(routes.aiohttp, 'ClientSession', Client)
@@ -448,6 +449,53 @@ def test_coplay_handoff_opens_its_play_act_once_before_the_end(tmp_path, monkeyp
     assert [o[0] for o in order] == ['start', 'end']
     assert order[0][1:] == order[1][1:]   # same session and start epoch: the same act key
 
+
+
+def test_coplay_planner_calls_carry_the_play_act_id(tmp_path, monkeypatch, planner):
+    # Live 2026-10-29: 32 co-play acts, 0 charged any GPU time, while orion-hub-retro held 83
+    # metacog leases in 2 h. Each planner call had a fresh correlation id, and the act ledger
+    # charges an act only the leases carrying its own. A watched handoff's calls now carry it.
+    from scripts.act_emit import coplay_turn_id
+    from scripts.retro_memory_export import coplay_key
+    app, world = _coplay_app(tmp_path, monkeypatch, frames=None, attempt=decision(), alive=10 ** 6)
+    started, sent = [], []
+    async def start(sid, started_at): started.append((sid, started_at))
+    app.state.retro_session_start_sink = start
+    async def chat(config, prompt, *, max_tokens, route=None, turn_id=None):
+        sent.append(turn_id); return dict(content=json.dumps(GOOD)), 'call-1'
+    monkeypatch.setattr(planner, '_gateway_chat', chat)
+    with TestClient(app) as c:
+        c.post('/api/retro/sessions/' + 'a' * 36 + '/scripted', json=HANDOFF, headers=H)
+        assert _wait(lambda: started)
+        r = c.post(PATH, json=dict(BODY, expected_epoch=7), headers=H)
+        world.alive = 0   # end the handoff so its watcher exits
+        assert _wait(lambda: world.ended)
+    assert r.status_code == 200, r.text
+    (sid, started_at), = started
+    assert sent == [coplay_turn_id(coplay_key(sid, started_at))]
+
+
+def test_gateway_chat_sends_the_turn_id_on_a_fresh_reply_channel(monkeypatch, planner):
+    import sys, types
+    seen = []
+    class Bus:
+        codec = SimpleNamespace(decode=lambda data: SimpleNamespace(ok=True, envelope=SimpleNamespace(payload={'content': 'x'})))
+        def __init__(self, url): pass
+        async def connect(self): pass
+        async def close(self): pass
+        async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec):
+            seen.append((str(envelope.correlation_id), reply_channel)); return {'data': b''}
+    monkeypatch.setitem(sys.modules, 'orion.core.bus.async_service', types.SimpleNamespace(OrionBusAsync=Bus))
+    cfg = SimpleNamespace(ORION_BUS_URL='redis://x', LLM_GATEWAY_SERVICE_NAME='gw', NODE_NAME='n', CHANNEL_LLM_INTAKE='in')
+    turn = '0f8fad5b-d9cb-469f-a165-70867728950e'
+    _, ids = asyncio.run(planner._gateway_chat(cfg, 'p', max_tokens=8, turn_id=turn))
+    _, alone = asyncio.run(planner._gateway_chat(cfg, 'p', max_tokens=8))
+    (corr1, reply1), (corr2, reply2) = seen
+    head, call = ids.rsplit(':', 1)
+    assert corr1 == head == turn and reply1.endswith(':' + call) and call != turn   # the lease is charged to the act
+    # planner_id keeps both ids (gateway log/lease, then this call) inside Retro's 128 characters
+    assert len('llm-gateway:' + planner.COPLAY_ROUTE + ':' + ids) <= 128
+    assert corr2 == alone and reply2.endswith(':' + alone)                  # no act: the call's own id
 
 
 def test_coplay_handoff_gone_before_first_poll_opens_no_act(tmp_path, monkeypatch):

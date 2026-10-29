@@ -196,7 +196,11 @@ async def test_the_co_play_sinks_open_and_close_one_play_act(cards) -> None:
     assert (opened.event_kind, closed.event_kind) == ("act_opened", "act_closed")
     assert opened.act.act_id == closed.act.act_id
     assert (closed.act.actor, closed.act.verb, opened.act.expect.signal_id) == ("hub.retro_coplay", "play", "artifact_produced")
-    assert opened.correlation_id == closed.correlation_id == "retro-1:1792699320.000"   # the row key
+    # One UUID per handoff (the row key is not one); the planner's GPU leases carry it too, so the
+    # act ledger charges the act for them (2026-10-29: 32 co-play acts, 0 charged).
+    from scripts.act_emit import coplay_turn_id
+    assert opened.correlation_id == closed.correlation_id == coplay_turn_id("retro-1:1792699320.000")
+    assert str(UUID(opened.correlation_id)) == opened.correlation_id
     assert opened.observed_at == datetime.fromtimestamp(1792699320.0, tz=timezone.utc)  # the handoff start
     assert closed.act.object_ref == "retro_session:retro-1"
     assert closed.act.outcome.value == 1.0 and closed.act.outcome.note == "decisions=31 met=14"
@@ -379,14 +383,15 @@ async def test_a_session_with_no_planner_decision_closes_its_act_at_zero(cards) 
 
 
 @pytest.mark.asyncio
-async def test_co_play_closes_its_own_act_keyed_by_the_row(cards) -> None:
+async def test_co_play_closes_its_own_act_on_the_handoff_id(cards) -> None:
     bus = _Bus()
     rx._remember_opened("r:1.000")   # this process published the open
     out = await _export(_Pool(), bus, kind="co_play", dispatch_id=None, session_id="r:1.000", retro_session_id="r",
                         journal=_journal(human=60000, orion=40000))
     assert out.state == "exported" and out.summary.played_together
     (ev,) = bus.events()
-    assert ev.act.actor == "hub.retro_coplay" and ev.correlation_id == "r:1.000"
+    from scripts.act_emit import coplay_turn_id
+    assert ev.act.actor == "hub.retro_coplay" and ev.correlation_id == coplay_turn_id("r:1.000")
     # The disabled switch still closes the co-play act at 0, like leisure.
     bus2 = _Bus()
     off = await _export(_Pool(), bus2, kind="co_play", dispatch_id=None, session_id="r:1.000", enabled=False)

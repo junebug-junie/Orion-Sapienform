@@ -64,6 +64,7 @@ from orion.schemas.world_pulse_read import (
 )
 from orion.substrate.adapters.world_pulse_read import map_world_pulse_read_handoff_to_substrate
 from orion.substrate.assertion_projector import assertion_node_id
+from orion.world_pulse_read.reader_contract import fence_reader_contract
 from orion.substrate.graph_journal import RevisionConflict
 from orion.substrate.reconcile import SubstrateIdentityResolver, is_identity_fenced
 
@@ -270,8 +271,11 @@ def claim_prompt_section(ctx: ClaimContextV1) -> str:
             "is recorded for review, not linked, unless the quote names it):\n"
             f"{listing(related)}\n"
         )
-    return (
-        "\n\nRELATIONSHIP CLAIMS (optional; an empty list is a fine answer). You may link a concept "
+    # The claim instructions are part of the reader's output contract: fenced so the stance
+    # pass does not see the extra key (orion/world_pulse_read/reader_contract.py). The
+    # retained excerpts stay outside the fence; they are source text, not a contract.
+    return "\n\n" + fence_reader_contract(
+        "RELATIONSHIP CLAIMS (optional; an empty list is a fine answer). You may link a concept "
         "this read produced (subject) to an EXISTING concept (object) only when the text below "
         "states the relationship. Use only these ids.\n"
         f"subjects:\n{listing(ctx.subjects)}\n"
@@ -286,8 +290,7 @@ def claim_prompt_section(ctx: ClaimContextV1) -> str:
         + "A paraphrased quote is not accepted.\n"
         'Add the key "relationship_claims": [{"subject_id": "...", "predicate": "...", '
         '"object_id": "...", "statement_text": "one plain sentence", "quote": "exact text"}]\n'
-        + "\n".join(excerpts)
-    )
+    ) + "\n".join(excerpts)
 
 
 def domain_violation(predicate: str, subject_kind: str, object_kind: str) -> Optional[str]:

@@ -135,6 +135,27 @@ def normalize_self_prediction(value: Any) -> dict[str, Any] | None:
     return out or None
 
 
+# Ternary-Bonsai-2-27B (PQ2_0, 2-bit) writes the key "imperial" where it means
+# "imperative": 9 of its 59 non-empty stance outputs live 2026-10-22..29 (cognition_traces,
+# verb stance_react), on reading and chat turns alike. Its own reasoning shows it means
+# the right key and still cannot emit it ("Let's produce final now with correct spelling:
+# i m p e r a t i v e" -> "imperial", corr 998f5800). One misspelling with a known cause,
+# not a list of guesses. The value is used only when it is real text, so an empty or null
+# "imperial" still defers the turn as empty_imperative.
+_MISSPELLED_IMPERATIVE_KEY = "imperial"
+
+
+def _repair_imperative_key(data: dict[str, Any], *, correlation_id: str | None) -> None:
+    misspelled = data.pop(_MISSPELLED_IMPERATIVE_KEY, None)
+    if _coerce_optional_str(data.get("imperative")) is not None:
+        return
+    text = misspelled.strip() if isinstance(misspelled, str) else ""
+    if not text:
+        return
+    logger.warning("stance_react_imperative_key_repaired from=%s corr=%s", _MISSPELLED_IMPERATIVE_KEY, correlation_id)
+    data["imperative"] = text
+
+
 def normalize_stance_react_raw(raw: dict[str, Any]) -> dict[str, Any]:
     """Coerce common LLM JSON mistakes before ThoughtEventV1 validation."""
     data = dict(raw)
@@ -147,6 +168,7 @@ def normalize_stance_react_raw(raw: dict[str, Any]) -> dict[str, Any]:
     data["profile"] = _coerce_required_str(data.get("profile"), default="stance_react")
     data["producer"] = _coerce_required_str(data.get("producer"), default="stance_react_v1")
     data["llm_profile"] = _coerce_required_str(data.get("llm_profile"), default="brain")
+    _repair_imperative_key(data, correlation_id=correlation_id)
     data["imperative"] = _coerce_and_clamp_str(
         data.get("imperative"),
         default="",

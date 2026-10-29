@@ -66,6 +66,9 @@ def test_rpc_validates_hold_and_deduplicates_read_only_turn(monkeypatch):
         assert kwargs["reading_only"] and kwargs["payload"]["no_write"]
         assert kwargs["payload"]["gpu_lease"] == req.gpu_lease.model_dump()
         assert kwargs["correlation_id"] == req.correlation_id
+        # An unfenced (pre-fix) brief: the stance gets the full prompt, as before.
+        assert kwargs["user_message"] == "Read the source"
+        assert kwargs["stance_view_message"] is None
         assert listener.bus.publish.await_count == 2
         await listener.stop()
 
@@ -207,6 +210,36 @@ def test_listener_stamps_budget_on_the_turn_payload(monkeypatch):
         payload = turn.call_args.kwargs["payload"]
         assert payload["inference_timeout_sec"] == 10.0
         assert REPLY_DEADLINE_PAYLOAD_KEY in payload
+        await listener.stop()
+
+    asyncio.run(run())
+
+
+def test_fenced_brief_gives_the_stance_a_view_without_the_reader_contract(monkeypatch):
+    from orion.world_pulse_read.reader_contract import STANCE_CONTRACT_PLACEHOLDER, fence_reader_contract
+
+    monkeypatch.setitem(ReadingTurnListener.handle.__globals__, "validate_hold_ref", AsyncMock())
+    turn = AsyncMock(return_value=[{"type": "final", "llm_response": "{}", "harness_source_fetches": []}])
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", turn)
+    prompt = "Read https://example.org/a.\n" + fence_reader_contract('{"what_i_learned": "x"}')
+
+    async def run():
+        listener = ReadingTurnListener(ServiceRef(name="orion-hub"))
+        listener.bus = AsyncMock()
+        listener.rpc_bus = listener.bus
+        req = request()
+        req.brief.prompt = prompt
+        envelope = BaseEnvelope(
+            kind="reading.turn.request.v1",
+            source=ServiceRef(name="orion-durable-runs"),
+            correlation_id=req.correlation_id,
+            reply_to=f"orion:reading:turn:reply:{req.correlation_id}",
+            payload=req.model_dump(),
+        )
+        await listener.handle(envelope)
+        kwargs = turn.call_args.kwargs
+        assert kwargs["user_message"] == prompt  # the reader gets the contract
+        assert kwargs["stance_view_message"] == "Read https://example.org/a.\n" + STANCE_CONTRACT_PLACEHOLDER + "\n"
         await listener.stop()
 
     asyncio.run(run())

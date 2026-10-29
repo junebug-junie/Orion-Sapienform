@@ -81,6 +81,7 @@ from orion.world_pulse_read.queue import (
     skip_already_read_stage2,
 )
 from orion.world_pulse_read.retry import is_refused_before_work
+from orion.world_pulse_read.reader_contract import fence_reader_contract
 from orion.world_pulse_read.fetch_provenance import (
     hop_allowlist,
     hop_refusal_reason,
@@ -243,6 +244,9 @@ def _build_stage2_prompt(
         "Do not write RDF, execute graph queries, or call Graphiti. Form/test priors, note hops, and return ONE "
         "JSON object — no prose outside a fenced JSON block.\n"
         f"handoff={payload}\n"
+        # Fenced so the stance pass does not see the reader's keys
+        # (orion/world_pulse_read/reader_contract.py).
+        + fence_reader_contract(
         "Required JSON shape (use exactly these top-level keys; anything else is dropped):\n"
         "{\n"
         '  "summary": "non-empty prose",\n'
@@ -267,6 +271,7 @@ def _build_stage2_prompt(
         # spend output on hops that are dropped.
         "need_stage1_urls may only hold URLs written in a page that was fetched (by you this "
         "turn, or by Stage 1) or URLs you fetched yourself this turn; a guessed URL is dropped, never read.\n"
+        )
         + WEBFETCH_LIMIT_NOTE
         + retry_note(prior_error)
         # Only when this read has retained text, stored concepts and existing candidates

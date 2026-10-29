@@ -58,6 +58,7 @@ from orion.world_pulse_read.events import publish_lifecycle
 from orion.world_pulse_read import pull as reading_pull
 from orion.schemas.world_pulse_read_pull import WorldPulseReadPullRequestV1, WorldPulseReadPullResultV1
 from orion.world_pulse_read.retry import is_refused_before_work
+from orion.world_pulse_read.reader_contract import fence_reader_contract
 from orion.world_pulse_read.fetch_text import WEBFETCH_LIMIT_NOTE, retain_fetch_texts
 from orion.world_pulse_read.timestamps import stamp_server_created_at
 from orion.world_pulse_read.read_evidence import (
@@ -216,7 +217,9 @@ def _build_document_stage1_prompt(
 
 
 def _stage1_json_contract(trace_id: str) -> str:
-    return (
+    # Fenced so the stance pass does not see the reader's keys
+    # (orion/world_pulse_read/reader_contract.py).
+    return fence_reader_contract(
         "Required JSON shape:\n"
         "{\n"
         '  "what_i_learned": "non-empty prose",\n'

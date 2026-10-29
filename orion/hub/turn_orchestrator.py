@@ -1007,6 +1007,7 @@ async def execute_unified_turn(
     urgent: bool = False,
     retrieval_query: str | None = None,
     draft_preview: bool = False,
+    stance_view_message: str | None = None,
 ) -> list[dict[str, Any]]:
     """Orion capability: unified Hub chat turn.
 
@@ -1033,6 +1034,13 @@ async def execute_unified_turn(
     self-initiated turn's standing question, a reading's source and claim).
     None keeps today's behavior: recall condenses the turn text itself. It
     rides StanceReactRequestV1.retrieval_query to cortex-exec's recall calls.
+
+    `stance_view_message` is the task as the stance pass should read it, when
+    that differs from what the motor gets. A reading turn passes its prompt
+    with the reader's JSON output contract cut out
+    (orion/world_pulse_read/reader_contract.py): with both contracts in view
+    the stance model wrote the reader's keys instead of its own. The motor
+    still gets `user_message` in full. None keeps today's behavior.
 
     `draft_preview=True` (interactive chat only, via run_unified_turn) asks the
     governor to publish the draft before the finalize judge (spec L8). The
@@ -1216,14 +1224,18 @@ async def execute_unified_turn(
     )
 
     appraisal = (mind_appraisal_text or "").strip()
-    stance_user_message = appraisal or user_message
+    # stance_inputs["harness_user_message"] below also takes the stance view:
+    # every stance_inputs key is rendered into the stance prompt, and the full
+    # message is exactly what a stance view leaves out.
+    stance_view = (stance_view_message or "").strip()
+    stance_user_message = appraisal or stance_view or user_message
     stance_inputs: dict[str, Any] = {"user_message": stance_user_message}
     if utterance_origin in ("juniper", "orion"):
         stance_inputs["utterance_origin"] = utterance_origin
     if appraisal:
         # Motor/harness still sees the full prompt; stance_inputs["user_message"]
         # must match StanceReactRequestV1.user_message (Mind snapshot user_text).
-        stance_inputs["harness_user_message"] = user_message
+        stance_inputs["harness_user_message"] = stance_view or user_message
     if recent_turns:
         # The stance pass writes the imperative and tone the motor follows, so
         # it must read the message against the thread too. Without this it saw

@@ -300,6 +300,23 @@ def _result(*, urls: list[str] | None = None) -> WorldPulseReadStage2ResultV1:
     )
 
 
+def test_stage2_stance_view_hides_the_reader_contract_only() -> None:
+    """Live 2026-10-27/28, 6 of 6 Qwen3.6-35B stances on Stage 2 wrote these keys
+    (summary in the imperative's slot, or the whole reading answer)."""
+    from orion.world_pulse_read.reader_contract import stance_view_of_reading_prompt
+
+    handoff = _handoff()
+    prompt = _build_stage2_prompt(handoff, "tr-s2", prior_error="turn_exception:TimeoutError: ")
+    view = stance_view_of_reading_prompt(prompt)
+    assert view is not None
+    for key in ('"summary"', "article_summary", "priors_tested", "need_stage1_urls", '"hops"', "tr-s2"):
+        assert key in prompt, key
+        assert key not in view, key
+    assert "You are continuing a deliberate source reading" in view
+    assert handoff.seed_ref.url in view
+    assert "RETRY: the previous attempt" in view
+
+
 def test_prompt_has_no_prior_write_instruction_when_no_candidates() -> None:
     """No bogus instruction to write a prior when there is nothing to write."""
     handoff = _handoff()

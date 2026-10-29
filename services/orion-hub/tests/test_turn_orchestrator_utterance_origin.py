@@ -249,6 +249,54 @@ async def test_execute_unified_turn_uses_mind_appraisal_text_for_stance_not_harn
 
 
 @pytest.mark.asyncio
+async def test_execute_unified_turn_gives_stance_the_view_and_harness_the_full_prompt() -> None:
+    """A reading turn: the stance reads the task without the reader's JSON contract,
+    the motor gets the full prompt with it."""
+    full = 'Read https://example.org/a.\nRequired JSON shape: {"summary": "..."}'
+    view = "Read https://example.org/a.\n[contract withheld]"
+    harness_client_run = AsyncMock(return_value=_harness_run())
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    with patches[0], patches[1] as react_mock, patches[2]:
+        await execute_unified_turn(
+            bus=MagicMock(),
+            correlation_id=_CORR_ID,
+            session_id="orion_world_pulse_read",
+            user_message=full,
+            payload={},
+            emit_observation_fn=lambda **_kwargs: None,
+            reading_only=True,
+            stance_view_message=view,
+        )
+
+    stance_req = react_mock.await_args.args[0]
+    assert stance_req.user_message == view
+    assert '"summary"' not in str(stance_req.stance_inputs)
+    harness_req = harness_client_run.await_args.args[0]
+    assert harness_req.user_message == full
+
+
+@pytest.mark.asyncio
+async def test_stance_view_also_replaces_harness_user_message_on_the_appraisal_path() -> None:
+    full = 'Read it.\nRequired JSON shape: {"summary": "..."}'
+    patches = _hub_client_patches(thought=_thought(), harness_run=_harness_run())
+    with patches[0], patches[1] as react_mock, patches[2]:
+        await execute_unified_turn(
+            bus=MagicMock(),
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message=full,
+            payload={},
+            emit_observation_fn=lambda **_kwargs: None,
+            mind_appraisal_text="subject",
+            stance_view_message="Read it.",
+        )
+
+    stance_req = react_mock.await_args.args[0]
+    assert stance_req.user_message == "subject"
+    assert stance_req.stance_inputs["harness_user_message"] == "Read it."
+
+
+@pytest.mark.asyncio
 async def test_execute_unified_turn_sends_caller_retrieval_query_to_stance() -> None:
     """Recall retrieval design phase 3: the caller's search text rides the stance request
     (orion-thought copies it to ctx["retrieval_query"] for cortex-exec's recall calls)."""

@@ -18,7 +18,7 @@ from orion.situational.perception_reader import (
     summarize_street,
     unnamed_people_range,
 )
-from orion.vision.walkway_rollup import bare_people_counts
+from orion.vision.walkway_rollup import bare_living_counts, bare_people_counts
 
 TZ = ZoneInfo("America/Denver")
 NOW = datetime(2026, 10, 22, 0, 9, tzinfo=timezone.utc)
@@ -167,6 +167,66 @@ def test_fetch_with_the_props_read_failing_says_up_to() -> None:
     })
     got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
     assert got.lines == [PREFIX + "up to 2 unfamiliar people" + SPLIT + "."]
+
+
+def test_fetch_takes_props_off_the_floor_of_their_own_kind() -> None:
+    conn = _Conn({
+        "GROUP BY s.individual_id": [_s("a"), _s("b"), *[_s(f"d{i}", kind="dog") for i in range(3)]],
+        "vision_scene_inventory": [{"counts": {"person": 2, "dog": 2}}],
+        "count(DISTINCT s.individual_id)": [{"kind": "person", "n": 1}, {"kind": "vehicle", "n": 4}],
+    })
+    got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
+    assert got.lines == [PREFIX + "at least 2, at most 3 unfamiliar dogs (the camera splits one dog into several), "
+                         "and at least 1, at most 2 unfamiliar people" + SPLIT + "."]
+
+
+# --- every living kind is a range (dogs, follow-up to PR #2875) -----------------------------------
+
+DOG_SPLIT = " (the camera splits one dog into several)"
+
+
+def _who_kinds(sightings, counts=None, props=None):
+    windows = None if counts is None else [{"counts": counts}]
+    lines = summarize_street(sightings=sightings, expectations=[], unresolved=[], patio=None, now=NOW, tz=TZ,
+                             people_windows=windows, stationary_people=props)
+    return lines[0] if lines else ""
+
+
+def test_live_6_dog_clusters_with_3_at_once_read_as_a_range() -> None:
+    """Live 2026-10-28 14:00 MDT hour: 6 dog clusters, never more than 3 dogs in one window. The street
+    line said "6 unfamiliar dogs"."""
+    line = _who_kinds([_s(f"d{i}", kind="dog") for i in range(6)], counts={"dog": 3, "person": 0})
+    assert line == PREFIX + "at least 3, at most 6 unfamiliar dogs" + DOG_SPLIT + "."
+    assert bare_living_counts(line) == []
+    # The window read failed: only "up to".
+    assert _who_kinds([_s(f"d{i}", kind="dog") for i in range(6)]) == PREFIX + "up to 6 unfamiliar dogs" + DOG_SPLIT + "."
+
+
+def test_dog_ranges_use_their_own_peak_props_names_and_days() -> None:
+    dogs = [_s("named", kind="dog", label="Biscuit"), _s("a", kind="dog", days=4), _s("b", kind="dog"),
+            _s("c", kind="dog")]
+    # 3 dogs at once, one of them Biscuit (named), one a stationary dog statue: floor 1.
+    line = _who_kinds(dogs + [_s("p")], counts={"dog": 3, "person": 1}, props={"dog": 1})
+    assert line == PREFIX + ("Biscuit, at least 1, at most 3 dogs I have no name for (some seen here on other "
+                             "days; the camera splits one dog into several), and an unfamiliar person.")
+    # One dog that is surely one: the old exact wording.
+    assert _who_kinds([_s("d", kind="dog")], counts={"dog": 1}) == PREFIX + "an unfamiliar dog."
+    assert _who_kinds([_s("d", kind="dog", days=3)], counts={"dog": 1}) == (
+        PREFIX + "a dog I have seen on 3 days but have no name for.")
+    # Things keep their count: no range for vehicles.
+    assert _who_kinds([_s("v1", kind="vehicle"), _s("v2", kind="vehicle")], counts={"vehicle": 2}) == (
+        PREFIX + "2 unfamiliar vehicles.")
+
+
+def test_no_orion_facing_street_line_states_a_bare_count_of_any_living_kind() -> None:
+    for kind, unnamed, recurring, peak, props in itertools.product(
+            ("person", "dog"), range(6), range(3), [None, *range(4)], [None, 0, 1]):
+        rows = [_s(f"r{i}", kind=kind, days=2 + i) for i in range(min(recurring, unnamed))]
+        rows += [_s(f"p{i}", kind=kind) for i in range(unnamed - min(recurring, unnamed))]
+        rows += [_s("other-dog", kind="dog"), _s("other-person")]
+        counts = None if peak is None else {kind: peak, "vehicle": 9}
+        line = _who_kinds(rows, counts=counts, props=None if props is None else {kind: props})
+        assert bare_living_counts(line) == [], line
 
 
 def test_fetch_with_the_window_read_failing_says_up_to() -> None:

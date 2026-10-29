@@ -473,7 +473,9 @@ def test_compound_detector_labels_map_to_kinds_and_other_never_names_a_peak():
     assert wr._peak_phrase({"other": 4, "vehicle": 3}) == ""
     # People are a range now; their window count is its low end, never a peak phrase.
     assert wr._peak_phrase({"other": 4, "person": 2}) == ""
-    assert wr._peak_phrase({"dog": 2, "person": 5}) == "most at once 2 dogs"
+    # Dogs too (rules_version 4): every living kind is a range.
+    assert wr._peak_phrase({"dog": 2, "person": 5}) == ""
+    assert wr._peak_phrase({"dog": 2, "stroller": 3}) == "most at once 3 strollers"
 
 
 def test_guard_dates_and_minutes_cannot_vouch_for_counts_and_times_must_match():
@@ -671,7 +673,9 @@ def test_display_line_never_shows_a_stored_line_it_cannot_vouch_for():
     assert wr.display_line("OLD 79 people", None) == ""
     assert wr.display_line("OLD 79 people", "{not json") == ""
     assert wr.display_line("OLD 79 people", {"rules_version": 1}) == ""  # cannot re-render
+    assert wr.display_line("OLD 6 dogs", {"rules_version": 3}) == ""     # a bare dog count, cannot re-render
     assert wr.display_line("ok", {"rules_version": 2}) == "ok"
+    assert wr.display_line("ok 6 dogs", {"rules_version": wr.LIVING_RANGE_RULES_VERSION}) == "ok 6 dogs"
 
 
 def test_bare_people_counts_finds_one_number_of_people_and_passes_ranges():
@@ -714,7 +718,7 @@ def _person_hour(t, persons=PERSONS):
 def test_named_is_by_person_and_clusters_of_one_person_merge():
     t = utc(2026, 10, 17, 21, 0)  # 15:00 MDT
     r = _person_hour(t)
-    assert r["rules_version"] == wr.PERSON_RECORD_RULES_VERSION
+    assert r["rules_version"] >= wr.PERSON_RECORD_RULES_VERSION
     assert r["named"] == {
         "Robin": {"times": ["15:05", "15:40"], "sightings": 2, "individual_ids": ["r1", "r2"],
                   "person_ids": ["person-robin"]},
@@ -763,9 +767,53 @@ def test_day_merges_one_person_across_hours_and_week_counts_days():
     assert "named: Robin on 1 day, Sam's bicycle on 1 day" in wr.render_line(week)
 
 
-def test_an_old_v2_day_row_still_renders_and_shows_its_stored_line():
-    old = {"rules_version": 2, "named": {"Robin": {"times": ["09:03"], "individual_ids": ["r1"]}}}
-    assert wr.display_line("stored v2 line", old) == "stored v2 line"
+def test_an_old_v2_or_v3_row_is_re_rendered_never_shown_with_a_bare_dog_count():
+    """Live 2026-10-28 14:00 MDT (rules_version 3): "6 dogs, 23 vehicles passing (most at once 3 dogs)".
+    A reader re-renders it: dogs are a range like people (rules_version 4)."""
+    t = utc(2026, 10, 28, 20, 0)
+    s = ([sight(f"d{i}", t + timedelta(minutes=i), kind="dog") for i in range(6)]
+         + [sight(f"v{i}", t + timedelta(minutes=i), kind="vehicle") for i in range(23)]
+         + [sight(f"p{i}", t + timedelta(minutes=i)) for i in range(13)])
+    r = hour(t, s, peak_at_once={"dog": 3, "person": 1, "vehicle": 4})
+    assert r["kinds"]["dog"]["count_range"] == {
+        "low": 3, "high": 6, "method_low": "most_in_one_window", "method_high": "appearance_clusters"}
+    line = wr.render_line(r)
+    assert "most at once" not in line  # the dog peak is the range's low; vehicles never name one
+    assert "people: at least 1, at most 13 (the camera splits one person into several); dogs: at least 3, " \
+           "at most 6 (the camera splits one dog into several); 23 vehicles passing" in line
+    assert wr.bare_living_counts(line) == [] and wr.unsupported_numbers(line, r) == []
+    old = copy.deepcopy(r)
+    old["rules_version"] = 3
+    old["kinds"]["dog"].pop("count_range")
+    stored = "Walkway 14:00–15:00 (Wed 28 Oct): people: ...; 6 dogs, 23 vehicles passing (most at once 3 dogs)."
+    assert wr.bare_living_counts(stored) == ["6 dogs", "3 dogs"]  # the guard catches the old line
+    shown = wr.display_line(stored, old)
+    assert "dogs: at least 3, at most 6" in shown and wr.bare_living_counts(shown) == []
+
+
+def test_day_dog_range_is_largest_hourly_low_and_summed_highs():
+    d = date(2026, 10, 25)
+    children = _day_rows(d, lambda i: [])
+    t8 = wr.local_midnight(d, TZ) + timedelta(hours=8)
+    t9 = t8 + timedelta(hours=1)
+    h8 = hour(t8, [sight("d1", t8, kind="dog"), sight("d2", t8, kind="dog")], peak_at_once={"dog": 1})
+    h9 = hour(t9, [sight("d3", t9, kind="dog")], peak_at_once={"dog": 1})
+    children = [(h, h8 if h.start == t8 else h9 if h.start == t9 else c) for h, c in children]
+    day = wr.build_parent("walkway", wr.day_period(d, TZ), children, TZ)
+    cr = day["kinds"]["dog"]["count_range"]
+    assert (cr["low"], cr["high"]) == (1, 3)
+    line = wr.render_line(day)
+    assert "dogs: at least 1, at most 3 (the camera splits one dog into several)" in line
+    assert "dogs (" not in line and wr.bare_living_counts(line) == []
+
+
+def test_bare_living_counts_catches_dogs_and_people_and_passes_ranges():
+    assert wr.bare_living_counts("6 unfamiliar dogs and 40 people") == ["6 unfamiliar dogs", "40 people"]
+    assert wr.bare_living_counts("two dogs") == ["two dogs"]
+    assert wr.bare_living_counts("at least 3, at most 6 unfamiliar dogs") == []
+    assert wr.bare_living_counts("dogs: at least 3, at most 6") == []
+    assert wr.bare_living_counts("an unfamiliar dog, 5 bicycles") == []
+    assert wr.RANGE_KINDS == ("person", "dog")  # the living kinds the rollup counts
 
 
 class _PersonFake(FakeReader):

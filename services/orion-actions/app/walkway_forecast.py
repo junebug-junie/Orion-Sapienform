@@ -55,10 +55,10 @@ from zoneinfo import ZoneInfo
 from orion.journaler import JournalTriggerV1
 from orion.vision.walkway_rollup import (
     RANGE_KINDS,
-    SPLIT_NOTE,
     bare_people_counts,
     display_line,
     person_count_range,
+    split_note,
     unsupported_numbers,
 )
 
@@ -410,14 +410,14 @@ def compact_rollup_facts(rollup: dict[str, Any]) -> dict[str, Any]:
         name: {k: v for k, v in (entry or {}).items() if k in ("times", "days", "sightings", "kinds")}
         for name, entry in (rollup.get("belongings") or {}).items()
     }
-    # People are a range (2026-10-20): at least the most in one frame, at most the clusters.
-    # Their bare passings/distinct (cluster counts) never reach the entry.
+    # People and dogs are a range (2026-10-20, dogs 2026-10-29): at least the most in one frame,
+    # at most the clusters. Their bare passings/distinct (cluster counts) never reach the entry.
     kinds: dict[str, Any] = {}
     for k, v in (rollup.get("kinds") or {}).items():
         if k in RANGE_KINDS:
             r = person_count_range(rollup, k)
             if r:
-                kinds[k] = {"at_least": r["low"], "at_most": r["high"], "note": SPLIT_NOTE}
+                kinds[k] = {"at_least": r["low"], "at_most": r["high"], "note": split_note(k)}
         else:
             kinds[k] = {"passings": v.get("passings", 0), "distinct": v.get("distinct", 0)}
     reg = rollup.get("regulars") or {}

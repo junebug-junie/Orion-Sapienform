@@ -20,7 +20,7 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, NamedTuple, Sequence
+from typing import Any, Mapping, NamedTuple, Sequence
 
 from sqlalchemy import create_engine, text
 
@@ -30,7 +30,7 @@ from orion.situational.street_material import (
     split_caption_sql,
     street_caption_line,
 )
-from orion.vision.walkway_rollup import SPLIT_NOTE, count_range, window_peak
+from orion.vision.walkway_rollup import LIVING_KINDS, count_range, split_note, window_peak
 
 logger = logging.getLogger(__name__)
 
@@ -457,7 +457,10 @@ def percept_age_seconds(observed_at: datetime | None, now: datetime | None = Non
 # named person seen in the 15 minutes is conservative: a named person who
 # passed at another moment still comes off the busiest window, so the floor
 # can read lower than it could ("up to 2" for two strangers together), never
-# higher than what was seen.
+# higher than what was seen. EVERY LIVING KIND (2026-10-29): dogs get the same
+# range ("at least 1, at most 6 unfamiliar dogs (the camera splits one dog into
+# several)"), with that kind's own window peak, stationary individuals and
+# named ones; things (vehicles, bicycles, strollers) keep their count.
 # STATIONARY FIXTURES. A box that has not moved for VISION_STATIONARY_MIN_SEC
 # (the patio skeleton) is a prop, not a visitor: sightings flagged
 # `stationary` are left out of "who is around". The column ships in the same
@@ -499,15 +502,16 @@ _STREET_PEOPLE_WINDOWS_SQL = text(
     "ORDER BY observed_at DESC LIMIT 1000"
 )
 
-# Person individuals sighted standing still (the patio skeleton): each may be
-# one of a window's detections, so the floor drops by that many (as in
-# walkway_rollup.count_range's `props`).
+# Individuals sighted standing still, by kind (the patio skeleton is a
+# "person"): each may be one of a window's detections, so that kind's floor
+# drops by that many (as in walkway_rollup.count_range's `props`).
 _STREET_STATIONARY_PEOPLE_SQL = text(
-    "SELECT count(DISTINCT s.individual_id) AS n FROM vision_individual_sighting s "
+    "SELECT i.kind, count(DISTINCT s.individual_id) AS n FROM vision_individual_sighting s "
     "JOIN vision_individual i ON i.individual_id = s.individual_id "
-    "WHERE s.stream_id = :stream_id AND i.kind = 'person' AND s.stationary "
+    "WHERE s.stream_id = :stream_id AND s.stationary "
     "  AND s.ended_at > CAST(:now AS timestamptz) - make_interval(mins => :lookback) "
-    "  AND s.started_at <= CAST(:until AS timestamptz)"
+    "  AND s.started_at <= CAST(:until AS timestamptz) "
+    "GROUP BY i.kind"
 )
 
 _STREET_EXPECTATIONS_SQL = text(
@@ -613,9 +617,11 @@ def _plural(kind: str) -> str:
 
 
 # Kinds that are someone rather than something: unnamed ones of these come
-# before vehicles and other things in the "who is around" line. Anything not
-# listed (vehicle, bicycle, stroller, ...) is a thing.
-_LIVING_KINDS = frozenset({"person", "dog", "cat", "bird", "horse", "animal"})
+# before vehicles and other things in the "who is around" line, and each is
+# said as a range (the matcher splits a dog into several clusters the way it
+# splits a person). Anything not listed (vehicle, bicycle, stroller, ...) is a
+# thing and keeps its count. One list, shared with the rollups.
+_LIVING_KINDS = LIVING_KINDS
 
 
 def _recurring_phrase(kind: str, days: list[int]) -> str:
@@ -653,29 +659,34 @@ def unnamed_people_range(
     return low, max(unnamed, low)
 
 
-def _people_phrase(low: int | None, high: int, *, recurring: list[int]) -> str:
-    """Unnamed people as a range (decision 5). `recurring`: distinct_days of
-    the individuals seen on 2+ days (said as "some", never as a count; one
-    person who is surely one keeps the day count)."""
+def _living_phrase(kind: str, low: int | None, high: int, *, recurring: list[int]) -> str:
+    """Unnamed individuals of one living kind as a range (decision 5, every
+    living kind since 2026-10-29). `recurring`: distinct_days of the
+    individuals seen on 2+ days (said as "some", never as a count; one that
+    is surely one keeps the day count)."""
     if recurring and high == 1 and low != 0:
-        return _recurring_phrase("person", recurring[:1])
+        return _recurring_phrase(kind, recurring[:1])
     if recurring:
-        one, many = "a person I have no name for", "people I have no name for"
+        one, many = f"{_article(kind)} {kind} I have no name for", f"{_plural(kind)} I have no name for"
     else:
-        one, many = "an unfamiliar person", "unfamiliar people"
+        one, many = f"an unfamiliar {kind}", f"unfamiliar {_plural(kind)}"
     notes: list[str] = []
     if recurring:
         notes.append("seen here on other days" if len(recurring) >= high else "some seen here on other days")
     if low is None or low < 1:
         text = (f"possibly {one}" if low == 0 else one) if high == 1 else f"up to {high} {many}"
         if high > 1:
-            notes.append(SPLIT_NOTE)
+            notes.append(split_note(kind))
     elif low == high:
         text = one if low == 1 else f"at least {low} {many}"
     else:
         text = f"at least {low}, at most {high} {many}"
-        notes.append(SPLIT_NOTE)
+        notes.append(split_note(kind))
     return text + (f" ({'; '.join(notes)})" if notes else "")
+
+
+def _people_phrase(low: int | None, high: int, *, recurring: list[int]) -> str:
+    return _living_phrase("person", low, high, recurring=recurring)
 
 
 def _who_line(
@@ -684,6 +695,8 @@ def _who_line(
     recent_cut: datetime,
     people_peak: int | None = None,
     people_props: int = 0,
+    peaks: Mapping[str, int] | None = None,
+    props: Mapping[str, int] | None = None,
 ) -> str:
     """The "who is around" list, most important first.
 
@@ -696,13 +709,19 @@ def _who_line(
     N more" counts the individuals left out, not the phrases ("and others"
     when the people range is among them: it has no single count).
 
-    Unnamed people are one range phrase (`_people_phrase`), never a count of
-    individuals: `people_peak` is the most people in one window over the same
-    minutes (None: unread), `people_props` the stationary person individuals.
+    Unnamed people, and every other living kind (dogs), are one range phrase
+    each (`_living_phrase`), never a count of individuals: `peaks` is the most
+    of each kind in one window over the same minutes (None: unread), `props`
+    the stationary individuals of each kind. `people_peak` / `people_props`
+    are the person-only form (used when `peaks` / `props` are not given).
     """
+    if peaks is None and people_peak is not None:
+        peaks = {"person": people_peak}
+    if props is None:
+        props = {"person": people_props}
     named: list[str] = []
     seen_names: set[str] = set()
-    named_people: set[str] = set()
+    named_by_kind: dict[str, set[str]] = {}
     # kind -> distinct_days per individual, in first-seen (most recent) order.
     recurring: dict[str, list[int]] = {}
     new: dict[str, int] = {}
@@ -716,8 +735,7 @@ def _who_line(
             if label.casefold() not in seen_names:
                 seen_names.add(label.casefold())
                 named.append(label)
-            if str(row.get("kind") or "").strip() == "person":
-                named_people.add(label.casefold())
+            named_by_kind.setdefault(str(row.get("kind") or "").strip(), set()).add(label.casefold())
             continue
         kind = str(row.get("kind") or "").strip() or "something"
         try:
@@ -737,13 +755,14 @@ def _who_line(
         for kind in kinds:
             if (kind in _LIVING_KINDS) is not living:
                 continue
-            if kind == "person":
+            if living:
                 rec = recurring.get(kind, [])
                 low, high = unnamed_people_range(
-                    unnamed=len(rec) + new.get(kind, 0), named=len(named_people),
-                    peak=people_peak, props=people_props,
+                    unnamed=len(rec) + new.get(kind, 0), named=len(named_by_kind.get(kind, ())),
+                    peak=None if peaks is None else int(peaks.get(kind, 0) or 0),
+                    props=int(props.get(kind, 0) or 0),
                 )
-                phrases.append((_people_phrase(low, high, recurring=rec), None))
+                phrases.append((_living_phrase(kind, low, high, recurring=rec), None))
                 continue
             if kind in recurring:
                 phrases.append((_recurring_phrase(kind, recurring[kind]), len(recurring[kind])))
@@ -805,7 +824,7 @@ def summarize_street(
     camera: str = "walkway",
     captions: list[dict[str, Any]] | None = None,
     people_windows: list[dict[str, Any]] | None = None,
-    stationary_people: int | None = None,
+    stationary_people: int | Mapping[str, int] | None = None,
 ) -> list[str]:
     """Pure: rows in, a few short plain-English lines out.
 
@@ -814,9 +833,10 @@ def summarize_street(
     snapshot per no-embed zone (a single dict is accepted too); each names its
     own zone under `zone`. `camera` is the stream the rows came from.
     `people_windows` are `vision_scene_inventory` rows (`counts`) from the
-    last 15 minutes and `stationary_people` the stationary person
-    individuals then; together they are the floor of the people range
-    (None: unread, the line can only say "up to").
+    last 15 minutes and `stationary_people` the stationary individuals then,
+    by kind (a bare int: persons only); together they are the floor of the
+    range of every living kind, people and dogs (None: unread, the line can
+    only say "up to").
     """
     lines: list[str] = []
     camera = (camera or "").strip() or "camera"
@@ -837,14 +857,20 @@ def summarize_street(
         lines.append(caption)
 
     # 1. Who is around (last 15 minutes).
-    peak: int | None = None
+    living = sorted({str(r.get("kind") or "").strip() for r in sightings or []} & _LIVING_KINDS)
+    peaks: dict[str, int] | None = None
     if people_windows is not None:
-        peak = max((window_peak(_json_obj(r.get("counts"))) for r in people_windows), default=0)
+        counts = [_json_obj(r.get("counts")) for r in people_windows]
+        peaks = {k: max((window_peak(c, k) for c in counts), default=0) for k in living}
+    if isinstance(stationary_people, Mapping):
+        props = {str(k): int(v or 0) for k, v in stationary_people.items()}
+    else:
+        props = {"person": int(stationary_people or 0)}
     who = _who_line(
         sightings or [],
         recent_cut=now - timedelta(minutes=STREET_RECENT_MINUTES),
-        people_peak=peak,
-        people_props=int(stationary_people or 0),
+        peaks=peaks,
+        props=props,
     )
     if who:
         lines.append(f"On the {camera} in the last {STREET_RECENT_MINUTES} minutes: {who}.")
@@ -1078,7 +1104,7 @@ def fetch_street_summary(
             # Without the props read the floor could still hold the patio
             # skeleton, so an unread props count makes the floor unread too.
             people_windows=people_windows if stationary_rows is not None else None,
-            stationary_people=int((stationary_rows or [{}])[0].get("n") or 0),
+            stationary_people={str(r.get("kind") or ""): int(r.get("n") or 0) for r in stationary_rows or []},
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("situation_street_summarize_failed err=%s", exc)

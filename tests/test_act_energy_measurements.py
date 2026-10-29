@@ -68,9 +68,13 @@ def test_containers_reading_more_than_the_host_are_normalised_not_over_charged()
     assert m["cpu_watts_host_other"] == 0.0
 
 
-def test_below_idle_charges_nothing():
+def test_below_the_fitted_floor_there_is_no_split_not_a_split_of_zero():
+    """Review 2026-10-29: circe reads down to ~46 W against its 100 W intercept (~10% of samples).
+    Publishing 0 W for busy containers there would be a fake zero."""
     m = container_cpu_measurements(_sample(2.0, {"a": 1.0}), 80.0)
-    assert m[CONTAINER_CPU_WATTS_PREFIX + "a"] == 0.0
+    assert not any(k.startswith(CONTAINER_CPU_WATTS_PREFIX) for k in m)
+    assert "container_cpu_watts_small" not in m and "cpu_watts_host_other" not in m
+    assert m["cpu_busy_cores"] == 2.0 and m["cpu_idle_watts"] == 99.0
 
 
 @pytest.mark.parametrize("sample,cpu_w,keys", [

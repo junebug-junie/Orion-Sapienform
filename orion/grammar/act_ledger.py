@@ -440,15 +440,17 @@ def fill_close_cost(conn: Any, act: ActV1, *, opened_at: datetime | None, closed
             since=anchor - timedelta(seconds=GPU_COST_LOOKBACK_SEC),
             until=closed_at + timedelta(seconds=GPU_COST_CLOSE_GRACE_SEC)), log_prefix="act_cost")
         if energy:
-            for field in ("usd", "heat_c_by_host"):
+            for field, basis_key in (("usd", "usd"), ("heat_c_by_host", "heat")):
                 if getattr(cost, field) is not None:
                     energy.pop(field, None)
+                    (energy.get("basis") or {}).pop(basis_key, None)  # not the writer's value
             if energy.get("basis"):
                 energy["basis"] = {**energy["basis"], **(cost.basis or {})}
             update.update(energy)
     if update:
         cost = cost.model_copy(update=update)
-    measured = any(v is not None for v in cost.model_dump().values())
+    # basis is words about the other fields, not a measurement of its own.
+    measured = any(v is not None for k, v in cost.model_dump().items() if k != "basis")
     return cost if measured else None
 
 

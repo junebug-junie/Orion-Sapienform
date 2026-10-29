@@ -53,12 +53,28 @@ class FakeConn:
         raise AssertionError(f"unexpected statement {stmt}")
 
 
+def heat_fixture(fitted_at):
+    """A circe-only heat fit, independent of the committed config (which a refit rewrites)."""
+    from orion.physiology.heat_config import parse_heat_sensitivity
+
+    entry = {"point": 0.5, "ci95": [0.2, 0.8], "horizon": "2h", "n": 100, "fitted_at": fitted_at.isoformat(),
+             "regressor": "compute_watts", "baseline_watts_p10": 200.0, "fit_command": "fixture"}
+    return parse_heat_sensitivity({"schema": "heat_sensitivity.v1", "hosts": {"circe": entry}})
+
+
+def usable_fixture_sensitivity():
+    from orion.physiology.prices import usable_sensitivity
+
+    return usable_sensitivity(0.5, 0.2, 0.8)
+
+
 @pytest.fixture(autouse=True)
 def _fresh_caches(monkeypatch):
     fill._IDLE_CACHE.clear()
     fill._POOL_CACHE.clear()
     fill._HEAT_CACHE.clear()
     monkeypatch.setattr(fill, "_card_locations", lambda: ({"gpu2": ("circe", 2), "gpu1": ("circe", 1)}, None))
+    monkeypatch.setattr(fill, "_heat_config", lambda: (heat_fixture(T0 - timedelta(days=1)), None))
 
 
 FLAT_140 = [(_at(t), 140.0) for t in range(0, 181, 30)]
@@ -72,8 +88,7 @@ def test_one_lease_alone_on_one_card():
     wh = 100.0 * 60.0 / 3600.0
     assert out["wh_by_host"] == {"circe": pytest.approx(wh, rel=1e-4)}
     assert out["usd"] == pytest.approx(wh / 1000.0 * 0.1254564295292, rel=1e-4)
-    # The committed heat fit: circe 0.3111 C per 100 W.
-    assert out["heat_c_by_host"] == {"circe": pytest.approx(0.3111 * wh / 100.0, rel=1e-3)}
+    assert out["heat_c_by_host"] == {"circe": pytest.approx(usable_fixture_sensitivity() * wh / 100.0, rel=1e-3)}
     assert set(out["basis"]) == {"wh", "usd", "heat", "cpu"}
     assert "share 1.00" in out["basis"]["wh"] and "idle 40.0 W" in out["basis"]["wh"]
     # The card's own key, on its own host.
@@ -128,6 +143,37 @@ def test_an_unfitted_host_has_no_heat_entry(monkeypatch):
     out = fill.act_energy_cost(conn, correlation_id="c", since=_at(0), until=_at(200), now=_at(200))
     assert "hecate" in out["wh_by_host"] and "heat_c_by_host" not in out
     assert "hecate unpriced (not_fitted:hecate)" in out["basis"]["heat"]
+
+
+def test_the_committed_heat_fit_parses():
+    """The real file only has to load; its numbers belong to fit_heat_sensitivity.py."""
+    from orion.physiology.heat_config import load_heat_sensitivity
+
+    cfg, err = load_heat_sensitivity(fill.HEAT_SENSITIVITY_PATH)
+    assert err is None and "circe" in cfg.hosts
+
+
+def test_interpolated_window_is_named_in_basis():
+    """A 5 s lease between two 30 s samples has no sample inside it: basis says so."""
+    conn = FakeConn(leases=[("L1", '["gpu2"]', 5_000.0, _at(36))], watts=FLAT_140, history=IDLE_40, rate=RATE)
+    out = fill.act_energy_cost(conn, correlation_id="c", since=_at(0), until=_at(200), now=_at(200))
+    assert "0 samples in 5 s (interpolated: no sample inside the lease)" in out["basis"]["wh"]
+
+
+def test_a_grant_that_never_ends_stops_sharing_after_the_longest_hold():
+    """Live: ~8 grants a day never get a terminal event. One from 3 h ago no longer shares the card."""
+    conn = FakeConn(leases=[("L1", '["gpu2"]', 60_000.0, _at(70))], watts=FLAT_140, history=IDLE_40, rate=RATE,
+                    card_leases=[("L9", _at(-9100), None)])
+    out = fill.act_energy_cost(conn, correlation_id="c", since=_at(0), until=_at(200), now=_at(200))
+    assert "share 1.00" in out["basis"]["wh"]
+
+
+def test_one_card_is_read_once_for_many_leases():
+    conn = FakeConn(leases=[("L1", '["gpu2"]', 20_000.0, _at(40)), ("L2", '["gpu2"]', 20_000.0, _at(90))],
+                    watts=FLAT_140, history=IDLE_40, rate=RATE)
+    out = fill.act_energy_cost(conn, correlation_id="c", since=_at(0), until=_at(200), now=_at(200))
+    assert out["wh_by_host"]["circe"] == pytest.approx(100.0 * 40.0 / 3600.0, rel=1e-4)
+    assert sum(1 for s, _ in conn.calls if s is fill._CARD_LEASES_SQL) == 1
 
 
 def test_the_real_pool_config_maps_cards_to_hosts():

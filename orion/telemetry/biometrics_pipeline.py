@@ -141,6 +141,9 @@ def container_cpu_measurements(sample: Dict[str, object], cpu_watts: Optional[fl
     `container_cpu_watts_small` sums containers under CONTAINER_CPU_NAME_FLOOR_CORES. The named
     containers + small + host_other = cpu_watts_total - idle (clamped at 0).
 
+    Below the floor (circe at low load reads down to ~46 W against a 100 W intercept) the linear
+    model does not hold: no split is published for that sample.
+
     The idle floor is a per-node setting (CPU_IDLE_WATTS_BY_NODE): the fit's intercept, not a
     reading. It is published as `cpu_idle_watts` beside the split so a reader sees the assumption.
     Absent when the package watts, the idle floor, the busy cores, or the container read is
@@ -158,10 +161,12 @@ def container_cpu_measurements(sample: Dict[str, object], cpu_watts: Optional[fl
         return out
     parsed = {str(k): v for k, v in ((k, _as_float(v)) for k, v in cores.items()) if v is not None and v >= 0.0}
     denom = max(busy, sum(parsed.values()))
-    above = max(0.0, cpu_watts - idle)
     out["cpu_idle_watts"] = idle
-    if denom <= 0.0:
+    if cpu_watts < idle or denom <= 0.0:
+        # Below the fitted floor (circe at low load, deep C-states: ~10% of its samples) the line
+        # does not hold, so there is no honest split: absent, never a split of 0 W.
         return out
+    above = cpu_watts - idle
     small = 0.0
     for name, c in parsed.items():
         w = above * c / denom

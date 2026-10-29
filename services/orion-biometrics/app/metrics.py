@@ -73,6 +73,7 @@ class BiometricsCollector:
         # tick's util of 0.0 is a placeholder, not a measurement).
         self._busy_cores: Optional[float] = None
         self._prev_ctr_usec: Dict[str, int] = {}
+        self._prev_ctr_mono: Optional[float] = None
         self._ctr_names: Dict[str, str] = {}
 
     def collect(self) -> Dict[str, Any]:
@@ -521,7 +522,12 @@ class BiometricsCollector:
             "cpu_idle_watts": settings.cpu_idle_watts(),
         }
         usec = self._read_container_usec()
+        # Its own clock at the cgroup read: dt from collect() also holds nvidia-smi's latency jitter.
+        now_mono = time.monotonic()
         prev, self._prev_ctr_usec = self._prev_ctr_usec, usec
+        prev_mono, self._prev_ctr_mono = self._prev_ctr_mono, now_mono
+        if prev_mono is not None:
+            dt = now_mono - prev_mono
         if not usec or not prev or not dt or dt <= 0 or dt > _RAPL_MAX_GAP_SEC:
             return out
         cores: Dict[str, float] = {}

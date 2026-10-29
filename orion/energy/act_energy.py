@@ -33,6 +33,10 @@ JOULES_PER_KWH = 3_600_000.0
 # A sample further than this from the instant it stands for is not that instant's reading.
 # 3 biometrics ticks (TELEMETRY_INTERVAL=30).
 MAX_SAMPLE_GAP_S = 90.0
+# p05 of the card's own 24 h. Measured bias (eval act_energy_vs_power_intent.py, 90 reverie images,
+# 2026-10-29): this floor sits ~5.5 W under the power-intent loop's pre-window sample, so a reverie
+# family's Wh reads ~1.2x the 1 Hz meter. Kept deliberately: "above idle" means above the card at
+# rest, and a card warmed for an image is not at rest. With the meter's floor the ratio is ~0.93.
 IDLE_QUANTILE = 0.05
 IDLE_MIN_SAMPLES = 60  # 30 min of 30 s samples
 

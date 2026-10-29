@@ -28,8 +28,26 @@ def _name(docker_root, cid, name):
     (d / "config.v2.json").write_text(json.dumps({"Name": f"/{name}"}))
 
 
+class _Clock:
+    """Stands in for time.monotonic at the cgroup read; each call advances by .step seconds."""
+
+    def __init__(self):
+        self.t, self.step = 1000.0, 30.0
+
+    def __call__(self):
+        self.t += self.step
+        return self.t
+
+
 @pytest.fixture()
-def env(tmp_path, monkeypatch):
+def clock(monkeypatch):
+    c = _Clock()
+    monkeypatch.setattr("app.metrics.time.monotonic", c)
+    return c
+
+
+@pytest.fixture()
+def env(tmp_path, monkeypatch, clock):
     sys_root, docker_root = tmp_path / "sys", tmp_path / "docker"
     monkeypatch.setattr("app.metrics.settings.HOST_SYS_PATH", str(sys_root))
     monkeypatch.setattr("app.metrics.settings.DOCKER_ROOT_PATH", str(docker_root))
@@ -54,8 +72,9 @@ def test_busy_cores_per_named_container(env):
     assert out["cpu_cores"][DOJO[:12]] == pytest.approx(1.0)  # no config.v2.json: the short id
 
 
-def test_cgroupfs_layout_is_read_too(env):
+def test_cgroupfs_layout_is_read_too(env, clock):
     sys_root, _ = env
+    clock.step = 10.0
     _cgroup(sys_root, VEC, 100, systemd=False)
     c = BiometricsCollector()
     c._collect_containers(dt=10.0)
@@ -63,7 +82,7 @@ def test_cgroupfs_layout_is_read_too(env):
     assert c._collect_containers(dt=10.0)["cpu_cores"][VEC[:12]] == pytest.approx(0.5)
 
 
-def test_a_restarted_counter_and_a_long_gap_report_nothing(env):
+def test_a_restarted_counter_and_a_long_gap_report_nothing(env, clock):
     sys_root, _ = env
     _cgroup(sys_root, VEC, 5_000_000)
     c = BiometricsCollector()
@@ -71,7 +90,19 @@ def test_a_restarted_counter_and_a_long_gap_report_nothing(env):
     _cgroup(sys_root, VEC, 1_000)  # counter went backwards: a new cgroup under the same id
     assert c._collect_containers(dt=30.0)["cpu_cores"] == {}
     _cgroup(sys_root, VEC, 9_000_000)
-    assert "cpu_cores" not in c._collect_containers(dt=10_000.0)
+    clock.step = 10_000.0  # the cgroup read's own clock decides the gap
+    assert "cpu_cores" not in c._collect_containers(dt=30.0)
+
+
+def test_rate_uses_the_cgroup_reads_own_clock_not_the_tick_dt(env, clock):
+    """nvidia-smi latency jitter in collect()'s dt must not leak into busy cores."""
+    sys_root, _ = env
+    _cgroup(sys_root, VEC, 0)
+    c = BiometricsCollector()
+    c._collect_containers(dt=30.0)
+    clock.step = 20.0
+    _cgroup(sys_root, VEC, 20_000_000)
+    assert c._collect_containers(dt=30.0)["cpu_cores"][VEC[:12]] == pytest.approx(1.0)
 
 
 def test_non_container_entries_are_ignored(env):

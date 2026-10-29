@@ -81,7 +81,7 @@ def test_inside_exit_moving_toward_the_portal_edge_is_projected() -> None:
     # 35 of 36 live walkway stories end "inside": the last box is 30% from the left edge.
     dist, speed = vh.gap_departure(facts(), W2D, CFG)
     assert dist == pytest.approx(0.3) and speed == 0.05
-    band = vh.choose_band("person", {}, {}, W2D, CFG)
+    band = vh.choose_band("person", {}, W2D, CFG)
     ws, we, late = vh.window_for(T0, dist, speed, band, CFG)
     # (0.3 + 0.4*1.5) / 0.05 = 18 s; (0.3 + 3*1.5) / 0.05 = 96 s; late margin 2 x 78 s.
     assert (ws - T0).total_seconds() == pytest.approx(18) and (we - T0).total_seconds() == pytest.approx(96)
@@ -149,32 +149,42 @@ def test_approach_needs_a_walkway_story_toward_the_house() -> None:
     assert vh.approach_departure(facts(dir_depth=1), APPROACH, CFG)
     assert not vh.approach_departure(facts(dir_depth=-1), APPROACH, CFG)
     assert not vh.approach_departure(facts(dir_depth=1, kind="bicycle"), APPROACH, CFG)
-    band = vh.choose_band("person", {}, {}, APPROACH, CFG)
+    band = vh.choose_band("person", {}, APPROACH, CFG)
     ws, we, _ = vh.window_for(T0, 0.0, 1.0, band, CFG)
     assert ((ws - T0).total_seconds(), (we - T0).total_seconds()) == (3.0, 30.0)
 
 
-# --- predict: band switch at 10 met ---------------------------------------------------------------
+# --- predict: band switch at 10 arrivals ---------------------------------------------------------------
 
 
-def test_prior_band_until_ten_met_then_conformal() -> None:
+def test_late_arrivals_count_toward_the_switch_off_a_wrong_prior() -> None:
+    """2026-10-29 live: approach_door's prior is 3-30 s, real arrivals took
+    40-75 s. 3 met, 6 late, 2 early. Counting only met kept the wrong prior
+    forever; every arrival counts, so the learned band takes over at 10."""
+    real = [6.5, 7.5, 4.9, 42.4, 49.4, 63.2, 73.8, 57.2, 59.9, 1.1]  # 3 met, 6 late, 1 early
+    band = vh.choose_band("person", {"person": real}, APPROACH, CFG)
+    assert band.source == "learned"
+    assert band.hi >= 73.8 and band.lo <= 1.1  # the window now spans what actually happens
+    assert vh.choose_band("person", {"person": real[:9]}, APPROACH, CFG).source == "prior"
+
+
+def test_prior_band_until_ten_arrivals_then_conformal() -> None:
     gs = [1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9]
-    b9 = vh.choose_band("person", {"person": gs[:9]}, {"person": 9}, W2D, CFG)
+    b9 = vh.choose_band("person", {"person": gs[:9]}, W2D, CFG)
     assert b9.source == "prior" and (b9.lo, b9.hi) == pytest.approx((0.6, 4.5))
-    b10 = vh.choose_band("person", {"person": gs}, {"person": 10}, W2D, CFG)
+    b10 = vh.choose_band("person", {"person": gs}, W2D, CFG)
     # n=10: order statistics floor(1.1)=1 and ceil(9.9)=10.
     assert b10.source == "learned" and (b10.lo, b10.hi) == (1.0, 1.9)
 
 
 def test_a_dog_uses_the_person_band_widened_until_its_own_ten() -> None:
     gs = [1.0 + 0.1 * i for i in range(10)]
-    b = vh.choose_band("dog", {"person": gs}, {"person": 10, "dog": 3}, W2D, CFG)
+    b = vh.choose_band("dog", {"person": gs}, W2D, CFG)
     assert b.source == "learned_person_widened" and b.lo < 1.0 and b.hi > 1.9
-    own = vh.choose_band("dog", {"person": gs, "dog": [2.0 + 0.1 * i for i in range(10)]},
-                         {"person": 10, "dog": 10}, W2D, CFG)
+    own = vh.choose_band("dog", {"person": gs, "dog": [2.0 + 0.1 * i for i in range(10)]}, W2D, CFG)
     assert own.source == "learned" and own.lo == 2.0
     # No person band either: the prior.
-    assert vh.choose_band("dog", {}, {"dog": 2}, W2D, CFG).source == "prior"
+    assert vh.choose_band("dog", {}, W2D, CFG).source == "prior"
 
 
 def test_conformal_band_needs_enough_values() -> None:
@@ -183,7 +193,7 @@ def test_conformal_band_needs_enough_values() -> None:
 
 
 def test_slow_walkers_get_later_wider_windows() -> None:
-    band = vh.choose_band("person", {}, {}, W2D, CFG)
+    band = vh.choose_band("person", {}, W2D, CFG)
     fast = vh.window_for(T0, 0.2, 0.1, band, CFG)
     slow = vh.window_for(T0, 0.2, 0.05, band, CFG)
     assert slow[0] > fast[0] and (slow[1] - slow[0]) > (fast[1] - fast[0])
@@ -194,7 +204,7 @@ def test_slow_walkers_get_later_wider_windows() -> None:
 
 def test_prior_p_is_uniform_when_the_world_matches_the_prior() -> None:
     rng = random.Random(7)
-    band = vh.choose_band("person", {}, {}, W2D, CFG)
+    band = vh.choose_band("person", {}, W2D, CFG)
     mu = (math.log(band.lo) + math.log(band.hi)) / 2
     sigma = (math.log(band.hi) - math.log(band.lo)) / (2 * vh.Z90)
     ps = [vh.p_value_arrival(math.exp(rng.gauss(mu, sigma)), band) for _ in range(4000)]
@@ -226,7 +236,7 @@ def test_learned_p_has_a_granularity_floor_of_two_over_n_plus_one() -> None:
 
 
 def test_rest_state_is_reachable_an_on_time_arrival_is_not_surprising() -> None:
-    band = vh.choose_band("person", {}, {}, W2D, CFG)
+    band = vh.choose_band("person", {}, W2D, CFG)
     centre = math.sqrt(band.lo * band.hi)
     assert vh.p_value_arrival(centre, band) == pytest.approx(1.0, abs=1e-6)
     assert vh.p_value_arrival(band.hi * 5, band) < 0.01
@@ -457,8 +467,8 @@ def test_handoff_code_never_writes_a_label_or_merges_individuals(name: str) -> N
 
 def test_a_prior_band_arrival_can_never_open_the_attention_gate() -> None:
     # Review #2: a hand-set x0.4..x3 guess must not call a 1 s transit surprising.
-    band = vh.choose_band("person", {}, {}, APPROACH, CFG)
-    floor = vh.prior_p_floor(CFG.min_met)
+    band = vh.choose_band("person", {}, APPROACH, CFG)
+    floor = vh.prior_p_floor(CFG.min_arrivals)
     for g in (0.0, 0.1, 1.0, 1000.0):
         p = vh.p_value_arrival(g, band, prior_floor=floor)
         assert p >= floor > CFG.attention_p
@@ -466,7 +476,7 @@ def test_a_prior_band_arrival_can_never_open_the_attention_gate() -> None:
 
 
 def test_arrival_log_score_is_highest_at_the_mode_and_in_nats_per_second() -> None:
-    band = vh.choose_band("person", {}, {}, W2D, CFG)
+    band = vh.choose_band("person", {}, W2D, CFG)
     mu, sigma = vh._lognormal_of(band)
     mode = math.exp(mu - sigma ** 2)
     best = vh.arrival_log_score(mode, band, 0.05, "gap")
@@ -475,7 +485,7 @@ def test_arrival_log_score_is_highest_at_the_mode_and_in_nats_per_second() -> No
     # The time density is the g density times dg/dt = speed.
     assert vh.arrival_log_score(mode, band, 0.1, "gap") - best == pytest.approx(math.log(2))
     # Integrates to ~1 over time (a proper density), approach portal, seconds.
-    ab = vh.choose_band("person", {}, {}, APPROACH, CFG)
+    ab = vh.choose_band("person", {}, APPROACH, CFG)
     total = sum(math.exp(vh.arrival_log_score(0.05 * i, ab, 1.0, "approach")) * 0.05 for i in range(1, 40000))
     assert total == pytest.approx(1.0, abs=0.01)
 

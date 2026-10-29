@@ -10,7 +10,7 @@ read-only session with a statement timeout. Nothing is written.
 
 Replays the reducer's rules in time order with the same pure functions the
 loop uses (app/vision_handoff.py): open (projection from ``inside``), predict
-(prior band until ``min_met`` met, then split conformal), match, grade with
+(prior band until ``min_arrivals`` arrivals, then split conformal), match, grade with
 the 80% "was looking" rule, overlap pairs on the central walk, p-values and
 the attention gate. Edges are derived from story evidence when the edges
 migration is not applied.
@@ -133,7 +133,6 @@ def replay(stories, census, rings, known, vecs, topology, cfg: vh.HandoffConfig,
     for v in by_stream.values():
         v.sort(key=lambda s: s.started_at)
     learned: Dict[str, Dict[str, List[float]]] = defaultdict(lambda: defaultdict(list))
-    met_n: Dict[str, Counter] = defaultdict(Counter)
     missed_n: Dict[str, Counter] = defaultdict(Counter)
     graded: List[dict] = []
     open_: List[dict] = []
@@ -172,11 +171,9 @@ def replay(stories, census, rings, known, vecs, topology, cfg: vh.HandoffConfig,
             g = vh.observed_g(transit, h["dist"], h["speed"], portal.kind)
             calib_kind = "person" if h["band"].source == "learned_person_widened" else src.kind
             band = vh.Band(h["band"].lo, h["band"].hi, h["band"].source, tuple(learned[portal.id][calib_kind]))
-            p = vh.p_value_arrival(g, band, prior_floor=vh.prior_p_floor(cfg.min_met))
+            p = vh.p_value_arrival(g, band, prior_floor=vh.prior_p_floor(cfg.min_arrivals))
             rec["log_score"] = vh.arrival_log_score(g, band, h["speed"], portal.kind)
             learned[portal.id][src.kind].append(g)
-            if status == "met":
-                met_n[portal.id][src.kind] += 1
             rec.update(status=status, transit=transit, g=g, p=p)
         elif status == "ambiguous":
             rec.update(status="ambiguous")
@@ -209,7 +206,7 @@ def replay(stories, census, rings, known, vecs, topology, cfg: vh.HandoffConfig,
                 dist, speed = 0.0, 1.0
             else:
                 continue
-            band = vh.choose_band(s.kind, learned[portal.id], met_n[portal.id], portal, cfg)
+            band = vh.choose_band(s.kind, learned[portal.id], portal, cfg)
             ws_, we_, lu_ = vh.window_for(s.ended_at, dist, speed, band, cfg)
             open_.append(dict(portal=portal.id, src=s, dist=dist, speed=speed, band=band, ws=ws_, we=we_, lu=lu_))
     for h in open_:
@@ -296,22 +293,22 @@ def summarize(graded, overlaps, unannounced, learned, tz: ZoneInfo, cfg: vh.Hand
                           and r["status"] == "unscorable"),
         "missed": len(doorbell_missed),
         "missed_min_coverage": min((r["coverage"] for r in doorbell_missed), default=None)}
-    met_total = sum(c.get("met", 0) for c in per.values())
+    arrived_total = sum(c.get(k, 0) for c in per.values() for k in vh.ARRIVED)
     reasons = []
-    if met_total < cfg.min_met:
-        reasons.append(f"only {met_total} met handoffs (< {cfg.min_met}): no learned band, no uniformity test")
+    if arrived_total < cfg.min_arrivals:
+        reasons.append(f"only {arrived_total} arrivals (< {cfg.min_arrivals}): no learned band, no uniformity test")
     if len(met_p) < 20:
         reasons.append(f"only {len(met_p)} met p-values (need >= 20 for a uniformity read)")
     if out["doorbell_target"]["missed"] and (out["doorbell_target"]["missed_min_coverage"] or 0) < cfg.min_coverage:
         reasons.append("FAIL: a doorbell-target miss with coverage under the 80% rule")
     if out["attention_gate"]["quiet_hour_passes"] > max(1, 0.05 * len(met_p)):
         reasons.append("FAIL: quiet hours produced gate passes above chance")
-    spreads = [v["spread_over_median"] for v in g_rep.values() if v["n"] >= cfg.min_met and v["spread_over_median"]]
+    spreads = [v["spread_over_median"] for v in g_rep.values() if v["n"] >= cfg.min_arrivals and v["spread_over_median"]]
     if any(s > 0.5 for s in spreads):
         reasons.append("learned gap spread above 50% of the median (acceptance check)")
     if any(r.startswith("FAIL") for r in reasons):
         out["verdict"] = "FAIL: " + "; ".join(reasons)
-    elif met_total < cfg.min_met or len(met_p) < 20:
+    elif arrived_total < cfg.min_arrivals or len(met_p) < 20:
         out["verdict"] = "TOO THIN FOR A VERDICT: " + "; ".join(reasons)
     else:
         out["verdict"] = "PASS" + ("" if not reasons else " with notes: " + "; ".join(reasons))

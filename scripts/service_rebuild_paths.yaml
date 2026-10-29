@@ -137,6 +137,9 @@ orion_package_extra_services:
   # service imports them. 2026-10-29: PR #2951 (dig + body_atlas only) rebuilt nothing.
   dig: [orion-harness-governor]
   body_atlas: [orion-harness-governor]
+  # body_atlas reads Postgres through orion/evals/model_replay/sandbox.py's ReadOnlyPsql
+  # (2026-10-29, whole-body atlas); without this a sandbox change left the harness stale.
+  evals: [orion-harness-governor]
   self_inventory.py: [orion-harness-governor]
 
 # Per-host positive allowlists live beside exclude_services.txt:

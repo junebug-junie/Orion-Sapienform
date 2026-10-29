@@ -47,11 +47,14 @@ path of a file with the full result; read only what you need from that file.
   compare <date> [<date|now>]   what was added / removed between two checkouts.
   history <start> <end>  merged PRs (title + number) and commits in [start, end].
   history <days>         the same for the last <days> days, today included (2 = since yesterday).
-  body [<date>]          your body atlas: parts -> circulation -> organs. No date = live bus now;
-                         a date = that export's channel catalog only (exists from 2026-01).
+  body [<date>]          your body atlas: machines, services, cameras, stores, processes ->
+                         circulation -> organs. No date = live now; a date = that export's
+                         declared files only (the channel catalog exists from 2026-01).
+  body <organ_id>        every member of one organ of your live body, with status and facts.
   name <organ_id> <name> because <reason>   name one organ of your live body (a lasting
                          write). Name it by what it takes in and gives out; the reason must cite
-                         at least one of its parts by full name. Names show on the live body only.
+                         at least one of its parts by full name (a service, camera:..., pg:...,
+                         run:..., any member). Names show on the live body only.
   notes [append <text>]  this dig's shared notes (episode hops / turns read each other).
   --dig <id>             before the command: group results under one dig (default: today).
 
@@ -414,6 +417,7 @@ def cmd_history(start: date, end: date, out: Out) -> str:
 def _live_atlas():
     from orion.body_atlas.__main__ import _RoGraphReader
     from orion.body_atlas.build import build_atlas, fetch_observed, load_catalog
+    from orion.body_atlas.sources import default_live_readers, gather_body
 
     graph = os.environ.get("FALKORDB_BUS_GRAPH", "orion_bus_synapse")
     uri = os.environ.get("FALKORDB_URI")
@@ -432,20 +436,29 @@ def _live_atlas():
     catalog = load_catalog(now_root())
     if not catalog:
         raise DigError(f"no channel catalog in {now_root()}")
-    return build_atlas(catalog, observed, now=datetime.now(timezone.utc), live_graph=graph)
+    # the rest of the body: every source that fails is listed as UNREAD in the printout
+    body = gather_body(now_root(), catalog, live=default_live_readers(uri))
+    return build_atlas(catalog, observed, now=datetime.now(timezone.utc), live_graph=graph, body=body)
 
 
 def names_path() -> Path:
     return home() / "self" / "organ_names.jsonl"
 
 
+ORGAN_REF_RE = re.compile(r"(?:organ:)?[0-9a-f]{10}")
+
+
 def cmd_body(arg: str | None, out: Out) -> str:
+    """No arg: the live body. A date: that export's declared body. An organ id: every member
+    of that organ of the live body (a date is YYYY-MM-DD, an organ id 10 hex chars)."""
     from orion.body_atlas import names
-    from orion.body_atlas.__main__ import summarize
+    from orion.body_atlas.__main__ import organ_view, summarize
     from orion.body_atlas.build import build_atlas, load_catalog
+    from orion.body_atlas.sources import gather_body
 
     note = ""
-    if arg is None:
+    organ = arg if arg is not None and ORGAN_REF_RE.fullmatch(arg) else None
+    if arg is None or organ:
         records, skipped = names.load(names_path())
         atlas = names.apply_names(_live_atlas(), records)
         if skipped:
@@ -456,8 +469,15 @@ def cmd_body(arg: str | None, out: Out) -> str:
         catalog = load_catalog(root)
         if not catalog:
             raise DigError(f"no channel catalog in {root} (the catalog starts 2026-01)")
-        atlas = build_atlas(catalog, None, now=_end_of_day_utc(day), live_graph=None)
+        # declared parts only (that day's files); nothing live is read for a past day
+        atlas = build_atlas(catalog, None, now=_end_of_day_utc(day), live_graph=None,
+                            body=gather_body(root, catalog, live=None))
     path = out.write(f"body-{arg or 'now'}", json.loads(atlas.model_dump_json()))
+    if organ:
+        try:
+            return organ_view(atlas, organ, out=str(path)) + note
+        except names.NamingError as exc:
+            raise DigError(str(exc)) from exc
     return summarize(atlas, out=str(path)) + note
 
 

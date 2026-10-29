@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -37,6 +38,7 @@ from orion.body_atlas.model import (
     PartV1,
 )
 from orion.body_atlas.organs import louvain, modularity
+from orion.body_atlas.sources import BodyInputs
 
 CATALOG_RELPATH = Path("orion/bus/channels.yaml")
 # A publisher not in the catalog is transient (smoke, probe, one-off script) when it is below
@@ -48,6 +50,8 @@ CATALOG_RELPATH = Path("orion/bus/channels.yaml")
 DEFAULT_MIN_OBSERVED_COUNT = 1000
 DEFAULT_LIVE_WINDOW_SEC = 24 * 3600
 NAMESPACE_HINTS = 3
+# Flow weight one camera, store or process part adds, split over its edges (see _add_body).
+BODY_PART_UNIT = 1.0
 
 
 @dataclass
@@ -110,6 +114,33 @@ class _FlowAcc:
         self.evidence: set[str] = set()
         self.channels: set[str] = set()
         self.causal_count = 0
+        self.relation = "signals"
+
+
+_STORE_PREFIX = {"postgres": "pg", "chroma": "chroma", "falkordb": "falkor"}
+_PROCESS_PREFIX = {"durable_workflow": "run", "substrate_reducer": "reducer"}
+
+
+def match_part(raw: str, known: set[str], host_names: Iterable[str]) -> str | None:
+    """A container / compose service / env-file directory name -> the atlas part it is.
+
+    Rules, not a table: ``orion-athena-cortex-exec`` and ``orion-orion-athena-bus-core`` drop
+    the ``orion-`` and ``<host>-`` prefixes; ``vision-retina-walkway`` gains ``orion-``; a
+    compose replica suffix (``-1``) drops. None when nothing matches (counted as unmatched)."""
+    hosts = "|".join(re.escape(h) for h in sorted(host_names, key=len, reverse=True))
+    prefix = rf"^(?:orion-)*(?:(?:{hosts})-)?" if hosts else r"^(?:orion-)*"
+    for base in (raw, re.sub(r"-\d+$", "", raw)):
+        rest = re.sub(prefix, "", base)
+        for cand in (base, rest, f"orion-{rest}"):
+            if cand in known:
+                return cand
+    return None
+
+
+def _status(last: float | None, now_epoch: float, window: int, *, seen: bool) -> str:
+    if last and now_epoch - last <= window:
+        return "live"
+    return "dormant" if seen or last else "declared_only"
 
 
 def build_atlas(
@@ -121,6 +152,7 @@ def build_atlas(
     live_graph: str | None = None,
     min_observed_count: int = DEFAULT_MIN_OBSERVED_COUNT,
     live_window_sec: int = DEFAULT_LIVE_WINDOW_SEC,
+    body: BodyInputs | None = None,
 ) -> BodyAtlasV1:
     catalog = list(catalog)
     by_channel = {c["name"]: c for c in catalog}
@@ -139,12 +171,14 @@ def build_atlas(
     seen: dict[str, dict] = defaultdict(lambda: {"count": 0, "last": 0.0, "ids": set()})
     flows: dict[tuple[str, str], _FlowAcc] = defaultdict(_FlowAcc)
 
-    def link(src: str, dst: str, weight: float, evidence: str, channel: str | None = None) -> None:
+    def link(src: str, dst: str, weight: float, evidence: str, channel: str | None = None,
+             relation: str = "signals") -> None:
         if src == dst:
             return
         acc = flows[(src, dst)]
         acc.weight += weight
         acc.evidence.add(evidence)
+        acc.relation = relation
         if channel:
             acc.channels.add(channel)
 
@@ -153,9 +187,16 @@ def build_atlas(
     # normalized by edge size). Without this, broadcast channels glue the body into one blob:
     # live 2026-10-23, orion:system:health (every service's heartbeat) carried 29.5% of all flow
     # weight with pairwise weights and Q fell to 0.22.
+    persisted = body.persisted if body is not None else {}
+
+    def consumers_of(entry: dict) -> list[str]:
+        # with the body, a persisted channel's writer is reached through ``writes`` flows instead
+        drop = persisted.get(entry["name"])
+        return [q for q in _services(entry, "consumer_services") if q != drop]
+
     for entry in catalog:
         producers = _services(entry, "producer_services")
-        consumers = _services(entry, "consumer_services")
+        consumers = consumers_of(entry)
         pairs = [(p, q) for p in producers for q in consumers if p != q]
         for p, q in pairs:
             link(p, q, 1.0 / len(pairs), "declared", entry["name"])
@@ -171,7 +212,7 @@ def build_atlas(
             if channel in by_channel:
                 on_channel[channel].append((name, count))
         for channel, pubs in on_channel.items():
-            consumers = _services(by_channel[channel], "consumer_services")
+            consumers = consumers_of(by_channel[channel])
             pairs = [(p, q, n) for p, n in pubs for q in consumers if p != q]
             if not pairs:
                 continue
@@ -214,6 +255,10 @@ def build_atlas(
             last_seen_at=_iso(rec["last"]) if rec else None,
         )
 
+    unmatched: dict[str, list[str]] = {}
+    if body is not None:
+        unmatched = _add_body(body, parts, flows, link, now_epoch=now_epoch, window=live_window_sec)
+
     flow_models = [
         FlowV1(
             source=f"part:{s}",
@@ -222,23 +267,27 @@ def build_atlas(
             evidence=sorted(acc.evidence),
             channels=sorted(acc.channels),
             causal_count=acc.causal_count,
+            relation=acc.relation,
         )
         for (s, t), acc in sorted(flows.items())
     ]
+    host_of = _placement(flows, parts)
 
-    # Undirected organ graph over every non-transient part (isolated parts become singletons).
-    body = sorted(n for n, p in parts.items() if p.status != "transient")
-    adj: dict[str, dict[str, float]] = {n: {} for n in body}
+    # Undirected organ graph over every non-transient part except hosts (isolated parts become
+    # singletons). Hosts stay out: athena runs ~130 containers, so placement edges would glue
+    # the body into one blob, and where a part runs is a different axis from what it does.
+    body_parts = sorted(n for n, p in parts.items() if p.status != "transient" and p.kind != "host")
+    adj: dict[str, dict[str, float]] = {n: {} for n in body_parts}
     for (s, t), acc in flows.items():
         if s in adj and t in adj:
             adj[s][t] = adj[s].get(t, 0.0) + acc.weight
             adj[t][s] = adj[t].get(s, 0.0) + acc.weight
     com = louvain(adj)
     q = modularity(adj, com) if adj else 0.0
-    strength = {n: sum(adj[n].values()) for n in body}
+    strength = {n: sum(adj[n].values()) for n in body_parts}
 
     groups: dict[int, list[str]] = defaultdict(list)
-    for n in body:
+    for n in body_parts:
         groups[com[n]].append(n)
 
     organ_of: dict[str, str] = {}
@@ -257,10 +306,14 @@ def build_atlas(
         organ_id = "organ:" + hashlib.sha1("|".join(sorted(members)).encode()).hexdigest()[:10]
         for n in members:
             organ_of[n] = organ_id
+        kinds = Counter(parts[n].kind for n in members)
+        placed = Counter(host_of[n] for n in members if n in host_of)
         organs.append(OrganV1(
             organ_id=organ_id,
             members=[f"part:{n}" for n in members],
             hub=f"part:{members[0]}",
+            kinds=dict(sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0]))),
+            placement=dict(sorted(placed.items(), key=lambda kv: (-kv[1], kv[0]))),
             namespaces=[k for k, _ in sorted(ns.items(), key=lambda kv: (-kv[1], kv[0]))[:NAMESPACE_HINTS]],
             internal_weight=round(internal, 4),
             external_weight=round(external, 4),
@@ -274,7 +327,8 @@ def build_atlas(
             between[(a, b)] += acc.weight
     organ_flows = [OrganFlowV1(source=a, target=b, weight=round(w, 4)) for (a, b), w in sorted(between.items())]
 
-    in_organs = len(body)
+    in_organs = len(body_parts)
+    hosts = sum(1 for p in parts.values() if p.kind == "host")
     return BodyAtlasV1(
         as_of=now.astimezone(timezone.utc).isoformat(),
         sources=AtlasSourcesV1(
@@ -284,6 +338,7 @@ def build_atlas(
             live_graph=live_graph if observed is not None else None,
             publish_edges=len(observed.publishes) if observed else 0,
             causal_edges=len(observed.causal) if observed else 0,
+            reads=list(body.reads) if body is not None else [],
         ),
         parts=list(parts.values()),
         flows=flow_models,
@@ -292,7 +347,8 @@ def build_atlas(
         stats=AtlasStatsV1(
             parts_total=len(parts),
             parts_in_organs=in_organs,
-            transient_parts=len(parts) - in_organs,
+            transient_parts=sum(1 for p in parts.values() if p.status == "transient"),
+            hosts=hosts,
             flows=len(flow_models),
             organs=len(organs),
             singleton_organs=sum(1 for o in organs if len(o.members) == 1),
@@ -300,4 +356,128 @@ def build_atlas(
             largest_organ_share=round(max((len(o.members) for o in organs), default=0) / in_organs, 4)
             if in_organs else 0.0,
         ),
+        known_gaps=list(body.known_gaps) if body is not None else [],
+        unmatched=unmatched,
+        missing_declared_stores=list(body.missing_declared_stores) if body is not None else [],
     )
+
+
+def _add_body(body: BodyInputs, parts: dict[str, PartV1], flows: dict, link, *, now_epoch: float,
+              window: int) -> dict[str, list[str]]:
+    """Hosts, cameras, stores and processes as parts, and their flows.
+
+    Each new part contributes at most ONE unit of flow weight, split evenly over its edges (the
+    channel-hyperedge rule from v1): a store eight services touch adds 1/8 per edge, not 8, so
+    no store, camera or process can glue the body together. A declared bus channel is also one
+    unit, an observed one log10(1 + messages), so circulation still dominates organ structure.
+    Returns raw names that matched no part, by source, for the reader to see."""
+    known = {n for n, p in parts.items() if p.status != "transient"}
+    host_names = [h.name for h in body.hosts]
+    unmatched: dict[str, set[str]] = defaultdict(set)
+
+    def add(name: str, **kw) -> None:
+        parts[name] = PartV1(part_id=f"part:{name}", name=name, **kw)
+
+    def spread(part: str, edges: list[tuple[str, str, str, str, str]]) -> None:
+        # edges: (src, dst, relation, evidence, via)
+        if not edges:
+            return
+        unit = BODY_PART_UNIT / len(edges)
+        for src, dst, relation, evidence, via in edges:
+            link(src, dst, unit, evidence, via or None, relation)
+
+    # hosts + placement (runs_on)
+    for h in body.hosts:
+        status = _status(h.last_seen_epoch, now_epoch, window, seen=False) if h.monitored else "declared_only"
+        facts = {"role": h.role, "hardware": h.hardware or "not recorded",
+                 "telemetry": "biometrics" if h.monitored else "none"}
+        if h.last_seen_epoch:
+            facts["last_seen"] = _iso(h.last_seen_epoch) or ""
+        add(f"host:{h.name}", kind="host", status=status, declared=True, facts=facts,
+            last_seen_at=_iso(h.last_seen_epoch))
+    hosts_by_alias = {a: h.name for h in body.hosts for a in h.aliases}
+    per_host: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+    for pl in body.placements:
+        host = hosts_by_alias.get(pl.host.lower())
+        svc = match_part(pl.service, known, host_names)
+        if host is None or svc is None or parts[svc].kind not in ("service", "endpoint"):
+            unmatched[pl.evidence].add(f"{pl.service}@{pl.host}")
+            continue
+        per_host[host][pl.evidence].add(svc)
+        link(svc, f"host:{host}", 1.0, pl.evidence, None, "runs_on")
+    for host, ev in per_host.items():
+        facts = parts[f"host:{host}"].facts
+        if ev.get("observed_placement"):
+            facts["services_observed"] = str(len(ev["observed_placement"]))
+        if ev.get("declared_placement"):
+            facts["services_declared"] = str(len(ev["declared_placement"]))
+
+    # cameras (sees_through: camera -> reading service)
+    for s in body.sensors:
+        name = f"camera:{s.name}"
+        edges, readers = [], set()
+        for raw, where in s.readers:
+            svc = match_part(raw, known, host_names)
+            if svc is None:
+                unmatched["declared_config"].add(raw)
+                continue
+            if svc not in readers:
+                readers.add(svc)
+                edges.append((name, svc, "sees_through", "declared_config", ""))
+        facts = {"stream": s.name, "readers": str(len(readers))}
+        on = [h.name for h in body.hosts if s.name in h.cameras]
+        if on:
+            facts["on_host"] = ",".join(on)
+        if s.events is not None:
+            facts["events_30d"] = str(s.events)
+        add(name, kind="sensor", status=_status(s.last_seen_epoch, now_epoch, window, seen=bool(s.events)),
+            declared=True, last_seen_at=_iso(s.last_seen_epoch), facts=facts)
+        spread(name, edges)
+        for h in on:  # placement, like a service's: never an organ edge (hosts are not in organs)
+            link(name, f"host:{h}", 1.0, "declared_placement", None, "runs_on")
+
+    # stores (writes: producer -> store; uses: service -> store)
+    for st in body.stores:
+        name = f"{_STORE_PREFIX[st.store]}:{st.name}"
+        edges, seen_pairs = [], set()
+        for raw, relation, evidence, via in st.links:
+            svc = match_part(raw, known, host_names)
+            if svc is None:
+                unmatched[evidence].add(raw)
+                continue
+            if (svc, relation) in seen_pairs:
+                continue
+            seen_pairs.add((svc, relation))
+            edges.append((svc, name, relation, evidence, via))
+        status = "declared_only" if st.rows is None else ("live" if st.rows > 0 else "dormant")
+        facts = {"store": st.store, "rows": "not read" if st.rows is None else str(st.rows)}
+        add(name, kind="store", status=status, declared=True, facts=facts)
+        spread(name, edges)
+
+    # processes (runs: runner -> process)
+    for pr in body.processes:
+        name = f"{_PROCESS_PREFIX[pr.family]}:{pr.name}"
+        facts = {"family": pr.family, "runner": pr.runner or "unknown"}
+        if pr.runs is not None:
+            facts["runs_30d"] = str(pr.runs)
+        if pr.last_run_epoch:
+            facts["last_run"] = _iso(pr.last_run_epoch) or ""
+        add(name, kind="process", declared=pr.declared, last_seen_at=_iso(pr.last_run_epoch), facts=facts,
+            status=_status(pr.last_run_epoch, now_epoch, window, seen=bool(pr.runs)))
+        runner = match_part(pr.runner, known, host_names) if pr.runner else None
+        if runner is None:
+            if pr.runner:
+                unmatched[pr.runner_evidence].add(pr.runner)
+            continue
+        spread(name, [(runner, name, "runs", pr.runner_evidence, "")])
+    return {k: sorted(v) for k, v in sorted(unmatched.items())}
+
+
+def _placement(flows: dict, parts: dict[str, PartV1]) -> dict[str, str]:
+    """part name -> host name, observed placement first, then declared."""
+    out: dict[str, str] = {}
+    for prefer in ("observed_placement", "declared_placement"):
+        for (s, t), acc in sorted(flows.items()):
+            if acc.relation == "runs_on" and prefer in acc.evidence and s not in out:
+                out[s] = parts[t].name.removeprefix("host:")
+    return out

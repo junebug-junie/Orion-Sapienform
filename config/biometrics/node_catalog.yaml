@@ -1,5 +1,8 @@
 schema_version: biometrics_node_catalog.v1
 
+# `hardware:` is free text for readers (the body atlas, orion/body_atlas/sources.py). NodeCatalog
+# ignores it; nothing branches on it. Juniper's words, 2026-10-29. Unknown models stay unwritten.
+
 defaults:
   expected_online: true
   role: unknown
@@ -16,6 +19,7 @@ nodes:
       - athena
       - athena.tail348bbe.ts.net
     role: orchestration
+    hardware: HP DL380 G10 (orchestration + vision/audio node)
     expected_online: true
     capabilities:
       hub: true
@@ -38,6 +42,8 @@ nodes:
     # free text read into biometrics node-context summaries; nothing branches
     # on its value. Pinned by tests/test_static_body_descriptions.py.
     role: primary_cognition_gpu
+    # Juniper 2026-10-29: "daily inference node, Gigabyte" -- the model name was cut off.
+    hardware: Gigabyte (model not recorded; daily inference node)
     # Was false: circe was intermittent/burst-only. A real llamacpp chat worker
     # (orion-atlas-llamacpp-chat, port 8011) has been running on circe continuously
     # for days (2026-07-18) -- expected_online=false was making pressure_organ.py
@@ -81,6 +87,7 @@ nodes:
       - hecate
       - hecate.tail348bbe.ts.net
     role: gpu_server
+    hardware: Inspur NF5288M5, 8-GPU (deep inference and training node)
     expected_online: false
     capabilities:
       local_llm_heavy: false
@@ -90,6 +97,40 @@ nodes:
       postgres: false
       hub: false
       monitoring: false
+
+# Machines that are part of Orion's body but that orion-biometrics does NOT monitor. Kept out of
+# `nodes:` on purpose: orion-biometrics lists every `nodes:` entry it has not heard from in each
+# cluster message (`nodes_absent`), so adding these there would report them absent forever.
+# NodeCatalog ignores this section; only the body atlas reads it (orion/body_atlas/sources.py).
+# `runs_services`: services declared to run there (the atlas labels this declared placement).
+# `cameras`: camera streams that are this machine's own camera.
+unmonitored_nodes:
+  carbon-x1:
+    aliases:
+      - carbon-x1
+      - carbon-x1.tail348bbe.ts.net
+    role: juniper_laptop
+    hardware: Lenovo ThinkPad X1 Carbon (Juniper's laptop)
+    expected_online: false
+    # camera streams (config/vision_frame_router.yaml `streams:`) that are this machine's own
+    # camera: `carbon` is the laptop webcam (docs/operations/carbon-webcam.md)
+    cameras:
+      - carbon
+  janus:
+    aliases:
+      - janus
+      - janus.tail348bbe.ts.net
+    role: unknown
+    expected_online: false
+  pan-1:
+    # services/orion-office-env/README.md: "It runs on pan-1 only" (Nano ESP32 + SHT40 by USB).
+    aliases:
+      - pan-1
+      - pan-1.tail348bbe.ts.net
+    role: office_sensor_host
+    expected_online: false
+    runs_services:
+      - orion-office-env
 
 # Hosts that no longer exist. Not part of the live fleet: NodeCatalog keeps them out of
 # `profiles`, resolves their names (and aliases) to expected_online=false so historical

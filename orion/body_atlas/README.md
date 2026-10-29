@@ -1,55 +1,100 @@
 # Body atlas
 
 Orion's body, converged from parts to organs. Rungs 1–3 of the self-now ladder in
-`docs/superpowers/specs/2026-10-23-repo-chronicle-design.md` (PR #2888):
+`docs/superpowers/specs/2026-10-23-repo-chronicle-design.md` (PR #2888). Since 2026-10-29 the
+atlas sees the whole body, not only the bus: the machines, cameras, stores and processes too.
 
-1. **Parts:** declared services (`orion/bus/channels.yaml`) plus every source id seen on the live
-   bus. Status is `live` / `dormant` / `declared_only` / `transient` (smokes and probes, kept out
-   of organs).
-2. **Circulation:** directed flows between parts. Each flow says where it came from:
-   - `declared`: catalog producer → consumer;
-   - `observed_publish`: seen publishing, joined to the declared consumers;
-   - `observed_causal`: the same correlation id followed from one service to another.
+1. **Parts.** Each part has a kind:
+   - `service` / `endpoint`: declared services (`orion/bus/channels.yaml`) plus every source id
+     seen on the live bus.
+   - `host` (`host:athena`): a physical machine. From `config/biometrics/node_catalog.yaml`
+     `nodes:` (biometrics watches them; live = biometrics reported in the last 24 h) and
+     `unmonitored_nodes:` (carbon-x1, janus, pan-1: real machines biometrics does not watch).
+     `hardware:` is Juniper's words; an unknown model stays "not recorded".
+   - `sensor` (`camera:walkway`): a camera stream from `config/vision_frame_router.yaml`
+     `streams:` (its stale `cameras:` section is ignored). Live activity from `vision_events`.
+   - `store`: `pg:<table>`, `chroma:<collection>`, `falkor:<graph>`. A Postgres table is a part
+     only when something links to it (a known writer); Chroma collections and FalkorDB graphs
+     are the ones that exist live (test/scratch graphs dropped by rule). A store has no
+     last-write time: `live` means it holds rows, `dormant` means it is empty.
+   - `process`: `run:<workflow>` (the `DurableWorkflowV1` Literal, plus any workflow seen in
+     `substrate_durable_run_state`) and `reducer:<cursor>` (`substrate_reduction_cursor`).
+
+   Status is `live` / `dormant` / `declared_only` / `transient` (smokes and probes, kept out
+   of organs). Each part carries a few `facts` (hardware, rows, readers, runner, last run).
+2. **Circulation.** Directed flows. Each flow has a `relation` and says where it came from:
+
+   | relation | from → to | evidence |
+   |---|---|---|
+   | `signals` | service → service | `declared` (catalog), `observed_publish`, `observed_causal` |
+   | `runs_on` | service or camera → host | `observed_placement` (this host's `docker ps`), `declared_placement` (`mesh-utilities/common/include_services_<host>.txt`, `runs_services`, `cameras`) |
+   | `sees_through` | camera → service | `declared_config`: the compose mounts the frame-router policy, or a `*STREAM_ID` setting names the stream |
+   | `writes` | producer → table | `declared_route`: orion-sql-writer's `DEFAULT_ROUTE_MAP` (kind → table) joined with that kind's channel producers |
+   | `uses` | service → Chroma/FalkorDB store | `declared_env`: its `.env_example` names the store (read or write: the env does not say) |
+   | `runs` | runner → process | `declared_runner` (producer of `durable.run.state.v1`), `assumed_runner` (reducers → orion-substrate-runtime) |
 
    A channel is one hyperedge: it contributes one unit, split over the pairs it joins, so a
-   broadcast heartbeat cannot glue the body together.
-3. **Organs:** Louvain communities over Newman modularity. `stats.modularity` (Q) is the
-   convergence test: about 0.3 and up is real structure; near 0 is mush. Organ `name` is `None`
-   until Orion names it (next patch). `namespaces` is a code-derived hint, not a name.
+   broadcast heartbeat cannot glue the body together. The new kinds follow the same rule: one
+   camera, store or process adds at most one unit, split over its edges. With the body, a
+   channel orion-sql-writer persists no longer also links its producer to orion-sql-writer:
+   that fact now lives on the `writes` flow to the real table (counted once, not twice).
+3. **Organs.** Louvain communities over Newman modularity. `stats.modularity` (Q) is the
+   convergence test: about 0.3 and up is real structure; near 0 is mush. **Hosts never join
+   organs**: athena runs ~130 containers, so placement edges would glue the body into one
+   blob, and where a part runs is a different axis from what it does. Each organ shows its
+   placement counts instead (`on athena 11 circe 1`). Organ `name` is `None` until Orion names
+   it. `namespaces` is a code-derived hint, not a name.
 
 ```bash
 # live (inside orion-harness-governor, where chat and curiosity run Bash):
+python -P -m orion.dig body                 # the live body, capped printout
+python -P -m orion.dig body <organ_id>      # every member of one organ
 FALKORDB_URI=redis://orion-athena-falkordb:6379 python -P -m orion.body_atlas --out /tmp/atlas.json
-# catalog only, e.g. a past checkout (the catalog has producer lists from 2026-01):
+python -P -m orion.body_atlas --organ <organ_id>
+# declared only, e.g. a past checkout:
 python -P -m orion.body_atlas --root /path/to/checkout --no-live --out /tmp/atlas.json
+# the v1 bus-only atlas:
+python -P -m orion.body_atlas --bus-only
 ```
 
-The printout is capped at 40 lines and 4,000 chars. The full atlas goes to `--out`. A requested
-live read that fails is an error, never a quiet catalog-only atlas.
+The printout is capped at 40 lines and 4,000 chars; the full atlas goes to `--out` (dig writes
+it under `$ORION_DIG_HOME/dig/`). A failed live bus read is an error. Every other source is
+optional but loud: one that fails is recorded in `sources.reads` as `unread` with its error,
+and the printout lists it under `UNREAD`. A declared file a past checkout lacks is `absent`.
+
+Postgres is read through `orion/evals/model_replay/sandbox.py`'s `ReadOnlyPsql`: `docker exec
+orion-athena-sql-db psql` as `orion_readonly`, inside a READ ONLY transaction. Nothing here
+writes to any DB, graph or bus.
 
 Gates:
 
 - `pytest orion/body_atlas/tests`
-- `python orion/body_atlas/evals/run_organ_structure_eval.py`: the frozen real bus graph from
-  2026-10-23. It checks that Q ≥ 0.3, that there are 5–25 organs, that no organ holds more than
-  35% of parts, and that obvious pairs share an organ. Add `--live` to run it against the live
-  graph, and `--export F` to refresh the fixture.
+- `python orion/body_atlas/evals/run_organ_structure_eval.py`: two frozen fixtures, the real bus
+  graph from 2026-10-23 and the whole body from 2026-10-29. Each must have Q ≥ 0.3, 5–25
+  organs, no organ above 35% of parts, every non-host part in exactly one organ, no host in
+  any, and obvious pairs together. `--live` runs it on the live whole body; `--export F`
+  refreshes a fixture.
 
-Live result, 2026-10-23: 137 parts (33 transient), 7 organs, Q = 0.33.
+Live results:
 
-- Six organs are recognizable: eyes, thinking, memory/inference, acting/compute, compute
-  regulation, and social.
-- One organ is mixed: body sensing, storage, and the substrate runtimes.
-- With plain pairwise weights, Q was 0.22 and the eval fails.
+- 2026-10-23, bus only: 137 parts (33 transient), 7 organs, Q = 0.33.
+- 2026-10-29, whole body: 254 parts (7 hosts, 4 cameras, 91 stores, 13 processes, 35
+  transient), 19 organs (8 singletons), Q = 0.350, largest organ 32%. Bus only, same day:
+  Q = 0.334, largest 31%.
 
-Known limits:
+Known gaps (also in every whole-body atlas as `known_gaps`):
 
-- **Reads only bus circulation.** It does not see table reads/writes, or durable runs carrying a
-  process across time.
+- **Grants.** On 2026-10-29 `orion_readonly` could not read `substrate_durable_run_state`,
+  `substrate_reduction_cursor` or `vision_events` (it can read 24 of 351 tables). Until it can,
+  processes and cameras are `declared_only` and reducers are missing; the printout says so.
+- **Other hosts' docker.** Only this host's containers are observed; circe placement is
+  declared (its allowlist), hecate has none.
+- **No machine-readable source yet:** the mood v4 autoencoder, the personality program as a
+  process, AI Town's bus identity (traces only), graphify (host-only storage), and who reads
+  a Postgres table.
 - **Old checkouts.** Before 2026-01 there is no producer catalog, so an older checkout gives no
   atlas.
 - **Wildcard channels are not joined.** Observed channels are matched to catalog names exactly,
-  so the 42 wildcard catalog entries (for example `orion:world_pulse_read:pull:reply:*`) add no
-  `observed_publish` flows. In the 2026-10-23 fixture that leaves out 24 messages.
+  so wildcard catalog entries add no `observed_publish` flows.
 - **Replicas stay separate.** Replicas (`atlas-worker-1`, `-2`) are separate parts that land in
   one organ.

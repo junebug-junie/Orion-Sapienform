@@ -1197,8 +1197,8 @@ def test_the_lookup_gate_still_refuses_an_investigation_that_did_not_look() -> N
 
 
 def test_the_composition_prompt_asks_for_the_exact_token_the_gate_checks() -> None:
-    """`is_pass_response` is `stripped.upper() == "PASS"` -- the WHOLE reply
-    must be that word. A prompt that only says "say so plainly" gets a graceful
+    """`is_pass_response` needs PASS on a line of its own (the whole reply, or a
+    line after Orion's reasoning). A prompt that only says "say so plainly" gets a graceful
     decline in Orion's own words delivered to Juniper AS the message, which is
     the exact inverse of what the prompt promised. Lives in the Hub suite
     because `scripts.endogenous_outreach` is Hub-scoped."""

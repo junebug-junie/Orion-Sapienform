@@ -1622,10 +1622,48 @@ def build_outreach_prompt(ctx: OutreachContext, tz: Any = timezone.utc) -> str:
 # top-level import, not a re-export shim.
 
 
+_PASS_LINE_STRIP = ".!\"'`*_# "
+
+
+# A finished sentence, then PASS as the reply's last word ("... for. PASS").
+_TRAILING_PASS = re.compile(r"[.!?][\"'`*_)]*[ \t]+[*_`]*PASS[.!\"'`*_]*\s*$")
+
+
+def _is_pass_line(line: str) -> bool:
+    return str(line or "").strip().strip(_PASS_LINE_STRIP).upper() == "PASS"
+
+
+def pass_shape(text: str) -> Optional[str]:
+    """How Orion declined, or None when the reply is a message.
+
+    ``"bare"``: the whole reply is the word PASS (what every outreach prompt asks for).
+    ``"after_reasoning"``: Orion reasoned first and put PASS on a line of its own. A line that
+    holds only PASS is a decision, never a sentence meant for Juniper, so the reply is a decline
+    wherever that line sits -- also when it comes first and more text follows (never seen live
+    through 2026-10-29; such a reply is dropped, and the row keeps the shape).
+    ``"trailing"``: the reply ends with a full sentence and then PASS as its own last word on the
+    same line ("Not worth interrupting for. PASS"; 2 live sends through 2026-10-28). Before 2026-10-29 only the bare form counted: 38 replies in 30 days
+    (35 reading findings, 3 endogenous ticks) reasoned, ended on a PASS line, and were delivered
+    to Juniper as chat messages with the reasoning in them.
+
+    Structural, not a word list: PASS inside a sentence ("I'll pass along the note", "PASS is the
+    honest answer here") is still a message.
+    """
+    body = str(text or "").strip()
+    if not body:
+        return None
+    if _is_pass_line(body):
+        return "bare"
+    if any(_is_pass_line(line) for line in body.splitlines()):
+        return "after_reasoning"
+    if _TRAILING_PASS.search(body):
+        return "trailing"
+    return None
+
+
 def is_pass_response(text: str) -> bool:
-    """True when Orion declined to reach out this tick."""
-    stripped = str(text or "").strip().strip(".!\"'` ")
-    return stripped.upper() == "PASS"
+    """True when Orion declined to reach out this tick (see ``pass_shape``)."""
+    return pass_shape(text) is not None
 
 
 # --------------------------------------------------------------------------
@@ -2330,7 +2368,8 @@ class EndogenousOutreach:
             )
         if is_pass_response(text):
             return self._record(
-                {"outreach": False, "reason": "orion_passed", "generation": gen_debug},
+                {"outreach": False, "reason": "orion_passed", "pass_shape": pass_shape(text),
+                 "generation": gen_debug},
                 forced=force,
                 tension_reason=tension_reason,
                 grounding=grounding,
@@ -2565,7 +2604,7 @@ class EndogenousOutreach:
             )
         if is_pass_response(text):
             return self._strain_record(
-                {**base, "reason": "orion_passed"},
+                {**base, "reason": "orion_passed", "pass_shape": pass_shape(text)},
                 forced=force, episode=episode, composed=True, grounding=grounding,
             )
         offending = self._named_ungrounded_terms(text, None, correlation_id, context_texts=[record_text])
@@ -2804,7 +2843,8 @@ class EndogenousOutreach:
             # Orion wrote the message and concluded it was not worth sending.
             # A real answer, and the composition prompt says so explicitly.
             return self._record(
-                {**extra, "outreach": False, "reason": "orion_passed", "source": tag},
+                {**extra, "outreach": False, "reason": "orion_passed", "source": tag,
+                 "pass_shape": pass_shape(body)},
                 forced=False,
             )
         if self._send_lock.locked():

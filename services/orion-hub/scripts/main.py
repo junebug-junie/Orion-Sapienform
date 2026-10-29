@@ -1007,6 +1007,7 @@ async def startup_event():
                     tick_interval_sec=settings.HUB_READING_FINDING_OUTREACH_TICK_SEC,
                     lookback_hours=settings.HUB_READING_FINDING_OUTREACH_LOOKBACK_HOURS,
                     max_attempts=settings.HUB_READING_FINDING_OUTREACH_MAX_ATTEMPTS,
+                    min_spacing_sec=settings.HUB_READING_FINDING_OUTREACH_MIN_SPACING_SEC,
                 )
                 await reading_finding_outreach.start()
             except Exception:  # noqa: BLE001 -- never blocks Hub boot

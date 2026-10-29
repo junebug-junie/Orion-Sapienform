@@ -14,6 +14,7 @@ def _worker(initiate_distance=0.0, last_social=None, cooldown=120.0):
     w._abandon_participating_since_ms = {}
     w._abandon_own_utterances = {}
     w._abandon_leave_sent_ms = {}
+    w._accept_sent_ms = {}
     w._orion_player_id = "orion"
     w._world_id = "w1"
     w._social_cooldown_sec = cooldown

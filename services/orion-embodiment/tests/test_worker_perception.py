@@ -26,6 +26,7 @@ def test_emit_perception_once_publishes_built_perception():
         {"id": "j", "name": "Juniper", "position": {"x": 3.0, "y": 4.0}},
     ]
     with patch("app.worker.aitown_client.list_players", return_value=players), \
+         patch("app.worker.aitown_client.list_conversations", return_value=[]), \
          patch("app.worker.publish_with_reconnect", new=AsyncMock()) as pub:
         perc = asyncio.run(w._emit_perception_once())
 
@@ -104,3 +105,16 @@ def test_emit_perception_once_fail_open_on_publish_error():
         perc = asyncio.run(w._emit_perception_once())
 
     assert perc is None
+
+
+def test_failed_conversation_lookup_skips_the_tick():
+    """Review 2026-10-29: an empty list read as "no conversation" and reset the
+    per-conversation resend guards, so one flaky query re-armed the leave flood."""
+    w = _worker()
+    players = [{"id": "orion", "position": {"x": 0.0, "y": 0.0}}]
+    with patch("app.worker.aitown_client.list_players", return_value=players), \
+         patch("app.worker.aitown_client.list_conversations", side_effect=TimeoutError("30 s")), \
+         patch("app.worker.publish_with_reconnect", new=AsyncMock()) as pub:
+        perc = asyncio.run(w._emit_perception_once())
+    assert perc is None
+    pub.assert_not_awaited()

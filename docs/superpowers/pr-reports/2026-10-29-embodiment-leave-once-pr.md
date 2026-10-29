@@ -1,12 +1,14 @@
 ## Summary
 
-- Orion's body now sends one `leaveConversation` per dead conversation per abandon window (180 s), instead of one every 3 s tick.
-- That flood froze AI Town on 2026-10-28. Leaves queued faster than the engine could process them. Every NPC action's result waited behind them and timed out, so no one spoke.
+- Orion's body now sends one `leaveConversation` per dead conversation per abandon window (180 s), instead of one every 3 s tick. The mark is set before sending, so a timed-out send is not retried every tick.
+- A pending invite is accepted at most once per 20 s, instead of every tick. The same loop shape, found in review.
+- A failed `list_conversations` now skips the tick, like a failed `list_players`. Before, it read as "no conversation" and reset the resend guards.
 - Fixed the test fixtures behind 14 embodiment tests that were already failing on main.
+- What this does not claim: these leaves did not stall the engine. The town was silent from 2026-10-24 16:58, 3.5 days before the flood began, and 0.33 leaves/s is trivial against an 18 inputs/s drain. The engine stalled first, and the leaves then filled about 84k of its queue. The cause of the stall is UNVERIFIED and remains open.
 
 ## Outcome moved
 
-Failure mode: town freeze from an input flood. Live evidence, 2026-10-28/29:
+Failure mode: a stalled engine's queue fills with Orion's resends, and the backlog has to drain before the town can recover. Live evidence, 2026-10-28/29:
 - `embodiment_dead_chat_abandoned convo=c:608342` was logged 19,541 times from 07:16 to 23:55 UTC.
 - 1,266 of the newest 1,500 engine inputs were `leaveConversation` from p:29.
 - The engine had processed up to input 846,016 while the newest was 930,137, a backlog of about 84,000. It drains at about 18 inputs/s.
@@ -48,8 +50,9 @@ Failure mode: town freeze from an input flood. Live evidence, 2026-10-28/29:
 ## Tests run
 
 ```text
-pytest services/orion-embodiment/tests -> 97 passed (main: 14 failed, 83 passed)
+pytest services/orion-embodiment/tests -> 100 passed (main: 14 failed, 83 passed)
 mutation: guard disabled -> test_dead_chat_sends_one_leave_per_abandon_window fails
+mutation: mark moved after the send -> test_failed_leave_is_not_resent_every_tick fails
 git diff --check -> ok
 ```
 
@@ -63,7 +66,19 @@ Not deployed. The current backlog is draining by itself (embodiment stopped send
 
 ## Review findings fixed
 
-(filled after review)
+- Finding (medium-high): a leave that raised (client timeout under backlog, while the input still lands) was never recorded, so it was resent every tick.
+  - Fix: mark before the send.
+  - Evidence: `test_failed_leave_is_not_resent_every_tick`; it fails with the mark moved back after the send.
+- Finding (medium): a failed `list_conversations` read as "no conversation" and cleared the guard.
+  - Fix: skip the tick (return no perception).
+  - Evidence: `test_failed_conversation_lookup_skips_the_tick`.
+- Finding (medium): this report claimed the leaves froze the town. The numbers say the engine stalled first.
+  - Fix: Summary and Outcome corrected; the stall is listed as open below.
+  - Evidence: the numbers above.
+- Finding (follow-up, fixed here): `acceptInvite` fired every tick while invited, which is the same loop shape.
+  - Fix: one accept per conversation per 20 s (the engine's invite times out at 60 s).
+  - Evidence: `test_pending_invite_is_accepted_once_per_window`.
+- Noted (low): the guard is in memory, so a restart resends one leave. Bounded.
 
 ## Restart required
 
@@ -72,7 +87,8 @@ After merge, from the clean primary main checkout on athena: `git pull --ff-only
 ## Risks / concerns
 
 - Severity: low. Concern: a leave the engine drops leaves Orion in the chat for one more window (180 s). Mitigation: it retries after the window.
-- Severity: medium (follow-up). Concern: other per-tick inputs (`moveTo` at 125 of 1,500, `startConversation`) are not throttled. The engine has no backpressure, so any loop can build a queue. Mitigation: follow-up; leaves were the flood.
+- Severity: high (open). Concern: the engine stalled from about 2026-10-24 16:58 for an unknown reason. Inputs were not processed, so the first leave never landed. Mitigation: none yet; this needs its own investigation.
+- Severity: low (follow-up). Concern: other per-tick inputs (`moveTo` at 125 of 1,500, through the 6 s move cooldown) are bounded only by cooldowns. The engine has no backpressure, so any loop can build a queue. Mitigation: follow-up; leaves were the flood.
 
 ## PR link
 

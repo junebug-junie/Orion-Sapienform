@@ -47,6 +47,9 @@ from orion.town_cast import ORION_DISPLAY_NAME, slug_for_name, thread_id_for
 
 logger = logging.getLogger("orion.embodiment.worker")
 
+# An unprocessed accept is resent at most this often (the engine's invite times out at 60 s).
+ACCEPT_RESEND_SEC = 20.0
+
 # Fixed cross-service contract endpoint (owned by orion-actions). The channel is
 # `orion:actions:trigger:journal.v1` and the consumer routes on the dotted kind
 # below — this is not operator-tunable, so it lives as a constant, not an env key.
@@ -149,6 +152,7 @@ class EmbodimentWorker:
         self._abandon_own_utterances: dict[str, int] = {}
         # When a leave was last sent per conversation: one leave, then wait.
         self._abandon_leave_sent_ms: dict[str, float] = {}
+        self._accept_sent_ms: dict[str, float] = {}
         self._salience = SalienceState()
         # Conversation-completion tracking for the journal gate (perception delta).
         self._active_conversation_id: Optional[str] = None
@@ -712,7 +716,10 @@ class EmbodimentWorker:
                 aitown_client.list_conversations, world_id=self._world_id or None
             ) or []
         except Exception:
+            # Skip the tick, like a list_players failure: an empty list would read as
+            # "no conversation" and reset the per-conversation resend guards.
             logger.debug("embodiment_perception_list_conversations_failed", exc_info=True)
+            return None
         # Only fetch the transcript for the conversation Orion is actually
         # participating in (avoids a query per unrelated town conversation).
         messages: list = []
@@ -776,6 +783,13 @@ class EmbodimentWorker:
             cid = str(convo.get("conversation_id") or "")
             other = convo.get("other") or {}
             if status == "invited" and cid:
+                # Same class as the leave flood: the invite stays visible until the engine
+                # processes the accept, so one accept per conversation per window.
+                now_ms = _utcnow().timestamp() * 1000.0
+                sent_ms = self._accept_sent_ms.get(cid)
+                if sent_ms is not None and now_ms - sent_ms < ACCEPT_RESEND_SEC * 1000.0:
+                    return
+                self._accept_sent_ms[cid] = now_ms
                 try:
                     await asyncio.to_thread(
                         aitown_client.accept_invite,
@@ -806,6 +820,7 @@ class EmbodimentWorker:
         self._abandon_participating_since_ms.clear()
         self._abandon_own_utterances.clear()
         self._abandon_leave_sent_ms.clear()
+        self._accept_sent_ms.clear()
         await self._maybe_initiate_conversation(perception)
 
     async def _maybe_abandon_dead_chat(
@@ -841,6 +856,9 @@ class EmbodimentWorker:
         sent_ms = self._abandon_leave_sent_ms.get(cid)
         if sent_ms is not None and now_ms - sent_ms < abandon_sec * 1000.0:
             return
+        # Marked before sending: under a backlog the client times out (30 s) while the
+        # input still lands, and an unmarked failure would be resent every tick.
+        self._abandon_leave_sent_ms[cid] = now_ms
         try:
             await asyncio.to_thread(
                 aitown_client.leave_conversation,
@@ -848,7 +866,6 @@ class EmbodimentWorker:
                 conversation_id=cid,
                 world_id=self._world_id or None,
             )
-            self._abandon_leave_sent_ms[cid] = now_ms
             logger.info("embodiment_dead_chat_abandoned convo=%s", cid)
         except Exception:
             logger.exception("embodiment_dead_chat_abandon_failed convo=%s", cid)

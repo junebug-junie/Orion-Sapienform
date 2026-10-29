@@ -188,10 +188,7 @@ class PostgresStore:
             args.append(stream_id)
         sql += f" ORDER BY {ts} LIMIT %s"
         args.append(limit + 1)
-        with self.pool.connection() as conn, conn.transaction():
-            conn.execute("SET TRANSACTION READ ONLY")
-            conn.execute(f"SET LOCAL statement_timeout = {int(EVENT_READ_TIMEOUT_MS)}")
-            return [r["ts"] for r in conn.execute(sql, args).fetchall()]
+        return [r["ts"] for r in self._read_only(sql, args, EVENT_READ_TIMEOUT_MS)]
 
     # --- model runs -----------------------------------------------------------------------
     def insert_runs(self, rows: list[dict]) -> None:

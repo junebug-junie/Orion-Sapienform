@@ -30,6 +30,7 @@ import pandas as pd
 from app.backtest import (
     COVERAGE_BAND,
     GATE_VERSION,
+    MIN_PATHS,
     QUANTILES,
     Selection,
     exceedance_probability,
@@ -295,12 +296,14 @@ class Engine:
             self.store.prune_shadow(spec.series_id, now - SHADOW_RETENTION)
         live = self.live_verdicts(spec, now) if self.shadow_enabled else {}
         incumbent = st.served.selection.assignment if st.served is not None else {}
+        self.check_paths(spec, {n: r.residuals for n, r in results.items() if n in BASELINES}, "baseline")
         sel = select_champion(results, spec, self.backtest_step_min, live=live, incumbent=incumbent)
         shadow = self.contenders(sel) if self.shadow_enabled else ()
         h = spec.max_horizon_steps
         res = {n: r.residuals for n, r in results.items()}
         champ_res = stitch(res, step_owner(sel.assignment, spec.grain_min, h))
         base_res = stitch(res, step_owner(sel.baseline_assignment, spec.grain_min, h))
+        self.check_paths(spec, {"champion": champ_res, "baseline": base_res}, "blend")
         selection_id = str(uuid.uuid4())
         common = {"selection_id": selection_id, "series_id": spec.series_id, "fitted_at": now,
                   "train_start": train.index[0].to_pydatetime() if len(train) else None,
@@ -340,7 +343,9 @@ class Engine:
 
     def check_ready(self, spec: SeriesSpec, series: pd.Series, step: int) -> None:
         """Refuse a selection before it runs the zoo on too little history (raises NotReady). Counted
-        from the first real reading after train_from, so a fresh sensor reads its true age."""
+        in grain buckets (gaps included) from the first real reading after train_from, so a fresh sensor
+        reads its true age. Necessary, not sufficient: gaps can still leave too few residual paths,
+        which check_paths catches after the backtest."""
         need = min_backtest_steps(spec, step)
         s = mask_windows(series, spec.exclude)
         if spec.train_from is not None:
@@ -349,18 +354,39 @@ class Engine:
         have = int((s.index >= first).sum()) if first is not None else 0
         if have >= need:
             return
-        ready_at = (first + pd.Timedelta(minutes=need * spec.grain_min)).to_pydatetime() if first is not None else None
+        # The series ends at floor(now - settle), so the last needed bucket is in view one settle later.
+        ready_at = ((first + pd.Timedelta(minutes=need * spec.grain_min)).to_pydatetime() + self.settle
+                    if first is not None else None)
         raise NotReady({"reason": f"{have} of {need} grain buckets of history (backtest needs "
                                   f"{need * spec.grain_min / 1440:.1f} days)",
                         "have_buckets": have, "need_buckets": need,
                         "first_reading": first.isoformat() if first is not None else None,
                         "ready_at": ready_at.isoformat() if ready_at else None})
 
+    def check_paths(self, spec: SeriesSpec, residuals: dict[str, np.ndarray], what: str) -> None:
+        """Every served horizon needs MIN_PATHS residuals in some baseline (and then in both blends), or
+        issuing would refuse every bucket as degenerate. Too few with nothing served yet = NotReady (a
+        young or gappy series); with a selection already served = a failed reselect, which keeps it."""
+        steps = [spec.steps(hm) - 1 for hm in spec.horizons_min]
+        counts = {n: [int(np.isfinite(r[:, j]).sum()) if r.size else 0 for j in steps] for n, r in residuals.items()}
+        if what == "baseline":
+            short = [hm for k, hm in enumerate(spec.horizons_min) if max(c[k] for c in counts.values()) < MIN_PATHS]
+        else:
+            short = [hm for k, hm in enumerate(spec.horizons_min) if min(c[k] for c in counts.values()) < MIN_PATHS]
+        if not short:
+            return
+        reason = (f"too few {what} residual paths at {short} min (need {MIN_PATHS}; gaps in the history "
+                  f"rejected backtest windows): {counts}")
+        if self.state[spec.series_id].served is not None:
+            raise RuntimeError(reason)
+        raise NotReady({"reason": reason, "short_horizons_min": short, "ready_at": None})
+
     def selection_due(self, spec: SeriesSpec, now: datetime) -> bool:
         """``spec`` is the effective spec: a change event that moved the training start (a break
         adopted) makes the served selection stale at once."""
         st = self.state[spec.series_id]
-        backing_off = st.last_select_error is not None and st.next_select_at is not None and now < st.next_select_at
+        backing_off = ((st.last_select_error is not None or st.not_ready is not None)
+                       and st.next_select_at is not None and now < st.next_select_at)
         stale = st.served is not None and (st.served.train_from != spec.train_from
                                            or st.served.events_key != st.events.get("fingerprint"))
         if stale and not backing_off:
@@ -740,8 +766,10 @@ class Engine:
                 st.not_ready, st.last_select_error = exc.detail, None
                 ready_at = _parse_ts(exc.detail.get("ready_at"))
                 st.next_select_at = now + self.select_interval
-                if ready_at is not None and now < ready_at < st.next_select_at:
-                    st.next_select_at = ready_at
+                if ready_at is not None:
+                    # Before ready_at: wake at it. At/after it (a late bucket): one grain later.
+                    st.next_select_at = min(st.next_select_at,
+                                            max(ready_at, now + timedelta(minutes=spec.grain_min)))
             except Exception as exc:  # noqa: BLE001 -- keep serving the previous selection, if any
                 st.last_select_error = f"{type(exc).__name__}: {exc}"[:300]
                 st.next_select_at = now + self.select_interval   # back off a full interval

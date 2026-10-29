@@ -615,7 +615,8 @@ def test_a_young_target_is_not_ready_and_the_mature_one_is_unaffected():
     need = 2 * 288 + 72 + 9 * 36      # 2 days training + 6 h horizon + 10 origins 3 h apart
     assert nr["need_buckets"] == need and 0 < nr["have_buckets"] < need
     ready_at = datetime.fromisoformat(nr["ready_at"])
-    assert ready_at == pd.Timestamp(y0).floor("5min") + timedelta(minutes=5 * need)
+    # The last needed bucket is in view one settle (60 s) after it ends.
+    assert ready_at == pd.Timestamp(y0).floor("5min") + timedelta(minutes=5 * need, seconds=60)
     # Ready in ~78 h: re-checked at the normal interval, not every tick.
     assert young.next_select_at == now + timedelta(hours=6)
     runs = len(store.runs)
@@ -639,7 +640,12 @@ def test_a_young_target_rechecks_at_its_ready_time_then_selects_and_forecasts():
     st = eng.state["test.young"]
     ready_at = datetime.fromisoformat(st.not_ready["ready_at"])
     assert now < ready_at < now + timedelta(hours=6) and st.next_select_at == ready_at
-    eng.clock.t = ready_at + timedelta(seconds=90)
+    # Half a tick early: still not ready, still waking at ready_at (not 6 h later).
+    eng.clock.t = ready_at - timedelta(seconds=30)
+    asyncio.run(eng.tick(_sync))
+    assert st.served is None and st.next_select_at == ready_at
+    # The first tick at ready_at selects (the settle delay is inside ready_at).
+    eng.clock.t = ready_at
     asyncio.run(eng.tick(_sync))
     assert st.served is not None and st.not_ready is None and st.last_select_error is None
     # ~3.4 days of history: daily usable, weekly refused (needs 2 cycles = 14 days).
@@ -666,3 +672,39 @@ def test_star_change_events_before_a_young_series_starts_change_nothing_for_it()
     # The mature series does take the same break (pending: too young to adopt at 4 days).
     mature = eng.effective(reg.get("test.temp"), now)
     assert mature.breaks == (y0 - timedelta(days=4),)
+
+
+def test_a_young_target_old_enough_but_gappy_is_not_ready_not_failed_or_degenerate():
+    need_h = (2 * 288 + 72 + 9 * 36) * 5 / 60
+    reg, store, end, y0 = _young_setup(young_hours=need_h + 2)
+    # A 12 h outage 2.5 days in: every window that trains across it is > 10 % filled and rejected.
+    g0, g1 = y0 + timedelta(days=2.5), y0 + timedelta(days=3)
+    store.cov_raw = {"test.young": [(t, v) for t, v in store.cov_raw["test.young"] if not g0 <= t < g1]}
+    now = end + timedelta(seconds=90)
+    eng = _engine(reg, store, Clock(now), [])
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.young"]
+    assert st.served is None and st.not_ready is not None and "residual paths" in st.not_ready["reason"]
+    assert st.not_ready["ready_at"] is None and st.next_select_at == now + timedelta(hours=6)
+    assert not {"selection_failed", "tick_failed", "degenerate_forecast"} & set(st.alerts)
+    assert "test.young" not in {r["series_id"] for r in store.runs}
+    assert eng.state["test.temp"].served is not None
+
+
+def test_not_ready_backs_off_even_when_a_stale_selection_would_force_a_reselect():
+    import dataclasses
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    served = eng.state["test.temp"].served
+    # The operator moves train_from to an hour ago: the served selection is stale, the series young.
+    reg.series["test.temp"] = dataclasses.replace(spec, train_from=end - timedelta(hours=1))
+    calls = []
+    real = eng.check_ready
+    eng.check_ready = lambda *a: (calls.append(1), real(*a))[1]
+    for _ in range(4):
+        clock.t += timedelta(seconds=30)
+        asyncio.run(eng.tick(_sync))
+    st = eng.state["test.temp"]
+    assert len(calls) == 1 and st.not_ready is not None and st.served is served   # keeps serving the old one

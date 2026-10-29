@@ -46,24 +46,40 @@ def _decide(policy: FrameDispatchPolicy, state: RouterState, now: float = 100.0)
 
 
 class _FakePipe:
-    def __init__(self, keys: set[str], fail: bool = False) -> None:
-        self.keys, self.fail, self.asked = keys, fail, []
+    """exists/get/pttl over a key set (presence keys) and a value dict (key -> (value, pttl_ms))."""
+
+    def __init__(self, keys: set[str], fail: bool = False, values: dict | None = None) -> None:
+        self.keys, self.fail, self.values, self.asked = keys, fail, values or {}, []
 
     def exists(self, key: str) -> None:
-        self.asked.append(key)
+        self.asked.append(("exists", key))
+
+    def get(self, key: str) -> None:
+        self.asked.append(("get", key))
+
+    def pttl(self, key: str) -> None:
+        self.asked.append(("pttl", key))
 
     async def execute(self):
         if self.fail:
             raise ConnectionError("redis down")
-        return [1 if k in self.keys else 0 for k in self.asked]
+        out = []
+        for op, k in self.asked:
+            if op == "exists":
+                out.append(1 if k in self.keys or k in self.values else 0)
+            elif op == "get":
+                out.append(self.values[k][0] if k in self.values else None)
+            else:
+                out.append(self.values[k][1] if k in self.values else -2)
+        return out
 
 
 class _FakeRedis:
-    def __init__(self, keys: set[str], fail: bool = False) -> None:
-        self.keys, self.fail = keys, fail
+    def __init__(self, keys: set[str], fail: bool = False, values: dict | None = None) -> None:
+        self.keys, self.fail, self.values = keys, fail, values or {}
 
     def pipeline(self) -> _FakePipe:
-        return _FakePipe(self.keys, self.fail)
+        return _FakePipe(self.keys, self.fail, self.values)
 
 
 class _HangingPipe(_FakePipe):

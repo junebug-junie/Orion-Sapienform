@@ -39,14 +39,27 @@ class RouterMetrics:
     # 24 of 24 walkway replies were "null_answer" and every counter looked
     # healthy; a long streak now logs a warning (dispatcher).
     caption_no_caption_streak: int = 0
+    # Main-lane dispatches per stream per "<tier>:<triggered_by>" (e.g.
+    # "triggered:experiment", "baseline:-"). Monotonic since boot. The
+    # switchback runner (orion-prediction) reads deltas at each block edge as
+    # its manipulation check: did an on-block actually raise the tier?
+    dispatch_tier_counts: dict[str, dict[str, int]] = field(default_factory=dict)
     last_error: str | None = None
 
     def record_skip(self, reason: str) -> None:
         self.frames_skipped_total += 1
         self.skip_reason_counts[reason] = self.skip_reason_counts.get(reason, 0) + 1
 
-    def record_dispatch(self) -> None:
+    def record_dispatch(
+        self, stream_id: str | None = None, tier: str | None = None, triggered_by: str | None = None
+    ) -> None:
         self.frames_dispatched_total += 1
+        if stream_id and tier:
+            # Copy-on-write: health readers copy this dict from another thread.
+            per = dict(self.dispatch_tier_counts.get(stream_id) or {})
+            key = f"{tier}:{triggered_by or '-'}"
+            per[key] = per.get(key, 0) + 1
+            self.dispatch_tier_counts[stream_id] = per
 
     def record_identity_dispatch(self) -> None:
         self.identity_dispatched_total += 1
@@ -80,6 +93,7 @@ def make_health_details(
     policy_path: str,
     metrics: RouterMetrics,
     state: RouterState,
+    experiment_override_streams: list[str] | None = None,
 ) -> dict[str, Any]:
     """The `details` dict of this service's SystemHealthV1 heartbeat.
 
@@ -114,6 +128,7 @@ def make_health_details(
         "caption_captioned_total": metrics.caption_captioned_total,
         "caption_inflight": sum(1 for t in pending if t.lane == "caption"),
         "caption_skip_counts": dict(metrics.caption_skip_counts),
+        "experiment_override_streams": list(experiment_override_streams or []),
         "caption_no_caption_counts": dict(metrics.caption_no_caption_counts),
         "caption_no_caption_streak": metrics.caption_no_caption_streak,
         "caption_failure_counts": dict(metrics.caption_failure_counts),

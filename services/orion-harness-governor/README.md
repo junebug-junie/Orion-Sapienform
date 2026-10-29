@@ -501,6 +501,16 @@ exists without a Live row, a responder section and a listed tool, so a
 contract-only PR ahead of the responder is refused on purpose: a channel with
 no responder would read as "unknown" on every call.
 
+## Dig kit: `dig body-economy` (skills.physiology.state.v1 from Bash, 2026-10-29)
+
+Chat and curiosity turns both run here with Bash and the dig brief line (`orion/dig/brief.py`). Orion reads
+their own body economy with `python -P -m orion.dig body-economy [<section>...] [--window 24h|7d|30d]
+[--family <f>]`: plain text from orion-durable-runs `GET /physiology/report` (what binds now, money, wants
+funded vs deferred, failed lease time, services down; `all` or any single section for more). The full
+report JSON goes to `$ORION_DIG_HOME/dig/<dig>/body-economy-<window>-N.json`. URL:
+`ORION_PHYSIOLOGY_REPORT_URL` (`.env_example`; app-net, container port 8121). Unreachable or off ->
+exit 1 with a plain reason, never empty text.
+
 ## Admitted turns (GPU pool hold)
 
 `HarnessRunRequestV1.gpu_lease` (a durable run's GPU pool hold ref, `GpuLeaseRefV1`) and

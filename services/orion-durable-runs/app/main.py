@@ -659,6 +659,40 @@ async def physiology_state() -> dict:
             "state": state.model_dump(mode="json")}
 
 
+_report_cache: Any = None
+
+
+@app.get("/physiology/report")
+async def physiology_report(window: Optional[str] = "24h", sections: Optional[str] = None,
+                            family: Optional[str] = None, outcome: Optional[str] = None,
+                            limit: Optional[int] = None) -> dict:
+    """Read-only ``PhysiologyReportV1``: Orion's body economy over 24h/7d/30d, aggregate down to
+    single bid decisions. Readers: the Hub #body-economy page and skills.physiology.state.v1. An
+    empty section always has a ``missing`` entry that says why. No writes."""
+    global _report_cache
+    from app.physiology_report import ReportCache, ReportDeps, build_report, parse_query, tiers_from_families
+
+    if not _settings.physiology_report_enabled:
+        raise HTTPException(503, "the physiology report is disabled (ORION_PHYSIOLOGY_REPORT_ENABLED)")
+    if _checkpointer_cm is None:
+        raise HTTPException(503, "no database pool yet (service starting or durable runs disabled)")
+    try:
+        q = parse_query(window, sections, family, outcome, limit)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if _report_cache is None:
+        _report_cache = ReportCache(_settings.physiology_report_cache_sec)
+    deps = ReportDeps(
+        pool=_checkpointer_cm, tz=_settings.orion_situation_timezone,
+        heat_sensitivity_path=_settings.physiology_heat_sensitivity_path,
+        gpu_pool_path=_settings.physiology_report_gpu_pool_path,
+        tiers=tiers_from_families(market.families) if market is not None else {},
+        family_weights=market.family_weights if market is not None else None,
+        concurrency=_settings.physiology_report_concurrency)
+    report = await _report_cache.get_or_build(q.cache_key, lambda: build_report(deps, q))
+    return report.model_dump(mode="json")
+
+
 @app.post("/physiology/bid")
 async def physiology_bid(want: dict):
     """Body economy Patch C1, SHADOW: one ``WantV1`` -> one ``WantDecisionV1`` (funded/deferred, lane,

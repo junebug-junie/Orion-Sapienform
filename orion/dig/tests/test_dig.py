@@ -176,3 +176,60 @@ def test_harness_prefix_carries_the_line(monkeypatch):
     quiet = compile_harness_prefix(make_thought(), repair_overlay=HarnessRepairOverlayV1(),
                                    user_message="hi", reading_only=True)
     assert DIG_BRIEF_LINE not in quiet
+
+
+# --- body-economy (skills.physiology.state.v1 from Bash) ------------------------------------
+
+_REPORT_FIXTURE = Path(__file__).resolve().parents[2] / "physiology" / "evals" / "fixtures" / \
+    "physiology_report_live_2026-10-29_24h.json"
+
+
+@pytest.fixture
+def report_server(monkeypatch):
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    seen: list[str] = []
+    body = _REPORT_FIXTURE.read_bytes()
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            seen.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    monkeypatch.setenv("ORION_PHYSIOLOGY_REPORT_URL", f"http://127.0.0.1:{srv.server_address[1]}")
+    yield seen
+    srv.shutdown()
+
+
+def test_body_economy_prints_text_and_writes_the_full_report(world, capsys, report_server):
+    code, out, _ = run(capsys, "body-economy")
+    assert code == 0 and "Binding now:" in out and "Money:" in out
+    assert len(out.splitlines()) <= dig.MAX_LINES + 1 and "full report: " in out
+    path = Path(out.strip().splitlines()[-1].split("full report: ", 1)[1])
+    assert json.loads(path.read_text())["schema_version"] == "physiology.report.v1"
+    assert "sections=limits%2Cmoney%2Cwants%2Cwaste%2Cservices" in report_server[0]
+
+
+def test_body_economy_sections_window_family(world, capsys, report_server):
+    code, out, _ = run(capsys, "body-economy", "queue_wait", "decisions", "--window", "7d", "--family", "hub.outreach")
+    assert code == 0 and "Queue wait" in out and "Bid decisions" in out
+    assert "window=7d" in report_server[0] and "family=hub.outreach" in report_server[0]
+
+
+def test_body_economy_refuses_bad_input_and_says_when_unreachable(world, capsys, monkeypatch):
+    code, _, err = run(capsys, "body-economy", "--window", "1y")
+    assert code == 1 and "--window" in err
+    code, _, err = run(capsys, "body-economy", "feelings")
+    assert code == 1 and "unknown section" in err
+    monkeypatch.setenv("ORION_PHYSIOLOGY_REPORT_URL", "http://127.0.0.1:9")
+    code, _, err = run(capsys, "body-economy")
+    assert code == 1 and "unreachable" in err

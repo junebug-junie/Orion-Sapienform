@@ -355,6 +355,9 @@ class Settings(BaseSettings):
     # PageIndex query provenance includes enriched journal trigger/stance/facet metadata.
     journal_pageindex_service_url: str = Field("http://orion-pageindex:8360", alias="JOURNAL_PAGEINDEX_SERVICE_URL")
     biometrics_http_timeout_sec: float = Field(5.0, alias="BIOMETRICS_HTTP_TIMEOUT_SEC")
+    # skills.physiology.state.v1: orion-durable-runs' read-only GET /physiology/report (app-net, port 8121).
+    physiology_report_url: str = Field("http://orion-athena-durable-runs:8121", alias="ORION_PHYSIOLOGY_REPORT_URL")
+    physiology_report_timeout_sec: float = Field(10.0, alias="ORION_PHYSIOLOGY_REPORT_TIMEOUT_SEC")
     # skills.perception.look_at_camera.v1 -- reads orion-vision-window's already-
     # projected current-window snapshot (GET /api/vision-window/current). Does
     # NOT trigger a fresh capture; that would need a direct vision-host RPC, out

@@ -203,6 +203,6 @@ circe and hecate run their own orion-biometrics: rebuild it on each host after i
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2977
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

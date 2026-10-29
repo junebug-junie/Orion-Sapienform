@@ -183,8 +183,8 @@ PYTHONPATH=. python orion/physiology/evals/physiology_state_skill_eval.py -> pas
 
 ```text
 Live DB timing (read-only, the real build_report on the live conjourney DB, concurrency 3, final code):
-  24h 0.35 s, 7d 0.77 s, 30d 1.02 s   (H5: under 2 s)
-  slowest reads at 30d: rhythm 0.94 s (per-hour spread), queue_wait 0.46 s, limits 0.43 s, waste 0.37 s.
+  24h 0.39-0.42 s, 7d 0.77 s, 30d 0.94-1.02 s   (H5: under 2 s)
+  slowest reads at 30d: rhythm 0.80-0.94 s (per-hour spread), queue_wait 0.45 s, limits 0.44 s, waste 0.41 s.
 The reviewer also ran it on the live DB inside a forced read-only session: 24h 245 ms, 30d 743 ms (before
 the rhythm spread).
 Network: orion-athena-harness-governor -> http://orion-athena-durable-runs:8121 reachable (0.018 s);
@@ -242,6 +242,11 @@ session. It found no blockers, 8 should-fix findings and 9 nits. All the materia
   - the cortex-exec text is capped at 40 lines / 4000 chars like the dig kit, and the undocumented
     `section` arg is dropped;
   - the cortex-exec adapter test runs in its own CI job, so its pins do not downgrade the dig job.
+- **Coordinator follow-up (#2974 token ledger):** `per 1k tokens` is no longer a TODO. It reads
+  `llm_call_usage` when the table exists, divides per-act measured energy by that act's tokens
+  (`correlation_id`, every recorder), and counts totals on `recorder='gateway'` only. Each gap has a
+  reason: table absent, no calls, no act energy, or no join. Evidence: `test_per_1k_tokens_joins_act_energy_to_the_token_ledger`
+  and the Postgres test (2.0 Wh over 1,500 tokens; gateway totals 2 calls / 1,100 tokens).
 - **Not changed, on purpose:** `Market.family_weights` reuses the bid path's history cache, so a report
   read can warm that cache. That is the same read the bid path does. It gates nothing.
 
@@ -275,10 +280,13 @@ docker exec orion-athena-harness-governor python -P -m orion.dig body-economy
   - Mitigation: `basis` says this.
   - Follow-up: a guardian endpoint for the current stopped list.
 - Severity: low.
-  - Concern: `vram` and per-act `unit_costs` read fields that sibling agents are adding now
-    (`gpuN_mem_*_mb`, `cost_json.wh_by_host` / `usd` / `heat_c_by_host`). Until those fields land, both say
-    "not measured" with the reason.
-  - The per-1k-token row is a TODO. It waits on the per-call token table, and its name is not on main yet.
+  - Concern: `vram`, per-act `unit_costs` and `per 1k tokens` read fields and tables that sibling PRs add now:
+    `gpuN_mem_*_mb`, `cost_json.wh_by_host` / `usd` / `heat_c_by_host`, and `llm_call_usage` (#2974, not merged).
+    Until each one lands, its row says "not measured" with the exact reason. Live today:
+    "llm_call_usage does not exist yet".
+  - Mitigation: the per-1k-token SQL is tested on Postgres against #2974's migration columns. It sums
+    per-act energy over that act's tokens on `correlation_id` (every recorder), and counts window totals on
+    `recorder='gateway'` only, per #2974's join rule.
 - Severity: low.
   - Concern: the model can't call cortex-exec skill verbs from either live path, so the adapter is reachable
     only from Skill Runner and verb plans. Orion's live path is the dig command.

@@ -944,7 +944,7 @@ off answers 503.
 | `wants{families, hourly}` | `want_ledger`, hand-run probes left out |
 | `rhythm[]` (local day x hour) | `gpu_pool_events` lease closes, each lease spread over the hours it was held: background vs all lease-seconds |
 | `money` | newest `energy` reading; `floor_usd` from its `why`; `orion_energy_hourly` per local day |
-| `unit_costs[]` | tariff rate, `config/physiology/heat_sensitivity.yaml`, `energy_run_cost`, `grammar_acts.cost_json` (`wh_by_host`/`usd`/`heat_c_by_host` when filled). Tokens: not measured until the per-call token table lands |
+| `unit_costs[]` | tariff rate, `config/physiology/heat_sensitivity.yaml`, `energy_run_cost`, `grammar_acts.cost_json` (`wh_by_host`/`usd`/`heat_c_by_host` when filled). Per 1k tokens: per-act energy / that act's tokens in `llm_call_usage` joined on `correlation_id` (every recorder); totals count `recorder='gateway'` only. Table absent or empty -> `not_measured` with the reason |
 | `waste` | lease closes whose reason is not `ok`/`completed`/`generated`/`text_done`/`operator:*`; the `released` twin of an expiry/abort is counted once |
 | `queue_wait[]` | `waited_ms` on granted leases; family from `want_ledger` for durable runs, else the holder's service |
 | `decisions[]` | `want_ledger`, newest first |

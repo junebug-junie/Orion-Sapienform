@@ -308,13 +308,16 @@ def test_report_sql_on_postgres():
         "CREATE TABLE orion_energy_hourly (hour_start timestamptz, source varchar, kwh double precision, PRIMARY KEY (hour_start, source))",
         """CREATE TABLE energy_run_cost (id bigserial PRIMARY KEY, intent_id varchar, workload_kind varchar,
            window_start timestamptz, energy_kwh double precision, estimated_run_cost_usd double precision)""",
-        "CREATE TABLE grammar_acts (act_id varchar PRIMARY KEY, actor varchar, opened_at timestamptz, cost_json jsonb)",
+        "CREATE TABLE grammar_acts (act_id varchar PRIMARY KEY, actor varchar, opened_at timestamptz, cost_json jsonb, correlation_id varchar)",
         """CREATE TABLE dev_economics_ledger_log (event_id varchar PRIMARY KEY, observed_at timestamptz,
            total_input_tokens integer, total_output_tokens integer, total_cache_creation_input_tokens integer,
            total_cache_read_input_tokens integer, total_estimated_cost_usd double precision,
            priced_session_count integer, unpriced_session_count integer)""",
         "CREATE TABLE orion_biometrics_summary (id serial PRIMARY KEY, \"timestamp\" varchar, node varchar, measurements jsonb)",
         "CREATE TABLE notify_requests (notification_id varchar PRIMARY KEY, source_service varchar, created_at timestamp, context jsonb)",
+        # services/orion-sql-db/manual_migration_llm_call_usage_v1.sql (PR #2974), the columns this report reads
+        """CREATE TABLE llm_call_usage (call_id text PRIMARY KEY, recorded_at timestamptz NOT NULL, recorder text NOT NULL,
+           correlation_id text, prompt_tokens integer, cached_prompt_tokens integer, completion_tokens integer)""",
     ]
 
     async def run():
@@ -351,8 +354,12 @@ def test_report_sql_on_postgres():
                     await conn.execute("INSERT INTO orion_energy_hourly VALUES (%s, 'athena', 1.5)", (now - timedelta(hours=3),))
                     await conn.execute("INSERT INTO energy_run_cost (workload_kind, window_start, energy_kwh, estimated_run_cost_usd) "
                                        "VALUES ('reverie_diffusion', %s, 0.0004, 0.00005)", (now - timedelta(hours=1),))
-                    await conn.execute("INSERT INTO grammar_acts VALUES ('a1', 'hub.outreach', %s, %s)",
-                                       (now - timedelta(hours=1), json.dumps({"wh_by_host": {"athena": 2.0}, "usd": 0.001})))
+                    await conn.execute("INSERT INTO grammar_acts VALUES ('a1', 'hub.outreach', %s, %s, 'corr-1')",
+                                       (now - timedelta(hours=1), json.dumps({"wh_by_host": {"athena": 1.5, "circe": 0.5}, "usd": 0.001})))
+                    for cid, rec, corr, p_, c_ in (("c1", "gateway", "corr-1", 900, 100), ("c2", "harness_relay", "corr-1", 400, 100),
+                                                   ("c3", "gateway", None, 50, 50)):
+                        await conn.execute("INSERT INTO llm_call_usage VALUES (%s, %s, %s, %s, %s, 0, %s)",
+                                           (cid, now - timedelta(minutes=50), rec, corr, p_, c_))
                     await conn.execute("INSERT INTO dev_economics_ledger_log VALUES ('x', %s, 1, 2, 3, 4, 0.5, 1, 0)",
                                        (now - timedelta(hours=1),))
                     await conn.execute("INSERT INTO orion_biometrics_summary (\"timestamp\", node, measurements) VALUES (%s, 'circe', %s)",
@@ -378,6 +385,10 @@ def test_report_sql_on_postgres():
                 assert next(c for c in rep.vram if c.card == "gpu0").headroom_mb == 32668.0
                 assert rep.services.down[0].name == "orion-kev/kev"
                 assert any(u.unit == "one hub.outreach act" and u.wh == 2.0 for u in rep.unit_costs)
+                tok = next(u for u in rep.unit_costs if u.unit == "per 1k tokens")
+                # act corr-1: 2.0 Wh over 1,500 tokens (every recorder); totals: gateway only (2 calls, 1,100)
+                assert tok.status == "measured" and tok.wh == pytest.approx(2.0 * 1000 / 1500, abs=1e-3)
+                assert "2 gateway calls, 1,100 tokens" in tok.source
         finally:
             async with await AsyncConnection.connect(DSN, autocommit=True) as conn:
                 await conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
@@ -455,3 +466,24 @@ def test_cache_skips_failed_reports_and_shares_one_build():
         assert calls.count(2) == 2   # a report with a failed read is never cached
 
     asyncio.run(run())
+
+
+def test_per_1k_tokens_joins_act_energy_to_the_token_ledger():
+    absent = pr.token_cost_row({"present": False})
+    assert absent["status"] == "not_measured" and "llm_call_usage does not exist yet" in absent["source"]
+    no_energy = pr.token_cost_row({"present": True, "calls": 10, "prompt": 900, "completion": 100,
+                                   "join": {"acts_with_energy": 0, "joined": 0}})
+    assert no_energy["status"] == "not_measured" and "nothing to divide" in no_energy["source"]
+    no_join = pr.token_cost_row({"present": True, "calls": 10, "prompt": 900, "completion": 100,
+                                 "join": {"acts_with_energy": 3, "joined": 0, "tokens": None}})
+    assert "none of the 3 acts" in no_join["source"]
+    ok = pr.token_cost_row({"present": True, "calls": 10, "prompt": 900, "completion": 100,
+                            "join": {"acts_with_energy": 3, "joined": 2, "wh": 4.0, "usd": 0.002, "tokens": 2000}})
+    assert ok["status"] == "measured" and ok["wh"] == 2.0 and ok["usd"] == 0.001
+    assert "J/token 7.2" in ok["source"] and "2 of 3 acts" in ok["source"]
+    rows = full_rows()
+    rows[pr.TOKENS_PRESENT_SQL] = [{"present": True}]
+    rows[pr.TOKENS_TOTAL_SQL] = [{"calls": 10, "prompt": 900, "completion": 100, "first_at": NOW}]
+    rows[pr.TOKENS_ACT_JOIN_SQL] = [{"acts_with_energy": 3, "joined": 2, "wh": 4.0, "usd": 0.002, "tokens": 2000}]
+    rep = _build(rows)
+    assert next(u for u in rep.unit_costs if u.unit == "per 1k tokens").status == "measured"

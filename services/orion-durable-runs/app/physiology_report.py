@@ -256,6 +256,37 @@ WHERE opened_at >= %(since)s AND opened_at < %(until)s AND cost_json IS NOT NULL
   AND (%(family)s::text IS NULL OR actor = %(family)s)
 """
 
+# Per-call token ledger (llm_call_usage, PR #2974; services/orion-sql-db/manual_migration_llm_call_usage_v1.sql).
+# Totals over time count recorder='gateway' only (a harness_relay row is an FCC turn whose gateway row has
+# no correlation_id, so counting both would count that call twice). One act: correlation_id, every recorder.
+TOKENS_PRESENT_SQL = "SELECT to_regclass('llm_call_usage') IS NOT NULL AS present"
+TOKENS_TOTAL_SQL = """
+SELECT COUNT(*) AS calls, COALESCE(SUM(prompt_tokens), 0) AS prompt, COALESCE(SUM(completion_tokens), 0) AS completion,
+       MIN(recorded_at) AS first_at
+FROM llm_call_usage
+WHERE recorder = 'gateway' AND recorded_at >= %(since)s AND recorded_at < %(until)s
+"""
+TOKENS_ACT_JOIN_SQL = """
+WITH acts AS (
+  SELECT correlation_id,
+         SUM((SELECT SUM(v::float) FROM jsonb_each_text(cost_json->'wh_by_host') AS e(k, v))) AS wh,
+         SUM(NULLIF(cost_json->>'usd', '')::float) AS usd
+  FROM grammar_acts
+  WHERE opened_at >= %(since)s AND opened_at < %(until)s AND correlation_id IS NOT NULL
+    AND jsonb_typeof(cost_json->'wh_by_host') = 'object'
+  GROUP BY 1
+), tok AS (
+  SELECT correlation_id, SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)) AS tokens
+  FROM llm_call_usage
+  WHERE correlation_id IN (SELECT correlation_id FROM acts)
+  GROUP BY 1
+)
+SELECT (SELECT COUNT(*) FROM acts) AS acts_with_energy, COUNT(*) AS joined, SUM(a.wh) AS wh, SUM(a.usd) AS usd,
+       SUM(t.tokens) AS tokens
+FROM acts a JOIN tok t USING (correlation_id)
+WHERE t.tokens > 0
+"""
+
 WASTE_BY_LANE_SQL = """
 SELECT COALESCE(role, '?') AS lane, SUM(held_ms) / 1000.0 AS held_s
 FROM gpu_pool_events
@@ -517,8 +548,8 @@ def load_heat_hosts(path: str) -> tuple[list[HeatHost], Optional[str]]:
 
 
 def shape_unit_costs(rate: Optional[float], heat_hosts: Sequence[HeatHost], heat_err: Optional[str],
-                     run_costs: Sequence[Mapping], act_costs: Optional[Mapping[str, dict]]
-                     ) -> tuple[list[dict], list[dict]]:
+                     run_costs: Sequence[Mapping], act_costs: Optional[Mapping[str, dict]],
+                     tokens: Optional[Mapping] = None) -> tuple[list[dict], list[dict]]:
     """``act_costs`` None: the act-cost read failed (its reason is already in ``missing``)."""
     rows: list[dict] = []
     missing: list[dict] = []
@@ -555,14 +586,44 @@ def shape_unit_costs(rate: Optional[float], heat_hosts: Sequence[HeatHost], heat
                      "status": "not_measured",
                      "source": "no act in the window carries cost_json wh_by_host / usd / heat_c_by_host yet "
                                "(the per-act energy fill is being added)"})
-    # TODO(per-call token table): a sibling agent is adding a per-LLM-call token table. Read it here
-    # (USD and W·h per 1k tokens) once it exists and its name is on main. Until then: not_measured.
-    rows.append({"unit": "per 1k tokens", "usd": None, "wh": None, "heat_c": None, "status": "not_measured",
-                 "source": "no per-call token table yet (being added); tokens are not joined to energy"})
+    rows.append(token_cost_row(tokens))
     if not any(r["status"] == "measured" for r in rows):
         missing.append({"section": "unit_costs", "reason": "nothing measured in the window: every row is derived "
                         "from the tariff and the heat fit, or not measured yet"})
     return rows, missing
+
+
+def token_cost_row(tokens: Optional[Mapping]) -> dict:
+    """Energy (and USD) per 1k tokens: per-act measured energy (grammar_acts.cost_json.wh_by_host)
+    divided by the tokens of that act's calls (llm_call_usage on correlation_id). ``tokens`` None: the
+    read failed (its reason is already in ``missing``)."""
+    row = {"unit": "per 1k tokens", "usd": None, "wh": None, "heat_c": None, "status": "not_measured"}
+    if tokens is None:
+        return {**row, "source": "token ledger read failed (see missing)"}
+    if not tokens.get("present"):
+        return {**row, "source": "the per-call token table llm_call_usage does not exist yet (PR #2974 and its "
+                                 "migration not applied)"}
+    calls = int(tokens.get("calls") or 0)
+    total = int(tokens.get("prompt") or 0) + int(tokens.get("completion") or 0)
+    if calls == 0:
+        return {**row, "source": "llm_call_usage has no gateway call in the window"}
+    seen = f"{calls} gateway calls, {total:,} tokens in the window"
+    j = tokens.get("join") or {}
+    n_acts, joined, jt = int(j.get("acts_with_energy") or 0), int(j.get("joined") or 0), int(j.get("tokens") or 0)
+    if n_acts == 0:
+        return {**row, "source": f"{seen}; no act in the window carries measured energy (cost_json.wh_by_host), "
+                                 "so there is nothing to divide"}
+    if joined == 0 or jt <= 0:
+        return {**row, "source": f"{seen}; none of the {n_acts} acts with measured energy has a call with its "
+                                 "correlation_id in llm_call_usage"}
+    wh = _f(j.get("wh"))
+    usd = _f(j.get("usd"))
+    return {**row, "status": "measured",
+            "wh": _r(wh * 1000.0 / jt, 4) if wh is not None else None,
+            "usd": _r(usd * 1000.0 / jt, 6) if usd is not None else None,
+            "source": f"{joined} of {n_acts} acts with measured energy joined to {jt:,} tokens on correlation_id "
+                      f"(J/token {wh * 3600.0 / jt:.3g}); {seen}" if wh is not None else
+                      f"{joined} acts joined to {jt:,} tokens; {seen}"}
 
 
 def shape_waste(by_lane: Sequence[Mapping], top: Sequence[Mapping]) -> tuple[dict, list[dict]]:
@@ -908,6 +969,15 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
         tasks["run_costs"] = timed("unit_costs", lambda: _rows(pool, RUN_COST_SQL, base), ("unit_costs",))
     if wanted & {"unit_costs", "value_per_cost"}:
         tasks["act_costs"] = timed("act_costs", act_costs, ("unit_costs", "value_per_cost"))
+    if "unit_costs" in wanted:
+        async def tokens():
+            present = bool(((await _rows(pool, TOKENS_PRESENT_SQL, {})) or [{}])[0].get("present"))
+            if not present:
+                return {"present": False}
+            total = ((await _rows(pool, TOKENS_TOTAL_SQL, base)) or [{}])[0]
+            join = ((await _rows(pool, TOKENS_ACT_JOIN_SQL, base)) or [{}])[0]
+            return {"present": True, **total, "join": join}
+        tasks["tokens"] = timed("tokens", tokens, ("unit_costs",))
     if "waste" in wanted:
         wp = {**base, "events": list(WASTE_CLOSE_EVENTS), "ok": list(OK_CLOSE_REASONS), "top": WASTE_TOP_N}
 
@@ -970,7 +1040,7 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
         def _unit():
             rate = shape_money(latest_row, [])[0]["rate_usd_per_kwh"] if latest_row else None
             hosts, herr = load_heat_hosts(deps.heat_sensitivity_path)
-            return shape_unit_costs(rate, hosts, herr, results["run_costs"], ac)
+            return shape_unit_costs(rate, hosts, herr, results["run_costs"], ac, results.get("tokens"))
         add("unit_costs", _unit)
     if "waste" in wanted and results.get("waste") is not None:
         add("waste", lambda: shape_waste(*results["waste"]))

@@ -704,9 +704,22 @@ def test_pass_on_its_own_line_is_a_pass(raw) -> None:
 
 
 @pytest.mark.parametrize("raw", [
+    # Live 2026-10-27 14:27:54Z and 2026-10-28 14:39:34Z (delivered as messages).
+    "One link. It's a fact recorded, not a connection that opens a new line of thought. PASS",
+    "It is unclear whether \"zero mesh collisions\" holds up under scrutiny. Not worth interrupting for. PASS",
+])
+def test_pass_as_the_last_word_after_a_sentence_is_a_pass(raw) -> None:
+    from scripts.endogenous_outreach import pass_shape
+
+    assert pass_shape(raw) == "trailing"
+
+
+@pytest.mark.parametrize("raw", [
     "I nearly wrote PASS, but this one matters: the link changes how I read the ES update.",
     "The test came back. PASS on all three checks.",
     "Passing this along:\nthe link joins two concepts.",
+    "The new eval gates PASS on cadence.",
+    "Three checks ran. All PASS on the first try.",
 ])
 def test_pass_inside_a_sentence_is_still_a_message(raw) -> None:
     assert is_pass_response(raw) is False

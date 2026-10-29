@@ -1066,7 +1066,7 @@ class Settings(BaseSettings):
     # After a reading message reaches Juniper, the next waits this long (a PASS does not start
     # the wait; 0 = off). Stops the post-quiet-hours flood; derivation in .env_example.
     HUB_READING_FINDING_OUTREACH_MIN_SPACING_SEC: float = Field(
-        default=5400.0, alias="HUB_READING_FINDING_OUTREACH_MIN_SPACING_SEC"
+        default=6750.0, alias="HUB_READING_FINDING_OUTREACH_MIN_SPACING_SEC"
     )
     # Orion contractor peer (HelpRequest -> Cursor/Claude PeerBrief soft-nudge
     # on kickoff / self-inquiry). On by default (matches .env_example and

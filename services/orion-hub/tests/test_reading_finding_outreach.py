@@ -113,7 +113,6 @@ class _Pool:
 
 def _setup(monkeypatch, *, links=None, moves=None, decisions=None, text="I read about NASA's flyover.",
            min_spacing_sec=0.0, last_sent=None, **outreach_kw):
-    outreach_kw_last_sent = last_sent
     from scripts import endogenous_outreach as eo
     from scripts import endogenous_outreach_decisions as decisions_mod
     from scripts import reading_finding_outreach as rfo
@@ -142,7 +141,7 @@ def _setup(monkeypatch, *, links=None, moves=None, decisions=None, text="I read 
     state = {"reads": [READ_ROW], "links": [_link_row()] if links is None else links,
              "moves": [] if moves is None else moves, "decisions": decisions or [],
              "origin": ORIGIN_ROWS, "origin_asked": [], "last_sent_asked": [],
-             "last_sent": outreach_kw_last_sent}
+             "last_sent": last_sent}
 
     async def lookup(ids):
         return {i: PRIOR_TEXTS.get(i, []) for i in ids}
@@ -403,3 +402,10 @@ def test_zero_spacing_turns_the_wait_off_and_skips_the_query(monkeypatch):
     _two_reads(state)
     assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent", "sent"]
     assert len(delivered) == 2 and state["last_sent_asked"] == []
+
+
+def test_the_last_sent_query_counts_only_reading_sends():
+    from scripts import reading_finding_outreach as rfo
+
+    sql = " ".join(rfo.LAST_SENT_SQL.split())
+    assert "reason = 'sent'" in sql and "result_json->>'source' = 'reading_finding_outreach'" in sql

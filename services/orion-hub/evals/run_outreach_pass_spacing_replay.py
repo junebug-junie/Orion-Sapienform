@@ -3,7 +3,7 @@
 Orion really delivered to Juniper.
 
     PYTHONPATH=.:services/orion-hub .venv/bin/python services/orion-hub/evals/run_outreach_pass_spacing_replay.py \
-        [--days 30] [--spacing-sec 5400] [--dsn postgresql://...] [--json]
+        [--days 30] [--spacing-sec 6750] [--dsn postgresql://...] [--json]
 
 1. PASS: every delivered outreach message (decision row ``sent`` joined to its chat_message row) is
    checked with the production ``is_pass_response`` on Orion's own words (the recorded article
@@ -99,7 +99,7 @@ def replay(rows: list[dict], spacing_sec: float) -> dict:
 async def _main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=30)
-    parser.add_argument("--spacing-sec", type=float, default=5400.0)
+    parser.add_argument("--spacing-sec", type=float, default=6750.0)
     parser.add_argument("--dsn", default=os.environ.get(
         "RECALL_PG_DSN", "postgresql://postgres:postgres@127.0.0.1:55432/conjourney"))
     parser.add_argument("--json", action="store_true")

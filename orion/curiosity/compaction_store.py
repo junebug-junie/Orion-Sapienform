@@ -7,12 +7,17 @@ A crash releases the connection lock and the next sleep resumes saved progress.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from functools import cached_property
 
 from sqlalchemy import create_engine, text
 
-from orion.curiosity.compaction import batches, due_window, source_material, window_id
+from orion.curiosity.compaction import (
+    MAX_STALLED_GENERATIONS, batches, due_window, note_failed_generation, source_material, window_id,
+)
+
+logger = logging.getLogger(__name__)
 
 class Store:
     """Explicit shared persistence API used by sleep admission and the durable graph."""
@@ -81,8 +86,12 @@ class Session:
             raise
 
     def prepare(self, now, cycle_id):
-        previous = self.read("SELECT * FROM curiosity_compaction WHERE cadence=:cadence "
-                             "ORDER BY window_start DESC LIMIT 1", {"cadence": self.cadence})
+        # The oldest pending window first (one an operator re-opened after later windows were
+        # created), else the newest row, which decides the next window.
+        previous = self.read("SELECT * FROM curiosity_compaction WHERE cadence=:cadence AND status='pending' "
+                             "ORDER BY window_start LIMIT 1", {"cadence": self.cadence}) or \
+            self.read("SELECT * FROM curiosity_compaction WHERE cadence=:cadence "
+                      "ORDER BY window_start DESC LIMIT 1", {"cadence": self.cadence})
         latest = previous[0] if previous else None
         window = due_window(now, self.cadence, latest)
         if window is None:
@@ -97,13 +106,27 @@ class Session:
                 return None
             if outcome == "failed":
                 # Retry only an authoritative terminal failure; keep all saved topic work.
+                # Bounded: generations that keep failing without saving a batch give the window up.
+                stalled = note_failed_generation(latest["state"])
+                if stalled >= MAX_STALLED_GENERATIONS:
+                    latest["status"] = "cancelled"
+                    self.save(latest)
+                    logger.warning("curiosity_compaction_gave_up window=%s run=%s stalled_generations=%d cursor=%s",
+                                   latest["compaction_id"], latest["run_id"], stalled, latest["state"]["stall"]["cursor"])
+                    return None
                 generation = latest["generation"] + 1
                 run_id = f"{latest['compaction_id']}:r{generation}"
-                self.conn.execute(text("UPDATE curiosity_compaction SET run_id=:new, generation=:generation "
-                                       "WHERE compaction_id=:id AND run_id=:old"),
-                                  {"new": run_id, "generation": generation, "id": latest["compaction_id"],
-                                   "old": latest["run_id"]})
-                self.conn.commit()
+                # One fenced UPDATE: the new generation and its stall count land together.
+                try:
+                    self.conn.execute(text(
+                        "UPDATE curiosity_compaction SET run_id=:new, generation=:generation, "
+                        "state=CAST(:state AS jsonb), updated_at=now() WHERE compaction_id=:id AND run_id=:old"),
+                        {"new": run_id, "generation": generation, "id": latest["compaction_id"],
+                         "old": latest["run_id"], "state": json.dumps(latest["state"])})
+                    self.conn.commit()
+                except BaseException:
+                    self.conn.rollback()
+                    raise
                 latest.update(run_id=run_id, generation=generation)
             return latest
         start, end = window

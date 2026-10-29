@@ -1221,10 +1221,14 @@ state. A SQL write checks the run generation to fence delayed old workers.
 
 Each call sends a JSON schema for its answer as `structured_output_schema`
 (`output_schema` in `orion/curiosity/compaction.py`; the gateway turns it into llama.cpp's
-`response_format`): topic body `maxLength` 1200, `refs` `minItems` 1 and an enum of the batch's
-aliases, at most 6 topics; the overall body `maxLength` 2400. The prompt asks for about 120-150
-words per topic so the cap is rarely reached; a body that fills the cap without ending a sentence
-was cut by the grammar and is rejected.
+`response_format`): `record_topics` first, an object with one REQUIRED key per alias of the batch
+(`s0`, `s1`, ...) and no other key, each mapped to a topic index; then at most 4 topics, body
+`maxLength` 1200; the overall body `maxLength` 2400. The grammar therefore cannot skip or invent a
+record (V1 had a free `refs` list per topic, and the model dropped refs on 13-record batches).
+`record_answer` still checks every rule, and also that each written topic has a record. The
+prompt asks for about 80-110 words per topic and 180-240 for the overall, leaving room under
+the caps (live bodies run ~7 characters per word and overshoot the asked length); a body that
+fills the cap without ending a sentence was cut by the grammar and is rejected.
 
 The final journal contains content-derived topic summaries with dated sources plus an
 overall synthesis. Missing/invented topic references, empty text and malformed JSON

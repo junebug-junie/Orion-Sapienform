@@ -82,7 +82,8 @@ git diff --check -> clean
 
 ```text
 evals/run_causal_calibration_eval.py -> PASS (switchback coverage95 0.97, null FPR 0.05; ITS coverage95 0.95)
-evals/run_cabinet_replay_eval.py     -> EVAL_REPLAY_RESULT
+evals/run_cabinet_replay_eval.py     -> RESULT: PASS (40 windows, committed real cabinet fixture; cabinet
+  assignment naive @5/15/60/1440, window_average_1h @360; unchanged by this PR -- backtest code untouched)
 ```
 
 ## Docker/build/smoke checks
@@ -135,6 +136,6 @@ Run from the clean primary main checkout after merge. The post-pull rebuild appl
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/2956
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

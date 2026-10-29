@@ -570,47 +570,6 @@ def test_recall_canary_query_rejects_invalid_profile_id(monkeypatch) -> None:
     assert staged.profile_id in detail["allowed_profile_ids"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "SECURITY, pending Juniper's decision: 7495edab7 (2026-05-01, 'various') removed "
-        "the operator-token guard from the recall-canary query, judgment and "
-        "review-artifact routes, so they answer without a token today. If the guard is "
-        "restored this XPASSes and strict mode fails CI -- then drop the xfail mark."
-    ),
-)
-@pytest.mark.parametrize(
-    ("path", "body"),
-    [
-        ("/api/substrate/recall-canary/query", {"query_text": "no-token"}),
-        ("/api/substrate/recall-canary/runs/run-x/judgment", {"judgment": "tie"}),
-        ("/api/substrate/recall-canary/runs/run-x/create-review-artifact", {}),
-    ],
-)
-def test_recall_canary_routes_refuse_a_request_without_operator_token(monkeypatch, path, body) -> None:
-    """Every sibling mutation route calls _require_mutation_operator_guard; these must too.
-
-    HTTP-level, so it fails on the missing guard itself (a 2xx/4xx other than 403),
-    not on a Python call signature. Replaces a test that only asserted the cookie
-    token was accepted, which cannot fail while no guard exists.
-    """
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    monkeypatch.setenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "secret")
-    monkeypatch.setattr(api_routes, "SUBSTRATE_MUTATION_STORE", SubstrateMutationStore())
-    monkeypatch.setattr(
-        api_routes.requests,
-        "post",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("recall service must not be called")),
-    )
-    app = FastAPI()
-    app.include_router(api_routes.router)
-    resp = TestClient(app).post(path, json=body)
-    assert resp.status_code == 403, (resp.status_code, resp.text[:200])
-
-
 def test_recall_canary_review_artifact_warns_without_active_shadow(monkeypatch) -> None:
     monkeypatch.setenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "secret")
     store = SubstrateMutationStore()

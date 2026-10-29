@@ -82,12 +82,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      # The proxy tests import scripts.api_routes, which needs the full Hub
-      # requirements (aiohttp, spacy, ...), so this job installs them.
+      # The proxy tests import scripts.api_routes, which needs most Hub
+      # requirements (aiohttp, spacy, ...). faster-whisper/soundfile are left
+      # out: their `av` dependency does not build on the runner and nothing
+      # these tests import needs speech-to-text.
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r services/orion-hub/requirements.txt
+          grep -vE '^(faster-whisper|soundfile)' services/orion-hub/requirements.txt > /tmp/hub-reqs.txt
+          python -m pip install -r /tmp/hub-reqs.txt
           python -m pip install "pytest>=8.2,<10" "pytest-asyncio>=0.23,<1" "fakeredis[lua]>=2.23,<3"
       - name: Hub outreach durable path and tray wiring
         env:

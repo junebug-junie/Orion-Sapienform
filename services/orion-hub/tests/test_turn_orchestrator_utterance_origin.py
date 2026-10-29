@@ -244,7 +244,10 @@ async def test_execute_unified_turn_uses_mind_appraisal_text_for_stance_not_harn
     assert "MERGE (h:HelpRequest" not in stance_req.user_message
     harness_client_run.assert_awaited_once()
     harness_req = harness_client_run.await_args.args[0]
-    assert harness_req.user_message == kickoff
+    # The full kickoff reaches the motor intact. A HelpRequest kickoff may also
+    # carry the role-teach "Mind work-shape" advisory in front of it
+    # (orion/curiosity/role_teach_disclosure.py, 2026-09-19), so not `==`.
+    assert harness_req.user_message.endswith(kickoff)
     assert "MERGE (h:HelpRequest" in harness_req.user_message
 
 

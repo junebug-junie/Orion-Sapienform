@@ -90,6 +90,9 @@ def test_coalesce_prefers_appendix_c_json() -> None:
     }
     out = _node_coalesce({"ok": True, "appendix_c_json": json.dumps(draft)})
     parsed = _parse_draft_text(out["draftText"])
+    # The coalescer always attaches an utterance_text_by_id map (92734d783) so
+    # the draft carries the turn text it was built from; none was supplied here.
+    assert parsed.pop("utterance_text_by_id") == {}
     assert parsed == draft
     assert out.get("error") in (None, "")
 

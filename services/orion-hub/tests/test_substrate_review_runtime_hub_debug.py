@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import asyncio
 import importlib.util
@@ -180,9 +181,12 @@ def test_self_experiments_trigger_daily_publishes_bus_event(monkeypatch) -> None
 def test_app_js_includes_substrate_in_shell_tab_switching_without_full_navigation() -> None:
     app_js = APP_JS_PATH.read_text(encoding="utf-8")
 
-    assert 'const substrateTabButton = document.getElementById("substratePageLink");' in app_js
+    # The button now prefers #substrateTabButton and falls back to the legacy
+    # #substratePageLink; the tab key goes through `effectiveTab` (tab aliases).
+    assert 'const substrateLegacyTabButton = document.getElementById("substratePageLink");' in app_js
+    assert 'document.getElementById("substrateTabButton") || substrateLegacyTabButton;' in app_js
     assert 'const substratePanel = document.getElementById("substrate");' in app_js
-    assert 'const isSubstrate = tabKey === "substrate";' in app_js
+    assert 'const isSubstrate = effectiveTab === "substrate";' in app_js
     assert 'substratePanel.classList.toggle("hidden", !isSubstrate);' in app_js
     assert 'styleTabButton(substrateTabButton, isSubstrate);' in app_js
     assert 'substrateTabButton.addEventListener("click", (event) => {' in app_js
@@ -683,7 +687,10 @@ def test_hub_substrate_debug_surface_does_not_embed_standalone_page() -> None:
     assert 'id="substratePanelFrame"' in index_html
     assert 'src="/substrate"' in index_html
     assert "substrate.js" not in index_html
-    assert "window.OrionHub" not in app_js
+    # substrate.js's `window.OrionHub` namespace must not be merged into the Hub
+    # bundle. Word boundary: app.js legitimately exports unrelated
+    # `window.OrionHubOpenOrganSignals`.
+    assert not re.search(r"window\.OrionHub\b", app_js)
 
 
 def test_autonomy_readiness_endpoint_returns_unified_read_only_snapshot() -> None:

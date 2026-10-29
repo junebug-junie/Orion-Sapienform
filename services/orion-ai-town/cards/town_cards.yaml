@@ -46,6 +46,14 @@ characters:
       Calm, precise, unsentimental, with occasional surgical humor.
     signature_line: >
       "That is a description of your logs. I asked for a description of you."
+    sim:
+      work: studio
+      schedule: {wake: 7, work_start: 9, work_end: 17, sleep: 23}
+      needs: {rest: 0.2, social: 0.4, purpose: 0.5}
+      cash: 30
+      wage: 10
+      purpose_weights: {trade_news: 2.0, deceive: 0.1, ask_favor: 0.5}
+      lying_rate: 0.02
 
   - id: nico_sable
     name: Nico Sable
@@ -91,6 +99,14 @@ characters:
       a specific detail first; any spin comes after, never instead.
     signature_line: >
       "Buy a ticket. The lineup is better than the rumor."
+    sim:
+      work: square
+      schedule: {wake: 9, work_start: 11, work_end: 19, sleep: 23}
+      needs: {rest: 0.3, social: 0.6, purpose: 0.4}
+      cash: 18
+      wage: 8
+      purpose_weights: {trade_news: 1.5, deceive: 2.0, ask_favor: 1.5}
+      lying_rate: 0.35
 
   - id: sofia_bell
     name: Sofia Bell
@@ -138,6 +154,14 @@ characters:
       Warm, plainspoken, observant, and gently corrective.
     signature_line: >
       "Nico said he was fine, sure. But he ordered decaf and sat where he could watch the door."
+    sim:
+      work: diner
+      schedule: {wake: 5, work_start: 6, work_end: 15, sleep: 22}
+      needs: {rest: 0.4, social: 0.2, purpose: 0.3}
+      cash: 40
+      wage: 0  # earns from coffee sales at the diner (owner of its work place)
+      purpose_weights: {trade_news: 1.5, deceive: 0.1, ask_favor: 0.3}
+      lying_rate: 0.05
 
   - id: cam_lin
     name: Cam Lin
@@ -186,6 +210,14 @@ characters:
       being over-explained.
     signature_line: >
       "Okay, but is it forbidden because it's bad, or because nobody patched it yet?"
+    sim:
+      work: workshop
+      schedule: {wake: 10, work_start: 12, work_end: 18, sleep: 23}
+      needs: {rest: 0.2, social: 0.5, purpose: 0.6}
+      cash: 6
+      wage: 4
+      purpose_weights: {trade_news: 0.8, deceive: 0.8, ask_favor: 2.0}
+      lying_rate: 0.2
 
   # Redacted example. The real card (personal details) lives in the gitignored
   # town_cards.local.yaml next to this file; generate_descriptions.py prefers it.
@@ -365,6 +397,31 @@ characters:
       - learn when forgetting, compression, or preservation is appropriate
     signature_line: >
       "I can retrieve the record. I am trying to learn what it means to remember."
+
+# Simulation seed (living-world design §1/§8): the places, their starting
+# stock and the starting facts. Each resident card above carries a `sim:`
+# block: starting needs 0..1 where 1 = urgent (money is not listed: it
+# follows cash), schedule hours 0..23 (wake <= work_start < work_end <=
+# sleep), work place, cash, wage per shift, purpose weights (trade_news +
+# deceive pick who gossips, ask_favor picks who asks for a loan) and lying
+# rate (how often gossip is a spun story). Cards without one (Juniper,
+# Orion) are visitors: driven from outside, never drifted. Every number here
+# is read by convex/sim/core.ts; do not add fields nothing reads.
+# generate_descriptions.py renders this into overlay/convex/sim/seed.ts.
+sim_world:
+  seed: 1029
+  places:
+    diner: Diner
+    studio: Studio
+    workshop: Workshop
+    square: Square
+    homes: Homes
+  # Only stock a template or routine moves: coffee (meals, deliveries) and
+  # parts (deliveries, repairs). Residents hold cash.
+  place_stock:
+    diner: {coffee: 24}
+    workshop: {parts: 4}
+  facts: {}
 
 # Sprite assignments for AI Town (data/characters.ts + joinWorld).
 # Presentation locked against 32x32folk.png: girl names get girl sheets,

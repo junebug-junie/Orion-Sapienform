@@ -22,6 +22,7 @@ PATCHES=(
   "orion-mechanical-leave.patch"
   "orion-live-turn-roles.patch"
   "orion-walkover-meet.patch"
+  "orion-sim-core-hooks.patch"
 )
 
 if [[ ! -d "${UPSTREAM}/.git" ]]; then
@@ -65,3 +66,23 @@ for name in "${PATCHES[@]}"; do
     exit 1
   fi
 done
+
+# Overlay: whole new files (convex/sim/ -- the simulation core and its Convex
+# functions) copied over upstream/ after the patches. pre_rebuild.sh deletes
+# them on reset like patch-created files. Copying is idempotent.
+if [[ -d "${ROOT}/overlay" ]]; then
+  cp -R "${ROOT}/overlay/." "${UPSTREAM}/"
+  echo "Copied overlay/"
+  # The committed seed renders the redacted example; re-render it from the
+  # cards actually in use (town_cards.local.yaml first).
+  SEED="${UPSTREAM}/convex/sim/seed.ts"
+  if ! python3 "${ROOT}/scripts/generate_descriptions.py" --render-sim-seed > "${SEED}.tmp"; then
+    # Do not leave the copied example seed behind: a later push would seed
+    # the live world from the redacted example instead of the real cards.
+    rm -f "${SEED}.tmp" "${SEED}"
+    echo "sim seed: rendering from the cards failed (needs python3 + PyYAML); removed convex/sim/seed.ts" >&2
+    exit 1
+  fi
+  mv "${SEED}.tmp" "${SEED}"
+  echo "Rendered convex/sim/seed.ts from the cards"
+fi

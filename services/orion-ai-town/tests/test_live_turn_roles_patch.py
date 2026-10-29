@@ -138,7 +138,7 @@ def test_patch_chain_applies_to_pinned_upstream(tmp_path):
     work.mkdir()
     subprocess.run(["git", "clone", "-q", src, str(work / "upstream")], check=True)
     subprocess.run(["git", "-C", str(work / "upstream"), "checkout", "-q", ref], check=True)
-    for name in ("patches", "scripts", "cards"):
+    for name in ("patches", "scripts", "cards", "overlay"):
         shutil.copytree(_SERVICE / name, work / name)
     run = subprocess.run(
         ["bash", str(work / "scripts" / "apply_upstream_patches.sh")], capture_output=True, text=True
@@ -146,3 +146,7 @@ def test_patch_chain_applies_to_pinned_upstream(tmp_path):
     assert run.returncode == 0, run.stdout + run.stderr
     for name in _apply_order():
         assert f"Applied {name}" in run.stdout, name
+    # The overlay (sim core) lands after the patches, seed rendered from the cards.
+    assert "Copied overlay/" in run.stdout
+    assert (work / "upstream" / "convex" / "sim" / "core.ts").is_file()
+    assert "export const SIM_CAST" in (work / "upstream" / "convex" / "sim" / "seed.ts").read_text()

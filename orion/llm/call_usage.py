@@ -1,7 +1,6 @@
 """Per-call token ledger: read token counts from a reply, queue the event, publish it.
 
-Shared by orion-llm-gateway (every call it places) and the harness governor's warm FCC relay
-(FCC-path turns only). Contract: ``orion/schemas/llm_call_usage.py``.
+Used by orion-llm-gateway (every call it places). Contract: ``orion/schemas/llm_call_usage.py``.
 
 Three pieces:
 

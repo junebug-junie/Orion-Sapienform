@@ -145,5 +145,5 @@ def test_schema_is_registered_and_channel_catalogued():
     catalog = yaml.safe_load((root / "orion/bus/channels.yaml").read_text())
     ch = next(c for c in catalog["channels"] if c["name"] == LLM_CALL_USAGE_CHANNEL)
     assert ch["schema_id"] == "LlmCallUsageV1" and ch["message_kind"] == LLM_CALL_USAGE_KIND
-    assert set(ch["producer_services"]) == {"orion-llm-gateway", "orion-harness-governor"}
+    assert ch["producer_services"] == ["orion-llm-gateway"]
     assert ch["consumer_services"] == ["orion-sql-writer"]

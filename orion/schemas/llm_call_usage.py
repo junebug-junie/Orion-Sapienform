@@ -4,27 +4,24 @@ Why: "cost per 1,000 tokens" and "joules per token" need tokens per call, joinab
 turn or act that made the call. The gateway's grammar windows (services/orion-llm-gateway/
 app/grammar_emit.py) only carry per-window token TOTALS and, by design, no correlation ids.
 
-Producers (``recorder``):
+Producer: ``recorder = 'gateway'`` -- orion-llm-gateway, every call that reached a model: bus RPC
+(``llm.chat.request``) and the HTTP passthroughs (``/v1/chat/completions``, ``/v1/messages``).
+This is every GPU call the gateway places, harness turns included.
 
-* ``gateway`` -- orion-llm-gateway, every call that reached a model: bus RPC
-  (``llm.chat.request``) and the HTTP passthroughs (``/v1/chat/completions``,
-  ``/v1/messages``). This is every GPU call the gateway places.
-* ``harness_relay`` -- the harness governor's warm FCC relay (orion/harness/fcc_warm_relay.py),
-  ONLY for a turn with no GPU lease. That turn goes relay -> FCC proxy -> gateway, and the FCC
-  proxy drops our headers, so the gateway sees the same call with no correlation id.
+``harness_relay`` is RETIRED (2026-10-29, kept in the Literal only so old rows still validate).
+It recorded warm-pool turns with no lease because the FCC proxy dropped our headers. Live after
+deploy, the real gap was larger: EVERY harness gateway row had ``correlation_id`` NULL, because the
+common path is a per-turn spawn with no lease (Claude Code -> FCC proxy -> gateway), which the
+relay never saw. The FCC adapter now forwards ``X-Orion-Correlation-Id``
+(services/orion-fcc/orion_fcc_messages_transport.py ``forward_correlation_header``), so the
+gateway row carries the turn id; a relay row would now count the same call twice.
 
-Join rules (no double count under either):
+Join rules:
 
-* Totals over time (tokens per hour, joules per token): ``recorder = 'gateway'`` only.
-* Tokens for one turn or act: every row with that ``correlation_id``. The FCC-path call the
-  relay recorded is also a gateway row, but that gateway row has ``correlation_id`` NULL.
+* Totals over time (tokens per hour, joules per token): ``recorder = 'gateway'``.
+* Tokens for one turn or act: ``correlation_id = <id> AND recorder = 'gateway'``.
 
-Known attribution gaps (the call is still in the totals, but no row carries the turn id):
-
-* A per-turn FCC spawn (not the warm pool) with NO GPU lease goes straight to the FCC proxy; the
-  proxy drops ``X-Orion-Correlation-Id`` and the relay is not in that path. Rare: lease-less
-  harness turns were ~8 calls in 48 h on 2026-10-29, warm and spawned together.
-* HTTP callers that send no ``X-Orion-Correlation-Id`` (AI Town NPCs, other OpenAI clients).
+Still no turn id: HTTP callers that send no ``X-Orion-Correlation-Id`` (AI Town NPCs, others).
 
 Token fields, normalized across the two wire formats llama.cpp speaks:
 

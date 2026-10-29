@@ -33,6 +33,7 @@ Fix: `llm_backend.py`'s `_served_model()` now prefers the backend's own echoed m
 | Channel | Env Var | Kind | Description |
 | :--- | :--- | :--- | :--- |
 | (Caller-defined) | (via `reply_to`) | `llm.chat.result` | Chat completion result. |
+| `orion:llm:call:usage` | `LLM_GATEWAY_CALL_USAGE_ENABLED` | `llm.call.usage.v1` | One per call that reached a model: tokens + correlation id (see "Per-call token ledger"). |
 
 ### Environment Variables
 Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
@@ -399,6 +400,26 @@ one-call minute read 1.0. The field digester (`ENABLE_LLM_INFERENCE_FIELD_DIGEST
 recorded in the projection for inspection and never reach the field. Replay what the
 channel would read from existing logs with
 `evals/run_inference_outcome_eval.py`.
+
+## Per-call token ledger (2026-10-29)
+
+One `llm.call.usage.v1` (`orion/schemas/llm_call_usage.py`) per call that reached a model: bus RPC,
+`/v1/chat/completions` and `/v1/messages`, streamed or not. It carries prompt tokens (cache reuse
+included), cached prompt tokens, completion tokens, route, model, served_by, the granted pool role,
+model time (grant -> reply) and pool wait, llama.cpp decode speed, and the caller's correlation id.
+orion-sql-writer stores it in `llm_call_usage`. No prompt or reply text.
+
+* Correlation id: bus envelope `correlation_id`; HTTP header `X-Orion-Correlation-Id` (then
+  `x-request-id`). FCC per-turn spawns send the header, so harness calls are no longer `corr=-`.
+* Streams: the first and last 4 KB are kept. An Anthropic stream has its prompt counts in
+  `message_start` (first event) and its completion count in `message_delta` (last). An OpenAI
+  stream from llama.cpp has no `usage` chunk; counts come from the last chunk's `timings`
+  (`token_source = 'timings'`).
+* Not recorded: a call the pool never granted that reported no tokens (a refusal). The grammar
+  windows still count it.
+* Telemetry never waits inside a reply: events go to a bounded in-memory queue (oldest dropped
+  and logged when full), drained every 2 s by `run_usage_publisher`.
+* Off switch: `LLM_GATEWAY_CALL_USAGE_ENABLED=false`.
 
 ## Calls under a durable run's GPU pool hold
 

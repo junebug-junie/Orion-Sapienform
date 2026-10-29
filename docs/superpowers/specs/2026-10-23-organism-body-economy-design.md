@@ -1066,3 +1066,19 @@ The reviewer spot-checked 12 facts against live data and code. 8 were confirmed.
   - Fix: dropped. The dials now carry a metric-gate record.
 - **`SettledBetV1` does not exist yet.**
   - Fix: Patch F's bets are marked blocked on #2827.
+
+## Report API + `skills.physiology.state.v1` (2026-10-29)
+
+- **Built.** `GET /physiology/report` on orion-durable-runs returns one `PhysiologyReportV1`
+  (`orion/schemas/physiology_report.py`): limits hour by hour, wants funded vs deferred, heavy-work rhythm,
+  money, unit costs, failed lease time, queue wait, single decisions, Claude spend, GPU memory headroom,
+  value per cost, services down. Every empty section carries a `missing` reason. This is the Phase 3 page's
+  data contract.
+- **The verb named in Patch C now exists:** `skills.physiology.state.v1` (tier 0, `autonomic`, like the
+  other body reads). The text renderer is `orion/physiology/report_text.py`.
+- **How Orion reaches it.** A unified chat turn and a curiosity run are both harness turns in
+  orion-harness-governor. Neither can call a cortex-exec skill verb mid-turn (the capability bridge only runs
+  under the retired agent supervisor). Both have Bash and the dig brief line, so the live path is
+  `python -P -m orion.dig body-economy`. The cortex-exec adapter serves Skill Runner, scheduler and verb plans.
+- **Measured (live DB, read-only, 2026-10-29):** 24 h ~0.3 s, 7 d ~0.6 s, 30 d ~0.8-1.0 s. H5 holds without a
+  persisted `gpu_pool_events` rollup for now.

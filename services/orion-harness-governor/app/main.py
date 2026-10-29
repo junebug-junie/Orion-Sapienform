@@ -12,6 +12,8 @@ from orion.core.bus.bus_schemas import ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 
+from orion.harness.fcc_warm_relay import get_usage_sink, set_usage_recording
+from orion.llm.call_usage import run_usage_publisher
 from orion.harness.fcc_warm_pool import WarmPoolConfig, get_warm_pool, start_warm_pool, stop_warm_pool
 
 from .bus_listener import run_bus_worker
@@ -148,6 +150,19 @@ async def lifespan(app: FastAPI):
     # Warm Claude Code pool for chat replies (spec L5). Started in the background so
     # a slow MCP start-up never delays the governor's readiness; until a slot is
     # warm, chat turns simply spawn as before.
+    # Per-call token ledger: drain the warm relay's FCC-path call records onto the bus.
+    app.state.call_usage_stop = asyncio.Event()
+    app.state.call_usage_task = None
+    if settings.harness_llm_call_usage_enabled and settings.orion_bus_enabled:
+        set_usage_recording(True)
+        app.state.call_usage_task = asyncio.create_task(
+            run_usage_publisher(
+                app.state.dispatch_bus, get_usage_sink(),
+                source=ServiceRef(name=settings.service_name, version=settings.service_version,
+                                  node=settings.node_name),
+                stop=app.state.call_usage_stop,
+            )
+        )
     app.state.fcc_warm_pool_task = None
     if settings.harness_fcc_chat_warm_pool_enabled and settings.orion_harness_governor_enabled:
         app.state.fcc_warm_pool_task = asyncio.create_task(start_fcc_warm_pool())
@@ -187,6 +202,12 @@ async def lifespan(app: FastAPI):
             await warm_task
     with suppress(Exception):
         await stop_warm_pool()
+    usage_task = getattr(app.state, "call_usage_task", None)
+    if usage_task is not None:
+        set_usage_recording(False)
+        app.state.call_usage_stop.set()  # one last drain, then exit
+        with suppress(asyncio.CancelledError, Exception):
+            await asyncio.wait_for(usage_task, timeout=5)
     publisher = getattr(app.state, "rpc_health_publisher", None)
     if publisher is not None:
         await publisher.stop()

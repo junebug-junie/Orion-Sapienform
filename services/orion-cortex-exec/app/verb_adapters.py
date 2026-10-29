@@ -1197,6 +1197,41 @@ class BiometricsSnapshotVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
         return _skill_result_output(skill_name="skills.biometrics.snapshot.v1", result=result), []
 
 
+@verb("skills.physiology.state.v1")
+class PhysiologyStateVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    """Orion's body-economy read: GET /physiology/report on orion-durable-runs, rendered as plain
+    first-person text (orion/physiology/report_text.py, the same words `dig body-economy` prints).
+    skill_args: sections (list or comma string; default overview), window (24h|7d|30d), family."""
+
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        from orion.physiology import report_text as rt
+
+        name = "skills.physiology.state.v1"
+        args = _skill_args(payload)
+        window = str(args.get("window") or "24h").strip()
+        family = (str(args.get("family")).strip() or None) if args.get("family") else None
+        try:
+            sections = rt.normalize_sections(args.get("sections"))
+            report = await asyncio.to_thread(
+                rt.fetch_report, base_url=str(settings.physiology_report_url), window=window, sections=sections,
+                family=family, timeout_sec=float(settings.physiology_report_timeout_sec))
+        except (ValueError, rt.ReportUnavailable) as exc:
+            reason = str(exc)
+            result = {"available": False, "reason": reason, "text": f"I could not read my body report: {reason}"}
+            return SkillVerbOutput(ok=False, status="unavailable", final_text=result["text"],
+                                   metadata={"skill_name": name, "skill_result": result},
+                                   error={"message": reason}), []
+        # Same turn-sized cap as `dig body-economy` (40 lines / 4000 chars); a cut is said in the text.
+        text = rt.cap_text(rt.render_report_text(report, sections))
+        result = {"available": True, "window": window, "sections": list(sections), "family": family,
+                  "generated_at": report.get("generated_at"), "missing": report.get("missing") or [], "text": text}
+        return SkillVerbOutput(ok=True, status="success", final_text=text,
+                               metadata={"skill_name": name, "skill_result": result}), []
+
+
 @verb("skills.biometrics.raw_recent.v1")
 class BiometricsRawRecentVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
     input_model = PlanExecutionRequest

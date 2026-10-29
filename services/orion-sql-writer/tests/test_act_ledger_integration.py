@@ -502,3 +502,80 @@ def test_producer_cost_wins_and_v2_fields_are_kept(session):
     cost = _row(session, act.act_id)["cost_json"]
     assert cost["seconds"] == 7.0 and cost["juniper_msgs"] == 1
     assert session.execute(text("SELECT latency_ms FROM substrate_action_outcomes")).scalar() == pytest.approx(7000.0)
+
+
+# --- act energy cost: wh_by_host / usd / heat_c_by_host / basis on close --------------------------
+
+_ENERGY_DDL = """
+CREATE TABLE gpu_pool_events (event_id VARCHAR PRIMARY KEY, generated_at TIMESTAMPTZ NOT NULL,
+    event VARCHAR NOT NULL, lease_id VARCHAR, role VARCHAR, cards JSON, turn_correlation_id VARCHAR,
+    held_ms DOUBLE PRECISION);
+CREATE TABLE orion_biometrics_summary (id VARCHAR PRIMARY KEY, "timestamp" VARCHAR NOT NULL,
+    node VARCHAR, measurements JSONB);
+CREATE TABLE energy_cost_accrued (id BIGSERIAL PRIMARY KEY, interval_start TIMESTAMPTZ NOT NULL,
+    marginal_usd_per_kwh DOUBLE PRECISION NOT NULL, tariff_version VARCHAR NOT NULL,
+    computed_at TIMESTAMPTZ NOT NULL DEFAULT now())
+"""
+
+
+def _summary(session, node, at, measurements):
+    import json as _json
+
+    session.execute(text(
+        'INSERT INTO orion_biometrics_summary (id, "timestamp", node, measurements) VALUES (:i, :t, :n, CAST(:m AS jsonb))'),
+        {"i": uuid.uuid4().hex, "t": at.strftime("%Y-%m-%d %H:%M:%S.%f+00"), "n": node, "m": _json.dumps(measurements)})
+
+
+def test_close_fills_energy_money_and_heat_from_the_act_leases(session, monkeypatch):
+    """Regression: wh_by_host was null on every act (body economy C1: 'No act carries wh_by_host')."""
+    from orion.grammar import act_energy_fill
+    from orion.physiology.heat_config import parse_heat_sensitivity
+    from orion.physiology.prices import usable_sensitivity
+
+    act_energy_fill._IDLE_CACHE.clear()
+    # A fit dated by the test clock: the committed file goes stale after 30 days and is rewritten by
+    # every refit, neither of which is this test's business.
+    fitted = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    heat = parse_heat_sensitivity({"schema": "heat_sensitivity.v1", "hosts": {"circe": {
+        "point": 0.5, "ci95": [0.2, 0.8], "horizon": "2h", "n": 100, "fitted_at": fitted,
+        "regressor": "compute_watts", "baseline_watts_p10": 200.0, "fit_command": "fixture"}}})
+    monkeypatch.setattr(act_energy_fill, "_heat_config", lambda: (heat, None))
+    for stmt in _ENERGY_DDL.split(";"):
+        if stmt.strip():
+            session.execute(text(stmt))
+    t0 = (datetime.now(timezone.utc) - timedelta(minutes=10)).replace(microsecond=0)
+    # circe gpu2: idle at 40 W for the trailing 24 h, then 140 W while the act's lease holds it.
+    for i in range(120):
+        _summary(session, "circe", t0 - timedelta(hours=2) + timedelta(seconds=30 * i), {"gpu2_watts": 40.0})
+    for i in range(-4, 8):
+        _summary(session, "circe", t0 + timedelta(seconds=30 * i), {"gpu2_watts": 140.0, "gpu1_watts": 300.0})
+    session.execute(text("INSERT INTO energy_cost_accrued (interval_start, marginal_usd_per_kwh, tariff_version) "
+                         "VALUES (:t, 0.1254564295292, 'rmp-test')"), {"t": t0 - timedelta(days=1)})
+    corr = "corr-energy"
+    session.execute(text(
+        "INSERT INTO gpu_pool_events (event_id, generated_at, event, lease_id, role, cards, turn_correlation_id, held_ms) "
+        "VALUES ('g1', :g, 'granted', 'L1', 'diffusion', CAST('[\"gpu2\"]' AS json), :c, NULL), "
+        "       ('r1', :r, 'released', 'L1', 'diffusion', CAST('[\"gpu2\"]' AS json), :c, 60000.0), "
+        # another turn's lease on gpu2 for the second half: the act pays half of those 30 s.
+        "       ('g2', :g2, 'granted', 'L2', 'diffusion', CAST('[\"gpu2\"]' AS json), 'other', NULL), "
+        "       ('r2', :r2, 'released', 'L2', 'diffusion', CAST('[\"gpu2\"]' AS json), 'other', 60000.0), "
+        # a grant that never ended (live: ~8 a day): capped at the 9000 s longest hold, so it
+        # stopped sharing gpu2 before this act's lease began.
+        "       ('g3', :g3, 'granted', 'L3', 'diffusion', CAST('[\"gpu2\"]' AS json), 'lost', NULL), "
+        "       ('g3b', :g3b, 'granted', 'L3', 'diffusion', CAST('[\"gpu2\"]' AS json), 'lost', NULL)"),
+        {"g": t0 + timedelta(seconds=10), "r": t0 + timedelta(seconds=70), "c": corr,
+         "g2": t0 + timedelta(seconds=40), "r2": t0 + timedelta(seconds=100),
+         "g3": t0 - timedelta(hours=2, minutes=40), "g3b": t0 - timedelta(hours=2, minutes=39)})
+    act = _make_act("energy-run")
+    apply_grammar_trace_batch(session, [act_opened_event(
+        act, source_service="orion-thought", source_component="t", correlation_id=corr, at=t0)])
+    apply_grammar_trace_batch(session, [act_closed_event(
+        act, produced=True, source_service="orion-thought", source_component="t", correlation_id=corr,
+        at=t0 + timedelta(seconds=90))])
+    cost = _row(session, act.act_id)["cost_json"]
+    wh = 100.0 * (30.0 + 30.0 / 2) / 3600.0  # 100 W above idle; alone 30 s, shared 30 s
+    assert cost["wh_by_host"] == {"circe": pytest.approx(wh, rel=1e-3)}
+    assert cost["usd"] == pytest.approx(wh / 1000.0 * 0.1254564295292, rel=1e-3)
+    assert cost["heat_c_by_host"]["circe"] == pytest.approx(usable_sensitivity(0.5, 0.2, 0.8) * wh / 100.0, rel=1e-3)
+    assert "share 0.75" in cost["basis"]["wh"] and cost["basis"]["cpu"].startswith("not charged")
+    assert cost["gpu_slot_s_by_lane"] == {"diffusion": pytest.approx(60.0)}

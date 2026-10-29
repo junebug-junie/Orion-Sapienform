@@ -41,6 +41,7 @@ from scripts.hub_surface_routes import _engine as hub_surface_engine
 from scripts.runtime_activity_routes import RuntimeActivityFeeds, router as runtime_activity_router
 from scripts.gpu_pool_routes import feed as gpu_pool_feed, page_router as gpu_pool_page_router, router as gpu_pool_router
 from scripts.temporal_self_routes import page_router as temporal_self_page_router, router as temporal_self_router
+from scripts.body_economy_routes import router as body_economy_router
 from scripts.personality_routes import page_router as personality_page_router, router as personality_router
 from orion.hub.runtime_activity import get_runtime_activity
 import scripts.api_routes as api_routes_runtime
@@ -1958,6 +1959,7 @@ app.include_router(gpu_pool_router)
 app.include_router(gpu_pool_page_router)
 app.include_router(temporal_self_router)
 app.include_router(temporal_self_page_router)
+app.include_router(body_economy_router)
 app.include_router(personality_router)
 app.include_router(personality_page_router)
 

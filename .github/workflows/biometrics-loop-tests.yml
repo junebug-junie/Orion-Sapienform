@@ -24,6 +24,11 @@ on:
       - 'tests/test_offline_node_stuck_pressure.py'
       - 'tests/test_biometrics_silent_node_exclusion.py'
       - 'orion/schemas/prediction_error_definitions.py'
+      - 'orion/telemetry/biometrics_pipeline.py'
+      - 'tests/test_act_energy_measurements.py'
+      - 'services/orion-biometrics/app/metrics.py'
+      - 'services/orion-biometrics/app/settings.py'
+      - 'services/orion-biometrics/tests/test_container_cpu.py'
       - '.github/workflows/biometrics-loop-tests.yml'
   push:
     branches: [main]
@@ -45,6 +50,11 @@ on:
       - 'tests/test_offline_node_stuck_pressure.py'
       - 'tests/test_biometrics_silent_node_exclusion.py'
       - 'orion/schemas/prediction_error_definitions.py'
+      - 'orion/telemetry/biometrics_pipeline.py'
+      - 'tests/test_act_energy_measurements.py'
+      - 'services/orion-biometrics/app/metrics.py'
+      - 'services/orion-biometrics/app/settings.py'
+      - 'services/orion-biometrics/tests/test_container_cpu.py'
       - '.github/workflows/biometrics-loop-tests.yml'
   workflow_dispatch:
 permissions:
@@ -71,3 +81,14 @@ jobs:
             tests/test_fleet_roster_coverage.py \
             tests/test_offline_node_stuck_pressure.py \
             tests/test_biometrics_silent_node_exclusion.py
+      # Act energy cost (2026-10-29): per-card watts/VRAM, per-container CPU watt split, and the
+      # collector's cgroup read.
+      - name: Per-card and per-container energy measurements
+        run: python -m pytest -q -p no:cacheprovider tests/test_act_energy_measurements.py
+      - name: Collector per-container CPU
+        working-directory: services/orion-biometrics
+        env:
+          PYTHONPATH: .:../..
+        run: |
+          pip install -r requirements.txt
+          python -m pytest -q -p no:cacheprovider tests/test_container_cpu.py

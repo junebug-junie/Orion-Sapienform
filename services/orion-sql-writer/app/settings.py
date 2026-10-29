@@ -73,6 +73,8 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "physiology.state.v1": "PhysiologyStateSQL",
     # Body economy Patch C1: one row per shadow bid decision (durable-runs POST /physiology/bid).
     "physiology.want.decision.v1": "WantLedgerSQL",
+    # Per-call token ledger (2026-10-29): one row per LLM call (llm-gateway, harness relay).
+    "llm.call.usage.v1": "LlmCallUsageSQL",
     "transport_baseline.hourly.v1": "TransportBaselineHourlySQL",
     "self_signal.hour.v1": "SelfSignalHourSQL",
     "self_signal.outcome_association.v1": "SelfSignalOutcomeAssociationSQL",
@@ -211,6 +213,7 @@ class Settings(BaseSettings):
             "orion:gpu_pool:state",
             "orion:physiology:state",
             "orion:physiology:want:decision",
+            "orion:llm:call:usage",
             "orion:equilibrium:transport_baseline:hourly",
             "orion:equilibrium:self_signal:hour",
             "orion:equilibrium:self_signal:outcome_association",
@@ -876,6 +879,9 @@ class Settings(BaseSettings):
     # at close, write Orion's own non-final `acted` verdict on that loop (attention_loop_outcome,
     # actor='orion'). Off: no stamping, no Orion loop verdicts; the ledger itself is unchanged.
     sql_writer_act_workspace_binding_enabled: bool = Field(True, alias="SQL_WRITER_ACT_WORKSPACE_BINDING_ENABLED")
+    # Act energy cost: fill grammar_acts.cost_json wh_by_host / usd / heat_c_by_host / basis on close
+    # from the act's GPU leases and per-card watts (orion/grammar/act_energy_fill.py).
+    sql_writer_act_energy_cost_enabled: bool = Field(True, alias="SQL_WRITER_ACT_ENERGY_COST_ENABLED")
 
     @property
     def route_map(self) -> dict[str, str]:
@@ -1025,6 +1031,10 @@ class Settings(BaseSettings):
         # without the channel want_ledger stays empty while /physiology/bid looks healthy).
         if "orion:physiology:want:decision" not in channels:
             channels.append("orion:physiology:want:decision")
+        # Same guarantee, same reason (llm.call.usage.v1 is a code-default route; without the
+        # channel llm_call_usage stays empty while the gateway publishes).
+        if "orion:llm:call:usage" not in channels:
+            channels.append("orion:llm:call:usage")
         # Same guarantee, same reason (transport_baseline.hourly.v1 is a
         # code-default route; SQL_WRITER_SUBSCRIBE_CHANNELS replaces).
         if "orion:equilibrium:transport_baseline:hourly" not in channels:

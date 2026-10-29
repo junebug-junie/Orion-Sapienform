@@ -86,6 +86,7 @@ _EXTRA_COVERED_SCHEMA_NAMES: dict[str, str] = {
     "DriveAuditV1": "drive_state.v1 (audit-trail companion, orion/core/schemas/drives.py)",
     "DriveNodeV1": "drive_state.v1 (cognitive-substrate graph-node projection, orion/core/schemas/cognitive_substrate.py -- static drive-kind node, not a live per-tick pressure reading)",
     "ArcAttentionSummaryV1": "sub-object of TemporalSelfArcV1 (orion/schemas/temporal_self.py): per-arc row counts and reason words of the already-registered attention_schema.v1 entry; no new sensor",
+    "PhysiologyReportV1": "read-only aggregate view over the registered physiology.state.v1 and physiology.want.decision.v1 entries (orion/schemas/physiology_report.py, GET /physiology/report, 2026-10-29): hourly rollups of their stored rows plus lease/energy/token tables; no new sensor, computes no new signal",
     # --- genuine keyword-collision false positives, unrelated domain ---
     "ArticleClusterV1": "false positive -- orion/schemas/world_pulse.py, news-article clustering, unrelated to node-health 'cluster'",
     "TemporalSelfStateV1": "false positive on 'selfstate' -- the Temporal Self chronology reducer's serialisable working state (orion/temporal_self/arcs.py), not the retired felt-state SelfStateV1; it reads no inner-state scalar",

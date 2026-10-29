@@ -1,0 +1,2961 @@
+{
+ "schema_version": "physiology.report.v1",
+ "generated_at": "2026-10-29T18:58:00Z",
+ "window": {
+  "start": "2026-10-28T19:00:00Z",
+  "end": "2026-10-29T19:00:00Z"
+ },
+ "limits": [
+  {
+   "constraint": "heat",
+   "label": "Cabinet heat",
+   "unit": "C",
+   "line": 31.0,
+   "now": {
+    "level": 32.1,
+    "bind_state": "binding",
+    "why": "cabinet 31.9 C; Orion's share 2.38 C (2 h step response: a short-run lower bound) [athena +267 W x 0.64 = 1.72 C; circe +213 W x 0.31 = 0.66 C; hecate asleep]; room without Orion 29.6 C vs line 31.0 C"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-28T19:00:00Z",
+     "level": 28.5,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T20:00:00Z",
+     "level": 28.4,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T21:00:00Z",
+     "level": 29.2,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T22:00:00Z",
+     "level": 30.5,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T23:00:00Z",
+     "level": 30.6,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T00:00:00Z",
+     "level": 29.7,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T01:00:00Z",
+     "level": 29.2,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T02:00:00Z",
+     "level": 28.6,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T03:00:00Z",
+     "level": 28.5,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 28.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 26.7,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 26.8,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 27.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 26.7,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 27.6,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 29.1,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 29.9,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 30.7,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 31.2,
+     "price": 0.1,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 31.2,
+     "price": 0.1,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 31.4,
+     "price": 0.1,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 30.9,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 31.6,
+     "price": 0.1,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 32.1,
+     "price": 0.1,
+     "bind_state": "binding"
+    }
+   ]
+  },
+  {
+   "constraint": "energy",
+   "label": "Money",
+   "unit": "USD",
+   "line": 100.0,
+   "now": {
+    "level": 181.71,
+    "bind_state": "exogenous_bind",
+    "why": "the envelope is spent by what stays switched on (not by what I do); month to date $181.71; forecast $196.97 by month end at $0.256/h; the always-on floor alone ($0.203/h) reaches $193.79 vs envelope $100"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-28T19:00:00Z",
+     "level": 176.0,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-28T20:00:00Z",
+     "level": 176.24,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-28T21:00:00Z",
+     "level": 176.48,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-28T22:00:00Z",
+     "level": 176.72,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-28T23:00:00Z",
+     "level": 176.96,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T00:00:00Z",
+     "level": 177.2,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T01:00:00Z",
+     "level": 177.44,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T02:00:00Z",
+     "level": 177.68,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T03:00:00Z",
+     "level": 177.92,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 178.16,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 178.4,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 178.64,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 178.88,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 179.12,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 179.36,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 179.6,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 179.84,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 180.08,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 180.32,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 180.56,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 180.8,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 181.04,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 181.28,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 181.52,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    }
+   ]
+  },
+  {
+   "constraint": "attention:juniper",
+   "label": "Juniper's attention",
+   "unit": "%",
+   "line": 100.0,
+   "now": {
+    "level": 25,
+    "bind_state": "slack",
+    "why": "1 of 4 cap-counted messages by 12:23 local; day-end pace 1.9"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-28T19:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T20:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T21:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T22:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T23:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T00:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T01:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T02:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T03:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 14,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 25,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 25,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 25,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 25,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 25,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 25,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 25,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 25,
+     "price": 0.0,
+     "bind_state": "slack"
+    }
+   ]
+  },
+  {
+   "constraint": "lane:agent",
+   "label": "Agent lane (gpu1)",
+   "unit": "%",
+   "line": 100.0,
+   "now": {
+    "level": 100,
+    "bind_state": "stuck_at_ceiling",
+    "why": "3612 lease-s asked of 1 slot(s) in 60 min, 12 s of it lent into idle holds; 7 deferrable waiting (hunger, not priced)"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-28T19:00:00Z",
+     "level": 76,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T20:00:00Z",
+     "level": 79,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T21:00:00Z",
+     "level": 92,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T22:00:00Z",
+     "level": 81,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T23:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T00:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T01:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T02:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "stuck_at_ceiling"
+    },
+    {
+     "h": "2026-10-29T03:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "stuck_at_ceiling"
+    }
+   ]
+  },
+  {
+   "constraint": "lane:chat",
+   "label": "Chat lane (gpu0)",
+   "unit": "%",
+   "line": 100.0,
+   "now": {
+    "level": 2,
+    "bind_state": "slack",
+    "why": "120 lease-s of 1 slot(s) in 60 min"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-28T19:00:00Z",
+     "level": 11,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T20:00:00Z",
+     "level": 15,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T21:00:00Z",
+     "level": 5,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T22:00:00Z",
+     "level": 45,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T23:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T00:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T01:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T02:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T03:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 100,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 85,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 70,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 40,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 33,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 20,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 10,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 5,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 3,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 1,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 2,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 3,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 2,
+     "price": 0.0,
+     "bind_state": "slack"
+    }
+   ]
+  },
+  {
+   "constraint": "lane:fast",
+   "label": "Fast lane (gpu3)",
+   "unit": "%",
+   "line": 100.0,
+   "now": {
+    "level": 9,
+    "bind_state": "slack",
+    "why": "4 slots, 9% used"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-28T19:00:00Z",
+     "level": 27,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T20:00:00Z",
+     "level": 5,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T21:00:00Z",
+     "level": 4,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T22:00:00Z",
+     "level": 6,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T23:00:00Z",
+     "level": 6,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T00:00:00Z",
+     "level": 5,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T01:00:00Z",
+     "level": 5,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T02:00:00Z",
+     "level": 6,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T03:00:00Z",
+     "level": 9,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 5,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 4,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 3,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 13,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 44,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 10,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 12,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 8,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 6,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 5,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 4,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 3,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 2,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 6,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 9,
+     "price": 0.0,
+     "bind_state": "slack"
+    }
+   ]
+  },
+  {
+   "constraint": "lane:diffusion",
+   "label": "Diffusion lane",
+   "unit": "%",
+   "line": 100.0,
+   "now": {
+    "level": 0,
+    "bind_state": "slack",
+    "why": "idle"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-28T19:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T20:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T21:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T22:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-28T23:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T00:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T01:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T02:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T03:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 0,
+     "price": 0.0,
+     "bind_state": "slack"
+    }
+   ]
+  }
+ ],
+ "wants": {
+  "families": [
+   "hub.retro_leisure",
+   "actions.journal",
+   "hub.outreach",
+   "thought.painting",
+   "durable.curiosity_investigate",
+   "thought.dream_hop"
+  ],
+  "hourly": [
+   {
+    "h": "2026-10-28T20:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 3,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-28T20:00:00Z",
+    "family": "actions.journal",
+    "funded": 4,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-28T20:00:00Z",
+    "family": "thought.painting",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-28T21:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-28T21:00:00Z",
+    "family": "actions.journal",
+    "funded": 3,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-28T21:00:00Z",
+    "family": "thought.painting",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-28T22:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 4,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-28T22:00:00Z",
+    "family": "actions.journal",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-28T22:00:00Z",
+    "family": "thought.painting",
+    "funded": 3,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-28T23:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-28T23:00:00Z",
+    "family": "actions.journal",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-28T23:00:00Z",
+    "family": "thought.painting",
+    "funded": 4,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-28T23:00:00Z",
+    "family": "durable.curiosity_investigate",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T00:00:00Z",
+    "family": "thought.dream_hop",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T01:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 3,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T01:00:00Z",
+    "family": "actions.journal",
+    "funded": 4,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T01:00:00Z",
+    "family": "thought.painting",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T02:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T02:00:00Z",
+    "family": "actions.journal",
+    "funded": 3,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T02:00:00Z",
+    "family": "thought.painting",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T03:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 4,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T03:00:00Z",
+    "family": "actions.journal",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T03:00:00Z",
+    "family": "thought.painting",
+    "funded": 3,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T04:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T04:00:00Z",
+    "family": "actions.journal",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T04:00:00Z",
+    "family": "thought.painting",
+    "funded": 4,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T05:00:00Z",
+    "family": "durable.curiosity_investigate",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T06:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 3,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T06:00:00Z",
+    "family": "actions.journal",
+    "funded": 4,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T06:00:00Z",
+    "family": "thought.painting",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T06:00:00Z",
+    "family": "thought.dream_hop",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T07:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T07:00:00Z",
+    "family": "actions.journal",
+    "funded": 3,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T07:00:00Z",
+    "family": "thought.painting",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T08:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 4,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T08:00:00Z",
+    "family": "actions.journal",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T08:00:00Z",
+    "family": "thought.painting",
+    "funded": 3,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T09:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T09:00:00Z",
+    "family": "actions.journal",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T09:00:00Z",
+    "family": "thought.painting",
+    "funded": 4,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T11:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 3,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T11:00:00Z",
+    "family": "actions.journal",
+    "funded": 4,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T11:00:00Z",
+    "family": "thought.painting",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T11:00:00Z",
+    "family": "durable.curiosity_investigate",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T12:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T12:00:00Z",
+    "family": "actions.journal",
+    "funded": 3,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T12:00:00Z",
+    "family": "thought.painting",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T12:00:00Z",
+    "family": "thought.dream_hop",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T13:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 4,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T13:00:00Z",
+    "family": "actions.journal",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T13:00:00Z",
+    "family": "hub.outreach",
+    "funded": 0,
+    "deferred": 6
+   },
+   {
+    "h": "2026-10-29T13:00:00Z",
+    "family": "thought.painting",
+    "funded": 3,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T14:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T14:00:00Z",
+    "family": "actions.journal",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T14:00:00Z",
+    "family": "hub.outreach",
+    "funded": 0,
+    "deferred": 7
+   },
+   {
+    "h": "2026-10-29T14:00:00Z",
+    "family": "thought.painting",
+    "funded": 4,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T15:00:00Z",
+    "family": "hub.outreach",
+    "funded": 0,
+    "deferred": 8
+   },
+   {
+    "h": "2026-10-29T15:00:00Z",
+    "family": "thought.painting",
+    "funded": 0,
+    "deferred": 2
+   },
+   {
+    "h": "2026-10-29T16:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 3,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T16:00:00Z",
+    "family": "actions.journal",
+    "funded": 4,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T16:00:00Z",
+    "family": "hub.outreach",
+    "funded": 0,
+    "deferred": 9
+   },
+   {
+    "h": "2026-10-29T16:00:00Z",
+    "family": "thought.painting",
+    "funded": 1,
+    "deferred": 2
+   },
+   {
+    "h": "2026-10-29T17:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T17:00:00Z",
+    "family": "actions.journal",
+    "funded": 3,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T17:00:00Z",
+    "family": "hub.outreach",
+    "funded": 0,
+    "deferred": 10
+   },
+   {
+    "h": "2026-10-29T17:00:00Z",
+    "family": "thought.painting",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T17:00:00Z",
+    "family": "durable.curiosity_investigate",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T18:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 4,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T18:00:00Z",
+    "family": "actions.journal",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T18:00:00Z",
+    "family": "hub.outreach",
+    "funded": 0,
+    "deferred": 11
+   },
+   {
+    "h": "2026-10-29T18:00:00Z",
+    "family": "thought.painting",
+    "funded": 3,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T18:00:00Z",
+    "family": "thought.dream_hop",
+    "funded": 1,
+    "deferred": 0
+   }
+  ]
+ },
+ "rhythm": [
+  {
+   "day": "2026-10-23",
+   "hour": 0,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 1,
+   "heavy": 3,
+   "total": 5
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 2,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 3,
+   "heavy": 4,
+   "total": 6
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 4,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 5,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 6,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 7,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 8,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 9,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 10,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 11,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 12,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 13,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 14,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 15,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 16,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 17,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 18,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 19,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 20,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 21,
+   "heavy": 3,
+   "total": 5
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 22,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-23",
+   "hour": 23,
+   "heavy": 4,
+   "total": 6
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 0,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 1,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 2,
+   "heavy": 3,
+   "total": 5
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 3,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 4,
+   "heavy": 4,
+   "total": 6
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 5,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 6,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 7,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 8,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 9,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 10,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 11,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 12,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 13,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 14,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 15,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 16,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 17,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 18,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 19,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 20,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 21,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 22,
+   "heavy": 3,
+   "total": 5
+  },
+  {
+   "day": "2026-10-24",
+   "hour": 23,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 0,
+   "heavy": 4,
+   "total": 6
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 1,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 2,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 3,
+   "heavy": 3,
+   "total": 5
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 4,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 5,
+   "heavy": 4,
+   "total": 6
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 6,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 7,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 8,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 9,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 10,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 11,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 12,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 13,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 14,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 15,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 16,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 17,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 18,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 19,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 20,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 21,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 22,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-25",
+   "hour": 23,
+   "heavy": 3,
+   "total": 5
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 0,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 1,
+   "heavy": 4,
+   "total": 6
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 2,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 3,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 4,
+   "heavy": 3,
+   "total": 5
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 5,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 6,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 7,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 8,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 9,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 10,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 11,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 12,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 13,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 14,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 15,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 16,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 17,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 18,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 19,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 20,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 21,
+   "heavy": 4,
+   "total": 6
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 22,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-26",
+   "hour": 23,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 0,
+   "heavy": 3,
+   "total": 5
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 1,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 2,
+   "heavy": 4,
+   "total": 6
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 3,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 4,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 5,
+   "heavy": 3,
+   "total": 5
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 6,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 7,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 8,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 9,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 10,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 11,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 12,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 13,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 14,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 15,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 16,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 17,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 18,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 19,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 20,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 21,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 22,
+   "heavy": 4,
+   "total": 6
+  },
+  {
+   "day": "2026-10-27",
+   "hour": 23,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 0,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 1,
+   "heavy": 3,
+   "total": 5
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 2,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 3,
+   "heavy": 4,
+   "total": 6
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 4,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 5,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 6,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 7,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 8,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 9,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 10,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 11,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 12,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 13,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 14,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 15,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 16,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 17,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 18,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 19,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 20,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 21,
+   "heavy": 3,
+   "total": 5
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 22,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 23,
+   "heavy": 4,
+   "total": 6
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 0,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 1,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 2,
+   "heavy": 3,
+   "total": 5
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 3,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 4,
+   "heavy": 4,
+   "total": 6
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 5,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 6,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 7,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 8,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 9,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 10,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 11,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 12,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 13,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 14,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 15,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 16,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 17,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 18,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 19,
+   "heavy": 1,
+   "total": 3
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 20,
+   "heavy": 2,
+   "total": 4
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 21,
+   "heavy": 0,
+   "total": 2
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 22,
+   "heavy": 3,
+   "total": 5
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 23,
+   "heavy": 1,
+   "total": 3
+  }
+ ],
+ "money": {
+  "mtd_usd": 181.71,
+  "forecast_usd": 196.97,
+  "envelope_usd": 100.0,
+  "floor_usd": 193.79,
+  "rate_usd_per_kwh": 0.125,
+  "daily_kwh": [
+   {
+    "d": "2026-10-23",
+    "kwh": 60.57
+   },
+   {
+    "d": "2026-10-24",
+    "kwh": 54.76
+   },
+   {
+    "d": "2026-10-25",
+    "kwh": 50.29
+   },
+   {
+    "d": "2026-10-26",
+    "kwh": 41.27
+   },
+   {
+    "d": "2026-10-27",
+    "kwh": 47.23
+   },
+   {
+    "d": "2026-10-28",
+    "kwh": 46.41
+   },
+   {
+    "d": "2026-10-29",
+    "kwh": 22.29
+   }
+  ]
+ },
+ "unit_costs": [
+  {
+   "unit": "1 kWh",
+   "usd": 0.125,
+   "wh": 1000.0,
+   "heat_c": null,
+   "status": "measured",
+   "source": "Rocky Mountain Power tariff, latest rate in the energy tick"
+  },
+  {
+   "unit": "1 painting (reverie image)",
+   "usd": 5e-05,
+   "wh": 0.36,
+   "heat_c": null,
+   "status": "measured",
+   "source": "power-intent loop: 315 settled runs since 09-27, watts above idle on circe gpu2"
+  },
+  {
+   "unit": "100 W for 1 hour, athena",
+   "usd": 0.0125,
+   "wh": 100.0,
+   "heat_c": 0.64,
+   "status": "derived",
+   "source": "kWh rate x fitted heat sensitivity (2 h step, a lower bound)"
+  },
+  {
+   "unit": "1 agent turn / curiosity run",
+   "usd": null,
+   "wh": null,
+   "heat_c": null,
+   "status": "not_measured",
+   "source": "lease seconds exist; watts per card do not (only the host's GPU total is stored)"
+  }
+ ],
+ "waste": {
+  "failed_lease_s_by_lane": {
+   "agent": 1840.0,
+   "agent-gpu2": 312.5,
+   "chat": 0.0
+  },
+  "top": [
+   {
+    "lane": "agent",
+    "family": "durable.curiosity_investigate",
+    "failed_lease_s": 1200.0,
+    "n": 3
+   },
+   {
+    "lane": "agent",
+    "family": "durable.self_inquiry",
+    "failed_lease_s": 640.0,
+    "n": 2
+   },
+   {
+    "lane": "agent-gpu2",
+    "family": "durable.self_sense_eval",
+    "failed_lease_s": 312.5,
+    "n": 1
+   }
+  ]
+ },
+ "queue_wait": [
+  {
+   "lane": "agent",
+   "family": "durable.curiosity_investigate",
+   "p50_s": 420.0,
+   "p90_s": 2900.0,
+   "n": 14
+  },
+  {
+   "lane": "agent",
+   "family": "hub.outreach",
+   "p50_s": 1800.0,
+   "p90_s": 6100.0,
+   "n": 9
+  },
+  {
+   "lane": "chat",
+   "family": "actions.journal",
+   "p50_s": 3.2,
+   "p90_s": 41.0,
+   "n": 22
+  }
+ ],
+ "decisions": [
+  {
+   "decided_at": "2026-10-29T18:25:00Z",
+   "family": "hub.outreach",
+   "verb": "say",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "capacity_reserved",
+   "net": 0.301,
+   "binding_constraint": "lane:agent",
+   "why": "hub.outreach: weight 0.61 (evidence) x rank 0.62 (graded; intensity 1.00, hunger 48041 s (since_last_close, tau 1291 s rhythm:60)) - charge 0.080 = net +0.301; lane:agent is full: forecast use + 0 reservation(s) + this cost exceed",
+   "prices_seen": {
+    "heat": 0.1,
+    "energy": 1.0,
+    "lane:chat": 0.85,
+    "lane:agent": 1.0
+   },
+   "displaced": []
+  },
+  {
+   "decided_at": "2026-10-29T18:24:00Z",
+   "family": "thought.painting",
+   "verb": "make",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "capacity_reserved",
+   "net": 0.276,
+   "binding_constraint": "lane:diffusion",
+   "why": "thought.painting: weight 0.77 (evidence) x rank 0.36 (graded; intensity 0.65, hunger 6165 s (since_last_close, tau 5830 s rhythm:84)) - charge 0.000 = net +0.276; lane:diffusion is full: forecast use + 0 reservation(s) + this cost",
+   "prices_seen": {
+    "heat": 0.1,
+    "energy": 1.0,
+    "lane:chat": 0.85,
+    "lane:agent": 1.0
+   },
+   "displaced": []
+  },
+  {
+   "decided_at": "2026-10-29T18:17:00Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.79,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.75 (ungraded; intensity 1.00, hunger 179952 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.790",
+   "prices_seen": {
+    "heat": 0.08,
+    "energy": 1.0,
+    "lane:chat": 0.83,
+    "lane:agent": 1.0
+   },
+   "displaced": [
+    "hub.outreach@2026-10-29T18:10:00Z"
+   ]
+  },
+  {
+   "decided_at": "2026-10-29T18:17:00Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.617,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.62 (graded; intensity 1.00, hunger 21600 s (lane_seed:agent, tau 162 s rhythm:350)) - charge 0.000 = net +0.617",
+   "prices_seen": {
+    "heat": 0.08,
+    "energy": 1.0,
+    "lane:chat": 0.83,
+    "lane:agent": 1.0
+   },
+   "displaced": []
+  },
+  {
+   "decided_at": "2026-10-29T16:05:00Z",
+   "family": "durable.self_sense_eval",
+   "verb": "sense",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "capacity_reserved",
+   "net": 0.858,
+   "binding_constraint": "lane:agent-gpu2",
+   "why": "durable.self_sense_eval: weight 1.05 (prior) x rank 0.82 (graded; intensity 0.71, hunger 13961 s (since_last_close, tau 11150 s rhythm:38)) - charge 0.000 = net +0.858; lane:agent-gpu2 is full",
+   "prices_seen": {
+    "energy": 1.0,
+    "lane:chat": 0.58,
+    "lane:agent": 0.8
+   },
+   "displaced": []
+  },
+  {
+   "decided_at": "2026-10-29T14:13:00Z",
+   "family": "thought.dream_hop",
+   "verb": "make",
+   "tier": 2,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.677,
+   "binding_constraint": null,
+   "why": "thought.dream_hop: weight 1.05 (prior) x rank 0.64 (graded; intensity 0.32, hunger 1300 s (since_last_close, tau 3322 s rhythm:45)) - charge 0.000 = net +0.677",
+   "prices_seen": {
+    "energy": 1.0,
+    "lane:chat": 0.35,
+    "lane:agent": 0.22
+   },
+   "displaced": []
+  },
+  {
+   "decided_at": "2026-10-29T12:35:00Z",
+   "family": "durable.curiosity_investigate",
+   "verb": "infer",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "capacity_reserved",
+   "net": 0.763,
+   "binding_constraint": "lane:agent-gpu2",
+   "why": "durable.curiosity_investigate: weight 1.05 (prior) x rank 0.73 (graded; intensity 0.76, hunger 7076 s (since_last_close, tau 4973 s rhythm:33)) - charge 0.000 = net +0.763; lane:agent-gpu2 is full",
+   "prices_seen": {
+    "energy": 1.0,
+    "lane:chat": 0.02,
+    "lane:agent": 1.0
+   },
+   "displaced": []
+  },
+  {
+   "decided_at": "2026-10-29T09:04:00Z",
+   "family": "durable.self_sense_eval",
+   "verb": "sense",
+   "tier": 2,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.255,
+   "binding_constraint": null,
+   "why": "durable.self_sense_eval: weight 1.05 (prior) x rank 0.24 (graded; intensity 0.48, hunger 7245 s (since_last_close, tau 11053 s rhythm:37)) - charge 0.000 = net +0.255",
+   "prices_seen": {
+    "energy": 1.0,
+    "lane:agent": 0.16,
+    "attention:juniper": 0.22
+   },
+   "displaced": []
+  },
+  {
+   "decided_at": "2026-10-28T23:20:00Z",
+   "family": "hub.retro_coplay",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.964,
+   "binding_constraint": null,
+   "why": "hub.retro_coplay: weight 1.02 (prior) x rank 0.94 (ungraded; intensity 1.00, hunger 101850 s (since_last_close, tau 61 s rhythm:26)) - charge 0.000 = net +0.964",
+   "prices_seen": {
+    "energy": 1.0,
+    "attention:juniper": 0.75
+   },
+   "displaced": []
+  },
+  {
+   "decided_at": "2026-10-28T21:15:00Z",
+   "family": "durable.self_inquiry",
+   "verb": "ask",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "durable.self_inquiry: weight 1.02 (prior) x rank 0.00 (ungraded; intensity 0.40, hunger 4356 s) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund",
+   "prices_seen": {
+    "energy": 1.0
+   },
+   "displaced": []
+  }
+ ],
+ "claude": {
+  "window_tokens": {
+   "input": 1240000,
+   "output": 186000,
+   "cache_read": 9800000,
+   "cache_write": 410000
+  },
+  "usd_est": 14.62,
+  "limit_events": [
+   {
+    "at": "2026-10-29T15:02:00Z",
+    "kind": "rate_limited"
+   },
+   {
+    "at": "2026-10-29T15:40:00Z",
+    "kind": "rate_limited"
+   }
+  ],
+  "status": "estimated"
+ },
+ "vram": [
+  {
+   "host": "circe",
+   "card": "gpu0",
+   "used_mb": 30100,
+   "total_mb": 32768,
+   "headroom_mb": 2668,
+   "roles": [
+    "chat"
+   ]
+  },
+  {
+   "host": "circe",
+   "card": "gpu1",
+   "used_mb": 29800,
+   "total_mb": 32768,
+   "headroom_mb": 2968,
+   "roles": [
+    "agent"
+   ]
+  },
+  {
+   "host": "circe",
+   "card": "gpu2",
+   "used_mb": 24500,
+   "total_mb": 32768,
+   "headroom_mb": 8268,
+   "roles": [
+    "agent-gpu2",
+    "diffusion"
+   ]
+  },
+  {
+   "host": "circe",
+   "card": "gpu3",
+   "used_mb": 15200,
+   "total_mb": 32768,
+   "headroom_mb": 17568,
+   "roles": [
+    "metacog",
+    "fast"
+   ]
+  }
+ ],
+ "value_per_cost": [
+  {
+   "family": "thought.painting",
+   "evidence_n": 315,
+   "value_metric": "replies per act",
+   "value": 0.42,
+   "usd_per_act": 5e-05,
+   "status": "measured"
+  },
+  {
+   "family": "hub.outreach",
+   "evidence_n": 41,
+   "value_metric": "Juniper replied",
+   "value": 0.61,
+   "usd_per_act": 0.004,
+   "status": "derived"
+  },
+  {
+   "family": "durable.curiosity_investigate",
+   "evidence_n": 12,
+   "value_metric": "graded useful",
+   "value": 0.33,
+   "usd_per_act": null,
+   "status": "not_measured"
+  }
+ ],
+ "services": {
+  "checked_at": "2026-10-29T18:55:00Z",
+  "down": [
+   {
+    "name": "orion-harness-worker",
+    "host": "athena",
+    "state": "exited",
+    "since": "2026-10-29T07:36:00Z"
+   }
+  ]
+ },
+ "missing": []
+}

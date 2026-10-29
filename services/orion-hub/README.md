@@ -3087,6 +3087,27 @@ sql-writer (Hub's `DATABASE_URL`). Spec:
 | `HUB_ENERGY_TIMEZONE` | `America/Denver` | Local day boundary for the daily kWh bars (Postgres `AT TIME ZONE` name). |
 | `ORION_ENERGY_STAKES_MAX_AGE_SEC` | `1800` | Snapshot age past which the strip reads stale (and curiosity never holds -- section 4.2.4). |
 
+### Body Economy tab
+
+`#body-economy` (iframe: `static/body-economy.html` + `static/js/body-economy.js`) is Phase 3 of
+`docs/superpowers/specs/2026-10-23-organism-body-economy-design.md`: how Orion's body is doing.
+It shows "right now" tiles (the four most pressed limits, plus services that should run but are
+stopped), each limit hour by hour (level line against its dashed line; amber = binding; hatching =
+over the line for reasons Orion does not control; idle GPU lanes folded away), funded wants by
+family with deferred wants as a dashed ghost bar, the heavy-work rhythm heatmap, money this month,
+wasted GPU time, queue wait per lane, GPU memory headroom, Claude spend, unit costs, value per
+dollar per family, and the verbatim `why` line per limit. Below that, single decisions: an outcome
+filter, a "why did Orion wait?" family search, and a click on a row for its life, the prices it saw
+and its reason. Dragging across the limits or wants chart filters the decisions to that window.
+
+API: `GET /api/body-economy/report?window=24h|7d|30d` (`scripts/body_economy_routes.py`), a thin
+proxy to orion-durable-runs `GET /physiology/report` (schema `physiology.report.v1`) at
+`HUB_CURIOSITY_DURABLE_RUNS_URL` (no new key). The Hub reads no physiology table itself. Upstream
+down is a 502 whose body carries `unreachable_since`, so every section says "durable-runs
+unreachable since ..." instead of drawing a blank chart; a section the report lists in `missing`
+shows that reason. Tests: `tests/test_body_economy_routes.py`, `static/js/body-economy.test.js`
+(brushing), `tests/test_body_economy_browser_smoke.py` (opens `#body-economy`, clicks a deferred row).
+
 ### Orion Energy tab
 
 `#orion-energy` (iframe: `static/orion-energy.html` + `static/js/orion-energy.js`) shows what

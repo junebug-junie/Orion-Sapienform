@@ -28,6 +28,7 @@ sandbox checkout is already a supported, pre-existing case, not a new risk this 
 | `CHANNEL_FINALIZE_APPRAISAL_REQUEST` | `orion:substrate:finalize_appraisal:request` | 5a draft molecule RPC |
 | `CHANNEL_POST_TURN_CLOSURE` | `orion:substrate:post_turn_closure` | Step 7 learning closure |
 | `CHANNEL_HARNESS_RUN_DRAFT_PREVIEW` | `orion:harness:run:draft_preview` | Draft-first display: grounded draft published before the finalize judge when the request sets `draft_preview` (see below) |
+| `HARNESS_LLM_CALL_USAGE_ENABLED` (flag) | `orion:llm:call:usage` | Per-call token ledger: the warm relay records each FCC-path model call (chat turn with no GPU lease) with the turn's correlation id. Lease-path calls go to llm-gateway, which records them. FCC per-turn spawns send `X-Orion-Correlation-Id` on every model call. |
 
 Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
 `HEARTBEAT_INTERVAL_SEC` (default 10s), independent of the request/cancel bus workers above.
@@ -499,6 +500,16 @@ Steps 1–5 land in the same PR. The coverage test fails if a request channel
 exists without a Live row, a responder section and a listed tool, so a
 contract-only PR ahead of the responder is refused on purpose: a channel with
 no responder would read as "unknown" on every call.
+
+## Dig kit: `dig body-economy` (skills.physiology.state.v1 from Bash, 2026-10-29)
+
+Chat and curiosity turns both run here with Bash and the dig brief line (`orion/dig/brief.py`). Orion reads
+their own body economy with `python -P -m orion.dig body-economy [<section>...] [--window 24h|7d|30d]
+[--family <f>]`: plain text from orion-durable-runs `GET /physiology/report` (what binds now, money, wants
+funded vs deferred, failed lease time, services down; `all` or any single section for more). The full
+report JSON goes to `$ORION_DIG_HOME/dig/<dig>/body-economy-<window>-N.json`. URL:
+`ORION_PHYSIOLOGY_REPORT_URL` (`.env_example`; app-net, container port 8121). Unreachable or off ->
+exit 1 with a plain reason, never empty text.
 
 ## Admitted turns (GPU pool hold)
 

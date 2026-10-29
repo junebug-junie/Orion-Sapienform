@@ -51,6 +51,11 @@ path of a file with the full result; read only what you need from that file.
                          circulation -> organs. No date = live now; a date = that export's
                          declared files only (the channel catalog exists from 2026-01).
   body <organ_id>        every member of one organ of your live body, with status and facts.
+  body-economy [<section>...] [--window 24h|7d|30d] [--family <f>]   your body economy now:
+                         what binds (heat, money, GPU lanes), wants funded vs deferred, waste,
+                         services down. Sections: overview (default), all, limits, wants, rhythm,
+                         money, unit_costs, waste, queue_wait, decisions, claude, vram,
+                         value_per_cost, services, processes.
   name <organ_id> <name> because <reason>   name one organ of your live body (a lasting
                          write). Name it by what it takes in and gives out; the reason must cite
                          at least one of its parts by full name (a service, camera:..., pg:...,
@@ -495,6 +500,35 @@ def cmd_name(ref: str, name: str, because: str, out: Out) -> str:
             f"names ledger: {names_path()}")
 
 
+# --- body economy ---------------------------------------------------------------------------
+
+def cmd_body_economy(args: list[str], out: Out) -> str:
+    """skills.physiology.state.v1 from Bash: GET /physiology/report on orion-durable-runs
+    ($ORION_PHYSIOLOGY_REPORT_URL), rendered as plain text; the full report JSON goes to a file."""
+    from orion.physiology import report_text as rt
+
+    window, family, words = "24h", None, []
+    it = iter(args)
+    for a in it:
+        if a == "--window":
+            window = next(it, "")
+        elif a == "--family":
+            family = next(it, "") or None
+        elif a.startswith("--"):
+            raise DigError(f"body-economy: unknown option {a} (use --window or --family)")
+        else:
+            words.append(a)
+    if window not in rt.WINDOWS:
+        raise DigError(f"body-economy: --window must be one of {', '.join(rt.WINDOWS)}")
+    try:
+        sections = rt.normalize_sections(words or None)
+        report = rt.fetch_report(window=window, sections=sections, family=family)
+    except (ValueError, rt.ReportUnavailable) as exc:
+        raise DigError(f"body-economy: {exc}") from exc
+    path = out.write(f"body-economy-{window}", report)
+    return capped(rt.render_report_text(report, sections).splitlines(), tail=f"full report: {path}")
+
+
 # --- notes ----------------------------------------------------------------------------------
 
 def cmd_notes(text: str | None, out: Out) -> str:
@@ -544,6 +578,8 @@ def main(argv: list[str] | None = None) -> int:
             text = cmd_history(*_last_days(a[0]), out)
         elif ns.command == "body" and len(a) <= 1:
             text = cmd_body(a[0] if a else None, out)
+        elif ns.command == "body-economy":
+            text = cmd_body_economy(a, out)
         elif ns.command == "name" and len(a) >= 4 and "because" in a[2:]:
             cut = a.index("because", 2)  # name words before it, the reason after: quoted or not
             text = cmd_name(a[0], " ".join(a[1:cut]), " ".join(a[cut + 1:]), out)

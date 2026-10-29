@@ -161,6 +161,30 @@ def test_act_cost_v2_rejects_negative_and_unknown_fields():
         ActV1.model_validate({**_act().model_dump(mode="json"), "cost": {"seconds": 1.0, "dollars": 3}})
 
 
+def test_act_cost_v2_energy_fields_round_trip_and_reject_negatives():
+    """Act energy cost (2026-10-29): the fields the physiology report reads from cost_json."""
+    from orion.schemas.grammar import ActCostV2
+
+    cost = ActCostV2(wh_by_host={"circe": 0.25}, usd=0.0000314, heat_c_by_host={"circe": 0.00078},
+                     basis={"wh": "GPU watts above idle", "cpu": "not charged per act"})
+    assert ActCostV2.model_validate(cost.model_dump(mode="json")) == cost
+    with pytest.raises(ValidationError):
+        ActCostV2(usd=-0.01)
+    with pytest.raises(ValidationError):
+        ActCostV2(heat_c_by_host={"circe": -0.1})
+
+
+def test_a_want_with_no_cost_carries_no_new_cost_keys_on_the_wire():
+    """Consumer-first: WantV1.cost is ActCostV2, and no producer sets it, so the new fields never
+    reach an older durable-runs reader (extra="forbid")."""
+    import json
+
+    from orion.schemas.physiology_want import WantV1
+
+    want = WantV1(want_id="w", family="thought.painting", producer="p", verb="make", tier=2)
+    assert json.loads(want.model_dump_json())["cost"] is None
+
+
 def test_act_cost_v2_from_v1_keeps_every_v1_field_and_unknown_stays_none():
     from orion.schemas.grammar import ActCostV1, ActCostV2
 

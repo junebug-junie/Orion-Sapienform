@@ -427,6 +427,9 @@ SYNC_PREFIXES = (
 
 SYNC_EXACT = frozenset(
     {
+        # Act energy cost (2026-10-29): orion-biometrics per-container CPU watt split.
+        "CPU_IDLE_WATTS_BY_NODE",
+        "DOCKER_ROOT_PATH",
         "COCREATION_SIGNALS_GRAPH_HOST_PATH",
         "COCREATION_SIGNALS_GRAPH_PATH",
         "SELF_STUDY_ENRICHMENT_GRAPH_HOST_PATH",
@@ -595,6 +598,9 @@ DEFAULT_SERVICES = (
     # Body economy Patch C3b (2026-10-27): its shadow-bid switch is an exact key; without this
     # entry the default run never visited the service at all.
     "orion-topic-foundry",
+    # Act energy cost (2026-10-29): per-container CPU keys (CPU_IDLE_WATTS_BY_NODE,
+    # DOCKER_ROOT_PATH in SYNC_EXACT). Same dual-half blind spot: never visited by default.
+    "orion-biometrics",
 )
 
 

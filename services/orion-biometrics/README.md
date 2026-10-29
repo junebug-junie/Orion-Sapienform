@@ -281,6 +281,15 @@ wrote last would win at random.
 Likewise `cpu_watts_total` and `gpu_watts_total` are *contained within* `chassis_watts`, not
 additional to it — see the containment block in `orion/telemetry/biometrics_pipeline.py`.
 
+**Per card and per container (2026-10-29, act energy cost).** From the same nvidia-smi row as
+`gpu{N}_temp_c`: `gpu{N}_watts`, `gpu{N}_mem_used_mb`, `gpu{N}_mem_total_mb` (each absent when its
+column is not a number; none are fleet-summed, they are already inside `gpu_watts_total`). From
+cgroup v2 `cpu.stat` under the host `/sys` mount: `cpu_busy_cores`, `cpu_idle_watts` (this node's
+`CPU_IDLE_WATTS_BY_NODE` floor), `container_cpu_watts.<name>` = (cpu_watts_total - idle) x the
+container's share of busy cores, `container_cpu_watts_small` (containers under 0.05 cores) and
+`cpu_watts_host_other` (non-container work). The split sums to the watts above idle. Theory: the
+linear utilisation power model, fitted by `scripts/analysis/fit_cpu_idle_watts.py`.
+
 **Multi-PSU machines span outlets.** A node's PDU draw is the SUM of its outlets, and the
 outlet→node map is physical cabling that SNMP cannot report (the device's outlet names are
 generic and not editable on this firmware). It lives in `PDU_OUTLETS`, per node, and **re-cabling

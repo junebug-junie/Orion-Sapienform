@@ -819,6 +819,9 @@ let chatTurnTimer = null;
   const orionEnergyTabButton = document.getElementById("orionEnergyTabButton");
   const orionEnergyPanelEl = document.getElementById("orion-energy");
   const orionEnergyFrame = document.getElementById("orionEnergyFrame");
+  const bodyEconomyTabButton = document.getElementById("bodyEconomyTabButton");
+  const bodyEconomyPanelEl = document.getElementById("body-economy");
+  const bodyEconomyFrame = document.getElementById("bodyEconomyFrame");
   const topicFoundryBaseLabel = document.getElementById("topicFoundryBaseLabel");
   const tsDatasetSelect = document.getElementById("tsDatasetSelect");
   const tsDatasetName = document.getElementById("tsDatasetName");
@@ -1115,6 +1118,9 @@ let chatTurnTimer = null;
     if (tabKey === "orion-energy" && !orionEnergyPanelEl) {
       effectiveTab = "hub";
     }
+    if (tabKey === "body-economy" && !bodyEconomyPanelEl) {
+      effectiveTab = "hub";
+    }
     if (tabKey === "collapse-mirror" && !collapseMirrorPanel) {
       effectiveTab = "hub";
     }
@@ -1152,6 +1158,7 @@ let chatTurnTimer = null;
     const isFieldChannelGlossary = effectiveTab === "field-channel-glossary";
     const isMoodArcStatus = effectiveTab === "mood-arc-status";
     const isOrionEnergy = effectiveTab === "orion-energy";
+    const isBodyEconomy = effectiveTab === "body-economy";
     const isMind = effectiveTab === "mind";
     const isSignals = effectiveTab === "signals";
     const isCollapseMirror = effectiveTab === "collapse-mirror";
@@ -1325,6 +1332,13 @@ let chatTurnTimer = null;
       const currentSrc = orionEnergyFrame.getAttribute("src");
       orionEnergyFrame.setAttribute("src", currentSrc);
     }
+    if (bodyEconomyPanelEl) {
+      bodyEconomyPanelEl.classList.toggle("hidden", !isBodyEconomy);
+    }
+    if (bodyEconomyFrame && isBodyEconomy) {
+      const currentSrc = bodyEconomyFrame.getAttribute("src");
+      bodyEconomyFrame.setAttribute("src", currentSrc);
+    }
     if (collapseMirrorPanel) {
       collapseMirrorPanel.classList.toggle("hidden", !isCollapseMirror);
     }
@@ -1451,6 +1465,9 @@ let chatTurnTimer = null;
     }
     if (orionEnergyTabButton) {
       styleTabButton(orionEnergyTabButton, isOrionEnergy);
+    }
+    if (bodyEconomyTabButton) {
+      styleTabButton(bodyEconomyTabButton, isBodyEconomy);
     }
     if (collapseMirrorTabButton) {
       styleTabButton(collapseMirrorTabButton, isCollapseMirror);
@@ -2055,6 +2072,8 @@ let chatTurnTimer = null;
       setActiveTab("mood-arc-status");
     } else if (h === "#orion-energy" && orionEnergyPanelEl && orionEnergyTabButton) {
       setActiveTab("orion-energy");
+    } else if (h === "#body-economy" && bodyEconomyPanelEl && bodyEconomyTabButton) {
+      setActiveTab("body-economy");
     } else if (h === "#memory" && memoryPanel && memoryTabButton) {
       setActiveTab("memory");
     } else if (h === "#mind" && mindPanel && mindTabButton) {
@@ -2085,6 +2104,7 @@ let chatTurnTimer = null;
         || h === "#field-channel-glossary"
         || h === "#mood-arc-status"
         || h === "#orion-energy"
+        || h === "#body-economy"
         || h === "#memory"
         || h === "#mind"
         || h === "#signals"
@@ -13734,6 +13754,13 @@ let chatTurnTimer = null;
         event.preventDefault();
         setActiveTab("orion-energy");
         history.replaceState(null, "", "#orion-energy");
+      });
+    }
+    if (bodyEconomyTabButton && bodyEconomyPanelEl) {
+      bodyEconomyTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("body-economy");
+        history.replaceState(null, "", "#body-economy");
       });
     }
     if (collapseMirrorTabButton && collapseMirrorPanel) {

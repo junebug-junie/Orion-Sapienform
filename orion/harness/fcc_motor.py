@@ -803,13 +803,19 @@ def _build_subprocess_env(
     n_ctx: Optional[int] = None,
     gpu_lease: dict | None = None,
     chat_reply: bool = False,
+    correlation_id: Optional[str] = None,
 ) -> Dict[str, str]:
     env = os.environ.copy()
+    from orion.harness.fcc_warm_relay import CORRELATION_HEADER
     from orion.llm.resource_lease import GPU_LEASE_HEADER, encode_gpu_lease_header
-    # Never inherit another run's lease; preserve unrelated custom headers.
-    ours = {GPU_LEASE_HEADER.lower()}
+    # Never inherit another run's lease or turn id; preserve unrelated custom headers.
+    ours = {GPU_LEASE_HEADER.lower(), CORRELATION_HEADER.lower()}
     headers = [line for line in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines()
                if line.partition(":")[0].strip().lower() not in ours]
+    corr = str(correlation_id or "").strip()
+    if corr and "\n" not in corr and "\r" not in corr:
+        # The turn's id on every model call: the gateway's per-call token ledger joins on it.
+        headers.append(f"{CORRELATION_HEADER}: {corr}")
     if gpu_lease is not None:
         # The run's GPU pool hold. The gateway attaches every call to it, so the run's own
         # calls never queue behind the hold that reserves their slot.
@@ -1290,6 +1296,7 @@ async def run_fcc_turn(
     spawn_env = _build_subprocess_env(
         chat_reply=chat_reply,
         gpu_lease=gpu_lease,
+        correlation_id=correlation_id,
         n_ctx=lane_n_ctx,
         fcc_server_url=fcc_server_url,
         auth_token=auth_token,

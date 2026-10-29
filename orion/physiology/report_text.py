@@ -175,7 +175,7 @@ def render_limits(report: Mapping, *, full: bool) -> list[str]:
     for lim in lims:
         state = (lim.get("now") or {}).get("bind_state")
         is_lane = str(lim.get("constraint", "")).startswith("lane:")
-        if is_lane and not full and state in ("slack", None):
+        if is_lane and not full and state == "slack":
             hidden_lanes.append(str(lim["constraint"]).split(":", 1)[1])
             continue
         out.append(_limit_line(lim))
@@ -198,7 +198,8 @@ def render_money(report: Mapping) -> list[str]:
     out = [line.strip()]
     days = m.get("daily_kwh") or []
     if days:
-        tail = ", ".join(f"{d['d'][5:]} {_n(d['kwh'])}" for d in days[-7:])
+        tail = ", ".join(f"{d['d'][5:]} {_n(d['kwh'])}{' (part of the day)' if d.get('partial') else ''}"
+                         for d in days[-7:])
         out.append(f"- kWh per day (local): {tail}")
     return out
 
@@ -260,7 +261,7 @@ def render_waste(report: Mapping, *, full: bool) -> list[str]:
         return []
     total = sum(float(v) for v in by.values())
     lanes = ", ".join(f"{k} {_dur(v)}" for k, v in sorted(by.items(), key=lambda kv: -float(kv[1])))
-    out = [f"Waste: {_dur(total)} of GPU leases ended in failure ({lanes})."]
+    out = [f"Waste: {_dur(total)} of GPU lease time ended without success ({lanes})."]
     for t in (w.get("top") or [])[: (10 if full else 3)]:
         out.append(f"- {t.get('holder')} on {t.get('role')}: held {_dur(t.get('held_s'))}, ended {t.get('reason')} at {str(t.get('at'))[:16]}")
     return out
@@ -273,12 +274,16 @@ def render_queue_wait(report: Mapping, *, full: bool) -> list[str]:
     ranked = sorted(rows, key=lambda r: -(float(r.get("p90_s") or 0.0)))
     slow = [r for r in ranked if float(r.get("p90_s") or 0.0) >= 1.0]
     out = ["Queue wait for a GPU lease (median / 90th percentile):"]
-    for r in slow[: (15 if full else 6)]:
-        out.append(f"- {r['family']} on {r['lane']}: {_dur(r.get('p50_s'))} / {_dur(r.get('p90_s'))} (n={r.get('n')})")
-    rest = len(ranked) - min(len(slow), 15 if full else 6)
-    if rest > 0:
-        fast_n = sum(int(r.get("n") or 0) for r in ranked if float(r.get("p90_s") or 0.0) < 1.0)
-        out.append(f"- {rest} more lane/family pairs; {fast_n} leases waited under 1 s at the 90th percentile")
+    shown = slow[: (15 if full else 6)]
+    for r in shown:
+        who = f"{r['family']} (by holder)" if r.get("family_source") == "holder" else r["family"]
+        out.append(f"- {who} on {r['lane']}: {_dur(r.get('p50_s'))} / {_dur(r.get('p90_s'))} (n={r.get('n')})")
+    fast = [r for r in ranked if float(r.get("p90_s") or 0.0) < 1.0]
+    if fast:
+        out.append(f"- {len(fast)} more lane/holder pairs ({sum(int(r.get('n') or 0) for r in fast)} leases) had a "
+                   "90th-percentile wait under 1 s")
+    if len(slow) > len(shown):
+        out.append(f"- {len(slow) - len(shown)} slower pairs not shown (see the full report)")
     return out
 
 
@@ -299,11 +304,16 @@ def render_decisions(report: Mapping, *, full: bool) -> list[str]:
 def render_claude(report: Mapping) -> list[str]:
     c = report.get("claude") or {}
     t = c.get("window_tokens") or {}
-    if not any(int(t.get(k) or 0) for k in ("input", "output", "cache_read", "cache_write")) and not c.get("status"):
+    known = all(t.get(k) is not None for k in ("input", "output", "cache_read", "cache_write"))
+    if not known and not c.get("status"):
         return []
-    usd = f", about {_usd(c['usd_est'])} at API prices" if c.get("usd_est") is not None else ""
-    out = [f"Claude: {_n(t.get('output'), 0)} output tokens, {_n(t.get('input'), 0)} input, "
-           f"{_n(t.get('cache_read'), 0)} cache reads, {_n(t.get('cache_write'), 0)} cache writes{usd}."]
+    out = []
+    if known:
+        usd = f", about {_usd(c['usd_est'])} at API prices" if c.get("usd_est") is not None else ""
+        out.append(f"Claude: {_n(t.get('output'), 0)} output tokens, {_n(t.get('input'), 0)} input, "
+                   f"{_n(t.get('cache_read'), 0)} cache reads, {_n(t.get('cache_write'), 0)} cache writes{usd}.")
+    else:
+        out.append("Claude: token counts unknown for this window.")
     if c.get("limit_events"):
         out.append("- limit events: " + ", ".join(f"{e['kind']} at {str(e['at'])[:16]}" for e in c["limit_events"]))
     if c.get("status"):
@@ -338,7 +348,7 @@ def render_services(report: Mapping) -> list[str]:
     down = s.get("down") or []
     if not down:
         return []
-    out = [f"Services that should run and do not ({len(down)}):"]
+    out = [f"Services the mesh guardian reported stopped in the last 30 days ({len(down)}):"]
     for d in down:
         where = f" on {d['host']}" if d.get("host") else ""
         out.append(f"- {d['name']}{where}: {d.get('state') or '?'} since {str(d.get('since') or '?')[:16]}")
@@ -365,13 +375,20 @@ assert set(_RENDER) == set(SECTIONS)
 
 
 def headline(report: Mapping) -> Optional[str]:
-    """One sentence naming what binds right now, in the report's own words."""
-    binding = [lim for lim in report.get("limits") or []
-               if (lim.get("now") or {}).get("bind_state") in ("binding", "exogenous_bind", "stuck_at_ceiling")]
-    if not binding:
-        return "Nothing binds right now: every limit with a reading has slack." if report.get("limits") else None
-    names = ", ".join(str(lim.get("label") or lim.get("constraint")) for lim in binding)
-    return f"Binding now: {names}."
+    """One sentence naming what binds right now, in the report's own words. A limit with no price
+    or no reading is unknown, never counted as slack."""
+    lims = report.get("limits") or []
+    if not lims:
+        return None
+    state = lambda lim: (lim.get("now") or {}).get("bind_state")  # noqa: E731
+    name = lambda lim: str(lim.get("label") or lim.get("constraint"))  # noqa: E731
+    binding = [name(l) for l in lims if state(l) in ("binding", "exogenous_bind", "stuck_at_ceiling")]
+    unknown = [name(l) for l in lims if state(l) not in ("binding", "exogenous_bind", "stuck_at_ceiling", "slack")]
+    parts = [f"Binding now: {', '.join(binding)}." if binding else
+             ("Nothing binds right now." if not unknown else "Nothing with a price binds right now.")]
+    if unknown:
+        parts.append(f"Unknown (no price or no reading): {', '.join(unknown)}.")
+    return " ".join(parts)
 
 
 def render_report_text(report: Mapping, sections: Iterable[str] = OVERVIEW) -> str:
@@ -381,7 +398,9 @@ def render_report_text(report: Mapping, sections: Iterable[str] = OVERVIEW) -> s
     secs = tuple(sections)
     full = secs != OVERVIEW
     win = report.get("window") or {}
-    lines = [f"My body economy, {str(win.get('start', '?'))[:16]} to {str(win.get('end', '?'))[:16]} UTC "
+    fam = (report.get("query") or {}).get("family")
+    scope = f", family {fam} (narrows wants, decisions, queue wait, value per cost, per-act costs)" if fam else ""
+    lines = [f"My body economy, {str(win.get('start', '?'))[:16]} to {str(win.get('end', '?'))[:16]} UTC{scope} "
              f"(read {str(report.get('generated_at', '?'))[:19]}):"]
     if "limits" in secs:
         h = headline(report)
@@ -405,7 +424,21 @@ def render_report_text(report: Mapping, sections: Iterable[str] = OVERVIEW) -> s
     return "\n".join(lines)
 
 
+def cap_text(text: str, *, max_lines: int = 40, max_chars: int = 4000) -> str:
+    """Keep a reply turn-sized (the dig kit's own cap). A cut is always said."""
+    lines = text.splitlines()
+    if len(lines) > max_lines:
+        lines = lines[: max_lines - 1] + [f"(showing {max_lines - 1} of {len(text.splitlines())} lines; "
+                                          "ask for fewer sections to see the rest)"]
+    out = "\n".join(lines)
+    if len(out) > max_chars:
+        note = "(cut at the size limit; ask for fewer sections to see the rest)"
+        out = out[: max_chars - len(note) - 1].rsplit("\n", 1)[0] + "\n" + note
+    return out
+
+
 __all__ = [
+    "cap_text",
     "DEFAULT_REPORT_URL",
     "OVERVIEW",
     "REPORT_URL_ENV",

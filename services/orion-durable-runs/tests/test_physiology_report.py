@@ -188,8 +188,11 @@ def test_full_report_fills_every_section_from_rows():
     assert rep.services.down[0].name == "orion-kev/kev" and rep.services.down[0].host == "athena"
     assert rep.services.down[0].since == NOW - timedelta(hours=2) - timedelta(hours=332.85)
     assert "total" in rep.timing_ms
-    # Only vram has partial data (circe gpu1 reported; other cards not): no section is missing outright.
-    assert {m.section for m in rep.missing} <= {"value_per_cost"}
+    assert any(r.startswith("partial:") for r in _reasons(rep, "vram"))      # only circe gpu1 reports
+    assert any("hecate" in r and "athena" in r for r in _reasons(rep, "vram"))  # no fresh rows for them
+    assert {m.section for m in rep.missing} <= {"value_per_cost", "vram"}
+    assert rep.query == {"window": "24h", "sections": list(REPORT_SECTIONS), "family": None, "outcome": None,
+                         "limit": 50}
 
 
 def test_every_empty_section_says_why():
@@ -336,7 +339,12 @@ def test_report_sql_on_postgres():
                     for i, (ev, reason, held, waited, holder) in enumerate([
                             ("granted", None, None, 60000.0, "durable-runs:run1"),
                             ("released", "attempt_failed", 8500000.0, None, "durable-runs:run1"),
-                            ("released", "ok", 1000.0, None, "cortex-exec:x")]):
+                            ("released", "ok", 1000.0, None, "cortex-exec:x"),
+                            # an expiry writes two close rows for one lease: counted once
+                            ("expired", "heartbeat_lost", 5000.0, None, "durable-runs:run2"),
+                            ("released", "expire:heartbeat_lost", 5000.0, None, "durable-runs:run2"),
+                            # an operator bench is not waste
+                            ("released", "operator:gpu-power-bench", 7000.0, None, "operator:bench")]):
                         await conn.execute("INSERT INTO gpu_pool_events (event_id, generated_at, event, holder, priority, role, "
                                            "waited_ms, held_ms, reason) VALUES (%s, %s, %s, %s, 'background', 'agent', %s, %s, %s)",
                                            (f"e{i}", now - timedelta(minutes=30 - i), ev, holder, waited, held, reason))
@@ -359,10 +367,13 @@ def test_report_sql_on_postgres():
                 assert failed == [], failed
                 assert rep.limits and rep.money.floor_usd == 193.85 and rep.money.daily_kwh
                 assert [f.family for f in rep.wants.families] == ["durable.self_inquiry"]   # probe left out
-                assert rep.waste.failed_lease_s_by_lane == {"agent": 8500.0}
+                assert rep.waste.failed_lease_s_by_lane == {"agent": 8505.0}   # 8500 + one 5 s expiry
+                assert [t.reason for t in rep.waste.top] == ["attempt_failed", "heartbeat_lost"]
                 assert rep.queue_wait[0].family == "durable.self_inquiry" and rep.queue_wait[0].p50_s == 60.0
                 assert rep.decisions[0].why == "full" and rep.decisions[0].prices_seen == {"heat": 0.5}
-                assert rep.rhythm and rep.rhythm[0].heavy > 0
+                # the 8500 s hold is spread over the hours it was held, not piled into its close hour
+                assert len(rep.rhythm) >= 3 and max(c.total for c in rep.rhythm) <= 3600.0 + 1e-6
+                assert sum(c.heavy for c in rep.rhythm) == pytest.approx(8500.0 + 1.0 + 5.0 + 7.0, abs=0.5)
                 assert rep.claude.window_tokens.cache_write == 3 and rep.claude.usd_est == 0.5
                 assert next(c for c in rep.vram if c.card == "gpu0").headroom_mb == 32668.0
                 assert rep.services.down[0].name == "orion-kev/kev"
@@ -370,5 +381,77 @@ def test_report_sql_on_postgres():
         finally:
             async with await AsyncConnection.connect(DSN, autocommit=True) as conn:
                 await conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+    asyncio.run(run())
+
+
+def test_stale_newest_tick_is_said_not_served_as_now():
+    rows = full_rows()
+    rows[pr.LIMITS_LATEST_SQL] = [{**LATEST, "generated_at": NOW - timedelta(hours=3)}]
+    rep = _build(rows)
+    for s in ("limits", "money", "claude", "unit_costs"):
+        assert any(r.startswith("stale: the newest physiology tick is 180 min old") for r in _reasons(rep, s)), s
+
+
+def test_family_filter_says_which_sections_it_narrows():
+    rows = full_rows()
+    rows[pr.QUEUE_WAIT_SQL] = []
+    rows[pr.WANTS_HOURLY_SQL] = []
+    rep = _build(rows, q=pr.parse_query("24h", None, "hub.outreach", None, None))
+    assert any("only durable-run admissions carry a want family" in r for r in _reasons(rep, "queue_wait"))
+    assert any("for family hub.outreach" in r for r in _reasons(rep, "wants"))
+    star = " ".join(_reasons(rep, "*"))
+    assert "family=hub.outreach narrows" in star and "waste" in star and "limits" in star
+    assert [v.family for v in rep.value_per_cost] == ["hub.outreach"]
+
+
+def test_holder_named_queue_rows_are_marked():
+    rows = full_rows()
+    rows[pr.QUEUE_WAIT_SQL] = [{"lane": "chat", "family": "cortex-exec", "family_source": "holder", "p50_s": 0.1,
+                                "p90_s": 0.4, "n": 600}]
+    rep = _build(rows)
+    assert rep.queue_wait[0].family_source == "holder"
+    assert any(r.startswith("partial: only durable-run admissions") for r in _reasons(rep, "queue_wait"))
+
+
+def test_no_token_rows_reads_unknown_not_zero():
+    rows = full_rows()
+    rows[pr.CLAUDE_TOKENS_SQL] = [{"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "usd": None,
+                                   "priced": 0, "unpriced": 0, "ticks": 0, "newest": None}]
+    rep = _build(rows)
+    t = rep.claude.window_tokens
+    assert (t.input, t.output, t.cache_read, t.cache_write) == (None, None, None, None) and rep.claude.usd_est is None
+    assert any("token counts unknown" in r for r in _reasons(rep, "claude"))
+
+
+def test_a_helper_read_failure_names_the_dependent_sections():
+    rep = _build(full_rows(), fail={"ORDER BY generated_at DESC LIMIT 1"})
+    for s in ("limits", "money", "claude", "unit_costs"):
+        assert any(r.startswith("read failed (latest)") for r in _reasons(rep, s)), s
+
+
+def test_cache_skips_failed_reports_and_shares_one_build():
+    cache = pr.ReportCache(60.0)
+    calls = []
+
+    async def build_ok():
+        calls.append(1)
+        await asyncio.sleep(0.01)
+        return _build_sync_ok
+
+    _build_sync_ok = _build(full_rows())
+    failed = _build(full_rows(), fail={"gpu_pool_events"})
+
+    async def run():
+        a, b = await asyncio.gather(cache.get_or_build(("k",), build_ok), cache.get_or_build(("k",), build_ok))
+        assert a is b and len(calls) == 1
+        assert await cache.get_or_build(("k",), build_ok) is a and len(calls) == 1
+
+        async def build_failed():
+            calls.append(2)
+            return failed
+        await cache.get_or_build(("f",), build_failed)
+        await cache.get_or_build(("f",), build_failed)
+        assert calls.count(2) == 2   # a report with a failed read is never cached
 
     asyncio.run(run())

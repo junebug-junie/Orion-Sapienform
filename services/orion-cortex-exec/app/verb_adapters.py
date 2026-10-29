@@ -1214,7 +1214,7 @@ class PhysiologyStateVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
         window = str(args.get("window") or "24h").strip()
         family = (str(args.get("family")).strip() or None) if args.get("family") else None
         try:
-            sections = rt.normalize_sections(args.get("sections") or args.get("section"))
+            sections = rt.normalize_sections(args.get("sections"))
             report = await asyncio.to_thread(
                 rt.fetch_report, base_url=str(settings.physiology_report_url), window=window, sections=sections,
                 family=family, timeout_sec=float(settings.physiology_report_timeout_sec))
@@ -1224,7 +1224,8 @@ class PhysiologyStateVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
             return SkillVerbOutput(ok=False, status="unavailable", final_text=result["text"],
                                    metadata={"skill_name": name, "skill_result": result},
                                    error={"message": reason}), []
-        text = rt.render_report_text(report, sections)
+        # Same turn-sized cap as `dig body-economy` (40 lines / 4000 chars); a cut is said in the text.
+        text = rt.cap_text(rt.render_report_text(report, sections))
         result = {"available": True, "window": window, "sections": list(sections), "family": family,
                   "generated_at": report.get("generated_at"), "missing": report.get("missing") or [], "text": text}
         return SkillVerbOutput(ok=True, status="success", final_text=text,

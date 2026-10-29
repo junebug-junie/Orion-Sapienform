@@ -682,9 +682,6 @@ async def physiology_report(window: Optional[str] = "24h", sections: Optional[st
         raise HTTPException(422, str(exc)) from exc
     if _report_cache is None:
         _report_cache = ReportCache(_settings.physiology_report_cache_sec)
-    hit = _report_cache.get(q.cache_key)
-    if hit is not None:
-        return hit.model_dump(mode="json")
     deps = ReportDeps(
         pool=_checkpointer_cm, tz=_settings.orion_situation_timezone,
         heat_sensitivity_path=_settings.physiology_heat_sensitivity_path,
@@ -692,8 +689,7 @@ async def physiology_report(window: Optional[str] = "24h", sections: Optional[st
         tiers=tiers_from_families(market.families) if market is not None else {},
         family_weights=market.family_weights if market is not None else None,
         concurrency=_settings.physiology_report_concurrency)
-    report = await build_report(deps, q)
-    _report_cache.put(q.cache_key, report)
+    report = await _report_cache.get_or_build(q.cache_key, lambda: build_report(deps, q))
     return report.model_dump(mode="json")
 
 

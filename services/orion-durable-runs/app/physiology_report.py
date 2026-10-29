@@ -58,7 +58,11 @@ SYNTHETIC_PRODUCERS = ("deploy-verification", "probe", "replay", "test")
 #: timeouts, recalls, release_failed:*) is lease time that produced nothing.
 OK_CLOSE_REASONS = ("ok", "completed", "generated", "text_done")
 WASTE_CLOSE_EVENTS = ("released", "expired", "aborted")
-RHYTHM_CLOSE_EVENTS = ("released", "expired", "aborted", "retried")
+RHYTHM_CLOSE_EVENTS = ("released", "expired", "aborted")
+#: An expiry or recall abort writes TWO close rows for one lease ~2 ms apart (an ``expired``/
+#: ``aborted`` row and a ``released`` row with reason ``expire:*``/``abort:*``, same held_ms; 64 pairs
+#: in the 30 days to 2026-10-29). The ``released`` twin is left out so a lease counts once.
+DUP_CLOSE_SQL = "NOT (event = 'released' AND (reason LIKE 'expire:%%' OR reason LIKE 'abort:%%'))"
 #: Prices were first posted on this tick (Patch B deploy, 2026-10-27 ~05:25Z).
 PRICES_BEGAN_AT = datetime(2026, 10, 27, 5, 26, 40, tzinfo=timezone.utc)
 PRICES_BEGAN_NOTE = "prices began 2026-10-27 (Patch B); earlier ticks have levels only"
@@ -205,20 +209,34 @@ ORDER BY 1, 2, 3
 """
 WANTS_FIRST_SQL = "SELECT MIN(decided_at) AS first_at FROM want_ledger WHERE producer <> ALL(%(synthetic)s)"
 
+# Each lease is spread over the local hours it was held ([close - held, close]), clipped to the
+# window, so a 2.4 h durable-run hold counts in the hours it ran, not only the hour it closed.
+# A lease still open at the window's end is not counted (it has no close row yet).
 RHYTHM_SQL = """
-SELECT to_char(generated_at AT TIME ZONE %(tz)s, 'YYYY-MM-DD') AS day,
-       EXTRACT(HOUR FROM generated_at AT TIME ZONE %(tz)s)::int AS hour,
-       COALESCE(SUM(held_ms) FILTER (WHERE priority = 'background'), 0) / 1000.0 AS heavy_s,
-       COALESCE(SUM(held_ms), 0) / 1000.0 AS total_s
-FROM gpu_pool_events
-WHERE generated_at >= %(since)s AND generated_at < %(until)s
-  AND event = ANY(%(events)s) AND held_ms IS NOT NULL
+WITH leases AS (
+  SELECT GREATEST(generated_at - held_ms * interval '1 millisecond', %(since)s) AS s,
+         generated_at AS e, priority = 'background' AS heavy
+  FROM gpu_pool_events
+  WHERE generated_at >= %(since)s AND generated_at < %(until)s
+    AND event = ANY(%(events)s) AND held_ms > 0 AND """ + DUP_CLOSE_SQL + """
+), parts AS (
+  SELECT h, heavy,
+         EXTRACT(EPOCH FROM LEAST(l.e, h + interval '1 hour') - GREATEST(l.s, h)) AS sec
+  FROM leases l,
+       generate_series(date_trunc('hour', l.s), date_trunc('hour', l.e), interval '1 hour') AS h
+)
+SELECT to_char(h AT TIME ZONE %(tz)s, 'YYYY-MM-DD') AS day,
+       EXTRACT(HOUR FROM h AT TIME ZONE %(tz)s)::int AS hour,
+       COALESCE(SUM(sec) FILTER (WHERE heavy), 0) AS heavy_s,
+       COALESCE(SUM(sec), 0) AS total_s
+FROM parts WHERE sec > 0
 GROUP BY 1, 2
 ORDER BY 1, 2
 """
 
 ENERGY_DAILY_SQL = """
-SELECT to_char(hour_start AT TIME ZONE %(tz)s, 'YYYY-MM-DD') AS d, SUM(kwh) AS kwh
+SELECT to_char(hour_start AT TIME ZONE %(tz)s, 'YYYY-MM-DD') AS d, SUM(kwh) AS kwh,
+       COUNT(DISTINCT hour_start) AS hours
 FROM orion_energy_hourly
 WHERE hour_start >= %(since)s AND hour_start < %(until)s
 GROUP BY 1 ORDER BY 1
@@ -243,7 +261,8 @@ SELECT COALESCE(role, '?') AS lane, SUM(held_ms) / 1000.0 AS held_s
 FROM gpu_pool_events
 WHERE generated_at >= %(since)s AND generated_at < %(until)s
   AND event = ANY(%(events)s) AND held_ms IS NOT NULL
-  AND (reason IS NULL OR reason <> ALL(%(ok)s))
+  AND (reason IS NULL OR (reason <> ALL(%(ok)s) AND reason NOT LIKE 'operator:%%'))
+  AND """ + DUP_CLOSE_SQL + """
 GROUP BY 1 ORDER BY 2 DESC
 """
 WASTE_TOP_SQL = """
@@ -251,7 +270,8 @@ SELECT holder, role, held_ms / 1000.0 AS held_s, reason, generated_at AS at
 FROM gpu_pool_events
 WHERE generated_at >= %(since)s AND generated_at < %(until)s
   AND event = ANY(%(events)s) AND held_ms IS NOT NULL
-  AND (reason IS NULL OR reason <> ALL(%(ok)s))
+  AND (reason IS NULL OR (reason <> ALL(%(ok)s) AND reason NOT LIKE 'operator:%%'))
+  AND """ + DUP_CLOSE_SQL + """
 ORDER BY held_ms DESC
 LIMIT %(top)s
 """
@@ -264,20 +284,21 @@ WITH fam AS (
 ), g AS (
   SELECT COALESCE(e.role, '?') AS lane,
          COALESCE(fam.family, split_part(e.holder, ':', 1)) AS family,
+         CASE WHEN fam.family IS NULL THEN 'holder' ELSE 'want_ledger' END AS family_source,
          e.waited_ms
   FROM gpu_pool_events e
   LEFT JOIN fam ON e.holder LIKE 'durable-runs:%%' AND fam.want_id = substr(e.holder, 14)
   WHERE e.generated_at >= %(since)s AND e.generated_at < %(until)s
     AND e.event = 'granted' AND e.waited_ms IS NOT NULL
 )
-SELECT lane, family,
+SELECT lane, family, family_source,
        percentile_cont(0.5) WITHIN GROUP (ORDER BY waited_ms) / 1000.0 AS p50_s,
        percentile_cont(0.9) WITHIN GROUP (ORDER BY waited_ms) / 1000.0 AS p90_s,
        COUNT(*) AS n
 FROM g
 WHERE (%(family)s::text IS NULL OR family = %(family)s)
-GROUP BY 1, 2
-ORDER BY 1, 2
+GROUP BY 1, 2, 3
+ORDER BY 1, 2, 3
 """
 
 DECISIONS_SQL = """
@@ -375,8 +396,8 @@ def shape_limits(hourly: Sequence[Mapping], latest: Optional[Mapping], first_at:
     return limits, missing
 
 
-def shape_wants(rows: Sequence[Mapping], first_at: Optional[datetime], tiers: Mapping[str, int]
-                ) -> tuple[dict, list[dict]]:
+def shape_wants(rows: Sequence[Mapping], first_at: Optional[datetime], tiers: Mapping[str, int],
+                family: Optional[str] = None) -> tuple[dict, list[dict]]:
     hourly: dict[tuple, dict] = {}
     fam: dict[str, dict] = {}
     for r in rows:
@@ -396,14 +417,16 @@ def shape_wants(rows: Sequence[Mapping], first_at: Optional[datetime], tiers: Ma
     if not fam:
         first = (f"first decision {first_at.isoformat()}" if first_at
                  else "want_ledger is empty (shadow bids began 2026-10-27)")
-        missing.append({"section": "wants", "reason": f"no bid decision in the window; {first}"})
+        scope = f" for family {family}" if family else ""
+        missing.append({"section": "wants", "reason": f"no bid decision{scope} in the window; {first}"})
     return out, missing
 
 
 def shape_rhythm(rows: Sequence[Mapping]) -> tuple[list[dict], list[dict]]:
     cells = [{"day": str(r["day"]), "hour": int(r["hour"]), "heavy": round(float(r.get("heavy_s") or 0.0), 1),
               "total": round(float(r.get("total_s") or 0.0), 1)} for r in rows]
-    missing = [] if cells else [{"section": "rhythm", "reason": "no GPU lease closed in the window (gpu_pool_events)"}]
+    missing = [] if cells else [{"section": "rhythm", "reason": "no GPU lease closed in the window (gpu_pool_events); "
+                                 "leases still open are counted once they close"}]
     return cells, missing
 
 
@@ -416,7 +439,8 @@ def shape_money(latest: Optional[Mapping], daily: Sequence[Mapping]) -> tuple[di
     missing: list[dict] = []
     money: dict = {"mtd_usd": None, "forecast_usd": None, "envelope_usd": None, "floor_usd": None,
                    "rate_usd_per_kwh": None,
-                   "daily_kwh": [{"d": str(r["d"]), "kwh": round(float(r["kwh"]), 3)} for r in daily
+                   "daily_kwh": [{"d": str(r["d"]), "kwh": round(float(r["kwh"]), 3),
+                                  "partial": int(r.get("hours") or 24) < 23} for r in daily
                                  if r.get("kwh") is not None]}
     energy = None
     for c in (_json(latest.get("constraints")) if latest else None) or []:
@@ -493,7 +517,9 @@ def load_heat_hosts(path: str) -> tuple[list[HeatHost], Optional[str]]:
 
 
 def shape_unit_costs(rate: Optional[float], heat_hosts: Sequence[HeatHost], heat_err: Optional[str],
-                     run_costs: Sequence[Mapping], act_costs: Mapping[str, dict]) -> tuple[list[dict], list[dict]]:
+                     run_costs: Sequence[Mapping], act_costs: Optional[Mapping[str, dict]]
+                     ) -> tuple[list[dict], list[dict]]:
+    """``act_costs`` None: the act-cost read failed (its reason is already in ``missing``)."""
     rows: list[dict] = []
     missing: list[dict] = []
     if rate is not None:
@@ -519,12 +545,12 @@ def shape_unit_costs(rate: Optional[float], heat_hosts: Sequence[HeatHost], heat
     if not run_costs:
         rows.append({"unit": "one measured run", "usd": None, "wh": None, "heat_c": None, "status": "not_measured",
                      "source": "energy_run_cost has no run in the window (only reverie diffusion is measured today)"})
-    for actor in sorted(act_costs):
+    for actor in sorted(act_costs or {}):
         a = act_costs[actor]
         rows.append({"unit": f"one {actor} act", "usd": _r(a["usd"], 6), "wh": _r(a["wh"], 3),
                      "heat_c": _r(a["heat_c"], 4), "status": "measured",
                      "source": f"grammar_acts.cost_json mean over {a['n']} acts in the window"})
-    if not act_costs:
+    if act_costs is not None and not act_costs:
         rows.append({"unit": "one act (any family)", "usd": None, "wh": None, "heat_c": None,
                      "status": "not_measured",
                      "source": "no act in the window carries cost_json wh_by_host / usd / heat_c_by_host yet "
@@ -547,14 +573,25 @@ def shape_waste(by_lane: Sequence[Mapping], top: Sequence[Mapping]) -> tuple[dic
     return out, missing
 
 
-def shape_queue_wait(rows: Sequence[Mapping]) -> tuple[list[dict], list[dict]]:
-    out = [{"lane": str(r["lane"]), "family": str(r["family"] or "?"), "p50_s": _r(_f(r.get("p50_s")), 1),
-            "p90_s": _r(_f(r.get("p90_s")), 1), "n": int(r.get("n") or 0)} for r in rows]
-    missing = [] if out else [{"section": "queue_wait", "reason": "no GPU lease was granted in the window"}]
+def shape_queue_wait(rows: Sequence[Mapping], family: Optional[str] = None) -> tuple[list[dict], list[dict]]:
+    out = [{"lane": str(r["lane"]), "family": str(r["family"] or "?"), "family_source": r.get("family_source"),
+            "p50_s": _r(_f(r.get("p50_s")), 1), "p90_s": _r(_f(r.get("p90_s")), 1), "n": int(r.get("n") or 0)}
+           for r in rows]
+    missing = []
+    if not out and family:
+        missing.append({"section": "queue_wait", "reason": f"no granted lease is attributable to family {family} in "
+                        "the window: only durable-run admissions carry a want family; other leases are named by "
+                        "their holder's service"})
+    elif not out:
+        missing.append({"section": "queue_wait", "reason": "no GPU lease was granted in the window"})
+    elif any(r["family_source"] == "holder" for r in out):
+        missing.append({"section": "queue_wait", "reason": "partial: only durable-run admissions join to a want "
+                        "family; other rows are named by the holder's service"})
     return out, missing
 
 
-def shape_decisions(rows: Sequence[Mapping], first_at: Optional[datetime]) -> tuple[list[dict], list[dict]]:
+def shape_decisions(rows: Sequence[Mapping], first_at: Optional[datetime],
+                    family: Optional[str] = None) -> tuple[list[dict], list[dict]]:
     out = []
     for r in rows:
         prices = _json(r.get("prices_seen"))
@@ -567,8 +604,9 @@ def shape_decisions(rows: Sequence[Mapping], first_at: Optional[datetime]) -> tu
     missing = []
     if not out:
         first = (f"first decision {first_at.isoformat()}" if first_at
-                 else "want_ledger is empty (shadow bids began 2026-10-27)")
-        missing.append({"section": "decisions", "reason": f"no bid decision matches in the window; {first}"})
+                 else "first decision unknown (shadow bids began 2026-10-27)")
+        scope = f" for family {family}" if family else ""
+        missing.append({"section": "decisions", "reason": f"no bid decision{scope} matches in the window; {first}"})
     return out, missing
 
 
@@ -579,22 +617,25 @@ CLAUDE_TOKEN_SCOPE = ("tokens are Claude Code sessions on athena (dev_economics,
 def shape_claude(tokens: Optional[Mapping], latest: Optional[Mapping]) -> tuple[dict, list[dict]]:
     missing: list[dict] = []
     t = tokens or {}
-    out: dict = {"window_tokens": {"input": int(t.get("input") or 0), "output": int(t.get("output") or 0),
-                                   "cache_read": int(t.get("cache_read") or 0),
-                                   "cache_write": int(t.get("cache_write") or 0)},
+    has_rows = int(t.get("ticks") or 0) > 0
+    tok = (lambda k: int(t.get(k) or 0)) if has_rows else (lambda k: None)
+    out: dict = {"window_tokens": {"input": tok("input"), "output": tok("output"),
+                                   "cache_read": tok("cache_read"), "cache_write": tok("cache_write")},
                  "usd_est": None, "limit_events": [], "status": ""}
     priced = int(t.get("priced") or 0)
     usd = _f(t.get("usd"))
-    out["usd_est"] = round(usd, 2) if (usd is not None and priced > 0) else None
+    out["usd_est"] = round(usd, 2) if (has_rows and usd is not None and priced > 0) else None
     claude = None
     for c in (_json(latest.get("constraints")) if latest else None) or []:
         if isinstance(c, dict) and c.get("constraint") == "claude":
             claude = c
     parts = [CLAUDE_TOKEN_SCOPE]
-    if usd is None or priced == 0:
+    if has_rows and (usd is None or priced == 0):
         parts.append("no priced session in the window, so no USD estimate")
-    elif int(t.get("unpriced") or 0):
-        parts.append(f"{int(t.get('unpriced'))} session(s) had no price and are left out of usd_est")
+    elif has_rows and int(t.get("unpriced") or 0):
+        parts.append("some sessions had no price and are left out of usd_est (an API-price estimate, not a bill)")
+    elif has_rows:
+        parts.append("usd_est is an API-price estimate, not a bill")
     if claude is None:
         parts.append("limits: no claude reading on the newest physiology tick")
     elif claude.get("no_reading"):
@@ -602,16 +643,19 @@ def shape_claude(tokens: Optional[Mapping], latest: Optional[Mapping]) -> tuple[
                      "orion:substrate:claude_limit; its producer in orion-cocreation-signals is off by default "
                      "(COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED=false)")
     else:
+        # orion/physiology/body.py claude_reading: per kind `<kind>_state`, `<kind>_events` (a count, no
+        # per-event times), `<kind>_resets_at`. One entry per kind that saw limit events, at the reading's time.
         detail = claude.get("detail") if isinstance(claude.get("detail"), dict) else {}
-        for ev in detail.get("events") or detail.get("limit_events") or []:
-            at = _utc((ev or {}).get("at") or (ev or {}).get("observed_at"))
-            if at is not None:
-                out["limit_events"].append({"at": at, "kind": str(ev.get("kind") or "?")})
-        parts.append(f"limits: {claude.get('state') or 'read'}, level {claude.get('level')}")
+        at = _utc(claude.get("source_at"))
+        for key, n in sorted(detail.items()):
+            if key.endswith("_events") and (_f(n) or 0) > 0 and at is not None:
+                kind = key[: -len("_events")]
+                out["limit_events"].append({"at": at, "kind": f"{kind} x{int(_f(n))} ({detail.get(kind + '_state', '?')})"})
+        parts.append(f"limits: {claude.get('state') or 'read'}, {int(_f(claude.get('level')) or 0)} limit event(s)")
     out["status"] = "; ".join(parts)
-    if int(t.get("ticks") or 0) == 0:
+    if not has_rows:
         missing.append({"section": "claude", "reason": "dev_economics_ledger_log has no row in the window "
-                        "(orion-cocreation-signals dev_economics producer down or off)"})
+                        "(orion-cocreation-signals dev_economics producer down or off): token counts unknown"})
     return out, missing
 
 
@@ -644,6 +688,7 @@ def shape_vram(gpu_pool_doc: Optional[Mapping], pool_err: Optional[str], bio_row
             stale.append(str(r.get("node")))
             continue
         meas[str(r.get("node"))] = m
+    stale = sorted(set(stale) | {h for h in VRAM_HOSTS if h not in meas})
     cards = _card_map(gpu_pool_doc) if gpu_pool_doc else []
     pooled = {(h, i) for h, _, i, _ in cards}
     # Cards a host reports that the pool does not schedule (athena's T10s): no roles.
@@ -665,16 +710,20 @@ def shape_vram(gpu_pool_doc: Optional[Mapping], pool_err: Optional[str], bio_row
     if pool_err:
         missing.append({"section": "vram", "reason": f"card -> role map unavailable ({pool_err})"})
     if reported == 0:
-        why = ("per-card GPU memory is not reported yet: orion_biometrics_summary.measurements has no "
-               "gpuN_mem_used_mb / gpuN_mem_total_mb (being added beside gpuN_watts)")
-        if stale:
-            why += f"; no fresh biometrics row for {', '.join(sorted(stale))}"
-        missing.append({"section": "vram", "reason": why})
+        missing.append({"section": "vram", "reason": "per-card GPU memory is not reported yet: "
+                        "orion_biometrics_summary.measurements has no gpuN_mem_used_mb / gpuN_mem_total_mb "
+                        "(being added beside gpuN_watts)"})
+    elif reported < len(out):
+        missing.append({"section": "vram", "reason": f"partial: {len(out) - reported} of {len(out)} cards report "
+                        "no memory figures"})
+    if stale:
+        missing.append({"section": "vram", "reason": f"no biometrics row in the last 15 min for "
+                        f"{', '.join(sorted(stale))} (asleep or its reporter is down): its cards read unknown"})
     return out, missing
 
 
 def shape_value_per_cost(weights: Optional[Mapping[str, Any]], weights_err: Optional[str],
-                         act_costs: Mapping[str, dict]) -> tuple[list[dict], list[dict]]:
+                         act_costs: Mapping[str, dict], family: Optional[str] = None) -> tuple[list[dict], list[dict]]:
     """One row per family with graded evidence: the same evidence the market's family weights use
     (orion/physiology/weights.py: (a) downstream use rate, (b) Juniper reply rate)."""
     if weights is None:
@@ -682,6 +731,8 @@ def shape_value_per_cost(weights: Optional[Mapping[str, Any]], weights_err: Opti
     rows: list[dict] = []
     no_evidence: list[str] = []
     for fam in sorted(weights):
+        if family and fam != family:
+            continue
         w = weights[fam]
         ev = getattr(w, "evidence", None)
         n = int(getattr(ev, "n", 0) or 0) if ev is not None else 0
@@ -697,7 +748,8 @@ def shape_value_per_cost(weights: Optional[Mapping[str, Any]], weights_err: Opti
         if getattr(w, "basis", None) == "prior":
             parts.append("under 10 graded acts, so bids still use the prior weight")
         usd = (act_costs.get(fam) or {}).get("usd")
-        rows.append({"family": fam, "evidence_n": n, "value_metric": "mean of " + ", ".join(parts),
+        rows.append({"family": fam, "evidence_n": n,
+                     "value_metric": "30-day evidence the bids use: mean of " + ", ".join(parts),
                      "value": round(float(rate), 4), "usd_per_act": _r(usd, 6),
                      "status": "measured" if usd is not None else "not_measured"})
     missing = []
@@ -705,9 +757,11 @@ def shape_value_per_cost(weights: Optional[Mapping[str, Any]], weights_err: Opti
         missing.append({"section": "value_per_cost",
                         "reason": f"no graded evidence yet for {len(no_evidence)} famil"
                                   f"{'y' if len(no_evidence) == 1 else 'ies'}: {', '.join(no_evidence)}"})
+    if family and not rows and not no_evidence:
+        missing.append({"section": "value_per_cost", "reason": f"family {family} is not a bidding family"})
     if rows and all(r["usd_per_act"] is None for r in rows):
         missing.append({"section": "value_per_cost",
-                        "reason": "usd_per_act not measured: no act carries cost_json.usd yet"})
+                        "reason": "usd_per_act not measured: no act in the window carries cost_json.usd yet"})
     return rows, missing
 
 
@@ -776,23 +830,45 @@ def _load_yaml(path: str) -> tuple[Optional[dict], Optional[str]]:
         return None, f"unreadable:{Path(path).name}:{type(exc).__name__}"
 
 
+#: Sections the ``family=`` filter narrows; every other section is whole-body and says so.
+FAMILY_FILTERED = ("wants", "decisions", "queue_wait", "value_per_cost")
+#: The newest physiology tick is "now" only if it is this fresh (ticks every ~120 s).
+LATEST_MAX_AGE = timedelta(minutes=10)
+#: One semaphore for every report read in this process, so concurrent requests (the Hub page's
+#: 24h/7d/30d plus a skill call) share ``concurrency`` slots of the pool, not ``concurrency`` each.
+_SEMAPHORES: dict[int, asyncio.Semaphore] = {}
+
+
+def _shared_semaphore(n: int) -> asyncio.Semaphore:
+    n = max(1, int(n))
+    sem = _SEMAPHORES.get(n)
+    if sem is None:
+        sem = _SEMAPHORES[n] = asyncio.Semaphore(n)
+    return sem
+
+
 async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime] = None) -> PhysiologyReportV1:
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     since = now - WINDOW_DELTAS[q.window]
     base = {"since": since, "until": now}
-    sem = asyncio.Semaphore(max(1, deps.concurrency))
+    sem = _shared_semaphore(deps.concurrency)
     timing: dict[str, float] = {}
     missing: list[dict] = []
     wanted = set(q.sections)
 
-    async def timed(name: str, coro_fn: Callable[[], Awaitable[Any]]) -> Any:
+    def fail(sections: Iterable[str], what: str, exc: BaseException) -> None:
+        for s in sections:
+            missing.append({"section": s, "reason": f"read failed{what}: {type(exc).__name__}: {str(exc)[:160]}"})
+
+    async def timed(name: str, coro_fn: Callable[[], Awaitable[Any]], sections: Iterable[str]) -> Any:
+        """A failed read is recorded under every asked section that needed it (never a 500)."""
         async with sem:
             t0 = time.perf_counter()
             try:
                 return await coro_fn()
-            except Exception as exc:  # noqa: BLE001 -- one section failing never fails the report
-                logger.warning("physiology_report_read_failed section=%s", name, exc_info=True)
-                missing.append({"section": name, "reason": f"read failed: {type(exc).__name__}: {str(exc)[:160]}"})
+            except Exception as exc:  # noqa: BLE001 -- one read failing never fails the report
+                logger.warning("physiology_report_read_failed read=%s", name, exc_info=True)
+                fail([s for s in sections if s in wanted], f" ({name})" if name not in wanted else "", exc)
                 return None
             finally:
                 timing[name] = round((time.perf_counter() - t0) * 1000.0, 1)
@@ -801,7 +877,7 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
     syn = list(SYNTHETIC_PRODUCERS)
 
     async def latest():
-        return (await _rows(pool, LIMITS_LATEST_SQL, base) or [None])[0]
+        return ((await _rows(pool, LIMITS_LATEST_SQL, base)) or [None])[0]
 
     async def limits():
         h = await _rows(pool, LIMITS_HOURLY_SQL, base)
@@ -816,92 +892,113 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
     async def act_costs():
         return act_costs_by_family(await _rows(pool, ACT_COST_SQL, {**base, "family": q.family}))
 
-    need_latest = wanted & {"limits", "money", "unit_costs", "claude"}
-    need_act_costs = wanted & {"unit_costs", "value_per_cost"}
     tasks: dict[str, Awaitable[Any]] = {}
-    if need_latest:
-        tasks["latest"] = timed("latest", latest)
+    if wanted & {"limits", "money", "unit_costs", "claude"}:
+        tasks["latest"] = timed("latest", latest, ("limits", "money", "unit_costs", "claude"))
     if "limits" in wanted:
-        tasks["limits"] = timed("limits", limits)
-    if "wants" in wanted or "decisions" in wanted:
-        tasks["wants"] = timed("wants", wants)
+        tasks["limits"] = timed("limits", limits, ("limits",))
+    if wanted & {"wants", "decisions"}:
+        tasks["wants"] = timed("wants", wants, ("wants",))
     if "rhythm" in wanted:
-        tasks["rhythm"] = timed("rhythm", lambda: _rows(pool, RHYTHM_SQL, {**base, "tz": deps.tz,
-                                                                          "events": list(RHYTHM_CLOSE_EVENTS)}))
+        tasks["rhythm"] = timed("rhythm", lambda: _rows(pool, RHYTHM_SQL, {
+            **base, "tz": deps.tz, "events": list(RHYTHM_CLOSE_EVENTS)}), ("rhythm",))
     if "money" in wanted:
-        tasks["money"] = timed("money", lambda: _rows(pool, ENERGY_DAILY_SQL, {**base, "tz": deps.tz}))
+        tasks["money"] = timed("money", lambda: _rows(pool, ENERGY_DAILY_SQL, {**base, "tz": deps.tz}), ("money",))
     if "unit_costs" in wanted:
-        tasks["run_costs"] = timed("unit_costs", lambda: _rows(pool, RUN_COST_SQL, base))
-    if need_act_costs:
-        tasks["act_costs"] = timed("act_costs", act_costs)
+        tasks["run_costs"] = timed("unit_costs", lambda: _rows(pool, RUN_COST_SQL, base), ("unit_costs",))
+    if wanted & {"unit_costs", "value_per_cost"}:
+        tasks["act_costs"] = timed("act_costs", act_costs, ("unit_costs", "value_per_cost"))
     if "waste" in wanted:
         wp = {**base, "events": list(WASTE_CLOSE_EVENTS), "ok": list(OK_CLOSE_REASONS), "top": WASTE_TOP_N}
 
         async def waste():
             return await _rows(pool, WASTE_BY_LANE_SQL, wp), await _rows(pool, WASTE_TOP_SQL, wp)
-        tasks["waste"] = timed("waste", waste)
+        tasks["waste"] = timed("waste", waste, ("waste",))
     if "queue_wait" in wanted:
-        tasks["queue_wait"] = timed("queue_wait", lambda: _rows(pool, QUEUE_WAIT_SQL, {**base, "family": q.family}))
+        tasks["queue_wait"] = timed("queue_wait", lambda: _rows(pool, QUEUE_WAIT_SQL, {**base, "family": q.family}),
+                                    ("queue_wait",))
     if "decisions" in wanted:
         tasks["decisions"] = timed("decisions", lambda: _rows(pool, DECISIONS_SQL, {
-            **base, "synthetic": syn, "family": q.family, "outcome": q.outcome, "limit": q.limit}))
+            **base, "synthetic": syn, "family": q.family, "outcome": q.outcome, "limit": q.limit}), ("decisions",))
     if "claude" in wanted:
-        tasks["claude"] = timed("claude", lambda: _rows(pool, CLAUDE_TOKENS_SQL, base))
+        tasks["claude"] = timed("claude", lambda: _rows(pool, CLAUDE_TOKENS_SQL, base), ("claude",))
     if "vram" in wanted:
-        tasks["vram"] = timed("vram", lambda: _rows(pool, VRAM_SQL, {"hosts": list(VRAM_HOSTS)}))
+        tasks["vram"] = timed("vram", lambda: _rows(pool, VRAM_SQL, {"hosts": list(VRAM_HOSTS)}), ("vram",))
     if "services" in wanted:
         tasks["services"] = timed("services", lambda: _rows(pool, SERVICES_SQL, {
-            "since_naive": (now - SERVICES_LOOKBACK).replace(tzinfo=None)}))
+            "since_naive": (now - SERVICES_LOOKBACK).replace(tzinfo=None)}), ("services",))
     if "value_per_cost" in wanted and deps.family_weights is not None:
-        tasks["weights"] = timed("value_per_cost", deps.family_weights)
+        tasks["weights"] = timed("value_per_cost", deps.family_weights, ("value_per_cost",))
 
     t_all = time.perf_counter()
     results = dict(zip(tasks, await asyncio.gather(*tasks.values())))
     latest_row = results.get("latest")
-    out: dict[str, Any] = {"generated_at": now, "window": {"start": since, "end": now}}
+    out: dict[str, Any] = {"generated_at": now, "window": {"start": since, "end": now},
+                           "query": {"window": q.window, "sections": list(q.sections), "family": q.family,
+                                     "outcome": q.outcome, "limit": q.limit}}
 
-    def add(section: str, value_missing: tuple[Any, list[dict]]):
-        value, miss = value_missing
+    if latest_row is not None:
+        at = _utc(latest_row.get("generated_at"))
+        if at is None or now - at > LATEST_MAX_AGE:
+            age = "unknown" if at is None else f"{(now - at).total_seconds() / 60.0:.0f} min"
+            for s in ("limits", "money", "unit_costs", "claude"):
+                if s in wanted:
+                    missing.append({"section": s, "reason": f"stale: the newest physiology tick is {age} old "
+                                    f"(ticks run every ~2 min), so 'now' values are from {at.isoformat() if at else '?'}"})
+
+    def add(section: str, fn: Callable[[], tuple[Any, list[dict]]]) -> None:
+        """Shaping errors are a reason too: a bad row empties its own section, never the report."""
+        try:
+            value, miss = fn()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("physiology_report_shape_failed section=%s", section, exc_info=True)
+            missing.append({"section": section, "reason": f"shaping failed: {type(exc).__name__}: {str(exc)[:160]}"})
+            return
         out[section] = value
         missing.extend(miss)
 
+    ac = results.get("act_costs") if "act_costs" in results else {}
     if "limits" in wanted and results.get("limits") is not None:
-        h, first = results["limits"]
-        add("limits", shape_limits(h, latest_row, first, since))
+        add("limits", lambda: shape_limits(results["limits"][0], latest_row, results["limits"][1], since))
     if "wants" in wanted and results.get("wants") is not None:
-        r, first = results["wants"]
-        add("wants", shape_wants(r, first, deps.tiers))
+        add("wants", lambda: shape_wants(results["wants"][0], results["wants"][1], deps.tiers, q.family))
     if "rhythm" in wanted and results.get("rhythm") is not None:
-        add("rhythm", shape_rhythm(results["rhythm"]))
+        add("rhythm", lambda: shape_rhythm(results["rhythm"]))
     if "money" in wanted and results.get("money") is not None:
-        add("money", shape_money(latest_row, results["money"]))
-    ac = results.get("act_costs") or {}
+        add("money", lambda: shape_money(latest_row, results["money"]))
     if "unit_costs" in wanted and results.get("run_costs") is not None:
-        rate = None
-        if latest_row:
-            m, _ = shape_money(latest_row, [])
-            rate = m["rate_usd_per_kwh"]
-        hosts, herr = load_heat_hosts(deps.heat_sensitivity_path)
-        add("unit_costs", shape_unit_costs(rate, hosts, herr, results["run_costs"], ac))
+        def _unit():
+            rate = shape_money(latest_row, [])[0]["rate_usd_per_kwh"] if latest_row else None
+            hosts, herr = load_heat_hosts(deps.heat_sensitivity_path)
+            return shape_unit_costs(rate, hosts, herr, results["run_costs"], ac)
+        add("unit_costs", _unit)
     if "waste" in wanted and results.get("waste") is not None:
-        add("waste", shape_waste(*results["waste"]))
+        add("waste", lambda: shape_waste(*results["waste"]))
     if "queue_wait" in wanted and results.get("queue_wait") is not None:
-        add("queue_wait", shape_queue_wait(results["queue_wait"]))
+        add("queue_wait", lambda: shape_queue_wait(results["queue_wait"], q.family))
     if "decisions" in wanted and results.get("decisions") is not None:
         first = results["wants"][1] if results.get("wants") else None
-        add("decisions", shape_decisions(results["decisions"], first))
+        add("decisions", lambda: shape_decisions(results["decisions"], first, q.family))
     if "claude" in wanted and results.get("claude") is not None:
-        add("claude", shape_claude((results["claude"] or [None])[0], latest_row))
+        add("claude", lambda: shape_claude((results["claude"] or [None])[0], latest_row))
     if "vram" in wanted and results.get("vram") is not None:
-        doc, perr = _load_yaml(deps.gpu_pool_path)
-        add("vram", shape_vram(doc, perr, results["vram"], now))
+        def _vram():
+            doc, perr = _load_yaml(deps.gpu_pool_path)
+            return shape_vram(doc, perr, results["vram"], now)
+        add("vram", _vram)
     if "value_per_cost" in wanted:
         if deps.family_weights is None:
-            add("value_per_cost", shape_value_per_cost(None, "the bid market is off (ORION_PHYSIOLOGY_BID_ENABLED)", ac))
+            add("value_per_cost", lambda: shape_value_per_cost(
+                None, "the bid market is off (ORION_PHYSIOLOGY_BID_ENABLED)", ac or {}, q.family))
         elif results.get("weights") is not None:
-            add("value_per_cost", shape_value_per_cost(results["weights"], None, ac))
+            add("value_per_cost", lambda: shape_value_per_cost(results["weights"], None, ac or {}, q.family))
     if "services" in wanted and results.get("services") is not None:
-        add("services", shape_services(results["services"], now))
+        add("services", lambda: shape_services(results["services"], now))
+    if q.family:
+        whole = [s for s in q.sections if s not in FAMILY_FILTERED and s != "unit_costs"]
+        if whole:
+            missing.append({"section": "*", "reason": f"family={q.family} narrows wants, decisions, queue_wait, "
+                            f"value_per_cost and the per-act unit costs only; {', '.join(whole)} are whole-body"})
     not_asked = [s for s in REPORT_SECTIONS if s not in wanted]
     if not_asked and len(not_asked) < len(REPORT_SECTIONS):
         missing.append({"section": "*", "reason": f"not asked for: {', '.join(not_asked)}"})
@@ -911,12 +1008,18 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
     return PhysiologyReportV1.model_validate(out)
 
 
+def has_read_failure(report: PhysiologyReportV1) -> bool:
+    return any(m.reason.startswith(("read failed", "shaping failed")) for m in report.missing)
+
+
 class ReportCache:
-    """Same query inside ``ttl_sec`` -> the same report. A report is a few hundred KB at most."""
+    """Same query inside ``ttl_sec`` -> the same report. A report with a failed read is not cached
+    (the next request retries). Concurrent misses on one key share one build (single flight)."""
 
     def __init__(self, ttl_sec: float) -> None:
         self.ttl = ttl_sec
         self._d: dict[tuple, tuple[float, PhysiologyReportV1]] = {}
+        self._inflight: dict[tuple, asyncio.Future] = {}
 
     def get(self, key: tuple) -> Optional[PhysiologyReportV1]:
         hit = self._d.get(key)
@@ -925,11 +1028,32 @@ class ReportCache:
         return None
 
     def put(self, key: tuple, report: PhysiologyReportV1) -> None:
-        if self.ttl <= 0:
+        if self.ttl <= 0 or has_read_failure(report):
             return
         if len(self._d) > 64:
             self._d.clear()
         self._d[key] = (time.monotonic(), report)
+
+    async def get_or_build(self, key: tuple, build: Callable[[], Awaitable[PhysiologyReportV1]]) -> PhysiologyReportV1:
+        hit = self.get(key)
+        if hit is not None:
+            return hit
+        fut = self._inflight.get(key)
+        if fut is not None:
+            return await asyncio.shield(fut)
+        fut = asyncio.get_running_loop().create_future()
+        self._inflight[key] = fut
+        try:
+            report = await build()
+            self.put(key, report)
+            fut.set_result(report)
+            return report
+        except BaseException as exc:
+            fut.set_exception(exc)
+            fut.exception()  # retrieved: no "never retrieved" warning when nobody else waited
+            raise
+        finally:
+            self._inflight.pop(key, None)
 
 
 def tiers_from_families(families: Any) -> dict[str, int]:

@@ -23,10 +23,10 @@ work cost", and the answer comes from the stored records.
 Live check on 2026-10-29 (real data, read-only). The text Orion reads starts:
 
 ```text
-Binding now: Energy money this month, Cabinet heat (my share against the soft line).
-- Cabinet heat (my share against the soft line): BINDING, not from my load; 34.27 °C against a line of 31 °C. room over the line without Orion's load (not my load); cabinet 34.3 C; Orion's share 2.25 C ...
-Money: $182.18 spent on electricity this month against a $100 envelope; forecast $196.91 by month end. What stays switched on alone reaches $193.86.
-Waste: 42.4 h of GPU leases ended in failure (agent-gpu2 18.7 h, agent 13.4 h, chat 10.2 h, ...).
+Binding now: Energy money this month, Cabinet heat (my share against the soft line). Unknown (no price or no reading): Claude usage limits.
+- Cabinet heat (my share against the soft line): BINDING, not from my load; 33.65 °C against a line of 31 °C. room over the line without Orion's load (not my load); cabinet 33.6 C; Orion's share 1.98 C ...
+Money: $182.27 spent on electricity this month against a $100 envelope; forecast $196.87 by month end. What stays switched on alone reaches $193.80.
+Waste: 40.5 h of GPU lease time ended without success (agent-gpu2 17.4 h, agent 12.8 h, chat 10.2 h, ...).
 - durable-runs:d7d0c7d60c96 on agent: held 2.5 h, ended attempt_failed at 2026-10-29T18:58
 ```
 
@@ -148,11 +148,12 @@ The waste lines show today's incident: curiosity holds of about 8,500 s that end
 
 The report creates no new metric. It aggregates already-stored values. Two judgment calls:
 
-- **`waste`**: lease-seconds of closes whose reason is not one of `ok`, `completed`, `generated` or
-  `text_done`. Recalls and operator benches count as waste. The top rows show the reason, so a reader can
-  see that.
-- **`rhythm.heavy`**: lease-seconds of `priority='background'` leases. This is the deferrable self-work
-  class used by the S2 stopgap (#2873).
+- **`waste`**: lease-seconds of closes whose reason is not `ok`, `completed`, `generated`, `text_done` or
+  `operator:*`. Recalls and retries count as waste, and the top rows show the reason. An expiry or abort
+  writes two close rows for one lease, and the report counts that lease once. Live check: all 63 such
+  `released` twins in 30 days had a matching `expired`/`aborted` row.
+- **`rhythm.heavy`**: lease-seconds of `priority='background'` leases, spread over the hours each lease was
+  held. This is the deferrable self-work class used by the S2 stopgap (#2873).
 
 ## Tests run
 
@@ -181,10 +182,11 @@ PYTHONPATH=. python orion/physiology/evals/physiology_state_skill_eval.py -> pas
 ## Docker/build/smoke checks
 
 ```text
-Live DB timing (read-only, the real build_report on the live conjourney DB, concurrency 3):
-  24h ~0.28-0.40 s, 7d ~0.59 s, 30d ~0.78-1.05 s   (H5: under 2 s)
-  slowest reads at 30d: queue_wait ~0.42-0.50 s, rhythm ~0.32-0.49 s, waste ~0.35-0.46 s,
-  limits ~0.30-0.46 s.
+Live DB timing (read-only, the real build_report on the live conjourney DB, concurrency 3, final code):
+  24h 0.35 s, 7d 0.77 s, 30d 1.02 s   (H5: under 2 s)
+  slowest reads at 30d: rhythm 0.94 s (per-hour spread), queue_wait 0.46 s, limits 0.43 s, waste 0.37 s.
+The reviewer also ran it on the live DB inside a forced read-only session: 24h 245 ms, 30d 743 ms (before
+the rhythm spread).
 Network: orion-athena-harness-governor -> http://orion-athena-durable-runs:8121 reachable (0.018 s);
          orion-athena-cortex-exec -> same host reachable.
 Not deployed (per task). The live route itself is UNVERIFIED until durable-runs is rebuilt.
@@ -192,7 +194,56 @@ Not deployed (per task). The live route itself is UNVERIFIED until durable-runs 
 
 ## Review findings fixed
 
-(filled after the review subagent)
+An independent review subagent read the full diff and ran the real SQL against the live DB in a read-only
+session. It found no blockers, 8 should-fix findings and 9 nits. All the material ones are fixed:
+
+- **Finding:** `family=` made queue_wait report a false claim. Most leases carry a holder name, not a want
+  family, so the section came back empty with "no lease granted".
+  - **Fix:** a new `family_source` field (`want_ledger` | `holder`). An empty filtered result now says
+    "no granted lease is attributable to family X; only durable-run admissions carry a want family". A
+    "partial" note appears when rows are named by holder. The wants and decisions reasons now say "for family X".
+  - **Evidence:** `test_family_filter_says_which_sections_it_narrows`, `test_holder_named_queue_rows_are_marked`.
+- **Finding:** most sections silently ignored the family filter.
+  - **Fix:** a `*` missing entry names the whole-body sections. The text header names the filter, and
+    value_per_cost now filters by family.
+  - **Evidence:** the same test, plus `test_family_filter_is_named_in_the_header`.
+- **Finding:** an old physiology tick was served as "now".
+  - **Fix:** a tick older than 10 min adds a `stale: ... min old` reason to limits, money, claude and unit_costs.
+  - **Evidence:** `test_stale_newest_tick_is_said_not_served_as_now`.
+- **Finding:** the headline and lane summary counted "no price" as slack.
+  - **Fix:** only `slack` counts as slack. No price and no reading are listed as "Unknown".
+  - **Evidence:** `test_headline_never_counts_no_price_as_slack`.
+- **Finding:** Claude showed 0 tokens when there was no data.
+  - **Fix:** the token fields are now Optional and None when no row exists. The text says "token counts unknown".
+  - **Evidence:** `test_no_token_rows_reads_unknown_not_zero`, `test_unknown_tokens_are_not_printed_as_zero`.
+- **Finding:** an expiry or abort was counted twice in waste and rhythm, and `retried` never occurs.
+  - **Fix:** the `released` twin with reason `expire:*`/`abort:*` is excluded, and `retried` is dropped.
+  - **Evidence:** the Postgres test now inserts a twin pair and expects one 5 s count. Live check: 63/63 twins
+    had a pair.
+- **Finding:** rhythm put a whole 2.4 h hold into the hour it closed.
+  - **Fix:** each lease is spread over the hours it was held (`generate_series`), clipped to the window.
+  - **Evidence:** the Postgres test checks that an 8,500 s hold spans at least 3 hours, with no hour over 3,600 s.
+- **Finding:** each request could take 3 of the 8 shared pool connections, the cache had no single flight,
+  and it cached failed reads.
+  - **Fix:**
+    - one semaphore shared by all requests;
+    - `ReportCache.get_or_build` gives single flight;
+    - a report with a read or shaping failure is never cached.
+  - **Evidence:** `test_cache_skips_failed_reports_and_shares_one_build`.
+- **Nits fixed:**
+  - partial days marked in `daily_kwh` (`partial`);
+  - a shaping error becomes a `missing` reason, never a 500;
+  - a helper-read failure is reported under each dependent section ("read failed (latest)");
+  - vram names hosts with no fresh row, plus a "partial" note;
+  - the services heading is now "reported stopped in the last 30 days";
+  - waste says "ended without success", and operator benches are excluded;
+  - the garbled queue-wait sentence is fixed;
+  - the Claude session-count wording is fixed;
+  - the cortex-exec text is capped at 40 lines / 4000 chars like the dig kit, and the undocumented
+    `section` arg is dropped;
+  - the cortex-exec adapter test runs in its own CI job, so its pins do not downgrade the dig job.
+- **Not changed, on purpose:** `Market.family_weights` reuses the bid path's history cache, so a report
+  read can warm that cache. That is the same read the bid path does. It gates nothing.
 
 ## Restart required
 
@@ -234,6 +285,14 @@ docker exec orion-athena-harness-governor python -P -m orion.dig body-economy
   - Follow-up: an orion-introspect MCP tool would give a typed tool call (the power_attribution recipe,
     about 29 files).
 
+## Observed while testing (not changed here)
+
+`hub.outreach` shadow funded decisions rose from 15 to 237 in the trailing 24 h within about 40 minutes on
+2026-10-29 (~20:24 to ~21:02 UTC). Something is bidding outreach far more often than the daily cap allows.
+This is a shadow decision, so nothing acted on it. It is worth a look by the body-economy owner.
+
 ## PR link
 
-(filled after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2973
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)

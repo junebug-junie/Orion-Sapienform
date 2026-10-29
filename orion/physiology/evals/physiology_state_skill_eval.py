@@ -99,7 +99,7 @@ def check(name: str, report: dict, text: str, sections: tuple[str, ...]) -> list
             fails.append(f"{name}: ${usd} is not a value in the report")
     if "limits" in sections and report.get("limits"):
         want = sorted(l["label"] for l in report["limits"] if (l.get("now") or {}).get("bind_state") in BINDING)
-        m = re.search(r"Binding now: (.*)\.\n", body)
+        m = re.search(r"Binding now: (.*?)\.(?: |\n)", body)
         got = sorted(x.strip() for x in m.group(1).split(", ")) if m else []
         if want and got != want:
             fails.append(f"{name}: headline names {got}, report binds {want}")

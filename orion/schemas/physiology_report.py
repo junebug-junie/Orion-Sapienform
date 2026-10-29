@@ -20,7 +20,7 @@ toward cool local hours".
 
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import AwareDatetime, BaseModel, Field
 
@@ -82,15 +82,19 @@ class WantsV1(BaseModel):
 
 
 class RhythmCellV1(BaseModel):
+    """Each closed lease is spread over the local hours it was held. A lease still open at the
+    window's end is not counted yet."""
+
     day: str = Field(description="local America/Denver date, YYYY-MM-DD")
     hour: int = Field(ge=0, le=23, description="local America/Denver hour")
-    heavy: float = Field(description="lease-seconds of deferrable (background) GPU work")
-    total: float = Field(description="lease-seconds of all GPU work")
+    heavy: float = Field(description="lease-seconds of deferrable (background) GPU work held in this hour")
+    total: float = Field(description="lease-seconds of all GPU work held in this hour")
 
 
 class DailyKwhV1(BaseModel):
     d: str = Field(description="local America/Denver date, YYYY-MM-DD")
     kwh: float
+    partial: bool = Field(default=False, description="the window covers only part of this local day")
 
 
 class MoneyV1(BaseModel):
@@ -126,7 +130,8 @@ class WasteV1(BaseModel):
 
 class QueueWaitV1(BaseModel):
     lane: str
-    family: str
+    family: str = Field(description="want family when known (durable-run admissions), else the holder's service")
+    family_source: Optional[Literal["want_ledger", "holder"]] = None
     p50_s: Optional[float] = None
     p90_s: Optional[float] = None
     n: int
@@ -146,10 +151,12 @@ class DecisionV1(BaseModel):
 
 
 class ClaudeTokensV1(BaseModel):
-    input: int = 0
-    output: int = 0
-    cache_read: int = 0
-    cache_write: int = 0
+    """None (not 0) when no token row exists in the window: unknown is not zero."""
+
+    input: Optional[int] = None
+    output: Optional[int] = None
+    cache_read: Optional[int] = None
+    cache_write: Optional[int] = None
 
 
 class ClaudeLimitEventV1(BaseModel):
@@ -220,6 +227,7 @@ class PhysiologyReportV1(BaseModel):
     value_per_cost: List[ValuePerCostV1] = Field(default_factory=list)
     services: ServicesV1 = Field(default_factory=ServicesV1)
     missing: List[MissingV1] = Field(default_factory=list)
+    query: Dict[str, Any] = Field(default_factory=dict, description="the window, sections, family, outcome, limit asked")
     timing_ms: Dict[str, float] = Field(default_factory=dict, description="per-section read time, for H5")
 
 

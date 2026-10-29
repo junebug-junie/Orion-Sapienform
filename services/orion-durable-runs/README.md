@@ -942,10 +942,10 @@ off answers 503.
 |---|---|
 | `limits[]` (now + hourly level/price/bind state) | `physiology_state` (prices from 2026-10-27) |
 | `wants{families, hourly}` | `want_ledger`, hand-run probes left out |
-| `rhythm[]` (local day x hour) | `gpu_pool_events` lease closes: background vs all lease-seconds |
+| `rhythm[]` (local day x hour) | `gpu_pool_events` lease closes, each lease spread over the hours it was held: background vs all lease-seconds |
 | `money` | newest `energy` reading; `floor_usd` from its `why`; `orion_energy_hourly` per local day |
 | `unit_costs[]` | tariff rate, `config/physiology/heat_sensitivity.yaml`, `energy_run_cost`, `grammar_acts.cost_json` (`wh_by_host`/`usd`/`heat_c_by_host` when filled). Tokens: not measured until the per-call token table lands |
-| `waste` | lease closes whose reason is not `ok`/`completed`/`generated`/`text_done` |
+| `waste` | lease closes whose reason is not `ok`/`completed`/`generated`/`text_done`/`operator:*`; the `released` twin of an expiry/abort is counted once |
 | `queue_wait[]` | `waited_ms` on granted leases; family from `want_ledger` for durable runs, else the holder's service |
 | `decisions[]` | `want_ledger`, newest first |
 | `claude` | `dev_economics_ledger_log` (Claude Code sessions on athena, not Orion's harness) + the `claude` constraint |
@@ -957,7 +957,10 @@ A section is never silently empty: `missing[{section, reason}]` says why. One fa
 own section (`read failed: ...`). `timing_ms` has each read's time. Postgres does the hourly grouping, so
 Python sees aggregated rows; reads run at most `ORION_PHYSIOLOGY_REPORT_CONCURRENCY` at once on the
 shared pool; the same query is cached `ORION_PHYSIOLOGY_REPORT_CACHE_SEC`. Measured on the live DB
-2026-10-29 (read-only, concurrency 3): 24h ~0.3 s, 7d ~0.6 s, 30d ~0.8-1.0 s (H5: under 2 s).
+2026-10-29 (read-only, concurrency 3): 24h ~0.35 s, 7d ~0.8 s, 30d ~1.0 s (H5: under 2 s; the
+slowest read is rhythm at 30 d, ~0.9 s). The newest tick older than 10 min is reported `stale`, not "now".
+With `family=`, a `*` entry names the sections it does not narrow. A report with a failed read is not cached.
+The concurrency limit is one semaphore shared by all requests; concurrent identical queries share one build.
 `gpu_pool_events` has no persisted rollup; if 30 d grows past 2 s, that is the table to roll up.
 
 Off: `ORION_PHYSIOLOGY_REPORT_ENABLED=false` (503; the skill then tells Orion the report is off).

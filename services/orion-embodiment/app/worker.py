@@ -147,6 +147,8 @@ class EmbodimentWorker:
         # many successful injects it has landed in that conversation.
         self._abandon_participating_since_ms: dict[str, float] = {}
         self._abandon_own_utterances: dict[str, int] = {}
+        # When a leave was last sent per conversation: one leave, then wait.
+        self._abandon_leave_sent_ms: dict[str, float] = {}
         self._salience = SalienceState()
         # Conversation-completion tracking for the journal gate (perception delta).
         self._active_conversation_id: Optional[str] = None
@@ -803,6 +805,7 @@ class EmbodimentWorker:
         # No active conversation — drop abandon clocks so a later rejoin starts fresh.
         self._abandon_participating_since_ms.clear()
         self._abandon_own_utterances.clear()
+        self._abandon_leave_sent_ms.clear()
         await self._maybe_initiate_conversation(perception)
 
     async def _maybe_abandon_dead_chat(
@@ -832,6 +835,12 @@ class EmbodimentWorker:
             participating_since_ms=self._abandon_participating_since_ms.get(cid),
         ):
             return
+        # The chat stays visible until the engine processes the leave. Resending every
+        # tick queued ~84k leaveConversation inputs on 2026-10-28; every NPC action then
+        # timed out behind them and the town froze. One leave per abandon window.
+        sent_ms = self._abandon_leave_sent_ms.get(cid)
+        if sent_ms is not None and now_ms - sent_ms < abandon_sec * 1000.0:
+            return
         try:
             await asyncio.to_thread(
                 aitown_client.leave_conversation,
@@ -839,6 +848,7 @@ class EmbodimentWorker:
                 conversation_id=cid,
                 world_id=self._world_id or None,
             )
+            self._abandon_leave_sent_ms[cid] = now_ms
             logger.info("embodiment_dead_chat_abandoned convo=%s", cid)
         except Exception:
             logger.exception("embodiment_dead_chat_abandon_failed convo=%s", cid)

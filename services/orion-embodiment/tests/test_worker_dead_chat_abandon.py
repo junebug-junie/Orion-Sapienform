@@ -23,6 +23,7 @@ def _worker(**kwargs) -> EmbodimentWorker:
     w._world_id = "w1"
     w._abandon_participating_since_ms = {}
     w._abandon_own_utterances = {}
+    w._abandon_leave_sent_ms = {}
     w._faced_conversations = set()
     w._opened_conversations = set()
     w._speaking_conversations = set()
@@ -142,3 +143,33 @@ def test_engage_abandons_never_spoke_with_fresh_partner_spam():
     leave.assert_called_once_with(
         player_id="p:29", conversation_id="c:1", world_id="w1"
     )
+
+
+def test_dead_chat_sends_one_leave_per_abandon_window():
+    """2026-10-28: the chat stays visible until the engine processes the leave, so a
+    leave per tick flooded the input queue (~84k) and froze the town."""
+    w = _worker(abandon_sec=180.0)
+    perception = WorldPerceptionV1(
+        player_id="p:29",
+        position={"x": 1.0, "y": 1.0},
+        nearby_players=[],
+        active_conversation={
+            "conversation_id": "c:1",
+            "status": "participating",
+            "participants": ["p:29", "p:0"],
+            "other": {"player_id": "p:0", "name": "Mara Vale"},
+            "messages": [{"author_id": "p:29", "text": "old line", "created_ms": 1_000.0}],
+            "facing_partner": True,
+        },
+    )
+    with patch("app.worker._utcnow") as now_mock, patch(
+        "app.worker.aitown_client.leave_conversation"
+    ) as leave, patch("app.worker.asyncio.to_thread", new_callable=AsyncMock) as to_thread:
+        to_thread.side_effect = lambda fn, **kwargs: fn(**kwargs)
+        for t in (181.0, 184.0, 187.0, 300.0):  # 3 s ticks, chat still visible
+            now_mock.return_value = datetime.fromtimestamp(t, tz=timezone.utc)
+            asyncio.run(w._engage_conversation(perception))
+        assert leave.call_count == 1
+        now_mock.return_value = datetime.fromtimestamp(362.0, tz=timezone.utc)  # window passed
+        asyncio.run(w._engage_conversation(perception))
+        assert leave.call_count == 2

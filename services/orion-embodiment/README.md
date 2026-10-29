@@ -105,7 +105,7 @@ This service guarantees the `!pathfinding` precondition for Orion:
 
 ## Dead-chat abandon
 
-`EMBODIMENT_CONVERSATION_ABANDON_SEC` (default `180`) walks Orion out of a `participating` conversation that has gone dead: either the latest transcript line is older than the window, or Orion has never successfully spoken and has been participating that long. Sends the town's `leaveConversation` input (mechanical; no LLM). `0` disables. Companion to AI Town's `orion-mechanical-leave.patch` (NPC duration leave without an LLM goodbye).
+`EMBODIMENT_CONVERSATION_ABANDON_SEC` (default `180`) walks Orion out of a `participating` conversation that has gone dead: either the latest transcript line is older than the window, or Orion has never successfully spoken and has been participating that long. Sends the town's `leaveConversation` input (mechanical; no LLM). `0` disables. Companion to AI Town's `orion-mechanical-leave.patch` (NPC duration leave without an LLM goodbye). It sends one leave per conversation per window. The chat stays visible until the engine processes the leave, and on 2026-10-28 a leave on every 3 s tick queued about 84,000 inputs. Every NPC action then timed out behind them, and the town froze for a day.
 
 ## Memory: journal facts vs conversation content
 

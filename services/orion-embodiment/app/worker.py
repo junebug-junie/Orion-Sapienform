@@ -1205,7 +1205,8 @@ class EmbodimentWorker:
                     timeout_sec=float(self._settings.unified_timeout_sec),
                     participant_continuity=participant_continuity,
                 )
-                if grounded.strip():
+                # Junk ("[]", error text) falls through to the quick path, not a skipped turn.
+                if is_injectable(grounded):
                     return grounded
             except Exception as exc:
                 logger.info(

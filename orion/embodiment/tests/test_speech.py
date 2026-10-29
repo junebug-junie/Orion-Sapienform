@@ -121,5 +121,7 @@ def test_letterless_replies_are_not_speech():
 
     for junk in ("[]", "{}", "  ", "...", '""', "—", "", None):
         assert not is_injectable(junk), junk
-    for line in ("Hi.", "I hear it.", "Já!", "好"):
+    for line in ("Hi.", "I hear it.", "Já!", "好", "42", "3:15"):
         assert is_injectable(line), line
+    # Plumbing errors posted as speech (2026-08-19 class).
+    assert not is_injectable("[Error: llamacpp timed out after waiting]")

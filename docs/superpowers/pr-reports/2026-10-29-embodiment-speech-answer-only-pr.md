@@ -1,7 +1,7 @@
 ## Summary
 
 - Orion's town speech now reads only the model's answer. On an empty answer it no longer falls back to the model's reasoning.
-- `is_injectable` (`orion/embodiment/speech.py`) now requires at least one letter. Live 2026-10-29 (`c:609091`), Orion posted `[]`, an empty structured answer that passed the whitespace-only check.
+- `is_injectable` (`orion/embodiment/speech.py`) now requires at least one letter or digit, and rejects plumbing error text (`looks_like_error_text`). Live 2026-10-29 (`c:609091`), Orion posted `[]`, an empty structured answer that passed the whitespace-only check.
 - Both speech paths in `services/orion-embodiment/app/worker.py` move from `extract_cortex_payload_text` (reasoning fallback on by default) to `extract_cortex_answer_text`. That module's own docstring says text shown as Orion's words must use the latter.
 - Live 2026-10-29 01:38 UTC (`c:608777`, Orion↔Sofia): Orion opened a chat, so there was no partner line yet, and the prompt allows an empty reply. The model reasoned its way to empty. The gateway separated `reasoning_content` (1,890 chars) correctly. Embodiment's extractor then posted that reasoning, which quotes the full speech prompt, as Orion's line.
 
@@ -53,7 +53,7 @@ mutation: old extractor restored -> test_request_utterance_quick_never_speaks_th
 
 ## Evals run
 
-None. Live check after deploy: Orion's town lines contain no prompt text, and an empty answer logs `embodiment_speech_empty_reply_skipped`.
+None. Live, 2026-10-29 01:50-02:20 UTC, on `quick_background` too: the reasoning leaked twice more (`c:609823`, `c:609988`) and `[]` twice (`c:609823`, `c:609988`), so the bug is route-independent. Town speech was turned off (`EMBODIMENT_SPEECH_ENABLED=false` in the live `.env`) until this deploys. Live check after deploy: Orion's town lines contain no prompt text, and an empty answer logs `embodiment_speech_empty_reply_skipped`.
 
 ## Docker/build/smoke checks
 
@@ -61,14 +61,24 @@ Not deployed.
 
 ## Review findings fixed
 
-(filled after review)
+- Finding (low/medium, pre-existing): error text like `[Error: llamacpp timed out…]` was speakable.
+  - Fix: `is_injectable` uses the canonical `looks_like_error_text`.
+  - Evidence: `test_letterless_replies_are_not_speech`.
+- Finding (low): a letters-only rule dropped replies like `42`.
+  - Fix: letters or digits.
+  - Evidence: same test.
+- Finding (low, pre-existing): a junk grounded reply skipped the turn instead of falling back to quick.
+  - Fix: the grounded path is accepted only if `is_injectable`.
+  - Evidence: worker.py.
+- Noted (low): the extractor reads dict-valued `structured`/`json`/`payload` fields as text. Not reachable for `chat_quick`.
+- Noted: junk that has letters (`null`, `*stays silent*`) still passes. The source is the speech prompt's "reply with an empty string"; that is a follow-up, not a word list.
 
 ## Restart required
 
 After merge, from the clean primary main checkout on athena:
 
 1. `git pull --ff-only` (rebuilds orion-embodiment).
-2. Set `EMBODIMENT_SPEECH_QUICK_LLM_ROUTE=quick_embodied` in `services/orion-embodiment/.env`.
+2. In `services/orion-embodiment/.env`, set `EMBODIMENT_SPEECH_ENABLED=true` and `EMBODIMENT_SPEECH_QUICK_LLM_ROUTE=quick_embodied`.
 3. `scripts/safe_docker_build.sh orion-embodiment up -d --force-recreate`
 
 ## Risks / concerns
@@ -78,6 +88,6 @@ After merge, from the clean primary main checkout on athena:
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2955
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

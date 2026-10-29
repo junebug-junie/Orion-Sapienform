@@ -362,3 +362,63 @@ def test_queueing_between_our_own_slots_is_not_a_dirty_round(monkeypatch, tmp_pa
     summary = json.loads((tmp_path / "out" / "summary.json").read_text())
     assert summary["by_cap"][0]["n"] == 1 and summary["meta"]["dropped"] == []
     assert calls == [200, 250.0]
+
+
+def test_foreign_work_on_a_slot_we_already_freed_is_dirty(monkeypatch) -> None:
+    # Both slots are ours. Slot 0's reply came back 5 s ago and it is busy again: someone else's request.
+    monkeypatch.setattr(bench, "http_json", lambda *a, **k: [{"id": 0, "is_processing": True},
+                                                              {"id": 1, "is_processing": True}])
+    w = bench.SlotWatch("http://x", (0, 1))
+    w._poll(0)
+    assert not w.dirty  # both still running our own requests
+    w.finished[0] = bench.time.monotonic() - 5
+    w._poll(0)
+    assert w.dirty
+
+
+def test_a_slot_busy_just_after_its_reply_is_not_dirty(monkeypatch) -> None:
+    monkeypatch.setattr(bench, "http_json", lambda *a, **k: [{"id": 0, "is_processing": True}])
+    w = bench.SlotWatch("http://x", (0, 1))
+    w.finished[0] = bench.time.monotonic()  # the server has not marked it idle yet
+    w._poll(0)
+    assert not w.dirty
+
+
+def test_one_round_records_when_each_reply_arrived(monkeypatch) -> None:
+    monkeypatch.setattr(bench, "one_request", lambda base, prompt, n, slot: (0.0, 10.0 + slot, {}))
+    finished: dict = {}
+    bench.one_round("http://x", "p", 8, (0, 1), finished)
+    assert finished == {0: 10.0, 1: 11.0}
+
+
+def test_one_round_fails_fast_without_waiting_for_the_other_slot(monkeypatch) -> None:
+    import threading
+
+    release = threading.Event()
+
+    def req(base, prompt, n, slot):
+        if slot == 0:
+            raise TimeoutError("stalled")
+        release.wait(10)  # the other request would run for minutes
+        return (0.0, 1.0, {})
+
+    monkeypatch.setattr(bench, "one_request", req)
+    t0 = bench.time.monotonic()
+    with pytest.raises(TimeoutError):
+        bench.one_round("http://x", "p", 8, (0, 1))
+    assert bench.time.monotonic() - t0 < 3
+    release.set()
+
+
+def test_zero_server_time_does_not_crash_the_round() -> None:
+    power = [(t / 10, 200.0) for t in range(0, 201)]
+    a = (0.0, 12.0, {"prompt_ms": 0.0, "predicted_ms": 9000.0, "prompt_n": 0, "predicted_n": 270})
+    b = (0.0, 13.0, {"prompt_ms": 2000.0, "predicted_ms": 8000.0, "prompt_n": 1000, "predicted_n": 240})
+    assert bench.to_round_sample(150, 0, _sampler(power), [a, b]).slots == 2
+
+
+@pytest.mark.parametrize("extra", [["--slots", ""], ["--slots", "0,"], ["--prompt-sentences", "0"]])
+def test_bad_flags_are_refused_cleanly(monkeypatch, tmp_path, extra) -> None:
+    calls = _patch_main(monkeypatch)
+    assert bench.main(_argv(tmp_path) + extra) == 2
+    assert calls == []

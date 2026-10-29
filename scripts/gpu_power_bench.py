@@ -60,6 +60,8 @@ SMI_TIMEOUT_S = 30
 # a request queued behind real agent work waits seconds, so more than this means its windows are wrong.
 MAX_OVERHEAD_S = 2.0
 SAMPLE_STALE_S = 5.0  # no fresh power reading for this long = the sampler is dead; abort
+# A slot can still read as busy for a moment after its reply arrived; past this, it is new work.
+FINISH_GRACE_S = 1.0
 HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
 
 
@@ -256,19 +258,26 @@ def token_counter(base: str) -> float | None:
 
 
 class SlotWatch(threading.Thread):
-    """Polls /slots during one request or round; `.dirty` is True if any slot not ours did work
-    meanwhile. Three failed polls in a row set `.broken` (abort the run, do not keep dropping samples)."""
+    """Polls /slots during one request or round; `.dirty` is True if a slot not ours did work meanwhile,
+    or one of ours was busy again after its reply came back (`finished`, filled by `one_round`): with
+    every slot ours, foreign work can only land on a slot we already freed. Three failed polls in a
+    row set `.broken` (abort the run, do not keep dropping samples)."""
 
     def __init__(self, base: str, our_slots: tuple[int, ...]) -> None:
         super().__init__(daemon=True)
         self.base, self.our_slots = base, tuple(our_slots)
         self.dirty = False
         self.broken = False
+        self.finished: dict[int, float] = {}  # slot -> monotonic time its reply arrived
         self._halt = threading.Event()
 
     def _poll(self, fails: int) -> int:
         try:
-            self.dirty |= bool(busy_slots(self.base, ignore=self.our_slots))
+            busy = busy_slots(self.base)
+            now = time.monotonic()
+            self.dirty |= any(s not in self.our_slots
+                              or (s in self.finished and now - self.finished[s] > FINISH_GRACE_S)
+                              for s in busy)
             return 0
         except Exception:  # noqa: BLE001
             self.dirty = True
@@ -309,24 +318,36 @@ def one_request(base: str, prompt: str, n_predict: int, slot: int) -> tuple[floa
     return t_send, time.monotonic(), res["timings"]
 
 
-def one_round(base: str, prompt: str, n_predict: int, slots: tuple[int, ...]) -> list[tuple[float, float, dict]]:
-    """One request per slot, all sent at once. Daemon threads, not an executor: a Ctrl+C must not
-    leave the process waiting minutes for replies after the card's limit is restored."""
+def one_round(base: str, prompt: str, n_predict: int, slots: tuple[int, ...],
+              finished: dict[int, float] | None = None) -> list[tuple[float, float, dict]]:
+    """One request per slot, all sent at once; each reply's arrival is recorded in `finished`.
+    Daemon threads, not an executor, and the first failure is raised at once: a Ctrl+C or a dead
+    request must not keep the card capped while the other request runs on for minutes."""
+    finished = {} if finished is None else finished
     if len(slots) == 1:
-        return [one_request(base, prompt, n_predict, slots[0])]
+        r = one_request(base, prompt, n_predict, slots[0])
+        finished[slots[0]] = r[1]
+        return [r]
     results: list = [None] * len(slots)
+    lock, done = threading.Lock(), threading.Event()
+    left = [len(slots)]
 
     def go(i: int, slot: int) -> None:
         try:
             results[i] = one_request(base, prompt, n_predict, slot)
+            finished[slot] = results[i][1]
         except BaseException as exc:  # noqa: BLE001 -- re-raised in the calling thread below
             results[i] = exc
+            done.set()
+        with lock:
+            left[0] -= 1
+            if not left[0]:
+                done.set()
 
-    threads = [threading.Thread(target=go, args=(i, s), daemon=True) for i, s in enumerate(slots)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    for i, s in enumerate(slots):
+        threading.Thread(target=go, args=(i, s), daemon=True).start()
+    while not done.wait(1.0):
+        pass
     for r in results:
         if isinstance(r, BaseException):
             raise r
@@ -382,8 +403,10 @@ def to_round_sample(cap: int, rep: int, sampler: Sampler, results: list[tuple[fl
         cap_w=cap, rep=rep, prompt_n=pn,
         prompt_s=round(max(tm["prompt_ms"] for *_, tm in results) / 1000, 3), gen_n=gn,
         gen_s=round(max(tm["predicted_ms"] for *_, tm in results) / 1000, 3),
-        prompt_tok_s=round(statistics.median(tm["prompt_n"] / tm["prompt_ms"] * 1000 for *_, tm in results), 1),
-        gen_tok_s=round(statistics.median(tm["predicted_n"] / tm["predicted_ms"] * 1000 for *_, tm in results), 2),
+        prompt_tok_s=round(statistics.median(tm["prompt_n"] / tm["prompt_ms"] * 1000 if tm["prompt_ms"] else 0.0
+                                             for *_, tm in results), 1),
+        gen_tok_s=round(statistics.median(tm["predicted_n"] / tm["predicted_ms"] * 1000 if tm["predicted_ms"]
+                                          else 0.0 for *_, tm in results), 2),
         prompt_j_per_tok=None, gen_j_per_tok=None,
         gen_avg_w=round(e_all / wall, 1) if e_all is not None and wall else None,
         max_temp_c=max(sampler.window(sampler.temp, t_start, t_end), default=0),
@@ -450,7 +473,7 @@ def run_caps(args: argparse.Namespace, base: str, caps: list[int], sampler: Samp
             watch = SlotWatch(base, slots)
             watch.start()
             try:
-                results = one_round(base, prompt, args.n_predict, slots)
+                results = one_round(base, prompt, args.n_predict, slots, watch.finished)
             finally:
                 watch.stop()
                 watch.join()
@@ -506,7 +529,14 @@ def main(argv: list[str] | None = None) -> int:
 
     base = f"http://127.0.0.1:{args.port}"
     caps = [int(c) for c in args.caps.split(",")]
-    args.slot_ids = tuple(int(s) for s in args.slots.split(","))
+    try:
+        args.slot_ids = tuple(int(s) for s in args.slots.split(","))
+    except ValueError:
+        print(f"--slots {args.slots!r}: expected slot ids like 0 or 0,1", file=sys.stderr)
+        return 2
+    if args.prompt_sentences < 1:
+        print("--prompt-sentences must be at least 1", file=sys.stderr)
+        return 2
     if len(set(args.slot_ids)) != len(args.slot_ids):
         print(f"--slots {args.slots} repeats a slot", file=sys.stderr)
         return 2

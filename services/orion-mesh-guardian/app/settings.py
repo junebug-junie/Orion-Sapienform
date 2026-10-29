@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     remote_container_watch_enabled: bool = Field(True, alias="MESH_GUARDIAN_REMOTE_CONTAINER_WATCH_ENABLED")
     remote_container_hosts: str = Field("circe", alias="MESH_GUARDIAN_REMOTE_CONTAINER_HOSTS")
     remote_container_stale_sec: int = Field(300, alias="MESH_GUARDIAN_REMOTE_CONTAINER_STALE_SEC")
+    # Stopped containers (stability.stopped_containers): a container with restart policy
+    # always/unless-stopped sitting exited/created this long, or a "<12 hex>_<name>" compose
+    # recreate left "Created", raises one card per stop episode. 2026-10-29: a killed rebuild left
+    # the harness worker stopped ~9.5 h with no card. Local docker only.
+    stopped_container_watch_enabled: bool = Field(True, alias="MESH_GUARDIAN_STOPPED_CONTAINER_WATCH_ENABLED")
+    stopped_container_grace_sec: int = Field(600, alias="MESH_GUARDIAN_STOPPED_CONTAINER_GRACE_SEC")
     falkordb_uri: str = Field("redis://orion-athena-falkordb:6379", alias="FALKORDB_URI")
     falkordb_bus_graph: str = Field("orion_bus_synapse", alias="FALKORDB_BUS_GRAPH")
     # GPU actuation watch (app/gpu_watch.py): probes every actuated role's GPU lane controller

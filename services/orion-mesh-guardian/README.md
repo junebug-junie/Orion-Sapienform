@@ -96,6 +96,35 @@ over 235 h, one per 23.5 min) the first card lands at 72 min, inside the 2 h win
 ~22 s cadence, at cycle 2. The whole incident would have raised 40 cards (one per 6 h) instead of 0.
 A reporter that stops heartbeating reads blind 5 min later.
 
+## Stopped containers (athena)
+
+Added after 2026-10-29: a post-pull rebuild was killed inside `orion-harness-governor up -d --build`.
+Compose had stopped the old container and left its replacement "Created" under a temp name. No worker
+served `orion:harness:run:request` for ~9.5 h, and nothing alerted: the crash-loop check only sees
+restarts, and a container that is stopped cleanly never restarts.
+
+- **Rule:** a container whose restart policy is `always` or `unless-stopped`, in state `exited` or
+  `created`, for longer than `MESH_GUARDIAN_STOPPED_CONTAINER_GRACE_SEC` (600). A `<12 hex>_<name>`
+  container in `created` is a half-finished compose recreate and is flagged whatever its policy.
+  The clock is the container's own stop time (`FinishedAt`, or `Created` for a created one).
+- **Grouping:** by compose service. One outage (old container exited + temp replacement created)
+  is one card. A stopped leftover beside a running container of the same compose service is not
+  flagged.
+- **No nagging:** one card per stop episode (container id + stop time). A container that stays
+  stopped never re-cards; if it starts and stops again, that is a new card. Episodes live in
+  memory, so a guardian restart re-cards each still-stopped container once. To silence one you
+  stopped on purpose, `docker rm` it.
+- **Read:** one `/containers/json?all=true` call, then `inspect` only for the non-running ones.
+  Local docker only: the circe census carries restart counts, not state.
+- Cards go through `_publish_alerts` (AlertGate, then notify `attention_request`), the same Hub
+  Pending Attention surface as the other stability cards (`heartbeat: stability`,
+  `event: stopped_container`).
+- Disable with `MESH_GUARDIAN_STOPPED_CONTAINER_WATCH_ENABLED=false`.
+
+Live check, athena, 2026-10-29: 133 containers, 2 not running. One card: `orion-athena-kev`
+(`unless-stopped`, exited 2026-10-15; kev moved to circe). The other is a one-shot init job with
+restart `no`, not flagged.
+
 ## Tests
 
 ```bash

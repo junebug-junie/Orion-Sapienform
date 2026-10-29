@@ -24,6 +24,11 @@
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/session_start_graph_worktree_guard.py\"",
             "timeout": 25
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/check_rebuild_log.py\" --session-start",
+            "timeout": 10
           }
         ]
       }

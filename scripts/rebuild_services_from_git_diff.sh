@@ -6,6 +6,11 @@
 #
 # Usage:
 #   scripts/rebuild_services_from_git_diff.sh [--dry-run] [--base REF] [--list-only]
+#   scripts/rebuild_services_from_git_diff.sh --services "svc ..." [--recreate "svc ..."]
+#
+# --services skips the git-diff planner and the migration step and rebuilds
+# exactly the named stacks, with the same per-stack rules. It is the command
+# an interrupted run prints (ABORT) to finish what it left undone.
 #
 # Requires:
 #   - python3
@@ -26,6 +31,8 @@ cd "$REPO_ROOT"
 DRY_RUN=0
 LIST_ONLY=0
 BASE_REF=""
+ONLY_SERVICES=""
+ONLY_RECREATE=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -43,8 +50,29 @@ while [ $# -gt 0 ]; do
                 exit 2
             fi
             ;;
+        --services|--recreate)
+            opt="$1"
+            shift
+            case "${1:-}" in
+                ""|-*)
+                    echo "rebuild_services_from_git_diff.sh: $opt requires a service list" >&2
+                    exit 2
+                    ;;
+            esac
+            for _svc in $1; do
+                if ! printf '%s' "$_svc" | grep -Eq '^[a-z0-9][a-z0-9_-]*$' || [ ! -d "$REPO_ROOT/services/$_svc" ]; then
+                    echo "rebuild_services_from_git_diff.sh: $opt: unknown service: $_svc" >&2
+                    exit 2
+                fi
+            done
+            if [ "$opt" = "--services" ]; then
+                ONLY_SERVICES="$1"
+            else
+                ONLY_RECREATE="$1"
+            fi
+            ;;
         -h|--help)
-            sed -n '2,20p' "$0"
+            sed -n '2,26p' "$0"
             exit 0
             ;;
         *)
@@ -105,15 +133,42 @@ if [ -n "$BASE_REF" ]; then
 else
     set --
 fi
+if [ -n "$ONLY_SERVICES" ] && [ -n "$BASE_REF" ]; then
+    echo "rebuild_services_from_git_diff.sh: --services and --base do not combine" >&2
+    exit 2
+fi
+if [ -n "$ONLY_RECREATE" ] && [ -z "$ONLY_SERVICES" ]; then
+    echo "rebuild_services_from_git_diff.sh: --recreate needs --services" >&2
+    exit 2
+fi
+
+# A run killed by SIGKILL cannot write its own ABORT line (no trap runs). Say
+# so at the start of the next run, once: the step in flight, the services
+# never rebuilt, and the command that finishes them (scripts/check_rebuild_log.py
+# appends a DIED line so the same run is not reported twice). Never fails the run.
+if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] && [ -f "$REPO_ROOT/scripts/check_rebuild_log.py" ]; then
+    ORION_REBUILD_LOG="$REBUILD_LOG" python3 "$REPO_ROOT/scripts/check_rebuild_log.py" --mark </dev/null || true
+fi
 
 # --plan prints "<service>\t<build|recreate>". recreate = a changed repo path
 # is bind-mounted into the service's containers, so an unchanged image would
 # not recreate them (and a single-file mount keeps the old inode) -- those
 # get --force-recreate below.
-set +e
-PLAN=$(python3 "$PY" --plan "$@")
-PY_RC=$?
-set -e
+if [ -n "$ONLY_SERVICES" ]; then
+    PLAN=$(for _svc in $ONLY_SERVICES; do
+        if printf '%s\n' $ONLY_RECREATE | grep -qx "$_svc"; then
+            printf '%s\trecreate\n' "$_svc"
+        else
+            printf '%s\tbuild\n' "$_svc"
+        fi
+    done)
+    PY_RC=0
+else
+    set +e
+    PLAN=$(python3 "$PY" --plan "$@")
+    PY_RC=$?
+    set -e
+fi
 if [ "$PY_RC" -ne 0 ]; then
     if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ]; then
         rebuild_log "PLANNER_FAILED rc=$PY_RC base=${BASE_REF:-default}"
@@ -147,7 +202,8 @@ APPLY_RC=0
 APPLIER=""
 CHECK_PY=python3
 MIGRATIONS=""
-if [ "$LIST_ONLY" != "1" ]; then
+# --services finishes an earlier run, which already passed its migration step.
+if [ "$LIST_ONLY" != "1" ] && [ -z "$ONLY_SERVICES" ]; then
     set +e
     MIGRATIONS=$(python3 "$PY" --migrations "$@" 2>/dev/null)
     set -e
@@ -303,11 +359,59 @@ ANALYTICS="orion-analytics"
 FAILED=""
 REBUILT=0
 
+# Interrupted runs. Before this, a run killed mid-step just stopped: the log
+# showed a START with no END, and nothing named what was left undone
+# (2026-10-29: killed inside `orion-harness-governor up -d --build`; compose had
+# stopped the old container and left the new one "Created", so no worker served
+# orion:harness:run:request for ~9.5 h, and hub, thought and cortex-orch were
+# never rebuilt). Now any exit before DONE -- a signal, or set -e -- writes an
+# ABORT line naming the step in flight and the unfinished services, plus the
+# command that finishes them, to the run log and to stderr. SIGKILL runs no
+# trap: scripts/check_rebuild_log.py reports that case at the next run and at
+# session start. Bash runs a trap only after the foreground compose step
+# returns, so ABORT never cuts a step in half that was not already cut.
+RUN_ACTIVE=0
+CURRENT_SVC=""
+IN_FLIGHT=""
+QUEUED=""
+on_abort() {
+    [ "$RUN_ACTIVE" = "1" ] || return 0
+    RUN_ACTIVE=0
+    trap '' PIPE  # stdout may be the closed pipe that killed us; writes must fail, not re-signal
+    local todo recreate cmd
+    todo=$(printf '%s\n' $CURRENT_SVC $QUEUED | awk 'NF && !seen[$0]++' | tr '\n' ' ')
+    todo="${todo% }"
+    recreate=""
+    for _svc in $todo; do
+        if printf '%s\n' $RECREATE | grep -qx "$_svc" 2>/dev/null; then
+            recreate="$recreate $_svc"
+        fi
+    done
+    recreate="${recreate# }"
+    rebuild_log "ABORT reason=$1 in_flight=${IN_FLIGHT:-none} unfinished=${todo:-none} failed=${FAILED# }"
+    if [ -n "$todo" ]; then
+        cmd="scripts/rebuild_services_from_git_diff.sh --services '$todo'${recreate:+ --recreate '$recreate'}"
+        rebuild_log "ABORT-FINISH $cmd"
+        {
+            echo "rebuild_services_from_git_diff.sh: ABORTED ($1) during: ${IN_FLIGHT:-between steps}"
+            echo "rebuild_services_from_git_diff.sh: not rebuilt: $todo"
+            echo "rebuild_services_from_git_diff.sh: a container of the step in flight may be stopped or left 'Created' (docker ps -a)"
+            echo "rebuild_services_from_git_diff.sh: finish from the primary main checkout: $cmd"
+        } >&2 2>/dev/null || true
+    fi
+}
+trap 'on_abort "exit rc=$?"' EXIT
+trap 'on_abort SIGINT; exit 130' INT
+trap 'on_abort SIGHUP; exit 129' HUP
+trap 'on_abort SIGTERM; exit 143' TERM
+trap 'on_abort SIGPIPE; exit 141' PIPE
+
 # run_safe_build <service-dir> <compose args...>; sets rc.
 run_safe_build() {
     local started
     started=$(date +%s) || started=0
     rebuild_log "START $*"
+    IN_FLIGHT="$*"
     set +e
     if [ -n "$ALLOW_SHARED" ]; then
         ORION_ALLOW_SHARED_CHECKOUT_WRITE="$ALLOW_SHARED" "$SAFE_BUILD" "$@"
@@ -316,10 +420,12 @@ run_safe_build() {
     fi
     rc=$?
     set -e
+    IN_FLIGHT=""
     rebuild_log "END rc=$rc seconds=$(($(date +%s) - started)) $*"
 }
 
 if [ "$DRY_RUN" != "1" ]; then
+    RUN_ACTIVE=1
     rebuild_log "RUN base=${BASE_REF:-default} services=$(printf '%s ' $SERVICES)recreate=$(printf '%s ' $RECREATE)"
 fi
 
@@ -528,9 +634,21 @@ EOF_EXTRA
     fi
 }
 
-for svc in $SERVICES; do
-    rebuild_one "$svc"
-done
+# rebuild_queue <services...>: rebuild each in order; QUEUED always holds the
+# ones not started yet, CURRENT_SVC the one in progress (for on_abort).
+rebuild_queue() {
+    QUEUED="$*"
+    for svc in "$@"; do
+        QUEUED="${QUEUED#"$svc"}"
+        QUEUED="${QUEUED# }"
+        CURRENT_SVC="$svc"
+        rebuild_one "$svc"
+        CURRENT_SVC=""
+    done
+}
+
+# shellcheck disable=SC2086
+rebuild_queue $SERVICES
 
 # Files deferred behind a backup: wait, apply, then rebuild again the
 # consumers the deploy gate refused above. Only services that FAILED and are
@@ -555,15 +673,15 @@ if [ "$DEFERRED_RAN" = "1" ] && [ -n "${FAILED//[$'\n\r\t ']}" ]; then
         echo "rebuild_services_from_git_diff.sh: deferred migration pass done; rebuilding the services the deploy gate refused:$RETRY"
         rebuild_log "RETRY-AFTER-MIGRATION services=${RETRY# }"
         FAILED="$STILL_FAILED"
-        for svc in $RETRY; do
-            rebuild_one "$svc"
-        done
+        # shellcheck disable=SC2086
+        rebuild_queue $RETRY
     fi
 fi
 
 echo ""
 echo "rebuild_services_from_git_diff.sh: rebuilt $REBUILT service(s)"
 if [ "$DRY_RUN" != "1" ]; then
+    RUN_ACTIVE=0
     rebuild_log "DONE rebuilt=$REBUILT failed=${FAILED# }"
     echo "rebuild_services_from_git_diff.sh: run log: $REBUILD_LOG"
 fi

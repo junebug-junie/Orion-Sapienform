@@ -27,10 +27,13 @@ box. ``inside`` is never read as "went into a door".
 ``(exit_dist + g) / exit_speed``: slow walkers get later, wider windows.
 Approach portals have no speed: ``g`` is the transit in seconds.
 
-- Fewer than ``min_met`` met handoffs for the portal and kind: the prior band,
+- Fewer than ``min_arrivals`` arrivals (met, early or late) for the portal and
+  kind: the prior band,
   x0.4 to x3 of the topology's gap (approach: ``prior_sec``).
 - Otherwise: the split-conformal 10%-90% band of past ``g`` (met and late
-  rows; ambiguous rows never train). A kind without its own ``min_met`` uses
+  rows; ambiguous rows never train). Counting only ``met`` toward the switch
+  was a trap (2026-10-29): with a wrong prior most arrivals land early or late,
+  so the learned band never took over. A kind without its own ``min_arrivals`` uses
   the person band widened by ``person_widen``.
 
 **p-value, and the calm state it must have.** ``p`` is the probability of an
@@ -50,7 +53,7 @@ on-time arrival in the middle of the band has ``p`` near 1.
 Smallest p (granularity, not a rest-state floor): the conformal p cannot go
 below ``2 / (n + 1)`` with ``n`` calibration values, so under n = 39 no
 arrival can pass p < 0.05. The prior band gets the same floor as a
-``min_met``-value calibration set (``2 / (min_met + 1)``): a hand-set x0.4..x3
+``min_arrivals``-value calibration set (``2 / (min_arrivals + 1)``): a hand-set x0.4..x3
 guess must never call anything surprising, however short the transit (short
 transits are normal on the overlapping central walk). The attention gate is
 ``p < attention_p`` AND (a known person OR unusual for the hour); the replay
@@ -115,7 +118,7 @@ PRIOR_LO_FACTOR, PRIOR_HI_FACTOR = 0.4, 3.0
 class HandoffConfig:
     kinds: Tuple[str, ...] = ("person", "dog", "bicycle", "stroller")
     look_kinds: Tuple[str, ...] = ("person", "dog")
-    min_met: int = 10
+    min_arrivals: int = 10
     person_widen: float = 1.5
     min_coverage: float = 0.8
     # A census span counts as watched this long past its end (census windows
@@ -312,17 +315,17 @@ class Band:
     calib: Tuple[float, ...] = ()
 
 
-def choose_band(kind: str, learned: Mapping[str, Sequence[float]], met_counts: Mapping[str, int], portal,
-                cfg: HandoffConfig) -> Band:
-    """Own band after ``min_met`` met handoffs of this kind; else the person
-    band widened; else the prior."""
+def choose_band(kind: str, learned: Mapping[str, Sequence[float]], portal, cfg: HandoffConfig) -> Band:
+    """Own band after ``min_arrivals`` arrivals of this kind (``learned`` holds
+    every met, early and late ``g``); else the person band widened; else the
+    prior."""
     own = learned.get(kind) or ()
-    if met_counts.get(kind, 0) >= cfg.min_met:
+    if len(own) >= cfg.min_arrivals:
         b = conformal_band(own)
         if b:
             return Band(b[0], b[1], "learned", tuple(own))
-    if kind != "person" and met_counts.get("person", 0) >= cfg.min_met:
-        people = learned.get("person") or ()
+    people = learned.get("person") or ()
+    if kind != "person" and len(people) >= cfg.min_arrivals:
         b = conformal_band(people)
         if b:
             lo, hi = b
@@ -366,8 +369,8 @@ def _phi(z: float) -> float:
     return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
 
 
-def prior_p_floor(min_met: int) -> float:
-    return 2.0 / (int(min_met) + 1)
+def prior_p_floor(min_arrivals: int) -> float:
+    return 2.0 / (int(min_arrivals) + 1)
 
 
 def _lognormal_of(band: Band) -> Tuple[float, float]:

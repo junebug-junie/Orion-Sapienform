@@ -65,7 +65,8 @@ node --test --test-reporter=tap services/orion-hub/static/js/body-economy.test.j
 node --test $(find services/orion-hub/static/js -name '*.test.js')                  -> pass 392, fail 0
 pytest services/orion-hub/tests/test_body_economy_routes.py                          -> 17 passed
 pytest services/orion-hub/tests/test_body_economy_browser_smoke.py (Chromium)        -> 3 passed
-pytest services/orion-hub/tests (full hub suite)                                     -> see PR comment / CI
+pytest services/orion-hub/tests (full hub suite, local)                              -> 4433 passed, 146 skipped, 3 xfailed
+CI: all 17 checks green, incl. "Hub — full tests folder" and hub-schedule-browser-smoke
 ```
 
 Mutation check: I removed the family-type guard. The malformed-row smoke then failed with "could not draw ... reading 'length'". I put the guard back.

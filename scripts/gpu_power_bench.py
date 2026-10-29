@@ -7,12 +7,21 @@ building. Run it on the card's own host, as root (setting a power limit needs ro
 
     sudo python3 scripts/gpu_power_bench.py --gpu 2 --port 8016
 
+Shaped like real agent work (gpu2 72 h median: 6.5k new prompt tokens, 2.5k written, top tenth 16k/13.6k,
+often both slots at once), compare only the caps that matter:
+
+    sudo python3 scripts/gpu_power_bench.py --gpu 2 --port 8016 --caps 250,150 \
+        --prompt-sentences 480 --n-predict 4096 --slots 0,1
+
 Stdlib only, so it runs with the host's python3 and no Orion venv.
 
 What it does, per cap (default 250, 200, 150, 100 W):
   1. sets the cap (nvidia-smi -pl), waits for the card to settle;
-  2. sends the same fixed prompt REPEATS times to one slot, prompt cache off, a fixed token count;
-  3. integrates the card's power over the reading phase and the writing phase of each request.
+  2. sends the same fixed prompt REPEATS times, prompt cache off, a fixed token count. With several
+     --slots, each repeat is one round: one request per slot, all sent at once;
+  3. integrates the card's power over the reading phase and the writing phase of each request
+     (one slot), or over the whole round (several slots: their phases overlap, so only the round's
+     all-in joules per written token are honest).
 
 It takes no GPU pool hold (a pool hold that lands on agent-gpu2 also pins gpu1). Instead a request
 goes out only when every slot is idle and the card is near idle power, and a sample is thrown away
@@ -44,7 +53,7 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-PROMPT_SENTENCES = 60  # ~2k tokens (220 measured 7.4k on Bonsai 2); the same bytes on every run
+PROMPT_SENTENCES = 60  # ~2k tokens (60 measured 1,981 on Bonsai 2, ~33 per sentence); same bytes every run
 SMI_TIMEOUT_S = 30
 # Request round trip beyond the server's own prompt_ms + predicted_ms: tokenizing, HTTP, JSON.
 # An idle card measured 0.84 s of it on circe gpu2 (2026-10-29, 2k-token prompt, 512 tokens out);
@@ -64,11 +73,11 @@ class BenchAbort(RuntimeError):
 SERVER_GONE = (urllib.error.URLError, OSError, http.client.HTTPException, json.JSONDecodeError, KeyError)
 
 
-def fixed_prompt() -> str:
+def fixed_prompt(sentences: int = PROMPT_SENTENCES) -> str:
     lines = [
         f"Note {i}: the walkway light turned on at {i % 24:02d}:{(i * 7) % 60:02d}, "
         f"the cabinet read {30 + (i % 9)} degrees, and nothing else changed."
-        for i in range(PROMPT_SENTENCES)
+        for i in range(sentences)
     ]
     return "\n".join(lines) + "\nWrite a long, plain summary of these notes:\n"
 
@@ -108,6 +117,12 @@ class Sample:
     max_temp_c: int
     max_sm_mhz: int
     waited_s: float = 0.0
+    slots: int = 1
+    # Generated tokens per second of the whole request or round, reading included: the card's output rate.
+    total_gen_tok_s: float | None = None
+    # Joules from first read to last write, per generated token. The one energy figure that stays
+    # honest when slots overlap; with one slot it is prompt + write energy over written tokens.
+    all_in_j_per_gen_tok: float | None = None
 
 
 class Sampler(threading.Thread):
@@ -216,12 +231,13 @@ def wait_for_server(base: str, wait_s: float) -> bool:
             time.sleep(10)
 
 
-def busy_slots(base: str, ignore: int | None = None) -> list[int]:
-    """Ids of slots doing work. Raises BenchAbort if this server's /slots cannot say."""
+def busy_slots(base: str, ignore: int | tuple[int, ...] = ()) -> list[int]:
+    """Ids of slots doing work, other than `ignore`. Raises BenchAbort if this server's /slots cannot say."""
+    ignore = (ignore,) if isinstance(ignore, int) else tuple(ignore)
     slots = http_json(f"{base}/slots", timeout=10)
     if not isinstance(slots, list) or not slots or any("is_processing" not in s for s in slots):
         raise BenchAbort(f"{base}/slots does not report is_processing per slot; cannot detect sharing")
-    return [s["id"] for s in slots if s["is_processing"] and s["id"] != ignore]
+    return [s["id"] for s in slots if s["is_processing"] and s["id"] not in ignore]
 
 
 _DECODE_RE = re.compile(r"^llamacpp:(tokens_predicted_total|prompt_tokens_total)\s+([0-9.e+]+)$", re.M)
@@ -240,19 +256,19 @@ def token_counter(base: str) -> float | None:
 
 
 class SlotWatch(threading.Thread):
-    """Polls /slots during one request; `.dirty` is True if any other slot did work meanwhile.
-    Three failed polls in a row set `.broken` (abort the run, do not keep dropping samples)."""
+    """Polls /slots during one request or round; `.dirty` is True if any slot not ours did work
+    meanwhile. Three failed polls in a row set `.broken` (abort the run, do not keep dropping samples)."""
 
-    def __init__(self, base: str, our_slot: int) -> None:
+    def __init__(self, base: str, our_slots: tuple[int, ...]) -> None:
         super().__init__(daemon=True)
-        self.base, self.our_slot = base, our_slot
+        self.base, self.our_slots = base, tuple(our_slots)
         self.dirty = False
         self.broken = False
         self._halt = threading.Event()
 
     def _poll(self, fails: int) -> int:
         try:
-            self.dirty |= bool(busy_slots(self.base, ignore=self.our_slot))
+            self.dirty |= bool(busy_slots(self.base, ignore=self.our_slots))
             return 0
         except Exception:  # noqa: BLE001
             self.dirty = True
@@ -293,6 +309,30 @@ def one_request(base: str, prompt: str, n_predict: int, slot: int) -> tuple[floa
     return t_send, time.monotonic(), res["timings"]
 
 
+def one_round(base: str, prompt: str, n_predict: int, slots: tuple[int, ...]) -> list[tuple[float, float, dict]]:
+    """One request per slot, all sent at once. Daemon threads, not an executor: a Ctrl+C must not
+    leave the process waiting minutes for replies after the card's limit is restored."""
+    if len(slots) == 1:
+        return [one_request(base, prompt, n_predict, slots[0])]
+    results: list = [None] * len(slots)
+
+    def go(i: int, slot: int) -> None:
+        try:
+            results[i] = one_request(base, prompt, n_predict, slot)
+        except BaseException as exc:  # noqa: BLE001 -- re-raised in the calling thread below
+            results[i] = exc
+
+    threads = [threading.Thread(target=go, args=(i, s), daemon=True) for i, s in enumerate(slots)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    for r in results:
+        if isinstance(r, BaseException):
+            raise r
+    return results
+
+
 def waited_s(t_send: float, t_recv: float, timings: dict) -> float:
     """Round-trip time not spent in the server's own prompt and generation clocks."""
     return (t_recv - t_send) - (timings["prompt_ms"] + timings["predicted_ms"]) / 1000
@@ -309,6 +349,7 @@ def to_sample(cap: int, rep: int, sampler: Sampler, t_recv: float, timings: dict
     e_prompt = energy_joules(sampler.power, t_start, t_mid)
     e_gen = energy_joules(sampler.power, t_mid, t_end)
     pn, gn = int(timings["prompt_n"]), int(timings["predicted_n"])
+    e_all = e_prompt + e_gen if e_prompt is not None and e_gen is not None else None
     return Sample(
         cap_w=cap, rep=rep, prompt_n=pn, prompt_s=round(prompt_s, 3), gen_n=gn, gen_s=round(gen_s, 3),
         prompt_tok_s=round(pn / prompt_s, 1) if prompt_s else 0.0,
@@ -318,6 +359,38 @@ def to_sample(cap: int, rep: int, sampler: Sampler, t_recv: float, timings: dict
         gen_avg_w=round(e_gen / gen_s, 1) if e_gen is not None and gen_s else None,
         max_temp_c=max(sampler.window(sampler.temp, t_start, t_end), default=0),
         max_sm_mhz=max(sampler.window(sampler.clock, t_start, t_end), default=0),
+        total_gen_tok_s=round(gn / (prompt_s + gen_s), 2) if prompt_s + gen_s else None,
+        all_in_j_per_gen_tok=round(e_all / gn, 3) if e_all is not None and gn else None,
+    )
+
+
+def to_round_sample(cap: int, rep: int, sampler: Sampler, results: list[tuple[float, float, dict]]) -> Sample:
+    """One sample for a round of overlapping requests. Speeds are the median request's (what one turn
+    sees); energy is the whole round's, from the first request starting to read to the last reply,
+    per generated token. Per-phase joules are None: one request reads while another writes."""
+    if len(results) == 1:
+        return to_sample(cap, rep, sampler, results[0][1], results[0][2])
+    spans = []
+    for _t_send, t_recv, tm in results:
+        spans.append((t_recv - (tm["prompt_ms"] + tm["predicted_ms"]) / 1000, t_recv))
+    t_start, t_end = min(a for a, _ in spans), max(b for _, b in spans)
+    e_all = energy_joules(sampler.power, t_start, t_end)
+    pn = sum(int(tm["prompt_n"]) for *_, tm in results)
+    gn = sum(int(tm["predicted_n"]) for *_, tm in results)
+    wall = t_end - t_start
+    return Sample(
+        cap_w=cap, rep=rep, prompt_n=pn,
+        prompt_s=round(max(tm["prompt_ms"] for *_, tm in results) / 1000, 3), gen_n=gn,
+        gen_s=round(max(tm["predicted_ms"] for *_, tm in results) / 1000, 3),
+        prompt_tok_s=round(statistics.median(tm["prompt_n"] / tm["prompt_ms"] * 1000 for *_, tm in results), 1),
+        gen_tok_s=round(statistics.median(tm["predicted_n"] / tm["predicted_ms"] * 1000 for *_, tm in results), 2),
+        prompt_j_per_tok=None, gen_j_per_tok=None,
+        gen_avg_w=round(e_all / wall, 1) if e_all is not None and wall else None,
+        max_temp_c=max(sampler.window(sampler.temp, t_start, t_end), default=0),
+        max_sm_mhz=max(sampler.window(sampler.clock, t_start, t_end), default=0),
+        slots=len(results),
+        total_gen_tok_s=round(gn / wall, 2) if wall else None,
+        all_in_j_per_gen_tok=round(e_all / gn, 3) if e_all is not None and gn else None,
     )
 
 
@@ -335,11 +408,12 @@ def summarize(samples: list[Sample], caps: list[int]) -> list[dict]:
         rows.append({"cap_w": cap, "n": len(got), "prompt_tok_s": med("prompt_tok_s"),
                      "gen_tok_s": med("gen_tok_s"), "gen_avg_w": med("gen_avg_w"),
                      "prompt_j_per_tok": med("prompt_j_per_tok"), "gen_j_per_tok": med("gen_j_per_tok"),
+                     "total_gen_tok_s": med("total_gen_tok_s"), "all_in_j_per_gen_tok": med("all_in_j_per_gen_tok"),
                      "max_temp_c": max((s.max_temp_c for s in got), default=None),
                      "max_sm_mhz": max((s.max_sm_mhz for s in got), default=None)})
     top = rows[0] if rows else None
     for r in rows:
-        for key in ("gen_tok_s", "prompt_tok_s", "gen_j_per_tok"):
+        for key in ("gen_tok_s", "prompt_tok_s", "gen_j_per_tok", "total_gen_tok_s", "all_in_j_per_gen_tok"):
             r[f"{key}_vs_top"] = (round(r[key] / top[key], 3)
                                   if top and r[key] is not None and top[key] else None)
     return rows
@@ -357,12 +431,13 @@ def write_outputs(out: Path, samples: list[Sample], caps: list[int], meta: dict)
 
 def run_caps(args: argparse.Namespace, base: str, caps: list[int], sampler: Sampler,
              samples: list[Sample], dropped: list[dict], save) -> None:
-    prompt = fixed_prompt()
+    prompt = fixed_prompt(args.prompt_sentences)
+    slots = args.slot_ids
     for cap in caps:
         set_limit(args.gpu, cap)
         print(f"\n== {cap} W ==", flush=True)
         time.sleep(args.settle_s)
-        one_request(base, prompt, 16, args.slot)  # warm-up at this cap, not recorded
+        one_request(base, prompt, 16, slots[0])  # warm-up at this cap, not recorded
         rep = attempts = 0
         while rep < args.repeats and attempts < args.repeats + args.max_retries:
             attempts += 1
@@ -372,36 +447,40 @@ def run_caps(args: argparse.Namespace, base: str, caps: list[int], sampler: Samp
                       flush=True)
                 continue
             before = token_counter(base)
-            watch = SlotWatch(base, args.slot)
+            watch = SlotWatch(base, slots)
             watch.start()
             try:
-                t_send, t_recv, timings = one_request(base, prompt, args.n_predict, args.slot)
+                results = one_round(base, prompt, args.n_predict, slots)
             finally:
                 watch.stop()
                 watch.join()
             if watch.broken:
                 raise BenchAbort("/slots stopped answering during a request")
             after = token_counter(base)
-            ours = timings["prompt_n"] + timings["predicted_n"]
+            ours = sum(tm["prompt_n"] + tm["predicted_n"] for *_, tm in results)
+            # Only the first request to start must not have waited (someone else on the server). The
+            # server reads our own prompts one after another, so the rest queue behind it by design;
+            # that queueing is part of what a multi-slot round measures (gpu2 live: 2nd waited 25 s).
+            waited = min(waited_s(t_send, t_recv, tm) for t_send, t_recv, tm in results)
             why = None
             if watch.dirty:
                 why = "other_slot_busy"
             elif before is not None and after is not None and after - before > ours + 16:
                 why = f"server_counted_{after - before - ours:.0f}_extra_tokens"
-            elif waited_s(t_send, t_recv, timings) > MAX_OVERHEAD_S:
-                why = f"request_waited_{waited_s(t_send, t_recv, timings):.2f}s"
+            elif waited > MAX_OVERHEAD_S:
+                why = f"request_waited_{waited:.2f}s"
             if why:
                 dropped.append({"cap_w": cap, "why": why})
                 print(f"  sample thrown away: {why}", flush=True)
                 continue
             time.sleep(0.5)  # let the sampler cover the end of the window
-            s = to_sample(cap, rep, sampler, t_recv, timings)
-            s.waited_s = round(waited_s(t_send, t_recv, timings), 3)
+            s = to_round_sample(cap, rep, sampler, results)
+            s.waited_s = round(waited, 3)
             samples.append(s)
             save()
             rep += 1
             print(f"  rep {rep}: read {s.prompt_tok_s} tok/s, write {s.gen_tok_s} tok/s, "
-                  f"{s.gen_avg_w} W, {s.gen_j_per_tok} J/token, {s.max_temp_c} C", flush=True)
+                  f"{s.gen_avg_w} W, {s.all_in_j_per_gen_tok} J/token all-in, {s.max_temp_c} C", flush=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -411,7 +490,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--caps", default="250,200,150,100", help="watts, comma separated, highest first")
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--n-predict", type=int, default=512)  # ~11 s of writing at 46 tok/s
-    ap.add_argument("--slot", type=int, default=0)
+    ap.add_argument("--slots", default="0",
+                    help="slot ids, comma separated; several = one request per slot, all at once")
+    ap.add_argument("--prompt-sentences", type=int, default=PROMPT_SENTENCES,
+                    help="prompt size; ~33 tokens each on Bonsai 2 (480 ~ 16k tokens)")
     ap.add_argument("--idle-w", type=float, default=80.0, help="card must draw under this before a request")
     ap.add_argument("--settle-s", type=float, default=15.0)
     ap.add_argument("--quiet-timeout-s", type=float, default=180.0)
@@ -424,6 +506,10 @@ def main(argv: list[str] | None = None) -> int:
 
     base = f"http://127.0.0.1:{args.port}"
     caps = [int(c) for c in args.caps.split(",")]
+    args.slot_ids = tuple(int(s) for s in args.slots.split(","))
+    if len(set(args.slot_ids)) != len(args.slot_ids):
+        print(f"--slots {args.slots} repeats a slot", file=sys.stderr)
+        return 2
     original, default, lo, hi = read_limits(args.gpu)
     bad = [c for c in caps if not lo <= c <= hi]
     if bad:
@@ -449,12 +535,16 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     try:
         busy_slots(base)  # refuses a server whose /slots cannot show sharing, before any cap is set
+        n_slots = len(http_json(f"{base}/slots", timeout=10))
     except BenchAbort as exc:
         print(f"{exc}; nothing was changed on card {args.gpu}", file=sys.stderr)
         return 2
     except SERVER_GONE as exc:
         print(f"model server went away before the start ({exc!r}); nothing was changed", file=sys.stderr)
         return 3
+    if any(not 0 <= s < n_slots for s in args.slot_ids):
+        print(f"--slots {args.slots}: this server has slots 0-{n_slots - 1}", file=sys.stderr)
+        return 2
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -468,7 +558,8 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(sig, _raise)
 
     meta = {"gpu": args.gpu, "port": args.port, "original_limit_w": original, "caps": caps,
-            "n_predict": args.n_predict, "prompt_chars": len(fixed_prompt()), "dropped": []}
+            "n_predict": args.n_predict, "prompt_sentences": args.prompt_sentences,
+            "prompt_chars": len(fixed_prompt(args.prompt_sentences)), "slots": list(args.slot_ids), "dropped": []}
     try:
         meta["model"] = http_json(f"{base}/props", timeout=10).get("model_path")
     except Exception:  # noqa: BLE001
@@ -497,11 +588,12 @@ def main(argv: list[str] | None = None) -> int:
         write_outputs(out, samples, caps, meta)
 
     rows = summarize(samples, caps)
-    print("\ncap  read tok/s  write tok/s  write W  J/token(write)  vs top cap (speed / energy)  max C")
+    print("\ncap  read tok/s  write tok/s  card out tok/s  W  J/token(all-in)  vs top cap (write speed / "
+          "out rate / energy)  max C")
     for r in rows:
-        print(f"{r['cap_w']:>4} {r['prompt_tok_s']!s:>10} {r['gen_tok_s']!s:>12} {r['gen_avg_w']!s:>8} "
-              f"{r['gen_j_per_tok']!s:>15}  {r['gen_tok_s_vs_top']!s:>8} / {r['gen_j_per_tok_vs_top']!s:<8}"
-              f"          {r['max_temp_c']}")
+        print(f"{r['cap_w']:>4} {r['prompt_tok_s']!s:>10} {r['gen_tok_s']!s:>12} {r['total_gen_tok_s']!s:>15} "
+              f"{r['gen_avg_w']!s:>6} {r['all_in_j_per_gen_tok']!s:>15}  {r['gen_tok_s_vs_top']!s:>6} / "
+              f"{r['total_gen_tok_s_vs_top']!s:>6} / {r['all_in_j_per_gen_tok_vs_top']!s:<6}          {r['max_temp_c']}")
     print(f"\nwritten: {out / 'samples.csv'}, {out / 'summary.json'}; dropped samples: {len(meta['dropped'])}")
     return 1 if meta.get("aborted") else 0
 

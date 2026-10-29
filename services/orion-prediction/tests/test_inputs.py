@@ -182,3 +182,66 @@ def test_first_weather_refresh_runs_before_the_selection_later_ones_after(monkey
     order.clear()
     asyncio.run(eng.tick(_sync))
     assert order == ["select", "weather"]
+
+
+class _Conn:
+    def __init__(self, log, rows):
+        self.log, self.rows = log, rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def transaction(self):
+        return self
+
+    def execute(self, sql, args=()):
+        self.log.append((sql, list(args)))
+        return self
+
+    def fetchall(self):
+        return self.rows
+
+
+class _Pool:
+    def __init__(self, rows):
+        self.log, self.rows = [], rows
+
+    def connection(self):
+        return _Conn(self.log, self.rows)
+
+
+def _office_store(rows):
+    from app.store import PostgresStore
+    st = PostgresStore.__new__(PostgresStore)
+    st.pool = _Pool(rows)
+    return st
+
+
+def test_office_env_source_reads_only_live_fresh_rows_read_only_with_a_timeout():
+    reg = parse_registry(spec_doc(source={"kind": "office_env", "node": "pan-1", "key": "office_temp_c"}))
+    sp = reg.get("test.temp")
+    st = _office_store([{"ts": T0, "v": 26.1}])
+    assert st.points(sp, T0, T0 + timedelta(hours=1)) == [(T0, 26.1)]
+    sqls = [s for s, _ in st.pool.log]
+    assert sqls[0] == "SET TRANSACTION READ ONLY" and sqls[1].startswith("SET LOCAL statement_timeout = ")
+    sql, args = st.pool.log[2]
+    assert "FROM office_env_sample" in sql and "office_temp_c AS v" in sql
+    assert "sensor_online AND NOT stale AND office_temp_c IS NOT NULL" in sql
+    assert args == ["pan-1", T0, T0 + timedelta(hours=1)]
+
+
+def test_office_env_store_refuses_a_key_outside_the_allowlist_even_if_the_spec_was_built_by_hand():
+    import dataclasses
+
+    import pytest
+
+    from app.series import Source
+    sp = parse_registry(spec_doc(source={"kind": "office_env", "node": "pan-1", "key": "office_temp_c"})).get("test.temp")
+    bad = dataclasses.replace(sp, source=Source(kind="office_env", node="pan-1", key="payload_json"))
+    st = _office_store([])
+    with pytest.raises(ValueError, match="office_env key"):
+        st.points(bad, T0)
+    assert st.pool.log == []

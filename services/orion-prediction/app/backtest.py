@@ -71,6 +71,16 @@ def origins_for(n: int, h: int, n_windows: int, step: int, min_train: int) -> li
     return sorted(o for o in out if o >= min_train)
 
 
+def min_backtest_steps(spec: SeriesSpec, step: int) -> int:
+    """Grain buckets (from the first reading, gaps included) a series needs before a backtest can
+    give every served step MIN_PATHS residuals: MIN_TRAIN_STEPS_DAYS of training behind the oldest
+    origin, MIN_PATHS origins ``step`` apart, and the longest horizon after the newest one. Fewer, and
+    every residual quantile is NaN, so nothing could be served (a young series, e.g. a sensor
+    installed days ago). Exact for gapless data; gaps can still reject windows (Engine.check_paths)."""
+    min_train = MIN_TRAIN_STEPS_DAYS * 1440 // spec.grain_min
+    return min_train + spec.max_horizon_steps + (MIN_PATHS - 1) * step
+
+
 def run_backtest(series: pd.Series, spec: SeriesSpec, name: str,
                  make_model: Callable[[list[Seasonality]], Forecaster], n_windows: int, step: int,
                  actuals: pd.Series | None = None, covariates: pd.DataFrame | None = None) -> BacktestResult:

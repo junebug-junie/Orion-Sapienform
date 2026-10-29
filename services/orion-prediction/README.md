@@ -1,8 +1,8 @@
 # orion-prediction
 
 Forecasts Orion's telemetry, grades every forecast against what really happened, and estimates
-cause and effect ("if X happens, how much does the cabinet warm?"). First series: the Athena
-cabinet temperature.
+cause and effect ("if X happens, how much does the cabinet warm?"). Targets: the Athena cabinet
+temperature, and the office (room) temperature from the pan-1 SHT40 installed 2026-10-28.
 
 Spec: `docs/superpowers/specs/2026-10-15-orion-prediction-service-design.md`.
 
@@ -19,6 +19,21 @@ Spec: `docs/superpowers/specs/2026-10-15-orion-prediction-service-design.md`.
 4. **Monitor**. Alerts in `/health` and `/series/{id}/live` (and one log line when they change):
    live coverage out of band, worse than baseline over 24 h, stale input, stale forecast,
    degenerate output (refused, never stored), failed selection.
+
+A **young series** (too little history for the backtest) gets no selection and no forecast. That is a
+lifecycle state, not a fault: `/health` shows `series.<id>.not_ready` with buckets held vs needed and
+`ready_at`, no alert fires, and selection is re-checked at `ready_at` (or every 6 h). The backtest needs
+2 days of training + the longest horizon + 10 origins 3 h apart: ~4.1 days for a 24 h horizon.
+
+## Targets
+
+| series | what | source |
+|---|---|---|
+| `athena.cabinet_temp_c` | cabinet air (Nano ESP32 in the cabinet) | `orion_biometrics_summary` (biometrics) |
+| `office.temp_c` | office air = the cabinet's intake (pan-1 SHT40, `orion-office-env`) | `office_env_sample` (office_env: stale/offline rows dropped) |
+
+`office.temp_c` has no thresholds and no covariates. It joins the cabinet's covariates once ~14 days
+of it exist (~2026-11-12); before that `direct_arx` would lose every cabinet row older than the sensor.
 
 ## Models
 
@@ -203,6 +218,8 @@ docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/ori
   Consumer: orion-hardware-watch shows the shed probability beside each reflex decision
   (observe-only).
 - Tables: `services/orion-sql-db/manual_migration_prediction_v1.sql`, `manual_migration_prediction_change_events_v1.sql`, `manual_migration_prediction_action_bet_v1.sql`.
+  Reads (read-only, other services' tables): `orion_biometrics_summary`, `orion_biometrics_cluster`,
+  `home_cooling_sample`, `office_env_sample` (index: `manual_migration_prediction_office_env_idx_v1.sql`).
 - Series registry: `config/prediction/series.v1.yaml` (baked into the image).
 
 ## Run

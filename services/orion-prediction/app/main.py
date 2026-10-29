@@ -161,6 +161,7 @@ async def health() -> dict[str, Any]:
                 "last_select_seconds": st.last_select_seconds,
                 "last_input_ts": st.last_input_ts.isoformat() if st.last_input_ts else None,
                 "alerts": st.alerts,
+                "not_ready": st.not_ready,
                 "change_events": st.events,
                 "shadow": list(sv.shadow) if sv else [], "shadow_failed": st.shadow_failed,
             }

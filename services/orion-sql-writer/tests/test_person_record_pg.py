@@ -6,7 +6,7 @@ TRUNCATEs the walkway and person tables:
 
     docker run -d --rm --name pg -e POSTGRES_PASSWORD=t -p 127.0.0.1:55499:5432 postgres:16-alpine
     for f in walkway_camera_v1 walkway_privacy_v2 vision_confirm_asks_v1 vision_ask_names_v1 \\
-             vision_split_v1 vision_osnet_shadow_v1 vision_person_album_v1 person_record_v1; do
+             vision_split_v1 vision_osnet_shadow_v1 vision_person_album_v1 person_record_v1 person_merge_v1; do
       docker exec -i pg psql -U postgres < services/orion-sql-db/manual_migration_$f.sql; done
     ORION_TEST_PG_URI=postgresql://postgres:t@127.0.0.1:55499/postgres pytest tests/test_person_record_pg.py
 """
@@ -278,3 +278,27 @@ def test_a_person_question_shows_only_pictures_she_tied_to_that_name(pg) -> None
             "VALUES ('e2', 'Sam', 'crop-n', -1, 'confirm_pick_no', 'ask-d', :t)"), {"t": NOW})
     _run(pg, NOW + timedelta(minutes=3))
     assert _rows(pg, "SELECT image_refs FROM orion_ask WHERE ask_id = :a", a=sam["ask_id"]) == [([THUMB_PICKED],)]
+
+
+@needs_pg
+def test_a_name_joined_as_the_same_person_moves_its_clusters_and_is_not_asked_about(pg) -> None:
+    """2026-10-29: "Same person as..." in the Hub sets person.merged_into; the next pass
+    moves the joined name's clusters, and no question is opened about that name."""
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _cluster(conn, "sam-1", "Sam", days=5)
+        _cluster(conn, "full-1", "Sam Lee", days=1)
+    _run(pg, cap=0)
+    persons = dict(_rows(pg, "SELECT display_name, person_id FROM person"))
+    with pg.begin() as conn:
+        conn.execute(text("UPDATE person SET merged_into = :t WHERE person_id = :p"),
+                     {"t": persons["Sam Lee"], "p": persons["Sam"]})
+        _cluster(conn, "sam-2", "sam", days=2)
+    summary, opened = _run(pg, NOW + timedelta(minutes=1))
+    links = _rows(pg, "SELECT source_ref, person_id FROM person_link WHERE revoked_at IS NULL ORDER BY source_ref")
+    assert links == [("full-1", persons["Sam Lee"]), ("sam-1", persons["Sam Lee"]), ("sam-2", persons["Sam Lee"])]
+    assert summary["link_conflicts"] == 0
+    assert all(not a["source_ref"].startswith(persons["Sam"]) for a in opened)
+    assert [a["source_ref"] for a in opened if a["source_ref"].startswith(persons["Sam Lee"])] == [
+        f"{persons['Sam Lee']}|relationship"]

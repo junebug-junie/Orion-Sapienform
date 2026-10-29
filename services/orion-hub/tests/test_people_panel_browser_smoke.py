@@ -103,3 +103,68 @@ def test_people_panel_browser_smoke() -> None:
                       ("/api/people/p-sam/facts/f1/remove", {}),
                       ("/api/people/p-sam/status", {"status": "not_a_person"})]
     assert errors == []
+
+
+def test_same_person_join_browser_smoke() -> None:
+    """2026-10-29: "Same person as..." joins a first name to a full name; the joined
+    name leaves the list and shows as "Also called" on the person kept."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    page_html = f"<!doctype html><html><body>{_panel_html()}<script src=\"/static/js/people.js\"></script></body></html>"
+    script = JS.read_text(encoding="utf-8")
+    merged: dict = {}
+    posted: list = []
+
+    def people():
+        out = []
+        for pid, name in (("p-full", "Sam Lee"), ("p-first", "Sam")):
+            if pid in merged:
+                continue
+            out.append({"person_id": pid, "name": name, "status": "active", "days": 1, "clusters": 1,
+                        "belongings": 0, "image_ref": None, "facts": [], "open_question": None,
+                        "also_called": ["Sam"] if pid == "p-full" and "p-first" in merged else []})
+        return out
+
+    def handle(route):
+        url = route.request.url
+        if url.endswith("/home"):
+            return route.fulfill(body=page_html, content_type="text/html")
+        if url.endswith("/static/js/people.js"):
+            return route.fulfill(body=script, content_type="application/javascript")
+        if url.endswith("/api/people") and route.request.method == "GET":
+            return route.fulfill(body=json.dumps({"ok": True, "people": people(), "categories": []}),
+                                 content_type="application/json")
+        if route.request.method == "POST" and url.endswith("/same-as"):
+            body = json.loads(route.request.post_data or "{}")
+            posted.append((url.split("hub.test")[1], body))
+            merged[url.split("/")[-2]] = body["into"]
+            return route.fulfill(body=json.dumps({"ok": True}), content_type="application/json")
+        return route.fulfill(status=404, body="")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        errors: list = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.route("http://hub.test/**", handle)
+        page.set_viewport_size({"width": 360, "height": 800})
+        page.goto("http://hub.test/home")
+        page.click("#peopleCard summary")
+        page.wait_for_selector('[data-person-id="p-first"]')
+        first = '[data-person-id="p-first"]'
+        # Join with nothing chosen does nothing.
+        page.click(f'{first} [data-person-action="same-as"]')
+        assert posted == []
+        opts = page.locator(f'{first} [data-person-field="same-as"] option').all_inner_texts()
+        assert opts == ["Same person as...", "Sam Lee"]
+        box = page.locator(f'{first} [data-person-field="same-as"]').bounding_box()
+        assert box["x"] + box["width"] <= 360 + 1
+        page.select_option(f'{first} [data-person-field="same-as"]', "p-full")
+        page.click(f'{first} [data-person-action="same-as"]')
+        page.wait_for_selector(first, state="detached")
+        assert "Also called Sam" in page.inner_text('[data-person-id="p-full"]')
+        assert page.inner_text("#peopleStatus") == "Orion knows 1 person by name."
+        browser.close()
+    assert posted == [("/api/people/p-first/same-as", {"into": "p-full"})]
+    assert errors == []

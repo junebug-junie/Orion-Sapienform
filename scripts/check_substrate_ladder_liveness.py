@@ -74,6 +74,7 @@ if _REPO_ROOT not in sys.path:
 from orion import schema_skew_discovery as ssd  # noqa: E402
 from orion import sql_migration_drift as drift  # noqa: E402
 from orion import substrate_ladder_liveness as ll  # noqa: E402
+from orion import vision_detection_rate_watch as dr  # noqa: E402
 
 EXIT_OK = 0
 EXIT_RED = 1
@@ -124,6 +125,28 @@ def read_freshness(conn, lookback_sec: float) -> tuple[dict[str, Optional[dateti
         except Exception as exc:  # noqa: BLE001
             errors.append(f"consolidation:motifs: {exc.__class__.__name__}: {str(exc).strip()}")
     return newest, motif_counts, errors
+
+
+def read_detection_rates(conn, now: datetime) -> tuple[list[dr.DetectionRateResult], list[str]]:
+    """Blind-detector watch: one bounded query per 24/7 camera (8 index range
+    scans of vision_scene_inventory). "unknown" goes to cannot_check: absence
+    is never calm, and never re-arms a delivered card."""
+    results: list[dr.DetectionRateResult] = []
+    notes: list[str] = []
+    with conn.cursor() as cur:
+        cur.execute(f"SET statement_timeout = {STATEMENT_TIMEOUT_MS}")
+        for stream in dr.DETECTION_RATE_STREAMS:
+            try:
+                cur.execute(dr.DETECTION_RATE_SQL, dr.sql_params(stream, now))
+                current, baseline = dr.split_rows(cur.fetchall())
+            except Exception as exc:  # noqa: BLE001 - one bad stream must not hide the rest
+                notes.append(f"detection_rate:{stream}: {exc.__class__.__name__}: {str(exc).strip()}")
+                continue
+            r = dr.evaluate_detection_rate(stream, current, baseline)
+            if r.status == "unknown":
+                notes.append(r.summary())
+            results.append(r)
+    return results, notes
 
 
 # ----------------------------------------------------------------------- docker
@@ -520,6 +543,9 @@ def build_report(args) -> ll.LadderReport:
                 newest, motifs, errors = read_freshness(conn, args.lookback_hours * 3600)
                 report.rungs = ll.evaluate_ladder(newest, now, consolidation_motif_counts=motifs)
                 report.cannot_check += errors
+                rates, rate_notes = read_detection_rates(conn, now)
+                report.detection_rates = rates
+                report.cannot_check += rate_notes
                 if not args.skip_migrations:
                     check_migrations(conn, args, report)
             finally:
@@ -642,6 +668,9 @@ def print_human(report: ll.LadderReport, verbose: bool = False) -> None:
             print(f"{mark}consolidation:motifs: {'last %d frames empty' % int(r.max_age_sec) if r.red else 'motifs present'}")
         else:
             print(f"{mark}{r.summary()}")
+    for d in report.detection_rates:
+        if d.status != "unknown":  # unknown is printed under CANNOT CHECK
+            print(f"{'RED ' if d.red else 'ok  '}{d.summary()}")
     counts: dict[str, int] = {}
     for s in report.skew:
         counts[s.status] = counts.get(s.status, 0) + 1

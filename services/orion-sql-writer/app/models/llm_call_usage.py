@@ -1,9 +1,9 @@
 """One row per LLM call: the per-call token ledger (2026-10-29).
 
 Writer: sql-writer off ``orion:llm:call:usage`` (``LlmCallUsageV1``, contract and join rules in
-``orion/schemas/llm_call_usage.py``). Producers: orion-llm-gateway (``recorder='gateway'``, every
-call it places) and the harness governor's warm FCC relay (``recorder='harness_relay'``, FCC-path
-turns only). PK ``call_id``, so a redelivered event is one row.
+``orion/schemas/llm_call_usage.py``). Producer: orion-llm-gateway (``recorder='gateway'``, every
+call it places, harness turns included via the FCC adapter's header forward). ``harness_relay`` is
+retired. PK ``call_id``, so a redelivered event is one row.
 
 Totals over time: ``WHERE recorder = 'gateway'``. One turn or act: ``WHERE correlation_id = ...``.
 

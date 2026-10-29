@@ -210,10 +210,6 @@ class HarnessGovernorSettings(BaseSettings):
     harness_shutdown_drain_sec_agent: float = Field(900.0, ge=0, le=3600, alias="HARNESS_SHUTDOWN_DRAIN_SEC_AGENT")
     # Docker's wait before SIGKILL (compose `stop_grace_period`). Read here only to check it outlasts the drain.
     harness_stop_grace_sec: float = Field(1000.0, ge=0, alias="HARNESS_STOP_GRACE_SEC")
-    # Per-call token ledger (orion/llm/call_usage.py): the warm relay records each FCC-path model
-    # call (a chat turn with no GPU lease) with the turn's correlation id; this publishes them on
-    # orion:llm:call:usage -> sql-writer llm_call_usage. Lease-path calls are recorded by the gateway.
-    harness_llm_call_usage_enabled: bool = Field(True, alias="HARNESS_LLM_CALL_USAGE_ENABLED")
     harness_fcc_chat_warm_pool_enabled: bool = Field(True, alias="HARNESS_FCC_CHAT_WARM_POOL_ENABLED")
     # Processes kept warm. 1 = observed chat concurrency (220 chat turns over 30
     # days, never two at once). Each one keeps its own MCP servers running.

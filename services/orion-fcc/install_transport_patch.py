@@ -31,16 +31,20 @@ def patch_routes(path):
         "from . import dependencies",
         "from orion_fcc_messages_transport import (\n"
         "    adapt_message_response,\n"
+        "    bind_correlation,\n"
+        "    forward_correlation_header,\n"
         "    guard_local_optimizations,\n"
         "    prepare_request,\n"
         ")\n\n"
-        "guard_local_optimizations()\n\n"
+        "guard_local_optimizations()\n"
+        "forward_correlation_header()\n\n"
         "from . import dependencies",
     )
     text = _replace(
         text,
         '"""Create a message (always streaming)."""\n    return handler.create(request_data)',
         '"""Honor the Messages wire format and maintain SSE liveness."""\n'
+        "    bind_correlation(request)\n"
         "    return await adapt_message_response(\n"
         "        handler.create(prepare_request(request_data)),\n"
         '        stream="stream" in request_data.model_fields_set and request_data.stream is True,\n'

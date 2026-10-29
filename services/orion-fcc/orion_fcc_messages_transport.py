@@ -5,6 +5,7 @@ never model progress. Non-streaming replies require a complete message.
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 from contextlib import suppress
@@ -97,6 +98,51 @@ def guard_local_optimizations():
 
     guarded.orion_compaction_guard = True
     handlers.try_optimizations = guarded
+
+
+# The harness turn id. Claude Code sends it on every model call (ANTHROPIC_CUSTOM_HEADERS, set by
+# orion/harness/fcc_motor._build_subprocess_env); FCC builds a brand-new upstream request, so
+# without this the header stops here and llm-gateway's per-call token ledger (llm_call_usage)
+# records every harness call with correlation_id NULL -- live 2026-10-29: 17 of 17 rows.
+CORRELATION_HEADER = "X-Orion-Correlation-Id"
+_CORRELATION_MAX = 128  # llm-gateway clips to the GPU pool lease's turn_correlation_id limit
+_correlation = contextvars.ContextVar("orion_correlation_id", default=None)
+
+
+def bind_correlation(request):
+    """Remember this request's turn id for the upstream call it causes.
+
+    Set in the route's own task; the provider's upstream send runs in tasks spawned after this
+    (the response body iterator, the heartbeat reader), which copy the context, so the value
+    reaches them and never another request. A missing or unsafe value clears it."""
+    value = str(request.headers.get(CORRELATION_HEADER) or "").strip()
+    if not value or "\r" in value or "\n" in value:
+        value = None
+    _correlation.set(value[:_CORRELATION_MAX] if value else None)
+
+
+def forward_correlation_header():
+    """Add the bound turn id to FCC's native Anthropic upstream request headers.
+
+    The llama.cpp provider (``LLAMACPP_BASE_URL`` = llm-gateway) is an
+    ``AnthropicMessagesTransport``; every messages call takes its headers from
+    ``_request_headers``. Idempotent; fails loudly if upstream moves the hook, so a pin bump
+    cannot silently drop the forward."""
+    from providers.transports.anthropic_messages.transport import AnthropicMessagesTransport
+
+    original = AnthropicMessagesTransport._request_headers
+    if getattr(original, "orion_correlation_forward", False):
+        return
+
+    def with_correlation(self):
+        headers = dict(original(self))
+        corr = _correlation.get()
+        if corr:
+            headers[CORRELATION_HEADER] = corr
+        return headers
+
+    with_correlation.orion_correlation_forward = True
+    AnthropicMessagesTransport._request_headers = with_correlation
 
 
 async def with_heartbeats(body, interval=15.0):

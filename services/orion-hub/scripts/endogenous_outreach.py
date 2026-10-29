@@ -1674,6 +1674,10 @@ def is_pass_response(text: str) -> bool:
 class EndogenousOutreach:
     """Randomized-trigger outreach loop. Best-effort at every step."""
 
+    # orion.notify.client.NotifyClient, set by main.py after construction. When
+    # set, outreach goes through orion-notify so it is durable until dismissed.
+    notify_client: Any = None
+
     def __init__(
         self,
         *,
@@ -3469,23 +3473,39 @@ class EndogenousOutreach:
         notification_title: Optional[str] = None,
         notification_type: Optional[str] = None,
     ) -> None:
+        resolved_type = notification_type or OUTREACH_TAG
+        notify_tags = list(tags) if tags is not None else [OUTREACH_TAG]
+        title = notification_title or "Orion reached out"
+        if resolved_type == OUTREACH_TAG:
+            # Durable path: orion-notify writes a notify_requests row keyed by
+            # this message_id (the same id as the chat_message row) and
+            # publishes the live in-app event itself. The row stays open until
+            # Juniper dismisses it in the tray, across Hub restarts.
+            if await self._persist_outreach_via_notify(
+                text=text,
+                session_id=session_id,
+                correlation_id=correlation_id,
+                message_id=message_id,
+                tags=notify_tags,
+                title=title,
+            ):
+                return
         if not self._bus:
             return
         try:
-            notify_tags = list(tags) if tags is not None else [OUTREACH_TAG]
             notification = HubNotificationEvent(
                 notification_id=uuid4(),
                 created_at=datetime.now(timezone.utc),
                 severity="info",
                 event_kind=OUTREACH_EVENT_KIND,
                 source_service="orion-hub",
-                title=notification_title or "Orion reached out",
+                title=title,
                 body_text=text,
                 tags=notify_tags,
                 correlation_id=correlation_id,
                 session_id=session_id,
                 message_id=UUID(message_id),
-                notification_type=notification_type or OUTREACH_TAG,
+                notification_type=resolved_type,
             )
             env = BaseEnvelope(
                 kind="notify.in_app.v1",
@@ -3496,3 +3516,62 @@ class EndogenousOutreach:
             await self._bus.publish(self.notify_channel, env)
         except Exception as exc:  # noqa: BLE001
             logger.warning("endogenous_outreach_notify_failed corr=%s err=%s", correlation_id, exc)
+
+    async def _persist_outreach_via_notify(
+        self,
+        *,
+        text: str,
+        session_id: str,
+        correlation_id: str,
+        message_id: str,
+        tags: List[str],
+        title: str,
+    ) -> bool:
+        """Send one outreach message through orion-notify's /chat/message.
+
+        Returns True only when orion-notify accepted it. Then orion-notify owns
+        both the durable row and the live in-app event, so the caller must not
+        publish a second in-app event. Returns False when no client is wired or
+        the call failed; the caller then falls back to the old direct publish,
+        so the live tray still gets the message (just not durably).
+        """
+        client = self.notify_client
+        if client is None:
+            return False
+        durable_tags = list(tags)
+        if OUTREACH_TAG not in durable_tags:
+            # The tray asks orion-notify for open rows by this tag.
+            durable_tags.append(OUTREACH_TAG)
+        preview = text if len(text) <= 280 else text[:279] + "\u2026"
+        try:
+            accepted = await asyncio.to_thread(
+                client.chat_message,
+                session_id=session_id,
+                preview_text=preview,
+                full_text=text,
+                title=title,
+                severity="info",
+                require_read_receipt=True,
+                tags=durable_tags,
+                source_service="orion-hub",
+                correlation_id=correlation_id,
+                message_id=UUID(message_id),
+                notification_type=OUTREACH_TAG,
+            )
+        except Exception as exc:  # noqa: BLE001 -- NotifyClient never raises; a fake or a bug might
+            logger.warning("endogenous_outreach_durable_notify_failed corr=%s err=%s", correlation_id, exc)
+            return False
+        if not getattr(accepted, "ok", False):
+            logger.warning(
+                "endogenous_outreach_durable_notify_failed corr=%s detail=%s -- falling back to direct in-app publish",
+                correlation_id,
+                getattr(accepted, "detail", None),
+            )
+            return False
+        logger.info(
+            "endogenous_outreach_durable_notify_ok corr=%s message_id=%s notification_id=%s",
+            correlation_id,
+            message_id,
+            getattr(accepted, "notification_id", None),
+        )
+        return True

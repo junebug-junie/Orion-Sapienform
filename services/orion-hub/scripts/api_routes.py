@@ -2373,7 +2373,15 @@ def api_attention_ack(attention_id: str, payload: AttentionAckRequest):
 
 
 @router.get("/api/chat/messages")
-def api_chat_messages(limit: int = 50, status: Optional[str] = None, session_id: Optional[str] = None):
+def api_chat_messages(
+    limit: int = 50,
+    status: Optional[str] = None,
+    session_id: Optional[str] = None,
+    tag: Optional[str] = None,
+):
+    # The notification tray reads Orion's open (not yet dismissed) outreach
+    # here: status=open&tag=endogenous_outreach. Durable in notify_requests,
+    # so it survives a Hub restart, unlike /api/notifications.
     if not settings.NOTIFY_BASE_URL:
         return []
     headers = {}
@@ -2382,15 +2390,17 @@ def api_chat_messages(limit: int = 50, status: Optional[str] = None, session_id:
     try:
         resp = requests.get(
             f"{settings.NOTIFY_BASE_URL}/chat/messages",
-            params={"limit": limit, "status": status, "session_id": session_id},
+            params={"limit": limit, "status": status, "session_id": session_id, "tag": tag},
             headers=headers,
             timeout=10,
         )
         resp.raise_for_status()
         return resp.json()
     except Exception as exc:
+        # 502, not []: the tray treats an empty list as "nothing is open" and
+        # would hide live Orion messages while orion-notify is down.
         logger.warning("Failed to fetch chat messages: %s", exc)
-        return []
+        raise HTTPException(status_code=502, detail="Failed to fetch chat messages") from exc
 
 
 @router.get("/api/chat/turn/{turn_id}/substrate-effect")

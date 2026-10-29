@@ -50,6 +50,7 @@ from orion.autonomy.prediction import (
 )
 from orion.regulation.juniper_turns import JUNIPER_INGRESS_PREDICATE, JUNIPER_TURN_PREDICATE
 from orion.schemas.grammar import ActCostV2, ActExpectV1, ActOutcomeV1, ActV1, GrammarEventV1
+from orion.grammar.act_energy_fill import act_energy_cost
 
 logger = logging.getLogger("orion.grammar.act_ledger")
 
@@ -92,6 +93,15 @@ def configure_act_workspace_binding(enabled: bool) -> None:
 
 def act_workspace_binding_enabled() -> bool:
     return _WORKSPACE_BINDING_ENABLED
+
+
+_ENERGY_COST_ENABLED = True
+
+
+def configure_act_energy_cost(enabled: bool) -> None:
+    """SQL_WRITER_ACT_ENERGY_COST_ENABLED. Off: no wh_by_host/usd/heat_c_by_host fill on close."""
+    global _ENERGY_COST_ENABLED
+    _ENERGY_COST_ENABLED = bool(enabled)
 
 
 _BROADCAST_AT_SQL = text(
@@ -421,6 +431,21 @@ def fill_close_cost(conn: Any, act: ActV1, *, opened_at: datetime | None, closed
             closed_at + timedelta(seconds=GPU_COST_CLOSE_GRACE_SEC)), log_prefix="act_cost")
         if lanes:
             update["gpu_slot_s_by_lane"] = lanes
+    # Energy, money and heat from the same leases (orion/grammar/act_energy_fill.py). Only when the
+    # producer measured none of it; its own basis lines are kept beside the writer's.
+    if _ENERGY_COST_ENABLED and cost.wh_by_host is None and correlation_id:
+        anchor = _aware(opened_at) if opened_at is not None else closed_at
+        energy = _isolated(conn, "energy", act.act_id, lambda: act_energy_cost(
+            conn, correlation_id=str(correlation_id),
+            since=anchor - timedelta(seconds=GPU_COST_LOOKBACK_SEC),
+            until=closed_at + timedelta(seconds=GPU_COST_CLOSE_GRACE_SEC)), log_prefix="act_cost")
+        if energy:
+            for field in ("usd", "heat_c_by_host"):
+                if getattr(cost, field) is not None:
+                    energy.pop(field, None)
+            if energy.get("basis"):
+                energy["basis"] = {**energy["basis"], **(cost.basis or {})}
+            update.update(energy)
     if update:
         cost = cost.model_copy(update=update)
     measured = any(v is not None for v in cost.model_dump().values())

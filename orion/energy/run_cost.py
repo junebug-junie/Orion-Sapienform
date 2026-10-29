@@ -22,6 +22,7 @@ import math
 from datetime import datetime
 from typing import Any, Optional
 
+from orion.energy.act_energy import incremental_joules
 from orion.energy.ledger import UsageLedger
 from orion.schemas.energy import EnergyRunCostEstimatedV1
 from orion.schemas.power import PowerIntentSettledV1
@@ -37,12 +38,11 @@ def _run_kwh(settled: PowerIntentSettledV1) -> tuple[Optional[float], Optional[s
     if elapsed <= 0:
         return None, None
     if settled.baseline_watts is not None and settled.actual_mean_watts is not None:
-        mean = settled.actual_mean_watts
-        baseline = settled.baseline_watts
-        if not (math.isfinite(mean) and math.isfinite(baseline)) or mean < 0.0:
+        # Shared with per-act energy (orion/energy/act_energy.py): watts above the baseline.
+        joules = incremental_joules(settled.actual_mean_watts, settled.baseline_watts, elapsed)
+        if joules is None:
             return None, None
-        delta_w = max(0.0, mean - baseline)
-        return delta_w * elapsed / JOULES_PER_KWH, "incremental_over_baseline"
+        return joules / JOULES_PER_KWH, "incremental_over_baseline"
     if settled.energy_joules is None:
         return None, None
     joules = settled.energy_joules

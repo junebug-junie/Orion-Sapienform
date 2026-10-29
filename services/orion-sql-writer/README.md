@@ -1166,6 +1166,25 @@ once; the read runs in its own savepoint). Producer values win. `substrate_actio
 still comes only from a producer-reported `seconds`. Rollout is consumer-first: producers keep
 sending V1 until every reader of `orion:grammar:event` / `grammar_events` runs V2-aware code.
 
+**Energy, money and heat filled on close (2026-10-29).** Same leases, same window, own savepoint
+(`orion/grammar/act_energy_fill.py`, arithmetic in `orion/energy/act_energy.py`). Fields the
+physiology report reads from `grammar_acts.cost_json`:
+
+- `wh_by_host`: GPU watt-hours ABOVE IDLE per host. Each leased card's `gpu{index}_watts`
+  (`orion_biometrics_summary`, ~30 s) is interpolated per second, minus the card's idle floor
+  (p05 of its own trailing 24 h), and split equally among the leases holding the card at that
+  second. Card -> host and nvidia-smi index come from `config/gpu_pool.yaml` (baked into the image).
+- `usd`: Wh / 1000 x the latest `energy_cost_accrued.marginal_usd_per_kwh` (<= 7 days old).
+- `heat_c_by_host`: `config/physiology/heat_sensitivity.yaml` sensitivity x Wh / 100 (an act's Wh
+  is its share of that hour's mean watts, the fit's regressor). A host with no usable fit is absent.
+- `basis`: per field, in words: cards, samples in window, share, idle floor, rate, fit, or why
+  not. `basis.cpu` says CPU is not charged per act (it is measured per container in biometrics).
+
+Absent, never 0: no lease -> nothing written; a card with no reading or no 30 min of history ->
+`basis.wh = "unmeasured: <reason>"` and no Wh. A 30 s sample can land on a peak, so one act scatters;
+a family's total tracks the 1 Hz power-intent meter (`python3 evals/act_energy_vs_power_intent.py`).
+Kill switch: `SQL_WRITER_ACT_ENERGY_COST_ENABLED=false`.
+
 **Rung 3: acts bound to the workspace winner (2026-10-21).** At open, an act whose actor answers a
 world-first workspace source is stamped with the winning loop it was opened under
 (`grammar_acts.workspace_ref` = the broadcast's selected open loop id), through the same binding

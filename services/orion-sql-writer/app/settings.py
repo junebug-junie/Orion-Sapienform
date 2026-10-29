@@ -876,6 +876,9 @@ class Settings(BaseSettings):
     # at close, write Orion's own non-final `acted` verdict on that loop (attention_loop_outcome,
     # actor='orion'). Off: no stamping, no Orion loop verdicts; the ledger itself is unchanged.
     sql_writer_act_workspace_binding_enabled: bool = Field(True, alias="SQL_WRITER_ACT_WORKSPACE_BINDING_ENABLED")
+    # Act energy cost: fill grammar_acts.cost_json wh_by_host / usd / heat_c_by_host / basis on close
+    # from the act's GPU leases and per-card watts (orion/grammar/act_energy_fill.py).
+    sql_writer_act_energy_cost_enabled: bool = Field(True, alias="SQL_WRITER_ACT_ENERGY_COST_ENABLED")
 
     @property
     def route_map(self) -> dict[str, str]:

@@ -50,6 +50,19 @@ class Settings(BaseSettings):
     weather_lat: float | None = Field(None, alias="ORION_SITUATION_WEATHER_LAT")
     weather_lon: float | None = Field(None, alias="ORION_SITUATION_WEATHER_LON")
 
+    # --- switchback experiment runner (app/experiment_runner.py, POST /experiments/run) ---
+    # Performs vision.focus:<stream_id> experiments: holds orion:vision:experiment:<stream_id> = on
+    # (bus Redis, ORION_BUS_URL) during ON blocks. false = POST /experiments/run answers 503; the
+    # design/log/analyze endpoints still work for hand-run experiments. Never starts on boot.
+    experiment_runner_enabled: bool = Field(True, alias="PREDICTION_EXPERIMENT_RUNNER_ENABLED")
+    # The frame router's /healthz (per-stream dispatch tier counts = the manipulation check).
+    vision_router_url: str = Field("http://orion-vision-frame-router:8010", alias="PREDICTION_VISION_ROUTER_URL")
+    # TTL on the override key, refreshed every tick: a dead runner leaves focus on for at most this long.
+    experiment_override_ttl_sec: int = Field(90, ge=30, le=600, alias="PREDICTION_EXPERIMENT_OVERRIDE_TTL_SEC")
+    experiment_tick_sec: float = Field(30.0, ge=5, le=60, alias="PREDICTION_EXPERIMENT_TICK_SEC")
+    # Re-run the experiment guard (a forecast build) this often during a run, and before every ON block.
+    experiment_guard_every_sec: float = Field(300.0, ge=60, le=1800, alias="PREDICTION_EXPERIMENT_GUARD_EVERY_SEC")
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

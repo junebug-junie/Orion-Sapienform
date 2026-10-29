@@ -30,6 +30,7 @@ from app.causal import CausalError
 from app.effects import Effects
 from app.engine import Engine
 from app.event_pair import MIN_A_EVENTS, EventPairRefused
+from app.experiment_runner import ExperimentRunner, RouterProbe, RunnerRefused, recover as recover_experiments
 from app.series import load_registry
 from app.settings import get_settings
 from app.store import PostgresStore
@@ -42,6 +43,8 @@ logger = logging.getLogger("orion-prediction.main")
 engine: Engine | None = None
 effects: Effects | None = None
 action_bets: ActionBets | None = None
+runner: ExperimentRunner | None = None
+_runner_redis: Any = None
 _store: PostgresStore | None = None
 _bus: OrionBusAsync | None = None
 _tasks: list[asyncio.Task] = []
@@ -70,7 +73,7 @@ async def _tick_forever() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global engine, effects, action_bets, _store, _bus
+    global engine, effects, action_bets, runner, _runner_redis, _store, _bus
     heartbeat = HeartbeatOnly(ChassisConfig(
         service_name=_settings.service_name, service_version=_settings.service_version,
         node_name=_settings.node_name, bus_url=_settings.orion_bus_url, bus_enabled=_settings.orion_bus_enabled,
@@ -98,6 +101,22 @@ async def lifespan(app: FastAPI):
                                              if _settings.world_model_shadow_enabled else None))
     logger.info("prediction_ready enabled=%s publish=%s targets=%s", _settings.enabled, _settings.publish_enabled,
                 [s.series_id for s in registry.targets()])
+    if _settings.experiment_runner_enabled:
+        # Plain redis-py on the bus Redis (where the frame router reads orion:vision:experiment:*).
+        import redis.asyncio as aioredis
+
+        _runner_redis = aioredis.from_url(_settings.orion_bus_url, decode_responses=True, socket_timeout=3.0,
+                                          socket_connect_timeout=3.0)
+        runner = ExperimentRunner(effects, _runner_redis, RouterProbe(_settings.vision_router_url),
+                                  override_ttl_sec=_settings.experiment_override_ttl_sec,
+                                  tick_sec=_settings.experiment_tick_sec,
+                                  guard_every_sec=_settings.experiment_guard_every_sec)
+        try:   # a run the last process left half-done is marked cancelled; nothing is resumed
+            cancelled = await recover_experiments(effects, _runner_redis)
+            if cancelled:
+                logger.warning("experiment_runner_recovered cancelled=%s", cancelled)
+        except Exception as exc:  # noqa: BLE001 -- the key's TTL still clears focus; boot goes on
+            logger.warning("experiment_runner_recover_failed %s: %s", type(exc).__name__, exc)
     _stop.clear()
     if _settings.enabled:
         _tasks.append(asyncio.create_task(_tick_forever()))
@@ -105,6 +124,13 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         _stop.set()
+        if runner is not None:
+            await runner.shutdown("service shutting down")
+        if _runner_redis is not None:
+            try:
+                await _runner_redis.aclose()
+            except Exception:  # noqa: BLE001
+                pass
         for t in _tasks:
             t.cancel()
         await asyncio.gather(*_tasks, return_exceptions=True)
@@ -169,7 +195,8 @@ async def health() -> dict[str, Any]:
             "last_tick_at": _jsonable(_last_tick["at"]), "last_tick_error": _last_tick["error"],
             "weather": _jsonable({k: v for k, v in e.weather_state.items()}) if e and e.weather else
             {"ok": False, "error": "weather off (PREDICTION_WEATHER_ENABLED or ORION_SITUATION_WEATHER_LAT/LON unset)"},
-            "series": series, "action_bets": await _action_bets_health()}
+            "series": series, "action_bets": await _action_bets_health(),
+            "experiment_runner": runner.status() if runner else {"enabled": False}}
 
 
 async def _action_bets_health() -> dict[str, Any]:
@@ -347,6 +374,53 @@ async def post_design(body: DesignBody) -> dict[str, Any]:
 async def post_analyze(experiment_id: uuid.UUID) -> dict[str, Any]:
     _ready()
     return await _causal(effects.analyze_experiment, str(experiment_id))
+
+
+class RunBody(BaseModel):
+    """Design AND perform a switchback experiment now. Defaults = the first vision focus experiment
+    (docs/superpowers/pr-reports/2026-10-29-vision-focus-experiment-pr.md has the power reasoning)."""
+    action: str = Field(..., pattern=r"^vision\.focus:[a-z0-9_-]{1,40}$")
+    series_id: str = "athena.cabinet_temp_c"
+    block_min: int = Field(20, ge=5, le=240)
+    n_blocks: int = Field(12, ge=8, le=96)
+    burn_in_min: int = Field(10, ge=0, le=120)
+    seed: int | None = None
+    start_delay_min: int = Field(2, ge=0, le=60)
+
+
+def _runner() -> ExperimentRunner:
+    _ready()
+    if runner is None:
+        raise HTTPException(503, "experiment runner disabled (PREDICTION_EXPERIMENT_RUNNER_ENABLED=false)")
+    return runner
+
+
+@app.post("/experiments/run")
+async def post_run(body: RunBody) -> dict[str, Any]:
+    """Refuses (409) unless GET /experiments/guard passes and no other run is active. Never auto-starts."""
+    r = _runner()
+    try:
+        out = await r.start(body.action, body.series_id, body.block_min, body.n_blocks, body.burn_in_min,
+                            body.seed, body.start_delay_min)
+    except RunnerRefused as exc:
+        raise HTTPException(exc.status, exc.detail) from exc
+    except CausalError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return _jsonable(out)
+
+
+@app.get("/experiments/runner")
+async def get_runner() -> dict[str, Any]:
+    return _jsonable(_runner().status())
+
+
+@app.post("/experiments/runner/abort")
+async def post_runner_abort() -> dict[str, Any]:
+    """Stop the active run now: focus key cleared, abort logged, experiment cancelled."""
+    r = _runner()
+    if not await r.shutdown("aborted by operator"):
+        raise HTTPException(409, "no experiment is running")
+    return _jsonable(r.status())
 
 
 @app.get("/effects/{action}")

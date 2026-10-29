@@ -394,6 +394,12 @@ def test_script_mapping_real_repo() -> None:
     assert "orion-hub" in payload["services"]
 
 
+@pytest.mark.parametrize("path", ["orion/dig/__main__.py", "orion/body_atlas/names.py", "orion/self_inventory.py"])
+def test_cli_packages_orion_runs_in_the_harness_rebuild_it(path: str) -> None:
+    # No service imports these; Orion runs them through Bash in the harness. PR #2951 rebuilt nothing.
+    assert "orion-harness-governor" in _resolve([path], ROOT)["services"]
+
+
 def test_resolve_base_ref_prefers_orig_head(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

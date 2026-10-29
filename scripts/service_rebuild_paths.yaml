@@ -132,7 +132,12 @@ script_services:
 # when import scanning misses a consumer (dynamic import, data file read by
 # another package). Prefer keeping this empty. To stop a package from ever
 # auto-rebuilding, add orion/<pkg>/ to skip_prefixes instead.
-orion_package_extra_services: {}
+orion_package_extra_services:
+  # Orion runs these as CLIs through Bash inside the harness (`python -P -m orion.dig`), so no
+  # service imports them. 2026-10-29: PR #2951 (dig + body_atlas only) rebuilt nothing.
+  dig: [orion-harness-governor]
+  body_atlas: [orion-harness-governor]
+  self_inventory.py: [orion-harness-governor]
 
 # Per-host positive allowlists live beside exclude_services.txt:
 #   mesh-utilities/common/include_services_<host>.txt

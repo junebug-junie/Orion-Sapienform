@@ -122,6 +122,6 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2942
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

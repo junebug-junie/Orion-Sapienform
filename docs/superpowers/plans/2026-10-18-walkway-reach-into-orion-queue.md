@@ -86,5 +86,5 @@ Context spec for all seven parts plus the over-count and caption-as-fact problem
 - Walkway person learning (albums, learned bars, "Is this X?" asks, person pictures kept
   forever): [PR #2767](https://github.com/junebug-junie/Orion-Sapienform/pull/2767)
   (`docs/superpowers/specs/2026-10-20-walkway-person-learning-design.md`). Live: #2765, #2776,
-  #2782, #2797, #2807. Story-link backfill applied 2026-10-29 (76 stories). Consumer of "probably X"
-  guesses for now: the orion-prediction experiment only.
+  #2782, #2797, #2807. Story-link backfill applied 2026-10-29 (76 stories). Nothing reads "probably X"
+  guesses yet (checked 2026-10-29); when one may is still an open question in the spec.

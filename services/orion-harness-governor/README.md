@@ -28,6 +28,7 @@ sandbox checkout is already a supported, pre-existing case, not a new risk this 
 | `CHANNEL_FINALIZE_APPRAISAL_REQUEST` | `orion:substrate:finalize_appraisal:request` | 5a draft molecule RPC |
 | `CHANNEL_POST_TURN_CLOSURE` | `orion:substrate:post_turn_closure` | Step 7 learning closure |
 | `CHANNEL_HARNESS_RUN_DRAFT_PREVIEW` | `orion:harness:run:draft_preview` | Draft-first display: grounded draft published before the finalize judge when the request sets `draft_preview` (see below) |
+| `HARNESS_LLM_CALL_USAGE_ENABLED` (flag) | `orion:llm:call:usage` | Per-call token ledger: the warm relay records each FCC-path model call (chat turn with no GPU lease) with the turn's correlation id. Lease-path calls go to llm-gateway, which records them. FCC per-turn spawns send `X-Orion-Correlation-Id` on every model call. |
 
 Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
 `HEARTBEAT_INTERVAL_SEC` (default 10s), independent of the request/cancel bus workers above.

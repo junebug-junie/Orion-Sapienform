@@ -75,6 +75,7 @@ from app.models import (
     GpuPoolStateSQL,
     PhysiologyStateSQL,
     WantLedgerSQL,
+    LlmCallUsageSQL,
     TransportBaselineHourlySQL,
     SelfSignalHourSQL,
     SelfSignalOutcomeAssociationSQL,
@@ -135,6 +136,7 @@ from app.models.physiology_state import physiology_state_row
 from orion.schemas.physiology import PhysiologyStateV1
 from app.models.want_ledger import want_ledger_row
 from orion.schemas.physiology_want import WantDecisionV1
+from orion.schemas.llm_call_usage import LlmCallUsageV1
 from orion.schemas.telemetry.transport_baseline_hourly import TransportBaselineHourlyV1
 from orion.schemas.self_signal_outcome import SelfSignalHourV1, SelfSignalOutcomeAssociationV1
 from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
@@ -275,6 +277,7 @@ INSERT_ONLY_MODELS = {
     GpuPoolStateSQL,
     PhysiologyStateSQL,
     WantLedgerSQL,
+    LlmCallUsageSQL,
     TransportBaselineHourlySQL,
     SelfSignalOutcomeAssociationSQL,
     FieldChannelAnomalyScoreSQL,
@@ -563,6 +566,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "GpuPoolStateSQL": (GpuPoolStateSQL, GpuPoolStateV1),
     "PhysiologyStateSQL": (PhysiologyStateSQL, PhysiologyStateV1),
     "WantLedgerSQL": (WantLedgerSQL, WantDecisionV1),
+    "LlmCallUsageSQL": (LlmCallUsageSQL, LlmCallUsageV1),
     "TransportBaselineHourlySQL": (TransportBaselineHourlySQL, TransportBaselineHourlyV1),
     "SelfSignalHourSQL": (SelfSignalHourSQL, SelfSignalHourV1),
     "SelfSignalOutcomeAssociationSQL": (SelfSignalOutcomeAssociationSQL, SelfSignalOutcomeAssociationV1),
@@ -3127,6 +3131,12 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                 write_ok = await _write(sql_model, None, data_to_process, {}, kind=env.kind)
             elif sql_model is CockpitTurnSightingSQL:
                 write_ok = await _write(sql_model, CockpitHopV1, data_to_process, {}, kind=env.kind)
+            elif sql_model is LlmCallUsageSQL:
+                # extra_fields={}: the generic extras carry the ENVELOPE correlation_id, which is a
+                # fresh uuid4 whenever the producer had none (or a non-UUID turn id). Merging it
+                # would overwrite the payload's correlation_id -- NULL is meaningful here (the
+                # FCC-path gateway row) and the per-turn join reads the payload's value.
+                write_ok = await _write(sql_model, schema_model, data_to_process, {}, kind=env.kind)
             else:
                 write_ok = await _write(sql_model, schema_model, data_to_process, extra_sql_fields, kind=env.kind)
             if env.kind == JOURNAL_WRITE_KIND and write_ok:

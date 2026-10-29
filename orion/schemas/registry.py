@@ -109,6 +109,7 @@ from orion.schemas.drive_reading import DriveReadingV1
 from orion.schemas.regulation import REGULATION_STATE_KIND, RegulationStateV1
 from orion.schemas.physiology import PHYSIOLOGY_STATE_KIND, PhysiologyStateV1
 from orion.schemas.physiology_want import WANT_DECISION_KIND, WANT_KIND, WantDecisionV1, WantV1
+from orion.schemas.llm_call_usage import LLM_CALL_USAGE_KIND, LlmCallUsageV1
 from orion.schemas.personality import (
     PERSONALITY_CHOICE_KIND,
     ChoiceOptionV1,
@@ -1614,6 +1615,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     # (durable-runs -> sql-writer want_ledger). Both also in SCHEMA_REGISTRY.
     "WantV1": WantV1,
     "WantDecisionV1": WantDecisionV1,
+    # Per-call token ledger (2026-10-29): one LLM call's tokens + correlation id. Bus
+    # orion:llm:call:usage (llm-gateway, harness-governor -> sql-writer llm_call_usage).
+    "LlmCallUsageV1": LlmCallUsageV1,
     # Personality choice evidence (PR #2726 P0, 2026-10-16). Read-only reconstruction, no bus
     # channel yet. PersonalityChoiceV1 is also in SCHEMA_REGISTRY; ChoiceOptionV1 is nested.
     "PersonalityChoiceV1": PersonalityChoiceV1,
@@ -2164,6 +2168,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "WantDecisionV1": SchemaRegistration(
         model=WantDecisionV1,
         kind=WANT_DECISION_KIND,
+    ),
+    "LlmCallUsageV1": SchemaRegistration(
+        model=LlmCallUsageV1,
+        kind=LLM_CALL_USAGE_KIND,
     ),
     # Personality choice evidence (PR #2726 P0). Also in `_REGISTRY`; the nested
     # ChoiceOptionV1 lives in `_REGISTRY` alone.

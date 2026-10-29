@@ -114,6 +114,10 @@ class Settings(BaseSettings):
     # reducer (ENABLE_LLM_INFERENCE_REDUCER) and field flag are also on.
     llm_gateway_grammar_enabled: bool = Field(False, alias="LLM_GATEWAY_GRAMMAR_ENABLED")
     llm_gateway_grammar_window_sec: float = Field(60.0, alias="LLM_GATEWAY_GRAMMAR_WINDOW_SEC")
+    # Per-call token ledger (app/call_usage_emit.py): one llm.call.usage.v1 per call that reached a
+    # model (bus RPC and HTTP passthroughs), with its correlation id, on orion:llm:call:usage ->
+    # sql-writer llm_call_usage. Counts and clocks only, no text. Independent of the grammar flag.
+    llm_gateway_call_usage_enabled: bool = Field(True, alias="LLM_GATEWAY_CALL_USAGE_ENABLED")
     llm_gateway_anthropic_passthrough_enabled: bool = Field(
         True, alias="LLM_GATEWAY_ANTHROPIC_PASSTHROUGH_ENABLED"
     )

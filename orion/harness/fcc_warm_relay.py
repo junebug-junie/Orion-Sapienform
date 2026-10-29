@@ -141,6 +141,118 @@ def _json_error(status: int, message: str, *, error_type: str = "api_error"):
     return JSONResponse({"type": "error", "error": {"type": error_type, "message": message}}, status_code=status)
 
 
+_USAGE_SINK = None
+
+
+def get_usage_sink():
+    """The relay's per-call token ledger queue (drained by the governor onto the bus)."""
+    global _USAGE_SINK
+    if _USAGE_SINK is None:
+        from orion.llm.call_usage import UsageSink
+
+        _USAGE_SINK = UsageSink()
+    return _USAGE_SINK
+
+
+# A non-streamed JSON reply is kept whole up to this size (its ``usage`` is at the end).
+_JSON_BODY_MAX_BYTES = 1 << 20
+
+
+def _keep_head_tail(head: bytearray, tail: bytearray, chunk: bytes, *, whole: bool = False) -> None:
+    """Keep a stream's first and last bytes (``whole``: keep a JSON body entire, capped)."""
+    from orion.llm.call_usage import STREAM_HEAD_BYTES, STREAM_TAIL_BYTES
+
+    if whole:
+        if len(head) < _JSON_BODY_MAX_BYTES:
+            head.extend(chunk[: _JSON_BODY_MAX_BYTES - len(head)])
+        return
+    if len(head) < STREAM_HEAD_BYTES:
+        head.extend(chunk[: STREAM_HEAD_BYTES - len(head)])
+    tail.extend(chunk)
+    if len(tail) > STREAM_TAIL_BYTES:
+        del tail[:-STREAM_TAIL_BYTES]
+
+
+def _ledger_decoder(encoding: Optional[str]):
+    """A per-response chunk decoder for gzip/deflate bodies (None for identity). A decode error
+    yields b"" for the rest of the body: the ledger row then reads token_source=none."""
+    import zlib
+
+    enc = str(encoding or "").strip().lower()
+    if enc not in ("gzip", "deflate"):
+        return None
+    inflater = zlib.decompressobj(16 + zlib.MAX_WBITS if enc == "gzip" else zlib.MAX_WBITS)
+    broken = False
+
+    def decode(chunk: bytes) -> bytes:
+        nonlocal broken
+        if broken:
+            return b""
+        try:
+            return inflater.decompress(chunk)
+        except zlib.error:
+            broken = True
+            return b""
+
+    return decode
+
+
+def record_relay_call(
+    *,
+    correlation_id: str,
+    request_body: bytes,
+    status: int,
+    completed: bool,
+    head: bytes,
+    tail: bytes,
+    duration_ms: int,
+):
+    """One ``llm.call.usage.v1`` (recorder ``harness_relay``). Never raises. ``duration_ms`` here is
+    request sent -> reply end, so it includes the gateway pool's line; the gateway's own row for
+    the same call (correlation_id NULL) has the model-only time."""
+    try:
+        import json
+        import os
+        from datetime import datetime, timezone
+
+        from orion.llm.call_usage import new_call_id, token_counts
+        from orion.schemas.llm_call_usage import LlmCallUsageV1
+
+        try:
+            request = json.loads(request_body or b"{}")
+        except ValueError:
+            request = {}
+        request = request if isinstance(request, dict) else {}
+        counts = token_counts(*(p for p in (head, tail) if p))
+        if 200 <= int(status) < 300:
+            outcome = "served" if completed else "client_gone"
+        else:
+            outcome = f"http_{int(status)}"
+        event = LlmCallUsageV1(
+            call_id=new_call_id(),
+            recorded_at=datetime.now(timezone.utc),
+            recorder="harness_relay",
+            path="relay_anthropic",
+            correlation_id=(str(correlation_id or "")[:256] or None),
+            model=(str(request.get("model") or "")[:256] or None),
+            holder="harness:fcc_warm_relay",
+            node=(os.environ.get("NODE_NAME") or None),
+            outcome=outcome,
+            stream=bool(request.get("stream")),
+            prompt_tokens=counts.prompt_tokens,
+            cached_prompt_tokens=counts.cached_prompt_tokens,
+            completion_tokens=counts.completion_tokens,
+            token_source=counts.token_source,
+            duration_ms=max(0, int(duration_ms)),
+            decode_tps=counts.decode_tps,
+        )
+    except Exception:  # noqa: BLE001 -- telemetry must never break a turn
+        logger.warning("fcc_warm_relay_usage_build_failed corr=%s", correlation_id, exc_info=True)
+        return None
+    get_usage_sink().offer(event)
+    return event
+
+
 def build_relay_app(registry: RelayRegistry, default_upstream: RelayUpstream, *, upstream_timeout_sec: float = 10.0):
     """ASGI app. Built lazily so importing this module does not require starlette/httpx."""
     import httpx
@@ -199,11 +311,11 @@ def build_relay_app(registry: RelayRegistry, default_upstream: RelayUpstream, *,
             headers[CORRELATION_HEADER] = binding.correlation_id
             if binding.gpu_lease_header:
                 headers[GPU_LEASE_HEADER] = binding.gpu_lease_header
-        body = await request.body()
+        body_bytes = await request.body()
         client: httpx.AsyncClient = state["client"]
         started = time.monotonic()
         try:
-            upstream_req = client.build_request(request.method, url, headers=headers, content=body)
+            upstream_req = client.build_request(request.method, url, headers=headers, content=body_bytes)
             resp = await client.send(upstream_req, stream=True)
         except httpx.HTTPError as exc:
             logger.warning(
@@ -218,14 +330,35 @@ def build_relay_app(registry: RelayRegistry, default_upstream: RelayUpstream, *,
             int((time.monotonic() - started) * 1000),
         )
         out_headers = {k: v for k, v in resp.headers.items() if k.lower() not in _DROP_RESPONSE_HEADERS}
+        # Per-call token ledger: only a turn WITHOUT a lease. With a lease the upstream is the
+        # gateway, which records the call itself under this X-Orion-Correlation-Id. Without one
+        # the call goes to the FCC proxy, which drops our headers, so this is the only place
+        # that knows the turn id.
+        ledger = binding is not None and is_messages and not binding.gpu_lease_header
+        head, tail = bytearray(), bytearray()
+        whole = "json" in str(resp.headers.get("content-type") or "").lower()
+        # aiter_raw passes the upstream's encoding through untouched; the ledger copy is decoded.
+        decoder = _ledger_decoder(resp.headers.get("content-encoding")) if ledger else None
+        completed = False
+
         async def body():
+            nonlocal completed
             # Close upstream on every exit, including the client (a killed warm
             # process) disconnecting, so a GPU generation never outlives its turn.
             try:
                 async for chunk in resp.aiter_raw():
+                    if ledger:
+                        _keep_head_tail(head, tail, decoder(chunk) if decoder else chunk, whole=whole)
                     yield chunk
+                completed = True
             finally:
                 await resp.aclose()
+                if ledger:
+                    record_relay_call(
+                        correlation_id=corr, request_body=body_bytes, status=resp.status_code,
+                        completed=completed, head=bytes(head), tail=bytes(tail),
+                        duration_ms=int((time.monotonic() - started) * 1000),
+                    )
 
         return StreamingResponse(body(), status_code=resp.status_code, headers=out_headers)
 
@@ -317,6 +450,8 @@ def summarize_binding(binding: Optional[RelayTurnBinding]) -> Dict[str, Any]:
 
 __all__ = [
     "CORRELATION_HEADER",
+    "get_usage_sink",
+    "record_relay_call",
     "RelayRegistry",
     "RelayServer",
     "RelayTurnBinding",

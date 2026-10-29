@@ -23,6 +23,8 @@ from orion.schemas.telemetry.system_health import BusConsumerReadinessV1
 from orion.schemas.vector.schemas import VectorUpsertV1
 
 from orion.gpu_pool.client import Lease, LeaseUnavailable
+from orion.llm.call_usage import run_usage_publisher
+from orion.schemas.llm_call_usage import LLM_CALL_USAGE_CHANNEL
 
 from .ctx_overflow import CONTEXT_OVERFLOW_ERROR
 from .llm_backend import (
@@ -34,7 +36,7 @@ from .llm_backend import (
 )
 from .anthropic_passthrough import register_anthropic_passthrough_routes
 from .openai_passthrough import register_openai_passthrough_routes
-from . import grammar_emit, lane_senders, pool_placement, routes_compat_reads, upstream_cancel
+from . import call_usage_emit, grammar_emit, lane_senders, pool_placement, routes_compat_reads, upstream_cancel
 from .embed_publish import publish_assistant_embedding
 from .models import ChatBody
 from .resource_lease import ResourceLeaseRejected, gpu_lease_from_options
@@ -575,6 +577,11 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
                 )
             except Exception:  # noqa: BLE001
                 pass
+        call_clock.close()
+        call_usage_emit.record_bus_call(
+            {}, outcome="gateway_exception", clock=call_clock, correlation_id=str(typed_req.correlation_id),
+            route=body.route, holder=holder, verb=body.verb, requested_model=body.model,
+        )
         raise
     if settings.llm_gateway_grammar_enabled:
         try:
@@ -585,6 +592,13 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
             )
         except Exception:  # noqa: BLE001 -- telemetry must never break a reply
             logger.warning("llm_gateway_grammar_record_failed", exc_info=True)
+    # Per-call token ledger: same call, with its correlation id (the grammar windows have none).
+    call_clock.close()
+    call_usage_emit.record_bus_call(
+        result, outcome=grammar_emit.classify_outcome(result), clock=call_clock,
+        correlation_id=str(typed_req.correlation_id), route=body.route, holder=holder, verb=body.verb,
+        requested_model=body.model,
+    )
     # A refusal / backend failure / unusable request comes back as a normal
     # llm.chat.result (empty content, typed raw.error). Mark the reply degraded so the
     # caller's RPC health counts it, never times it as this hop's speed: live
@@ -776,6 +790,10 @@ async def main() -> None:
         cfg.bus_url,
     )
     tasks = [chat_svc.start(), _serve_health(), pool_bus_task]
+    if settings.llm_gateway_call_usage_enabled:
+        logger.info("[LLM-GW] per-call token ledger on channel=%s", LLM_CALL_USAGE_CHANNEL)
+        tasks.append(run_usage_publisher(chat_svc.bus, call_usage_emit.get_sink(),
+                                         source=call_usage_emit.source_ref()))
     if settings.llm_gateway_grammar_enabled:
         logger.info(
             "[LLM-GW] inference grammar windows on window_sec=%s gateway_node=%s",

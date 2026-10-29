@@ -22,10 +22,13 @@ from .remediator import docker_cli_selfcheck, execute_remediation
 from .roster import NEVER_REMEDIATE_IDS, RosterDocument, RosterEntry, load_roster, validate_roster
 from .settings import Settings
 from .stability import (
+    STOPPED_STATES,
     AlertGate,
+    ContainerState,
     CounterRiseTracker,
     CrashLoopTracker,
     StabilityAlert,
+    StoppedContainerTracker,
     graph_inflation_alert,
     qualify,
     remote_restart_counts,
@@ -51,6 +54,7 @@ class MeshGuardianService:
         self._tasks: list[asyncio.Task] = []
         self._equilibrium_queue: asyncio.Queue = asyncio.Queue(maxsize=8)
         self._crash_loops = CrashLoopTracker()
+        self._stopped = StoppedContainerTracker()
         self._bus_disconnects = CounterRiseTracker()
         self._alert_gate = AlertGate()
         self._stability_cycles = 0
@@ -272,6 +276,7 @@ class MeshGuardianService:
         summary: dict[str, object] = {}
         checks = (
             ("containers", self._check_crash_loops),
+            ("stopped", self._check_stopped_containers),
             ("bus_redis", self._check_bus_redis),
             ("falkordb", self._check_falkordb),
         )
@@ -288,16 +293,21 @@ class MeshGuardianService:
         if self._stability_cycles % 60 == 0 or alerts:
             logger.info("stability cycle %s alerts=%d", summary, len(alerts))
         self._stability_cycles += 1
-        await self._publish_alerts(alerts, now, heartbeat_name="stability")
+        delivered = await self._publish_alerts(alerts, now, heartbeat_name="stability")
+        self._stopped.confirm(delivered)
         return alerts
 
-    async def _publish_alerts(self, alerts: list[StabilityAlert], now: float, *, heartbeat_name: str) -> None:
+    async def _publish_alerts(
+        self, alerts: list[StabilityAlert], now: float, *, heartbeat_name: str
+    ) -> list[StabilityAlert]:
         """The one path to a Hub card for host-wide checks: AlertGate dedup, then notify. Shared
         by the stability and GPU loops, so a key seen by both still yields one card per window
-        (admit() never awaits, so concurrent loops cannot interleave inside it)."""
+        (admit() never awaits, so concurrent loops cannot interleave inside it). Returns the
+        alerts whose card notify accepted."""
+        delivered: list[StabilityAlert] = []
         for alert in self._alert_gate.admit(alerts, now):
             logger.warning("%s alert kind=%s subject=%s: %s", heartbeat_name, alert.kind, alert.subject, alert.message)
-            await asyncio.to_thread(
+            ok = await asyncio.to_thread(
                 self.attention.publish_transition,
                 service_id=alert.subject,
                 heartbeat_name=heartbeat_name,
@@ -307,6 +317,9 @@ class MeshGuardianService:
                     "context": {"event": alert.kind, **alert.context},
                 },
             )
+            if ok:
+                delivered.append(alert)
+        return delivered
 
     # --- GPU actuation watch (see app/gpu_watch.py) --------------------------
 
@@ -450,6 +463,17 @@ class MeshGuardianService:
         # must not reset another host's (or its own) restart history.
         return alerts + self._crash_loops.observe(counts, now, read_hosts=read_hosts), info
 
+    async def _check_stopped_containers(self, now: float) -> tuple[list[StabilityAlert], object]:
+        """This host's containers that should run and do not (stability.stopped_containers). Own
+        check, own docker read: it only inspects the few non-running containers, and a failure
+        here must not blind the crash-loop check."""
+        if not self.settings.stopped_container_watch_enabled:
+            return [], "disabled"
+        containers = await _docker_container_states()
+        alerts = self._stopped.observe(containers, now, grace_sec=self.settings.stopped_container_grace_sec)
+        stopped = sum(1 for c in containers if c.status in STOPPED_STATES)
+        return alerts, {"containers": len(containers), "not_running": stopped}
+
     def _local_node(self) -> str:
         node = (self.settings.node_name or "").strip()
         return node if node and node != "unknown" else "local"
@@ -535,6 +559,71 @@ async def _docker_restart_counts(socket_path: str = "/var/run/docker.sock", tran
             body = detail.json()
             lines.append(f"{body['Id']} {body['Name']} {body['RestartCount']}")
     return _parse_restart_counts("\n".join(lines))
+
+
+def _parse_docker_time(value: object) -> float | None:
+    """Docker's RFC 3339 (nanosecond) timestamp -> epoch seconds. Docker writes
+    0001-01-01T00:00:00Z for "never"; that, and anything unparsable, is None."""
+    from datetime import datetime
+
+    text = str(value or "")
+    if not text or text.startswith("0001-"):
+        return None
+    text = text.replace("Z", "+00:00")
+    head, dot, rest = text.partition(".")
+    if dot:  # trim the fraction to microseconds; fromisoformat refuses nanoseconds
+        frac = rest[: len(rest) - len(rest.lstrip("0123456789"))]
+        text = f"{head}.{frac[:6]}{rest[len(frac):]}"
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return None
+
+
+async def _docker_container_states(socket_path: str = "/var/run/docker.sock", transport=None) -> list[ContainerState]:
+    """Every container on this host. Running ones from the list call only; the non-running
+    ones are inspected for their restart policy and FinishedAt (the list does not carry them)."""
+    import httpx
+
+    transport = transport or httpx.AsyncHTTPTransport(uds=socket_path)
+    out: list[ContainerState] = []
+    async with httpx.AsyncClient(transport=transport, base_url="http://docker", timeout=10.0) as client:
+        resp = await client.get("/containers/json", params={"all": "true"})
+        resp.raise_for_status()
+        for row in resp.json():
+            labels = row.get("Labels") or {}
+            project = labels.get("com.docker.compose.project")
+            service = labels.get("com.docker.compose.service")
+            workdir = labels.get("com.docker.compose.project.working_dir") or ""
+            # Only a services/<name> stack is a valid safe_docker_build.sh argument.
+            parent = workdir.rstrip("/").rsplit("/", 2)
+            if len(parent) < 2 or parent[-2] != "services":
+                workdir = ""
+            names = row.get("Names") or ["/?"]
+            status = str(row.get("State") or "")
+            policy, since = "", None
+            if status in STOPPED_STATES:
+                detail = await client.get(f"/containers/{row['Id']}/json")
+                if detail.status_code != 200:
+                    continue  # removed between list and inspect
+                body = detail.json()
+                policy = str(((body.get("HostConfig") or {}).get("RestartPolicy") or {}).get("Name") or "")
+                if status == "exited":
+                    since = _parse_docker_time((body.get("State") or {}).get("FinishedAt"))
+                else:
+                    since = float(row["Created"]) if row.get("Created") else _parse_docker_time(body.get("Created"))
+            out.append(
+                ContainerState(
+                    id=str(row["Id"]),
+                    name=str(names[0]).lstrip("/"),
+                    status=status,
+                    restart_policy=policy,
+                    since=since,
+                    compose_service=f"{project}/{service}" if project and service else None,
+                    compose_dir=workdir.rstrip("/").rsplit("/", 1)[-1] or None,
+                )
+            )
+    return out
 
 
 def _parse_restart_counts(text: str) -> dict[str, int]:

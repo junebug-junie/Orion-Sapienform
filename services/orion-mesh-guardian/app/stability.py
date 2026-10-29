@@ -14,12 +14,19 @@ healthy stack:
 - slow-consumer kill: Redis ``client_output_buffer_limit_disconnections`` rising
 - snapshot: Redis/FalkorDB ``BGSAVE`` stuck, failed, or long overdue
 - graph inflation: bus-synapse Channel nodes far above the channel catalog
+- stopped container: a container that should run (restart policy ``always``/``unless-stopped``)
+  sitting ``exited``/``created`` past a grace period, or a half-finished compose recreate
+  (``<12 hex>_<name>`` in ``created``). Local docker only: the remote census carries counts, not
+  state. Added after 2026-10-29: a killed post-pull rebuild left orion-athena-harness-governor
+  stopped and its replacement "Created" for ~9.5 h; the crash-loop check saw nothing, because a
+  container that is stopped cleanly never restarts.
 
 Evaluation is pure (``*Tracker.observe`` / ``*_alerts``) so the incident can be
 replayed in tests; collection is the thin async layer in ``service.py``.
 """
 from __future__ import annotations
 
+import re
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Iterable
@@ -330,3 +337,129 @@ class AlertGate:
                 self._last_sent[alert.key] = (now, rank)
                 out.append(alert)
         return out
+
+
+# --- stopped containers ----------------------------------------------------------------------
+
+# Docker restarts a container with these policies by itself, so one that is not running was
+# stopped (by `docker stop`, or by compose in the middle of a recreate) and nothing started it.
+SHOULD_RUN_POLICIES = frozenset({"always", "unless-stopped"})
+STOPPED_STATES = frozenset({"exited", "created", "dead"})
+LIVE_STATES = frozenset({"running", "restarting"})
+# compose v2 creates the replacement as "<old id[:12]>_<name>", stops and removes the old one,
+# then renames and starts the new one. A run killed in between leaves the temp name "Created".
+TEMP_RECREATE_NAME = re.compile(r"^[0-9a-f]{12}_(.+)$")
+
+
+@dataclass(frozen=True)
+class ContainerState:
+    id: str
+    name: str
+    status: str  # docker State.Status: running, exited, created, restarting, ...
+    restart_policy: str = ""
+    since: float | None = None  # exited: State.FinishedAt; created: Created (epoch seconds)
+    compose_service: str | None = None  # "<project>/<service>" from the compose labels
+    compose_dir: str | None = None  # basename of com.docker.compose.project.working_dir
+
+
+def _group_of(c: ContainerState) -> str:
+    if c.compose_service:
+        return c.compose_service
+    m = TEMP_RECREATE_NAME.match(c.name)
+    return m.group(1) if m else c.name
+
+
+def stopped_containers(
+    containers: Iterable[ContainerState], now: float, *, grace_sec: float
+) -> dict[str, list[tuple[ContainerState, str]]]:
+    """Containers that should be running and are not, grouped by compose service (or bare name).
+
+    A group is dropped when another container of the same compose service is live: a stale
+    leftover beside a running replacement is junk, not an outage."""
+    containers = list(containers)
+    live = {_group_of(c) for c in containers if c.status in LIVE_STATES}
+    out: dict[str, list[tuple[ContainerState, str]]] = {}
+    for c in containers:
+        if c.status not in STOPPED_STATES or c.since is None or now - c.since < grace_sec:
+            continue
+        if c.status in ("created", "dead") and TEMP_RECREATE_NAME.match(c.name):
+            why = "half-finished compose recreate"
+        elif c.restart_policy in SHOULD_RUN_POLICIES:
+            why = f"restart={c.restart_policy}"
+        else:
+            continue
+        group = _group_of(c)
+        if group not in live:
+            out.setdefault(group, []).append((c, why))
+    return out
+
+
+class StoppedContainerTracker:
+    """One card per stop episode. An episode is (container id, stopped-since), grouped by compose
+    service: a group cards when none of its stopped containers has carded yet. The same container
+    stopping again later is a new episode, and staying stopped never re-cards -- so a container
+    someone stopped on purpose costs one card, not one every 6 h. Episodes live in memory: a
+    guardian restart re-cards each still-stopped container once.
+
+    An episode counts as carded only after ``confirm`` gets its delivered card. Until then the
+    alert is emitted every cycle and the AlertGate holds it to one try per 6 h -- so a card lost
+    because notify was down (e.g. the same interrupted rebuild stopped it) is retried."""
+
+    def __init__(self) -> None:
+        self._carded: set[tuple[str, float]] = set()
+        self._pending: dict[str, set[tuple[str, float]]] = {}  # alert key -> its episode
+
+    def confirm(self, delivered: Iterable[StabilityAlert]) -> None:
+        for alert in delivered:
+            episode = self._pending.pop(alert.key, None)
+            if episode:
+                self._carded |= episode
+
+    def observe(self, containers: Iterable[ContainerState], now: float, *, grace_sec: float) -> list[StabilityAlert]:
+        groups = stopped_containers(containers, now, grace_sec=grace_sec)
+        seen = {(c.id, c.since) for members in groups.values() for c, _ in members}
+        self._carded &= seen  # a container that started or was removed ends its episode
+        self._pending = {}
+        alerts: list[StabilityAlert] = []
+        for group, members in sorted(groups.items()):
+            episode = {(c.id, c.since) for c, _ in members}
+            if episode & self._carded:
+                # One outage, one card: a container joining a carded group adds none.
+                self._carded |= episode
+                continue
+            oldest = min(c.since for c, _ in members if c.since is not None)
+            hours = (now - oldest) / 3600.0
+            listing = ", ".join(f"{c.name} ({c.status}, {why})" for c, why in members)
+            compose_dir = next((c.compose_dir for c, _ in members if c.compose_dir), None)
+            service = group.split("/", 1)[1] if "/" in group else ""
+            start = (
+                f"`scripts/safe_docker_build.sh {compose_dir} up -d{(' ' + service) if service else ''}` "
+                f"from the primary main checkout"
+                if compose_dir
+                else "`docker start <name>`"
+            )
+            names = " ".join(c.name for c, _ in members)
+            alerts.append(
+                StabilityAlert(
+                    key=f"stopped_container:{group}:" + ",".join(sorted(f"{c.id[:12]}@{c.since:.0f}" for c, _ in members)),
+                    subject=group,
+                    kind="stopped_container",
+                    severity="error",
+                    message=(
+                        f"Nothing of {group} is running, and it should be: {listing}. Stopped for "
+                        f"{hours:.1f} h. Docker will not start it again by itself. Anything that "
+                        f"waits on this service waits until someone does. If a rebuild was "
+                        f"interrupted, look for a START with no END in ~/.orion/post_pull_rebuild.log. "
+                        f"Start it: {start}. If it was stopped on purpose, remove it "
+                        f"(`docker rm {names}`) so this check stops counting it."
+                    ),
+                    context={
+                        "containers": [c.name for c, _ in members],
+                        "states": [c.status for c, _ in members],
+                        "stopped_hours": round(hours, 2),
+                        "compose_dir": compose_dir,
+                    },
+                )
+            )
+            self._pending[alerts[-1].key] = episode
+        return alerts

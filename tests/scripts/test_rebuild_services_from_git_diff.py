@@ -78,6 +78,8 @@ def _run(
     applier: str | None = None,
     safe_build_body: str | None = None,
     init_git: bool | str = False,
+    log_checker: bool = False,
+    services: tuple[str, ...] = (),
 ):
     fake_root = tmp_path / "repo"
     fake_scripts = fake_root / "scripts"
@@ -86,6 +88,10 @@ def _run(
     script = fake_scripts / SCRIPT.name
     shutil.copy2(SCRIPT, script)
     (fake_scripts / "rebuild_affected_services.py").write_text(_FAKE_CLASSIFIER)
+    if log_checker:
+        shutil.copy2(ROOT / "scripts" / "check_rebuild_log.py", fake_scripts / "check_rebuild_log.py")
+    for name in services:
+        (fake_root / "services" / name).mkdir(parents=True, exist_ok=True)
     if checker is not None:
         (fake_scripts / "check_sql_migrations_applied.py").write_text(checker)
     if applier is not None:
@@ -422,6 +428,12 @@ with open(cap, "a") as fh:
 if "--defer-if-backup" in args:
     print("post-pull migrations: a backup is running; DEFERRED")
     raise SystemExit(3)
+if os.environ.get("FAKE_TERM_DURING_WAIT"):
+    # Ctrl-C/TERM during the backup wait: signal the rebuild script (our parent is its subshell).
+    import signal
+    script = int(open(f"/proc/{os.getppid()}/stat").read().rsplit(")", 1)[1].split()[1])
+    os.kill(script, signal.SIGTERM)
+    raise SystemExit(130)
 rc = int(os.environ.get("FAKE_SECOND_APPLY_RC", "0"))
 if rc == 0:
     open(cap + ".applied", "w").close()
@@ -450,6 +462,22 @@ def test_backup_defers_the_apply_until_after_the_other_rebuilds_then_retries_the
     events = [ln.split(" ", 4)[3] for ln in _log_lines(tmp_path)]
     assert "DEFERRED-APPLY" in events and "RETRY-AFTER-MIGRATION" in events
     assert _log_lines(tmp_path)[-1].endswith("DONE rebuilt=2 failed=")
+
+
+def test_abort_during_the_backup_wait_names_the_refused_consumer_and_the_migration(
+        tmp_path: Path, monkeypatch) -> None:
+    """Review finding: the abort used to say unfinished=none while orion-hub sat refused."""
+    monkeypatch.setenv("FAKE_TERM_DURING_WAIT", "1")
+    completed, calls = _run(
+        tmp_path, plan="orion-hub,build;orion-planner,build", migrations=_MIG,
+        checker=_CHECKER_REPORT, applier=_DEFERRING_APPLIER, safe_build_body=_GATE,
+    )
+    assert completed.returncode == 143, completed.stdout + completed.stderr
+    lines = _log_lines(tmp_path)
+    assert any(" ABORT reason=SIGTERM in_flight=none unfinished=orion-hub " in ln for ln in lines), lines
+    assert any(f"ABORT-MIGRATIONS run first (deferred behind a backup, not applied): "
+               f"python3 scripts/apply_post_pull_migrations.py {_MIG}" in ln for ln in lines), lines
+    assert lines[-1].endswith("ABORT-FINISH scripts/rebuild_services_from_git_diff.sh --services 'orion-hub'")
 
 
 def test_deferred_apply_that_cannot_run_leaves_the_consumer_refused(tmp_path: Path, monkeypatch) -> None:
@@ -724,3 +752,91 @@ def test_dry_run_names_the_hooks_without_running_them(tmp_path: Path) -> None:
     assert calls == []
     assert "would run first: services/orion-ai-town/scripts/pre_rebuild.sh" in completed.stdout
     assert "would run after a good build: services/orion-ai-town/scripts/post_rebuild.sh" in completed.stdout
+
+
+# --- Interrupted runs (2026-10-29: killed inside the harness-governor step, no END line) ---
+
+INCIDENT_PLAN = "orion-biometrics,build;orion-harness-governor,build;orion-hub,recreate;orion-thought,build"
+INCIDENT_SERVICES = ("orion-biometrics", "orion-harness-governor", "orion-hub", "orion-thought")
+
+
+def _kill_parent_during_governor(sig: str) -> str:
+    # The fake safe_docker_build.sh is a direct child of the rebuild script.
+    return f'case "$*" in orion-harness-governor*) kill -{sig} $PPID; sleep 0.3; exit 1;; esac\n'
+
+
+def test_sigterm_mid_step_logs_abort_with_the_unfinished_services_and_finish_command(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path, plan=INCIDENT_PLAN, safe_build_body=_kill_parent_during_governor("TERM"), services=INCIDENT_SERVICES
+    )
+    assert completed.returncode == 143, completed.stdout + completed.stderr
+    assert calls == ["orion-biometrics up -d --build", "orion-harness-governor up -d --build"]
+    lines = _log_lines(tmp_path)
+    abort = [line for line in lines if " ABORT " in line]
+    assert len(abort) == 1, lines
+    assert "reason=SIGTERM in_flight=orion-harness-governor up -d --build" in abort[0]
+    assert "unfinished=orion-harness-governor orion-hub orion-thought " in abort[0]
+    finish = "scripts/rebuild_services_from_git_diff.sh --services 'orion-harness-governor orion-hub orion-thought' --recreate 'orion-hub'"
+    assert lines[-1].endswith("ABORT-FINISH " + finish), lines
+    assert finish in completed.stderr
+    assert not any(" DONE " in line for line in lines)
+
+
+def test_the_printed_finish_command_rebuilds_exactly_what_was_left(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-unrelated,build",  # --services must not ask the planner
+        services=INCIDENT_SERVICES,
+        extra_args=["--services", "orion-harness-governor orion-hub orion-thought", "--recreate", "orion-hub"],
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == [
+        "orion-harness-governor up -d --build",
+        "orion-hub up -d --build --force-recreate",
+        "orion-thought up -d --build",
+    ]
+
+
+def test_services_rejects_an_unknown_service(tmp_path: Path) -> None:
+    completed, calls = _run(tmp_path, plan="", extra_args=["--services", "orion-nope"])
+    assert completed.returncode == 2
+    assert "unknown service: orion-nope" in completed.stderr
+    assert calls == []
+
+
+def test_recreate_outside_services_is_refused(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path, plan="", services=("orion-hub", "orion-thought"),
+        extra_args=["--services", "orion-hub", "--recreate", "orion-thought"],
+    )
+    assert completed.returncode == 2
+    assert "--recreate orion-thought is not in --services" in completed.stderr
+    assert calls == []
+
+
+def test_clean_failure_is_not_an_abort(tmp_path: Path) -> None:
+    completed, _ = _run(tmp_path, plan="orion-hub,build", safe_build_rc=3)
+    assert completed.returncode == 1
+    assert not any(" ABORT" in line for line in _log_lines(tmp_path))
+
+
+def test_sigkill_leaves_no_end_and_the_next_run_reports_it_once(tmp_path: Path) -> None:
+    """SIGKILL runs no trap -- exactly the 2026-10-29 log. The next run names what was left."""
+    completed, _ = _run(
+        tmp_path, plan=INCIDENT_PLAN, safe_build_body=_kill_parent_during_governor("KILL"),
+        services=INCIDENT_SERVICES, log_checker=True,
+    )
+    assert completed.returncode == -9
+    assert _log_lines(tmp_path)[-1].split(" ", 3)[3].startswith("START orion-harness-governor")
+
+    shutil.rmtree(tmp_path / "repo")
+    (tmp_path / "safe-build-args.txt").unlink()
+    second, _ = _run(tmp_path, plan="", log_checker=True)
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert "died with no END line, during `orion-harness-governor up -d --build`" in second.stderr
+    assert "--services 'orion-harness-governor orion-hub orion-thought' --recreate 'orion-hub'" in second.stderr
+    assert any(" DIED run=" in line for line in _log_lines(tmp_path))
+
+    shutil.rmtree(tmp_path / "repo")
+    third, _ = _run(tmp_path, plan="", log_checker=True)
+    assert "died with no END line" not in third.stderr

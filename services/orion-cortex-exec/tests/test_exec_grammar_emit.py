@@ -648,3 +648,60 @@ def test_trace_ended_falls_back_to_trace_start_with_zero_atoms(
     events = build_cortex_exec_grammar_events(collector)
     trace_ended = next(e for e in events if e.event_kind == "trace_ended")
     assert trace_ended.observed_at == FIXED_OBS
+
+
+def _failed_run_events(error: str) -> list:
+    """One-step plan whose only step failed with ``error`` (as router.py records it)."""
+    from app.grammar_emit import short_error_kind
+    from orion.gpu_pool.shed import shed_reason_from_error
+
+    collector = CortexExecGrammarCollector(
+        node_name=NODE, correlation_id=CORR, code_version="0.2.0", observed_at=FIXED_OBS,
+    )
+    req = _minimal_plan(steps=1)
+    collector.record_request_received(req=req, mode="brain")
+    collector.record_plan_started(req=req, depth=None, step_count=1)
+    collector.record_step_started(
+        order=1, step_name="step_1", verb_name="chat_general", services=["LLMGatewayService"]
+    )
+    collector.record_step_failed(
+        order=1,
+        step_name="step_1",
+        error_kind=short_error_kind(error),
+        shed_reason=shed_reason_from_error(error),
+    )
+    collector.record_result_assembled(
+        status="fail", final_text_present=False, reasoning_present=False, thinking_source="none",
+        shed_reason=shed_reason_from_error(error),  # router.py: the plan's returned error
+    )
+    collector.record_result_emitted(reply_present=True, status="fail")
+    return build_cortex_exec_grammar_events(collector)
+
+
+def test_shed_step_keeps_shed_reason_in_failed_atom_summary() -> None:
+    """Regression 2026-10-20: short_error_kind() cut gpu_pool_unavailable:shed:cabinet_hot to
+    gpu_pool_unavailable and the shed reason was lost before any consumer saw it."""
+    events = _failed_run_events("gpu_pool_unavailable:shed:cabinet_hot")
+    failed = [e.atom for e in events if e.atom and e.atom.semantic_role == "exec_step_failed"]
+    assert len(failed) == 1
+    assert "error_kind=gpu_pool_unavailable" in failed[0].summary
+    assert "shed_reason=cabinet_hot" in failed[0].summary
+
+
+def test_shed_step_is_not_failure_pressure_end_to_end() -> None:
+    """Producer -> reducer: a shed-only run reads failure_pressure 0, a deadline refusal 1."""
+    from orion.substrate.execution_loop.grammar_extract import extract_execution_state_from_events
+
+    shed = extract_execution_state_from_events(_failed_run_events("gpu_pool_unavailable:shed:cabinet_hot"))
+    assert shed.failed_step_count == 0
+    assert shed.shed_step_count == 1
+    assert shed.pressure_hints["failure_pressure"] == 0.0
+    assert shed.pressure_hints["execution_friction"] == 0.0
+
+    deadline = extract_execution_state_from_events(_failed_run_events("gpu_pool_unavailable:deadline"))
+    assert deadline.failed_step_count == 1
+    assert deadline.shed_step_count == 0
+    assert deadline.pressure_hints["failure_pressure"] == 1.0
+    failed = [e.atom for e in _failed_run_events("gpu_pool_unavailable:deadline")
+              if e.atom and e.atom.semantic_role == "exec_step_failed"]
+    assert "shed_reason" not in failed[0].summary

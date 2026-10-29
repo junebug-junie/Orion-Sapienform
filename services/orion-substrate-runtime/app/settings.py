@@ -63,6 +63,22 @@ class Settings(BaseSettings):
     )
     biometrics_node_stale_after_sec: int = Field(180, alias="BIOMETRICS_NODE_STALE_AFTER_SEC")
     biometrics_pressure_min_confidence: float = Field(0.60, alias="BIOMETRICS_PRESSURE_MIN_CONFIDENCE")
+    # Kill switch: an expected-offline node that went stale is judged by Rule A
+    # (suppression) only; its frozen pressure_hints no longer re-add strain via
+    # Rules C/D/E (orion/substrate/biometrics_loop/pressure_organ.py).
+    biometrics_offline_frozen_hint_guard: bool = Field(
+        True, alias="BIOMETRICS_OFFLINE_FROZEN_HINT_GUARD"
+    )
+    # Kill switch: leave nodes that stopped reporting (hecate in BMC-only standby)
+    # out of node:substrate.biometrics' prediction-error mean. "Stopped" = last
+    # report older than BIOMETRICS_SILENT_NODE_CADENCE_MULTIPLE x the node's own
+    # learned report interval (orion/substrate/biometrics_loop/report_cadence.py).
+    biometrics_silent_node_exclusion: bool = Field(
+        True, alias="BIOMETRICS_SILENT_NODE_EXCLUSION"
+    )
+    biometrics_silent_node_cadence_multiple: float = Field(
+        6.0, alias="BIOMETRICS_SILENT_NODE_CADENCE_MULTIPLE"
+    )
     node_catalog_path: str = Field(
         "config/biometrics/node_catalog.yaml",
         alias="NODE_CATALOG_PATH",
@@ -149,6 +165,51 @@ class Settings(BaseSettings):
     cabinet_heat_rise_threshold_c: float = Field(
         0.5, ge=0.0, alias="SUBSTRATE_CABINET_HEAT_RISE_THRESHOLD_C"
     )
+    # Street events -> the workspace competition (spec 2026-10-20 street
+    # continuity, section 6; gate in orion/substrate/street_attention.py).
+    # Subscribes to orion:vision:street:events, gates each StreetEventV1 (ring
+    # always; others p < 0.05, camera up, under the hourly cap) and writes
+    # node:substrate.street's prediction_error every tick: the held salience
+    # of a passed event, else 0.0. Also records the street_handoff Rung 6
+    # reading. Needs SUBSTRATE_WRITE_PREDICTION_ERROR_NODES. false = kill
+    # switch (no listener, no node writes).
+    street_attention_enabled: bool = Field(True, alias="SUBSTRATE_STREET_ATTENTION_ENABLED")
+    street_events_channel: str = Field(
+        "orion:vision:street:events", alias="SUBSTRATE_STREET_EVENTS_CHANNEL"
+    )
+    # Gate passes allowed in any trailing hour (rings count toward it but are
+    # never refused). The cap on how often the street can take the top slot.
+    street_attention_max_per_hour: int = Field(
+        4, ge=0, alias="SUBSTRATE_STREET_ATTENTION_MAX_PER_HOUR"
+    )
+    # How long one passed event holds the node up. >= 2 broadcast intervals
+    # (30 s) so at least two attention cycles see it; at the cap that is 4 x
+    # 90 s = 10% of an hour, the top-decile edge, so a street at its cap all
+    # week habituates out of the "high" band on its own.
+    street_attention_hold_sec: float = Field(
+        90.0, gt=0.0, alias="SUBSTRATE_STREET_ATTENTION_HOLD_SEC"
+    )
+    street_attention_tick_interval_sec: float = Field(
+        30.0, gt=0.0, alias="SUBSTRATE_STREET_ATTENTION_TICK_INTERVAL_SEC"
+    )
+    # A camera is "up" when the runtime saw a frame from it on
+    # orion:vision:artifacts within this many seconds (the perception
+    # listener records it; with that listener off every non-ring event reads
+    # camera_unseen and is refused).
+    street_camera_up_max_age_sec: float = Field(
+        600.0, gt=0.0, alias="SUBSTRATE_STREET_CAMERA_UP_MAX_AGE_SEC"
+    )
+    # Strain news -> the workspace competition (docs/superpowers/specs/2026-10-20-strain-loop-design.md
+    # Part 2; orion/regulation/strain_news.py). Reads orion:regulation:latest every tick and writes
+    # node:substrate.strain's prediction_error = 1.0 on a strain news event (onset / escalation /
+    # reminder; <= 8 per local day, >= 30 min apart), held for attention's 300 s orienting window,
+    # else a calm 0.0. An unknown or stale regulation reading writes nothing. ON (ship flags on).
+    enable_strain_attention: bool = Field(True, alias="SUBSTRATE_STRAIN_ATTENTION_ENABLED")
+    strain_attention_tick_interval_sec: float = Field(
+        30.0, ge=5.0, alias="SUBSTRATE_STRAIN_ATTENTION_TICK_INTERVAL_SEC"
+    )
+    # Orion's local day for the strain news daily cap. Same key and default as orion-durable-runs.
+    orion_situation_timezone: str = Field("America/Denver", alias="ORION_SITUATION_TIMEZONE")
     rpc_health_snapshot_channel: str = Field(
         "orion:rpc_health:snapshot", alias="SUBSTRATE_RPC_HEALTH_SNAPSHOT_CHANNEL"
     )
@@ -429,6 +490,17 @@ class Settings(BaseSettings):
         True,
         alias="ENABLE_ASK_ANSWERED_LISTENER",
     )
+    # Walkway rollups -> "seen on <day>" links for named people (app/walkway_seen_loop.py):
+    # reads complete vision_rollup day rows, links existing entity:vision_individual:* nodes
+    # to one day evidence node. false = no links written.
+    walkway_seen_enabled: bool = Field(True, alias="WALKWAY_SEEN_ENABLED")
+    walkway_seen_interval_sec: float = Field(1800.0, gt=0.0, alias="WALKWAY_SEEN_INTERVAL_SEC")
+    walkway_seen_streams: str = Field("walkway", alias="WALKWAY_SEEN_STREAMS")
+    walkway_seen_lookback_days: int = Field(3, ge=1, alias="WALKWAY_SEEN_LOOKBACK_DAYS")
+    # person / person_link rows (PR #2852) -> one graph node per person and an instance_of
+    # claim per named camera cluster, via the journal (app/person_graph_loop.py). false = none written.
+    person_graph_enabled: bool = Field(True, alias="PERSON_GRAPH_ENABLED")
+    person_graph_interval_sec: float = Field(600.0, gt=0.0, alias="PERSON_GRAPH_INTERVAL_SEC")
     # Voluntary attention (ORION_ATTENTION_TOPDOWN_ENABLED) goal-context feed:
     # populates the in-memory active-goal store from GoalProposalV1 events.
     channel_goal_proposal: str = Field(

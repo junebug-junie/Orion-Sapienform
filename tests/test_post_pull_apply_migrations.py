@@ -241,7 +241,13 @@ state_path = os.environ["FAKE_DB_STATE"]
 state = json.load(open(state_path))
 with open(os.environ["FAKE_PSQL_CALLS"], "a") as fh:
     fh.write(json.dumps({"argv": sys.argv[1:], "first_line": sql.splitlines()[0] if sql else "",
-                         "pgoptions": os.environ.get("PGOPTIONS", "")}) + "\n")
+                         "pgoptions": os.environ.get("PGOPTIONS", ""),
+                         "appname": os.environ.get("PGAPPNAME", "")}) + "\n")
+first = sql.splitlines()[0] if sql else ""
+n_calls = sum(json.loads(x)["first_line"] == first for x in open(os.environ["FAKE_PSQL_CALLS"]))  # this file's tries
+if "FAKE-LOCK-FAIL" in sql and n_calls <= int(state.get("lock_fail_first", 0)):
+    print("ERROR:  canceling statement due to lock timeout", file=sys.stderr)
+    raise SystemExit(3)
 if "FAKE-FAIL" in sql:
     print("ERROR:  canceling statement due to lock timeout", file=sys.stderr)
     raise SystemExit(3)
@@ -264,9 +270,16 @@ class _FakeCursor:
     def __exit__(self, *a):
         return False
 
-    def execute(self, sql):
+    def execute(self, sql, params=None):
         st = self.state
-        if sql == d.LIVE_STATE_SQL["tables"]:
+        if sql == ap.BACKUP_SQL:
+            if st.get("backup_error"):
+                raise RuntimeError("permission denied for pg_stat_activity")
+            self.rows = [tuple(b) for b in st.get("backups", [])]
+        elif sql == ap.BLOCKER_SQL:
+            assert params == (ap.APP_NAME,)
+            self.rows = [tuple(b) for b in st.get("blockers", [])]
+        elif sql == d.LIVE_STATE_SQL["tables"]:
             self.rows = [(t,) for t in st["tables"]]
         elif sql == d.LIVE_STATE_SQL["columns"]:
             self.rows = [tuple(c.split(".", 1)) for c in st["columns"]]
@@ -545,3 +558,252 @@ def test_real_apply_script_migration_is_still_refused_with_its_script():
                                                                sequences=set())).files if f.name == name)
     assert result.header_script == "scripts/gpu_pool_stage5_snapshot_and_drop.sh"
     assert result.apply_command().startswith("scripts/gpu_pool_stage5_snapshot_and_drop.sh")
+
+
+# ------------------------------------------- a running backup (incident 2026-10-17 ~03:56 UTC)
+#
+# The nightly pg_dump held AccessShareLocks ~45 min; the apply of
+# manual_migration_vision_motion_story_strip_v2.sql hit lock_timeout and its consumers stayed refused
+# until it was applied by hand. lock_timeout stays 10s; the applier waits for the backup instead.
+
+
+class _Clock:
+    """Fake time: sleep() advances now(); `on_sleep(n)` may change the fake database."""
+
+    def __init__(self, on_sleep=None):
+        self.t, self.sleeps, self.on_sleep = 1000.0, [], on_sleep
+
+    def now(self):
+        return self.t
+
+    def sleep(self, secs):
+        self.sleeps.append(secs)
+        self.t += secs
+        if self.on_sleep:
+            self.on_sleep(len(self.sleeps))
+
+
+def _set_state(world, **kw):
+    st = json.loads(world.state.read_text())
+    st.update(kw)
+    world.state.write_text(json.dumps(st))
+
+
+def _run_clocked(world, paths, clock, **kw):
+    kw.setdefault("watch_interval_s", 0.01)
+    return world.run(paths, sleep=clock.sleep, clock=clock.now, **kw)
+
+
+PG_DUMP = [4242, "pg_dump", 2700]
+
+
+def test_running_backup_is_waited_for_then_the_file_is_applied(world):
+    a = world.add("manual_migration_a.sql", HDR + "CREATE TABLE ta (id int);")
+    _set_state(world, backups=[PG_DUMP])
+    clock = _Clock(on_sleep=lambda n: n == 2 and _set_state(world, backups=[]))
+    rc = _run_clocked(world, [a], clock, poll_s=30)
+    assert rc == 0, world.lines
+    assert clock.sleeps == [30, 30]
+    assert len(world.called()) == 1
+    text = "\n".join(world.lines)
+    assert "waiting for a running backup (pg_dump pid=4242 running 45m)" in text
+    assert "backup finished after a 60s wait" in text
+    log = world.log.read_text()
+    assert log.index("BACKUP-WAIT services/") < log.index("BACKUP-WAIT-DONE") < log.index("APPLIED ")
+    assert "waited=60s" in log
+
+
+def test_backup_outlasting_the_max_wait_fails_and_holds(world):
+    a = world.add("manual_migration_a.sql", HDR + "CREATE TABLE ta (id int);")
+    b = world.add("manual_migration_b.sql", HDR + "CREATE TABLE tb (id int);")
+    _set_state(world, backups=[PG_DUMP])
+    clock = _Clock()
+    rc = _run_clocked(world, [a, b], clock, poll_s=30, max_wait_s=90)
+    assert rc == 1
+    assert world.called() == []          # nothing ran against the database
+    assert sum(clock.sleeps) == 90
+    text = "\n".join(world.lines)
+    assert "a backup is still running (pg_dump pid=4242 running 45m); waited 90s in total" in text
+    assert "HELD, not applied -- manual_migration_a.sql comes first" in text
+    log = world.log.read_text()
+    assert "BACKUP-WAIT-EXCEEDED services/orion-sql-db/manual_migration_a.sql" in log
+    assert "HELD services/orion-sql-db/manual_migration_b.sql" in log
+
+
+def test_max_wait_comes_from_env_and_defaults_to_90_minutes():
+    assert ap.max_backup_wait({}) == 5400
+    assert ap.max_backup_wait({ap.MAX_WAIT_ENV: "120"}) == 120
+    assert ap.max_backup_wait({ap.MAX_WAIT_ENV: "junk"}) == 5400
+    assert ap.max_backup_wait({ap.MAX_WAIT_ENV: "-5"}) == 0
+
+
+def test_lock_timeout_behind_a_backup_is_retried_then_applied(world):
+    a = world.add("manual_migration_a.sql", HDR + "-- FAKE-LOCK-FAIL\nCREATE TABLE ta (id int);")
+    _set_state(world, blockers=[[4242, "pg_dump"]], lock_fail_first=1)
+    clock = _Clock()
+    rc = _run_clocked(world, [a], clock, backoff_s=(5, 10, 20))
+    assert rc == 0, world.lines
+    calls = world.called()
+    assert len(calls) == 2
+    assert all(c["appname"] == ap.APP_NAME for c in calls)
+    assert all("lock_timeout=10s" in c["pgoptions"] for c in calls)  # never raised
+    assert clock.sleeps == [5]
+    text = "\n".join(world.lines)
+    assert "lock timeout behind a backup (pg_dump pid=4242); retry 1/3 in 5s" in text
+    log = world.log.read_text()
+    assert "RETRY services/orion-sql-db/manual_migration_a.sql" in log and "attempt=1/3" in log
+    assert "retries=1" in log.splitlines()[-1] and "APPLIED" in log.splitlines()[-1]
+
+
+def test_lock_timeout_behind_a_backup_gives_up_after_the_retries(world):
+    a = world.add("manual_migration_a.sql", HDR + "-- FAKE-LOCK-FAIL\nCREATE TABLE ta (id int);")
+    b = world.add("manual_migration_b.sql", HDR + "CREATE TABLE tb (id int);")
+    _set_state(world, blockers=[[4242, "pg_dump"]], lock_fail_first=99)
+    clock = _Clock()
+    rc = _run_clocked(world, [a, b], clock, backoff_s=(5, 10, 20))
+    assert rc == 1
+    assert len(world.called()) == 4         # first try + 3 retries; b never ran
+    assert clock.sleeps == [5, 10, 20]
+    assert "after 3 retries; giving up" in "\n".join(world.lines)
+    log = world.log.read_text()
+    assert log.count("RETRY ") == 3 and "FAILED services/orion-sql-db/manual_migration_a.sql" in log
+    assert "HELD services/orion-sql-db/manual_migration_b.sql" in log
+
+
+def test_lock_timeout_behind_a_non_backup_session_fails_at_once_as_before(world):
+    a = world.add("manual_migration_a.sql", HDR + "-- FAKE-LOCK-FAIL\nCREATE TABLE ta (id int);")
+    b = world.add("manual_migration_b.sql", HDR + "CREATE TABLE tb (id int);")
+    _set_state(world, blockers=[[77, "orion-sql-writer"]], lock_fail_first=99)
+    clock = _Clock()
+    assert _run_clocked(world, [a, b], clock) == 1
+    assert len(world.called()) == 1 and clock.sleeps == []
+    text = "\n".join(world.lines)
+    assert "blocker: orion-sql-writer pid=77 -- not a backup, not retried" in text
+    assert "FAILED; later files are held" in text
+    assert "RETRY" not in world.log.read_text()
+
+
+def test_lock_timeout_behind_a_backup_and_another_session_is_not_retried(world):
+    a = world.add("manual_migration_a.sql", HDR + "-- FAKE-LOCK-FAIL\nCREATE TABLE ta (id int);")
+    _set_state(world, blockers=[[4242, "pg_dump"], [77, "psql"]], lock_fail_first=99)
+    assert _run_clocked(world, [a], _Clock()) == 1
+    assert len(world.called()) == 1
+
+
+def test_lock_timeout_with_no_blocker_seen_is_not_retried(world):
+    a = world.add("manual_migration_a.sql", HDR + "-- FAKE-LOCK-FAIL\nCREATE TABLE ta (id int);")
+    _set_state(world, lock_fail_first=99)
+    assert _run_clocked(world, [a], _Clock()) == 1
+    assert len(world.called()) == 1
+    assert "blocker: no blocker seen" in "\n".join(world.lines)
+
+
+def test_file_without_a_transaction_wrapper_is_not_retried(world):
+    """A CONCURRENTLY file may have committed statements before the timeout; re-running it is not
+    the same file any more."""
+    t = world.add("manual_migration_a.sql", HDR + "CREATE TABLE ta (id int);")
+    i = world.add("manual_migration_b.sql", HDR + "-- FAKE-LOCK-FAIL\n"
+                  "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_ta ON ta (id);")
+    _set_state(world, blockers=[[4242, "pg_dump"]], lock_fail_first=99)
+    assert _run_clocked(world, [t, i], _Clock()) == 1
+    assert len(world.called()) == 2
+    assert "ran without a transaction wrapper" in "\n".join(world.lines)
+
+
+def test_defer_if_backup_never_waits_and_exits_3(world):
+    a = world.add("manual_migration_a.sql", HDR + "CREATE TABLE ta (id int);")
+    b = world.add("manual_migration_b.sql", HDR + "CREATE TABLE tb (id int);")
+    _set_state(world, backups=[PG_DUMP])
+    clock = _Clock()
+    assert _run_clocked(world, [a, b], clock, defer_if_backup=True) == ap.EXIT_DEFERRED
+    assert world.called() == [] and clock.sleeps == []
+    text = "\n".join(world.lines)
+    assert "DEFERRED until it finishes" in text
+    assert "manual_migration_b.sql: DEFERRED behind manual_migration_a.sql" in text
+    log = world.log.read_text()
+    assert "DEFERRED services/orion-sql-db/manual_migration_a.sql" in log
+    assert "DEFERRED services/orion-sql-db/manual_migration_b.sql" in log
+
+
+def test_defer_if_backup_defers_a_backup_blocked_lock_timeout(world):
+    a = world.add("manual_migration_a.sql", HDR + "-- FAKE-LOCK-FAIL\nCREATE TABLE ta (id int);")
+    _set_state(world, blockers=[[4242, "pg_dump"]], lock_fail_first=99)
+    clock = _Clock()
+    assert _run_clocked(world, [a], clock, defer_if_backup=True) == ap.EXIT_DEFERRED
+    assert len(world.called()) == 1 and clock.sleeps == []
+
+
+def test_defer_if_backup_without_a_backup_applies_normally(world):
+    a = world.add("manual_migration_a.sql", HDR + "CREATE TABLE ta (id int);")
+    assert _run_clocked(world, [a], _Clock(), defer_if_backup=True) == 0
+    assert len(world.called()) == 1
+
+
+def test_an_earlier_refusal_wins_over_a_deferral(world):
+    r = world.add("manual_migration_a.sql", HDR + "DELETE FROM t;")
+    b = world.add("manual_migration_b.sql", HDR + "CREATE TABLE tb (id int);")
+    _set_state(world, backups=[PG_DUMP])
+    assert _run_clocked(world, [r, b], _Clock(), defer_if_backup=True) == 1
+    assert world.called() == []
+
+
+def test_a_deferred_file_keeps_exit_3_when_a_later_file_is_refused(world):
+    """Review finding: exit 1 here would skip the rebuild script's second pass, stranding A."""
+    a = world.add("manual_migration_a.sql", HDR + "CREATE TABLE ta (id int);")
+    r = world.add("manual_migration_b.sql", HDR + "DELETE FROM t;")
+    _set_state(world, backups=[PG_DUMP])
+    assert _run_clocked(world, [a, r], _Clock(), defer_if_backup=True) == ap.EXIT_DEFERRED
+    assert world.called() == []
+    b_line = next(x for x in world.lines if "manual_migration_b.sql:" in x)
+    assert "UNVERIFIABLE" in b_line or "NOT auto-applied" in b_line, b_line
+
+
+def test_backup_look_only_counts_sessions_inside_a_transaction():
+    """An idle orphaned pg_dump backend (2026-08-16..18) holds no locks; waiting on it would turn a
+    file that applies today into a 90 min wait and a failure. pg_basebackup takes no locks."""
+    assert "xact_start IS NOT NULL" in ap.BACKUP_SQL
+    assert "datname = current_database()" in ap.BACKUP_SQL
+    assert ap.BACKUP_APP_NAMES == ("pg_dump", "pg_dumpall")
+
+
+def test_retry_backoff_never_sleeps_past_the_wait_budget(world):
+    a = world.add("manual_migration_a.sql", HDR + "-- FAKE-LOCK-FAIL\nCREATE TABLE ta (id int);")
+    _set_state(world, backups=[PG_DUMP], blockers=[[4242, "pg_dump"]], lock_fail_first=99)
+    # the backup is gone after the first poll; the budget (40s) started at that first wait
+    clock = _Clock(on_sleep=lambda n: n == 1 and _set_state(world, backups=[]))
+    rc = _run_clocked(world, [a], clock, poll_s=30, max_wait_s=40, backoff_s=(30, 60, 120))
+    assert rc == 1
+    assert clock.sleeps[:2] == [30, 10]          # backoff clamped to what is left of the budget
+    assert sum(clock.sleeps) <= 40
+
+
+def test_backup_check_that_cannot_answer_applies_as_before(world):
+    a = world.add("manual_migration_a.sql", HDR + "CREATE TABLE ta (id int);")
+    _set_state(world, backup_error=True)
+    assert _run_clocked(world, [a], _Clock()) == 0
+    assert len(world.called()) == 1
+    assert "could not check for a running backup" in "\n".join(world.lines)
+
+
+def test_dry_run_never_waits(world):
+    a = world.add("manual_migration_a.sql", HDR + "CREATE TABLE ta (id int);")
+    _set_state(world, backups=[PG_DUMP])
+    clock = _Clock()
+    assert _run_clocked(world, [a], clock, dry_run=True) == 0
+    assert clock.sleeps == [] and world.called() == []
+
+
+def test_default_prefix_names_the_session_for_the_blocker_watch():
+    cmd = ap.default_psql({})
+    assert f"PGAPPNAME={ap.APP_NAME}" in cmd
+    assert ap.APP_NAME not in ap.BACKUP_APP_NAMES
+
+
+def test_required_by_lists_the_consumers(world, capsys):
+    a = world.add("manual_migration_a.sql", "-- ORION-MIGRATION-REQUIRED-BY: orion-sql-writer, orion-hub\n"
+                  "CREATE TABLE ta (id int);")
+    b = world.add("manual_migration_b.sql", "-- ORION-MIGRATION-REQUIRED-BY: none schema-only\n"
+                  "CREATE TABLE tb (id int);")
+    assert ap.main(["--required-by", "--repo", str(world.repo), a, b]) == 0
+    assert capsys.readouterr().out.split() == ["orion-hub", "orion-sql-writer"]
+    assert world.called() == []

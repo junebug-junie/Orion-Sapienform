@@ -177,7 +177,6 @@ class Settings(BaseSettings):
     orion_situation_high_wind_mph_threshold: int = Field(25, alias="ORION_SITUATION_HIGH_WIND_MPH_THRESHOLD")
     orion_situation_hot_car_temp_f_threshold: int = Field(80, alias="ORION_SITUATION_HOT_CAR_TEMP_F_THRESHOLD")
     orion_situation_agenda_enabled: bool = Field(False, alias="ORION_SITUATION_AGENDA_ENABLED")
-    orion_situation_lab_context_enabled: bool = Field(True, alias="ORION_SITUATION_LAB_CONTEXT_ENABLED")
     # P4: the camera percept in the situation brief. Default OFF -- this puts
     # camera-derived content about a private home into the prompt, so it is
     # opt-in. See PerceptionContextV1's docstring for the exposed-field
@@ -271,7 +270,6 @@ class Settings(BaseSettings):
     orion_situation_reverie_ttl_seconds: int = Field(
         180, alias="ORION_SITUATION_REVERIE_TTL_SECONDS"
     )
-    orion_situation_lab_provider: str = Field("stub", alias="ORION_SITUATION_LAB_PROVIDER")
     # 2026-08-14: "does Orion know what model it's running on" (Juniper).
     # Default ON -- unlike perception, this carries no private-home content,
     # just a route name and a model id already visible in orion-llm-gateway's
@@ -475,7 +473,10 @@ class Settings(BaseSettings):
         "config/substrate/repair_pressure_weights.v2.yaml",
         alias="REPAIR_PRESSURE_WEIGHTS_V2_PATH",
     )
-    repair_pressure_probe_route: str = Field("quick", alias="REPAIR_PRESSURE_PROBE_ROUTE")
+    # quick_turn (2026-10-23): the fast class at interactive pool priority. Every Hub turn awaits
+    # this probe; on `quick` (system) the heat reflex shed it on 19/19 of Juniper's turns 10-20..21.
+    # The gateway must know quick_turn (config/gpu_pool.yaml) before this is deployed.
+    repair_pressure_probe_route: str = Field("quick_turn", alias="REPAIR_PRESSURE_PROBE_ROUTE")
     # Same-turn LLM novelty/salience judgment for the chat-scoped attention/
     # curiosity pipeline (app/current_turn_llm_signals.py), replacing the
     # deleted LegacyRegexSignalDetector's "any capitalized word" regex.

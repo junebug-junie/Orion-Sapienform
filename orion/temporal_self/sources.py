@@ -24,8 +24,10 @@ import json
 from datetime import datetime
 from typing import Any, Callable, Iterable, Mapping
 
+from orion.regulation.arousal import strain_causes
 from orion.schemas.temporal_self import LABEL_MAX, TemporalSelfEventV1
 from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for
+from orion.vision.motion_story_gate import gate_passed, tally_from_counts
 
 Row = Mapping[str, Any]
 
@@ -388,6 +390,245 @@ def presence_transition(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEven
     )
 
 
+AROUSAL_LEVELS = frozenset({"engaged", "idle", "strained", "unknown"})
+AROUSAL_EVENT_PREFIX = "arousal_transition:"
+
+
+def arousal_transition(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """temporal_self_event rows the regulation step wrote itself (``source_table='regulation'``,
+    ``services/orion-durable-runs/app/regulation_store.py``): one per level change, plus one per
+    strain cause that joins an episode already strained. Time: occurred_at. Subject:
+    ``orion:arousal``. Verdict: the new level.
+
+    The event keeps the row's OWN ``event_id``. The chronicle stores every event it folds in that
+    same table: a new id would make each fold insert a copy that the next read folds again.
+
+    ``since`` is the reading's episode start (when the level was entered); ``causes`` are the
+    strain causes in the reading (``orion.regulation.arousal.STRAIN_CAUSES``)."""
+    event_id = str(row.get("event_id") or "")
+    payload = _json(row.get("payload_json")) or {}
+    if not event_id.startswith(AROUSAL_EVENT_PREFIX) or not isinstance(payload, dict):
+        return None
+    to_level = payload.get("to")
+    reading = payload.get("reading") if isinstance(payload.get("reading"), dict) else {}
+    if to_level not in AROUSAL_LEVELS:
+        return None
+    return _event(
+        kind="arousal_transition", table="regulation", ref=event_id[len(AROUSAL_EVENT_PREFIX):],
+        at=row.get("occurred_at"), tz_name=tz_name, subject_ref="orion:arousal", label=str(to_level),
+        verdict=str(to_level),
+        payload={
+            "from": payload.get("from"), "to": to_level, "since": _iso(reading.get("since")),
+            "causes": strain_causes(reading.get("reasons") or []),
+            "cabinet_temp_c": reading.get("cabinet_temp_c"), "gpu_queue_depth": reading.get("gpu_queue_depth"),
+            # The previous reading was too old to carry (an outage): what happened in the gap is unseen.
+            "gap": "prev_dropped:gap" in (reading.get("reasons") or []),
+        },
+    )
+
+
+def retro_play_label(row: Row) -> str:
+    """A short, deterministic phrase for one session, from the row's own fields: the game, who played
+    (``solo`` only for a leisure session with a recorded human share of 0, ``together`` when a human
+    drove more than half of the frames, else ``with a human``) and the prediction count. The full summary stays on the row and the memory card;
+    the stance cue has room for this phrase only (STANCE_CUE_MAX_CHARS)."""
+    title = str(row.get("game_title") or row.get("game_id") or "a game")
+    if row.get("played_together"):
+        who = "together"
+    elif row.get("kind") == "leisure" and not row.get("human_may_be_in_control") \
+            and row.get("control_basis") in ("leisure_sponsor", "frames") and row.get("human_share") in (0, 0.0):
+        who = "solo"
+    else:
+        who = "with a human"
+    decisions = row.get("decisions")
+    if decisions:
+        met = int(row.get("predictions_met") or 0)
+        unknown = int(row.get("predictions_unknown") or 0)
+        done = f", {met} of {int(decisions)} predictions met" + (f", {unknown} unknown" if unknown else "")
+    elif decisions == 0:
+        done = ", no planner decisions"
+    else:
+        done = ""
+    return clip(f"{title} {who}{done}")
+
+
+def retro_play(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """retro_play_sessions (orion-hub scripts/retro_memory_export.py): one finished Retro session.
+    Time: started_at to ended_at (available at ended_at, when the row is written). Subject:
+    ``retro_session:<session_id>``. Label: ``retro_play_label`` ("The Legend of Zelda solo, 14 of 31
+    predictions met"). A row with no summary is dropped: Hub writes one for every exported session,
+    so a row without it was not written by the exporter."""
+    session_id = row.get("session_id")
+    if not session_id or not str(row.get("summary") or "").strip():
+        return None
+    return _event(
+        kind="retro_play", table="retro_play_sessions", ref=session_id, at=row.get("started_at"),
+        ended=row.get("ended_at"), tz_name=tz_name,
+        # The Retro session (a co-play row key is per handoff): the same ref the memory card anchors.
+        subject_ref=f"retro_session:{row.get('retro_session_id') or session_id}",
+        label=retro_play_label(row),
+        payload={
+            "game_id": row.get("game_id"), "kind": row.get("kind"), "lineage_id": row.get("lineage_id"),
+            "played_together": bool(row.get("played_together")), "human_share": row.get("human_share"),
+            "decisions": row.get("decisions"), "predictions_met": row.get("predictions_met"),
+            "rooms_new": row.get("rooms_new"), "deaths": row.get("deaths"),
+            "memory_card_id": str(row["memory_card_id"]) if row.get("memory_card_id") else None,
+        },
+    )
+
+
+# --------------------------------------------------------------------------- the street
+# Episodes from the street (walkway follow-ups spec PR #2763, item 1). Only events something
+# already marked notable become episodes: a published motion story that passed Juniper's
+# spot-check gate, a doorbell ring, and a graded handoff that passed the street attention gate.
+# Every frame, every parked car and every unpublished glimpse stays out.
+
+# orion/substrate/street_attention.py GATE_P_VALUE / RING_KIND / HANDOFF_KINDS, restated (importing
+# that module pulls the whole orion.substrate package); test_street_arcs.py fails if they disagree.
+STREET_GATE_P_VALUE = 0.05
+STREET_RING_KIND = "doorbell_ring"
+STREET_HANDOFF_KINDS = frozenset({"handoff_met", "handoff_late", "handoff_missed"})
+# Moving cars are traffic, not events, and Juniper's spot checks were on people, dogs and strollers.
+STREET_STORY_KINDS = frozenset({"person", "dog", "bicycle", "stroller"})
+STREET_CAMERA_WORDS = {"walkway": "walkway camera", "doorbell": "doorbell camera"}
+_STORY_MOTION = {
+    "walking": "walked", "running": "ran", "riding": "rode by", "pushed": "was pushed",
+    "walked": "was walked", "creeping": "crept", "standing": "stood", "driving": "drove by",
+}
+_HANDOFF_WORDS = {"handoff_met": "arrived when predicted", "handoff_late": "arrived late",
+                  "handoff_missed": "never arrived"}
+
+
+def _camera_words(streams: Iterable[Any]) -> str:
+    names = [STREET_CAMERA_WORDS.get(str(x), f"{x} camera") for x in streams if x]
+    return " and ".join(dict.fromkeys(names)) or "street camera"
+
+
+def _story_gate(row: Row) -> bool:
+    """Juniper's spot-check gate (orion/vision/motion_story_gate.py) for this story's rules version.
+    The driver passes the verdict counts of the newest rules version with published clean stories
+    (the walkway rollups' rule); a story on any other version is never vouched for."""
+    version = row.get("gate_rules_version")
+    if version is None or row.get("rules_version") != version:
+        return False
+    counts = _json(row.get("gate_counts")) or {}
+    return gate_passed(tally_from_counts(counts if isinstance(counts, dict) else {}, 0, int(version)))
+
+
+def street_story_label(row: Row) -> str:
+    """"Outside (walkway camera): a person walked left to right, away from the house, with a stroller".
+    Built from the story's own fields, never its sentence: the sentence says "together with 1 other
+    person", a bare track count. The label carries NO people count. The honest range
+    (orion/vision/walkway_rollup.py, PR #2781) exists only once the hour's rollup closes, a median ~3 h
+    after the hour, long after the chronicle reads the story; adding it would give the same arc a
+    different label live and on a re-fold. "How many" is the rollups' job (the Day letter line)."""
+    kind = str(row.get("kind") or "")
+    who = str(row.get("name_label") or "").strip() or f"a {kind}"
+    motion = _STORY_MOTION.get(str(row.get("speed_class") or ""), "passed")
+    where = [w for w, on in (("left to right", row.get("dir_lateral") == 1),
+                             ("right to left", row.get("dir_lateral") == -1),
+                             ("toward the house", row.get("dir_depth") == 1),
+                             ("away from the house", row.get("dir_depth") == -1)) if on]
+    companions = sorted({str(c) for c in (row.get("companion_kinds") or []) if c})
+    text = f"Outside ({_camera_words([row.get('stream_id')])}): {who} {motion}"
+    if where:
+        text += " " + ", ".join(where)
+    others = [c for c in companions if c != "person"]
+    if others:
+        text += ", with " + " and ".join(f"a {c}" for c in others)
+    if "person" in companions:
+        text += ", with other people"
+    return clip(text)
+
+
+def _street_story(row: Row, tz_name: str) -> TemporalSelfEventV1 | None:
+    stream = row.get("stream_id")
+    if (not row.get("published") or not row.get("clean") or stream is None or stream in ROOM_STREAMS
+            or row.get("kind") not in STREET_STORY_KINDS or not _story_gate(row)):
+        return None
+    ref = row.get("story_id")
+    named = bool(str(row.get("name_label") or "").strip())
+    return _event(
+        kind="street_event", table="vision_motion_story", ref=ref, at=row.get("started_at"),
+        ended=row.get("ended_at"), tz_name=tz_name, subject_ref=f"street:story:{ref}",
+        related_refs=sorted({str(x) for x in (row.get("together_story_ids") or []) if x}),
+        label=street_story_label(row),
+        payload={"outside_world": True, "origin": "motion_story", "stream_ids": [str(stream)],
+                 "subject_kind": row.get("kind"), "named": named,
+                 "individual_id": row.get("individual_id") if named else None,
+                 "gate": f"spot_check rules_version={row.get('rules_version')}"},
+    )
+
+
+def _street_ring(row: Row, tz_name: str) -> TemporalSelfEventV1 | None:
+    stream = row.get("stream_id") or "doorbell"
+    if row.get("event_type") != STREET_RING_KIND or stream in ROOM_STREAMS:
+        return None
+    return _event(
+        kind="street_event", table="vision_events", ref=row.get("event_id"), at=row.get("created_at"),
+        tz_name=tz_name, subject_ref=f"street:ring:{row.get('event_id')}",
+        label=clip(f"Outside ({_camera_words([stream])}): someone rang the doorbell"),
+        payload={"outside_world": True, "origin": "doorbell_ring", "stream_ids": [str(stream)],
+                 "subject_kind": "person", "named": False,
+                 "gate": "doorbell_ring always passes"},
+    )
+
+
+def _street_handoff(row: Row, tz_name: str) -> TemporalSelfEventV1 | None:
+    """A ``StreetEventV1`` from sql-writer's outbox, kept only when it passes the street attention
+    gate's event clauses: a graded handoff with ``p_value < 0.05``. Rings arrive as vision_events
+    (``_street_ring``), never from here. The gate's camera-up and hourly-cap clauses are runtime
+    state no row records; the daily episode cap (``ReducerConfig.street_arcs_per_day``) is this
+    path's habituation."""
+    ev = _json(row.get("event")) or {}
+    if not isinstance(ev, dict) or ev.get("kind") not in STREET_HANDOFF_KINDS:
+        return None
+    p = ev.get("p_value")
+    if isinstance(p, bool) or not isinstance(p, (int, float)) or not p < STREET_GATE_P_VALUE:
+        return None
+    streams = [str(x) for x in (ev.get("stream_ids") or []) if x]
+    if not streams or any(x in ROOM_STREAMS for x in streams):
+        return None
+    try:
+        if as_utc(ev.get("occurred_at")) is None:
+            return None
+    except (TypeError, ValueError):
+        return None  # one malformed outbox row is dropped, never fails the whole window read
+    guess = str(ev.get("person_guess") or "").strip()
+    who = f"{guess} (a guess)" if guess else "someone"
+    ref = row.get("event_id") or ev.get("event_id")
+    return _event(
+        kind="street_event", table="vision_handoff_street_outbox", ref=ref, at=ev.get("occurred_at"),
+        tz_name=tz_name, subject_ref=f"street:handoff:{row.get('handoff_id') or ref}",
+        related_refs=sorted({str(x) for x in (ev.get("evidence_refs") or []) if x}),
+        label=clip(f"Outside ({_camera_words(streams)}): {who} crossing between cameras "
+                   f"{_HANDOFF_WORDS[ev['kind']]} (p {float(p):.2g})"),
+        verdict=str(ev["kind"]),
+        payload={"outside_world": True, "origin": "street_event", "stream_ids": streams,
+                 "subject_kind": ev.get("subject_kind"), "named": False,
+                 "p_value": float(p), "gate": f"p_value < {STREET_GATE_P_VALUE}"},
+    )
+
+
+_STREET_ORIGINS = {"motion_story": _street_story, "doorbell_ring": _street_ring, "street_event": _street_handoff}
+
+
+def street_event(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """One notable outside event, from one of three driver reads (``row['origin']``):
+
+    * ``motion_story``: vision_motion_story, published and clean, on a non-room stream, kind person /
+      dog / bicycle / stroller, and its rules version passed Juniper's spot-check gate. Time:
+      started_at .. ended_at (available at ended_at). Subject: ``street:story:<story_id>``.
+    * ``doorbell_ring``: vision_events with event_type doorbell_ring. Time: created_at.
+    * ``street_event``: vision_handoff_street_outbox, a graded handoff with p < 0.05. Time: the
+      event's occurred_at.
+
+    Every event carries ``payload.outside_world = True`` and a label that starts "Outside (<camera>)":
+    the street is never room company (``presence_transition`` and ``vision_percept`` stay room-only)."""
+    fn = _STREET_ORIGINS.get(str(row.get("origin") or ""))
+    return fn(row, tz_name) if fn else None
+
+
 def _iso(value: Any) -> str | None:
     dt = as_utc(value)
     return dt.isoformat() if dt else None
@@ -413,6 +654,9 @@ ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
     "vision_percept": vision_percept,
     "memory_episode": memory_episode,
     "presence_transition": presence_transition,
+    "arousal_transition": arousal_transition,
+    "retro_play": retro_play,
+    "street_event": street_event,
 }
 
 

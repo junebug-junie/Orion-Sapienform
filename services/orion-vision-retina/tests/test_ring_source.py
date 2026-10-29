@@ -77,13 +77,16 @@ def test_event_filtering_and_cooldown(tmp_path):
         assert src.events_seen == 0
         src.on_event(_event(kind="motion"))
         await asyncio.sleep(0)
-        src.on_event(_event(kind="ding"))  # inside the cooldown
+        src.on_event(_event(kind="motion"))  # inside the cooldown: no new view
+        await asyncio.sleep(0)
+        src.on_event(_event(kind="ding"))  # inside the cooldown: a ring always opens one
         await asyncio.sleep(0)
         return src, started
 
     src, started = asyncio.run(run())
-    assert started == ["motion"]
-    assert (src.events_seen, src.events_ignored, src.last_event_kind) == (2, 1, "ding")
+    assert started == ["motion", "ding"]
+    assert (src.events_seen, src.events_ignored, src.last_event_kind) == (3, 1, "ding")
+    assert (src.dings_total, src.motions_total) == (1, 2) and src.last_ding_ts is not None
 
 
 def test_no_second_burst_while_one_runs(tmp_path):
@@ -119,7 +122,7 @@ def test_read_serves_each_frame_once_and_idle_is_waiting(tmp_path):
 
     src, got, again = asyncio.run(run())
     assert (got.width, got.height) == (640, 480)
-    assert got.source_meta == {"type": "ring", "ring_event_kind": "ding"}
+    assert got.source_meta == {"type": "ring", "ring_event_kind": "ding", "ring_correlation_id": None}
     assert again is None and src.waiting_for_event
 
 
@@ -197,7 +200,10 @@ def test_settings_refuse_ring_with_no_event_kinds():
 def test_doorbell_instance_matches_router_and_zones():
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
     svc = compose["services"]["orion-vision-retina-doorbell"]
-    assert svc["profiles"] == ["doorbell"]
+    # No profile: the post-pull rebuild runs a plain `up` and never starts a
+    # profile service that is not already running, so a profiled doorbell
+    # never deployed itself (2026-10-17). Unauthenticated, it only waits.
+    assert "profiles" not in svc
     env = dict(e.split("=", 1) for e in svc["environment"])
     assert env["RETINA_SOURCE_TYPE"] == "ring"
     assert env["RETINA_STREAM_ID"] == "doorbell" and env["RETINA_CAMERA_ID"] == "doorbell"
@@ -338,6 +344,7 @@ def test_burst_delivers_frames_and_always_closes_the_session(tmp_path, fake_aior
 
     async def run():
         src = _burst_src(tmp_path, dev)
+        src.consecutive_failed_bursts = 2  # earlier views failed; a frame clears it
         seen = []
         task = asyncio.create_task(src._burst("ding"))
         while not task.done():
@@ -349,6 +356,7 @@ def test_burst_delivers_frames_and_always_closes_the_session(tmp_path, fake_aior
 
     src, seen = asyncio.run(run())
     assert seen and src.bursts_failed == 0 and src.last_error is None
+    assert src.consecutive_failed_bursts == 0 and src.blind is False
     assert dev.closed == dev.opened and len(dev.opened) == 1  # registered before Ring talks, closed after
     assert dev.keep_alive_timeout >= 30  # Ring keeps the view open for the whole burst
     pc = fake_aiortc.instances[0]
@@ -361,6 +369,10 @@ def test_no_answer_is_named_failed_and_still_closed(tmp_path, fake_aiortc):
     src = _burst_src(tmp_path, dev)
     asyncio.run(src._burst("motion"))
     assert src.bursts_failed == 1 and "no answer from Ring" in src.last_error
+    assert src.consecutive_failed_bursts == 1
+    asyncio.run(src._burst("motion"))
+    asyncio.run(src._burst("motion"))
+    assert src.consecutive_failed_bursts == 3 and src.blind is True
     assert dev.closed == dev.opened and fake_aiortc.instances[0].closed
 
 
@@ -441,3 +453,508 @@ def test_supervisor_reconnects_a_dead_push_listener(tmp_path, monkeypatch):
 
     reconnects = asyncio.run(run())
     assert reconnects == ["ring push listener stopped; reconnecting"]
+
+
+# --- every Ring push is recorded (2026-10-20 live bug) -----------------------
+
+
+def test_ding_during_open_live_view_is_recorded_and_extends_it(tmp_path):
+    """Walk up = motion burst; the press arrived while it ran and was dropped
+    ("ignored: burst running or in cooldown"). Now it is counted, handed to the
+    sink, and pushes the open live view out."""
+
+    async def run():
+        src = _connected(tmp_path, cooldown_seconds=30, burst_seconds=15)
+        pushes = []
+        src.event_sink = pushes.append
+        gate = asyncio.Event()
+
+        async def slow_burst(kind):
+            src._frames_open = True  # in the frame loop, which reads the extension
+            await gate.wait()
+
+        src._burst = slow_burst
+        src.on_event(_event(kind="motion", id=1))
+        await asyncio.sleep(0)
+        before = time.monotonic()
+        src.on_event(_event(kind="ding", id=2))
+        extend_until = src._burst_extend_until
+        gate.set()
+        await asyncio.sleep(0)
+        return src, pushes, before, extend_until
+
+    src, pushes, before, extend_until = asyncio.run(run())
+    assert src.dings_total == 1 and src.motions_total == 1 and src.bursts_extended == 1
+    assert extend_until >= before + 15 - 0.5
+    assert src.events_ignored == 0
+    assert [(p.kind, p.live_view) for p in pushes] == [("motion", "started"), ("ding", "extended")]
+    assert pushes[1].ring_event_id == "2" and pushes[0].correlation_id != pushes[1].correlation_id
+    assert src._event_kind == "ding" and src._burst_correlation_id == pushes[1].correlation_id
+
+
+@pytest.mark.parametrize("raw", ["ding", "DING", "com.ring.push.HANDLE_NEW_DING", "com.ring.pn.live-event.ding"])
+def test_every_ding_spelling_ring_doorbell_produces_is_a_ding(tmp_path, raw):
+    """ring_doorbell 0.9.14 eventlistener.py:228 compares `action.lower` (the
+    method) so a legacy-format ding carries the raw action string as kind."""
+
+    async def run():
+        src = _connected(tmp_path)
+        src._burst = lambda kind: asyncio.sleep(0)
+        src.on_event(_event(kind=raw))
+        await asyncio.sleep(0)
+        return src
+
+    src = asyncio.run(run())
+    assert src.dings_total == 1 and src.last_event_kind == "ding"
+
+
+def test_legacy_motion_spelling_is_a_motion(tmp_path):
+    async def run():
+        src = _connected(tmp_path)
+        src._burst = lambda kind: asyncio.sleep(0)
+        src.on_event(_event(kind="com.ring.push.HANDLE_NEW_motion"))
+        await asyncio.sleep(0)
+        return src
+
+    assert asyncio.run(run()).motions_total == 1
+
+
+def test_sink_failure_never_breaks_recording(tmp_path):
+    async def run():
+        src = _connected(tmp_path)
+        src._burst = lambda kind: asyncio.sleep(0)
+
+        def boom(_p):
+            raise RuntimeError("bus down")
+
+        src.event_sink = boom
+        src.on_event(_event())
+        await asyncio.sleep(0)
+        return src
+
+    assert asyncio.run(run()).dings_total == 1
+
+
+def test_real_burst_is_extended_by_a_ding(tmp_path, fake_aiortc, monkeypatch):
+    """The frame loop reads the extension: a 0.3 s burst runs past 0.3 s when
+    a ding lands mid-burst, and stops at MAX_BURST_FACTOR bursts at most."""
+    dev = _Device()
+    orig = _PC.__init__
+
+    def init(self, *a, **k):
+        orig(self, *a, **k)
+        self.track = _Track(1000)
+
+    monkeypatch.setattr(_PC, "__init__", init)
+
+    async def run():
+        src = _burst_src(tmp_path, dev, burst=0.3)
+        t0 = time.monotonic()
+        task = asyncio.create_task(src._burst("motion"))
+        await asyncio.sleep(0.2)
+        src._extend_burst("c-1")
+        await task
+        return src, time.monotonic() - t0
+
+    src, took = asyncio.run(run())
+    assert took >= 0.45, took
+    assert took < 0.3 * rs.MAX_BURST_FACTOR + 0.3
+    assert dev.keep_alive_timeout >= int(0.3 * rs.MAX_BURST_FACTOR) + 30
+    assert dev.closed == dev.opened and src.bursts_failed == 0
+
+
+# --- active looking ----------------------------------------------------------
+
+
+def test_self_look_caps_spacing_and_open_views(tmp_path):
+    async def run():
+        src = _connected(tmp_path, cooldown_seconds=0, self_look_max_per_day=2, self_look_min_spacing_seconds=100)
+        kinds = []
+
+        async def fake_burst(kind):
+            kinds.append(kind)
+            src._last_burst_end = time.time()
+
+        src._burst = fake_burst
+        # 01:00 UTC tomorrow: later than the real clock the fake burst stamps
+        # into _last_burst_end, and far from a UTC day boundary.
+        t = (time.time() // 86400 + 1) * 86400 + 3600
+        out = [src.self_look("h1", now=t)]
+        await asyncio.sleep(0)
+        out.append(src.self_look("h2", now=t + 10))  # spacing
+        out.append(src.self_look("h2", now=t + 200))
+        await asyncio.sleep(0)
+        out.append(src.self_look("h3", now=t + 400))  # cap 2
+        out.append(src.self_look("h4", now=t + 86400))  # next UTC day
+        return src, out, kinds
+
+    src, out, kinds = asyncio.run(run())
+    assert out == ["started", "spacing", "started", "daily_cap", "started"]
+    assert kinds == ["self_look"] * 3
+    assert src.self_looks_total == 3 and src.self_looks_today == 1
+    assert src.last_self_look_reason == "h4"
+
+
+def test_self_look_never_opens_a_second_view_or_while_deaf(tmp_path):
+    async def run():
+        src = _connected(tmp_path, cooldown_seconds=30)
+        gate = asyncio.Event()
+
+        async def slow_burst(kind):
+            await gate.wait()
+
+        src._burst = slow_burst
+        src.on_event(_event(kind="motion"))
+        await asyncio.sleep(0)
+        running = src.self_look("h1")
+        gate.set()
+        await asyncio.sleep(0)
+        src._last_burst_end = time.time()
+        cooling = src.self_look("h1")
+        deaf = RingEventFrameSource("", state_dir=str(tmp_path)).self_look("h1")
+        return src, running, cooling, deaf
+
+    src, running, cooling, deaf = asyncio.run(run())
+    assert (running, cooling, deaf) == ("burst_running", "cooldown", "not_ready")
+    assert src.self_looks_total == 0
+
+
+class _Redis:
+    def __init__(self):
+        self.value = None
+
+    async def get(self, _key):
+        return self.value
+
+
+def test_service_acts_once_per_key_value(tmp_path):
+    async def run():
+        src = _connected(tmp_path, cooldown_seconds=0, self_look_min_spacing_seconds=0)
+        src._burst = lambda kind: asyncio.sleep(0)
+        svc = _service_with(src)
+        svc.bus.redis = _Redis()
+        out = [await svc.self_look_once()]  # no key
+        svc.bus.redis.value = b"handoff-7"
+        out.append(await svc.self_look_once())
+        await asyncio.sleep(0)
+        out.append(await svc.self_look_once())  # same value: nothing
+        svc.bus.redis.value = None
+        out.append(await svc.self_look_once())
+        for _ in range(3):
+            await asyncio.sleep(0)  # let the first fake burst finish
+        svc.bus.redis.value = "handoff-7"  # SET again after expiry counts
+        out.append(await svc.self_look_once())
+        return src, out
+
+    src, out = asyncio.run(run())
+    assert out == [None, "started", None, None, "started"]
+    assert src.self_looks_total == 2 and src.last_self_look_reason == "handoff-7"
+
+
+# --- recorded events on the bus ------------------------------------------------
+
+
+def _push(kind="ding", **kw):
+    base = dict(
+        kind=kind,
+        raw_kind=kind,
+        ring_event_id="9001",
+        occurred_at=1_760_000_000.0,
+        received_ts=1_760_000_001.0,
+        correlation_id="5b2f7b8e-3a0d-4a43-9d51-2c7f3c0b1a11",
+        live_view="extended",
+    )
+    base.update(kw)
+    return rs.RingPush(**base)
+
+
+def test_ring_push_publishes_vision_and_street_event(tmp_path):
+    from orion.schemas.registry import resolve
+    from orion.schemas.vision import StreetEventV1, VisionEventPayload
+
+    svc = _service_with(_connected(tmp_path))
+    svc.settings.RETINA_STREAM_ID = "doorbell"
+    svc.bus.published = []
+    asyncio.run(svc._publish_ring_push(_push()))
+    chans = [a[0] for a in svc.bus.published]
+    assert chans == ["orion:vision:events", "orion:vision:street:events"]
+    vis_env, street_env = (a[1] for a in svc.bus.published)
+    assert vis_env.kind == "vision.event.bundle" and street_env.kind == "vision.street.event.v1"
+    assert str(vis_env.correlation_id) == str(street_env.correlation_id) == _push().correlation_id
+    item = VisionEventPayload(**vis_env.payload).events[0]
+    assert (item.event_type, item.salience, item.stream_id) == ("doorbell_ring", 1.0, "doorbell")
+    assert "ring_event:9001" in item.evidence_refs
+    street = resolve("StreetEventV1").model_validate(street_env.payload)
+    assert isinstance(street, StreetEventV1)
+    assert (street.kind, street.salience, street.stream_ids, street.event_id) == ("doorbell_ring", 1.0, ["doorbell"], item.event_id)
+    assert svc.metrics.ring_vision_events_published == 1 and svc.metrics.ring_street_events_published == 1
+
+
+def test_motion_push_is_a_low_salience_vision_event_only(tmp_path):
+    from orion.schemas.vision import VisionEventPayload
+
+    svc = _service_with(_connected(tmp_path))
+    svc.bus.published = []
+    asyncio.run(svc._publish_ring_push(_push(kind="motion")))
+    assert [a[0] for a in svc.bus.published] == ["orion:vision:events"]
+    item = VisionEventPayload(**svc.bus.published[0][1].payload).events[0]
+    assert item.event_type == "doorbell_motion" and item.salience == 0.2
+
+
+def test_ring_event_id_is_stable_per_push():
+    from app.ring_events import ring_event_id
+
+    assert ring_event_id(_push()) == ring_event_id(_push(correlation_id="00000000-0000-0000-0000-000000000000"))
+    assert ring_event_id(_push()) != ring_event_id(_push(ring_event_id="9002"))
+    # No Ring id: Ring's created_at second, not the random correlation id.
+    a = _push(ring_event_id=None)
+    assert ring_event_id(a) == ring_event_id(_push(ring_event_id=None, correlation_id="00000000-0000-0000-0000-000000000001"))
+
+
+def test_health_reports_ring_counts(tmp_path):
+    src = _connected(tmp_path)
+    src.dings_total, src.motions_total, src.last_ding_ts = 2, 5, 123.0
+    src.self_looks_today, src.self_looks_total = 1, 4
+    svc = _service_with(src)
+    svc._copy_source_metrics()
+    d = svc.health_envelope(None).payload["details"]
+    assert (d["dings_total"], d["motions_total"], d["last_ding_ts"]) == (2, 5, 123.0)
+    assert (d["self_looks_today"], d["self_looks_total"]) == (1, 4)
+
+
+def test_doorbell_compose_ships_self_look_on():
+    doc = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
+    env = doc["services"]["orion-vision-retina-doorbell"]["environment"]
+    assert "RETINA_RING_SELF_LOOK_ENABLED=${DOORBELL_RING_SELF_LOOK_ENABLED:-true}" in env
+    assert Settings(_env_file=None).RETINA_RING_SELF_LOOK_ENABLED is True
+
+
+# --- review fixes: no ding is marked covered without a live view ------------
+
+
+def test_ding_while_connecting_is_queued_and_served_by_frames_start(tmp_path, fake_aiortc):
+    dev = _Device()
+
+    async def run():
+        src = _burst_src(tmp_path, dev, burst=0.2)
+        src._burst_correlation_id = "motion-corr"
+        task = asyncio.create_task(src._burst("motion"))
+        src._burst_task = task
+        pushes = []
+        src.event_sink = pushes.append
+        src.on_event(_event(kind="ding"))  # before the first await: still connecting
+        kind_at_frames = None
+        while not task.done():
+            if src._frames_open and kind_at_frames is None:
+                kind_at_frames = (src._event_kind, src._burst_correlation_id)
+            await asyncio.sleep(0.005)
+        return src, pushes, kind_at_frames
+
+    src, pushes, kind_at_frames = asyncio.run(run())
+    assert pushes[0].live_view == "queued"
+    assert kind_at_frames == ("ding", pushes[0].correlation_id)
+    assert src._pending_ding_corr is None and len(dev.opened) == 1  # no second view needed
+
+
+def test_ding_while_closing_reopens_a_live_view(tmp_path, fake_aiortc):
+    """Frame loop over, close_webrtc_stream still awaiting: the ding must not
+    be marked extended with nothing left to read it."""
+
+    class _SlowClose(_Device):
+        async def close_webrtc_stream(self, session_id):
+            await asyncio.sleep(0.1)
+            await super().close_webrtc_stream(session_id)
+
+    dev = _SlowClose()
+
+    async def run():
+        src = _burst_src(tmp_path, dev, burst=0.1)
+        src.cooldown_seconds = 30
+        pushes = []
+        src.event_sink = pushes.append
+        src._burst_task = asyncio.create_task(src._burst("motion"))
+        while not src._frames_open:
+            await asyncio.sleep(0.005)
+        while src._frames_open:
+            await asyncio.sleep(0.005)
+        src.on_event(_event(kind="ding"))  # closing
+        first = src._burst_task
+        await first
+        second = src._burst_task
+        await second
+        return src, pushes, first is not second
+
+    src, pushes, reopened = asyncio.run(run())
+    assert pushes[0].live_view == "queued" and reopened
+    assert len(dev.opened) == 2 and dev.closed == dev.opened
+
+
+def test_extension_survives_a_frame_gap(tmp_path, fake_aiortc, monkeypatch):
+    """No frame for the rest of the original burst: the wait_for timeout must
+    re-read the extension instead of ending the burst."""
+    dev = _Device()
+    orig = _PC.__init__
+
+    def init(self, *a, **k):
+        orig(self, *a, **k)
+        self.track = _Track(1)  # one frame, then silence
+
+    monkeypatch.setattr(_PC, "__init__", init)
+
+    async def run():
+        src = _burst_src(tmp_path, dev, burst=0.3)
+        t0 = time.monotonic()
+        task = asyncio.create_task(src._burst("motion"))
+        await asyncio.sleep(0.2)
+        src._extend_burst("c-1")
+        await task
+        return src, time.monotonic() - t0
+
+    src, took = asyncio.run(run())
+    assert took >= 0.45, took
+    assert src.bursts_failed == 0
+
+
+def test_dings_in_cooldown_are_capped(tmp_path):
+    async def run():
+        src = _connected(tmp_path, cooldown_seconds=3600)
+        pushes = []
+        src.event_sink = pushes.append
+
+        async def fake_burst(kind):
+            src._last_burst_end = time.time()
+
+        src._burst = fake_burst
+        src._last_burst_end = time.time()  # in the cooldown
+        for i in range(rs.DING_REOPEN_MAX + 2):
+            src.on_event(_event(kind="ding", id=i))
+            for _ in range(3):
+                await asyncio.sleep(0)
+        return src, pushes
+
+    src, pushes = asyncio.run(run())
+    views = [p.live_view for p in pushes]
+    assert views == ["started"] * rs.DING_REOPEN_MAX + ["ding_capped"] * 2
+    assert src.dings_total == rs.DING_REOPEN_MAX + 2  # every press still recorded
+    assert src.ding_reopens_refused == 2
+
+
+def test_self_look_value_is_bounded(tmp_path):
+    async def run():
+        src = _connected(tmp_path, cooldown_seconds=0)
+        src._burst = lambda kind: asyncio.sleep(0)
+        svc = _service_with(src)
+        svc.bus.redis = _Redis()
+        svc.bus.redis.value = "x" * 500
+        await svc.self_look_once()
+        return src
+
+    assert len(asyncio.run(run()).last_self_look_reason) == 80
+
+
+# --- 2026-10-23: blind doorbell (aiortc video buffer too small) -------------
+
+
+def _fu_a_frame(n_packets: int, seq0: int = 1000, ts: int = 90000):
+    """One H.264 IDR frame split into ``n_packets`` FU-A RTP packets."""
+    from aiortc.rtp import RtpPacket
+
+    out = []
+    for i in range(n_packets):
+        fu_header = 0x05 | (0x80 if i == 0 else 0) | (0x40 if i == n_packets - 1 else 0)
+        pkt = RtpPacket(
+            payload_type=99,
+            marker=1 if i == n_packets - 1 else 0,
+            sequence_number=(seq0 + i) & 0xFFFF,
+            timestamp=ts,
+            ssrc=1,
+            payload=bytes([0x7C, fu_header]) + b"\x00" * 1100,
+        )
+        pkt = RtpPacket.parse(pkt.serialize())  # as received off the wire
+        pkt._data = pkt.payload  # RTCRtpReceiver depayloads before the buffer
+        out.append(pkt)
+    return out
+
+
+def _assembles(packets) -> bool:
+    """True when the whole frame comes out of the buffer in one piece."""
+    import aiortc.rtcrtpreceiver as rr
+
+    buf = rr.JitterBuffer(capacity=128, is_video=True)  # what RTCRtpReceiver asks for
+    frames = [buf.add(p)[1] for p in packets]
+    # A frame is released when the next timestamp starts; send one more packet.
+    nxt = _fu_a_frame(1, seq0=packets[-1].sequence_number + 1, ts=packets[-1].timestamp + 3000)
+    frames.append(buf.add(nxt[0])[1])
+    # Complete = every packet's data, start included. Too small a buffer drops
+    # the keyframe's head to make room and hands the decoder the tail, which
+    # never decodes: that is the live failure, not "no frame object at all".
+    whole = sum(len(p._data) for p in packets)
+    return any(f is not None and len(f.data) == whole for f in frames)
+
+
+def test_a_250_packet_keyframe_never_assembles_in_aiortcs_default_buffer():
+    """The live failure, reproduced: Ring keyframes are ~250 packets."""
+    import aiortc.jitterbuffer as jb
+    import aiortc.rtcrtpreceiver as rr
+
+    saved = rr.JitterBuffer
+    rr.JitterBuffer = jb.JitterBuffer
+    try:
+        assert _assembles(_fu_a_frame(100)) is True  # small keyframes always worked
+        assert _assembles(_fu_a_frame(250)) is False
+    finally:
+        rr.JitterBuffer = saved
+
+
+def test_raised_video_capacity_assembles_a_250_packet_keyframe():
+    import aiortc.jitterbuffer as jb
+    import aiortc.rtcrtpreceiver as rr
+
+    from app.ring_source import VIDEO_JITTER_CAPACITY, ensure_video_jitter_capacity
+
+    saved = rr.JitterBuffer
+    rr.JitterBuffer = jb.JitterBuffer
+    try:
+        ensure_video_jitter_capacity()
+        ensure_video_jitter_capacity()  # idempotent: no subclass-of-subclass
+        assert rr.JitterBuffer(capacity=128, is_video=True).capacity == VIDEO_JITTER_CAPACITY
+        assert rr.JitterBuffer(capacity=16, prefetch=4).capacity == 16  # audio untouched
+        assert rr.JitterBuffer.__mro__[1] is jb.JitterBuffer
+        assert _assembles(_fu_a_frame(250)) is True
+    finally:
+        rr.JitterBuffer = saved
+
+
+def test_blind_after_three_failed_live_views_and_clears_on_a_frame(tmp_path):
+    from app.ring_source import BLIND_AFTER_FAILED_BURSTS
+
+    src = _connected(tmp_path)
+    src.consecutive_failed_bursts = BLIND_AFTER_FAILED_BURSTS - 1
+    assert src.blind is False
+    src.consecutive_failed_bursts = BLIND_AFTER_FAILED_BURSTS
+    assert src.blind is True
+    svc = _service_with(src)
+    asyncio.run(svc.capture_once())
+    assert svc.metrics.ring_blind is True
+    assert svc.metrics.ring_consecutive_failed_bursts == BLIND_AFTER_FAILED_BURSTS
+    from app.health import make_system_health_envelope
+
+    env = make_system_health_envelope(
+        service_name="vision-retina-doorbell", service_version="t", camera_id="doorbell",
+        stream_id="doorbell", source_type="ring", source_ok=True, metrics=svc.metrics,
+        fps_target=2.0, storage_dir=str(tmp_path), heartbeat_interval_sec=10.0,
+    )
+    payload = env.payload if isinstance(env.payload, dict) else env.payload.model_dump()
+    assert payload["status"] == "degraded"
+    assert payload["details"]["ring_blind"] is True
+
+
+def test_a_setup_failure_counts_toward_blind(tmp_path, fake_aiortc):
+    class _BadIce(_Device):
+        def get_ice_servers(self):
+            raise RuntimeError("no ice servers")
+
+    src = _burst_src(tmp_path, _BadIce())
+    asyncio.run(src._burst("motion"))
+    assert src.bursts_failed == 1 and src.consecutive_failed_bursts == 1
+    assert "setup: RuntimeError" in src.last_error

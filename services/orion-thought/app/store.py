@@ -550,6 +550,72 @@ def visual_last_painting_age_hours() -> float | None:
         return None
 
 
+# Decided attempts since the newest produced one (bounded lookback; the table is small). Closed
+# outcomes: produced, abandoned, deferred_resource, deferred_thermal, failed. 'active' (inserted when
+# an attempt starts) and 'unknown' (a generate may still be on the card) are undecided: never a
+# failure, or 5 ordinary failures + 1 painting in progress would page as 6.
+_ATTEMPT_STREAK_SQL = """
+SELECT count(*) FROM reverie_visual_attempt
+WHERE started_at > now() - make_interval(days => :days)
+  AND outcome NOT IN ('active', 'unknown')
+  AND started_at > COALESCE(
+      (SELECT max(started_at) FROM reverie_visual_attempt
+        WHERE outcome = 'produced' AND started_at > now() - make_interval(days => :days)),
+      '-infinity'::timestamptz)
+"""
+
+
+_BASELINE_DEFERRAL_SQL = "SELECT state->'deferral' FROM visual_baseline_checkpoint WHERE id = 1"
+
+
+def visual_baseline_deferral() -> dict | None:
+    """The waking baseline painting's current run of arousal deferrals, as proposal-runtime's
+    scheduler records it (``orion.reverie.baseline.DEFERRAL_KEY``: reason, since, last_at), or None
+    (none recorded, no checkpoint table, or the read failed). Never raises.
+
+    2026-10-18 12:07 -> 10-20: arousal read strained (cabinet heat + GPU queue) and every due
+    baseline was deferred; the painting-gap alert blamed the GPU controller instead."""
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            if not conn.execute(text("SELECT to_regclass('visual_baseline_checkpoint')")).scalar():
+                return None
+            row = conn.execute(text(_BASELINE_DEFERRAL_SQL)).first()
+            value = row[0] if row else None
+            if isinstance(value, str):
+                import json
+
+                value = json.loads(value)
+            return value if isinstance(value, dict) and value.get("reason") else None
+    except Exception as exc:
+        logger.warning("visual_baseline_deferral query failed err=%s", exc)
+        return None
+
+
+def visual_attempt_failure_streak() -> int | None:
+    """How many painting attempts in a row produced nothing (newest first, back to the last
+    produced one, within the painting-age lookback). None if the read failed. Never raises.
+
+    Incident 2026-10-16 -> 10-20: 35 attempts in a row ended `abandoned` (gpu2 faulted, the pool
+    granted no diffusion hold). History 2026-09-14 -> 10-19 (405 attempts): every streak of 6 or
+    more was an outage (35; 16 = the 10-09/10 controller incident; 9 on 10-08 and 09-25), and the
+    longest ordinary streak was 5. See evals/test_attempt_streak_replay.py."""
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            if not conn.execute(text("SELECT to_regclass('reverie_visual_attempt')")).scalar():
+                return None
+            row = conn.execute(text(_ATTEMPT_STREAK_SQL), {"days": _PAINTING_AGE_LOOKBACK_DAYS}).first()
+            return int(row[0]) if row else None
+    except Exception as exc:
+        logger.warning("visual_attempt_failure_streak query failed err=%s", exc)
+        return None
+
+
 def load_latest_visual_chain_continuity_state(*, with_identity: bool = False):
     """Most recent visual-chain row's `prior_description`, `continuity_
     streak`, AND `context_slot_rotation`, in ONE round trip (review finding

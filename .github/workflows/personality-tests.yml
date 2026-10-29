@@ -8,6 +8,12 @@ on:
       - 'scripts/analysis/tests/test_measure_tone_dial_baseline.py'
       - 'scripts/analysis/measure_personality_choices.py'
       - 'scripts/analysis/tests/test_measure_personality_choices.py'
+      - 'scripts/analysis/measure_personality_lane_independence.py'
+      - 'scripts/analysis/tests/test_measure_personality_lane_independence.py'
+      - 'scripts/analysis/measure_personality_situation_specificity.py'
+      - 'scripts/analysis/tests/test_measure_personality_situation_specificity.py'
+      - 'scripts/analysis/eval_personality_naming_grounding.py'
+      - 'scripts/analysis/tests/test_eval_personality_naming_grounding.py'
       - 'orion/schemas/personality.py'
       - 'orion/schemas/registry.py'
       - 'tests/test_personality_schemas_registered.py'
@@ -23,4 +29,4 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install pytest pydantic==2.11.5
-      - run: python -m pytest orion/personality/tests scripts/analysis/tests/test_measure_tone_dial_baseline.py scripts/analysis/tests/test_measure_personality_choices.py tests/test_personality_schemas_registered.py -q
+      - run: python -m pytest orion/personality/tests scripts/analysis/tests/test_measure_tone_dial_baseline.py scripts/analysis/tests/test_measure_personality_choices.py scripts/analysis/tests/test_measure_personality_lane_independence.py scripts/analysis/tests/test_measure_personality_situation_specificity.py scripts/analysis/tests/test_eval_personality_naming_grounding.py tests/test_personality_schemas_registered.py -q

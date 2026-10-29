@@ -192,6 +192,15 @@ class DurableRunRegistryStore:
                 (run_id, event))).fetchone()
             return row["at"] if row else None
 
+    async def first_event(self, run_id: str, event: str) -> tuple[str, datetime] | None:
+        """(entry_id, generated_at) of the first ``event`` recorded for this run, or None. The act
+        ledger producer opens a run's act only on the call that recorded its FIRST pool grant."""
+        async with self.pool.connection() as conn:
+            row = await (await conn.execute(
+                "SELECT entry_id, generated_at FROM durable_resource_events WHERE run_id=%s AND event=%s "
+                "ORDER BY generated_at, entry_id LIMIT 1", (run_id, event))).fetchone()
+            return (row["entry_id"], row["generated_at"]) if row else None
+
     async def outreach_holds_pending(self, max_age_seconds: float) -> list[dict[str, Any]]:
         """Door-A holds a previous process left for Hub: completed runs whose ``run.outreach_pending``
         names a pool hold with no ``resource.lease_released`` for it yet (restart adoption)."""

@@ -1,5 +1,33 @@
 services:
 
+  # Retro's realtime relay in its own process (scripts/retro_gateway.py). Hub's main
+  # event loop also serves every Hub page; game input queued behind it (live
+  # 2026-10-20: 720 ms acks vs 17 ms here). Loopback only; tailscale serve routes
+  # /api/retro to it.
+  hub-retro-gateway:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+    build:
+      context: ../..
+      dockerfile: services/orion-hub/Dockerfile
+      args:
+        INSTALL_DEV_DEPS: ${INSTALL_DEV_DEPS:-true}
+    container_name: ${PROJECT}-hub-retro-gateway
+    # Skip Hub's bus-wait entrypoint: only optional goal planning uses Redis;
+    # human input/media must start even when cognition is unavailable.
+    entrypoint: []
+    network_mode: "host"
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ${HUB_RETRO_SOCKET_HOST:-/dev/null}:/run/orion-retro:ro
+      - ${HUB_RETRO_AUTH_HOST:-/dev/null}:/run/orion-retro-auth:ro
+    command: ["uvicorn", "scripts.retro_gateway:app", "--host", "127.0.0.1", "--port", "${HUB_RETRO_GATEWAY_PORT:-8092}"]
+
   hub-app:
     logging:
       driver: journald
@@ -28,6 +56,8 @@ services:
       - path: .env
         required: false
     volumes:
+      - ${HUB_RETRO_SOCKET_HOST:-/dev/null}:/run/orion-retro:ro
+      - ${HUB_RETRO_AUTH_HOST:-/dev/null}:/run/orion-retro-auth:ro
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-hub/templates:/app/templates
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-hub/static:/app/static
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:/repo:ro
@@ -94,12 +124,14 @@ services:
       # Host cabinet sensor snapshot (systemd reader -> /run/orion-sensors/latest.json).
       # Same :ro mount as orion-biometrics; create via scripts/setup_athena_cabinet_sensors.sh.
       - /run/orion-sensors:/run/orion-sensors:ro
-      # Host ambient-audio snapshot (systemd reader -> /run/orion-audio/latest.json).
+      # Host ambient-audio snapshot + live PCM ring (systemd reader -> /run/orion-audio/{latest.json,live/}).
       - /run/orion-audio:/run/orion-audio:ro
     environment:
       - HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=${HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED:-true}
       - HUB_CURIOSITY_MAX_QUEUED_INVESTIGATIONS=${HUB_CURIOSITY_MAX_QUEUED_INVESTIGATIONS:-1}
       - HUB_CURIOSITY_DURABLE_RUNS_URL=${HUB_CURIOSITY_DURABLE_RUNS_URL:-http://127.0.0.1:8124}
+      - ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED=${ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED:-true}
+      - ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC=${ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC:-3600}
       - HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED=${HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED:-true}
       - HUB_CURIOSITY_URGENT_ENABLED=${HUB_CURIOSITY_URGENT_ENABLED:-true}
       - HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC=${HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC:-900}
@@ -155,8 +187,12 @@ services:
       - CABINET_SENSORS_STALE_AFTER_SEC=${CABINET_SENSORS_STALE_AFTER_SEC:-10.0}
       - AMBIENT_AUDIO_PATH=${AMBIENT_AUDIO_PATH:-/run/orion-audio/latest.json}
       - AMBIENT_AUDIO_STALE_AFTER_SEC=${AMBIENT_AUDIO_STALE_AFTER_SEC:-5}
+      - AMBIENT_AUDIO_LIVE_DIR=${AMBIENT_AUDIO_LIVE_DIR:-/run/orion-audio/live}
       - CABINET_AMBIENT_HISTORY_NODE=${CABINET_AMBIENT_HISTORY_NODE:-athena}
       - CABINET_AMBIENT_HISTORY_MAX_POINTS=${CABINET_AMBIENT_HISTORY_MAX_POINTS:-800}
+      - OFFICE_ENV_NODE=${OFFICE_ENV_NODE:-pan-1}
+      - OFFICE_ENV_STALE_AFTER_SEC=${OFFICE_ENV_STALE_AFTER_SEC:-90}
+      - OFFICE_ENV_HISTORY_MAX_POINTS=${OFFICE_ENV_HISTORY_MAX_POINTS:-800}
       - NOTIFY_IN_APP_ENABLED=${NOTIFY_IN_APP_ENABLED}
       - NOTIFY_IN_APP_CHANNEL=${NOTIFY_IN_APP_CHANNEL}
       - NOTIFY_IN_APP_MAX=${NOTIFY_IN_APP_MAX}

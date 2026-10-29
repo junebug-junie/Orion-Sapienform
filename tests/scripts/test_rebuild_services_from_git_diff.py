@@ -26,6 +26,12 @@ if "--running-profile-services" in args:
         if owner == svc and profile not in skip:
             print(profile + "\\t" + name)
     raise SystemExit(0)
+if "--running-extra-compose" in args:
+    svc = args[args.index("--running-extra-compose") + 1]
+    for line in os.environ.get("FAKE_EXTRA", "").split(";"):
+        if line and line.split(",")[0] == svc:
+            print(line.split(",")[1] + "\\t" + line.split(",")[2])
+    raise SystemExit(0)
 if "--pool-held-services" in args:
     svc = args[args.index("--pool-held-services") + 1]
     # FAKE_POOL answers the first call, FAKE_POOL_AFTER (when set) every later one:
@@ -59,6 +65,7 @@ def _run(
     *,
     plan: str,
     profiles: str = "",
+    extra: str = "",
     pool: str = "",
     pool_after: str | None = None,
     pool_rc: int | None = None,
@@ -69,6 +76,8 @@ def _run(
     migrations: str = "",
     checker: str | None = None,
     applier: str | None = None,
+    safe_build_body: str | None = None,
+    init_git: bool | str = False,
 ):
     fake_root = tmp_path / "repo"
     fake_scripts = fake_root / "scripts"
@@ -89,14 +98,36 @@ def _run(
         + ("cat >/dev/null\n" if safe_build_reads_stdin else "")
         + "printf '%s\\n' \"$*\" >> \"$REBUILD_TEST_CAPTURE\"\n"
         + 'case "$*" in *" build") exit "${FAKE_BUILD_RC:-0}";; esac\n'
+        + (safe_build_body or "")
         + f"exit {safe_build_rc}\n"
     )
     safe_build.chmod(0o755)
 
+    if init_git:
+        def g(*cmd, cwd=fake_root):
+            subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=T", *cmd],
+                           cwd=cwd, check=True, capture_output=True)
+        g("init", "-q", "-b", "main")
+        g("add", "-A")
+        g("commit", "-qm", "init")
+        remote = tmp_path / "remote.git"
+        g("init", "--bare", "-q", str(remote), cwd=tmp_path)
+        g("remote", "add", "origin", str(remote))
+        g("push", "-qu", "origin", "main")
+        if init_git == "stale":  # origin/main already ahead when the run starts
+            other = tmp_path / "other"
+            g("clone", "-q", "-b", "main", str(remote), str(other), cwd=tmp_path)
+            (other / "ahead.txt").write_text("ahead\n")
+            g("add", "ahead.txt", cwd=other)
+            g("commit", "-qm", "ahead", cwd=other)
+            g("push", "-q", "origin", "main", cwd=other)
+
     env = os.environ.copy()
+    env.pop("ORION_DEPLOY_PINNED_HEAD", None)
     env["REBUILD_TEST_CAPTURE"] = str(capture)
     env["FAKE_PLAN"] = plan
     env["FAKE_PROFILES"] = profiles
+    env["FAKE_EXTRA"] = extra
     env["FAKE_POOL"] = pool
     env["FAKE_POOL_CALLS"] = str(tmp_path / "pool-calls")
     env.pop("FAKE_POOL_AFTER", None)
@@ -358,7 +389,8 @@ def test_migrations_are_applied_before_any_rebuild(tmp_path: Path) -> None:
         checker=_CHECKER_REPORT, applier=_APPLIER,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert calls == [f"APPLY {_MIG}", "orion-hub up -d --build", "orion-sql-writer up -d --build"]
+    assert calls == [f"APPLY --defer-if-backup {_MIG}", "orion-hub up -d --build",
+                     "orion-sql-writer up -d --build"]
     out = completed.stdout
     # applier output, then the read-only report of what is live afterwards
     assert out.index("fake applier ran") < out.index("live state:")
@@ -370,6 +402,105 @@ def test_dry_run_passes_dry_run_to_the_applier(tmp_path: Path) -> None:
         applier=_APPLIER, extra_args=["--dry-run"],
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == [f"APPLY --dry-run {_MIG}"]
+
+
+# 2026-10-17 ~03:56 UTC: the nightly pg_dump held locks, the first pass hit lock_timeout, and hub +
+# sql-writer stayed refused until the file was applied by hand. Now the first pass defers (exit 3),
+# every rebuild runs, then the second pass waits for the backup and applies, and only the consumers
+# the deploy gate refused are rebuilt again. The fake gate refuses orion-hub until the fake applier
+# has "applied" (marker file).
+_DEFERRING_APPLIER = """\
+import os, sys
+args = sys.argv[1:]
+cap = os.environ["REBUILD_TEST_CAPTURE"]
+if "--required-by" in args:
+    print(os.environ.get("FAKE_REQUIRED_BY", "orion-hub"))
+    raise SystemExit(0)
+with open(cap, "a") as fh:
+    fh.write("APPLY " + " ".join(args) + "\\n")
+if "--defer-if-backup" in args:
+    print("post-pull migrations: a backup is running; DEFERRED")
+    raise SystemExit(3)
+rc = int(os.environ.get("FAKE_SECOND_APPLY_RC", "0"))
+if rc == 0:
+    open(cap + ".applied", "w").close()
+raise SystemExit(rc)
+"""
+
+_GATE = ('case "$*" in orion-hub*up*) [ -f "$REBUILD_TEST_CAPTURE.applied" ] || '
+         '{ echo "refused: migration not applied" >&2; exit 1; } ;; esac\n')
+
+
+def test_backup_defers_the_apply_until_after_the_other_rebuilds_then_retries_the_refused(
+        tmp_path: Path, monkeypatch) -> None:
+    completed, calls = _run(
+        tmp_path, plan="orion-hub,build;orion-planner,build", migrations=_MIG,
+        checker=_CHECKER_REPORT, applier=_DEFERRING_APPLIER, safe_build_body=_GATE,
+    )
+    assert calls == [
+        f"APPLY --defer-if-backup {_MIG}",
+        "orion-hub up -d --build",          # refused by the gate: migration deferred
+        "orion-planner up -d --build",      # not a consumer: deploys without waiting
+        f"APPLY {_MIG}",                    # the wait-and-apply pass, after every rebuild
+        "orion-hub up -d --build",          # the refused consumer, again
+    ], completed.stdout + completed.stderr
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "rebuilding the services the deploy gate refused: orion-hub" in completed.stdout
+    events = [ln.split(" ", 4)[3] for ln in _log_lines(tmp_path)]
+    assert "DEFERRED-APPLY" in events and "RETRY-AFTER-MIGRATION" in events
+    assert _log_lines(tmp_path)[-1].endswith("DONE rebuilt=2 failed=")
+
+
+def test_deferred_apply_that_cannot_run_leaves_the_consumer_refused(tmp_path: Path, monkeypatch) -> None:
+    """Exit 2 = not allowed here / live state UNKNOWN: nothing was applied, nothing is retried."""
+    monkeypatch.setenv("FAKE_SECOND_APPLY_RC", "2")
+    completed, calls = _run(
+        tmp_path, plan="orion-hub,build", migrations=_MIG, checker=_CHECKER_REPORT,
+        applier=_DEFERRING_APPLIER, safe_build_body=_GATE,
+    )
+    assert calls == [f"APPLY --defer-if-backup {_MIG}", "orion-hub up -d --build", f"APPLY {_MIG}"]
+    assert completed.returncode != 0
+    assert "deferred migration apply did not finish (exit 2)" in completed.stderr
+    assert "git pull will not return until the backup finishes" in completed.stderr
+
+
+def test_partly_failed_second_pass_still_retries_the_consumers(tmp_path: Path, monkeypatch) -> None:
+    """Exit 1: some file applied, another did not. Retry the refused consumers anyway; the deploy
+    gate refuses again any whose file is still missing (here the gate marker exists: it landed)."""
+    monkeypatch.setenv("FAKE_SECOND_APPLY_RC", "1")
+    (tmp_path / "safe-build-args.txt.applied").write_text("")  # hub's own file did land
+    completed, calls = _run(
+        tmp_path, plan="orion-hub,build", migrations=_MIG, checker=_CHECKER_REPORT,
+        applier=_DEFERRING_APPLIER,
+        safe_build_body='case "$*" in orion-hub*up*) [ -f "$REBUILD_TEST_CAPTURE.phase2" ] || '
+                        '{ touch "$REBUILD_TEST_CAPTURE.phase2"; exit 1; } ;; esac\n',
+    )
+    assert calls == [f"APPLY --defer-if-backup {_MIG}", "orion-hub up -d --build", f"APPLY {_MIG}",
+                     "orion-hub up -d --build"], completed.stdout + completed.stderr
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_only_consumers_of_the_deferred_file_are_retried(tmp_path: Path, monkeypatch) -> None:
+    """A service that failed for another reason is not rebuilt a second time."""
+    monkeypatch.setenv("FAKE_REQUIRED_BY", "orion-sql-writer")
+    completed, calls = _run(
+        tmp_path, plan="orion-hub,build", migrations=_MIG, checker=_CHECKER_REPORT,
+        applier=_DEFERRING_APPLIER, safe_build_body=_GATE,
+    )
+    assert calls == [f"APPLY --defer-if-backup {_MIG}", "orion-hub up -d --build", f"APPLY {_MIG}"]
+
+
+def test_migration_only_pull_still_runs_the_deferred_apply(tmp_path: Path) -> None:
+    completed, calls = _run(tmp_path, plan="", migrations=_MIG, checker=_CHECKER_REPORT,
+                            applier=_DEFERRING_APPLIER)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == [f"APPLY --defer-if-backup {_MIG}", f"APPLY {_MIG}"]
+
+
+def test_dry_run_never_runs_the_deferred_pass(tmp_path: Path) -> None:
+    completed, calls = _run(tmp_path, plan="orion-hub,build", migrations=_MIG, checker=_CHECKER_REPORT,
+                            applier=_DEFERRING_APPLIER, extra_args=["--dry-run"])
     assert calls == [f"APPLY --dry-run {_MIG}"]
 
 
@@ -457,3 +588,139 @@ def test_nothing_to_rebuild_still_leaves_a_log_line(tmp_path: Path) -> None:
     assert calls == []
     lines = _log_lines(tmp_path)
     assert len(lines) == 1 and " NOTHING " in lines[0], lines
+
+
+# --- Second compose files (2026-10-20: Qwen caption lane ran stale for days) ---
+
+
+def test_running_extra_compose_file_is_rebuilt_from_that_file(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-vision-host,build",
+        extra="orion-vision-host,docker-compose.circe-qwen.yml,vision-host-circe-qwen",
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == [
+        "orion-vision-host up -d --build",
+        "orion-vision-host --compose-file docker-compose.circe-qwen.yml up -d --build --no-deps vision-host-circe-qwen",
+    ]
+
+
+def test_extra_compose_file_gets_force_recreate_with_its_stack(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-vision-host,recreate",
+        extra="orion-vision-host,docker-compose.circe-qwen.yml,vision-host-circe-qwen",
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls[-1] == "orion-vision-host --compose-file docker-compose.circe-qwen.yml up -d --build --no-deps --force-recreate vision-host-circe-qwen"
+
+
+def test_failed_extra_compose_file_fails_its_stack(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-vision-host,build",
+        extra="orion-vision-host,docker-compose.circe-qwen.yml,vision-host-circe-qwen",
+        safe_build_body='case "$*" in *circe-qwen*) exit 9;; esac\n',
+    )
+    assert "FAILED orion-vision-host/docker-compose.circe-qwen.yml (exit 9)" in completed.stderr
+    assert completed.returncode != 0
+
+
+def test_dry_run_reports_extra_compose_files_without_building(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-vision-host,build",
+        extra="orion-vision-host,docker-compose.circe-qwen.yml,vision-host-circe-qwen",
+        extra_args=["--dry-run"],
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == []
+    assert "would rebuild running extra compose file: orion-vision-host --compose-file docker-compose.circe-qwen.yml vision-host-circe-qwen" in completed.stdout
+
+
+def test_no_extra_compose_means_plain_up_only(tmp_path: Path) -> None:
+    completed, calls = _run(tmp_path, plan="orion-vision-host,build")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == ["orion-vision-host up -d --build"]
+
+
+def test_every_safe_build_call_is_pinned_to_the_run_start_head(tmp_path: Path) -> None:
+    """2026-10-20: a PR merge mid-run refused every remaining service. The run
+    hands the wrapper the commit it started on so it judges against that."""
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-a,build;orion-b,build",
+        init_git=True,
+        safe_build_body='echo "PIN=$ORION_DEPLOY_PINNED_HEAD" >> "$REBUILD_TEST_CAPTURE"\n',
+    )
+    assert completed.returncode == 0, completed.stderr
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp_path / "repo",
+                          capture_output=True, text=True, check=True).stdout.strip()
+    pins = [c for c in calls if c.startswith("PIN=")]
+    assert pins and set(pins) == {f"PIN={head}"}
+
+
+def test_run_started_on_stale_main_is_not_pinned(tmp_path: Path) -> None:
+    """A run that starts behind origin/main must not get a pin, or the wrapper
+    would accept the stale main it used to refuse."""
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-a,build",
+        init_git="stale",
+        safe_build_body='echo "PIN=$ORION_DEPLOY_PINNED_HEAD" >> "$REBUILD_TEST_CAPTURE"\n',
+    )
+    assert completed.returncode == 0, completed.stderr
+    pins = [c for c in calls if c.startswith("PIN=")]
+    assert pins == ["PIN="]
+
+
+
+def _write_hook(tmp_path: Path, svc: str, name: str, rc: int) -> None:
+    hook = tmp_path / "repo" / "services" / svc / "scripts" / name
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text(f"#!/bin/sh\nprintf '{name} {svc}\\n' >> \"$REBUILD_TEST_CAPTURE\"\nexit {rc}\n")
+    hook.chmod(0o755)
+
+
+def test_pre_and_post_rebuild_wrap_the_build(tmp_path: Path) -> None:
+    _write_hook(tmp_path, "orion-ai-town", "pre_rebuild.sh", 0)
+    _write_hook(tmp_path, "orion-ai-town", "post_rebuild.sh", 0)
+    completed, calls = _run(tmp_path, plan="orion-ai-town,build")
+    assert completed.returncode == 0, completed.stderr
+    assert calls[0] == "pre_rebuild.sh orion-ai-town"
+    assert calls[1].startswith("orion-ai-town up -d --build")
+    assert calls[-1] == "post_rebuild.sh orion-ai-town"
+
+
+def test_failing_pre_rebuild_skips_build_and_post(tmp_path: Path) -> None:
+    _write_hook(tmp_path, "orion-ai-town", "pre_rebuild.sh", 3)
+    _write_hook(tmp_path, "orion-ai-town", "post_rebuild.sh", 0)
+    completed, calls = _run(tmp_path, plan="orion-ai-town,build")
+    assert calls == ["pre_rebuild.sh orion-ai-town"]
+    assert "pre_rebuild.sh exit 3; not building" in completed.stderr
+    assert completed.returncode != 0
+
+
+def test_failed_build_never_runs_post_rebuild(tmp_path: Path) -> None:
+    _write_hook(tmp_path, "orion-ai-town", "post_rebuild.sh", 0)
+    completed, calls = _run(tmp_path, plan="orion-ai-town,build", safe_build_rc=1)
+    assert "post_rebuild.sh orion-ai-town" not in calls
+    assert completed.returncode != 0
+
+
+def test_failing_post_rebuild_marks_the_stack_failed(tmp_path: Path) -> None:
+    _write_hook(tmp_path, "orion-ai-town", "post_rebuild.sh", 4)
+    completed, calls = _run(tmp_path, plan="orion-ai-town,build")
+    assert calls[-1] == "post_rebuild.sh orion-ai-town"
+    assert "post_rebuild.sh exit 4" in completed.stderr
+    assert completed.returncode != 0
+
+
+def test_dry_run_names_the_hooks_without_running_them(tmp_path: Path) -> None:
+    _write_hook(tmp_path, "orion-ai-town", "pre_rebuild.sh", 0)
+    _write_hook(tmp_path, "orion-ai-town", "post_rebuild.sh", 0)
+    completed, calls = _run(tmp_path, plan="orion-ai-town,build", extra_args=["--dry-run"])
+    assert calls == []
+    assert "would run first: services/orion-ai-town/scripts/pre_rebuild.sh" in completed.stdout
+    assert "would run after a good build: services/orion-ai-town/scripts/post_rebuild.sh" in completed.stdout

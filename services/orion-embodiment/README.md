@@ -63,9 +63,11 @@ The dispatcher tries grounded first only when unified is enabled. With `EMBODIME
 | `EMBODIMENT_SPEECH_UNIFIED_ENABLED` | `false` | Optional grounded_small `chat_general` pass before quick fallback |
 | `EMBODIMENT_CORTEX_REQUEST_CHANNEL` | `orion:cortex:exec:request:chat` | Chat exec lane intake (not legacy) |
 | `EMBODIMENT_SPEECH_HUB_LLM_ROUTE` | `chat` | LLM route when unified grounded pass is enabled |
-| `EMBODIMENT_SPEECH_QUICK_LLM_ROUTE` | `quick_background` | LLM route for the live quick-lane path (`_request_utterance_quick`, active when unified is off, the default). Separate from `EMBODIMENT_SPEECH_LANE`, which is cognition "mode" metadata only, not a gateway route -- see below. |
+| `EMBODIMENT_SPEECH_QUICK_LLM_ROUTE` | `quick_embodied` | LLM route for the live quick-lane path (`_request_utterance_quick`, active when unified is off, the default). Separate from `EMBODIMENT_SPEECH_LANE`, which is cognition "mode" metadata only, not a gateway route -- see below. |
 
 **2026-07-30 fix:** `_request_utterance_quick` previously only set `extra={"lane": EMBODIMENT_SPEECH_LANE}` when calling orion-cortex-exec, but that service's `llm_route` override resolution reads `ctx["llm_route"]`, not `ctx["lane"]` -- so `EMBODIMENT_SPEECH_LANE` never actually changed which gateway route town speech used; the observed "quick" behavior came entirely from cortex-exec's own per-verb default mapping, coincidentally matching. `EMBODIMENT_SPEECH_QUICK_LLM_ROUTE` is now threaded through as the actual override, defaulting to `quick_background` so Orion's own ai-town dialogue shares `atlas-worker-fast-1` without competing evenly with `orion-mind`/`orion-hub`'s own `quick` traffic -- see `services/orion-llm-gateway/README.md`'s "Background-priority routes".
+
+**2026-10-23:** the default is now `quick_embodied`: the same fast lane at GPU pool priority `interactive`. On `quick_background`, every reply waited in the fast queue behind `system` work (`orion-topic-foundry`), past this worker's 45 s speech RPC, so Orion never answered anyone in town. The lane itself answered an Orion-sized prompt in 2.2 s. `quick_embodied` is system-only (hidden from the Hub picker, refused from Hub and orion-actions), and cortex-exec accepts it as an override through `orion.llm.routes.CORTEX_OVERRIDE_SYSTEM_ROUTES`.
 
 ## Spatial grounding: named map landmarks
 
@@ -103,7 +105,7 @@ This service guarantees the `!pathfinding` precondition for Orion:
 
 ## Dead-chat abandon
 
-`EMBODIMENT_CONVERSATION_ABANDON_SEC` (default `180`) walks Orion out of a `participating` conversation that has gone dead: either the latest transcript line is older than the window, or Orion has never successfully spoken and has been participating that long. Sends the town's `leaveConversation` input (mechanical; no LLM). `0` disables. Companion to AI Town's `orion-mechanical-leave.patch` (NPC duration leave without an LLM goodbye).
+`EMBODIMENT_CONVERSATION_ABANDON_SEC` (default `180`) walks Orion out of a `participating` conversation that has gone dead: either the latest transcript line is older than the window, or Orion has never successfully spoken and has been participating that long. Sends the town's `leaveConversation` input (mechanical; no LLM). `0` disables. Companion to AI Town's `orion-mechanical-leave.patch` (NPC duration leave without an LLM goodbye). It sends one leave per conversation per window. The chat stays visible until the engine processes the leave, and on 2026-10-28 a leave on every 3 s tick queued about 84,000 inputs. Every NPC action then timed out behind them, and the town froze for a day.
 
 ## Memory: journal facts vs conversation content
 

@@ -179,6 +179,13 @@ let notifications = [];
 let pendingAttention = [];
 const seenMessageIds = new Set();
 const openedMessageIds = new Set();
+// Orion's own outreach messages in the tray (orion-message-tray.js). Durable
+// rows come from orion-notify and stay until Juniper dismisses each one.
+let orionOpenMessages = [];
+const dismissedOrionMessageIds = new Set();
+// Ids orion-notify reports closed (dismissed elsewhere) that Hub's cache still
+// holds. Recomputed on every durable load. See closedByDurable().
+let orionClosedByDurable = new Set();
 const NOTIFICATION_MAX = 200;
 let notificationToastSeconds = 8;
 
@@ -269,6 +276,18 @@ let chatTurnTimer = null;
   const presenceClearButton = document.getElementById('presenceClearButton');
   const recallModeSelect = document.getElementById('recallModeSelect');
   const recallProfileSelect = document.getElementById('recallProfileSelect');
+  const recallModeToggle = document.getElementById('recallModeToggle');
+  const recallModeCaret = document.getElementById('recallModeCaret');
+  const recallModeBody = document.getElementById('recallModeBody');
+  const recallModeControls = document.getElementById('recallModeControls');
+  const recallModeOpenModal = document.getElementById('recallModeOpenModal');
+  const recallModeModalRoot = document.getElementById('recallModeModalRoot');
+  const recallModeModalBackdrop = document.getElementById('recallModeModalBackdrop');
+  const recallModeModalDialog = document.getElementById('recallModeModalDialog');
+  const recallModeModalClose = document.getElementById('recallModeModalClose');
+  const recallModeModalBody = document.getElementById('recallModeModalBody');
+  const cabinetAudioButton = document.getElementById('cabinetAudioButton');
+  const cabinetAudioStatus = document.getElementById('cabinetAudioStatus');
   const debugPanelOpenModal = document.getElementById('debugPanelOpenModal');
   const debugPanelModalRoot = document.getElementById('debugPanelModalRoot');
   const debugPanelModalBackdrop = document.getElementById('debugPanelModalBackdrop');
@@ -510,6 +529,7 @@ let chatTurnTimer = null;
   const substrateReviewResultRaw = document.getElementById('substrateReviewResultRaw');
   const notificationList = document.getElementById('notificationList');
   const notificationFilter = document.getElementById('notificationFilter');
+  const orionMessagesBadge = document.getElementById('orionMessagesBadge');
   const attentionList = document.getElementById('attentionList');
   const attentionDismissAllBtn = document.getElementById('attentionDismissAllBtn');
   let dismissAllAttentionInFlight = false;
@@ -667,12 +687,22 @@ let chatTurnTimer = null;
   // Visualizers
   const visualizerCanvas = document.getElementById('visualizer');
   const canvasCtx = visualizerCanvas ? visualizerCanvas.getContext('2d') : null;
-  // The voice box is collapsed unless Orion's voice is actually playing, so the
-  // transcript gets the vertical space. The canvas's ResizeObserver re-sizes it
-  // when it reappears.
+  const visualizerLabel = document.getElementById('visualizerLabel');
+  // Live cabinet mic analyser (cabinet-live-audio.js); drawn under Orion's voice.
+  let cabinetAnalyser = null;
+  let voiceBoxVoiceVisible = false;
+  // The voice box is collapsed unless Orion's voice or the cabinet mic is
+  // actually playing, so the transcript gets the vertical space. The canvas's
+  // ResizeObserver re-sizes it when it reappears.
   function setVoiceBoxVisible(visible) {
+    voiceBoxVoiceVisible = visible;
     const box = visualizerCanvas && visualizerCanvas.parentElement;
-    if (box) box.classList.toggle('hidden', !visible);
+    if (box) box.classList.toggle('hidden', !(visible || cabinetAnalyser));
+    if (visualizerLabel) {
+      visualizerLabel.textContent = cabinetAnalyser
+        ? (visible ? 'Cabinet + Oríon’s Voice' : 'Cabinet')
+        : 'Oríon’s Voice';
+    }
   }
   
   // NOTE: stateVisualizer was replaced by an iframe in the HTML. 
@@ -786,6 +816,9 @@ let chatTurnTimer = null;
   const moodArcStatusTabButton = document.getElementById("moodArcStatusTabButton");
   const moodArcStatusPanelEl = document.getElementById("mood-arc-status");
   const moodArcStatusFrame = document.getElementById("moodArcStatusFrame");
+  const orionEnergyTabButton = document.getElementById("orionEnergyTabButton");
+  const orionEnergyPanelEl = document.getElementById("orion-energy");
+  const orionEnergyFrame = document.getElementById("orionEnergyFrame");
   const topicFoundryBaseLabel = document.getElementById("topicFoundryBaseLabel");
   const tsDatasetSelect = document.getElementById("tsDatasetSelect");
   const tsDatasetName = document.getElementById("tsDatasetName");
@@ -1079,6 +1112,9 @@ let chatTurnTimer = null;
     if (tabKey === "mood-arc-status" && !moodArcStatusPanelEl) {
       effectiveTab = "hub";
     }
+    if (tabKey === "orion-energy" && !orionEnergyPanelEl) {
+      effectiveTab = "hub";
+    }
     if (tabKey === "collapse-mirror" && !collapseMirrorPanel) {
       effectiveTab = "hub";
     }
@@ -1115,6 +1151,7 @@ let chatTurnTimer = null;
     const isSubstrateLattice = effectiveTab === "substrate-lattice";
     const isFieldChannelGlossary = effectiveTab === "field-channel-glossary";
     const isMoodArcStatus = effectiveTab === "mood-arc-status";
+    const isOrionEnergy = effectiveTab === "orion-energy";
     const isMind = effectiveTab === "mind";
     const isSignals = effectiveTab === "signals";
     const isCollapseMirror = effectiveTab === "collapse-mirror";
@@ -1281,6 +1318,13 @@ let chatTurnTimer = null;
       const currentSrc = moodArcStatusFrame.getAttribute("src");
       moodArcStatusFrame.setAttribute("src", currentSrc);
     }
+    if (orionEnergyPanelEl) {
+      orionEnergyPanelEl.classList.toggle("hidden", !isOrionEnergy);
+    }
+    if (orionEnergyFrame && isOrionEnergy) {
+      const currentSrc = orionEnergyFrame.getAttribute("src");
+      orionEnergyFrame.setAttribute("src", currentSrc);
+    }
     if (collapseMirrorPanel) {
       collapseMirrorPanel.classList.toggle("hidden", !isCollapseMirror);
     }
@@ -1404,6 +1448,9 @@ let chatTurnTimer = null;
     }
     if (moodArcStatusTabButton) {
       styleTabButton(moodArcStatusTabButton, isMoodArcStatus);
+    }
+    if (orionEnergyTabButton) {
+      styleTabButton(orionEnergyTabButton, isOrionEnergy);
     }
     if (collapseMirrorTabButton) {
       styleTabButton(collapseMirrorTabButton, isCollapseMirror);
@@ -2006,6 +2053,8 @@ let chatTurnTimer = null;
       setActiveTab("field-channel-glossary");
     } else if (h === "#mood-arc-status" && moodArcStatusPanelEl && moodArcStatusTabButton) {
       setActiveTab("mood-arc-status");
+    } else if (h === "#orion-energy" && orionEnergyPanelEl && orionEnergyTabButton) {
+      setActiveTab("orion-energy");
     } else if (h === "#memory" && memoryPanel && memoryTabButton) {
       setActiveTab("memory");
     } else if (h === "#mind" && mindPanel && mindTabButton) {
@@ -2035,6 +2084,7 @@ let chatTurnTimer = null;
         || h === "#substrate-lattice"
         || h === "#field-channel-glossary"
         || h === "#mood-arc-status"
+        || h === "#orion-energy"
         || h === "#memory"
         || h === "#mind"
         || h === "#signals"
@@ -3521,6 +3571,7 @@ let chatTurnTimer = null;
       || isModalVisible(autonomyConstitutionModalRoot)
       || isModalVisible(autonomyReadinessModalRoot)
       || isModalVisible(debugPanelModalRoot)
+      || isModalVisible(recallModeModalRoot)
       || isModalVisible(biometricsModalRoot)
       || isModalVisible(agentTraceModal)
       || isModalVisible(cockpitHudRoot);
@@ -4306,6 +4357,33 @@ let chatTurnTimer = null;
     }
     debugPanelModalRoot.classList.remove('hidden');
     debugPanelModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+  }
+
+  function toggleRecallModePanel() {
+    if (!recallModeBody) return;
+    const nextHidden = !recallModeBody.classList.contains('hidden');
+    recallModeBody.classList.toggle('hidden', nextHidden);
+    if (recallModeCaret) recallModeCaret.textContent = nextHidden ? '▾' : '▴';
+  }
+
+  // The selects are the live inputs every chat send reads, so there is exactly
+  // one copy: the modal borrows #recallModeControls and gives it back on close.
+  function openRecallModeModal() {
+    if (!recallModeModalRoot) return;
+    if (recallModeModalRoot.parentElement !== document.body) document.body.appendChild(recallModeModalRoot);
+    if (recallModeControls && recallModeModalBody) recallModeModalBody.appendChild(recallModeControls);
+    recallModeModalRoot.classList.remove('hidden');
+    recallModeModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+    if (recallModeSelect) recallModeSelect.focus();
+  }
+
+  function closeRecallModeModal() {
+    if (!recallModeModalRoot) return;
+    if (recallModeControls && recallModeBody) recallModeBody.appendChild(recallModeControls);
+    recallModeModalRoot.classList.add('hidden');
+    recallModeModalRoot.setAttribute('aria-hidden', 'true');
     syncDebugModalScrollLock();
   }
 
@@ -6605,7 +6683,7 @@ let chatTurnTimer = null;
         handleChatMessageReceipt(notification.message_id, notification.session_id, 'seen');
       }
     }
-    if (notification.notification_type === 'endogenous_outreach') {
+    if (isOrionTrayMessage(notification)) {
       // Live sockets already rendered this as a chat bubble (the orion_outreach
       // branch in socket.onmessage), and the notification rides the same tts_q,
       // so toasting it too would show the identical text twice. It still lands
@@ -6661,24 +6739,207 @@ let chatTurnTimer = null;
     });
   }
 
-  function renderNotifications() {
-    if (!notificationList) return;
+  function orionTray() {
+    return (typeof window !== 'undefined' && window.OrionMessageTray) || null;
+  }
+
+  function isOrionTrayMessage(n) {
+    const t = orionTray();
+    if (t) return t.isOrionMessage(n);
+    return Boolean(n && n.notification_type === 'endogenous_outreach');
+  }
+
+  // Open Orion messages: durable rows plus any that arrived live on this page.
+  function currentOrionMessages() {
+    const t = orionTray();
+    if (!t) return [];
+    const hidden = new Set([...dismissedOrionMessageIds, ...orionClosedByDurable]);
+    return t.mergeOpenMessages(orionOpenMessages, notifications, hidden);
+  }
+
+  // The normal cards under the Orion rows: severity filter, then the
+  // self-clearing alert rule (orion-message-tray.js explains it).
+  function generalTrayItems() {
     const filter = notificationFilter ? notificationFilter.value : 'all';
-    notificationList.innerHTML = '';
-    const filtered = sortedNotificationsForTray(notifications).filter(
+    const base = notifications.filter(
       (n) =>
         isNotificationTrayItem(n) &&
+        !isOrionTrayMessage(n) &&
         (filter === 'all' || (n.severity || '').toLowerCase() === filter)
     );
+    const t = orionTray();
+    const collapsed = t ? t.collapseSelfClearing(base) : { visible: base, hidden: 0, groups: new Map() };
+    return { base, ...collapsed };
+  }
 
-    if (notificationsDismissAllBtn) notificationsDismissAllBtn.disabled = filtered.length === 0;
+  async function loadOrionMessages() {
+    try {
+      const resp = await fetch(
+        `${API_BASE_URL}/api/chat/messages?status=open&tag=endogenous_outreach&limit=100`
+      );
+      // A failed fetch must not read as "nothing is open": keep the live list.
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (Array.isArray(data)) {
+        orionOpenMessages = data;
+        const t = orionTray();
+        orionClosedByDurable = t ? t.closedByDurable(data, notifications) : new Set();
+        renderNotifications();
+      }
+    } catch (err) {
+      console.warn('Failed to load Orion messages', err);
+    }
+  }
 
-    if (filtered.length === 0) {
+  async function dismissOrionMessage(m) {
+    if (!m || !m.message_id || dismissedOrionMessageIds.has(m.message_id)) return;
+    dismissedOrionMessageIds.add(m.message_id);
+    renderNotifications();
+    const ok = await handleChatMessageReceipt(m.message_id, m.session_id, 'dismissed');
+    if (!ok) {
+      // Not saved, so it would come back on reload. Say so now instead.
+      dismissedOrionMessageIds.delete(m.message_id);
+      renderNotifications();
+      showToastText('Could not save that dismiss. The message is back in the tray.');
+    }
+  }
+
+  // Reply: put the chat on the message's conversation, show the message
+  // there, and focus the input so Juniper can just type.
+  function replyToOrionMessage(m) {
+    if (!m) return;
+    let bubble = null;
+    const esc = (v) => (window.CSS && typeof window.CSS.escape === 'function' ? window.CSS.escape(v) : v);
+    if (conversationDiv) {
+      for (const id of [m.correlation_id, m.message_id].filter(Boolean)) {
+        bubble = conversationDiv.querySelector(`[data-turn-id="${esc(id)}"]`);
+        if (bubble) break;
+      }
+    }
+    // Already on screen: Juniper is in that thread. Otherwise switch to the
+    // message's thread, and say so in the chat, because Hub cannot reload an
+    // older thread's history and the turns above belong to another thread.
+    if (!bubble && m.session_id && m.session_id !== orionSessionId) {
+      setSessionId(m.session_id);
+      if (conversationDiv && conversationDiv.children.length) {
+        appendMessage('System', 'Replying in the thread where Orion said this. The messages above are from another thread.', 'text-gray-400');
+      }
+      // Same hello the socket sends on connect, so the server (outreach and
+      // the reply stamp) knows this tab is now in that thread.
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        try {
+          socket.send(JSON.stringify({ type: 'session_hello', session_id: m.session_id }));
+        } catch (err) {
+          console.warn('[WS] session_hello failed', err);
+        }
+      }
+    }
+    if (conversationDiv) {
+      if (!bubble && m.text) {
+        appendMessage('Orion', m.text, 'text-white', {
+          correlationId: m.correlation_id || null,
+          messageId: m.message_id,
+          turnId: m.correlation_id || m.message_id,
+          mode: 'orion',
+          unsolicited: true,
+        });
+        bubble = conversationDiv.lastElementChild;
+      }
+    }
+    focusChatInput();
+    if (bubble && typeof bubble.scrollIntoView === 'function') {
+      bubble.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+    handleChatMessageReceipt(m.message_id, m.session_id, 'opened');
+    // Replying handles it: the message is in the chat now, so it leaves the tray.
+    dismissOrionMessage(m);
+  }
+
+  function renderOrionMessageRow(m) {
+    const item = document.createElement('div');
+    item.className = 'om-orion-msg rounded-lg border border-green-800/60 bg-green-950/30 p-2';
+    item.dataset.messageId = m.message_id;
+
+    const head = document.createElement('div');
+    head.className = 'flex items-center justify-between gap-2';
+    const who = document.createElement('div');
+    who.className = 'text-[11px] font-semibold text-green-300';
+    const when = m.created_at ? formatHubLocalTime(m.created_at) : '';
+    who.textContent = when ? `Orion · ${when}` : 'Orion';
+
+    const actions = document.createElement('div');
+    actions.className = 'flex items-center gap-1';
+    const replyBtn = document.createElement('button');
+    replyBtn.type = 'button';
+    replyBtn.className = 'om-orion-reply text-[10px] px-2 py-0.5 rounded bg-green-800/80 hover:bg-green-700 text-white';
+    replyBtn.textContent = 'Reply';
+    replyBtn.title = 'Open this conversation in the chat and reply';
+    replyBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      replyToOrionMessage(m);
+    });
+    const dismissBtn = document.createElement('button');
+    dismissBtn.type = 'button';
+    dismissBtn.className = 'om-orion-dismiss text-[10px] px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200';
+    dismissBtn.textContent = 'Dismiss';
+    dismissBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dismissOrionMessage(m);
+    });
+    actions.appendChild(replyBtn);
+    actions.appendChild(dismissBtn);
+    head.appendChild(who);
+    head.appendChild(actions);
+
+    const fullText = normalizeTextForPreview(m.text || '');
+    const body = document.createElement('div');
+    body.className = 'mt-1 text-[11px] text-gray-200 line-clamp-2';
+    body.textContent = truncate(fullText);
+    body.title = fullText;
+
+    item.appendChild(head);
+    item.appendChild(body);
+    return item;
+  }
+
+  function renderNotifications() {
+    if (!notificationList) return;
+    notificationList.innerHTML = '';
+
+    const orionMessages = currentOrionMessages();
+    if (orionMessagesBadge) {
+      orionMessagesBadge.textContent = orionMessages.length ? `Orion ${orionMessages.length}` : '';
+      orionMessagesBadge.classList.toggle('hidden', orionMessages.length === 0);
+    }
+    orionMessages.forEach((m) => notificationList.appendChild(renderOrionMessageRow(m)));
+
+    const tray = generalTrayItems();
+    const filtered = sortedNotificationsForTray(tray.visible);
+
+    if (notificationsDismissAllBtn) notificationsDismissAllBtn.disabled = tray.base.length === 0;
+
+    if (orionMessages.length && filtered.length) {
+      const divider = document.createElement('div');
+      divider.className = 'border-t border-gray-800';
+      notificationList.appendChild(divider);
+    }
+
+    if (filtered.length === 0 && orionMessages.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'text-xs text-gray-500 italic';
       empty.textContent = 'No notifications';
       notificationList.appendChild(empty);
-      return;
+    }
+
+    if (tray.hidden > 0) {
+      // Rendered last (below the cards) but built here so every exit path has it.
+      tray.hiddenNote = document.createElement('div');
+      tray.hiddenNote.className = 'om-cleared-hidden text-[10px] text-gray-500 italic';
+      tray.hiddenNote.textContent = `${tray.hidden} self-cleared alert${tray.hidden === 1 ? '' : 's'} hidden`;
+      tray.hiddenNote.title =
+        'Alerts whose condition has already cleared (a matching *_cleared notice arrived), and repeats of a condition that is still on. Full list: /api/notifications.';
     }
 
     filtered.forEach((n) => {
@@ -6705,8 +6966,11 @@ let chatTurnTimer = null;
       dismissBtn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        const identity = notificationIdentity(n);
-        notifications = notifications.filter((item) => notificationIdentity(item) !== identity);
+        // A collapsed alert card stands for its whole family; drop all of it,
+        // or the next-newest hidden repeat would pop up in its place.
+        const group = tray.groups.get(n) || [n];
+        const doomed = new Set(group.map(notificationIdentity));
+        notifications = notifications.filter((item) => !doomed.has(notificationIdentity(item)));
         renderNotifications();
         if (n && n.message_id && n.session_id) {
           handleChatMessageReceipt(n.message_id, n.session_id, 'dismissed');
@@ -6760,6 +7024,7 @@ let chatTurnTimer = null;
       if (details) item.appendChild(details);
       notificationList.appendChild(item);
     });
+    if (tray.hiddenNote) notificationList.appendChild(tray.hiddenNote);
   }
 
   function focusChatInput() {
@@ -6813,14 +7078,10 @@ let chatTurnTimer = null;
 
   function dismissAllNotifications() {
     if (!Array.isArray(notifications)) return;
-    const filter = notificationFilter ? notificationFilter.value : 'all';
-    // Scoped to what the active filter is actually showing -- dismissing rows
-    // the operator cannot see would be a surprise.
-    const targets = notifications.filter(
-      (n) =>
-        isNotificationTrayItem(n) &&
-        (filter === 'all' || (n.severity || '').toLowerCase() === filter)
-    );
+    // Scoped to the active severity filter. Includes the self-cleared alerts
+    // the tray folds away (they stand behind the visible cards). Orion's own
+    // messages are left alone: each waits for its own Dismiss or Reply.
+    const targets = generalTrayItems().base;
     if (!targets.length) return;
     const doomed = new Set(targets.map(notificationIdentity));
     notifications = notifications.filter((n) => !doomed.has(notificationIdentity(n)));
@@ -6832,14 +7093,26 @@ let chatTurnTimer = null;
     });
   }
 
+  // Returns true when Hub accepted the receipt, false otherwise (callers that
+  // must not pretend a dismiss was saved check it).
   async function handleChatMessageReceipt(messageId, sessionId, receiptType) {
-    if (!messageId || !sessionId) return;
-    if (String(messageId).startsWith('synthetic:')) return;
+    if (!messageId || !sessionId) return false;
+    if (String(messageId).startsWith('synthetic:')) return false;
     // Deduplicate double-clicks / bubbling
     const key = `${messageId}:${receiptType}`;
-    window.__orionReceiptInFlight = window.__orionReceiptInFlight || new Set();
-    if (window.__orionReceiptInFlight.has(key)) return;
-    window.__orionReceiptInFlight.add(key);
+    // Same receipt already in flight: share its result instead of guessing.
+    window.__orionReceiptInFlight = window.__orionReceiptInFlight || new Map();
+    if (window.__orionReceiptInFlight.has(key)) return window.__orionReceiptInFlight.get(key);
+    const pending = sendChatMessageReceipt(messageId, sessionId, receiptType);
+    window.__orionReceiptInFlight.set(key, pending);
+    try {
+      return await pending;
+    } finally {
+      try { window.__orionReceiptInFlight.delete(key); } catch (_) {}
+    }
+  }
+
+  async function sendChatMessageReceipt(messageId, sessionId, receiptType) {
     try {
       const resp = await fetch(`${API_BASE_URL}/api/chat/message/${messageId}/receipt`, {
         method: 'POST',
@@ -6847,10 +7120,10 @@ let chatTurnTimer = null;
         body: JSON.stringify({ session_id: sessionId, receipt_type: receiptType }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      return true;
     } catch (err) {
       console.warn('Failed to send chat message receipt', err);
-    } finally {
-      try { window.__orionReceiptInFlight.delete(key); } catch (_) {}
+      return false;
     }
   }
 
@@ -7082,7 +7355,6 @@ let chatTurnTimer = null;
     addSection('time_place', 'Time/place', { time: (meta.situation_brief || {}).time, place: (meta.situation_brief || {}).place });
     addSection('weather', 'Weather/environment', (meta.situation_brief || {}).environment);
     addSection('agenda', 'Agenda', (meta.situation_brief || {}).agenda);
-    addSection('lab', 'Lab context', (meta.situation_brief || {}).lab);
     addSection('surface', 'Surface', (meta.situation_brief || {}).surface);
     addSection('affordances', 'Affordances', meta.situation_affordances || (meta.situation_brief || {}).affordances);
     addSection('provider_diagnostics', 'Provider diagnostics', (meta.situation_brief || {}).diagnostics);
@@ -9066,7 +9338,9 @@ let chatTurnTimer = null;
 
   async function loadNotifications() {
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/notifications?limit=50`);
+      // Whole Hub cache (NOTIFY_IN_APP_MAX=200): the self-clearing rule needs
+      // to see an alert's matching *_cleared notice to fold it away.
+      const resp = await fetch(`${API_BASE_URL}/api/notifications?limit=200`);
       if (!resp.ok) return;
       const data = await resp.json();
       if (Array.isArray(data)) {
@@ -9074,8 +9348,10 @@ let chatTurnTimer = null;
         notificationsInitialHydrateDone = true;
         notifications = data;
         renderNotifications();
-        if (firstHydrate && data.length >= notificationBatchHydrateThreshold()) {
-          showToastText(`${data.length} notifications loaded (see tray)`);
+        // Count what the tray will actually show, not folded-away alerts.
+        const shown = generalTrayItems().visible.length;
+        if (firstHydrate && shown >= notificationBatchHydrateThreshold()) {
+          showToastText(`${shown} notifications loaded (see tray)`);
         }
       }
     } catch (err) {
@@ -10618,6 +10894,17 @@ let chatTurnTimer = null;
   if (memoryDebugModalDialog) {
     memoryDebugModalDialog.addEventListener('click', (event) => event.stopPropagation());
   }
+  if (recallModeToggle) recallModeToggle.addEventListener('click', toggleRecallModePanel);
+  if (recallModeOpenModal) {
+    recallModeOpenModal.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openRecallModeModal();
+    });
+  }
+  if (recallModeModalClose) recallModeModalClose.addEventListener('click', closeRecallModeModal);
+  if (recallModeModalBackdrop) recallModeModalBackdrop.addEventListener('click', closeRecallModeModal);
+  if (recallModeModalDialog) recallModeModalDialog.addEventListener('click', (event) => event.stopPropagation());
   ensureDebugPanelModalRootOnBody();
   if (debugPanelOpenModal) {
     debugPanelOpenModal.addEventListener('click', (event) => {
@@ -11152,6 +11439,10 @@ let chatTurnTimer = null;
     });
   }
   document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && recallModeModalRoot && !recallModeModalRoot.classList.contains('hidden')) {
+      closeRecallModeModal();
+      return;
+    }
     if (event.key === 'Escape' && memoryGraphBridgeModal && !memoryGraphBridgeModal.classList.contains('hidden')) {
       closeMemoryGraphBridgeModal();
       return;
@@ -12543,8 +12834,11 @@ let chatTurnTimer = null;
           console.info('[tts] playback ended');
           clearAudioWatchdog();
           isPlayingAudio = false;
-          cancelAnimationFrame(animationFrameId);
-          if (canvasCtx) canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
+          analyser = null;
+          if (!cabinetAnalyser) {
+            cancelAnimationFrame(animationFrameId);
+            if (canvasCtx) canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
+          }
           setVoiceBoxVisible(false);
           processAudioQueue();
         };
@@ -12558,21 +12852,71 @@ let chatTurnTimer = null;
     }
   }
 
-  function drawVisualizer() {
-    if (!analyser || !canvasCtx) return;
-    const bufLen = analyser.frequencyBinCount;
+  function drawAnalyserBars(source, color) {
+    const bufLen = source.frequencyBinCount;
     const data = new Uint8Array(bufLen);
-    analyser.getByteFrequencyData(data);
-    canvasCtx.clearRect(0,0,visualizerCanvas.width, visualizerCanvas.height);
+    source.getByteFrequencyData(data);
     const barW = (visualizerCanvas.width / bufLen) * 2.5;
     let x = 0;
     for(let i=0; i<bufLen; i++) {
       const h = (data[i] / 255) * visualizerCanvas.height;
-      canvasCtx.fillStyle = `rgb(${h+100}, 100, 200)`;
+      canvasCtx.fillStyle = color(h);
       canvasCtx.fillRect(x, visualizerCanvas.height - h, barW, h);
       x += barW + 1;
     }
+  }
+
+  // One waveform for every live sound: cabinet mic (teal) underneath, Orion's
+  // TTS voice (violet) on top. One animation loop no matter which started it.
+  function drawVisualizer() {
+    cancelAnimationFrame(animationFrameId);
+    // Watchdog/error/interrupt exits leave `analyser` set; isPlayingAudio is
+    // the flag every exit path clears, so a dead clip can't keep the loop alive.
+    const voiceAnalyser = isPlayingAudio ? analyser : null;
+    if (!canvasCtx) return;
+    if (!voiceAnalyser && !cabinetAnalyser) {
+      canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
+      return;
+    }
+    canvasCtx.clearRect(0,0,visualizerCanvas.width, visualizerCanvas.height);
+    if (cabinetAnalyser) drawAnalyserBars(cabinetAnalyser, (h) => `rgba(45, ${Math.round(h + 120)}, 170, 0.85)`);
+    if (voiceAnalyser) drawAnalyserBars(voiceAnalyser, (h) => `rgb(${h+100}, 100, 200)`);
     animationFrameId = requestAnimationFrame(drawVisualizer);
+  }
+
+  const cabinetLiveAudio = window.OrionCabinetLiveAudio
+    ? window.OrionCabinetLiveAudio.createCabinetLiveAudio({
+        getContext: () => {
+          if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          return audioContext;
+        },
+        onAnalyser: (node) => {
+          cabinetAnalyser = node;
+          setVoiceBoxVisible(voiceBoxVoiceVisible);
+          drawVisualizer();
+        },
+        onStatus: (state, text) => {
+          const on = state === 'connecting' || state === 'live';
+          if (cabinetAudioButton) {
+            cabinetAudioButton.setAttribute('aria-pressed', on ? 'true' : 'false');
+            cabinetAudioButton.textContent = on ? 'Stop cabinet audio' : 'Cabinet audio';
+            cabinetAudioButton.classList.toggle('border-teal-500', on);
+            cabinetAudioButton.classList.toggle('text-teal-200', on);
+          }
+          if (cabinetAudioStatus) {
+            cabinetAudioStatus.textContent = text;
+            cabinetAudioStatus.classList.toggle('text-red-300', state === 'error');
+          }
+        },
+      })
+    : null;
+  if (cabinetAudioButton) {
+    cabinetAudioButton.disabled = !cabinetLiveAudio;
+    cabinetAudioButton.addEventListener('click', () => {
+      if (!cabinetLiveAudio) return;
+      if (cabinetLiveAudio.isActive()) cabinetLiveAudio.stop();
+      else cabinetLiveAudio.start();
+    });
   }
 
   // --- Session & Init ---
@@ -12625,6 +12969,7 @@ let chatTurnTimer = null;
         if (!Number.isNaN(parsed)) notificationToastSeconds = parsed;
       }
       await loadNotifications();
+      await loadOrionMessages();
       await loadPendingAttention();
       loadCognitiveLoops();
       await loadWorldPulseLatest();
@@ -13382,6 +13727,13 @@ let chatTurnTimer = null;
         event.preventDefault();
         setActiveTab("mood-arc-status");
         history.replaceState(null, "", "#mood-arc-status");
+      });
+    }
+    if (orionEnergyTabButton && orionEnergyPanelEl) {
+      orionEnergyTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("orion-energy");
+        history.replaceState(null, "", "#orion-energy");
       });
     }
     if (collapseMirrorTabButton && collapseMirrorPanel) {

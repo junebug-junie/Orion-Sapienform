@@ -122,7 +122,7 @@ def test_turn_routes_are_accepted_system_only_and_known_to_the_pool() -> None:
     from orion.llm.routes import METACOG_LLM_ROUTES, fcc_model_for_route
 
     pool_routes = load_pool_config().routes
-    for name in ("metacog_turn",):
+    for name in ("metacog_turn", "quick_turn"):
         assert name in ACCEPTED_LLM_ROUTES and name in LLM_ROUTE_DISPLAY_ORDER
         assert name in SYSTEM_LLM_ROUTES and name not in BACKGROUND_LLM_ROUTES
         assert normalize_llm_route(name) is None
@@ -130,8 +130,12 @@ def test_turn_routes_are_accepted_system_only_and_known_to_the_pool() -> None:
         assert pool_routes[name].priority == "interactive"
     # same worker as metacog: the gateway must pin the metacog profile for it too
     assert "metacog_turn" in METACOG_LLM_ROUTES
-    # no caller sends quick/agent on a live turn yet: no route without its caller (keyword cathedral)
-    assert "quick_turn" not in pool_routes and "agent_turn" not in pool_routes
+    # quick_turn's caller is cortex-exec's pre-turn repair-pressure probe (2026-10-23); it is the
+    # fast class, not metacog, so it must NOT be pinned to the metacog profile.
+    assert pool_routes["quick_turn"].work_class == "fast"
+    assert "quick_turn" not in METACOG_LLM_ROUTES
+    # no caller sends agent on a live turn yet: no route without its caller (keyword cathedral)
+    assert "agent_turn" not in pool_routes
 
 
 def test_every_accepted_route_is_a_pool_route() -> None:
@@ -140,3 +144,20 @@ def test_every_accepted_route_is_a_pool_route() -> None:
     from orion.gpu_pool.config import load_pool_config
 
     assert ACCEPTED_LLM_ROUTES <= set(load_pool_config().routes)
+
+
+def test_quick_embodied_is_system_only_but_cortex_may_override_with_it():
+    from orion.llm.routes import (
+        CORTEX_OVERRIDE_SYSTEM_ROUTES,
+        SYSTEM_LLM_ROUTES,
+        normalize_llm_route,
+    )
+
+    assert "quick_embodied" in SYSTEM_LLM_ROUTES
+    # Hub and orion-actions call without allow_system: still refused there.
+    assert normalize_llm_route("quick_embodied") is None
+    assert normalize_llm_route("quick_embodied", allow_system=CORTEX_OVERRIDE_SYSTEM_ROUTES) == "quick_embodied"
+    # The exception is exactly one route; other system routes stay refused even for cortex.
+    assert CORTEX_OVERRIDE_SYSTEM_ROUTES == {"quick_embodied"}
+    for route in SYSTEM_LLM_ROUTES - CORTEX_OVERRIDE_SYSTEM_ROUTES:
+        assert normalize_llm_route(route, allow_system=CORTEX_OVERRIDE_SYSTEM_ROUTES) is None

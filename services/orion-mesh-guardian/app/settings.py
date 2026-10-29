@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     # slow-consumer kills, stuck/failed snapshots, bus-synapse graph inflation.
     stability_enabled: bool = Field(True, alias="MESH_GUARDIAN_STABILITY_ENABLED")
     stability_interval_sec: int = Field(60, alias="MESH_GUARDIAN_STABILITY_INTERVAL_SEC")
+    # Remote crash loops: other hosts' RestartCount censuses, carried on a per-host service's
+    # heartbeat (SystemHealthV1.details["container_restarts"]; circe: orion-gpu-lane-controller)
+    # and read from the equilibrium snapshot. Hosts listed here read as BLIND (a card) when no
+    # fresh census arrives within remote_container_stale_sec -- absence is never "no restarts".
+    # hecate is on-demand and has no reporter yet, so it is not listed.
+    remote_container_watch_enabled: bool = Field(True, alias="MESH_GUARDIAN_REMOTE_CONTAINER_WATCH_ENABLED")
+    remote_container_hosts: str = Field("circe", alias="MESH_GUARDIAN_REMOTE_CONTAINER_HOSTS")
+    remote_container_stale_sec: int = Field(300, alias="MESH_GUARDIAN_REMOTE_CONTAINER_STALE_SEC")
     falkordb_uri: str = Field("redis://orion-athena-falkordb:6379", alias="FALKORDB_URI")
     falkordb_bus_graph: str = Field("orion_bus_synapse", alias="FALKORDB_BUS_GRAPH")
     # GPU actuation watch (app/gpu_watch.py): probes every actuated role's GPU lane controller
@@ -43,6 +51,9 @@ class Settings(BaseSettings):
     gpu_watch_enabled: bool = Field(True, alias="MESH_GUARDIAN_GPU_WATCH_ENABLED")
     gpu_probe_interval_sec: int = Field(300, alias="MESH_GUARDIAN_GPU_PROBE_INTERVAL_SEC")
     gpu_probe_wait_sec: float = Field(90.0, alias="MESH_GUARDIAN_GPU_PROBE_WAIT_SEC")
+
+    def remote_container_host_list(self) -> list[str]:
+        return [h.strip() for h in self.remote_container_hosts.split(",") if h.strip()]
 
     class Config:
         env_file = ".env"

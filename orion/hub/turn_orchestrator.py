@@ -32,6 +32,7 @@ from orion.situational.context import build_situation_for_ctx, hub_settings_to_r
 from orion.harness.attachment_staging import prune_staging, stage_attachments
 from orion.harness.repair import map_repair_pressure_contract
 from orion.harness.runner import build_harness_prompt
+from orion.harness.prefix import format_recent_turns
 from orion.schemas.harness_finalize import (
     HARNESS_RECENT_TURNS_MAX,
     HarnessAttachmentV1,
@@ -57,6 +58,10 @@ from orion.fcc.context_budget import (
 )
 
 logger = logging.getLogger("orion.hub.turn_orchestrator")
+
+# Per-message cap for the stance pass's copy of RECENT CONVERSATION: enough to
+# follow the thread, not every word of a long reply.
+STANCE_RECENT_TURN_MAX_CHARS = 400
 
 DEFAULT_UNIFIED_TURN_FCC_MODEL_LABEL = "MODEL_SONNET"
 
@@ -325,7 +330,10 @@ async def _publish_unified_turn_chat_grammar(
             # into memory as a "repair". The sub-floor reading still
             # travels on its own atom.
             has_repair_signal=is_repair_signal(repair_pressure_level),
-            has_repair_pressure_reading=repair_bundle is not None,
+            # A reading exists only if the paradigm measured one. A bundle whose
+            # repair_pressure failed (e.g. probe shed by heat) has no level (None):
+            # no atom, rather than a 0.0 "calm" reading.
+            has_repair_pressure_reading=repair_pressure_level is not None,
             stance_disposition=stance_disposition,
             stance_disposition_reasons=stance_disposition_reasons,
             stance_boundary_register=stance_boundary_register,
@@ -598,13 +606,16 @@ async def _run_pre_turn_appraisal(
     """Run pre-turn appraisal and return (bundle, cockpit_texture).
 
     Texture is honest Hub-boundary detail for Soft HUD progress hops — never
-    fabricated cognition. Keys: status, error, failed_paradigms, elapsed_ms,
-    skipped_reason.
+    fabricated cognition. Keys: status, error, failed_paradigms, failure_reasons,
+    elapsed_ms, skipped_reason. A failed paradigm (e.g. its probe shed by heat:
+    failure_reasons={"repair_pressure": "shed:cabinet_hot"}) makes the status
+    ``failed``: its level is unknown, never reported as ``ok``.
     """
     texture: dict[str, Any] = {
         "status": "skipped",
         "error": None,
         "failed_paradigms": [],
+        "failure_reasons": {},
         "elapsed_ms": None,
         "skipped_reason": None,
     }
@@ -659,10 +670,20 @@ async def _run_pre_turn_appraisal(
         return None, texture
 
     failed = list(bundle.failed_paradigms or [])
+    reasons = dict(getattr(bundle, "failure_reasons", None) or {})
     texture["failed_paradigms"] = failed
+    texture["failure_reasons"] = reasons
     if failed:
         texture["status"] = "failed"
-        texture["error"] = f"failed_paradigms={','.join(failed)}"
+        texture["error"] = "failed_paradigms=" + ",".join(
+            f"{name}:{reasons[name]}" if reasons.get(name) else name for name in failed
+        )
+        logger.warning(
+            "pre_turn_appraisal_failed corr=%s failed=%s reasons=%s",
+            correlation_id,
+            failed,
+            reasons,
+        )
     else:
         texture["status"] = "ok"
 
@@ -1108,6 +1129,7 @@ async def execute_unified_turn(
                     "phase": "done",
                     "status": appraisal_status,
                     "failed_paradigms": list(appraisal_texture.get("failed_paradigms") or []),
+                    "failure_reasons": dict(appraisal_texture.get("failure_reasons") or {}),
                     "elapsed_ms": appraisal_texture.get("elapsed_ms"),
                     "error": appraisal_error,
                     "skipped_reason": appraisal_texture.get("skipped_reason"),
@@ -1166,6 +1188,33 @@ async def execute_unified_turn(
         if payload.get("gpu_lease") is not None
         else None
     )
+    # Reuses build_turn_window (already the appraisal call above's normalizer)
+    # rather than passing continuity_messages through raw -- caps to the last
+    # HARNESS_RECENT_TURNS_MAX messages regardless of what the caller already
+    # capped, so HarnessRunRequestV1.recent_turns's own bound holds even if a
+    # future caller forgets to cap. No synthetic single-message fallback here
+    # (unlike _run_pre_turn_appraisal's turn_window above): an empty
+    # continuity_messages should render as a genuinely empty recent_turns, not
+    # a fabricated one-line "history".
+    #
+    # Real callers (services/orion-hub/scripts/api_routes.py's build_continuity_
+    # messages(history=user_messages, ...) and websocket_handler.py's history
+    # list) both include THIS turn's own message as the trailing entry --
+    # confirmed live review 2026-08-20: without stripping it here, recent_turns'
+    # last item duplicates user_message, so compile_harness_prefix would render
+    # the current question twice (once under RECENT CONVERSATION, once as
+    # "User message: ..."). _run_pre_turn_appraisal's turn_window above is left
+    # alone -- that RPC may legitimately want the current message included.
+    history_only = list(continuity_messages or [])
+    if history_only:
+        last = history_only[-1]
+        last_content = str(last.get("content") or "").strip() if isinstance(last, dict) else None
+        if last_content is not None and last_content == user_message.strip():
+            history_only = history_only[:-1]
+    recent_turns = build_turn_window(
+        history_only, max_turns=HARNESS_RECENT_TURNS_MAX, keep_timestamps=True
+    )
+
     appraisal = (mind_appraisal_text or "").strip()
     stance_user_message = appraisal or user_message
     stance_inputs: dict[str, Any] = {"user_message": stance_user_message}
@@ -1175,6 +1224,17 @@ async def execute_unified_turn(
         # Motor/harness still sees the full prompt; stance_inputs["user_message"]
         # must match StanceReactRequestV1.user_message (Mind snapshot user_text).
         stance_inputs["harness_user_message"] = user_message
+    if recent_turns:
+        # The stance pass writes the imperative and tone the motor follows, so
+        # it must read the message against the thread too. Without this it saw
+        # only "That was on Sunday. Today is Monday :) It was eventful" and
+        # told the motor to "meet Juniper's Monday update" -- the motor had the
+        # history but followed the stance (live 2026-10-20, corr=98bde7cf).
+        stance_inputs["recent_conversation"] = format_recent_turns(
+            recent_turns,
+            now=datetime.now(timezone.utc),
+            max_content_chars=STANCE_RECENT_TURN_MAX_CHARS,
+        )
     # Not copied into stance_inputs: stance_react.j2 renders every stance_inputs
     # key into the stance LLM prompt as "additional context". This is recall's
     # search text, not something stance should read (PR #2423 review).
@@ -1472,32 +1532,6 @@ async def execute_unified_turn(
                 correlation_id,
             )
 
-    # Reuses build_turn_window (already the appraisal call above's normalizer)
-    # rather than passing continuity_messages through raw -- caps to the last
-    # HARNESS_RECENT_TURNS_MAX messages regardless of what the caller already
-    # capped, so HarnessRunRequestV1.recent_turns's own bound holds even if a
-    # future caller forgets to cap. No synthetic single-message fallback here
-    # (unlike _run_pre_turn_appraisal's turn_window above): an empty
-    # continuity_messages should render as a genuinely empty recent_turns, not
-    # a fabricated one-line "history".
-    #
-    # Real callers (services/orion-hub/scripts/api_routes.py's build_continuity_
-    # messages(history=user_messages, ...) and websocket_handler.py's history
-    # list) both include THIS turn's own message as the trailing entry --
-    # confirmed live review 2026-08-20: without stripping it here, recent_turns'
-    # last item duplicates user_message, so compile_harness_prefix would render
-    # the current question twice (once under RECENT CONVERSATION, once as
-    # "User message: ..."). _run_pre_turn_appraisal's turn_window above is left
-    # alone -- that RPC may legitimately want the current message included.
-    history_only = list(continuity_messages or [])
-    if history_only:
-        last = history_only[-1]
-        last_content = str(last.get("content") or "").strip() if isinstance(last, dict) else None
-        if last_content is not None and last_content == user_message.strip():
-            history_only = history_only[:-1]
-    recent_turns = build_turn_window(
-        history_only, max_turns=HARNESS_RECENT_TURNS_MAX, keep_timestamps=True
-    )
 
     # "orion" or "agent" -- computed once, up near the top of this function
     # (alongside resolved_fcc_model_label; see that block's own comment) so
@@ -1548,6 +1582,9 @@ async def execute_unified_turn(
     harness_req = HarnessRunRequestV1(
         gpu_lease=payload.get("gpu_lease"),
         resume_key=payload.get("resume_key"),
+        # Only a curiosity run that took a focus (curiosity_investigation._generate). Honored on
+        # Orion's own turns only: a chat client's payload never reaches the system prompt.
+        curiosity_focus=payload.get("curiosity_focus") if utterance_origin == "orion" else None,
         inference_timeout_sec=inference_timeout_sec,
         reply_budget_sec=reply_budget_sec,
         reading_binding=reading_binding,

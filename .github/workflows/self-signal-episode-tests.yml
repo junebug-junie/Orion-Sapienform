@@ -2,8 +2,8 @@ name: self-signal-episode-tests
 
 # Deterministic gate for metacog self_signal_episode (spec 2026-10-07 section D):
 # the pure episode lifecycle over the attention seam's verdicts, its equilibrium
-# adapter + wiring, the "prose once per episode" consumers (cortex-orch,
-# orion-actions), and the 7-day replay eval over real stored PE history.
+# adapter + wiring, the "prose once per episode" consumer (cortex-orch;
+# orion-actions' metacog journal was removed 2026-10-23), and the 7-day replay eval over real stored PE history.
 # No DB, bus or LLM.
 
 on:
@@ -24,7 +24,6 @@ on:
       - "services/orion-equilibrium-service/evals/test_self_signal_episode_*.py"
       - "services/orion-equilibrium-service/evals/fixtures/self_signal_*"
       - "services/orion-cortex-orch/app/orchestrator.py"
-      - "services/orion-actions/app/main.py"
       - "scripts/analysis/replay_self_signal_episodes.py"
       - ".github/workflows/self-signal-episode-tests.yml"
   push:
@@ -51,7 +50,6 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r services/orion-equilibrium-service/requirements.txt
           python -m pip install -r services/orion-cortex-orch/requirements.txt
-          python -m pip install -r services/orion-actions/requirements.txt
           python -m pip install -r requirements-dev.txt
       - name: Pure lifecycle + evidence map contract
         run: |
@@ -69,6 +67,3 @@ jobs:
       - name: cortex-orch close row is not drafted
         working-directory: services/orion-cortex-orch
         run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests/test_metacog_self_signal_episode_prose.py
-      - name: orion-actions close row is not journaled
-        working-directory: services/orion-actions
-        run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests/test_metacog_self_signal_episode_journal.py

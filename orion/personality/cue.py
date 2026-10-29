@@ -3,7 +3,8 @@
 A fixed template over the current ``PersonalityFrameV1`` (orion-durable-runs
 ``GET /personality/frame``). No model writes it. It names what Orion keeps returning to, in
 Orion's own words (each node's label is an excerpt of Orion's evidence), with where it showed up
-and how often. It is framed as a record, not an instruction: the design is bottom-up (spec rev 2),
+and how often. A node Orion has named reads ``you call this "<name>": "<excerpt>"``; the excerpt
+is never dropped for the name. It is framed as a record, not an instruction: the design is bottom-up (spec rev 2),
 so nothing here tells Orion how to sound.
 
 Renders nothing (``text == ""`` plus ``skip_reason``) when the frame is missing, invalid, older
@@ -29,7 +30,13 @@ DEFAULT_TOP_K = 5
 # The choice line is a pattern claim; below this many choices it is an anecdote, not shown
 # (live 2026-10-17: "went your own way in 1 of 1 choices" read to Orion as a tendency).
 MIN_CHOICES_SHOWN = 5
-LABEL_SHOWN_CHARS = 120
+# Labels are excerpts of Orion's evidence; the opening words carry the theme. Live 2026-10-20 at
+# 120 chars only 1 of 4 active nodes fit the cue.
+LABEL_SHOWN_CHARS = 64
+# A named node's line is up to ~58 chars longer (NAMING_NAME_MAX_CHARS = 40). Before a node is
+# dropped to fit the cap, named nodes' excerpts shrink to this many chars instead: the excerpt stays
+# beside the name, and the 4 live nodes keep reaching Orion with 40-char names.
+NAMED_LABEL_MIN_CHARS = 36
 
 HEADER = (
     "Things you keep coming back to, gathered from your own recent dreams, journal, reverie, "
@@ -57,18 +64,34 @@ def _skip(now: datetime, reason: str, frame: PersonalityFrameV1 | None = None) -
     )
 
 
-def _label(text: str) -> str:
+def _label(text: str, max_chars: int = LABEL_SHOWN_CHARS) -> str:
     text = " ".join(text.split())
-    if len(text) <= LABEL_SHOWN_CHARS:
+    if len(text) <= max_chars:
         return text
-    return text[: LABEL_SHOWN_CHARS - 1].rstrip() + "…"
+    cut = text[: max_chars - 1]
+    word_cut = cut.rsplit(" ", 1)[0]
+    if len(word_cut) >= max_chars // 2:  # end on a whole word unless that guts the label
+        cut = word_cut
+    return cut.rstrip(" ,;:.—-…") + "…"
 
 
-def _line(d: Any) -> str:
+def _name(d: Any) -> str:
+    # A '"' in a model-written name would break the quoted framing; it reads as "'".
+    return " ".join(str(getattr(d, "name", None) or "").split()).replace('"', "'")
+
+
+def _line(d: Any, named_label_chars: int = LABEL_SHOWN_CHARS) -> str:
     lanes = sorted(d.lane_counts.items(), key=lambda kv: (-kv[1], kv[0]))
     where = ", ".join(LANE_WORDS.get(lane, lane) for lane, n in lanes if n > 0)
     since = d.first_seen_at.strftime("%b %d").replace(" 0", " ")
-    return f'- "{_label(d.label)}" ({where}; {d.evidence_count} times since {since})'
+    # Self-naming (spec 2026-10-17 section 6): Orion's own name leads, but the evidence excerpt
+    # always stays beside it so the word is never read back without what it names.
+    name = _name(d)
+    excerpt = _label(d.label, named_label_chars if name else LABEL_SHOWN_CHARS)
+    tail = f'"{excerpt}" ({where}; {d.evidence_count} times since {since})'
+    if name:
+        return f'- you call this "{name}": {tail}'
+    return f"- {tail}"
 
 
 def _choice_line(frame: PersonalityFrameV1) -> str | None:
@@ -105,12 +128,18 @@ def project_personality_cue(
     if not shown and choice is None:
         return _skip(now, "empty", parsed)
 
-    # Drop the weakest node until the cue fits; the choice line goes last and is kept if it fits.
+    # Fit the cap: first shorten named nodes' excerpts, then drop the weakest node; the choice
+    # line goes last and is kept if it fits. Unnamed-only cues fit exactly as before naming.
     while True:
-        lines = [HEADER] + [_line(d) for d in shown] if shown else []
-        if choice:
-            lines.append(choice)
-        text = "\n".join(lines)
+        text = ""
+        any_named = any(_name(d) for d in shown)
+        for named_chars in (LABEL_SHOWN_CHARS, NAMED_LABEL_MIN_CHARS) if any_named else (LABEL_SHOWN_CHARS,):
+            lines = [HEADER] + [_line(d, named_chars) for d in shown] if shown else []
+            if choice:
+                lines.append(choice)
+            text = "\n".join(lines)
+            if len(text) <= PERSONALITY_CUE_MAX_CHARS:
+                break
         if len(text) <= PERSONALITY_CUE_MAX_CHARS:
             break
         if shown:

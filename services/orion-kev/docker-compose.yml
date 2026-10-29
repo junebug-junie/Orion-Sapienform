@@ -22,14 +22,17 @@ services:
       - KEV_MODEL=${KEV_MODEL:-jaredpalmer/kev-0.8b}
     volumes:
       - ${KEV_HF_CACHE_HOST_DIR:-/mnt/scripts/kev/.hf-cache}:/cache/huggingface
-    # Same GPU pin pattern as orion-whisper-tts: host nvidia-smi index,
-    # remapped to cuda:0 inside. No silent default — fail loud if unset.
+    # GPU pin by UUID (KEV_GPU_DEVICE_ID), remapped to cuda:0 inside. Never a
+    # bare index: circe's indices renumbered when cards moved, and
+    # orion-affectgpt-worker's index pin "1" put it on a full card, where it
+    # crash-looped 601 times (2026-10-14..23). A UUID cannot move. No silent
+    # default -- fail loud if unset. Gate: tests/test_gpu_pin.py.
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["${KEV_GPU_DEVICE_ID:?KEV_GPU_DEVICE_ID must be set in services/orion-kev/.env}"]
+              device_ids: ["${KEV_GPU_DEVICE_ID:?KEV_GPU_DEVICE_ID must be set to a circe GPU UUID in services/orion-kev/.env}"]
               capabilities: [gpu]
     healthcheck:
       test:

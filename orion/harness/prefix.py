@@ -11,6 +11,7 @@ from orion.harness.operator_brief import (
     HARNESS_UNIFIED_OPERATOR_BRIEF,
     harness_motor_instruction as _stance_motor_instruction,
 )
+from orion.dig.brief import append_dig_harness_brief
 from orion.harness.situation_brief import append_situation_block_harness_brief
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import HarnessRepairOverlayV1
@@ -182,10 +183,11 @@ def _gap_line(earlier: datetime | None, later: datetime | None) -> str | None:
     return _format_gap((later - earlier).total_seconds())
 
 
-def _format_recent_turns(
+def format_recent_turns(
     recent_turns: list[TurnWindowMessageV1],
     *,
     now: datetime | None = None,
+    max_content_chars: int | None = None,
 ) -> list[str]:
     """Bounded recent-history block for the harness prompt.
 
@@ -204,6 +206,9 @@ def _format_recent_turns(
     16 h silence -> "what's the latest?" as one continuous moment and
     invented a causal story (live 2026-10-16). Untimed messages render as
     before; no time or gap is ever guessed.
+
+    ``max_content_chars`` trims each message: the stance pass reads the same
+    block but needs the thread, not every word of a long reply.
     """
     if not recent_turns:
         return []
@@ -221,7 +226,10 @@ def _format_recent_turns(
         if msg.at is not None:
             when = _format_local_time(msg.at, tz)
             label = f"{label[:-1]}, {when})" if label.endswith(")") else f"{label} ({when})"
-        lines.append(f"- {label}: {msg.content}")
+        content = msg.content
+        if max_content_chars is not None and len(content) > max_content_chars:
+            content = content[:max_content_chars].rstrip() + " …"
+        lines.append(f"- {label}: {content}")
         prev_at = msg.at
     tail_gap = _gap_line(prev_at, now)
     if tail_gap:
@@ -327,7 +335,7 @@ def compile_harness_prefix(
     # governor builds this right after the RPC lands. `now` is injectable
     # for tests only.
     now_utc = now if now is not None else datetime.now(timezone.utc)
-    parts.extend(_format_recent_turns(recent_turns or [], now=now_utc))
+    parts.extend(format_recent_turns(recent_turns or [], now=now_utc))
 
     if user_message.strip():
         parts.append(HARNESS_TASK_HEADER)
@@ -362,6 +370,7 @@ def compile_harness_prefix(
         trailing,
         situation_prompt_fragment=situation_prompt_fragment,
     )
+    append_dig_harness_brief(trailing, reading_only=reading_only)
 
     if trailing and user_message.strip():
         parts.append(HARNESS_TURN_RULES_HEADER)

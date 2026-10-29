@@ -28,3 +28,11 @@ steps:
     services: [LLMGatewayService]
     prompt_template: reverie_expectation_judge.j2
     requires_gpu: true
+
+# Body economy (Patch C2): who pays for this verb. Parsed by plan_loader.load_verb_physiology;
+# checked by scripts/check_verb_physiology.py. Tier 0 never bids (turn/autonomic).
+physiology:
+  tier: 2
+  family: thought.reverie
+  lanes: [metacog]
+  deferrable_window_s: 900

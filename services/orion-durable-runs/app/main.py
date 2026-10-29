@@ -12,6 +12,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hunter
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 from orion.schemas.chat_history import CHAT_HISTORY_TURN_KIND
+from orion.schemas.claude_limit import CLAUDE_LIMIT_KIND
 from orion.schemas.durable_run import (
     DURABLE_RUN_RECEIPT_KIND,
     DURABLE_RUN_REQUEST_KIND,
@@ -44,6 +45,8 @@ _admission_task: asyncio.Task | None = None
 _reconcile_task: asyncio.Task | None = None
 situation: Any = None
 temporal_self: Any = None
+claude_limits: Any = None   # app.physiology_store.ClaudeLimitCache while the physiology node runs
+market: Any = None          # app.physiology_market.Market while ORION_PHYSIOLOGY_BID_ENABLED (Patch C1)
 chronicle: Any = None
 personality: Any = None
 rpc_health_publisher: RpcHealthPublisher | None = None
@@ -84,6 +87,13 @@ def _chassis_cfg() -> ChassisConfig:
 
 
 async def _handle_request(env: BaseEnvelope) -> None:
+    if env.kind == CLAUDE_LIMIT_KIND:
+        # The physiology node's claude constraint: keep the latest observation per kind.
+        if claude_limits is not None:
+            from datetime import datetime, timezone
+
+            claude_limits.offer(env.payload, datetime.now(timezone.utc))
+        return
     if env.kind == IDENTITY_SIGHTING_KIND:
         if situation is not None and isinstance(env.payload, dict):
             from app.situation_driver import event_from_sighting
@@ -258,6 +268,8 @@ def _build_temporal_self(saver: Any):
     checkpointer's pool, the rest drive from Redis, projects RegulationStateV1 to Redis."""
     from datetime import datetime, timezone
 
+    import dataclasses
+
     from app import regulation_store
     from app.temporal_self_driver import TemporalSelfDriver
     from app.temporal_self_graph import TemporalSelfDeps
@@ -299,6 +311,10 @@ def _build_temporal_self(saver: Any):
         return await regulation_store.record_transition(
             _checkpointer_cm, regulation_store.transition_row(prev, new, day_id))
 
+    async def record_cause(reading, day_id, joined, seed) -> bool:
+        return await regulation_store.record_transition(
+            _checkpointer_cm, regulation_store.cause_row(reading, day_id, joined, seed))
+
     async def read_immune_series(now):
         """R4: 24 h of every glossary channel that carries semantics, one sample per minute."""
         from orion.field.channel_glossary import load_glossary
@@ -312,12 +328,16 @@ def _build_temporal_self(saver: Any):
         return await regulation_store.record_immune_findings(
             _checkpointer_cm, [regulation_store.immune_finding_row(f, day_id, now) for f in findings])
 
+    read_body, project_physiology, body_config, price_body = (_build_physiology() if s.physiology_enabled
+                                                              else (None, None, None, None))
+
     global chronicle
     chronicle = _build_chronicle() if s.temporal_self_chronicle_enabled else None
 
     deps = TemporalSelfDeps(
         read_inputs=read_inputs, read_drives=read_drives, project=project,
         record_transition=record_transition, now=lambda: datetime.now(timezone.utc),
+        record_cause=record_cause if s.temporal_self_strain_arcs_enabled else None,
         chronicle=chronicle.step if chronicle is not None else None,
         read_immune_series=read_immune_series if s.temporal_self_immune_enabled else None,
         record_immune=record_immune,
@@ -327,10 +347,114 @@ def _build_temporal_self(saver: Any):
         gpu_sustain_sec=s.regulation_strained_gpu_queue_sec,
         clear_sec=s.regulation_strained_clear_sec,
         max_prev_gap_sec=3.0 * s.temporal_self_tick_sec,
+        read_body=read_body, project_physiology=project_physiology,
+        physiology_min_interval_sec=s.physiology_min_interval_sec,
+        price_body=price_body,
     )
+    if body_config is not None:
+        deps = dataclasses.replace(deps, body_config=body_config)
     return TemporalSelfDriver(checkpointer=saver, deps=deps,
                               timezone_name=s.orion_situation_timezone, tick_sec=s.temporal_self_tick_sec,
                               retention_days=s.temporal_self_retention_days)
+
+
+def _build_physiology():
+    """Body economy Patch A3: the physiology node's reads and its projection. Reads run on the
+    checkpointer's pool; the pool-capacity RPC and the projection on the long-lived rpc_bus."""
+    from uuid import uuid4
+    from zoneinfo import ZoneInfo
+
+    from app import physiology_store
+    from orion.gpu_pool.placement import fetch_pool_state
+    from orion.physiology.body import BodyConfig, BodyInputs
+    from orion.schemas.physiology import PHYSIOLOGY_STATE_KIND, PHYSIOLOGY_STATE_REDIS_KEY
+
+    global claude_limits
+    s = _settings
+    tz = ZoneInfo(s.orion_situation_timezone)
+    source = ServiceRef(name=s.service_name, version=s.service_version, node=s.node_name)
+    claude_limits = physiology_store.ClaudeLimitCache()
+    cfg = BodyConfig(heat_soft_line_c=s.physiology_heat_soft_line_c,
+                     energy_monthly_envelope_usd=s.physiology_energy_monthly_envelope_usd,
+                     juniper_daily_cap=s.hub_endogenous_outreach_daily_cap,
+                     lane_window_sec=s.physiology_lane_window_sec)
+
+    async def read_body(now, heat):
+        warnings: list[str] = []
+        pool_state = None
+        if rpc_bus is not None:
+            # include_config: the class -> seats map that places waiting self-work beside its lanes.
+            pool_state = await fetch_pool_state(rpc_bus, source=s.service_name, timeout_sec=2.0,
+                                                include_config=True)
+        if pool_state is None:
+            warnings.append("lane_capacity:pool_state_unread")
+        body = BodyInputs(
+            heat=heat,
+            energy=await physiology_store.read_energy(_checkpointer_cm, now, tz),
+            lanes=await physiology_store.read_lanes(_checkpointer_cm, now, s.physiology_lane_window_sec, pool_state),
+            juniper=await physiology_store.read_juniper(_checkpointer_cm, now, tz),
+            claude=claude_limits.snapshot() if claude_limits is not None else (),
+            backlog=await physiology_store.read_backlog(_checkpointer_cm, now),
+            host_watts=(await physiology_store.read_host_watts(_checkpointer_cm, now)
+                        if price_body is not None else None))
+        return body, warnings
+
+    async def project_physiology(model) -> None:
+        if rpc_bus is None:
+            raise RuntimeError("no bus")
+        try:
+            await rpc_bus.redis.setex(PHYSIOLOGY_STATE_REDIS_KEY, s.physiology_redis_ttl_sec, model.model_dump_json())
+        except Exception:  # noqa: BLE001 - the bus event (and its table row) still lands
+            logger.warning("physiology_redis_write_failed", exc_info=True)
+        await rpc_bus.publish(s.physiology_state_channel, BaseEnvelope(
+            kind=PHYSIOLOGY_STATE_KIND, source=source, correlation_id=uuid4(),
+            payload=model.model_dump(mode="json")))
+
+    price_body = None
+    if s.physiology_prices_enabled:
+        # Patch B2 (SHADOW): the Budget organ. The heat sensitivities are data, baked into the image
+        # and loaded once; their 30-day age is judged every tick against ``now``.
+        from orion.physiology.budget import BudgetConfig, price_state
+        from orion.physiology.heat_config import load_heat_sensitivity
+
+        heat_cfg, heat_err = load_heat_sensitivity(s.physiology_heat_sensitivity_path)
+        if heat_err:
+            logger.warning("physiology_heat_sensitivity_unavailable reason=%s", heat_err)
+        budget_cfg = BudgetConfig(tz=s.orion_situation_timezone, heat_soft_line_c=s.physiology_heat_soft_line_c,
+                                  heat_config=heat_cfg, heat_config_error=heat_err)
+
+        def price_body(model, body, carry, now):
+            return price_state(model, body, carry, now, budget_cfg)
+
+    return read_body, project_physiology, cfg, price_body
+
+
+def _build_market():
+    """Body economy Patch C1 (SHADOW): the bid market. History reads on the checkpointer's pool; the
+    latest prices from Redis orion:physiology:latest; decisions published on the long-lived rpc_bus."""
+    from uuid import uuid4
+
+    from app.physiology_market import Market
+    from orion.physiology.families import load_families
+    from orion.schemas.physiology_want import WANT_DECISION_KIND
+
+    s = _settings
+    families, err = load_families(s.physiology_families_path)
+    if err:
+        logger.warning("physiology_families_unavailable reason=%s", err)
+    source = ServiceRef(name=s.service_name, version=s.service_version, node=s.node_name)
+
+    async def publish(decision) -> None:
+        if rpc_bus is None:
+            raise RuntimeError("no bus")
+        await rpc_bus.publish(s.physiology_want_decision_channel, BaseEnvelope(
+            kind=WANT_DECISION_KIND, source=source, correlation_id=uuid4(),
+            payload=decision.model_dump(mode="json")))
+
+    return Market(families=families, families_error=err, pool_getter=lambda: _checkpointer_cm,
+                  redis_getter=lambda: rpc_bus.redis if rpc_bus is not None else None, publish=publish,
+                  history_ttl_sec=s.physiology_bid_history_ttl_sec, lane_window_sec=s.physiology_lane_window_sec,
+                  stale_after_sec=s.physiology_bid_stale_after_sec)
 
 
 def _build_chronicle():
@@ -346,13 +470,18 @@ def _build_chronicle():
     reducer = ReducerConfig(
         tz_name=s.orion_situation_timezone, arc_min_ticks=s.temporal_self_arc_min_ticks,
         return_window_sec=60.0 * s.temporal_self_return_window_min,
-        conversation_return_window_sec=60.0 * s.temporal_self_conversation_return_window_min)
+        conversation_return_window_sec=60.0 * s.temporal_self_conversation_return_window_min,
+        street_arcs_per_day=s.temporal_self_street_episodes_per_day)
     cfg = ChronicleConfig(
         reducer=reducer, read_lag_sec=s.temporal_self_read_lag_sec, backfill_days=s.temporal_self_backfill_days,
         event_retention_days=s.temporal_self_event_retention_days,
         arc_retention_days=s.temporal_self_arc_retention_days,
         day_retention_days=s.temporal_self_day_retention_days)
-    return Chronicler(store=ChronicleStore(_checkpointer_cm), reader=SourceReader(_checkpointer_cm, reducer.tz_name),
+    return Chronicler(store=ChronicleStore(_checkpointer_cm), reader=SourceReader(
+        _checkpointer_cm, reducer.tz_name,
+        exclude_kinds=tuple(k for k, on in (("arousal_transition", s.temporal_self_strain_arcs_enabled),
+                                            ("retro_play", s.temporal_self_retro_play_enabled),
+                                            ("street_event", s.temporal_self_street_episodes_enabled)) if not on)),
                       cfg=cfg, now=lambda: datetime.now(timezone.utc))
 
 
@@ -368,13 +497,14 @@ def _build_personality():
     embed, close_embed = http_embedder(_settings.personality_embed_url)
     return PersonalityDriver(store=PersonalityStore(_checkpointer_cm), reader=PersonalitySourceReader(_checkpointer_cm),
                              embed=embed, now=lambda: datetime.now(timezone.utc),
-                             tick_sec=_settings.personality_tick_sec, close_embedder=close_embed)
+                             tick_sec=_settings.personality_tick_sec, close_embedder=close_embed,
+                             naming_enabled=_settings.personality_naming_apply_enabled)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task, _reconcile_task
-    global rpc_health_publisher, situation, temporal_self, personality
+    global rpc_health_publisher, situation, temporal_self, personality, market
     from app.runner import DurableRunner
 
     try:
@@ -394,7 +524,8 @@ async def lifespan(app: FastAPI):
         runner = DurableRunner(_settings, bus=rpc_bus, checkpointer=saver)
         if _settings.admission_enabled:
             from app.admission_runtime import AdmissionRuntime
-            admission = AdmissionRuntime(_settings, runner, _checkpointer_cm)
+            # market is built below; the bidder reads the module global at call time.
+            admission = AdmissionRuntime(_settings, runner, _checkpointer_cm, market_getter=lambda: market)
             # Admission migration is operator-managed, unlike saver migrations.
             # Fail startup if it has not been applied; never accept into memory.
             await admission.store.list_pending(limit=1)
@@ -416,6 +547,8 @@ async def lifespan(app: FastAPI):
         if _settings.personality_enabled:
             personality = _build_personality()
             await personality.start(_stop)
+        if _settings.physiology_bid_enabled:
+            market = _build_market()
         if admission is not None:
             _admission_task = asyncio.create_task(admission.run(_stop))
             if _settings.memory_episode_writer_enabled:
@@ -434,6 +567,8 @@ async def lifespan(app: FastAPI):
                              _settings.identity_sighting_channel]
             if temporal_self is not None and _settings.chat_history_turn_channel not in patterns:
                 patterns.append(_settings.chat_history_turn_channel)
+            if claude_limits is not None and _settings.claude_limit_channel not in patterns:
+                patterns.append(_settings.claude_limit_channel)
             hunter = Hunter(_chassis_cfg(), handler=_handle_request, patterns=patterns)
             await hunter.start_background()
             logger.info("durable_runs_listening channel=%s", _settings.request_channel)
@@ -496,7 +631,71 @@ async def health() -> dict[str, Any]:
         "temporal_self": temporal_self.health() if temporal_self is not None else None,
         "temporal_self_chronicle": chronicle.health() if chronicle is not None else None,
         "personality": personality.health() if personality is not None else None,
+        "physiology_market": market.health() if market is not None else None,
     }
+
+
+@app.get("/physiology/state")
+async def physiology_state() -> dict:
+    """Read-only debug readout for humans (body economy Patch B2, SHADOW): the latest
+    ``PhysiologyStateV1`` (Body readings, a price per constraint, the strain dial) from Redis
+    ``orion:physiology:latest``. Nothing that decides reads this route or those prices."""
+    from datetime import datetime, timezone
+
+    from orion.schemas.physiology import PHYSIOLOGY_STATE_REDIS_KEY, parse_physiology_state
+
+    if rpc_bus is None:
+        return {"ok": False, "reason": "bus_unavailable", "state": None}
+    try:
+        raw = await rpc_bus.redis.get(PHYSIOLOGY_STATE_REDIS_KEY)
+    except Exception as exc:  # noqa: BLE001 - a debug route reports, never raises
+        return {"ok": False, "reason": f"redis_read_failed:{type(exc).__name__}", "state": None}
+    state = parse_physiology_state(raw)
+    if state is None:
+        return {"ok": False, "reason": "absent_or_expired" if raw is None else "malformed", "state": None}
+    age = (datetime.now(timezone.utc) - state.generated_at).total_seconds()
+    return {"ok": True, "shadow": True, "age_sec": round(age, 1), "strain": state.strain.model_dump(mode="json") if state.strain else None,
+            "prices": {c.constraint: (c.price.model_dump(mode="json") if c.price else None) for c in state.constraints},
+            "state": state.model_dump(mode="json")}
+
+
+@app.post("/physiology/bid")
+async def physiology_bid(want: dict):
+    """Body economy Patch C1, SHADOW: one ``WantV1`` -> one ``WantDecisionV1`` (funded/deferred, lane,
+    prices seen, net, binding constraint, displaced, retry_after, ``shadow=true``), priced against the
+    latest physiology state and published to ``orion:physiology:want:decision`` (want_ledger). Callers
+    must not obey it yet. A missing or stale body is ``physiology_unavailable`` -- never funded."""
+    from pydantic import ValidationError
+
+    from orion.schemas.physiology_want import WantV1
+
+    if market is None:
+        raise HTTPException(503, "the bid market is disabled (ORION_PHYSIOLOGY_BID_ENABLED)")
+    try:
+        parsed = WantV1.model_validate(want)
+    except ValidationError as exc:
+        raise HTTPException(422, exc.errors(include_url=False, include_context=False)) from exc
+    decision = await market.bid(parsed)
+    return decision.model_dump(mode="json")
+
+
+@app.post("/physiology/bid/{want_id}/release")
+async def physiology_bid_release(want_id: str):
+    """The want's act closed (or will not run): release its reservations now instead of at expiry."""
+    if market is None:
+        raise HTTPException(503, "the bid market is disabled (ORION_PHYSIOLOGY_BID_ENABLED)")
+    return {"want_id": want_id, "released": market.release(want_id)}
+
+
+@app.get("/physiology/reservations")
+async def physiology_reservations():
+    """Read-only debug: the reservation book (funded shadow bids still holding cost)."""
+    from datetime import datetime, timezone
+
+    if market is None:
+        raise HTTPException(503, "the bid market is disabled (ORION_PHYSIOLOGY_BID_ENABLED)")
+    now = datetime.now(timezone.utc)
+    return {"shadow": True, "reservations": market.book.snapshot(now), "market": market.health(now)}
 
 
 @app.get("/regulation/state")
@@ -613,7 +812,8 @@ async def _personality_read(coro):
         return await coro
     except (UndefinedTable, UndefinedColumn) as exc:
         raise HTTPException(503, "personality tables missing: apply "
-                                 "services/orion-sql-db/manual_migration_personality_graph_v1.sql") from exc
+                                 "services/orion-sql-db/manual_migration_personality_graph_v1.sql and "
+                                 "manual_migration_personality_naming_v1.sql") from exc
 
 
 @app.get("/personality/frame")
@@ -624,7 +824,9 @@ async def personality_frame():
     store = _personality_store()
     now = datetime.now(timezone.utc)
     frame = await _personality_read(store.frame(now, warnings=personality.frame_warnings(now)))
-    return frame.model_dump(mode="json")
+    # exclude_none: an unnamed node carries no name keys, so readers built before self-naming
+    # (DispositionV1 is extra="forbid") keep validating the frame if durable-runs deploys first.
+    return frame.model_dump(mode="json", exclude_none=True)
 
 
 _PERSONALITY_STATUSES = {"active", "candidate", "retired", "all"}
@@ -644,6 +846,32 @@ async def personality_evidence(disposition_id: Optional[str] = None, limit: int 
     """Evidence rows, newest first; optionally one disposition's."""
     rows = await _personality_read(_personality_store().evidence(disposition_id or None, limit=max(1, min(limit, 500))))
     return {"disposition_id": disposition_id, "count": len(rows), "evidence": rows}
+
+
+@app.get("/personality/naming/next")
+async def personality_naming_next():
+    """The next DispositionNamingPacketV1 for Hub's self-inquiry naming run, or 204 when nothing is
+    due (or PERSONALITY_NAMING_APPLY_ENABLED=false). Read-only: a node counts as shown only when
+    Orion's answer row is applied, so a run that never answers leaves nothing behind."""
+    from datetime import datetime, timezone
+
+    from fastapi import Response
+
+    store = _personality_store()
+    if not personality.naming_enabled:
+        return Response(status_code=204, headers={"X-Personality-Naming": "disabled"})
+    packet = await _personality_read(store.naming_next(datetime.now(timezone.utc)))
+    if packet is None:
+        return Response(status_code=204)
+    return packet.model_dump(mode="json")
+
+
+@app.get("/personality/naming")
+async def personality_naming(disposition_id: Optional[str] = None, limit: int = 50):
+    """The naming log (orion_disposition_naming), newest first; optionally one disposition's."""
+    rows = await _personality_read(_personality_store().namings(disposition_id or None,
+                                                                limit=max(1, min(limit, 500))))
+    return {"disposition_id": disposition_id, "count": len(rows), "namings": rows}
 
 
 @app.get("/runs/unfinished")

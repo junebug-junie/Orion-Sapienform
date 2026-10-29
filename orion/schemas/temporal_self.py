@@ -12,7 +12,7 @@ no producer (see docs/superpowers/pr-reports/2026-10-10-temporal-self-chronology
 * ``unresolved_percept`` (1 row ever), ``attention_worthy_sighting`` (walkway not live).
 * ``prior_revision`` / ``peer_ask``: FalkorDB reads, deferred to the patch-3 driver.
 * ``situation_revision``: Redis keeps only the latest revision, no history to replay.
-* ``immune_finding`` / ``arousal_transition`` / ``drive_reading``: regulation lane, not here.
+* ``immune_finding`` / ``drive_reading``: regulation lane, not here.
 * ``ArcSelfModelSummaryV1``: acceptance check 9 requires reproducing the calibration
   script's 66.0% on the same rows first; those rows aged out (168 h retention). Not bound.
 
@@ -20,6 +20,26 @@ Seam S1 (2026-10-14) added ``presence_transition`` / arc kind ``company`` / clos
 ``source_stale`` once ``vision_presence_transition`` existed. Consumer-first rollout: these
 models forbid unknown values, so every reader of frames/arcs (orion-thought, orion-hub) must
 deploy before the producer (orion-durable-runs) folds a company arc.
+
+Strain loop part 1 (2026-10-20, docs/superpowers/specs/2026-10-20-strain-loop-design.md) added
+``arousal_transition`` / arc kind ``strain`` and ``episode_began_at``: the regulation step's own
+level-change and cause rows (already in ``temporal_self_event``) become one arc per strain
+episode. Same consumer-first rollout: orion-thought and orion-hub before orion-durable-runs.
+
+Orion plays Zelda (2026-10-22, docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md
+section F) added ``retro_play`` / arc kind ``play``: one finished Retro session
+(``retro_play_sessions``, written by orion-hub) is one process arc, labelled with its deterministic
+summary. Same consumer-first rollout: orion-thought and orion-hub before orion-durable-runs.
+
+Episodes from the street (2026-10-23, walkway follow-ups spec PR #2763 item 1) added
+``street_event`` / arc kind ``street``: a notable outside event (a published motion story that passed
+Juniper's spot-check gate, a doorbell ring, a graded handoff that passed the street attention gate)
+is one closed process arc, labelled "Outside (<camera>): ..." so it is never read as room company.
+Same consumer-first rollout: orion-thought and orion-hub before orion-durable-runs.
+
+``causes_now`` (2026-10-23, on the arc and its summary) follows the same order: every stored frame
+carries it (``null`` on non-strain arcs), so an orion-thought or orion-hub still on older code
+rejects the whole frame and the stance cue goes dark until they are rebuilt.
 """
 
 from __future__ import annotations
@@ -56,6 +76,12 @@ TemporalSourceKind = Literal[
     "memory_episode",
     # the room camera's presence state machine (seam S1)
     "presence_transition",
+    # the regulation step's strain level changes and cause rows (strain loop part 1)
+    "arousal_transition",
+    # one finished Retro (game) session, orion-hub's retro_play_sessions (Orion plays Zelda, F)
+    "retro_play",
+    # one notable outside (walkway / doorbell) event: story, ring, or gated handoff (PR #2763 item 1)
+    "street_event",
 ]
 
 ArcKind = Literal[
@@ -68,6 +94,9 @@ ArcKind = Literal[
     "imagery",
     "sleep",
     "company",
+    "strain",
+    "play",
+    "street",
 ]
 
 ArcStatus = Literal["open", "suspended", "closed"]
@@ -181,6 +210,13 @@ class TemporalSelfArcV1(_Forbid):
     privacy_class: PrivacyClass = "orion_internal"
     carried_from_previous_day: bool = False
     carried_from_arc_id: str | None = None
+    # A strain arc carried over midnight begins at the day boundary; this keeps when the episode
+    # itself began (the regulation reading's ``since``). None for every other kind.
+    episode_began_at: AwareDatetime | None = None
+    # A strain arc's causes present at its newest row (the label keeps every cause seen in the
+    # episode). [] while a strain only holds before clearing; None when not recorded (every other
+    # kind, and arcs folded before this field existed).
+    causes_now: list[str] | None = None
     related_refs: list[str] = Field(default_factory=list)  # e.g. offered prior ids
     evidence_refs: list[str] = Field(default_factory=list)  # refs that SHARE subject_ref
     evidence_overflow: int = 0
@@ -226,6 +262,10 @@ class ArcSummaryV1(_Forbid):
     # Patch 4: the arc's newest evidence ("last turn 3 min ago"). Optional so frames and closed
     # days stored before it still validate; readers render the clause only when it is present.
     last_seen_at: AwareDatetime | None = None
+    # Strain loop part 1: when a strain episode began, even if that was on an earlier day.
+    episode_began_at: AwareDatetime | None = None
+    # Strain loop: the causes present at the strain arc's newest row (see TemporalSelfArcV1).
+    causes_now: list[str] | None = None
 
 
 class OpenThreadV1(_Forbid):

@@ -11,6 +11,10 @@ A ``vision_same_individual`` ("same person?") answer that carries ``names``
 (2026-10-15: Juniper typed who one or both faces are) writes the same entity
 for each named individual, exactly as a "who is this?" answer for it would.
 
+A ``vision_person_confirm`` ("Is this <name>?", 2026-10-20) answered ``yes``
+writes the same entity for ``<individual_id>`` named ``<name>`` (source_ref
+"<individual_id>|<name>"); ``no`` names nobody.
+
 Not handled here, on purpose:
 - ``vision_individual.label`` in Postgres is set by ``orion-sql-writer`` from
   the ``orion_ask`` row on its own clock (the row is the truth, not this event).
@@ -28,6 +32,7 @@ from contextlib import suppress
 from typing import Any, Callable, Optional
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.schemas.ask import OrionAskAnsweredV1
 
 from .settings import Settings, get_settings
@@ -37,7 +42,7 @@ logger = logging.getLogger("orion.substrate.runtime.ask_answered")
 _ASK_ANSWERED_KIND = "orion.ask.answered.v1"
 _VISION_INDIVIDUAL = "vision_individual"
 _VISION_SAME_INDIVIDUAL = "vision_same_individual"
-_MAX_ALIASES = 20
+_VISION_PERSON_CONFIRM = "vision_person_confirm"
 
 StoreGetter = Callable[[], Any]
 EngineGetter = Callable[[], Any]
@@ -92,6 +97,11 @@ def apply_answer_to_substrate(
             if result is not None:
                 written.append({"individual_id": individual_id, **result})
         return {"outcome": "pair_names", "entities": written} if written else None
+    if event.source_kind == _VISION_PERSON_CONFIRM:
+        individual_id, _, name = (event.source_ref or "").partition("|")
+        if (event.answer or "").strip().lower() != "yes" or not individual_id or not name.strip():
+            return None
+        return _write_individual_entity(event, individual_id, name, get_store=get_store, get_engine=get_engine)
     if event.source_kind != _VISION_INDIVIDUAL or not (event.answer or "").strip():
         return None
     return _write_individual_entity(event, event.source_ref, event.answer or "", get_store=get_store, get_engine=get_engine)
@@ -107,7 +117,10 @@ def _write_individual_entity(
 ) -> Optional[dict[str, Any]]:
     """One user-asserted entity for ``individual_id`` named ``label`` by ``event``."""
     from orion.core.schemas.cognitive_substrate import EntityNodeV1
-    from orion.substrate.adapters.vision_individual import map_vision_individual_label_to_substrate
+    from orion.substrate.adapters.vision_individual import (
+        map_vision_individual_label_to_substrate,
+        relabelled_individual_entity,
+    )
     from orion.substrate.falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
     from orion.substrate.materializer import SubstrateGraphMaterializer
     from orion.substrate.reconcile import SubstrateIdentityResolver
@@ -131,38 +144,8 @@ def _write_individual_entity(
     node = record.nodes[0]
     existing = store.get_node_by_id(node.node_id)
     if isinstance(existing, EntityNodeV1):
-        # Explicit update, not the materializer: merge_node() keeps the
-        # existing label and lets existing metadata win, so a rename (even a
-        # capitalization-only one) and the newest label_ask_id would both be
-        # silently dropped. The old name is kept as an alias so recall by it
-        # still works.
         renamed = existing.label != node.label
-        aliases: list[str] = []
-        for alias in [*existing.aliases, existing.label]:
-            if alias and alias != node.label and alias not in aliases:
-                aliases.append(alias)
-        aliases = aliases[-_MAX_ALIASES:]
-        metadata = {**existing.metadata}
-        for key, value in node.metadata.items():
-            if value is not None:
-                metadata[key] = value
-        updated = existing.model_copy(
-            update={
-                "label": node.label,
-                "aliases": aliases,
-                "entity_type": node.entity_type if node.entity_type != "unknown" else existing.entity_type,
-                "provenance": node.provenance.model_copy(
-                    update={"evidence_refs": sorted({*existing.provenance.evidence_refs, *node.provenance.evidence_refs})}
-                ),
-                "temporal": existing.temporal.model_copy(
-                    update={"observed_at": max(existing.temporal.observed_at, node.temporal.observed_at)}
-                ),
-                "signals": existing.signals.model_copy(
-                    update={"confidence": max(existing.signals.confidence, node.signals.confidence)}
-                ),
-                "metadata": metadata,
-            }
-        )
+        updated = relabelled_individual_entity(existing, node)
         identity_key = SubstrateIdentityResolver().canonical_node_key(updated)
         store.upsert_node(identity_key=identity_key, node=updated, skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS)
         outcome = "relabelled" if renamed else "updated"
@@ -223,30 +206,13 @@ async def run_ask_answered_listener(
     if not s.enable_ask_answered_listener:
         logger.info("ask_answered listener disabled by config")
         return
-    channel = s.channel_ask_answered
-    logger.info("ask_answered listener subscribing channel=%s", channel)
-    try:
-        async with bus.subscribe(channel) as pubsub:
-            while True:
-                if stop_event is not None and stop_event.is_set():
-                    break
-                try:
-                    msg = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                        timeout=1.2,
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                if not msg or msg.get("type") not in ("message", "pmessage"):
-                    continue
-                try:
-                    await _handle_bus_message(bus, msg, get_store=get_store, get_engine=get_engine)
-                except Exception:
-                    logger.exception("ask_answered unhandled error")
-    except asyncio.CancelledError:
-        raise
-    finally:
-        logger.info("ask_answered listener stopped channel=%s", channel)
+    await run_subscription(
+        bus,
+        s.channel_ask_answered,
+        lambda msg: _handle_bus_message(bus, msg, get_store=get_store, get_engine=get_engine),
+        stop_event=stop_event,
+        name="ask_answered listener",
+    )
 
 
 async def start_ask_answered_listener(

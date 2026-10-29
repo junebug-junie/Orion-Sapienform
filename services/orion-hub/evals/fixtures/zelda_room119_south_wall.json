@@ -1,0 +1,185 @@
+{
+ "source": "live session c6041e2d 2026-10-23 16:17 UTC, decision 15:9 (Link at the solid south wall of room 119)",
+ "decision": {
+  "decision_id": "15:9",
+  "port": 0,
+  "expected_epoch": 15,
+  "observation_frame": 9000,
+  "observation": {
+   "status": "observed",
+   "profile": "zelda-1-ram-v1",
+   "frame": 9000,
+   "mode": "play",
+   "mode_code": 5,
+   "submode": 0,
+   "level": 0,
+   "room": 119,
+   "next_room": 119,
+   "paused": false,
+   "link": {
+    "x": 112,
+    "y": 189,
+    "tile": [
+     14,
+     17
+    ],
+    "facing": "S",
+    "invincible_frames": 0,
+    "controllable": true
+   },
+   "hearts": {
+    "current": 3,
+    "containers": 3
+   },
+   "items": {
+    "sword": 1,
+    "bombs": "unknown",
+    "candle": "unknown",
+    "raft": "unknown",
+    "rupees": 3,
+    "keys": "unknown"
+   },
+   "enemies": [],
+   "drops": [],
+   "menu": null,
+   "walls_hash": "7d7e213851978f62",
+   "terrain": [
+    "##############....##############",
+    "##############....##############",
+    "##############....##############",
+    "########..####....##############",
+    "########..........##############",
+    "########..........##############",
+    "######............##############",
+    "######............##############",
+    "####..............##############",
+    "####..............##############",
+    "................................",
+    "................................",
+    "####........................####",
+    "####........................####",
+    "####........................####",
+    "####........................####",
+    "####........................####",
+    "####........................####",
+    "################################",
+    "################################",
+    "################################",
+    "################################"
+   ]
+  },
+  "supported_goals": [
+   "exit",
+   "enter",
+   "fight",
+   "retreat",
+   "collect",
+   "explore",
+   "wait"
+  ],
+  "supported_predictions": [
+   "reach_room",
+   "enter_cave",
+   "item_gained",
+   "enemies_cleared",
+   "survive",
+   "unknown"
+  ],
+  "previous": {
+   "decision_id": "15:8",
+   "goal": {
+    "kind": "explore",
+    "dir": "S"
+   },
+   "prediction": {
+    "kind": "reach_room",
+    "value": 120
+   },
+   "planner_id": "llm-gateway:metacog_background:e1d44511-b8ec-47bb-9cf1-d568e2cf3975",
+   "outcome": "completed",
+   "verdict": "refuted",
+   "start_digest": "ea8443189cdd1bb1",
+   "end_digest": "ea8443189cdd1bb1",
+   "start_frame": 8999,
+   "end_frame": 9000,
+   "applied_frames": 0,
+   "human_intervention": false,
+   "bumps": 0
+  },
+  "open_sides": [
+   "N",
+   "W",
+   "E"
+  ]
+ },
+ "atlas": {
+  "lineage_id": "dec3ed36f29248639913bf652199f5c1",
+  "level": 0,
+  "room": 119,
+  "current": {
+   "first_seen": "2026-10-23T16:16:34+00:00",
+   "first_session": "c6041e2d-ea4f-452a-9f61-5514df7e985a",
+   "visits": 1,
+   "exits_seen": {
+    "N": 103,
+    "S": null,
+    "E": null,
+    "W": null
+   },
+   "caves": [],
+   "learned_blocked": [],
+   "enemy_types_seen": [],
+   "deaths": 0,
+   "damage_taken": 0,
+   "last_visit": "2026-10-23T16:16:34+00:00"
+  },
+  "adjacent": {
+   "N": {
+    "room": 103,
+    "known": true,
+    "seen_exit": 103
+   },
+   "W": {
+    "room": 118,
+    "known": false,
+    "seen_exit": null
+   },
+   "E": {
+    "room": 120,
+    "known": false,
+    "seen_exit": null
+   }
+  },
+  "rooms_known": 2,
+  "rooms_with_unvisited_sides": [
+   "0:103",
+   "0:119"
+  ],
+  "caves": [],
+  "deaths": [],
+  "map": {
+   "0:103": {
+    "visits": 1,
+    "exits": {
+     "N": null,
+     "S": 119,
+     "E": null,
+     "W": null
+    },
+    "caves": 0,
+    "deaths": 0
+   },
+   "0:119": {
+    "visits": 1,
+    "exits": {
+     "N": 103,
+     "S": null,
+     "E": null,
+     "W": null
+    },
+    "caves": 0,
+    "deaths": 0
+   }
+  }
+ }
+}

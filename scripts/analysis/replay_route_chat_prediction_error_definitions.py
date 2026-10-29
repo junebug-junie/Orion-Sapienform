@@ -80,8 +80,9 @@ def route_v1(prev: RouteArbitrationProjectionV1, curr: RouteArbitrationProjectio
 def _chat_hints_v1(turn: ChatTurnStateV1) -> dict[str, float]:
     return {
         "conversation_load": min(1.0, turn.word_count / 150.0),
-        "repair_pressure": turn.repair_pressure_level,
-        "topic_coherence": max(0.0, 1.0 - turn.repair_pressure_level),
+        # Frozen v1: it read a missing reading as 0.0 (rows before 2026-10-23 stored 0.0).
+        "repair_pressure": turn.repair_pressure_level or 0.0,
+        "topic_coherence": max(0.0, 1.0 - (turn.repair_pressure_level or 0.0)),
     }
 
 

@@ -21,12 +21,20 @@ from app.causal import (
     time_of_day_profile,
 )
 from app.engine import Engine, InputStale
-from app.frame import to_grain, training_slice
+from app.event_pair import EventPairRefused, event_pair_effect
+from app.events import breaks_between
+from app.frame import covariate_series, mask_windows, to_grain, training_slice
 from app.models import build_models, split_seasonalities
 from app.series import SeriesSpec
 
 ITS_MODEL = "mstl_ets"
 PROFILE_DAYS = 14
+EVENT_PAIR_MAX_EVENTS = 200_000   # per selector; above this the read is refused, never truncated
+
+
+def selector_key(sel: dict) -> str:
+    """Stable label for one event selector, e.g. ``vision_events:person_presence@walkway``."""
+    return f"{sel['source']}:{sel['event_type']}" + (f"@{sel['stream_id']}" if sel.get("stream_id") else "")
 
 
 class Effects:
@@ -41,12 +49,13 @@ class Effects:
         return spec
 
     def _series(self, spec: SeriesSpec, start: datetime, end: datetime) -> pd.Series:
-        return to_grain(self.store.points(spec, start, end), spec.grain_min, spec.agg, spec.max_fill_min,
-                        start=start, end=end)
+        """Regular view with the spec's exclusions (registry + change events) masked out."""
+        return mask_windows(to_grain(self.store.points(spec, start, end), spec.grain_min, spec.agg,
+                                     spec.max_fill_min, start=start, end=end), spec.exclude)
 
     # --- level 1 --------------------------------------------------------------------------
     def scenario(self, series_id: str, covariate_id: str, path: list[float], days: float = 7.0) -> dict:
-        spec = self._spec(series_id, "target")
+        spec = self.engine.effective(self._spec(series_id, "target"), self.engine.clock())
         if covariate_id not in spec.covariates:
             raise CausalError(f"{covariate_id} is not a declared covariate of {series_id}")
         cov = self._spec(covariate_id)
@@ -56,7 +65,9 @@ class Effects:
         if spec.train_from and start < spec.train_from:
             start = spec.train_from
         y = training_slice(self._series(spec, start, end.to_pydatetime()), spec)
-        x = self._series(cov, start, end.to_pydatetime()).reindex(y.index)
+        # The same covariate view training uses (real buckets, derived rules, exclusions); scenario's own
+        # gap checks then refuse a covariate that is mostly missing instead of interpolating it.
+        x = mask_windows(covariate_series(self.store, cov, start, end.to_pydatetime(), y.index), spec.exclude)
         res = scenario(y, x, covariate_id, path, spec.grain_min)
         return {**res.__dict__, "series_id": series_id, "unit": spec.unit, "covariate_unit": cov.unit}
 
@@ -82,7 +93,13 @@ class Effects:
         if end + timedelta(minutes=lag_min) > now:
             raise CausalError("the intervention window (plus lag) has not finished yet")
         span_start = start - timedelta(days=pre_days * 4)
-        series = self._series(spec, span_start, end + timedelta(minutes=lag_min + spec.grain_min))
+        stop = end + timedelta(minutes=lag_min + spec.grain_min)
+        crossed = breaks_between(self.engine.change_events(), series_id, span_start, stop)
+        if crossed:
+            raise CausalError(f"a change-event break at {crossed[-1].isoformat()} falls inside the "
+                              "intervention's history window; its counterfactual would straddle two regimes")
+        spec = self.engine.effective(spec, now)
+        series = self._series(spec, span_start, stop)
         usable, _ = split_seasonalities(spec, int(pre_days * 1440 // spec.grain_min))
         model = build_models(spec, usable)[ITS_MODEL]
         busy = [(r["started_at"], r["ended_at"] + timedelta(minutes=lag_min)) for r in self.store.interventions(limit=500)
@@ -94,6 +111,42 @@ class Effects:
                                          "ci_lo": est.ci_lo, "ci_hi": est.ci_hi, "p_value": est.p_value,
                                          "n": est.n, "details": est.details})
 
+    # --- level 2b: event -> event ---------------------------------------------------------------
+    def _event_seconds(self, sel: dict, start: datetime, end: datetime) -> np.ndarray:
+        rows = self.store.event_times(sel["source"], sel["event_type"], sel.get("stream_id"), start, end,
+                                      EVENT_PAIR_MAX_EVENTS)
+        if len(rows) > EVENT_PAIR_MAX_EVENTS:
+            raise EventPairRefused(f"{selector_key(sel)} has more than {EVENT_PAIR_MAX_EVENTS} events in range; "
+                                   "narrow the time range")
+        return np.array([(t - start).total_seconds() for t in rows], dtype=float)
+
+    def event_pair(self, a: dict, b: dict, start: datetime, end: datetime, lag_min_sec: float, lag_max_sec: float,
+                   n_placebo: int = 999, seed: int = 0, placebo: str = "same_time_of_day") -> dict:
+        """Does A raise B's rate within [lag_min, lag_max] after it? Stored as an observational estimate.
+        Raises ``EventPairRefused`` (with counts) when there is too little data to answer."""
+        if end <= start:
+            raise EventPairRefused("end must be after start")
+        if end > self.engine.clock():
+            raise EventPairRefused("end is in the future; events there have not happened yet")
+        same_rows = (a["source"] == b["source"] and a["event_type"] == b["event_type"]
+                     and (a.get("stream_id") is None or b.get("stream_id") is None
+                          or a.get("stream_id") == b.get("stream_id")))
+        if same_rows and lag_min_sec <= 0:
+            raise EventPairRefused("A and B can be the same rows: lag_min must be > 0 or each A counts itself")
+        res = event_pair_effect(self._event_seconds(a, start, end), self._event_seconds(b, start, end),
+                                (end - start).total_seconds(), lag_min_sec, lag_max_sec, n_placebo, seed,
+                                placebo=placebo)
+        details = {"estimator": "event_pair", "a": a, "b": b, "start": start.isoformat(), "end": end.isoformat(),
+                   **{k: v for k, v in res.__dict__.items() if k != "claim_kind"}}
+        row = self.store.insert_effect({"action": f"event_pair:{selector_key(a)}",
+                                        "series_id": selector_key(b), "claim_kind": res.claim_kind,
+                                        "effect": res.rate_ratio, "ci_lo": None, "ci_hi": None,
+                                        "p_value": res.p_value, "n": res.n_a, "details": details})
+        return {**row, "summary": (f"{selector_key(b)} was {res.rate_ratio:.2f}x its baseline rate within "
+                                   f"[{lag_min_sec:g}s, {lag_max_sec:g}s] after {selector_key(a)} "
+                                   f"({res.observed_b_in_windows} seen vs {res.expected_b_in_windows:.1f} expected; "
+                                   f"{res.placebo} placebo p={res.p_value:.3f}). Observational: a common cause would look the same.")}
+
     # --- level 3 --------------------------------------------------------------------------
     def guard(self, spec: SeriesSpec) -> dict:
         t = spec.threshold("experiment_guard")
@@ -103,6 +156,7 @@ class Effects:
         if st is None or st.served is None:
             return {"safe": False, "reason": "no current selection"}
         now = self.engine.clock()
+        spec = self.engine.effective(spec, now)
         series = self.engine.load_series(spec, now, timedelta(minutes=spec.train_window_min + spec.grain_min))
         origin = self.engine.latest_complete_bucket(spec, now)
         try:
@@ -147,7 +201,12 @@ class Effects:
         last = max(pd.Timestamp(b["end"]) for b in blocks).to_pydatetime()
         if last > self.engine.clock():
             raise CausalError("the experiment has blocks that have not finished")
-        history = self._series(spec, first - timedelta(days=PROFILE_DAYS), first)
+        spec = self.engine.effective(spec, self.engine.clock())
+        hist_start = first - timedelta(days=PROFILE_DAYS)
+        before = breaks_between(self.engine.change_events(), spec.series_id, hist_start, first)
+        if before:   # the time-of-day profile must come from the regime the experiment ran in
+            hist_start = before[-1]
+        history = self._series(spec, hist_start, first)
         profile = time_of_day_profile(history.dropna(), spec.grain_min) if history.notna().any() else None
         series = self._series(spec, first, last)
         est = analyze_switchback(series, blocks, exp["burn_in_min"], spec.grain_min, profile)
@@ -197,6 +256,7 @@ class Effects:
         # Newest estimate per intervention only: re-estimating one occurrence must not count it twice.
         newest: dict[str, dict] = {}
         for r in rows:   # store.effects is newest-first
+            # ci_lo is NULL on event_pair rows (a rate ratio, not a shift in this series): keep them out.
             if r["claim_kind"] == "observational_effect" and r["ci_lo"] is not None:
                 newest.setdefault(str(r["intervention_id"]), r)
         obs = list(newest.values())

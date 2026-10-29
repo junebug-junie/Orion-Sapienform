@@ -22,6 +22,7 @@ on:
       - 'services/orion-cortex-exec/tests/test_render_scene_durable_kickoff.py'
       - 'services/orion-sql-db/manual_migration_reverie_visual*.sql'
       - 'tests/test_visual_baseline_pipeline.py'
+      - 'tests/test_visual_baseline_arousal_reader.py'
       - 'services/orion-analytics/models/marts/dim_reverie_outcomes.sql'
       - 'tests/test_dim_reverie_outcomes_covers_terminal_reasons.py'
       - 'orion/gpu_pool/client.py'
@@ -61,19 +62,23 @@ jobs:
           tests/test_motor_allocator.py tests/test_proposal_frame_builder.py
           tests/test_policy_decision_builder.py tests/test_execution_dispatch_builder.py
           tests/test_action_outcome_resolution.py tests/test_feedback_runtime_store.py
-          tests/test_express_outward_action.py
+          tests/test_express_outward_action.py tests/test_visual_baseline_arousal_reader.py
           tests/test_dim_reverie_outcomes_covers_terminal_reasons.py
+          orion/reverie/tests/test_proposal.py orion/reverie/tests/test_proposal_world_winner.py
       - name: Thought storage, source, HTTP and replica contracts
         run: >-
           python -m pytest -q services/orion-thought/tests/test_visual_activity.py
           services/orion-thought/tests/test_store.py services/orion-thought/tests/test_visual_chain.py
           services/orion-thought/tests/test_visual_chain_thermal_gate.py
+          services/orion-thought/tests/test_thermal_line_pin.py
           services/orion-thought/tests/test_visual_chain_gpu_lease.py
           services/orion-thought/tests/test_visual_chain_run_deadline.py
           services/orion-thought/tests/test_visual_steps.py
           services/orion-thought/tests/test_visual_steps_db.py
           services/orion-thought/tests/test_bus_listener_visual_step.py
           services/orion-thought/tests/test_painting_act.py
+          services/orion-thought/tests/test_visual_painting_gap_monitor.py
+          services/orion-thought/tests/test_settings_mind_enrichment.py
       # One process per service: both services' tests import a top-level `app` package.
       - name: Durable render settlement contracts (execution-dispatch)
         run: python -m pytest -q services/orion-execution-dispatch-runtime/tests/test_visual_settlement.py

@@ -1,0 +1,13 @@
+# Hand-checked walkway people counts, one row per clock hour (spec PR #2763, Item 2 patch B).
+# Read by services/orion-sql-writer/evals/run_walkway_count_estimator_eval.py.
+#
+# Columns:
+#   hour_start_utc  start of the clock hour in UTC, ISO 8601, on the hour (2026-10-16T18:00:00Z)
+#   stream          camera stream id (walkway)
+#   true_people     how many different people passed in that hour, counted by a human from the
+#                   pictures (one person walking back counts once: the passing rule). Integer >= 0.
+#   note            how it was checked, and anything odd (a group, a person who stood still, ...)
+#
+# Rules: only counts a human actually made. Never copy a number from an estimator. The eval
+# lists the hours most worth checking when there are too few rows here.
+hour_start_utc,stream,true_people,note

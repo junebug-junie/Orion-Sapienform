@@ -31,6 +31,8 @@ Sources:
   (``orion/temporal_self/day_block.py``). Read from the table directly, like every source here
   (same connection, same "a failed source names its gap" rule); a day that is not closed yet is
   ``empty`` and renders nothing.
+* walkway_day -- the walkway camera's deterministic day rollup line (``vision_rollup``,
+  grain ``day``, written by orion-sql-writer; orion/vision/walkway_rollup.py). Counts only.
 """
 
 from __future__ import annotations
@@ -60,11 +62,13 @@ from orion.schemas.orion_day import (
     ReverieThoughtV1,
     SelfSenseAnswerV1,
     VisualReverieV1,
+    WalkwayDayV1,
     WorldPulseDigestItemV1,
     WorldPulseDigestV1,
 )
 from orion.schemas.temporal_self import TemporalSelfDayBlockV1, TemporalSelfDayV1
 from orion.temporal_self.day_block import render_closed_day_block
+from orion.vision.walkway_rollup import display_line
 from orion.world_pulse_read.findings import PriorLookup, ReadRefV1, findings_for_reads
 from orion.world_pulse_read.introspect import reading_items_between
 
@@ -194,6 +198,13 @@ TEMPORAL_DAY_IMMUNE_SQL = """
 SELECT payload_json FROM temporal_self_event
 WHERE source_kind = 'immune_finding' AND day_id = $1 AND ingested_at <= $2
 ORDER BY occurred_at, event_id
+"""
+
+WALKWAY_DAY_STREAM = "walkway"
+WALKWAY_DAY_SQL = """
+SELECT stream_id, line, rollup, complete
+FROM vision_rollup
+WHERE stream_id = $1 AND grain = 'day' AND period_start = $2
 """
 
 WORLD_PULSE_DIGEST_SQL = """
@@ -449,6 +460,25 @@ async def gather_world_pulse_digest(conn: Any, letter_date: date) -> WorldPulseD
     )
 
 
+async def gather_walkway_day(conn: Any, letter_date: date, start: datetime) -> WalkwayDayV1 | None:
+    row = await conn.fetchrow(WALKWAY_DAY_SQL, WALKWAY_DAY_STREAM, start)
+    if row is None:
+        return None
+    # People as a range: a row from before rules_version 2 is re-rendered, never shown bare.
+    line = display_line(row["line"], _row_get(row, "rollup"))
+    if not line:
+        return None
+    return WalkwayDayV1(stream_id=str(row["stream_id"]), day=letter_date, line=line,
+                        complete=bool(row["complete"]))
+
+
+def _row_get(row: Any, key: str) -> Any:
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
 async def gather_corrections(conn: Any, start: datetime, end: datetime) -> list[OrionDayCorrectionV1]:
     def _texts(value: Any) -> list[str] | None:
         return None if value is None else [str(v) for v in value]
@@ -517,6 +547,7 @@ async def gather_orion_day(
     github = await _read(sources, "github_compactor", lambda: gather_github_compactor(conn, letter_date, github_repo, end), None)
     digest = await _read(sources, "world_pulse_digest", lambda: gather_world_pulse_digest(conn, letter_date), None)
     corrections = await _read(sources, "corrections", lambda: gather_corrections(conn, start, end), [])
+    walkway = await _read(sources, "walkway_day", lambda: gather_walkway_day(conn, letter_date, start), None)
     # Kill switch off: not read at all, so the letter is exactly what it was before patch 4.
     day_block = (await _read(sources, "temporal_day", lambda: gather_temporal_day(conn, letter_date, tz_name), None)
                  if temporal_day else None)
@@ -541,5 +572,6 @@ async def gather_orion_day(
         world_pulse_digest=digest,
         corrections=corrections,
         temporal_day=day_block,
+        walkway_day=walkway,
         sources=sources,
     )

@@ -14,7 +14,11 @@ def test_repo_registry_loads_and_declares_the_cabinet_target():
     assert t.role == "target" and t.grain_min == 5
     assert t.threshold("shed").value == 34.0
     assert t.threshold("experiment_guard").max_probability == 0.05
-    assert set(t.covariates) == {"athena.chassis_watts", "athena.cabinet_cooling_watts"}
+    assert set(t.covariates) == {"athena.chassis_watts", "circe.chassis_watts", "hecate.chassis_watts",
+                                 "athena.cabinet_cooling_watts", "athena.central_ac_proxy"}
+    proxy = reg.get("athena.central_ac_proxy")
+    assert proxy.source.kind == "weather" and proxy.lag_min == 180 and proxy.above == 75.0
+    assert reg.get("hecate.chassis_watts").zero_before_first and reg.get("circe.chassis_watts").source.kind == "cluster"
     assert all(s.consumers for s in reg.series.values())
 
 
@@ -46,6 +50,9 @@ def test_duration(value, expected):
     ({"seasonalities": [{"name": "odd", "period": "13min"}]}, "multiple"),
     ({"source": {"kind": "biometrics", "node": "n", "key": "Bad-Key"}}, "key"),
     ({"transform": "logit"}, "transform"),
+    ({"source": {"kind": "weather", "key": "humidity"}}, "temp_f"),
+    ({"source": {"kind": "cluster", "node": "Circe!", "key": "w"}}, "cluster source"),
+    ({"thresholds": [{"name": "hot", "value": 31.0, "window": "12h"}]}, "longer than the longest horizon"),
 ])
 def test_bad_registry_refused(over, msg):
     with pytest.raises(SeriesConfigError, match=msg):
@@ -55,3 +62,28 @@ def test_bad_registry_refused(over, msg):
 def test_version_must_be_one():
     with pytest.raises(SeriesConfigError):
         parse_registry({"version": 2, "series": []})
+
+
+def test_cabinet_thresholds_are_pinned_to_the_thermal_owner():
+    """Body economy Patch B: the cabinet lines come from orion/autonomy/thermal_gate.py, not literals.
+    Values written by hand: a moved owner line or a registry that stops reading it fails here."""
+    t = load_registry(REGISTRY_PATH).get("athena.cabinet_temp_c")
+    assert (t.threshold("shed").value, t.threshold("shed").window_min) == (34.0, 30)
+    assert (t.threshold("experiment_guard").value, t.threshold("experiment_guard").window_min) == (32.0, 30)
+
+
+def test_a_literal_cabinet_line_is_refused():
+    doc = spec_doc(source={"kind": "biometrics", "node": "athena", "key": "cabinet_temp_c"},
+                   thresholds=[{"name": "shed", "value": 34.0, "window": "30min"}])
+    with pytest.raises(SeriesConfigError, match="value_from"):
+        parse_registry(doc)
+
+
+@pytest.mark.parametrize("bad", [
+    {"name": "x", "window": "30min"},
+    {"name": "x", "value": 1.0, "value_from": "thermal_gate.hot", "window": "30min"},
+    {"name": "x", "value_from": "thermal_gate.nope", "window": "30min"},
+])
+def test_value_from_is_exactly_one_known_owner(bad):
+    with pytest.raises(SeriesConfigError):
+        parse_registry(spec_doc(thresholds=[bad]))

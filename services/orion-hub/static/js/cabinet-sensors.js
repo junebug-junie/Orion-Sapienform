@@ -24,6 +24,8 @@
   var COOLING_LATEST_URL = "/api/cabinet/cooling/latest";
   var COOLING_HISTORY_URL = "/api/cabinet/cooling/history?window=";
   var SVG_NS = "http://www.w3.org/2000/svg";
+  // chart-hover.js loads first (index.html). If it is missing, charts render without hover.
+  var chartHover = typeof window !== "undefined" ? window.OrionChartHover : null;
 
   // Nano reader ticks ~1 Hz; poll at the same cadence while the tab is visible.
   var POLL_MS = 1000;
@@ -623,7 +625,7 @@
       });
     }
     host.appendChild(chart);
-    attachSeriesHover(host, chart, validSamples, x, y, options);
+    if (chartHover) chartHover.attachSeriesHover(host, chart, validSamples, x, y, options);
 
     var firstTime = validSamples[0].t ? new Date(validSamples[0].t).toLocaleString() : "—";
     var lastTime = validSamples[validSamples.length - 1].t
@@ -652,116 +654,6 @@
         firstTime + "  →  " + lastTime + " · n=" + validSamples.length
       )
     );
-  }
-
-  // Linear nearest-neighbor lookup by x-position over points pre-sorted by
-  // xFn. Pure/DOM-free (unlike the rest of hover wiring) so it has direct
-  // unit coverage; chart point counts are small (hundreds), so a scan is fine.
-  function nearestSeriesPoint(sortedPoints, xFn, targetX) {
-    var best = sortedPoints[0];
-    var bestDist = Math.abs(xFn(best) - targetX);
-    for (var i = 1; i < sortedPoints.length; i++) {
-      var dist = Math.abs(xFn(sortedPoints[i]) - targetX);
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = sortedPoints[i];
-      }
-    }
-    return best;
-  }
-
-  // Builds the hover tooltip's text: day, time, then the reading. Pure/DOM-free
-  // so it has direct unit coverage independent of attachSeriesHover's DOM wiring.
-  function formatHoverTooltipText(point, options) {
-    options = options || {};
-    var when = point && point.t ? new Date(point.t) : null;
-    var dayText = when
-      ? when.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
-      : "—";
-    var timeText = when
-      ? when.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-      : "—";
-    var digits = options.digits !== undefined ? options.digits : 2;
-    var reading = point && typeof point.value === "number" ? point.value.toFixed(digits) : "—";
-    return dayText + " " + timeText + "  ·  " + (options.label || "value") + " " + reading;
-  }
-
-  // Wire a mouse-hover crosshair + tooltip onto a rendered line chart.
-  // `xFn`/`yFn` are the same coordinate functions renderAmbientSeries used
-  // to draw the line, so the hover marker lands exactly on the plotted point.
-  function attachSeriesHover(host, chart, points, xFn, yFn, options) {
-    if (!points.length) return;
-    if (!host.style.position) host.style.position = "relative";
-    options = options || {};
-
-    var guide = svgEl("line", {
-      x1: 0,
-      y1: 0,
-      x2: 0,
-      y2: 40,
-      stroke: "#9ca3af",
-      "stroke-width": 0.6,
-      "vector-effect": "non-scaling-stroke",
-      opacity: 0,
-    });
-    var dot = svgEl("circle", {
-      r: 1.8,
-      fill: options.color || "#818cf8",
-      stroke: "#0b0f19",
-      "stroke-width": 0.6,
-      opacity: 0,
-    });
-    chart.appendChild(guide);
-    chart.appendChild(dot);
-
-    var tip = el(
-      "div",
-      "pointer-events-none absolute z-10 hidden whitespace-nowrap rounded border border-gray-700 bg-gray-950/95 px-2 py-1 text-[10px] font-mono text-gray-200 shadow-lg"
-    );
-    host.appendChild(tip);
-
-    var sorted = points.slice().sort(function (a, b) {
-      return xFn(a) - xFn(b);
-    });
-
-    function show(evt) {
-      var chartRect = chart.getBoundingClientRect();
-      if (!chartRect.width) return;
-      var xFrac = (evt.clientX - chartRect.left) / chartRect.width;
-      if (xFrac < 0 || xFrac > 1) {
-        hide();
-        return;
-      }
-      var point = nearestSeriesPoint(sorted, xFn, xFrac * 100);
-      var px = xFn(point);
-      var py = yFn(point.value);
-      guide.setAttribute("x1", px);
-      guide.setAttribute("x2", px);
-      guide.setAttribute("opacity", 1);
-      dot.setAttribute("cx", px);
-      dot.setAttribute("cy", py);
-      dot.setAttribute("opacity", 1);
-
-      tip.textContent = formatHoverTooltipText(point, options);
-      tip.classList.remove("hidden");
-
-      var hostRect = host.getBoundingClientRect();
-      var left = evt.clientX - hostRect.left + 12;
-      var top = evt.clientY - hostRect.top - 12;
-      var tipWidth = tip.offsetWidth || 140;
-      if (left + tipWidth > hostRect.width) left = evt.clientX - hostRect.left - tipWidth - 12;
-      tip.style.left = Math.max(0, left) + "px";
-      tip.style.top = Math.max(0, top) + "px";
-    }
-
-    function hide() {
-      guide.setAttribute("opacity", 0);
-      dot.setAttribute("opacity", 0);
-      tip.classList.add("hidden");
-    }
-
-    chart.addEventListener("mousemove", show);
-    chart.addEventListener("mouseleave", hide);
   }
 
   function renderAmbientHistory(payload, spikesPayload) {
@@ -970,11 +862,13 @@
       state.lastPayload = payload;
       state.lastFetchedAt = Date.now();
       renderPayload(payload);
+      if (state.active && window.OrionCabinetSonification) window.OrionCabinetSonification.receive(payload);
       setStatusLine(
         "Updated " + new Date().toLocaleTimeString() + " · polling every " + POLL_MS / 1000 + "s",
         "text-gray-500"
       );
     } catch (err) {
+      if (window.OrionCabinetSonification) window.OrionCabinetSonification.fail();
       // Keep last good render on transient fetch error; show poll-error badge.
       if (state.lastPayload) {
         setStatusLine(
@@ -1151,6 +1045,8 @@
   async function fetchSensorHistory() {
     var requestId = ++state.sensorHistoryRequest;
     var requestedWindow = state.sensorWindow;
+    var requestStartedAt = Date.now();
+    if (window.OrionCabinetSonification) window.OrionCabinetSonification.historyLoading(requestedWindow);
     state.sensorHistoryNote = "Loading " + requestedWindow + " sensor history…";
     renderSensorHistoryStatus();
     try {
@@ -1165,6 +1061,7 @@
       }
       if (requestId !== state.sensorHistoryRequest) return;
       state.sensorHistory = payload;
+      if (state.active && window.OrionCabinetSonification) window.OrionCabinetSonification.receiveHistory(payload, requestStartedAt);
       renderSensorHistory(payload);
       var stats = payload.stats || {};
       var tempStats = stats.temp_c || {};
@@ -1181,6 +1078,7 @@
       state.sensorHistoryNote = note;
     } catch (err) {
       if (requestId !== state.sensorHistoryRequest) return;
+      if (window.OrionCabinetSonification) window.OrionCabinetSonification.historyFailed();
       state.sensorHistoryNote =
         "history error — " +
         (state.sensorHistory ? "keeping last good charts" : "no chart data yet") +
@@ -1232,6 +1130,7 @@
   }
 
   function deactivate() {
+    if (window.OrionCabinetSonification) window.OrionCabinetSonification.stop("Cabinet hidden");
     state.active = false;
     stopTimer();
     // Rendered DOM is deliberately left in place -- switching away and back
@@ -1292,6 +1191,12 @@
   var api = {
     activate: activate,
     deactivate: deactivate,
+    setHistoryWindow: function (nextWindow) {
+      if (["24h", "3d", "7d"].indexOf(nextWindow) < 0 || nextWindow === state.sensorWindow) return;
+      state.sensorWindow = nextWindow;
+      renderSensorWindowButtons();
+      fetchSensorHistory();
+    },
     refresh: function () {
       poll();
       pollAmbientLatest();
@@ -1314,12 +1219,5 @@
     } else {
       init();
     }
-  }
-
-  if (typeof module !== "undefined" && module.exports) {
-    module.exports = {
-      nearestSeriesPoint: nearestSeriesPoint,
-      formatHoverTooltipText: formatHoverTooltipText,
-    };
   }
 })();

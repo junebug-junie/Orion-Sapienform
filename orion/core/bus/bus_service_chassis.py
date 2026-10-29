@@ -18,6 +18,7 @@ except Exception:  # pragma: no cover - fallback when loguru is unavailable
     logger = logging.getLogger("orion.bus")
 
 from .async_service import OrionBusAsync
+from .resilience import subscription_health
 from .bus_schemas import BaseEnvelope, ErrorInfo, ServiceRef
 from .rpc_degraded import (
     DEGRADED_TRACE_KEY,
@@ -73,6 +74,21 @@ class ChassisConfig:
     # system channels (stable defaults)
     health_channel: str = "orion:system:health"
     error_channel: str = "orion:system:error"
+
+
+def _listener_heartbeat_status() -> tuple[str, Dict[str, Any] | None]:
+    """("degraded", summary) while any run_subscription listener in this process is
+    not subscribed; ("ok", summary) when all are; ("ok", None) for a process with none.
+    Never raises: a heartbeat must not die over its own diagnostics."""
+    try:
+        health = subscription_health()
+    except Exception as exc:
+        logger.warning(f"heartbeat listener health failed: {exc}")
+        return "ok", None
+    if not health["listeners"]:
+        return "ok", None
+    summary = {"ok": health["ok"], "down": health["down"], "count": len(health["listeners"])}
+    return ("ok" if health["ok"] else "degraded"), summary
 
 
 class BaseChassis:
@@ -184,13 +200,18 @@ class BaseChassis:
                         )
                     except Exception as details_exc:
                         logger.warning(f"heartbeat_details provider failed: {details_exc}")
+                # Process alive is not the same as listening: a bus listener that died
+                # left this heartbeat "ok" while chat lost reflection (2026-10-20).
+                status, listener_details = _listener_heartbeat_status()
+                if listener_details is not None:
+                    details["listeners"] = listener_details
                 v1_payload = SystemHealthV1(
                     service=self.cfg.service_name,
                     node=node,
                     version=self.cfg.service_version,
                     instance=self.cfg.instance_id,
                     boot_id=self.boot_id,
-                    status="ok",
+                    status=status,
                     last_seen_ts=now,
                     heartbeat_interval_sec=float(self.cfg.heartbeat_interval_sec or 10.0),
                     details=details,
@@ -496,8 +517,9 @@ class Hunter(BaseChassis):
         patterns: Union[List[str], str, None] = None,
         pattern: Optional[str] = None,
         concurrent_handlers: bool = False,
+        heartbeat_details: Optional[HeartbeatDetailsProvider] = None,
     ):
-        super().__init__(cfg)
+        super().__init__(cfg, heartbeat_details=heartbeat_details)
         
         self.patterns: List[str] = []
         if patterns is not None:

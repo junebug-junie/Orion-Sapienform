@@ -24,6 +24,7 @@ from app.models import DatasetSpec, EnrichmentSpec, ModelSpec, RunRecord, RunSpe
 from app.services.data_access import fetch_dataset_rows
 from app.services.conversation_overrides import OverrideRecord, apply_overrides, build_conversations
 from app.services.embedding_client import VectorHostEmbeddingProvider
+from app.services import act_emit
 from app.services.bus_events import get_bus_publisher
 from app.services.enrichment import run_enrichment_sync
 from app.services.llm_client import get_llm_client
@@ -298,6 +299,22 @@ def enqueue_training(
     background_tasks.add_task(_run_training, run_id, payload, model_row, dataset, spec_hash)
 
 
+def _shadow_bid_run_start(run_id: UUID) -> None:
+    """Body economy Patch C3b: a SHADOW bid at run start, logged beside the real outcome and never
+    obeyed (app/services/physiology_shadow.py). The run has no gate of its own here, so the real
+    outcome is ``ran``. want_id = the run act's correlation id. Never raises, never waits."""
+    try:
+        from app.services.physiology_shadow import ShadowBid
+
+        shadow = ShadowBid(family=act_emit.ACTOR, verb=act_emit.VERB, tier=2,
+                           want_id=act_emit.run_correlation_id(run_id), object_ref=f"topic_foundry_run:{run_id}",
+                           component="training_run")
+        shadow.place()
+        shadow.settle("ran")
+    except Exception:  # noqa: BLE001 -- shadow only
+        logger.info("topic_foundry_shadow_bid_failed run_id=%s", run_id)
+
+
 def _run_training(
     run_id: UUID,
     payload: RunTrainRequest,
@@ -310,6 +327,12 @@ def _run_training(
     run.stage = "training"
     run.started_at = utc_now()
     update_run(run)
+    # Act ledger (body economy A5): one `maintain` act per run, closed exactly once below.
+    act = act_emit.start_run_act(
+        run_id,
+        model_ref=f"topic_foundry_model:{model_row.get('name', 'unknown')}:{model_row.get('version', 'unknown')}",
+    )
+    _shadow_bid_run_start(run_id)
 
     try:
         start = time.monotonic()
@@ -414,14 +437,20 @@ def _run_training(
         run.artifact_paths = artifact_paths
         run.completed_at = utc_now()
         update_run(run)
+        act.close(True, f"status=complete segments={len(segment_records)} stage={run.stage}")
         _publish_run_complete(run, model_row)
     except Exception as exc:  # noqa: BLE001
+        act.close(False, f"raised:{type(exc).__name__}:{str(exc)[:200]}")
         logger.exception("Training run failed run_id=%s", run_id)
         run.status = "failed"
         run.stage = "failed"
         run.error = str(exc)
         run.completed_at = utc_now()
         update_run(run)
+    finally:
+        # Anything that escaped both paths above (a BaseException) still closes, at 0. A no-op
+        # after a close above: the trace closes once.
+        act.close(False, "exited_without_outcome")
 
 
 def _publish_run_complete(run: RunRecord, model_row: Dict[str, Any]) -> None:

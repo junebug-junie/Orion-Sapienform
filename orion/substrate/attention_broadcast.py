@@ -31,7 +31,12 @@ from orion.schemas.attention_frame import (
     PredictionErrorMagnitudeV1,
     VoluntaryOverrideAbsentReasonV1,
 )
-from orion.schemas.attention_candidate import NO_ATTENTION_CONSUMER_NODE_IDS
+from orion.schemas.attention_candidate import (
+    NO_ATTENTION_CONSUMER_NODE_IDS,
+    PERCEPTION_WALKWAY_NODE_ID,
+    world_first_fenced,
+)
+from orion.substrate.prediction_error_freshness import missing_input_reason
 from orion.substrate.attention.common import compact, stable_id
 from orion.substrate.attention.policy import select_actions
 from orion.substrate.attention.scoring import build_open_loops, merge_signals
@@ -285,6 +290,10 @@ def build_substrate_attention_frame(
         max_asks=0,
         stale_thread_active=False,
     )
+    if world_first:
+        actions, selected, deferred = world_first_action_floor(
+            actions, selected, deferred, open_loops=open_loops, eligible_scores=world_first_scores
+        )
     frame = AttentionFrameV1(
         generated_at=resolved_now,
         open_loops=open_loops,
@@ -322,9 +331,12 @@ def world_first_signals(
     """World-first candidates -> eligible workspace signals, plus the trace.
 
     Candidates: every cognitive ``node:substrate.*`` node carrying a
-    prediction error (magnitude from the stored history; perception is
-    external and absent while its embeddings are stale -- it writes 0.0 then,
-    so absence comes from ``embedding_staleness``, never from the value) and
+    prediction error (magnitude from the stored history; the camera nodes are
+    external and absent while their input is missing -- they write a 0.0
+    placeholder marked ``prediction_error_missing_reason`` then, so absence
+    comes from that marker and ``embedding_staleness``, never from the value;
+    the walkway node is admitted only for its own p99+ band,
+    ``ATTENTION_MIN_BAND_BY_NODE_ID``) and
     the caller's ``external_candidates`` (chat). Any other graph node with
     pressure has no calibrated unusualness against its own history, so it
     cannot interrupt: listed in the trace as ``uncalibrated``, not ranked
@@ -358,7 +370,7 @@ def world_first_signals(
             if not is_cognitive_node(node):
                 continue
             node_id = str(getattr(node, "node_id", "") or "")
-            if node_id in NO_ATTENTION_CONSUMER_NODE_IDS:
+            if world_first_fenced(node_id):
                 continue
             metadata = dict(getattr(node, "metadata", None) or {})
             if node_id.startswith(SUBSTRATE_NODE_PREFIX) and metadata.get("prediction_error") is not None:
@@ -368,6 +380,15 @@ def world_first_signals(
                         embedding_staleness=metadata.get("embedding_staleness"),
                         vision_frame_staleness=vision_organ_md.get("vision_frame_staleness"),
                     )
+                elif node_id == PERCEPTION_WALKWAY_NODE_ID:
+                    # The vision organ's frame staleness is the room cameras';
+                    # the walkway has only its own embedding clock.
+                    absent = perception_absent_reason(
+                        embedding_staleness=metadata.get("embedding_staleness"),
+                    )
+                missing = missing_input_reason(node)
+                if absent is None and missing is not None:
+                    absent = f"input missing ({missing})"
                 observed_at = getattr(getattr(node, "temporal", None), "observed_at", None)
                 label = compact(str(getattr(node, "label", "") or node_id), 120)
                 candidates.append(
@@ -439,6 +460,61 @@ def world_first_signals(
     trace = ranking.trace()
     trace["uncalibrated"] = sorted(uncalibrated)[:24]
     return signals[: max(1, limit)], trace, scores
+
+
+# Rung 3 binding fix (thinking-architecture design 2026-10-14, "Bind the winner to action").
+# Under world-first the gate (orion.attention.world_first) decides WHETHER a loop competes: only
+# eligible candidates become signals, and an event-written one stops being eligible when its 300 s
+# orienting window closes. Its loop's salience is then the gate's rank score, which fades with the
+# event (percentile x event_decay). select_actions() still applies its absolute 0.48 / 0.35 ladder,
+# tuned for the old seed-weight score (policy.py says so: "disclosed not fixed"). The ladder turned a
+# winner the gate still judged eligible into "none" once the fade crossed 0.35 -- live 48 h to
+# 2026-10-21: 48 broadcast ticks had an eligible world-first winner and an open loop, yet
+# selected_action_type "none", so nothing could bind. The gate's verdict is the bar; the ladder may
+# still grade watch vs defer, but it may not drop an eligible loop. Floor: "defer" (the ladder's
+# lowest non-none grade), never "watch" -- the fade is real and the grade should say so.
+WORLD_FIRST_ACTION_FLOOR = "defer"
+
+
+def world_first_action_floor(
+    actions: list[Any],
+    selected: Any,
+    deferred: list[str],
+    *,
+    open_loops: Sequence[OpenLoopV1],
+    eligible_scores: dict[str, float],
+) -> tuple[list[Any], Any, list[str]]:
+    """Floor a world-first-eligible loop's ``none`` action at ``defer``; re-pick when nothing was
+    selected. A loop is eligible when one of its source refs is a world-first eligible source."""
+    eligible_ids = {
+        loop.id for loop in open_loops if any(ref in eligible_scores for ref in loop.source_refs)
+    }
+    if not eligible_ids:
+        return actions, selected, deferred
+    floored: list[Any] = []
+    for action in actions:
+        if action.action_type == "none" and action.open_loop_id in eligible_ids:
+            action = action.model_copy(
+                update={
+                    "action_type": WORLD_FIRST_ACTION_FLOOR,
+                    "rationale": "world-first eligible inside its orienting window; the score ladder may grade it, not drop it",
+                    "provenance": {**dict(action.provenance), "world_first_floor": True},
+                }
+            )
+        floored.append(action)
+    new_deferred = list(deferred) + [
+        str(a.open_loop_id) for a in floored
+        if a.provenance.get("world_first_floor") and str(a.open_loop_id) not in deferred
+    ]
+    if getattr(selected, "action_type", "none") == "none":
+        ranked = sorted(
+            (a for a in floored if a.action_type in {"watch", "defer", "suppress"}),
+            key=lambda a: a.score,
+            reverse=True,
+        )
+        if ranked:
+            selected = ranked[0]
+    return floored, selected, new_deferred
 
 
 def _rank_loops_world_first(

@@ -10,3 +10,11 @@ steps:
     result_key: host_result
 
 output_template: "perceive_caption_frame.j2"
+
+# Body economy (Patch C2): who pays for this verb. Parsed by plan_loader.load_verb_physiology;
+# checked by scripts/check_verb_physiology.py. Tier 0 never bids (turn/autonomic).
+physiology:
+  tier: 0
+  family: autonomic
+  lanes: []
+  deferrable_window_s: 0

@@ -17,6 +17,7 @@ import torch
 from orion.vision.caption_echo import CAPTION_PROMPT, strip_echoed_prompt_prefix
 
 from .artifacts import merge_result_inputs
+from .box_thresholds import apply_box_thresholds, resolve_box_thresholds
 from .caption_sanitize import sanitize_answer, sanitize_caption
 from .crop_embeddings import (
     ThumbRateLimiter,
@@ -69,7 +70,7 @@ def _face_frame_store():
                 _FACE_FRAMES.stop_pruner()
             _FACE_FRAMES = FaceFrameStore(
                 root,
-                retention_days=float(getattr(settings, "VISION_FACE_FRAMES_RETENTION_DAYS", 14.0)),
+                retention_days=float(getattr(settings, "VISION_FACE_FRAMES_RETENTION_DAYS", 0.0)),
                 min_interval_sec=float(getattr(settings, "VISION_FACE_FRAMES_MIN_INTERVAL_SEC", 5.0)),
             )
             _FACE_FRAMES.start_pruner()
@@ -89,7 +90,7 @@ def _thumb_store() -> ThumbStore | None:
         return None
     if _THUMB_STORE is None or str(_THUMB_STORE.root) != root:
         _THUMB_STORE = ThumbStore(
-            root, retention_days=float(getattr(settings, "VISION_CROP_THUMB_RETENTION_DAYS", 10.0)))
+            root, retention_days=float(getattr(settings, "VISION_CROP_THUMB_RETENTION_DAYS", 0.0)))
         # Retention runs on its own daemon thread, never on the detect path.
         _THUMB_STORE.start_pruner()
     return _THUMB_STORE
@@ -808,9 +809,12 @@ class VisionRunner:
 
         # `score_threshold` is the historical spelling in vision_profiles.yaml and
         # was silently ignored; honour it as an alias so the documented knob works.
-        box_th = float(
-            p.params.get("box_threshold", p.params.get("score_threshold", 0.25))
-        )
+        # Per-stream, per-label cut-offs (app/box_thresholds.py): the detector
+        # runs at the lowest cut-off that applies, then each box must reach its
+        # own label's. box_th stays this stream's default (reported as before).
+        thresholds = resolve_box_thresholds(p.params, request.get("stream_id"))
+        box_th = thresholds.default
+        detect_th = thresholds.floor
         text_th = float(p.params.get("text_threshold", 0.25))
         max_det = int(p.params.get("max_detections", 30))
         nms_iou = float(p.params.get("nms_iou", 0.6))
@@ -825,8 +829,12 @@ class VisionRunner:
         def _cast(inputs: Dict[str, Any]) -> Dict[str, Any]:
             return self._cast_inputs_to_model_dtype(inputs, model, device)
 
+        def _detect(images: List[Any]) -> List[List[Dict[str, Any]]]:
+            raw = detect_images(model, processor, images, text, detect_th, text_th, device, _cast)
+            return [apply_box_thresholds(objs, thresholds) for objs in raw]
+
         t_full = time.perf_counter()
-        objects = detect_images(model, processor, [img], text, box_th, text_th, device, _cast)[0]
+        objects = _detect([img])[0]
         full_s = time.perf_counter() - t_full
 
         # Tiled full-resolution pass (walkway only: the router sets
@@ -845,7 +853,7 @@ class VisionRunner:
                 t_tiles = time.perf_counter()
                 budget = tp["time_budget_s"]
                 if tp["batch"]:
-                    per_tile = detect_images(model, processor, crops, text, box_th, text_th, device, _cast)
+                    per_tile = _detect(crops)
                 else:
                     # Sequential, with a wall-clock budget: once the tiles
                     # have used it up, the rest are skipped so a slow GPU
@@ -854,7 +862,7 @@ class VisionRunner:
                     for c in crops:
                         if budget > 0 and per_tile and time.perf_counter() - t_tiles >= budget:
                             break
-                        per_tile.append(detect_images(model, processor, [c], text, box_th, text_th, device, _cast)[0])
+                        per_tile.append(_detect([c])[0])
                 tiles_s = time.perf_counter() - t_tiles
                 tile_objs = [
                     to_frame_coords(o, t, img.width, img.height)
@@ -904,7 +912,9 @@ class VisionRunner:
         crop_stats = None
         if request.get("want_crop_embeddings") is True and objects:
             try:
-                crop_stats = self._attach_crop_embeddings(p, objects, img, request, device, box_th)
+                # detect_th: every box that survived its own label's cut-off
+                # is eligible for a crop (equal to box_th when no label is lower).
+                crop_stats = self._attach_crop_embeddings(p, objects, img, request, device, detect_th)
             except Exception as exc:
                 # A crop-embedding failure must not cost the detection or the
                 # whole-frame embedding. Strip any partial vectors.
@@ -928,6 +938,7 @@ class VisionRunner:
             "model_id": model_id,
             "prompts": prompts,
             "box_threshold": box_th,
+            "box_threshold_by_label": dict(thresholds.by_label),
             "text_threshold": text_th,
             "nms_iou": nms_iou,
             "max_detections": max_det,

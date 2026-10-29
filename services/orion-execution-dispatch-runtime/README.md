@@ -629,3 +629,94 @@ Dependencies: the feedback runtime's `ORION_WORLD_SETTLEMENT_SCORING_ENABLED` mu
 episode stays "in flight" (6 h horizon), so with scoring off the action fires at most once per 6 h.
 The global per-tick `ORION_DISPATCH_HOLDBACK_FRACTION` (live 0.0) still applies after the per-template
 draw and writes no world control row; the real treated rate is 0.5 x (1 - that fraction).
+
+## Rung-2 acts in the allocator (thinking rung 3, 2026-10-21)
+
+A route that really produces a rung-2 act declares it (`act:` in
+`config/execution_dispatch/execution_dispatch_policy.v1.yaml`). Today only `render_scene`, which is
+the `thought.painting` `make` act (its act key is `reverie_visual_run_id(dispatch_id)`). The
+allocator scores that candidate on the act's own EffectPosterior (`act:make`, `thought.painting`,
+`artifact_produced`) with the binary act learner's observation variance (0.25), and on the route's
+measured cost (p50 settled latency over `ORION_DISPATCH_ACT_COST_LOOKBACK_HOURS`, 720 h). Before this,
+render_scene was refused `unmeasurable` on every tick. Unchanged: the 0.02 nats/s floor, the
+allowance, the harm gate, the cold-start rule and every doer gate downstream. Added: no typed 5 s
+cost fallback for an act (no measured cost -> `no_cost_estimate`), and one in flight per act
+(`act_in_flight`: an open act for the actor or a `pending` dispatch result for the route, 6 h;
+read errors, including a failed belief read, fail closed; one act-backed candidate per act per tick).
+These guards live in the allocator preview, so they bind only while the allocator decides the send
+(`ORION_DISPATCH_ALLOCATOR_ENFORCE=true`, a motor budget present, not a tripwire probe tick);
+orion-thought's own single-flight lock is the backstop otherwise. The visual-baseline lane is
+not act-scored: it keeps its own schedule, eligibility and old cost path. The scored numbers ride on the candidate as an
+`act_expectation:...` reason. Kill switch: `ORION_DISPATCH_ACT_CANDIDATES_ENABLED=false`.
+
+The per-tick randomized holdback (`ORION_DISPATCH_HOLDBACK_FRACTION`) is ON at 0.2 (attend-to-act
+design D3). It draws only on ticks that can yield a control observation: at least one candidate with a
+declared field signal that is not a world action or a visual baseline (`tick_can_yield_control`).
+Other ticks are re-proposed seconds later, so withholding them would only delay them. The rule
+decides only WHETHER a tick is drawn: on a mixed tick that is drawn, every candidate on it is held,
+as the per-tick design always did.
+
+Eval: `python orion/autonomy/evals/run_rung3_replay_eval.py [--live --hours 48]`.
+
+### Stage 3 option B: admitting an act proven to help (2026-10-21)
+
+The information path retires an act once it is well measured, so an act that works is refused for
+being known. A second, separate path (`ORION_DISPATCH_PROVEN_EFFECT_ENABLED`, ON) reconsiders an
+act-backed candidate the floor refused. It admits the candidate when the act's own EffectPosterior
+has n >= 20 and a 2-sigma lower bound above a reference rate. The reference is the act's randomized
+control arm once that arm has 20 rows, and the act learner's prior (0.5) before that. Value is
+KL(Bernoulli(LB) || Bernoulli(reference)) nats per measured second. Candidates are admitted best
+first, inside the remaining allowance. There is no floor on this path. The information floor and its
+constants are unchanged.
+
+Every proven admission is held back at `ORION_DISPATCH_HOLDBACK_FRACTION` (stable draw per dispatch).
+Both arms are precommitted to `substrate_act_episodes`
+(`services/orion-sql-db/manual_migration_act_episodes_v1.sql`; also created lazily). A row that
+cannot be written means the act is not sent. A decision of either arm holds the act in flight for its
+`horizon_sec`. The frame carries `admitted:proven_effect:...`, or `proven_effect:<why not>:...`.
+
+**Which acts are held back (2026-10-21 follow-up).** A control arm is drawn only when the act's
+outcome can occur without the act. The route says where the act's object comes from
+(`act.object_source`, `orion/autonomy/act_episodes.py` `holdback_rule`):
+
+- `dispatch`: the dispatch makes the object (a painting run id derives from the dispatch id). Without
+  the dispatch there is nothing to observe, so a control row would be 0 by construction. Never held
+  back. The treated row says `holdback_exempt:outcome_requires_act:object_minted_by_dispatch`.
+- `queue`: the dispatch picks an object that already exists and that another lane can also act on.
+  Held back. Both arms record the object (`object_ref`) and are resolved the same way after the
+  horizon: 1 if a graded act with that key closed with outcome 1 inside the window, else 0.
+
+### Reading pull (2026-10-21 follow-up)
+
+Route `read_world_pulse` (template of the same name, kind `observe`, `inspect_only`). Its executor key
+`orion.world_pulse_read.pull.v1` is one bus RPC to Hub (`orion:world_pulse_read:pull:request`). The
+dispatch is one extra `hub.world_pulse_read` `look` act on the seed Hub's own lane would claim next.
+
+- Cost: the look act's own median open->close time over 30 days (679 s live). The RPC is not the
+  work, so the result row carries no latency.
+- In flight: an episode of either arm, for 12000 s. The lane's own open reads do not count.
+- Order per decision: `check` (Hub gates and seed, no side effect) -> precommit with that seed ->
+  `act` (treated starts the read; control only marks the seed, so a later pull cannot take it).
+- A refusal at `check` writes no row. The candidate is blocked `doer_refused:<why>`, and the route is
+  held for Hub's `retry_after_sec` (arousal 360 s, thermal 300 s, cap until UTC midnight).
+- Kill switch: `ORION_DISPATCH_READING_PULL_ENABLED` (ON). Hub has its own
+  (`HUB_WORLD_PULSE_READ_PULL_ENABLED`) and runs every gate.
+- Replay: `orion/autonomy/evals/run_rung3_reading_replay_eval.py [--live --hours 48]`.
+
+### Retro leisure session (2026-10-22, Orion plays Zelda section E)
+
+Route `retro_leisure_session` (template of the same name, kind `express`, `express_bounded`). Its
+executor key `orion.retro_leisure.start.v1` is one bus RPC to Hub (`orion:retro_leisure:start:request`,
+`app/retro_leisure_dispatch.py`). The dispatch is one `hub.retro_leisure` `play` act: Hub opens it when
+the session starts (key `retro_leisure_dispatch:<dispatch_id>`) and closes it at session end
+(`artifact_produced` = a session summary with at least one real planner decision).
+
+- Cost: the play act's own median open->close time (a session's wall time). Until the first session
+  closes, the route's `cold_cost_ceiling_sec` (1800 s, the runner's session cap): the worst case, not a
+  typical guess. An unreadable cost is still refused `no_cost_estimate`.
+- In flight: any open play act or proven-path episode holds the route (one session at a time).
+- Object minted by the dispatch: no control arm. A proven-path row is voided when Hub refuses.
+- A Hub refusal blocks the candidate `doer_refused:<why>` and holds the route for Hub's
+  `retry_after_sec` (300 s when none is given or Hub did not answer). On the frame: `allocator:<reason>`.
+- Kill switch: `ORION_DISPATCH_RETRO_LEISURE_ENABLED` (ON). Hub has its own (`RETRO_LEISURE_ENABLED`)
+  and runs every gate.

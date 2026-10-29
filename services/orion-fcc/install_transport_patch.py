@@ -8,6 +8,12 @@ EXPECTED = "09955d7712b618df8b368c21d9bba4320fa0af70e7250e1ca5f2e79bddfccaef"
 LEDGER_EXPECTED = "a6a2c1796c7165de4ea5edbfcc1a75423b546ace32343208b6077ac8296edd5f"
 
 
+def _replace(text, old, new):
+    if old not in text:
+        raise RuntimeError(f"FCC patch anchor missing: {old[:60]!r}")
+    return text.replace(old, new)
+
+
 def patch_routes(path):
     source = path.read_bytes()
     if hashlib.sha256(source).hexdigest() != EXPECTED:
@@ -15,19 +21,28 @@ def patch_routes(path):
             "FCC routes changed; review messages transport patch before updating the pin"
         )
     text = source.decode()
-    text = text.replace(
+    text = _replace(
+        text,
         "async def create_message(\n    request_data: MessagesRequest,",
         "async def create_message(\n    request_data: MessagesRequest,\n    request: Request,",
     )
-    text = text.replace(
+    text = _replace(
+        text,
         "from . import dependencies",
-        "from orion_fcc_messages_transport import adapt_message_response\n\nfrom . import dependencies",
+        "from orion_fcc_messages_transport import (\n"
+        "    adapt_message_response,\n"
+        "    guard_local_optimizations,\n"
+        "    prepare_request,\n"
+        ")\n\n"
+        "guard_local_optimizations()\n\n"
+        "from . import dependencies",
     )
-    text = text.replace(
+    text = _replace(
+        text,
         '"""Create a message (always streaming)."""\n    return handler.create(request_data)',
         '"""Honor the Messages wire format and maintain SSE liveness."""\n'
         "    return await adapt_message_response(\n"
-        "        handler.create(request_data),\n"
+        "        handler.create(prepare_request(request_data)),\n"
         '        stream="stream" in request_data.model_fields_set and request_data.stream is True,\n'
         "        disconnected=request.is_disconnected,\n"
         "    )",
@@ -41,7 +56,8 @@ def patch_error_emitter(path):
         raise RuntimeError(
             "FCC ledger changed; review error transport patch before updating the pin"
         )
-    text = source.decode().replace(
+    text = _replace(
+        source.decode(),
         "        error_index = self.blocks.allocate_index()\n"
         '        yield self.content_block_start(error_index, "text")\n'
         '        yield self.content_block_delta(error_index, "text_delta", error_message)\n'

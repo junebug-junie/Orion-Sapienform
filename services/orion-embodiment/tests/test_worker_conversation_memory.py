@@ -18,6 +18,10 @@ def _worker(*, conversation_memory_enabled: bool = True, memory_enabled: bool = 
     w._world_id = "w1"
     w._bus = SimpleNamespace()
     w._speaking_conversations = set()
+    w._abandon_participating_since_ms = {}
+    w._abandon_own_utterances = {}
+    w._abandon_leave_sent_ms = {}
+    w._accept_sent_ms = {}
     w._opened_conversations = set()
     w._speech_exhausted_partner_lines = set()
     w._salience = SalienceState()
@@ -446,3 +450,9 @@ def test_request_utterance_quick_marks_surface_as_aitown():
     asyncio.run(w._request_utterance_quick("prompt text", correlation_id="11111111-1111-1111-1111-111111111111"))
     env = bus.rpc_request.call_args.args[1]
     assert env.payload["context"]["metadata"]["surface"] == "aitown"
+
+
+def test_town_speech_defaults_to_the_interactive_fast_route():
+    from app.settings import Settings
+
+    assert Settings.model_fields["speech_quick_llm_route"].default == "quick_embodied"

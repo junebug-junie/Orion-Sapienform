@@ -121,6 +121,7 @@ def _domains() -> dict[str, DomainSpec]:
     # (prediction_error.py's calibrated constants) without a circular import:
     # prediction_error.py imports Expectation from this module.
     from orion.substrate import prediction_error as pe
+    from orion.substrate import street_attention as st
 
     return {
         "execution": DomainSpec(
@@ -130,6 +131,19 @@ def _domains() -> dict[str, DomainSpec]:
         "chat": DomainSpec(
             "chat",
             Expectation(pe._CHAT_PREDICTION_ERROR_EWMA_ALPHA, pe._CHAT_PREDICTION_ERROR_MIN_VARIANCE),
+            rollback_window_sec=24 * 3600,
+        ),
+        # One reading per graded street handoff (-ln p_value, nats;
+        # orion/substrate/street_attention.py). Rest point under a calibrated
+        # model: mean 1 nat, variance 1. The schema's 24 h rollback maximum,
+        # like chat. EXPECTED TO STAY INERT: the tuner needs WARMUP +
+        # MIN_FIT + MIN_HOLDOUT = 480 readings inside its 72 h window (~160
+        # graded handoffs a day); the street makes a handful. Recorded now so
+        # the corpus exists; the contract (mutation_contracts.py) allows the
+        # target so an adoption is possible once volume is real.
+        st.STREET_HANDOFF_DOMAIN: DomainSpec(
+            st.STREET_HANDOFF_DOMAIN,
+            Expectation(st.STREET_HANDOFF_EWMA_ALPHA, st.STREET_HANDOFF_MIN_VARIANCE),
             rollback_window_sec=24 * 3600,
         ),
     }

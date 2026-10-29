@@ -25,9 +25,13 @@ GrammarEventKind = Literal[
 ]
 
 # Closed, versioned verb vocabulary (design section 3.2). The same at every
-# level. Producers as of rung 2: make (orion-thought paintings), say (hub chat
-# reply, outreach), ask (outreach), look (reading). The others are reserved by
-# the design and have no producer yet; a new producer must ship with a test.
+# level. Producers as of rung 2: make (orion-thought paintings; orion-durable-runs journal
+# compose), infer / ask / sense (orion-durable-runs curiosity, self-inquiry, self-sense eval,
+# body economy A5), say (hub chat
+# reply, outreach), ask (outreach), look (reading), play (hub retro leisure
+# session, 2026-10-22: docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md
+# section E). The others are reserved by the design and have no producer yet; a
+# new producer must ship with a test.
 ActVerb = Literal[
     "sense",
     "look",
@@ -40,6 +44,7 @@ ActVerb = Literal[
     "make",
     "maintain",
     "regulate",
+    "play",
 ]
 
 ActLevel = Literal["metabolic", "organ", "faculty", "deliberate"]
@@ -249,6 +254,57 @@ class ActCostV1(BaseModel):
     watts: float | None = Field(default=None, ge=0.0)
 
 
+class ActCostV2(BaseModel):
+    """ActCostV1 plus the body economy's per-constraint currencies (body economy Patch A2,
+    docs/superpowers/specs/2026-10-23-organism-body-economy-design.md, Organ 3 "ActCostV2").
+
+    Additive and optional: every V1 field, same meaning. None means not measured, never zero.
+
+    * ``seconds``: wall time from act_opened to act_closed. The act ledger fills it on a PRODUCER
+      close when the producer left it unset and the open time is known. A resolver or expired
+      close is stamped at the horizon (or at Juniper's reply), so its wall time is not what the
+      act spent: left None.
+    * ``gpu_slot_s_by_lane``: GPU pool slot-seconds held, per lane (pool role). Filled on close
+      from ``gpu_pool_events`` leases whose ``turn_correlation_id`` is the act's correlation_id.
+    * ``wh_by_host``: watt-hours drawn, per host. Not measured yet.
+    * ``juniper_msgs``: messages that reached Juniper. Not measured yet.
+    * ``claude_limit_events``: Claude limit events the act triggered. Not measured yet.
+
+    CONSUMER-FIRST: ``ActV1.cost`` accepts V1 or V2, but V1 and ActV1 are extra="forbid", so a
+    reader running older code rejects a V2 payload outright. Producers keep sending V1 (or no cost)
+    until every reader of ``orion:grammar:event`` (sql-writer, and substrate-runtime reading
+    ``grammar_events``) runs code that knows V2. The writer-side fill below never crosses the bus:
+    it lands only in ``grammar_acts.cost_json``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    seconds: float | None = Field(default=None, ge=0.0)
+    gpu_seconds: float | None = Field(default=None, ge=0.0)
+    tokens: int | None = Field(default=None, ge=0)
+    watts: float | None = Field(default=None, ge=0.0)
+    gpu_slot_s_by_lane: dict[str, float] | None = None
+    wh_by_host: dict[str, float] | None = None
+    juniper_msgs: int | None = Field(default=None, ge=0)
+    claude_limit_events: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _non_negative_maps(self) -> "ActCostV2":
+        for name in ("gpu_slot_s_by_lane", "wh_by_host"):
+            for key, value in (getattr(self, name) or {}).items():
+                if value < 0:
+                    raise ValueError(f"{name}[{key!r}] must be >= 0, got {value!r}")
+        return self
+
+    @classmethod
+    def from_any(cls, cost: "ActCostV1 | ActCostV2 | None") -> "ActCostV2 | None":
+        if cost is None:
+            return None
+        if isinstance(cost, cls):
+            return cost
+        return cls(**cost.model_dump())
+
+
 class ActOutcomeV1(BaseModel):
     """What actually happened, on the expectation's own scale."""
 
@@ -287,7 +343,8 @@ class ActV1(BaseModel):
     object_ref: str | None = None
     test_before: str | None = None
     expect: ActExpectV1 | None = None
-    cost: ActCostV1 | None = None
+    # V1 or V2 (consumer-first: see ActCostV2). A dict with only V1 keys parses as V1.
+    cost: ActCostV1 | ActCostV2 | None = None
     outcome: ActOutcomeV1 | None = None
     error: float | None = None
     goal_ref: str | None = None

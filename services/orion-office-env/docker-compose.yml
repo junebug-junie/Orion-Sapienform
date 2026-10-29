@@ -1,0 +1,43 @@
+services:
+  orion-office-env:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+    container_name: ${PROJECT}-orion-office-env
+    build:
+      context: ../..
+      dockerfile: services/orion-office-env/Dockerfile
+    restart: unless-stopped
+
+    env_file:
+      - .env
+    environment:
+      SERVICE_NAME: ${SERVICE_NAME:-orion-office-env}
+      SERVICE_VERSION: ${SERVICE_VERSION:-0.1.0}
+      INSTANCE_ID: ${INSTANCE_ID:-pan-1}
+      ORION_BUS_ENABLED: ${ORION_BUS_ENABLED:-true}
+      ORION_BUS_URL: ${ORION_BUS_URL}
+      ORION_HEALTH_CHANNEL: ${ORION_HEALTH_CHANNEL:-orion:system:health}
+      HEARTBEAT_INTERVAL_SEC: ${HEARTBEAT_INTERVAL_SEC:-10}
+      OFFICE_ENV_SAMPLE_CHANNEL: ${OFFICE_ENV_SAMPLE_CHANNEL:-orion:office:env:sample}
+      OFFICE_SERIAL_PORT: /dev/office-nano
+      OFFICE_SERIAL_BAUD: ${OFFICE_SERIAL_BAUD:-115200}
+      OFFICE_PUBLISH_INTERVAL_SEC: ${OFFICE_PUBLISH_INTERVAL_SEC:-30}
+      OFFICE_STALE_AFTER_SEC: ${OFFICE_STALE_AFTER_SEC:-10}
+      OFFICE_SENSOR_ID: ${OFFICE_SENSOR_ID:-sht40-office}
+
+    # The Nano's host serial device, mapped to a fixed in-container path. Compose
+    # refuses to start if the host path is absent (Nano unplugged) -- by design.
+    devices:
+      - "${OFFICE_SERIAL_DEVICE_HOST}:/dev/office-nano"
+    group_add:
+      - "${OFFICE_SERIAL_GID:-20}"
+
+    networks:
+      - app-net
+
+
+networks:
+  app-net:
+    external: true

@@ -107,6 +107,8 @@ from orion.schemas.memory_episode import MEMORY_EPISODE_CLOSED_KIND, MemoryEpiso
 from orion.schemas.situation_state import SITUATION_STATE_KIND, SituationStateV1
 from orion.schemas.drive_reading import DriveReadingV1
 from orion.schemas.regulation import REGULATION_STATE_KIND, RegulationStateV1
+from orion.schemas.physiology import PHYSIOLOGY_STATE_KIND, PhysiologyStateV1
+from orion.schemas.physiology_want import WANT_DECISION_KIND, WANT_KIND, WantDecisionV1, WantV1
 from orion.schemas.personality import (
     PERSONALITY_CHOICE_KIND,
     ChoiceOptionV1,
@@ -115,6 +117,12 @@ from orion.schemas.personality import (
     PersonalityChoiceV1,
     PersonalityCueV1,
     PersonalityFrameV1,
+    PERSONALITY_NAMING_KIND,
+    DispositionNamingPacketV1,
+    DispositionNamingV1,
+    NamingEvidenceV1,
+    NamingNeighborV1,
+    NamingPriorVerdictV1,
 )
 from orion.schemas.vision_sighting import IDENTITY_SIGHTING_KIND, IdentitySightingV1
 from orion.schemas.context_exec import ContextExecPermissionV1
@@ -444,6 +452,7 @@ from orion.schemas.telemetry.biometrics import (
 )
 from orion.schemas.telemetry.cabinet_ambient_spike import CabinetAmbientSpikeV1
 from orion.schemas.telemetry.home_cooling import HomeCoolingSampleV1
+from orion.schemas.telemetry.office_env import OfficeEnvSampleV1
 from orion.schemas.energy import (
     EnergyBillActualV1,
     EnergyBillForecastV1,
@@ -510,6 +519,7 @@ from orion.schemas.telemetry.spark_candidate import SparkCandidateV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.signals.models import OrionSignalV1
 from orion.schemas.telemetry.system_health import (
+    ContainerRestartsV1,
     EquilibriumSnapshotV1,
     EquilibriumServiceTransitionV1,
     SystemHealthV1,
@@ -543,6 +553,7 @@ from orion.schemas.person_model import (
 from orion.schemas.vision import (
     VisionArtifactPayload,
     VisionSceneInventoryV1,
+    StreetEventV1,
     VisionCropV1,
     VisionCropObservationV1,
     PerceptExpectationV1,
@@ -637,6 +648,7 @@ from orion.schemas.thought import (
     GroundingCapsuleV1,
     HubAssociationBundleV1,
     StanceHarnessSliceV1,
+    TurnSelfPredictionV1,
     StanceReactRequestV1,
     ThoughtDecisionRecordV1,
     ThoughtEventV1,
@@ -673,6 +685,8 @@ from orion.schemas.durable_run import (
     DurableRunReceiptV1,
 )
 from orion.schemas.resource_admission import ResourceEventV1
+from orion.schemas.world_pulse_read_pull import WorldPulseReadPullRequestV1, WorldPulseReadPullResultV1
+from orion.schemas.retro_leisure import RetroLeisureStartRequestV1, RetroLeisureStartResultV1
 from orion.schemas.gpu_pool import (
     GpuActuateResultV1,
     GpuActuateV1,
@@ -702,7 +716,6 @@ from orion.schemas.situation import (
     CuriosityPriorContextV1,
     CuriosityPriorSummaryV1,
     EnvironmentContextV1,
-    LabContextV1,
     PerceptionContextV1,
     PlaceContextV1,
     PresenceCompanionV1,
@@ -810,7 +823,8 @@ from orion.schemas.reading import (
 )
 from orion.schemas.introspect import (
     CuriosityArguments, DreamsArguments, IntrospectItemV1, OrionDayArguments, IntrospectRequestV1, IntrospectResultV1, IntrospectToolBindingV1,
-    NodeHistoryArguments, QueueCuriosityFocusArguments, ReadingResultArguments, RecordCorrectionArguments,
+    NodeHistoryArguments, PowerAttributionArguments, QueueCuriosityFocusArguments, ReadingResultArguments,
+    RecordCorrectionArguments,
 )
 from orion.schemas.reading_resonance import (
     ReadingResonanceCheckV1,
@@ -963,6 +977,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SparkStateSnapshotV1": SparkStateSnapshotV1,
     "SparkTelemetryPayload": SparkTelemetryPayload,
     "SystemHealthV1": SystemHealthV1,
+    "ContainerRestartsV1": ContainerRestartsV1,
     "RpcHealthSnapshotV1": RpcHealthSnapshotV1,
     "RpcChannelLatencyV1": RpcChannelLatencyV1,
     "BusConsumerReadinessV1": BusConsumerReadinessV1,
@@ -1012,6 +1027,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "VisionEdgeArtifact": VisionEdgeArtifact,
     "VisionEdgeActivityPayload": VisionEdgeActivityPayload,
     "VisionSceneInventoryV1": VisionSceneInventoryV1,
+    "StreetEventV1": StreetEventV1,
     "VisionCropV1": VisionCropV1,
     "VisionCropObservationV1": VisionCropObservationV1,
     "PerceptExpectationV1": PerceptExpectationV1,
@@ -1082,6 +1098,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GpuPoolControlReplyV1": GpuPoolControlReplyV1,
     "GpuPoolShedReasonRequestV1": GpuPoolShedReasonRequestV1,
     "GpuPoolShedResultV1": GpuPoolShedResultV1,
+    "WorldPulseReadPullRequestV1": WorldPulseReadPullRequestV1,
+    "WorldPulseReadPullResultV1": WorldPulseReadPullResultV1,
+    "RetroLeisureStartRequestV1": RetroLeisureStartRequestV1,
+    "RetroLeisureStartResultV1": RetroLeisureStartResultV1,
     "GpuActuateV1": GpuActuateV1,
     "GpuActuateResultV1": GpuActuateResultV1,
     "LlmWorkerAnnounceV1": LlmWorkerAnnounceV1,
@@ -1122,7 +1142,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "WeatherPracticalFlagsV1": WeatherPracticalFlagsV1,
     "EnvironmentContextV1": EnvironmentContextV1,
     "AgendaContextV1": AgendaContextV1,
-    "LabContextV1": LabContextV1,
     "CabinetContextV1": CabinetContextV1,
     "CameraSenseV1": CameraSenseV1,
     "SurfaceContextV1": SurfaceContextV1,
@@ -1373,6 +1392,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "BiometricsClusterV1": BiometricsClusterV1,
     "CabinetAmbientSpikeV1": CabinetAmbientSpikeV1,
     "HomeCoolingSampleV1": HomeCoolingSampleV1,
+    "OfficeEnvSampleV1": OfficeEnvSampleV1,
     "EnergyUsageIntervalV1": EnergyUsageIntervalV1,
     "EnergyCostAccruedV1": EnergyCostAccruedV1,
     "EnergyRunCostEstimatedV1": EnergyRunCostEstimatedV1,
@@ -1545,6 +1565,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "OrionDayArguments": OrionDayArguments,
     "RecordCorrectionArguments": RecordCorrectionArguments,
     "NodeHistoryArguments": NodeHistoryArguments,
+    "PowerAttributionArguments": PowerAttributionArguments,
     "QueueCuriosityFocusArguments": QueueCuriosityFocusArguments,
     "WorldPulseReadSeedV1": WorldPulseReadSeedV1,
     "WorldPulseReadHandoffV1": WorldPulseReadHandoffV1,
@@ -1583,6 +1604,14 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     # Regulation state (Temporal Self rev 4 R3, 2026-10-10). Redis orion:regulation:latest and
     # GET /regulation/state only; no bus channel until a bus consumer exists. Also in SCHEMA_REGISTRY.
     "RegulationStateV1": RegulationStateV1,
+    # Body economy Patch A3 (2026-10-23): Organ 1 Body. Bus orion:physiology:state (durable-runs ->
+    # sql-writer physiology_state) and Redis orion:physiology:latest. Also in SCHEMA_REGISTRY.
+    "PhysiologyStateV1": PhysiologyStateV1,
+    # Body economy Patch C1 (2026-10-27): Organ 3 Appetite + Organ 4 Choice, SHADOW. WantV1 is the
+    # POST /physiology/bid body (no channel); WantDecisionV1 rides orion:physiology:want:decision
+    # (durable-runs -> sql-writer want_ledger). Both also in SCHEMA_REGISTRY.
+    "WantV1": WantV1,
+    "WantDecisionV1": WantDecisionV1,
     # Personality choice evidence (PR #2726 P0, 2026-10-16). Read-only reconstruction, no bus
     # channel yet. PersonalityChoiceV1 is also in SCHEMA_REGISTRY; ChoiceOptionV1 is nested.
     "PersonalityChoiceV1": PersonalityChoiceV1,
@@ -1593,6 +1622,13 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "DispositionV1": DispositionV1,
     "ChoiceStyleV1": ChoiceStyleV1,
     "PersonalityCueV1": PersonalityCueV1,
+    # Self-naming (PR #2742): the answer crosses the bus (Hub -> sql-writer), the packet crosses
+    # HTTP (durable-runs -> Hub); both are also in SCHEMA_REGISTRY. Nested models live here only.
+    "DispositionNamingV1": DispositionNamingV1,
+    "DispositionNamingPacketV1": DispositionNamingPacketV1,
+    "NamingEvidenceV1": NamingEvidenceV1,
+    "NamingNeighborV1": NamingNeighborV1,
+    "NamingPriorVerdictV1": NamingPriorVerdictV1,
     "IdentitySightingV1": IdentitySightingV1,
     "ContextExecPermissionV1": ContextExecPermissionV1,
     "SelfExperimentSpecV1": SelfExperimentSpecV1,
@@ -1602,6 +1638,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SelfExperimentListResponseV1": SelfExperimentListResponseV1,
     "CoalitionSnapshotV1": CoalitionSnapshotV1,
     "StanceHarnessSliceV1": StanceHarnessSliceV1,
+    "TurnSelfPredictionV1": TurnSelfPredictionV1,
     "HubAssociationBundleV1": HubAssociationBundleV1,
     "ThoughtEventV1": ThoughtEventV1,
     "ThoughtDecisionRecordV1": ThoughtDecisionRecordV1,
@@ -1671,6 +1708,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "HomeCoolingSampleV1": SchemaRegistration(
         model=HomeCoolingSampleV1,
         kind="home.cooling.sample.v1",
+    ),
+    "OfficeEnvSampleV1": SchemaRegistration(
+        model=OfficeEnvSampleV1,
+        kind="office.env.sample.v1",
     ),
     "EnergyUsageIntervalV1": SchemaRegistration(
         model=EnergyUsageIntervalV1,
@@ -1775,6 +1816,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         model=VisionSceneInventoryV1,
         kind="vision.scene.inventory.v1",
     ),
+    "StreetEventV1": SchemaRegistration(
+        model=StreetEventV1,
+        kind="vision.street.event.v1",
+    ),
     # Walkway camera (docs/superpowers/specs/2026-09-22-walkway-camera-busy-
     # world-design.md). PerceptExpectationV1/VisionCropV1 are persisted/nested
     # shapes with no bus kind, so they live in _REGISTRY only.
@@ -1801,6 +1846,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "StanceHarnessSliceV1": SchemaRegistration(
         model=StanceHarnessSliceV1,
         kind="stance.harness.slice.v1",
+    ),
+    "TurnSelfPredictionV1": SchemaRegistration(
+        model=TurnSelfPredictionV1,
+        kind="turn.self_prediction.v1",
     ),
     "HubAssociationBundleV1": SchemaRegistration(
         model=HubAssociationBundleV1,
@@ -2019,6 +2068,12 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "GpuPoolControlReplyV1": SchemaRegistration(model=GpuPoolControlReplyV1, kind="gpu_pool.control.reply.v1"),
     "GpuPoolShedReasonRequestV1": SchemaRegistration(model=GpuPoolShedReasonRequestV1, kind="gpu_pool.shed.request.v1"),
     "GpuPoolShedResultV1": SchemaRegistration(model=GpuPoolShedResultV1, kind="gpu_pool.shed.result.v1"),
+    # Thinking rung 3 follow-up: the allocator's reading pull (orion/schemas/world_pulse_read_pull.py).
+    "WorldPulseReadPullRequestV1": SchemaRegistration(model=WorldPulseReadPullRequestV1, kind="world_pulse_read.pull.request.v1"),
+    "WorldPulseReadPullResultV1": SchemaRegistration(model=WorldPulseReadPullResultV1, kind="world_pulse_read.pull.result.v1"),
+    # Orion plays Zelda (section E): the allocator's retro leisure start (orion/schemas/retro_leisure.py).
+    "RetroLeisureStartRequestV1": SchemaRegistration(model=RetroLeisureStartRequestV1, kind="retro_leisure.start.request.v1"),
+    "RetroLeisureStartResultV1": SchemaRegistration(model=RetroLeisureStartResultV1, kind="retro_leisure.start.result.v1"),
     # Stage 4 actuation (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md).
     "GpuActuateV1": SchemaRegistration(model=GpuActuateV1, kind="gpu_pool.actuate.v1"),
     "GpuActuateResultV1": SchemaRegistration(model=GpuActuateResultV1, kind="gpu_pool.actuate.result.v1"),
@@ -2096,6 +2151,18 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         model=RegulationStateV1,
         kind=REGULATION_STATE_KIND,
     ),
+    "PhysiologyStateV1": SchemaRegistration(
+        model=PhysiologyStateV1,
+        kind=PHYSIOLOGY_STATE_KIND,
+    ),
+    "WantV1": SchemaRegistration(
+        model=WantV1,
+        kind=WANT_KIND,
+    ),
+    "WantDecisionV1": SchemaRegistration(
+        model=WantDecisionV1,
+        kind=WANT_DECISION_KIND,
+    ),
     # Personality choice evidence (PR #2726 P0). Also in `_REGISTRY`; the nested
     # ChoiceOptionV1 lives in `_REGISTRY` alone.
     "PersonalityChoiceV1": SchemaRegistration(
@@ -2105,6 +2172,14 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "PersonalityFrameV1": SchemaRegistration(
         model=PersonalityFrameV1,
         kind="personality.frame.v1",
+    ),
+    "DispositionNamingV1": SchemaRegistration(
+        model=DispositionNamingV1,
+        kind=PERSONALITY_NAMING_KIND,
+    ),
+    "DispositionNamingPacketV1": SchemaRegistration(
+        model=DispositionNamingPacketV1,
+        kind="personality.naming.packet.v1",
     ),
 }
 

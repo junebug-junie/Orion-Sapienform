@@ -9,7 +9,7 @@ how much of it was filled, so a caller can refuse a fit that is mostly invented 
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Sequence
 
 import numpy as np
@@ -78,3 +78,37 @@ def training_slice(series: pd.Series, spec: SeriesSpec, end: pd.Timestamp | None
     # Leading NaNs carry no information and would be back-filled into invented history.
     first = s.first_valid_index()
     return s[s.index >= first] if first is not None else s.iloc[0:0]
+
+
+def load_points(store, spec: SeriesSpec, start: datetime, end: datetime) -> list[tuple[datetime, float | None]]:
+    """Raw points for ``spec`` over [start, end) with its derived-input rules applied (lag, above)."""
+    lag = timedelta(minutes=spec.lag_min)
+    pts = store.points(spec, start - lag, end - lag)
+    if lag:
+        pts = [(t + lag, v) for t, v in pts]
+    if spec.above is not None:
+        pts = [(t, None if v is None else max(v - spec.above, 0.0)) for t, v in pts]
+    return pts
+
+
+def covariate_series(store, spec: SeriesSpec, start: datetime, end: datetime, index: pd.DatetimeIndex) -> pd.Series:
+    """One covariate on ``index``: real buckets only, derived rules applied, zero before the first reading.
+
+    Weather is hourly: each value holds for its hour, so it is carried forward up to the series' max_fill
+    (60 min) -- interpolating between hours would leave every bucket after the newest hour empty, and a
+    covariate model would refuse for the rest of each hour."""
+    if spec.source.kind == "weather":
+        hold = timedelta(minutes=spec.max_fill_min)
+        s = to_grain(load_points(store, spec, start - hold, end), spec.grain_min, spec.agg, 0,
+                     start=start - hold, end=end)
+        s = s.ffill(limit=max(0, spec.max_fill_min // spec.grain_min - 1))
+        s = s[s.index >= pd.Timestamp(floor_ts(start, spec.grain_min))]
+    else:
+        s = to_grain(load_points(store, spec, start, end), spec.grain_min, spec.agg, 0, start=start, end=end)
+    if spec.zero_before_first:
+        first = store.first_reading(spec)
+        if first is None:
+            s = s.fillna(0.0)
+        else:
+            s = s.where(~(s.isna() & (s.index < pd.Timestamp(first) + pd.Timedelta(minutes=spec.lag_min))), 0.0)
+    return s.reindex(index)

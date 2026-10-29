@@ -369,46 +369,76 @@ async def _run_on(env, bus, req):
 
 
 @pytest.mark.asyncio
-async def test_replayed_prepare_opens_the_painting_act_once(env, monkeypatch):
-    # Live 2026-10-16: 13 act_opened for 3 painting acts -- every prepare re-opened.
+async def test_prepare_never_opens_the_painting_act(env, monkeypatch):
+    """2026-10-21 grading rule: a plan is not an attempt. Fails on the old open-at-prepare code."""
     monkeypatch.setattr(env.steps.settings, "thought_act_ledger_enabled", True, raising=False)
     bus = _GrammarBus()
     first = await _run_on(env, bus, _req("prepare"))
     assert first.status == "done"
-    assert env.store.rows[first.attempt_id]["stage_json"]["act_opened_at"] == NOW.isoformat()
+    assert "act_opened_at" not in env.store.rows[first.attempt_id]["stage_json"]
     for corr in ("corr-2", "corr-3"):
-        replay = await _run_on(env, bus, _req("prepare", correlation_id=corr))
-        assert (replay.status, replay.attempt_id) == ("done", first.attempt_id)
-    assert bus.act_kinds() == ["act_opened"]
+        await _run_on(env, bus, _req("prepare", correlation_id=corr))
+    assert bus.act_kinds() == []
 
 
 @pytest.mark.asyncio
-async def test_prepare_retried_behind_another_painting_opens_only_on_its_own_claim(env, monkeypatch):
-    # The live duplicates: a run queued behind an in-flight attempt retried prepare
-    # (attempt_unresolved) on backoff for ~40 minutes, opening on every retry.
+async def test_first_real_generation_opens_the_act_once(env, monkeypatch):
     monkeypatch.setattr(env.steps.settings, "thought_act_ledger_enabled", True, raising=False)
     bus = _GrammarBus()
-    env.store.claim_replay = {"outcome": "deferred_busy", "reason": "attempt_unresolved", "attempt_id": "other"}
-    for _ in range(3):
-        assert (await _run_on(env, bus, _req("prepare"))).status == "retry"
-    assert bus.act_kinds() == []
-    env.store.claim_replay = None
-    assert (await _run_on(env, bus, _req("prepare"))).status == "done"
-    assert (await _run_on(env, bus, _req("prepare"))).status == "done"
+    first = await _run_on(env, bus, _req("prepare"))
+    out = await _run_on(env, bus, _req("generate", attempt_id=first.attempt_id))
+    assert out.status == "done"
+    assert env.store.rows[first.attempt_id]["stage_json"]["act_opened_at"] == NOW.isoformat()
+    await _run_on(env, bus, _req("generate", attempt_id=first.attempt_id, correlation_id="corr-2"))
     assert bus.act_kinds() == ["act_opened"]
+
+
+def _fake_abandon(env, monkeypatch):
+    def abandon(attempt_id, *, dispatch_id, reason, now, in_flight_window_sec, request_json):
+        row = env.store.rows.get(attempt_id) if attempt_id else None
+        if row is None:
+            return None
+        row["outcome"] = "abandoned"
+        row["result_json"] = {"reason": reason}
+        return row
+
+    from app import store as store_mod
+
+    monkeypatch.setattr(store_mod, "abandon_visual_attempt", abandon)
 
 
 @pytest.mark.asyncio
-async def test_prepare_that_failed_before_its_plan_write_opens_on_the_replay_that_writes_it(env, monkeypatch):
+async def test_abandoned_before_the_gpu_records_no_outcome(env, monkeypatch):
+    """The live painting belief was 29 closes like this (attempt_missing / run_abandoned before
+    any generation), each graded 0. Not an attempt now: nothing is published."""
     monkeypatch.setattr(env.steps.settings, "thought_act_ledger_enabled", True, raising=False)
+    _fake_abandon(env, monkeypatch)
     bus = _GrammarBus()
-    real = env.vc.compute_visual_plan
-    monkeypatch.setattr(env.vc, "compute_visual_plan", AsyncMock(side_effect=RuntimeError("cortex down")))
-    assert (await _run_on(env, bus, _req("prepare"))).status == "retry"
+    first = await _run_on(env, bus, _req("prepare"))
+    out = await _run_on(env, bus, _req("abandon", attempt_id=first.attempt_id))
+    assert out.status == "done"
     assert bus.act_kinds() == []
-    monkeypatch.setattr(env.vc, "compute_visual_plan", real)
-    assert (await _run_on(env, bus, _req("prepare"))).status == "done"
+    assert (await _run_on(env, bus, _req("abandon"))).status == "done"   # attempt_missing
+    assert bus.act_kinds() == []
+
+
+@pytest.mark.asyncio
+async def test_generation_that_started_then_failed_keeps_its_zero(env, monkeypatch):
+    monkeypatch.setattr(env.steps.settings, "thought_act_ledger_enabled", True, raising=False)
+    _fake_abandon(env, monkeypatch)
+    bus = _GrammarBus()
+    first = await _run_on(env, bus, _req("prepare"))
+
+    def broken(*a, **kw):
+        raise env.vc.DiffusionGenerationError("HTTP 500")
+
+    monkeypatch.setattr(env.vc, "call_diffusion_generate", broken)
+    assert (await _run_on(env, bus, _req("generate", attempt_id=first.attempt_id))).status == "retry"
     assert bus.act_kinds() == ["act_opened"]
+    await _run_on(env, bus, _req("abandon", attempt_id=first.attempt_id))
+    assert bus.act_kinds() == ["act_opened", "act_closed"]
+    closed = [env_.payload for ch, env_ in bus.sent if ch == "orion:grammar:event"][-1]
+    assert closed["act"]["outcome"]["value"] == 0.0
 
 
 # ── generate ────────────────────────────────────────────────────────────────
@@ -1088,3 +1118,56 @@ def test_waking_step_reply_omits_dream_only_fields():
     assert "caption" not in payload
     assert payload["execution_receipt"] == {"gate_reason": "max_steps", "detail": None}  # nested Nones kept
     assert ReverieVisualStepResultV1.model_validate(payload) == result
+
+
+@pytest.mark.asyncio
+async def test_a_retried_generation_after_a_failure_opens_once(env, monkeypatch):
+    monkeypatch.setattr(env.steps.settings, "thought_act_ledger_enabled", True, raising=False)
+    bus = _GrammarBus()
+    first = await _run_on(env, bus, _req("prepare"))
+    real = env.vc.call_diffusion_generate
+
+    def broken(*a, **kw):
+        raise env.vc.DiffusionGenerationError("HTTP 500")
+
+    monkeypatch.setattr(env.vc, "call_diffusion_generate", broken)
+    assert (await _run_on(env, bus, _req("generate", attempt_id=first.attempt_id))).status == "retry"
+    monkeypatch.setattr(env.vc, "call_diffusion_generate", real)
+    out = await _run_on(env, bus, _req("generate", attempt_id=first.attempt_id, correlation_id="corr-2"))
+    assert out.status == "done"
+    assert bus.act_kinds() == ["act_opened"]
+
+
+@pytest.mark.asyncio
+async def test_an_act_opened_at_prepare_by_the_old_code_is_not_reopened_and_still_closes(env, monkeypatch):
+    monkeypatch.setattr(env.steps.settings, "thought_act_ledger_enabled", True, raising=False)
+    _fake_abandon(env, monkeypatch)
+    bus = _GrammarBus()
+    first = await _run_on(env, bus, _req("prepare"))
+    env.store.rows[first.attempt_id]["stage_json"]["act_opened_at"] = "2026-10-20T00:00:00+00:00"
+    await _run_on(env, bus, _req("generate", attempt_id=first.attempt_id))
+    assert bus.act_kinds() == []
+    await _run_on(env, bus, _req("abandon", attempt_id=first.attempt_id))
+    assert bus.act_kinds() == ["act_closed"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_open_state_still_publishes_the_zero_close(env, monkeypatch):
+    """A really-opened act left open would block its actor in dispatch's in-flight rule."""
+    from app import store as store_mod
+
+    monkeypatch.setattr(env.steps.settings, "thought_act_ledger_enabled", True, raising=False)
+    _fake_abandon(env, monkeypatch)
+    bus = _GrammarBus()
+    first = await _run_on(env, bus, _req("prepare"))
+
+    def down(*a, **kw):
+        raise RuntimeError("db down")
+
+    real_abandon = store_mod.abandon_visual_attempt
+    out = await _run_on(env, bus, _req("abandon", attempt_id=first.attempt_id))
+    assert out.status == "done" and bus.act_kinds() == []
+    monkeypatch.setattr(store_mod, "load_visual_attempt", down)
+    monkeypatch.setattr(store_mod, "abandon_visual_attempt", real_abandon)
+    await env.steps._mirror_painting_act(bus, _req("abandon", attempt_id=first.attempt_id), out)
+    assert bus.act_kinds() == ["act_closed"]

@@ -15,7 +15,7 @@ from orion.gpu_pool.config import load_pool_config
 from orion.schemas.gpu_pool import GPU_POOL_EVENT_CHANNEL
 
 from .attention import AttentionPublisher
-from .equilibrium_watch import equilibrium_status_for_service, watch_equilibrium
+from .equilibrium_watch import equilibrium_status_for_service, equilibrium_subscribed, watch_equilibrium
 from .gpu_watch import ActiveProbeTracker, RefusalWatch, RoleTarget, role_targets
 from .probe import run_probe
 from .remediator import docker_cli_selfcheck, execute_remediation
@@ -27,6 +27,8 @@ from .stability import (
     CrashLoopTracker,
     StabilityAlert,
     graph_inflation_alert,
+    qualify,
+    remote_restart_counts,
     slow_consumer_alert,
     snapshot_alerts,
 )
@@ -48,11 +50,11 @@ class MeshGuardianService:
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
         self._equilibrium_queue: asyncio.Queue = asyncio.Queue(maxsize=8)
-        self._equilibrium_task_alive = False
         self._crash_loops = CrashLoopTracker()
         self._bus_disconnects = CounterRiseTracker()
         self._alert_gate = AlertGate()
         self._stability_cycles = 0
+        self._stability_started_at: float | None = None
         self._falkordb = None
         self._gpu_active = ActiveProbeTracker()
         self._gpu_refusals = RefusalWatch()
@@ -107,7 +109,9 @@ class MeshGuardianService:
         await self.bus.close()
 
     def equilibrium_subscriber_alive(self) -> bool:
-        return self._equilibrium_task_alive
+        # Subscribed right now, not merely "task started": False while the watch backs
+        # off after a Redis drop, True again once it has resubscribed.
+        return equilibrium_subscribed()
 
     async def _connect_bus_with_retry(
         self,
@@ -138,19 +142,12 @@ class MeshGuardianService:
                 backoff = min(backoff * 2.0, 15.0)
 
     async def _equilibrium_loop(self) -> None:
-        self._equilibrium_task_alive = True
-        try:
-            await watch_equilibrium(
-                self.bus,
-                self.settings.channel_equilibrium_snapshot,
-                self._equilibrium_queue,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("equilibrium watch failed")
-        finally:
-            self._equilibrium_task_alive = False
+        await watch_equilibrium(
+            self.bus,
+            self.settings.channel_equilibrium_snapshot,
+            self._equilibrium_queue,
+            stop_event=self._stop,
+        )
 
     async def _drain_equilibrium(self) -> None:
         while not self._equilibrium_queue.empty():
@@ -269,6 +266,8 @@ class MeshGuardianService:
     async def run_stability_checks(self, now: float) -> list[StabilityAlert]:
         """One cycle. Each check is isolated: one unreachable source (FalkorDB
         down, docker socket missing) must not blind the others."""
+        if self._stability_started_at is None:
+            self._stability_started_at = now
         alerts: list[StabilityAlert] = []
         summary: dict[str, object] = {}
         checks = (
@@ -409,9 +408,51 @@ class MeshGuardianService:
         return alerts
 
     async def _check_crash_loops(self, now: float) -> tuple[list[StabilityAlert], object]:
-        counts = await _docker_restart_counts()
-        info = {"containers": len(counts), "max_restarts": max(counts.values(), default=0)}
-        return self._crash_loops.observe(counts, now), info
+        """This host's docker socket plus every remote host's census from the latest equilibrium
+        snapshot, all host-qualified ("<host>/<name>@<id12>") into one tracker. Either source
+        failing must not blind the other: a dead local socket still lets circe through, and a
+        blind remote host is its own card, never zero restarts."""
+        if self._stability_started_at is None:
+            self._stability_started_at = now
+        local = self._local_node()
+        counts: dict[str, int] = {}
+        info: dict[str, object] = {}
+        try:
+            counts.update(qualify(local, await _docker_restart_counts()))
+            info["local"] = len(counts)
+        except Exception as exc:
+            info["local"] = f"error:{type(exc).__name__}"
+            logger.warning("stability local docker restart counts failed: %s", exc)
+        alerts: list[StabilityAlert] = []
+        if self.settings.remote_container_watch_enabled:
+            snapshot = self.latest_snapshot
+            census = remote_restart_counts(
+                snapshot.services if snapshot is not None else [],
+                expected_hosts=self.settings.remote_container_host_list(),
+                local_node=local,
+                now=now,
+                watching_since=self._stability_started_at,
+                stale_after_sec=self.settings.remote_container_stale_sec,
+            )
+            counts.update(census.counts)
+            alerts += census.alerts
+            info["remote"] = {h: f"{age:.0f}s" for h, age in census.fresh_hosts.items()}
+            if census.alerts:
+                info["blind"] = [a.subject for a in census.alerts]
+            read_hosts = set(census.fresh_hosts)
+        else:
+            read_hosts = set()
+        if not isinstance(info.get("local"), str):
+            read_hosts.add(local)
+        info["containers"] = len(counts)
+        info["max_restarts"] = max(counts.values(), default=0)
+        # Only hosts actually read this cycle may drop histories: a socket error or a blind host
+        # must not reset another host's (or its own) restart history.
+        return alerts + self._crash_loops.observe(counts, now, read_hosts=read_hosts), info
+
+    def _local_node(self) -> str:
+        node = (self.settings.node_name or "").strip()
+        return node if node and node != "unknown" else "local"
 
     async def _check_bus_redis(self, now: float) -> tuple[list[StabilityAlert], object]:
         redis = self.bus.redis  # raises RuntimeError when not connected

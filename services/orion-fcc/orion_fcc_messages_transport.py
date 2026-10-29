@@ -6,6 +6,7 @@ never model progress. Non-streaming replies require a complete message.
 
 import asyncio
 import json
+import logging
 from contextlib import suppress
 from copy import deepcopy
 
@@ -16,6 +17,86 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.requests import ClientDisconnect
 
 PING = 'event: ping\ndata: {"type":"ping"}\n\n'
+
+# uvicorn's logger is the one whose INFO lines reach `docker logs` in this container.
+logger = logging.getLogger("uvicorn.error")
+
+# Fixed text of Claude Code's compaction prompts (2.1.304, the CLI in the governor and Hub):
+# the no-tools preamble, and the opening shared by its full, partial ("RECENT portion") and
+# "this conversation" wordings. The CLI sends that prompt as the last user turn WITH the turn's tools still attached
+# and only asks, in text, for no tool calls. Claude models obey; the local Qwen lanes often
+# call a tool, and the CLI keeps the text before the call ("Now let me read the remaining
+# files...") as the summary, so the task is lost: 33 of 51 live compactions on 2026-10-17.
+COMPACTION_PROMPT_MARKS = (
+    "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.",
+    "Your task is to create a detailed summary of ",
+)
+
+
+def _text_of(content):
+    if isinstance(content, str):
+        return content
+    parts = []
+    for block in content or ():
+        text = getattr(block, "text", None)
+        if text is None and isinstance(block, dict):
+            text = block.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+    return "\n".join(parts)
+
+
+def is_compaction_request(request_data):
+    """True when the last turn is the CLI's own compaction prompt from the user role."""
+    messages = getattr(request_data, "messages", None) or []
+    if not messages:
+        return False
+    last = messages[-1]
+    if getattr(last, "role", None) != "user":
+        return False
+    text = _text_of(getattr(last, "content", None))
+    return any(mark in text for mark in COMPACTION_PROMPT_MARKS)
+
+
+def prepare_request(request_data):
+    """Compaction requests go upstream with no tools, so the model can only answer in text.
+
+    Earlier tool calls in the history stay as they are; only the offer of new ones is removed.
+    Side effect: upstream FCC's no-tools local shortcuts (api/optimization_handlers.py) now see
+    this request, and its title detector DOES match the CLI's system prompt -- see
+    `guard_local_optimizations`, which must be installed alongside this.
+    Every other request is returned unchanged (same object)."""
+    if not is_compaction_request(request_data) or not getattr(request_data, "tools", None):
+        return request_data
+    logger.info(
+        "fcc_compaction_tools_stripped model=%s tools=%d messages=%d",
+        getattr(request_data, "model", None), len(request_data.tools), len(request_data.messages),
+    )
+    return request_data.model_copy(update={"tools": None, "tool_choice": None})
+
+
+def guard_local_optimizations():
+    """Keep FCC's local shortcuts away from compaction requests.
+
+    Once `prepare_request` strips their tools, the CLI's own system prompt satisfies FCC's
+    title-generation detector, which answers "Conversation" in ~20 ms instead of calling the
+    model. That one word became every compaction summary from 2026-10-21 (19 of 19 live), so
+    each long turn lost its task after compacting. Idempotent; fails loudly if upstream moves
+    the hook, so a pin bump cannot silently drop the guard."""
+    import api.handlers.messages as handlers
+
+    original = handlers.try_optimizations
+    if getattr(original, "orion_compaction_guard", False):
+        return
+
+    def guarded(request_data, settings):
+        if is_compaction_request(request_data):
+            logger.info("fcc_compaction_local_shortcut_skipped model=%s", getattr(request_data, "model", None))
+            return None
+        return original(request_data, settings)
+
+    guarded.orion_compaction_guard = True
+    handlers.try_optimizations = guarded
 
 
 async def with_heartbeats(body, interval=15.0):

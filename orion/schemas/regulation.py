@@ -25,6 +25,12 @@ Inputs, per the spec's metric gate (R3):
   ``actuate_refused`` that ``orion.gpu_pool.controller_health.classify`` calls unfixable by retry,
   not yet followed by a ``swapped``) is a fault, not load: S2 reads like a stale input and the
   reading carries ``gpu_fault:<kind>:<seat>`` in ``reasons`` (2026-10-09: 26 h of refusals).
+  Queue entries a GPU pool shed (heat) holds back are not load either: S2 reads the queue minus
+  them, and when they alone lift it to the floor S2 reads like a stale input, ``gpu_shed:<reason>``
+  (2026-10-18 -> 10-20: the heat shed's held queue read as GPU strain for two days).
+  Queued background holds (Orion's own deferrable self-work) are left out of the queue entirely:
+  waiting self-work is hunger, not strain (2026-10-23 S2 decision; the agent lane's self-queued
+  readings kept strain latched for days). The reading notes them as ``gpu_queue_self_deferrable:<n>``.
 """
 
 from __future__ import annotations
@@ -73,6 +79,18 @@ class ArousalInputsV1(BaseModel):
     # (``orion.regulation.arousal.gpu_fault_from_events`` over ``gpu_pool_events``). A queue at or
     # above the floor during a fault is not load evidence. None: no fault seen in the lookback.
     gpu_fault: Optional[str] = None
+    # S2 shed (2026-10-20): of ``gpu_queue_depth``, how many queued leases a GPU pool shed (heat)
+    # is holding back in the newest snapshot, and the shed reason(s) (``orion.gpu_pool.shed.
+    # shed_held_queue``). They wait on heat, not on GPU load: S2 reads the queue minus these, and
+    # a queue they alone lift to the floor is not load evidence. None/0: nothing held, or a
+    # snapshot saved before the shed columns existed.
+    gpu_queue_shed_held: Optional[int] = Field(default=None, ge=0)
+    gpu_shed_reason: Optional[str] = None
+    # S2 deferrable (2026-10-23): of ``gpu_queue_depth``, how many queued leases are Orion's own
+    # deferrable self-work (background holds, ``orion.gpu_pool.shed.deferrable_queued``; never a
+    # lease already counted shed-held) in the newest snapshot. Hunger, not load: S2 leaves them out
+    # and the reading says ``gpu_queue_self_deferrable:<n>``. None/0: none, or an older snapshot.
+    gpu_queue_self_deferrable: Optional[int] = Field(default=None, ge=0)
 
 
 class ArousalReadingV1(BaseModel):

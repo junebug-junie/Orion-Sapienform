@@ -212,15 +212,16 @@ services:
   # The token lands in /mnt/telemetry/vision/ring_state (owner-only, mounted
   # into this container only -- the other retinas share retina_state and must
   # not read Ring credentials); the source picks it up within a minute, no
-  # restart. Behind the
-  # `doorbell` profile, like the walkway:
-  #   scripts/safe_docker_build.sh orion-vision-retina --profile doorbell up -d --build orion-vision-retina-doorbell
+  # restart. No compose profile (2026-10-20): unlike the walkway, whose empty
+  # RTSP URL is refused at boot, an unauthenticated doorbell just waits and
+  # retries ("ring not authenticated"), so a plain `up` -- and the post-pull
+  # rebuild, which never starts a profile service that is not running --
+  # builds and starts it. Behind a profile it never deployed itself.
   orion-vision-retina-doorbell:
     logging:
       driver: journald
       options:
         tag: "{{.Name}}"
-    profiles: ["doorbell"]
     build:
       context: ../..
       dockerfile: services/orion-vision-retina/Dockerfile
@@ -255,6 +256,13 @@ services:
       - RETINA_RING_EVENT_KINDS=${DOORBELL_RING_EVENT_KINDS:-motion,ding}
       - RETINA_RING_BURST_SECONDS=${DOORBELL_RING_BURST_SECONDS:-15.0}
       - RETINA_RING_COOLDOWN_SECONDS=${DOORBELL_RING_COOLDOWN_SECONDS:-30.0}
+      # Ring pushes recorded as vision events / street events (app/ring_events.py).
+      - CHANNEL_VISION_EVENTS_PUB=${CHANNEL_VISION_EVENTS_PUB:-orion:vision:events}
+      - CHANNEL_STREET_EVENTS_PUB=${CHANNEL_STREET_EVENTS_PUB:-orion:vision:street:events}
+      # Active looking (settings.py RETINA_RING_SELF_LOOK_*).
+      - RETINA_RING_SELF_LOOK_ENABLED=${DOORBELL_RING_SELF_LOOK_ENABLED:-true}
+      - RETINA_RING_SELF_LOOK_MAX_PER_DAY=${DOORBELL_RING_SELF_LOOK_MAX_PER_DAY:-8}
+      - RETINA_RING_SELF_LOOK_MIN_SPACING_SECONDS=${DOORBELL_RING_SELF_LOOK_MIN_SPACING_SECONDS:-300}
       - RETINA_CLIP_ENABLED=false
     volumes:
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-vision-retina/app:/app/app

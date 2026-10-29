@@ -63,3 +63,108 @@ class PredictionForecastV1(BaseModel):
     steps: list[PredictionStepV1]
     exceedance: list[PredictionExceedanceV1] = Field(default_factory=list)
 
+
+
+# --- Action bets (docs/superpowers/specs/2026-10-23-embodied-experience-learning-design.md) -------
+#
+# HTTP contracts only (orion-prediction :8132, /action-bets/*); no bus channel in v1. A body asks for
+# a quote on its options, places a bet on the one it chose (the service computes ``p`` itself at
+# placing, so no caller can supply a probability after the fact) and settles it. ``skill`` and
+# ``context`` use the game-free vocabulary in orion/embodiment/skills.py; the service treats them
+# as opaque keys. Settled bets are graded with app/grading.py like every other probability.
+
+ACTION_BET_MAX_OPTIONS = 20
+ActionBetResult = Literal["success", "failure", "void"]
+ActionBetLevel = Literal["place", "situation", "skill", "prior"]
+
+
+class ActionBetOptionV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    option_id: str = Field(..., min_length=1, max_length=64)
+    skill: str = Field(..., min_length=1, max_length=32)
+    context: dict[str, str] = Field(default_factory=dict, max_length=8)
+    place: str | None = Field(None, max_length=128)
+
+
+class ActionBetQuoteRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    domain: str = Field(..., min_length=1, max_length=64)   # 'retro:zelda'
+    body: str = Field(..., min_length=1, max_length=32)     # 'retro'
+    options: list[ActionBetOptionV1] = Field(..., min_length=1, max_length=ACTION_BET_MAX_OPTIONS)
+
+
+class ActionBetCountsV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    level: ActionBetLevel
+    # Above the place level each place counts as ONE unit (its bets weigh 1/n each), so one stubborn
+    # wall cannot teach a body that a whole skill fails: these may be fractional there.
+    successes: float = Field(..., ge=0)
+    failures: float = Field(..., ge=0)
+
+
+class ActionBetQuoteV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    option_id: str
+    model: str                       # 'action_beta_backoff', or the baseline when the gate serves it
+    p: float = Field(..., ge=0.0, le=1.0)
+    p_baseline: float = Field(..., ge=0.0, le=1.0)
+    interval80: tuple[float, float]
+    eig_nats: float = Field(..., ge=0.0)
+    level: ActionBetLevel            # deepest level with at least one settled bet
+    counts: list[ActionBetCountsV1]  # skill first, then situation, then place (those that apply)
+
+
+class ActionBetPlaceV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bet_id: str = Field(..., min_length=1, max_length=200)
+    domain: str = Field(..., min_length=1, max_length=64)
+    body: str = Field(..., min_length=1, max_length=32)
+    skill: str = Field(..., min_length=1, max_length=32)
+    context: dict[str, str] = Field(default_factory=dict, max_length=8)
+    place: str | None = Field(None, max_length=128)
+    action: dict = Field(default_factory=dict)       # the body's own goal, for inspection only
+    chosen_rank: int | None = Field(None, ge=1, le=ACTION_BET_MAX_OPTIONS)
+    session_id: str | None = Field(None, max_length=128)
+    # Body-level transition inputs (orion/embodiment/transition.py, zelda_features) for the world-model
+    # shadow; the service scores them only when feature_version matches its loaded weights.
+    features: list[float] | None = Field(None, max_length=64)
+    feature_version: str | None = Field(None, max_length=64)
+
+
+class ActionBetSettleV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    result: ActionBetResult
+    outcome: str = Field(..., min_length=1, max_length=64)   # the body's own words
+    detail: dict = Field(default_factory=dict)
+
+
+class ActionBetV1(BaseModel):
+    """One stored bet, as returned by place, settle and the list endpoints."""
+    model_config = ConfigDict(extra="forbid")
+
+    bet_id: str
+    domain: str
+    body: str
+    skill: str
+    context: dict[str, str]
+    place: str | None = None
+    action: dict
+    model: str
+    p: float = Field(..., ge=0.0, le=1.0)
+    p_baseline: float = Field(..., ge=0.0, le=1.0)
+    level: ActionBetLevel
+    counts: list[ActionBetCountsV1]
+    chosen_rank: int | None = None
+    session_id: str | None = None
+    placed_at: AwareDatetime
+    settled_at: AwareDatetime | None = None
+    result: ActionBetResult | None = None
+    shadow: dict | None = None       # world-model shadow at placing: {model, tag, p, heads}; never served
+    outcome: str | None = None
+    detail: dict = Field(default_factory=dict)

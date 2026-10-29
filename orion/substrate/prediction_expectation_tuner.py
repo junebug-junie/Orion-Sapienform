@@ -85,12 +85,13 @@ class PredictionExpectationTuner:
     # re-assessment of a ~98%-identical 72 h window is ~24 correlated tries a
     # day; spacing them keeps a rejected or noisy candidate from retrying (and
     # an adoption from flip-flopping) on what is effectively the same data.
+    # Read from the store's proposals, not process memory, so a Hub restart
+    # does not re-arm it.
     min_proposal_spacing: timedelta = timedelta(hours=24)
     # Readings replayed before an adoption to warm both settings up for the
     # post-adoption comparison (only WARMUP_READINGS of them are needed).
     post_adoption_warmup: timedelta = timedelta(hours=6)
     _last_assessed: dict[str, datetime] = field(default_factory=dict)
-    _last_proposed: dict[str, datetime] = field(default_factory=dict)
 
     def propose(self, *, store, now: datetime | None = None) -> list[MutationProposalV1]:
         t = now or datetime.now(timezone.utc)
@@ -100,8 +101,9 @@ class PredictionExpectationTuner:
             last = self._last_assessed.get(domain)
             if last is not None and t - last < self.min_interval:
                 continue
-            proposed = self._last_proposed.get(domain)
+            proposed = store.latest_proposal_at(surface)
             if proposed is not None and t - proposed < self.min_proposal_spacing:
+                self._last_assessed[domain] = t  # re-check hourly, not every tick
                 continue
             if store.active_surface(surface) is not None or store.has_queued_proposal_for_surface(surface):
                 continue
@@ -179,7 +181,6 @@ class PredictionExpectationTuner:
             )
             store.record_signal(signal)
             store.add_proposal(proposal, priority=60, due_at=t)
-            self._last_proposed[domain] = t
             proposals.append(proposal)
         return proposals
 

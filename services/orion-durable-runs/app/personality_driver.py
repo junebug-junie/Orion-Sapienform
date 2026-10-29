@@ -4,7 +4,8 @@ A plain periodic task (no LangGraph): all state lives in the ``personality_*`` t
 per-source cursors, so a restart resumes exactly. One tick, every ``PERSONALITY_TICK_SEC`` and
 once on start:
 
-1. load non-retired nodes and the cursors;
+1. load non-retired nodes and the cursors; once (``rekey`` marker), move their ``lane_recent`` from
+   lane keys to source keys (``rekey_sources``), committed with this tick;
 2. first tick ever: write a start cursor (= now) for every source (no backfill) and seed nodes
    from the latest version of each curiosity self-inquiry concept (all-or-nothing: a failed embed
    leaves the ``seed`` marker unwritten, so the whole seed is retried next tick);
@@ -14,7 +15,10 @@ once on start:
    previous row, so the failed row is read again next tick;
 5. ``fold`` (fades, then folds) or, with no evidence, ``apply_fade`` so fade and retirement still
    persist;
-6. commit evidence, nodes, history and cursors in one transaction.
+6. self-naming (``PERSONALITY_NAMING_APPLY_ENABLED``): read Orion's answers from
+   ``orion_disposition_naming`` after the ``naming`` cursor, embed each NAME's ``name + sentence`` for
+   the recorded grounding rank/margin, and ``apply_namings`` to the folded nodes;
+7. commit evidence, nodes, history and cursors in one transaction.
 
 A failed tick logs ``personality_tick_failed`` with the exception type and writes nothing.
 """
@@ -27,18 +31,31 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Optional, Sequence
 
-from orion.personality.graph import Evidence, FoldResult, Node, apply_fade, fold, seed_nodes
+from orion.personality.graph import (
+    Evidence,
+    FoldResult,
+    NamingApplyResult,
+    NamingRow,
+    Node,
+    apply_fade,
+    apply_namings,
+    fold,
+    rekey_sources,
+    seed_nodes,
+)
+from orion.personality.naming import grounding
 from orion.personality.situation import COMPANY_CLOSE_GRACE, situation_at
 
 from app.personality_sources import (
     READ_LAG_SEC,
+    REKEY_CURSOR,
     SEED_CURSOR,
     SOURCE_NAMES,
     Candidate,
     Cursor,
     SourceItem,
 )
-from app.personality_store import TickWrite, node_key
+from app.personality_store import NAMING_CURSOR, TickWrite, node_key
 
 logger = logging.getLogger("orion-durable-runs.personality_driver")
 
@@ -101,7 +118,7 @@ def to_evidence(c: Candidate, vec: list[float]) -> Evidence:
     if not vec:
         meta["embed_rejected"] = True
     return Evidence(evidence_id=c.evidence_id, lane=c.lane, source_ref=c.source_ref, occurred_at=c.occurred_at,
-                    excerpt=c.excerpt, embedding=vec, meta=meta)
+                    excerpt=c.excerpt, embedding=vec, meta=meta, text=c.text)
 
 
 def accept(items: Sequence[SourceItem], existing: set[str], vectors: dict[str, Optional[list[float]]],
@@ -119,19 +136,20 @@ def accept(items: Sequence[SourceItem], existing: set[str], vectors: dict[str, O
     return out, (Cursor(last.at, last.ref) if last else None), False
 
 
-def merge(seeded: Optional[FoldResult], folded: FoldResult, input_ids: set[str]) -> FoldResult:
-    """Seed result + fold result, deduped (the fold's copy of a node wins)."""
+def merge(seeded: Optional[FoldResult], folded: FoldResult, input_ids: set[str],
+          rekeyed: Optional[FoldResult] = None, named: Optional[NamingApplyResult] = None) -> FoldResult:
+    """Rekey + seed + fold + naming results, deduped (the later step's copy of a node wins)."""
     nodes: dict[str, Node] = {}
     history: dict[tuple[str, datetime], Any] = {}
     evidence = []
-    for res in (seeded, folded):
+    for res in (rekeyed, seeded, folded, named):
         if res is None:
             continue
         for n in res.nodes:
             nodes[n.disposition_id] = n
         for h in res.history:
             history[(h.disposition_id, h.at)] = h
-        evidence.extend(res.evidence_rows)
+        evidence.extend(getattr(res, "evidence_rows", ()))
     return FoldResult(nodes=list(nodes.values()), evidence_rows=evidence, history=list(history.values()))
 
 
@@ -148,6 +166,7 @@ class TickStats:
     nodes_by_status: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
     seeded: bool = False
+    namings_last_tick: list = field(default_factory=list)  # [{naming, verdict, apply_status, ...}]
 
 
 CHRONICLE_MAX_LAG = timedelta(minutes=30)
@@ -156,7 +175,8 @@ CHRONICLE_MAX_LAG = timedelta(minutes=30)
 class PersonalityDriver:
     def __init__(self, *, store: Any, reader: Any, embed: EmbedFn, now: Callable[[], datetime],
                  tick_sec: float = 600.0, read_lag_sec: float = READ_LAG_SEC,
-                 close_embedder: Optional[Callable[[], Awaitable[None]]] = None) -> None:
+                 close_embedder: Optional[Callable[[], Awaitable[None]]] = None,
+                 naming_enabled: bool = True) -> None:
         self._store = store
         self._reader = reader
         self._embed = embed
@@ -167,6 +187,7 @@ class PersonalityDriver:
         self._task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
         self._embed_failures: dict[str, int] = {}  # evidence_id -> consecutive failed ticks
+        self.naming_enabled = naming_enabled
         self.stats = TickStats()
 
     async def start(self, stop: asyncio.Event) -> None:
@@ -239,6 +260,17 @@ class PersonalityDriver:
         cursors = await self._store.load_cursors()
         write_cursors: dict[str, Cursor] = {}
 
+        rekeyed: Optional[FoldResult] = None
+        if REKEY_CURSOR not in cursors:
+            hits = await self._store.rekey_hits(n.disposition_id for n in nodes)
+            rekeyed = rekey_sources(nodes, hits, now=now)
+            by_id = {n.disposition_id: n for n in rekeyed.nodes}
+            demoted = [n.disposition_id for n in nodes
+                       if n.status == "active" and by_id.get(n.disposition_id, n).status != "active"]
+            nodes = [by_id.get(n.disposition_id, n) for n in nodes]
+            write_cursors[REKEY_CURSOR] = Cursor(now, "")
+            logger.info("personality_rekey nodes=%d demoted=%s", len(rekeyed.nodes), demoted)
+
         # First boot (per source): start at now, no backfill. Not read this tick.
         for name in SOURCE_NAMES:
             if name not in cursors:
@@ -307,11 +339,26 @@ class PersonalityDriver:
             folded = await asyncio.to_thread(fold, base, evidence, now=now)
         else:
             folded = await asyncio.to_thread(apply_fade, base, now=now)
-        result = merge(seeded, folded, input_ids)
+        named: Optional[NamingApplyResult] = None
+        if self.naming_enabled:
+            current = {n.disposition_id: n for n in base} | {n.disposition_id: n for n in folded.nodes}
+            named = await self._apply_namings(list(current.values()), cursors, write_cursors, now, warnings)
+        result = merge(seeded, folded, input_ids, rekeyed, named)
         loaded = {n.disposition_id: node_key(n) for n in nodes}
 
         await self._store.commit_tick(TickWrite(now=now, evidence=result.evidence_rows, nodes=result.nodes,
                                                 loaded=loaded, history=result.history, cursors=write_cursors))
+        # Logged only once committed: the line is the acceptance evidence that a verdict landed.
+        applied = []
+        for o in (named.outcomes if named is not None else []):
+            margin = f"{o.grounding_margin:.4f}" if o.grounding_margin is not None else "none"
+            logger.info("personality_naming_applied naming=%s verdict=%s grounding_rank=%s margin=%s apply_status=%s",
+                        o.naming_id, o.verdict, o.grounding_rank if o.grounding_rank is not None else "none",
+                        margin, o.apply_status)
+            applied.append({"naming": o.naming_id, "disposition_id": o.disposition_id, "verdict": o.verdict,
+                            "apply_status": o.apply_status, "grounding_rank": o.grounding_rank,
+                            "grounding_margin": o.grounding_margin})
+        self.stats.namings_last_tick = applied
 
         try:
             status = await self._store.status_counts()
@@ -329,9 +376,62 @@ class PersonalityDriver:
         s.warnings = warnings
         s.seeded = s.seeded or seeded is not None or SEED_CURSOR in cursors
         summary = {"evidence": s.evidence_last_tick, "skipped": s.skipped_last_tick, "rows": rows, "held": held,
+                   "namings": len(applied),
                    "nodes_written": len(result.nodes), "history": len(result.history), "warnings": warnings}
         logger.info("personality_tick %s", summary)
         return summary
+
+    async def _apply_namings(self, current: list[Node], cursors: dict, write_cursors: dict, now: datetime,
+                             warnings: list[str]) -> Optional[NamingApplyResult]:
+        """Orion's answers after the ``naming`` cursor, applied to the folded nodes (same tick, same
+        transaction). A NAME's grounding embed that fails holds the cursor at the row before it (the
+        row is re-read next tick) until ``EMBED_MAX_FAILURES``; then it is applied ungrounded."""
+        rows = await self._reader.read_namings(cursors.get(NAMING_CURSOR), now - self._lag)
+        if not rows:
+            return None
+        names = [r for r in rows if r.get("verdict") == "name" and r.get("hub_check") == "accepted"]
+        vecs: dict[str, Optional[list[float]]] = {}
+        sem = asyncio.Semaphore(EMBED_CONCURRENCY)
+
+        async def one(r: dict) -> None:
+            async with sem:
+                text = f"{(r.get('name') or '').strip()} {(r.get('sentence') or '').strip()}".strip()
+                try:
+                    vecs[r["naming_id"]] = await self._embed(f"personality-naming-{r['naming_id']}", text)
+                except Exception as exc:  # noqa: BLE001 - grounding is recorded, never a gate
+                    logger.warning("personality_naming_embed_failed naming=%s error=%s",
+                                   r["naming_id"], type(exc).__name__)
+                    vecs[r["naming_id"]] = REJECTED if _rejected(exc) else None
+
+        await asyncio.gather(*(one(r) for r in names))
+        live = [n for n in current if n.status != "retired"]
+        take: list[dict] = []
+        ground: dict[str, tuple[int, float]] = {}
+        for r in rows:
+            nid = r["naming_id"]
+            if nid in vecs:
+                vec = vecs[nid]
+                if vec is None:
+                    fails = self._embed_failures.get(nid, 0) + 1
+                    self._embed_failures[nid] = fails
+                    if fails < EMBED_MAX_FAILURES:
+                        warnings.append("naming_grounding_embed_failed")
+                        break
+                    warnings.append(f"naming_grounding_gave_up:{nid}"[:200])
+                self._embed_failures.pop(nid, None)
+                g = grounding(vec, r["disposition_id"], live) if vec else None
+                if g is not None:
+                    ground[nid] = g
+            take.append(r)
+        if not take:
+            return None
+        namings = [NamingRow(naming_id=r["naming_id"], disposition_id=r["disposition_id"], verdict=r["verdict"],
+                             hub_check=r["hub_check"], written_at=r["written_at"], name=r.get("name"),
+                             sentence=r.get("sentence"), merge_with=r.get("merge_with")) for r in take]
+        res = apply_namings(current, namings, ground, now=now)
+        last = take[-1]
+        write_cursors[NAMING_CURSOR] = Cursor(last["created_at"], last["naming_id"])
+        return res
 
     def health(self) -> dict:
         s = self.stats
@@ -339,7 +439,8 @@ class PersonalityDriver:
                 "evidence_last_tick": s.evidence_last_tick, "skipped_last_tick": s.skipped_last_tick,
                 "rows_last_tick": s.rows_last_tick, "held_sources": s.held_sources,
                 "nodes_by_status": s.nodes_by_status, "warnings": s.warnings, "seeded": s.seeded,
-                "tick_sec": self._tick_sec}
+                "tick_sec": self._tick_sec, "naming_enabled": self.naming_enabled,
+                "namings_last_tick": s.namings_last_tick}
 
     def frame_warnings(self, now: datetime) -> list[str]:
         """Warnings carried into the frame: staleness/failure FIRST (they must survive the 20 cap),

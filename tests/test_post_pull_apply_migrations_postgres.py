@@ -78,7 +78,7 @@ def _q(pg, sql):
 _FAKE_CLASSIFIER = """\
 import os, sys
 args = sys.argv[1:]
-if "--running-profile-services" in args or "--pool-held-services" in args:
+if "--running-profile-services" in args or "--pool-held-services" in args or "--running-extra-compose" in args:
     raise SystemExit(0)
 if "--migrations" in args:
     print("\\n".join(x for x in os.environ["FAKE_MIGRATIONS"].split(";") if x))
@@ -218,3 +218,188 @@ def test_kill_switch_leaves_the_database_alone(scratch):
     p, builds = scratch.pull([a])
     assert "auto-apply OFF" in p.stdout
     assert builds == ["BUILD orion-hub up -d --build tables=-"]
+
+
+# ------------------------------------------- a running backup (incident 2026-10-17 ~03:56 UTC)
+#
+# The nightly pg_dump (application_name 'pg_dump') held AccessShareLocks ~45 min and the apply hit
+# lock_timeout. Here a session NAMED like a backup holds a real lock on the table the migration
+# alters; the real applier, real psql, real pg_stat_activity / pg_blocking_pids decide. The applier
+# runs in-process so the poll and backoff can be short; lock_timeout itself stays 10s.
+
+import importlib.util  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+
+
+def _load_applier():
+    spec = importlib.util.spec_from_file_location("apply_post_pull_migrations_pg",
+                                                  REPO_ROOT / "scripts" / "apply_post_pull_migrations.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+ap = _load_applier()
+
+
+class _Holder:
+    """A session with `appname` holding ACCESS SHARE on pp_probe_keep (what pg_dump takes on every
+    table it dumps) for `hold_s` seconds after start(), then disconnecting."""
+
+    def __init__(self, pg, appname, hold_s):
+        self.pg, self.appname, self.hold_s = pg, appname, hold_s
+        self.locked = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self):
+        conn = psycopg2.connect(application_name=self.appname, **self.pg)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("LOCK TABLE pp_probe_keep IN ACCESS SHARE MODE")
+                self.locked.set()
+                time.sleep(self.hold_s)
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def __enter__(self):
+        self.thread.start()
+        assert self.locked.wait(10)
+        return self
+
+    def __exit__(self, *a):
+        self.thread.join(timeout=60)
+
+
+def _connect(pg):
+    def connect():
+        conn = psycopg2.connect(**pg)
+        conn.set_session(readonly=True, autocommit=True)
+        return conn
+    return connect
+
+
+_ADD_COLUMN = HDR + "ALTER TABLE pp_probe_keep ADD COLUMN IF NOT EXISTS note text;\n"
+
+
+def _has_note(pg):
+    return _q(pg, "SELECT count(*) FROM information_schema.columns "
+                  "WHERE table_name = 'pp_probe_keep' AND column_name = 'note'") == [(1,)]
+
+
+def _apply(scratch, paths, **kw):
+    lines = []
+    kw.setdefault("poll_s", 0.5)
+    kw.setdefault("watch_interval_s", 0.5)
+    rc = ap.run(paths, repo=scratch.repo, env=scratch.env, connect_fn=_connect(scratch.pg),
+                out=lines.append, **kw)
+    return rc, "\n".join(lines)
+
+
+def test_running_pg_dump_is_waited_for_then_the_migration_lands(scratch):
+    _q(scratch.pg, "CREATE TABLE pp_probe_keep (id int)")
+    f = scratch.add("manual_migration_pp_a.sql", _ADD_COLUMN)
+    with _Holder(scratch.pg, "pg_dump", 3):
+        t0 = time.monotonic()
+        rc, text = _apply(scratch, [f])
+        waited = time.monotonic() - t0
+    assert rc == 0, text
+    assert "waiting for a running backup (pg_dump pid=" in text
+    assert "backup finished after a" in text
+    assert "lock timeout" not in text   # it never even tried while the backup ran
+    assert 2.0 < waited < 9.5, waited   # waited for the holder, not for lock_timeout
+    assert _has_note(scratch.pg)
+    log = scratch.log.read_text()
+    assert log.index("BACKUP-WAIT ") < log.index("BACKUP-WAIT-DONE") < log.index("APPLIED ")
+
+
+def test_idle_pg_dump_backend_is_not_waited_for(scratch):
+    """An orphaned pg_dump backend (2026-08-16..18) sits idle and holds no locks: apply at once."""
+    _q(scratch.pg, "CREATE TABLE pp_probe_keep (id int)")
+    f = scratch.add("manual_migration_pp_a.sql", _ADD_COLUMN)
+    idle = psycopg2.connect(application_name="pg_dump", **scratch.pg)
+    idle.autocommit = True
+    try:
+        assert _q(scratch.pg, "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'pg_dump'") == [(1,)]
+        rc, text = _apply(scratch, [f], max_wait_s=0)
+    finally:
+        idle.close()
+    assert rc == 0, text
+    assert "waiting for a running backup" not in text
+    assert _has_note(scratch.pg)
+
+
+def test_pg_dump_outlasting_the_max_wait_fails_and_holds(scratch):
+    _q(scratch.pg, "CREATE TABLE pp_probe_keep (id int)")
+    f = scratch.add("manual_migration_pp_a.sql", _ADD_COLUMN)
+    with _Holder(scratch.pg, "pg_dump", 4):
+        rc, text = _apply(scratch, [f], max_wait_s=1)
+    assert rc == 1, text
+    assert "a backup is still running (pg_dump pid=" in text
+    assert not _has_note(scratch.pg)
+    assert "BACKUP-WAIT-EXCEEDED" in scratch.log.read_text()
+
+
+def test_lock_timeout_behind_pg_dump_is_retried_then_lands(scratch):
+    """The backup starts after the pre-apply look (here: the first look is made to miss it), so the
+    apply really hits lock_timeout; the watcher must name pg_dump via pg_blocking_pids."""
+    _q(scratch.pg, "CREATE TABLE pp_probe_keep (id int)")
+    f = scratch.add("manual_migration_pp_a.sql", _ADD_COLUMN)
+    real = _connect(scratch.pg)
+    looks = []
+
+    class _MissFirstLook:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def cursor(self):
+            cur = self.conn.cursor()
+            outer = self
+
+            class C:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    cur.close()
+                    return False
+
+                def execute(self, sql, params=None):
+                    self.miss = sql == ap.BACKUP_SQL and not looks
+                    if sql == ap.BACKUP_SQL:
+                        looks.append(1)
+                    cur.execute(sql, params)
+
+                def fetchall(self):
+                    rows = cur.fetchall()
+                    return [] if self.miss else rows
+            return C()
+
+        def close(self):
+            self.conn.close()
+
+    lines = []
+    with _Holder(scratch.pg, "pg_dump", 12):
+        rc = ap.run([f], repo=scratch.repo, env=scratch.env, connect_fn=lambda: _MissFirstLook(real()),
+                    out=lines.append, poll_s=0.5, watch_interval_s=0.5, backoff_s=(0.5, 0.5, 0.5))
+    text = "\n".join(lines)
+    assert rc == 0, text
+    assert "lock timeout behind a backup (pg_dump pid=" in text and "retry 1/3" in text
+    assert _has_note(scratch.pg)
+    log = scratch.log.read_text()
+    assert "RETRY " in log and "retries=1" in log
+
+
+def test_lock_timeout_behind_a_non_backup_session_fails_at_once(scratch):
+    _q(scratch.pg, "CREATE TABLE pp_probe_keep (id int)")
+    f = scratch.add("manual_migration_pp_a.sql", _ADD_COLUMN)
+    with _Holder(scratch.pg, "orion-some-reader", 11):
+        rc, text = _apply(scratch, [f], backoff_s=(0.5, 0.5, 0.5))
+    assert rc == 1, text
+    assert "canceling statement due to lock timeout" in text
+    assert "blocker: orion-some-reader pid=" in text and "not a backup, not retried" in text
+    assert "RETRY" not in scratch.log.read_text()
+    assert "FAILED services/orion-sql-db/manual_migration_pp_a.sql" in scratch.log.read_text()
+    assert not _has_note(scratch.pg)

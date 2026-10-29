@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import uvicorn
@@ -33,7 +33,6 @@ from orion.journaler import (
     build_collapse_stored_trigger,
     build_compose_request,
     build_manual_trigger,
-    build_metacog_trigger,
     build_notify_summary_trigger,
     build_scheduler_trigger,
     build_write_payload,
@@ -47,11 +46,10 @@ from orion.schemas.compactor_digest_run import COMPACTOR_DIGEST_WORKFLOW
 from orion.schemas.durable_run import DURABLE_RUN_STATE_CHANNEL, DURABLE_RUN_STATE_KIND, DurableRunStateV1
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.notify import NotificationRecord, NotificationRequest
-from orion.metacog.self_signal_episode import trigger_wants_prose
-from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
+from . import act_emit
 from .capability_gap_journal import build_daily_seed_payload, collect_capability_gaps
 from .perception_gap_journal import collect_perception_gaps
-from .walkway_forecast import collect_walkway_jobs, run_walkway_tick
+from .walkway_forecast import collect_walkway_jobs, guard_walkway_draft, run_walkway_tick
 from .world_pulse_journal import handle_world_pulse_run_result_journal, submit_durable_run_via_cortex
 from .logic import (
     ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
@@ -897,8 +895,8 @@ def _resolve_now_utc(now_utc: datetime | None) -> datetime:
 def _journal_email_daily_cap_key(*, scope: str = "shared", now_utc: datetime | None = None) -> str:
     """One key per local calendar day, per cap `scope` (see
     `JournalDispatchPolicy.daily_cap_scope`). The default "shared" scope is shared
-    across every trigger_kind still using it (daily_summary, metacog_digest,
-    notify_summary, autonomy_episode, collapse_response, manual) -- one send/day
+    across every email-enabled trigger_kind still using it (autonomy_episode,
+    collapse_response, manual) -- one send/day
     across all of them, regardless of which fires first. A non-"shared" scope (e.g.
     world_pulse_digest) gets its own independent slot/day, isolated from the shared
     pool. Journal entries always persist regardless of scope; only the email step is
@@ -1217,13 +1215,6 @@ def should_journal_from_collapse(is_causally_dense: bool, *, dense_only: bool) -
     return bool(is_causally_dense) or not dense_only
 
 
-def should_journal_metacog_trigger(trigger: MetacogTriggerV1) -> bool:
-    """A self_signal_episode CLOSE row is a terse record with no prose (spec
-    2026-10-07 section D, prose once per episode); every other trigger keeps
-    getting its metacog_digest journal."""
-    return trigger_wants_prose(trigger.trigger_kind, trigger.upstream)
-
-
 def should_run_interval(*, now_monotonic: float, last_run_monotonic: float | None, interval_seconds: int, run_on_startup: bool) -> bool:
     if last_run_monotonic is None:
         return bool(run_on_startup)
@@ -1336,6 +1327,9 @@ async def lifespan(app: FastAPI):
         state_path=scheduler_cursor_store.path.parent / DAILY_ATTEMPT_STATE_FILENAME,
     )
 
+    # Act ledger (body economy A5, app/act_emit.py). None = ACTIONS_ACT_EMIT_ENABLED off: no acts.
+    _act_publish = act_emit.bus_publisher(lambda: hunter.bus) if settings.actions_act_emit_enabled else None
+
     async def _audit(
         parent: BaseEnvelope,
         *,
@@ -1410,6 +1404,7 @@ async def lifespan(app: FastAPI):
         parent: BaseEnvelope,
         *,
         trigger,
+        compose_correlation_id: str | None = None,
     ) -> dict[str, Any]:
         journal_llm_route = _normalized_llm_route(settings.actions_journal_llm_route, settings.actions_llm_route)
         tk = str(getattr(trigger, "trigger_kind", "") or "")
@@ -1417,8 +1412,6 @@ async def lifespan(app: FastAPI):
         sched_daily = tk == "daily_summary" and sk == "scheduler"
         if sched_daily:
             recall_profile = settings.actions_journal_scheduler_recall_profile
-        elif tk == "metacog_digest":
-            recall_profile = settings.actions_journal_metacog_recall_profile
         elif tk == "notify_summary":
             recall_profile = settings.actions_journal_notify_recall_profile
         elif tk == "world_pulse_digest":
@@ -1426,7 +1419,7 @@ async def lifespan(app: FastAPI):
         else:
             recall_profile = settings.actions_recall_profile
 
-        if sched_daily or tk in {"metacog_digest", "notify_summary", "world_pulse_digest"}:
+        if sched_daily or tk in {"notify_summary", "world_pulse_digest"}:
             logger.info(
                 "journal_compose profile=%s trigger_kind=%s recall_enabled=true",
                 recall_profile,
@@ -1444,7 +1437,14 @@ async def lifespan(app: FastAPI):
             },
         )
         reply_channel = new_reply_channel("orion:cortex:result")
-        req_env = parent.derive_child(kind="cortex.orch.request", source=src, payload=req, reply_to=reply_channel)
+        # The compose request carries its own correlation id (one per compose attempt), so the GPU
+        # leases it causes join exactly one actions.journal act. The parent's id is shared by other
+        # work (every walkway job in a scheduler tick; a collapse's chat reply), so it cannot be the
+        # cost key. The journal write below keeps the parent's id, as before.
+        req_env = parent.derive_child(
+            kind="cortex.orch.request", source=src, payload=req, reply_to=reply_channel,
+            **({"correlation_id": UUID(compose_correlation_id)} if compose_correlation_id else {}),
+        )
         msg = await _actions_rpc_bus.rpc_request(
             settings.cortex_request_channel,
             req_env,
@@ -1458,6 +1458,8 @@ async def lifespan(app: FastAPI):
         if not orch_payload.get("ok", False):
             raise RuntimeError(f"journal_compose_failed:{orch_payload.get('error') or orch_payload.get('status')}")
         draft = draft_from_cortex_result(orch_payload)
+        # Walkway entries may phrase the rollup, never invent numbers (walkway_forecast.py).
+        draft, _walkway_unsupported = guard_walkway_draft(draft, trigger)
         write = build_write_payload(
             draft,
             trigger=trigger,
@@ -1471,6 +1473,31 @@ async def lifespan(app: FastAPI):
             "write": write.model_dump(mode="json"),
             "orch_payload": orch_payload,
         }
+
+    def _journal_shadow(want_id: str, parent: BaseEnvelope, trigger: Any):
+        """The journal compose's shadow want (actions.journal, Tier 1), placed. ``want_id`` is the
+        act's correlation id (the compose id; the trigger's id when acts are off and no act exists).
+        None if it could not be built: the compose never depends on it."""
+        try:
+            from .physiology_shadow import ShadowBid
+
+            shadow = ShadowBid(
+                family=act_emit.JOURNAL_ACTOR, verb="make", tier=1, want_id=want_id,
+                object_ref=f"journal_trigger:{str(getattr(trigger, 'trigger_kind', '') or 'unknown')}",
+                component="journal",
+            )
+            shadow.place()
+            return shadow
+        except Exception:  # noqa: BLE001 -- shadow only
+            logger.info("journal_shadow_bid_not_built want_id=%s", want_id)
+            return None
+
+    def _settle_shadow(shadow: Any, real: str) -> None:
+        try:
+            if shadow is not None:
+                shadow.settle(real)
+        except Exception:  # noqa: BLE001 -- shadow only
+            logger.info("journal_shadow_settle_failed")
 
     async def _dispatch_journal(
         parent: BaseEnvelope,
@@ -1489,13 +1516,32 @@ async def lifespan(app: FastAPI):
 
         acquired = False
         t0 = time.monotonic()
+        compose_corr = act_emit.compose_correlation_id(dedupe_key, str(parent.correlation_id)) if _act_publish else None
+        # Body economy Patch C3b: the point this journal would compose. A SHADOW bid, logged beside
+        # the real outcome and never obeyed (app/physiology_shadow.py). want_id = the compose
+        # correlation id, which is the journal act's correlation id.
+        jshadow = _journal_shadow(compose_corr or str(parent.correlation_id), parent, trigger)
+        jact = act_emit.ActTrace(
+            _act_publish,
+            act_emit.journal_act(
+                dedupe_key, str(parent.correlation_id),
+                trigger_kind=str(getattr(trigger, "trigger_kind", "") or "unknown"),
+                horizon=act_emit.journal_horizon_sec(settings.actions_exec_timeout_seconds),
+            ),
+            component=f"{audit_action}.act",
+            correlation_id=compose_corr or str(parent.correlation_id),
+        )
         try:
             await sem.acquire()
             acquired = True
+            _settle_shadow(jshadow, "ran")
+            await jact.open()
             result = await _run_journal(
                 parent,
                 trigger=trigger,
+                compose_correlation_id=compose_corr,
             )
+            await jact.close(True, f"entry_id={result['write']['entry_id']} mode={result['draft']['mode']}")
             # Notification dispatch (email/in-app) happens exactly once, from the
             # post-persist consumer (_handle_journal_created) after the SQL write is
             # confirmed -- see _dispatch_journal_notifications. This function only
@@ -1519,6 +1565,9 @@ async def lifespan(app: FastAPI):
             return True
         except Exception as exc:
             dt_ms = int((time.monotonic() - t0) * 1000)
+            _settle_shadow(jshadow, f"blocked:raised:{type(exc).__name__}")  # no-op once settled "ran"
+            # Close first: a cancel during the audit await must not leave the act open.
+            await jact.close(False, f"raised:{type(exc).__name__}:{str(exc)[:200]}")
             await _audit(
                 parent,
                 status="failed",
@@ -1529,6 +1578,10 @@ async def lifespan(app: FastAPI):
             )
             logger.exception("Journal dispatch failed action=%s corr=%s", audit_action, parent.correlation_id)
             return False
+        except BaseException as exc:  # cancellation: close at 0, then re-raise
+            _settle_shadow(jshadow, f"blocked:raised:{type(exc).__name__}")  # no-op once settled "ran"
+            await jact.close(False, f"raised:{type(exc).__name__}")
+            raise
         finally:
             if acquired:
                 sem.release()
@@ -1551,9 +1604,20 @@ async def lifespan(app: FastAPI):
         t0 = time.monotonic()
         acquired = False
         outcome = DailyAttemptResult(completed=False, attempted=True, failure_reason="daily_execute_no_outcome")
+        # Only daily_metacog_v1 is an act family (A5 verb map); daily_pulse_v1 opens nothing.
+        dact = act_emit.ActTrace(
+            _act_publish if action_name == ACTION_DAILY_METACOG_V1 else None,
+            act_emit.daily_metacog_act(
+                dedupe_key, str(parent.correlation_id),
+                horizon=act_emit.daily_metacog_horizon_sec(settings.actions_exec_timeout_seconds),
+            ),
+            component="daily_metacog.act",
+            correlation_id=str(parent.correlation_id),
+        )
         try:
             await sem.acquire()
             acquired = True
+            await dact.open()
             await _audit(parent, status="started", event_id=dedupe_key, action_name=action_name)
             context = {
                 "request_date": window.request_date,
@@ -1713,6 +1777,7 @@ async def lifespan(app: FastAPI):
 
             if generic_ok and chat_ok:
                 deduper.mark_done(dedupe_key)
+                await dact.close(True, f"delivered duration_ms={dt_ms}")
                 await _audit(parent, status="completed", event_id=dedupe_key, action_name=action_name, extra=extra)
                 outcome = DailyAttemptResult(completed=True)
             else:
@@ -1722,11 +1787,13 @@ async def lifespan(app: FastAPI):
                 elif chat_message_accepted and not chat_message_accepted.ok:
                     reason = chat_message_accepted.detail
                 outcome = DailyAttemptResult(completed=False, failure_reason=f"notify_failed:{reason or 'unknown'}")
+                await dact.close(False, f"notify_failed:{reason or 'unknown'}")
                 await _audit(parent, status="failed", event_id=dedupe_key, action_name=action_name, reason=reason, extra=extra)
 
         except Exception as exc:
             dt_ms = int((time.monotonic() - t0) * 1000)
             outcome = DailyAttemptResult(completed=False, failure_reason=str(exc) or exc.__class__.__name__)
+            await dact.close(False, f"raised:{type(exc).__name__}:{str(exc)[:200]}")
             await _audit(
                 parent,
                 status="failed",
@@ -1736,6 +1803,9 @@ async def lifespan(app: FastAPI):
                 extra={"duration_ms": dt_ms},
             )
             logger.exception("Daily action failed action=%s dedupe=%s", action_name, dedupe_key)
+        except BaseException as exc:  # cancellation: close at 0, then re-raise
+            await dact.close(False, f"raised:{type(exc).__name__}")
+            raise
         finally:
             if acquired:
                 sem.release()
@@ -1863,28 +1933,6 @@ async def lifespan(app: FastAPI):
             env,
             trigger=trigger,
             audit_action="journal.notify_summary",
-            dedupe_key=cooldown_key_for_trigger(trigger),
-        )
-
-    async def _handle_journal_metacog(env: BaseEnvelope) -> None:
-        try:
-            trigger_payload = MetacogTriggerV1.model_validate(env.payload)
-        except Exception:
-            return
-        if not should_journal_metacog_trigger(trigger_payload):
-            await _audit(
-                env,
-                status="skipped",
-                event_id=str(env.correlation_id),
-                action_name="journal.metacog_digest",
-                reason="self_signal_episode_close_no_prose",
-            )
-            return
-        trigger = build_metacog_trigger(trigger_payload)
-        await _dispatch_journal(
-            env,
-            trigger=trigger,
-            audit_action="journal.metacog_digest",
             dedupe_key=cooldown_key_for_trigger(trigger),
         )
 
@@ -2141,9 +2189,6 @@ async def lifespan(app: FastAPI):
             return
         if kind == "notify.notification.request.v1":
             await _handle_journal_notify(env)
-            return
-        if kind == "orion.metacog.trigger.v1":
-            await _handle_journal_metacog(env)
             return
         if kind == "world.pulse.run.result.v1":
             if await _handle_world_pulse_run_result_journal(env):
@@ -2491,9 +2536,10 @@ async def lifespan(app: FastAPI):
                     and settings.actions_journaling_enabled
                     and walkway_should_run
                 ):
-                    # Nightly: grade today's walkway expectations, then forecast
-                    # tomorrow's (app/walkway_forecast.py). Zero, one, or two
-                    # entries -- never one about nothing. Own try so a read
+                    # Nightly: today's walkway day rollup (plus week on Sunday,
+                    # month on its last day), grade today's expectations, then
+                    # forecast tomorrow's (app/walkway_forecast.py). Never an
+                    # entry about nothing. Own try so a read
                     # failure cannot cost the daily journal below it.
                     walkway_corr = str(uuid4())
 

@@ -11,6 +11,12 @@ cooldown for this kind (``skip_rate_gates``). Disabled, turn-in-flight, recent-c
 arousal ``strained`` still apply. A finding blocked by them is retried on a later tick (it stays
 pending until told), so quiet hours delay a message instead of losing it.
 
+Spacing (2026-10-29): after a message reaches Juniper, the next one waits ``min_spacing_sec``. Reads
+run all night and their findings wait out quiet hours, so before this they all went out the moment
+quiet hours ended (live 2026-10-28: 14 messages between 14:11 and 15:08 UTC). A PASS is not a
+message, so it does not start the wait, and a held finding stays pending (it is not dropped). The
+last send time is read back from the decision log, so a restart does not reopen the gap.
+
 Dedupe: findings of one read are bundled into one message; a finding already told (decision row
 ``sent`` or ``orion_passed`` naming its ``finding_id``) is never told again. A later finding of the
 same read (a belief moved days after its link) is a new bundle. A bundle whose composition fails
@@ -38,6 +44,7 @@ from orion.world_pulse_read.findings import (
     first_sentences,
 )
 from orion.world_pulse_read.introspect import reading_items_between
+from orion.world_pulse_read.origin import read_origins
 
 logger = logging.getLogger("orion-hub.reading_finding_outreach")
 
@@ -46,6 +53,8 @@ TOLD_REASONS = frozenset({"sent", "orion_passed"})
 # Composition failures that count toward ``max_attempts``. A gate block is not a failure.
 FAILED_REASONS = frozenset({"empty_generation", "named_ungrounded_signal"})
 
+SPACING_REASON = "reading_spacing"
+
 # Reads this old are still watched for a NEW finding (a belief a run moves days later).
 READ_WINDOW_DAYS = 7
 
@@ -53,6 +62,14 @@ DECISIONS_SQL = """
 SELECT reason, result_json->'finding_ids' AS finding_ids
 FROM endogenous_outreach_decisions
 WHERE decided_at >= $1 AND reason = ANY($2::text[])
+  AND result_json->>'source' = 'reading_finding_outreach'
+"""
+
+
+LAST_SENT_SQL = """
+SELECT max(decided_at) AS last_sent
+FROM endogenous_outreach_decisions
+WHERE decided_at >= $1 AND reason = 'sent'
   AND result_json->>'source' = 'reading_finding_outreach'
 """
 
@@ -117,6 +134,7 @@ class ReadingFindingOutreach:
         tick_interval_sec: float = 300.0,
         lookback_hours: float = 48.0,
         max_attempts: int = 3,
+        min_spacing_sec: float = 0.0,
         clock: Optional[Callable[[], datetime]] = None,
     ) -> None:
         self.enabled = bool(enabled)
@@ -126,12 +144,17 @@ class ReadingFindingOutreach:
         self.tick_interval_sec = max(30.0, float(tick_interval_sec))
         self.lookback_hours = float(lookback_hours)
         self.max_attempts = max(1, int(max_attempts))
+        self.min_spacing_sec = max(0.0, float(min_spacing_sec))
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         # Process-local mirror of the decision log: a row is written on a daemon thread, so the
         # next tick may not see it yet. Never the only record (restart -> the table answers).
         self._told: set[str] = set()
         self._failures: dict[str, int] = {}
         self._blocked_logged: set[tuple[str, str]] = set()
+        # Last reading message that reached Juniper: this process's own send, and the decision
+        # log's (read each tick, so a restart keeps the gap). The later of the two counts.
+        self._last_sent_at: Optional[datetime] = None
+        self._logged_last_sent_at: Optional[datetime] = None
         self._task: Optional[asyncio.Task] = None
         self.last_tick: dict[str, Any] = {}
 
@@ -140,8 +163,8 @@ class ReadingFindingOutreach:
             logger.info("reading_finding_outreach disabled")
             return
         self._task = asyncio.create_task(self._run())
-        logger.info("reading_finding_outreach started tick=%ss lookback_h=%s max_attempts=%s",
-                    self.tick_interval_sec, self.lookback_hours, self.max_attempts)
+        logger.info("reading_finding_outreach started tick=%ss lookback_h=%s max_attempts=%s spacing=%ss",
+                    self.tick_interval_sec, self.lookback_hours, self.max_attempts, self.min_spacing_sec)
 
     async def stop(self) -> None:
         if self._task is not None:
@@ -179,6 +202,22 @@ class ReadingFindingOutreach:
             by_seed = {seed: [f for f in fs if f.observed_at >= since] for seed, fs in result.by_seed.items()}
             rows = await conn.fetch(DECISIONS_SQL, now - timedelta(days=READ_WINDOW_DAYS + 7),
                                     sorted(TOLD_REASONS | FAILED_REASONS))
+            bundles = self._bundles(reads, by_seed, rows)
+            if bundles and self.min_spacing_sec > 0:
+                last = await conn.fetch(LAST_SENT_SQL, now - timedelta(seconds=self.min_spacing_sec))
+                self._logged_last_sent_at = last[0]["last_sent"] if last else None
+            # How each read started, so the prompt states it from the record instead of asserting it.
+            # A failed lookup degrades to "not recorded"; it never holds a message back.
+            origins = {}
+            if bundles:
+                try:
+                    origins = await read_origins(conn, [b.seed_id for b in bundles])
+                except Exception:  # noqa: BLE001
+                    logger.warning("reading_finding_origin_unavailable seeds=%d", len(bundles), exc_info=True)
+        return [b.model_copy(update={"origin": origins.get(b.seed_id, [])}) for b in bundles]
+
+    def _bundles(self, reads: list[ReadRefV1], by_seed: dict[str, list[ReadingFindingV1]],
+                 rows: list[Any]) -> list[ReadingFindingBundleV1]:
         told, logged_failures = set(self._told), {}
         for row in rows:
             for fid in _ids(row["finding_ids"]):
@@ -205,10 +244,43 @@ class ReadingFindingOutreach:
             summary["blocked"] = "no_outreach_loop"
             return summary
         for bundle in bundles:
+            wait = self.spacing_wait_sec(self._clock())
+            if wait > 0:
+                summary["results"].append(self._hold_for_spacing(outreach, bundle, wait))
+                break  # every later bundle waits for the same gap
             summary["results"].append(await self._tell(outreach, bundle))
             if summary["results"][-1]["reason"] not in TOLD_REASONS | FAILED_REASONS:
                 break  # a gate is closed: every later bundle would hit it too
         return summary
+
+    def spacing_wait_sec(self, now: datetime) -> float:
+        """Seconds until the next reading message may reach Juniper; 0 when it may now."""
+        if self.min_spacing_sec <= 0:
+            return 0.0
+        sent = [t for t in (self._last_sent_at, self._logged_last_sent_at) if t is not None]
+        if not sent:
+            return 0.0
+        return max(0.0, self.min_spacing_sec - (now - max(sent)).total_seconds())
+
+    def _hold_for_spacing(self, outreach: Any, bundle: ReadingFindingBundleV1, wait: float) -> dict[str, Any]:
+        meta = {**decision_meta(bundle, str(uuid4())), "spacing_wait_sec": round(wait, 1),
+                "min_spacing_sec": self.min_spacing_sec}
+        self._record_block_once(outreach, bundle, meta, SPACING_REASON, str(uuid4()))
+        return {"seed_id": bundle.seed_id, "reason": SPACING_REASON}
+
+    def _record_block_once(self, outreach: Any, bundle: ReadingFindingBundleV1, meta: dict[str, Any],
+                           reason: str, correlation_id: str) -> None:
+        """Retried next tick. Logged/recorded once per bundle+reason, not every tick of a
+        quiet-hours night."""
+        key = (meta["bundle_key"], reason)
+        if key in self._blocked_logged:
+            return
+        if len(self._blocked_logged) > 1000:
+            self._blocked_logged.clear()  # a log-spam guard, not state
+        self._blocked_logged.add(key)
+        logger.info("reading_finding_outreach_blocked seed=%s reason=%s findings=%d",
+                    bundle.seed_id, reason, len(bundle.findings))
+        outreach.record_blocked(reason, correlation_id=correlation_id, source=READING_FINDING_TAG, extra=meta)
 
     async def _tell(self, outreach: Any, bundle: ReadingFindingBundleV1) -> dict[str, Any]:
         correlation_id = str(uuid4())  # per attempt: see bundle_key
@@ -217,17 +289,7 @@ class ReadingFindingOutreach:
         await outreach.refresh_human_gates()
         blocked = outreach.blocked_reason(skip_rate_gates=True)
         if blocked:
-            # Retried next tick. Logged/recorded once per bundle+reason, not every tick of a
-            # quiet-hours night.
-            key = (meta["bundle_key"], str(blocked))
-            if key not in self._blocked_logged:
-                if len(self._blocked_logged) > 1000:
-                    self._blocked_logged.clear()  # a log-spam guard, not state
-                self._blocked_logged.add(key)
-                logger.info("reading_finding_outreach_blocked seed=%s reason=%s findings=%d",
-                            bundle.seed_id, blocked, len(bundle.findings))
-                outreach.record_blocked(str(blocked), correlation_id=correlation_id,
-                                        source=READING_FINDING_TAG, extra=meta)
+            self._record_block_once(outreach, bundle, meta, str(blocked), correlation_id)
             return {"seed_id": bundle.seed_id, "reason": str(blocked)}
         prompt = build_reading_finding_prompt(bundle)
         text, debug = await outreach.compose(
@@ -252,6 +314,8 @@ class ReadingFindingOutreach:
             record_appendix=article_appendix(bundle),
         )
         reason = str(result.get("reason") or ("sent" if result.get("outreach") else "not_sent"))
+        if reason == "sent":
+            self._last_sent_at = self._clock()
         if reason in TOLD_REASONS:
             self._told.update(bundle.finding_ids)
         elif reason in FAILED_REASONS:

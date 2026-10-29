@@ -37,7 +37,9 @@ defaults:
 actuators:
   circe: {host: circe}
 
-priorities: [urgent, interactive, system, background]   # highest first
+# perception (2026-10-23, body-economy design Patch A0): Orion's senses. Below Juniper's turn, above
+# Orion's own work, and never shed by heat -- orion/gpu_pool/shed.py can only block system/background.
+priorities: [urgent, interactive, perception, system, background]   # highest first
 
 # index = the card's CUDA / nvidia-smi device number on circe (CUDA_DEVICE_ORDER=PCI_BUS_ID). Hub's
 # biometrics GPU labels join nvidia-smi on it (stage 5.5). gpu0/1/3 verified live 2026-09-29 against
@@ -55,7 +57,12 @@ cards:
 
 roles:
   chat:       {kind: llm, cards: [gpu0], owner: chat, port: 8011}
-  agent:      {kind: llm, cards: [gpu1], owner: agent, port: 8015}
+  # memory_distill co-owns gpu1 (2026-10-20): it is its only role, and its route is system "ahead of
+  # curiosity's background holds". As a borrower, rule 5 gave every queued agent lease (background
+  # included) gpu1 first and recalled a running distill hold owner_waiting (10-18 11:39), so two
+  # system distill holds waited 10+ h behind background reading holds (10-20). As an owner, queue
+  # order (priority, then age) decides. Rollback: owner: agent.
+  agent:      {kind: llm, cards: [gpu1], owner: [agent, memory_distill], port: 8015}
   agent-gpu2: {kind: llm, cards: [gpu2], owner: agent, port: 8016,   # diffusion reclaims gpu2 via evicts
                # How long gpu2 may stay borrowed from diffusion once the pool loaded it (was
                # DURABLE_RUNS_ELASTIC_MAX_BORROW_SEC): then holds are recalled and the seat unloads.
@@ -156,10 +163,29 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
   # Calls on a human's critical path (spec 2026-10-06-thermal-controller-redesign D4): same class
   # as metacog, but interactive, so a heat shed never holds a live Hub turn (orion-mind on a Hub
   # turn, MIND_TURN_MODEL_ROUTE). metacog stays system: it also carries background callers.
-  # quick_turn / agent_turn (spec D4, Q4) are NOT added: no live-turn caller sends quick or agent
-  # today (cortex-orch's memory annotation listens to finished turns; Hub Agent mode runs through the
-  # FCC harness). Add each with the caller that uses it, not before.
+  # Also Hub's Zelda co-play planner (2026-10-24, retro_planner.COPLAY_ROUTE): Link stands still on
+  # screen while Juniper watches each decision; ~30 reply tokens per call. Solo leisure stays on
+  # metacog_background (nobody waiting, shed under heat).
+  # agent_turn (spec D4, Q4) is NOT added: no live-turn caller sends agent today (Hub Agent mode
+  # runs through the FCC harness). Add it with the caller that uses it, not before.
   metacog_turn: {class: metacog, priority: interactive}
+  # quick_turn (2026-10-23): the pre-turn repair-pressure probe (cortex-exec
+  # REPAIR_PRESSURE_PROBE_ROUTE), awaited by every Hub turn before the stance runs. On `quick`
+  # (system) the 34 C reflex refused it on 19/19 Juniper turns 10-20..21, and the turn went on
+  # with no repair reading. Same fast class, interactive, so heat never sheds it.
+  quick_turn: {class: fast, priority: interactive}
+  # quick_embodied (2026-10-23): Orion's own speech in AI Town (orion-embodiment
+  # EMBODIMENT_SPEECH_QUICK_LLM_ROUTE, through cortex-exec chat_quick). On quick_background it
+  # waited in the fast queue behind system work (orion-topic-foundry) and the embodiment worker's
+  # 45 s RPC gave up on every reply 10-23, while the lane itself answered in 2.2 s. Someone is
+  # standing there waiting for an answer, so it is a live turn: interactive, never shed by heat.
+  quick_embodied: {class: fast, priority: interactive}
+  # Orion's sight (2026-10-23, docs/superpowers/specs/2026-10-23-organism-body-economy-design.md, A0):
+  # vision-council's scene reads. On metacog_background the 34 C reflex refused it 25,430 times in the
+  # 7 days to 10-23 -- Orion stopped interpreting what it saw whenever the cabinet ran hot. perception
+  # is never shed by heat and ranks below Juniper's turn. Load: ~33 GPU-h/week (p90 1,679 slot-s/hour);
+  # the pool alerts past GPU_POOL_PERCEPTION_ALERT_HELD_SEC_PER_HOUR.
+  metacog_perception: {class: metacog, priority: perception}
   # The old "burst" lanes: agent work on a borrowed card. The pool now decides which card
   # (agent -> gpu2 seat when loaded -> gpu0 when lent), so both are just agent work.
   agent-burst: {class: agent, priority: system}

@@ -50,12 +50,17 @@ reboot. No systemd linger required.
 | Container name | `${PROJECT}-kev` → `orion-circe-kev` |
 | Network | `app-net` (external) |
 | Port | `8009` |
-| GPU | `KEV_GPU_DEVICE_ID=3` (host nvidia-smi index) |
+| GPU | `KEV_GPU_DEVICE_ID=GPU-599d16a7-8c7c-1e3a-ac94-a01e5cb5cf7a` (circe GPU UUID; the V100-SXM2, nvidia-smi index 3 on 2026-10-23) |
 | GPU pool | role `kev` on `gpu3` in `config/gpu_pool.yaml` (listed + probed; never scheduled) |
 | Weights cache | `KEV_HF_CACHE_HOST_DIR` |
 
-If Kev moves to another card, change `KEV_GPU_DEVICE_ID` and the `kev` role's
-`cards` together.
+The pin is a UUID, never a bare index. circe's indices renumbered when cards
+moved, and orion-affectgpt-worker's index pin landed it on a full card
+(601 restarts, 2026-10-14..23). Find UUIDs with `nvidia-smi -L` on circe.
+
+If Kev moves to another card, change `KEV_GPU_DEVICE_ID`, the `kev` role's
+`cards`, and `CIRCE_CARD_UUIDS` in `tests/test_orion_kev_contract.py` together
+(the pool config has no UUID field yet).
 
 Substrate (athena) must have:
 

@@ -34,8 +34,12 @@ UNSTAMPED_DEFINITION_VERSION = 1
 #   turns a batch touched, not every turn ever stored (same fix as route v2).
 # route_arbitration v2 (2026-09-25): the decision-mismatch rate averages over
 #   only the runs a batch actually touched, not every run in the projection.
+# node_biometrics v2 (2026-10-20): nodes that stopped reporting (last report older
+#   than 6x their own report interval -- hecate in BMC-only standby) are left out of
+#   the hint-change mean instead of adding a 0.0 delta per frozen key.
 PREDICTION_ERROR_DEFINITION_VERSIONS: dict[str, int] = {
     "chat_session": 3,
+    "node_biometrics": 2,
     "route_arbitration": 2,
 }
 

@@ -924,7 +924,7 @@ once per tick; each loop decides what a level means for its own dial:
 |---|---|---|---|---|
 | Curiosity investigation line | held, `arousal_strained` | cooldown x `HUB_CURIOSITY_AROUSAL_ENGAGED_COOLDOWN_MULTIPLIER` (2.0), `arousal_engaged_cooldown` | as today | as today |
 | Curiosity self-inquiry | held, `arousal_strained` | held, `arousal_engaged` | as today | as today |
-| Background outreach | refused, `arousal_strained` | as today | as today | as today |
+| Background outreach | refused, `arousal_strained` (one strain report per long episode may pass, see below) | as today | as today | as today |
 | Scheduled self-modification proposals (R3 reader 6) | no new proposal; pressure kept, traced `mutation_proposal_held` | as today | as today | as today |
 
 Every arousal hold is checked last, so it only ever adds a hold after every other
@@ -937,6 +937,43 @@ the producer's own `unknown`, or a Redis error changes nothing. Off switches:
 `HUB_ENDOGENOUS_OUTREACH_AROUSAL_ENABLED`. The rest drive (above) stays a separate
 input: tired and strained are different facts and both can hold. The outreach
 status endpoint shows `arousal`. Eval: `scripts/analysis/measure_arousal_reader_replay.py`.
+
+**Strain report door (strain loop part 3, `scripts/strain_report.py`).** While strained,
+background outreach stays refused, with one exception: when the current strained episode has
+lasted `ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC` (3600), Orion may send Juniper ONE
+report about it. Rules:
+
+- It passes only the `arousal_strained` refusal. Disabled, turn-in-flight, recent-chat, quiet
+  hours, the daily cap, the cooldowns all still hold. Inside quiet hours it waits, and goes out
+  after quiet hours if the same episode is still open.
+- One per episode (keyed on the episode start, `arousal.since`) and one per local day
+  (`ORION_SITUATION_TIMEZONE`). Both are rebuilt from `endogenous_outreach_decisions` on first
+  use, so a restart does not re-send; if that read fails the door stays shut
+  (`strain_report=history_unknown`). Before delivery a `reason=strain_report_sending` row is
+  written synchronously; if it does not land, nothing is sent (`intent_write_failed`), and the
+  row alone blocks a re-send even if the final `sent` row is lost. A PASS from Orion closes the
+  episode; a failed compose may retry after 30 min, at most 3 times per episode
+  (`attempts_exhausted`).
+- A strain report spends one daily-cap slot (`count_sent_on` counts it), on purpose: it is a
+  background message.
+- Known limits: the episode key is the regulation `since`, so a regulation outage long enough to
+  reset `since` makes a new episode (the once-per-day rule still bounds it). History looks back
+  30 days. If the reading goes stale between the two gate reads the row says
+  `reason=strain_ended`.
+- Grounding is the live regulation reading (since, causes now, cabinet temp, GPU jobs waiting)
+  plus the open `strain` arc from durable-runs `GET /temporal-self/frame` when it is this
+  episode (causes seen, `[arc:<id>]`). What strain holds back comes from the
+  `regulation.state.v1` readers in `orion/inner_state_registry.py` (a test keeps the list in
+  step). No reading, no message (`strain_report=no_grounding`). Orion writes the message through
+  the normal unified turn; a deterministic "Strain record" line with the citation is appended.
+- Trace: every row of this door has `door=strain_report` and `strain_episode_since`; composed
+  rows also have `source=strain_report`. Non-sending ticks keep `reason=arousal_strained` and say
+  why in `strain_report` (`episode_too_short`, `already_reported_episode`,
+  `already_reported_today`, ...). Count live sends:
+  `SELECT count(*) FROM endogenous_outreach_decisions WHERE reason='sent' AND result_json->>'source'='strain_report';`
+- Off switch: `ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED=false` (old refusal, unchanged).
+  Eval: `python3 services/orion-hub/evals/run_strain_report_replay.py` (read-only replay of
+  `arousal_transition` level rows; reports per local day).
 
 The self-modification reader is different in one way: the mutation cycle runs 60-90 s
 off the event loop, so it reads Redis itself (one blocking GET, 2 s timeout) at the
@@ -1250,6 +1287,25 @@ HTTP routes (`POST /curiosity/api/self-questions/{id}/pin|park`) were removed
 still a real column pair in `orion.curiosity.self_question_pool`, just not
 reachable over HTTP today. Full contract and inspection queries:
 `orion/curiosity/README.md` §13.
+
+**Naming branch (2026-10-20).** Before the pool pick, a self-inquiry tick may
+become a naming sitting: Orion is shown one of their own personality
+dispositions (counts, lanes, evidence excerpts, situation mix, neighbors; not
+weight) and asked "Is this you?". Order: an overdue pinned lived question
+always wins; else Hub GETs `<HUB_CURIOSITY_DURABLE_RUNS_URL>/personality/naming/next`
+(204 = nothing due); a packet runs only while fewer than
+`HUB_CURIOSITY_SELF_NAMING_DAILY_CAP` (default 1) naming runs started today
+(Redis `orion:curiosity:self_naming:count:<local date>`). Flag:
+`HUB_CURIOSITY_SELF_NAMING_ENABLED` (default `true`). Orion writes one
+`:DispositionNaming` node (early MERGE, ids filled in by code); Hub reads it
+read-only, checks structure (`orion/personality/naming_check.py`, never repairs
+an id) and publishes exactly one `DispositionNamingV1` on
+`orion:personality:naming` -- `no_answer` when nothing was written or the run
+failed. The shown packet is kept in Redis
+(`orion:curiosity:self_naming:packet:<run_id>`, 7 days) so the durable
+completion event can be checked against what Orion saw. Logs:
+`curiosity_disposition_naming_shown`, `curiosity_disposition_naming_published`,
+`curiosity_self_naming_skipped reason=...`.
 
 #### 4.2.2 Self-sense eval: the daily 4-question identity check, scheduled
 
@@ -2657,6 +2713,38 @@ Safety posture:
 
 ---
 
+## Body economy shadow bids (Patch C3b, 2026-10-27)
+
+Three Hub producers ask the body economy whether it would fund them, then ignore the answer.
+The answer is only logged, next to what Hub really did. Nothing changes what Hub does.
+
+| producer | family | where it bids | want_id (= the act's correlation id) | real outcome logged |
+|---|---|---|---|---|
+| endogenous outreach | `hub.outreach` | at compose (before `_generate`), and on a tick held by strain alone | the compose correlation id (fresh id on a strain-held tick, no act) | `ran` (sent) or `blocked:<reason>` (orion_passed, `*_after_generation`, arousal_strained, ...) |
+| retro leisure | `hub.retro_leisure` | `RetroLeisureListener.start` | the dispatch id | `ran` (started) or `blocked:<refusal>` |
+| retro co-play | `hub.retro_coplay` | the session-start sink | the handoff row key | `ran` (co-play has no gate) |
+
+One log line per bid: `physiology_shadow_bid family=... want_id=... shadow=funded|deferred|none
+reason=... lane=... real=ran|blocked:<reason> act_correlation_id=...` (`act_correlation_id` is set only
+when outreach's agent-lane fallback moved the act to a new id). The decision itself is written by
+durable-runs into `want_ledger`. A funded shadow decision whose act was blocked releases its
+reservation. Code: `scripts/physiology_shadow.py`. Switch: `HUB_PHYSIOLOGY_SHADOW_BID_ENABLED`
+(default true). Hub runs on the host network, so `ORION_PHYSIOLOGY_BID_URL` points at durable-runs'
+host port `http://127.0.0.1:8124/physiology/bid`.
+
+Known gaps, on purpose:
+
+- When outreach's agent lane times out and the chat lane retries, the act opens on the retry's
+  new id. `want_ledger.want_id` then differs from `grammar_acts.correlation_id`; the log line's
+  `act_correlation_id` is the only link. A join must use it.
+- Only the endogenous tick bids. `offer_message` (curiosity Door-A) and reading-finding outreach
+  also open `hub.outreach` acts, and those acts have no shadow want.
+- A refused leisure dispatch that the dispatch runtime retries bids again under the same
+  `want_id` (one `want_ledger` row per decision). Take the last decision per `want_id`.
+
+Reading pull does not bid here: a read runs as a `reading.turn` durable run, and that bid is left
+to durable-runs admission (a separate patch), so a read is never bid twice.
+
 ## 🧵 Philosophy
 
 Hub is intentionally thin:
@@ -2916,6 +3004,16 @@ API: `GET /api/cabinet/sensors/latest`, `GET /api/cabinet/sensors/history?window
 (`scripts/cabinet_sensors_routes.py`, `/static/js/cabinet-sensors.js`). Latest polls ~1s only
 while `#cabinet` is visible; sensor history fetches on tab activation, window toggle, or Refresh.
 
+**Office strip** (Biometrics → *Cabinet / Office*, below Cooling): office temperature and
+humidity from pan-1's SHT40, read from Postgres `office_env_sample` (written by sql-writer from
+`orion:office:env:sample`, produced by `orion-office-env`). Routes: `GET /api/office/env/latest`
+and `GET /api/office/env/history?window=24h|3d|7d` (`scripts/office_env_routes.py`). Node comes
+from `OFFICE_ENV_NODE` (default `pan-1`); `OFFICE_ENV_STALE_AFTER_SEC` (default 90 = three missed
+30 s publishes) decides when the strip reads "no recent publish". A stale sensor shows
+"stale"/gaps, never 0. Frontend: `static/js/office-env.js` (own script; polls every 30 s only
+while `#cabinet` is visible). Tests: `tests/test_office_env_routes.py`,
+`tests/test_office_env_panel.py`, `static/js/office-env.test.js` (`node --test`).
+
 **Sensor history** (below live tiles on the Cabinet tab) charts temperature, humidity, lidar,
 ALS, and climate/proximity/UV activity from `orion_biometrics_summary` at ~30s grain. Requires
 biometrics → sql-writer rows with `cabinet_temp_c` and related keys on node
@@ -2954,6 +3052,18 @@ API: `GET /api/cabinet/ambient/latest`, `GET /api/cabinet/ambient/history?window
 (`scripts/cabinet_ambient_routes.py`, `/static/js/cabinet-sensors.js`). Latest polls ~1s only
 while `#cabinet` is visible; history fetches on tab activation, window toggle, or Refresh.
 
+**Live listen (chat card "Cabinet audio" button).** The host reader keeps one continuous
+`arecord` stream and writes every 0.5s window to a 16-slot ring at `/run/orion-audio/live/`
+(tmpfs, ~8s, overwritten, never persisted; layout in `orion/schemas/telemetry/ambient_audio.py`).
+`GET /api/cabinet/ambient/live` tails that ring and streams raw S16_LE PCM (rate/channels in
+`X-Orion-Sample-Rate` / `X-Orion-Channels`); it returns 503 when the ring is empty and ends the
+stream after 5s with no new chunk. `static/js/cabinet-live-audio.js` plays it through the same
+waveform canvas as Orion's TTS voice (cabinet = teal, voice = violet), ~0.5–1s behind real
+time. Env: `AMBIENT_AUDIO_LIVE_DIR`. Kill switch on the host reader:
+`ORION_AMBIENT_AUDIO_LIVE_ENABLED=0` in `/etc/default/orion-ambient-audio`, then restart
+`orion-ambient-audio`. Plays at full gain: if the cabinet mic can hear the speakers you
+listen on, it will feed back (and inflate the ambient levels) -- use headphones.
+
 ### House electricity (Energy strip)
 
 Below the cooling strip, **House electricity — Rocky Mountain Power** shows what the house
@@ -2976,6 +3086,32 @@ sql-writer (Hub's `DATABASE_URL`). Spec:
 |---|---|---|
 | `HUB_ENERGY_TIMEZONE` | `America/Denver` | Local day boundary for the daily kWh bars (Postgres `AT TIME ZONE` name). |
 | `ORION_ENERGY_STAKES_MAX_AGE_SEC` | `1800` | Snapshot age past which the strip reads stale (and curiosity never holds -- section 4.2.4). |
+
+### Orion Energy tab
+
+`#orion-energy` (iframe: `static/orion-energy.html` + `static/js/orion-energy.js`) shows what
+Orion itself draws -- athena, circe, hecate and the cabinet AC's Shelly plug -- stacked per
+hour / day / week / month / quarter / year, with the RMP house meter as a line on the same
+kWh axis. A second chart draws the whole house and Orion as two kWh lines over the same
+hours (the share's hours), with the gap between them shaded as the rest of the house; hollow,
+dashed points mark periods where both meters cover under 90% of the time. Hovering a period
+lists each source's kWh and how much of the period it was measured, the house kWh and how
+many RMP hours have arrived, the share, the rest of the house, and the dollars.
+
+API: `GET /api/energy/orion?grain=day&periods=31` (`scripts/energy_routes.py`). Reads
+`orion_energy_hourly` (sql-writer's rollup), `energy_usage_interval` and the newest pricing
+per interval in `energy_cost_accrued`. Buckets follow `HUB_ENERGY_TIMEZONE` (weeks start
+Monday). Rules:
+
+- The share counts only hours where both Orion's meters and the RMP meter have data, so RMP's
+  ~24 h lag never reads as Orion using the whole house -- and only hours where every reporting
+  source was measured for 90% of the hour (`partial_hours` counts the ones left out). The two
+  kWh tiles cover those same hours.
+- Orion cost prices each Orion hour at that hour's next-kWh rate -- what Orion adds to the
+  bill under block pricing. Pre-tax. `orion_priced_kwh` says how much of Orion's kWh had a price.
+- Unknown is null: no rows means `orion_kwh: null`, never 0.
+- RMP reports whole kWh per hour, so the hourly share is rough (the tab says so).
+- Not measured: prometheus, the network switch, UPS losses. Per-node history starts 2026-09-22.
 
 API: `GET /api/energy/latest` (stakes, importer, reconcile, `stale`, `as_of`,
 `covered_through`), `GET /api/energy/usage/daily?days=1..90` (`scripts/energy_routes.py`,
@@ -3231,6 +3367,12 @@ The check uses `POSTGRES_URI` and a read-only transaction, resolves the latest U
 
 **Reads in flight (2026-10-14).** Each Stage 1 and Stage 2 tick makes up to `HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT` claims (default 3; 1 = one read at a time). The claim order puts seeds with a submitted durable turn first, so in-flight reads are polled before a new one starts, and a new one only starts while fewer than that many are in flight. Before this, a tick claimed one seed, so a running read was re-claimed every tick and no second read was ever submitted: the GPU pool never saw two agent holds to spread over gpu1/gpu2. Priority order and Stage 1 before Stage 2 per seed are unchanged. Log line: `world_pulse_read_tick_claims n=<k>`.
 
+**Reading pull (2026-10-21, thinking rung 3 follow-up).** The motor allocator may ask for ONE extra Stage 1 read now (`orion:world_pulse_read:pull:request`, `scripts/world_pulse_read_pull_listener.py`, `WorldPulseReadPipeline.pull`). Hub picks the seed the lane would claim next (`CLAIM_SQL` order: priority, then age; not one already in flight or already pulled) and runs every gate first, in this order: kill switch `HUB_WORLD_PULSE_READ_PULL_ENABLED` (ON); the lane's own Wallet A gate (window, refund backoff); `HUB_WORLD_PULSE_READ_PULL_DAILY_CAP` started pulls per UTC day (default 8: the lane's median reading day over 30 days, `orion/world_pulse_read/pull.py`); arousal `strained` (`HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED`, same rule as the baseline painting); thermal `hot` on Hub's own cabinet sensor (`orion/autonomy/thermal_gate.py` defaults and hysteresis). `op=check` has no side effect. `op=act` marks the seed (`pull_dispatch_id`, `pull_arm`, `pulled_at`; migration `manual_migration_reading_pull_v1.sql`, also added lazily): a treated pull claims it and starts it under the lane lock, then the lane polls it like any other read; a control pull only marks it, and the lane may still read it. The lane itself is unchanged. Log lines: `reading_pull op=...`, `reading_pull_started`.
+
+**Retro leisure start and memory export (2026-10-22, Orion plays Zelda sections E and F).** The motor allocator may ask for ONE solo Zelda session (`orion:retro_leisure:start:request`, `scripts/retro_leisure_listener.py`). The listener asks the leisure runner (`scripts/retro_leisure.py`) for its own `should_start(settings)` verdict and passes a refusal through by name; with no runner it refuses `runner_unavailable` (300 s hold), never a fake session. A passed gate starts `run_leisure_session(settings, act_id=<dispatch_id>)`; a refusal from its own re-check within 5 s is still answered as a refusal. Otherwise the listener opens one `play` act (`hub.retro_leisure`, key = dispatch id, `test_before=retro_leisure_dispatch:<dispatch_id>`, horizon 2400 s = 1800 s session cap + 600 s save/export, `scripts/act_emit.py`). When the leisure session ends the listener passes its `RetroSessionEnded` to `scripts/retro_memory_export.py:export_leisure_outcome` (co-play handoffs reach the same export through `app.state.retro_session_end_sink`): it builds one deterministic summary (facts and counts only; "played together" when a human drove more than half of the frames), writes one `retro_play_sessions` row (migration `services/orion-sql-db/manual_migration_retro_play_sessions_v1.sql`, also created lazily), one active `memory_cards` row with provenance and trust_source `retro_play`, links them, and closes the leisure `play` act (1 only with at least one real planner decision). Kill switch: `HUB_RETRO_MEMORY_EXPORT_ENABLED` (ON). Log lines: `retro_leisure_started`, `retro_leisure_refused`, `retro_memory_export`.
+
+**Co-play play act (2026-10-23, body-economy A5).** A co-play handoff (Juniper hands her controller to Orion's goal motor on `/retro`) is an act too. `scripts/retro_routes.py` `watch_coplay` opens a `play` act (actor `hub.retro_coplay`, key and correlation id = the session row key `<retro session id>:<handoff start epoch>`, `test_before=retro_play_sessions:<key>`, stamped at the handoff start, horizon 2400 s) when it first sees a Zelda cognition policy, through `app.state.retro_session_start_sink`. The export closes it (1 with at least one real planner decision). Both the Hub and the Retro gateway register the opener; the gateway opens its own bus client (`ORION_BUS_URL`) in the background for it. Before this, co-play opened no act and the gateway had no bus, so `grammar_acts` held 0 retro acts while every played session ran through co-play. Log lines: `retro_gateway_act_bus_ready`, `coplay_act_open_failed`, `coplay_act_close_failed`.
+
 **Stale digest items.** Every Stage 1 tick marks pending `digest_item` seeds older than `HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS` (default 5, 0 disables) as `skipped` / `stale_digest_item`, except one that a finding or reading request was aliased onto. Digest items are priority 10 behind findings and readings, so without this the tail only grew older. Log line: `world_pulse_read_skipped_stale_digest_items`.
 
 The MCP response preserves the full `{ok, result, error}` envelope. Only `ok=true` plus a row-backed `result.request_id` proves acceptance. The Harness Governor correlates raw FCC `tool_use.id` / `tool_result.tool_use_id` pairs, validates the deterministic request ID, records the outcomes on `HarnessRunV1.reading_receipts`, and applies the same deterministic truth gate before the draft and final voice response leave the service. Failed, timed-out, missing, or malformed receipts produce `acceptance is unknown`; model-authored persistence/future-work claims and unfetched summaries are discarded rather than phrase-matched.
@@ -3358,13 +3500,19 @@ that read goes into the same message. A change told once is never told again; a 
 change of the same read (a belief moved days after the link) is a new message.
 
 - **Same path as curiosity findings.** `EndogenousOutreach.compose` (the real unified
-  turn; `PASS` means "not worth sending") then `offer_message` (decision log, grounding
+  turn; `PASS` means "not worth sending" -- the whole reply, or a line of its own after
+  Orion's reasoning, see `is_pass_response`) then `offer_message` (decision log, grounding
   guard, sockets + chat history + notification). The recorded summary of the piece is
   delivered under Orion's message as stored, not regenerated.
 - **Gates.** No daily cap and no cooldown for this kind (`skip_rate_gates`, Juniper
   2026-10-13). Disabled, turn-in-flight, recent-chat, quiet hours and arousal `strained`
   still apply; a blocked message waits for a later tick, it is not dropped. Sends do not
   consume the background tick's daily cap (`count_sent_on` excludes the source).
+- **Spacing.** After a reading message reaches Juniper, the next one waits
+  `_MIN_SPACING_SEC` (6750). Findings pile up overnight; without this they all went out
+  when quiet hours ended (14 messages in 57 minutes on 2026-10-28). A PASS does not start
+  the wait. A held bundle is recorded once as `reason='reading_spacing'` and stays pending.
+  The last send time is read back from the decision log, so a restart keeps the gap.
 - **Evidence.** The decision row (`endogenous_outreach_decisions`, `result_json.source =
   'reading_finding_outreach'`) carries `seed_id`, `finding_ids`, `finding_kinds`,
   `evidence_refs`; the delivered message carries an `outreach_provenance.v1` capsule with
@@ -3375,7 +3523,7 @@ change of the same read (a belief moved days after the link) is a new message.
 - **Env.** `HUB_READING_FINDING_OUTREACH_ENABLED` (on), `_TICK_SEC` (300),
   `_LOOKBACK_HOURS` (48: a change recorded within this window is told; reads up to 7 days
   old are watched, so a belief moved days after its read still counts), `_MAX_ATTEMPTS`
-  (3 composition failures before a change is dropped).
+  (3 composition failures before a change is dropped), `_MIN_SPACING_SEC` (6750; 0 = off).
 - **What it cannot see yet.** A belief counts only when the curiosity run that moved it
   names the read (URL path, seed id or request id) in the prior's `why`/`formed_from`.
   Live 2026-10-13: 0 of 26 run-written prior texts in the last 7 days cite any read, so
@@ -3584,6 +3732,61 @@ kept 168 h), through `orion/introspect/node_history.py`.
   Postgres down or no pool: `node_history_unavailable; answer unknown`. Log
   line per answer: `node_history_introspect_answered corr=<id> node=<id>
   hours=<h> items=<n> readings=<n>`.
+
+### Introspect responder: `power_attribution`
+
+**What it does.** Answers "where is my power (and so the cabinet's heat) going,
+and since when?" with numbers instead of a guess. Curiosity runs kept landing
+on "my cabinet runs hot and I don't know why"; this is the method that found
+the 2026-10-14 circe step by hand (~790 W -> ~1100 W, with a crash loop worth
+~144 W inside it), made deterministic. Orion calls it from a unified chat turn
+or a curiosity run through the orion-introspect `power_attribution` tool: one
+implementation, two callers.
+
+- **What Orion can ask.** `node` (`circe`, `athena`, `hecate`, or `cooling` =
+  the cabinet AC plug; omitted = every machine with wall watts), `days` (2-30,
+  default 14), optional `until=<ISO timestamp with timezone>`. The window must
+  start within the last 30 days (raw per-node watts are pruned after that).
+- **What it computes** (`orion/physiology/heat_archaeology.py`, pure, no numpy):
+  steps in hourly wall watts (binary segmentation, >= 60 W, >= 24 h each side),
+  each split into GPU/CPU/rest watts; a least-squares fit of hourly wall watts
+  on GPU-pool busy-hours per holder (`http:anthropic` = harness, `http:openai` =
+  ai-town, cortex-exec, vision-council, ...) plus a CPU-load regime indicator
+  (Otsu split of `load_15m`, kept only when the load is clearly two-moded);
+  each step's watts split across the terms that changed with it (`unexplained`
+  = the rest); CPU-load and CPU-watt shifts on their own, and the same split
+  across each CPU-load shift (a crisp clock when hourly wander keeps the wall
+  step under its bar: the 30-day window finds 10-14 this way). Step and term
+  significance use autocorrelation-corrected standard errors (Bartlett AR(1));
+  measured false-step rate on flat wandering series 1.5-2.5% at live-like
+  autocorrelation; durable-run holds as
+  reservations (never fitted: their compute is the child leases).
+- **Sources** (`orion/introspect/power_attribution.py`, three parameterized
+  SELECTs): `orion_energy_hourly`, `orion_biometrics_cluster`,
+  `gpu_pool_events` + `durable_run_workflow`. A 30-day read takes ~4 s live.
+- **What comes back.** One `power_attribution` item per machine (`unsettled`;
+  text = the plain-English answer, extra = steps, fit with R2 and per-term
+  watts/SE, attributions, shifts, reservations, evidence refs, `verified=false`)
+  and one `power_attribution_queries` item (`record`) with the exact SQL. The
+  result is kept under the 12k MCP budget by shedding the daily trend, evidence
+  refs, then structure, in that order, naming each drop in `extra.omitted`.
+- **Honesty.** Correlational. An always-on marker is confounded with anything
+  else that started the same hour. The text says UNVERIFIED until an
+  intervention (stop the suspect, watch the watts) confirms it. A CPU-load
+  shift points at host processes and container restart counts, which GPU
+  leases cannot see.
+- **Transport and trust.** `orion:introspect:power_attribution:request`
+  (`IntrospectRequestV1`), answered by
+  `scripts/power_attribution_introspect_listener.py`; the reply goes to exactly
+  `orion:introspect:result:<correlation_id>`. Reads run in a READ ONLY
+  transaction (`ReadOnlyPool`). Nothing is written, no container is touched.
+- **Empty vs unknown.** No machine with a wall-power reading in the window:
+  `ok=true, items=[]`. Postgres down or no pool:
+  `power_attribution_unavailable; answer unknown`. Log line per answer:
+  `power_attribution_introspect_answered corr=<id> node=<n> days=<d> items=<n> steps=<n>`.
+- **Live eval.** `POSTGRES_URI=... python services/orion-hub/evals/run_power_attribution_live_eval.py`
+  reruns the analysis on live Postgres, checks it against the raw rows, and
+  checks the 2026-10-14 circe step comes back.
 
 ### Introspect responder: `record_correction`
 
@@ -3973,12 +4176,27 @@ The Vision panel's camera dropdown has polled "live" views: **Carbon (live)** (e
 - Changing the mount needs a Hub recreate, not just a restart.
 - Tests: `tests/test_vision_live_frame.py`, `tests/test_vision_frame_cache.py`, `tests/test_vision_affect_capture_api.py`.
 
+## People Orion knows
+
+One card per person (`#peopleCard`, under "Orion is asking"; `static/js/people.js`, routes in `scripts/people_routes.py`, spec `docs/superpowers/specs/2026-10-22-people-one-record-design.md`). Reads the person record orion-sql-writer keeps from the camera names (`person`, `person_link`, `person_fact`):
+
+- `GET /api/people`: everyone but Orion, most-seen first: the newest picture Juniper herself tied to them (`orion/person_model/pictures.py`, never a camera cluster's own newest picture, which can be someone else), days seen on camera, what Juniper said about them, and Orion's open question about them.
+- `POST /api/people/{id}/facts` `{category, value}`: add what she knows (`hub_edit`). Categories come from `orion/person_model/categories.yaml`.
+- `POST /api/people/{id}/facts/{fact_id}/remove`: the fact stops counting (`removed_at`, never deleted).
+- `POST /api/people/{id}/same-as` `{into: <person_id>|null}` (2026-10-29): "Same person as..." on a card. Two names of one person (a first name and a full name, a nickname) become one: the name is kept as "Also called" on the person kept (`also_called` in `GET /api/people`), its facts move over, its open question closes (and one about the person kept whose category is now answered), and orion-sql-writer moves its camera links on its next tick. Anyone already joined to it follows. Each "Also called" line has Undo (`{into: null}`): the name is its own person again; facts that moved stay with the person kept. Her own (interlocutor) card is always the one kept. A fact typed on, or an answer arriving for, a joined name lands on the person kept. 422 `same_as_itself` / `into_is_merged` / `into_is_not_a_person` / `interlocutor_is_kept`, 404 for an unknown person or Orion. Needs `manual_migration_person_merge_v1.sql` (`person.merged_into`).
+- `POST /api/people/{id}/status` `{status: not_a_person|active}`: for a name that is not one person (a delivery company, two people named together). Orion stops asking about it; its open question is dismissed.
+
+An "Is this <name>?" card with several pictures (2026-10-23) puts Not sure / <name> / Not <name> under each picture and one Send; the answer carries `pictures: [{image_ref, verdict}]` for every picture (`same` = it is <name>). `answer` must be `yes` exactly when one picture is <name> (422 `answer_does_not_match_pictures`, `every_picture_needs_an_answer`, `no_names_on_is_this_cards`); all "not sure" is a dismissal.
+
+Orion's questions about people (`source_kind=person_fact`) appear in "Orion is asking" as ordinary free-text cards. Camera links are corrected where they come from: rename the person on a camera card. Needs `services/orion-sql-db/manual_migration_person_record_v1.sql`; without it the routes return 503 `ask_schema_missing`. Tests: `tests/test_people_routes.py` (real Postgres), `tests/test_people_panel_browser_smoke.py` (Chromium, 360 px).
+
 ## Orion is asking (open questions to Juniper)
 
 Walkway camera idea 3 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`). The "Orion is asking" panel (`#visionAsksCard`, `static/js/vision-asks.js`; since 2026-10-06 the first card on the Hub home, no longer inside Vision) lists Orion's open questions and lets Juniper answer or dismiss them. Routes in `scripts/ask_routes.py`, on the Hub's asyncpg pool (`RECALL_PG_DSN`, `conjourney`):
 
 - `GET /api/asks?status=open` -- open, unexpired `orion_ask` rows, newest first.
 - `POST /api/asks/{ask_id}/answer` with `{"answer": "..."}` and `POST /api/asks/{ask_id}/dismiss` -- only an open, unexpired row moves (409 otherwise, 404 if unknown). Sets `status`, `answer`, `answered_at`, then publishes `OrionAskAnsweredV1` on `orion:ask:answered` (consumed by `orion-substrate-runtime`). If the publish fails the answer is still saved (`published: false` in the response); `orion-sql-writer` applies labels from the row itself.
+- **"I don't know"** (2026-10-27): a "who is this?" card (`vision_individual`, people and vehicles) has an **I don't know** button next to Answer / Dismiss. It posts `POST /api/asks/{ask_id}/dismiss` with `{"reason": "dont_know"}` (422 `dont_know_only_on_who_is_this_cards` on any other card). The row becomes `status='dismissed'`, `answer` NULL, `answer_detail={"dont_know": true}`, so no name is ever stored. `orion-sql-writer` may ask again after `VISION_ASK_COOLDOWN_DAYS`, counted from when she pressed it; a plain Dismiss still blocks that individual for good. Typed answers are not filtered by a word list: before this button, non-answers typed in the box ("no", "unsure") were saved as names.
 
 Asks are opened by `orion-sql-writer`'s individuals loop (row insert only, no bus event); the card polls every 60s.
 
@@ -4056,3 +4274,166 @@ Peer brief offers now carry the investigation run ID; completed investigations
 emit a separate completion receipt. Prompt-authored decisions cite existing Hop
 records. Deploy the updated peer consumer before this Hub producer. See
 [peer ask episodes](../../docs/peer-ask-episodes.md) for contracts and rollout.
+
+### Walkway stories: who is this story about? (2026-10-18)
+
+The "Walkway stories" card (Vision panel, "Walkway (live)") shows one box per
+person in each story: the walker, and anyone it walked with. Each box shows the
+name Orion has for that individual, or "unnamed person (individual <short id>)".
+Juniper can type a name, say "Someone else" (optionally typing who it really
+is), or say "Not sure". Route: `POST /api/vision/motion-stories/{story_id}/people/{individual_id}`
+(`scripts/motion_story_routes.py`).
+
+Nothing new stores identity. Each answer is an `orion_ask` row, written already
+answered, that orion-sql-writer applies on its own clock:
+
+- A name is a `vision_individual` ("who is this?") answer with
+  `answer_detail.story_id`: a typed label, last typed name wins, a same-name
+  link to an individual already given that name, and the usual
+  `orion:ask:answered` event for the substrate entity. It does not count
+  against the "who is this?" opener's daily cap.
+- "Someone else" / "Not sure" is a `vision_story_person` row with one picture
+  verdict per story crop; "someone else" crops go to the split pass (which
+  refuses when they would be most of that individual's pictures).
+
+A correction of the name the story was written with also records the story's
+"Wrong name" verdict, unless the story already has a verdict about something
+else. The sentence shown is re-derived on read: Juniper's latest name or
+"someone else" on that story wins; otherwise the strict naming rule
+(`orion/vision/story_naming.py`) on today's names. The stored sentence is shown
+as "Orion first wrote: ..." when it differs.
+
+## Retro browser play
+
+`/retro` offers native NES viewing/control without an additional access code through a
+private Unix socket. Disabled by default. See [setup and acceptance](../../docs/runbooks/retro-browser.md)
+for exact-origin configuration, credentials, browser checks and known limits, and for
+Zelda play (planner v2, the play panel and solo leisure, `scripts/retro_leisure.py`).
+
+**Action bets (2026-10-23, `scripts/retro_experience.py`).** Before each Zelda goal, the Hub
+lists the moves Orion could make (each open side, fight, collect, enter a known cave, retreat,
+wait). It asks orion-prediction (`HUB_PREDICTION_URL`, default `http://127.0.0.1:8132`) how often
+each kind of move worked before, and shows the model the top 5 in the prompt (score = chance x
+hand-set value + 2 x expected learning). When Retro accepts the goal, the Hub places a bet on it.
+The next decision settles that bet from Retro's `goal_finished` row and the new observation. A
+human takeover or pause (`stopped:*`) is void, never a failure. At session end, any open bet is
+settled, and the memory card gets up to 3 fact lines read back from the bets. Prediction service
+unreachable: no menu, no bet, log line `action_quote_unavailable`. Kill switch
+`HUB_ACTION_BETS_ENABLED` (ON); off restores the #2870 planner exactly. Offline eval:
+`evals/zelda_experience_replay.py`. Spec: `docs/superpowers/specs/2026-10-23-embodied-experience-learning-design.md`.
+
+### Cabinet sonification (live instrument)
+
+In Biometrics → Cabinet, **Listen** starts a quiet magnetic-field tone. Pitch rises
+logarithmically from 110–440 Hz across fixed 20–60 µT bounds. Values outside those
+bounds are visibly clipped. This is an audible measurement display, not an alarm
+or inference about Orion's feelings. Start at low device volume with headphones.
+
+The three-voice implementation also contains near-to-fast LiDAR pulses and a
+hysteretic sampled-movement onset. **LiDAR and vibration remain disabled pending
+controlled movement calibration**; their proposed 0–4000 mm and 0.10/0.06 g onset /
+re-arm settings are not approved operating ranges. The source inspector shows
+this explicitly. A future reviewed preset patch must attach rest/intervention
+samples before changing either `approved` flag. History playback uses aggregated levels and omits vibration; optional voices remain
+separate future patches.
+
+Mute and Solo change the mix without restarting it. **Stop**, leaving Cabinet,
+hiding the page, a failed poll, suspended audio, or losing fresh calibrated input
+stops playback; press Listen again to resume. Sources expire after five seconds,
+individually, even if another Nano keeps the merged snapshot fresh. The instrument
+reuses the Cabinet poller and owns its own audio context. TTS has no dependable
+public lifecycle hook here: use Stop manually during TTS; Stop does not stop TTS.
+No armed state or preferences are persisted, and no microphone is requested.
+Speaker sound may influence the cabinet's existing ambient observations.
+
+Open **Source readings and sound targets** for native units, source ID/time,
+physical bounds, normalized level, audio targets, clipping and mute reasons.
+**Record local trace** opts into a maximum 600 records in memory; **Download trace**
+ends capture and downloads the preset and validated frames/targets as JSON. Nothing
+is uploaded or retained across reloads. Traces can reveal activity timing; share
+them deliberately. Remove the module, its template controls and the three poll /
+visibility integration calls to roll back; no stored Orion state changes.
+
+Verification (from repository root):
+
+```bash
+node --test services/orion-hub/static/js/cabinet-sonification.test.js services/orion-hub/static/js/cabinet-sensors.test.js
+python -m pytest services/orion-hub/tests/test_cabinet_sonification_provenance.py services/orion-hub/tests/test_cabinet_sensors_panel.py -q
+python services/orion-hub/evals/cabinet_sonification_server.py --port 18097
+# In another shell; PUPPETEER_MODULE can point to an existing Puppeteer install:
+node services/orion-hub/evals/cabinet_sonification_browser.cjs http://127.0.0.1:18097
+```
+
+The browser eval uses rendered Hub controls and native Web Audio, replays sanitized
+real measurements with their original timestamps for deterministic mapping, and
+renders a finite/unclipped offline mix with test-only approval of all three voices.
+Its interaction fixtures advance source timestamps; they do not prove live freshness.
+The loopback server starts no Hub workers and accesses no stores.
+
+Manual listening acceptance remains required: capture quiet → controlled LiDAR
+motion → gentle disturbance → quiet with UTC markers and headphones. Inspect
+missingness, clipping, repeated samples and return to the actual measured baseline.
+Record device volume, artifacts, audibility and which voice changes are discernible.
+For a blinded replay, shuffle at least ten labeled changes per voice, retain the
+trial order privately, and record the listener's source/direction choices and error
+count before revealing labels. This patch has no completed human listening trial;
+do not interpret the automated audio render as evidence of perceptual usefulness.
+
+
+### Cabinet history playback
+
+Choose **Sound mode → History**, select **24 hours / 3 days / 7 days**, then
+**Listen**. The existing history chart request feeds the player; there is no new
+polling loop. Every window plays in 60 seconds (1440×, 4320×, 10080×). The window
+ends at the frozen browser request-start time, explicitly labeled approximate
+because the existing API omits server query bounds. Its start is exactly the
+selected duration earlier. Sensor timestamps never move those bounds; trailing
+outages remain silent. Browser/server clock skew can shift the estimated window,
+but is never relabeled as a sensor observation timestamp. Source time, playback time, window endpoints, compression, grain,
+returned/raw counts and actual magnetic spacing are shown beside the controls.
+The inspector exposes per-series spacing and original observation brackets.
+
+The fixed 20–60 µT magnetic range is unchanged throughout playback. Interpolation
+uses each series' timestamps independently. There is no extrapolation, zero fill,
+impact reconstruction, or per-window automatic rescaling. Invalid values and
+conflicting duplicate timestamps break interpolation. Aggregated vibration is
+always omitted, even if a later live preset enables percussion. LiDAR retains its
+existing calibration gate.
+
+The gap policy is a multiple of each series' own **median point spacing**, default
+**2×**. The history API thins every window to about 800 points, so spacing grows
+with the window: live data measured 2026-10-21 was about 94 s (24h), 313 s (3d)
+and 750 s (7d) apart. An earlier fixed 90-second default was shorter than all three
+and left every real window silent. At 2× the normal jitter plays (24h spacing reached
+about 1.7× the median), while a real outage stays silent (the 24h LiDAR series had a
+312-second hole, 3.3×). Choose 1.5×, 4× or 10× explicitly; the info line shows the
+resulting seconds. Interpolation is an interpretation of aggregated levels, not
+recovery of the missing measurements. Wider gaps remain silent while the playback
+clock continues. Changing the gap policy stops playback for review.
+
+**Pause** freezes the cursor and closes audio; **Listen** resumes. **Seek** pauses
+at the selected playback second and clears transient state; press Listen to resume.
+**Replay** starts from zero; **Stop** resets to zero. Natural completion stops at
+60 seconds. Switching Live/History, changing the window, hiding Cabinet/page, or
+suspended audio disarms the instrument; none automatically restart it. A history
+request starts by clearing the old playable window, and an error leaves it empty.
+Live poll errors do not invalidate an already downloaded history window. History
+is a frozen in-memory response, not a stream requiring five-second live freshness.
+
+Trace downloads include history window bounds, aggregation metadata, explicit gap
+policy, source position and actual observation brackets in each recorded frame.
+The 600-record memory cap still applies (at history scheduler cadence this covers
+roughly 15 seconds of playback). Start another capture for another segment. No
+history recordings or audio are uploaded, and no autoplay state is persisted.
+
+Additional deterministic history checks:
+
+```bash
+node --test services/orion-hub/static/js/cabinet-sonification-history.test.js
+```
+
+The existing Cabinet browser eval now also covers real captured history, default-policy
+audibility, explicit wider-policy audibility in native Web Audio, pause, seek,
+replay, history hide/reopen, mode separation, failed requests, and exactly one
+existing history fetch per changed window. It mocks 3d/7d with partial data to test
+alignment and missingness; it does not claim a live historical headphone audition.

@@ -20,8 +20,6 @@ from app import visual_chain
 def _reset_gate_state(monkeypatch):
     monkeypatch.setattr(visual_chain, "_thermal_state", "normal", raising=False)
     monkeypatch.setattr(visual_chain.settings, "thermal_gate_enabled", True)
-    monkeypatch.setattr(visual_chain.settings, "thermal_hot_c", 32.0)
-    monkeypatch.setattr(visual_chain.settings, "thermal_hot_rearm_c", 30.5)
 
 
 def _persist_spy(monkeypatch):

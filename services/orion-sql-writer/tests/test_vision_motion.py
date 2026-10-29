@@ -490,3 +490,264 @@ def test_retention_keeps_stories_juniper_has_checked(pg) -> None:
     assert summary["pruned"] == 1
     with pg.connect() as conn:
         assert [r[0] for r in conn.execute(text("SELECT story_id FROM vision_motion_story"))] == ["a" * 32]
+
+
+def test_fill_evidence_links_fills_only_nulls_in_place_order() -> None:
+    from app import vision_motion_loop as vl
+
+    ev = [{"crop_id": "c1", "individual_id": None, "thumb": "t"}, {"crop_id": "c2", "individual_id": "ind-a"},
+          {"crop_id": "c3", "individual_id": None}, {"individual_id": None}]
+    assert vl.unlinked_crop_ids(ev) == ["c1", "c3"]
+    out, n = vl.fill_evidence_links(ev, {"c1": "ind-j", "c2": "ind-z"})
+    assert n == 1 and [e.get("individual_id") for e in out] == ["ind-j", "ind-a", None, None]
+    assert out[0]["thumb"] == "t" and ev[0]["individual_id"] is None      # input untouched
+    assert vl.fill_evidence_links(None, {"c1": "x"}) == (None, 0)
+    assert vl.unlinked_crop_ids("not a list") == []
+
+
+# --- per-camera frame size, entry/exit edges, exit speed (2026-10-20) -----------------------------------
+
+DOOR_W, DOOR_H = 1600.0, 1200.0   # a doorbell-sized frame, smaller than the walkway's 2560x1920
+
+
+def door_walker(prefix: str = "d", *, n: int = 4, x0: float = 400.0, frame: bool = True, h: float = 200.0,
+                y2: float = 900.0, step: float = 2.5):
+    """Feet move right by 10% of the doorbell frame width over the passage (160 px / 1600 px)."""
+    dx = 0.10 * DOOR_W / (n - 1)
+    return [vm.MotionCrop(f"{prefix}{i}", T0 + timedelta(seconds=i * step), "person",
+                          (x0 + i * dx - 40, y2 - h, x0 + i * dx + 40, y2), score=0.5,
+                          frame_w=DOOR_W if frame else None, frame_h=DOOR_H if frame else None)
+            for i in range(n)]
+
+
+def door_stories(crops, cfg=CFG):
+    ps = vm.link_passages(crops, cfg)
+    return vm.build_stories(ps, stream_id="doorbell", zones=[], cfg=cfg, labels={}, stationary_ids=set(),
+                            prop_ids=set(), prop_boxes=[], clean_since=None)
+
+
+def test_doorbell_frame_size_reads_a_tenth_of_its_width_as_lateral() -> None:
+    """Regression: under the global 2560 px width the same 160 px is 6% of the frame, below lateral_frac."""
+    [s] = door_stories(door_walker())
+    assert s.dir_lateral == 1 and "left to right" in s.sentence
+    assert (s.frame_w, s.frame_h, s.frame_size_source) == (1600, 1200, "detection")
+    [old] = door_stories(door_walker(frame=False))
+    assert old.dir_lateral == 0 and old.frame_size_source == "default" and old.frame_w == 2560
+
+
+def test_right_edge_clipping_fires_at_the_doorbells_own_right_edge() -> None:
+    box = (1500.0, 700.0, DOOR_W - 2, 900.0)
+    c = vm.MotionCrop("e", T0, "person", box, frame_w=DOOR_W, frame_h=DOOR_H)
+    assert vm.crop_clipped(c, CFG) and vm.edge_of(c, CFG) == "right"
+    # The same box against the global 2560 px frame is nowhere near an edge.
+    assert not vm.is_edge_clipped(box, CFG)
+    bottom = vm.MotionCrop("b", T0, "person", (700.0, 1000.0, 800.0, DOOR_H - 1), frame_w=DOOR_W, frame_h=DOOR_H)
+    assert vm.crop_clipped(bottom, CFG) and vm.edge_of(bottom, CFG) == "bottom"
+
+
+def test_stream_setting_is_the_fallback_when_crops_carry_no_frame() -> None:
+    lc = vl.LoopConfig(frame_size_by_stream=(("doorbell", (DOOR_W, DOOR_H)),))
+    m = lc.motion_for("doorbell")
+    assert (m.frame_w, m.frame_h, m.frame_source) == (DOOR_W, DOOR_H, "stream_setting")
+    assert lc.motion_for("walkway") is lc.motion
+    [s] = door_stories(door_walker(frame=False), cfg=m)
+    assert s.dir_lateral == 1 and s.frame_size_source == "stream_setting" and s.frame_w == 1600
+    # The crop's own size beats the setting.
+    other = vm.MotionCrop("o", T0, "person", (0, 0, 10, 10), frame_w=800, frame_h=600)
+    assert vm.frame_of(other, m) == (800.0, 600.0)
+    assert lc.strip_for("doorbell") is None
+    from app.vision_story_strip import StripConfig
+    lc2 = vl.LoopConfig(strip=StripConfig(frames_dir="/f", strip_dir="/s"),
+                        frame_size_by_stream=(("doorbell", (DOOR_W, DOOR_H)),))
+    assert (lc2.strip_for("doorbell").frame_w, lc2.strip_for("walkway").frame_w) == (DOOR_W, 2560.0)
+
+
+def test_parse_frame_sizes_skips_bad_entries() -> None:
+    assert vl.parse_frame_sizes("doorbell=1920x1440, walkway=2560X1920") == (
+        ("doorbell", (1920.0, 1440.0)), ("walkway", (2560.0, 1920.0)))
+    assert vl.parse_frame_sizes("") == ()
+    assert vl.parse_frame_sizes("doorbell=abc,=10x10,x=0x5,cam=640x480") == (("cam", (640.0, 480.0)),)
+
+
+def test_settings_reach_frame_map_and_edge_margin() -> None:
+    from app.settings import Settings
+
+    s = Settings(SQL_WRITER_SUBSCRIBE_CHANNELS=[], VISION_MOTION_FRAME_SIZE_BY_STREAM="doorbell=1920x1440",
+                 VISION_MOTION_EDGE_ZONE_FRAC=0.07)
+    cfg = vl.loop_config(s)
+    assert cfg.frame_size_by_stream == (("doorbell", (1920.0, 1440.0)),)
+    assert cfg.motion.edge_zone_frac == 0.07
+    assert vl.loop_config(Settings(SQL_WRITER_SUBSCRIBE_CHANNELS=[])).frame_size_by_stream == ()
+
+
+def test_entry_and_exit_edges_foot_and_exit_speed() -> None:
+    """Enters clipped at the left edge, walks right, leaves clipped at the right edge."""
+    W = CFG.frame_w
+    xs = [30.0, 600.0, 1100.0, 1600.0, 2100.0, W - 30.0]
+    crops = [crop(f"x{i}", i * 2.5, x, 1350.0) for i, x in enumerate(xs)]
+    [s] = stories(crops)
+    assert s.entry_edge == "left" and s.exit_edge == "right" and s.dir_lateral == 1
+    assert s.exit_foot_x == round((W - 30.0) / W, 4) and s.exit_foot_y == round(1350.0 / CFG.frame_h, 4)
+    # Unclipped tail: x 600..2100 over 7.5 s = 1500 px / 2560 / 7.5 s, unsigned.
+    assert s.exit_speed_fw_per_sec == pytest.approx(1500.0 / W / 7.5, abs=1e-5)
+    [back] = stories([crop(f"r{i}", i * 2.5, x, 1350.0) for i, x in enumerate(reversed(xs))])
+    assert back.entry_edge == "right" and back.exit_edge == "left" and back.dir_lateral == -1
+    assert back.exit_speed_fw_per_sec == pytest.approx(s.exit_speed_fw_per_sec, abs=1e-5)
+
+
+def test_mid_frame_start_and_stop_are_inside_and_head_cut_is_not_top() -> None:
+    [s] = stories(walker())
+    assert (s.entry_edge, s.exit_edge) == ("inside", "inside")
+    # A near walker's head cut by the top edge, feet mid-frame: not "top".
+    tall = vm.MotionCrop("t", T0, "person", (1000.0, 0.0, 1300.0, 1300.0))
+    assert vm.edge_of(tall, CFG) == "inside"
+    far = vm.MotionCrop("f", T0, "person", (1000.0, 10.0, 1020.0, 60.0))
+    assert vm.edge_of(far, CFG) == "top"
+    # Too few unclipped boxes: no exit speed.
+    [g] = stories([crop("g0", 0, 20, 1350), crop("g1", 2.5, 600, 1350)])
+    assert g.exit_speed_fw_per_sec is None and g.entry_edge == "left"
+
+
+def test_insert_names_every_story_column_and_old_schema_drops_the_new_ones() -> None:
+    [s] = stories(walker())
+    p = vl.story_params(s)
+    for key in p:
+        assert f":{key}" in vl.INSERT_SQL, key
+    old = vl.story_params(s, edges=False)
+    assert not set(vl.EDGE_COLUMNS) & set(old)
+    for key in old:
+        assert f":{key}" in vl.INSERT_SQL_NO_EDGES, key
+    for c in vl.EDGE_COLUMNS:
+        assert c not in vl.INSERT_SQL_NO_EDGES
+
+
+EDGES_MIGRATION = REPO / "services" / "orion-sql-db" / "manual_migration_vision_motion_story_edges_v1.sql"
+
+
+def test_edges_migration_is_additive_and_auto_appliable() -> None:
+    from orion.sql_migration_drift import auto_apply_refusals
+
+    body = EDGES_MIGRATION.read_text()
+    assert body.splitlines()[0] == "-- ORION-MIGRATION-REQUIRED-BY: orion-sql-writer"
+    assert auto_apply_refusals(body, {"vision_crop_observation", "vision_motion_story"}) == []
+    for c in vl.EDGE_COLUMNS:
+        assert f"vision_motion_story ADD COLUMN IF NOT EXISTS {c} " in body, c
+    for c in vl.CROP_FRAME_COLUMNS:
+        assert f"vision_crop_observation ADD COLUMN IF NOT EXISTS {c} " in body, c
+
+
+def _drop_edge_columns(engine) -> None:
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE vision_motion_story " + ", ".join(
+            f"DROP COLUMN IF EXISTS {c}" for c in vl.EDGE_COLUMNS)))
+        conn.execute(text("ALTER TABLE vision_crop_observation DROP COLUMN IF EXISTS frame_width, "
+                          "DROP COLUMN IF EXISTS frame_height"))
+
+
+def _apply_edges_migration(engine) -> None:
+    import re
+
+    from sqlalchemy import text
+
+    body = re.sub(r"--[^\n]*", "", EDGES_MIGRATION.read_text())
+    with engine.begin() as conn:
+        for stmt in body.split(";"):
+            if stmt.strip():
+                conn.execute(text(stmt))
+
+
+@needs_pg
+def test_cycle_writes_edges_and_reads_the_crops_own_frame(pg) -> None:
+    from sqlalchemy import text
+
+    _apply_edges_migration(pg)
+    crops = door_walker("q")
+    with pg.begin() as conn:
+        for c in crops:
+            conn.execute(text(
+                "INSERT INTO vision_crop_observation (crop_id, observation_id, stream_id, observed_at, label, score, "
+                "box_xyxy, created_at, frame_width, frame_height) VALUES (:c, :o, 'doorbell', :t, 'person', 0.5, :b, "
+                ":t, 1600, 1200)"), {"c": c.crop_id, "o": "obs-" + c.crop_id, "t": c.t, "b": list(c.box)})
+    with pg.connect() as conn:
+        got = vl.read_crops(conn, "doorbell", T0 - timedelta(seconds=1), T0 + timedelta(seconds=60))
+    assert [(c.frame_w, c.frame_h) for c in got] == [(1600.0, 1200.0)] * len(crops)
+    cfg = vl.LoopConfig(streams=("doorbell",), initial_lookback_sec=600)
+    summary = vl.run_one_motion_cycle(postgres_uri=PG, cfg=cfg, zones_by_stream={"doorbell": []},
+                                      now=T0 + timedelta(seconds=200))
+    assert summary["written"] == 1 and "edges" not in summary
+    with pg.connect() as conn:
+        r = conn.execute(text(
+            "SELECT dir_lateral, entry_edge, exit_edge, exit_foot_x, exit_speed_fw_per_sec, frame_w, frame_h, "
+            "frame_size_source FROM vision_motion_story")).mappings().one()
+    assert r["dir_lateral"] == 1 and (r["entry_edge"], r["exit_edge"]) == ("inside", "inside")
+    assert (r["frame_w"], r["frame_h"], r["frame_size_source"]) == (1600, 1200, "detection")
+    assert r["exit_foot_x"] == pytest.approx((400.0 + 160.0) / 1600.0, abs=1e-4)
+    assert r["exit_speed_fw_per_sec"] == pytest.approx(0.10 / 7.5, abs=1e-4)
+
+
+@needs_pg
+def test_cycle_without_the_edges_migration_still_writes_stories(pg) -> None:
+    from sqlalchemy import text
+
+    _drop_edge_columns(pg)
+    try:
+        _insert_crops(pg, walker("n"))
+        with pg.connect() as conn:
+            assert all(c.frame_w is None for c in vl.read_crops(conn, "walkway", T0 - timedelta(seconds=1),
+                                                                T0 + timedelta(seconds=60)))
+        summary = vl.run_one_motion_cycle(postgres_uri=PG, cfg=vl.LoopConfig(initial_lookback_sec=600),
+                                          zones_by_stream={"walkway": ZONES}, now=T0 + timedelta(seconds=200))
+        assert summary["written"] == 1 and summary["edges"].startswith("migration missing")
+        with pg.connect() as conn:
+            assert conn.execute(text("SELECT count(*) FROM vision_motion_story WHERE published")).scalar() == 1
+    finally:
+        _apply_edges_migration(pg)
+
+
+def _crop_obs(w, h):
+    from orion.schemas.vision import VisionCropObservationV1, VisionCropV1
+
+    return VisionCropObservationV1(observation_id="ob1", stream_id="doorbell", observed_at=T0, frame_width=w,
+                                   frame_height=h, crops=[VisionCropV1(label="person", score=0.9,
+                                                                       box_xyxy=[10, 20, 110, 220])])
+
+
+def test_crop_rows_keep_the_detector_frame_size() -> None:
+    from app import vision_crop_persist as vcp
+
+    (row,) = vcp.build_crop_rows(_crop_obs(1600, 1200), [])
+    assert (row["frame_width"], row["frame_height"]) == (1600, 1200)
+    (none,) = vcp.build_crop_rows(_crop_obs(None, None), [])
+    assert (none["frame_width"], none["frame_height"]) == (None, None)
+    assert ":frame_width" in vcp._INSERT_SQL and "frame_width" not in vcp._INSERT_SQL_NO_FRAME
+
+
+@needs_pg
+def test_crop_insert_with_and_without_the_frame_columns(pg) -> None:
+    from sqlalchemy import text
+    from sqlalchemy.orm import Session
+
+    from app import vision_crop_persist as vcp
+
+    rows = vcp.build_crop_rows(_crop_obs(1600, 1200), [])
+    vcp._frame_columns.update(present=None, checked_at=0.0)
+    with Session(pg) as sess:
+        assert vcp._frame_columns_present(sess) is True
+        sess.execute(text(vcp._INSERT_SQL), rows)
+        sess.commit()
+        got = sess.execute(text("SELECT frame_width, frame_height FROM vision_crop_observation")).one()
+    assert tuple(got) == (1600, 1200)
+    _drop_edge_columns(pg)
+    try:
+        vcp._frame_columns.update(present=None, checked_at=0.0)
+        with Session(pg) as sess:
+            assert vcp._frame_columns_present(sess) is False
+            sess.execute(text("DELETE FROM vision_crop_observation"))
+            sess.execute(text(vcp._INSERT_SQL_NO_FRAME), rows)   # the extra frame keys are ignored
+            sess.commit()
+            assert sess.execute(text("SELECT count(*) FROM vision_crop_observation")).scalar() == 1
+    finally:
+        _apply_edges_migration(pg)
+        vcp._frame_columns.update(present=None, checked_at=0.0)

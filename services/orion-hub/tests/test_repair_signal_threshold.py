@@ -92,6 +92,26 @@ async def test_real_repair_pressure_gives_repair_signal():
 
 
 @pytest.mark.asyncio
+async def test_failed_appraisal_emits_neither_atom_and_projection_level_is_unknown():
+    """Regression (2026-10-20..21): a heat-shed probe used to reach the projection as a measured
+    0.0. A failed paradigm has no grammar scalars, so no repair atom, so the level stays None."""
+    shed = TurnAppraisalBundleV1(
+        correlation_id="corr-1",
+        failed_paradigms=["repair_pressure"],
+        failure_reasons={"repair_pressure": "shed:cabinet_hot"},
+    )
+    events = await _emitted_events(shed)
+    roles = _roles(events)
+    assert "repair_signal" not in roles and "repair_pressure_reading" not in roles
+    state = extract_chat_turn_state(events)
+    assert state.repair_pressure_level is None and state.repair_pressure_confidence is None
+    from orion.substrate.chat_loop.grammar_extract import compute_chat_pressure_hints
+
+    # no fabricated 0.0 hint: the field digester writes nothing for a missing key
+    assert "repair_pressure" not in compute_chat_pressure_hints(state)
+
+
+@pytest.mark.asyncio
 async def test_no_appraisal_emits_neither_atom():
     roles = _roles(await _emitted_events(None))
     assert "repair_signal" not in roles

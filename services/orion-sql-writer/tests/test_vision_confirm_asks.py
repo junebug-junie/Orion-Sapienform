@@ -132,6 +132,19 @@ def test_ask_image_refs_faces_first_newest_first_no_repeats() -> None:
     assert vi.ask_image_refs(rows, now=NOW, thumb_retention_days=7, ask_expiry_days=7) == []
 
 
+def test_ask_image_refs_keep_forever_offers_old_thumbs() -> None:
+    """Live 2026-10-20: ask-9645cdc1... was posted with no picture because its
+    individual's only thumbs were ~3.6 days old and the old 10-day retention left
+    a 3-day horizon. Retention 0 (the default) = the host keeps them forever."""
+    rows = [(FACE("1"), NOW - timedelta(days=3, hours=15), False, None),
+            (FACE("2"), NOW - timedelta(days=400), False, FACE("a")),
+            (FACE("3"), NOW, True, FACE("d"))]                        # no-embed zone still never shown
+    for keep_forever in (0, 0.0, -1):
+        assert vi.ask_image_refs(rows, now=NOW, thumb_retention_days=keep_forever, ask_expiry_days=7) == [
+            FACE("a"), FACE("1"), FACE("2")]
+    assert vi.IndividualsConfig().thumb_retention_days == 0.0
+
+
 def test_questions_are_plain() -> None:
     q = vi.face_ask_question(face_n=47, sighting_count=1)
     assert "who this is" in q and "once" in q
@@ -289,6 +302,104 @@ def test_face_cap_is_separate_from_the_slow_rule_cap(pg) -> None:
         assert len(vi._open_asks(conn, NOW + timedelta(days=1), TZ, cfg)) == 1
 
 
+def _add_regular(conn, iid: str, visits: int, *, thumbs: bool, kind: str = "person") -> None:
+    """A body-only regular: one sighting a day for ``visits`` days (the slow rule)."""
+    from sqlalchemy import text
+
+    conn.execute(text(
+        "INSERT INTO vision_individual (individual_id, stream_id, kind, centroid, centroid_n, first_seen_at, "
+        "last_seen_at, sighting_count, distinct_days) VALUES (:i, 'walkway', :k, :c, :n, :a, :b, :n, :n)"),
+        {"i": iid, "k": kind, "c": list(_vec(1)), "n": visits, "a": NOW - timedelta(days=visits),
+         "b": NOW - timedelta(hours=1)})
+    for d in range(visits):
+        t = NOW - timedelta(days=d, hours=1)
+        conn.execute(text(
+            "INSERT INTO vision_individual_sighting (sighting_id, individual_id, stream_id, started_at, ended_at, "
+            "dwell_sec, observation_count, thumb_ref) VALUES (:s, :i, 'walkway', :t, :t, 0, 1, :th)"),
+            {"s": f"s-{iid}-{d}", "i": iid, "t": t, "th": f"thumb:{iid[0] * 63}{d % 10}" if thumbs else None})
+
+
+@needs_pg
+def test_no_picture_no_who_is_this_and_it_does_not_block_the_next(pg) -> None:
+    """C.2 (2026-10-20): a regular with no thumbnail gets no card (live:
+    ask-9645... went out with image_refs=[]), stays a candidate, and does not
+    use up the slot of a regular behind it that has pictures."""
+    from sqlalchemy import text
+
+    cfg = vi.IndividualsConfig(ask_daily_cap=1, ask_face_min_faces=0)
+    with pg.begin() as conn:
+        _add_regular(conn, "blank", 12, thumbs=False)     # ranks first (more sightings)
+        _add_regular(conn, "shown", 10, thumbs=True)
+        opened = vi._open_asks(conn, NOW, TZ, cfg)
+        assert [(a["source_ref"], bool(a["image_refs"])) for a in opened] == [("shown", True)]
+        assert conn.execute(text("SELECT count(*) FROM orion_ask WHERE source_ref='blank'")).scalar() == 0
+        # Pictures arrive later: the blank one is still a candidate.
+        conn.execute(text("UPDATE vision_individual_sighting SET thumb_ref='thumb:' || repeat('b', 64) "
+                          "WHERE individual_id='blank'"))
+        later = vi._open_asks(conn, NOW + timedelta(days=1), TZ, cfg)
+    assert [a["source_ref"] for a in later] == ["blank"]
+
+
+def _hub_dismiss(conn, ask_id: str, *, dont_know: bool, at=NOW) -> None:
+    """What the Hub's POST /api/asks/{id}/dismiss does to the row (CLOSE_ASK_SQL):
+    no answer; ``{"reason": "dont_know"}`` adds answer_detail.dont_know."""
+    from sqlalchemy import text
+
+    conn.execute(text("UPDATE orion_ask SET status='dismissed', answer=NULL, answered_at=:t, "
+                      "answer_detail=CAST(:d AS jsonb) WHERE ask_id=:i"),
+                 {"t": at, "i": ask_id, "d": json.dumps({"dont_know": True}) if dont_know else None})
+
+
+@needs_pg
+def test_i_dont_know_stores_no_name_and_asks_again_only_after_the_cooldown(pg) -> None:
+    """2026-10-27: "I don't know" on "Do you know whose vehicle this is?" closes the
+    card without a label (live: four vehicles were named "no" / "unsure" / "I do not
+    know whose vehicle this is." because typing was the only way to say it). It is
+    re-asked after the cooldown, counted from when she said it; plain Dismiss never."""
+    from sqlalchemy import text
+
+    cfg = vi.IndividualsConfig(ask_face_min_faces=0, ask_daily_cap=5)
+    with pg.begin() as conn:
+        _add_regular(conn, "car1", 10, thumbs=True, kind="vehicle")
+        _add_regular(conn, "car2", 10, thumbs=True, kind="vehicle")
+        opened = {a["source_ref"]: a for a in vi._open_asks(conn, NOW, TZ, cfg)}
+        assert sorted(opened) == ["car1", "car2"]
+        assert opened["car1"]["question"].endswith("Do you know whose vehicle this is?")
+        said_at = NOW + timedelta(days=5)   # answered late in the card's life
+        _hub_dismiss(conn, opened["car1"]["ask_id"], dont_know=True, at=said_at)
+        _hub_dismiss(conn, opened["car2"]["ask_id"], dont_know=False, at=said_at)
+        vi._apply_answers(conn, said_at)
+        assert _labels(conn) == {"car1": (None, False), "car2": (None, False)}
+
+        def reopened(at):
+            # Thumbs must still be young enough: move the sightings forward with the clock.
+            conn.execute(text("UPDATE vision_individual SET last_seen_at=:t"), {"t": at})
+            conn.execute(text("UPDATE vision_individual_sighting SET ended_at=:t, started_at=:t - "
+                              "(CAST(split_part(sighting_id, '-', 3) AS int) * interval '1 day')"), {"t": at})
+            return [a["source_ref"] for a in vi._open_asks(conn, at, TZ, cfg)]
+
+        assert reopened(said_at + timedelta(days=1)) == []
+        # Cooldown counted from created_at would have reopened it here; from the answer it does not.
+        assert reopened(NOW + timedelta(days=cfg.ask_cooldown_days + 1)) == []
+        assert reopened(said_at + timedelta(days=cfg.ask_cooldown_days + 1)) == ["car1"]
+        assert conn.execute(text(
+            "SELECT count(*) FROM orion_ask WHERE source_ref='car2' AND status='open'")).scalar() == 0
+
+
+@needs_pg
+def test_a_face_without_its_picture_does_not_block_the_next_face(pg) -> None:
+    from sqlalchemy import text
+
+    cfg = vi.IndividualsConfig(confirm_ask_daily_cap=1)
+    with pg.begin() as conn:
+        _add_person(conn, "p0", _vec(1.0), 9, FACE("0"))
+        _add_person(conn, "p1", _vec(0.0, 1.0), 6, FACE("1"))
+        conn.execute(text("UPDATE vision_individual_sighting SET face_thumb_ref=NULL, thumb_ref=NULL "
+                          "WHERE individual_id='p0'"))
+        opened = vi._open_asks(conn, NOW, TZ, cfg)
+    assert [a["source_ref"] for a in opened] == ["p1"]
+
+
 @needs_pg
 def test_unparseable_pair_answer_is_applied_as_nothing(pg) -> None:
     from sqlalchemy import text
@@ -328,6 +439,38 @@ def test_prune_keeps_individuals_in_an_open_pair_ask(pg) -> None:
         vi._prune(conn, NOW, vi.IndividualsConfig(), summary)
         left = {r[0] for r in conn.execute(text("SELECT individual_id FROM vision_individual")).fetchall()}
     assert {"aaa", "bbb"} <= left
+
+
+@needs_pg
+@pytest.mark.parametrize("keep,left", [(("person",), {"p-old", "p-new", "v-new"}),
+                                       ((), {"p-new", "v-new"})])
+def test_prune_keeps_crops_with_a_kept_label(pg, keep, left) -> None:
+    """Person crops are labelled examples (2026-10-20 person-learning spec,
+    Phase 0): the 7-day prune skips them; vehicles still go. Empty = old rule."""
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        for cid, label, age in (("p-old", "person", 30), ("p-new", "person", 1),
+                                ("v-old", "car", 30), ("v-new", "car", 1)):
+            conn.execute(text(
+                "INSERT INTO vision_crop_observation (crop_id, observation_id, stream_id, observed_at, label, "
+                "score, box_xyxy) VALUES (:c, 'obs', 'walkway', :t, :l, 0.9, '{0,0,1,1}')"),
+                {"c": cid, "t": NOW - timedelta(days=age), "l": label})
+        summary: dict = {}
+        vi._prune(conn, NOW, vi.IndividualsConfig(crop_retention_keep_labels=keep), summary)
+        got = {r[0] for r in conn.execute(text("SELECT crop_id FROM vision_crop_observation")).fetchall()}
+    assert got == left
+    assert summary["pruned_crops"] == 4 - len(left)
+
+
+@pytest.mark.parametrize("raw,want", [("person", ("person",)), (" person , dog ", ("person", "dog")),
+                                      ("0", ()), ("", ())])
+def test_keep_labels_env_parsing(raw, want, monkeypatch) -> None:
+    from app.settings import Settings
+    from app.vision_individuals_loop import individuals_config
+
+    monkeypatch.setenv("VISION_CROP_RETENTION_KEEP_LABELS", raw)
+    assert individuals_config(Settings()).crop_retention_keep_labels == want
 
 
 @needs_pg

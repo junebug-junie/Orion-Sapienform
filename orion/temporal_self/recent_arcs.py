@@ -30,7 +30,7 @@ from pydantic import ValidationError
 
 from orion.schemas.temporal_self import ArcSummaryV1, TemporalSelfFrameV1
 from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for
-from orion.temporal_self.stance_cue import DEFAULT_MAX_AGE_SEC, MAX_FUTURE_SKEW_SEC, span_words
+from orion.temporal_self.stance_cue import DEFAULT_MAX_AGE_SEC, MAX_FUTURE_SKEW_SEC, span_words, strain_cause_text
 
 MAX_LIMIT = 5
 RECENT_ARCS_MAX_CHARS = 400
@@ -58,6 +58,13 @@ def _what(arc: ArcSummaryV1) -> str:
         return _KIND_WORDS[arc.kind]
     if arc.kind == "attention":
         return f"attention on {label}"
+    if arc.kind == "play":
+        return f"played {label}"
+    if arc.kind == "street":
+        return f"saw {label}"  # the label already says "Outside (<camera>): ..."
+    if arc.kind == "strain":
+        causes = strain_cause_text(arc.subject_label)
+        return f"strained ({causes})" if causes else "strained"
     return f"{arc.kind}: {label}"
 
 
@@ -116,7 +123,11 @@ def project_recent_arcs(
     n = max(1, min(int(limit), MAX_LIMIT))
     tz = ZoneInfo(tz_name)
     dreams = [a for a in closed if a.kind == "reverie"]
-    others = [a for a in closed if a.kind != "reverie"][: n - 1 if dreams else n]
+    # Street arcs (passers-by) are about the outside world: only the latest one may take a line, so
+    # a busy walkway never pushes Orion's own arcs out of the block.
+    latest_street = next((a for a in closed if a.kind == "street"), None)
+    others = [a for a in closed if a.kind != "reverie" and (a.kind != "street" or a is latest_street)][
+        : n - 1 if dreams else n]
     # (line, cited arc, sort key) -- the daydream line sits where its latest daydream ended
     rows = [(_line(a, tz), a, as_utc(a.ended_at)) for a in others]
     if dreams:

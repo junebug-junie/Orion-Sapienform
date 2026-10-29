@@ -127,6 +127,9 @@ SYNC_PREFIXES = (
     # had no keys left before that. Its pool-placement keys are below.)
     "DURABLE_RUNS_",
     "CORTEX_DURABLE_",
+    # Body economy Patch A3 (2026-10-23): durable-runs' physiology node (Organ 1 Body).
+    "ORION_PHYSIOLOGY_",
+    "CHANNEL_PHYSIOLOGY_",
     # GPU pool (2026-09-25, stage 3): the pool's own keys and the Gateway's pool-placement keys.
     # Without these the default sync visited both .env files and silently added nothing.
     "GPU_POOL_",
@@ -412,6 +415,14 @@ SYNC_PREFIXES = (
     # Temporal Self rev 4 regulation (orion-durable-runs regulate node, 2026-10-10).
     "TEMPORAL_SELF_",
     "ORION_REGULATION_",
+    # Walkway rollups (2026-10-18): orion-sql-writer reducer and orion-substrate-runtime
+    # "seen on <day>" links. Neither matched an existing prefix.
+    "VISION_ROLLUP_",
+    "WALKWAY_SEEN_",
+    # Caption motion cross-check (orion-sql-writer, 2026-10-23, spec PR #2763 item 3 C).
+    "VISION_CAPTION_MOTION_",
+    # Hourly frame samples (orion-sql-writer, 2026-10-29).
+    "VISION_HOURLY_FRAMES_",
 )
 
 SYNC_EXACT = frozenset(
@@ -426,18 +437,28 @@ SYNC_EXACT = frozenset(
         "AUTONOMY_CHAT_STANCE_DEFER_ORION_DRIVES",
         "AUTONOMY_GRAPH_QUERY_URL",
         "AUTONOMY_GRAPH_UPDATE_URL",
+        # Body economy Patch C3b: orion-topic-foundry's shadow-bid switch.
+        "TOPIC_FOUNDRY_PHYSIOLOGY_SHADOW_BID_ENABLED",
         "AUTONOMY_GRAPH_TIMEOUT_SEC",
         "CHANNEL_MEMORY_TURN_PERSISTED",
         "CHANNEL_CHAT_HISTORY_SPARK_META_PATCH",
         "CHANNEL_HELP_REQUEST",
+        # Body economy Patch C3b: orion-actions' shadow-bid switch (no ACTIONS_PHYSIOLOGY_ prefix).
+        "ACTIONS_PHYSIOLOGY_SHADOW_BID_ENABLED",
         "CHANNEL_PEER_BRIEF",
         # Mind run artifact channel (reused by unified-turn enrichment, mode=orion)
         "CHANNEL_MIND_ARTIFACT",
+        # Body economy Patch C3b: hub's shadow-bid switch (no HUB_PHYSIOLOGY_ prefix is synced).
+        "HUB_PHYSIOLOGY_SHADOW_BID_ENABLED",
         "SQL_WRITER_EMIT_MEMORY_TURN_PERSISTED",
+        # Body economy Patch C3b: orion-thought's shadow-bid switch (no THOUGHT_PHYSIOLOGY_ prefix).
+        "THOUGHT_PHYSIOLOGY_SHADOW_BID_ENABLED",
         # bus_fallback_log backlog watcher (orion-sql-writer). NOTIFY_API_TOKEN is
         # deliberately absent: it is a credential, .env_example carries it empty, and
         # the settings default of "" already makes the key optional.
         "NOTIFY_SERVICE_URL",
+        # Body economy Patch C3b: orion-dream's shadow-bid switch (no DREAM_ prefix is synced).
+        "DREAM_PHYSIOLOGY_SHADOW_BID_ENABLED",
         "MEMORY_CONSOLIDATION_ENABLED",
         "LLM_LOGPROB_SUMMARY_ENABLED",
         "LLM_GATEWAY_OPENAI_PASSTHROUGH_ENABLED",
@@ -571,6 +592,9 @@ DEFAULT_SERVICES = (
     # Energy watcher (2026-09-27). Same dual-half blind spot: absent here and no
     # ENERGY_ prefix, so the default run added none of its 14 plan-2 keys.
     "orion-energy",
+    # Body economy Patch C3b (2026-10-27): its shadow-bid switch is an exact key; without this
+    # entry the default run never visited the service at all.
+    "orion-topic-foundry",
 )
 
 

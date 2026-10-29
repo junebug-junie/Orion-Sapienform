@@ -83,3 +83,12 @@ def test_harness_override_is_rejected_like_an_unrecognized_value():
     llm_route_selected log line instead of looking like no override was ever supplied."""
     assert _resolve_llm_route_override({"options": {"llm_route": "harness"}}) == (None, "harness")
     assert _resolve_llm_route_override({"llm_route": "harness"}) == (None, "harness")
+
+
+def test_embodied_speech_route_is_accepted_as_an_override():
+    # orion-embodiment's town speech (2026-10-23): system-only, but cortex-exec takes it.
+    assert _resolve_llm_route_override({"llm_route": "quick_embodied"}) == ("quick_embodied", "quick_embodied")
+
+
+def test_other_system_routes_stay_refused_as_overrides():
+    assert _resolve_llm_route_override({"llm_route": "quick_turn"}) == (None, "quick_turn")

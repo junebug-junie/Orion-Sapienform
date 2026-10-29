@@ -354,6 +354,8 @@ Env: `CABINET_SENSORS_PATH` (default `/run/orion-sensors/latest.json`),
 ## Cabinet ambient audio (Athena USB mic, levels-only)
 
 Continuous CMTECK (or configured ALSA) noise levels — RMS/peak only, no Whisper.
+The same host reader also feeds Hub's live-listen ring (`/run/orion-audio/live/`, tmpfs,
+~8s); biometrics never reads it. See Hub README **Cabinet ambient audio**.
 Design: `docs/superpowers/specs/2026-08-24-athena-ambient-audio-levels-design.md`.
 
 ```text

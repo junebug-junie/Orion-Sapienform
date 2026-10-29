@@ -175,15 +175,40 @@ def test_unreadable_sources_are_named_in_the_trace() -> None:
     assert frame.debug["world_first"]["absent_sources"] == ["node:substrate.execution"]
 
 
-def test_walkway_perception_node_is_fenced_out_of_attention() -> None:
-    """node:substrate.perception_walkway is written and recorded but has no
-    cognition consumer until its live-data sanity check runs: neither the
-    world-first nor the legacy competition may rank it, however loud."""
+def test_walkway_wins_only_in_its_own_p99_band() -> None:
+    """node:substrate.perception_walkway competes in the world-first contest
+    only for its own p99+ tail (ATTENTION_MIN_BAND_BY_NODE_ID, 2026-10-21);
+    its p90-p99 band was at chance for street events. It stays out of the
+    legacy salience signals, which judge no band."""
     from orion.schemas.attention_candidate import PERCEPTION_WALKWAY_NODE_ID
 
     walkway = _node(PERCEPTION_WALKWAY_NODE_ID, "Walkway PE", pressure=1.0, pe=1.0, embedding_staleness=0.0)
     frame = _frame([walkway], {PERCEPTION_WALKWAY_NODE_ID: _mag(0.999, value=1.0)})
+    proj = ab.broadcast_projection_from_frame(frame)
+    assert proj.attended_node_ids == [PERCEPTION_WALKWAY_NODE_ID]
+    (cand,) = frame.debug["world_first"]["candidates"]
+    assert cand["source_kind"] == "external" and cand["band"] == "unusual" and cand["eligible"]
+
+    frame = _frame([walkway], {PERCEPTION_WALKWAY_NODE_ID: _mag(0.95, value=0.6)})
     assert frame.open_loops == []
-    wf = frame.debug["world_first"]
-    assert wf["candidates"] == [] and PERCEPTION_WALKWAY_NODE_ID not in wf.get("uncalibrated", [])
+    (cand,) = frame.debug["world_first"]["candidates"]
+    assert cand["band"] == "high" and not cand["eligible"]
+    assert "below this source's unusual floor" in cand["reason"]
     assert ab.substrate_pressure_signals([walkway], min_salience=0.0) == []
+
+
+def test_camera_placeholder_for_missing_input_is_absent_not_quiet() -> None:
+    from orion.schemas.attention_candidate import PERCEPTION_NODE_ID, PERCEPTION_WALKWAY_NODE_ID
+    from orion.substrate.prediction_error_freshness import PREDICTION_ERROR_MISSING_REASON_KEY
+
+    walkway = _node(PERCEPTION_WALKWAY_NODE_ID, "Walkway PE", pe=0.0, embedding_staleness=1.0)
+    room = _node(PERCEPTION_NODE_ID, "Room PE", pe=0.0, embedding_staleness=0.0,
+                 **{PREDICTION_ERROR_MISSING_REASON_KEY: "warming"})
+    frame = _frame([walkway, room], {
+        PERCEPTION_WALKWAY_NODE_ID: _mag(0.999, value=1.0), PERCEPTION_NODE_ID: _mag(0.999, value=1.0),
+    })
+    assert frame.open_loops == []
+    by_id = {c["source_id"]: c for c in frame.debug["world_first"]["candidates"]}
+    assert by_id[PERCEPTION_WALKWAY_NODE_ID]["absent"] is True
+    assert by_id[PERCEPTION_NODE_ID]["absent"] is True
+    assert sorted(frame.debug["world_first"]["absent_sources"]) == sorted(by_id)

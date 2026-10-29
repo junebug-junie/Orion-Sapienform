@@ -47,7 +47,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Sequence
+from typing import Any, Optional, Sequence
+
+from orion.vision.walkway_rollup import display_line
 
 # How much to put in front of Orion. Enough to choose between, few enough that
 # the material does not crowd out its own self-model in the turn's context.
@@ -166,6 +168,10 @@ class StudyMaterial:
     # council said lately, deduped, capped. Same degrade-to-nothing rule as
     # `unresolved`; offered alongside it, never counted as `has_material`.
     street_captions: list["StreetCaptionCard"] = field(default_factory=list)
+    # The walkway's latest day rollup, 2026-10-18 (vision_rollup, grain=day):
+    # the street over a whole day, counted by code. Alongside the captions, same
+    # degrade-to-nothing rule, never counted as `has_material`.
+    street_day: Optional["StreetDayCard"] = None
     local_timezone: str = "America/Denver"
     unavailable_reason: str | None = None
 
@@ -475,6 +481,7 @@ _REASON_PLAIN = {
     "council_uncertainty": "the vision council was unsure",
     "no_label": "no detector label was confident enough",
     "surprise": "it looked unlike what that camera usually sees",
+    "handoff_missed": "someone left one camera toward the other and never arrived",
 }
 
 
@@ -622,3 +629,48 @@ def build_street_caption_cards(
         )
         for c in kept
     ]
+
+
+# --- The street over a whole day (2026-10-18) ------------------------------------------------
+#
+# The walkway's newest day rollup (vision_rollup grain=day, orion-sql-writer;
+# orion/vision/walkway_rollup.py): counts by kind, named people, regulars,
+# busiest hour, camera-down hours -- one deterministic line. The newest row may
+# be today, still running (`complete` false; the line says "so far").
+
+STREET_DAY_ROLLUP_SQL = (
+    "SELECT stream_id, label, complete, line, rollup, computed_at FROM vision_rollup "
+    "WHERE stream_id = ANY($1::text[]) AND grain = 'day' "
+    "ORDER BY period_start DESC LIMIT 1"
+)
+
+
+@dataclass(frozen=True)
+class StreetDayCard:
+    stream_id: str
+    day: str
+    line: str
+    complete: bool
+
+    def preview(self) -> str:
+        # The line already says "(so far, through HH:MM)" for a running day and names
+        # missing hours ("No record ...") for an incomplete past one.
+        return self.line
+
+
+def build_street_day_card(row: Any) -> Optional[StreetDayCard]:
+    if row is None:
+        return None
+    try:
+        try:
+            rollup = row["rollup"]
+        except (KeyError, IndexError):
+            rollup = None
+        # People as a range: a row from before rules_version 2 is re-rendered, never shown bare.
+        line = display_line(row["line"], rollup)
+        if not line:
+            return None
+        return StreetDayCard(stream_id=str(row["stream_id"] or ""), day=str(row["label"] or ""), line=line,
+                             complete=bool(row["complete"]))
+    except (KeyError, IndexError, TypeError):
+        return None

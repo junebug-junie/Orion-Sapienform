@@ -118,7 +118,6 @@ _ISOLATED_RUNTIME = SimpleNamespace(
     orion_situation_enabled=True,
     orion_situation_weather_enabled=False,
     orion_situation_agenda_enabled=False,
-    orion_situation_lab_context_enabled=False,
     orion_situation_perception_enabled=False,
     orion_situation_affect_enabled=False,
     orion_situation_curiosity_enabled=False,

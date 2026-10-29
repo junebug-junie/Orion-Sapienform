@@ -168,12 +168,81 @@ template_to_cortex:
     allowed_scope: self_reversible
     rpc_timeout_sec: 10
 
+  # 2026-10-21 (thinking rung 3): this dispatch IS the thought.painting `make` act -- the act's
+  # key is reverie_visual_run_id(dispatch_id) and its test_before is visual_dispatch:<dispatch_id>
+  # (services/orion-thought/app/visual_steps.py _painting_act). So the allocator scores the
+  # candidate on that act's own EffectPosterior (orion/autonomy/act_candidates.py) instead of
+  # refusing it `unmeasurable`. Kill switch: ORION_DISPATCH_ACT_CANDIDATES_ENABLED.
   render_scene:
     dispatch_kind: express
     cortex_verb: skills.imagination.render_scene.v1
     cortex_mode: brain
     allowed_scope: express_bounded
     rpc_timeout_sec: 170
+    act:
+      verb: make
+      actor: thought.painting
+      signal_id: artifact_produced
+      horizon_sec: 5400   # PAINTING_HORIZON_SEC, services/orion-thought/app/visual_steps.py
+      object_source: dispatch   # the painting run id derives from the dispatch id: no control arm
+
+  # 2026-10-21 (thinking rung 3 follow-up): the reading pull. This dispatch IS one extra
+  # hub.world_pulse_read `look` act on the seed the self-scheduled lane would claim next (Hub picks
+  # it with CLAIM_SQL's own order and answers with read_seed:<seed_id>, the act's ledger key).
+  # Not a cortex verb: orion.world_pulse_read.pull.v1 is the executor key the dispatch runtime maps
+  # to one orion:world_pulse_read:pull:request RPC (check, precommit, act). Hub runs every gate:
+  # HUB_WORLD_PULSE_READ_PULL_ENABLED, the lane's own window/refund backoff, the daily cap (derived:
+  # 8), arousal strained, thermal hot. inspect_only: it reads the world and writes nothing outside
+  # Orion's own reading queue.
+  # horizon_sec 12000: derived, not picked -- p90 of (Stage 1 durable turn submitted -> look act
+  # closed) over the 83 successful reads with both on record (live 2026-10-21: p50 4205 s, p90
+  # 11992 s; most of it is the GPU queue). A pulled read that has not closed by then counts 0, the
+  # same for a held-back decision whose seed the lane did not read.
+  # object_source queue: the seed exists without the dispatch, so the control arm is informative.
+  # Dispatch-side kill switch: ORION_DISPATCH_READING_PULL_ENABLED.
+  read_world_pulse:
+    dispatch_kind: observe
+    cortex_verb: orion.world_pulse_read.pull.v1
+    cortex_mode: brain
+    allowed_scope: inspect_only
+    rpc_timeout_sec: 15
+    act:
+      verb: look
+      actor: hub.world_pulse_read
+      signal_id: artifact_produced
+      horizon_sec: 12000
+      object_source: queue
+
+  # 2026-10-22 (Orion plays Zelda, docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md
+  # section E): one solo leisure session. This dispatch IS the hub.retro_leisure `play` act: Hub opens
+  # it keyed retro_leisure_dispatch:<dispatch_id> when the session starts and closes it at session end
+  # (artifact_produced = a session summary with at least one real planner decision). Not a cortex verb:
+  # orion.retro_leisure.start.v1 is the executor key the dispatch runtime maps to one
+  # orion:retro_leisure:start:request RPC. Hub's leisure runner runs every gate (arousal strained,
+  # cabinet_hot, human present or recent, 1 per 3 h, 90 min/day, RETRO_LEISURE_ENABLED); the
+  # allocator only admits or refuses, and a refusal is stamped allocator:<reason> on the frame.
+  # horizon_sec 2400: the runner's 1800 s session cap (spec E) + 600 s for its end-of-session save
+  # state and the memory export that closes the act. A session not closed by then counts 0.
+  # object_source dispatch: the session exists only because of the dispatch, so no control arm.
+  # cost_source act_duration: the RPC answers in milliseconds; the work is the session itself.
+  # cold_cost_ceiling_sec 1800: the session cap, charged until the first session closes.
+  # express_bounded: the session heats the GPU (planner) and holds the cabinet, so it shares the
+  # outward gate mode.allow_express_dispatch. Dispatch-side kill switch:
+  # ORION_DISPATCH_RETRO_LEISURE_ENABLED.
+  retro_leisure_session:
+    dispatch_kind: express
+    cortex_verb: orion.retro_leisure.start.v1
+    cortex_mode: brain
+    allowed_scope: express_bounded
+    rpc_timeout_sec: 15
+    act:
+      verb: play
+      actor: hub.retro_leisure
+      signal_id: artifact_produced
+      horizon_sec: 2400
+      object_source: dispatch
+      cost_source: act_duration
+      cold_cost_ceiling_sec: 1800
 
   # 2026-08-25: analysis -> self-study journal entry.
   #

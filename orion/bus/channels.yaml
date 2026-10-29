@@ -1206,13 +1206,9 @@ channels:
     kind: "event"
     schema_id: "MetacogTriggerV1"
     producer_services: ["orion-equilibrium-service"]
-    # orion-actions was already a live subscriber (_handle_journal_metacog,
-    # services/orion-actions/app/main.py) before this registry entry was
-    # corrected -- found during the chat_turn metacog trigger design
-    # investigation (docs/superpowers/design/2026-07-18-collapse-mirror-
-    # metacog-redesign.md). Real contract drift, unrelated to whether that
-    # trigger ships.
-    consumer_services: ["orion-cortex-orch", "orion-sql-writer", "orion-actions"]
+    # orion-actions unsubscribed 2026-10-23: its metacog_digest journal writer
+    # was removed (telemetry narration, ~140 LLM calls/day, no grounding).
+    consumer_services: ["orion-cortex-orch", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-01-10"
 
@@ -1338,10 +1334,29 @@ channels:
     schema_id: "VisionEventPayload"
     message_kind: "vision.event.bundle"
     # orion-vision-window: accepted camera captions (event_type camera_caption).
-    producer_services: ["orion-vision-council", "orion-vision-window"]
+    # orion-vision-retina (doorbell): one doorbell_ring / doorbell_motion
+    # event per Ring push (app/ring_events.py).
+    producer_services: ["orion-vision-council", "orion-vision-window", "orion-vision-retina"]
     consumer_services: ["orion-vision-scribe"]
     stability: "experimental"
     since: "2026-01-08"
+
+  # Street events (docs/superpowers/specs/2026-10-20-street-continuity-handoff-
+  # design.md section 6): facts about the street that may compete for
+  # attention. Producers: orion-vision-retina (doorbell, kind doorbell_ring,
+  # salience 1.0) and the handoff reducer in orion-sql-writer (approach_door,
+  # handoff_met / handoff_late with arrival_log_score, handoff_missed once
+  # unexplained, overlap_pair). Consumer: orion-substrate-runtime
+  # (_street_events_listener_loop: gate -> node:substrate.street, Rung 6
+  # street_handoff; orion/substrate/street_attention.py).
+  - name: "orion:vision:street:events"
+    kind: "event"
+    schema_id: "StreetEventV1"
+    message_kind: "vision.street.event.v1"
+    producer_services: ["orion-vision-retina", "orion-sql-writer"]
+    consumer_services: ["orion-substrate-runtime"]
+    stability: "experimental"
+    since: "2026-10-20"
 
   - name: "orion:vision:events:sql-write"
     kind: "event"
@@ -1972,6 +1987,33 @@ channels:
     stability: "experimental"
     since: "2026-10-07"
 
+  # Body economy Patch A3 (docs/superpowers/specs/2026-10-23-organism-body-economy-design.md, Organ 1
+  # Body): one PhysiologyStateV1 per regulation tick (~120 s) from durable-runs' `physiology` node --
+  # every constraint (heat, energy, lane:<role>, attention:juniper, claude) in its own unit with an
+  # explicit no_reading. sql-writer persists one row per tick to `physiology_state`. Latest also in
+  # Redis orion:physiology:latest. No prices yet; nothing decides from it.
+  - name: "orion:physiology:state"
+    kind: "event"
+    schema_id: "PhysiologyStateV1"
+    message_kind: "physiology.state.v1"
+    producer_services: ["orion-durable-runs"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-10-23"
+
+  # Body economy Patch C1 (Organ 3 Appetite + Organ 4 Choice), SHADOW: one WantDecisionV1 per
+  # POST /physiology/bid on durable-runs -- funded/deferred, lane, prices seen, net, binding
+  # constraint, displaced, retry_after, shadow=true. sql-writer persists one row per decision to
+  # `want_ledger`. Nobody obeys the decision yet (Patch D cuts over one reader per PR).
+  - name: "orion:physiology:want:decision"
+    kind: "event"
+    schema_id: "WantDecisionV1"
+    message_kind: "physiology.want.decision.v1"
+    producer_services: ["orion-durable-runs"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-10-27"
+
   - name: "orion:chat:history:spark_meta:patch"
     kind: "event"
     schema_id: "ChatHistorySparkMetaPatchV1"
@@ -2091,6 +2133,16 @@ channels:
     stability: "experimental"
     since: "2026-09-25"
     description: "Read-only portable AC / cabinet cooling watts from Athena Z-Wave Shelly Wave plug."
+
+  - name: "orion:office:env:sample"
+    kind: "telemetry"
+    schema_id: "OfficeEnvSampleV1"
+    message_kind: "office.env.sample.v1"
+    producer_services: ["orion-office-env"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-10-27"
+    description: "Read-only office temperature/humidity (SHT40 on a pan-1 Nano ESP32). Absent is not zero; stale samples carry no measurements."
 
   # House-level electricity (docs/superpowers/specs/2026-09-26-orion-energy-watcher-design.md).
   # Whole-house Green Button intervals, priced by a versioned tariff, joined to settled
@@ -2331,6 +2383,16 @@ channels:
     stability: "experimental"
     since: "2026-09-05"
     description: "Append-only, versioned self-concept claims -- the identity.yaml-replacement store (self-model rebuild arc, Layer 2/Patch 3). Fed by three producers: Layer 3's real LLM reflection findings (orion-cortex-exec), Self Atlas's per-cluster LLM-written descriptions (orion-hub, services/orion-hub/scripts/self_atlas_cluster_history.py), and -- since 2026-09-08 -- Orion's own first-person `:SelfDefinition` from a self-inquiry curiosity run, mirrored by orion-hub under concept_id `self:definition` / produced_by `curiosity_self_inquiry` (orion/curiosity/self_inquiry.py). That last one is read back into every chat turn's identity kernel via the felt-state reader's `orion_self_definition` lane. Additive to identity.yaml, not a replacement."
+
+  - name: "orion:personality:naming"
+    kind: "event"
+    schema_id: "DispositionNamingV1"
+    message_kind: "personality.naming.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-10-20"
+    description: "Orion's verdict on one personality disposition shown in a self-inquiry naming run (name / reject / merge / no_answer), with the packet Orion was shown and Hub's structural check. orion-sql-writer appends it to orion_disposition_naming; orion-durable-runs (single writer of personality_*) reads that table and applies it. Spec docs/superpowers/specs/2026-10-17-personality-orion-names-dispositions-design.md (PR #2742)."
 
   - name: "orion:self_sense:eval:write"
     kind: "event"
@@ -2927,7 +2989,8 @@ channels:
   # rate_limit_events.py reads the constraint's own first-party announcement
   # ("You've hit your session limit - resets 3:30am (UTC)") including the reset
   # time, and had ZERO consumers from the day it shipped until this channel.
-  # It replaces the dollar-denominated quota_budget.py allowance, whose
+  # It replaced the dollar-denominated quota_budget.py allowance (deleted in
+  # body economy Patch B), whose
   # denominator was measured and refuted (2026-08-27-quota-window-calibration-
   # finding.md): no dollar threshold separates limited from not-limited.
   # Produced here rather than in orion-hub because this service already mounts
@@ -2940,7 +3003,7 @@ channels:
     schema_id: "ClaudeLimitObservationV1"
     message_kind: "substrate.claude_limit.v1"
     producer_services: ["orion-cocreation-signals"]
-    consumer_services: ["orion-hub"]
+    consumer_services: ["orion-hub", "orion-durable-runs"]
     stability: "experimental"
     since: "2026-09-08"
 
@@ -3000,10 +3063,22 @@ channels:
     # source_service="orion-bus" on rpc_transport_timeout markers published from
     # whichever service's bus client timed out.
     producer_services:
+      # act ledger (body economy A5): daily_metacog_v1 attempts (`infer`) and in-process journal
+      # composes (`make`) publish act_opened/act_closed (services/orion-actions/app/act_emit.py),
+      # gated by ACTIONS_ACT_EMIT_ENABLED. Durable journal.compose runs are left to orion-durable-runs (its act producer is not shipped yet).
+      - orion-actions
       - orion-biometrics
       - orion-bus
       - orion-cortex-exec
       - orion-cortex-orch
+      # act ledger (body economy A5): the dream cycle's `make` act, opened when a sleep starts
+      # replay and closed when it is persisted (services/orion-dream/app/act_emit.py), gated by
+      # DREAM_ACT_EMIT_ENABLED.
+      - orion-dream
+      # act ledger (body economy A5): want-family durable runs publish act_opened at their
+      # first pool grant and act_closed at their terminal (infer / ask / sense / make) --
+      # services/orion-durable-runs/app/run_acts.py, gated by ORION_DURABLE_ACT_EMIT_ENABLED.
+      - orion-durable-runs
       - orion-gpu-pool
       - orion-harness-governor
       # settled H1 verdict transitions + one summary per hour (trace prefix
@@ -3021,6 +3096,10 @@ channels:
       # THOUGHT_ACT_LEDGER_ENABLED. orion-hub's say/ask/look acts ride its existing entry
       # (HUB_ACT_LEDGER_ENABLED). Persisted by orion-sql-writer to grammar_acts.
       - orion-thought
+      # act ledger (body economy A5): each topic-foundry training run publishes one `maintain`
+      # act (services/orion-topic-foundry/app/services/act_emit.py), gated by
+      # TOPIC_FOUNDRY_ACT_EMIT_ENABLED.
+      - orion-topic-foundry
       # per-window storage-write outcome traces (sql_writer.storage:), gated by
       # SQL_WRITER_WRITE_HEALTH_ENABLED -- services/orion-sql-writer/app/write_health.py.
       # The writer is also this channel's persister; it never counts its own
@@ -3409,6 +3488,46 @@ channels:
     stability: "experimental"
     since: "2026-10-01"
     description: "Per-request reply to orion:gpu_pool:shed:request (orion.schemas.gpu_pool.GPU_POOL_SHED_REPLY_PREFIX): the shed record (state active|expired|cancelled|preempted_by_reflex|refused, refusal, TTL, drained_at, grants_withheld, delayed_grant_sec)."
+
+  - name: "orion:world_pulse_read:pull:request"
+    kind: "request"
+    schema_id: "WorldPulseReadPullRequestV1"
+    message_kind: "world_pulse_read.pull.request.v1"
+    producer_services: ["orion-execution-dispatch-runtime"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-10-21"
+    description: "Thinking rung 3 follow-up: the motor allocator's reading pull (route read_world_pulse). op=check runs Hub's gates (HUB_WORLD_PULSE_READ_PULL_ENABLED, daily cap, arousal strained, thermal hot, the reading pipeline's own window/refund backoff) and picks the next seed in the queue's own claim order, with no side effect; op=act re-runs them, then arm=treated starts that read as one extra in-flight read and arm=control only marks the seed as the decision's control. Reply WorldPulseReadPullResultV1 on orion:world_pulse_read:pull:reply:*."
+
+  - name: "orion:world_pulse_read:pull:reply:*"
+    kind: "result"
+    schema_id: "WorldPulseReadPullResultV1"
+    message_kind: "world_pulse_read.pull.result.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-execution-dispatch-runtime"]
+    stability: "experimental"
+    since: "2026-10-21"
+    description: "Per-request reply to orion:world_pulse_read:pull:request (orion.schemas.world_pulse_read_pull.WORLD_PULSE_READ_PULL_REPLY_PREFIX): state ready|started|control_recorded|refused, the seed and its act-ledger key (read_seed:<seed_id>), refusal and retry_after_sec, pulls today and the cap."
+
+  - name: "orion:retro_leisure:start:request"
+    kind: "request"
+    schema_id: "RetroLeisureStartRequestV1"
+    message_kind: "retro_leisure.start.request.v1"
+    producer_services: ["orion-execution-dispatch-runtime"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-10-22"
+    description: "Orion plays Zelda, section E: the motor allocator admitted a solo leisure session (route retro_leisure_session, act play:hub.retro_leisure:artifact_produced). Hub asks the leisure runner's own should_start() gate (arousal strained, cabinet_hot, human present or recent, session/daily caps, RETRO_LEISURE_ENABLED); when it passes Hub starts the session and opens the play act keyed retro_leisure_dispatch:<dispatch_id>. Reply RetroLeisureStartResultV1 on orion:retro_leisure:start:reply:*."
+
+  - name: "orion:retro_leisure:start:reply:*"
+    kind: "result"
+    schema_id: "RetroLeisureStartResultV1"
+    message_kind: "retro_leisure.start.result.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-execution-dispatch-runtime"]
+    stability: "experimental"
+    since: "2026-10-22"
+    description: "Per-request reply to orion:retro_leisure:start:request (orion.schemas.retro_leisure.RETRO_LEISURE_START_REPLY_PREFIX): state started|refused, the session id and its act-ledger key, the runner's named refusal and retry_after_sec."
 
   - name: "orion:gpu_pool:actuate:request"
     kind: "request"
@@ -3840,6 +3959,17 @@ channels:
     stability: "experimental"
     since: "2026-10-13"
     description: "orion-introspect node_history tool RPC. Read-only: one substrate node's prediction-error readings over a window of at most 168 h (count, min/median/max, first/last, <=48 bucketed points, largest reading-to-reading changes), or which nodes have readings in the window. Answered by Hub from substrate_node_prediction_error_history in a READ ONLY transaction. Reply on orion:introspect:result:<correlation_id>."
+
+  - name: "orion:introspect:power_attribution:request"
+    kind: "request"
+    schema_id: "IntrospectRequestV1"
+    message_kind: "introspect.tool.request.v1"
+    producer_services: ["orion-harness-governor"]
+    consumer_services: ["orion-hub"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-10-23"
+    description: "orion-introspect power_attribution tool RPC (heat archaeology). Read-only: per node, steps in hourly wall watts over a 2-30 day window, each split into GPU/CPU/rest watts and attributed to GPU-pool workloads and a CPU-load regime by least squares (R2 reported), plus CPU-load shifts and the SQL behind every claim. Answered by Hub from orion_energy_hourly, orion_biometrics_cluster, gpu_pool_events and durable_run_workflow in a READ ONLY transaction. Correlational, never verified. Reply on orion:introspect:result:<correlation_id>."
 
   - name: "orion:introspect:result:*"
     kind: "result"

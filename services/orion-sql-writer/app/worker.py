@@ -27,6 +27,7 @@ from app.models import (
     PowerIntentSettledSQL,
     CabinetAmbientSpikeSQL,
     HomeCoolingSampleSQL,
+    OfficeEnvSampleSQL,
     EnergyBillActualSQL,
     EnergyBillForecastSQL,
     EnergyCostAccruedSQL,
@@ -72,12 +73,15 @@ from app.models import (
     DurableRunStateSQL,
     GpuPoolEventSQL,
     GpuPoolStateSQL,
+    PhysiologyStateSQL,
+    WantLedgerSQL,
     TransportBaselineHourlySQL,
     SelfSignalHourSQL,
     SelfSignalOutcomeAssociationSQL,
     FieldChannelAnomalyScoreSQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
+    DispositionNamingSQL,
     SelfSenseEvalLogSQL,
     SocialRoomTurnSQL,
     ExternalRoomMessageSQL,
@@ -127,11 +131,16 @@ from orion.schemas.curiosity_supervisor import HopReadingV1
 from orion.schemas.durable_run import DurableRunStateV1
 from orion.schemas.gpu_pool import GpuPoolEventV1, GpuPoolStateV1
 from app.models.gpu_pool_state import state_history_row
+from app.models.physiology_state import physiology_state_row
+from orion.schemas.physiology import PhysiologyStateV1
+from app.models.want_ledger import want_ledger_row
+from orion.schemas.physiology_want import WantDecisionV1
 from orion.schemas.telemetry.transport_baseline_hourly import TransportBaselineHourlyV1
 from orion.schemas.self_signal_outcome import SelfSignalHourV1, SelfSignalOutcomeAssociationV1
 from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
 from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
 from orion.schemas.self_concept_history import SelfConceptHistoryV1
+from orion.schemas.personality import DispositionNamingV1
 from orion.schemas.self_sense import SelfSenseEvalV1
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
@@ -161,6 +170,7 @@ from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.power import PowerIntentSettledV1
 from orion.schemas.telemetry.cabinet_ambient_spike import CabinetAmbientSpikeV1
 from orion.schemas.telemetry.home_cooling import HomeCoolingSampleV1
+from orion.schemas.telemetry.office_env import OfficeEnvSampleV1
 from orion.schemas.energy import (
     EnergyBillActualV1,
     EnergyBillForecastV1,
@@ -263,6 +273,8 @@ INSERT_ONLY_MODELS = {
     JournalEntrySQL,
     GpuPoolEventSQL,
     GpuPoolStateSQL,
+    PhysiologyStateSQL,
+    WantLedgerSQL,
     TransportBaselineHourlySQL,
     SelfSignalOutcomeAssociationSQL,
     FieldChannelAnomalyScoreSQL,
@@ -274,6 +286,7 @@ INSERT_ONLY_MODELS = {
     DurableRunStateSQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
+    DispositionNamingSQL,
     SocialRoomTurnSQL,
     ChatResponseFeedbackSQL,
     MindRunSQL,
@@ -510,6 +523,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "PowerIntentSettledSQL": (PowerIntentSettledSQL, PowerIntentSettledV1),
     "CabinetAmbientSpikeSQL": (CabinetAmbientSpikeSQL, CabinetAmbientSpikeV1),
     "HomeCoolingSampleSQL": (HomeCoolingSampleSQL, HomeCoolingSampleV1),
+    "OfficeEnvSampleSQL": (OfficeEnvSampleSQL, OfficeEnvSampleV1),
     "EnergyUsageIntervalSQL": (EnergyUsageIntervalSQL, EnergyUsageIntervalV1),
     "EnergyCostAccruedSQL": (EnergyCostAccruedSQL, EnergyCostAccruedV1),
     "EnergyRunCostSQL": (EnergyRunCostSQL, EnergyRunCostEstimatedV1),
@@ -547,12 +561,15 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "DurableRunStateSQL": (DurableRunStateSQL, DurableRunStateV1),
     "GpuPoolEventSQL": (GpuPoolEventSQL, GpuPoolEventV1),
     "GpuPoolStateSQL": (GpuPoolStateSQL, GpuPoolStateV1),
+    "PhysiologyStateSQL": (PhysiologyStateSQL, PhysiologyStateV1),
+    "WantLedgerSQL": (WantLedgerSQL, WantDecisionV1),
     "TransportBaselineHourlySQL": (TransportBaselineHourlySQL, TransportBaselineHourlyV1),
     "SelfSignalHourSQL": (SelfSignalHourSQL, SelfSignalHourV1),
     "SelfSignalOutcomeAssociationSQL": (SelfSignalOutcomeAssociationSQL, SelfSignalOutcomeAssociationV1),
     "FieldChannelAnomalyScoreSQL": (FieldChannelAnomalyScoreSQL, FieldChannelAnomalyScoreV1),
     "ChatStanceBeliefLogSQL": (ChatStanceBeliefLogSQL, ChatStanceBeliefLogV1),
     "SelfConceptHistorySQL": (SelfConceptHistorySQL, SelfConceptHistoryV1),
+    "DispositionNamingSQL": (DispositionNamingSQL, DispositionNamingV1),
     "SelfSenseEvalLogSQL": (SelfSenseEvalLogSQL, SelfSenseEvalV1),
     "SocialRoomTurnSQL": (SocialRoomTurnSQL, SocialRoomTurnV1),
     "ExternalRoomMessageSQL": (ExternalRoomMessageSQL, ExternalRoomMessageV1),
@@ -1663,6 +1680,48 @@ def _normalize_home_cooling_sample_payload(write_data: dict) -> dict:
     return out
 
 
+def _normalize_office_env_sample_payload(write_data: dict) -> dict:
+    """Map ``office.env.sample.v1`` onto OfficeEnvSampleSQL columns.
+
+    Nested sensor/measurements/state/provenance objects are flattened. A stale
+    sample has no measurements, so the reading columns stay NULL -- never 0.0.
+    """
+    full_payload = dict(write_data)
+    out = dict(write_data)
+
+    sensor = out.pop("sensor", None)
+    if isinstance(sensor, dict):
+        if sensor.get("id") is not None:
+            out["sensor_id"] = str(sensor["id"])
+        if "online" in sensor:
+            out["sensor_online"] = bool(sensor["online"])
+
+    measurements = out.pop("measurements", None)
+    if isinstance(measurements, dict):
+        for key in ("office_temp_c", "office_humidity_pct"):
+            value = measurements.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                out[key] = float(value)
+
+    state = out.pop("state", None)
+    if isinstance(state, dict) and state.get("stale") is not None:
+        out["stale"] = bool(state["stale"])
+
+    provenance = out.pop("provenance", None)
+    if isinstance(provenance, dict):
+        age = provenance.get("sample_age_sec")
+        if isinstance(age, (int, float)) and not isinstance(age, bool):
+            out["sample_age_sec"] = float(age)
+        seq = provenance.get("frame_seq")
+        if isinstance(seq, int) and not isinstance(seq, bool):
+            out["frame_seq"] = seq
+
+    out["payload_json"] = _json_sanitize(full_payload)
+    out.pop("schema_name", None)
+    out.pop("schema", None)
+    return out
+
+
 def _normalize_biometrics_cluster_payload(write_data: dict) -> dict:
     """Map a ``biometrics.cluster.v1`` payload onto BiometricsClusterSQL's columns.
 
@@ -1720,6 +1779,8 @@ def _write_row(sql_model_cls, data: dict) -> bool:
             write_data = _normalize_biometrics_cluster_payload(write_data)
         if sql_model_cls is HomeCoolingSampleSQL:
             write_data = _normalize_home_cooling_sample_payload(write_data)
+        if sql_model_cls is OfficeEnvSampleSQL:
+            write_data = _normalize_office_env_sample_payload(write_data)
 
         col_key_by_name = {col.name: col.key for col in mapper.columns}
         valid_keys = set(attr.key for attr in mapper.attrs)
@@ -2159,7 +2220,15 @@ async def _write(
             )
             raise
         data = (state_history_row(obj) if sql_model_cls is GpuPoolStateSQL else
+                physiology_state_row(obj) if sql_model_cls is PhysiologyStateSQL else
+                want_ledger_row(obj) if sql_model_cls is WantLedgerSQL else
                 obj.model_dump() if hasattr(obj, "model_dump") else obj.dict())
+        if sql_model_cls is DispositionNamingSQL:
+            # jsonb columns hold the nested packet (datetimes inside); the engine's serializer is
+            # plain json.dumps. Top-level written_at stays a datetime for its timestamptz column.
+            as_json = obj.model_dump(mode="json")
+            for key in ("shown", "evidence_refs", "refused_reasons"):
+                data[key] = as_json[key]
     else:
         data = payload if isinstance(payload, dict) else {}
 

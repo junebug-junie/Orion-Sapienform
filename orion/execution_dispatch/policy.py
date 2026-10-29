@@ -4,7 +4,9 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from orion.schemas.grammar import ActSignal, ActVerb
 
 
 class DispatchModeConfigV1(BaseModel):
@@ -42,11 +44,54 @@ EXPRESS_SCOPE = "express_bounded"
 # route's cortex_verb is an executor key the dispatch runtime maps to a GPU-pool shed RPC.
 SELF_REVERSIBLE_SCOPE = "self_reversible"
 SHED_EXECUTOR_VERB = "orion.gpu_pool.shed.v1"
+# Thinking rung 3 follow-up (2026-10-21): not a cortex verb either. The executor key the dispatch
+# runtime maps to the reading pull RPC (orion/schemas/world_pulse_read_pull.py), which asks Hub to
+# start one extra world-pulse read. Hub runs every gate; the dispatch runtime only admits or refuses.
+READ_PULL_EXECUTOR_VERB = "orion.world_pulse_read.pull.v1"
+# Orion plays Zelda (2026-10-22, spec section E): the executor key the dispatch runtime maps to one
+# retro leisure start RPC (orion/schemas/retro_leisure.py). Hub's leisure runner runs every gate.
+RETRO_LEISURE_EXECUTOR_VERB = "orion.retro_leisure.start.v1"
 
 # Keys a route's static `skill_args` may never carry, because a real value
 # for them is derived from runtime safety state rather than chosen by an
 # operator. See CortexRouteTemplateV1.skill_args.
 _CONFIG_FORBIDDEN_SKILL_ARGS = frozenset({"mode", "run_mode", "dry_run"})
+
+
+class ActRouteRefV1(BaseModel):
+    """Rung 3: the rung-2 act (orion/schemas/grammar.py ActV1) this route's dispatch really
+    produces. The allocator scores the route's candidates on that act's EffectPosterior
+    (orion/autonomy/act_candidates.py). Declared only where the act is joined to the dispatch in
+    code (render_scene -> thought.painting: test_before=visual_dispatch:<dispatch_id>)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    verb: ActVerb
+    actor: str = Field(min_length=1)
+    signal_id: ActSignal
+    # How long one decision of the proven-effect path, treated or held back, keeps the act in flight
+    # and (for a "queue" object) when its outcome is read. For a "dispatch" object it is the
+    # producer's own ActExpectV1.horizon_sec.
+    horizon_sec: float = Field(gt=0.0)
+    # Where the act's object comes from (orion/autonomy/act_episodes.py holdback_rule):
+    # - "dispatch": the dispatch mints it (render_scene: the painting run id derives from the
+    #   dispatch id). No control arm (the outcome cannot occur without the act), measured cost is the
+    #   route's settled dispatch latency, and the actor is single-flight (any open act holds it).
+    # - "queue": the dispatch picks an existing object another lane also acts on (a pending reading
+    #   seed). Control arm drawn and resolved by the object's fate, cost is the act's own measured
+    #   open->close time (the dispatch is only an RPC), and the actor's other open acts (the lane's
+    #   own concurrent reads) do not hold it.
+    object_source: Literal["dispatch", "queue"] = "dispatch"
+    # Where the act's measured cost comes from. None keeps the object_source rule above. "act_duration":
+    # the act's own measured open->close time (grammar_acts), for a route whose dispatch is only an
+    # RPC that starts the work (retro_leisure_session: a session runs minutes after the RPC answers).
+    # Such a route is also held in flight for horizon_sec after Hub answers `started`, before its open
+    # act is stored (the worker's _act_in_flight).
+    cost_source: Literal["act_duration"] | None = None
+    # Charged only while the act has no measured cost yet (never graded). Must be the doer's own
+    # enforced ceiling for one act, so a cold act is charged its worst case, never a typical guess:
+    # an act-backed route otherwise has no first cost, and no cost means `no_cost_estimate` forever.
+    cold_cost_ceiling_sec: float | None = Field(None, gt=0.0)
 
 
 class CortexRouteTemplateV1(BaseModel):
@@ -56,6 +101,7 @@ class CortexRouteTemplateV1(BaseModel):
     cortex_verb: str
     cortex_mode: str = "brain"
     allowed_scope: str
+    act: ActRouteRefV1 | None = None
     # 2026-08-12: per-route RPC budget, None = use the runtime's global
     # EXECUTION_DISPATCH_RPC_TIMEOUT_SEC. Exists because the two needs are
     # genuinely opposed: a real build-cache prune can run for minutes, while
@@ -166,6 +212,30 @@ class ExecutionDispatchPolicyV1(BaseModel):
     template_to_cortex: dict[str, CortexRouteTemplateV1] = Field(default_factory=dict)
     hard_blocks: list[str] = Field(default_factory=list)
     limits: DispatchLimitsV1 = Field(default_factory=DispatchLimitsV1)
+
+    def act_refs_by_cortex_verb(self) -> dict[str, ActRouteRefV1]:
+        """cortex_verb -> the rung-2 act its dispatch produces (rung 3). A dispatch candidate
+        carries its cortex_verb, so this is how the allocator finds the act without any
+        dispatch-frame schema change."""
+        out: dict[str, ActRouteRefV1] = {}
+        for route in [*self.proposal_kind_to_cortex.values(), *self.template_to_cortex.values()]:
+            if route.act is not None:
+                out[route.cortex_verb] = route.act
+        return out
+
+    @model_validator(mode="after")
+    def _one_act_per_verb(self) -> "ExecutionDispatchPolicyV1":
+        seen: dict[str, ActRouteRefV1] = {}
+        for route in [*self.proposal_kind_to_cortex.values(), *self.template_to_cortex.values()]:
+            if route.act is None:
+                continue
+            prior = seen.setdefault(route.cortex_verb, route.act)
+            if prior != route.act:
+                raise ValueError(
+                    f"routes sharing cortex_verb {route.cortex_verb!r} declare different acts "
+                    f"({prior.model_dump()} vs {route.act.model_dump()}): one dispatch, one act"
+                )
+        return self
 
 
 def load_execution_dispatch_policy(path: str | Path) -> ExecutionDispatchPolicyV1:

@@ -278,6 +278,17 @@ from orion.situational.perception_reader import fetch_presence, presence_fragmen
 from orion.regulation.arousal_view import AROUSAL_STRAINED_REASON
 from scripts.arousal_reader import ArousalReader
 from scripts.rest_drive_reader import RestDriveReader
+from scripts.strain_report import (
+    STRAIN_REPORT_INTENT_REASON,
+    STRAIN_REPORT_SOURCE,
+    StrainReportHistory,
+    build_strain_report_prompt,
+    episode_key,
+    fetch_open_strain_arc,
+    render_record,
+    strain_report_block,
+    strain_report_facts,
+)
 from scripts.personality_cue_reader import cue_status, read_personality_cue
 from scripts.outreach_vocabulary import (
     find_ungrounded_signal_mentions,
@@ -1323,6 +1334,8 @@ def summarize_outreach_lanes(lanes: Dict[str, Any]) -> str:
         parts.append(f"curiosity signals ({curiosity})")
     if lanes.get("tension"):
         parts.append("tension trigger")
+    if lanes.get("strain_report"):
+        parts.append("strain report")
     if lanes.get("daydream"):
         age = lanes.get("daydream_age_sec")
         if age is not None:
@@ -1609,10 +1622,48 @@ def build_outreach_prompt(ctx: OutreachContext, tz: Any = timezone.utc) -> str:
 # top-level import, not a re-export shim.
 
 
+_PASS_LINE_STRIP = ".!\"'`*_# "
+
+
+# A finished sentence, then PASS as the reply's last word ("... for. PASS").
+_TRAILING_PASS = re.compile(r"[.!?][\"'`*_)]*[ \t]+[*_`]*PASS[.!\"'`*_]*\s*$")
+
+
+def _is_pass_line(line: str) -> bool:
+    return str(line or "").strip().strip(_PASS_LINE_STRIP).upper() == "PASS"
+
+
+def pass_shape(text: str) -> Optional[str]:
+    """How Orion declined, or None when the reply is a message.
+
+    ``"bare"``: the whole reply is the word PASS (what every outreach prompt asks for).
+    ``"after_reasoning"``: Orion reasoned first and put PASS on a line of its own. A line that
+    holds only PASS is a decision, never a sentence meant for Juniper, so the reply is a decline
+    wherever that line sits -- also when it comes first and more text follows (never seen live
+    through 2026-10-29; such a reply is dropped, and the row keeps the shape).
+    ``"trailing"``: the reply ends with a full sentence and then PASS as its own last word on the
+    same line ("Not worth interrupting for. PASS"; 2 live sends through 2026-10-28). Before 2026-10-29 only the bare form counted: 38 replies in 30 days
+    (35 reading findings, 3 endogenous ticks) reasoned, ended on a PASS line, and were delivered
+    to Juniper as chat messages with the reasoning in them.
+
+    Structural, not a word list: PASS inside a sentence ("I'll pass along the note", "PASS is the
+    honest answer here") is still a message.
+    """
+    body = str(text or "").strip()
+    if not body:
+        return None
+    if _is_pass_line(body):
+        return "bare"
+    if any(_is_pass_line(line) for line in body.splitlines()):
+        return "after_reasoning"
+    if _TRAILING_PASS.search(body):
+        return "trailing"
+    return None
+
+
 def is_pass_response(text: str) -> bool:
-    """True when Orion declined to reach out this tick."""
-    stripped = str(text or "").strip().strip(".!\"'` ")
-    return stripped.upper() == "PASS"
+    """True when Orion declined to reach out this tick (see ``pass_shape``)."""
+    return pass_shape(text) is not None
 
 
 # --------------------------------------------------------------------------
@@ -1622,6 +1673,10 @@ def is_pass_response(text: str) -> bool:
 
 class EndogenousOutreach:
     """Randomized-trigger outreach loop. Best-effort at every step."""
+
+    # orion.notify.client.NotifyClient, set by main.py after construction. When
+    # set, outreach goes through orion-notify so it is durable until dismissed.
+    notify_client: Any = None
 
     def __init__(
         self,
@@ -1647,8 +1702,22 @@ class EndogenousOutreach:
         # (HUB_PERSONALITY_CUE_ENABLED, base URL HUB_CURIOSITY_DURABLE_RUNS_URL).
         personality_cue_enabled: bool = False,
         durable_runs_url: str = "",
+        # Strain report door (scripts/strain_report.py, strain loop part 3). Off here so bare
+        # constructions in tests keep the old behaviour; settings ship it on
+        # (ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED). The day for once-per-day is
+        # ``strain_report_timezone`` (settings: ORION_SITUATION_TIMEZONE), else this loop's zone.
+        strain_report_enabled: bool = False,
+        strain_report_min_episode_sec: float = 3600.0,
+        strain_report_timezone: Optional[str] = None,
     ) -> None:
         self.enabled = enabled
+        self.strain_report_enabled = bool(strain_report_enabled)
+        self.strain_report_min_episode_sec = max(0.0, float(strain_report_min_episode_sec))
+        self._strain_tz_name = str(strain_report_timezone or "").strip() or None
+        # Rebuilt from the decision log on first use (restart-safe), then kept current in memory:
+        # this process is the only writer of strain_report rows.
+        self._strain_history: Optional[StrainReportHistory] = None
+        self._strain_last: Optional[str] = None
         self.personality_cue_enabled = bool(personality_cue_enabled)
         self.durable_runs_url = str(durable_runs_url or "")
         # Orion's arousal: while it reads `strained`, background outreach is refused.
@@ -1685,6 +1754,15 @@ class EndogenousOutreach:
             )
             self.timezone_name = "UTC"
             self._tz = ZoneInfo("UTC")
+        self._strain_tz = self._tz
+        if self._strain_tz_name:
+            try:
+                self._strain_tz = ZoneInfo(self._strain_tz_name)
+            except (ZoneInfoNotFoundError, ValueError, KeyError):
+                logger.error(
+                    "endogenous_outreach_bad_strain_report_timezone name=%r using %s",
+                    self._strain_tz_name, self.timezone_name,
+                )
         # Defaults to the real tension trigger, imported lazily to match this
         # file's existing convention for cross-Hub-module dependencies
         # (curiosity_hint, hub_presence below) -- keeps a hard Postgres
@@ -1963,6 +2041,12 @@ class EndogenousOutreach:
                 None if self.arousal_reader is None else self.arousal_reader.view().as_dict()
             ),
             "block_reason": outreach_block_reason(inputs),
+            "strain_report": {
+                "enabled": self.strain_report_enabled,
+                "min_episode_sec": self.strain_report_min_episode_sec,
+                "history_recovered": self._strain_history is not None,
+                "last": self._strain_last,
+            },
             "last_result": dict(self._last_result),
         }
 
@@ -2084,7 +2168,20 @@ class EndogenousOutreach:
                 {"outreach": False, "reason": "already_sending"}, forced=force, tension_reason=None
             )
         async with self._send_lock:
-            return await self._outreach_once(force=force)
+            # Body economy Patch C3b: a SHADOW bid, logged beside this tick's real outcome and
+            # never obeyed (scripts/physiology_shadow.py). Placed only where the tick would
+            # compose (or where strain alone holds it); settled here with the real outcome.
+            from scripts.physiology_shadow import ShadowBid, real_from_result
+
+            shadow = ShadowBid(family="hub.outreach", verb="say", tier=2, object_ref="juniper",
+                               component="endogenous_outreach")
+            try:
+                result = await self._outreach_once(force=force, shadow=shadow)
+            except BaseException:
+                shadow.settle("blocked:error")
+                raise
+            shadow.settle(real_from_result(result), act_correlation_id=result.get("correlation_id"))
+            return result
 
     async def _spoke_ago(self) -> Optional[float]:
         self._last_spoke_read_at = time.time()
@@ -2094,7 +2191,7 @@ class EndogenousOutreach:
             logger.warning("endogenous_outreach_last_spoke_read_failed err=%s", exc)
             return None
 
-    async def _outreach_once(self, *, force: bool) -> Dict[str, Any]:
+    async def _outreach_once(self, *, force: bool, shadow: Any = None) -> Dict[str, Any]:
         compose_started_at = time.time()
         if self.rest_drive_reader is not None:
             await self.rest_drive_reader.refresh(self._bus)
@@ -2105,6 +2202,17 @@ class EndogenousOutreach:
         if not blocked:
             self._last_spoke_ago = await self._spoke_ago()
             blocked = outreach_block_reason(self._gate_inputs())
+        if blocked == AROUSAL_STRAINED_REASON and shadow is not None:
+            # Strain alone holds this tick: the gate the economy is meant to replace. Bid, and
+            # record the real outcome as the strain hold whatever the strain report door does
+            # (that door's message is a report about strain, not this want).
+            shadow.place()
+            shadow.real = f"blocked:{AROUSAL_STRAINED_REASON}"
+        if blocked == AROUSAL_STRAINED_REASON and self.strain_report_enabled:
+            # Strain is the only gate holding (it is checked last), so every other gate passed.
+            # The strain report door may pass this one refusal, once per long episode.
+            self._last_tension_reason = None
+            return await self._strain_report_once(force=force, compose_started_at=compose_started_at)
         if blocked:
             # Same staleness reasoning as the `force` branch below: this
             # tick never reached `_should_roll()`, so whatever reason the
@@ -2231,7 +2339,13 @@ class EndogenousOutreach:
         # `OutreachContext` -- would inherit whatever the last cycle left.
         grounding = grounding_summary(ctx)
 
-        correlation_id = str(uuid4())
+        # The compose point. The shadow want's id IS this compose's correlation id, so the
+        # shadow decision joins the outreach act (grammar_acts.correlation_id).
+        if shadow is not None:
+            correlation_id = shadow.want_id
+            shadow.place()
+        else:
+            correlation_id = str(uuid4())
         retrieval_query = outreach_retrieval_query(ctx)
         raw_text, gen_debug = await self._generate(
             prompt, session_id, correlation_id,
@@ -2258,7 +2372,8 @@ class EndogenousOutreach:
             )
         if is_pass_response(text):
             return self._record(
-                {"outreach": False, "reason": "orion_passed", "generation": gen_debug},
+                {"outreach": False, "reason": "orion_passed", "pass_shape": pass_shape(text),
+                 "generation": gen_debug},
                 forced=force,
                 tension_reason=tension_reason,
                 grounding=grounding,
@@ -2371,6 +2486,213 @@ class EndogenousOutreach:
             forced=force,
             tension_reason=tension_reason,
             grounding=grounding,
+        )
+
+    # -- the strain report door (strain loop part 3) -------------------------
+
+    async def _recover_strain_history(self) -> Optional[StrainReportHistory]:
+        """Rebuild what this door already did from the decision log, once. Retried until it
+        succeeds; None (unknown) keeps the door shut."""
+        if self._strain_history is not None:
+            return self._strain_history
+        from scripts.endogenous_outreach_decisions import fetch_strain_report_history
+
+        try:
+            rows = await asyncio.to_thread(fetch_strain_report_history)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("strain_report_history_read_failed err=%s", exc)
+            rows = None
+        if rows is None:
+            return None
+        self._strain_history = StrainReportHistory.from_rows(rows, self._strain_tz)
+        logger.info(
+            "strain_report_history_recovered rows=%d reported=%d days=%s",
+            len(rows), len(self._strain_history.reported_episodes),
+            ",".join(sorted(self._strain_history.report_dates)) or "-",
+        )
+        return self._strain_history
+
+    def _strain_record(
+        self,
+        result: Dict[str, Any],
+        *,
+        forced: bool,
+        episode: Optional[str],
+        composed: bool,
+        grounding: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """One decision row for this door. Composed outcomes also update the in-memory history
+        with the same rule a restart applies to the rows (StrainReportHistory.note)."""
+        result.setdefault("door", STRAIN_REPORT_SOURCE)
+        if episode:
+            result.setdefault("strain_episode_since", episode)
+        if composed:
+            result["source"] = STRAIN_REPORT_SOURCE
+            result["strain_composed"] = True
+            if episode and self._strain_history is not None:
+                self._strain_history.note(
+                    episode=episode, reason=str(result.get("reason") or ""),
+                    at=datetime.now(timezone.utc), tz=self._strain_tz,
+                )
+        self._strain_last = str(result.get("strain_report") or result.get("reason") or "")
+        return self._record(result, forced=forced, grounding=grounding)
+
+    async def _strain_report_once(self, *, force: bool, compose_started_at: float) -> Dict[str, Any]:
+        """Orion tells Juniper about a long strain episode. Runs only when ``arousal_strained``
+        is the one gate holding. Every non-sending outcome keeps ``reason=arousal_strained`` and
+        names why in ``strain_report``, so the existing refusal counts do not change meaning."""
+        now = datetime.now(timezone.utc)
+        reader = self.arousal_reader
+        view = None if reader is None else reader.view(now)
+        state = None if reader is None else reader.state(now)
+
+        def held(sub: str, episode: Optional[str] = None) -> Dict[str, Any]:
+            return self._strain_record(
+                {"outreach": False, "reason": AROUSAL_STRAINED_REASON, "strain_report": sub},
+                forced=force, episode=episode, composed=False,
+            )
+
+        history = await self._recover_strain_history()
+        if history is None:
+            return held("history_unknown")
+        since = None if view is None else view.since
+        episode = None if since is None else episode_key(since)
+        sub = strain_report_block(
+            level=None if view is None else view.level,
+            since=since,
+            now=now,
+            min_episode_sec=self.strain_report_min_episode_sec,
+            history=history,
+            tz=self._strain_tz,
+        )
+        if sub:
+            return held(sub, episode)
+        # Qualifies. Now the DB read for recent_chat, then the whole gate again: strain must
+        # still be the ONLY thing holding.
+        self._last_spoke_ago = await self._spoke_ago()
+        blocked = outreach_block_reason(self._gate_inputs())
+        if blocked != AROUSAL_STRAINED_REASON:
+            if blocked is None:
+                # The reading aged out between the two gate reads: nothing is held any more.
+                return self._strain_record(
+                    {"outreach": False, "reason": "strain_ended", "strain_report": "strain_ended"},
+                    forced=force, episode=episode, composed=False,
+                )
+            return self._strain_record(
+                {"outreach": False, "reason": blocked, "strain_report": "gated"},
+                forced=force, episode=episode, composed=False,
+            )
+
+        arc, arc_status = await fetch_open_strain_arc(self.durable_runs_url)
+        facts = strain_report_facts(state, arc)
+        if facts is None or episode_key(facts.episode_since) != episode:
+            return held("no_grounding", episode)
+        record_text = render_record(facts, now, self._strain_tz)
+        prompt = build_strain_report_prompt(facts, record_text, now, self._strain_tz)
+        grounding = {"strain_report": facts.as_dict(), "strain_arc_status": arc_status}
+        logger.info(
+            "strain_report_composing episode=%s arc=%s causes_now=%s",
+            episode, facts.arc_id or "-", ",".join(facts.causes_now) or "-",
+        )
+
+        session_id = self._active_session_id()
+        correlation_id = str(uuid4())
+        raw_text, gen_debug = await self._generate(prompt, session_id, correlation_id)
+        correlation_id = str(gen_debug.get("correlation_id") or correlation_id)
+        text = str(raw_text or "").strip()
+        base = {"outreach": False, "generation": gen_debug, "correlation_id": correlation_id}
+        if not text:
+            return self._strain_record(
+                {**base, "reason": "empty_generation"},
+                forced=force, episode=episode, composed=True, grounding=grounding,
+            )
+        if is_pass_response(text):
+            return self._strain_record(
+                {**base, "reason": "orion_passed", "pass_shape": pass_shape(text)},
+                forced=force, episode=episode, composed=True, grounding=grounding,
+            )
+        offending = self._named_ungrounded_terms(text, None, correlation_id, context_texts=[record_text])
+        if offending:
+            return self._strain_record(
+                {**base, "reason": "named_ungrounded_signal", "offending_terms": offending},
+                forced=force, episode=episode, composed=True, grounding=grounding,
+            )
+
+        # Re-gate before delivery, same as the background tick: compose can take minutes.
+        if reader is not None:
+            await reader.refresh(self._bus)
+        blocked_now = outreach_block_reason(self._gate_inputs())
+        if blocked_now == AROUSAL_STRAINED_REASON:
+            now_view = None if reader is None else reader.view()
+            if now_view is None or now_view.since is None or episode_key(now_view.since) != episode:
+                blocked_now = "strain_episode_changed"
+            else:
+                blocked_now = None
+                try:
+                    if await asyncio.to_thread(_juniper_spoke_since, compose_started_at):
+                        blocked_now = "juniper_spoke"
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("strain_report_spoke_since_read_failed err=%s", exc)
+        elif blocked_now is None:
+            blocked_now = "strain_ended"
+        if blocked_now:
+            logger.info("strain_report_dropped_after_generation corr=%s reason=%s", correlation_id, blocked_now)
+            return self._strain_record(
+                {**base, "reason": f"{blocked_now}_after_generation"},
+                forced=force, episode=episode, composed=True, grounding=grounding,
+            )
+
+        # Intent row first, synchronously: if it does not land, do not send. A delivered report
+        # whose fire-and-forget `sent` row is later lost would otherwise be re-sent on restart.
+        from scripts.endogenous_outreach_decisions import record_decision_now
+
+        intent = {
+            **base, "reason": STRAIN_REPORT_INTENT_REASON, "door": STRAIN_REPORT_SOURCE,
+            "source": STRAIN_REPORT_SOURCE, "strain_composed": True, "strain_episode_since": episode,
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+        if not await asyncio.to_thread(record_decision_now, intent):
+            return self._strain_record(
+                {**base, "reason": "intent_write_failed"},
+                forced=force, episode=episode, composed=False, grounding=grounding,
+            )
+        if self._strain_history is not None:
+            self._strain_history.note(
+                episode=episode, reason=STRAIN_REPORT_INTENT_REASON,
+                at=datetime.now(timezone.utc), tz=self._strain_tz,
+            )
+        delivered = f"{text}\n\n{record_text}"
+        decision_id = str(uuid4())
+        provenance = build_outreach_provenance(
+            prompt_text=prompt, lanes=grounding, correlation_id=correlation_id, decision_id=decision_id,
+        )
+        await self._deliver(
+            text=delivered,
+            session_id=session_id,
+            correlation_id=correlation_id,
+            model=gen_debug.get("fcc_model_label"),
+            source_tag=STRAIN_REPORT_SOURCE,
+            provenance=provenance,
+        )
+        self._last_outreach_at = time.time()
+        self._sent_today += 1
+        logger.info(
+            "endogenous_outreach_sent corr=%s session=%s chars=%d sent_today=%d source=%s episode=%s arc=%s",
+            correlation_id, session_id, len(delivered), self._sent_today,
+            STRAIN_REPORT_SOURCE, episode, facts.arc_id or "-",
+        )
+        return self._strain_record(
+            {
+                **base,
+                "outreach": True,
+                "reason": "sent",
+                "session_id": session_id,
+                "chars": len(delivered),
+                "decision_id": decision_id,
+                "provenance": provenance,
+                "strain_arc_id": facts.arc_id,
+            },
+            forced=force, episode=episode, composed=True, grounding=grounding,
         )
 
     # -- delivery on behalf of another loop --------------------------------
@@ -2525,7 +2847,8 @@ class EndogenousOutreach:
             # Orion wrote the message and concluded it was not worth sending.
             # A real answer, and the composition prompt says so explicitly.
             return self._record(
-                {**extra, "outreach": False, "reason": "orion_passed", "source": tag},
+                {**extra, "outreach": False, "reason": "orion_passed", "source": tag,
+                 "pass_shape": pass_shape(body)},
                 forced=False,
             )
         if self._send_lock.locked():
@@ -3150,23 +3473,39 @@ class EndogenousOutreach:
         notification_title: Optional[str] = None,
         notification_type: Optional[str] = None,
     ) -> None:
+        resolved_type = notification_type or OUTREACH_TAG
+        notify_tags = list(tags) if tags is not None else [OUTREACH_TAG]
+        title = notification_title or "Orion reached out"
+        if resolved_type == OUTREACH_TAG:
+            # Durable path: orion-notify writes a notify_requests row keyed by
+            # this message_id (the same id as the chat_message row) and
+            # publishes the live in-app event itself. The row stays open until
+            # Juniper dismisses it in the tray, across Hub restarts.
+            if await self._persist_outreach_via_notify(
+                text=text,
+                session_id=session_id,
+                correlation_id=correlation_id,
+                message_id=message_id,
+                tags=notify_tags,
+                title=title,
+            ):
+                return
         if not self._bus:
             return
         try:
-            notify_tags = list(tags) if tags is not None else [OUTREACH_TAG]
             notification = HubNotificationEvent(
                 notification_id=uuid4(),
                 created_at=datetime.now(timezone.utc),
                 severity="info",
                 event_kind=OUTREACH_EVENT_KIND,
                 source_service="orion-hub",
-                title=notification_title or "Orion reached out",
+                title=title,
                 body_text=text,
                 tags=notify_tags,
                 correlation_id=correlation_id,
                 session_id=session_id,
                 message_id=UUID(message_id),
-                notification_type=notification_type or OUTREACH_TAG,
+                notification_type=resolved_type,
             )
             env = BaseEnvelope(
                 kind="notify.in_app.v1",
@@ -3177,3 +3516,62 @@ class EndogenousOutreach:
             await self._bus.publish(self.notify_channel, env)
         except Exception as exc:  # noqa: BLE001
             logger.warning("endogenous_outreach_notify_failed corr=%s err=%s", correlation_id, exc)
+
+    async def _persist_outreach_via_notify(
+        self,
+        *,
+        text: str,
+        session_id: str,
+        correlation_id: str,
+        message_id: str,
+        tags: List[str],
+        title: str,
+    ) -> bool:
+        """Send one outreach message through orion-notify's /chat/message.
+
+        Returns True only when orion-notify accepted it. Then orion-notify owns
+        both the durable row and the live in-app event, so the caller must not
+        publish a second in-app event. Returns False when no client is wired or
+        the call failed; the caller then falls back to the old direct publish,
+        so the live tray still gets the message (just not durably).
+        """
+        client = self.notify_client
+        if client is None:
+            return False
+        durable_tags = list(tags)
+        if OUTREACH_TAG not in durable_tags:
+            # The tray asks orion-notify for open rows by this tag.
+            durable_tags.append(OUTREACH_TAG)
+        preview = text if len(text) <= 280 else text[:279] + "\u2026"
+        try:
+            accepted = await asyncio.to_thread(
+                client.chat_message,
+                session_id=session_id,
+                preview_text=preview,
+                full_text=text,
+                title=title,
+                severity="info",
+                require_read_receipt=True,
+                tags=durable_tags,
+                source_service="orion-hub",
+                correlation_id=correlation_id,
+                message_id=UUID(message_id),
+                notification_type=OUTREACH_TAG,
+            )
+        except Exception as exc:  # noqa: BLE001 -- NotifyClient never raises; a fake or a bug might
+            logger.warning("endogenous_outreach_durable_notify_failed corr=%s err=%s", correlation_id, exc)
+            return False
+        if not getattr(accepted, "ok", False):
+            logger.warning(
+                "endogenous_outreach_durable_notify_failed corr=%s detail=%s -- falling back to direct in-app publish",
+                correlation_id,
+                getattr(accepted, "detail", None),
+            )
+            return False
+        logger.info(
+            "endogenous_outreach_durable_notify_ok corr=%s message_id=%s notification_id=%s",
+            correlation_id,
+            message_id,
+            getattr(accepted, "notification_id", None),
+        )
+        return True

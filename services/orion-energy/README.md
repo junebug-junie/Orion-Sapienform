@@ -29,22 +29,41 @@ unknown, not free. All costs are pre-tax (`cost_basis: pre_tax`).
 
 ## Tariff
 
-`ENERGY_TARIFF_PATH` defaults to `config/energy/tariff.rmp_ut_sch1.2026-08-10.r2.yaml`,
-which reproduces the first real bill (billing date 2026-09-21, 37 days, 3,772 kWh,
-$554.99) line for line. What that bill showed, and the old file got wrong:
+`ENERGY_TARIFF_PATH` defaults to `config/energy/tariff.rmp_ut_sch1.2026-08-10.r3.yaml`,
+which reproduces both real bills line for line: 2026-09-21 (Aug 12 - Sep 18, 37 days,
+3,772 kWh, $554.99) and 2026-10-20 (Sep 18 - Oct 19, 31 days, 3,106 kWh, $427.39).
+What the bills showed:
 
-- The 400 kWh first block and the monthly charges prorate by days / 30 (493 kWh,
-  $14.80 and $0.20 for 37 days). Every price uses the length of its own period: the
-  bill's dates for reconcile, the `ENERGY_BILLING_CYCLE_START_DAY` cycle for accrual.
+- A bill of 27-33 days is billed as a plain month: 400 kWh first block, $12.00, $0.16.
+  Outside that range, blocks and monthly charges prorate by days / 30 (493 kWh, $14.80 and
+  $0.20 for 37 days).
+- RMP bills the days after the start read through the end read ("Sep 18 to Oct 19" is
+  Sep 19 - Oct 19). A bill that spans the Oct 1 (or Jun 1) season change splits its kWh
+  and its blocks by the days in each season: 12 summer days of 31 got 1,202 kWh and a
+  155 kWh first block at summer prices. r2 priced that bill all winter and missed by $21.58.
+- A rider can change rate mid-period (`rates:` in the tariff); the bill prints one line
+  per rate. Schedule 92 went 1.17% -> 1.78% on 2026-09-25 (read off the bill).
 - Each rider has its own base: Schedule 92 is on energy + customer charge; efficiency and
   EV riders are on energy + EBA + renewable adjustment.
-- Utah sales tax (4.40%) skips the lifeline charge. Tax is only in `Tariff.itemize`, a
-  bill-shaped estimate; accruals, stakes, and reconcile stay pre-tax.
+- Utah sales tax (4.40%) skips the lifeline charge.
 
-The old file's total missed that bill by only ~$0.67 because a ~$2.50 energy overcharge
-and a $2.64 fixed-charge undercharge (flat $12.16) cancel; its per-bucket deltas show both.
-Evidence: `orion/energy/tests/test_energy_tariff.py` (line-exact) and
+`Tariff.itemize` prices a period exactly like the bill. The projection (stakes, forecast
+reconcile) and actual-bill reconcile use it, all pre-tax; tax is a line in `itemize` only.
+Hourly accrual and run cost stay an approximation: each hour priced by its own month and a
+dated rider's latest rate (they need the next kWh's price, not the bill).
+Evidence: `orion/energy/tests/test_energy_tariff.py` (both bills line-exact) and
 `evals/test_energy_real_bill_eval.py` (hour-by-hour ledger + reconcile, within cents).
+
+### Billing cycles follow the meter reads
+
+`ENERGY_BILLING_CYCLE_START_DAY` is the usual read day (18 here). Every actual bill's start
+and end dates are real meter reads, and a read within 10 days of a scheduled start replaces
+it, so the cycle after the 2026-10-20 bill is Oct 19 -> Nov 18, not Oct 18 -> Nov 18. A newly
+dropped bill re-accrues and publishes every cycle whose bounds moved; at boot the replayed
+bills move the bounds in memory only (boot never publishes), so drop a bill through the inbox
+rather than copying it into `processed/`. A re-issued bill with the same start replaces the
+older one. Changing the bill's *due date* with RMP does
+not move the read date.
 
 ## Feeding it (Plan 1: file drop)
 
@@ -56,7 +75,7 @@ The first drop must cover the **current billing cycle from day one** (`ENERGY_BI
 
 Re-dropping an overlapping export is safe when the new file is **newer**: `retrieved_at` is the drop time, so dropping an **old** export after a newer one overwrites fresher data. Pending run-cost re-pricing state is in-memory and lost on restart. Bus publishing after a file moves to `processed/` is best-effort — re-drop the export to republish.
 
-Set `ENERGY_BILLING_CYCLE_START_DAY` to your bill's meter-read day.
+Set `ENERGY_BILLING_CYCLE_START_DAY` to your bill's usual meter-read day; actual bills then pin the real read dates.
 
 ## Bills (file drop)
 

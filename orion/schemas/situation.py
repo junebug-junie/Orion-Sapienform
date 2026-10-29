@@ -209,23 +209,6 @@ class AgendaContextV1(BaseModel):
     diagnostics: dict[str, str] = Field(default_factory=dict)
 
 
-class LabContextV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    available: bool = False
-    active_node: Optional[str] = None
-    gpu_hosts_online: list[str] = Field(default_factory=list)
-    service_health_summary: Optional[str] = None
-    ambient_temp_f: Optional[float] = None
-    power_load_watts: Optional[float] = None
-    ups_on_battery: Optional[bool] = None
-    thermal_risk: Literal["unknown", "low", "medium", "high"] = "unknown"
-    power_risk: Literal["unknown", "low", "medium", "high"] = "unknown"
-    source: str = "none"
-    confidence: Literal["low", "medium", "high"] = "low"
-    diagnostics: dict[str, str] = Field(default_factory=dict)
-
-
 class CabinetContextV1(BaseModel):
     """Live read of Orion's own physical cabinet sensors (Athena Nano ESP32
     node: BME680 climate, LTR390 UV/ALS, magnetometer, PMSA003I particulate,
@@ -234,10 +217,9 @@ class CabinetContextV1(BaseModel):
     inventory and `services/orion-biometrics/README.md`'s "Cabinet sensor
     node" section for the full host-reader -> biometrics pipeline).
 
-    This is the real thing `LabContextV1` was a stand-in for -- Orion's own
-    housing, not a hand-waved compute-cluster risk summary. `LabContextV1`
-    stays untouched as a distinct, still-unwired concept (GPU-cluster
-    thermal/power risk); this does not replace or extend it.
+    This is the real thing the old lab stub (removed 2026-10-27) was a
+    stand-in for -- Orion's own housing, not a hand-waved compute-cluster
+    risk summary.
 
     Producer: `orion/situational/context.py`'s `_fetch_cabinet_context`,
     reusing the same shared `orion.telemetry.cabinet_sensors` /
@@ -322,7 +304,7 @@ class RuntimeContextV1(BaseModel):
 
     `available=False` is the honest default: probe failure, a disabled flag,
     or an unreachable gateway all degrade to "unavailable", not a guess.
-    Mirrors `LabContextV1`/`PerceptionContextV1`'s pattern in this file.
+    Mirrors `PerceptionContextV1`'s pattern in this file.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -365,8 +347,6 @@ class SituationAffordanceV1(BaseModel):
         "family_audience",
         "privacy_sensitive_audience",
         "late_night_risk",
-        "lab_thermal_risk",
-        "lab_power_risk",
         "calendar_constraint",
         "weather_alert",
         "stale_context_revalidation",
@@ -748,10 +728,9 @@ class SituationBriefV1(BaseModel):
     place: PlaceContextV1
     environment: EnvironmentContextV1 = Field(default_factory=EnvironmentContextV1)
     agenda: AgendaContextV1 = Field(default_factory=AgendaContextV1)
-    lab: LabContextV1 = Field(default_factory=LabContextV1)
     # Additive (2026-08-31): defaults to available=False. Rendered like
     # curiosity/reverie (omitted from the prompt entirely when unavailable,
-    # not an always-on placeholder line) rather than like weather/lab/
+    # not an always-on placeholder line) rather than like weather/
     # perception -- see `_build_prompt_fragment`'s own comment for why. ON
     # by default in orion-hub (the only process with the `/run/orion-
     # sensors` bind mount) -- carries no private-home content, same

@@ -70,8 +70,15 @@ jobs:
       - name: No personal terms in tracked files
         run: python -m pytest tests/test_no_personal_terms.py -q -p no:cacheprovider
 
+      # Orion's organ names stay out of recall/memory until battle-tested (design PR #2888).
+      - name: Organ names ledger read only by body atlas + dig
+        run: python -m pytest tests/test_organ_names_partition.py -q -p no:cacheprovider
+
       - name: Env sync preserves overrides and reaches admission templates
         run: python -m pytest tests/scripts/test_sync_local_env_from_example.py scripts/tests/test_check_env_template_parity.py -q
+
+      - name: Host rebuild allowlists only name services that can start from defaults
+        run: python -m pytest tests/scripts/test_host_allowlist_buildable.py -q -p no:cacheprovider
 
       # Code defaults and compose ${KEY:-x} fallbacks must equal .env_example, so a
       # key missing from a live .env cannot silently change behaviour (2026-10-09:
@@ -100,7 +107,7 @@ jobs:
       # PR #2424 (missing table) and PR #2400 (missing column) red over the real
       # services/orion-sql-db corpus, and the data-only reset as verify-manually.
       - name: Substrate ladder liveness logic replays the 09-20 incident red
-        run: python -m pytest tests/scripts/test_substrate_ladder_liveness.py tests/scripts/test_schema_skew_discovery.py tests/test_sql_migration_drift_gate.py -q
+        run: python -m pytest tests/scripts/test_substrate_ladder_liveness.py tests/scripts/test_vision_detection_rate_watch.py tests/scripts/test_schema_skew_discovery.py tests/test_sql_migration_drift_gate.py -q
 
       # Deploy-time migration gate (scripts/safe_docker_build.sh refuses `up` while a
       # migration REQUIRED-BY the service is unapplied; PRs #2594/#2605 shipped
@@ -189,6 +196,29 @@ jobs:
 
       - name: Inner-state registry completeness
         run: python scripts/check_inner_state_registry.py
+
+      # Body economy "no unregistered veto" (Patch A1 of the 2026-10-23 body-economy
+      # design): every module that reads regulation/arousal/thermal/price state must be
+      # registered in config/physiology/contract.yaml, so the strained-veto pile cannot
+      # grow back while Phase 1 retires it. AST scan, no live data.
+      - name: Body economy contract (no unregistered veto)
+        run: |
+          python scripts/check_body_economy_contract.py
+          python -m pytest tests/test_check_body_economy_contract.py -q -p no:cacheprovider
+
+      # Body economy "every verb declares its physiology" (Patch C2): every
+      # orion/cognition/verbs/*.yaml carries a valid physiology block (tier, family, pool
+      # lanes, deferrable window) so Patch C3's cortex-orch bid site has no untiered verb.
+      - name: Body economy verb physiology (every verb declares tier/family/lanes)
+        run: |
+          python scripts/check_verb_physiology.py
+          python -m pytest tests/test_check_verb_physiology.py -q -p no:cacheprovider
+
+      # One owner per tuned env key, and no copy at all of a module-owned line (body economy
+      # Patch B: the room's 32/30.5/34/33 C lines live only in orion/autonomy/thermal_gate.py).
+      # Repo-wide on purpose: a new copy can land in any service, so a path filter would miss it.
+      - name: Env key / thermal line single owner
+        run: python scripts/check_env_key_single_source.py
 
       - name: scripts/ must not shadow a stdlib module
         run: python scripts/check_scripts_dir_no_stdlib_shadow.py
@@ -310,3 +340,6 @@ jobs:
           fi
           echo "$files" | sed 's/^/  /'
           node --test $files
+
+      - name: Cabinet sonification source provenance parity
+        run: python -m pytest services/orion-hub/tests/test_cabinet_sonification_provenance.py -q -p no:cacheprovider

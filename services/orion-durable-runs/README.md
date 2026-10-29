@@ -36,6 +36,36 @@ Hub tick (scheduling, material, worldview, prompt)
 - A thread older than `DURABLE_RUNS_MAX_AGE_HOURS` is abandoned (one `abandoned` state
   event), never resumed into a different day's material.
 
+### One failed-attempt policy for admitted work nodes (2026-10-23)
+
+`app/admitted_graph.py:failed_attempt` decides what an exception from a work node does, so a
+crash or timeout resumes from the checkpoint instead of ending the run. Used by
+`curiosity.investigate`, `self_sense_eval`, `self_study.reflect` and `curiosity.compaction`.
+
+- **Transient** (any other exception: the node timer's `TimeoutError`, a failed turn's
+  `RuntimeError`, a transport error that raises): the hold is handed back (a re-queued hold
+  keeps its place), `attempt` +1, and the run waits `DURABLE_RUNS_RETRY_BASE_SEC * 2^(n-1)`
+  (capped at `DURABLE_RUNS_RETRY_MAX_SEC`) in `retry_wait`, or re-queues at once in graphs
+  without that node (reflect, compaction: `backoff=False`). Note: the runner's turn RPC turns
+  a bus timeout or bad reply into an `ok=False` result, not an exception, so for self-sense
+  that is a recorded empty answer (the per-question contract), not a retry.
+- **Deterministic** (`ValueError` incl. pydantic `ValidationError`, `TypeError`,
+  `LookupError`, `AttributeError`, ...; `is_deterministic`, by type, never by error text):
+  fails at once with `last_error = "deterministic: ..."`: a code or input bug a retry cannot fix.
+- **Rejected model answer** (`orion.cognition.model_output.ModelOutputRejected`, a `ValueError`
+  subclass raised only where an LLM answer is parsed/validated, e.g. `record_answer` in
+  `orion/curiosity/compaction.py`): treated as **transient** -- the next sample differs. Failing
+  these fast (#2899) stopped curiosity.compaction: 0 batches saved 2026-10-24..27 over 9 runs.
+- **Budget spent** (`DURABLE_RUNS_RETRY_MAX_ATTEMPTS`; urgent runs 2) or a retry that cannot
+  get a whole attempt before the deadline: `failed`.
+
+Not on this policy, on purpose: `reading.turn` (Hub's seed queue owns bounded retries; a
+second loop would nest), `journal.compose` and `memory.episode_distill` (an unparseable
+draft does recover on a fresh sample: their own minimum-attempt retry), `compactor.digest`
+(falls back to the deterministic merge), `orion_day.letter` (per-node attempts),
+`reverie.visual` / `dream.carry` (deferrals that never spend an attempt). Each already
+retries with backoff.
+
 ## Workflow registry (2026-09-21)
 
 ### Admitted reading turns (2026-09-26)
@@ -392,6 +422,25 @@ reflect timeout budget on two separate attempts for one logical reflection).
 ### `self_sense_eval` (2026-09-21) -- the second registered workflow
 
 Its own graph (`app/self_sense_graph.py`): `ask_questions -> publish -> finish`.
+
+**Durable since 2026-10-23.** The admitted graph asks ONE question per `ask_questions` run,
+so each answer is checkpointed when it lands; a timeout, crash or take-back resumes at the
+next unanswered question. Each question's node timer is its share of the brief budget
+(`timeout_sec / len(questions)`, passed to `execute` as `node_timeout_sec`); Hub's turn
+limit is that share minus 30 s, so Hub answers (empty, recorded) before the timer cancels
+the turn. Each question's turn id is a uuid5 of the run, the question and the replay
+counters (`question_turn_id`), so it derives from the checkpoint: a restarted worker cancels
+the turn its predecessor left running in Hub. It is also on the `run.started` event
+(`step_correlation_id`) before the turn runs, and `last_turn` (`question_key`,
+`turn_correlation_id`, `timeout_sec`) is checkpointed with each outcome. A failed attempt
+goes through the shared `failed_attempt` policy above (`retrying` -> `retry_wait` ->
+`resource_request`), with the deadline check reserving one share per unanswered question.
+`attempt` counts the current question's failures. A question that spends its budget or fails
+deterministically is recorded as an empty answer naming the error (each answer records its
+own `attempts`), and the run goes on; it fails only when every answer is empty, on
+`workflow_deadline`, or when not one more question fits before the deadline. Live
+cause: run `20261023T180730Z-0842e5` held agent-gpu2 for its whole 8840 s budget on one
+hung question, then failed with every answer lost.
 Deliberately NOT a branch inside `graph.py`'s curiosity pipeline -- self-sense-eval has
 no material/worldview read, no journal, no outreach, and asks four fixed questions
 instead of one open prompt, so sharing `journal`/`read_turn_result` would have meant
@@ -567,6 +616,42 @@ gap longer than three ticks) is one `arousal_transition` row in
 hand-applied). The latest rest-drive reading (`orion:drive:rest:latest`) is embedded verbatim
 for the trace; arousal never reads it. No dial reads arousal yet (spec order 6).
 
+Strain loop part 1 (2026-10-20, `docs/superpowers/specs/2026-10-20-strain-loop-design.md`): a
+level row is written only when the level changes, so a cause that joins an episode already
+strained (the cabinet going critical mid-episode) was never recorded. While strained, the node
+now also writes one row per strain cause new to the episode (`cause_row`, event id
+`...:strained:at:<observed_at>`, `payload.joined`), one seed row (`payload.seed = true`) when
+the episode has nothing recorded yet (the first step after deploy, a lost onset row), and a
+keepalive (`joined = []`) every `STRAIN_KEEPALIVE_SEC` (1,800 s) so the chronology can close an
+arc whose closing row was lost, and a row when the causes present now differ from the last row's
+(a cause left, e.g. the cabinet cooled; at most every `STRAIN_CAUSE_CHANGE_MIN_SEC`, 600 s, so a
+flapping cause costs at most one row per 10 min). Every row's reading carries the causes present
+at that moment. A failed write is retried on the next step. Same table, kind and label, so readers of levels still
+read `strained` (`scripts/analysis/measure_arousal_reader_replay.py` filters them out, since they
+would restart a level's age). The causes already recorded and the last row's time ride in the
+checkpoint as `strain_causes_seen` / `strain_row_at` / `strain_causes_now`.
+Kill switch: `TEMPORAL_SELF_STRAIN_ARCS_ENABLED=false` (no cause rows, no strain arcs).
+
+**Retro play source (2026-10-22, Orion plays Zelda section F).** The chronicle reads orion-hub's
+`retro_play_sessions` (migration `services/orion-sql-db/manual_migration_retro_play_sessions_v1.sql`,
+REQUIRED-BY this service and orion-hub) as source `retro_play`: one `play` arc per finished Retro
+session, shown in the chat stance cue. The query is skipped while the table does not exist
+(`to_regclass`), so the source can never fail the whole read. Kill switch:
+`TEMPORAL_SELF_RETRO_PLAY_ENABLED` (ON).
+
+**Street episodes (2026-10-23, walkway follow-ups spec PR #2763 item 1).** The chronicle reads notable
+outside events as source `street_event`, three reads of one kind: published clean motion stories whose
+rules version passed Juniper's spot-check gate (`vision_motion_story` + `vision_motion_story_verdict`;
+labels carry no people count), doorbell rings (`vision_events`), and graded
+handoffs with p < 0.05 (`vision_handoff_street_outbox`). One `street` arc each, labelled "Outside
+(<camera>): ...", at most `TEMPORAL_SELF_STREET_EPISODES_PER_DAY` (12) a local day. Each read is skipped
+while one of its tables is missing. Log lines: `temporal_self_street_episode arc_id=... source=...` per
+new arc, `temporal_self_street_capped count=...` when the cap kept events out. A story is available at
+its `ended_at` and written a median 49 s later; one in 54 (7 days to 10-23) lands after the 300 s read
+lag and is stored late, not folded. Kill switch: `TEMPORAL_SELF_STREET_EPISODES_ENABLED` (ON); off, the
+source is not read and episodes are room-only again. Deploy order: orion-thought and orion-hub before
+this service (the `street` arc kind is new to `extra="forbid"` frame readers).
+
 Kill switches: `TEMPORAL_SELF_ENABLED=false` (no thread), `ORION_REGULATION_AROUSAL_ENABLED=false`
 (reads `unknown`). Health: `/health` -> `temporal_self`.
 
@@ -625,9 +710,167 @@ deploy). Kill switch: `TEMPORAL_SELF_CHRONICLE_ENABLED=false`. Health: `/health`
 `temporal_self_chronicle`. Eval: `evals/temporal_self_live_replay.py` runs this code path over the
 10-09 fixture on a disposable Postgres (`--source-dsn` reads real tables read-only instead).
 
+## Body: the `physiology` node (2026-10-23, body economy Patch A3, no reader yet; prices Patch B2)
+
+Organ 1 of the body economy (`docs/superpowers/specs/2026-10-23-organism-body-economy-design.md`).
+After `regulate`, at most once per `ORION_PHYSIOLOGY_MIN_INTERVAL_SEC` (100 s; chat-turn steps in
+between are skipped), the node reads every constraint Orion lives under and writes one
+`PhysiologyStateV1` (`orion/schemas/physiology.py`):
+
+| constraint | level (unit) | line | source |
+|---|---|---|---|
+| `heat` | cabinet C | soft line `ORION_PHYSIOLOGY_HEAT_SOFT_LINE_C` (31) | this step's own regulate inputs (no second query) |
+| `energy` | Orion month-to-date USD (local month) | `ORION_PHYSIOLOGY_ENERGY_MONTHLY_ENVELOPE_USD` (unset: no line) | `orion_energy_hourly` x `energy_cost_accrued` next-kWh rate (newest `computed_at`; unpriced recent hours carry the newest rate) |
+| `lane:<role>` | GPU slot-seconds occupied in the last `ORION_PHYSIOLOGY_LANE_WINDOW_SEC` (at most `slots` leases count at once; the rest is `detail.lent_overlap_s`) | discovered slots x window (pool state RPC) | `gpu_pool_events` closes (`held_ms`, each on its own seat) + open grants |
+| `attention:juniper` | outreach messages sent today | `HUB_ENDOGENOUS_OUTREACH_DAILY_CAP` (owner: Hub) | `endogenous_outreach_decisions` |
+| `claude` | limit events, plus `state` | not limited | `orion:substrate:claude_limit` (`ClaudeLimitObservationV1`), latest per kind in memory |
+
+A failed, stale or never-observed source is `level=None` with a `no_reading` reason, never 0. Pure
+logic: `orion/physiology/body.py`; reads: `app/physiology_store.py`. Transport: Redis
+`orion:physiology:latest` (TTL `ORION_PHYSIOLOGY_REDIS_TTL_SEC`) and bus `orion:physiology:state` ->
+sql-writer `physiology_state` (one row per tick). `/health` -> `temporal_self.physiology` shows the
+last tick id and every `no_reading`. Own 30 s timeout; a failure is the step warning
+`physiology_failed` and never touches the regulation reading. Off: `ORION_PHYSIOLOGY_ENABLED=false`.
+
+Lanes (Patch B1, 2026-10-27):
+- **Each held span is charged to the seat its own event names.** A lease the pool re-placed (aborted
+  on `agent-gpu2`, re-granted on `agent`) used to be charged in full to its last seat. That is how
+  `lane:agent` read 5,985.9 slot-s in a 3,600 s window on one slot (10-23 10:14:12; 747 of 2,778
+  ticks over capacity by 10-27). Warning: `lane_leases_held_on_two_seats:<n>`.
+- **Gap lending is real overlap, reported apart.** The pool lets a higher-priority one-off call run
+  in an idle background hold's gap (scheduler H3). Both leases are live; the slot is occupied once.
+  `level` caps concurrent leases at `slots`; `detail.lease_s` is the raw sum and
+  `detail.lent_overlap_s` the difference. A seat with 0 live slots that still holds a lease is left
+  uncapped and flagged `held_without_live_slot`.
+- **Waiting self-work (hunger) sits beside each lane**, from `gpu_pool_state_history.deferrable_depth`
+  (#2873): `deferrable_queued` (queued background durable-run holds, summed over fresh pool hosts,
+  of every work class the pool's own class map lets run on this seat) and `deferrable_waiting_sec`
+  (how long that queue has been non-empty as far as the history saw it; a hole in the history
+  restarts the count; `deferrable_waiting_capped` = the whole 6 h lookback). Queued work has no
+  seat yet, so one item sits beside every seat it may use: **do not sum lanes**. Unknown is
+  `deferrable_no_reading` (backlog unread, stale, unrecorded, or the class map unread), never 0. A
+  stale pool host is named in `deferrable_hosts_stale`. It is not strain and nothing prices it; it
+  seeds Appetite. The class map comes from the pool state RPC (`include_config`).
+
+Known limits: `lent_overlap_s` uses the seat's slots now, not as they were earlier in the window (a
+seat that is down now is uncapped for the whole window);
+`claude` reads `no_observation` while orion-cocreation-signals' `COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED`
+is false.
+
+### Budget: shadow prices and the strain dial (2026-10-27, body economy Patch B2)
+
+Organ 2 Budget and Organ 5's `strain` dial, **shadow only**. Every physiology tick, after the Body
+readings, `orion/physiology/budget.py` puts a price on each reading (`PhysiologyConstraintReadingV1.price`:
+`value`, `ceiling`, `ceiling_source`, `bind_state`, `use`, `budget`, `excess`, `horizon_sec`, `why`) and
+the dial on the state (`PhysiologyStateV1.strain`). Same Redis key, same bus channel, same
+`physiology_state` row (prices live inside `constraints`; `strain` is recomputable from them with
+`strain_dial`). **Nothing that decides reads them.** Debug readout for humans: `GET /physiology/state`.
+
+| constraint | what the price charges (use vs budget) | `exogenous_bind` (clamped, listed apart from strain) |
+|---|---|---|
+| `heat` | Orion's own share in C: short-run sensitivity x watts above baseline, per host, against the room's headroom (soft line - (raw cabinet reading - Orion's share)); forecast = the newest reading | room over the line even with Orion's share at 0 (0.5 C hysteresis) |
+| `energy` | month-end Orion cost forecast vs the $ envelope | the always-on floor alone reaches the envelope (5% hysteresis) |
+| `lane:<role>` | lease-seconds asked of the seat (`detail.lease_s`) vs slots x window; waiting work is NOT an input | never (Patch C1). A seat with 0 live slots now whose window use already ran (`served_while_loaded`: a swap seat, diffusion / agent-gpu2) is slack; one with a lease still open (`held_without_live_slot`) is `no_reading` |
+| `attention:juniper` | today's cap-counted sends paced to the end of the local day vs the cap | never. Self-spent (Patch C1): Orion's own outreach fills it, so it is listed in `strain.self_spent` and does not move the dial; its price still charges outreach wants |
+| `claude` | `clear` = 0 use | `limited` |
+
+Rules (`orion/physiology/prices.py`, Patch B): bounded ramp into bind (never a jump to the ceiling),
+bind hysteresis, the point sensitivity (not the upper bound), ceilings `provisional` until Appetite has
+graded wants to size them, and the stuck check: at the ceiling, unflagged, past one horizon reads
+`stuck_at_ceiling` plus the warning `price_stuck_at_ceiling:<constraint>`. Rates are per hour, scaled
+to the real tick. Unknown is `no_reading` and the price is held at its last value, never set to 0.
+
+Heat sensitivities are data: `config/physiology/heat_sensitivity.yaml`, written only by
+`scripts/analysis/fit_heat_sensitivity.py --write-config` and baked into the image
+(`ORION_PHYSIOLOGY_HEAT_SENSITIVITY_PATH`). A host entry older than 30 days, a missing file, a
+fitted host with no watts, or an awake host with no fit makes the heat price `no_reading`. Refit and
+rebuild to refresh it. Off: `ORION_PHYSIOLOGY_PRICES_ENABLED=false` (Body readings only).
+
+Known limits (review, 10-27):
+- Orion's heat share uses the 2 h step-response sensitivity, so it is a **short-run lower bound**
+  for load held for hours. `exogenous_bind` ("not my load") is therefore biased toward excusing
+  Orion. No reader may decide on it before the sensitivity is calibrated (design Organ 6).
+- The cabinet reading is compared raw. There is no sensor offset (removed 10-29: the sensor never
+  moved; the 10-17 rise is real heat from the vision bring-up). A yaml that still carries
+  `measurement_offsets` is refused, and heat reads `no_reading`.
+- hecate counts as asleep below a 150 W 1 h mean, so a short burst can be missed.
+- The carry (price, bind flag, ceiling run) crosses the daily graph thread (`CARRIED_KEYS`) and is
+  kept for a day for a constraint missing from a tick. Warnings `heat_sensitivity_stale_in_days:<host>:<d>`
+  (7 days ahead) and `heat_sensitivity_stale:<host>` say when to refit.
+- `attention:juniper` paces the day only after 6 h of it; before that the use is the count itself.
+
+### Appetite + Choice: `POST /physiology/bid` (2026-10-27, body economy Patch C1, SHADOW)
+
+A producer sends a `WantV1` (`orion/schemas/physiology_want.py`) and gets a `WantDecisionV1` back:
+funded or deferred, the lane, the prices it saw, its cost as a share of each budget, the net, the
+binding constraint, what it displaced, `retry_after_sec`, and `shadow=true`. **Nobody obeys the
+decision yet** (design Patch D cuts over one reader per PR). Every decision is published on
+`orion:physiology:want:decision` and sql-writer stores it in `want_ledger`.
+
+```text
+net       = family_weight x value_rank - sum_k price_k x cost_k      (cost_k = share of constraint k's budget)
+funded    = net > 0, or a hungry Tier 2 family under 5% of Tier 2's funded wants over the rolling 7 days (never past a capacity line)
+placement = the cheapest acceptable lane with room; a seat with 0 live slots is a last resort
+```
+
+- **Families** (`config/physiology/families.yaml`, one per act-ledger actor): tier 0 never bids
+  (`hub.chat_reply`, `vision.council`, `perception`), tier 1 upkeep (`actions.journal`, `dream.cycle`,
+  `durable.journal_compose`), tier 2 the rest. Unknown family: deferred `unknown_family`.
+- **Appetite** (`orion/physiology/appetite.py`): intensity `1 - exp(-t/tau)`, `t` = time since the
+  family's last act closed (floored by B1's waiting deferrable work beside its lanes); `tau` = the
+  family's median close-to-close gap (>= 5 gaps), else its `deferrable_window_s`. `value_rank` =
+  percentile of intensity x outcome within the family's 30 days; `graded` = >= 30 graded closes
+  (expired closes are not grades); ungraded families rank on intensity alone.
+- **Weights** (`orion/physiology/weights.py`): shrinkage (kappa 30) from the prior toward the mean of
+  the evidence rates that exist: downstream use (`act_downstream_use`, linked + window closed) and
+  Juniper replies (resolver closes of `juniper_replied` acts). A missing source is skipped, never 0;
+  under 10 evidenced acts stays at prior; 0.1/day drift cap (replayed day by day, stateless).
+  Personality endorsement is excluded.
+- **Reservations**: a funded bid reserves its cost on capacity lines (lanes, Juniper's cap) until
+  `POST /physiology/bid/{want_id}/release` (the act closed) or expiry. Before the act opens, expiry is
+  the earlier of one act-length (its expected seconds, 120 s .. 1 h) and the end of the want's window
+  (Patch C3a: no act by then, no reservation); once the producer reports the open (durable runs: the
+  first grant) it is one act-length from the open. Later
+  bids must fit `forecast use + reservations + cost <= line`. In memory: a restart releases them.
+  Tier 1 pays no lane price inside its reserved share (p75 of its 14-day hourly use, cap 50%).
+- **Unpriced, said so**: heat, energy and claude are listed `unpriced:<constraint>` on every
+  decision: per-act watt-hours and limit events are not measured yet (`ActCostV2.wh_by_host` null).
+- **Never fail open**: no fresh body state (> `ORION_PHYSIOLOGY_BID_STALE_AFTER_SEC`), no act history
+  or no families config is `physiology_unavailable`. The client (`orion/physiology/client.py`,
+  0.5 s timeout) returns `None` on any failure and the caller keeps its own gate.
+
+Reads: Redis `orion:physiology:latest`, and `grammar_acts` + `act_downstream_use` (30 days, cached
+`ORION_PHYSIOLOGY_BID_HISTORY_TTL_SEC`). Debug: `GET /physiology/reservations`; `/health` ->
+`physiology_market`. Off: `ORION_PHYSIOLOGY_BID_ENABLED=false` (the route answers 503). Read-only
+sample against live prices: `scripts/analysis/sample_body_economy_bids.py`.
+
+**Exploration floor, weekly quota (Patch C3a).** Funded wants are counted from `want_ledger` (rolling 7
+days, re-read with the history) plus this process's own funded decisions, deduplicated by
+`decision_id`. A Tier 2 family under 5% of Tier 2's funded wants is funded when only the price said
+defer; each floor fund raises its share, so the floor stops by itself. No ledger read yet: no floor.
+
+### Admission bids (2026-10-27, body economy Patch C3a, SHADOW)
+
+`app/run_bids.py`: a run in a want family (curiosity investigate, self-inquiry, self-sense eval,
+journal compose -- the set `app/run_acts.py` opens acts for) bids in-process when `submit` accepts
+it: `want_id` = run id, `object_ref` = `durable_run:<run_id>`, `correlation_id` = the run's
+correlation id (the act's), window `latest` = the admission deadline. The bid is a background task:
+`submit` returns its usual receipt whatever the market says. The bid reserves PENDING (runs wait
+~1.5 h in the pool's queue): the first grant calls `Market.mark_opened`, which starts the
+reservation, and the terminal calls `Market.release`. A grant or terminal that beats the background
+bid is applied when the bid lands. A duplicate submit bids once. Log line:
+`physiology_shadow_bid run=... corr=... decision_id=... obeyed=false`. Off:
+`ORION_PHYSIOLOGY_SHADOW_BIDS_ENABLED=false`.
+
+Disagreement report (read-only): `scripts/analysis/body_economy_shadow_vs_real.py --days 7` (the
+four-cell shadow-vs-real table per family; `--source replay` re-decides the real admissions).
+
+Live smoke (read-only, replays the node over stored ticks): `ORION_ANALYSIS_DSN=... python
+scripts/analysis/smoke_body_economy_prices.py --hours 24`.
+
 ## Runtime immune sweep: the `immune` node (2026-10-13, Temporal Self R4)
 
-The thread runs `ingest -> regulate -> immune -> chronicle -> done`. `immune` asks whether any of
+The thread runs `ingest -> regulate -> physiology -> immune -> chronicle -> done`. `immune` asks whether any of
 Orion's own gauges has stopped telling the truth. It runs only while arousal reads `idle`, at most
 once per `TEMPORAL_SELF_IMMUNE_INTERVAL_SEC` (6 h; the last run time is in the checkpoint and
 carries over midnight). It reads 24 h of every field channel whose glossary entry carries
@@ -711,6 +954,43 @@ keeps running. Kill switch: `PERSONALITY_ENABLED=false` (tables stay).
 Tests: `tests/test_personality_loop.py` (fakes), `tests/test_personality_postgres.py` (real
 Postgres, needs `ORION_ADMISSION_TEST_DSN`).
 
+### Orion names their own dispositions (2026-10-20)
+
+Orion is shown one disposition at a time and says what it is: a name, "not me", or "the same as
+this neighbor". This service picks what to show, and applies Orion's answer to the graph.
+
+Spec: `docs/superpowers/specs/2026-10-17-personality-orion-names-dispositions-design.md` (decisions
+2026-10-20). Needs `services/orion-sql-db/manual_migration_personality_naming_v1.sql` applied before
+deploy (new `personality_disposition` columns and the `orion_disposition_naming` table).
+
+- `GET /personality/naming/next` returns the next `DispositionNamingPacketV1` or 204. Due order
+  (`orion/personality/naming.py`, `naming_due`): an active node never shown, strongest first; a node
+  whose last answer was empty or refused, again after 3 days, at most 3 tries; a named or rejected node
+  only when its evidence doubled or a new source now counts toward promotion, never sooner than 14
+  days. Reading the packet marks nothing; the node counts as shown when Orion's answer row is applied.
+- `GET /personality/naming?disposition_id=&limit=50` is the naming log, newest first.
+- `/personality/dispositions` rows add `name`, `name_sentence`, `orion_verdict`, `merged_into`,
+  `name_grounding_rank`, `name_grounding_margin`, `named_at`, `last_shown_at`, `shown_count`.
+- Each tick reads `orion_disposition_naming` after the `naming` cursor (keyset `created_at,
+  naming_id`, same read lag as the sources) and applies it after the fold, in the same transaction
+  (`graph.apply_namings`). NAME sets the name only. REJECT marks the node; it keeps matching and
+  fading, and leaves the frame. MERGE pools B into A only at centroid cosine >= 0.85
+  (`merge_min_cosine`, set from P0 live cosines) and retires B with `merged_into`; otherwise
+  `apply_status=merge_too_far`. No verdict adds a hit. Each applied row logs
+  `personality_naming_applied naming=<id> verdict=<v> grounding_rank=<n> margin=<x> apply_status=<s>`
+  after commit.
+- Grounding: `name + " " + sentence` is embedded and ranked against every non-retired centroid.
+  Recorded only, never a refusal. A failed embed holds the naming cursor for up to 3 ticks, then the
+  name is applied without grounding.
+- Own-name echo: evidence whose text contains the matched node's own current name still counts
+  (`lane_counts`, `evidence_count`) but adds no weight, and is stored with `meta.cites_own_name=true`.
+- Kill switch: `PERSONALITY_NAMING_APPLY_ENABLED=false` (answers wait in the table, the route answers 204).
+- Roll back one merge: `scripts/personality_unmerge.py --disposition <B>` (dry run; `--apply` writes;
+  approximate for A because the merge clamp is not reversible; stop the loop first).
+
+Tests: `orion/personality/tests/test_naming.py`, `tests/test_personality_naming.py`, and the naming test
+in `tests/test_personality_postgres.py`.
+
 ### Situation on every piece of evidence (2026-10-16)
 
 Each new evidence row's `meta.situation` records the situation the row happened in, at the row's own time. It has three fields:
@@ -726,6 +1006,33 @@ The lookup fails open. If the Temporal Self tables cannot be read, the evidence 
 Code: `orion/personality/situation.py` (pure) and `PersonalityStore.load_situation_inputs`.
 
 `GET /personality/dispositions` gives each node a `situation_mix`: `{"n", "arousal": {level: count}, "day_phase": {phase: count}, "company": {"true": n, "false": n}}`. It counts that node's evidence rows by situation, in one grouped query (`SITUATION_MIX_SQL`) bounded to the returned node ids. Rows without a situation (all rows before 2026-10-16 23:36 UTC) are left out, and `n` counts only the rows that have one. A node with no stamped rows gets `n=0` and empty counts. It is observability only: weights, matching and the frame do not read it.
+
+## Acts: want-family runs write to `grammar_acts` (2026-10-23, body economy Patch A5)
+
+Every durable run Orion starts for itself leaves an efference copy in the act ledger, so the body
+economy can grade each family and price it (`app/run_acts.py`). Flag:
+`ORION_DURABLE_ACT_EMIT_ENABLED` (default `true`).
+
+| family | workflow / line | actor | verb |
+|---|---|---|---|
+| curiosity investigate | `curiosity.investigate` / `investigate` | `durable.curiosity_investigate` | `infer` |
+| self-inquiry | `curiosity.investigate` / `self_inquiry` | `durable.self_inquiry` | `ask` |
+| self-sense eval | `self_sense_eval` | `durable.self_sense_eval` | `sense` |
+| journal compose | `journal.compose` | `durable.journal_compose` | `make` |
+
+- **Open:** when the run's FIRST pool grant is recorded (`run.resource_granted`). The queue wait is
+  not the act. A run refused before any grant opens nothing. A restart or a later re-grant does not
+  re-open (only the call that inserted the first grant row publishes).
+- **Close:** in `_terminal`, with the actual terminal status: `completed` = 1, `failed` /
+  `cancelled` = 0. Cost = ActCostV1 `seconds` (first grant -> terminal). The ledger fills GPU
+  slot-seconds itself by joining `correlation_id` (= the hold lease's `turn_correlation_id`).
+- **Never stuck open:** each act expects `artifact_produced` by a measured horizon (24 h curiosity
+  lines, 12 h self-sense, 1 h journal or the run's own deadline + 600 s); the ledger expires an act
+  past it at 0.
+- **Excluded:** urgent curiosity incident runs (a sensor alarm forced them), reading.turn and
+  reverie.visual (Hub / thought already emit their acts), dream.carry (dream producer), and upkeep
+  workflows (episode distill, compaction, digest, orion_day letter, self_study.reflect).
+- **Live replay (read-only):** `python evals/run_acts_live_replay.py --dsn <live dsn> --days 7`.
 
 ## Deploy order
 
@@ -913,9 +1220,20 @@ crash between artifact commit and LangGraph checkpoint. The checkpoint itself st
 small: source material is stored once in `curiosity_compaction`, not in every LangGraph
 state. A SQL write checks the run generation to fence delayed old workers.
 
+Each call sends a JSON schema for its answer as `structured_output_schema`
+(`output_schema` in `orion/curiosity/compaction.py`; the gateway turns it into llama.cpp's
+`response_format`): `record_topics` first, an object with one REQUIRED key per alias of the batch
+(`s0`, `s1`, ...) and no other key, each mapped to a topic index; then at most 4 topics, body
+`maxLength` 1200; the overall body `maxLength` 2400. The grammar therefore cannot skip or invent a
+record (V1 had a free `refs` list per topic, and the model dropped refs on 13-record batches).
+`record_answer` still checks every rule, and also that each written topic has a record. The
+prompt asks for about 80-110 words per topic and 180-240 for the overall, leaving room under
+the caps (live bodies run ~7 characters per word and overshoot the asked length); a body that
+fills the cap without ending a sentence was cut by the grammar and is rejected.
+
 The final journal contains content-derived topic summaries with dated sources plus an
 overall synthesis. Missing/invented topic references, empty text and malformed JSON
-are rejected. Empty input skips the GPU. Finalization releases the hold before journal
+are rejected (`ModelOutputRejected`: a bounded retry, each accepted batch already saved). Empty input skips the GPU. Finalization releases the hold before journal
 publication; delivery failure retries without regeneration, and the dream-side
 reconciler repairs missed journal delivery using the same ID. Every source survives.
 See the dream README and the 2026-10-14 PR report for activation and migration order.

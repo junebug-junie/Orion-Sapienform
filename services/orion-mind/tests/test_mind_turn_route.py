@@ -1,5 +1,7 @@
-"""A live Hub turn's Mind calls ride `metacog_turn` (interactive: never shed under heat); Orion's own
-turns and non-turn runs keep `metacog` (system: shed). Spec 2026-10-06-thermal-controller-redesign D4.
+"""Juniper's live turn (utterance_origin="juniper") rides `metacog_turn` (interactive: never shed
+under heat); Orion's own, unmarked, and non-turn runs keep `metacog` (system: shed).
+Spec 2026-10-06-thermal-controller-redesign D4; tiers attach to callers, not lanes (body-economy
+design Organ 3b, 2026-10-23).
 """
 from __future__ import annotations
 
@@ -38,7 +40,7 @@ def _three_phase_responses() -> list[dict]:
 
 
 def _routes_called(monkeypatch, *, trigger="user_turn", origin=None, turn_route="metacog_turn",
-                   phase_routes=("metacog", "metacog", "metacog")) -> list[str]:
+                   phase_routes=("metacog", "metacog", "metacog"), session_id=None) -> list[str]:
     from app.engine import run_mind
     from app.llm_client import FakeMindLLMClient, set_llm_client_override
     from app.settings import settings
@@ -54,6 +56,7 @@ def _routes_called(monkeypatch, *, trigger="user_turn", origin=None, turn_route=
     try:
         run_mind(
             MindRunRequestV1(correlation_id=str(uuid4()), trigger=trigger, utterance_origin=origin,
+                             session_id=session_id,
                              snapshot_inputs={"user_text": "hello"},
                              policy=MindRunPolicyV1(n_loops_max=1, wall_time_ms_max=60_000)),
             router_profiles_dir=_CONFIG_DIR, snapshot_max_bytes=512_000, mind_settings=settings,
@@ -71,13 +74,38 @@ def test_turn_route_setting_defaults_to_metacog_turn(monkeypatch) -> None:
     assert settings_module.settings.MIND_TURN_MODEL_ROUTE == "metacog_turn"
 
 
-@pytest.mark.parametrize("origin", [None, "juniper"])
-def test_a_live_hub_turn_uses_the_turn_route(monkeypatch, origin) -> None:
-    assert set(_routes_called(monkeypatch, origin=origin)) == {"metacog_turn"}
+def test_juniper_turn_lifts_all_three_phases(monkeypatch) -> None:
+    assert _routes_called(monkeypatch, origin="juniper") == ["metacog_turn"] * 3
 
 
 def test_orions_own_turn_stays_sheddable(monkeypatch) -> None:
     assert set(_routes_called(monkeypatch, origin="orion")) == {"metacog"}
+
+
+def test_unmarked_turn_stays_sheddable(monkeypatch) -> None:
+    """Unknown origin is not a live turn: "a human is waiting" must be positively marked."""
+    assert set(_routes_called(monkeypatch, origin=None)) == {"metacog"}
+
+
+def test_world_pulse_read_turn_is_not_lifted(monkeypatch) -> None:
+    """Regression, live 2026-10-22..23: world-pulse read turns (reading_turn_listener, no origin
+    set) rode Juniper's interactive tier -- 72 interactive orion-mind grants with no Juniper chat."""
+    for session in ("orion_world_pulse_read", "orion_world_pulse_read_stage2"):
+        assert set(_routes_called(monkeypatch, origin=None, session_id=session)) == {"metacog"}
+
+
+def test_carries_live_turn_truth_table() -> None:
+    from app.engine import carries_live_turn
+    from orion.mind.v1 import MindRunRequestV1
+
+    def live(trigger, origin):
+        return carries_live_turn(MindRunRequestV1(correlation_id="c", trigger=trigger, utterance_origin=origin))
+
+    assert live("user_turn", "juniper") is True
+    for origin in (None, "orion"):
+        assert live("user_turn", origin) is False
+    for trigger in ("scheduled", "operator", "replay"):
+        assert live(trigger, "juniper") is False
 
 
 @pytest.mark.parametrize("trigger", ["scheduled", "operator", "replay"])
@@ -86,12 +114,12 @@ def test_non_turn_runs_stay_sheddable(monkeypatch, trigger) -> None:
 
 
 def test_empty_setting_is_the_rollback(monkeypatch) -> None:
-    assert set(_routes_called(monkeypatch, turn_route="")) == {"metacog"}
+    assert set(_routes_called(monkeypatch, origin="juniper", turn_route="")) == {"metacog"}
 
 
 def test_only_metacog_phases_are_lifted(monkeypatch) -> None:
     """An operator's `quick` or a deliberately yielding `metacog_background` phase is left alone."""
-    routes = _routes_called(monkeypatch, phase_routes=("quick", "metacog", "metacog_background"))
+    routes = _routes_called(monkeypatch, origin="juniper", phase_routes=("quick", "metacog", "metacog_background"))
     assert routes == ["quick", "metacog_turn", "metacog_background"]
 
 

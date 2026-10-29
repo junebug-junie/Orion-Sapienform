@@ -45,3 +45,48 @@ def test_stance_react_prompt_does_not_ask_model_for_record_identity() -> None:
     text = (REPO_ROOT / "orion/cognition/prompts/stance_react.j2").read_text(encoding="utf-8")
     for field in ("event_id", "session_id", "created_at"):
         assert field not in text, field
+
+
+def _render_stance(stance_inputs: dict) -> str:
+    from jinja2 import Environment, StrictUndefined
+
+    text = (REPO_ROOT / "orion/cognition/prompts/stance_react.j2").read_text(encoding="utf-8")
+    return Environment(undefined=StrictUndefined).from_string(text).render(
+        user_message="It was eventful",
+        stance_inputs=stance_inputs,
+        association={},
+        repair_bundle=None,
+        coalition_projection=None,
+        orion_identity_summary=None,
+        juniper_relationship_summary=None,
+        mind_coloring=None,
+        temporal_self_cue=None,
+        self_readings=None,
+        personality_cue=None,
+        chat_attention_frame=None,
+        autonomy_slice=None,
+        self_prediction_enabled=False,
+    )
+
+
+def test_stance_prompt_reads_message_against_recent_conversation() -> None:
+    rendered = _render_stance(
+        {
+            "user_message": "It was eventful",
+            "recent_conversation": [
+                "- User (Sun Oct 18, 1:40 am): Big day later today at Lagoon",
+                "(\u2014 about 45 hours pass \u2014)",
+            ],
+        }
+    )
+    # Plain lines, rendered once -- not an escaped JSON blob in the generic loop.
+    assert rendered.count("Big day later today at Lagoon") == 1
+    assert "  - User (Sun Oct 18, 1:40 am): Big day later today at Lagoon\n" in rendered
+    assert "\u2014 about 45 hours pass \u2014" in rendered
+    assert "\\u2014" not in rendered
+    assert "Read user_message against it" in rendered
+
+
+def test_stance_prompt_without_history_has_no_recent_conversation_guidance() -> None:
+    rendered = _render_stance({"user_message": "It was eventful"})
+    assert "recent_conversation" not in rendered

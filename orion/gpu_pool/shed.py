@@ -7,7 +7,7 @@ reasons combine lives here.
 
 - A reason is named, has a precedence (lower number wins) and a fixed set of priorities it blocks.
   Only ``background`` and ``system`` can ever be shed; a reason naming anything else is refused at
-  import time. ``interactive`` (chat) and ``urgent`` are never shed.
+  import time. ``interactive`` (chat), ``perception`` (Orion's senses) and ``urgent`` are never shed.
 - A signal is one producer's claim that a reason holds: ``(reason, source_id, detail, valid_until)``.
   The board keeps one per ``(reason, source_id)``; a signal past ``valid_until`` counts as absent,
   so a producer that dies stops shedding within its own validity window (fail-open).
@@ -149,3 +149,118 @@ class ShedBoard:
                              "valid_until": s.valid_until.isoformat(), "detail": s.detail} for s in sigs],
             })
         return ShedView(enabled, blocked, active, rows)
+
+
+def shed_held_queue(leases: Any, blocked: Any, *,
+                    reasons: Any = None) -> tuple[dict[str, int], str | None]:
+    """Of a pool snapshot's QUEUED leases, the ones a shed is holding back right now (U4's own
+    test in ``scheduler.schedule``: no ``hold_lease_id`` and a priority in ``blocked``).
+
+    ``leases``: ``GpuPoolStateV1.leases`` (models or dicts). ``blocked``: ``GpuPoolStateV1.shed
+    ["blocked"]`` (priority -> reason name; empty when nothing is shed or the lever is off).
+    Returns ``({work_class: n}, reasons)``: the held count per work class (a subset of the
+    snapshot's ``queue_depth``, which counts status ``queued`` only) and the reasons holding them,
+    sorted and ``+``-joined (None when nothing is held). Readers use it so a queue a heat shed is
+    holding is not read as GPU load (``orion.regulation.arousal``, 2026-10-20).
+
+    ``reasons``: count only leases held by these reasons (None = any). The history row passes
+    ``REFLEX_REASONS``: a lease held by Orion's own ``orion_self_shed`` waits on a choice made while
+    the cabinet is warm but below the reflex, which arousal's cabinet input does not read as hot."""
+    blocked = blocked if isinstance(blocked, dict) else {}
+    held: dict[str, int] = {}
+    seen: set[str] = set()
+    for lease in leases or ():
+        row = lease if isinstance(lease, dict) else vars(lease)
+        if row.get("status") != "queued" or row.get("hold_lease_id") is not None:
+            continue
+        reason = blocked.get(row.get("priority"))
+        if not reason or (reasons is not None and reason not in reasons):
+            continue
+        held[row["work_class"]] = held.get(row["work_class"], 0) + 1
+        seen.add(str(reason))
+    return held, ("+".join(sorted(seen)) or None)
+
+
+def is_deferrable_self_work(row: Any) -> bool:
+    """A queued lease that is Orion's own deferrable work: a durable-run HOLD at ``background``
+    priority with no parent hold (``hold_lease_id`` None). Decided by lease fields only, never by
+    holder name. Live 2026-10-23: the agent-lane queue was all such holds (curiosity readings,
+    compaction), retryable, and kept arousal's S2 strained for days after the heat cleared.
+
+    Waiting deferrable self-work is hunger (an unfunded want), not strain (body-economy design
+    2026-10-23, "S2 decision"). Requests at any priority, and background REQUESTS, are not this.
+    A durable-run hold that serves Juniper must therefore ask for ``system`` or ``urgent`` priority:
+    ``ResourceRequirementV1.priority`` defaults to ``background``, which reads as self-work here."""
+    row = row if isinstance(row, dict) else vars(row)
+    return (row.get("status") == "queued" and row.get("priority") == "background"
+            and row.get("kind") == "hold" and row.get("hold_lease_id") is None)
+
+
+def deferrable_queued(leases: Any, blocked: Any, *, reasons: Any = None) -> dict[str, int]:
+    """Of a pool snapshot's QUEUED leases, the deferrable self-work (``is_deferrable_self_work``)
+    that a shed is NOT already holding: ``{work_class: n}``.
+
+    Each lease counts once. A lease ``shed_held_queue(leases, blocked, reasons=reasons)`` counts as
+    shed-held is left out here, so a reader subtracting both never subtracts it twice. Pass the
+    same ``blocked``/``reasons`` as the shed-held count (the history row passes ``REFLEX_REASONS``).
+    Readers: ``orion.regulation.arousal.gpu_queue_evidence`` (S2 stopgap until the holds move onto
+    bid(), body-economy Patch D)."""
+    blocked = blocked if isinstance(blocked, dict) else {}
+    out: dict[str, int] = {}
+    for lease in leases or ():
+        row = lease if isinstance(lease, dict) else vars(lease)
+        if not is_deferrable_self_work(row):
+            continue
+        reason = blocked.get(row.get("priority"))
+        if reason and (reasons is None or reason in reasons):
+            continue  # already shed-held: shed_held_queue counts it
+        out[row["work_class"]] = out.get(row["work_class"], 0) + 1
+    return out
+
+
+# ---------------------------------------------------------------------------------------------
+# Reading a shed back out of a refusal. When the pool sheds a request, orion-llm-gateway answers
+# ``raw.error="gpu_pool_unavailable"`` with ``raw.details.reason="shed:<name>"``, and cortex-exec's
+# ``gateway_error_step_failure`` folds that into the step error ``gpu_pool_unavailable:shed:<name>``
+# (optionally followed by ``: <message>``). A shed is the pool doing its job on purpose -- it is
+# not a failure of the work that was refused. Other ``gpu_pool_unavailable:*`` reasons (deadline,
+# pool_bus_unavailable, no_serviceable_role) are real capacity failures and are NOT sheds.
+# ---------------------------------------------------------------------------------------------
+
+GPU_POOL_UNAVAILABLE_PREFIX = "gpu_pool_unavailable"
+_SHED_MARKER = f"{GPU_POOL_UNAVAILABLE_PREFIX}:shed:"
+
+
+def shed_reason_from_error(error: Any) -> str | None:
+    """The shed reason name (e.g. ``cabinet_hot``) when ``error`` is a GPU-pool shed, else None.
+
+    Matches only ``gpu_pool_unavailable:shed:<name>`` (anywhere in the text, so a plan-level
+    error that wraps the step error still matches). ``<name>`` is the leading ``[A-Za-z0-9_]``
+    run; an empty name is not a shed."""
+    if not isinstance(error, str):
+        return None
+    idx = error.find(_SHED_MARKER)
+    if idx < 0:
+        return None
+    rest = error[idx + len(_SHED_MARKER):]
+    name = []
+    for ch in rest:
+        if ch.isascii() and (ch.isalnum() or ch == "_"):
+            name.append(ch)
+        else:
+            break
+    return "".join(name)[:64] or None
+
+
+def is_gpu_pool_refusal(error: Any) -> bool:
+    """True when ``error`` names any GPU-pool refusal (``gpu_pool_unavailable`` or ``...:<reason>``),
+    shed or not: the LLM was never asked, so the caller's own prompt/work was not judged.
+
+    Prefix match, unlike ``shed_reason_from_error``'s substring match, on purpose: this is
+    asked of a plan's own returned error (cortex-exec sets it to the failing step's error
+    verbatim), and a wrapped string such as ``metacog_draft_fallback:gpu_pool_unavailable:...``
+    names a different outcome (the caller fell back), not a bare refusal."""
+    if not isinstance(error, str):
+        return False
+    text = error.strip()
+    return text == GPU_POOL_UNAVAILABLE_PREFIX or text.startswith(f"{GPU_POOL_UNAVAILABLE_PREFIX}:")

@@ -59,6 +59,8 @@ from app.pool_hold import (
     hold_placement, ref_dict, refusal_is_terminal,
 )
 from app.reflect_graph import finish_detail as reflect_finish_detail
+from app.run_acts import RunActEmitter
+from app.run_bids import RunBidder
 from app.orion_day_graph import (
     OrionDayDeps, build_orion_day_graph, finish_detail as orion_day_finish_detail, slim_brief as orion_day_slim_brief,
 )
@@ -73,7 +75,7 @@ from orion.schemas.compactor_digest_run import COMPACTOR_DIGEST_WORKFLOW
 from orion.schemas.reading_turn import READING_WORKFLOW
 from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW, reverie_visual_run_id
 from orion.schemas.orion_day import ORION_DAY_WORKFLOW, OrionDayRunBriefV1
-from app.self_sense_graph import finish_detail as self_sense_finish_detail
+from app.self_sense_graph import finish_detail as self_sense_finish_detail, next_unanswered, question_turn_id
 from orion.durable_runs.registry_store import (
     ABANDON_ACKED_EVENT,
     ABANDON_GIVE_UP_SEC,
@@ -156,11 +158,21 @@ TAKEBACK_RELEASE_REASONS = frozenset({HoldLost.release_reason, URGENT_PREEMPT})
 
 
 class AdmissionRuntime:
-    def __init__(self, settings, runner, pool, *, store=None, clock=None, holds=None):
+    def __init__(self, settings, runner, pool, *, store=None, clock=None, holds=None, market_getter=None):
         self.settings, self.runner, self.pool = settings, runner, pool
         self.store = store or DurableRunRegistryStore(pool)
         self.now = clock or (lambda: datetime.now(timezone.utc))
         self.holds = holds or PoolHolds(runner._bus, source=settings.service_name)
+        # Body economy A5: want-family runs open an act at their first grant, close it at terminal.
+        self.acts = RunActEmitter(
+            enabled=bool(getattr(settings, "durable_act_emit_enabled", True)), store=self.store,
+            publish=lambda *args: runner._publish(*args), corr_for=lambda c: runner._corr_for_admission(c),
+            now=self.now)
+        # Body economy C3a (SHADOW): want-family runs bid at submit, open at first grant, release at
+        # terminal. Logged to want_ledger, never obeyed: admission below is unchanged.
+        self.bids = RunBidder(
+            enabled=bool(getattr(settings, "physiology_shadow_bids_enabled", True)),
+            market_getter=market_getter or (lambda: None))
         if settings.lease_heartbeat_sec * 2 > self.holds.hold_ttl_sec:
             # Two missed beats must still land inside the pool's TTL, or a slow bus expires a
             # healthy run's hold mid-turn.
@@ -373,8 +385,11 @@ class AdmissionRuntime:
         if request.workflow == DREAM_CARRY_WORKFLOW and request.admission.deadline_at is None:
             # Text/finish retries never spend attempts: the deadline is the carry's only bound.
             raise ValueError("dream.carry runs require admission.deadline_at")
-        row = await self.store.submit(request.model_dump(mode="json"))
+        payload = request.model_dump(mode="json")
+        row = await self.store.submit(payload)
         self._wake.set()
+        if not row.get("terminal") and (bids := getattr(self, "bids", None)) is not None:
+            bids.on_submit(payload)   # background task; never raises, never delays the receipt
         return {"run_id": request.run_id, "status": row.get("terminal") or "waiting_resource",
                 "workflow_kind": request.workflow, "requested_resource": request.admission.resource}
 
@@ -486,10 +501,14 @@ class AdmissionRuntime:
             ref = ref_dict(reply, durable_run_holder(run_id))
             detail = {"lease": ref, "lane": ref["role"], "lease_id": ref["lease_id"], "generation": ref["generation"],
                       "role": ref["role"], "requested_lane": (state.get("admission") or {}).get("preferred_lane")}
-            await self.store.record_event(run_id, "run.resource_granted", detail,
-                                          event_id=f"granted:{ref['lease_id']}:{ref['generation']}")
+            granted = await self.store.record_event(run_id, "run.resource_granted", detail,
+                                                    event_id=f"granted:{ref['lease_id']}:{ref['generation']}")
             await self.store.record_event(run_id, "run.lane_assigned", detail,
                                           event_id=f"assigned:{ref['lease_id']}:{ref['generation']}")
+            if (acts := getattr(self, "acts", None)) is not None:   # absent on bare test runtimes
+                await acts.on_grant(state, granted)
+            if (bids := getattr(self, "bids", None)) is not None:
+                bids.on_grant(run_id, self.now())
             return GRANTED, {"status": "admitted", "lease": ref, "hold": _without_backoff(hold)}
         if reply.status in POOL_WAITING:
             self._checked[run_id] = time.monotonic()   # just read: the poll fallback starts from here
@@ -593,12 +612,16 @@ class AdmissionRuntime:
             # Joinable to the pool's child leases (acceptance check 2: no un-attached agent lease
             # under a turn whose run holds a hold).
             detail["turn_correlation_id"] = turn_correlation_id(state)
-        elif state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, DREAM_CARRY_WORKFLOW) \
+        elif state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, DREAM_CARRY_WORKFLOW, SELF_SENSE_WORKFLOW) \
                 and state.get("step_correlation_id"):
+            # The step's own turn identity, on the event log BEFORE the turn runs: a turn that hangs
+            # or a worker that dies mid-step is still traceable by it (self-sense: the question's).
             detail["step_correlation_id"] = state["step_correlation_id"]
         await self.event(state, "run.started", detail)
         work = asyncio.create_task(node(state))
-        timeout = float(state["brief"]["timeout_sec"])
+        # ``node_timeout_sec``: a node whose attempt is a slice of the brief's budget (self-sense:
+        # one question's share), so one hung step cannot hold the GPU for the whole run's budget.
+        timeout = float(state.get("node_timeout_sec") or state["brief"]["timeout_sec"])
         deadline = state["admission"].get("deadline_at")
         if deadline:
             timeout = min(timeout, max(0, (datetime.fromisoformat(deadline)-self.now()).total_seconds()))
@@ -974,6 +997,12 @@ class AdmissionRuntime:
         inflight = state.get("_inflight_turn_correlation_ids")
         if isinstance(inflight, list):
             ids.extend(c for c in inflight if isinstance(c, str) and c)
+        if state.get("workflow") == SELF_SENSE_WORKFLOW and isinstance(state.get("brief"), dict):
+            # The question turn a dead worker left running: its id derives from the checkpoint
+            # (the in-memory in-flight list above died with that worker).
+            pending = next_unanswered(state)
+            if pending is not None:
+                ids.append(question_turn_id(state, pending[0]))
         seen: set[str] = set()
         for correlation_id in ids:
             if not correlation_id or correlation_id in seen:
@@ -1167,6 +1196,13 @@ class AdmissionRuntime:
             actual = await self.store.finish_projection(run_id, status, detail, cancelled_detail=cancelled)
         else:
             actual = await self.store.finish_projection(run_id, status, detail)
+        if actual is not None and (acts := getattr(self, "acts", None)) is not None:
+            # Close the run's act first, right after the terminal row commits: nothing below may
+            # raise before it (a later step failing would leave the act to the ledger's expiry).
+            # on_terminal never raises.
+            await acts.on_terminal({**state, "run_id": run_id, "workflow": wf}, actual)
+        if actual is not None and (bids := getattr(self, "bids", None)) is not None:
+            bids.on_terminal(run_id)   # never raises
         if actual is not None and actual != status:
             await self._graph_for(wf).aupdate_state(self.config(run_id), {"status": actual}, as_node="finish")
         if actual is not None and actual != "completed" and run_id in self.outreach:

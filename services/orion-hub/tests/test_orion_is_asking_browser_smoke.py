@@ -4,7 +4,8 @@ The REAL panel markup (cut out of templates/index.html by its id) and the REAL
 static/js/vision-asks.js in Chromium, with the Hub API intercepted (no Hub process). Covers the
 changed interactions: memory cards render Confirm / Revise / Reject, each button POSTs the right
 body to /api/asks/{id}/resolve and the card leaves the list, Revise is prefilled and cannot be
-sent empty, a vision card still gets Answer / Dismiss, and database text stays inert.
+sent empty, a vision card still gets Answer / Dismiss plus "I don't know", and database text
+stays inert.
 """
 from __future__ import annotations
 
@@ -47,6 +48,17 @@ def _asks(open_ids):
                     "source_ref": "ind-3", "created_at": "2026-10-15T21:30:00+00:00", "evidence_refs": [],
                     "image_ref": f"thumb:{FACE_A}",
                     "image_refs": [f"thumb:{FACE_A}", f"thumb:{FACE_B}", f"thumb:{FACE_C}"]})
+    if "c1" in open_ids:
+        out.append({"ask_id": "c1", "question": "Is this Juniper? It is my best guess, but I am not sure.",
+                    "source_kind": "vision_person_confirm", "source_ref": "ind-4|Juniper",
+                    "created_at": "2026-10-20T19:00:00+00:00", "evidence_refs": [],
+                    "image_ref": f"thumb:{FACE_C}", "image_refs": [f"thumb:{FACE_C}"]})
+    if "c3" in open_ids:
+        out.append({"ask_id": "c3", "question": "Is this Emerald? It is my best guess, but I am not sure.",
+                    "source_kind": "vision_person_confirm", "source_ref": "ind-5|Emerald",
+                    "created_at": "2026-10-20T19:05:00+00:00", "evidence_refs": [],
+                    "image_ref": f"thumb:{FACE_A}",
+                    "image_refs": [f"thumb:{FACE_A}", f"thumb:{FACE_B}", f"thumb:{FACE_C}"]})
     return out
 
 
@@ -63,7 +75,7 @@ def test_orion_is_asking_panel_browser_smoke():
 
     page_html = f"<!doctype html><html><body>{_panel_html()}<script src=\"/static/js/vision-asks.js\"></script></body></html>"
     script = (HUB / "static" / "js" / "vision-asks.js").read_text(encoding="utf-8")
-    open_ids = {"m-confirm", "m-revise", "m-reject", "v1", "p1", "v3"}
+    open_ids = {"m-confirm", "m-revise", "m-reject", "v1", "p1", "v3", "c1", "c3"}
     posted: list[tuple[str, dict]] = []
 
     def handle(route):
@@ -94,7 +106,7 @@ def test_orion_is_asking_panel_browser_smoke():
         page.goto("http://hub.test/home")
 
         page.wait_for_selector('[data-ask-id="m-confirm"]')
-        assert "Orion has 6 questions for you." in page.inner_text("#visionAsksStatus")
+        assert "Orion has 8 questions for you." in page.inner_text("#visionAsksStatus")
         assert "Orion is asking" in page.inner_text("#visionAsksCard")
         # Database text is inert: the markup in a question renders as text and never runs.
         assert "<img src=x" in page.inner_text('[data-ask-id="m-reject"]')
@@ -153,6 +165,45 @@ def test_orion_is_asking_panel_browser_smoke():
             {"image_ref": f"thumb:{FACE_B}", "verdict": "same"},
             {"image_ref": f"thumb:{FACE_C}", "verdict": "different", "name": "Other kid"}]})
         posted.clear()
+
+        # "Is this Juniper?": one picture, three choices, one Send; nothing is sent
+        # until a choice is made; "No" sends no.
+        card_c = '[data-ask-id="c1"]'
+        assert page.locator(f"{card_c} img").count() == 1
+        assert page.locator(f"{card_c} [data-ask-choice]").count() == 3
+        assert "Yes, it is Juniper" in page.inner_text(card_c) and "Can't tell" in page.inner_text(card_c)
+        page.click(f'{card_c} [data-ask-action="send"]')
+        assert posted == []
+        page.locator(f'{card_c} input[value="no"]').check()
+        page.click(f'{card_c} [data-ask-action="send"]')
+        page.wait_for_selector(card_c, state="detached")
+        assert posted[-1] == ("c1/answer", {"answer": "no"})
+        posted.clear()
+
+        # "Is this Emerald?" with three pictures that may be different people
+        # (2026-10-23): a choice under each picture, "Not sure" by default.
+        card_e = '[data-ask-id="c3"]'
+        assert page.locator(f"{card_e} select").count() == 3
+        assert page.locator(f"{card_e} [data-ask-choice]").count() == 0
+        assert "may not all be the same person" in page.inner_text(card_e)
+        assert page.get_by_label("Picture 2:").input_value() == "unsure"
+        opts = page.locator(f'{card_e} [data-ask-picture="1"] option').all_inner_texts()
+        assert opts == ["Not sure", "Emerald", "Not Emerald"]
+        e_box = page.locator(card_e).bounding_box()
+        sel = page.locator(f'{card_e} [data-ask-picture="2"]').bounding_box()
+        assert sel["x"] + sel["width"] <= e_box["x"] + e_box["width"] + 1, (sel, e_box)
+        # Send with nothing chosen is refused (review 2026-10-23: it used to dismiss for good).
+        page.click(f'{card_e} [data-ask-action="send"]')
+        assert posted == [] and "or press Can't tell" in page.inner_text(card_e)
+        page.locator(f'{card_e} [data-ask-picture="1"]').select_option("same")
+        page.locator(f'{card_e} [data-ask-picture="0"]').select_option("different")
+        page.click(f'{card_e} [data-ask-action="send"]')
+        page.wait_for_selector(card_e, state="detached")
+        assert posted[-1] == ("c3/answer", {"answer": "yes", "pictures": [
+            {"image_ref": f"thumb:{FACE_A}", "verdict": "different"},
+            {"image_ref": f"thumb:{FACE_B}", "verdict": "same"},
+            {"image_ref": f"thumb:{FACE_C}", "verdict": "unsure"}]})
+        posted.clear()
         page.set_viewport_size({"width": 1280, "height": 800})
 
         page.click('[data-ask-id="m-confirm"] [data-ask-action="confirm"]')
@@ -178,5 +229,19 @@ def test_orion_is_asking_panel_browser_smoke():
         page.wait_for_selector('[data-ask-id="m-reject"]', state="detached")
         assert posted[-1] == ("m-reject/resolve", {"resolution": "rejected", "note": ""})
         page.wait_for_function("document.getElementById('visionAsksStatus').textContent.includes('1 question')")
+
+        # "I don't know" (2026-10-27): the who-is-this card's own button, inside the
+        # card at phone width, closes it as a dont_know dismissal; the typed box is not sent.
+        page.set_viewport_size({"width": 360, "height": 800})
+        dk = page.locator('[data-ask-id="v1"] [data-ask-action="dont-know"]')
+        assert dk.inner_text() == "I don't know"
+        v1_box = page.locator('[data-ask-id="v1"]').bounding_box()
+        for action in ("answer", "dont-know", "dismiss"):
+            b = page.locator(f'[data-ask-id="v1"] [data-ask-action="{action}"]').bounding_box()
+            assert b["x"] + b["width"] <= v1_box["x"] + v1_box["width"] + 1, (action, b, v1_box)
+        page.fill('[data-ask-id="v1"] [data-ask-input="v1"]', "unsure")
+        dk.click()
+        page.wait_for_selector('[data-ask-id="v1"]', state="detached")
+        assert posted[-1] == ("v1/dismiss", {"reason": "dont_know"})
         assert errors == [], errors
         browser.close()

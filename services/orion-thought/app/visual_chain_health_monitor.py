@@ -40,12 +40,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
 
 import requests
 
 from orion.notify.client import NotifyClient
+from orion.reverie.baseline import AROUSAL_STRAINED_REASON, DEFAULT_RETRY_SEC
 
 from .settings import ThoughtSettings
 from .settings import settings as _default_settings
@@ -55,11 +57,18 @@ logger = logging.getLogger("orion-thought.visual_chain_health_monitor")
 _SOURCE_SERVICE = "orion-thought"
 _CHECK_KEY = "visual_chain_stale"
 _PAINTING_GAP_CHECK_KEY = "visual_painting_gap"
+_ATTEMPT_STREAK_CHECK_KEY = "visual_attempt_failure_streak"
 _EVENT_KINDS = {
     _CHECK_KEY: "orion.reverie.visual_chain_stale.health.attention.v1",
     _PAINTING_GAP_CHECK_KEY: "orion.reverie.visual_painting_gap.health.attention.v1",
+    _ATTEMPT_STREAK_CHECK_KEY: "orion.reverie.visual_attempt_failure_streak.health.attention.v1",
 }
 Severity = Literal["info", "error", "critical"]
+# A deferral record counts as current only if its latest deferral is this recent: the scheduler
+# re-defers every retry_sec while arousal stays strained, so two retries plus one gap-check tick.
+# Older means the scheduler stopped reaching the arousal check (stale activity, an active attempt,
+# disabled ...) and arousal is not what is holding the painting.
+DEFERRAL_FRESH_SEC = 2 * DEFAULT_RETRY_SEC + 600
 
 
 @dataclass(frozen=True)
@@ -95,7 +104,29 @@ def _check(*, age_min: float | None, threshold_min: float) -> HealthCheck:
     )
 
 
-def _painting_gap_check(*, age_hours: float | None, threshold_hours: float) -> HealthCheck:
+@dataclass(frozen=True)
+class DeferralEvidence:
+    """Why the waking baseline painting is not being issued, from real records (2026-10-20):
+    the baseline checkpoint's deferral run (proposal-runtime) and Orion's arousal now (Redis)."""
+    reason: str                          # the checkpoint's deferral reason, e.g. "arousal_strained"
+    since: str | None = None             # first deferral of this need (ISO)
+    last_at: str | None = None           # latest deferral (ISO)
+    arousal_reasons: tuple[str, ...] = ()   # arousal's reasons now, while it reads strained
+
+
+def _deferral_cause(ev: DeferralEvidence) -> str:
+    why = ", ".join(ev.arousal_reasons)
+    heat = (" The cabinet is hot, so the GPU pool is also holding background work."
+            if "cabinet_hot" in ev.arousal_reasons else "")
+    return (f"(1) Orion's arousal reads strained ({why}), so the waking baseline painting has been "
+            f"deferred every time it came due since {ev.since or 'unknown'} (latest {ev.last_at or 'unknown'}; "
+            "visual_baseline_deferred reason=arousal_strained in orion-athena-proposal-runtime logs)."
+            f"{heat} This is not a broken GPU path: it clears when arousal drops (2026-10-18 precedent). "
+            "Other causes to rule out: ")
+
+
+def _painting_gap_check(*, age_hours: float | None, threshold_hours: float,
+                        deferral: DeferralEvidence | None = None) -> HealthCheck:
     """Pure threshold judgement on a real number. `record_painting_gap`
     never passes None here (None = no observation, state left untouched);
     None is still treated as healthy for direct callers.
@@ -113,12 +144,20 @@ def _painting_gap_check(*, age_hours: float | None, threshold_hours: float) -> H
         healthy=not gap,
         severity="error",
         message=(
-            f"Orion has not produced a painting in {age_hours:.1f} hours "
-            f"(threshold {threshold_hours:g} h). Likely causes, most likely first: "
-            "(1) the GPU lane controller is refusing swaps -- check the "
-            "mesh-guardian GPU cards or run scripts/gpu_pool_actuator_probe.py "
-            "(2026-10-09 precedent, 27.6 h); (2) long thermal refusals on the "
-            "painting GPU; (3) the visual-chain worker is wedged."
+            (
+                f"Orion has not produced a painting in {age_hours:.1f} hours "
+                f"(threshold {threshold_hours:g} h). " + _deferral_cause(deferral)
+                + "the GPU lane controller refusing swaps (scripts/gpu_pool_actuator_probe.py); "
+                "the visual-chain worker wedged."
+                if deferral is not None and deferral.reason == AROUSAL_STRAINED_REASON
+                else
+                f"Orion has not produced a painting in {age_hours:.1f} hours "
+                f"(threshold {threshold_hours:g} h). Likely causes, most likely first: "
+                "(1) the GPU lane controller is refusing swaps -- check the "
+                "mesh-guardian GPU cards or run scripts/gpu_pool_actuator_probe.py "
+                "(2026-10-09 precedent, 27.6 h); (2) long thermal refusals on the "
+                "painting GPU; (3) the visual-chain worker is wedged."
+            )
             if gap
             else ""
         ),
@@ -126,6 +165,37 @@ def _painting_gap_check(*, age_hours: float | None, threshold_hours: float) -> H
             f"[Orion reverie] recovered: {_PAINTING_GAP_CHECK_KEY} -- a painting "
             f"landed (latest {age_hours:.1f} hours ago)."
             if (not gap and age_hours is not None)
+            else ""
+        ),
+    )
+
+
+def _attempt_streak_check(*, streak: int | None, threshold: int) -> HealthCheck:
+    """Third check (2026-10-20): N painting attempts in a row produced nothing.
+
+    The gap check above fired ONCE on 2026-10-16 15:10, at "error" (held as a pending card, one
+    email after 60 min unacked), and said nothing more while gpu2 stayed faulted for 4 days and 35
+    attempts in a row were abandoned. This one is "critical" (orion-notify emails it at once): a run
+    of failures is not heat that clears on its own. Threshold 6 = one more than the longest
+    ordinary streak on 2026-09-14 -> 10-19 (evals/test_attempt_streak_replay.py)."""
+    bad = streak is not None and streak >= threshold
+    return HealthCheck(
+        key=_ATTEMPT_STREAK_CHECK_KEY,
+        healthy=not bad,
+        severity="critical",
+        message=(
+            f"Orion's last {streak} painting attempts in a row produced nothing "
+            f"(threshold {threshold}). Most likely the painting GPU is not being given out: "
+            "check the GPU pool's gpu2 card (stuck in fault? the pool raises its own card after "
+            "30 min) and `docker ps` on circe for both atlas-agent-burst and diffusion-host "
+            "running at once (2026-10-16 precedent, 4 days)."
+            if bad
+            else ""
+        ),
+        recovery_message=(
+            f"[Orion reverie] recovered: {_ATTEMPT_STREAK_CHECK_KEY} -- the run of failed painting "
+            f"attempts is below {threshold} again (now {streak})."
+            if not bad and streak is not None
             else ""
         ),
     )
@@ -177,14 +247,60 @@ class VisualChainHealthMonitor:
         if age_hours is None:
             return
         try:
+            threshold = self._settings.visual_painting_gap_threshold_hours
+            # Evidence for the cause is read only while there is a gap (not every healthy tick).
+            deferral = self._deferral_evidence() if age_hours > threshold else None
             self._run_tick_for_check(
-                _painting_gap_check(
-                    age_hours=age_hours,
-                    threshold_hours=self._settings.visual_painting_gap_threshold_hours,
-                )
+                _painting_gap_check(age_hours=age_hours, threshold_hours=threshold, deferral=deferral)
             )
         except Exception:
             logger.exception("visual_painting_gap_check_failed")
+
+    def _deferral_evidence(self, now: datetime | None = None) -> DeferralEvidence | None:
+        """The baseline checkpoint's deferral run, only while it is CURRENT: its latest deferral
+        within DEFERRAL_FRESH_SEC and arousal strained right now. Otherwise None, and the alert
+        keeps its GPU-first wording (a stale record or a calm arousal is not the cause). Never raises."""
+        try:
+            from .store import visual_baseline_deferral
+
+            raw = visual_baseline_deferral()
+            if not raw or raw.get("reason") != AROUSAL_STRAINED_REASON:
+                return None
+            now = now or datetime.now(timezone.utc)
+            last_at = datetime.fromisoformat(str(raw.get("last_at")))
+            if last_at.tzinfo is None:
+                last_at = last_at.replace(tzinfo=timezone.utc)
+            if (now - last_at).total_seconds() > DEFERRAL_FRESH_SEC:
+                return None
+            from orion.regulation.arousal_read import read_arousal_sync
+
+            # Diagnostic read only (it gates nothing), so not behind the reverie reader flags.
+            view = read_arousal_sync(
+                self._settings.orion_bus_url, enabled=True, reader="visual_painting_gap",
+                max_age_sec=float(self._settings.regulation_reader_max_age_sec))
+            if view.level != "strained":
+                return None
+            reasons = tuple(view.reasons)
+            return DeferralEvidence(reason=str(raw.get("reason")), since=raw.get("since"),
+                                    last_at=raw.get("last_at"), arousal_reasons=reasons)
+        except Exception:
+            logger.exception("visual_painting_gap_deferral_read_failed")
+            return None
+
+    def record_attempt_streak(self, *, streak: int | None) -> None:
+        """Call once per watchdog tick with the current failed-attempt streak. None = no
+        observation (state untouched). Never raises."""
+        if streak is None:
+            return
+        try:
+            self._run_tick_for_check(
+                _attempt_streak_check(
+                    streak=streak,
+                    threshold=self._settings.visual_attempt_failure_streak_threshold,
+                )
+            )
+        except Exception:
+            logger.exception("visual_attempt_streak_check_failed")
 
     def _run_tick_for_check(self, check: HealthCheck) -> None:
         key = check.key
@@ -294,6 +410,17 @@ def check_visual_painting_gap(age_hours: float | None) -> None:
         logger.exception("visual_painting_gap_check_failed")
 
 
+def check_visual_attempt_streak(streak: int | None) -> None:
+    """Module-level entrypoint for the failed-attempt streak check (same singleton). Never raises."""
+    global _MONITOR
+    try:
+        if _MONITOR is None:
+            _MONITOR = VisualChainHealthMonitor()
+        _MONITOR.record_attempt_streak(streak=streak)
+    except Exception:
+        logger.exception("visual_attempt_streak_check_failed")
+
+
 async def run_visual_painting_gap_watchdog(
     stop_event: asyncio.Event | None = None,
     *,
@@ -309,7 +436,7 @@ async def run_visual_painting_gap_watchdog(
     if not cfg.visual_painting_gap_check_enabled:
         logger.info("visual painting gap check disabled; watchdog not started")
         return
-    from .store import visual_last_painting_age_hours
+    from .store import visual_attempt_failure_streak, visual_last_painting_age_hours
 
     logger.info(
         "visual painting gap watchdog started interval=%ss threshold_h=%s",
@@ -323,6 +450,9 @@ async def run_visual_painting_gap_watchdog(
             age_h = await asyncio.to_thread(visual_last_painting_age_hours)
             # to_thread: the notify calls are synchronous requests (up to ~20 s).
             await asyncio.to_thread(check_visual_painting_gap, age_h)
+            if cfg.visual_attempt_streak_check_enabled:
+                streak = await asyncio.to_thread(visual_attempt_failure_streak)
+                await asyncio.to_thread(check_visual_attempt_streak, streak)
         except Exception:
             logger.exception("visual_painting_gap_watchdog_tick_failed")
         try:

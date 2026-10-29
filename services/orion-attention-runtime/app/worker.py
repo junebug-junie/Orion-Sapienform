@@ -262,12 +262,17 @@ class AttentionRuntimeWorker:
             history_error = f"prediction-error history unreadable ({type(exc).__name__})"
             logger.warning("attention_world_first_pe_history_failed err=%s", exc)
 
-        from orion.schemas.attention_candidate import NO_ATTENTION_CONSUMER_NODE_IDS
+        from orion.schemas.attention_candidate import world_first_fenced
 
-        node_ids = (set(magnitudes) | {
-            k for k in field.node_vectors if k.startswith(SUBSTRATE_NODE_PREFIX)
-            and "prediction_error" in field.node_vectors[k]
-        }) - NO_ATTENTION_CONSUMER_NODE_IDS  # recorded, not yet admitted to attention (walkway camera)
+        node_ids = {
+            k for k in (set(magnitudes) | {
+                k for k in field.node_vectors if k.startswith(SUBSTRATE_NODE_PREFIX)
+                and "prediction_error" in field.node_vectors[k]
+            })
+            # Recorded but not admitted (fence), unless admitted under a per-node
+            # band floor (walkway camera: its own p99+ only).
+            if not world_first_fenced(k)
+        }
         sustain = bool(getattr(self._settings, "attention_sustained_body_enabled", True))
         candidates = []
         for node_id in sorted(node_ids):

@@ -124,6 +124,15 @@ def _world_snapshot(world_id: Optional[str] = None) -> Dict[str, Any]:
     return ws if isinstance(ws, dict) else {}
 
 
+def engine_running(world_id: Optional[str] = None) -> bool:
+    """Whether the world's engine is processing inputs. Hub's Freeze button
+    (``testing:stop``) stops it; inputs sent meanwhile queue unprocessed and the
+    engine must replay them all after Unfreeze (~84k on 2026-10-28). A snapshot
+    without the field reads as running."""
+    engine = _world_snapshot(world_id).get("engine") or {}
+    return bool(engine.get("running", True))
+
+
 def _game_descriptions(world_id: Optional[str] = None) -> Dict[str, Any]:
     wid = str(world_id or _world_id()).strip()
     gd = convex_query("world:gameDescriptions", {"worldId": wid})

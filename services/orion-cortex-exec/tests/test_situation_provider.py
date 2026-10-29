@@ -36,8 +36,6 @@ def _settings(**overrides):
         "orion_situation_high_wind_mph_threshold": 25,
         "orion_situation_hot_car_temp_f_threshold": 80,
         "orion_situation_agenda_enabled": False,
-        "orion_situation_lab_context_enabled": True,
-        "orion_situation_lab_provider": "stub",
         # False here (unlike the True production default) for the same
         # reason weather_enabled is False above: avoid a real network call
         # to orion-llm-gateway from every unrelated situation test.
@@ -332,7 +330,7 @@ async def test_weather_context_reports_live_conditions_when_openmeteo_configured
             }
         )
 
-    monkeypatch.setattr(situation, "urlopen", _urlopen)
+    monkeypatch.setattr(situation.openmeteo, "urlopen", _urlopen)
     cfg = situation.settings_from_runtime(
         _settings(
             orion_situation_weather_enabled=True,
@@ -363,7 +361,7 @@ async def test_weather_context_caches_within_ttl(monkeypatch):
             }
         )
 
-    monkeypatch.setattr(situation, "urlopen", _urlopen)
+    monkeypatch.setattr(situation.openmeteo, "urlopen", _urlopen)
     cfg = situation.settings_from_runtime(
         _settings(
             orion_situation_weather_enabled=True,
@@ -605,7 +603,7 @@ async def test_runtime_context_reads_pool_state_not_the_gateway(monkeypatch):
     def _no_http(url, timeout=None):
         raise AssertionError(f"no HTTP read expected, got {url}")
 
-    monkeypatch.setattr(situation, "urlopen", _no_http)
+    monkeypatch.setattr(situation.openmeteo, "urlopen", _no_http)
     monkeypatch.setattr(store, "_BUS", _Bus())
     cfg = situation.settings_from_runtime(_settings(orion_situation_runtime_enabled=True))
     runtime = await situation._build_runtime_context(cfg, situation.SituationDiagnosticsV1())

@@ -127,6 +127,8 @@ def _provenance(source_service: str, source_component: str) -> GrammarProvenance
         return GrammarProvenanceV1(source_service="orion-hub", source_component=source_component)
     if source_service == "orion-thought":
         return GrammarProvenanceV1(source_service="orion-thought", source_component=source_component)
+    if source_service == "orion-durable-runs":
+        return GrammarProvenanceV1(source_service="orion-durable-runs", source_component=source_component)
     raise ValueError(f"unregistered act producer {source_service!r}")
 
 
@@ -150,6 +152,8 @@ def act_closed_event(
     source_service: str,
     source_component: str,
     note: str = "",
+    # V1 only until every reader of orion:grammar:event runs ActCostV2-aware code (consumer-first,
+    # orion/schemas/grammar.py ActCostV2). The act ledger fills V2 fields itself on close.
     cost: ActCostV1 | None = None,
     correlation_id: str | None = None,
     session_id: str | None = None,

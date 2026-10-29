@@ -30,6 +30,23 @@ _VALID_HDBSCAN_METRICS = frozenset(
 
 
 class Settings(BaseSettings):
+    HUB_RETRO_COGNITION_ENABLED: bool = Field(default=True, alias="HUB_RETRO_COGNITION_ENABLED")
+    # Action bets (spec 2026-10-23 embodied experience; scripts/retro_experience.py): every planned
+    # Zelda goal is quoted, placed and settled in orion-prediction. Off -> the #2870 planner exactly.
+    HUB_ACTION_BETS_ENABLED: bool = Field(default=True, alias="HUB_ACTION_BETS_ENABLED")
+    HUB_PREDICTION_URL: str = Field(default="http://127.0.0.1:8132", alias="HUB_PREDICTION_URL")
+    HUB_RETRO_ENABLED: bool = False
+    HUB_RETRO_ORIGIN: str = ""
+    HUB_RETRO_SOCKET: str = "/run/orion-retro/retro.sock"
+    HUB_RETRO_AUTH_DIR: str = "/run/orion-retro-auth"
+    # Solo leisure play (scripts/retro_leisure.py). Ships on; the allocator act and the doer
+    # gates decide when it actually runs.
+    RETRO_LEISURE_ENABLED: bool = Field(default=True, alias="RETRO_LEISURE_ENABLED")
+    RETRO_LEISURE_GAME_IDS: str = Field(default="the-legend-of-zelda", alias="RETRO_LEISURE_GAME_IDS")
+    RETRO_LEISURE_SESSION_MAX_SEC: float = Field(default=1800.0, ge=60.0, le=1800.0, alias="RETRO_LEISURE_SESSION_MAX_SEC")
+    RETRO_LEISURE_DAILY_MAX_SEC: float = Field(default=5400.0, ge=0.0, le=86400.0, alias="RETRO_LEISURE_DAILY_MAX_SEC")
+    RETRO_LEISURE_MIN_GAP_SEC: float = Field(default=10800.0, ge=0.0, alias="RETRO_LEISURE_MIN_GAP_SEC")
+
     """Configuration for the Orion Hub service, loaded from environment variables."""
 
     model_config = SettingsConfigDict(
@@ -473,10 +490,20 @@ class Settings(BaseSettings):
         default=5.0,
         alias="AMBIENT_AUDIO_STALE_AFTER_SEC",
     )
+    # Host reader's live PCM slot ring (tmpfs) for the Cabinet Audio listen button.
+    AMBIENT_AUDIO_LIVE_DIR: str = Field(
+        default="/run/orion-audio/live",
+        alias="AMBIENT_AUDIO_LIVE_DIR",
+    )
     CABINET_AMBIENT_HISTORY_NODE: str = Field(
         default="athena",
         alias="CABINET_AMBIENT_HISTORY_NODE",
     )
+    # Office SHT40 (pan-1 Nano ESP32) -> orion-office-env -> Postgres office_env_sample.
+    OFFICE_ENV_NODE: str = Field(default="pan-1", alias="OFFICE_ENV_NODE")
+    OFFICE_ENV_HISTORY_MAX_POINTS: int = Field(default=800, ge=1, alias="OFFICE_ENV_HISTORY_MAX_POINTS")
+    # Publisher cadence is 30 s; 3 missed publishes => the Office strip reads stale.
+    OFFICE_ENV_STALE_AFTER_SEC: float = Field(default=90.0, alias="OFFICE_ENV_STALE_AFTER_SEC")
     CABINET_AMBIENT_HISTORY_MAX_POINTS: int = Field(
         default=800,
         ge=1,
@@ -826,6 +853,29 @@ class Settings(BaseSettings):
     HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT: int = Field(
         default=3, ge=1, le=8, alias="HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT"
     )
+    # Reading pull (thinking rung 3 follow-up, orion/world_pulse_read/pull.py): the motor
+    # allocator may admit ONE extra Stage 1 read on the seed the lane would claim next. Kill
+    # switch, shipped on. Off = every pull is refused `disabled`; the lane is unchanged either way.
+    HUB_WORLD_PULSE_READ_PULL_ENABLED: bool = Field(
+        default=True, alias="HUB_WORLD_PULSE_READ_PULL_ENABLED"
+    )
+    # Started pulls per UTC day. Default derived from data, not picked: the lane's median reading
+    # day over 30 days (orion/world_pulse_read/pull.py DERIVED_DAILY_CAP = 8).
+    HUB_WORLD_PULSE_READ_PULL_DAILY_CAP: int = Field(
+        default=8, ge=0, le=100, alias="HUB_WORLD_PULSE_READ_PULL_DAILY_CAP"
+    )
+    # Orion's arousal (Redis orion:regulation:latest): `strained` refuses a pull, the same rule the
+    # waking baseline painting follows. Unknown / stale / false changes nothing.
+    HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED: bool = Field(
+        default=True, alias="HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED"
+    )
+    # Orion plays Zelda (2026-10-22, spec section F; scripts/retro_memory_export.py): one
+    # deterministic summary per finished Retro session -> one memory_cards row (provenance
+    # retro_play) + one retro_play_sessions row (Temporal Self source retro_play). Shipped ON;
+    # false writes nothing (a leisure session's play act still closes, at 0).
+    HUB_RETRO_MEMORY_EXPORT_ENABLED: bool = Field(
+        default=True, alias="HUB_RETRO_MEMORY_EXPORT_ENABLED"
+    )
     # Pending digest_item seeds older than this many days are marked
     # skipped/stale_digest_item on every Stage 1 tick. 0 disables.
     # See orion/world_pulse_read/queue.py skip_stale_digest_items.
@@ -1013,6 +1063,11 @@ class Settings(BaseSettings):
     HUB_READING_FINDING_OUTREACH_MAX_ATTEMPTS: int = Field(
         default=3, alias="HUB_READING_FINDING_OUTREACH_MAX_ATTEMPTS"
     )
+    # After a reading message reaches Juniper, the next waits this long (a PASS does not start
+    # the wait; 0 = off). Stops the post-quiet-hours flood; derivation in .env_example.
+    HUB_READING_FINDING_OUTREACH_MIN_SPACING_SEC: float = Field(
+        default=6750.0, alias="HUB_READING_FINDING_OUTREACH_MIN_SPACING_SEC"
+    )
     # Orion contractor peer (HelpRequest -> Cursor/Claude PeerBrief soft-nudge
     # on kickoff / self-inquiry). On by default (matches .env_example and
     # production, aligned 2026-10-10) — kill switch for the peer
@@ -1196,6 +1251,15 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_SELF_PINNED_FLOOR_DAYS: float = Field(
         default=7.0, alias="HUB_CURIOSITY_SELF_PINNED_FLOOR_DAYS"
     )
+    # Naming branch of the self-inquiry line: Orion is shown one personality disposition
+    # (GET HUB_CURIOSITY_DURABLE_RUNS_URL/personality/naming/next) and names, rejects or merges
+    # it. Uses an existing self-inquiry slot; never displaces an overdue pinned lived question.
+    HUB_CURIOSITY_SELF_NAMING_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_SELF_NAMING_ENABLED"
+    )
+    HUB_CURIOSITY_SELF_NAMING_DAILY_CAP: int = Field(
+        default=1, alias="HUB_CURIOSITY_SELF_NAMING_DAILY_CAP"
+    )
     # Where Orion's own repository is mounted INSIDE the FCC sandbox (the
     # harness governor's compose mounts it read-only at /repo). Rendered into
     # the self-inquiry prompt only; Hub never reads it.
@@ -1231,6 +1295,11 @@ class Settings(BaseSettings):
     # messages (say/ask) and web reads (look) publish act_opened/act_closed grammar events
     # (orion/grammar/acts.py) that orion-sql-writer persists and grades into L10.
     HUB_ACT_LEDGER_ENABLED: bool = Field(default=True, alias="HUB_ACT_LEDGER_ENABLED")
+
+    # Body economy Patch C3b: outreach, retro co-play and retro leisure place a SHADOW bid
+    # (orion.physiology.client -> durable-runs POST /physiology/bid) and log the decision beside
+    # their real gate (scripts/physiology_shadow.py). Never obeyed; off = no bid, no log line.
+    HUB_PHYSIOLOGY_SHADOW_BID_ENABLED: bool = Field(default=True, alias="HUB_PHYSIOLOGY_SHADOW_BID_ENABLED")
 
     HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(
         default=True, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"
@@ -1355,6 +1424,15 @@ class Settings(BaseSettings):
     # Reader 7, outreach cooldown: strained -> refuse (arousal_strained).
     HUB_ENDOGENOUS_OUTREACH_AROUSAL_ENABLED: bool = Field(
         default=True, alias="HUB_ENDOGENOUS_OUTREACH_AROUSAL_ENABLED"
+    )
+    # Strain report door (strain loop part 3, scripts/strain_report.py): once per strained
+    # episode that has lasted MIN_EPISODE_SEC, one message may pass the arousal_strained refusal
+    # (every other gate still holds), at most one per local day (ORION_SITUATION_TIMEZONE).
+    ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED: bool = Field(
+        default=True, alias="ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED"
+    )
+    ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC: float = Field(
+        default=3600.0, ge=0.0, alias="ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC"
     )
     # Background outreach waits this long after Juniper's last saved message (read from
     # chat_history_log, so a Hub restart cannot reset it). 2026-10-09: a fresh restart forgot
@@ -1772,8 +1850,7 @@ class Settings(BaseSettings):
     # node -- BME680 climate, LTR390 UV, magnetometer, PMSA003I particulate,
     # VL53L1X lidar, BNO085 IMU/vibration), folded into the same unified-turn
     # chat prompt via orion.situational.context.build_situation_for_ctx. The
-    # real thing LabContextV1's thermal/power framing above was always a
-    # stub stand-in for. Default ON, same "no private-home content" call as
+    # real thing the old lab stub (removed 2026-10-27) stood in for. Default ON, same "no private-home content" call as
     # curiosity/reverie above. Reuses the EXISTING CABINET_SENSORS_PATH/
     # CABINET_SENSORS_B_PATH/CABINET_SENSORS_STALE_AFTER_SEC config further
     # up this file (already wired for cabinet_sensors_routes.py's own

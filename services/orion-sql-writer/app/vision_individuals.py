@@ -839,23 +839,27 @@ def ask_image_refs(
 
     ``sightings`` are ``(thumb_ref, ended_at, zone_no_embed[, face_thumb_ref])``,
     any order. A thumbnail is a crop of ONE embedded box (or the face inside
-    it), never the whole frame. It must also outlive the ask: the host prunes
+    it), never the whole frame. ``thumb_retention_days`` <= 0 means the host
+    keeps thumbnails forever (the default since 2026-10-20), so every one is
+    offered, however old. Otherwise it must outlive the ask: the host prunes
     thumbnails ``thumb_retention_days`` after they were last written, and the
     ask stays open ``ask_expiry_days``, so only a thumb from a sighting that
     ended within the difference is offered. Empty -> the card shows no picture.
     """
-    if thumb_retention_days <= ask_expiry_days:
-        # Any thumbnail could be pruned while the ask is still open.
-        logger.warning("ask_image_ref_disabled thumb_retention_days=%s <= ask_expiry_days=%s",
-                       thumb_retention_days, ask_expiry_days)
-        return []
-    horizon = now - timedelta(days=thumb_retention_days - ask_expiry_days)
+    horizon: Optional[datetime] = None
+    if thumb_retention_days > 0:
+        if thumb_retention_days <= ask_expiry_days:
+            # Any thumbnail could be pruned while the ask is still open.
+            logger.warning("ask_image_ref_disabled thumb_retention_days=%s <= ask_expiry_days=%s",
+                           thumb_retention_days, ask_expiry_days)
+            return []
+        horizon = now - timedelta(days=thumb_retention_days - ask_expiry_days)
     faces: List[Tuple[datetime, str]] = []
     crops: List[Tuple[datetime, str]] = []
     for row in sightings:
         thumb_ref, ended_at, no_embed = row[0], row[1], row[2]
         face_ref = row[3] if len(row) > 3 else None
-        if no_embed or ended_at is None or ended_at < horizon:
+        if no_embed or ended_at is None or (horizon is not None and ended_at < horizon):
             continue
         for bucket, ref in ((faces, face_ref), (crops, None if faces_only else thumb_ref)):
             if ref and str(ref).startswith(THUMB_REF_PREFIX):
@@ -890,6 +894,17 @@ def ask_image_ref(
 
 SOURCE_KIND_INDIVIDUAL = "vision_individual"
 SOURCE_KIND_SAME = "vision_same_individual"
+# Juniper's "someone else" / "not sure" about one person on a Hub walkway story
+# card (2026-10-18). Carries only picture verdicts (answer_detail.pictures, each
+# with its crop_id): never a name for the individual, so it is not a
+# "who is this?" answer and never stops the opener from asking one. A NAME typed
+# on a story card is a plain SOURCE_KIND_INDIVIDUAL answer with
+# answer_detail.story_id. Both are written by the Hub (scripts/motion_story_routes.py).
+SOURCE_KIND_STORY_PERSON = "vision_story_person"
+# "Is this <name>?" (person learning, 2026-10-20): source_ref "<individual_id>|<name>",
+# answer yes / no; "can't tell" is Dismiss. Opened from an unsure guess in
+# vision_person_attribution; yes names the individual, no adds "not <name>" exemplars.
+SOURCE_KIND_PERSON_CONFIRM = "vision_person_confirm"
 # evidence_refs marker on a "who is this?" ask opened by the face rule, so the
 # daily caps can tell the two openers apart without another column.
 FACE_RULE_REF = "rule:face"
@@ -1068,6 +1083,9 @@ class IndividualsConfig:
     batch_rows: int = 5000
     lookback_ceiling_sec: float = 3600.0
     crop_retention_days: float = 7.0
+    # Crop labels the retention prune never deletes: their rows (and
+    # embeddings) are Juniper's labelled examples. Empty = prune every label.
+    crop_retention_keep_labels: tuple[str, ...] = ("person",)
     sighting_retention_days: float = 90.0
     patio_present_sec: float = 120.0
     patio_grace_sec: float = 600.0
@@ -1088,9 +1106,10 @@ class IndividualsConfig:
     # After an ask expires unanswered, do not re-ask about that individual for this long.
     ask_cooldown_days: float = 30.0
     # orion-vision-host keeps crop thumbnails this long (its own prune, by
-    # file age). An ask only shows a thumbnail young enough to outlive the
-    # ask itself: taken within (thumb_retention_days - ask_expiry_days).
-    thumb_retention_days: float = 10.0
+    # file age); 0 = forever, so any thumbnail may be shown. A positive value:
+    # an ask only shows a thumbnail young enough to outlive the ask itself,
+    # taken within (thumb_retention_days - ask_expiry_days).
+    thumb_retention_days: float = 0.0
     # Faces (walkway person crops): cosine similarity to the nearest same-kind
     # face centroid that wins assignment over appearance. <= 0 disables.
     face_match_threshold: float = 0.60
@@ -1112,6 +1131,8 @@ class IndividualsConfig:
     # Daily cap for these face asks together (both kinds). The 10-sightings
     # rule keeps its own cap (ask_daily_cap); memory confirmation has its own.
     confirm_ask_daily_cap: int = 6
+    # Daily cap for "Is this <name>?" asks, separate from the slow rule's cap.
+    person_confirm_ask_daily_cap: int = 6
     # Splits on "someone else" picture answers (app/vision_split.py) and the
     # matcher's cannot-link rule. False: verdicts are recorded only.
     split_on_verdict_enabled: bool = True
@@ -1214,9 +1235,13 @@ def _check_tables(conn) -> None:
 
 def run_one_individuals_cycle(
     *, postgres_uri: str, cfg: IndividualsConfig, zones_by_stream: Dict[str, List[Zone]],
-    now: Optional[datetime] = None,
+    now: Optional[datetime] = None, person_cfg: Any = None, person_record_cfg: Any = None,
 ) -> Tuple[dict, List[dict]]:
-    """One full tick. Returns (summary, opened_asks as OrionAskV1 dicts to publish)."""
+    """One full tick. Returns (summary, opened_asks as OrionAskV1 dicts to publish).
+    ``person_cfg`` (a vision_person_model.PersonModelConfig): also run one person
+    model cycle (albums, bars, guesses) under the same lock, after answers apply.
+    ``person_record_cfg`` (app.person_record.PersonRecordConfig): keep the person
+    record and its questions current from the names, same lock."""
     from sqlalchemy import create_engine, text
 
     ts = now or datetime.now(timezone.utc)
@@ -1266,6 +1291,16 @@ def run_one_individuals_cycle(
             with engine.begin() as conn:
                 for k, v in apply_splits(conn, ts, cfg).items():
                     summary[k] = summary.get(k, 0) + v
+        if person_cfg is not None:
+            from app.vision_person_model import run_person_model
+
+            # Its own transaction: a failure here never blocks asks or the prune.
+            try:
+                with engine.begin() as conn:
+                    summary.update(run_person_model(conn, ts, person_cfg))
+            except Exception as exc:
+                summary["person_model_error"] = str(exc)[:200]
+                logger.warning("vision_person_model_failed error=%s", exc)
         with engine.begin() as conn:
             summary["asks_expired"] = conn.execute(text(
                 "UPDATE orion_ask SET status='expired' WHERE status='open' "
@@ -1273,6 +1308,18 @@ def run_one_individuals_cycle(
         with engine.begin() as conn:
             opened = _open_asks(conn, ts, tz, cfg)
             summary["asks_opened"] = len(opened)
+        if person_record_cfg is not None:
+            from app.person_record import run_person_record
+
+            # Its own transaction, after names were applied this tick: a failure never blocks the prune.
+            try:
+                with engine.begin() as conn:
+                    record_summary, record_opened = run_person_record(conn, ts, person_record_cfg)
+                summary.update(record_summary)
+                opened.extend(record_opened)
+            except Exception as exc:
+                summary["person_record_error"] = str(exc)[:200]
+                logger.warning("person_record_failed error=%s", exc)
         with engine.begin() as conn:
             _prune(conn, ts, cfg, summary)
     except Exception as exc:
@@ -1716,7 +1763,7 @@ def _propagate_label(conn, individual_id: str, label: str, ask_id: str, at: date
         # Two typed names in one confirmed group: copies follow the newest, but say so.
         others = sorted({r[0] for r in conn.execute(text(
             "SELECT label FROM vision_individual WHERE individual_id = ANY(:ids) AND label IS NOT NULL "
-            "AND NOT label_copied AND label <> :l"), {"ids": group, "l": label}).fetchall()})
+            "AND NOT label_copied AND lower(label) <> lower(:l)"), {"ids": group, "l": label}).fetchall()})
         if others:
             logger.warning("[VISION_GROUP_NAME_CONFLICT] individual_id=%s new=%r other_typed=%r ask_id=%s",
                            individual_id, label, others, ask_id)
@@ -1728,7 +1775,7 @@ def _propagate_label(conn, individual_id: str, label: str, ask_id: str, at: date
 
 
 def _close_who_is_this(conn, individual_ids: Sequence[str], label: str, ask_id: str, now: datetime) -> int:
-    """Close any still-open "who is this?" card for people who just got ``label``
+    """Close any still-open "who is this?" or "Is this <name>?" card for people who just got ``label``
     from a name Juniper typed elsewhere, so she is not asked again. Marked
     applied: the label is already set (a copied one must not become typed)."""
     from sqlalchemy import text
@@ -1740,14 +1787,26 @@ def _close_who_is_this(conn, individual_ids: Sequence[str], label: str, ask_id: 
         "answer_detail=jsonb_build_object('resolved_by', CAST(:a AS text)) "
         "WHERE source_kind=:k AND status='open' AND source_ref = ANY(:ids)"),
         {"l": label, "now": now, "a": ask_id, "k": SOURCE_KIND_INDIVIDUAL, "ids": list(individual_ids)}).rowcount or 0
+    # An open "Is this <name>?" card about them is moot too: they have a name now.
+    n += conn.execute(text(
+        "UPDATE orion_ask SET status='answered', answer=NULL, answered_at=:now, applied_at=:now, "
+        "answer_detail=jsonb_build_object('resolved_by', CAST(:a AS text)) "
+        "WHERE source_kind=:k AND status='open' AND split_part(source_ref, '|', 1) = ANY(:ids)"),
+        {"now": now, "a": ask_id, "k": SOURCE_KIND_PERSON_CONFIRM, "ids": list(individual_ids)}).rowcount or 0
     if n:
         logger.info("[VISION_ASK_CLOSED_BY_NAME] n=%d by_ask_id=%s ids=%s", n, ask_id, ",".join(individual_ids))
     return n
 
 
 def _apply_typed_name(conn, individual_id: str, label: str, ask_id: str, at: datetime, now: datetime) -> bool:
-    """One typed name, applied the same way wherever it was typed: the
-    individual, then everyone confirmed the same person, then their open cards."""
+    """One typed name, applied the same way wherever it was typed (a "who is
+    this?" card, a walkway story card, a name box on a "same person?" card): a
+    'same' link to an existing individual she already typed that name for
+    (``_link_same_name``), then the individual, then everyone confirmed the same
+    person, then their open cards. A typed name that replaces a different
+    typed name first drops the same-name links the old name made."""
+    _unlink_old_name(conn, individual_id, label, ask_id)
+    _link_same_name(conn, individual_id, label, ask_id, at)
     if not _set_typed_label(conn, individual_id, label, ask_id, at):
         return False
     copied = _propagate_label(conn, individual_id, label, ask_id, at, replace_copied=True)
@@ -1770,8 +1829,11 @@ def picture_rows(ask_id: str, individual_id: str, detail: Dict[str, Any], answer
             continue
         seen.add(ref)
         name = _clean_name(p.get("name")) or None
+        # A story card names the crop itself (its pictures are crops, not thumbnails).
+        crop_id = str(p.get("crop_id") or "") or None
         out.append({"ask": ask_id, "ref": ref, "idx": int(p.get("index") or 0), "ind": individual_id,
-                    "v": verdict, "name": name if verdict != "unsure" else None, "at": answered_at})
+                    "v": verdict, "name": name if verdict != "unsure" else None, "at": answered_at,
+                    "crop_id": crop_id})
     return out
 
 
@@ -1782,20 +1844,13 @@ def _record_pictures(conn, rows: List[dict]) -> int:
 
     if not rows:
         return 0
-    refs = [r["ref"] for r in rows]
-    crop = {}
-    for ref, crop_id in conn.execute(text(
-            "SELECT DISTINCT ON (ref) ref, crop_id FROM ("
-            "  SELECT face_thumb_ref AS ref, crop_id, observed_at FROM vision_crop_observation "
-            "  WHERE face_thumb_ref = ANY(:r) UNION ALL "
-            "  SELECT thumb_ref, crop_id, observed_at FROM vision_crop_observation WHERE thumb_ref = ANY(:r)) c "
-            "ORDER BY ref, observed_at DESC"), {"r": refs}).fetchall():
-        crop[ref] = crop_id
+    crop = _crops_for_refs(conn, [r["ref"] for r in rows])
     for r in rows:
         conn.execute(text(
             "INSERT INTO vision_ask_picture_verdict (ask_id, image_ref, picture_index, individual_id, verdict, name, "
             "crop_id, answered_at) VALUES (:ask, :ref, :idx, :ind, :v, :name, :crop, :at) "
-            "ON CONFLICT (ask_id, image_ref) DO NOTHING"), {**r, "crop": crop.get(r["ref"])})
+            "ON CONFLICT (ask_id, image_ref) DO NOTHING"),
+            {k: v for k, v in {**r, "crop": r.get("crop_id") or crop.get(r["ref"])}.items() if k != "crop_id"})
     others = [r for r in rows if r["v"] != "same"]
     if others:
         logger.info("[VISION_PICTURE_VERDICT] ask_id=%s individual_id=%s pictures=%d not_same=%s",
@@ -1804,16 +1859,103 @@ def _record_pictures(conn, rows: List[dict]) -> int:
     return len(rows)
 
 
+def same_name_target(conn, individual_id: str, name: str, *, exclude: Sequence[str] = ()) -> Optional[str]:
+    """An existing individual (same stream and kind as ``individual_id``) Juniper
+    already TYPED ``name`` for, that is not already confirmed the same person
+    (a 'same' path between them), has no pair verdict with it, and whose
+    confirmed group has no 'different' (cannot-link) with this one's group --
+    a link must never join two people she said are different, even through
+    others. First by labeled_at. None when there is none."""
+    from sqlalchemy import text
+
+    me = conn.execute(text("SELECT stream_id, kind FROM vision_individual WHERE individual_id=:i"),
+                      {"i": individual_id}).fetchone()
+    if me is None:
+        return None
+    skip = [individual_id, *exclude]
+    # A candidate with any pair verdict with this individual is skipped (a 'different' she gave stays).
+    cands = [r[0] for r in conn.execute(text(
+        "SELECT v.individual_id FROM vision_individual v WHERE v.stream_id=:s AND v.kind=:k "
+        "AND v.label IS NOT NULL AND NOT v.label_copied AND lower(v.label) = lower(:n) "
+        "AND NOT (v.individual_id = ANY(:skip)) "
+        "AND NOT EXISTS (SELECT 1 FROM vision_individual_pair_verdict p WHERE "
+        "  (p.individual_a = v.individual_id AND p.individual_b = :me) OR "
+        "  (p.individual_b = v.individual_id AND p.individual_a = :me)) "
+        "ORDER BY v.labeled_at NULLS LAST, v.individual_id"),
+        {"s": me[0], "k": me[1], "n": name, "skip": skip, "me": individual_id}).fetchall()]
+    if not cands:
+        return None
+    verdicts = conn.execute(text(
+        "SELECT individual_a, individual_b, verdict FROM vision_individual_pair_verdict "
+        "WHERE verdict IN ('same', 'different')")).fetchall()
+    groups = same_groups((a, b) for a, b, v in verdicts if v == "same")
+    g = lambda i: groups.get(i, i)  # noqa: E731
+    apart = {frozenset((g(a), g(b))) for a, b, v in verdicts if v == "different"}
+    mine = g(individual_id)
+    return next((c for c in cands if g(c) != mine and frozenset((g(c), mine)) not in apart), None)
+
+
+def _link_same_name(conn, individual_id: str, name: str, ask_id: str, at: datetime) -> Optional[str]:
+    """A typed name (any card): a 'same' link to an existing
+    individual Juniper already typed that name for (the split's same-name link,
+    app/vision_split.py). Never over an existing pair verdict (a 'different'
+    she gave stays). Returns the linked id, or None."""
+    from sqlalchemy import text
+
+    other = same_name_target(conn, individual_id, name)
+    if other is None:
+        return None
+    a, b = sorted((individual_id, other))
+    linked = conn.execute(text(
+        "INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, face_cosine, ask_id, "
+        "decided_at) VALUES (:a, :b, 'same', NULL, :ask, :at) ON CONFLICT (individual_a, individual_b) DO NOTHING "
+        "RETURNING individual_a"), {"a": a, "b": b, "ask": ask_id, "at": at}).fetchone()
+    if linked is None:
+        return None
+    logger.info("[VISION_SAME_NAME_LINK] individual_id=%s other=%s name=%r ask_id=%s",
+                individual_id, other, name, ask_id)
+    return other
+
+
+def _unlink_old_name(conn, individual_id: str, label: str, ask_id: str) -> int:
+    """She corrected a typed name ("Maya" -> "Mya"): the 'same' links that only
+    came from the old name go. Those are rows involving this individual written
+    by a typed-name ask (source_kind vision_individual: a who-is-this or story
+    answer, or a split it caused), never her own "same person?" answers. No-op
+    when the old name was copied or differs only in case."""
+    from sqlalchemy import text
+
+    prev = conn.execute(text(
+        "SELECT label, label_copied FROM vision_individual WHERE individual_id=:i"), {"i": individual_id}).fetchone()
+    if prev is None or not prev[0] or prev[1] or prev[0].lower() == label.lower():
+        return 0
+    gone = conn.execute(text(
+        "DELETE FROM vision_individual_pair_verdict p WHERE p.verdict='same' "
+        "AND :i IN (p.individual_a, p.individual_b) AND EXISTS (SELECT 1 FROM orion_ask q "
+        "  WHERE q.ask_id = p.ask_id AND q.source_kind = :k) "
+        "RETURNING CASE WHEN p.individual_a = :i THEN p.individual_b ELSE p.individual_a END"),
+        {"i": individual_id, "k": SOURCE_KIND_INDIVIDUAL}).fetchall()
+    if gone:
+        logger.info("[VISION_SAME_NAME_UNLINK] individual_id=%s old=%r new=%r ask_id=%s others=%s",
+                    individual_id, prev[0], label, ask_id, ",".join(sorted(r[0] for r in gone)))
+    return len(gone)
+
+
 def _apply_answers(conn, now: datetime) -> int:
-    """Every unapplied "who is this?" and "same person?" answer, oldest first, so
-    when two answers name one individual the later one wins."""
+    """Every unapplied "who is this?", "same person?" and "Is this <name>?" answer, oldest first, so
+    when two answers name one individual the later one wins. Every typed name
+    also links the individual to an existing one Juniper gave the same name
+    (``_apply_typed_name``); a name typed on a walkway story card
+    (answer_detail.story_id) is a plain "who is this?" answer; a story card's
+    "someone else" / "not sure" records its picture verdicts only."""
     from sqlalchemy import text
 
     rows = conn.execute(text(
         "SELECT ask_id, source_kind, source_ref, answer, answered_at, answer_detail FROM orion_ask "
         "WHERE source_kind = ANY(:k) AND status='answered' AND applied_at IS NULL "
         "ORDER BY answered_at NULLS FIRST, ask_id"),
-        {"k": [SOURCE_KIND_INDIVIDUAL, SOURCE_KIND_SAME]}).fetchall()
+        {"k": [SOURCE_KIND_INDIVIDUAL, SOURCE_KIND_SAME, SOURCE_KIND_STORY_PERSON,
+               SOURCE_KIND_PERSON_CONFIRM]}).fetchall()
     for ask_id, kind, ref, answer, answered_at, detail in rows:
         at = answered_at or now
         if kind == SOURCE_KIND_INDIVIDUAL:
@@ -1821,6 +1963,10 @@ def _apply_answers(conn, now: datetime) -> int:
             if label:
                 _apply_typed_name(conn, ref, label, ask_id, at, now)
                 _record_pictures(conn, picture_rows(ask_id, ref, _detail(detail), at))
+        elif kind == SOURCE_KIND_STORY_PERSON:
+            _record_pictures(conn, picture_rows(ask_id, ref, _detail(detail), at))
+        elif kind == SOURCE_KIND_PERSON_CONFIRM:
+            _apply_person_confirm(conn, ask_id, ref, answer, at, now, _detail(detail))
         else:
             _apply_pair_answer(conn, ask_id, ref, answer, at, _detail(detail), now)
         conn.execute(text("UPDATE orion_ask SET applied_at=:now WHERE ask_id=:a"), {"now": now, "a": ask_id})
@@ -1924,8 +2070,17 @@ def _apply_pair_answer(conn, ask_id: str, ref: str, answer: Optional[str], at: d
 # confirmation loop also opens cards there under its own cap (5 open), and
 # face asks (FACE_RULE_REF, vision_same_individual) have confirm_ask_daily_cap.
 ASKED_TODAY_SQL = (
-    "SELECT count(*) FROM orion_ask WHERE source_kind = 'vision_individual' AND created_at >= :d "
-    "AND NOT (evidence_refs @> CAST(:face AS jsonb))"
+    "SELECT count(*) FROM orion_ask WHERE source_kind = 'vision_individual' "
+    "AND created_at >= :d "
+    "AND NOT (evidence_refs @> CAST(:face AS jsonb)) "
+    # A name Juniper typed on a walkway story card is not a question Orion asked (2026-10-18).
+    "AND NOT coalesce(answer_detail ? 'story_id', false)"
+)
+# "Is this <name>?" asks have their own cap (person_confirm_ask_daily_cap). Until
+# 2026-10-22 they shared ask_daily_cap with the slow rule, which opens first and
+# used both slots every day: 0 were ever asked.
+PERSON_CONFIRM_ASKED_TODAY_SQL = (
+    "SELECT count(*) FROM orion_ask WHERE source_kind = 'vision_person_confirm' AND created_at >= :d"
 )
 CONFIRM_ASKED_TODAY_SQL = (
     "SELECT count(*) FROM orion_ask WHERE created_at >= :d AND (source_kind = :same "
@@ -1933,10 +2088,17 @@ CONFIRM_ASKED_TODAY_SQL = (
 )
 
 # An earlier ask about the same subject blocks a new one: open, answered or
-# dismissed for good; expired only for the cooldown.
+# dismissed for good; expired only for the cooldown. "I don't know" (a dismissal
+# with answer_detail.dont_know, Hub /dismiss {reason: dont_know}, 2026-10-27) is
+# also only for the cooldown, counted from when she said it: she may know later.
+# Containment, not a ::boolean cast: one malformed row cannot break the opener query.
+# (No braces: _NOT_ASKED_SQL goes through str.format.)
+DONT_KNOW_SQL = "coalesce(a.answer_detail @> jsonb_build_object('dont_know', true), false)"
 _NOT_ASKED_SQL = (
     "NOT EXISTS (SELECT 1 FROM orion_ask a WHERE a.source_kind={kind} AND a.source_ref={ref} "
-    "AND (a.status IN ('open','answered','dismissed') OR (a.status = 'expired' AND a.created_at > :cool)))"
+    "AND ((a.status IN ('open','answered') OR (a.status = 'dismissed' AND NOT " + DONT_KNOW_SQL + ")) "
+    "OR (a.status = 'expired' AND a.created_at > :cool) "
+    "OR (a.status = 'dismissed' AND " + DONT_KNOW_SQL + " AND coalesce(a.answered_at, a.created_at) > :cool)))"
 )
 
 
@@ -1971,9 +2133,11 @@ def _images(srows, now: datetime, cfg: IndividualsConfig, *, limit: int = 3, fac
 
 
 def _open_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> List[dict]:
-    """Face asks first (their own cap), then the slow 10-sightings rule (its cap)."""
+    """Face asks first (their own cap), then the slow 10-sightings rule (its cap),
+    then "Is this <name>?" (its own cap)."""
     out = _open_face_asks(conn, now, tz, cfg)
     out.extend(_open_sighting_asks(conn, now, tz, cfg))
+    out.extend(_open_person_confirm_asks(conn, now, tz, cfg))
     return out
 
 
@@ -2047,9 +2211,11 @@ def _open_face_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -
           AND {_NOT_ASKED_SQL.format(kind="'vision_individual'", ref="i.individual_id")}
           AND NOT EXISTS (SELECT 1 FROM orion_ask p WHERE p.source_kind=:same AND p.status='open'
                           AND (p.source_ref LIKE i.individual_id || '|%' OR p.source_ref LIKE '%|' || i.individual_id))
-        ORDER BY i.face_n DESC, i.individual_id LIMIT :b
+          AND NOT EXISTS (SELECT 1 FROM orion_ask p WHERE p.source_kind='vision_person_confirm' AND p.status='open'
+                          AND split_part(p.source_ref, '|', 1) = i.individual_id)
+        ORDER BY i.face_n DESC, i.individual_id
     """), {"f": cfg.ask_face_min_faces, "k": people, "recent": now - timedelta(days=cfg.candidate_days),
-           "cool": cool, "same": SOURCE_KIND_SAME, "b": budget - len(out)}).fetchall()
+           "cool": cool, "same": SOURCE_KIND_SAME}).fetchall()
     # One "who is this?" per person: individuals Juniper said are the same
     # share an answer (_propagate_label), so a group already asked is skipped.
     asked_groups = {groups.get(r[0], r[0]) for r in conn.execute(text(
@@ -2093,6 +2259,8 @@ def _open_sighting_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfi
         return []
     # Only real visits count: stationary sightings (a prop) are excluded from
     # the counts, and an individual that is a fixture right now is not asked about.
+    # No LIMIT: a candidate skipped below (no picture) must not use up a slot,
+    # or it would block everyone behind it on every tick.
     cands = conn.execute(text(f"""
         SELECT i.individual_id, i.kind, v.n, v.d, i.label FROM vision_individual i
         JOIN LATERAL (
@@ -2103,11 +2271,15 @@ def _open_sighting_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfi
         WHERE i.label IS NULL AND NOT i.stationary AND i.sighting_count >= :n AND i.distinct_days >= :d
           AND v.n >= :n AND v.d >= :d
           AND {_NOT_ASKED_SQL.format(kind="'vision_individual'", ref="i.individual_id")}
-        ORDER BY v.n DESC, i.individual_id LIMIT :b
-    """), {"n": cfg.ask_min_sightings, "d": cfg.ask_min_days, "b": budget, "tz": str(tz.key),
+          AND NOT EXISTS (SELECT 1 FROM orion_ask p WHERE p.source_kind='vision_person_confirm' AND p.status='open'
+                          AND split_part(p.source_ref, '|', 1) = i.individual_id)
+        ORDER BY v.n DESC, i.individual_id
+    """), {"n": cfg.ask_min_sightings, "d": cfg.ask_min_days, "tz": str(tz.key),
            "cool": now - timedelta(days=cfg.ask_cooldown_days)}).fetchall()
     out: List[dict] = []
     for iid, kind, sc, dd, label in cands:
+        if len(out) >= budget:
+            break
         if not should_ask(label=label, sighting_count=sc, distinct_days=dd,
                           min_sightings=cfg.ask_min_sightings, min_days=cfg.ask_min_days):
             continue
@@ -2115,17 +2287,178 @@ def _open_sighting_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfi
         minutes = [r[1].astimezone(tz).hour * 60 + r[1].astimezone(tz).minute for r in srows]
         mean, r = circular_mean_minute(minutes)
         images = _images(srows, now, cfg)
+        if not images:
+            continue  # no picture, no ask: Juniper cannot answer a blank card; it stays a candidate
         ask = OrionAskV1(
             ask_id=f"ask-{uuid.uuid4().hex}",
             question=ask_question(kind=kind, sighting_count=sc, distinct_days=dd, mean_minute=mean, r=r),
             evidence_refs=[f"sighting:{row[0]}" for row in srows[:5]],
-            image_ref=images[0] if images else None, image_refs=images, created_at=now,
+            image_ref=images[0], image_refs=images, created_at=now,
             expires_at=now + timedelta(days=cfg.ask_expiry_days),
             source_kind=SOURCE_KIND_INDIVIDUAL, source_ref=iid,
         )
         if _insert_ask(conn, ask):
             out.append(ask.model_dump(mode="json"))
     return out
+
+
+# "Is this <name>?" only about someone seen at least this often: a one-off
+# passer-by would spend a daily slot on a single crop (review, 2026-10-20).
+PERSON_CONFIRM_MIN_SIGHTINGS = 2
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def person_confirm_question(*, person: str, sighting_count: int, distinct_days: int) -> str:
+    seen = (f"I have seen them {_plural(sighting_count, 'time')} over {_plural(distinct_days, 'day')}."
+            if sighting_count else "")
+    return f"Is this {person}? It is my best guess, but I am not sure. {seen}".strip()
+
+
+def _open_person_confirm_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> List[dict]:
+    """"Is this <name>?" for unsure guesses, most likely first, under their own
+    daily cap (person_confirm_ask_daily_cap). Same rules as the other openers: no
+    picture, no ask; a skipped candidate never uses up a slot."""
+    from sqlalchemy import text
+
+    from orion.schemas.ask import OrionAskV1
+
+    if conn.execute(text("SELECT to_regclass('vision_person_attribution')")).scalar() is None:
+        return []
+    asked_today = conn.execute(text(PERSON_CONFIRM_ASKED_TODAY_SQL), {"d": local_day_start(now, tz)}).scalar() or 0
+    budget = remaining_ask_budget(daily_cap=cfg.person_confirm_ask_daily_cap, asked_today=int(asked_today))
+    if budget <= 0:
+        return []
+    cands = conn.execute(text(f"""
+        SELECT g.individual_id, g.person_label, i.sighting_count, i.distinct_days
+        FROM vision_person_attribution g JOIN vision_individual i USING (individual_id)
+        WHERE g.revoked_at IS NULL AND g.band = 'unsure' AND i.label IS NULL AND NOT i.stationary
+          AND i.sighting_count >= :min_s
+          -- Asked before about this individual and this name (any casing): open, answered or
+          -- dismissed for good; expired only for the cooldown.
+          AND NOT EXISTS (SELECT 1 FROM orion_ask a WHERE a.source_kind = 'vision_person_confirm'
+                AND lower(a.source_ref) = lower(g.individual_id || '|' || g.person_label)
+                AND (a.status IN ('open', 'answered', 'dismissed') OR (a.status = 'expired' AND a.created_at > :cool)))
+          AND NOT EXISTS (SELECT 1 FROM orion_ask o WHERE o.status = 'open' AND (
+                (o.source_kind = 'vision_individual' AND o.source_ref = g.individual_id) OR
+                (o.source_kind = 'vision_person_confirm' AND o.source_ref LIKE g.individual_id || '|%')))
+        ORDER BY g.score DESC, g.individual_id
+    """), {"cool": now - timedelta(days=cfg.ask_cooldown_days), "min_s": PERSON_CONFIRM_MIN_SIGHTINGS}).fetchall()
+    out: List[dict] = []
+    for iid, person, sc, dd in cands:
+        if len(out) >= budget:
+            break
+        srows = _sighting_rows(conn, iid)
+        images = _images(srows, now, cfg)
+        if not images:
+            continue  # no picture, no ask; it stays a candidate
+        ask = OrionAskV1(
+            ask_id=f"ask-{uuid.uuid4().hex}",
+            question=person_confirm_question(person=person, sighting_count=int(sc or 0), distinct_days=int(dd or 0)),
+            evidence_refs=[f"sighting:{row[0]}" for row in srows[:5]],
+            image_ref=images[0], image_refs=images, created_at=now,
+            expires_at=now + timedelta(days=cfg.ask_expiry_days),
+            source_kind=SOURCE_KIND_PERSON_CONFIRM, source_ref=f"{iid}{PAIR_SEP}{person}",
+        )
+        if _insert_ask(conn, ask):
+            out.append(ask.model_dump(mode="json"))
+    return out
+
+
+def confirm_picture_verdicts(detail: Dict[str, Any]) -> Dict[str, str]:
+    """``answer_detail.pictures`` of an "Is this <name>?" card -> image_ref -> verdict
+    ("same" = it is <name>, "different" = it is not, "unsure"). Pure."""
+    out: Dict[str, str] = {}
+    for p in detail.get("pictures") or []:
+        if isinstance(p, dict) and p.get("image_ref") and p.get("verdict") in PICTURE_VERDICTS:
+            out.setdefault(str(p["image_ref"]), str(p["verdict"]))
+    return out
+
+
+def _crops_for_refs(conn, refs: Sequence[str]) -> Dict[str, str]:
+    """thumbnail ref (face or crop) -> the newest crop it is a picture of."""
+    from sqlalchemy import text
+
+    if not refs:
+        return {}
+    return {ref: crop_id for ref, crop_id in conn.execute(text(
+        "SELECT DISTINCT ON (ref) ref, crop_id FROM ("
+        "  SELECT face_thumb_ref AS ref, crop_id, observed_at FROM vision_crop_observation "
+        "  WHERE face_thumb_ref = ANY(:r) UNION ALL "
+        "  SELECT thumb_ref, crop_id, observed_at FROM vision_crop_observation WHERE thumb_ref = ANY(:r)) c "
+        "ORDER BY ref, observed_at DESC"), {"r": list(refs)}).fetchall()}
+
+
+def _apply_person_confirm(conn, ask_id: str, ref: str, answer: Optional[str], at: datetime, now: datetime,
+                          detail: Optional[Dict[str, Any]] = None) -> None:
+    """yes: name the individual (the album picks it up as a named cluster).
+    no: its newest crops (the ones guessed on) become "not <name>" exemplars,
+    which also stops Orion guessing that name for it.
+
+    Per-picture answers (2026-10-23, Juniper: "one of the three is Emerald but I
+    can't specify which"): when she did not give every picture the same answer,
+    the cluster holds more than one person, so it is NOT named. Each picture she
+    marked becomes an exemplar of its own crop instead: "is <name>" (+1,
+    confirm_pick_yes) or "not <name>" (-1, confirm_pick_no). "Not sure" adds nothing."""
+    from sqlalchemy import text
+
+    from app.vision_person_model import ATTRIBUTION_CROPS, exemplar_id, tables_present
+    from orion.person_model.pictures import CONFIRM_PICK_NO, CONFIRM_PICK_YES
+
+    iid, _, person = ref.partition(PAIR_SEP)
+    verdict = parse_yes_no(answer)
+    if not iid or not person or verdict is None:
+        logger.warning("person_confirm_answer_unusable ask_id=%s ref=%r answer=%r", ask_id, ref, answer)
+        return
+    pictures = confirm_picture_verdicts(detail or {})
+    if pictures and set(pictures.values()) not in ({"same"}, {"different"}):
+        if not tables_present(conn):
+            logger.warning("person_confirm_pictures_not_applied ask_id=%s reason=person tables missing", ask_id)
+            return
+        crops = _crops_for_refs(conn, [r for r, v in pictures.items() if v != "unsure"])
+        added = 0
+        for pic_ref, v in pictures.items():
+            crop_id = crops.get(pic_ref)
+            if v == "unsure" or not crop_id:
+                continue
+            source, polarity = (CONFIRM_PICK_YES, 1) if v == "same" else (CONFIRM_PICK_NO, -1)
+            added += conn.execute(text(
+                "INSERT INTO vision_person_exemplar (exemplar_id, person_label, crop_id, polarity, source, ask_id, "
+                "added_at) VALUES (:e, :p, :c, :pol, :s, :a, :t) ON CONFLICT (exemplar_id) DO NOTHING"),
+                {"e": exemplar_id(person, crop_id, source), "p": person, "c": crop_id, "pol": polarity,
+                 "s": source, "a": ask_id, "t": at}).rowcount or 0
+        conn.execute(text(
+            "UPDATE vision_person_attribution SET revoked_at=:t WHERE individual_id=:i AND person_label=:p "
+            "AND revoked_at IS NULL"), {"t": now, "i": iid, "p": person})
+        logger.info("person_confirm_pictures ask_id=%s individual_id=%s verdicts=%s exemplars_added=%d",
+                    ask_id, iid, ",".join(sorted(pictures.values())), added)
+        return
+    if verdict:
+        unnamed = conn.execute(text("SELECT label IS NULL FROM vision_individual WHERE individual_id=:i"),
+                               {"i": iid}).scalar()
+        if unnamed:
+            _apply_typed_name(conn, iid, person, ask_id, at, now)
+        else:
+            logger.info("person_confirm_yes_not_applied ask_id=%s individual_id=%s reason=%s", ask_id, iid,
+                        "gone" if unnamed is None else "already named")
+        return
+    if not tables_present(conn):
+        logger.warning("person_confirm_no_not_applied ask_id=%s reason=person tables missing", ask_id)
+        return
+    # The crops Orion guessed on (the newest ones), not every crop the individual
+    # ever had: an older crop of an impure cluster may really be that person.
+    for (crop_id,) in conn.execute(text(
+            "SELECT crop_id FROM vision_crop_observation WHERE individual_id=:i "
+            "ORDER BY observed_at DESC LIMIT :n"), {"i": iid, "n": ATTRIBUTION_CROPS}).fetchall():
+        conn.execute(text(
+            "INSERT INTO vision_person_exemplar (exemplar_id, person_label, crop_id, polarity, source, ask_id, added_at) "
+            "VALUES (:e, :p, :c, -1, 'confirm_no', :a, :t) ON CONFLICT (exemplar_id) DO NOTHING"),
+            {"e": exemplar_id(person, crop_id, "confirm_no"), "p": person, "c": crop_id, "a": ask_id, "t": at})
+    conn.execute(text(
+        "UPDATE vision_person_attribution SET revoked_at=:t WHERE individual_id=:i AND person_label=:p "
+        "AND revoked_at IS NULL"), {"t": now, "i": iid, "p": person})
 
 
 def _prune(conn, now: datetime, cfg: IndividualsConfig, summary: dict) -> None:
@@ -2135,7 +2468,8 @@ def _prune(conn, now: datetime, cfg: IndividualsConfig, summary: dict) -> None:
     sight_cut = now - timedelta(days=cfg.sighting_retention_days)
     summary["pruned_crops"] = conn.execute(text(
         "DELETE FROM vision_crop_observation WHERE crop_id IN (SELECT crop_id FROM vision_crop_observation "
-        "WHERE observed_at < :c LIMIT 20000)"), {"c": crop_cut}).rowcount or 0
+        "WHERE observed_at < :c AND label <> ALL(CAST(:keep AS text[])) LIMIT 20000)"),
+        {"c": crop_cut, "keep": list(cfg.crop_retention_keep_labels)}).rowcount or 0
     summary["pruned_sightings"] = conn.execute(text(
         "DELETE FROM vision_individual_sighting WHERE sighting_id IN (SELECT sighting_id FROM "
         "vision_individual_sighting WHERE started_at < :c LIMIT 20000)"), {"c": sight_cut}).rowcount or 0

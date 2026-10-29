@@ -360,5 +360,150 @@ class RouteTests(unittest.TestCase):
                 patch_error_emitter(path)
 
 
+
+# --- compaction requests go upstream without tools ----------------------------------------
+
+from orion_fcc_messages_transport import (  # noqa: E402
+    is_compaction_request,
+    prepare_request,
+)
+
+TOOL = {"name": "Read", "description": "Read a file", "input_schema": {"type": "object"}}
+HISTORY = [
+    {"role": "user", "content": "Investigate the reading pipeline."},
+    {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/x.py"}}]},
+    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "def f(): ..."}]},
+]
+# The CLI's compaction turn: its no-tools preamble, then the summary prompt (Claude Code 2.1.304).
+COMPACT_TURN = (
+    "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\n\n"
+    "Your task is to create a detailed summary of the conversation so far, paying close "
+    "attention to the user's explicit requests"
+)
+# The CLI's partial-compaction wording, sent without the preamble here to test the other mark.
+PARTIAL_TURN = "Your task is to create a detailed summary of the RECENT portion of the conversation"
+
+
+def _req(last, **extra):
+    return MessagesRequest.model_validate({
+        "model": "agent", "max_tokens": 64, "tools": [TOOL],
+        "tool_choice": {"type": "auto"}, "messages": [*HISTORY, last], **extra,
+    })
+
+
+class CompactionRequestTests(unittest.TestCase):
+    def test_compaction_turn_is_sent_without_tools_and_keeps_history(self):
+        for content in (
+            COMPACT_TURN,
+            [{"type": "text", "text": COMPACT_TURN}],
+            [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}, {"type": "text", "text": PARTIAL_TURN}],
+        ):
+            out = prepare_request(_req({"role": "user", "content": content}))
+            self.assertIsNone(out.tools)
+            self.assertIsNone(out.tool_choice)
+            self.assertEqual(len(out.messages), len(HISTORY) + 1)
+            self.assertEqual(out.messages[1].content[0].type, "tool_use")
+
+    def test_ordinary_turns_are_untouched(self):
+        req = _req({"role": "user", "content": "Keep going."})
+        self.assertIs(prepare_request(req), req)
+        self.assertEqual(len(req.tools), 1)
+
+    def test_prompt_text_quoted_inside_a_tool_result_is_not_a_compaction(self):
+        quoted = {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": COMPACT_TURN}]}
+        req = _req(quoted)
+        self.assertFalse(is_compaction_request(req))
+        self.assertIs(prepare_request(req), req)
+
+    def test_prompt_text_from_the_assistant_is_not_a_compaction(self):
+        req = _req({"role": "assistant", "content": COMPACT_TURN})
+        self.assertFalse(is_compaction_request(req))
+
+    def test_patched_route_strips_tools_before_the_provider_sees_the_request(self):
+        seen = []
+
+        class Handler:
+            def create(self, request):
+                seen.append(request)
+                return StreamingResponse(source(events()), media_type="text/event-stream")
+
+        app = FastAPI()
+
+        @app.post("/v1/messages")
+        async def route(body: MessagesRequest, request: Request):
+            return await create_message(body, request, Handler(), None)
+
+        with TestClient(app) as client:
+            body = _req({"role": "user", "content": COMPACT_TURN}).model_dump(mode="json", exclude_none=True)
+            self.assertEqual(client.post("/v1/messages", json={**body, "stream": False}).status_code, 200)
+            body = _req({"role": "user", "content": "Keep going."}).model_dump(mode="json", exclude_none=True)
+            self.assertEqual(client.post("/v1/messages", json={**body, "stream": False}).status_code, 200)
+        self.assertIsNone(seen[0].tools)
+        self.assertEqual(len(seen[1].tools), 1)
+
+
+
+# --- FCC's local shortcuts never answer a compaction -------------------------------------
+
+# Words from Claude Code's own system prompt that satisfy FCC's title detector once the
+# compaction request has no tools (live 2026-10-21..26: every summary came back "Conversation").
+TITLE_SHAPED_SYSTEM = (
+    "You are Claude Code. When asked for a title, return JSON with a single field. "
+    "Summarize this session."
+)
+
+
+def _text(response):
+    block = response.content[0]
+    return block["text"] if isinstance(block, dict) else block.text
+
+
+class CompactionShortcutTests(unittest.TestCase):
+    def _settings(self):
+        from config.settings import Settings
+
+        return Settings.model_construct(enable_title_generation_skip=True)
+
+    def _compaction(self):
+        return prepare_request(_req({"role": "user", "content": COMPACT_TURN}, system=TITLE_SHAPED_SYSTEM))
+
+    def test_unguarded_title_skip_answers_conversation(self):
+        # Regression proof: this is the bug the guard exists for.
+        from api.optimization_handlers import try_optimizations as raw
+
+        self.assertEqual(_text(raw(self._compaction(), self._settings())), "Conversation")
+
+    def test_guarded_shortcuts_pass_compaction_to_the_model(self):
+        import api.handlers.messages as handlers
+        from orion_fcc_messages_transport import guard_local_optimizations
+
+        guard_local_optimizations()
+        guard_local_optimizations()  # idempotent
+        self.assertTrue(handlers.try_optimizations.orion_compaction_guard)
+        self.assertIsNone(handlers.try_optimizations(self._compaction(), self._settings()))
+
+    def test_guard_leaves_real_title_requests_alone(self):
+        import api.handlers.messages as handlers
+        from orion_fcc_messages_transport import guard_local_optimizations
+
+        guard_local_optimizations()
+        title = MessagesRequest.model_validate({
+            "model": "agent", "max_tokens": 64, "system": TITLE_SHAPED_SYSTEM,
+            "messages": [{"role": "user", "content": "fix the flaky test"}],
+        })
+        self.assertEqual(_text(handlers.try_optimizations(title, self._settings())), "Conversation")
+
+    def test_patched_routes_install_the_guard(self):
+        # Fresh process: the tests above install the guard in this one, which would hide a
+        # routes patch that stopped calling it. Importing the app is the server's own start path.
+        import subprocess
+        import sys
+
+        probe = "import api.app, api.handlers.messages as h; assert h.try_optimizations.orion_compaction_guard"
+        subprocess.run([sys.executable, "-c", probe], check=True)
+
+
 if __name__ == "__main__":
     unittest.main()

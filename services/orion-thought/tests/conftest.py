@@ -78,3 +78,10 @@ def _no_live_database(monkeypatch):
 
     if not os.environ.get("POSTGRES_URI"):
         monkeypatch.setenv("POSTGRES_URI", "postgresql://x:x@127.0.0.1:1/nope")
+
+
+@pytest.fixture(autouse=True)
+def _no_live_physiology_bid(monkeypatch):
+    """Unit tests must never POST a shadow bid to the live body economy (Patch C3b): the client
+    returns None without a call. Tests of the shadow seam stub app.physiology_shadow.abid."""
+    monkeypatch.setenv("ORION_PHYSIOLOGY_BID_CLIENT_ENABLED", "false")

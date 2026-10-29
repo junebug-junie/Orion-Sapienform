@@ -325,23 +325,15 @@ async def prepare_step(bus, req: ReverieVisualStepRequestV1, *,
     elapsed = time.monotonic() - step.started
     now = now_fn()
 
-    act_opened_here = False
-
     def freeze(current: dict, current_row: dict) -> dict | None:
-        nonlocal act_opened_here
         if current_row["outcome"] not in _OPEN_OUTCOMES or _frozen_plan(current) is not None:
             return None
         current.update(plan=plan.to_json(), prepared_at=now.isoformat(),
                        prepare_elapsed_sec=round(elapsed, 3))
-        # The run's `make` act opens with the first plan written for this attempt, and the
-        # marker lives in the same row write: a replayed or retried prepare (durable runs
-        # replay steps, and a run queued behind another painting retries prepare for up
-        # to its whole deadline) never opens it again. Live 2026-10-16: 13 opens for 3 acts.
-        # The marker is per attempt and the act per run: a run that ever claimed a second
-        # attempt would publish a second open, which the writer ignores (first open wins).
-        if not current.get("act_opened_at"):
-            current["act_opened_at"] = now.isoformat()
-            act_opened_here = True
+        # 2026-10-21 (rung 3 grading rule): the `make` act no longer opens here. A plan is not
+        # an attempt: a run that never reaches the GPU (queue/admission refusal, abandoned
+        # before work) is not graded. The act opens when generation really starts
+        # (_mark_generating), like a read opens on its run's first run.started.
         if dream_hop is not None:
             current["dream_hop"] = dream_hop
         # Re-freezing an unreadable plan must not rewind a generating/generated attempt:
@@ -359,8 +351,6 @@ async def prepare_step(bus, req: ReverieVisualStepRequestV1, *,
     if _dream_hop_mismatch(req, frozen["stage_json"]):
         # A concurrent prepare for this dispatch froze a plan for a different hop.
         return step.terminal("failed", "dispatch_request_mismatch")
-    if act_opened_here:
-        await _publish_painting_open(bus, req)
     return step.result("done", attempt_id=attempt_id,
                        elapsed_sec=float(frozen["stage_json"].get("prepare_elapsed_sec") or elapsed))
 
@@ -391,9 +381,13 @@ def _generate_task_done(task: asyncio.Task) -> None:
                      exc_info=task.exception())
 
 
-def _mark_generating(observed: dict, started_at: datetime):
+def _mark_generating(observed: dict, started_at: datetime, opened: list | None = None,
+                     act_correlation_id: str | None = None):
     """Compare-and-set from the stage the step decided on. A concurrent generate,
-    caption reset or abandon in between leaves the row unchanged."""
+    caption reset or abandon in between leaves the row unchanged. ``opened`` (if given) gets
+    True appended when THIS write set the act marker. ``act_correlation_id`` (if given) is
+    stored beside the marker: the act's correlation id, so a later generate of the same attempt
+    can name the act it ran under (body economy shadow join, app/physiology_shadow.py)."""
     def mutate(current: dict, row: dict) -> dict | None:
         if (row["outcome"] not in _OPEN_OUTCOMES or current.get("abandoned_at")
                 or current.get("stage") != observed.get("stage")
@@ -401,6 +395,15 @@ def _mark_generating(observed: dict, started_at: datetime):
             return None
         current["stage"] = "generating"
         current["generating_started_at"] = started_at.isoformat()
+        # The run's `make` act opens with its FIRST real generation, in the same row write:
+        # the single-flight lock is held and the GPU call is next. A replayed or retried
+        # generate finds the marker and never opens again (per attempt; first open wins).
+        if not current.get("act_opened_at"):
+            current["act_opened_at"] = started_at.isoformat()
+            if act_correlation_id:
+                current["act_correlation_id"] = act_correlation_id
+            if opened is not None:
+                opened.append(True)
         current.pop("artifact", None)
         current.pop("caption", None)
         return current
@@ -409,18 +412,29 @@ def _mark_generating(observed: dict, started_at: datetime):
 
 
 async def _generate_work(attempt_id: str, plan: vc.VisualPlan, observed: dict, hold: GpuLeaseRefV1, bus: Any,
-                         thermal_gate: dict, now_fn: Any) -> tuple[str, Any, float | None]:
-    """("generated", StoredVisualArtifact, work_sec) or ("retry", reason, work_sec|None)."""
+                         thermal_gate: dict, now_fn: Any, *, on_act_open: Any = None,
+                         gpu_started: list | None = None, act_opened: list | None = None,
+                         act_correlation_id: str | None = None) -> tuple[str, Any, float | None]:
+    """("generated", StoredVisualArtifact, work_sec) or ("retry", reason, work_sec|None).
+    ``gpu_started`` (if given) gets True appended once the GPU call is next (the real gates
+    passed); ``act_opened`` (if given) gets True when this call opened the act."""
     async with vc.visual_chain_single_flight(deadline_sec=_in_flight_window_sec()) as held:
         if not held:
             await _record_deferral(attempt_id, "generate", "deferred_busy", now_fn())
             return "retry", "deferred_busy", None
         started_at = now_fn()
+        opened: list = []
         marked = await asyncio.to_thread(store.update_visual_stage, attempt_id,
-                                         _mark_generating(observed, started_at))
+                                         _mark_generating(observed, started_at, opened, act_correlation_id))
         if (marked is None or marked["stage_json"].get("stage") != "generating"
                 or marked["stage_json"].get("generating_started_at") != started_at.isoformat()):
             return "retry", "stage_changed", None
+        if gpu_started is not None:
+            gpu_started.append(True)
+        if act_opened is not None and opened:
+            act_opened.append(True)
+        if on_act_open is not None and opened:
+            await on_act_open()
         work_started = time.monotonic()
         try:
             # Hard ceiling, the same bound past which a claim treats the attempt's GPU
@@ -569,13 +583,95 @@ async def generate_step(bus, req: ReverieVisualStepRequestV1, *, now_fn: Any = _
             # overlap it on the card.
             return step.retry("generate_in_flight", retry_after_sec=max(0.0, window - age))
 
+    # Body economy Patch C3b: a SHADOW bid at the point this step would spend GPU work. Logged
+    # beside the real outcome, never obeyed (app/physiology_shadow.py). Replays, adoptions and the
+    # in-flight guard above return before it: they are not a new want.
+    shadow = _painting_shadow(req)
+    trace = _GenerateTrace()
+    result: ReverieVisualStepResultV1 | None = None
+    try:
+        result = await _generate_gated(bus, req, step, attempt_id, stage, plan, window, now_fn, trace)
+        return result
+    finally:
+        _settle_painting_shadow(shadow, trace, stage, result)
+
+
+class _GenerateTrace:
+    """What one generate step's work did, for the shadow bid's real outcome."""
+
+    def __init__(self) -> None:
+        self.gpu_started: list = []
+        self.act_opened: list = []
+        self.task: asyncio.Task | None = None
+
+
+def _painting_shadow(req: ReverieVisualStepRequestV1):
+    """The generate step's shadow want, placed. want_id = this step's correlation id: the act's
+    correlation id when this step opens the act (grammar_acts keeps the first one it sees).
+    None if the shadow could not be built: the step never depends on it."""
+    try:
+        from .physiology_shadow import ShadowBid
+
+        shadow = ShadowBid(family="thought.painting" if req.dream_hop is None else "thought.dream_hop", verb="make",
+                           tier=2, want_id=req.correlation_id, object_ref=f"durable_run:{req.run_id}",
+                           component="visual_steps.generate")
+        shadow.place()
+        return shadow
+    except Exception:  # noqa: BLE001 -- shadow only
+        logger.info("painting_shadow_bid_not_built run=%s", req.run_id)
+        return None
+
+
+def _settle_painting_shadow(shadow: Any, trace: _GenerateTrace, stage: dict,
+                            result: ReverieVisualStepResultV1 | None) -> None:
+    """Real outcome: ``ran`` once the real gates (thermal, single-flight, stage) passed and the GPU
+    call started, whatever the render's fate; else ``blocked:<the step's reason>``. A step that
+    returns while its work is still waiting (deadline, cancel) settles when the work ends, so a
+    render that starts late is not logged as blocked."""
+    if shadow is None:
+        return
+
+    def settle(reason: str | None) -> None:
+        try:
+            if trace.act_opened:
+                shadow.settle("ran")
+            elif trace.gpu_started:
+                # The act opened on an earlier generate of this attempt: name it for the join.
+                shadow.settle("ran", act_correlation_id=(stage or {}).get("act_correlation_id"))
+            else:
+                shadow.settle(f"blocked:{reason or 'error'}")
+        except Exception:  # noqa: BLE001 -- shadow only
+            logger.info("painting_shadow_settle_failed")
+
+    task = trace.task
+    if task is not None and not task.done():
+        def on_done(t: asyncio.Task) -> None:
+            reason = "error"
+            if not t.cancelled() and t.exception() is None:
+                kind, value, _ = t.result()
+                reason = None if kind in ("generated", "unrecorded") else str(value)
+            settle(reason)
+
+        task.add_done_callback(on_done)
+        return
+    settle(getattr(result, "reason", None))
+
+
+async def _generate_gated(bus, req: ReverieVisualStepRequestV1, step: _Step, attempt_id: str, stage: dict,
+                          plan: vc.VisualPlan, window: float, now_fn: Any,
+                          trace: _GenerateTrace) -> ReverieVisualStepResultV1:
+    """generate_step from the thermal gate on, recording what its work did in ``trace``."""
     thermal_gate = await vc.thermal_gate_snapshot()
     if not thermal_gate["allows_gpu_work"]:
         await _record_deferral(attempt_id, "generate", "thermal_refused", now_fn())
         return step.retry("thermal_refused", retry_after_sec=_THERMAL_RETRY_AFTER_SEC)
 
     observed = {"stage": stage.get("stage"), "generating_started_at": stage.get("generating_started_at")}
-    task = asyncio.create_task(_generate_work(attempt_id, plan, observed, req.gpu_lease, bus, thermal_gate, now_fn))
+    task = asyncio.create_task(_generate_work(attempt_id, plan, observed, req.gpu_lease, bus, thermal_gate, now_fn,
+                                              on_act_open=lambda: _publish_painting_open(bus, req),
+                                              gpu_started=trace.gpu_started, act_opened=trace.act_opened,
+                                              act_correlation_id=req.correlation_id))
+    trace.task = task
     _generate_tasks.add(task)
     task.add_done_callback(_generate_task_done)
     done, _ = await asyncio.wait({task}, timeout=visual_step_generate_deadline_sec())
@@ -805,9 +901,9 @@ def painting_act_transition(req: ReverieVisualStepRequestV1,
     """What this step result means for the run's ``make`` act.
 
     Returns (action, produced, note): action is "close" or "none". The open is not
-    decided here: prepare_step publishes it once, when it first writes the attempt's
-    plan (see ``act_opened_at``), because a step result alone cannot tell a first
-    prepare from a replayed or retried one.
+    decided here: the first real generation publishes it once (``_mark_generating`` sets
+    ``act_opened_at``), because a step result alone cannot tell a first generate from a
+    replayed or retried one. A non-produced close is published only for an opened act.
 
     - Any result naming outcome "produced" closes at 1, whatever its status: a
       replayed step on an attempt that already produced reports terminal/produced
@@ -840,7 +936,7 @@ def _act_ledger_on(bus) -> bool:
 
 
 async def _publish_painting_open(bus, req: ReverieVisualStepRequestV1) -> None:
-    """Publish the run's act_opened. Called once per attempt, by prepare_step."""
+    """Publish the run's act_opened. Called once per attempt, at its first real generation."""
     if not _act_ledger_on(bus):
         return
     try:
@@ -855,6 +951,22 @@ async def _publish_painting_open(bus, req: ReverieVisualStepRequestV1) -> None:
         logger.warning("painting_act_publish_failed run=%s step=%s error=%s", req.run_id, req.step, exc)
 
 
+async def _act_was_opened(req: ReverieVisualStepRequestV1, result: ReverieVisualStepResultV1) -> bool:
+    """Did this run's attempt open its `make` act (reach generation)? Unknown reads as yes."""
+    try:
+        attempt_id = getattr(result, "attempt_id", None) or req.attempt_id
+        if attempt_id:
+            row = await asyncio.to_thread(store.load_visual_attempt, attempt_id)
+        else:
+            row = await asyncio.to_thread(store.load_visual_attempt_for_dispatch, req.visual_request)
+        return bool(row and (row.get("stage_json") or {}).get("act_opened_at"))
+    except Exception as exc:  # noqa: BLE001
+        # Unknown -> publish the 0 close: a really-opened act left open would block its actor in the
+        # dispatch in-flight rule until expiry, and an unopened one gets the same 0 the expiry gives.
+        logger.warning("painting_act_open_lookup_failed run=%s error=%s", req.run_id, exc)
+        return True
+
+
 async def _mirror_painting_act(bus, req: ReverieVisualStepRequestV1,
                                result: ReverieVisualStepResultV1) -> None:
     if not _act_ledger_on(bus):
@@ -865,6 +977,10 @@ async def _mirror_painting_act(bus, req: ReverieVisualStepRequestV1,
 
         action, produced, note = painting_act_transition(req, result)
         if action != "close":
+            return
+        if not produced and not await _act_was_opened(req, result):
+            # No attempt reached the GPU: not an act, so no outcome (a close with no open would
+            # make the writer create and grade one). An opened act that failed still closes 0.
             return
         await publish_grammar_event(
             bus, act_closed_event(_painting_act(req), produced=bool(produced), note=note, **_act_common(req)),

@@ -144,15 +144,26 @@ is a street section):
   `ORION_REVERIE_STREET_GRADED_MAX` (4), each with the subject's 14-day hit rate
   when there is one. The rhythm reducer needs >= 5 days of support before it
   emits an expectation, so this is empty for the camera's first week.
+- **The day so far** (2026-10-23): one line from `vision_rollup` -- today's
+  running day row ("Walkway Fri 23 Oct 2026 (so far, through 10:00): people: at
+  least 1, at most 2 ..."). Today's row only: the writer builds it with today's
+  first hour, so just after midnight there is no line. Shown only through
+  `orion.vision.walkway_rollup.display_line`, so people are a range and an old
+  rules_version 1 row is re-rendered or dropped, never shown with a bare count.
+  Cut at a clause boundary to `ORION_REVERIE_STREET_DAY_MAX_CHARS` (480); a
+  first clause longer than that means no line. Yesterday's row is not "the day
+  so far" and is skipped. Context key `street_day`;
+  `ORION_REVERIE_STREET_DAY_ENABLED=false` turns only this line off. A failed
+  read costs only this line.
 
-Context keys `street_percepts` / `street_predictions` (absent when empty: no
-heading over nothing). The room-only expectation judge never reads them, and the
+Context keys `street_percepts` / `street_predictions` / `street_day` (absent
+when empty: no heading over nothing). The room-only expectation judge never reads them, and the
 prompt says any stated expectation is about the room. Readers:
 `app/vision_reader.py` `read_recent_street_events` / `read_recent_street_graded`
 (fail-open); shared wording in `orion/situational/street_material.py`.
 `ORION_REVERIE_STREET_ENABLED=false` or an empty stream list turns both off
 (no query is made). Log line when present: `reverie_street_context corr=...
-captions=N graded=N`.
+captions=N graded=N rollup=0|1` (`rollup=1`: the day line went in).
 
 ## Reverie expectation scoring (Movement III)
 
@@ -441,7 +452,9 @@ template, no LLM.
   next hour had <a failed turn | a reply I had to repair | an RPC timeout> Nx as often at equal activity (...)
   [assoc:<id>]" from the newest `self_signal_outcome_association` row per (signal, outcome) written by
   orion-equilibrium-service within the last 3 h (read at most every 5 min, same lock/timeout). Only
-  rows whose 95% interval excludes 1 with enough hours carry a clause; a clause is dropped before a
+  rows whose 95% interval excludes 1 with enough hours carry a clause, and only once that verdict held
+  on each of the last `SELF_SIGNAL_OUTCOME_CONSECUTIVE_HOLDS` (6) consecutive hourly computations (a
+  gap or a different verdict resets; shared `held_latest_by_pair`); a clause is dropped before a
   reading would be. Kill switch: `SELF_SIGNAL_OUTCOME_ASSOCIATION_ENABLED=false` (block byte-identical).
 
 ## Reverie VISUAL chain (context rotation + validated episode-memory seed)
@@ -670,6 +683,8 @@ Flags:
 | `ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED` | `true` | Painting-gap check (2026-10-10), own loop, not gated on `ORION_VISUAL_CHAIN_ENABLED` (off in production, which is why the staleness watchdog never ran during the 27.6 h 2026-10-09/10 outage) |
 | `ORION_VISUAL_PAINTING_GAP_THRESHOLD_HOURS` | `12` | If no real painting (a `reverie_visual_chain` row with a `production_receipt`, timed by its `produced_at`) has landed in this many hours, fire an orion-notify `error` attention request (emails if left unacked). Calibrated in-sample on 2026-09-14..10-10: no gap fell between 7.6 h and 14.7 h |
 | `ORION_VISUAL_PAINTING_GAP_CHECK_INTERVAL_SEC` | `600` | How often the painting-gap loop re-reads the last painting's age |
+| `ORION_VISUAL_ATTEMPT_STREAK_CHECK_ENABLED` | `true` | Failed-attempt streak check (critical card) in the same loop |
+| `ORION_VISUAL_ATTEMPT_FAILURE_STREAK_THRESHOLD` | `6` | Painting attempts in a row with no image before the card |
 | `ORION_VISUAL_CHAIN_WATCHDOG_CHECK_INTERVAL_SEC` | `600` | How often the watchdog re-checks that staleness, independently of the worker's own loop |
 | `ORION_DIFFUSION_HOST_BASE_URL` | `http://100.112.254.99:8014` | circe's diffusion host |
 | `ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC` | `120` | `/generate` HTTP timeout (raised from `30` 2026-08-28 -- tuned for sdxl-turbo's near-instant single step; FLUX.1-schnell's real generation measured 49-56s live, timing out every tick until fixed) |
@@ -808,6 +823,17 @@ treated as no observation, not as recovery. Dream carry pictures
 calibrated in-sample on 2026-09-14..10-10 (no gap fell between 7.6 h and
 14.7 h); replay: `evals/test_painting_gap_replay.py`.
 
+`visual_attempt_failure_streak` (same loop, 2026-10-20): how many painting
+attempts in a row (`reverie_visual_attempt`) produced nothing. At
+`ORION_VISUAL_ATTEMPT_FAILURE_STREAK_THRESHOLD` (6) it raises a **critical**
+card (emailed at once), and a recovery note once an attempt produces an image.
+2026-10-16 -> 10-20 had 35 in a row while the only alert was one "error" gap
+card. 6 is one more than the longest ordinary streak on 2026-09-14..10-19;
+every streak of 6+ was an outage. Replay: `evals/test_attempt_streak_replay.py`.
+`ORION_VISUAL_ATTEMPT_STREAK_CHECK_ENABLED=false` turns it off (so does
+`ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED=false`: it runs in that loop). Attempts
+still `active`/`unknown` (in progress) never count as failures.
+
 ## Acknowledged visual activity and baseline execution
 
 `GET /visual-chain/activity` returns `VisualActivityV1`. `history_status=ok` with
@@ -930,3 +956,32 @@ GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the
 and [consumer-first rollout and rollback](../../docs/runbooks/gpu2-elastic-admission.md)
 for this service's exact flags, HTTP contracts and operator commands.
 No production env sync, migration, GPU transition or deployment was performed.
+
+## Body economy shadow bid (Patch C3b, 2026-10-27)
+
+The `generate` step of a `reverie.visual` run (`app/visual_steps.py`) asks the body economy
+whether it would fund the GPU work, then ignores the answer. The answer is only logged, next to
+what the step really did. Nothing changes what the step does.
+
+- Where: `generate_step`, after the replay, adoption and in-flight checks (those are not a new
+  want) and before the thermal gate. `prepare`, `caption` and `abandon` never bid.
+- Family: `thought.painting`, or `thought.dream_hop` for a dream-carry image hop. Verb `make`, tier 2.
+- `want_id`: the generate step's correlation id (one per RPC). When this step opens the run's
+  `make` act (its first real generation), that is the act's `grammar_acts.correlation_id`. A later
+  generate of the same attempt (after a failed render) runs under the act an earlier step opened:
+  its line carries `act_correlation_id=<that step's id>`, read from `stage_json.act_correlation_id`,
+  which the opening write now stores beside `act_opened_at`.
+- Real outcome: `ran` once the real gates (thermal, single-flight, stage) passed and the GPU call
+  started, whatever the render's fate; else `blocked:<the step's reason>` (`thermal_refused`,
+  `deferred_busy`, `stage_changed`, ...). A step that returns before its work decides (deadline,
+  cancel) logs when the work ends, so a late start is not logged blocked.
+- Volume: every generate retry is a new RPC and a new bid. A run held by the thermal gate bids once
+  per retry (`_THERMAL_RETRY_AFTER_SEC`, 300 s). Group by `object_ref=durable_run:<run_id>` to count
+  wants per painting, not per retry.
+- A lost `act_opened` publish (not retried) leaves the act row built from its close, on a different
+  correlation id, so that `ran` line joins nothing.
+- Log line: `physiology_shadow_bid family=... want_id=... shadow=funded|deferred|none reason=...
+  lane=... real=...`. durable-runs writes the decision into `want_ledger`. A funded decision whose
+  step was blocked releases its reservation.
+- Switch: `THOUGHT_PHYSIOLOGY_SHADOW_BID_ENABLED` (default true). The bid runs as a background task
+  and never delays the step.

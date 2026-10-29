@@ -6,8 +6,9 @@ one decider.
 - ``thermal``: the cabinet sensor through ``orion.autonomy.cabinet_heat.read_cabinet_heat`` -- the one
   owner of "how hot is the cabinet" and of what a missing reading means (thermal controller v2, D1/D10,
   docs/superpowers/specs/2026-10-06-thermal-controller-redesign-design.md). Blocks at ``hot`` (the
-  32 C line, hysteresis to 30.5 C, unchanged by the 34 C reflex decision) and on ``unknown``: loading
-  an extra model into a room nobody can measure is refused. Unlike before:
+  line and its hysteresis are ``orion/autonomy/thermal_gate.py``'s DEFAULT_HOT_C / DEFAULT_HOT_REARM_C,
+  reached through read_cabinet_heat; the guard holds no copy -- body economy Patch B) and on
+  ``unknown``: loading an extra model into a room nobody can measure is refused. Unlike before:
   - it starts ``unknown``, not ``hot`` (C13): the reason says there is no reading yet;
   - one failed or degraded read inside the grace window (300 s) holds the last state instead of
     blocking (C10): the guard keeps the readings it saw and re-judges them at ``now``.

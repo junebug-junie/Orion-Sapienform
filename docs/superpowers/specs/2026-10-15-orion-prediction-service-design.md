@@ -31,6 +31,78 @@ experiment dispatcher. Where the build departs from the design below, the build 
   max residual once (n+1)·q ≥ n, so at the default 40 windows the 95 % upper bound is the max
   observed error (conservative); at 14 the 80 % and 95 % ranges coincide.
 
+## Shadow scoring (2026-10-22, follow-up PR)
+
+Live 2026-10-21/22: direct_arx served 15 min for 18 h (backtest p 0.041-0.049) and beat the baseline
+live (0.922x over 213 scored forecasts), then flickered off at p 0.054-0.070. Two problems: a hard
+p cut-off on a noisy number, and no live record for anything not served. Contenders (beat the baseline
+somewhere in the backtest, or serving) now forecast in the shadow every issue; `app/live.py` turns the
+scored shadow rows into per-horizon live verdicts (time-thinned to independent pairs, >= 20, overlap-
+aware paired test both ways; "better" Holm-corrected across the contender x horizon family, since an
+uncorrected 0.05 promoted a null model in ~1/3 of selections). Gate: live-worse never serves, live-better
+serves only if it also beats the baseline in the backtest, else backtest with hysteresis (enter
+p < 0.05, stay p < 0.10); live winners rank first. Per-horizon look-back = max(7 d, 25 horizons) so the
+24 h horizon can reach a verdict; shadow rows kept 35 days. GATE_VERSION 3 forces a reselect on deploy. The
+worse_than_baseline alert now judges the serving model's own live record instead of 7 days of champion
+rows (which kept alerting on a pick already dropped).
+
+## Weather + fleet inputs (2026-10-21, follow-up PR)
+
+New covariates for the cabinet target, and the shared weather seam. Metric quality gate:
+
+1. Provenance: `circe.chassis_watts` / `hecate.chassis_watts` = `orion_biometrics_cluster.measurements_by_node`
+   written by orion-biometrics on athena (circe via its PDU outlets, `services/orion-biometrics/app/pdu.py`;
+   hecate via its BMC read remotely, `app/ilo.py`). `athena.central_ac_proxy` = Open-Meteo hourly
+   `temperature_2m` via `orion/weather/openmeteo.py`, stored in `prediction_weather_hourly`.
+2. Independence: circe and hecate are separate machines on separate meters from athena (all three in the
+   cabinet). The proxy is an outdoor sensor, independent of every in-cabinet reading, but NOT of the
+   portable AC: with the central AC off the portable one works harder (845 vs 719 W), so the two overlap
+   by design -- the proxy carries the cause, the AC watts the response.
+3. Theory anchor: cabinet heat balance (electrical draw ~ heat in). For the proxy, the house meter:
+   household + central kWh/h rises +0.33 per F above 75 F outdoor, 3 h earlier (p ~1e-18; 508 h,
+   2026-09-26 -> 10-17), and hours with the central AC likely on run the cabinet ~1.3 C cooler.
+4. Live sanity (2026-10-21, 2 days): circe 700-1100 W (mean 927), hecate ~96 W standby with spikes, no gaps.
+   The proxy is 0 for this whole fall stretch (outside < 75 F since ~10-11): it carries no information until
+   it warms up, and ridge treats the flat column as zero-variance. Kept so spring data trains it; the eval
+   above is the retirement check.
+5. Existing mechanism: none in the forecaster; the situation layer fetched weather live and kept no
+   history -- its HTTP client is now the shared seam.
+6. Reversibility: registry entries; the gate decides whether `direct_arx` serves.
+
+Replay (40 windows ending 2026-10-20, all inside the post-T10 regime): `direct_arx` ~1.0x persistence
+(0.96 at 15 min, p 0.25) -- no significant gain yet; the gate serves the baseline. A 14-window smoke on
+10-19 -> 10-21 showed 0.73-0.89x (too few windows to pass). Weather is not committed to the eval
+fixture: an hourly temperature series from one spot narrows down where it is, and the repo is public.
+
+## Grading the exceedance + the alert tie (2026-10-20, follow-up PR)
+
+The `shed` probability was shown beside every reflex decision but never stored, so its quality was
+unknown. `prediction_exceedance` stores each issued probability with its window [origin+grain,
+origin+grain+window); the reducer writes `hit_raw` / `hit_mean` once the window passes; `/live` grades it
+(Brier, base rate, skill, calibration). `worse_than_baseline` fired on a tie ("1.00x" with 4 of 5
+horizons served by naive); it now uses only differing forecasts, >= 1.05x and a paired test p < 0.05.
+
+Measured on the house meter, 2026-10-20 (for the inputs PR that follows): house kWh minus the cabinet
+nodes and the portable AC rises +0.33 kWh/h per F above 75 F outdoor (3 h earlier; p ~1e-18) -- the
+central AC. Hours with it likely on: cabinet 1.3 C cooler and the portable AC ~126 W lighter. Input to
+build: outdoor F above 75, 3 h earlier (known 48 h ahead from the forecast).
+
+## Change events (2026-10-20, follow-up PR)
+
+The cabinet regime moved twice in two days, both visible in `orion_biometrics_summary`:
+the athena GPU0 -> passive T10 swap (10-15 18:54-19:00 UTC: gpu0_temp_c 70 -> 55 C, fan_pct_max floor
+~44 -> ~65 %, idle chassis_watts ~385 -> ~425 W), and the vision bring-up with the cabinet open
+(10-16 21:30 -> 10-17 00:35 UTC: cabinet_lidar_mm erratic then settled 116 -> 94 mm, magnetic 36 -> 33.5
+uT, temp dipped to 25.5 C while open, then ~2 C higher than between the events). The sensor's geometry
+changed, so part of that 2 C may be the sensor's new position rather than heat. From 10-18 the cabinet
+crosses 34 C (278 readings to 10-20) with the AC already at its ~860 W ceiling.
+
+`prediction_change_event` (`app/events.py`) records these: `exclude` masks a window from training and
+actuals; `break` gives Prophet a level-shift regressor immediately and, after `MIN_POST_BREAK_DAYS`
+(10, enough for the 40-window backtest), becomes every model's training start, invalidating the served
+selection on the spot (selection records its `train_from`). Measured: one day after a 2 C step,
+Prophet's error is 0.009 C with the regressor vs 0.93 C without.
+
 ## Covariate models (2026-10-16, follow-up PR)
 
 `direct_ar` / `direct_arx` (`app/direct.py`): one ridge regression per lead time on origin-time

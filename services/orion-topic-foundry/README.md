@@ -221,11 +221,50 @@ Example (truncated, representative):
 - `TOPIC_FOUNDRY_COSINE_IMPL` → `cosine_impl_default`
 - `TOPIC_FOUNDRY_INTROSPECT_SCHEMAS` → `introspection.ok` / `introspection.schemas`
 
+## Act ledger: each training run is one act (2026-10-23, body economy A5)
+
+Each `_run_training` call publishes one `maintain` act (actor `topic_foundry.run`) on
+`orion:grammar:event`, persisted by orion-sql-writer to `grammar_acts`
+(`app/services/act_emit.py`, flag `TOPIC_FOUNDRY_ACT_EMIT_ENABLED`, default on).
+
+- Opens when the run starts work. Closes once: 1 on `status=complete`, 0 on failure (including
+  "No documents available for training"), any exception, or anything that escapes (`finally`).
+- Act key = the run id. A restart mid-run (a deploy) leaves the act open; the writer expires it
+  at 0 at its horizon (3600 s: p90 of complete runs over 30 days, rounded up to the hour).
+- GPU cost: not joined yet. The act's correlation id is derived from the run id, but each LLM call
+  keeps its own envelope id (sharing one across a run's ~200 calls would make orion-bus-mirror
+  record fake causal hops). Follow-up: the gateway forwards an explicit turn id to the GPU pool.
+- Cost `seconds` = wall time from open to close.
+
+## Body economy shadow bid (Patch C3b, 2026-10-27)
+
+Each training run asks the body economy "would you fund this run?" at run start, then ignores the
+answer. The answer is only logged. Nothing changes what the run does.
+
+- Where: `_run_training`, right after the run's act opens. Family `topic_foundry.run` (Tier 2),
+  verb `maintain`. `want_id` = `act_emit.run_correlation_id(run_id)`, the run act's correlation id.
+- Real outcome: always `ran`, meaning admitted, not completed (a run that later fails still
+  logged `ran`; its act closes at 0). The run has no gate of its own at that point (the `/runs/train`
+  route already created it), so the comparison is "would the economy have deferred a run that ran".
+- Log line: `physiology_shadow_bid family=topic_foundry.run want_id=... shadow=... real=ran`.
+  durable-runs writes the decision into `want_ledger`.
+- The bid runs on a daemon thread (the run is synchronous, in a BackgroundTasks worker); the run
+  never waits on it. Switch: `TOPIC_FOUNDRY_PHYSIOLOGY_SHADOW_BID_ENABLED` (default on). Code:
+  `app/services/physiology_shadow.py`.
+
 ## LLM over bus
 
 LLM path is considered usable when:
 1. `TOPIC_FOUNDRY_LLM_ENABLE=true` (feature enabled), and
 2. `TOPIC_FOUNDRY_LLM_USE_BUS=true` and `ORION_BUS_ENABLED=true` (transport resolves to bus).
+
+**GPU heat shed:** a batch makes one LLM call per topic/boundary. When the gateway reply says
+the GPU pool is shedding (`raw.details.reason` = `shed:<name>`, e.g. `shed:cabinet_hot`),
+`TopicFoundryLLMClient.request_json` returns `None` for later calls without sending them, for
+30 s doubling to 180 s (or the gateway's `retry_after_sec` if longer); one call per window
+probes, and the first real answer ends it. `None` is what a refused call already returned, so
+callers fall back exactly as before. Logs: one `gpu_shed_backoff_start` / `gpu_shed_backoff_end
+... skipped=N` pair per episode. Code: `orion/gpu_pool/shed_backoff.py`.
 
 **`TOPIC_FOUNDRY_LLM_BUS_ROUTE` is a route *key* into `orion-llm-gateway`'s route table**
 (`LLM_GATEWAY_ROUTE_TABLE_JSON`, e.g. `chat`/`agent`/`metacog`/`quick` — check that gateway's

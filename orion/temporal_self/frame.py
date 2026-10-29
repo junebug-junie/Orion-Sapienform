@@ -35,7 +35,8 @@ def summarize(arc: TemporalSelfArcV1) -> ArcSummaryV1:
         arc_id=arc.arc_id, kind=arc.kind, subject_ref=arc.subject_ref, subject_label=arc.subject_label,
         began_at=arc.began_at, ended_at=arc.ended_at, status=arc.status,
         attention_returns=arc.attention_returns, cumulative_dwell_sec=round(arc.cumulative_dwell_sec, 3),
-        last_seen_at=arc.last_seen_at,
+        last_seen_at=arc.last_seen_at, episode_began_at=arc.episode_began_at,
+        causes_now=None if arc.causes_now is None else list(arc.causes_now),
     )
 
 
@@ -57,7 +58,23 @@ def build_frame(state: TemporalSelfStateV1, now: datetime, cfg: ReducerConfig = 
     previous = max(ended_fg, key=lambda a: (a.ended_at or a.last_seen_at, a.arc_id), default=None)
 
     # Non-reverie arcs first (most recent), reverie fills what is left; then chronological.
-    ranked = sorted(arcs, key=lambda a: (a.kind == "reverie", -a.began_at.timestamp(), a.arc_id))[:ARCS_IN_FRAME_CAP]
+    # Street arcs (passers-by, PR #2763 item 1) rank with reverie: they fill leftover slots and never
+    # push Orion's own arcs (sleep, conversation, strain, company) out of a busy day's frame.
+    ranked = sorted(arcs, key=lambda a: (a.kind in ("reverie", "street"), -a.began_at.timestamp(),
+                                         a.arc_id))[:ARCS_IN_FRAME_CAP]
+
+    def _latest(kind: str):
+        return max((a for a in arcs if a.kind == kind), key=lambda a: (a.ended_at or a.began_at, a.arc_id),
+                   default=None)
+
+    # Pinned however busy the day. Orion plays Zelda (section F): today's latest Retro session, so the
+    # stance cue can still say Orion played (it reads arcs_today; a closed play arc has no
+    # active_by_kind entry to fall back on). Street: today's latest outside event, so recent arcs can
+    # still name it.
+    pins = [a for a in (_latest("play"), _latest("street")) if a is not None]
+    if any(a not in ranked for a in pins):
+        rest = [a for a in ranked if a not in pins]
+        ranked = rest[: ARCS_IN_FRAME_CAP - len(pins)] + pins
     listed = sorted(ranked, key=lambda a: (a.began_at, a.arc_id))
 
     threads = [

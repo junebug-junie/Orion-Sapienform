@@ -394,6 +394,19 @@ def _build_social_epistemic_phrase_hint(
     }
 
 
+def is_third_party_room(payload: Dict[str, Any], social_room: bool | None = None) -> bool:
+    """A social-room turn relayed from an external room, not the Hub UI's own hub_direct room."""
+    if social_room is None:
+        social_room = is_social_room_payload(payload)
+    if not social_room:
+        return False
+    if str(payload.get("social_room_mode") or "").strip().lower() == "hub_direct":
+        return False
+    room = payload.get("external_room")
+    platform = str(room.get("platform") or "").strip().lower() if isinstance(room, dict) else ""
+    return platform != "hub"
+
+
 def build_cortex_chat_request(
     *,
     payload: Dict[str, Any],
@@ -405,6 +418,7 @@ def build_cortex_chat_request(
     source_label: str,
     prompt: str,
     messages: List[Dict[str, Any]] | None = None,
+    utterance_origin: str | None = None,
 ) -> Tuple[CortexChatRequest, Dict[str, Any], bool]:
     selected_ui_route = _normalize_mode(
         payload.get("mode"),
@@ -486,6 +500,10 @@ def build_cortex_chat_request(
     llm_route_norm = normalize_llm_route(llm_route_raw)
     if llm_route_norm:
         options["llm_route"] = llm_route_norm
+    else:
+        # A refused route must not ride on in the copied options: cortex-exec accepts
+        # orion.llm.routes.CORTEX_OVERRIDE_SYSTEM_ROUTES as an override (2026-10-23).
+        options.pop("llm_route", None)
 
     workflow_match = None
     workflow_management = None
@@ -591,6 +609,13 @@ def build_cortex_chat_request(
     mind_requested, mind_diagnostics = _mind_requested_from_payload(payload)
     if mind_requested:
         metadata["mind_enabled"] = True
+    # Who typed this turn. Only the caller knows (websocket/HTTP chat pass "juniper"); never read
+    # from the client payload. cortex-orch copies it onto MindRunRequestV1, and orion-mind keeps
+    # only a "juniper" run on the interactive (never heat-shed) tier. A message relayed from an
+    # external social room (orion-social-room-bridge) is a third party speaking, so it never
+    # carries Juniper's mark; the Hub UI's own hub_direct room is still Juniper typing.
+    if utterance_origin in ("juniper", "orion") and not is_third_party_room(payload, social_room):
+        metadata["utterance_origin"] = utterance_origin
     draft_ac = build_answer_contract_draft_for_hub(prompt)
     metadata["answer_contract_draft"] = draft_ac
     logger.info(
@@ -863,8 +888,13 @@ def build_chat_request(
     source_label: str,
     prompt: str,
     messages: List[Dict[str, Any]] | None = None,
+    utterance_origin: str | None = None,
 ) -> Tuple[CortexChatRequest, Dict[str, Any], bool]:
-    """Compatibility wrapper: canonical Hub chat request builder for HTTP + WS."""
+    """Compatibility wrapper: canonical Hub chat request builder for HTTP + WS.
+
+    ``utterance_origin="juniper"`` marks a turn Juniper typed (Hub chat). Leave it None for any
+    other caller: an unmarked turn's Mind run is sheddable under heat (orion-mind
+    engine.carries_live_turn)."""
     return build_cortex_chat_request(
         payload=payload,
         session_id=session_id,
@@ -875,4 +905,5 @@ def build_chat_request(
         source_label=source_label,
         prompt=prompt,
         messages=messages,
+        utterance_origin=utterance_origin,
     )

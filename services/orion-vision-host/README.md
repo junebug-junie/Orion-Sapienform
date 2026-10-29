@@ -148,13 +148,19 @@ harmless only because the values happened to coincide — fixed for the same
 reason as round 1, not left as a known-benign exception now that the
 principle above is stated as a blanket "no exceptions."
 
-**Bring up (from a worktree ON ATHENA, never the shared checkout):**
+**Bring up (2026-10-20: from the clean primary main checkout, like every live
+deploy).** The post-pull rebuild redeploys this lane on its own whenever
+`services/orion-vision-host/` changes and the lane is running
+(`rebuild_affected_services.py --running-extra-compose`). Before that it never
+did, and the lane ran its 2026-10-16 image and env for days, dropping every
+doorbell caption. By hand, the wrapper's `--compose-file` flag targets this file
+INSTEAD of `docker-compose.yml` (never merged with it), with every deploy check:
 
-Not via `scripts/safe_docker_build.sh` -- that wrapper hardcodes
-`-f services/$SERVICE/docker-compose.yml` and has no hook for a second
-compose file for the same service; passing `-f` yourself would merge both
-files and risk touching the main vision-host service too. Run docker
-compose directly:
+```bash
+scripts/safe_docker_build.sh orion-vision-host --compose-file docker-compose.circe-qwen.yml up -d --build
+```
+
+The equivalent raw command, for reference:
 
 ```bash
 # Confirm the GPU is actually free RIGHT NOW -- do not trust an earlier
@@ -406,6 +412,30 @@ name:cols,rows,overlap[,x0,y0,x1,y1]] [--draw]`; see its docstring for the
 read-only docker command. Results: `docs/superpowers/pr-reports/
 2026-10-15-walkway-tiled-detection-pr.md`.
 
+## Detection cut-offs per camera and label (2026-10-29)
+
+The detector keeps a box only when its score reaches a cut-off. Before this
+change one cut-off (`score_threshold: 0.35`) served every camera and every
+label. Now `retina_detect_open_vocab` also reads `box_threshold_by_stream` in
+`config/vision_profiles.yaml`:
+
+```yaml
+box_threshold_by_stream:
+  walkway:
+    default: 0.35   # optional
+    vehicle: 0.35   # optional, one label
+```
+
+The request's `stream_id` picks the entry. The detector runs once at the
+lowest cut-off that applies, then each box must reach its own label's
+cut-off (`app/box_thresholds.py`). A label not listed gets the stream's
+`default`, else `score_threshold`. Invalid values are logged and ignored.
+Duplicate suppression is unchanged. The shipped values equal today's 0.35
+everywhere; the evidence for that is in
+`docs/superpowers/pr-reports/2026-10-29-vision-blind-detector-watch-pr.md`.
+The config is copied into the image, so a change needs a rebuild, not a
+restart.
+
 ## Crop embeddings (walkway individuals)
 
 Deploy steps, rebuild set, and the rule that editing `config/vision_zones.yaml`
@@ -449,9 +479,12 @@ L2-normalized inline `embedding`; the detect artifact also carries
   embedder receives, so a no-embed-zone box cannot get one -- is also saved as
   a <=160 px JPEG (quality 70) named by its sha256 under
   `VISION_CROP_THUMB_DIR` (default `/mnt/telemetry/orion-vision-host/crop_thumbs`),
-  and the object gains `thumb_ref = "thumb:<sha256>"`. The host prunes files
-  not rewritten for `VISION_CROP_THUMB_RETENTION_DAYS` (10, longer than an
-  ask's 7-day life). orion-hub mounts the directory read-only and serves one
+  and the object gains `thumb_ref = "thumb:<sha256>"`. At most one per stream
+  AND label per `VISION_CROP_THUMB_MIN_INTERVAL_SEC` (per label since
+  2026-10-20: one shared slot let vehicles take ~2/3 of all thumbnails).
+  Kept forever: `VISION_CROP_THUMB_RETENTION_DAYS=0` (default since
+  2026-10-20; a positive value prunes files not rewritten for that many days).
+  `VISION_FACE_FRAMES_RETENTION_DAYS=0` keeps face frames forever the same way. orion-hub mounts the directory read-only and serves one
   thumbnail by hash at `/api/vision/crop-thumbs/<sha256>`. Empty dir disables.
 - Test: `tests/test_crop_embeddings_patio.py`, `tests/test_crop_thumbnails.py`,
   `tests/test_crop_faces.py` (embedder and face models mocked).

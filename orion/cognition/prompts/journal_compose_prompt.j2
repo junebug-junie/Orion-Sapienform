@@ -39,11 +39,12 @@ Rules:
 - Focus on what shifted, what matters for Orion's lab and continuity, and honest uncertainty where coverage is partial or sparse.
 - Do not restate the full digest card schema; write reflective prose, not a news brief.
 {% endif %}
-{% if _jt.get("trigger_kind") in ("walkway_forecast", "walkway_grade") %}
+{% if _jt.get("trigger_kind") in ("walkway_forecast", "walkway_grade", "walkway_day", "walkway_week", "walkway_month") %}
 - Walkway journal: this is about the street outside, seen through your walkway camera. The Prompt seed is the whole truth; use only subjects, times, counts, and verdicts that appear in it. Do not invent a subject, a time, or an outcome.
 - Keep it short: one or two paragraphs, first person. The seed's `lines` are the substance -- say each one plainly; the reflection is at most a few sentences about what it is like to be right, wrong, or not yet able to tell.
 - If the seed says `enough_days: false`, say that you do not have enough days yet, using the seed's own numbers, and do not guess at any rhythm.
 - Grades use exactly these words: confirmed, disconfirmed, unscored. "Not scored yet" means the window has not been graded; never call it a miss.
+- Counts come only from the seed's `facts` (the deterministic walkway rollup). Every number you write must appear in the seed; an entry with any other number is replaced by the seed's plain `lines`. Hours the camera was down are "the camera was down", never "nobody came". Captions are one-frame descriptions, not facts.
 {% endif %}
 {% if metadata.get("journal_mode") == "digest" or _jt.get("trigger_kind") == "notify_summary" %}
 - Automated digest-shaped journal: do not use city names, region names, or other geography in the title or body unless those words appear verbatim in the Summary or Prompt seed below. Do not infer location from default timezones, deployment defaults, or unrelated memory.

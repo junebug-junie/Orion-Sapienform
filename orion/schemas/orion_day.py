@@ -218,6 +218,18 @@ class WorldPulseDigestV1(_Model):
     items: list[WorldPulseDigestItemV1] = Field(default_factory=list)
 
 
+class WalkwayDayV1(_Model):
+    """The street outside on this day: the deterministic day rollup of the walkway camera
+    (``vision_rollup`` grain=day, orion/vision/walkway_rollup.py), as its one template line.
+    Counts only -- no LLM wrote it. ``complete`` false = the rollup did not cover the whole day
+    (camera down, or the reducer was behind); the line itself says which hours."""
+
+    stream_id: str
+    day: date
+    line: str
+    complete: bool = False
+
+
 class OrionDayCorrectionV1(_Model):
     """A letter claim Juniper and Orion agreed was wrong, as recorded by Orion
     (``orion_day_correction``, orion/orion_day/corrections.py). In a day's material when it was
@@ -267,6 +279,9 @@ class OrionDayMaterialV1(_Model):
     # it (temporal_self_day), rendered by a fixed template with [arc:<id>] refs. None when the day
     # was not closed/chronicled: renders nothing. Same rollout rule as ``corrections``.
     temporal_day: TemporalSelfDayBlockV1 | None = None
+    # Added 2026-10-18 (walkway rollups): the walkway day rollup line. None = no row (table not
+    # migrated, reducer off, camera not installed). Same rollout rule as ``corrections``.
+    walkway_day: WalkwayDayV1 | None = None
     sources: dict[str, OrionDaySourceStatusV1] = Field(default_factory=dict)
 
     @model_validator(mode="after")

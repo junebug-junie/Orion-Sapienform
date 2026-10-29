@@ -104,6 +104,9 @@ RefusalReason = Literal[
     "allowance_exhausted",
     "no_cost_estimate",
     "unmeasurable",
+    # Rung 3: an act-backed candidate whose earlier act/dispatch is still open. Decided outside
+    # allocate() (orion.autonomy.act_candidates.refuse_in_flight), recorded here so it is a reason.
+    "act_in_flight",
 ]
 
 # How many standard deviations of the measured contrast must sit on the wrong
@@ -219,6 +222,15 @@ class Candidate:
     # cold-start exemption in allocate().
     cold_start: bool = False
     visual_baseline: VisualBaselineEligibilityV1 | None = None
+    # tau^2 of the learner that owns this candidate's posterior. Field-signal
+    # cells use DEFAULT_OBSERVATION_VARIANCE (unchanged for every existing
+    # candidate). An act-backed candidate (rung 3: a dispatch route that
+    # declares the rung-2 act it produces, orion.autonomy.act_candidates) is
+    # graded by the binary act learner, whose tau^2 is
+    # ACT_BINARY_OBSERVATION_VARIANCE; scoring its information with the field
+    # tau^2 would claim 0.04 where the belief really updates with 0.25. This
+    # is the act learner's existing constant, not a new scoring constant.
+    observation_variance: float = DEFAULT_OBSERVATION_VARIANCE
 
     @property
     def measurable(self) -> bool:
@@ -230,7 +242,7 @@ class Candidate:
         there is no belief for the observation to update."""
         if self.posterior_variance is None:
             return 0.0
-        return expected_information_gain_nats(self.posterior_variance)
+        return expected_information_gain_nats(self.posterior_variance, self.observation_variance)
 
     @property
     def nats_per_sec(self) -> float | None:
@@ -447,4 +459,7 @@ def candidate_from_dispatch(
         claimed_direction=claimed_direction,
         cold_start=cold_start,
         visual_baseline=visual_baseline,
+        # The variance above was inverted with THIS tau^2; scoring it with any
+        # other would change the nats the bins actually carry.
+        observation_variance=observation_variance,
     )

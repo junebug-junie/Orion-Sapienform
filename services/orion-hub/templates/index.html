@@ -43,6 +43,7 @@
               <span class="hub-tab-launcher-hint">Esc to close</span>
             </div>
             <nav id="hubPrimaryNav" class="hub-tab-nav" aria-label="Hub sections">
+          <a id="retroTabButton" href="#retro" data-hash-target="#retro" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700" role="button">Retro</a>
           <a id="graphWorkbenchTabButton" href="#graph-workbench" data-hash-target="#graph-workbench"
              class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
              role="button">Graphs</a>
@@ -173,6 +174,13 @@
             role="button"
           >Mood Arc Status</a>
           <a
+            id="orionEnergyTabButton"
+            href="#orion-energy"
+            data-hash-target="#orion-energy"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Orion Energy</a>
+          <a
             id="collapseMirrorTabButton"
             href="#collapse-mirror"
             data-hash-target="#collapse-mirror"
@@ -286,6 +294,16 @@
         <div id="visionAsksStatus" class="text-xs text-gray-400">Loading Orion's questions…</div>
         <div id="visionAsksList" class="space-y-2 overflow-y-auto pr-1"></div>
       </div>
+      <!-- People Orion knows (2026-10-22, docs/superpowers/specs/2026-10-22-people-one-record-design.md):
+           one card per person from GET /api/people (scripts/people_routes.py). Juniper adds what
+           she knows, removes a fact, or marks a name as not a person. Wired by static/js/people.js. -->
+      <details id="peopleCard" class="w-full bg-gray-900 rounded-2xl shadow-lg p-5 space-y-2">
+        <summary class="flex items-center justify-between cursor-pointer">
+          <h2 class="text-xl font-bold text-white inline">People Orion knows</h2>
+          <span id="peopleStatus" class="text-[11px] text-gray-400">Loading…</span>
+        </summary>
+        <div id="peopleList" class="mt-2 space-y-2 max-h-[32rem] overflow-y-auto pr-1"></div>
+      </details>
       <div class="w-full flex flex-col md:flex-row gap-6 items-stretch">
       
       <!-- Cognitive EKG is a drawer: open by default (as before); collapsing it pans it
@@ -354,11 +372,21 @@
           id="visualizerContainer"
           class="hidden w-full h-28 shrink-0 min-h-0 flex flex-col bg-gray-800/50 rounded-lg border border-gray-800 px-3 py-2"
         >
-          <span class="shrink-0 text-xs text-gray-400">Oríon’s Voice</span>
+          <span id="visualizerLabel" class="shrink-0 text-xs text-gray-400">Oríon’s Voice</span>
           <canvas id="visualizer" class="block w-full flex-1 min-h-0"></canvas>
         </div>
 
         <div class="flex items-center justify-end gap-2 -mb-1">
+          <!-- Live cabinet mic (host reader PCM ring -> GET /api/cabinet/ambient/live),
+               drawn on the same waveform as Orion's voice. static/js/cabinet-live-audio.js -->
+          <button
+            id="cabinetAudioButton"
+            type="button"
+            class="mr-auto rounded-md border border-gray-700 bg-gray-900/70 px-2 py-1 text-[10px] font-semibold text-gray-300 hover:text-white hover:border-gray-500"
+            title="Listen to the cabinet mic live"
+            aria-pressed="false"
+          >Cabinet audio</button>
+          <span id="cabinetAudioStatus" class="text-[10px] text-gray-500" aria-live="polite"></span>
           <span id="visionStatusChip" class="hidden rounded-full border px-2 py-0.5 text-[10px] font-semibold"></span>
           <button
             id="copyTranscriptButton"
@@ -510,32 +538,6 @@
           </div>
         </div>
 
-        <div class="flex flex-wrap items-center gap-2 bg-gray-800/60 border border-gray-700 rounded-lg p-2 text-xs">
-          <div class="flex items-center gap-2">
-            <label for="recallModeSelect" class="text-gray-400">Recall Mode</label>
-            <select id="recallModeSelect" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-              <option value="auto" selected>Auto</option>
-              <option value="blend">Blend</option>
-            </select>
-          </div>
-          <div class="flex items-center gap-2">
-            <label for="recallProfileSelect" class="text-gray-400">Recall Profile</label>
-            <select
-              id="recallProfileSelect"
-              class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Auto-set by Mode: Orion mode leaves this unset (backend default); any other mode forces assist.light.v1. Manual picks below override until Mode changes again."
-            >
-              <option value="assist.light.v1" selected>assist.light.v1</option>
-              <option value="recall.v1">recall.v1</option>
-              <option value="chat.general.v1">chat.general.v1</option>
-              <option value="self.factual.v1">self.factual.v1</option>
-              <option value="reflect.v1">reflect.v1</option>
-              <option value="reflect.anchor.v1">reflect.anchor.v1</option>
-              <option value="recall_v2_shadow_default">recall_v2_shadow_default (optional canary)</option>
-            </select>
-          </div>
-        </div>
-
         <div
           id="operatorToolsBar"
           class="flex items-center justify-between gap-2 bg-gray-800/40 border border-gray-700 rounded-xl px-2.5 py-1.5 text-xs"
@@ -610,14 +612,21 @@
 
         <div id="hubNotificationsPanel" class="bg-gray-900 rounded-2xl shadow-lg p-5 space-y-3" data-notification-batch-threshold="5" title="Notifications reflect server recent events; refresh reloads the Hub cache, not full history.">
           <div class="flex items-center justify-between">
-            <div class="text-xs uppercase tracking-wide text-gray-500">Notifications</div>
+            <div class="flex items-center gap-2">
+              <div class="text-xs uppercase tracking-wide text-gray-500">Notifications</div>
+              <span
+                id="orionMessagesBadge"
+                class="hidden rounded-full bg-green-900/70 px-2 py-0.5 text-[10px] font-semibold text-green-200"
+                title="Messages from Orion you have not dismissed yet"
+              ></span>
+            </div>
             <div class="flex items-center gap-2">
               <button id="settingsOpenButton" type="button" class="text-[10px] text-gray-400 hover:text-gray-200 underline-offset-2 hover:underline">Notify settings</button>
               <button
                 id="notificationsDismissAllBtn"
                 type="button"
                 class="rounded border border-gray-700 bg-gray-800 px-2 py-0.5 text-[10px] text-gray-300 hover:bg-gray-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
-                title="Dismiss every notification currently shown by this filter"
+                title="Dismiss every notification currently shown by this filter (Orion's own messages stay until you dismiss each one)"
                 disabled
               >Dismiss all</button>
               <select id="notificationFilter" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
@@ -724,6 +733,19 @@
           <div id="walkwayStoriesGate" class="text-[11px] text-amber-300"></div>
           <div id="walkwayStoriesStatus" class="text-[11px] text-gray-500">Loading walkway stories…</div>
           <div id="walkwayStoriesList" class="space-y-2 max-h-[40rem] overflow-y-auto pr-1"></div>
+        </div>
+        <!-- Walkway history (walkway rollups, 2026-10-18): shown under the live picture
+             only while "Walkway (live)" is selected. Deterministic counts by hour, day,
+             week and month from orion-sql-writer (vision_rollup); hours the camera was
+             down say so. GET /api/vision/rollups (scripts/walkway_rollup_routes.py);
+             wired by static/js/walkway-history.js. -->
+        <div id="walkwayHistoryCard" class="hidden rounded-lg border border-gray-700 bg-gray-900 p-3 space-y-2">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h3 class="text-sm font-semibold text-white">Walkway history</h3>
+            <div id="walkwayHistoryTabs" role="tablist" class="flex flex-wrap gap-2"></div>
+          </div>
+          <div id="walkwayHistoryStatus" class="text-[11px] text-gray-500">Loading walkway history…</div>
+          <div id="walkwayHistoryList" class="space-y-2 max-h-[32rem] overflow-y-auto pr-1"></div>
         </div>
       </div>
 
@@ -1295,6 +1317,10 @@
         <div class="rounded-xl border border-gray-800 bg-gray-950/40 overflow-hidden flex-1 min-h-[40rem]">
           <iframe id="temporalSelfPanelFrame" src="/temporal-self" class="w-full h-full border-0 min-h-[48rem]" loading="lazy" title="Temporal Self"></iframe>
         </div>
+      </section>
+
+      <section id="retro" data-panel="retro" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-3 min-h-[56rem]">
+        <iframe id="retroPanelFrame" src="about:blank" class="w-full border-0 min-h-[70rem]" title="Retro games" allow="autoplay; gamepad; fullscreen" allowfullscreen></iframe>
       </section>
 
       <section id="personality" data-panel="personality" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
@@ -2940,6 +2966,22 @@
         </div>
       </section>
 
+      <section id="orion-energy" data-panel="orion-energy" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
+        <div>
+          <h2 class="text-xl font-bold text-white">Orion Energy</h2>
+          <p class="text-xs text-gray-400 mt-0.5">What Orion's machines and cabinet cooling draw, against the whole house on the Rocky Mountain Power meter.</p>
+        </div>
+        <div class="rounded-xl border border-gray-800 bg-gray-950/40 overflow-hidden flex-1 min-h-[52rem]">
+          <iframe
+            id="orionEnergyFrame"
+            src="/static/orion-energy.html?v={{HUB_UI_ASSET_VERSION}}"
+            class="w-full h-full border-0 min-h-[52rem]"
+            loading="lazy"
+            title="Orion Energy"
+          ></iframe>
+        </div>
+      </section>
+
       <section id="mood-arc-status" data-panel="mood-arc-status" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
         <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
@@ -3139,7 +3181,7 @@
           <button type="button" id="biometricsSubtabCirce" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700">Circe</button>
           <button type="button" id="biometricsSubtabHecate" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700">Hecate</button>
           <button type="button" id="biometricsSubtabGpu" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700">GPU</button>
-          <button type="button" id="biometricsSubtabCabinet" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700">Cabinet</button>
+          <button type="button" id="biometricsSubtabCabinet" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700">Cabinet / Office</button>
         </div>
         <button
           id="biometricsModalClose"
@@ -3261,6 +3303,34 @@
             </div>
             <div id="cabinetStatus" class="text-xs text-gray-400 min-h-[1.25rem]">Open this subview to start polling.</div>
             <div id="cabinetSources" class="text-xs text-gray-400 min-h-[1rem]"></div>
+            <div id="cabinetSonification" class="rounded-xl border border-gray-700 bg-gray-950/40 p-4 text-sm text-gray-200">
+              <h3 class="font-semibold">Listen to the cabinet</h3>
+              <p class="text-xs text-gray-400">Magnetic field → pitch · distance → pulse rate · sampled movement → percussion. Start at low volume; headphones recommended. Speaker sound can influence cabinet observations. Stop manually during TTS.</p>
+              <p class="text-xs text-amber-300">LiDAR and vibration voices await controlled movement calibration and remain disabled. History plays aggregated levels; vibration impacts are omitted.</p>
+              <div class="flex flex-wrap gap-3 my-3">
+                <label>Sound mode <select id="cabinetSoundMode" class="bg-gray-800 border rounded"><option value="live">Live</option><option value="history">History</option></select></label>
+                <label>History window <select id="cabinetSoundWindow" class="bg-gray-800 border rounded"><option value="24h">24 hours</option><option value="3d">3 days</option><option value="7d">7 days</option></select></label>
+                <label>Interpolate gaps up to <select id="cabinetSoundGap" class="bg-gray-800 border rounded"><option value="1.5">1.5× normal spacing</option><option value="2" selected>2× normal spacing (default)</option><option value="4">4× normal spacing</option><option value="10">10× normal spacing</option></select></label>
+              </div>
+              <div class="flex flex-wrap gap-3 my-3">
+                <button type="button" id="cabinetSoundListen" class="border rounded px-3 py-1">Listen</button>
+                <button type="button" id="cabinetSoundStop" class="border rounded px-3 py-1">Stop</button>
+                <button type="button" id="cabinetSoundPause" class="border rounded px-3 py-1" disabled>Pause</button>
+                <button type="button" id="cabinetSoundReplay" class="border rounded px-3 py-1" disabled>Replay</button>
+                <button type="button" id="cabinetSoundRecord" class="border rounded px-3 py-1">Record local trace</button>
+                <button type="button" id="cabinetSoundDownload" class="border rounded px-3 py-1">Download trace</button>
+              </div>
+              <div class="flex flex-wrap gap-4 my-2">
+                <span><label><input type="checkbox" data-sound-mute="magnetic"> Mute magnetic</label> <button type="button" class="border rounded px-2" data-sound-solo="magnetic" aria-pressed="false">Solo magnetic</button></span>
+                <span><label><input type="checkbox" data-sound-mute="lidar"> Mute lidar</label> <button type="button" class="border rounded px-2" data-sound-solo="lidar" aria-pressed="false">Solo lidar</button></span>
+                <span><label><input type="checkbox" data-sound-mute="vibration"> Mute vibration</label> <button type="button" class="border rounded px-2" data-sound-solo="vibration" aria-pressed="false">Solo vibration</button></span>
+              </div>
+              <label class="block">Seek in playback seconds (pauses) <input id="cabinetSoundSeek" type="range" min="0" max="60" step="0.01" value="0" disabled class="w-full"></label>
+              <p id="cabinetSoundTimeline" class="text-xs text-gray-300"></p>
+              <p id="cabinetSoundHistoryInfo" class="text-xs text-amber-300"></p>
+              <div id="cabinetSoundStatus" role="status">Stopped</div>
+              <details><summary>Source readings and sound targets</summary><pre id="cabinetSoundDebug" class="text-xs overflow-auto max-h-96"></pre></details>
+            </div>
             <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-col gap-4">
               <div class="flex flex-wrap items-start justify-between gap-3">
                 <div>
@@ -3351,6 +3421,78 @@
                 <div id="cabinetCoolingWattsChart" class="min-h-[8rem]"></div>
               </div>
             </div>
+            <div id="officeEnvStrip" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-col gap-4">
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 class="text-sm font-semibold text-gray-100">Office — pan-1 SHT40</h3>
+                  <p class="text-[11px] text-gray-500">
+                    Office temperature and humidity from Postgres <code class="text-gray-500">office_env_sample</code>
+                    (~30s grain). A stale sensor shows gaps and "stale", never 0.
+                  </p>
+                </div>
+                <div class="flex flex-wrap items-center gap-1" aria-label="Office history window">
+                  <button type="button" data-office-env-window="24h" class="px-2 py-1 rounded border border-sky-500 bg-sky-950/60 text-[11px] font-mono text-sky-200">24h</button>
+                  <button type="button" data-office-env-window="3d" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">3d</button>
+                  <button type="button" data-office-env-window="7d" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">7d</button>
+                </div>
+              </div>
+              <div id="officeEnvStatus" class="text-[11px] text-gray-500 min-h-[1rem]">Open this subview to load the office sensor.</div>
+              <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-wide text-gray-500">temp °C</div>
+                  <div id="officeEnvTemp" class="mt-1 font-mono text-sm text-gray-200">—</div>
+                </div>
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-wide text-gray-500">humidity %</div>
+                  <div id="officeEnvHumidity" class="mt-1 font-mono text-sm text-gray-200">—</div>
+                </div>
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-wide text-gray-500">age</div>
+                  <div id="officeEnvAge" class="mt-1 font-mono text-sm text-gray-200">—</div>
+                </div>
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-wide text-gray-500">status</div>
+                  <div id="officeEnvLiveStatus" class="mt-1 font-mono text-sm text-gray-200">—</div>
+                </div>
+              </div>
+              <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
+                  <div class="text-xs font-semibold text-gray-300 mb-2">office temp °C</div>
+                  <div id="officeEnvTempChart" class="min-h-[8rem]"></div>
+                </div>
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
+                  <div class="text-xs font-semibold text-gray-300 mb-2">office humidity %</div>
+                  <div id="officeEnvHumidityChart" class="min-h-[8rem]"></div>
+                </div>
+              </div>
+            </div>
+            <div id="climateOverlayStrip" role="region" aria-label="Office, cabinet, outdoor temperature and Orion power" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-col gap-3">
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 class="text-sm font-semibold text-gray-100">Climate and power — overlay</h3>
+                  <p class="text-[11px] text-gray-500">
+                    Office, cabinet and outdoor temperature on one °C plot, with Orion's total wall watts
+                    (all nodes plus cabinet cooling) underneath on the same time axis. Outdoor is hourly
+                    Open-Meteo. Gaps mean no reading, never 0.
+                  </p>
+                </div>
+                <div class="flex flex-wrap items-center gap-1" aria-label="Overlay history window">
+                  <button type="button" data-climate-overlay-window="24h" class="px-2 py-1 rounded border border-sky-500 bg-sky-950/60 text-[11px] font-mono text-sky-200">24h</button>
+                  <button type="button" data-climate-overlay-window="3d" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">3d</button>
+                  <button type="button" data-climate-overlay-window="7d" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">7d</button>
+                </div>
+              </div>
+              <div class="flex flex-wrap items-center gap-1.5" role="group" aria-label="Series shown in the overlay">
+                <button type="button" data-climate-overlay-series="office_temp_c" aria-pressed="true" class="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-200 hover:border-gray-500"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#3987e5"></span>office °C</button>
+                <button type="button" data-climate-overlay-series="cabinet_temp_c" aria-pressed="true" class="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-200 hover:border-gray-500"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#d95926"></span>cabinet °C</button>
+                <button type="button" data-climate-overlay-series="outdoor_temp_c" aria-pressed="true" class="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-200 hover:border-gray-500"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#199e70"></span>outdoor °C</button>
+                <button type="button" data-climate-overlay-series="orion_watts" aria-pressed="true" class="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-200 hover:border-gray-500"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#9085e9"></span>Orion watts</button>
+              </div>
+              <div id="climateOverlayStatus" class="text-[11px] text-gray-500 min-h-[1rem]">Open this subview to load the overlay.</div>
+              <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
+                <div id="climateOverlayChart" class="min-h-[10rem]"></div>
+              </div>
+            </div>
             <div id="energyStrip" role="region" aria-label="House electricity" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-col gap-4">
               <div class="flex flex-wrap items-start justify-between gap-3">
                 <div>
@@ -3371,7 +3513,7 @@
                   <div id="energyCoveredThrough" class="mt-0.5 font-mono text-[10px] text-gray-500">through unknown</div>
                 </div>
                 <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
-                  <div class="text-[10px] uppercase tracking-wide text-gray-500">Orion projects</div>
+                  <div class="text-[10px] uppercase tracking-wide text-gray-500">Orion projects (pre-tax)</div>
                   <div id="energyProjected" class="mt-1 font-mono text-sm text-gray-200">unknown</div>
                 </div>
                 <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
@@ -3437,6 +3579,56 @@
       </div>
       <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           <div id="runtimeDebugPanelBody" class="space-y-2 text-xs text-gray-300">
+            <!-- Recall Mode: the live recall selects every chat send reads. One set
+                 of controls; openRecallModeModal() moves #recallModeControls into
+                 the modal and closeRecallModeModal() moves it back. -->
+            <div id="recallModePanel" class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
+              <div class="flex items-center justify-between gap-2">
+                <button
+                  id="recallModeToggle"
+                  class="flex-1 flex items-center justify-between text-xs text-gray-300 hover:text-white"
+                  type="button"
+                >
+                  <span class="uppercase tracking-wide">Recall Mode</span>
+                  <span id="recallModeCaret" class="text-gray-500">▾</span>
+                </button>
+                <button
+                  id="recallModeOpenModal"
+                  class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
+                  type="button"
+                >
+                  Modal
+                </button>
+              </div>
+              <div id="recallModeBody" class="hidden">
+                <div id="recallModeControls" class="flex flex-wrap items-center gap-2 text-xs">
+                  <div class="flex items-center gap-2">
+                    <label for="recallModeSelect" class="text-gray-400">Recall Mode</label>
+                    <select id="recallModeSelect" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                      <option value="auto" selected>Auto</option>
+                      <option value="blend">Blend</option>
+                    </select>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <label for="recallProfileSelect" class="text-gray-400">Recall Profile</label>
+                    <select
+                      id="recallProfileSelect"
+                      class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Auto-set by Mode: Orion mode leaves this unset (backend default); any other mode forces assist.light.v1. Manual picks below override until Mode changes again."
+                    >
+                      <option value="assist.light.v1" selected>assist.light.v1</option>
+                      <option value="recall.v1">recall.v1</option>
+                      <option value="chat.general.v1">chat.general.v1</option>
+                      <option value="self.factual.v1">self.factual.v1</option>
+                      <option value="reflect.v1">reflect.v1</option>
+                      <option value="reflect.anchor.v1">reflect.anchor.v1</option>
+                      <option value="recall_v2_shadow_default">recall_v2_shadow_default (optional canary)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
               <div class="flex items-center justify-between gap-2">
                 <button
@@ -3764,6 +3956,33 @@
           </div>
         </div>
           </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="recallModeModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
+    <div id="recallModeModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
+    <div id="recallModeModalDialog" class="fixed left-1/2 top-1/2 z-[121] flex w-[min(40rem,92vw)] max-h-[75vh] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+      <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-gray-300">Recall Mode</div>
+          <div class="mt-1 text-[11px] text-gray-400">How each chat turn pulls memory. Applies to your next message.</div>
+        </div>
+        <button
+          id="recallModeModalClose"
+          class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-800"
+          type="button"
+        >
+          Close
+        </button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-4 text-xs text-gray-300">
+        <div id="recallModeModalBody"></div>
+        <dl class="space-y-2 text-[11px] text-gray-400">
+          <div><dt class="inline font-semibold text-gray-200">Auto</dt> <dd class="inline">— sends no recall mode; the backend default decides.</dd></div>
+          <div><dt class="inline font-semibold text-gray-200">Blend</dt> <dd class="inline">— sends <code>recall.mode = "blend"</code> with each turn.</dd></div>
+          <div><dt class="inline font-semibold text-gray-200">Recall Profile</dt> <dd class="inline">— set automatically by the chat Mode; a manual pick holds until Mode changes again.</dd></div>
+        </dl>
       </div>
     </div>
   </div>
@@ -4408,7 +4627,9 @@
   <script src="/static/js/carbon-affect-snapshot.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/vision-live-frame.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/walkway-stories.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/walkway-history.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/vision-asks.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/people.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/thought-process.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <script src="/static/js/organ-signals-graph-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
@@ -4426,13 +4647,19 @@
   <script src="/static/js/exo-exploration.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cocreation-signals.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/field-attention.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/cabinet-sonification-history.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/cabinet-sonification.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/chart-hover.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cabinet-sensors.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/office-env.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/cabinet-climate-overlay.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/energy-strip.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/biometrics-view.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/self_observability.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/hub_surface_tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/gpu_pool_tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/temporal_self_tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/retro-tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/personality_tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/reading_tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/runtime-activity.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
@@ -4462,6 +4689,8 @@
   <script src="/static/js/hub-tab-launcher.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/gpu_pool_leases.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/presence-form.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/cabinet-live-audio.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/orion-message-tray.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
 </body>
 </html>

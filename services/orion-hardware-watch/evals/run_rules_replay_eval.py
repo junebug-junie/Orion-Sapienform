@@ -49,6 +49,10 @@ for p in (str(ROOT), str(SERVICE)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+# The room lines are owned by thermal_gate.py (body economy Patch B); the eval holds no copy.
+from orion.autonomy.thermal_gate import DEFAULT_CRITICAL_C as CRITICAL_C  # noqa: E402
+from orion.autonomy.thermal_gate import DEFAULT_ELEVATED_C as ELEVATED_C  # noqa: E402
+from orion.autonomy.thermal_gate import DEFAULT_HOT_C as HOT_C  # noqa: E402
 from orion.hardware_watch.rules import (  # noqa: E402
     CoolingPoint, ShedRuleConfig, TempPoint, cabinet_rise_c, shed_verdict,
 )
@@ -257,7 +261,7 @@ def shed_leg_stats(cabinet: list[TempPoint], start, end, cfg: ShedRuleConfig) ->
             legs["requested"] += 1
         if v.temp_c is not None and v.temp_c >= cfg.elevated_c:
             legs["elevated_ge_29_5"] += 1
-        if v.temp_c is not None and v.temp_c >= 32.0:
+        if v.temp_c is not None and v.temp_c >= HOT_C:
             legs["hot_ge_32"] += 1
         r10 = rise is not None and rise >= cfg.rise_c
         if r10:
@@ -361,8 +365,6 @@ def injection_stats(cooling, temps, cutoff) -> list[dict]:
 
 V2_FIXTURE = HERE / "fixtures" / "thermal_v2_replay.csv.gz"
 REFLEX_SHED_CHANNEL_FALLBACK = "orion:hardware:watch:reflex_shed"
-CRITICAL_C = 34.0
-ELEVATED_C = 29.5
 EMAIL_WINDOW = timedelta(hours=6)
 # The real week never reached 34 C (peak 33.5 C, 10-05 19:00). So the >= 34 C assertion is not
 # vacuous, a second replay shifts 10-05's cabinet readings up by this much (peak 34.5 C).
@@ -439,7 +441,7 @@ def d11_report(temps, episodes) -> dict:
     rows = [shed_effect(e, cab, gpu, episodes) for e in episodes]
     # Live sanity on the 10-04/05 hot days: can the control read both warming and cooling (not degenerate)?
     hot = [p for p in cab if p.ts.strftime("%m-%d") in ("10-04", "10-05")]
-    ctrl = control_deltas(hot, episodes, near_c=32.0, band_c=0.5, minutes=15)
+    ctrl = control_deltas(hot, episodes, near_c=HOT_C, band_c=0.5, minutes=15)
     sanity = {"n": len(ctrl), "min": min(ctrl) if ctrl else None, "max": max(ctrl) if ctrl else None,
               "median": round(statistics.median(ctrl), 3) if ctrl else None,
               "share_negative": round(sum(1 for d in ctrl if d < 0) / len(ctrl), 2) if ctrl else None}
@@ -679,7 +681,7 @@ def thermal_v2_gate(path: Path = V2_FIXTURE) -> tuple[dict, list[str]]:
         "fixture": str(path.name), "since": since.isoformat(), "cutoff": cutoff.isoformat(), "ticks": n,
         "calibration_pct_of_ticks": {
             "temp_ge_29_5": share(lambda tk: tk["temp"] is not None and tk["temp"] >= ELEVATED_C),
-            "temp_ge_32": share(lambda tk: tk["temp"] is not None and tk["temp"] >= 32.0),
+            "temp_ge_32": share(lambda tk: tk["temp"] is not None and tk["temp"] >= HOT_C),
             "temp_ge_34": share(lambda tk: tk["temp"] is not None and tk["temp"] >= CRITICAL_C),
             "reflex_shed_any": share(lambda tk: bool(tk["blocked"])),
             "learned_shed_eligible": share(lambda tk: tk["eligible"]),

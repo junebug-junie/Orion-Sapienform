@@ -86,7 +86,7 @@ cp .env_example .env
 ### Ring doorbell source (2026-10-17)
 
 `RETINA_SOURCE_TYPE=ring` (`app/ring_source.py`), deployed as
-`orion-vision-retina-doorbell` (profile `doorbell`, stream/camera id
+`orion-vision-retina-doorbell` (no compose profile, stream/camera id
 `doorbell`). The doorbell is battery-powered with no Ring Protect plan, so it
 has no RTSP, no saved recordings, and cannot take a snapshot while it records
 ([Ring snapshot limitations](https://github.com/dgreif/ring/wiki/Snapshot-Limitations)).
@@ -99,20 +99,63 @@ The only picture source is a live view. So:
   `RETINA_RING_BURST_SECONDS` (15). `capture_loop` samples the newest frame
   at `RETINA_FPS`, exactly as for RTSP. Downstream sees the same
   `vision.frame.pointer` stream as the walkway, only in bursts.
-- **Never continuous.** One live view at a time, none without an event, and
-  `RETINA_RING_COOLDOWN_SECONDS` (30) from the end of one to the next start.
-  Each live view wakes the camera and costs battery.
+- **Never continuous.** One live view at a time, none without an event or a
+  self-look (below), and `RETINA_RING_COOLDOWN_SECONDS` (30) from the end of
+  one to the next start. Each live view wakes the camera and costs battery.
+- **Every push is recorded (2026-10-20).** A ding that arrived while the
+  motion-triggered live view was open, or in its cooldown, used to be dropped
+  ("ignored: burst running or in cooldown") -- the usual case: walk up =
+  motion, then press. Now every push of a configured kind is counted
+  (`dings_total`, `motions_total`, `last_ding_ts`), logged with a correlation
+  id (`ring ding recorded corr=... live_view=started|extended|already_open|cooldown`),
+  and published (`app/ring_events.py`):
+  - one `vision.event.bundle` on `orion:vision:events` -> orion-vision-scribe
+    -> `vision_events` row, `event_type` `doorbell_ring` (salience 1.0) or
+    `doorbell_motion` (0.2), `stream_id` `doorbell`, correlation id = the
+    push's. Same rail as the window's `camera_caption` rows.
+  - for a ding, one `StreetEventV1` on `orion:vision:street:events`
+    (`doorbell_ring`, salience 1.0).
+  A ding during an open live view extends it by `RETINA_RING_BURST_SECONDS`
+  (at most 4 bursts long in total). A ding while the view is still connecting
+  or already closing is `queued`: the connecting view covers it, or a new one
+  opens after the close. A ding in the cooldown opens a new one, at most 3 per
+  10 min (`ding_capped` after that, counted in `ring_ding_reopens_refused`;
+  the press is still recorded).
+  Burst frames keep their own envelope correlation ids (the frame router
+  keys pending tasks by them); the push's id is in each frame's
+  `Published frame pointer ... ring_corr=` log line.
+- **ding spellings.** ring_doorbell 0.9.14 `listen/eventlistener.py`
+  `_get_ding_event` compares `action.lower == PUSH_ACTION_DING.lower()` (the
+  method, never called), so a legacy-format ding push carries kind
+  `com.ring.push.HANDLE_NEW_DING`. `ring_source.KIND_ALIASES` maps it, and the
+  new-format `com.ring.pn.live-event.ding`, to `ding`.
+- **Active looking** (spec 2026-10-20 street continuity, section 5). The
+  retina polls Redis key `RETINA_RING_SELF_LOOK_KEY`
+  (`orion:vision:look:doorbell`, on the bus Redis) every 2 s. The handoff
+  reducer (later PR) SETs it, value = handoff id, with a TTL, when it expects
+  someone at the door. A new value opens a live view if none is open and the
+  cooldown has passed, at most `RETINA_RING_SELF_LOOK_MAX_PER_DAY` (8) per
+  UTC day and `RETINA_RING_SELF_LOOK_MIN_SPACING_SECONDS` (300) apart. Each
+  is logged (`ring self_look handoff=... outcome=...`) and counted
+  (`self_looks_today`, `self_looks_total`, `last_self_look_reason`). The
+  live-view call needs no event: `generate_async_webrtc_stream` takes only
+  the device and an SDP offer. Opening one with no preceding event is
+  UNVERIFIED against Ring's servers. Off: `RETINA_RING_SELF_LOOK_ENABLED=false`.
 - Between events an empty read is not a failure (`waiting_for_event`). A live
   view that delivers no frame sets `last_error` (health `degraded`) and counts
   in `ring_bursts_failed`. Health `details` also carry `ring_events_seen`,
-  `ring_events_ignored`, `ring_bursts_started`, `ring_last_event_kind`,
-  `ring_last_event_ts`. `last_frame_age_sec` growing between visits is normal
-  for this camera.
+  `ring_events_ignored` (pushes that opened or extended no view),
+  `ring_bursts_started`, `ring_bursts_extended`, `ring_last_event_kind`,
+  `ring_last_event_ts`, `ring_vision_events_published`,
+  `ring_street_events_published`, `ring_events_publish_failed`.
+  `GET /health` (doorbell: `127.0.0.1:8029`) returns the same payload.
+  `last_frame_age_sec` growing between visits is normal for this camera.
 
-Login, once, after the first `up`:
+No compose profile: the normal `up` (and the post-pull rebuild) builds and
+starts it. Until the Ring login it waits and reports `ring not authenticated`
+in health. Login, once:
 
 ```bash
-scripts/safe_docker_build.sh orion-vision-retina --profile doorbell up -d --build orion-vision-retina-doorbell
 docker exec -it orion-vision-retina-doorbell python -m app.ring_login
 ```
 

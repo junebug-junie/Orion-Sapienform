@@ -21,6 +21,15 @@ Weight fades with a half-life. Nodes are born as ``candidate``, promoted to ``ac
 at least ``promote_min_lanes`` distinct non-seed lanes back them, and ``retired`` when they
 fade out or are never backed. Retired is terminal and never matched again.
 
+Independence, not lane names: ``lane_recent`` is keyed by SOURCE (``source_key``), not by lane. Two
+lanes that narrate the same upstream signal are one source. Reverie narrates the attention
+broadcast coalition and the metacog journal is opened by the self-signal episode gate; both start
+from ``substrate_node_prediction_error_history`` through the same attention eligibility rule. Live
+2026-10-20: on the 3 active prediction-error nodes, 16 of 27 metacog journal hits had a reverie hit
+on the same node within 10 minutes (1 of 27 at a 6 h or 3 h offset), so "two lanes" was one source
+and promoted them. ``lane_counts`` stays per lane (what the panel shows). ``rekey_sources`` moves
+nodes stored under the old lane keys onto source keys, once.
+
 Rows mirror ``services/orion-sql-db/manual_migration_personality_graph_v1.sql``:
 ``Node`` -> personality_disposition, ``EvidenceRow`` -> personality_evidence,
 ``HistoryRow`` -> personality_weight_history. Single writer: orion-durable-runs.
@@ -43,6 +52,8 @@ from typing import Any, Mapping, Optional, Sequence, get_args
 from orion.schemas.personality import (
     DISPOSITION_LABEL_MAX_CHARS,
     FRAME_MAX_DISPOSITIONS,
+    NAMING_NAME_MAX_CHARS,
+    NAMING_SENTENCE_MAX_CHARS,
     ChoiceStyleV1,
     DispositionV1,
     PersonalityFrameV1,
@@ -53,7 +64,14 @@ CHOICE_LANE = "curiosity_choice"
 SEED_LANE = "self_inquiry_seed"
 ORIGIN_SEED = "seed_self_inquiry"
 ORIGIN_RECURRENCE = "recurrence"
+# One source: reverie plus the metacog journal (see module docstring).
+SUBSTRATE_NARRATION = "substrate_narration"
 VALID_LANES = frozenset(get_args(PersonalityLane))
+# Node.orion_verdict values (self-naming).
+VERDICT_NAMED = "named"
+VERDICT_REJECTED = "rejected"
+VERDICT_MERGED = "merged"
+
 _FRAME_MAX_WARNINGS = 20
 
 
@@ -74,6 +92,12 @@ class GraphParams:
     retire_below_weight: float = 0.25  # active node faded below this -> retired
     centroid_n_cap: int = 50  # running-mean memory, lets a node drift slowly
     history_min_rel_change: float = 0.01
+    # MERGE (B into A) by Orion's own verdict only when the two centroids are at least this close.
+    # The design's starting knob was 0.70; the P0 eval on live data (98 nodes, 2026-10-20) found
+    # pairwise centroid cosine median 0.633, p90 0.747, and 21% of all pairs >= 0.70, so 0.70 would
+    # let one in five arbitrary pairs merge. Nearest-neighbor cosine: median 0.827, p90 0.897. 0.85
+    # admits only pairs closer than a typical nearest neighbor (and above the 0.82 match threshold).
+    merge_min_cosine: float = 0.85
 
 
 DEFAULT_PARAMS = GraphParams()
@@ -88,6 +112,9 @@ class Evidence:
     excerpt: str  # <=160 chars, Orion's own words
     embedding: Sequence[float]
     meta: Mapping[str, Any] = field(default_factory=dict)
+    # The full text that was embedded (the excerpt is only its first sentence). Read only by the
+    # own-name echo gate; never stored.
+    text: str = ""
 
 
 @dataclass
@@ -114,6 +141,19 @@ class Node:  # mirrors personality_disposition
     last_folded_at: datetime | None = None
     # Weight at the last history row: history compares against it, so slow fade shows up.
     history_weight: float = 0.0
+    # Self-naming (design 2026-10-17-personality-orion-names-dispositions). Set only by
+    # ``apply_namings``; a name never changes weight, fade or status.
+    name: str | None = None
+    name_sentence: str | None = None
+    named_at: datetime | None = None
+    naming_id: str | None = None  # the last applied naming row for this node
+    orion_verdict: str | None = None  # "named" | "rejected" | "merged" (this node was merged away)
+    merged_into: str | None = None
+    name_grounding_rank: int | None = None
+    name_grounding_margin: float | None = None
+    last_shown_at: datetime | None = None
+    shown_count: int = 0
+    verdict_evidence_count: int | None = None  # evidence_count when the last real verdict landed
 
 
 @dataclass(frozen=True)
@@ -191,6 +231,14 @@ def _derived_weight(lane_recent: Mapping[str, float], params: GraphParams) -> fl
     )
 
 
+def source_key(lane: str, meta: Mapping[str, Any] | None) -> str:
+    """The ``lane_recent`` key: the independent source behind this evidence (module docstring)."""
+    if lane == "reverie" or (lane == "journal" and isinstance(meta, Mapping)
+                             and meta.get("source_kind") == "metacog"):
+        return SUBSTRATE_NARRATION
+    return lane
+
+
 def _node_id(evidence_id: str) -> str:
     return "disp-" + hashlib.sha1(evidence_id.encode("utf-8")).hexdigest()[:16]
 
@@ -205,8 +253,9 @@ def _copy(node: Node) -> Node:
 
 
 def _promoting_lanes(node: Node, params: GraphParams) -> int:
-    return sum(1 for lane, r in node.lane_recent.items()
-               if lane != SEED_LANE and r >= params.promote_lane_min_recent)
+    """Distinct non-seed SOURCES (``lane_recent`` keys) at or above the recent floor."""
+    return sum(1 for key, r in node.lane_recent.items()
+               if key != SEED_LANE and r >= params.promote_lane_min_recent)
 
 
 # --- tick state -------------------------------------------------------------------------------
@@ -267,15 +316,18 @@ class _Tick:
                 best, best_sim = node, sim
         return best, best_sim
 
-    def reinforce(self, node: Node, ev: Evidence, emb: list[float], lane: str, sim: float,
-                  params: GraphParams) -> float:
+    def reinforce(self, node: Node, ev: Evidence, emb: list[float], lane: str, key: str, sim: float,
+                  params: GraphParams, *, hit: bool = True) -> float:
+        """``hit=False`` (own-name echo): the evidence is counted and moves the centroid, but adds
+        no ``lane_recent`` hit, so no weight, and never becomes the label."""
         c = self.centroid(node) or emb
         before = node.weight
-        # Clamp at the level where the lane's contribution caps: hits on a capped lane refresh it
-        # instead of piling up, so a theme that goes quiet fades out in weeks whatever its volume
-        # (unclamped, 2,600 reverie hits stayed above the cap ~134 days after the last one).
-        node.lane_recent[lane] = min(node.lane_recent.get(lane, 0.0) + 1.0, math.expm1(params.lane_cap))
-        node.weight = _derived_weight(node.lane_recent, params)
+        if hit:
+            # Clamp at the level where the lane's contribution caps: hits on a capped lane refresh it
+            # instead of piling up, so a theme that goes quiet fades out in weeks whatever its volume
+            # (unclamped, 2,600 reverie hits stayed above the cap ~134 days after the last one).
+            node.lane_recent[key] = min(node.lane_recent.get(key, 0.0) + 1.0, math.expm1(params.lane_cap))
+            node.weight = _derived_weight(node.lane_recent, params)
         gain = node.weight - before
         node.evidence_count += 1
         node.lane_counts[lane] = node.lane_counts.get(lane, 0) + 1
@@ -290,15 +342,15 @@ class _Tick:
         node.centroid = new_c
         self.unit_centroids[id(node)] = new_c
         node.centroid_n += 1
-        if sim > node.label_similarity:
+        if hit and sim > node.label_similarity:
             label = _clip_label(ev.excerpt)
             if label:
                 node.label, node.label_similarity = label, sim
         return gain
 
-    def create(self, ev: Evidence, emb: list[float], lane: str, origin: str, now: datetime,
+    def create(self, ev: Evidence, emb: list[float], lane: str, key: str, origin: str, now: datetime,
                params: GraphParams) -> Node:
-        gain = _derived_weight({lane: 1.0}, params)
+        gain = _derived_weight({key: 1.0}, params)
         # A node born from self-inquiry alone is a seed whichever entry point created it.
         origin = ORIGIN_SEED if lane == SEED_LANE else origin
         node = Node(
@@ -309,7 +361,7 @@ class _Tick:
             weight=gain, evidence_count=1, lane_counts={lane: 1},
             chosen_count=1 if lane == CHOICE_LANE else 0, first_seen_at=ev.occurred_at,
             last_reinforced_at=ev.occurred_at, retired_at=None, updated_at=now,
-            lane_recent={lane: 1.0}, last_folded_at=now,
+            lane_recent={key: 1.0}, last_folded_at=now,
         )
         # Id collision with an existing (e.g. retired) node: derive a distinct id deterministically.
         taken = {n.disposition_id for n in self.nodes}
@@ -371,6 +423,16 @@ class _Tick:
         return FoldResult(nodes=changed, evidence_rows=list(self.evidence_rows), history=history)
 
 
+def cites_own_name(node: Node, ev: Evidence) -> bool:
+    """Own-name echo gate (design decision 2, 2026-10-20): the evidence's excerpt or text contains
+    the matched node's CURRENT name (case-insensitive exact substring). Only that node's own name;
+    no word lists, no other node's name."""
+    name = (node.name or "").strip().casefold()
+    if not name:
+        return False
+    return any(name in (t or "").casefold() for t in (ev.excerpt, ev.text) if isinstance(t, str))
+
+
 def _ingest(tick: _Tick, evidence: Sequence[Evidence], *, now: datetime, params: GraphParams,
             lane_override: Optional[str], origin: str, eligible) -> None:
     seen: set[str] = set()
@@ -404,17 +466,20 @@ def _ingest(tick: _Tick, evidence: Sequence[Evidence], *, now: datetime, params:
     valid.sort(key=lambda t: (t[0].occurred_at, t[0].evidence_id))
     for ev, emb, lane in valid:
         node, sim = tick.best_match(emb, eligible=eligible)
+        meta = dict(ev.meta) if isinstance(ev.meta, Mapping) else {}
         if node is not None and sim >= params.match_threshold:
-            delta = tick.reinforce(node, ev, emb, lane, sim, params)
+            echo = cites_own_name(node, ev)
+            if echo:
+                meta["cites_own_name"] = True
+            delta = tick.reinforce(node, ev, emb, lane, source_key(lane, ev.meta), sim, params, hit=not echo)
             disp_id, similarity = node.disposition_id, sim
         else:
-            node = tick.create(ev, emb, lane, origin, now, params)
+            node = tick.create(ev, emb, lane, source_key(lane, ev.meta), origin, now, params)
             delta, disp_id, similarity = node.weight, node.disposition_id, 1.0
         tick.evidence_rows.append(EvidenceRow(
             evidence_id=ev.evidence_id, lane=lane, source_ref=str(ev.source_ref or ""),
             occurred_at=ev.occurred_at, excerpt=ev.excerpt[:DISPOSITION_LABEL_MAX_CHARS],
-            disposition_id=disp_id, similarity=similarity, weight_delta=delta,
-            meta=dict(ev.meta) if isinstance(ev.meta, Mapping) else {},
+            disposition_id=disp_id, similarity=similarity, weight_delta=delta, meta=meta,
         ))
 
 
@@ -451,6 +516,62 @@ def seed_nodes(seeds: Sequence[Evidence], *, now: datetime,
     return tick.result(now, params)
 
 
+# Lanes whose stored ``lane_recent`` key may hold another source's hits (before ``source_key``).
+REKEY_LANES = ("reverie", "journal")
+
+
+def rekey_sources(nodes: Sequence[Node], hits: Mapping[str, Sequence[tuple[str, Any, datetime]]], *,
+                  now: datetime, params: GraphParams = DEFAULT_PARAMS) -> FoldResult:
+    """One-time move of ``lane_recent`` from lane keys to source keys (``source_key``).
+
+    ``hits[disposition_id]`` lists that node's evidence in ``REKEY_LANES`` as (lane, meta,
+    occurred_at). Those keys are rebuilt by replaying the hits (fade by the half-life between hits,
+    +1 per hit, clamped as in ``reinforce``) up to the node's ``updated_at``; other keys are kept.
+    An active node that no longer has ``promote_min_lanes`` sources goes back to candidate: it was
+    promoted by one source counted twice; its candidate TTL restarts at ``now``. Returns every node whose ``lane_recent`` changed, with a
+    history row at ``now`` when weight or status moved. Inputs are not mutated."""
+    cap = math.expm1(params.lane_cap)
+    changed: list[Node] = []
+    history: list[HistoryRow] = []
+    for orig in nodes:
+        if orig.status == "retired":
+            continue
+        rebuilt: dict[str, float] = {}
+        last: dict[str, datetime] = {}
+        for lane, meta, at in sorted(hits.get(orig.disposition_id, ()), key=lambda h: h[2]):
+            if lane not in REKEY_LANES or _aware(at) is None:
+                continue
+            key = source_key(lane, meta)
+            r = rebuilt.get(key, 0.0)
+            if key in last and params.half_life_days > 0:
+                r *= 0.5 ** (max(0.0, _days(at - last[key])) / params.half_life_days)
+            rebuilt[key], last[key] = min(r + 1.0, cap), at
+        end = _aware(orig.updated_at)
+        for key, at in last.items():
+            if end is not None and params.half_life_days > 0:
+                rebuilt[key] *= 0.5 ** (max(0.0, _days(end - at)) / params.half_life_days)
+        node = _copy(orig)
+        node.lane_recent = {k: v for k, v in orig.lane_recent.items() if k not in REKEY_LANES} | rebuilt
+        if node.lane_recent == orig.lane_recent:
+            continue
+        node.weight = _derived_weight(node.lane_recent, params)
+        if node.status == "active" and _promoting_lanes(node, params) < params.promote_min_lanes:
+            # A fresh candidate window: the demotion is a recount, not neglect, so the candidate
+            # TTL must not retire (terminal) a long-quiet node in the same tick.
+            node.status, node.last_folded_at = "candidate", now
+        if node.status != orig.status or node.weight != orig.weight:
+            history.append(HistoryRow(node.disposition_id, now, node.weight, node.status,
+                                      node.evidence_count))
+            node.history_weight = node.weight
+        changed.append(node)
+    return FoldResult(nodes=changed, evidence_rows=[], history=history)
+
+
+def _clip(text: Optional[str], n: int) -> Optional[str]:
+    t = (text or "").strip()[:n]
+    return t or None
+
+
 def _as_utc(dt: datetime) -> datetime:
     return dt.replace(tzinfo=timezone.utc) if _aware(dt) is None else dt
 
@@ -461,7 +582,8 @@ def project_frame(nodes: Sequence[Node], *, now: datetime, choice_style: ChoiceS
     for n in nodes:
         if n.status in counts:
             counts[n.status] += 1
-    active = sorted((n for n in nodes if n.status == "active"),
+    # A node Orion said is "not me" keeps matching and fading but leaves every lane's cue.
+    active = sorted((n for n in nodes if n.status == "active" and n.orion_verdict != VERDICT_REJECTED),
                     key=lambda n: (-n.weight, n.disposition_id))[:FRAME_MAX_DISPOSITIONS]
     dispositions = [
         DispositionV1(
@@ -472,6 +594,7 @@ def project_frame(nodes: Sequence[Node], *, now: datetime, choice_style: ChoiceS
             lane_counts={str(k): int(v) for k, v in n.lane_counts.items()},
             chosen_count=max(0, int(n.chosen_count)),
             first_seen_at=_as_utc(n.first_seen_at), last_reinforced_at=_as_utc(n.last_reinforced_at),
+            name=_clip(n.name, NAMING_NAME_MAX_CHARS), name_sentence=_clip(n.name_sentence, NAMING_SENTENCE_MAX_CHARS),
         )
         for n in active
     ]
@@ -528,3 +651,151 @@ def choice_style_from_rows(rows: Sequence[Mapping[str, Any]], *, now: datetime,
     took_top = sum(1 for r in best.values() if r == 1)
     return ChoiceStyleV1(window_days=window_days, choices=len(best), took_top=took_top,
                          went_own_way=len(best) - took_top)
+
+
+# --- self-naming: Orion's verdicts applied to nodes -------------------------------------------
+# Design: docs/superpowers/specs/2026-10-17-personality-orion-names-dispositions-design.md section 5,
+# decisions 2026-10-20 (grounding is recorded, never a refusal; no veto).
+
+
+@dataclass(frozen=True)
+class NamingRow:  # one orion_disposition_naming row (the fields the reducer reads)
+    naming_id: str
+    disposition_id: str
+    verdict: str  # name | reject | merge | no_answer
+    hub_check: str  # accepted | refused
+    written_at: datetime
+    name: str | None = None
+    sentence: str | None = None
+    merge_with: str | None = None
+
+
+@dataclass(frozen=True)
+class NamingOutcome:
+    naming_id: str
+    disposition_id: str
+    verdict: str  # the row's verdict, or "refused" when Hub refused it
+    apply_status: str  # applied | refused | no_answer | unknown_disposition | merge_too_far | merge_target_missing
+    grounding_rank: int | None = None
+    grounding_margin: float | None = None
+
+
+@dataclass
+class NamingApplyResult:
+    nodes: list[Node]  # every node whose row must be written (full upsert)
+    history: list[HistoryRow]
+    outcomes: list[NamingOutcome]
+
+
+def _fade_to(node: Node, now: datetime, params: GraphParams) -> None:
+    updated = _aware(node.updated_at)
+    dt = _days(now - updated) if updated is not None else 0.0
+    if dt > 0 and params.half_life_days > 0:
+        factor = 0.5 ** (dt / params.half_life_days)
+        node.lane_recent = {k: v * factor for k, v in node.lane_recent.items()}
+        node.weight = _derived_weight(node.lane_recent, params)
+        node.updated_at = now
+
+
+def cosine(a: Sequence[float], b: Sequence[float]) -> Optional[float]:
+    """Cosine of two vectors, or None when either is unusable or the dimensions differ."""
+    ua, ub = _unit(a), _unit(b)
+    if ua is None or ub is None or len(ua) != len(ub):
+        return None
+    return _dot(ua, ub)
+
+
+def node_cosine(a: Node, b: Node) -> Optional[float]:
+    return cosine(a.centroid, b.centroid)
+
+
+def _merge_into(a: Node, b: Node, now: datetime, params: GraphParams) -> None:
+    """Pool B's existing evidence into A. Per-key ``lane_recent`` is summed and clamped at the
+    per-lane cap, so a merge never exceeds what the same evidence would give one node."""
+    _fade_to(a, now, params)
+    _fade_to(b, now, params)
+    cap = math.expm1(params.lane_cap)
+    for k, v in b.lane_recent.items():
+        a.lane_recent[k] = min(cap, a.lane_recent.get(k, 0.0) + v)
+    a.weight = _derived_weight(a.lane_recent, params)
+    for lane, c in b.lane_counts.items():
+        a.lane_counts[lane] = a.lane_counts.get(lane, 0) + c
+    a.evidence_count += b.evidence_count
+    a.chosen_count += b.chosen_count
+    ua, ub = _unit(a.centroid), _unit(b.centroid)
+    na, nb = max(1, a.centroid_n), max(1, b.centroid_n)
+    if ua is not None and ub is not None and len(ua) == len(ub):
+        a.centroid = _unit([(x * na + y * nb) / (na + nb) for x, y in zip(ua, ub)]) or ua
+    a.centroid_n = a.centroid_n + b.centroid_n
+    a.first_seen_at = min(a.first_seen_at, b.first_seen_at)
+    a.last_reinforced_at = max(a.last_reinforced_at, b.last_reinforced_at)
+    folded = [t for t in (a.last_folded_at, b.last_folded_at) if t is not None]
+    a.last_folded_at = max(folded) if folded else None
+    a.updated_at = now
+    b.status, b.retired_at, b.updated_at = "retired", now, now
+    b.merged_into, b.orion_verdict = a.disposition_id, VERDICT_MERGED
+
+
+def apply_namings(nodes: Sequence[Node], namings: Sequence[NamingRow],
+                  grounding: Mapping[str, tuple[int, float]] | None = None, *, now: datetime,
+                  params: GraphParams = DEFAULT_PARAMS) -> NamingApplyResult:
+    """Apply Orion's naming verdicts, in the given order, to copies of ``nodes``.
+
+    NAME sets the name fields (and the recorded grounding rank/margin); REJECT marks the node
+    ``orion_verdict='rejected'`` (it keeps matching and fading); MERGE pools B into A only when
+    cosine(A, B) >= ``merge_min_cosine`` and retires B with ``merged_into=A``. A refused or empty
+    answer only updates the shown bookkeeping. No verdict adds a hit, changes the fade, or moves
+    a status the evidence would not give; only MERGE moves A's weight, by pooling. Promotion is not
+    checked here: a merged node is promoted (if at all) by the next tick's ``fold``."""
+    grounding = grounding or {}
+    work = {n.disposition_id: _copy(n) for n in nodes}
+    before = {k: (n.weight, n.status) for k, n in work.items()}
+    touched: dict[str, Node] = {}
+    outcomes: list[NamingOutcome] = []
+    for row in namings:
+        node = work.get(row.disposition_id)
+        verdict = row.verdict if row.hub_check == "accepted" else "refused"
+        if node is None or node.status == "retired":
+            outcomes.append(NamingOutcome(row.naming_id, row.disposition_id, verdict, "unknown_disposition"))
+            continue
+        node.shown_count += 1
+        at = _aware(row.written_at) or now
+        node.last_shown_at = at if node.last_shown_at is None else max(node.last_shown_at, at)
+        touched[node.disposition_id] = node
+        if verdict == "refused" or verdict == "no_answer":
+            outcomes.append(NamingOutcome(row.naming_id, row.disposition_id, verdict, verdict))
+            continue
+        if verdict == "name":
+            rank, margin = grounding.get(row.naming_id, (None, None))
+            node.name = (row.name or "").strip()[:NAMING_NAME_MAX_CHARS] or None
+            node.name_sentence = (row.sentence or "").strip()[:NAMING_SENTENCE_MAX_CHARS] or None
+            node.named_at, node.naming_id, node.orion_verdict = now, row.naming_id, VERDICT_NAMED
+            node.name_grounding_rank, node.name_grounding_margin = rank, margin
+            node.verdict_evidence_count = node.evidence_count
+            outcomes.append(NamingOutcome(row.naming_id, row.disposition_id, verdict, "applied", rank, margin))
+        elif verdict == "reject":
+            node.orion_verdict, node.naming_id = VERDICT_REJECTED, row.naming_id
+            node.verdict_evidence_count = node.evidence_count
+            outcomes.append(NamingOutcome(row.naming_id, row.disposition_id, verdict, "applied"))
+        elif verdict == "merge":
+            target = work.get(row.merge_with or "")
+            if target is None or target.status == "retired" or target is node:
+                outcomes.append(NamingOutcome(row.naming_id, row.disposition_id, verdict, "merge_target_missing"))
+                continue
+            cos = node_cosine(target, node)
+            if cos is None or cos < params.merge_min_cosine:
+                outcomes.append(NamingOutcome(row.naming_id, row.disposition_id, verdict, "merge_too_far"))
+                continue
+            _merge_into(target, node, now, params)
+            node.naming_id, node.verdict_evidence_count = row.naming_id, node.evidence_count
+            touched[target.disposition_id] = target
+            outcomes.append(NamingOutcome(row.naming_id, row.disposition_id, verdict, "applied"))
+        else:
+            outcomes.append(NamingOutcome(row.naming_id, row.disposition_id, verdict, "unknown_verdict"))
+    history: list[HistoryRow] = []
+    for did, n in touched.items():
+        w0, st0 = before[did]
+        if n.weight != w0 or n.status != st0:
+            history.append(HistoryRow(did, now, n.weight, n.status, n.evidence_count))
+            n.history_weight = n.weight
+    return NamingApplyResult(nodes=list(touched.values()), history=history, outcomes=outcomes)

@@ -60,9 +60,18 @@ def main() -> int:
     spec = reg.get("athena.cabinet_temp_c")
     y = load("cabinet_temp_c", spec)
     actuals = load("cabinet_temp_c", spec, fill=False).reindex(y.index)
-    cov_cols = {"athena.chassis_watts": "chassis_watts", "athena.cabinet_cooling_watts": "cooling_watts"}
-    covariates = pd.DataFrame({cid: load(cov_cols[cid], reg.get(cid), fill=False).reindex(y.index) for cid in spec.covariates},
-                              index=y.index)
+    cov_cols = {"athena.chassis_watts": "chassis_watts", "athena.cabinet_cooling_watts": "cooling_watts",
+                "circe.chassis_watts": "circe_watts", "hecate.chassis_watts": "hecate_watts"}
+    skipped = [c for c in spec.covariates if c not in cov_cols]
+    covariates = pd.DataFrame({cid: load(cov_cols[cid], reg.get(cid), fill=False).reindex(y.index)
+                               for cid in spec.covariates if cid in cov_cols}, index=y.index)
+    if "hecate.chassis_watts" in covariates:          # zero_before_first, as covariate_series does live
+        first = covariates["hecate.chassis_watts"].first_valid_index()
+        if first is None:
+            covariates["hecate.chassis_watts"] = 0.0
+        else:
+            covariates.loc[covariates.index < first, "hecate.chassis_watts"] = 0.0
+    print("covariates in fixture:", list(covariates.columns), "| not in fixture (live only):", skipped)
     train = training_slice(y, spec)
     usable, refused = split_seasonalities(spec, len(train))
     zoo = build_models(spec, usable)
@@ -120,9 +129,9 @@ def main() -> int:
     print("assignment:", sel.assignment, "served_baseline:", sel.served_baseline)
 
     scen = {}
-    for cov_id in spec.covariates:
+    for cov_id in [c for c in spec.covariates if c in ("athena.chassis_watts", "athena.cabinet_cooling_watts")]:
         cov_spec = reg.get(cov_id)
-        col = {"athena.chassis_watts": "chassis_watts", "athena.cabinet_cooling_watts": "cooling_watts"}[cov_id]
+        col = cov_cols[cov_id]
         x = load(col, cov_spec).reindex(y.index)
         # End where the covariate's own history ends (the fixture's AC tail can be empty).
         last = x.last_valid_index()

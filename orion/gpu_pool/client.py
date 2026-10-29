@@ -27,6 +27,7 @@ from orion.schemas.gpu_pool import (
     GPU_LEASE_REQUEST_KIND, GPU_POOL_EVENT_CHANNEL, GPU_POOL_LEASE_REPLY_PREFIX, GPU_POOL_LEASE_REQUEST_CHANNEL, GpuLeaseGrantV1,
     GpuLeaseRefV1, GpuLeaseReplyV1, GpuLeaseRequestV1,
 )
+from orion.gpu_pool.shed_backoff import ShedBackoff, is_shed_reason
 
 REPLY_PREFIX = GPU_POOL_LEASE_REPLY_PREFIX
 # One lease RPC never waits longer than this (and never longer than the caller's own deadline):
@@ -51,9 +52,15 @@ def durable_run_holder(run_id: str) -> str:
 
 
 class LeaseUnavailable(RuntimeError):
-    def __init__(self, reason: str, lease_id: str | None = None):
+    """``retry_after_sec``: set on a shed refusal -- how long this process will keep refusing the
+    same priority locally (SHED_BACKOFF). ``local``: True when this refusal never reached the pool
+    (the shed backoff answered it), so callers can log it quietly."""
+
+    def __init__(self, reason: str, lease_id: str | None = None, *, retry_after_sec: float | None = None,
+                 local: bool = False):
         super().__init__(reason)
         self.reason, self.lease_id = reason, lease_id
+        self.retry_after_sec, self.local = retry_after_sec, local
 
 
 class PoolRpcTimeout(asyncio.TimeoutError):
@@ -67,6 +74,13 @@ class PoolRpcTimeout(asyncio.TimeoutError):
 
 
 _BACKGROUND: set = set()
+
+# One per process, keyed by lease priority: the pool sheds by priority (orion/gpu_pool/shed.py), so a
+# "shed:cabinet_hot" for one background call holds for every background call this process makes.
+SHED_BACKOFF = ShedBackoff(name="gpu_pool_client")
+# A probe still queued after this long was not shed (the pool refuses a shed one-shot lease on its
+# first tick, GPU_POOL_TICK_SEC = 1 s): three ticks of margin.
+QUEUED_PROBE_CLEARS_SEC = 3.0
 
 
 class LeaseBacklogged(LeaseUnavailable):
@@ -127,6 +141,66 @@ async def gpu_lease(
         req = GpuLeaseRequestV1(verb="acquire", request_id=request_id or uuid.uuid4().hex, holder=holder,
                                 work_class=work_class, priority=priority, kind=kind, min_ctx_tokens=min_ctx_tokens,
                                 deadline_at=deadline, turn_correlation_id=turn_correlation_id, retryable=retryable)
+    # Shed backoff (orion/gpu_pool/shed_backoff.py): only a one-shot request can be refused with
+    # "shed:<name>" (scheduler D3); holds, attach children and retryable leases wait in the pool
+    # instead, so they are never gated here.
+    shed_key = priority if (hold is None and kind == "request" and not retryable) else None
+    token: int | None = None
+    on_queued = None
+    if shed_key is not None:
+        wait, token = SHED_BACKOFF.admit(shed_key)
+        if wait is not None:
+            raise LeaseUnavailable(SHED_BACKOFF.reason(shed_key) or "shed:backoff", retry_after_sec=wait, local=True)
+        if token is not None:
+            # The pool refuses a shed one-shot lease on its first tick (~1 s). A probe it QUEUED and
+            # still holds after QUEUED_PROBE_CLEARS_SEC was not shed: end the episode now, so the
+            # rest of this process is not refused while the probe waits in line.
+            key, tok = shed_key, token
+
+            def on_queued() -> None:
+                timers.append(asyncio.get_running_loop().call_later(
+                    QUEUED_PROBE_CLEARS_SEC, lambda: SHED_BACKOFF.resolve(key, None, token=tok)))
+    timers: list[asyncio.TimerHandle] = []
+    try:
+        lease, req = await _acquire(bus, req, source=source, deadline=deadline, rpc_timeout=rpc_timeout,
+                                    retryable=retryable, on_queued=on_queued)
+    except LeaseUnavailable as exc:
+        if shed_key is not None:
+            SHED_BACKOFF.resolve(shed_key, exc.reason, token=token)
+            if is_shed_reason(exc.reason):
+                exc.retry_after_sec = SHED_BACKOFF.remaining(shed_key)
+        raise
+    except BaseException:
+        if shed_key is not None:
+            SHED_BACKOFF.abandon(shed_key, token=token)
+        raise
+    finally:
+        for t in timers:
+            t.cancel()
+    if shed_key is not None:
+        SHED_BACKOFF.resolve(shed_key, None, token=token)
+
+    beat = asyncio.create_task(_heartbeat(bus, lease, source, heartbeat_sec or (10.0 if req.kind == "request" else 30.0)))
+    outcome, detail = "ok", None
+    try:
+        yield lease
+    except BaseException as exc:
+        outcome, detail = "upstream_error", f"{type(exc).__name__}: {exc}"[:2000]
+        raise
+    finally:
+        beat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await beat
+        if lease.release_outcome:
+            outcome, detail = lease.release_outcome, lease.release_detail or detail
+        await _quiet(lease_rpc(bus, GpuLeaseRequestV1(verb="release", lease_id=lease.lease_id,
+                                                      outcome=outcome, detail=detail), source=source))
+
+
+async def _acquire(bus: Any, req: GpuLeaseRequestV1, *, source: str, deadline: datetime, rpc_timeout: float,
+                   retryable: bool, on_queued: Any = None) -> tuple[Lease, GpuLeaseRequestV1]:
+    """The acquire/attach exchange: a granted Lease, or a typed exception (withdrawn first).
+    ``on_queued()`` runs once when the pool queues the lease (the shed probe's timer)."""
     lease: Lease | None = None
     reply: GpuLeaseReplyV1 | None = None
     unreachable = False
@@ -141,6 +215,8 @@ async def gpu_lease(
             if reply.status == "granted" and reply.grant:
                 lease = Lease(reply.lease_id, reply.grant)
             elif reply.status == "queued":
+                if on_queued is not None:
+                    on_queued()
                 lease, wait_reason = await _wait_for_grant(bus, pubsub, reply.lease_id, deadline)
     except BaseException:
         # Cancelled or failed mid-acquire: withdraw by request_id (idempotent; works even if the
@@ -160,22 +236,7 @@ async def gpu_lease(
         await _withdraw(bus, req, reply, source)
         raise LeaseUnavailable(reply.reason or wait_reason
                                or ("deadline" if reply.status == "queued" else reply.status), reply.lease_id)
-
-    beat = asyncio.create_task(_heartbeat(bus, lease, source, heartbeat_sec or (10.0 if req.kind == "request" else 30.0)))
-    outcome, detail = "ok", None
-    try:
-        yield lease
-    except BaseException as exc:
-        outcome, detail = "upstream_error", f"{type(exc).__name__}: {exc}"[:2000]
-        raise
-    finally:
-        beat.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await beat
-        if lease.release_outcome:
-            outcome, detail = lease.release_outcome, lease.release_detail or detail
-        await _quiet(lease_rpc(bus, GpuLeaseRequestV1(verb="release", lease_id=lease.lease_id,
-                                                      outcome=outcome, detail=detail), source=source))
+    return lease, req
 
 
 async def lease_status(bus: Any, lease_id: str, *, source: str,

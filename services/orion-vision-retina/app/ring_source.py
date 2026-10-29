@@ -9,9 +9,11 @@ and hang up after RETINA_RING_BURST_SECONDS. RetinaService.capture_loop
 samples that frame at RETINA_FPS exactly as it samples an RTSP camera, so
 downstream sees the same frame-pointer stream as the walkway, only in bursts.
 
-Never continuous: no live view runs without an event, one burst at a time,
-and RETINA_RING_COOLDOWN_SECONDS between the end of a burst and the next
-start (each live view wakes the camera and costs battery). Every exit path of
+Never continuous: no live view runs without an event (or a capped self-look,
+`self_look`), one burst at a time, and RETINA_RING_COOLDOWN_SECONDS between
+the end of a burst and the next start (each live view wakes the camera and
+costs battery). A ding is the exception: every push is recorded (event_sink),
+and a ding extends an open burst or ignores the cooldown. Every exit path of
 a burst closes the Ring session: an orphaned one keeps the camera streaming
 to nobody.
 
@@ -35,8 +37,10 @@ import os
 import tempfile
 import time
 import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from loguru import logger
 
@@ -53,6 +57,94 @@ SUPERVISE_SECONDS = 60.0
 RECONNECT_EVERY_SECONDS = 12 * 3600.0
 # Seconds to wait for Ring's SDP answer to our live-view offer.
 ANSWER_TIMEOUT_SECONDS = 10.0
+# aiortc buffers at most 128 RTP packets per video stream. A frame bigger
+# than that loses its head to make room, and the tail goes to the decoder,
+# which cannot decode it. Since ~2026-10-21 Ring sends this doorbell's
+# 1920x1920 H.264 with keyframes of ~250 packets, so no keyframe ever
+# decoded and every live view ended "no frame within 15s" while ~7,000 good
+# video packets arrived (measured 2026-10-23; 512 decoded 261 frames in 12 s).
+# 512 (the size verified live) is 2x headroom, and a packet NACK cannot
+# recover stalls decoding for ~1 s at ~470 packets/s, not ~2 s at 1024.
+# Must be a power of 2 (aiortc asserts it).
+VIDEO_JITTER_CAPACITY = 512
+# This many live views in a row with no frame = the doorbell is blind.
+BLIND_AFTER_FAILED_BURSTS = 3
+
+
+def ensure_video_jitter_capacity(video_capacity: int = VIDEO_JITTER_CAPACITY) -> None:
+    """Make aiortc's video receivers buffer ``video_capacity`` packets (idempotent).
+
+    aiortc hard-codes ``JitterBuffer(capacity=128, is_video=True)`` in
+    RTCRtpReceiver; swap the class it looks up for one that raises a video
+    capacity. Audio is untouched."""
+    try:
+        import aiortc.jitterbuffer as jb
+        import aiortc.rtcrtpreceiver as rr
+    except ImportError as exc:  # an aiortc without these modules (or a test double)
+        logger.warning(f"[RETINA] ring video buffer not raised: {exc}")
+        return
+
+    current = rr.JitterBuffer
+    if getattr(current, "_orion_video_capacity", None) == video_capacity:
+        return
+    base = getattr(current, "_orion_base", current)
+
+    class _VideoJitterBuffer(base):  # type: ignore[misc,valid-type]
+        _orion_video_capacity = video_capacity
+        _orion_base = base
+
+        # Same parameter names as aiortc: RTCRtpReceiver passes them by keyword.
+        def __init__(self, capacity: int, prefetch: int = 0, is_video: bool = False) -> None:
+            if is_video:
+                capacity = max(capacity, video_capacity)
+            super().__init__(capacity=capacity, prefetch=prefetch, is_video=is_video)
+
+    assert base is jb.JitterBuffer or issubclass(base, jb.JitterBuffer)
+    rr.JitterBuffer = _VideoJitterBuffer
+# A ring during an open live view extends it, up to this many burst lengths
+# in total (a stuck button must not stream all day).
+MAX_BURST_FACTOR = 4.0
+# A ding skips the cooldown, so a stuck button or repeated presses could keep
+# the battery camera streaming. At most this many ding-opened live views that
+# skipped the cooldown per window; later ones are still recorded.
+DING_REOPEN_MAX = 3
+DING_REOPEN_WINDOW_SECONDS = 600.0
+
+# Every spelling ring_doorbell 0.9.14 can hand us for a press or a motion.
+# Legacy (gcmData) pushes: listen/eventlistener.py _get_ding_event compares
+# `action.lower == ...` (the method, never called), so a legacy ding never
+# matches and its kind is the raw action string "com.ring.push.HANDLE_NEW_DING".
+# New-format pushes map the category through PUSH_NOTIFICATION_KINDS; an
+# unmapped category reads "Unknown" (logged, not counted).
+KIND_ALIASES = {
+    "ding": "ding",
+    "com.ring.push.handle_new_ding": "ding",
+    "com.ring.pn.live-event.ding": "ding",
+    "motion": "motion",
+    "com.ring.push.handle_new_motion": "motion",
+    "com.ring.pn.live-event.motion": "motion",
+}
+SELF_LOOK_KIND = "self_look"
+
+
+def normalize_kind(raw: Any) -> str:
+    k = str(raw or "").strip().lower()
+    return KIND_ALIASES.get(k, k)
+
+
+@dataclass(frozen=True)
+class RingPush:
+    """One recorded Ring push (a configured kind on our doorbell)."""
+
+    kind: str  # normalized: "ding" | "motion" | another configured kind
+    raw_kind: str
+    ring_event_id: str | None
+    occurred_at: float  # Ring's own created_at when present, else receipt
+    received_ts: float
+    correlation_id: str
+    # started | extended | queued (opens when the live view connects, or
+    # reopens after it closes) | already_open | cooldown | ding_capped
+    live_view: str
 
 
 def _write_private(path: Path, data: str) -> None:
@@ -133,6 +225,9 @@ class RingEventFrameSource:
         burst_seconds: float = 15.0,
         cooldown_seconds: float = 30.0,
         event_kinds: tuple[str, ...] = DEFAULT_EVENT_KINDS,
+        self_look_max_per_day: int = 8,
+        self_look_min_spacing_seconds: float = 300.0,
+        event_sink: Callable[[RingPush], None] | None = None,
     ) -> None:
         if not state_dir:
             raise ValueError("ring source requires RETINA_RING_STATE_DIR")
@@ -140,7 +235,12 @@ class RingEventFrameSource:
         self.state_dir = state_dir
         self.burst_seconds = float(burst_seconds)
         self.cooldown_seconds = float(cooldown_seconds)
-        self.event_kinds = tuple(k.strip().lower() for k in event_kinds if k.strip())
+        self.event_kinds = tuple(normalize_kind(k) for k in event_kinds if k.strip())
+        self.self_look_max_per_day = int(self_look_max_per_day)
+        self.self_look_min_spacing_seconds = float(self_look_min_spacing_seconds)
+        # Called (sync, on the loop) once per recorded push. RetinaService
+        # sets it to publish the doorbell vision/street events.
+        self.event_sink = event_sink
 
         self._ring: Any = None
         self._device: Any = None
@@ -153,6 +253,17 @@ class RingEventFrameSource:
         self._frame_ts = 0.0
         self._frame_served_ts = 0.0
         self._event_kind: str | None = None
+        self._burst_correlation_id: str | None = None
+        # Monotonic time a ring pushed the open live view out to; 0 = none.
+        self._burst_extend_until = 0.0
+        # True only while the frame loop runs and will read _burst_extend_until.
+        self._frames_open = False
+        # A ding that came while the live view was connecting or closing.
+        self._pending_ding_corr: str | None = None
+        self._closing_for_stop = False
+        self._ding_reopen_times: list[float] = []
+        self._self_look_day: str | None = None
+        self._last_self_look_ts = 0.0
 
         # Read by RetinaService (capture_once / health).
         self.ever_connected = False
@@ -161,8 +272,20 @@ class RingEventFrameSource:
         self.events_ignored = 0
         self.bursts_started = 0
         self.bursts_failed = 0
+        # Live views in a row that delivered no frame; 0 after any frame.
+        self.consecutive_failed_bursts = 0
         self.last_event_kind: str | None = None
         self.last_event_ts: float | None = None
+        # Every recorded push, whatever happened to the live view.
+        self.dings_total = 0
+        self.motions_total = 0
+        self.last_ding_ts: float | None = None
+        self.bursts_extended = 0
+        self.ding_reopens_refused = 0
+        self.self_looks_today = 0
+        self.self_looks_total = 0
+        self.last_self_look_ts: float | None = None
+        self.last_self_look_reason: str | None = None
 
     def _has_new_frame(self) -> bool:
         return self._frame is not None and self._frame_ts > self._frame_served_ts
@@ -175,10 +298,12 @@ class RingEventFrameSource:
         return self.ever_connected and not self._has_new_frame()
 
     async def start(self) -> None:
+        self._closing_for_stop = False
         if self._supervise_task is None or self._supervise_task.done():
             self._supervise_task = asyncio.create_task(self._supervise())
 
     async def stop(self) -> None:
+        self._closing_for_stop = True
         tasks = [t for t in (self._supervise_task, self._burst_task) if t and not t.done()]
         for task in tasks:
             task.cancel()
@@ -223,7 +348,14 @@ class RingEventFrameSource:
         await self._connect_once()
 
     async def _connect_once(self) -> bool:
-        from ring_doorbell import Auth, Ring, RingEventListener
+        try:
+            from ring_doorbell import Auth, Ring, RingEventListener
+        except ImportError as exc:
+            # Outside the try below this killed _supervise silently and health
+            # read the generic "connecting to camera".
+            self.last_error = f"ring library missing in this image: {exc}"
+            logger.error(f"[RETINA] {self.last_error}")
+            return False
 
         token = _read_json(Path(self.state_dir) / TOKEN_FILE)
         if not token:
@@ -267,36 +399,147 @@ class RingEventFrameSource:
         return True
 
     def on_event(self, event: Any) -> None:
-        """RingEventListener callback (sync, on the event loop)."""
+        """RingEventListener callback (sync, on the event loop).
+
+        Every push of a configured kind is recorded (counted, logged with a
+        correlation id, handed to event_sink), whatever the live view does.
+        A ding while a live view is open extends it; a ding in the cooldown
+        starts a new one (2026-10-20: walk up = motion burst, then the press
+        was dropped as "burst running or in cooldown")."""
         if self._device is None or getattr(event, "doorbot_id", None) != self._device.device_api_id:
             return
         if getattr(event, "is_update", False):
             return  # the same event again (Ring re-sends on state change)
-        kind = str(getattr(event, "kind", "") or "").lower()
+        raw_kind = str(getattr(event, "kind", "") or "")
+        kind = normalize_kind(raw_kind)
         if kind not in self.event_kinds:
-            # Logged: ring_doorbell 0.9.14 mislabels old-format ding pushes,
-            # and a silent drop would hide that.
-            logger.info(f"[RETINA] ring event kind {kind!r} not in {self.event_kinds}; ignored")
+            # Logged so a new spelling of a ding shows up instead of vanishing.
+            logger.info(f"[RETINA] ring event kind {raw_kind!r} not in {self.event_kinds}; ignored")
             return
+        now = time.time()
         self.events_seen += 1
         self.last_event_kind = kind
-        self.last_event_ts = time.time()
-        if not self.should_start_burst(time.time()):
+        self.last_event_ts = now
+        if kind == "ding":
+            self.dings_total += 1
+            self.last_ding_ts = now
+        elif kind == "motion":
+            self.motions_total += 1
+        corr = str(uuid.uuid4())
+        live_view = self._live_view_for(kind, now, corr)
+        ring_id = getattr(event, "id", None)
+        try:
+            occurred_at = float(getattr(event, "now", None) or now)
+        except (TypeError, ValueError):
+            occurred_at = now
+        logger.info(
+            f"[RETINA] ring {kind} recorded corr={corr} ring_event_id={ring_id} "
+            f"raw_kind={raw_kind!r} live_view={live_view}"
+        )
+        if self.event_sink is not None:
+            push = RingPush(
+                kind=kind,
+                raw_kind=raw_kind,
+                ring_event_id=str(ring_id) if ring_id is not None else None,
+                occurred_at=occurred_at,
+                received_ts=now,
+                correlation_id=corr,
+                live_view=live_view,
+            )
+            try:
+                self.event_sink(push)
+            except Exception as exc:  # noqa: BLE001 -- recording must not break the listener
+                logger.warning(f"[RETINA] ring event sink failed corr={corr}: {type(exc).__name__}: {exc}")
+
+    def _burst_running(self) -> bool:
+        return self._burst_task is not None and not self._burst_task.done()
+
+    def _live_view_for(self, kind: str, now: float, corr: str) -> str:
+        if self._burst_running():
+            if kind != "ding":
+                self.events_ignored += 1
+                return "already_open"
+            if self._frames_open:
+                self._extend_burst(corr)
+                return "extended"
+            # Connecting (frames start covers it) or closing (_burst's finally
+            # reopens): never marked extended with no frame loop to read it.
+            self._pending_ding_corr = corr
+            return "queued"
+        if self.should_start_burst(now):
+            self._start_burst(kind, corr)
+            return "started"
+        if kind != "ding":
             self.events_ignored += 1
-            logger.info(f"[RETINA] ring {kind} ignored: burst running or in cooldown")
-            return
-        logger.info(f"[RETINA] ring {kind}: opening live view for {self.burst_seconds:.0f}s")
+            return "cooldown"
+        if not self._take_ding_reopen(now):
+            self.events_ignored += 1
+            return "ding_capped"
+        self._start_burst(kind, corr)
+        return "started"
+
+    def _take_ding_reopen(self, now: float) -> bool:
+        """Quota for ding-opened live views that skip the cooldown."""
+        self._ding_reopen_times = [t for t in self._ding_reopen_times if now - t < DING_REOPEN_WINDOW_SECONDS]
+        if len(self._ding_reopen_times) >= DING_REOPEN_MAX:
+            self.ding_reopens_refused += 1
+            return False
+        self._ding_reopen_times.append(now)
+        return True
+
+    def _extend_burst(self, corr: str) -> None:
+        self.bursts_extended += 1
+        self._burst_extend_until = time.monotonic() + self.burst_seconds
+        self._event_kind = "ding"
+        self._burst_correlation_id = corr
+
+    def _start_burst(self, kind: str, corr: str) -> None:
+        logger.info(f"[RETINA] ring {kind}: opening live view for {self.burst_seconds:.0f}s corr={corr}")
+        self._burst_extend_until = 0.0
+        self._frames_open = False
+        self._burst_correlation_id = corr
         self._burst_task = asyncio.create_task(self._burst(kind))
 
     def should_start_burst(self, now: float) -> bool:
-        if self._burst_task is not None and not self._burst_task.done():
+        if self._burst_running():
             return False
         return self._last_burst_end == 0.0 or now - self._last_burst_end >= self.cooldown_seconds
+
+    def self_look(self, reason: str, now: float | None = None) -> str:
+        """Open a live view because Orion expects someone (spec section 5).
+
+        Same live-view call as an event burst: ring_doorbell's
+        generate_async_webrtc_stream takes only the device and an SDP offer,
+        no ding id. Returns the outcome: started | not_ready | burst_running |
+        cooldown | daily_cap | spacing."""
+        now = time.time() if now is None else now
+        day = datetime.fromtimestamp(now, tz=timezone.utc).date().isoformat()
+        if day != self._self_look_day:
+            self._self_look_day = day
+            self.self_looks_today = 0
+        if not self.ever_connected or self._device is None:
+            return "not_ready"
+        if self._burst_running():
+            return "burst_running"
+        if not self.should_start_burst(now):
+            return "cooldown"
+        if self.self_looks_today >= self.self_look_max_per_day:
+            return "daily_cap"
+        if self._last_self_look_ts and now - self._last_self_look_ts < self.self_look_min_spacing_seconds:
+            return "spacing"
+        self.self_looks_today += 1
+        self.self_looks_total += 1
+        self._last_self_look_ts = now
+        self.last_self_look_ts = now
+        self.last_self_look_reason = reason
+        self._start_burst(SELF_LOOK_KIND, f"self_look:{reason}")
+        return "started"
 
     async def _burst(self, kind: str) -> None:
         from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
         from aiortc.sdp import candidate_from_sdp
 
+        ensure_video_jitter_capacity()
         self.bursts_started += 1
         self._event_kind = kind
         started = time.time()
@@ -307,7 +550,15 @@ class RingEventFrameSource:
         remote_set = False
         pending: set[asyncio.Task] = set()
         video_track: asyncio.Future = loop.create_future()
-        pc = RTCPeerConnection(RTCConfiguration(iceServers=[RTCIceServer(urls=device.get_ice_servers())]))
+        try:
+            pc = RTCPeerConnection(RTCConfiguration(iceServers=[RTCIceServer(urls=device.get_ice_servers())]))
+        except Exception as exc:  # noqa: BLE001 -- counts toward blind like any failed view
+            self.bursts_failed += 1
+            self.consecutive_failed_bursts += 1
+            self.last_error = f"ring {kind} live view failed (setup: {type(exc).__name__}: {exc})"
+            logger.warning(f"[RETINA] {self.last_error}")
+            self._last_burst_end = time.time()
+            return
         session_id = uuid.uuid4().hex
 
         def on_message(msg: Any) -> None:
@@ -351,7 +602,7 @@ class RingEventFrameSource:
                 pc.localDescription.sdp,
                 session_id,
                 on_message,
-                keep_alive_timeout=int(self.burst_seconds) + 30,
+                keep_alive_timeout=int(self.burst_seconds * MAX_BURST_FACTOR) + 30,
             )
             phase = "answer"
             sdp = await asyncio.wait_for(answer, timeout=ANSWER_TIMEOUT_SECONDS)
@@ -361,17 +612,38 @@ class RingEventFrameSource:
                 await add_candidate(*item)
 
             phase = "frames"
-            deadline = time.monotonic() + self.burst_seconds
+            frames_start = time.monotonic()
+            deadline = frames_start + self.burst_seconds
+            cap = frames_start + self.burst_seconds * MAX_BURST_FACTOR
             track = await asyncio.wait_for(video_track, timeout=self.burst_seconds)
-            while (remaining := deadline - time.monotonic()) > 0:
-                frame = await asyncio.wait_for(track.recv(), timeout=remaining)
+            self._frames_open = True
+            if self._pending_ding_corr is not None:
+                # A ding while connecting: this full burst, from now, covers it.
+                self._event_kind = "ding"
+                self._burst_correlation_id = self._pending_ding_corr
+                self._pending_ding_corr = None
+
+            def until() -> float:
+                # A ding while open moves _burst_extend_until (on_event).
+                return min(cap, max(deadline, self._burst_extend_until))
+
+            while (remaining := until() - time.monotonic()) > 0:
+                try:
+                    frame = await asyncio.wait_for(track.recv(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    if until() - time.monotonic() > 0:
+                        continue  # extended while waiting for this frame
+                    raise
                 self._frame = frame
                 self._frame_ts = time.time()
+                self.consecutive_failed_bursts = 0
+            self._frames_open = False
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 -- incl. TimeoutError and aiortc MediaStreamError
             if self._frame_ts < started:
                 self.bursts_failed += 1
+                self.consecutive_failed_bursts += 1
                 if phase == "answer" and isinstance(exc, asyncio.TimeoutError):
                     why = f"no answer from Ring within {ANSWER_TIMEOUT_SECONDS:.0f}s"
                 elif phase == "frames" and isinstance(exc, asyncio.TimeoutError):
@@ -383,6 +655,7 @@ class RingEventFrameSource:
             # Frames already arrived: the timeout is the burst's normal end,
             # and a stream that ends early still delivered.
         finally:
+            self._frames_open = False
             for task in list(pending):
                 task.cancel()
             await pc.close()
@@ -392,6 +665,21 @@ class RingEventFrameSource:
                 logger.warning(f"[RETINA] ring live view close failed: {exc}")
             self._last_burst_end = time.time()
             self._frame = None
+            corr = self._pending_ding_corr
+            self._pending_ding_corr = None
+            if corr is not None and not self._closing_for_stop:
+                # A ding came while this view connected-and-failed or closed.
+                if self._take_ding_reopen(time.time()):
+                    logger.info(f"[RETINA] ring ding queued during live view close: reopening corr={corr}")
+                    self._start_burst("ding", corr)
+                else:
+                    self.events_ignored += 1
+                    logger.info(f"[RETINA] ring ding queued corr={corr}: reopen refused (ding quota)")
+
+    @property
+    def blind(self) -> bool:
+        """Ring events arrive but live views keep delivering no picture."""
+        return self.consecutive_failed_bursts >= BLIND_AFTER_FAILED_BURSTS
 
     async def read(self) -> FrameReadResult | None:
         """Newest live-view frame not yet served, else None."""
@@ -408,5 +696,9 @@ class RingEventFrameSource:
             ts=ts,
             width=w,
             height=h,
-            source_meta={"type": "ring", "ring_event_kind": self._event_kind},
+            source_meta={
+                "type": "ring",
+                "ring_event_kind": self._event_kind,
+                "ring_correlation_id": self._burst_correlation_id,
+            },
         )

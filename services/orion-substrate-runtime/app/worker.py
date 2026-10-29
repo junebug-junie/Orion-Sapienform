@@ -4,10 +4,11 @@ import asyncio
 import logging
 import math
 import os
+import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field as _dataclass_field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 from uuid import uuid4
@@ -16,6 +17,7 @@ import requests
 
 from orion.biometrics.node_catalog import NodeCatalog
 from orion.grammar.publish import publish_grammar_event
+from orion.core.bus.resilience import run_subscription
 from orion.core.schemas.drives import DriveStateV1
 from orion.schemas.attention_candidate import PERCEPTION_NODE_ID, PERCEPTION_WALKWAY_NODE_ID
 from orion.schemas.biometrics_projection import (
@@ -47,6 +49,7 @@ from orion.substrate.cabinet_ambient_spike_consumer import (
     apply_cabinet_ambient_spike_bump,
     build_cabinet_ambient_spike_grammar_events,
 )
+from orion.substrate.biometrics_loop.report_cadence import NodeReportCadence, silent_nodes
 from orion.substrate.biometrics_loop.pressure_organ import (
     build_absence_trigger_event,
     sweep_absent_nodes,
@@ -324,6 +327,7 @@ def _prediction_error_receipt(
     prediction_error: float,
     now: datetime,
     caused_by_event_ids: Sequence[str] = (),
+    definition_version: int | None = None,
 ) -> Any:
     from orion.schemas.prediction_error_definitions import prediction_error_definition_version
     from orion.schemas.reduction_receipt import ReductionReceiptV1
@@ -349,7 +353,11 @@ def _prediction_error_receipt(
                     # version moves and folds only matching receipts
                     # (orion/schemas/prediction_error_definitions.py). Kept out of
                     # pressure_hints so no digester channel is created for it.
-                    "definition_version": prediction_error_definition_version(reducer_key),
+                    "definition_version": (
+                        definition_version
+                        if definition_version is not None
+                        else prediction_error_definition_version(reducer_key)
+                    ),
                 },
                 caused_by_event_ids=list(
                     caused_by_event_ids[:_PREDICTION_ERROR_EVIDENCE_CAP]
@@ -386,7 +394,8 @@ class _PerceptionGroupState:
     """Latest perceptual prediction-error reading for one published node.
 
     Same four facts the room node keeps in the ``_last_perception_*``
-    attributes, for the walkway node: the last real score, how many surprise
+    attributes, for the walkway node: the latest real score not yet published
+    (``_take_perception_score``; None once the tick has published it), how many surprise
     samples its scalar baseline has seen (still-warming check), when its last
     embedding arrived (staleness clock) and which stream sent it. In-memory
     "how is this lately" cache; the durable state is the per-stream row in
@@ -397,6 +406,14 @@ class _PerceptionGroupState:
     surprise_n: int = 0
     embedding_at: datetime | None = None
     stream_id: str | None = None
+    lock: threading.Lock = _dataclass_field(default_factory=threading.Lock, repr=False, compare=False)
+
+
+# Why a node's published prediction_error is a placeholder, not a reading
+# (orion/substrate/prediction_error_freshness.py PREDICTION_ERROR_MISSING_REASON_KEY).
+PERCEPTION_MISSING_STALE = "stale"
+PERCEPTION_MISSING_WARMING = "warming"
+PERCEPTION_MISSING_NO_FRAME = "no_scored_frame_since_last_tick"
 
 
 @dataclass(frozen=True)
@@ -502,7 +519,32 @@ def _prediction_error_label(node_id: str) -> str:
     return f"{domain[:1].upper()}{domain[1:]} prediction error"
 
 
+def _on_event_loop_thread() -> bool:
+    """True when called from a thread that is running an asyncio event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 class BiometricsSubstrateWorker:
+    # Single-flight build of the shared substrate store (_get_substrate_graph_store).
+    # A Falkor store hydrates the whole graph in its constructor. Before 2026-10-20
+    # six tick threads raced past the None check at boot and each hydrated its own
+    # copy, while a loop-thread caller built one inline and froze the event loop
+    # ~3 min. The build lock is held for the whole hydrate, so the event loop
+    # never waits on it; the warm lock only guards the warming flag. Class-level
+    # defaults so workers built via __new__ (tests) have them; one worker per process.
+    _substrate_graph_store_lock = threading.Lock()
+    _substrate_graph_store_warm_lock = threading.Lock()
+    _substrate_graph_store_warming = False
+    _substrate_graph_store: Any = None
+    # Per-node biometrics report interval, learned in-process (report_cadence.py),
+    # and the last silent-node set logged. Instance attributes once assigned.
+    _report_cadence: Any = None
+    _last_silent_biometrics_nodes: frozenset = frozenset()
+
     def __init__(self) -> None:
         self._settings = get_settings()
         self._store = BiometricsSubstrateStore(self._settings.postgres_uri)
@@ -594,6 +636,10 @@ class BiometricsSubstrateWorker:
         # never touches _last_perception_embedding_vector above either: the
         # world-model vision_embedding group stays a room embedding.
         self._perception_walkway = _PerceptionGroupState()
+        # Guards the room score's take-and-clear: the listener and the tick run
+        # on different threads. Built here, not lazily, so the two first callers
+        # cannot each build their own lock (review 2026-10-21).
+        self._perception_room_score_lock = threading.Lock()
         # World-model publish tick (world_model_features.py): real per-domain
         # prediction-error scalars cached by their own _*_tick() methods
         # below, read by _world_model_publish_tick's execution_context group
@@ -639,6 +685,7 @@ class BiometricsSubstrateWorker:
 
     async def start(self) -> None:
         s = self._settings
+        self._start_substrate_graph_store_warm()
         if s.orion_bus_enabled:
             from orion.core.bus.async_service import OrionBusAsync
 
@@ -758,10 +805,31 @@ class BiometricsSubstrateWorker:
                     self._rpc_delivery_tick_loop(), name="substrate-rpc-delivery-tick"
                 )
             )
+        # Street events -> node:substrate.street (spec 2026-10-20 street
+        # continuity, section 6). Listener + tick share one flag; without the
+        # bus there are no events, so the tick does not run either (the node
+        # then ages out and attention reads it absent, never calm).
+        if self._bus is not None and s.street_attention_enabled:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._street_events_listener_loop(), name="substrate-street-events-listener"
+                )
+            )
+            self._tasks.append(
+                asyncio.create_task(
+                    self._street_attention_tick_loop(), name="substrate-street-attention-tick"
+                )
+            )
         if s.enable_cabinet_heat_attention:
             self._tasks.append(
                 asyncio.create_task(
                     self._cabinet_heat_tick_loop(), name="substrate-cabinet-heat-tick"
+                )
+            )
+        if s.enable_strain_attention:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._strain_attention_tick_loop(), name="substrate-strain-news-tick"
                 )
             )
         # World-model publish tick: the first real producer for
@@ -1142,6 +1210,39 @@ class BiometricsSubstrateWorker:
         )
         return event.event_id
 
+    def _silent_biometrics_nodes(
+        self, projection: NodeBiometricsProjectionV1, now: datetime
+    ) -> frozenset[str]:
+        """Nodes left out of this tick's biometrics prediction error.
+
+        A node whose last report is older than N x its own report interval (hecate
+        powered down to BMC-only standby) has frozen hints; counting them added a
+        0.0 delta per key. See orion/substrate/biometrics_loop/report_cadence.py.
+        The interval tracker learns on every tick, even with the kill switch off.
+        Logs only when the set changes.
+        """
+        cadence = self._report_cadence
+        if cadence is None:
+            cadence = NodeReportCadence()
+            self._report_cadence = cadence
+        cadence.observe(projection)
+        if not self._settings.biometrics_silent_node_exclusion:
+            return frozenset()
+        silent = silent_nodes(
+            projection,
+            cadence=cadence,
+            multiple=self._settings.biometrics_silent_node_cadence_multiple,
+        )
+        if silent != self._last_silent_biometrics_nodes:
+            logger.info(
+                "biometrics_silent_nodes excluded=%s fleet_cadence_sec=%s multiple=%s",
+                ",".join(sorted(silent)) or "-",
+                cadence.fleet_cadence_sec(),
+                self._settings.biometrics_silent_node_cadence_multiple,
+            )
+            self._last_silent_biometrics_nodes = silent
+        return silent
+
     def _absence_sweep(self, now: datetime) -> list[GrammarEventV1]:
         """Evaluate nodes that are sending nothing.
 
@@ -1228,6 +1329,7 @@ class BiometricsSubstrateWorker:
                 stale_after_sec=self._settings.biometrics_node_stale_after_sec,
                 min_confidence=self._settings.biometrics_pressure_min_confidence,
                 now=now,
+                offline_frozen_hint_guard=self._settings.biometrics_offline_frozen_hint_guard,
             )
         except Exception:
             # Never let the absence path take down the ordinary tick: a node being
@@ -1278,6 +1380,7 @@ class BiometricsSubstrateWorker:
                 stale_after_sec=self._settings.biometrics_node_stale_after_sec,
                 min_confidence=self._settings.biometrics_pressure_min_confidence,
                 now=now,
+                offline_frozen_hint_guard=self._settings.biometrics_offline_frozen_hint_guard,
             )
 
         quarantined: list[str] = []
@@ -1290,7 +1393,10 @@ class BiometricsSubstrateWorker:
 
         if last_id is not None:
             curr_projection = load_node_bio()
-            error = biometrics_prediction_error(prev_projection, curr_projection)
+            silent = self._silent_biometrics_nodes(curr_projection, now)
+            error = biometrics_prediction_error(
+                prev_projection, curr_projection, exclude_nodes=silent
+            )
             evidence_event_ids = _prediction_error_evidence_event_ids(
                 events, quarantined_event_ids=quarantined
             )
@@ -1301,6 +1407,11 @@ class BiometricsSubstrateWorker:
                     prediction_error=error,
                     now=now,
                     caused_by_event_ids=evidence_event_ids,
+                    # Kill switch off = the v1 formula ran, so stamp v1: the
+                    # attention baseline must not mix the two under one version.
+                    definition_version=(
+                        None if self._settings.biometrics_silent_node_exclusion else 1
+                    ),
                 )
             )
             # Write the node on every tick, not just when error > 0.0 -- the
@@ -1337,18 +1448,45 @@ class BiometricsSubstrateWorker:
         need the same durable store and cache it on ``self._substrate_graph_store``
         so repeated ticks don't rebuild it. Fail-open: returns None on init error
         (caller decides whether that means "skip this tick").
-        """
-        try:
-            store = self._substrate_graph_store
-            if store is None:
-                from orion.substrate.graphdb_store import build_substrate_store_from_env
 
-                store = build_substrate_store_from_env()
-                self._substrate_graph_store = store
+        Built once, under a lock. Never built on the event-loop thread: building
+        hydrates the whole graph, so a loop-thread caller that arrives first gets
+        None (it skips, as on an init error) and the build starts in a background
+        thread instead.
+        """
+        store = self._substrate_graph_store
+        if store is not None:
             return store
-        except Exception:
-            logger.exception(log_label)
+        if _on_event_loop_thread():
+            self._start_substrate_graph_store_warm()
+            logger.info("substrate_store_warming caller=%s", log_label)
             return None
+        with self._substrate_graph_store_lock:
+            if self._substrate_graph_store is None:
+                try:
+                    from orion.substrate.graphdb_store import build_substrate_store_from_env
+
+                    self._substrate_graph_store = build_substrate_store_from_env()
+                except Exception:
+                    logger.exception(log_label)
+                    return None
+            return self._substrate_graph_store
+
+    def _start_substrate_graph_store_warm(self) -> None:
+        """Build the shared store in a daemon thread, once; never blocks the caller."""
+        with self._substrate_graph_store_warm_lock:
+            if self._substrate_graph_store is not None or self._substrate_graph_store_warming:
+                return
+            self._substrate_graph_store_warming = True
+
+        def _warm() -> None:
+            try:
+                self._get_substrate_graph_store(log_label="substrate_store_warm_failed")
+            finally:
+                with self._substrate_graph_store_warm_lock:
+                    self._substrate_graph_store_warming = False
+
+        threading.Thread(target=_warm, name="substrate-store-warm", daemon=True).start()
 
     def _get_bus_synaptic_client(self):
         """Return the cached read-only FalkorDB client for the bus synaptic graph
@@ -1394,45 +1532,13 @@ class BiometricsSubstrateWorker:
     async def _rpc_health_listener_loop(self) -> None:
         """Subscribe to orion:rpc_health:snapshot and fold each snapshot into
         the RPC delivery window. Same subscribe shape as the vision listener."""
-        channel = self._settings.rpc_health_snapshot_channel
-        backoff = 1.0
-        while not self._stop.is_set():
-            logger.info("substrate_rpc_health_listener subscribing channel=%s", channel)
-            try:
-                async with self._bus.subscribe(channel) as pubsub:
-                    backoff = 1.0
-                    while not self._stop.is_set():
-                        try:
-                            msg = await asyncio.wait_for(
-                                pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                                timeout=1.2,
-                            )
-                        except asyncio.TimeoutError:
-                            continue
-                        if not msg or msg.get("type") not in ("message", "pmessage"):
-                            continue
-                        try:
-                            self._handle_rpc_health_message(msg)
-                        except Exception:
-                            logger.exception("substrate_rpc_health_handle_failed")
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # A dead subscription must not leave the field holding the last
-                # reading: resubscribe. (Meanwhile the tick finds the window
-                # empty, writes nothing, and the field digester expires the
-                # channel after 120 s -- unmeasured, not calm.)
-                logger.exception(
-                    "substrate_rpc_health_listener_failed channel=%s retry_in=%.0fs",
-                    channel,
-                    backoff,
-                )
-                try:
-                    await asyncio.wait_for(self._stop.wait(), timeout=backoff)
-                except asyncio.TimeoutError:
-                    pass
-                backoff = min(backoff * 2.0, 60.0)
-        logger.info("substrate_rpc_health_listener stopped channel=%s", channel)
+        await run_subscription(
+            self._bus,
+            self._settings.rpc_health_snapshot_channel,
+            self._handle_rpc_health_message,
+            stop_event=self._stop,
+            name="substrate_rpc_health_listener",
+        )
 
     def _handle_rpc_health_message(self, raw_msg: dict[str, Any]) -> bool:
         decoded = self._bus.codec.decode(raw_msg.get("data"))
@@ -1527,6 +1633,378 @@ class BiometricsSubstrateWorker:
             except asyncio.CancelledError:
                 break
 
+    # ------------------------------------------------------------------
+    # Street events -> node:substrate.street (orion/substrate/street_attention.py)
+    # ------------------------------------------------------------------
+
+    _STREET_LISTENER_NAME = "substrate_street_events_listener"
+
+    def _street_state(self):
+        # getattr: tests build the worker via __new__ and skip __init__.
+        state = getattr(self, "_street", None)
+        if state is None:
+            from orion.substrate.street_attention import StreetAttentionState
+
+            state = StreetAttentionState()
+            self._street = state
+        return state
+
+    def street_attention_status(self) -> dict[str, Any]:
+        """Counters for /health (``street_attention``)."""
+        s = self._settings
+        status = self._street_state().status(time.time(), float(s.street_attention_hold_sec))
+        status["enabled"] = bool(s.street_attention_enabled)
+        status["max_per_hour"] = int(s.street_attention_max_per_hour)
+        return status
+
+    def _street_camera_stream_ids(self) -> frozenset[str]:
+        return self._perception_walkway_stream_ids() | _parse_stream_ids(
+            getattr(self._settings, "perception_log_only_stream_ids", None),
+            _DEFAULT_PERCEPTION_LOG_ONLY_STREAM_IDS,
+        )
+
+    async def _street_events_listener_loop(self) -> None:
+        await run_subscription(
+            self._bus,
+            self._settings.street_events_channel,
+            self._handle_street_event_message,
+            stop_event=self._stop,
+            name=self._STREET_LISTENER_NAME,
+        )
+
+    async def _handle_street_event_message(self, raw_msg: dict[str, Any]) -> None:
+        decoded = self._bus.codec.decode(raw_msg.get("data"))
+        if not decoded.ok:
+            self._street_state().bump("invalid_total")
+            logger.warning("substrate_street_event_decode_failed: %s", decoded.error)
+            return
+        await asyncio.to_thread(self._process_street_event, decoded.envelope.payload or {})
+
+    def _process_street_event(self, payload: Any, *, now: datetime | None = None) -> None:
+        """Gate one StreetEventV1, log the verdict, record Rung 6, write on pass.
+
+        One ``substrate_street_event`` log line per received event (kind,
+        salience, verdict, reason, correlation_id). Fail-open."""
+        from orion.schemas.vision import StreetEventV1
+        from orion.substrate.prediction_expectation import domain_specs
+        from orion.substrate.street_attention import (
+            STREET_HANDOFF_DOMAIN,
+            STREET_NODE_ID,
+            street_handoff_raw_reading,
+        )
+
+        s = self._settings
+        state = self._street_state()
+        try:
+            event = StreetEventV1.model_validate(payload)
+        except ValueError as exc:
+            state.bump("invalid_total")
+            logger.error("substrate_street_event_invalid err=%s", exc)
+            return
+        now = now or datetime.now(timezone.utc)
+        now_epoch = now.timestamp()
+        verdict = state.judge(
+            event,
+            now_epoch=now_epoch,
+            max_per_hour=int(s.street_attention_max_per_hour),
+            camera_up_max_age_sec=float(s.street_camera_up_max_age_sec),
+        )
+        raw = street_handoff_raw_reading(event)
+        surprise_z: float | None = None
+        if raw is not None:
+            self._record_prediction_raw_reading(STREET_HANDOFF_DOMAIN, raw, event.occurred_at)
+            expectation = self._prediction_expectation(STREET_HANDOFF_DOMAIN) or domain_specs()[
+                STREET_HANDOFF_DOMAIN
+            ].default
+            surprise_z = state.handoff_surprise_z(
+                raw, alpha=expectation.alpha, min_variance=expectation.min_variance
+            )
+        logger.info(
+            "substrate_street_event kind=%s salience=%.3f p_value=%s verdict=%s reason=%r "
+            "correlation_id=%s event_id=%s streams=%s person_guess=%s raw_nats=%s handoff_surprise_z=%s",
+            event.kind,
+            event.salience,
+            "none" if event.p_value is None else f"{event.p_value:.4g}",
+            "pass" if verdict.passed else "block",
+            verdict.reason,
+            event.correlation_id,
+            event.event_id,
+            ",".join(event.stream_ids),
+            event.person_guess or "none",
+            "none" if raw is None else f"{raw:.4f}",
+            "none" if surprise_z is None else f"{surprise_z:.3f}",
+        )
+        if verdict.passed:
+            # Write now, not at the next tick: the event's correlation id rides
+            # on the node (contributing_turn_ids) into the broadcast's
+            # evidence_refs, so a ring is traceable retina -> attention.
+            self._write_street_node(now=now, node_id=STREET_NODE_ID)
+
+    def _write_street_node(self, *, now: datetime, node_id: str) -> None:
+        s = self._settings
+        state = self._street_state()
+        value, held = state.held_reading(now.timestamp(), float(s.street_attention_hold_sec))
+        # Each held event's correlation id was appended when it passed; the
+        # writer dedupes, so re-sending the newest one here is a no-op.
+        last_corr = held[-1].correlation_id if held else None
+        self._write_prediction_error_node(
+            node_id=node_id,
+            error=value,
+            now=now,
+            reducer_key="street_attention",
+            contributing_id=last_corr,
+            evidence_event_ids=[f"street_event:{h.event_id}" for h in held],
+        )
+        state.last_written_value = value
+        state.bump("node_writes_total")
+
+    def _street_attention_tick(self, *, now: datetime | None = None) -> None:
+        """Write node:substrate.street every tick: held salience, else a real 0.0.
+
+        Writes NOTHING when the runtime cannot see the street -- the street
+        listener is not subscribed, or no street camera delivered a frame
+        within SUBSTRATE_STREET_CAMERA_UP_MAX_AGE_SEC -- unless an event is
+        being held (a passed ring is a fact even with the cameras dark). The
+        reading then ages and attention marks the node absent: silence is not
+        calm. Fail-open."""
+        from orion.core.bus.resilience import subscription_health
+        from orion.substrate.street_attention import STREET_NODE_ID
+
+        s = self._settings
+        try:
+            now = now or datetime.now(timezone.utc)
+            now_epoch = now.timestamp()
+            state = self._street_state()
+            value, held = state.held_reading(now_epoch, float(s.street_attention_hold_sec))
+            listener = next(
+                (
+                    row
+                    for row in subscription_health(now_epoch)["listeners"]
+                    if row.get("name") == self._STREET_LISTENER_NAME
+                ),
+                None,
+            )
+            reason = None
+            if listener is None or not listener.get("subscribed"):
+                reason = "street listener not subscribed"
+            elif not state.street_visible(
+                sorted(self._street_camera_stream_ids()),
+                now_epoch,
+                float(s.street_camera_up_max_age_sec),
+            ):
+                reason = "no street camera frame in the last %.0fs" % float(s.street_camera_up_max_age_sec)
+            if reason is not None and not held and state.last_written_value > 0.0:
+                # The hold just ended while the street is unmeasurable: write
+                # one 0.0 so the held value does not keep competing as fresh
+                # for another 180 s, then go silent (absent) from the next tick.
+                logger.info("substrate_street_attention_hold_closed reason=%r", reason)
+            elif reason is not None and not held:
+                state.bump("ticks_unmeasured_total")
+                logger.info("substrate_street_attention_tick_unmeasured reason=%r", reason)
+                return
+            self._write_street_node(now=now, node_id=STREET_NODE_ID)
+            logger.info(
+                "substrate_street_attention_tick_completed value=%.3f held=%d passes_last_hour=%d",
+                value,
+                len(held),
+                state.status(now_epoch, float(s.street_attention_hold_sec))["passes_last_hour"],
+            )
+        except Exception:
+            logger.exception("substrate_street_attention_tick_failed")
+
+    async def _street_attention_tick_loop(self) -> None:
+        interval = float(self._settings.street_attention_tick_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._street_attention_tick)
+            except Exception:
+                logger.exception("substrate_street_attention_tick_loop_failed")
+    # Strain news (docs/superpowers/specs/2026-10-20-strain-loop-design.md Part 2). Per-process
+    # state; rebuilt from the node's own persisted event rows on the first known reading.
+    _strain_news_state: Any = None
+    _strain_history_warm: bool = False
+    _strain_warm_checked_at: Any = None
+    _strain_failed_at: Any = None
+    _strain_pe_off_logged: bool = False
+    _strain_redis: Any = None
+    # A failed tick (DB down) is retried after this, not every 30 s with a traceback each time.
+    _STRAIN_FAILURE_BACKOFF = timedelta(minutes=5)
+    # The 7-day history size is re-counted this often (it can fall back under 200).
+    _STRAIN_WARM_RECHECK = timedelta(minutes=30)
+
+    def _read_regulation_reading(self, now: datetime) -> tuple[Any, Any]:
+        """(ArousalReadingV1 or None, ArousalView). None whenever ``arousal_view`` says unknown
+        (absent, unparseable, stale, future-stamped, producer unknown, Redis error)."""
+        from orion.regulation.arousal_view import ArousalView, arousal_view
+        from orion.schemas.regulation import REGULATION_STATE_REDIS_KEY, parse_regulation_state
+
+        try:
+            client = self._strain_redis
+            if client is None:
+                import redis
+
+                client = redis.Redis.from_url(
+                    self._settings.orion_bus_url, socket_timeout=2.0, socket_connect_timeout=2.0
+                )
+                self._strain_redis = client
+            raw = client.get(REGULATION_STATE_REDIS_KEY)
+        except Exception as exc:  # noqa: BLE001 -- unreadable is unknown, never strained
+            self._strain_redis = None
+            logger.warning("substrate_strain_news_regulation_read_failed err=%s", exc)
+            return None, ArousalView(level="unknown", reason="read_failed")
+        view = arousal_view(raw, now=now)
+        if not view.known:
+            return None, view
+        state = parse_regulation_state(raw)
+        return (state.arousal if state is not None else None), view
+
+    def _strain_attention_tick(self) -> None:
+        """Write node:substrate.strain's prediction_error: 1.0 on a strain news event, else 0.0.
+
+        The strain LEVEL never competes for attention (it would win every tick of a 54 h
+        episode). Only rare news events do (orion/regulation/strain_news.py: onset, escalation,
+        reminders; <= 8 per local day, >= 30 min apart). An event's 1.0 is carried unwritten for
+        attention's orienting window (world-first fades it by its age and stops it at 300 s);
+        every other tick with a known reading writes a calm 0.0, so the node has the history
+        world-first needs to call a 1.0 unusual. An unknown or stale regulation reading writes
+        nothing. Each event is also recorded in substrate_node_prediction_error_history directly,
+        so a restart rebuilds the budget from it and never re-fires an onset. Fail-open.
+        """
+        if not self._settings.enable_strain_attention:
+            return
+        if not _prediction_error_nodes_enabled():
+            # The node can never be written, so its history can never warm: say so once.
+            if not self._strain_pe_off_logged:
+                self._strain_pe_off_logged = True
+                logger.warning(
+                    "substrate_strain_news_skipped prediction_error_nodes_disabled "
+                    "(SUBSTRATE_WRITE_PREDICTION_ERROR_NODES is off)"
+                )
+            return
+        from zoneinfo import ZoneInfo
+
+        from orion.attention.sustained import EVENT_ORIENTING_WINDOW_SEC
+        from orion.regulation.strain_news import (
+            EVENT_VALUE,
+            REST_VALUE,
+            STRAIN_NODE_ID,
+            rest_write_allowed,
+            seed_state,
+            strain_news,
+        )
+        from orion.substrate.prediction_error_magnitude import DEFAULT_MIN_READINGS, WINDOW_7D
+
+        now = datetime.now(timezone.utc)
+        failed_at = self._strain_failed_at
+        if failed_at is not None and now - failed_at < self._STRAIN_FAILURE_BACKOFF:
+            return
+        try:
+            tz = ZoneInfo(str(self._settings.orion_situation_timezone or "UTC"))
+            reading, view = self._read_regulation_reading(now)
+            if reading is None:
+                logger.info(
+                    "substrate_strain_news_tick_unmeasured reason=%s age_sec=%s",
+                    view.reason, view.age_sec,
+                )
+                return
+            if self._strain_news_state is None:
+                local_midnight = now.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+                since = min(local_midnight, reading.since, now - timedelta(hours=1))
+                since = max(since, now - WINDOW_7D)
+                times = self._store.fetch_prediction_error_event_times(
+                    node_id=STRAIN_NODE_ID, since=since
+                )
+                self._strain_news_state = seed_state(times, reading, now, tz)
+                logger.info(
+                    "substrate_strain_news_seeded events_found=%d events_today=%d "
+                    "episode_since=%s last_event_at=%s",
+                    len(times), self._strain_news_state.events_today,
+                    self._strain_news_state.episode_since, self._strain_news_state.last_event_at,
+                )
+            checked = self._strain_warm_checked_at
+            if checked is None or now - checked >= self._STRAIN_WARM_RECHECK:
+                # World-first needs DEFAULT_MIN_READINGS 7-day readings before it can call any
+                # value unusual. Until then an event would be spent where attention cannot see
+                # it: build the calm history first, step the news later. Re-counted every
+                # _STRAIN_WARM_RECHECK (cheap while warming, and history can shrink).
+                n = self._store.count_prediction_error_history(
+                    node_id=STRAIN_NODE_ID, since=now - WINDOW_7D
+                )
+                self._strain_warm_checked_at = now
+                self._strain_history_warm = n >= DEFAULT_MIN_READINGS
+                if not self._strain_history_warm:
+                    logger.info(
+                        "substrate_strain_news_tick_warming history_rows=%d needed=%d level=%s",
+                        n, DEFAULT_MIN_READINGS, reading.arousal_level,
+                    )
+            if not self._strain_history_warm:
+                if rest_write_allowed(self._strain_news_state, now, EVENT_ORIENTING_WINDOW_SEC):
+                    self._write_prediction_error_node(
+                        node_id=STRAIN_NODE_ID, error=REST_VALUE, now=now, reducer_key="strain_news"
+                    )
+                return
+            event, self._strain_news_state = strain_news(
+                self._strain_news_state, reading, now, tz
+            )
+            state = self._strain_news_state
+            if event is not None:
+                self._write_prediction_error_node(
+                    node_id=STRAIN_NODE_ID, error=EVENT_VALUE, now=now, reducer_key="strain_news"
+                )
+                try:
+                    self._store.save_prediction_error_history_samples(
+                        [(STRAIN_NODE_ID, now, EVENT_VALUE)]
+                    )
+                except Exception:
+                    logger.exception("substrate_strain_news_event_record_failed")
+                logger.info(
+                    "substrate_strain_news_event node_id=%s value=%.1f %s",
+                    STRAIN_NODE_ID, EVENT_VALUE, event.as_log_fields(),
+                )
+                return
+            wrote = "none"
+            if rest_write_allowed(state, now, EVENT_ORIENTING_WINDOW_SEC):
+                self._write_prediction_error_node(
+                    node_id=STRAIN_NODE_ID, error=REST_VALUE, now=now, reducer_key="strain_news"
+                )
+                wrote = "0.0"
+            logger.info(
+                "substrate_strain_news_tick_completed level=%s causes=%s cabinet_temp_c=%s "
+                "episode_since=%s events_today=%d last_event_at=%s onset_pending=%s "
+                "escalation_pending=%s reminders_consumed=%d wrote=%s",
+                reading.arousal_level,
+                "+".join(sorted(state.episode_causes)) or "-",
+                reading.cabinet_temp_c,
+                None if state.episode_since is None else state.episode_since.isoformat(),
+                state.events_today,
+                None if state.last_event_at is None else state.last_event_at.isoformat(),
+                state.onset_pending,
+                state.escalation_pending,
+                state.reminders_consumed,
+                wrote,
+            )
+            self._strain_failed_at = None
+        except Exception:
+            if self._strain_failed_at is None:
+                logger.exception("substrate_strain_news_tick_failed")
+            else:
+                logger.warning("substrate_strain_news_tick_failed again; backing off")
+            self._strain_failed_at = now
+
+    async def _strain_attention_tick_loop(self) -> None:
+        interval = float(self._settings.strain_attention_tick_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._strain_attention_tick)
+            except Exception:
+                logger.exception("substrate_strain_news_tick_loop_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
     async def _rpc_delivery_tick_loop(self) -> None:
         interval = float(self._settings.rpc_delivery_tick_interval_sec)
         while not self._stop.is_set():
@@ -1552,34 +2030,13 @@ class BiometricsSubstrateWorker:
         ``start()`` for why folding this into that listener would defeat the
         point of giving this domain its own independent flag.
         """
-        channel = self._settings.vision_artifacts_channel
-        logger.info(
-            "substrate_perception_prediction_error_listener subscribing channel=%s", channel
+        await run_subscription(
+            self._bus,
+            self._settings.vision_artifacts_channel,
+            self._handle_perception_prediction_error_message,
+            stop_event=self._stop,
+            name="substrate_perception_prediction_error_listener",
         )
-        try:
-            async with self._bus.subscribe(channel) as pubsub:
-                while not self._stop.is_set():
-                    try:
-                        msg = await asyncio.wait_for(
-                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                            timeout=1.2,
-                        )
-                    except asyncio.TimeoutError:
-                        continue
-                    except asyncio.CancelledError:
-                        break
-                    if not msg or msg.get("type") not in ("message", "pmessage"):
-                        continue
-                    try:
-                        self._handle_perception_prediction_error_message(msg)
-                    except Exception:
-                        logger.exception("substrate_perception_prediction_error_handle_failed")
-        except asyncio.CancelledError:
-            raise
-        finally:
-            logger.info(
-                "substrate_perception_prediction_error_listener stopped channel=%s", channel
-            )
 
     def _handle_perception_prediction_error_message(self, raw_msg: dict[str, Any]) -> None:
         """Score one real ``orion:vision:artifacts`` message that carries an
@@ -1601,6 +2058,19 @@ class BiometricsSubstrateWorker:
         payload = decoded.envelope.payload or {}
         if not isinstance(payload, dict):
             return
+        # Street camera-up check (street_attention.py): ANY artifact from a
+        # stream, embedding or not, proves that camera is delivering frames.
+        try:
+            frame_inputs = payload.get("inputs")
+            frame_inputs = frame_inputs if isinstance(frame_inputs, dict) else {}
+            seen_at = time.time()
+            street = self._street_state()
+            street.frame_seen(
+                safe_camera_name(frame_inputs.get("camera_id"), frame_inputs.get("stream_id")), seen_at
+            )
+            street.frame_seen(frame_inputs.get("stream_id"), seen_at)
+        except Exception:  # noqa: BLE001 -- never costs the perception score
+            logger.debug("substrate_street_frame_seen_failed", exc_info=True)
         outputs = payload.get("outputs")
         embedding = (outputs or {}).get("embedding") if isinstance(outputs, dict) else None
         vector = embedding.get("vector") if isinstance(embedding, dict) else None
@@ -1644,7 +2114,8 @@ class BiometricsSubstrateWorker:
             walkway.stream_id = stream_id
             walkway.surprise_n = result.baseline.surprise.n
             if result.score is not None:
-                walkway.score = result.score
+                with walkway.lock:
+                    walkway.score = result.score
             self._log_perception_score(stream_id, result, node_id=PERCEPTION_WALKWAY_NODE_ID)
             return
         self._last_perception_embedding_at = now
@@ -1660,7 +2131,9 @@ class BiometricsSubstrateWorker:
         # return score=None (see this attribute's own comment in __init__).
         self._last_perception_surprise_n = result.baseline.surprise.n
         if result.score is not None:
-            self._last_perception_prediction_error = result.score
+            # Held until the tick publishes it (``_take_perception_score``).
+            with self._perception_room_lock():
+                self._last_perception_prediction_error = result.score
         self._log_perception_score(stream_id, result, node_id=PERCEPTION_NODE_ID)
 
     def _perception_walkway_stream_ids(self) -> frozenset[str]:
@@ -1668,6 +2141,43 @@ class BiometricsSubstrateWorker:
             getattr(self._settings, "perception_walkway_stream_ids", None),
             _DEFAULT_PERCEPTION_WALKWAY_STREAM_IDS,
         )
+
+    def _perception_room_lock(self) -> threading.Lock:
+        # Set in __init__; the getattr fallback is only for tests that build
+        # the worker via __new__ and skip __init__.
+        lock = getattr(self, "_perception_room_score_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._perception_room_score_lock = lock
+        return lock
+
+    def _take_perception_score(self, *, walkway: bool) -> float | None:
+        """Return the latest scored frame not yet published, and clear it.
+
+        None = no scored frame arrived since the last publish; the tick then
+        publishes missing, never a carried-forward copy of an old frame.
+
+        Latest frame, NOT the peak of the window (metric gate, 2026-10-21): the
+        per-frame score saturates at 1.0 for ~1.3% of frames, so the max of a
+        30 s window's ~4 frames sat at 1.0 in 10% of windows. Replayed on
+        2026-10-15..21: exact-zero ticks fell 61% -> 4.5%, curiosity's fixed
+        0.55 threshold fired 7x as often, the room camera's above-chance catch
+        of arrivals vanished (23 vs 14 by chance -> 2 vs 1) and the walkway's
+        p99+ tail disappeared. Record:
+        docs/superpowers/pr-reports/2026-10-21-camera-surprise-honest-input-pr.md.
+
+        Taken before the write: if the receipt or node write then raises, this
+        one frame is lost (fail-open; the next frame is published next tick).
+        """
+        if walkway:
+            state = self._perception_walkway_state()
+            with state.lock:
+                score, state.score = state.score, None
+            return score
+        with self._perception_room_lock():
+            score = self._last_perception_prediction_error
+            self._last_perception_prediction_error = None
+        return score
 
     def _perception_walkway_state(self) -> _PerceptionGroupState:
         # getattr: tests build the worker via __new__ and skip __init__.
@@ -1737,7 +2247,7 @@ class BiometricsSubstrateWorker:
                 node_id=PERCEPTION_NODE_ID,
                 reducer_key="perception",
                 log_prefix="substrate_perception_prediction_error",
-                cached_score=self._last_perception_prediction_error,
+                cached_score=self._take_perception_score(walkway=False),
                 surprise_n=self._last_perception_surprise_n,
                 embedding_at=self._last_perception_embedding_at,
                 stream_id=self._last_perception_stream_id,
@@ -1751,7 +2261,7 @@ class BiometricsSubstrateWorker:
                 node_id=PERCEPTION_WALKWAY_NODE_ID,
                 reducer_key="perception_walkway",
                 log_prefix="substrate_perception_walkway_prediction_error",
-                cached_score=walkway.score,
+                cached_score=self._take_perception_score(walkway=True),
                 surprise_n=walkway.surprise_n,
                 embedding_at=walkway.embedding_at,
                 stream_id=walkway.stream_id,
@@ -1772,9 +2282,16 @@ class BiometricsSubstrateWorker:
         stream_id: str | None,
         now: datetime,
     ) -> None:
-        """One perception node's tick: staleness -> 0.0, still-warming -> 0.0,
-        else the cached real score; receipt + graph node written every call.
-        Raises on failure; the caller isolates each node."""
+        """One perception node's tick. ``cached_score`` is the latest scored
+        frame since the last publish (None = no scored frame in the window).
+
+        A real reading publishes that score. Missing input -- embeddings stale,
+        baseline still warming, or no scored frame in the window -- still
+        writes the receipt and graph node (0.0, see below), but marks the node
+        with ``prediction_error_missing_reason`` so the value is never recorded
+        in substrate_node_prediction_error_history and never read as calm
+        (orion/substrate/prediction_error_freshness.py). Raises on failure; the
+        caller isolates each node."""
         last_at = embedding_at
         if last_at is None:
             # Nothing observed since this process started -- same startup-
@@ -1825,19 +2342,34 @@ class BiometricsSubstrateWorker:
         # state this migration's own comment says it widened the
         # window to include (own test coverage at the time only
         # exercised `surprise_n == 0`, never the real `== 1` case).
+        #
+        # 2026-10-21: the 0.0 written for stale / warming / no-frame is a
+        # placeholder for the field digester's receipt path (below), NOT a
+        # reading. It carries missing_reason, which keeps it out of
+        # substrate_node_prediction_error_history (the percentile window every
+        # attention contest ranks against) and out of the self-model. Before
+        # this, 49 h of stale zeros (2026-10-18..20) made 31% of the room
+        # camera's 7-day window exact 0.0 placeholders: its p90 read 0.137
+        # against 0.205 over live hours only, so ordinary frames ranked "high".
         still_warming = staleness < 1.0 and surprise_n < 2
+        missing_reason: str | None = None
         if staleness >= 1.0:
             score = 0.0
+            missing_reason = PERCEPTION_MISSING_STALE
         elif still_warming:
             score = 0.0
+            missing_reason = PERCEPTION_MISSING_WARMING
             logger.info(
                 "%s_tick_still_warming stream_id=%s surprise_n=%d",
                 log_prefix,
                 stream_id or "none",
                 surprise_n,
             )
+        elif cached_score is None:
+            score = 0.0
+            missing_reason = PERCEPTION_MISSING_NO_FRAME
         else:
-            score = cached_score or 0.0
+            score = cached_score
 
         # Receipt on EVERY tick, unconditionally -- NOT gated on
         # score > 0.0 the way _bus_synaptic_tick's is. This mirrors
@@ -1875,14 +2407,16 @@ class BiometricsSubstrateWorker:
             now=now,
             reducer_key=reducer_key,
             extra_channels={"embedding_staleness": staleness},
+            missing_reason=missing_reason,
         )
         logger.info(
-            "%s_tick_completed age_sec=%.1f staleness=%.3f score=%.3f stream_id=%s",
+            "%s_tick_completed age_sec=%.1f staleness=%.3f score=%.3f stream_id=%s missing=%s",
             log_prefix,
             age_seconds,
             staleness,
             score,
             stream_id or "none",
+            missing_reason or "no",
         )
 
     async def _perception_prediction_error_tick_loop(self) -> None:
@@ -2164,8 +2698,14 @@ class BiometricsSubstrateWorker:
         contributing_id: str | None = None,
         evidence_event_ids: Sequence[str] = (),
         extra_channels: dict[str, float] | None = None,
+        missing_reason: str | None = None,
     ) -> None:
         """Upsert a durable substrate node carrying the surprise (Rung 1 bridge).
+
+        ``missing_reason`` (2026-10-21): set when ``error`` is a placeholder
+        because the producer's input is missing; written to
+        ``metadata[PREDICTION_ERROR_MISSING_REASON_KEY]``. Every write replaces
+        the node's metadata, so a later real reading clears it.
 
         Default-off (env flag), fail-open: never raises out of a tick. When
         enabled it writes a single node under a fixed identity_key so re-writes
@@ -2255,6 +2795,12 @@ class BiometricsSubstrateWorker:
             # one, which is the whole distinction the channel exists to carry.
             for extra_key, extra_value in (extra_channels or {}).items():
                 metadata[extra_key] = round(float(extra_value), 6)
+            if missing_reason:
+                from orion.substrate.prediction_error_freshness import (
+                    PREDICTION_ERROR_MISSING_REASON_KEY,
+                )
+
+                metadata[PREDICTION_ERROR_MISSING_REASON_KEY] = str(missing_reason)
             if evidence_event_ids:
                 metadata["prediction_error_evidence_event_ids"] = list(
                     evidence_event_ids[:_PREDICTION_ERROR_EVIDENCE_CAP]
@@ -2501,30 +3047,13 @@ class BiometricsSubstrateWorker:
         Mirrors the post-turn-closure decode pattern. Gated at task-creation by
         ``embodiment_c_tick_enabled``; fail-open on decode/validate errors.
         """
-        channel = self._settings.drives_state_channel
-        logger.info("substrate_embodiment_drive_listener subscribing channel=%s", channel)
-        try:
-            async with self._bus.subscribe(channel) as pubsub:
-                while not self._stop.is_set():
-                    try:
-                        msg = await asyncio.wait_for(
-                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                            timeout=1.2,
-                        )
-                    except asyncio.TimeoutError:
-                        continue
-                    except asyncio.CancelledError:
-                        break
-                    if not msg or msg.get("type") not in ("message", "pmessage"):
-                        continue
-                    try:
-                        self._cache_drive_state_message(msg)
-                    except Exception:
-                        logger.exception("substrate_embodiment_drive_state_handle_failed")
-        except asyncio.CancelledError:
-            raise
-        finally:
-            logger.info("substrate_embodiment_drive_listener stopped channel=%s", channel)
+        await run_subscription(
+            self._bus,
+            self._settings.drives_state_channel,
+            self._cache_drive_state_message,
+            stop_event=self._stop,
+            name="substrate_embodiment_drive_listener",
+        )
 
     def _cache_drive_state_message(self, raw_msg: dict[str, Any]) -> None:
         decoded = self._bus.codec.decode(raw_msg.get("data"))
@@ -2550,30 +3079,13 @@ class BiometricsSubstrateWorker:
         lane) -- different model, different inputs (field-channel pressures,
         not domain prediction-error or attention-coalition tracking).
         """
-        channel = self._settings.field_channel_anomaly_score_channel
-        logger.info("substrate_field_channel_anomaly_listener subscribing channel=%s", channel)
-        try:
-            async with self._bus.subscribe(channel) as pubsub:
-                while not self._stop.is_set():
-                    try:
-                        msg = await asyncio.wait_for(
-                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                            timeout=1.2,
-                        )
-                    except asyncio.TimeoutError:
-                        continue
-                    except asyncio.CancelledError:
-                        break
-                    if not msg or msg.get("type") not in ("message", "pmessage"):
-                        continue
-                    try:
-                        self._cache_field_channel_anomaly_message(msg)
-                    except Exception:
-                        logger.exception("substrate_field_channel_anomaly_handle_failed")
-        except asyncio.CancelledError:
-            raise
-        finally:
-            logger.info("substrate_field_channel_anomaly_listener stopped channel=%s", channel)
+        await run_subscription(
+            self._bus,
+            self._settings.field_channel_anomaly_score_channel,
+            self._cache_field_channel_anomaly_message,
+            stop_event=self._stop,
+            name="substrate_field_channel_anomaly_listener",
+        )
 
     def _cache_field_channel_anomaly_message(self, raw_msg: dict[str, Any]) -> None:
         decoded = self._bus.codec.decode(raw_msg.get("data"))
@@ -2590,30 +3102,13 @@ class BiometricsSubstrateWorker:
 
     async def _cabinet_ambient_spike_listener_loop(self) -> None:
         """Subscribe to sustained cabinet ambient audio spikes for cognition."""
-        channel = self._settings.cabinet_ambient_spike_channel
-        logger.info("substrate_cabinet_ambient_spike_listener subscribing channel=%s", channel)
-        try:
-            async with self._bus.subscribe(channel) as pubsub:
-                while not self._stop.is_set():
-                    try:
-                        msg = await asyncio.wait_for(
-                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                            timeout=1.2,
-                        )
-                    except asyncio.TimeoutError:
-                        continue
-                    except asyncio.CancelledError:
-                        break
-                    if not msg or msg.get("type") not in ("message", "pmessage"):
-                        continue
-                    try:
-                        await self._handle_cabinet_ambient_spike_message(msg)
-                    except Exception:
-                        logger.exception("substrate_cabinet_ambient_spike_handle_failed")
-        except asyncio.CancelledError:
-            raise
-        finally:
-            logger.info("substrate_cabinet_ambient_spike_listener stopped channel=%s", channel)
+        await run_subscription(
+            self._bus,
+            self._settings.cabinet_ambient_spike_channel,
+            self._handle_cabinet_ambient_spike_message,
+            stop_event=self._stop,
+            name="substrate_cabinet_ambient_spike_listener",
+        )
 
     async def _handle_cabinet_ambient_spike_message(self, raw_msg: dict[str, Any]) -> None:
         decoded = self._bus.codec.decode(raw_msg.get("data"))
@@ -2689,30 +3184,13 @@ class BiometricsSubstrateWorker:
         graphify access lives in `orion-cocreation-signals`, the producer of
         this channel.
         """
-        channel = self._settings.codebase_delta_channel
-        logger.info("substrate_codebase_delta_listener subscribing channel=%s", channel)
-        try:
-            async with self._bus.subscribe(channel) as pubsub:
-                while not self._stop.is_set():
-                    try:
-                        msg = await asyncio.wait_for(
-                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                            timeout=1.2,
-                        )
-                    except asyncio.TimeoutError:
-                        continue
-                    except asyncio.CancelledError:
-                        break
-                    if not msg or msg.get("type") not in ("message", "pmessage"):
-                        continue
-                    try:
-                        await asyncio.to_thread(self._handle_codebase_delta_message, msg)
-                    except Exception:
-                        logger.exception("substrate_codebase_delta_handle_failed")
-        except asyncio.CancelledError:
-            raise
-        finally:
-            logger.info("substrate_codebase_delta_listener stopped channel=%s", channel)
+        await run_subscription(
+            self._bus,
+            self._settings.codebase_delta_channel,
+            lambda msg: asyncio.to_thread(self._handle_codebase_delta_message, msg),
+            stop_event=self._stop,
+            name="substrate_codebase_delta_listener",
+        )
 
     def _handle_codebase_delta_message(self, raw_msg: dict[str, Any]) -> None:
         decoded = self._bus.codec.decode(raw_msg.get("data"))
@@ -2826,30 +3304,13 @@ class BiometricsSubstrateWorker:
         Gated at task-creation by ``embodiment_perception_substrate_enabled``;
         fail-open on decode/validate/store errors.
         """
-        channel = self._settings.embodiment_channel_perception
-        logger.info("substrate_embodiment_perception_ingest subscribing channel=%s", channel)
-        try:
-            async with self._bus.subscribe(channel) as pubsub:
-                while not self._stop.is_set():
-                    try:
-                        msg = await asyncio.wait_for(
-                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                            timeout=1.2,
-                        )
-                    except asyncio.TimeoutError:
-                        continue
-                    except asyncio.CancelledError:
-                        break
-                    if not msg or msg.get("type") not in ("message", "pmessage"):
-                        continue
-                    try:
-                        await asyncio.to_thread(self._ingest_perception_message, msg)
-                    except Exception:
-                        logger.exception("substrate_embodiment_perception_ingest_handle_failed")
-        except asyncio.CancelledError:
-            raise
-        finally:
-            logger.info("substrate_embodiment_perception_ingest stopped channel=%s", channel)
+        await run_subscription(
+            self._bus,
+            self._settings.embodiment_channel_perception,
+            lambda msg: asyncio.to_thread(self._ingest_perception_message, msg),
+            stop_event=self._stop,
+            name="substrate_embodiment_perception_ingest",
+        )
 
     def _ingest_perception_message(self, raw_msg: dict[str, Any]) -> None:
         # Defense-in-depth gate (the loop is only spawned when enabled, but keep
@@ -3012,6 +3473,18 @@ class BiometricsSubstrateWorker:
                 sustain=bool(getattr(s, "attention_sustained_body_enabled", True)),
             )
             projection = broadcast_projection_from_frame(frame)
+            try:
+                from orion.substrate.street_attention import STREET_NODE_ID
+
+                attended = list(getattr(projection, "attended_node_ids", None) or [])
+                if STREET_NODE_ID in attended:
+                    self._street_state().bump("attention_wins_total")
+                    logger.info(
+                        "substrate_street_attention_won loop=%s",
+                        projection.selected_open_loop_id,
+                    )
+            except Exception:  # noqa: BLE001 -- a counter must not cost the broadcast
+                logger.debug("substrate_street_win_count_failed", exc_info=True)
             self._store.save_attention_broadcast(projection)
             try:
                 self._store.save_coalition_dwell(projection)
@@ -3075,7 +3548,15 @@ class BiometricsSubstrateWorker:
 
     @staticmethod
     def _node_prediction_error_reading(node: Any) -> tuple[float, datetime] | None:
-        """(prediction_error, observed_at) for a node, or None if unusable."""
+        """(prediction_error, observed_at) for a node, or None if unusable.
+
+        A placeholder written for missing input (camera stale/warming/no frame,
+        ``prediction_error_missing_reason``) is unusable: it is not recorded in
+        the history and has no magnitude. Missing is a gap, never a 0.0."""
+        from orion.substrate.prediction_error_freshness import missing_input_reason
+
+        if missing_input_reason(node) is not None:
+            return None
         metadata = getattr(node, "metadata", None) or {}
         raw = metadata.get("prediction_error") if isinstance(metadata, dict) else None
         if raw is None or isinstance(raw, bool):

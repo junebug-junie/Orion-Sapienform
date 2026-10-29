@@ -23,6 +23,8 @@ from scripts.crystallization_routes import router as crystallization_router
 from scripts.mind_routes import router as mind_router
 from scripts.ask_routes import router as ask_router
 from scripts.motion_story_routes import router as motion_story_router
+from scripts.people_routes import router as people_router
+from scripts.walkway_rollup_routes import router as walkway_rollup_router
 from scripts.memory_graph_routes import router as memory_graph_router
 from scripts.memory_consolidation_draft_routes import router as memory_consolidation_draft_router
 from scripts.concept_atlas_routes import router as concept_atlas_router
@@ -42,6 +44,13 @@ from scripts.temporal_self_routes import page_router as temporal_self_page_route
 from scripts.personality_routes import page_router as personality_page_router, router as personality_router
 from orion.hub.runtime_activity import get_runtime_activity
 import scripts.api_routes as api_routes_runtime
+from scripts.substrate_store_warm import (
+    STARTUP_CONSUMER_WAIT_SEC as _SUBSTRATE_STORE_WAIT_SEC,
+    SubstrateStoreNotReadyError,
+    not_ready_exception_handler as _substrate_store_not_ready_handler,
+    signal_shutdown as _signal_substrate_store_shutdown,
+    wait_all_ready as _wait_all_substrate_stores_ready,
+)
 import scripts.concept_atlas_routes as concept_atlas_routes_runtime
 import scripts.self_atlas_cluster_history as self_atlas_cluster_history_runtime
 import scripts.vision_affect_ambient as vision_affect_ambient_runtime
@@ -67,9 +76,12 @@ from orion.world_pulse_read.concept_search import (
     OBJECT_MIN_CENTERED_SIMILARITY as READING_OBJECT_MIN_SIMILARITY,
 )
 from scripts.reading_listener import ReadingListener
+from scripts.world_pulse_read_pull_listener import WorldPulseReadPullListener
+from scripts.retro_leisure_listener import RetroLeisureListener
 from scripts.curiosity_introspect_listener import CuriosityIntrospectListener
 from scripts.orion_day_introspect_listener import SEARCH_COLLECTION as ORION_DAY_SEARCH_COLLECTION, OrionDayIntrospectListener
 from scripts.node_history_introspect_listener import NodeHistoryIntrospectListener
+from scripts.power_attribution_introspect_listener import PowerAttributionIntrospectListener
 from scripts.orion_day_correction_listener import OrionDayCorrectionListener
 from scripts.curiosity_focus_listener import CuriosityFocusListener
 from scripts.reading_turn_listener import ReadingTurnListener
@@ -275,6 +287,10 @@ app = FastAPI(
     version=settings.SERVICE_VERSION,
 )
 
+# A route that touches a concept graph store still loading in the background
+# (scripts/substrate_store_warm.py) answers 503 with the reason.
+app.add_exception_handler(SubstrateStoreNotReadyError, _substrate_store_not_ready_handler)
+
 # These are populated on startup and imported by other modules:
 bus: Optional[OrionBusAsync] = None
 rpc_bus: Optional[OrionBusAsync] = None
@@ -339,9 +355,27 @@ endogenous_outreach: Optional[EndogenousOutreach] = None
 collapse_mirror_chat_reply_handler = None
 curiosity_investigation: Optional[CuriosityInvestigation] = None
 reading_listener = None
+world_pulse_read_pull_listener = None
+retro_leisure_listener = None
+
+
+def _cabinet_temp_reading() -> tuple[float | None, float | None]:
+    """(temp_c, age_sec) from Hub's own cabinet sensor snapshot -- the reading orion-thought's
+    thermal gate fetches over HTTP from this same route. Never raises: no reading is unknown."""
+    try:
+        from scripts.cabinet_sensors_routes import api_cabinet_sensors_latest
+
+        payload = api_cabinet_sensors_latest() or {}
+        env = ((payload.get("snapshot") or {}).get("frame") or {}).get("environment") or {}
+        temp, age = env.get("temp_c"), payload.get("age_sec")
+        return (None if temp is None else float(temp)), (None if age is None else float(age))
+    except Exception:  # noqa: BLE001
+        logger.warning("cabinet_temp_reading_failed", exc_info=True)
+        return None, None
 curiosity_introspect_listener = None
 orion_day_introspect_listener = None
 node_history_introspect_listener = None
+power_attribution_introspect_listener = None
 orion_day_correction_listener = None
 curiosity_focus_listener = None
 reading_turn_listener = None
@@ -360,6 +394,7 @@ presence_context_store: Optional["PresenceContextStore"] = None
 substrate_autonomy_task: Optional[asyncio.Task] = None
 substrate_review_task: Optional[asyncio.Task] = None
 substrate_topic_foundry_scheduler_task: Optional[asyncio.Task] = None
+substrate_concept_seed_task: Optional[asyncio.Task] = None
 affect_ambient_loop_task: Optional[asyncio.Task] = None
 heartbeat_chassis: Optional[HeartbeatOnly] = None
 
@@ -452,7 +487,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global reading_turn_listener, reading_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, world_pulse_read_pull_listener, retro_leisure_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -479,6 +514,17 @@ async def startup_event():
     # ------------------------------------------------------------
     # Orion Bus Initialization
     # ------------------------------------------------------------
+    # Orion plays Zelda (section F): co-play session ends (Lane B scripts/retro_routes.py
+    # emit_session_end) -> memory export. Needs only the memory pool, so registered whatever the bus
+    # state. The handoff's hub.retro_coplay play act opens at its start (emit_session_start) and closes
+    # on export; with no bus neither is published.
+    from scripts.retro_memory_export import make_session_end_sink, make_session_start_sink
+
+    app.state.retro_session_end_sink = make_session_end_sink(
+        pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+        bus_provider=lambda: bus,
+    )
+    app.state.retro_session_start_sink = make_session_start_sink(bus_provider=lambda: bus)
     if settings.ORION_BUS_ENABLED:
         try:
             logger.info(f"Connecting OrionBus → {settings.ORION_BUS_URL}")
@@ -581,6 +627,10 @@ async def startup_event():
                     max_age_sec=settings.ORION_REGULATION_READER_MAX_AGE_SEC,
                     name="outreach",
                 ),
+                # Strain report door: one message per long strained episode (scripts/strain_report.py).
+                strain_report_enabled=settings.ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED,
+                strain_report_min_episode_sec=settings.ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC,
+                strain_report_timezone=settings.ORION_SITUATION_TIMEZONE,
                 daily_cap=settings.HUB_ENDOGENOUS_OUTREACH_DAILY_CAP,
                 quiet_start_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR,
                 quiet_end_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR,
@@ -594,6 +644,13 @@ async def startup_event():
                     min_run_length=settings.HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH,
                 ),
             )
+            # Outreach is durable through orion-notify (notify_requests row,
+            # open until Juniper dismisses it in the tray). No client when
+            # NOTIFY_BASE_URL is unset: outreach then publishes in-app only.
+            if settings.NOTIFY_BASE_URL:
+                endogenous_outreach.notify_client = NotifyClient(
+                    settings.NOTIFY_BASE_URL, settings.NOTIFY_API_TOKEN or None, timeout=5
+                )
             # 2026-08-19: generation now goes through the real
             # orion.hub.turn_orchestrator.execute_unified_turn pipeline (see
             # endogenous_outreach.py's own docstring), the same
@@ -729,6 +786,8 @@ async def startup_event():
                 self_inquiry_min_cooldown_sec=settings.HUB_CURIOSITY_SELF_INQUIRY_MIN_COOLDOWN_SEC,
                 self_lived_weight=settings.HUB_CURIOSITY_SELF_LIVED_WEIGHT,
                 self_pinned_floor_days=settings.HUB_CURIOSITY_SELF_PINNED_FLOOR_DAYS,
+                self_naming_enabled=settings.HUB_CURIOSITY_SELF_NAMING_ENABLED,
+                self_naming_daily_cap=settings.HUB_CURIOSITY_SELF_NAMING_DAILY_CAP,
                 sandbox_repo_root=settings.HUB_CURIOSITY_SANDBOX_REPO_ROOT,
                 # The self-sense eval line: own budget, same loop. See
                 # scripts/curiosity_investigation.py's own comment on
@@ -796,6 +855,15 @@ async def startup_event():
                 # atlas routes already use. Callable so we never build a
                 # second orphan store.
                 store_provider=concept_atlas_routes_runtime._get_substrate_store,
+                # Reading pull (thinking rung 3 follow-up): the allocator's extra read, gated here.
+                pull_enabled=settings.HUB_WORLD_PULSE_READ_PULL_ENABLED,
+                pull_daily_cap=settings.HUB_WORLD_PULSE_READ_PULL_DAILY_CAP,
+                pull_arousal_reader=ArousalReader(
+                    enabled=settings.HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED,
+                    max_age_sec=settings.ORION_REGULATION_READER_MAX_AGE_SEC,
+                    name="reading_pull",
+                ),
+                pull_thermal_reader=_cabinet_temp_reading,
             )
             reading_turn_listener = ReadingTurnListener(
                 world_pulse_read_pipeline._source_ref, lambda: harness_step_relay,
@@ -816,6 +884,19 @@ async def startup_event():
                 documents=settings.reading_document_policy(),
             )
             await reading_listener.start(bus)
+            world_pulse_read_pull_listener = WorldPulseReadPullListener(
+                world_pulse_read_pipeline, world_pulse_read_pipeline._source_ref,
+            )
+            await world_pulse_read_pull_listener.start(bus)
+            # Orion plays Zelda (section E): the motor allocator's leisure start. The runner is
+            # scripts/retro_leisure.py (imported per request; missing -> `runner_unavailable`, never
+            # a fake session). Session end -> scripts/retro_memory_export.py (section F).
+            retro_leisure_listener = RetroLeisureListener(
+                world_pulse_read_pipeline._source_ref,
+                config_provider=lambda: settings,
+                pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+            )
+            await retro_leisure_listener.begin(bus)
             # orion-introspect `curiosity` tool: the Curiosity tab's own run
             # join, same pool and the same graph reader the routes build.
             curiosity_introspect_listener = CuriosityIntrospectListener(
@@ -873,6 +954,13 @@ async def startup_event():
                 source_ref=world_pulse_read_pipeline._source_ref,
             )
             await node_history_introspect_listener.start(bus)
+            # orion-introspect `power_attribution` tool (heat archaeology): where each machine's
+            # watts went and since when, attributed to workloads. Read-only.
+            power_attribution_introspect_listener = PowerAttributionIntrospectListener(
+                pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+                source_ref=world_pulse_read_pipeline._source_ref,
+            )
+            await power_attribution_introspect_listener.start(bus)
 
             world_pulse_read_stage2 = WorldPulseReadStage2Pipeline(
                 durable_url=settings.HUB_READING_DURABLE_URL,
@@ -926,6 +1014,7 @@ async def startup_event():
                     tick_interval_sec=settings.HUB_READING_FINDING_OUTREACH_TICK_SEC,
                     lookback_hours=settings.HUB_READING_FINDING_OUTREACH_LOOKBACK_HOURS,
                     max_attempts=settings.HUB_READING_FINDING_OUTREACH_MAX_ATTEMPTS,
+                    min_spacing_sec=settings.HUB_READING_FINDING_OUTREACH_MIN_SPACING_SEC,
                 )
                 await reading_finding_outreach.start()
             except Exception:  # noqa: BLE001 -- never blocks Hub boot
@@ -1071,8 +1160,20 @@ async def startup_event():
         # restart if Fuseki is slow/unreachable. seed_golden_concepts_at_startup()
         # still never raises either way -- this is purely to keep a slow/degraded
         # graph backend from stalling startup.
-        seeded_count = await asyncio.to_thread(api_routes_runtime.seed_golden_concepts_at_startup)
-        logger.info("substrate_concept_seed_loaded count=%s", seeded_count)
+        #
+        # Not awaited: the Orion store loads in the background
+        # (scripts/substrate_store_warm.py), so the seed waits for it in a
+        # worker thread while startup carries on.
+        async def _seed_golden_concepts_after_warm() -> None:
+            seeded_count = await asyncio.to_thread(
+                api_routes_runtime.seed_golden_concepts_at_startup,
+                wait_timeout_sec=_SUBSTRATE_STORE_WAIT_SEC,
+            )
+            logger.info("substrate_concept_seed_loaded count=%s", seeded_count)
+
+        substrate_concept_seed_task = asyncio.create_task(
+            _seed_golden_concepts_after_warm(), name="hub-substrate-concept-seed",
+        )
     else:
         logger.info("substrate_concept_seed_disabled reason=env_disabled")
 
@@ -1181,6 +1282,7 @@ async def startup_event():
         from scripts.topic_foundry_scheduler_policy import (
             next_wait_seconds as _tf_next_wait_seconds,
             should_retry_startup_tick as _tf_should_retry_startup_tick,
+            STARTUP_TICK_MAX_ATTEMPTS as _TF_STARTUP_TICK_MAX_ATTEMPTS,
         )
 
         topic_foundry_interval_sec = max(
@@ -1221,6 +1323,24 @@ async def startup_event():
             startup_attempt = 0
             if not startup_pending:
                 logger.info("substrate_topic_foundry_scheduler_startup_tick_disabled")
+            else:
+                # The startup tick ingests into the concept graph stores, which
+                # load in the background. Wait for them (in a worker thread) so
+                # the one boot-time ingest is not spent on a not-ready store.
+                not_ready = await asyncio.to_thread(
+                    _wait_all_substrate_stores_ready,
+                    (
+                        api_routes_runtime.SUBSTRATE_SEMANTIC_STORE,
+                        api_routes_runtime.SUBSTRATE_SEMANTIC_STORE_SELF,
+                        api_routes_runtime.SUBSTRATE_SEMANTIC_STORE_AITOWN,
+                    ),
+                    _SUBSTRATE_STORE_WAIT_SEC,
+                )
+                if not_ready:
+                    logger.warning(
+                        "substrate_topic_foundry_scheduler_startup_tick_stores_not_ready stores=%s",
+                        ",".join(not_ready),
+                    )
             while True:
                 # Timing/retry policy is pure and lives in
                 # scripts/topic_foundry_scheduler_policy.py so it is testable
@@ -1299,6 +1419,21 @@ async def startup_event():
                         ingest_summary.get("edges_written"),
                         ingest_summary.get("typed_edges_written"),
                     )
+                    # The boot ingest found the store still loading (the wait
+                    # above timed out): retry the startup tick on the same
+                    # bounded backoff instead of waiting a full interval.
+                    if (
+                        is_startup_tick
+                        and not startup_pending
+                        and ingest_summary.get("reason") == "substrate_store_unavailable"
+                        and startup_attempt + 1 < _TF_STARTUP_TICK_MAX_ATTEMPTS
+                    ):
+                        startup_attempt += 1
+                        startup_pending = True
+                        logger.info(
+                            "substrate_topic_foundry_scheduler_startup_tick_retry attempt=%s reason=substrate_store_unavailable",
+                            startup_attempt,
+                        )
                 except Exception as exc:  # advisory runtime loop; never crash service startup
                     logger.warning("substrate_topic_foundry_scheduler_ingest_error error=%s", exc)
 
@@ -1605,7 +1740,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global reading_turn_listener, reading_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, world_pulse_read_pull_listener, retro_leisure_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -1643,6 +1778,12 @@ async def shutdown_event() -> None:
         except asyncio.CancelledError:
             pass
         substrate_review_task = None
+    # Release worker threads blocked waiting for a store (seed, topic-foundry
+    # startup tick); cancelling their tasks does not stop the threads.
+    _signal_substrate_store_shutdown()
+    if substrate_concept_seed_task is not None:
+        substrate_concept_seed_task.cancel()
+        substrate_concept_seed_task = None
     if substrate_topic_foundry_scheduler_task is not None:
         substrate_topic_foundry_scheduler_task.cancel()
         try:
@@ -1677,6 +1818,12 @@ async def shutdown_event() -> None:
     if reading_listener is not None:
         await reading_listener.stop()
         reading_listener = None
+    if world_pulse_read_pull_listener is not None:
+        await world_pulse_read_pull_listener.stop()
+        world_pulse_read_pull_listener = None
+    if retro_leisure_listener is not None:
+        await retro_leisure_listener.stop()
+        retro_leisure_listener = None
     if curiosity_introspect_listener is not None:
         await curiosity_introspect_listener.stop()
         curiosity_introspect_listener = None
@@ -1686,6 +1833,9 @@ async def shutdown_event() -> None:
     if node_history_introspect_listener is not None:
         await node_history_introspect_listener.stop()
         node_history_introspect_listener = None
+    if power_attribution_introspect_listener is not None:
+        await power_attribution_introspect_listener.stop()
+        power_attribution_introspect_listener = None
     if orion_day_correction_listener is not None:
         await orion_day_correction_listener.stop()
         orion_day_correction_listener = None
@@ -1781,12 +1931,16 @@ async def shutdown_event() -> None:
 # 🔗 API Routes + WebSockets + Static Files
 # ───────────────────────────────────────────────────────────────
 
+from scripts.retro_routes import configured_router as retro_router
+app.include_router(retro_router())
 app.include_router(api_router)
 app.include_router(memory_router)
 app.include_router(crystallization_router)
 app.include_router(mind_router)
 app.include_router(ask_router)
 app.include_router(motion_story_router)
+app.include_router(people_router)
+app.include_router(walkway_rollup_router)
 app.include_router(memory_graph_router)
 app.include_router(memory_consolidation_draft_router)
 app.include_router(concept_atlas_router)

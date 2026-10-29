@@ -13,6 +13,8 @@ from typing import Any
 
 import yaml
 
+from orion.autonomy.thermal_gate import DEFAULT_CRITICAL_C, DEFAULT_HOT_C
+
 _DUR = re.compile(r"^\s*(\d+)\s*(min|h|d)\s*$")
 _ID = re.compile(r"^[a-z0-9_]+(\.[a-z0-9_]+)+$")
 _KEY = re.compile(r"^[a-z0-9_]{1,40}$")
@@ -23,6 +25,32 @@ AGGS = ("mean", "max", "min", "last")
 
 class SeriesConfigError(ValueError):
     pass
+
+
+# Lines a threshold may borrow by name instead of restating (body economy Patch B: one owner for
+# the room's temperature lines, orion/autonomy/thermal_gate.py). `value_from: thermal_gate.hot`.
+OWNED_VALUES: dict[str, float] = {
+    "thermal_gate.hot": DEFAULT_HOT_C,
+    "thermal_gate.critical": DEFAULT_CRITICAL_C,
+}
+# A threshold on the cabinet temperature is always one of those lines; a literal there is a copy.
+_THERMAL_KEY = "cabinet_temp_c"
+
+
+def _threshold_value(sid: str, t: dict, source: "Source") -> float:
+    has_value, has_from = "value" in t, "value_from" in t
+    if has_value == has_from:
+        raise SeriesConfigError(f"{sid}.thresholds.{t.get('name')}: give exactly one of value / value_from")
+    if has_from:
+        ref = str(t["value_from"])
+        if ref not in OWNED_VALUES:
+            raise SeriesConfigError(f"{sid}.thresholds.{t.get('name')}: unknown value_from {ref!r} "
+                                    f"(known: {sorted(OWNED_VALUES)})")
+        return float(OWNED_VALUES[ref])
+    if source.key == _THERMAL_KEY:
+        raise SeriesConfigError(f"{sid}.thresholds.{t.get('name')}: a cabinet temperature line is owned by "
+                                "orion/autonomy/thermal_gate.py; use value_from, not a literal")
+    return float(t["value"])
 
 
 def duration_min(value: Any) -> int:
@@ -52,7 +80,7 @@ class Threshold:
 
 @dataclass(frozen=True)
 class Source:
-    kind: str  # biometrics | cooling
+    kind: str  # biometrics | cooling | cluster (orion_biometrics_cluster per-node) | weather (prediction_weather_hourly)
     node: str | None = None
     key: str | None = None
     role: str | None = None
@@ -76,6 +104,14 @@ class SeriesSpec:
     horizons_min: tuple[int, ...] = ()
     thresholds: tuple[Threshold, ...] = ()
     covariates: tuple[str, ...] = ()
+    # Pending change-event breaks (app/events.py): Prophet fits a level shift at each one.
+    breaks: tuple[datetime, ...] = ()
+    # Derived inputs (applied by app.frame.load_points): value at t is the source at t - lag_min,
+    # then max(value - above, 0) when above is set; zero_before_first fills the time before the
+    # source's first-ever reading with 0 (a machine that was not running yet).
+    lag_min: int = 0
+    above: float | None = None
+    zero_before_first: bool = False
 
     @property
     def max_horizon_steps(self) -> int:
@@ -118,6 +154,15 @@ def _source(raw: dict, sid: str) -> Source:
         if not raw.get("role"):
             raise SeriesConfigError(f"{sid}: cooling source needs role")
         return Source(kind="cooling", role=str(raw["role"]))
+    if kind == "cluster":
+        node, key = raw.get("node"), raw.get("key")
+        if not node or not _KEY.match(str(node)) or not key or not _KEY.match(str(key)):
+            raise SeriesConfigError(f"{sid}: cluster source needs a [a-z0-9_] node and key")
+        return Source(kind="cluster", node=str(node), key=str(key))
+    if kind == "weather":
+        if raw.get("key") != "temp_f":
+            raise SeriesConfigError(f"{sid}: weather source supports key temp_f")
+        return Source(kind="weather", key="temp_f")
     raise SeriesConfigError(f"{sid}: unknown source kind {kind!r}")
 
 
@@ -152,13 +197,16 @@ def _spec(raw: dict) -> SeriesSpec:
         raise SeriesConfigError(f"{sid}: a target needs horizons")
     if len(set(horizons)) != len(horizons):
         raise SeriesConfigError(f"{sid}: duplicate horizons")
+    source = _source(raw.get("source") or {}, sid)
     thresholds = []
     for t in raw.get("thresholds") or ():
         mp = t.get("max_probability")
         thresholds.append(Threshold(
-            name=str(t["name"]), value=float(t["value"]),
+            name=str(t["name"]), value=_threshold_value(sid, t, source),
             window_min=_multiple(duration_min(t["window"]), grain, f"{sid}.thresholds.{t['name']}"),
             max_probability=None if mp is None else float(mp)))
+    if horizons and any(t.window_min > max(horizons) for t in thresholds):
+        raise SeriesConfigError(f"{sid}: a threshold window is longer than the longest horizon")
     exclude = []
     for e in raw.get("exclude") or ():
         start, end = _ts(e["start"], f"{sid}.exclude"), _ts(e["end"], f"{sid}.exclude")
@@ -166,13 +214,16 @@ def _spec(raw: dict) -> SeriesSpec:
             raise SeriesConfigError(f"{sid}: exclude window ends before it starts")
         exclude.append((start, end))
     return SeriesSpec(
-        series_id=sid, role=role, source=_source(raw.get("source") or {}, sid), unit=str(raw.get("unit", "")),
+        series_id=sid, role=role, source=source, unit=str(raw.get("unit", "")),
         grain_min=grain, agg=agg, max_fill_min=duration_min(raw.get("max_fill", "15min")), consumers=consumers,
         transform=transform,
         train_from=_ts(raw["train_from"], f"{sid}.train_from") if raw.get("train_from") else None,
         train_window_min=duration_min(raw.get("train_window", "21d")),
         seasonalities=tuple(seas), exclude=tuple(exclude), horizons_min=horizons,
         thresholds=tuple(thresholds), covariates=tuple(str(c) for c in raw.get("covariates") or ()),
+        lag_min=duration_min(raw["lag"]) if raw.get("lag") else 0,
+        above=float(raw["above"]) if raw.get("above") is not None else None,
+        zero_before_first=bool(raw.get("zero_before_first", False)),
     )
 
 

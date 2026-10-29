@@ -118,6 +118,21 @@ class Settings(BaseSettings):
         True,
         validation_alias=AliasChoices("ORION_BUS_ENABLED"),
     )
+    # Act ledger (body economy A5): each training run publishes one `maintain` act (actor
+    # topic_foundry.run) on orion:grammar:event, opened at run start, closed 1 on complete / 0 on
+    # failure. Its LLM calls share the act's correlation id so the act is charged its GPU leases.
+    # Off = no act, and each LLM call keeps its own id. app/services/act_emit.py.
+    topic_foundry_act_emit_enabled: bool = Field(
+        True,
+        validation_alias=AliasChoices("TOPIC_FOUNDRY_ACT_EMIT_ENABLED"),
+    )
+    # Body economy Patch C3b: each training run places a SHADOW bid at run start (topic_foundry.run;
+    # orion.physiology.client -> durable-runs POST /physiology/bid) and logs it beside the real
+    # outcome. Never obeyed; off = no bid, no log line. app/services/physiology_shadow.py.
+    topic_foundry_physiology_shadow_bid_enabled: bool = Field(
+        True,
+        validation_alias=AliasChoices("TOPIC_FOUNDRY_PHYSIOLOGY_SHADOW_BID_ENABLED"),
+    )
     orion_bus_url: str = Field(
         "redis://100.92.216.81:6379/0",
         validation_alias=AliasChoices("ORION_BUS_URL"),

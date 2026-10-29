@@ -1,0 +1,200 @@
+# Want families (body economy Patch C1: Organ 3 Appetite, Organ 3b tiers, Organ 4 Choice).
+#
+# Design: docs/superpowers/specs/2026-10-23-organism-body-economy-design.md, "Organ 3b" (tiers
+# decided by Juniper 10-23). Read by orion/physiology/families.py; the market
+# (POST /physiology/bid on orion-durable-runs) refuses a want whose family is not here.
+#
+# One family per act-ledger actor (grammar_acts.actor), so a family's history (closes, outcomes,
+# cost_json, act_downstream_use) joins by name. Seeded from the live actors on 2026-10-27.
+#
+# Fields:
+#   tier                 0 never bids (Juniper's turns, perception). 1 critical upkeep (a reserved
+#                        share of each lane). 2 discretionary (the open market).
+#   prior_weight         Juniper's instinct for this family, the shrinkage prior (default 1.0). It
+#                        fades as the family's own evidence grows (kappa = 30 evidenced acts).
+#   deferrable_window_s  How long a want can wait and still be useful (0 = perishable). Also the
+#                        hunger time constant until the family has a measured rhythm.
+#   lanes                Acceptable pool roles. Empty: the family records no GPU lane cost.
+#   placement            one_of: the act lands on ONE of `lanes` (Choice picks the cheapest).
+#                        fixed: the act's calls span its lanes by route; each is charged its own
+#                        historical cost and nothing is placed.
+#   fixed_cost           Per-act costs that are definitional, not measured (an outreach act IS one
+#                        message to Juniper). ActCostV2 field names only.
+#
+# Changing a tier needs Juniper's sign-off (the tiers are her decision, 10-23).
+
+version: 1
+
+families:
+  # --- Tier 0: never bid, never deferred by the economy. Listed so a bid for them is refused. ---
+  hub.chat_reply:
+    tier: 0
+    note: Juniper's own turn (interactive). Never priced.
+  vision.council:
+    tier: 0
+    note: perception (scene interpretation). Pipeline, not a verb; priority `perception` (Patch A0).
+  perception:
+    tier: 0
+    note: retinas, vision-edge, frame-router, vision-host, window, scribe, percept-store.
+
+  # --- Tier 1: critical upkeep, a reserved share of each lane. ---
+  actions.journal:
+    tier: 1
+    deferrable_window_s: 3600
+    lanes: [metacog, fast, agent, agent-gpu2]
+    placement: one_of
+  dream.cycle:
+    tier: 1
+    deferrable_window_s: 21600
+    lanes: [metacog]
+    placement: one_of
+  durable.journal_compose:
+    tier: 1
+    deferrable_window_s: 86400
+    lanes: [fast, metacog]
+    placement: one_of
+
+  # --- Tier 2: discretionary, the open market. ---
+  durable.curiosity_investigate:
+    tier: 2
+    deferrable_window_s: 21600
+    lanes: [agent, agent-gpu2, agent-deep]
+    placement: one_of
+  durable.self_inquiry:
+    tier: 2
+    deferrable_window_s: 21600
+    lanes: [agent, agent-gpu2, agent-deep]
+    placement: one_of
+  durable.self_sense_eval:
+    tier: 2
+    deferrable_window_s: 21600
+    lanes: [agent, agent-gpu2, agent-deep]
+    placement: one_of
+  topic_foundry.run:
+    tier: 2
+    deferrable_window_s: 86400
+    lanes: [fast, metacog]
+    placement: one_of
+  hub.world_pulse_read:
+    tier: 2
+    deferrable_window_s: 10800
+    # Reading runs on the interactive chat rails; its acts record no pool lease (0 of 90 costed
+    # closes carry gpu_slot_s_by_lane). Non-GPU as far as the ledger can see.
+    lanes: []
+  thought.painting:
+    tier: 2
+    deferrable_window_s: 21600
+    lanes: [diffusion]
+    placement: one_of
+  thought.dream_hop:
+    tier: 2
+    deferrable_window_s: 21600
+    lanes: [diffusion]
+    placement: one_of
+  hub.outreach:
+    tier: 2
+    deferrable_window_s: 3600
+    lanes: [agent, chat, fast, metacog]
+    placement: fixed
+    fixed_cost: {juniper_msgs: 1}
+  hub.retro_coplay:
+    tier: 2
+    deferrable_window_s: 3600
+    lanes: []
+  hub.retro_leisure:
+    tier: 2
+    deferrable_window_s: 3600
+    lanes: []
+
+  # --- Verb families (Patch C3 follow-up, 2026-10-27). Mirrors each cortex verb's own
+  # `physiology:` block (orion/cognition/verbs/*.yaml, Patch C2), so a cortex-orch dispatch bid
+  # no longer comes back `unknown_family`. Tier/lanes/window are copied from the verbs, not
+  # re-decided here; the window is the smallest any member verb declares. ---
+  actions.daily_metacog:
+    tier: 1
+    deferrable_window_s: 21600
+    # verbs: daily_metacog_v1
+    lanes: [metacog]
+    placement: one_of
+  actions.daily_pulse:
+    tier: 1
+    deferrable_window_s: 21600
+    # verbs: daily_pulse_v1
+    lanes: [metacog]
+    placement: one_of
+  compactor.digest:
+    tier: 1
+    deferrable_window_s: 86400
+    # verbs: chat_history_compactor_digest_v1, github_compactor_digest_v1
+    lanes: [agent]
+    placement: one_of
+  curiosity.compaction:
+    tier: 1
+    deferrable_window_s: 86400
+    # verbs: curiosity_compactor_digest_v1
+    lanes: [agent]
+    placement: one_of
+  curiosity.supervisor:
+    tier: 1
+    deferrable_window_s: 86400
+    # verbs: curiosity_hop_reading
+    lanes: [chat]
+    placement: one_of
+  execution_dispatch.maintain:
+    tier: 1
+    deferrable_window_s: 21600
+    # verbs: skills.runtime.builder_prune.v1, skills.runtime.docker_prune_stopped_containers.v1, skills.runtime.image_prune.v1
+    lanes: []
+  memory.consolidation:
+    tier: 1
+    deferrable_window_s: 3600
+    # verbs: memory_graph_suggest
+    lanes: [fast]
+    placement: one_of
+  metacog.log:
+    tier: 1
+    deferrable_window_s: 3600
+    # verbs: log_collapse_mirror, log_orion_metacognition
+    lanes: [metacog]
+    placement: one_of
+  orion_day.letter:
+    tier: 1
+    deferrable_window_s: 21600
+    # verbs: orion_day_carry_forward_v1, orion_day_note_v1
+    lanes: [agent]
+    placement: one_of
+  self_study:
+    tier: 1
+    deferrable_window_s: 21600
+    # verbs: self_concept_induce, self_concept_reflect, self_repo_inspect, self_retrieve, self_study.reflect, skills.self_study.analyze.v1
+    lanes: [agent]
+    placement: one_of
+  spark.introspect:
+    tier: 1
+    deferrable_window_s: 600
+    # verbs: introspect_spark
+    lanes: [fast]
+    placement: one_of
+  concept_induction:
+    tier: 2
+    deferrable_window_s: 86400
+    # verbs: concept_induction, concept_induction_journal_synthesize
+    lanes: [fast, agent]
+    placement: one_of
+  execution_dispatch.inspect:
+    tier: 2
+    deferrable_window_s: 300
+    # verbs: skills.perception.look_at_camera.v1
+    lanes: []
+  execution_dispatch.substrate:
+    tier: 2
+    deferrable_window_s: 1800
+    # verbs: substrate.inspect, substrate.observe, substrate.summarize
+    lanes: [fast]
+    placement: one_of
+  thought.reverie:
+    tier: 2
+    deferrable_window_s: 900
+    # verbs: reverie_expectation_judge, reverie_narrate
+    lanes: [metacog]
+    placement: one_of

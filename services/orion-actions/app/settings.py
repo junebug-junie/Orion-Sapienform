@@ -29,6 +29,7 @@ _BLANK_ENV_BOOL_FIELDS = (
     "actions_skills_notify_enabled",
     "actions_skills_docker_health_enabled",
     "actions_journaling_enabled",
+    "actions_act_emit_enabled",
     "actions_journaling_daily_enabled",
     "actions_journal_capability_gaps_enabled",
     "actions_journal_perception_gaps_enabled",
@@ -60,7 +61,7 @@ class Settings(BaseSettings):
 
     actions_subscribe_channel: str = Field("orion:collapse:triage", alias="ACTIONS_SUBSCRIBE_CHANNEL")
     actions_subscribe_channels: str = Field(
-        "orion:collapse:triage,orion:collapse:stored,orion:actions:trigger:daily_pulse.v1,orion:actions:trigger:daily_metacog.v1,orion:actions:trigger:journal.v1,orion:notify:persistence:request,orion:equilibrium:metacog:trigger,orion:world_pulse:run:result",
+        "orion:collapse:triage,orion:collapse:stored,orion:actions:trigger:daily_pulse.v1,orion:actions:trigger:daily_metacog.v1,orion:actions:trigger:journal.v1,orion:notify:persistence:request,orion:world_pulse:run:result",
         alias="ACTIONS_SUBSCRIBE_CHANNELS",
     )
     actions_audit_channel: str = Field("orion:actions:audit", alias="ACTIONS_AUDIT_CHANNEL")
@@ -86,14 +87,10 @@ class Settings(BaseSettings):
 
     actions_recall_profile: str = Field("collapse_mirror.v1", alias="ACTIONS_RECALL_PROFILE")
     # Journal-specific recall: same env keys in .env_example and docker-compose `environment` → _run_journal in main.py
-    # (trigger_kind daily_summary+scheduler / metacog_digest / notify_summary / world_pulse_digest).
+    # (trigger_kind daily_summary+scheduler / notify_summary / world_pulse_digest).
     actions_journal_scheduler_recall_profile: str = Field(
         "journal.daily.grounded.v1",
         alias="ACTIONS_JOURNAL_SCHEDULER_RECALL_PROFILE",
-    )
-    actions_journal_metacog_recall_profile: str = Field(
-        "journal.daily.metacog.grounded.v1",
-        alias="ACTIONS_JOURNAL_METACOG_RECALL_PROFILE",
     )
     actions_journal_notify_recall_profile: str = Field(
         "journal.notify.grounded.v1",
@@ -104,6 +101,16 @@ class Settings(BaseSettings):
     actions_daily_llm_route: str | None = Field(None, alias="ACTIONS_DAILY_LLM_ROUTE")
     actions_journal_llm_route: str | None = Field(None, alias="ACTIONS_JOURNAL_LLM_ROUTE")
     actions_exec_timeout_seconds: float = Field(240.0, alias="ACTIONS_EXEC_TIMEOUT_SECONDS")
+    # Act ledger (body economy A5): each daily_metacog_v1 attempt (`actions.daily_metacog`, infer)
+    # and each in-process journal compose (`actions.journal`, make) publishes act_opened/act_closed
+    # on orion:grammar:event. Durable journal.compose runs are left to orion-durable-runs' own
+    # act producer (not shipped yet), so a journal is never counted twice.
+    # Off = no acts. app/act_emit.py.
+    actions_act_emit_enabled: bool = Field(True, alias="ACTIONS_ACT_EMIT_ENABLED")
+    # Body economy Patch C3b: each in-process journal compose places a SHADOW bid (actions.journal,
+    # Tier 1; orion.physiology.client -> durable-runs POST /physiology/bid) and logs it beside the
+    # real outcome. Never obeyed; off = no bid, no log line. app/physiology_shadow.py.
+    actions_physiology_shadow_bid_enabled: bool = Field(True, alias="ACTIONS_PHYSIOLOGY_SHADOW_BID_ENABLED")
     # RPC wait for a SCHEDULED compactor workflow dispatch (LONG_RUNNING_SCHEDULED_WORKFLOWS in main.py).
     # Covers only the synchronous part: the fetch (GitHub PR walk <=300s) and registering the
     # compactor.digest durable run (<=10s receipt per generation). The LLM digest runs in that durable
@@ -238,7 +245,6 @@ class Settings(BaseSettings):
 
     @field_validator(
         "actions_journal_scheduler_recall_profile",
-        "actions_journal_metacog_recall_profile",
         "actions_journal_notify_recall_profile",
         "actions_journal_world_pulse_recall_profile",
         mode="before",

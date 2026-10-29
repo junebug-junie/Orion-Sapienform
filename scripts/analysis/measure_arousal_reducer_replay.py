@@ -13,8 +13,13 @@ each step's inputs exactly as ``services/orion-durable-runs/app/regulation_store
 * S2 -- ``gpu_queue_evidence`` over the saved ``gpu_pool_state_history`` snapshots in the sustain
   window plus 60 s, per host, most-strained fresh host wins; plus ``gpu_fault_from_events`` over the
   ``gpu_pool_events`` controller refusals/answers in the last ``GPU_FAULT_LOOKBACK_SEC`` (a queue
-  jammed by a refusing lane controller is not load). ``--no-gpu-fault`` replays the reducer as it
-  was before the fault input existed, for a before/after on the same rows.
+  jammed by a refusing lane controller is not load); and each snapshot's shed-held queue
+  (``shed_held_depth``, 2026-10-20; ``--reconstruct-shed`` proxies it for older snapshots from the
+  pool's ``shed:*`` events, ``--no-gpu-shed`` turns the exclusion off); and each snapshot's
+  deferrable self-work (``deferrable_depth``, 2026-10-23: queued background holds, hunger not
+  load; ``--reconstruct-deferrable`` proxies it for older snapshots from the pool's own queue
+  events for background holds, ``--no-gpu-deferrable`` turns the exclusion off). ``--no-gpu-fault`` replays
+  the reducer as it was before the fault input existed, for a before/after on the same rows.
 
 Reports minutes per level per UTC day, level transitions per day, and strained exits per day
 (spec R3a: more than 12 strained -> engaged/idle exits a day means the clear time is too short).
@@ -38,6 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from orion.autonomy.cabinet_heat import read_cabinet_heat  # noqa: E402
+from orion.gpu_pool.shed import REFLEX_REASONS  # noqa: E402
 from orion.hardware_watch.rules import TempPoint  # noqa: E402
 from orion.regulation.arousal import (  # noqa: E402
     DEFAULT_CLEAR_SEC,
@@ -57,6 +63,13 @@ from orion.schemas.regulation import ArousalInputsV1  # noqa: E402
 LEVELS = ("engaged", "idle", "strained", "unknown")
 CABINET_LOOKBACK = timedelta(hours=1)
 GPU_MARGIN_SEC = 60.0
+# --reconstruct-deferrable: how far back to read a background hold's queue/grant events, so a hold
+# queued long before the window still counts (live 10-22/23: holds waited up to 7 h).
+DEFERRABLE_EVENT_LOOKBACK = timedelta(hours=48)
+# A hold's events that put it in the queue, and those that take it out (orion-gpu-pool events).
+DEFERRABLE_OPEN_EVENTS = frozenset({"admitted", "queued"})
+DEFERRABLE_CLOSE_EVENTS = frozenset({"granted", "backlogged", "released", "cancelled", "unavailable",
+                                     "expired", "aborted"})
 
 
 def utc(value) -> datetime:
@@ -89,8 +102,26 @@ SELECT row_to_json(r) FROM (
  AND measurements ? 'cabinet_temp_c' ORDER BY timestamp
 ) r;
 SELECT row_to_json(r) FROM (
- SELECT 'gpu_state' AS kind, generated_at AS at, host, queue_depth FROM gpu_pool_state_history
+ SELECT 'gpu_state' AS kind, generated_at AS at, host, queue_depth,
+        to_jsonb(h)->'shed_held_depth' AS shed_held_depth, to_jsonb(h)->>'shed_reason' AS shed_reason,
+        to_jsonb(h)->'deferrable_depth' AS deferrable_depth
+ FROM gpu_pool_state_history h
  WHERE generated_at >= '{lo}'::timestamptz AND generated_at < '{hi}'::timestamptz ORDER BY host, generated_at
+) r;
+SELECT row_to_json(r) FROM (
+ SELECT 'shed_minute' AS kind, date_trunc('minute', generated_at) AS at,
+        string_agg(DISTINCT substr(reason, 6), '+' ORDER BY substr(reason, 6)) AS shed_reason
+ FROM gpu_pool_events
+ WHERE event IN ('unavailable', 'queued') AND reason LIKE ANY (ARRAY[{", ".join(f"'shed:{r}'" for r in sorted(REFLEX_REASONS))}])
+ AND generated_at >= '{lo}'::timestamptz AND generated_at < '{hi}'::timestamptz
+ GROUP BY 2
+) r;
+SELECT row_to_json(r) FROM (
+ SELECT 'deferrable_event' AS kind, e.generated_at AS at, e.event, e.lease_id, l.work_class
+ FROM gpu_pool_events e JOIN gpu_pool_leases l ON l.lease_id = e.lease_id
+ WHERE l.priority = 'background' AND l.kind = 'hold' AND l.hold_lease_id IS NULL
+ AND e.generated_at >= '{(warm - DEFERRABLE_EVENT_LOOKBACK).isoformat()}'::timestamptz
+ AND e.generated_at < '{hi}'::timestamptz ORDER BY e.generated_at, e.event_id
 ) r;
 SELECT row_to_json(r) FROM (
  SELECT 'gpu_event' AS kind, generated_at AS at, event, reason, role FROM gpu_pool_events
@@ -107,17 +138,47 @@ def replay(rows, start, end, **kw):
 
 def replay_readings(rows, start, end, *, tick_sec=120.0, engaged_minutes=DEFAULT_ENGAGED_MINUTES,
                     floor=DEFAULT_GPU_QUEUE_FLOOR, sustain_sec=DEFAULT_GPU_SUSTAIN_SEC, clear_sec=DEFAULT_CLEAR_SEC,
-                    gpu_fault=True):
-    """Every regulate step's ArousalReadingV1, in order (the readers' eval replays these)."""
+                    gpu_fault=True, gpu_shed=True, reconstruct_shed=False, gpu_deferrable=True,
+                    reconstruct_deferrable=False):
+    """Every regulate step's ArousalReadingV1, in order (the readers' eval replays these).
+
+    ``gpu_shed=False`` replays the reducer as it was before shed-held queue entries were excluded
+    (2026-10-20). ``reconstruct_shed``: for snapshots saved before the shed columns existed (NULL),
+    treat the whole queue as shed-held in any minute the pool logged a heat-reflex ``shed:*`` refusal or
+    re-queue -- a PROXY, valid only for windows where every queued lease was background/system
+    (true 2026-10-18 -> 10-20: no interactive or urgent lease sat queued).
+
+    ``gpu_deferrable=False`` replays the reducer as it was before deferrable self-work was left out
+    of the queue (2026-10-23). ``reconstruct_deferrable``: for snapshots saved before the
+    ``deferrable_depth`` column (NULL) and with nothing shed-held, count the background holds
+    (no parent hold, per ``gpu_pool_leases``) that the pool's own events put in the queue
+    (``admitted``/``queued``) and had not yet taken out (granted, backlogged, released, ...) at the
+    snapshot, capped per work class at the snapshot's queue -- a PROXY: the pool's events, not its
+    lease table, and an ``admitted`` that is granted in the same tick counts for those ms. It
+    under-counts (reads more strain, never less): a hold back in the queue after ``aborted`` with no
+    new ``queued`` event is missed, and a snapshot with anything shed-held is not reconstructed."""
     start, end = utc(start), utc(end)
     turns = sorted(utc(r["at"]) for r in rows if r["kind"] == "turn")
     heat = sorted((utc(r["at"]), float(r["temp_c"])) for r in rows
                   if r["kind"] == "heat" and r.get("temp_c") is not None)
     heat_ts = [h[0] for h in heat]
+    shed_minutes = {utc(r["at"]): r.get("shed_reason") for r in rows if r["kind"] == "shed_minute"}
+    waits = deferrable_waits(r for r in rows if r["kind"] == "deferrable_event")
     gpu: dict[str, list] = defaultdict(list)
     for r in rows:
         if r["kind"] == "gpu_state":
-            gpu[r["host"]].append((utc(r["at"]), r["queue_depth"]))
+            at, held, reason = utc(r["at"]), r.get("shed_held_depth"), r.get("shed_reason")
+            minute = at.replace(second=0, microsecond=0)
+            if held is None and reconstruct_shed and minute in shed_minutes:
+                held, reason = r["queue_depth"], shed_minutes[minute]
+            if not gpu_shed:
+                held = reason = None
+            deferrable = r.get("deferrable_depth")
+            if deferrable is None and reconstruct_deferrable and not (isinstance(held, dict) and any(held.values())):
+                deferrable = reconstruct_deferrable_depth(waits, at, r["queue_depth"])
+            if not gpu_deferrable:
+                deferrable = None
+            gpu[r["host"]].append((at, r["queue_depth"], held, reason, deferrable))
     gpu_ts = {h: [s[0] for s in sorted(v, key=lambda s: s[0])] for h, v in gpu.items()}
     events = sorted(((utc(r["at"]), r["event"], r.get("reason"), r.get("role"))
                      for r in rows if r["kind"] == "gpu_event"), key=lambda e: e[0])
@@ -150,12 +211,12 @@ def replay_readings(rows, start, end, *, tick_sec=120.0, engaged_minutes=DEFAULT
         for host, snaps in gpu.items():
             a = bisect.bisect_left(gpu_ts[host], now - timedelta(seconds=sustain_sec + GPU_MARGIN_SEC))
             b = bisect.bisect_right(gpu_ts[host], now)
-            age, depth, sustained = gpu_queue_evidence(snaps[a:b], now, floor=floor)
+            age, depth, sustained, held, shed_reason, deferrable = gpu_queue_evidence(snaps[a:b], now, floor=floor)
             if age is None:
                 continue
             key = (age <= GPU_STATE_STALE_SEC, sustained or 0.0, -age)
             if best is None or key > best[0]:
-                best = (key, age, depth, sustained)
+                best = (key, age, depth, sustained, held, shed_reason, deferrable)
         fault = None
         if gpu_fault:
             a = bisect.bisect_left(event_ts, now - timedelta(seconds=GPU_FAULT_LOOKBACK_SEC))
@@ -165,12 +226,41 @@ def replay_readings(rows, start, end, *, tick_sec=120.0, engaged_minutes=DEFAULT
             cabinet_read_ok=True, cabinet_reflex=verdict.reflex, cabinet_thermal_state=verdict.thermal_state,
             cabinet_critical=verdict.critical, cabinet_temp_c=verdict.temp_c,
             **({} if best is None else {"gpu_state_age_sec": best[1], "gpu_queue_depth": best[2],
-                                        "gpu_queue_sustained_sec": best[3], "gpu_fault": fault}))
+                                        "gpu_queue_sustained_sec": best[3], "gpu_fault": fault,
+                                        "gpu_queue_shed_held": best[4], "gpu_shed_reason": best[5],
+                                        "gpu_queue_self_deferrable": best[6]}))
         prev = classify_arousal(prev, inputs, engaged_minutes=engaged_minutes, gpu_queue_floor=floor,
                                 gpu_sustain_sec=sustain_sec, clear_sec=clear_sec, max_prev_gap_sec=3 * tick_sec)
         prev_inputs = inputs
         readings.append(prev)
     return readings
+
+
+def deferrable_waits(events):
+    """Per background hold, its queued intervals from the pool's events: ``[(work_class, since,
+    until)]``, ``until`` None while still queued at the end of the export."""
+    open_at: dict[str, tuple[str, datetime]] = {}
+    out = []
+    for e in sorted(events, key=lambda e: utc(e["at"])):
+        at, lid = utc(e["at"]), e["lease_id"]
+        if e["event"] in DEFERRABLE_OPEN_EVENTS:
+            open_at.setdefault(lid, (e["work_class"], at))
+        elif e["event"] in DEFERRABLE_CLOSE_EVENTS and lid in open_at:
+            wc, since = open_at.pop(lid)
+            out.append((wc, since, at))
+    out += [(wc, since, None) for wc, since in open_at.values()]
+    return out
+
+
+def reconstruct_deferrable_depth(waits, at, queue_depth):
+    """Background holds whose queued interval covers ``at``, per work class, capped at the
+    snapshot's own queue for that class (see ``replay_readings``: a proxy)."""
+    out: dict[str, int] = {}
+    for work_class, since, until in waits:
+        if since <= at and (until is None or at < until):
+            out[work_class] = out.get(work_class, 0) + 1
+    queue = queue_depth if isinstance(queue_depth, dict) else {}
+    return {wc: min(n, queue.get(wc, 0)) for wc, n in out.items() if queue.get(wc, 0)}
 
 
 def summarize(readings, end):
@@ -235,6 +325,14 @@ def main():
     p.add_argument("--gpu-queue-floor", type=int, default=DEFAULT_GPU_QUEUE_FLOOR)
     p.add_argument("--print-sql", action="store_true")
     p.add_argument("--no-gpu-fault", action="store_true", help="replay without the GPU fault input (before)")
+    p.add_argument("--no-gpu-shed", action="store_true",
+                   help="replay without the shed-held exclusion (before 2026-10-20)")
+    p.add_argument("--no-gpu-deferrable", action="store_true",
+                   help="replay without the deferrable self-work exclusion (before 2026-10-23)")
+    p.add_argument("--reconstruct-deferrable", action="store_true",
+                   help="for snapshots saved before deferrable_depth: proxy it from the pool's hold events")
+    p.add_argument("--reconstruct-shed", action="store_true",
+                   help="for snapshots saved before the shed columns: whole queue held in shed minutes (proxy)")
     args = p.parse_args()
     if args.print_sql:
         print(export_sql(args.start, args.end))
@@ -243,7 +341,9 @@ def main():
         p.error("history export required")
     rows = [json.loads(line) for line in args.history.read_text().splitlines() if line.strip().startswith("{")]
     result = replay(rows, args.start, args.end, tick_sec=args.tick_sec, floor=args.gpu_queue_floor,
-                    gpu_fault=not args.no_gpu_fault)
+                    gpu_fault=not args.no_gpu_fault, gpu_shed=not args.no_gpu_shed,
+                    reconstruct_shed=args.reconstruct_shed, gpu_deferrable=not args.no_gpu_deferrable,
+                    reconstruct_deferrable=args.reconstruct_deferrable)
     result.update(start=args.start.isoformat(), end=args.end.isoformat(), tick_sec=args.tick_sec,
                   gpu_queue_floor=args.gpu_queue_floor, input_counts=dict(Counter(r["kind"] for r in rows)))
     print(json.dumps(result, indent=2))

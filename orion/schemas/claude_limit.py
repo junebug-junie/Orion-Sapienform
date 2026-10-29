@@ -5,7 +5,8 @@
               Juniper's `~/.claude/projects` tree, read-only)
     consumer: orion-hub (budget surface + the ask_claude dry-run gate)
 
-WHY THIS AND NOT DOLLARS. `orion/autonomy/quota_budget.py` denominates
+WHY THIS AND NOT DOLLARS. `orion/autonomy/quota_budget.py` (deleted in body
+economy Patch B, 2026-10-27) denominated
 Claude scarcity in dollars against an operator allowance. That denominator
 was measured and refuted -- no dollar threshold separates limited from
 not-limited (`docs/superpowers/specs/2026-08-27-quota-window-calibration-
@@ -44,6 +45,8 @@ ClaudeLimitState = Literal["clear", "limited", "unknown"]
 # Mirrors `orion.dev_economics.rate_limit_events.EventKind`. Restated rather
 # than imported so a bus schema does not drag in a transcript-scanning module.
 ClaudeLimitKind = Literal["session_limit", "weekly_limit"]
+# The envelope kind on orion:substrate:claude_limit (the producer's KIND, the schema_version).
+CLAUDE_LIMIT_KIND = "substrate.claude_limit.v1"
 
 
 class ClaudeLimitObservationV1(BaseModel):

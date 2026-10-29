@@ -246,6 +246,46 @@ picture), so the last picture's caption is the dream's last word. Design:
   one-shot story, and the endpoint refuses). The step responder keeps running so
   carries already in flight still finish.
 
+### Every sleep is one act in the act ledger (2026-10-23, body economy A5)
+
+A sleep that starts replay is one `make` act (actor `dream.cycle`) on `orion:grammar:event`,
+persisted by orion-sql-writer to `grammar_acts`. It opens once the cycle has passed its gates and
+has material to replay, and closes once when the cycle is persisted: 1 for a completed, saved
+sleep with at least one hypothesis, else 0. Any exception or cancellation after the open closes it
+at 0 and is re-raised. A check that is not due, held, or `empty` opens nothing.
+
+- Act key = the cycle id (stable act id). A restart mid-cycle leaves the act open; the writer
+  expires it at 0 at its horizon: (DREAM_HYPOTHESES_PER_CYCLE + DREAM_CONTROL_PER_CYCLE) x
+  DREAM_LLM_TIMEOUT_SEC + 120 s (480 s by default).
+- GPU cost: during the sleep every recombination LLM call carries one correlation id derived from
+  the cycle id, so the GPU pool's leases carry it and the ledger charges the cycle for them.
+- Cost `seconds` = wall time from open to close.
+- Flag: `DREAM_ACT_EMIT_ENABLED` (default on). Off = no act, and each LLM call keeps its own id.
+
+### Body economy shadow bid (Patch C3b, 2026-10-27)
+
+A check that would sleep asks the body economy "would you fund this sleep?", then ignores the
+answer. The answer is only logged, next to what the cycle really did. Nothing changes what the
+cycle does.
+
+- Where: `run_cycle_once`, once the check would sleep (pressure due, the overdue backstop, or
+  forced), before the arousal read. A check that is too soon or not due is not a want: no bid.
+- Family `dream.cycle` (Tier 1), verb `make`. `want_id` = `act_emit.cycle_correlation_id(cycle_id)`,
+  the sleep act's correlation id. The cycle id is now minted before the arousal read, so a held
+  check has an id too; it opens no act.
+- Real outcome: `ran` (the gates passed and the sleep's act is opened; a sleep that then fails
+  still ran, and its act closes at 0), `blocked:arousal_<level>` (arousal held the sleep),
+  `blocked:nothing_to_replay` (the `empty` cycle, which opens no act), or `blocked:cancelled`.
+  With `DREAM_ACT_EMIT_ENABLED=false` a `ran` line has no act to join.
+- Volume: every held check is a new want with a new `want_id` (a new cycle id). A long hold at
+  the default 600 s check interval writes about 6 rows an hour; count holds per episode, not per row.
+- Log line: `physiology_shadow_bid family=dream.cycle want_id=... shadow=funded|deferred|none ... real=...`.
+  durable-runs writes the decision into `want_ledger`. A funded decision whose sleep was held
+  releases its reservation.
+- Switch: `DREAM_PHYSIOLOGY_SHADOW_BID_ENABLED` (default on). The bid is a background task; the
+  cycle never waits on it. Code: `app/physiology_shadow.py`.
+- Code: `app/act_emit.py`, `CycleActTrace` in `app/cycle.py`. Tests: `tests/test_dream_cycle_act.py`.
+
 ### HTTP / bus behavior
 
 - **No Hunter** in this process: `dream.trigger` is consumed by **cortex-orch** so triggers are not duplicated.
@@ -481,6 +521,14 @@ remain evidence of unfinished work, not claims of completion.
 - A busy GPU pool is a durable wait. Each accepted topic/overall answer is saved before
   advancing the graph. Failed durable runs retry their saved progress on a later sleep
   using a fenced generation; operator-cancelled/abandoned windows are not resurrected.
+  Retries are bounded: when 3 failed generations in a row end at the same saved cursor because
+  the model's answer was rejected there (`MAX_STALLED_GENERATIONS`, `state.stall`; durable-runs
+  writes `state.rejected_at`), the window is set `cancelled` and the next window can run. A GPU
+  deadline, an outage or a code bug does not count. A generation that saves a batch resets the
+  count. To re-open a given-up window, set its row back to `pending` and remove `state.stall`;
+  the oldest pending window is resumed first, even after later windows exist.
+- A source record longer than half the input budget is split into near-equal pieces at a
+  word boundary (no tiny tail pieces).
 - Empty windows are explicitly `empty`, with no model call or fabricated journal.
 - Completed topic+overall summaries enter the existing journal/index path with stable
   IDs and no notification trigger. Sleep retries journal delivery until the SQL row exists.

@@ -3,12 +3,20 @@ order 3 "R2/R3 core").
 
 One invocation per (coalesced) event on the day's thread ``temporal_self:orion:<local date>``:
 
-    ingest -> regulate -> immune -> chronicle -> done
+    ingest -> regulate -> physiology -> immune -> chronicle -> done
 
 * regulate: reads E1/S1/S2 (``deps.read_inputs``), folds them through the pure, I/O-free
   ``orion.regulation.arousal.classify_arousal`` with the previous reading carried by the
   checkpoint (hysteresis lives there), embeds the latest drive readings verbatim, projects the
   ``RegulationStateV1`` to Redis, and records one ``arousal_transition`` event on a level change.
+
+* physiology (body economy Patch A3, Organ 1 Body): at most once per
+  ``physiology_min_interval_sec`` (chat-turn steps inside it are skipped), reads every constraint's
+  source (``deps.read_body``; the cabinet comes from this step's own regulate inputs, never a
+  second query), folds them with the pure ``orion.physiology.body.build_physiology_state`` and
+  hands the ``PhysiologyStateV1`` to ``deps.project_physiology`` (Redis ``orion:physiology:latest``
+  + bus ``orion:physiology:state`` -> sql-writer ``physiology_state``). Own timeout; a failure is a
+  warning and never touches the regulation reading. Nothing decides from it yet (no prices).
 
 * immune (R4): while arousal is ``idle`` and at most once per ``immune_interval_sec`` (6 h), reads
   24 h of the glossary's semantic field channels (``deps.read_immune_series``), judges them with the
@@ -38,9 +46,11 @@ from typing import Any, Awaitable, Callable, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from orion.regulation.arousal import classify_arousal
+from orion.regulation.arousal import classify_arousal, strain_causes
 from orion.regulation.immune import ImmuneConfig, sweep as immune_sweep
+from orion.physiology.body import BodyConfig, BodyInputs, HeatInput, build_physiology_state
 from orion.schemas.drive_reading import DriveReadingV1
+from orion.schemas.physiology import PhysiologyStateV1
 from orion.schemas.regulation import (
     TEMPORAL_SELF_WORKFLOW,
     ArousalInputsV1,
@@ -50,7 +60,7 @@ from orion.schemas.regulation import (
 
 logger = logging.getLogger("orion-durable-runs.temporal_self_graph")
 
-NODES = ("ingest", "regulate", "immune", "chronicle", "done")
+NODES = ("ingest", "regulate", "physiology", "immune", "chronicle", "done")
 IMMUNE_TRACE_CAP = 20   # finding ids kept in the checkpoint
 
 
@@ -66,6 +76,15 @@ class TemporalSelfGraphState(TypedDict, total=False):
     warnings: list
     chronicle: Optional[dict]    # Chronicler.step() summary: watermark, lag, windows, error
     immune: dict                 # {last_run_at, open, findings[<=20], coverage, error, skipped}: carried across days
+    # Strain causes already recorded for the open strain episode (None: none recorded yet, or not
+    # strained). Carried across days so a long episode is not re-seeded at every midnight.
+    strain_causes_seen: Optional[list]
+    strain_row_at: Optional[str]     # when the last strain row (level, cause, seed or keepalive) was written
+    strain_causes_now: Optional[list]  # the strain causes present at that row
+    physiology_at: Optional[str]     # when the physiology node last produced a state (ISO)
+    physiology: Optional[dict]       # its one-line summary: tick_id, no_reading, error
+    # Patch B2: the Budget organ's carry between ticks {constraint: {price, bind, ceiling_since, at}}.
+    physiology_prices: Optional[dict]
 
 
 @dataclass
@@ -75,6 +94,9 @@ class TemporalSelfDeps:
     project: Callable[[RegulationStateV1], Awaitable[None]]
     record_transition: Callable[[Optional[ArousalReadingV1], ArousalReadingV1, str], Awaitable[bool]]
     now: Callable[[], datetime]
+    # Strain loop part 1: write a row when a strain cause joins an episode, or to seed an episode
+    # the chronicle has no onset row for. None (TEMPORAL_SELF_STRAIN_ARCS_ENABLED=false): no rows.
+    record_cause: Optional[Callable[[ArousalReadingV1, str, list[str], bool], Awaitable[bool]]] = None
     arousal_enabled: bool = True
     engaged_minutes: float = 45.0
     gpu_queue_floor: int = 2
@@ -95,6 +117,19 @@ class TemporalSelfDeps:
     # The read is ~3 s live; the store's statement timeout is 45 s. This is the hard ceiling.
     immune_timeout_sec: float = 90.0
     immune_config: ImmuneConfig = ImmuneConfig()
+    # Body economy Patch A3. read_body: (now, heat) -> (BodyInputs, warnings); project_physiology:
+    # PhysiologyStateV1 -> None (raises on failure). None = ORION_PHYSIOLOGY_ENABLED off.
+    read_body: Optional[Callable[[datetime, HeatInput], Awaitable[tuple[BodyInputs, list[str]]]]] = None
+    project_physiology: Optional[Callable[[PhysiologyStateV1], Awaitable[None]]] = None
+    body_config: BodyConfig = BodyConfig()
+    # The regulation tick is 120 s; a chat turn also steps the thread. 100 s keeps one state per
+    # tick and skips turn-driven steps in between.
+    physiology_min_interval_sec: float = 100.0
+    physiology_timeout_sec: float = 30.0
+    # Patch B2 (SHADOW): (state, body inputs, last carry, now) -> (priced state, carry). None =
+    # ORION_PHYSIOLOGY_PRICES_ENABLED off: the Body readings are published unpriced.
+    price_body: Optional[Callable[[PhysiologyStateV1, BodyInputs, Optional[dict], datetime],
+                                  tuple[PhysiologyStateV1, dict]]] = None
 
 
 def _dt(v: Any) -> Optional[datetime]:
@@ -130,6 +165,55 @@ def _prev_inputs(raw: Optional[dict]) -> Optional[ArousalInputsV1]:
         return None
 
 
+# Strain loop part 1: while strained, a row at least this often (a keepalive, ``joined == []``), so
+# the chronology can tell "still strained" from "the closing row was lost". The reducer closes a
+# strain arc with no row for 2.5x this (``ReducerConfig.strain_stale_sec``).
+STRAIN_KEEPALIVE_SEC = 1800.0
+
+
+# A cause that LEFT (or came back) is recorded no sooner than this after the last strain row, so a
+# cause flapping around its threshold costs at most one row per 10 min; a cause that JOINS the
+# episode for the first time is recorded at once.
+STRAIN_CAUSE_CHANGE_MIN_SEC = 600.0
+
+
+async def _strain_causes_step(
+    deps: TemporalSelfDeps, reading: ArousalReadingV1, state: TemporalSelfGraphState, level_row_written: bool,
+    warnings: list,
+) -> tuple[Optional[list], Optional[str], Optional[list]]:
+    """Strain loop part 1. A level row is written only when the level changes, so a cause that joins
+    an episode already strained (the cabinet going critical mid-episode) was never recorded. While
+    strained, write a row when a cause joins, when the causes present now differ from the last row's
+    (a cause left, e.g. the cabinet cooled; at most every STRAIN_CAUSE_CHANGE_MIN_SEC), a seed row
+    when nothing was recorded for the episode (the first step after deploy, a lost onset row), and a
+    keepalive every STRAIN_KEEPALIVE_SEC. Every row carries the causes present now.
+    Returns the new ``(strain_causes_seen, strain_row_at, strain_causes_now)``; a failed write keeps
+    the old values, so the next step retries it."""
+    if deps.record_cause is None or reading.arousal_level != "strained":
+        return None, None, None
+    now = reading.observed_at
+    causes = strain_causes(reading.reasons)
+    if level_row_written:
+        return causes, now.isoformat(), causes  # the onset row carries this episode's causes
+    seen = state.get("strain_causes_seen")
+    row_at = _dt(state.get("strain_row_at"))
+    recorded_now = state.get("strain_causes_now")
+    joined = [c for c in causes if c not in (seen or [])]
+    age = None if row_at is None else (now - row_at).total_seconds()
+    due = age is None or age >= STRAIN_KEEPALIVE_SEC
+    # None: no row since this key existed (the first steps after deploy) -- what the last row
+    # carried is unknown here, so write one once the rate limit allows rather than wait for the
+    # keepalive.
+    changed = ((recorded_now is None or set(causes) != set(recorded_now))
+               and age is not None and age >= STRAIN_CAUSE_CHANGE_MIN_SEC)
+    if seen is not None and not joined and not due and not changed:
+        return seen, state.get("strain_row_at"), recorded_now
+    if not await deps.record_cause(reading, state.get("day_id") or "", joined, seen is None):
+        warnings.append("strain_cause_write_failed")
+        return seen, state.get("strain_row_at"), recorded_now
+    return list(seen or []) + joined, now.isoformat(), causes
+
+
 def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
     async def ingest(state: TemporalSelfGraphState) -> dict:
         ev = dict(state.get("event") or {})
@@ -159,12 +243,15 @@ def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
         drives, warnings = await deps.read_drives(now)
         warnings = list(warnings)
         transition = None
+        recorded = False
         # A new level episode began: the level changed, or the previous reading was too old to
         # carry (``since`` restarted after an outage). Either way ``since`` moved.
         if prev is None or prev.since != reading.since:
             transition = {"from": prev.arousal_level if prev else None, "to": reading.arousal_level}
-            if not await deps.record_transition(prev, reading, state.get("day_id") or ""):
+            recorded = await deps.record_transition(prev, reading, state.get("day_id") or "")
+            if not recorded:
                 warnings.append("transition_write_failed")
+        seen, row_at, causes_now = await _strain_causes_step(deps, reading, state, recorded, warnings)
         open_findings = int((state.get("immune") or {}).get("open") or 0)
         model = RegulationStateV1(generated_at=now, arousal=reading, drives=drives, warnings=warnings,
                                   immune_findings_open=max(0, open_findings))
@@ -174,7 +261,60 @@ def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
             logger.warning("regulation_project_failed", exc_info=True)
             model = model.model_copy(update={"warnings": warnings + ["project_failed"]})
         return {"regulation": model.model_dump(mode="json"), "last_inputs": inputs.model_dump(mode="json"),
-                "transition": transition, "warnings": model.warnings}
+                "transition": transition, "warnings": model.warnings, "strain_causes_seen": seen, "strain_row_at": row_at,
+                "strain_causes_now": causes_now}
+
+    async def physiology(state: TemporalSelfGraphState) -> dict:
+        if deps.read_body is None or deps.project_physiology is None:
+            return {}
+        now = deps.now()
+        last = _dt(state.get("physiology_at"))
+        if last is not None and 0.0 <= (now - last).total_seconds() < deps.physiology_min_interval_sec:
+            return {}
+        inputs = _prev_inputs(state.get("last_inputs"))
+        heat = (HeatInput(read_ok=bool(inputs.cabinet_read_ok), temp_c=inputs.cabinet_temp_c,
+                          thermal_state=inputs.cabinet_thermal_state, observed_at=inputs.observed_at)
+                if inputs is not None else HeatInput(read_ok=False))
+
+        prices_out: dict = {}
+
+        async def run() -> PhysiologyStateV1:
+            body, read_warnings = await deps.read_body(now, heat)
+            model = build_physiology_state(now, body, deps.body_config, warnings=read_warnings)
+            if deps.price_body is not None:
+                try:
+                    model, carry = deps.price_body(model, body, state.get("physiology_prices"), now)
+                    prices_out["carry"] = carry
+                except Exception:  # noqa: BLE001 - a price bug must not cost the Body readings
+                    logger.warning("physiology_prices_failed", exc_info=True)
+                    model = model.model_copy(update={"warnings": list(model.warnings) + ["prices_failed"]})
+            await deps.project_physiology(model)
+            return model
+
+        warnings = list(state.get("warnings") or [])
+        try:
+            model = await asyncio.wait_for(run(), timeout=deps.physiology_timeout_sec)
+        # A failure also stamps physiology_at: a broken read is retried at the next tick, not on
+        # every chat-turn step in between (each could wait the full timeout).
+        except asyncio.TimeoutError:
+            logger.warning("physiology_node_timeout sec=%s", deps.physiology_timeout_sec)
+            return {"physiology_at": now.isoformat(),
+                    "physiology": {"error": f"timeout after {deps.physiology_timeout_sec:.0f} s"},
+                    "warnings": warnings + ["physiology_failed"]}
+        except Exception as exc:  # noqa: BLE001 - the body must never break regulation
+            logger.warning("physiology_node_failed", exc_info=True)
+            return {"physiology_at": now.isoformat(),
+                    "physiology": {"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
+                    "warnings": warnings + ["physiology_failed"]}
+        missing = [f"{c.constraint}:{c.no_reading}" for c in model.constraints if c.no_reading]
+        out = {"physiology_at": now.isoformat(),
+               "physiology": {"tick_id": model.tick_id, "constraints": len(model.constraints),
+                              "no_reading": missing, "error": None,
+                              "strain": None if model.strain is None else model.strain.value,
+                              "strain_constraint": None if model.strain is None else model.strain.constraint}}
+        if "carry" in prices_out:
+            out["physiology_prices"] = prices_out["carry"]
+        return out
 
     async def immune(state: TemporalSelfGraphState) -> dict:
         if deps.read_immune_series is None:
@@ -271,12 +411,13 @@ def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
         return {}
 
     g = StateGraph(TemporalSelfGraphState)
-    for name, fn in (("ingest", ingest), ("regulate", regulate), ("immune", immune), ("chronicle", chronicle),
-                     ("done", done)):
+    for name, fn in (("ingest", ingest), ("regulate", regulate), ("physiology", physiology), ("immune", immune),
+                     ("chronicle", chronicle), ("done", done)):
         g.add_node(name, fn)
     g.add_edge(START, "ingest")
     g.add_edge("ingest", "regulate")
-    g.add_edge("regulate", "immune")
+    g.add_edge("regulate", "physiology")
+    g.add_edge("physiology", "immune")
     g.add_edge("immune", "chronicle")
     g.add_edge("chronicle", "done")
     g.add_edge("done", END)

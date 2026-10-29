@@ -6,6 +6,7 @@ from contextlib import suppress
 from typing import Any
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.harness.fcc_motor import cancel_fcc_turn
 from orion.schemas.harness_finalize import HarnessRunCancelV1
 
@@ -56,26 +57,19 @@ async def run_cancel_worker(stop_event: Any | None = None) -> None:
     bus = OrionBusAsync(url=settings.orion_bus_url)
     channel = settings.channel_harness_run_cancel
     await bus.connect()
-    logger.info("subscribed cancel channel=%s", channel)
+    logger.info("starting cancel channel=%s", channel)
+
+    async def handle(msg: dict[str, Any]) -> None:
+        try:
+            await handle_cancel_bus_message(bus, msg)
+        except Exception:
+            logger.exception("unhandled harness cancel worker error")
 
     try:
-        async with bus.subscribe(channel) as pubsub:
-            while True:
-                if stop_event is not None and stop_event.is_set():
-                    break
-                try:
-                    msg = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                        timeout=1.2,
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                if not msg or msg.get("type") not in ("message", "pmessage"):
-                    continue
-                try:
-                    await handle_cancel_bus_message(bus, msg)
-                except Exception:
-                    logger.exception("unhandled harness cancel worker error")
+        # Resubscribes with backoff after a Redis drop instead of ending the worker.
+        await run_subscription(
+            bus, channel, handle, stop_event=stop_event, name="harness-governor-cancel"
+        )
     except asyncio.CancelledError:
         raise
     finally:

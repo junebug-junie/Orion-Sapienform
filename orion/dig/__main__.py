@@ -47,10 +47,8 @@ path of a file with the full result; read only what you need from that file.
   compare <date> [<date|now>]   what was added / removed between two checkouts.
   history <start> <end>  merged PRs (title + number) and commits in [start, end].
   history <days>         the same for the last <days> days, today included (2 = since yesterday).
-  body [<date>]          your body atlas: machines, services, cameras, stores, processes ->
-                         circulation -> organs. No date = live now; a date = that export's
-                         declared files only (the channel catalog exists from 2026-01).
-  body <organ_id>        every member of one organ of your live body, with status and facts.
+  body [<date>|<organ>]  your body: machines, services, cameras, stores, processes -> organs.
+                         None = live now; a date = that export's files; an organ id = its members.
   body-economy [<section>...] [--window 24h|7d|30d] [--family <f>]   your body economy now:
                          what binds (heat, money, GPU lanes), wants funded vs deferred, waste,
                          services down. Sections: overview (default), all, limits, wants, rhythm,
@@ -58,8 +56,7 @@ path of a file with the full result; read only what you need from that file.
                          value_per_cost, services, processes.
   name <organ_id> <name> because <reason>   name one organ of your live body (a lasting
                          write). Name it by what it takes in and gives out; the reason must cite
-                         at least one of its parts by full name (a service, camera:..., pg:...,
-                         run:..., any member). Names show on the live body only.
+                         at least one of its parts by full name. Names show on the live body only.
   notes [append <text>]  this dig's shared notes (episode hops / turns read each other).
   --dig <id>             before the command: group results under one dig (default: today).
 

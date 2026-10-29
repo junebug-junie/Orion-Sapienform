@@ -93,8 +93,10 @@ Known moments the world changed under a series, stored in `prediction_change_eve
 
 `POST /change-events` (`scope` = a series id or `*`), `GET /change-events`; `/health` shows each
 series' pending and adopted breaks. Seeded 2026-10-20 with the athena T10 swap (break, 10-15 18:57 UTC)
-and the vision bring-up (cabinet open 10-16 21:30 -> 10-17 00:35 excluded; sensor geometry changed:
-break at 00:35).
+and the vision bring-up (cabinet open 10-16 21:30 -> 10-17 00:35 excluded; vision services
+brought up: break at 00:35). The 00:35 break is **real heat** (the cabinet reads ~2 C warmer
+after). It was first seeded as "cabinet sensor geometry changed"; that was wrong: the sensor never
+moved (Juniper, 10-29). The live row needs a one-time UPDATE (see the 10-29 PR report).
 
 ## Cause and effect: three levels, always labelled (`claim_kind`)
 

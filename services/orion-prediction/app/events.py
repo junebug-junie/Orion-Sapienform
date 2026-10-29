@@ -1,7 +1,9 @@
 """Change events -> the effective training rules for one series.
 
-A change event is a known moment the world changed under a series (a GPU swap, the cabinet opened, a
-sensor moved). Two effects, each with a concrete consequence:
+A change event is a known moment the world changed under a series (a GPU swap, the cabinet opened,
+new hardware brought up). A ``break`` means the series' behaviour changed; it says nothing about
+whether the change was in the world or in the measurement, and nothing here treats it as a
+measurement offset. Two effects, each with a concrete consequence:
 
 - ``exclude`` [started_at, ended_at): masked out of training AND of backtest actuals, like the
   registry's ``exclude`` windows -- a disturbance that belongs to neither regime.

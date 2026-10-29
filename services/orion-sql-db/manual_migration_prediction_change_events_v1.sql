@@ -30,14 +30,18 @@ VALUES ('6d1f5c0a-6a11-4c6e-9d2b-0a1e5b7c1001', '*', 'break', '2026-10-15 18:57:
 ON CONFLICT DO NOTHING;
 
 -- Cabinet opened for the vision hardware bring-up: cabinet_lidar_mm erratic (157/204/35/125) and the
--- temperature dips to 25.5 C while open; settles at lidar ~94 mm (was ~116), so the sensor's geometry changed.
+-- temperature dips to 25.5 C while open; settles at lidar ~94 mm (was ~116).
+-- Corrected 2026-10-29 (Juniper): the sensor never moved. The ~2 C after 00:35 is real heat from the
+-- vision bring-up; the lidar/magnetic change is something near the sensor (likely the new hardware).
+-- ON CONFLICT DO NOTHING means an existing row keeps its old title: the live row is fixed by the
+-- one-time UPDATE in docs/superpowers/pr-reports/2026-10-29-cabinet-sensor-offset-was-real-heat-pr.md.
 INSERT INTO prediction_change_event (event_id, scope, effect, started_at, ended_at, title, notes, source, created_at)
 VALUES ('6d1f5c0a-6a11-4c6e-9d2b-0a1e5b7c1002', '*', 'exclude', '2026-10-16 21:30:00+00', '2026-10-17 00:35:00+00',
         'cabinet open: vision bring-up', 'door-open disturbance; not representative of either regime', 'seed-2026-10-20', '2026-10-20 06:00:00+00')
 ON CONFLICT DO NOTHING;
 INSERT INTO prediction_change_event (event_id, scope, effect, started_at, ended_at, title, notes, source, created_at)
 VALUES ('6d1f5c0a-6a11-4c6e-9d2b-0a1e5b7c1003', '*', 'break', '2026-10-17 00:35:00+00', NULL,
-        'cabinet sensor geometry changed (vision bring-up)', 'lidar 116 -> 94 mm, magnetic 36 -> 33.5 uT; cabinet reads ~2 C higher after', 'seed-2026-10-20', '2026-10-20 06:00:00+00')
+        'vision services brought up (real heat)', 'cabinet reads ~2 C higher after: real heat, not a sensor move (the sensor never moved; Juniper 2026-10-29). lidar 116 -> 94 mm, magnetic 36 -> 33.5 uT: something near the sensor changed, likely the new vision hardware.', 'seed-2026-10-20', '2026-10-20 06:00:00+00')
 ON CONFLICT DO NOTHING;
 
 COMMIT;

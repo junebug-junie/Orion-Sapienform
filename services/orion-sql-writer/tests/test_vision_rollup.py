@@ -412,7 +412,9 @@ def test_postgres_path_writes_rows_reads_them_back_and_is_idempotent(pg):
     assert day.rollup["busiest"]["at"] == "08:00" and day.rollup["busiest"]["peak_at_once"]["person"] == 2
     assert day.rollup["kinds"]["person"]["count_range"] == {
         "low": 2, "high": 3, "method_low": "most_in_one_window", "method_high": "raised_to_low"}
-    assert "busiest 08:00 (at most 2 passings; people at least 2, at most 2, most at once 1 dog)" in day.line
+    # Dogs are a range (rules_version 4): their window peak is the range's low, never "most at once".
+    assert "busiest 08:00 (at most 2 passings; people at least 2, at most 2)" in day.line
+    assert "dogs: at least 1, at most 1" in day.line and wr.bare_living_counts(day.line) == []
     assert "so far, through 21:00" in day.line and "No record" not in day.line
     assert "Camera down" in day.line and "03:00–04:00" in day.line
     run_one_rollup_cycle(postgres_uri=_schema_uri(), cfg=cfg, now=now, since=day0)

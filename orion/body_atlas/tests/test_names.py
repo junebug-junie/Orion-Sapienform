@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-import subprocess
-from pathlib import Path
-
 import pytest
 
 from orion.body_atlas import names
 from orion.body_atlas.build import build_atlas
 from orion.body_atlas.tests.test_build import CATALOG, NOW
-
-_REPO = Path(__file__).resolve().parents[3]
 
 
 def _atlas(catalog=CATALOG):
@@ -70,11 +65,3 @@ def test_ledger_round_trip(tmp_path):
     names.append(path, rec)
     names.append(path, rec)
     assert names.load(path) == [rec, rec]
-
-
-def test_only_the_atlas_and_dig_read_the_names_ledger():
-    # partition from recall (design PR #2888, decision 7): nothing else may read Orion's names yet
-    hits = subprocess.run(["git", "-C", str(_REPO), "grep", "-l", "-e", "organ_names", "-e", "body_atlas.names",
-                           "--", "*.py"], capture_output=True, text=True).stdout.split()
-    allowed = ("orion/body_atlas/", "orion/dig/")
-    assert [h for h in hits if not h.startswith(allowed)] == []

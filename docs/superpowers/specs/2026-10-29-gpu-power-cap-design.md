@@ -56,6 +56,29 @@ as weak (r 0.10–0.22). This is an energy decision, not a heat fix.
   | gpu0, gpu1, gpu2 | 250 W | 250 W | 100 W |
   | gpu3 | 300 W | 300 W | 150 W |
 
+## How the body economy reads this
+
+The cap is not an economy act, by the economy's own rules. Its honesty clause
+(`2026-10-23-organism-body-economy-design.md:60-65`) says structural power levers are Juniper's
+decisions, and Orion's job is to forecast and propose with numbers. A fixed per-card power limit is
+such a lever. The economy is also shadow-only today (Patches A, B, C1 and C3a record and price, and
+control nothing), so a root setting on a card must not depend on it.
+
+What the economy must do is read the cap as a body fact:
+
+- **Capacity.** A capped lane writes fewer tokens per second (gpu2 at 150 W: 0.85x). Anything that
+  prices or forecasts a lane's slot-seconds (`gpu_slot_s_by_lane` in the planned `ActCostV2`) must
+  use the capped rate, not a 250 W rate.
+- **Energy per act.** A capped lane spends less energy per token (gpu2 at 150 W: 0.80x). `wh_by_host`
+  estimates must use the capped figure.
+- **Where to read it.** The checked-in `config/gpu_power_limits.json` gives the intended limit. The
+  biometrics `power_limit_watts` column gives the actual limit. When the two disagree, the card is
+  in drift or a bench is running, and the economy should treat that lane's cost as unknown, not
+  guess.
+- **Proposals, not writes.** If Orion's data later says another number is better, Orion proposes a
+  config change with the evidence (bench or live J/token). The economy never writes the file. There
+  is one writer: a PR that Juniper merges.
+
 ## Missing questions
 
 None blocking. Juniper picked the number and the card. Decided here by default, each easy to change:
@@ -181,4 +204,10 @@ bench refuses to run on a capped card, which is safe.
 
 For the body-economy agent: this is the "flat cap first" step from your answer. The config file
 is the one place a card's limit is written. If a dynamic ceiling ever earns its keep, it should
-change what writes that number, not add a second writer.
+change what writes that number, not add a second writer. Until then, see "How the body economy
+reads this".
+
+gpu1: it still serves the Q4 27B (one slot). Bonsai replaced the Q4 model only on gpu2 (#2477, around
+2026-10-02). The gpu1 swap waits on the Bonsai replay quality check (#2554, `make
+eval-bonsai-replay`), which has no recorded run. If gpu1 moves to Bonsai, gpu2's bench numbers
+apply to it directly. Juniper's Hub Agent turns run there, so the 14% slower writing would be felt.

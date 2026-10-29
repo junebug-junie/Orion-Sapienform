@@ -1,7 +1,8 @@
-"""scripts/gpu_power_bench.py: the energy math, and that the card's limit always goes back."""
+"""scripts/gpu_power_bench.py: the energy math, dirty-sample rules, and that the card's limit always goes back."""
 from __future__ import annotations
 
 import importlib.util
+import signal
 import sys
 from pathlib import Path
 
@@ -31,55 +32,158 @@ def test_uncovered_or_empty_window_is_none_not_a_guess(t0: float, t1: float) -> 
     assert bench.energy_joules(samples, t0, t1) is None
 
 
-def test_sample_splits_reading_and_writing_energy() -> None:
+def _sampler(power: list[tuple[float, float]]) -> object:
     s = bench.Sampler(2)
-    s.power = [(t / 10, 100.0 if t < 10 else 200.0) for t in range(0, 41)]  # 100 W then 200 W
-    s.temp = [(t / 10, 60) for t in range(0, 41)]
-    s.clock = [(t / 10, 1300) for t in range(0, 41)]
-    timings = {"prompt_ms": 900.0, "predicted_ms": 2000.0, "prompt_n": 1800, "predicted_n": 64}
-    out = bench.to_sample(150, 0, s, 0.0, timings)
+    s.power = power
+    s.temp = [(t, 60) for t, _ in power]
+    s.clock = [(t, 1300) for t, _ in power]
+    return s
+
+
+def test_sample_windows_are_anchored_to_the_reply() -> None:
+    # Reading 1.0..2.0 s at 100 W, writing 2.0..4.0 s at 200 W; reply arrives at 4.0.
+    power = [(t / 100, 100.0 if t < 200 else 200.0) for t in range(0, 501)]
+    timings = {"prompt_ms": 1000.0, "predicted_ms": 2000.0, "prompt_n": 2000, "predicted_n": 64}
+    out = bench.to_sample(150, 0, _sampler(power), 4.0, timings)
     assert out.prompt_tok_s == 2000.0
     assert out.gen_tok_s == 32.0
-    assert out.gen_avg_w == pytest.approx(200.0, abs=3)  # ramp sits at the start of the window
-    assert out.gen_j_per_tok == pytest.approx(out.gen_avg_w * 2.0 / 64, abs=0.01)
-    assert out.max_temp_c == 60
+    assert out.prompt_j_per_tok == pytest.approx(100.0 / 2000, abs=1e-3)
+    assert out.gen_avg_w == pytest.approx(200.0, abs=0.6)
+    assert out.gen_j_per_tok == pytest.approx(400.0 / 64, abs=0.02)
 
 
-def test_summary_compares_each_cap_to_the_top_cap() -> None:
+def test_waited_time_is_round_trip_minus_server_clocks() -> None:
+    assert bench.waited_s(10.0, 13.4, {"prompt_ms": 1000.0, "predicted_ms": 2000.0}) == pytest.approx(0.4)
+
+
+def test_summary_compares_to_the_first_cap_and_never_switches_baseline() -> None:
     def mk(cap: int, tok_s: float, jpt: float) -> object:
         return bench.Sample(cap, 0, 1000, 1.0, 256, 256 / tok_s, 1000.0, tok_s, 0.1, jpt, 200.0, 70, 1400)
 
-    rows = bench.summarize([mk(250, 40.0, 5.0), mk(250, 40.0, 5.0), mk(150, 36.0, 4.0)])
-    assert [r["cap_w"] for r in rows] == [250, 150]
+    rows = bench.summarize([mk(250, 40.0, 5.0), mk(250, 40.0, 5.0), mk(150, 36.0, 4.0)], [250, 150])
     assert rows[1]["gen_tok_s_vs_top"] == 0.9
     assert rows[1]["gen_j_per_tok_vs_top"] == 0.8
+    # 250 W got no clean samples: ratios are None, not silently relative to 200 W.
+    rows = bench.summarize([mk(200, 38.0, 4.5), mk(150, 36.0, 4.0)], [250, 200, 150])
+    assert rows[0]["n"] == 0
+    assert all(r["gen_tok_s_vs_top"] is None for r in rows)
 
 
-class _Boom(RuntimeError):
-    pass
+def test_slots_without_is_processing_abort_instead_of_reading_clean(monkeypatch) -> None:
+    monkeypatch.setattr(bench, "http_json", lambda *a, **k: [{"id": 0, "state": 0}])
+    with pytest.raises(bench.BenchAbort):
+        bench.busy_slots("http://x")
 
 
-def test_limit_is_restored_when_a_request_fails(monkeypatch, tmp_path) -> None:
+def test_busy_slots_counts_our_own_slot_unless_ignored(monkeypatch) -> None:
+    monkeypatch.setattr(bench, "http_json", lambda *a, **k: [{"id": 0, "is_processing": True},
+                                                              {"id": 1, "is_processing": False}])
+    assert bench.busy_slots("http://x") == [0]
+    assert bench.busy_slots("http://x", ignore=0) == []
+
+
+def test_dead_sampler_aborts_the_quiet_wait() -> None:
+    s = bench.Sampler(2)  # never started: not alive, no readings
+    with pytest.raises(bench.BenchAbort):
+        bench.wait_until_quiet("http://x", s, 80.0, timeout_s=5)
+
+
+def test_thread_join_works() -> None:
+    # Regression: an Event named `_stop` shadows Thread._stop and breaks join().
+    s = bench.Sampler(2)
+    s.run = lambda: None
+    s.start()
+    s.join(timeout=2)
+    w = bench.SlotWatch("http://x", 0)
+    w.run = lambda: None
+    w.start()
+    w.join(timeout=2)
+
+
+def test_restore_retries_after_an_interrupt_and_ignores_signals_meanwhile(monkeypatch) -> None:
     calls: list[float] = []
-    monkeypatch.setattr(bench, "read_limits", lambda gpu: (250.0, 100.0, 250.0))
+    seen_handlers: list[object] = []
+
+    def flaky(gpu, w):
+        seen_handlers.append(signal.getsignal(signal.SIGTERM))
+        calls.append(w)
+        if len(calls) == 1:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(bench, "set_limit", flaky)
+    assert bench.restore_limit(2, 250.0) is True
+    assert calls == [250.0, 250.0]
+    assert all(h == signal.SIG_IGN for h in seen_handlers)
+    assert signal.getsignal(signal.SIGTERM) != signal.SIG_IGN  # put back afterwards
+
+
+def _patch_main(monkeypatch, *, limits=(250.0, 250.0, 100.0, 250.0)) -> list[float]:
+    calls: list[float] = []
+    monkeypatch.setattr(bench, "read_limits", lambda gpu: limits)
     monkeypatch.setattr(bench, "set_limit", lambda gpu, w: calls.append(w))
+    monkeypatch.setattr(bench, "busy_slots", lambda base, ignore=None: [])
+    monkeypatch.setattr(bench, "http_json", lambda *a, **k: {"model_path": "m"})
     monkeypatch.setattr(bench.time, "sleep", lambda s: None)
     monkeypatch.setattr(bench.Sampler, "run", lambda self: None)
+    return calls
+
+
+def _argv(tmp_path: Path, caps: str = "200,150") -> list[str]:
+    return ["--gpu", "2", "--port", "8016", "--caps", caps, "--out", str(tmp_path / "out"),
+            "--lock-dir", str(tmp_path)]
+
+
+@pytest.mark.parametrize("exc", [RuntimeError("server went away"), SystemExit(143), KeyboardInterrupt()])
+def test_limit_is_restored_on_error_sigterm_and_ctrl_c(monkeypatch, tmp_path, exc) -> None:
+    calls = _patch_main(monkeypatch)
 
     def fail(*_a, **_k):
-        raise _Boom("server went away")
+        raise exc
 
     monkeypatch.setattr(bench, "one_request", fail)
-    with pytest.raises(_Boom):
-        bench.main(["--gpu", "2", "--port", "8016", "--caps", "200,150", "--out", str(tmp_path)])
+    with pytest.raises(type(exc)):
+        bench.main(_argv(tmp_path))
     assert calls == [200, 250.0]  # set the first cap, then put the original back
 
 
+def test_all_dirty_attempts_end_the_cap_and_still_restore(monkeypatch, tmp_path) -> None:
+    calls = _patch_main(monkeypatch)
+    monkeypatch.setattr(bench, "wait_until_quiet", lambda *a, **k: True)
+    monkeypatch.setattr(bench, "token_counter", lambda base: None)
+    timings = {"prompt_ms": 1000.0, "predicted_ms": 1000.0, "prompt_n": 10, "predicted_n": 10}
+    # Every request reports a 5 s round trip for 2 s of server work: it waited, so it is dropped.
+    monkeypatch.setattr(bench, "one_request", lambda *a, **k: (0.0, 5.0, timings))
+    monkeypatch.setattr(bench.SlotWatch, "run", lambda self: None)
+    assert bench.main(_argv(tmp_path, caps="200") + ["--repeats", "2", "--max-retries", "3"]) == 0
+    assert calls == [200, 250.0]
+    import json
+    summary = json.loads((tmp_path / "out" / "summary.json").read_text())
+    assert summary["by_cap"][0]["n"] == 0
+    assert len(summary["meta"]["dropped"]) == 5  # 2 repeats + 3 retries, all thrown away
+
+
+def test_card_not_at_default_is_refused_before_touching_it(monkeypatch, tmp_path) -> None:
+    calls = _patch_main(monkeypatch, limits=(150.0, 250.0, 100.0, 250.0))
+    assert bench.main(_argv(tmp_path)) == 2
+    assert calls == []
+
+
 def test_caps_outside_the_card_range_are_refused_before_touching_it(monkeypatch, tmp_path) -> None:
-    calls: list[float] = []
-    monkeypatch.setattr(bench, "read_limits", lambda gpu: (300.0, 150.0, 300.0))
-    monkeypatch.setattr(bench, "set_limit", lambda gpu, w: calls.append(w))
-    assert bench.main(["--gpu", "3", "--port", "8012", "--caps", "250,100", "--out", str(tmp_path)]) == 2
+    calls = _patch_main(monkeypatch, limits=(300.0, 300.0, 150.0, 300.0))
+    assert bench.main(_argv(tmp_path, caps="250,100")) == 2
+    assert calls == []
+
+
+def test_second_bench_on_the_same_card_is_refused(monkeypatch, tmp_path) -> None:
+    import fcntl
+
+    calls = _patch_main(monkeypatch)
+    held = open(tmp_path / "gpu-power-bench-2.lock", "w")
+    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        assert bench.main(_argv(tmp_path)) == 2
+    finally:
+        held.close()
     assert calls == []
 
 

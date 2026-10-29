@@ -126,6 +126,6 @@ No container restart is needed: biometrics reads the sampler through a directory
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/2965
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

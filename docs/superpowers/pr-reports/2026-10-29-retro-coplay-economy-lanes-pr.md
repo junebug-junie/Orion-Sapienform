@@ -96,6 +96,6 @@ Hub rebuild on `git pull` (the post-pull rebuild covers it).
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2975
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

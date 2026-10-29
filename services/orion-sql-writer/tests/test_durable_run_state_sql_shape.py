@@ -64,3 +64,18 @@ def test_curiosity_compaction_state_is_accepted_by_real_writer_route():
     })
     values = event.model_dump(exclude={"schema_version"})
     assert model(**values).workflow == "curiosity.compaction"
+
+
+def test_harness_echo_smoke_state_is_accepted_by_real_writer_route():
+    # Consumer side of the durable-run -> harness step seam (orion/schemas/harness_step_run.py):
+    # sql-writer must accept the new workflow value before durable-runs runs a smoke.
+    model, schema = MODEL_MAP["DurableRunStateSQL"]
+    event = schema.model_validate({
+        "run_id": "harness-echo-smoke-20261029T000000Z-abc123", "workflow": "harness.echo_smoke",
+        "thread_id": "harness-echo-smoke-20261029T000000Z-abc123", "node": "finish",
+        "status": "completed", "correlation_id": "trace-smoke",
+        "detail": {"line": "harness_smoke", "turn_correlation_id": "c-1",
+                   "steps": {"echo": {"text": "harness echo smoke ok", "turn_correlation_id": "c-1"}}},
+    })
+    values = event.model_dump(exclude={"schema_version"})
+    assert model(**values).workflow == "harness.echo_smoke"

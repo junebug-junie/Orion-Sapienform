@@ -37,6 +37,9 @@ from app.admitted_graph import (
 from app.admitted_reflect_graph import build_admitted_reflect_graph
 from app.compactor_digest_graph import build_compactor_digest_graph, finish_detail as compactor_digest_finish_detail
 from app.journal_compose_graph import build_journal_compose_graph, finish_detail as journal_compose_finish_detail
+from app.harness_smoke_graph import build_harness_smoke_graph, finish_detail as harness_smoke_finish_detail
+from app.harness_step import harness_step_correlation_id
+from orion.schemas.harness_step_run import HARNESS_ECHO_SMOKE_STEP_KEY, HARNESS_ECHO_SMOKE_WORKFLOW
 from app.dream_carry_graph import (
     DEFAULT_CHILD_MAX_ATTEMPTS as DREAM_CARRY_DEFAULT_CHILD_MAX_ATTEMPTS,
     DEFAULT_CHILD_MIN_WINDOW_SEC as DREAM_CARRY_DEFAULT_CHILD_MIN_WINDOW_SEC,
@@ -110,7 +113,9 @@ WORK_NODES = {DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORK
               # Only a text hop holds the LLM hold; it releases it before its hop is checkpointed.
               # Image hops are child reverie.visual runs and hold nothing in the carry.
               DREAM_CARRY_WORKFLOW: {"text_hop"},
-              CURIOSITY_COMPACTION_WORKFLOW: {"compact"}}
+              CURIOSITY_COMPACTION_WORKFLOW: {"compact"},
+              # One harness turn under the hold (app/harness_step.py); finish needs no GPU.
+              HARNESS_ECHO_SMOKE_WORKFLOW: {"harness_step"}}
 # Interrupt nodes the driver resumes only once the run's checkpointed ``retry_at`` has passed, and
 # whose loop iterations are not lifecycle facts (no run.<status> / run.resumed event per wake).
 TIMED_WAIT_NODES = frozenset({"retry_wait", "image_wait"})
@@ -210,6 +215,10 @@ class AdmissionRuntime:
                 lambda brief: self._load_episode(brief),
                 lambda prompt, **kw: runner._call_memory_distill_llm(prompt, **kw),
                 lambda **kw: self._persist_episode(**kw), admission_deps, runner._checkpointer),
+            # Durable-run -> harness step seam smoke. Late-bound: the same Hub turn RPC curiosity and
+            # self_sense_eval use (orion:curiosity:turn:request), resolved on the runner per call.
+            HARNESS_ECHO_SMOKE_WORKFLOW: build_harness_smoke_graph(
+                lambda request: runner._run_turn(request), admission_deps, runner._checkpointer),
             # Bound lazily (like reading's run_turn): resolved on the runner at call time.
             ORION_DAY_WORKFLOW: build_orion_day_graph(OrionDayDeps(
                 call_verb_text=lambda *args, **kwargs: runner._call_verb_text(*args, **kwargs),
@@ -303,6 +312,8 @@ class AdmissionRuntime:
             return episode_distill_finish_detail(state)
         if workflow == DREAM_CARRY_WORKFLOW:
             return dream_carry_finish_detail(state)
+        if workflow == HARNESS_ECHO_SMOKE_WORKFLOW:
+            return harness_smoke_finish_detail(state)
         return finish_detail(state)
 
     async def _load_episode(self, brief) -> dict:
@@ -612,7 +623,8 @@ class AdmissionRuntime:
             # Joinable to the pool's child leases (acceptance check 2: no un-attached agent lease
             # under a turn whose run holds a hold).
             detail["turn_correlation_id"] = turn_correlation_id(state)
-        elif state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, DREAM_CARRY_WORKFLOW, SELF_SENSE_WORKFLOW) \
+        elif state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, DREAM_CARRY_WORKFLOW, SELF_SENSE_WORKFLOW,
+                                       HARNESS_ECHO_SMOKE_WORKFLOW) \
                 and state.get("step_correlation_id"):
             # The step's own turn identity, on the event log BEFORE the turn runs: a turn that hangs
             # or a worker that dies mid-step is still traceable by it (self-sense: the question's).
@@ -1003,6 +1015,10 @@ class AdmissionRuntime:
             pending = next_unanswered(state)
             if pending is not None:
                 ids.append(question_turn_id(state, pending[0]))
+        if state.get("workflow") == HARNESS_ECHO_SMOKE_WORKFLOW \
+                and HARNESS_ECHO_SMOKE_STEP_KEY not in (state.get("steps") or {}):
+            # The step turn a dead worker left running: its id derives from the checkpoint.
+            ids.append(harness_step_correlation_id(state, HARNESS_ECHO_SMOKE_STEP_KEY))
         seen: set[str] = set()
         for correlation_id in ids:
             if not correlation_id or correlation_id in seen:
@@ -1488,6 +1504,11 @@ class AdmissionRuntime:
                     "error": values.get("last_error"),
                     "work_started": await self.store.first_event_at(run_id, "run.started") is not None}
                    if workflow == REVERIE_VISUAL_WORKFLOW else {}),
+                # The step results the smoke checkpointed (full text), and the turn it is retrying.
+                **({"harness_steps": dict(values.get("steps") or {}), "error": values.get("last_error"),
+                    "attempt": int(values.get("attempt") or 0), "retry_at": values.get("retry_at"),
+                    "harness_turn_meta": values.get("harness_turn_meta")}
+                   if workflow == HARNESS_ECHO_SMOKE_WORKFLOW else {}),
                 **({"orion_day": {
                     "letter_date": (values.get("brief") or {}).get("letter_date"),
                     "note_ready": bool(values.get("note_md")),

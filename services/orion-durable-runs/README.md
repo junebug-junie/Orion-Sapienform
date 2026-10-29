@@ -319,6 +319,54 @@ one-inference gateway lease; at 06:00 the pool was busy and those failed with
 - `WORK_NODES["compactor.digest"] = {"digest"}`. The terminal state row settles the orion-actions
   schedule run that submitted it.
 
+### Harness steps: `app/harness_step.py` + smoke `harness.echo_smoke` (2026-10-29)
+
+A durable workflow can run one step as one harness turn (the same `claude -p` motor chat and
+curiosity use) and checkpoint the turn's final text as the step's result. This is the seam the
+planned `reminiscence.episode` hops sit on.
+
+- **Transport: nothing new.** The step sends the existing `CuriosityTurnRequestV1` on
+  `orion:curiosity:turn:request` through `Runner._run_turn`, the RPC curiosity.investigate and
+  self_sense_eval already use. Hub runs it with `execute_unified_turn` (`no_write`) under the run's
+  GPU pool hold; Hub refuses a stale hold before the turn starts, and the governor dispatches it on
+  the same lane, through the same turn lock, as a self_sense_eval question. Explicit `session_id` and `source_tag`, so a step never
+  borrows curiosity's investigation session.
+- **Result:** `run_harness_step` returns `{step_key, text, final_len, turn_correlation_id, debug
+  (bounded), harness_elapsed_sec, harness_started_at, harness_finished_at}`; the graph stores it at
+  `state["steps"][step_key]`. `turn_correlation_id` is the harness turn's correlation id: the turn's
+  stages are in `cockpit_turn_sighting` under it.
+- **Failure:** `ok=False` (refusal, Hub timeout, `no_lookup`, `error_shaped_text`), empty text, or a
+  reply for another turn raises `HarnessStepFailed` (a `RuntimeError`, so retryable). The graph sends
+  it through the shared `failed_attempt` policy: backoff in `retry_wait`, a fresh hold, a fresh turn
+  id (`harness_step_correlation_id`: uuid5 over run, step, attempt, fence, hold seq, take-backs).
+  Past `DURABLE_RUNS_RETRY_MAX_ATTEMPTS` the run fails with the turn's error and names the turn
+  (`detail.turn_correlation_id`). A step never completes with `final_len=0`.
+- **Resume:** a checkpointed step is never re-run. A worker that dies mid-step: recovery cancels the
+  pending step's turn by its checkpoint-derived id, then replays under the same hold.
+- **Hub's lookup gate applies:** Hub's `_turn_result_for` asks for at least `MIN_HARNESS_STEPS` (3)
+  harness stream steps, so a prompt that uses no tool can come back `no_lookup` (a step failure). The
+  smoke's prompt runs one Bash command for that reason.
+
+**Smoke `harness.echo_smoke`** (`app/harness_smoke_graph.py`, contract
+`orion/schemas/harness_step_run.py`): `resource_request -> resource_wait -> harness_step -> finish`,
+one step `echo`, agent lane, nothing persisted beyond the checkpoint, the admission row and its state
+rows. Hand-triggered only:
+
+```bash
+python3 services/orion-durable-runs/scripts/harness_echo_smoke.py
+```
+
+It POSTs the run to `http://localhost:8124/runs`, polls `GET /runs/<id>` (which shows
+`harness_steps`, `error`, `attempt`, `retry_at`, `harness_turn_meta` for this workflow), prints PASS
+only when the run completed and the step text carries `harness echo smoke ok`, and prints the
+`cockpit_turn_sighting` query for the turn. `--print` shows the request without submitting it.
+Finish detail: `line=harness_smoke`, `turn_correlation_id`, `steps.<key>` (text capped at 2000
+chars, `text_truncated`).
+
+**Deploy order:** `harness.echo_smoke` is an additive `DurableWorkflowV1` value on
+`extra="forbid"` models. Deploy orion-sql-writer, orion-hub, orion-actions and orion-cortex-orch
+before triggering the first smoke, or an old validator drops its state rows.
+
 ### Every admitted terminal reaches `orion:durable:run:state` (2026-09-28)
 
 `completed`, `failed` and `cancelled` admitted runs are all published as a

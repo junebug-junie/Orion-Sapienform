@@ -141,3 +141,14 @@ def test_empty_conversation_gets_an_opener_prompt_not_a_reply_prompt():
 
 def test_reply_prompt_never_offers_an_empty_reply():
     assert "empty string" not in build_speech_prompt(_perception_in_convo(), "orion")
+
+
+def test_partner_named_orion_is_still_answered():
+    # Review 2026-10-29: the name check skipped a partner called "Orion", so Orion
+    # sent an opener instead of answering a live question.
+    p = _perception_in_convo()
+    p.active_conversation["messages"] = [
+        {"author": "Orion", "author_id": "p9", "text": "where are you headed?"},
+    ]
+    assert latest_partner_line(p, "orion") == "where are you headed?"
+    assert "Your task is to answer this latest line" in build_speech_prompt(p, "orion")

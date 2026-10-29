@@ -80,7 +80,8 @@ def latest_partner_line(perception: WorldPerceptionV1, own_player_id: str) -> Op
             continue
         author_id = str(m.get("author_id") or m.get("player_id") or "").strip()
         author = str(m.get("author") or m.get("name") or "").strip().lower()
-        if author_id == own or author == "orion":
+        # The id decides when there is one: a partner named "Orion" is still a partner.
+        if (author_id == own) if author_id else (author == "orion"):
             continue
         text = str(m.get("text") or m.get("message") or "").strip()
         if text:

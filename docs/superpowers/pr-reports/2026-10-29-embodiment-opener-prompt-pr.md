@@ -22,7 +22,7 @@ The root cause of the 2026-10-29 leaks:
 
 ## Files changed
 
-- `orion/embodiment/speech.py`: opener branch; reply prompt without the empty-string escape.
+- `orion/embodiment/speech.py`: opener branch; reply prompt without the empty-string escape; own lines matched by `author_id` when present.
 - `orion/embodiment/tests/test_speech.py`: `test_empty_conversation_gets_an_opener_prompt_not_a_reply_prompt`, `test_reply_prompt_never_offers_an_empty_reply`.
 
 ## Schema / bus / API changes
@@ -45,7 +45,7 @@ The root cause of the 2026-10-29 leaks:
 ## Tests run
 
 ```text
-pytest orion/embodiment -> 103 passed
+pytest orion/embodiment -> 104 passed
 pytest services/orion-embodiment/tests -> 102 passed
 ```
 
@@ -59,7 +59,12 @@ Not deployed.
 
 ## Review findings fixed
 
-(filled after review)
+- Finding (low): `latest_partner_line` skipped any message whose author was named "Orion", whatever its id. So a partner named Orion got an opener mid-conversation.
+  - Fix: the id decides when it is present.
+  - Evidence: `test_partner_named_orion_is_still_answered`.
+- Noted (low): goodbye ping-pong is now bounded only by the partner leaving. The old decline path already failed by posting `[]`/reasoning. Watch live.
+- Noted (low): `chat_quick.j2` frames the whole prompt as the partner's line ("what they just said"). The model may answer the opener instruction instead of greeting. Same framing as the reply path; watch live.
+- Noted (low): the self-repeat retry nudge reads as a reply instruction, but it cannot reach an opener (empty transcript means no own lines).
 
 ## Restart required
 
@@ -71,6 +76,6 @@ After merge, from the clean primary main checkout on athena: `git pull --ff-only
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2971
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -15,7 +15,7 @@ Context spec for all seven parts plus the over-count and caption-as-fact problem
 | **Chat stance** | The street line: who was outside in the last 15 minutes (names first) and recent captions. | Render yes; reaching a real chat turn is UNVERIFIED (nothing records it). |
 | **Curiosity** | Captions from the last 6 hours, plus the walkway's own surprise signal. | Yes. Walkway offered 67 times in 48 h, chosen 28 times; one investigation asked "do certain people show up at consistent times?" |
 | **Attention** | Walled off by design (never wins). | Yes, but it leaks into every attention record as a suppressed item labelled "body signal" — an outdoor camera filed as body. Wrong label, harmless. |
-| **Substrate layers** | The walkway surprise signal (live, updating). Your named people (Maeve, Teddy, Esme, Adeline, Amanda Feld) each exist as a node in Orion's graph. | Partly. The named-people nodes have **no links to anything** and new sightings never update them. |
+| **Substrate layers** | The walkway surprise signal (live, updating). Your named people (five as of 10-18) each exist as a node in Orion's graph. | Partly. The named-people nodes have **no links to anything** and new sightings never update them. |
 | **Reveries** | The last couple of captions. | Yes. 66 of 518 reveries mention the street, e.g. "vehicles on the walkway disrupting expected patterns." |
 | **Dreams** | Only routine predictions about the walkway — and none exist yet. | No. |
 | **Memory and the day letter** | Nothing direct. Episodes count only the room camera; the day letter reads no camera at all. | No. |
@@ -83,3 +83,8 @@ Context spec for all seven parts plus the over-count and caption-as-fact problem
 - Story-card naming joined to recognition:
   [PR #2753](https://github.com/junebug-junie/Orion-Sapienform/pull/2753) (motion stories still
   Hub-only until the spot-check gate passes).
+- Walkway person learning (albums, learned bars, "Is this X?" asks, person pictures kept
+  forever): [PR #2767](https://github.com/junebug-junie/Orion-Sapienform/pull/2767)
+  (`docs/superpowers/specs/2026-10-20-walkway-person-learning-design.md`). Live: #2765, #2776,
+  #2782, #2797, #2807. Story-link backfill applied 2026-10-29 (76 stories). Consumer of "probably X"
+  guesses for now: the orion-prediction experiment only.

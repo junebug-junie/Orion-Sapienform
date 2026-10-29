@@ -92,6 +92,6 @@ After merge, from the clean primary main checkout on athena: `git pull --ff-only
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2943
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -7,8 +7,11 @@ lags. Controls reuse orion-prediction's own definitions rather than parallel one
 - weather enters through ``athena.central_ac_proxy`` (#2829; config/prediction/series.v1.yaml, parsed
   by services/orion-prediction/app/series.py): outdoor F above 75, 3 h earlier -- the house's central
   AC -- not a linear outdoor term;
-- ``prediction_change_event`` (#2780): 'exclude' windows are masked; the 10-17 sensor-geometry break
-  is a MEASUREMENT offset (fixed at the recorded ~2 C in the primary model), other breaks are steps;
+- ``prediction_change_event`` (#2780): 'exclude' windows are masked; every break is a free level
+  step whose size the fit estimates. That includes the 10-17 00:35 vision bring-up break: the
+  cabinet sensor never moved (Juniper, 10-29), so the ~2 C after it is real heat, not a measurement
+  offset. The ``*_no_steps`` variants drop the free steps, so that heat can only enter through the
+  measured watts;
 - the portable AC is ``home_cooling_sample`` (athena.cabinet_cooling_watts).
 A house-meter variant uses run_house_heat_balance_eval.py's household+central kWh instead of the
 proxy. ``decompose`` splits the 09-26..10-10 -> 10-18..10-22 rise into per-term contributions.
@@ -28,7 +31,7 @@ Usage:
 
 ``--write-config`` also writes ``config/physiology/heat_sensitivity.yaml`` (Patch B2): per host the
 short-run (2 h step response) sensitivity, its interval, n, fitted_at, the fit command and the
-host's baseline watts, plus the recorded sensor measurement offsets. The live Budget organ
+host's baseline watts. The live Budget organ
 (``orion/physiology/heat_config.py``) reads that file; an entry older than 30 days reads as
 no_reading. That file is only ever written here.
 """
@@ -232,13 +235,9 @@ def break_name(b: dict) -> str:
 
 
 def design(frame: dict, regs: dict[str, np.ndarray], *, outdoor: bool = False, proxy: bool = True,
-           house_ac: bool = False, ac: bool = True, breaks: bool = True, day_fe: bool = False,
-           fixed_offsets: dict[str, float] | None = None):
-    """Returns X, y, names, day, rows (indices into the frame grid).
-
-    ``fixed_offsets`` maps a break title to a known MEASUREMENT offset in degC: the cabinet reading
-    after that break is lowered by it and the break gets no free step (its size is not estimated)."""
-    fixed_offsets = fixed_offsets or {}
+           house_ac: bool = False, ac: bool = True, breaks: bool = True, day_fe: bool = False):
+    """Returns X, y, names, day, rows (indices into the frame grid). The cabinet reading is used
+    raw: no break lowers it (the sensor never moved; every break is real heat or real cooling)."""
     cols, names = [], []
     for h, series in regs.items():
         for k in LAGS_BINS:
@@ -259,8 +258,6 @@ def design(frame: dict, regs: dict[str, np.ndarray], *, outdoor: bool = False, p
         names.append("ac_per100w")
     if breaks:
         for b in frame["breaks"]:
-            if b["title"] in fixed_offsets:
-                continue
             step = np.array([t >= b["at"] for t in frame["times"]], dtype=float)
             if 0 < step.sum() < len(step):
                 cols.append(step)
@@ -278,9 +275,6 @@ def design(frame: dict, regs: dict[str, np.ndarray], *, outdoor: bool = False, p
     names.append("const")
     X = np.column_stack(cols)
     y = frame["cab"].copy()
-    for b in frame["breaks"]:
-        if b["title"] in fixed_offsets:
-            y[np.array([t >= b["at"] for t in frame["times"]])] -= fixed_offsets[b["title"]]
     ok = np.isfinite(y) & np.all(np.isfinite(X), axis=1) & ~frame["excluded"]
     rows = np.nonzero(ok)[0]
     X, y, day = X[ok], y[ok], day[ok]
@@ -550,7 +544,7 @@ def _swing(d: dict) -> float:
 
 def headline(models: dict, diag: dict, decomp: dict | None = None) -> list[str]:
     lines = []
-    for dk in ("primary", "proxy_offset_fixed_no_steps"):
+    for dk in ("primary", "proxy_no_steps"):
         d = (decomp or {}).get(dk) or {}
         if d.get("status") != "ok":
             continue
@@ -652,15 +646,7 @@ def decompose(model: dict, frame: dict, *, base: tuple[datetime, datetime], targ
     if in_b.sum() < 96 or in_t.sum() < 96:
         return {"status": "insufficient_rows", "base_rows": int(in_b.sum()), "target_rows": int(in_t.sum())}
     dx = X[in_t].mean(axis=0) - X[in_b].mean(axis=0)
-    # Fixed measurement offsets were subtracted from y; add them back as their own fixed terms so
-    # the decomposition is of the RAW reading's rise.
-    fixed = {}
-    for b in frame["breaks"]:
-        off = (model.get("design") or {}).get("fixed_offsets", {}).get(b["title"])
-        if off is not None:
-            after = np.array([t >= b["at"] for t in times], dtype=float)
-            fixed["fixed_offset:" + b["title"]] = off * float(after[in_t].mean() - after[in_b].mean())
-    dy = float(y[in_t].mean() - y[in_b].mean()) + sum(fixed.values())
+    dy = float(y[in_t].mean() - y[in_b].mean())
     raw = frame["cab"][rows]
 
     def group(nm: str) -> str:
@@ -685,8 +671,6 @@ def decompose(model: dict, frame: dict, *, base: tuple[datetime, datetime], targ
     beta = f["beta"]
     contrib = {g: {"degC": float(c @ beta), "ci95": [float(v) for v in np.percentile(boots[g], [2.5, 97.5])]}
                for g, c in groups.items()}
-    for k, v in fixed.items():
-        contrib[k] = {"degC": v, "ci95": [v, v], "fixed": True}
     explained = sum(v["degC"] for v in contrib.values())
     return {"status": "ok", "base": [base[0].isoformat(), base[1].isoformat()],
             "target": [target[0].isoformat(), target[1].isoformat()],
@@ -701,8 +685,6 @@ def _public(m: dict) -> dict:
     return {k: v for k, v in m.items() if not k.startswith("_")}
 
 
-# #2780's change event: "cabinet reads ~2 C higher after" the 10-17 00:35 sensor-geometry break.
-SENSOR_OFFSET_C = 2.0
 DECOMP_BASE = (datetime(2026, 9, 26, tzinfo=timezone.utc), datetime(2026, 10, 11, tzinfo=timezone.utc))
 DECOMP_TARGET = (datetime(2026, 10, 18, tzinfo=timezone.utc), datetime(2026, 10, 23, tzinfo=timezone.utc))
 
@@ -718,20 +700,21 @@ def run(extract: dict, *, reps: int, seed: int, with_corr: bool) -> dict:
     # proxy instead of a linear outdoor term, the portable AC, hour of day, one level-shift step per
     # change-event break, and the change-event exclusion windows masked. No day dummies: they would
     # absorb the central-AC effect, which acts at the day level.
+    # Every change-event break is a free step, including the 10-17 00:35 vision bring-up: the sensor
+    # never moved, so the rise after it is real heat (from load the watts capture, or from heat they
+    # do not, e.g. the new hardware's own draw or changed airflow). The free step can also take heat
+    # that is really Orion's load; the *_no_steps variants bound that from the other side.
     last_break = frame3["breaks"][-1]["at"] if frame3["breaks"] else None
-    sensor_offset = {b["title"]: SENSOR_OFFSET_C for b in frame3["breaks"] if "sensor" in b["title"].lower()}
     models = {
-        "primary": fit_model(frame3, comp2, label="compute watts + central-AC proxy + portable AC + hour; sensor break = fixed 2 C measurement offset; T10 break = free step", reps=reps, seed=seed, fixed_offsets=sensor_offset),
-        "sensor_step_estimated": fit_model(frame3, comp2, label="as primary but the sensor break's size is estimated (free step)", reps=reps, seed=seed),
-        "proxy_plus_linear_outdoor": fit_model(frame3, comp2, label="primary + linear outdoor temperature (0/1/3 h)", reps=reps, seed=seed, outdoor=True, fixed_offsets=sensor_offset),
+        "primary": fit_model(frame3, comp2, label="compute watts + central-AC proxy + portable AC + hour; every change-event break = free step (vision bring-up = real heat)", reps=reps, seed=seed),
+        "proxy_plus_linear_outdoor": fit_model(frame3, comp2, label="primary + linear outdoor temperature (0/1/3 h)", reps=reps, seed=seed, outdoor=True),
         "house_meter_ac": fit_model(frame3, comp2, label="house-meter household+central kWh (4 h mean) instead of the proxy", reps=reps, seed=seed, proxy=False, house_ac=True),
-        "house_meter_ac_offset_fixed": fit_model(frame3, comp2, label="house-meter AC, sensor offset fixed at the recorded value", reps=reps, seed=seed, proxy=False, house_ac=True, fixed_offsets=sensor_offset),
-        "proxy_offset_fixed_no_steps": fit_model(frame3, comp2, label="primary, sensor offset fixed, no free break steps (T10 heat only through athena watts)", reps=reps, seed=seed, fixed_offsets=sensor_offset, breaks=False),
-        "house_meter_ac_offset_fixed_no_steps": fit_model(frame3, comp2, label="house-meter AC, sensor offset fixed, no free break steps", reps=reps, seed=seed, proxy=False, house_ac=True, fixed_offsets=sensor_offset, breaks=False),
-        "no_proxy": fit_model(frame3, comp2, label="primary without the central-AC proxy", reps=reps, seed=seed, proxy=False, fixed_offsets=sensor_offset),
-        "primary_with_hecate": fit_model(frame3, comp3, label="primary + hecate chassis watts (data from 10-04)", reps=reps, seed=seed, fixed_offsets=sensor_offset),
-        "day_fixed_effects": fit_model(frame3, comp2, label="primary + one dummy per day (absorbs day-level AC effect)", reps=reps, seed=seed, day_fe=True, fixed_offsets=sensor_offset),
-        "chassis_watts": fit_model(frame3, chas2, label="primary with chassis watts (includes fans; reverse-causation risk)", reps=reps, seed=seed, fixed_offsets=sensor_offset),
+        "proxy_no_steps": fit_model(frame3, comp2, label="primary, no free break steps (T10 and vision heat only through athena watts)", reps=reps, seed=seed, breaks=False),
+        "house_meter_ac_no_steps": fit_model(frame3, comp2, label="house-meter AC, no free break steps", reps=reps, seed=seed, proxy=False, house_ac=True, breaks=False),
+        "no_proxy": fit_model(frame3, comp2, label="primary without the central-AC proxy", reps=reps, seed=seed, proxy=False),
+        "primary_with_hecate": fit_model(frame3, comp3, label="primary + hecate chassis watts (data from 10-04)", reps=reps, seed=seed),
+        "day_fixed_effects": fit_model(frame3, comp2, label="primary + one dummy per day (absorbs day-level AC effect)", reps=reps, seed=seed, day_fe=True),
+        "chassis_watts": fit_model(frame3, chas2, label="primary with chassis watts (includes fans; reverse-causation risk)", reps=reps, seed=seed),
         "first_diff": first_difference_hourly(frame3, comp2, reps=reps, seed=seed),
         "first_diff_chassis": first_difference_hourly(frame3, chas2, reps=reps, seed=seed),
     }
@@ -739,8 +722,7 @@ def run(extract: dict, *, reps: int, seed: int, with_corr: bool) -> dict:
         models["before_last_break"] = fit_model(restrict(frame3, last_break), comp2,
                                                 label=f"primary, only before {last_break.isoformat()}", reps=reps, seed=seed)
     decomp = {}
-    for key in ("primary", "proxy_offset_fixed_no_steps", "sensor_step_estimated", "proxy_plus_linear_outdoor",
-                "house_meter_ac", "house_meter_ac_offset_fixed", "house_meter_ac_offset_fixed_no_steps"):
+    for key in ("primary", "proxy_no_steps", "proxy_plus_linear_outdoor", "house_meter_ac", "house_meter_ac_no_steps"):
         if models[key].get("status") == "ok":
             decomp[key] = decompose(models[key], frame3, base=DECOMP_BASE, target=DECOMP_TARGET, reps=reps, seed=seed + 7)
     baselines = baseline_watts_p10(frame3, comp2)
@@ -820,14 +802,10 @@ def config_document(result: dict, *, command: str) -> dict:
                     "horizon": "2h", "n": int(fd["n"]), "fitted_at": fitted_at,
                     "regressor": f"{fd['regressor'][h]}_watts", "baseline_watts_p10": round(base, 1),
                     "fit_command": command}
-    offsets = [{"series": "athena.cabinet_temp_c", "since": b["at"], "offset_c": SENSOR_OFFSET_C,
-                "change_event": b["title"],
-                "source": "prediction_change_event note (#2780: 'cabinet reads ~2 C higher after'); fixed, not estimated"}
-               for b in result["method"]["change_event_breaks"] if "sensor" in b["title"].lower()]
     return {"schema": "heat_sensitivity.v1", "fitted_at": fitted_at,
             "window": [result["window"]["start"], result["window"]["end"]],
             "model": "hourly first differences: degC per 100 W step within 2 h (day-block bootstrap 95% CI)",
-            "hosts": hosts, "measurement_offsets": offsets}
+            "hosts": hosts}
 
 
 def write_config(doc: dict, path: Path = CONFIG_PATH) -> None:

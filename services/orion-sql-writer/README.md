@@ -664,6 +664,12 @@ the individuals tick, after answers apply, while `PERSON_RECORD_ENABLED` (true):
    different people. No confirmed picture, no picture. Every pass also
    corrects the pictures of questions already open.
 
+"Same person" (2026-10-29): names match exactly, so a first name and a full
+name are two people until Juniper joins them in the Hub People panel
+(`person.merged_into`, `manual_migration_person_merge_v1.sql`). The planner then
+resolves the joined name to the person kept and moves its clusters; a joined
+person is never asked about. Nothing is joined automatically.
+
 Needs `manual_migration_person_record_v1.sql`; without it the step reports
 `person_record: migration_missing`. Dry run on live data:
 `orion/person_model/evals/run_person_record_backfill_eval.py --live <dsn>`.
@@ -705,7 +711,7 @@ companions are never arrival candidates.
   `inside` (the detector looks every ~5 s), so a departure is projected: moving toward
   the portal edge, last foot within 0.6 of it, a measured exit speed (frame widths/s).
   Window = `(exit_dist + g) / exit_speed` with `g` the prior x0.4..x3 until
-  `VISION_HANDOFF_MIN_MET` met for that portal and kind, then the split-conformal 10-90%
+  `VISION_HANDOFF_MIN_ARRIVALS` arrivals (met, early or late) for that portal and kind, then the split-conformal 10-90%
   band of learned `g = transit_sec x exit_speed - exit_dist`. While a window is ahead it
   sets `orion:vision:expect:walkway` (extend-only; the rhythm loop keeps the key until
   `handoff_until`) or `orion:vision:look:doorbell` (= handoff id, TTL = window; the
@@ -732,7 +738,7 @@ companions are never arrival candidates.
   arrival time under the predicted distribution, for the Rung 6 `street_handoff` domain),
   `handoff_missed` once unexplained, `overlap_pair` (low salience). One outbox row per
   event; facts older than 1 h (approach: 5 min) are recorded but not published. The prior
-  band's p is floored at `2/(VISION_HANDOFF_MIN_MET+1)`, so a hand-set prior never opens
+  band's p is floored at `2/(VISION_HANDOFF_MIN_ARRIVALS+1)`, so a hand-set prior never opens
   the attention gate. Salience = who x what x surprise (`SALIENCE_*` in
   `vision_handoff.py`). p-value calm state and the conformal floor `2/(n+1)` are
   documented in the module.
@@ -942,6 +948,32 @@ read-only.
 - Eval (read only): `evals/run_story_strip_darkness_eval.py` -- coverage
   (saved vs frame_gone) and scene contrast by verdict, to re-check 0.10
   once Juniper has used "Can't tell".
+
+### Hourly frame samples (2026-10-29)
+
+`app/vision_hourly_frames.py` keeps one full frame per camera per UTC hour, so
+a sunny hour can be compared with a grey hour after the shared frames
+directory (~5 min) has pruned them. It was built after the walkway detector
+went half-blind on 2026-10-22..23 and nothing was left to look at.
+
+- Every `VISION_HOURLY_FRAMES_INTERVAL_SEC` (60 s): for each stream in
+  `VISION_HOURLY_FRAMES_STREAMS` with no sample this hour, copy the newest
+  frame of this hour that is at least 2 s old (unchanged bytes; in practice a
+  frame from HH:00-HH:01) from `VISION_STORY_FRAMES_DIR` to
+  `VISION_HOURLY_FRAMES_DIR/<YYYY-MM-DD>/<stream>_<HH>Z.jpg`.
+- One line per sample in `<YYYY-MM-DD>/index.jsonl`: frame time, size, luma
+  mean and contrast, and `detections` for the 10 min before the frame
+  (scene windows, windows that saw something, per-label window counts,
+  per-label crop score n/p50/max, and crop rows for that exact frame).
+  An empty `frame_crops` means no crop row exists for that frame; most frames
+  are never sent to the detector.
+- The doorbell has frames only during a Ring event, so it has samples only in
+  hours with an event.
+- Pruning: whole `YYYY-MM-DD` directories older than
+  `VISION_HOURLY_FRAMES_RETENTION_DAYS` (14 = today plus the 14 days before;
+  0 = forever). Nothing else under
+  the root is touched. About 0.3 GB at 14 days.
+- `VISION_HOURLY_FRAMES_ENABLED=false` turns it off.
 
 ### Walkway rollups by hour, day, week and month (2026-10-18)
 

@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Iterable, Mapping, Optional, Sequence
 
 from orion import schema_skew_discovery as ssd
+from orion import vision_detection_rate_watch as dr
 from orion.sql_migration_drift import DriftReport, alert_lines
 
 # ---------------------------------------------------------------------------
@@ -463,6 +464,14 @@ class LadderReport:
     # Merged hand-applied SQL migrations vs the live schema (orion/sql_migration_drift.py).
     # None = the section did not run this tick (skipped or could not check).
     migrations: Optional[DriftReport] = None
+    # Blind-detector watch (orion/vision_detection_rate_watch.py), one per
+    # 24/7 camera. Red: collapsed / silent. Green: ok. "unknown" is reported
+    # via cannot_check by the caller; quiet / low are neither red nor green.
+    detection_rates: list[dr.DetectionRateResult] = field(default_factory=list)
+
+    @property
+    def red_detection_rates(self) -> list[dr.DetectionRateResult]:
+        return [d for d in self.detection_rates if d.red]
 
     @property
     def red_migrations(self) -> list:
@@ -478,13 +487,14 @@ class LadderReport:
 
     @property
     def red(self) -> bool:
-        return bool(self.red_rungs or self.red_skew or self.red_migrations)
+        return bool(self.red_rungs or self.red_skew or self.red_migrations or self.red_detection_rates)
 
     def red_keys(self) -> list[str]:
         """Stable identifiers for debounce: one per failing rung / skewed container."""
         keys = [f"rung:{r.rung}" for r in self.red_rungs]
         keys += [s.key for s in self.red_skew]
         keys += [f.key for f in self.red_migrations]
+        keys += [f"rung:{d.name}" for d in self.red_detection_rates]
         return sorted(set(keys))
 
     def green_keys(self) -> list[str]:
@@ -496,6 +506,10 @@ class LadderReport:
         card that was already delivered.
         """
         keys = [f"rung:{r.rung}" for r in self.rungs if not r.red]
+        # Only "ok" (>= rearm ratio): unknown, quiet (a night proves nothing
+        # about a blind detector) and low (hysteresis) must not re-arm a card
+        # that was already delivered.
+        keys += [f"rung:{d.name}" for d in self.detection_rates if d.green]
         # A key is green only if no row for it is red this tick: one reader
         # container is compared against every writer of the file, and the
         # same key can be red against one writer and ok against another.
@@ -515,8 +529,11 @@ class LadderReport:
 
     def severity(self) -> str:
         """critical when anything that stops cognition is red; warning when the
-        only finding is empty consolidation (a symptom, usually of a red rung)."""
-        return "warning" if self.red_keys() == ["rung:consolidation:motifs"] else "critical"
+        only findings are empty consolidation (a symptom, usually of a red rung)
+        or a blind detector (perception degraded, nothing stopped)."""
+        keys = self.red_keys()
+        warning_only = all(k == "rung:consolidation:motifs" or k.startswith("rung:detection_rate:") for k in keys)
+        return "warning" if keys and warning_only else "critical"
 
     def alert_message(self) -> str:
         lines = []
@@ -536,6 +553,9 @@ class LadderReport:
             lines.append("Rebuild/redeploy those readers; a forbid-model change is a consumer-first migration.")
         if self.red_migrations:
             lines += alert_lines(self.migrations)
+        if self.red_detection_rates:
+            lines.append("A camera's detector has gone blind or silent (frames keep arriving, detections collapsed or stopped vs the same hours on recent days):")
+            lines += [f"- {d.summary()}" for d in self.red_detection_rates]
         return "\n".join(lines)
 
     def to_dict(self) -> dict:
@@ -563,6 +583,19 @@ class LadderReport:
                     "detail": s.detail,
                 }
                 for s in self.skew
+            ],
+            "detection_rates": [
+                {
+                    "rung": d.name,
+                    "status": d.status,
+                    "windows": d.current.windows,
+                    "detected": d.current.detected,
+                    "share": d.current.share,
+                    "baseline_share": d.baseline_share,
+                    "baseline_days": d.baseline_days_used,
+                    "reason": d.reason,
+                }
+                for d in self.detection_rates
             ],
             "migrations": None if self.migrations is None else [
                 {

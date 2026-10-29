@@ -718,6 +718,18 @@ class Settings(BaseSettings):
     # dark = median RMS contrast (std of luma, 0..1) of the strip's crops below
     # this. Measured live 2026-10-17: night crops 0.012-0.075, day/dusk >= 0.134.
     vision_story_strip_dark_contrast: float = Field(0.10, ge=0.0, le=1.0, alias="VISION_STORY_STRIP_DARK_CONTRAST")
+    # One full frame per camera per UTC hour, kept for N days, with an index of
+    # what the detector saw around it (app/vision_hourly_frames.py, 2026-10-29).
+    # Evidence for sunny-vs-grey detector comparisons; frames come from
+    # VISION_STORY_FRAMES_DIR. Streams: stream_id=frame file prefix (bare
+    # stream_id = retina naming <stream>_<stream>; cam0's edge writes frame_*).
+    vision_hourly_frames_enabled: bool = Field(True, alias="VISION_HOURLY_FRAMES_ENABLED")
+    vision_hourly_frames_interval_sec: float = Field(60.0, ge=0.0, alias="VISION_HOURLY_FRAMES_INTERVAL_SEC")
+    vision_hourly_frames_dir: str = Field("/mnt/telemetry/vision/hourly_frames", alias="VISION_HOURLY_FRAMES_DIR")
+    # Whole days older than this are deleted. 0 = keep forever.
+    vision_hourly_frames_retention_days: float = Field(14.0, ge=0.0, alias="VISION_HOURLY_FRAMES_RETENTION_DAYS")
+    vision_hourly_frames_streams: str = Field(
+        "walkway,cam0=frame,doorbell", alias="VISION_HOURLY_FRAMES_STREAMS")
 
     # Rhythm learner: fits when things usually happen, emits expectations,
     # grades them met / missed / unscorable.
@@ -759,7 +771,7 @@ class Settings(BaseSettings):
     vision_handoff_look_kinds: str = Field("person,dog", alias="VISION_HANDOFF_LOOK_KINDS")
     # The prior band is replaced by the learned (split-conformal 10-90%) band after
     # this many met handoffs per portal and kind.
-    vision_handoff_min_met: int = Field(10, alias="VISION_HANDOFF_MIN_MET")
+    vision_handoff_min_arrivals: int = Field(10, alias="VISION_HANDOFF_MIN_ARRIVALS")
     # Target camera looked at less than this share of the window -> unscorable, never missed.
     vision_handoff_min_coverage: float = Field(0.8, alias="VISION_HANDOFF_MIN_COVERAGE")
     # "Strong appearance" bars: cosine of the two stories' centroid vectors. Measured

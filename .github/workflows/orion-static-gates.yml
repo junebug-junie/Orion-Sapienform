@@ -70,6 +70,10 @@ jobs:
       - name: No personal terms in tracked files
         run: python -m pytest tests/test_no_personal_terms.py -q -p no:cacheprovider
 
+      # Orion's organ names stay out of recall/memory until battle-tested (design PR #2888).
+      - name: Organ names ledger read only by body atlas + dig
+        run: python -m pytest tests/test_organ_names_partition.py -q -p no:cacheprovider
+
       - name: Env sync preserves overrides and reaches admission templates
         run: python -m pytest tests/scripts/test_sync_local_env_from_example.py scripts/tests/test_check_env_template_parity.py -q
 
@@ -103,7 +107,7 @@ jobs:
       # PR #2424 (missing table) and PR #2400 (missing column) red over the real
       # services/orion-sql-db corpus, and the data-only reset as verify-manually.
       - name: Substrate ladder liveness logic replays the 09-20 incident red
-        run: python -m pytest tests/scripts/test_substrate_ladder_liveness.py tests/scripts/test_schema_skew_discovery.py tests/test_sql_migration_drift_gate.py -q
+        run: python -m pytest tests/scripts/test_substrate_ladder_liveness.py tests/scripts/test_vision_detection_rate_watch.py tests/scripts/test_schema_skew_discovery.py tests/test_sql_migration_drift_gate.py -q
 
       # Deploy-time migration gate (scripts/safe_docker_build.sh refuses `up` while a
       # migration REQUIRED-BY the service is unapplied; PRs #2594/#2605 shipped

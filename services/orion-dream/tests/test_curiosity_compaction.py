@@ -76,8 +76,8 @@ def answer_for(r):
     if r["state"]["phase"] == "overall":
         return json.dumps({"body": BODY})
     records = json.loads(prompt.split("SOURCE RECORDS:\n")[1])
-    return json.dumps({"topics": [{"topic": "Delivery reliability", "body": BODY,
-                                   "refs": [item["ref"] for item in records]}]})
+    return json.dumps({"record_topics": {item["ref"]: 0 for item in records},
+                       "topics": [{"topic": "Delivery reliability", "body": BODY}]})
 
 
 def test_topic_checkpoint_then_overall_keeps_provenance_and_reduces():
@@ -95,7 +95,11 @@ def test_topic_checkpoint_then_overall_keeps_provenance_and_reduces():
 
 
 @pytest.mark.parametrize("raw", ["", '{"body":""}', '{"body":"No findings."}', 'not json',
-                                  '{"topics":[{"topic":"Invented", "body":"' + BODY + '","refs":["made-up"]}]}'])
+                                  '{"record_topics":{"made-up":0},"topics":[{"topic":"Invented", "body":"' + BODY + '"}]}',
+                                  '{"record_topics":{"s0":0,"s1":0},"topics":[{"topic":"Invented", "body":"' + BODY + '"}]}',
+                                  '{"record_topics":{},"topics":[{"topic":"Omitted", "body":"' + BODY + '"}]}',
+                                  '{"record_topics":{"s0":1},"topics":[{"topic":"Missing", "body":"' + BODY + '"}]}',
+                                  '{"topics":[{"topic":"V1 shape", "body":"' + BODY + '","refs":["s0"]}]}'])
 def test_failed_empty_or_ungrounded_generation_does_not_change_checkpoint(raw):
     from orion.curiosity.compaction import record_answer
     r = row()
@@ -107,7 +111,8 @@ def test_failed_empty_or_ungrounded_generation_does_not_change_checkpoint(raw):
 
 
 def _topic_answer(body, refs=("s0",)):
-    return json.dumps({"topics": [{"topic": "Delivery reliability", "body": body, "refs": list(refs)}]})
+    return json.dumps({"record_topics": {ref: 0 for ref in refs},
+                       "topics": [{"topic": "Delivery reliability", "body": body}]})
 
 
 def test_body_over_the_cap_is_a_rejected_model_answer_not_a_code_error():
@@ -133,29 +138,116 @@ def test_body_cut_off_by_the_length_cap_is_rejected_but_a_finished_one_at_the_ca
     assert record_answer(row(), _topic_answer(finished))["state"]["phase"] == "overall"
 
 
-def test_output_schema_encodes_the_limits_and_this_batchs_refs():
-    from orion.curiosity.compaction import Topic, TopicPass, output_schema
+def test_output_schema_encodes_the_limits_and_requires_every_batch_ref():
+    from orion.curiosity.compaction import MAX_TOPICS, Topic, TopicPass, output_schema
     r = row([{"ref": str(i), "body": f"evidence {i} " * 20, "sources": ["j1"]} for i in range(3)])
     name, schema = output_schema(r)
-    assert name == "CuriosityCompactionTopicPassV1"
+    assert name == "CuriosityCompactionTopicPassV2"
+    # Records are grouped before any topic is written (llama.cpp follows property order).
+    assert list(schema["properties"]) == ["record_topics", "topics"] == schema["required"]
+    mapping = schema["properties"]["record_topics"]
+    aliases = [f"s{i}" for i in range(len(r["state"]["batches"][0]))]
+    assert mapping["required"] == aliases == list(mapping["properties"])   # no record can be skipped
+    assert mapping["additionalProperties"] is False                        # none can be invented
+    assert all(p == {"type": "integer", "enum": list(range(MAX_TOPICS))} for p in mapping["properties"].values())
     topics = schema["properties"]["topics"]
     item = topics["items"]["properties"]
     assert (topics["minItems"], topics["maxItems"]) == (1, TopicPass.model_fields["topics"].metadata[1].max_length) == (1, 4)
     assert item["body"]["maxLength"] == 1200 == Topic.model_fields["body"].metadata[1].max_length
     assert item["body"]["minLength"] == 80 and "pattern" not in item["body"] and "enum" not in item["body"]
-    assert item["refs"]["minItems"] == 1
-    assert item["refs"]["items"]["enum"] == [f"s{i}" for i in range(len(r["state"]["batches"][0]))]
-    assert topics["items"]["additionalProperties"] is False
+    assert set(item) == {"topic", "body"} and topics["items"]["additionalProperties"] is False
     r["state"]["phase"] = "overall"
     name, schema = output_schema(r)
     assert name == "CuriosityCompactionSummaryV1" and schema["properties"]["body"]["maxLength"] == 2400
 
 
-def test_prompt_asks_for_words_not_a_character_count_at_the_cap():
+def test_prompt_asks_for_words_with_headroom_under_the_cap():
+    """Live accepted bodies ran ~6.9 chars/word (p90 7.4) and up to 190 words when 150 were asked:
+    "120 to 150 words" sat at the 1200-char cap, so the grammar cut bodies off mid-sentence."""
     from orion.curiosity.compaction import next_prompt
     prompt = next_prompt(row())
-    assert "about 120 to 150 words" in prompt and "hard limit: 1200 characters" in prompt
-    assert "80 to 1200 characters" not in prompt and "1 to 4 topic areas" in prompt
+    assert "about 80 to 110 words" in prompt and "hard limit: 1200 characters" in prompt
+    assert "120 to 150 words" not in prompt and "1 to 4 topic areas" in prompt
+    assert "map EVERY record ref" in prompt
+    r = row()
+    r["state"]["phase"], r["state"]["topics"] = "overall", []
+    assert "about 180 to 240 words" in next_prompt(r) and "80 to 2400 characters" not in next_prompt(r)
+
+
+def test_live_reduction_batch_of_13_topic_summaries_needs_every_ref_and_accepts_full_coverage():
+    """Live shape, weekly 2026-10-05 batch 1 (r19..r21): 13 prior topic summaries, at most 4 topics
+    out. V1 answers kept dropping refs; V2 maps every ref, and a full map is accepted."""
+    from orion.cognition.model_output import ModelOutputRejected
+    from orion.curiosity.compaction import record_answer
+    material = [{"ref": f"topic:{3 + i // 5}:{i % 5}", "body": f"Area {i}\n" + BODY * 6, "sources": [f"j{i}"],
+                 "first_at": NOW.isoformat(), "last_at": NOW.isoformat()} for i in range(13)]
+    r = row(material)
+    r["state"]["sources"] = [{"entry_id": f"j{i}", "run_ref": f"curiosity:r{i}", "created_at": NOW.isoformat()}
+                             for i in range(13)]
+    assert len(r["state"]["batches"]) == 1 and len(r["state"]["batches"][0]) == 13
+    four = [{"topic": f"Area group {k}", "body": BODY} for k in range(4)]
+    dropped = {f"s{i}": i % 4 for i in range(12)}            # s12 left out: still rejected
+    with pytest.raises(ModelOutputRejected, match="omit or invent"):
+        record_answer(r, json.dumps({"record_topics": dropped, "topics": four}))
+    full = {f"s{i}": i % 4 for i in range(13)}
+    done = record_answer(r, json.dumps({"record_topics": full, "topics": four}))
+    assert {s for t in done["state"]["topics"] for s in t["sources"]} == {f"j{i}" for i in range(13)}
+    assert sorted(len(t["sources"]) for t in done["state"]["topics"]) == [3, 3, 3, 4]
+
+
+def test_a_topic_with_no_records_is_rejected():
+    from orion.cognition.model_output import ModelOutputRejected
+    from orion.curiosity.compaction import record_answer
+    r = row([{"ref": str(i), "body": f"evidence {i} " * 20, "sources": ["j1"]} for i in range(2)])
+    two = [{"topic": "One", "body": BODY}, {"topic": "Two", "body": BODY}]
+    with pytest.raises(ModelOutputRejected, match="without records"):
+        record_answer(r, json.dumps({"record_topics": {"s0": 0, "s1": 0}, "topics": two}))
+
+
+def test_split_long_record_has_no_stump_pieces():
+    """Live monthly 2026-09-01 batch 144: a 7032-char record was sliced 7000 + 32, and the 32-char
+    piece "elfDefinition 1, TurnOutcome 1.)" stood alone as source record s2."""
+    from orion.curiosity.compaction import INPUT_BUDGET, batches
+    words = ("Investigated over 33 harness steps, grounding: grounded, wrote HelpRequest 1. " * 400)
+    for size in (7032, 7350, 14001, 21500):
+        body = words[:size]
+        pieces = [item["body"] for batch in batches([{"ref": "j1", "body": body, "sources": ["j1"]}]) for item in batch]
+        assert "".join(pieces) == body                                   # lossless
+        assert len(pieces) == -(-size // (INPUT_BUDGET // 2))            # fewest pieces that fit
+        assert min(len(p) for p in pieces) >= 0.75 * size / len(pieces)  # no stump
+        assert all(len(p) <= INPUT_BUDGET // 2 for p in pieces)
+        assert all(p.endswith((" ", ".")) or p is pieces[-1] for p in pieces)   # cut between words
+
+
+def test_only_rejected_model_answers_count_toward_giving_a_window_up():
+    from orion.curiosity.compaction import MAX_STALLED_GENERATIONS, mark_rejected, note_failed_generation
+    r = {"state": {"phase": "topics", "batches": [[1]] * 5, "partials": [[]]}}
+
+    def rejected_generation():
+        r["state"] = mark_rejected(r)["state"]
+        return note_failed_generation(r["state"])
+
+    assert [rejected_generation() for _ in range(2)] == [1, 2]
+    assert note_failed_generation(r["state"]) == 2        # deadline/outage: no mark, no count
+    assert "rejected_at" not in r["state"]                 # a mark is used once
+    r["state"]["partials"].append([])                      # a generation saved a batch
+    assert rejected_generation() == 1
+    r["state"]["batches"], r["state"]["partials"] = [[1]] * 2, []   # a reduction moves it too
+    assert [rejected_generation() for _ in range(MAX_STALLED_GENERATIONS)][-1] == MAX_STALLED_GENERATIONS
+
+
+def test_accepted_answer_clears_a_rejection_mark():
+    from orion.curiosity.compaction import mark_rejected, record_answer
+    r = mark_rejected(row())
+    assert "rejected_at" in r["state"]
+    assert "rejected_at" not in record_answer(r, answer_for(r))["state"]
+
+
+def test_record_topics_index_must_be_an_integer():
+    from orion.cognition.model_output import ModelOutputRejected
+    from orion.curiosity.compaction import record_answer
+    with pytest.raises(ModelOutputRejected):
+        record_answer(row(), json.dumps({"record_topics": {"s0": 0.0}, "topics": [{"topic": "T one", "body": BODY}]}))
 
 
 def test_journal_contract_is_idempotent_indexable_and_silent():
@@ -290,9 +382,9 @@ def test_distinct_topic_areas_keep_their_own_sources_before_overall_synthesis():
     ], [])
     r = row(material)
     r["state"]["sources"] = sources
-    r = record_answer(r, json.dumps({"topics": [
-        {"topic": "Delivery reliability", "body": BODY, "refs": ["s0"]},
-        {"topic": "Self-understanding", "body": BODY, "refs": ["s1"]},
+    r = record_answer(r, json.dumps({"record_topics": {"s0": 0, "s1": 1}, "topics": [
+        {"topic": "Delivery reliability", "body": BODY},
+        {"topic": "Self-understanding", "body": BODY},
     ]}))
     assert {t["topic"]: t["sources"] for t in r["state"]["topics"]} == {
         "Delivery reliability": ["delivery"], "Self-understanding": ["self-inquiry"]}
@@ -315,8 +407,7 @@ def test_a_full_pass_the_schema_allows_fits_the_pass_budget():
     """Review finding: 6 x 1200-char topics could only ever be rejected as over budget."""
     from orion.curiosity.compaction import MAX_TOPICS, PASS_BUDGET, TOPIC_BODY_CHARS
     from orion.cognition.compactor.chunking import json_char_len
-    full = {"topics": [{"topic": "t" * 100, "body": "b" * TOPIC_BODY_CHARS, "refs": ["s0", "s1", "s2"]}
-                       for _ in range(MAX_TOPICS)]}
+    full = {"topics": [{"topic": "t" * 100, "body": "b" * TOPIC_BODY_CHARS} for _ in range(MAX_TOPICS)]}
     assert MAX_TOPICS >= 1 and json_char_len(full) <= PASS_BUDGET
 
 
@@ -330,7 +421,7 @@ def test_reduction_that_does_not_shrink_is_not_a_retryable_model_rejection():
     orig = compaction.batches
     compaction.batches = lambda material: [[m] for m in material] * 3
     try:
-        with pytest.raises(ValueError, match="did not shrink") as exc:
+        with pytest.raises(compaction.ReductionDidNotShrink, match="did not shrink") as exc:
             compaction.record_answer(r, answer_for(r))
         assert not isinstance(exc.value, ModelOutputRejected)
     finally:

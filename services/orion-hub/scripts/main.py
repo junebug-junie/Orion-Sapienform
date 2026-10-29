@@ -644,6 +644,13 @@ async def startup_event():
                     min_run_length=settings.HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH,
                 ),
             )
+            # Outreach is durable through orion-notify (notify_requests row,
+            # open until Juniper dismisses it in the tray). No client when
+            # NOTIFY_BASE_URL is unset: outreach then publishes in-app only.
+            if settings.NOTIFY_BASE_URL:
+                endogenous_outreach.notify_client = NotifyClient(
+                    settings.NOTIFY_BASE_URL, settings.NOTIFY_API_TOKEN or None, timeout=5
+                )
             # 2026-08-19: generation now goes through the real
             # orion.hub.turn_orchestrator.execute_unified_turn pipeline (see
             # endogenous_outreach.py's own docstring), the same
@@ -1007,6 +1014,7 @@ async def startup_event():
                     tick_interval_sec=settings.HUB_READING_FINDING_OUTREACH_TICK_SEC,
                     lookback_hours=settings.HUB_READING_FINDING_OUTREACH_LOOKBACK_HOURS,
                     max_attempts=settings.HUB_READING_FINDING_OUTREACH_MAX_ATTEMPTS,
+                    min_spacing_sec=settings.HUB_READING_FINDING_OUTREACH_MIN_SPACING_SEC,
                 )
                 await reading_finding_outreach.start()
             except Exception:  # noqa: BLE001 -- never blocks Hub boot

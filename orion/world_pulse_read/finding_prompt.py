@@ -1,8 +1,10 @@
 """The prompt Orion writes a reading-finding message from: the evidence, and nothing to copy.
 
 Same contract as the curiosity Door-A composition prompt (orion/curiosity/outreach_prompt.py):
-the evidence goes in, Orion's own message comes out, and ``PASS`` (the whole reply, that one
-word -- ``endogenous_outreach.is_pass_response``) means "not worth sending". No template
+the evidence goes in, Orion's own message comes out, and ``PASS`` means "not worth sending"
+(the prompt asks for the whole reply to be that one word; ``endogenous_outreach.is_pass_response``
+also takes a line holding only PASS after Orion's reasoning, which is how most declines arrived
+live through 2026-10-28 and were delivered to Juniper as messages). No template
 sentence is offered for Orion to fill in: a message that only restated the headlines would be
 template text in Orion's voice.
 

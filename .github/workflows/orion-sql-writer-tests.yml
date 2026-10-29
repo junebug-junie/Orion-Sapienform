@@ -96,6 +96,7 @@ jobs:
             services/orion-sql-writer/tests/test_vision_osnet_shadow.py \
             services/orion-sql-writer/tests/test_vision_walkway_faces_stationary.py \
             services/orion-sql-writer/tests/test_vision_rollup.py \
+            services/orion-sql-writer/tests/test_vision_hourly_frames.py \
             services/orion-sql-writer/tests/test_act_downstream_use.py \
             orion/vision/tests \
             services/orion-sql-writer/tests/test_vision_rhythm.py \
@@ -207,7 +208,9 @@ jobs:
             services/orion-sql-writer/tests/test_vision_caption_motion_pg.py \
             services/orion-sql-writer/tests/test_vision_story_strip.py \
             services/orion-sql-writer/tests/test_vision_rollup.py \
-            services/orion-sql-writer/tests/test_vision_handoff_pg.py | tee vision_pg.out
+            services/orion-sql-writer/tests/test_vision_handoff_pg.py \
+            services/orion-sql-writer/tests/test_vision_hourly_frames_pg.py \
+            tests/scripts/test_vision_detection_rate_watch_pg.py | tee vision_pg.out
           if grep -q "SKIPPED" vision_pg.out; then
             echo "visual confirmation Postgres tests skipped -- ORION_TEST_PG_URI wiring is broken" >&2
             exit 1

@@ -612,14 +612,21 @@
 
         <div id="hubNotificationsPanel" class="bg-gray-900 rounded-2xl shadow-lg p-5 space-y-3" data-notification-batch-threshold="5" title="Notifications reflect server recent events; refresh reloads the Hub cache, not full history.">
           <div class="flex items-center justify-between">
-            <div class="text-xs uppercase tracking-wide text-gray-500">Notifications</div>
+            <div class="flex items-center gap-2">
+              <div class="text-xs uppercase tracking-wide text-gray-500">Notifications</div>
+              <span
+                id="orionMessagesBadge"
+                class="hidden rounded-full bg-green-900/70 px-2 py-0.5 text-[10px] font-semibold text-green-200"
+                title="Messages from Orion you have not dismissed yet"
+              ></span>
+            </div>
             <div class="flex items-center gap-2">
               <button id="settingsOpenButton" type="button" class="text-[10px] text-gray-400 hover:text-gray-200 underline-offset-2 hover:underline">Notify settings</button>
               <button
                 id="notificationsDismissAllBtn"
                 type="button"
                 class="rounded border border-gray-700 bg-gray-800 px-2 py-0.5 text-[10px] text-gray-300 hover:bg-gray-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
-                title="Dismiss every notification currently shown by this filter"
+                title="Dismiss every notification currently shown by this filter (Orion's own messages stay until you dismiss each one)"
                 disabled
               >Dismiss all</button>
               <select id="notificationFilter" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
@@ -4683,6 +4690,7 @@
   <script src="/static/js/gpu_pool_leases.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/presence-form.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cabinet-live-audio.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/orion-message-tray.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
 </body>
 </html>

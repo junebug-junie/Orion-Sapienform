@@ -30,7 +30,7 @@ ADMIN_DSN = os.environ.get("ORION_MEMORY_EPISODE_TEST_DATABASE_URL")
 SQL = REPO_ROOT / "services" / "orion-sql-db"
 MIGRATIONS = [SQL / f"manual_migration_{f}.sql" for f in (
     "walkway_camera_v1", "walkway_privacy_v2", "vision_confirm_asks_v1", "vision_ask_names_v1",
-    "vision_person_album_v1", "person_record_v1")]
+    "vision_person_album_v1", "person_record_v1", "person_merge_v1")]
 needs_pg = pytest.mark.skipif(not ADMIN_DSN, reason="ORION_MEMORY_EPISODE_TEST_DATABASE_URL not set")
 JS = HUB_ROOT / "static" / "js" / "people.js"
 THUMB = "ab" * 32
@@ -42,7 +42,7 @@ def test_routes_are_mounted_on_the_hub_app() -> None:
     assert "app.include_router(people_router)" in main
     assert {r.path for r in pr.router.routes} == {
         "/api/people", "/api/people/{person_id}/facts", "/api/people/{person_id}/facts/{fact_id}/remove",
-        "/api/people/{person_id}/status"}
+        "/api/people/{person_id}/status", "/api/people/{person_id}/same-as"}
 
 
 def test_template_mounts_the_panel_under_orion_is_asking_and_loads_the_script() -> None:
@@ -69,7 +69,9 @@ def test_panel_helpers() -> None:
       api.statusLine([]), api.statusLine([{{status: "active"}}, {{status: "not_a_person"}}]),
       api.request("add-fact", "p/1", {{category: "age", value: "  ten "}}),
       api.request("remove-fact", "p1", {{fact_id: "f 1"}}),
-      api.request("status", "p1", {{status: "not_a_person"}})
+      api.request("status", "p1", {{status: "not_a_person"}}),
+      api.request("same-as", "p1", {{into: "p2"}}),
+      api.request("same-as", "p1", {{into: ""}})
     ]""")
     assert got == [
         f"/api/vision/crop-thumbs/{THUMB}", "", "",
@@ -78,6 +80,8 @@ def test_panel_helpers() -> None:
         {"url": "/api/people/p%2F1/facts", "body": {"category": "age", "value": "ten"}},
         {"url": "/api/people/p1/facts/f%201/remove", "body": {}},
         {"url": "/api/people/p1/status", "body": {"status": "not_a_person"}},
+        {"url": "/api/people/p1/same-as", "body": {"into": "p2"}},
+        {"url": "/api/people/p1/same-as", "body": {"into": None}},
     ]
 
 
@@ -204,3 +208,54 @@ def test_not_a_person_closes_its_question_and_sinks_to_the_bottom() -> None:
         assert (await client.post("/api/people/p-ups/status", json={"status": "gone"})).status_code == 422
     _run(body, published)
     assert [(e.ask_id, e.status, e.source_kind) for e in published] == [("ask-ups", "dismissed", "person_fact")]
+
+
+@needs_pg
+def test_same_person_joins_two_names_moves_facts_and_closes_the_question() -> None:
+    """2026-10-29, live: a first name and a full name were two people; she answered
+    "How do you know <full name>?" and was then asked about the first name."""
+    published: list = []
+
+    async def body(pool, client):
+        await _world(pool)
+        await pool.execute("INSERT INTO person (person_id, display_name, role) VALUES ('p-sam2', 'Sam Lee', 'other')")
+        await pool.execute("INSERT INTO person_link (link_id, person_id, source_kind, source_ref, decided_by) "
+                           "VALUES ('l9', 'p-sam2', 'vision_individual', 'sam-9', 'camera_name')")
+        await pool.execute(
+            "INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, created_at, expires_at) VALUES "
+            "('ask-sam2', 'How do you know Sam Lee?', 'person_fact', 'p-sam2|relationship', 'open', now(), "
+            "now() + interval '1 day'), ('ask-sam', 'Pronouns for Sam?', 'person_fact', 'p-sam|pronouns', 'open', "
+            "now(), now() + interval '1 day')")
+        r = (await client.post("/api/people/p-sam2/same-as", json={"into": "p-sam"})).json()
+        # Its facts move (none here), its open question closes; the kept person's
+        # relationship is already answered, so that question would close too.
+        assert (r["into"], r["facts_moved"], r["closed_asks"]) == ("p-sam", 0, ["ask-sam2"])
+        people = (await client.get("/api/people")).json()["people"]
+        assert [p["name"] for p in people].count("Sam Lee") == 0
+        sam = next(p for p in people if p["person_id"] == "p-sam")
+        assert sam["also_called"] == [{"person_id": "p-sam2", "name": "Sam Lee"}]
+        assert sam["open_question"]["ask_id"] == "ask-sam"
+        # A fact typed on a joined name lands on the person kept.
+        fid = (await client.post("/api/people/p-sam2/facts", json={"category": "age", "value": "ten"})).json()["fact_id"]
+        assert await pool.fetchval("SELECT person_id FROM person_fact WHERE fact_id = $1", fid) == "p-sam"
+        # Refused: itself, an unknown person, Orion, or a name already joined to someone.
+        assert (await client.post("/api/people/p-sam/same-as", json={"into": "p-sam"})).status_code == 422
+        assert (await client.post("/api/people/p-sam/same-as", json={"into": "nobody"})).status_code == 404
+        assert (await client.post("/api/people/p-sam/same-as", json={"into": "r-self"})).status_code == 404
+        r = await client.post("/api/people/r-you/same-as", json={"into": "p-sam"})
+        assert r.status_code == 422 and r.json()["detail"] == "interlocutor_is_kept"   # her own card is kept
+        r = await client.post("/api/people/p-ups/same-as", json={"into": "p-sam2"})
+        assert r.status_code == 422 and r.json()["detail"] == "into_is_merged"
+        await pool.execute("UPDATE person SET status = 'not_a_person' WHERE person_id = 'p-typo'")
+        r = await client.post("/api/people/p-ups/same-as", json={"into": "p-typo"})
+        assert r.status_code == 422 and r.json()["detail"] == "into_is_not_a_person"
+        # Joining the kept person into someone else carries the earlier name along.
+        assert (await client.post("/api/people/p-sam/same-as", json={"into": "r-you"})).status_code == 200
+        assert dict(await pool.fetch("SELECT person_id, merged_into FROM person WHERE person_id IN ('p-sam', 'p-sam2')")) == {
+            "p-sam": "r-you", "p-sam2": "r-you"}
+        assert await pool.fetchval("SELECT count(*) FROM person_fact WHERE person_id = 'r-you'") == 2
+        # Undo: the name is its own person again.
+        assert (await client.post("/api/people/p-sam2/same-as", json={"into": None})).status_code == 200
+        assert await pool.fetchval("SELECT merged_into FROM person WHERE person_id = 'p-sam2'") is None
+    _run(body, published)
+    assert [e.ask_id for e in published][:1] == ["ask-sam2"]

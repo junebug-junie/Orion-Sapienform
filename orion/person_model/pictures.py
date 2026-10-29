@@ -9,7 +9,8 @@ card. These are only pictures the interlocutor named or picked:
 - a picture she marked "the same person" on such a card;
 - a face she named on a "same person?" card;
 - a picture she picked as that name on an "Is this <name>?" card
-  (vision_person_exemplar, source ``confirm_pick_yes``).
+  (vision_person_exemplar, source ``confirm_pick_yes``). A name merged into
+  another person ("same person", ``person.merged_into``) counts for that person.
 
 One SQL string for both readers: orion-sql-writer (SQLAlchemy, ``:ids``) and the
 Hub (asyncpg, ``$1::text[]``). Rows: person_id, image_ref, at -- newest first.
@@ -46,12 +47,12 @@ SELECT person_id, ref AS image_ref, at FROM (
    AND lower(btrim(a.answer_detail->'names'->>l.source_ref)) = lower(btrim(i.label))
   WHERE l.source_kind = 'vision_individual' AND l.revoked_at IS NULL AND l.person_id = ANY(@IDS@)
   UNION ALL
-  SELECT p.person_id, coalesce(c.face_thumb_ref, c.thumb_ref), e.added_at
+  SELECT coalesce(p.merged_into, p.person_id), coalesce(c.face_thumb_ref, c.thumb_ref), e.added_at
   FROM vision_person_exemplar e
   JOIN vision_crop_observation c ON c.crop_id = e.crop_id
   JOIN person p ON lower(btrim(p.display_name)) = lower(btrim(e.person_label))
   WHERE e.source = 'confirm_pick_yes' AND e.polarity = 1 AND e.revoked_at IS NULL
-    AND p.person_id = ANY(@IDS@)
+    AND coalesce(p.merged_into, p.person_id) = ANY(@IDS@)
 ) x
 WHERE ref LIKE 'thumb:%'
   -- A picture later marked "someone else", or "not <name>", never shows.
@@ -59,7 +60,7 @@ WHERE ref LIKE 'thumb:%'
   AND NOT EXISTS (
     SELECT 1 FROM vision_person_exemplar n
     JOIN vision_crop_observation nc ON nc.crop_id = n.crop_id
-    JOIN person np ON np.person_id = x.person_id
+    JOIN person np ON x.person_id IN (np.person_id, np.merged_into)
     WHERE n.polarity = -1 AND n.revoked_at IS NULL
       AND lower(btrim(n.person_label)) = lower(btrim(np.display_name))
       AND x.ref IN (nc.thumb_ref, nc.face_thumb_ref))

@@ -64,7 +64,8 @@ def summarize(atlas: BodyAtlasV1, *, out: str | None) -> str:
         shown = ", ".join(names[m] for m in organ.members[:4])
         more = f" +{len(organ.members) - 4}" if len(organ.members) > 4 else ""
         ns = "/".join(organ.namespaces) or "-"
-        lines.append(f"{i:>2}. [{len(organ.members)} parts, {live} live] ns={ns}: {shown}{more}")
+        label = f'"{organ.name}" ' if organ.name else ""
+        lines.append(f"{i:>2}. {label}{organ.organ_id} [{len(organ.members)} parts, {live} live] ns={ns}: {shown}{more}")
     if len(multi) > budget:
         lines.append(f"showing {budget} of {len(multi)} multi-part organs")
     tail = f"full atlas: {out}" if out else "full atlas: not written (pass --out PATH)"

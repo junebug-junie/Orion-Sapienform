@@ -111,11 +111,18 @@ class NotifyClient:
         tags: Optional[List[str]] = None,
         source_service: str = "unknown",
         correlation_id: Optional[str] = None,
+        message_id: Optional[UUID] = None,
+        notification_type: Optional[str] = None,
     ) -> NotificationAccepted:
         url = f"{self.base_url}/chat/message"
         headers = {"Content-Type": "application/json"}
         if self.api_token:
             headers["X-Orion-Notify-Token"] = self.api_token
+        extra = {}
+        if message_id is not None:
+            # Lets the caller key the durable row to a message id it already
+            # wrote elsewhere (e.g. the chat_message row), so both join.
+            extra["message_id"] = message_id
         payload = ChatMessageNotification(
             source_service=source_service,
             session_id=session_id,
@@ -126,6 +133,8 @@ class NotifyClient:
             severity=severity,
             require_read_receipt=require_read_receipt,
             tags=tags or ["chat", "message"],
+            notification_type=notification_type,
+            **extra,
         )
         try:
             response = requests.post(url, json=payload.model_dump(mode="json"), headers=headers, timeout=self.timeout)

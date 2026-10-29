@@ -71,8 +71,8 @@ def sync_links(conn, people) -> Tuple[pr.Plan, Dict[str, int]]:
         "WHERE label IS NOT NULL AND btrim(label) <> ''")).fetchall())
     different = [(r[0], r[1]) for r in conn.execute(text(
         "SELECT individual_a, individual_b FROM vision_individual_pair_verdict WHERE verdict = 'different'"))]
-    persons = [pr.Person(r[0], r[1], r[2], r[3]) for r in conn.execute(text(
-        "SELECT person_id, display_name, role, status FROM person"))]
+    persons = [pr.Person(r[0], r[1], r[2], r[3], r[4]) for r in conn.execute(text(
+        "SELECT person_id, display_name, role, status, merged_into FROM person"))]
     links = {(r[0], r[1]): r[2] for r in conn.execute(text(
         "SELECT source_kind, source_ref, person_id FROM person_link WHERE revoked_at IS NULL"))}
     plan = pr.plan(clusters, different, people, persons, links)
@@ -125,8 +125,10 @@ def apply_fact_answers(conn, now: datetime) -> int:
         if parsed and value:
             person_id, category = parsed
             n = conn.execute(text(
+                # A name joined to another person ("same person") after the question was
+                # asked: the answer belongs to the person kept.
                 "INSERT INTO person_fact (fact_id, person_id, category, value_text, voice, source_ref) "
-                "SELECT :f, :p, :c, :v, :voice, :src WHERE EXISTS (SELECT 1 FROM person WHERE person_id = :p) "
+                "SELECT :f, coalesce(merged_into, person_id), :c, :v, :voice, :src FROM person WHERE person_id = :p "
                 "ON CONFLICT DO NOTHING"),
                 {"f": ask_id, "p": person_id, "c": category, "v": value, "voice": pf.VOICE_ASK_ANSWER,
                  "src": f"ask:{ask_id}"}).rowcount or 0
@@ -150,7 +152,7 @@ SELECT p.person_id, p.display_name, p.role,
        (SELECT count(*) FROM orion_ask a WHERE a.source_kind = :k
           AND split_part(a.source_ref, '|', 1) = p.person_id) AS asked
 FROM person p
-WHERE p.status = 'active' AND p.role <> 'self'
+WHERE p.status = 'active' AND p.role <> 'self' AND p.merged_into IS NULL
   -- Someone Orion actually meets: a live camera link, or the interlocutor. A name
   -- left with no link (a typo that was corrected) is not asked about.
   AND (p.role = 'interlocutor' OR EXISTS (SELECT 1 FROM person_link l WHERE l.person_id = p.person_id

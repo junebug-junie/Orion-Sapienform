@@ -8,7 +8,7 @@ What each price charges (``use`` against ``budget``, in the reading's own unit):
 
 * ``heat``: ORION'S OWN heat share in degC, sum over hosts of the short-run sensitivity
   (``config/physiology/heat_sensitivity.yaml``) x watts above the host's baseline / 100, against
-  the room's headroom: soft line - (cabinet, sensor offset removed, - Orion's share). The forecast
+  the room's headroom: soft line - (raw cabinet reading - Orion's share). The forecast
   is persistence (the newest cabinet reading). ``exogenous_bind`` (with 0.5 C hysteresis) when the
   room is over the line even with Orion's share at 0: "the room is too hot and my load is not the
   cause". A host whose sensitivity is missing or older than 30 days makes the heat price
@@ -39,11 +39,9 @@ from zoneinfo import ZoneInfo
 
 from orion.physiology.body import BodyInputs, priced_hours
 from orion.physiology.heat_config import (
-    CABINET_SERIES,
     DEFAULT_MAX_AGE_DAYS,
     HeatSensitivityConfig,
     host_sensitivity,
-    offset_at,
 )
 from orion.physiology.prices import (
     EXOGENOUS_BIND,
@@ -182,14 +180,11 @@ def heat_ask(reading: PhysiologyConstraintReadingV1, body: BodyInputs, now: date
         c = sens * over / 100.0
         share += c
         parts.append(f"{host} +{over:.0f} W x {sens:.2f} = {c:.2f} C")
-    raw = float(reading.level)
-    off, rec = offset_at(cfg.heat_config, CABINET_SERIES, now)
-    cabinet = raw - off
+    cabinet = float(reading.level)
     room = cabinet - share
     bind = bind_with_hysteresis(prev_bind, floor_use=room, budget=cfg.heat_soft_line_c, rearm_margin=cfg.heat_rearm_c)
     budget = max(0.0, cfg.heat_soft_line_c - room)
-    sensor = f" (sensor offset -{off:.1f} C, {rec.change_event})" if rec is not None else ""
-    why = (f"cabinet {raw:.1f} C{sensor} -> {cabinet:.1f} C; Orion's share {share:.2f} C (2 h step response: a short-run lower bound) "
+    why = (f"cabinet {cabinet:.1f} C; Orion's share {share:.2f} C (2 h step response: a short-run lower bound) "
            f"[{'; '.join(parts) or 'no host'}]; room without Orion {room:.1f} C vs line {cfg.heat_soft_line_c:.1f} C")
     if bind:
         why = "room over the line without Orion's load (not my load); " + why

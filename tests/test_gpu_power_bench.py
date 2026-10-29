@@ -190,3 +190,38 @@ def test_second_bench_on_the_same_card_is_refused(monkeypatch, tmp_path) -> None
 def test_prompt_is_identical_every_run() -> None:
     assert bench.fixed_prompt() == bench.fixed_prompt()
     assert len(bench.fixed_prompt()) > 4000
+
+
+def test_server_down_at_start_changes_nothing(monkeypatch, tmp_path) -> None:
+    calls = _patch_main(monkeypatch)
+    monkeypatch.setattr(bench, "wait_for_server", lambda base, wait_s: False)
+    assert bench.main(_argv(tmp_path)) == 3
+    assert calls == []
+
+
+def test_wait_for_server_retries_until_it_answers(monkeypatch) -> None:
+    answers = iter([bench.urllib.error.URLError("refused"), bench.urllib.error.URLError("refused"), {}])
+
+    def health(*_a, **_k):
+        a = next(answers)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    monkeypatch.setattr(bench, "http_json", health)
+    monkeypatch.setattr(bench.time, "sleep", lambda s: None)
+    assert bench.wait_for_server("http://x", 60) is True
+
+
+def test_server_leaving_mid_run_keeps_samples_and_restores(monkeypatch, tmp_path) -> None:
+    calls = _patch_main(monkeypatch)
+
+    def gone(*_a, **_k):
+        raise bench.urllib.error.URLError(ConnectionRefusedError(111, "refused"))
+
+    monkeypatch.setattr(bench, "one_request", gone)
+    assert bench.main(_argv(tmp_path)) == 1
+    assert calls == [200, 250.0]
+    import json
+    meta = json.loads((tmp_path / "out" / "summary.json").read_text())["meta"]
+    assert meta["aborted"].startswith("model server went away")

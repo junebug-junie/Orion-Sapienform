@@ -488,10 +488,13 @@ def test_gateway_chat_sends_the_turn_id_on_a_fresh_reply_channel(monkeypatch, pl
     monkeypatch.setitem(sys.modules, 'orion.core.bus.async_service', types.SimpleNamespace(OrionBusAsync=Bus))
     cfg = SimpleNamespace(ORION_BUS_URL='redis://x', LLM_GATEWAY_SERVICE_NAME='gw', NODE_NAME='n', CHANNEL_LLM_INTAKE='in')
     turn = '0f8fad5b-d9cb-469f-a165-70867728950e'
-    _, call = asyncio.run(planner._gateway_chat(cfg, 'p', max_tokens=8, turn_id=turn))
+    _, ids = asyncio.run(planner._gateway_chat(cfg, 'p', max_tokens=8, turn_id=turn))
     _, alone = asyncio.run(planner._gateway_chat(cfg, 'p', max_tokens=8))
     (corr1, reply1), (corr2, reply2) = seen
-    assert corr1 == turn and reply1.endswith(':' + call) and call != turn   # the lease is charged to the act
+    head, call = ids.rsplit(':', 1)
+    assert corr1 == head == turn and reply1.endswith(':' + call) and call != turn   # the lease is charged to the act
+    # planner_id keeps both ids (gateway log/lease, then this call) inside Retro's 128 characters
+    assert len('llm-gateway:' + planner.COPLAY_ROUTE + ':' + ids) <= 128
     assert corr2 == alone and reply2.endswith(':' + alone)                  # no act: the call's own id
 
 

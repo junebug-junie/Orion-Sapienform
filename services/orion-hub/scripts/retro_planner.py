@@ -568,7 +568,8 @@ def check_decision(decision: Any) -> dict:
 
 async def _gateway_chat(config, prompt: str, *, max_tokens: int, route: str = ZELDA_ROUTE,
                         turn_id: Optional[str] = None) -> tuple[dict, str]:
-    """One llm.chat.request on the local GPU route. Returns (result payload, this call's id).
+    """One llm.chat.request on the local GPU route. Returns (result payload, ids): the envelope
+    correlation (what the gateway log and the GPU lease carry), then this call's own id under a turn.
 
     ``turn_id``: the play act's correlation id. The gateway stamps the envelope's correlation id on
     its GPU lease, and the act ledger charges an act the leases that carry its correlation id
@@ -595,7 +596,7 @@ async def _gateway_chat(config, prompt: str, *, max_tokens: int, route: str = ZE
             raise PlannerUnavailable('planner_invalid_envelope')
         return decoded.envelope.payload
     try:
-        return await asyncio.wait_for(request(), 32), call
+        return await asyncio.wait_for(request(), 32), (f'{turn_id}:{call}' if turn_id else call)
     finally:
         await bus.close()
 

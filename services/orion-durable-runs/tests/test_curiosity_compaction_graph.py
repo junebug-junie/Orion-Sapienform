@@ -67,12 +67,12 @@ class Model:
             return ""
         if self.too_long and phase == "topics":
             self.too_long -= 1
-            return json.dumps({"topics": [{"topic": "Delivery reliability", "body": BODY * 8, "refs": ["s0"]}]})
+            return json.dumps({"record_topics": {"s0": 0}, "topics": [{"topic": "Delivery reliability", "body": BODY * 8}]})
         if phase == "overall":
             return json.dumps({"body": BODY})
         records = json.loads(prompt.split("SOURCE RECORDS:\n")[1])
-        return json.dumps({"topics": [{"topic": "Delivery reliability", "body": BODY,
-                                       "refs": [r["ref"] for r in records]}]})
+        return json.dumps({"record_topics": {r["ref"]: 0 for r in records},
+                           "topics": [{"topic": "Delivery reliability", "body": BODY}]})
     async def publish(self, entry):
         self.entries.append(entry)
         return entry.entry_id if self.publish_ok else None
@@ -158,6 +158,7 @@ def test_preemption_costs_no_attempt_and_empty_generation_is_bounded():
         world.grant()
         done = await graph(world, saver, store, model).ainvoke(Command(resume={}), CFG)
         assert done["status"] == "failed" and store.row["status"] == "pending" and model.entries == []
+        assert store.row["state"]["rejected_at"] == ["topics", 1, 0]   # an empty answer is the model's
     asyncio.run(run())
 
 
@@ -213,6 +214,8 @@ def test_rejected_answers_stay_bounded_by_max_attempts():
         done = await graph(world, saver, store, model).ainvoke(Command(resume={}), CFG)
         assert done["status"] == "failed" and done["attempt"] == 2 and model.calls == ["topics", "topics"]
         assert not done["last_error"].startswith("deterministic:")
+        # The next sleep counts this failed generation toward giving the window up.
+        assert store.row["state"]["rejected_at"] == ["topics", 1, 0]
     asyncio.run(run())
 
 
@@ -225,6 +228,7 @@ def test_a_real_code_error_still_fails_fast(bug):
         done = await graph(world, saver, store, model).ainvoke(initial(), CFG)
         assert done["status"] == "failed" and done["attempt"] == 1 and model.calls == ["topics"]
         assert done["last_error"].startswith("deterministic:")
+        assert "rejected_at" not in store.row["state"]   # a code bug is not the model's failure
     asyncio.run(run())
 
 
@@ -237,10 +241,10 @@ def test_each_call_sends_the_phase_output_schema_to_the_gateway():
         topics, overall = model.options
         assert topics["structured_output_method"] == overall["structured_output_method"] == "json_object_schema"
         assert topics["structured_output_thinking_policy"] == "disabled_for_artifact"
-        assert topics["structured_output_schema_name"] == "CuriosityCompactionTopicPassV1"
+        assert topics["structured_output_schema_name"] == "CuriosityCompactionTopicPassV2"
         item = topics["structured_output_schema"]["properties"]["topics"]["items"]["properties"]
-        assert item["body"]["maxLength"] == 1200 and item["refs"]["minItems"] == 1
-        assert item["refs"]["items"]["enum"] == ["s0"]
+        assert item["body"]["maxLength"] == 1200 and "refs" not in item
+        assert topics["structured_output_schema"]["properties"]["record_topics"]["required"] == ["s0"]
         assert topics["structured_output_schema"]["properties"]["topics"]["maxItems"] == 4
         assert overall["structured_output_schema_name"] == "CuriosityCompactionSummaryV1"
         assert overall["structured_output_schema"]["properties"]["body"]["maxLength"] == 2400

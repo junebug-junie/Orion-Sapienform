@@ -22,7 +22,7 @@ price exists for its baseline). ``render_md``'s "Not yet evaluable" list below i
 **The Patch B gate** (``patch_b`` in the output): the rules the live Budget organ runs
 (``orion/physiology/budget.py``): bounded ramp into bind, 0.5 C bind hysteresis, the point
 sensitivity of the short-run fit and the baselines from ``config/physiology/heat_sensitivity.yaml``,
-the cabinet reading corrected for #2780's sensor offset, slack decay of ceiling / horizon, and for
+the raw cabinet reading (no sensor offset: the sensor never moved), slack decay of ceiling / horizon, and for
 energy the $100 envelope with 5% bind hysteresis. R1 is graded with one horizon of decay tail
 excused (findings doc, Patch B rule 3). The older variants stay beside it for comparison.
 
@@ -49,7 +49,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_HERE.parents[1]))
 import _body_economy_data as data_mod  # noqa: E402
-from orion.physiology.heat_config import CABINET_SERIES, load_heat_sensitivity, offset_at  # noqa: E402
+from orion.physiology.heat_config import load_heat_sensitivity  # noqa: E402
 from orion.physiology.prices import (  # noqa: E402
     EXOGENOUS_BIND,
     NO_READING,
@@ -408,17 +408,6 @@ NOT_YET = {
 }
 
 
-def corrected_hours(hours: dict, heat_cfg) -> dict:
-    """The cabinet reading with the recorded sensor measurement offset removed (the live heat
-    price does the same, orion.physiology.heat_config.offset_at)."""
-    out = {}
-    for t, row in hours.items():
-        off, _ = offset_at(heat_cfg, CABINET_SERIES, t)
-        c = row.get("cabinet_c")
-        out[t] = {**row, "cabinet_c": (c - off) if c is not None else None}
-    return out
-
-
 def run_patch_b(hours: dict, heat_cfg, *, soft_line_c: float, start: datetime, end: datetime, kwh: dict,
                 cycle_start: datetime, cycle_end: datetime, envelope_usd: float = 100.0) -> dict:
     """The Patch B gate: the live Budget organ's rules (see the module docstring)."""
@@ -429,10 +418,9 @@ def run_patch_b(hours: dict, heat_cfg, *, soft_line_c: float, start: datetime, e
     base = {h: e.baseline_watts for h, e in heat_cfg.hosts.items()}
     hspec = DEFAULT_SPECS[HEAT]
     params = hspec.params()
-    hc = corrected_hours(hours, heat_cfg)
     heat = {}
     for mode in ("oracle", "persistence"):
-        res = run_heat_replay(hc, sensitivity=sens, baselines=base, params=params, soft_line_c=soft_line_c,
+        res = run_heat_replay(hours, sensitivity=sens, baselines=base, params=params, soft_line_c=soft_line_c,
                               start=start, end=end, forecast_mode=mode, bind_rearm_margin_c=0.5)
         binding = [r.status == EXOGENOUS_BIND or (r.excess is not None and r.excess > 0) for r in res]
         r1 = eval_r1(res, soft_line_c=soft_line_c, ceiling=params.ceiling)
@@ -453,8 +441,6 @@ def run_patch_b(hours: dict, heat_cfg, *, soft_line_c: float, start: datetime, e
               "hours_exogenous_bind": sum(1 for x in st if x == EXOGENOUS_BIND),
               "max_price": max(pr) if pr else None, "first_hours": pr[:6]}
     return {"sensitivity_c_per_100w": sens, "baseline_watts": base,
-            "sensor_offsets": [{"since": o.since.isoformat(), "offset_c": o.offset_c, "change_event": o.change_event}
-                               for o in heat_cfg.offsets],
             "heat_params_per_hour": asdict(params), "heat": heat, "energy": energy}
 
 
@@ -561,7 +547,7 @@ def render_md(r: dict) -> str:
         L += ["## Patch B gate (the live Budget organ's rules)", "",
               "Sensitivity (point, short-run fit, degC/100 W): " + ", ".join(f"{h} {v:.3f}" for h, v in pb["sensitivity_c_per_100w"].items())
               + "; baselines (W): " + ", ".join(f"{h} {v:.0f}" for h, v in pb["baseline_watts"].items())
-              + "; sensor offsets: " + (", ".join(f"-{o['offset_c']} C from {o['since'][:16]}" for o in pb["sensor_offsets"]) or "none"), "",
+              + "; cabinet reading raw (no sensor offset)", "",
               "The live forecaster is persistence (the newest cabinet reading); oracle grades the rule with a perfect 6 h mean.", "",
               "| forecast | R1 (decay tail excused) | under-line ~0 | over-line >0 | unmeetable flagged | R3 | max h to 0 | stuck | worst osc | unflagged ceiling run h | unflagged ceiling h: binding / not binding (windup) | max price |",
               "|---|---|---|---|---|---|---|---|---|---|---|---|"]
@@ -937,7 +923,7 @@ def run_wants(extract: dict, acts_ex: dict, heat_cfg, *, soft_line_c: float, act
         from orion.physiology.budget import DEFAULT_SPECS
         from orion.schemas.physiology import HEAT
 
-        pb = run_heat_replay(corrected_hours(hours, heat_cfg),
+        pb = run_heat_replay(hours,
                              sensitivity={h: e.usable for h, e in heat_cfg.hosts.items()},
                              baselines={h: e.baseline_watts for h, e in heat_cfg.hosts.items()},
                              params=DEFAULT_SPECS[HEAT].params(), soft_line_c=soft_line_c, start=acts_start,

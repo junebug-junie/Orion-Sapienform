@@ -10,6 +10,11 @@ Reads the person record that orion-sql-writer keeps (``person``, ``person_link``
 - ``POST /api/people/{person_id}/facts``: add what she knows (voice ``hub_edit``).
 - ``POST /api/people/{person_id}/facts/{fact_id}/remove``: a fact stops counting
   (``removed_at``; never deleted). That category is not asked again.
+- ``POST /api/people/{person_id}/same-as``: ``{"into": <person_id>}`` says this name
+  is the same person as another (a first name and a full name, a nickname). The
+  name is kept as "also called", its facts move over, its open question closes,
+  and orion-sql-writer moves its camera links on its next tick. ``{"into": null}``
+  undoes it (facts that moved stay with the person kept).
 - ``POST /api/people/{person_id}/status``: ``not_a_person`` for names like a
   delivery company or two people named together. Orion stops asking about them
   and their open question closes; ``active`` undoes it.
@@ -54,7 +59,7 @@ SELECT p.person_id, p.display_name, p.role, p.status,
 FROM person p
 LEFT JOIN person_link l ON l.person_id = p.person_id AND l.revoked_at IS NULL
 LEFT JOIN vision_individual i ON i.individual_id = l.source_ref
-WHERE p.role <> 'self'
+WHERE p.role <> 'self' AND p.merged_into IS NULL
 GROUP BY p.person_id
 -- A name left with no link and nothing said about it (a corrected typo) is not shown.
 HAVING p.role = 'interlocutor' OR count(l.link_id) > 0
@@ -66,6 +71,12 @@ LIMIT $1
 # The newest picture she herself tied to each person (orion/person_model/pictures.py):
 # a camera cluster can hold more than one person, so its own pictures are not used.
 _THUMB_SQL = confirmed_pictures_sql("$1::text[]")
+
+# Names she said are the same person as someone shown ("Also called ...").
+_ALIASES_SQL = """
+SELECT merged_into, person_id, display_name FROM person WHERE merged_into = ANY($1::text[])
+ORDER BY lower(display_name), person_id
+"""
 
 _FACTS_SQL = """
 SELECT fact_id, person_id, category, value_text, voice, created_at FROM person_fact
@@ -83,6 +94,11 @@ WHERE source_kind = $2 AND status = 'open' AND (expires_at IS NULL OR expires_at
 class FactBody(BaseModel):
     category: str = Field(min_length=1, max_length=64)
     value: str = Field(min_length=1, max_length=MAX_FACT_CHARS)
+
+
+class SameAsBody(BaseModel):
+    # The person kept; null undoes an earlier "same person".
+    into: Optional[str] = Field(default=None, max_length=200)
 
 
 class StatusBody(BaseModel):
@@ -110,6 +126,10 @@ async def list_people(request: Request) -> dict[str, Any]:
                 [(r["person_id"], r["image_ref"], r["at"]) for r in await conn.fetch(_THUMB_SQL, ids)], 1).items()}
             fact_rows = await conn.fetch(_FACTS_SQL, ids)
             asks = {r["person_id"]: r for r in await conn.fetch(_OPEN_ASK_SQL, ids, SOURCE_KIND_PERSON_FACT)}
+            aliases: dict[str, list] = {}
+            for r in await conn.fetch(_ALIASES_SQL, ids):
+                aliases.setdefault(r["merged_into"], []).append(
+                    {"person_id": r["person_id"], "name": r["display_name"]})
     except Exception as exc:
         ask_routes._raise_store_http(exc)
     facts: dict[str, list] = {}
@@ -125,7 +145,7 @@ async def list_people(request: Request) -> dict[str, Any]:
             "person_id": pid, "name": r["display_name"], "role": r["role"], "status": r["status"],
             "clusters": int(r["clusters"]), "belongings": int(r["belongings"]), "days": int(r["days"]),
             "last_seen_at": _iso(r["last_seen_at"]), "image_ref": thumbs.get(pid),
-            "facts": facts.get(pid, []),
+            "facts": facts.get(pid, []), "also_called": aliases.get(pid, []),
             "open_question": {"ask_id": ask["ask_id"], "question": ask["question"]} if ask else None,
         })
     categories = [{"key": k, "label": category_label(k)} for k in category_keys()]
@@ -150,9 +170,11 @@ async def add_fact(request: Request, person_id: str, body: FactBody) -> dict[str
     try:
         async with pool.acquire() as conn:
             await _person_exists(conn, person_id)
+            # A joined name's facts belong to the person kept.
             await conn.execute(
                 "INSERT INTO person_fact (fact_id, person_id, category, value_text, voice, source_ref) "
-                "VALUES ($1, $2, $3, $4, $5, 'hub')", fact_id, person_id, category, value, VOICE_HUB_EDIT)
+                "SELECT $1, coalesce(merged_into, person_id), $3, $4, $5, 'hub' FROM person WHERE person_id = $2",
+                fact_id, person_id, category, value, VOICE_HUB_EDIT)
     except HTTPException:
         raise
     except Exception as exc:
@@ -202,3 +224,63 @@ async def set_status(request: Request, person_id: str, body: StatusBody) -> dict
         await ask_routes._publish_answered(ask_routes._event_from_row(row))
     logger.info("person_status person_id=%s status=%s asks_closed=%d", person_id, body.status, len(closed))
     return {"ok": True, "status": body.status, "closed_asks": [r["ask_id"] for r in closed]}
+
+
+@router.post("/api/people/{person_id}/same-as")
+async def same_as(request: Request, person_id: str, body: SameAsBody) -> dict[str, Any]:
+    pool = ask_routes._pool(request)
+    into = (body.into or "").strip() or None
+    closed: list = []
+    moved = 0
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # Lock this row and anyone joined to it, so two joins at once cannot
+                # leave a two-step chain.
+                me = await conn.fetchrow(
+                    "SELECT role FROM person WHERE person_id = $1 AND role <> 'self' FOR UPDATE", person_id)
+                if me is None:
+                    raise HTTPException(status_code=404, detail="person_not_found")
+                await conn.execute("SELECT 1 FROM person WHERE merged_into = $1 FOR UPDATE", person_id)
+                if into is None:
+                    await conn.execute("UPDATE person SET merged_into = NULL, updated_at = now() WHERE person_id = $1",
+                                       person_id)
+                else:
+                    if into == person_id:
+                        raise HTTPException(status_code=422, detail="same_as_itself")
+                    # The interlocutor's own card is always the one kept.
+                    if me["role"] == "interlocutor":
+                        raise HTTPException(status_code=422, detail="interlocutor_is_kept")
+                    target = await conn.fetchrow(
+                        "SELECT merged_into, status FROM person WHERE person_id = $1 AND role <> 'self' FOR UPDATE",
+                        into)
+                    if target is None:
+                        raise HTTPException(status_code=404, detail="person_not_found")
+                    if target["merged_into"] is not None:
+                        raise HTTPException(status_code=422, detail="into_is_merged")
+                    if target["status"] != "active":
+                        raise HTTPException(status_code=422, detail="into_is_not_a_person")
+                    # Anyone already merged into this person follows it, so a chain stays one step.
+                    await conn.execute(
+                        "UPDATE person SET merged_into = $2, updated_at = now() WHERE person_id = $1 OR merged_into = $1",
+                        person_id, into)
+                    moved = int((await conn.execute(
+                        "UPDATE person_fact SET person_id = $2 WHERE person_id = $1", person_id, into)).split()[-1])
+                    # Its open question closes; so does one about the kept person whose
+                    # category the moved facts already answer.
+                    closed = list(await conn.fetch(
+                        "UPDATE orion_ask a SET status = 'dismissed', answered_at = now() "
+                        "WHERE a.source_kind = $1 AND a.status = 'open' AND (split_part(a.source_ref, '|', 1) = $2 "
+                        "  OR (split_part(a.source_ref, '|', 1) = $3 AND EXISTS (SELECT 1 FROM person_fact f "
+                        "      WHERE f.person_id = $3 AND f.category = split_part(a.source_ref, '|', 2)))) "
+                        "RETURNING ask_id, status, answer, answered_at, source_kind, source_ref",
+                        SOURCE_KIND_PERSON_FACT, person_id, into))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        ask_routes._raise_store_http(exc)
+    for row in closed:
+        await ask_routes._publish_answered(ask_routes._event_from_row(row))
+    logger.info("person_same_as person_id=%s into=%s facts_moved=%d asks_closed=%d",
+                person_id, into, moved, len(closed))
+    return {"ok": True, "into": into, "facts_moved": moved, "closed_asks": [r["ask_id"] for r in closed]}

@@ -9,15 +9,19 @@ worker cannot overwrite it. No LLM work executes in the dream service.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, TypedDict
 
 from app.admitted_graph import (
     AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, failed_attempt,
     replay_if_requeued, resource_nodes, taken_back,
 )
-from orion.curiosity.compaction import journal_entry, next_prompt, output_schema, record_answer
+from orion.cognition.model_output import ModelOutputRejected
+from orion.curiosity.compaction import ReductionDidNotShrink, journal_entry, mark_rejected, next_prompt, output_schema, record_answer
 from orion.schemas.curiosity_compaction import CURIOSITY_COMPACTION_VERB, CuriosityCompactionBriefV1
 from orion.schemas.gpu_pool import GpuLeaseRefV1
+
+logger = logging.getLogger(__name__)
 
 
 class CompactionState(TypedDict, total=False):
@@ -100,6 +104,13 @@ def build_curiosity_compaction_graph(store, call_verb_text, publish_journal, adm
         except HoldLost as exc:
             return await taken_back(admission, dict(state), exc.release_reason, str(exc), {"status": "waiting_resource"})
         except Exception as exc:
+            if isinstance(exc, (ModelOutputRejected, ReductionDidNotShrink)):
+                # Lets the next sleep tell "the model failed this batch" from an outage or deadline
+                # when it decides whether to give the window up (``note_failed_generation``).
+                try:
+                    await asyncio.to_thread(store.persist, mark_rejected(row))
+                except Exception:   # a fenced/unreachable store must not hide the real failure
+                    logger.warning("curiosity_compaction_reject_mark_failed run=%s", state.get("run_id"), exc_info=True)
             replay = await replay_if_requeued(admission, dict(state), {"status": "waiting_resource"})
             if replay is not None:
                 return replay

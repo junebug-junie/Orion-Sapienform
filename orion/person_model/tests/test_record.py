@@ -93,3 +93,32 @@ def test_a_people_yaml_row_added_later_takes_over_a_camera_minted_person() -> No
     assert sorted(plan.revoke) == [(pr.SOURCE_BELONGING, "bike"), (pr.SOURCE_INDIVIDUAL, "a")]
     assert sorted((l.source_ref, l.person_id) for l in plan.add_links) == [
         ("a", "referent-sam"), ("b", "referent-sam"), ("bike", "referent-sam")]
+
+
+def test_a_name_she_said_is_the_same_person_moves_to_that_person() -> None:
+    """2026-10-29, live: 23 clusters named with a first name and one with the full name
+    became two people, and she was asked "How do you know <first name>?" after answering
+    for the full name. "Same person" (person.merged_into) joins them; nothing is guessed."""
+    full = pr.Person(pr.minted_person_id("sam lee"), "Sam Lee")
+    first = pr.Person(pr.minted_person_id("sam"), "Sam", merged_into=full.person_id)
+    links = {(pr.SOURCE_INDIVIDUAL, "a"): first.person_id, (pr.SOURCE_INDIVIDUAL, "b"): full.person_id,
+             (pr.SOURCE_BELONGING, "bike"): first.person_id}
+    plan = run([c("a", "Sam"), c("b", "Sam Lee"), c("bike", "sam", kind="bicycle"), c("new", "SAM")],
+               persons=[full, first], links=links)
+    assert plan.conflicts == [] and plan.new_persons[2:] == []
+    assert sorted(plan.revoke) == [(pr.SOURCE_BELONGING, "bike"), (pr.SOURCE_INDIVIDUAL, "a")]
+    assert sorted((l.source_ref, l.person_id) for l in plan.add_links) == [
+        ("a", full.person_id), ("bike", full.person_id), ("new", full.person_id)]
+
+
+def test_without_same_person_a_first_name_stays_its_own_person() -> None:
+    full = pr.Person(pr.minted_person_id("sam lee"), "Sam Lee")
+    plan = run([c("a", "Sam"), c("b", "Sam Lee")], persons=[full], links={(pr.SOURCE_INDIVIDUAL, "b"): full.person_id})
+    assert [p.display_name for p in plan.new_persons if p.display_name.startswith("Sam")] == ["Sam"]
+
+
+def test_a_circular_same_person_chain_does_not_hang() -> None:
+    a = pr.Person("p-a", "Sam", merged_into="p-b")
+    b = pr.Person("p-b", "Sam B", merged_into="p-a")
+    plan = run([c("x", "Sam")], persons=[a, b])
+    assert len(plan.add_links) == 1

@@ -16,8 +16,8 @@ survive being written down.
 
 THAT OPTION IS ONLY REAL IF IT ASKS FOR THE EXACT TOKEN, and the first version
 of this file did not -- a review finding, not a hypothetical.
-`endogenous_outreach.is_pass_response` is `stripped.upper() == "PASS"`: the
-WHOLE reply must be that one word. So a graceful decline in Orion's own words
+`endogenous_outreach.is_pass_response` needs the token PASS on a line of its
+own (the whole reply, or a line after Orion's reasoning). So a graceful decline in Orion's own words
 ("having written this out, it is more interesting to have found than to hear")
 fails the check and gets delivered to Juniper AS the unsolicited message --
 the exact inverse of what the prompt promised. The instruction below now asks

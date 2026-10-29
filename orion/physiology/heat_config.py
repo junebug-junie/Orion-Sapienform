@@ -8,10 +8,11 @@
 * the host's baseline watts (p10 of hourly means in the fit window): Orion's heat share is
   charged on the watts above it.
 
-It also holds the cabinet sensor's recorded measurement offsets (prediction_change_event #2780:
-"cabinet reads ~2 C higher after" the 10-17 sensor move). A raw cabinet reading taken after
-``since`` is lowered by ``offset_c`` before it is compared with the soft line, so the line does not
-silently move when the sensor does.
+The cabinet reading is used raw. There is no sensor offset: an earlier version lowered every
+reading after 2026-10-17 00:35 by 2 C, on the belief that the sensor moved during the vision
+bring-up. The sensor never moved (Juniper, 2026-10-29); the ~2 C rise is real heat. A document that
+still carries a non-empty ``measurement_offsets`` list is refused as malformed (heat reads
+``no_reading`` with that reason), so the offset cannot come back silently.
 
 A host entry older than ``max_age_days`` (30), or missing, reads as ``no_reading`` for that host's
 heat cost, never 0. Pure parsing plus one file read; no clock (the caller passes ``now``).
@@ -20,16 +21,15 @@ heat cost, never 0. Pure parsing plus one file read; no clock (the caller passes
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional
 
 from orion.physiology.prices import usable_sensitivity
 
 SCHEMA = "heat_sensitivity.v1"
 DEFAULT_MAX_AGE_DAYS = 30.0
-CABINET_SERIES = "athena.cabinet_temp_c"
 
 
 @dataclass(frozen=True)
@@ -51,18 +51,8 @@ class HostSensitivity:
 
 
 @dataclass(frozen=True)
-class MeasurementOffset:
-    series: str
-    since: datetime
-    offset_c: float
-    change_event: str
-    source: str
-
-
-@dataclass(frozen=True)
 class HeatSensitivityConfig:
     hosts: Mapping[str, HostSensitivity]
-    offsets: Sequence[MeasurementOffset] = field(default_factory=tuple)
     fitted_at: Optional[datetime] = None
     window: tuple[str, str] = ("", "")
 
@@ -103,17 +93,12 @@ def parse_heat_sensitivity(doc: Any) -> HeatSensitivityConfig:
             regressor=str(e.get("regressor") or ""),
             baseline_watts=_num(e.get("baseline_watts_p10"), f"hosts.{name}.baseline_watts_p10"),
             fit_command=str(e.get("fit_command") or ""))
-    offsets = []
-    for i, o in enumerate(doc.get("measurement_offsets") or []):
-        if not isinstance(o, dict):
-            raise ValueError(f"measurement_offsets[{i}]: not a mapping")
-        offsets.append(MeasurementOffset(
-            series=str(o.get("series") or ""), since=_dt(o.get("since"), f"measurement_offsets[{i}].since"),
-            offset_c=_num(o.get("offset_c"), f"measurement_offsets[{i}].offset_c"),
-            change_event=str(o.get("change_event") or ""), source=str(o.get("source") or "")))
+    if doc.get("measurement_offsets"):
+        raise ValueError("measurement_offsets: removed (the cabinet sensor never moved; the 10-17 rise is "
+                         "real heat). Refit with fit_heat_sensitivity.py --write-config")
     window = doc.get("window") or ["", ""]
     return HeatSensitivityConfig(
-        hosts=hosts, offsets=tuple(sorted(offsets, key=lambda o: o.since)),
+        hosts=hosts,
         fitted_at=_dt(doc["fitted_at"], "fitted_at") if doc.get("fitted_at") else None,
         window=(str(window[0]), str(window[1])))
 
@@ -154,27 +139,12 @@ def host_sensitivity(cfg: Optional[HeatSensitivityConfig], host: str, now: datet
     return e, v, None
 
 
-def offset_at(cfg: Optional[HeatSensitivityConfig], series: str, at: datetime) -> tuple[float, Optional[MeasurementOffset]]:
-    """The measurement offset in force for ``series`` at ``at`` (the newest one at or before it),
-    and its record. 0 with None when none applies."""
-    if cfg is None:
-        return 0.0, None
-    hit = None
-    for o in cfg.offsets:
-        if o.series == series and o.since <= at:
-            hit = o
-    return (hit.offset_c, hit) if hit is not None else (0.0, None)
-
-
 __all__ = [
-    "CABINET_SERIES",
     "DEFAULT_MAX_AGE_DAYS",
     "HeatSensitivityConfig",
     "HostSensitivity",
-    "MeasurementOffset",
     "SCHEMA",
     "host_sensitivity",
     "load_heat_sensitivity",
-    "offset_at",
     "parse_heat_sensitivity",
 ]

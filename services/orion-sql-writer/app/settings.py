@@ -771,7 +771,7 @@ class Settings(BaseSettings):
     vision_handoff_look_kinds: str = Field("person,dog", alias="VISION_HANDOFF_LOOK_KINDS")
     # The prior band is replaced by the learned (split-conformal 10-90%) band after
     # this many met handoffs per portal and kind.
-    vision_handoff_min_met: int = Field(10, alias="VISION_HANDOFF_MIN_MET")
+    vision_handoff_min_arrivals: int = Field(10, alias="VISION_HANDOFF_MIN_ARRIVALS")
     # Target camera looked at less than this share of the window -> unscorable, never missed.
     vision_handoff_min_coverage: float = Field(0.8, alias="VISION_HANDOFF_MIN_COVERAGE")
     # "Strong appearance" bars: cosine of the two stories' centroid vectors. Measured

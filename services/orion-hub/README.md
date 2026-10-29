@@ -3500,13 +3500,19 @@ that read goes into the same message. A change told once is never told again; a 
 change of the same read (a belief moved days after the link) is a new message.
 
 - **Same path as curiosity findings.** `EndogenousOutreach.compose` (the real unified
-  turn; `PASS` means "not worth sending") then `offer_message` (decision log, grounding
+  turn; `PASS` means "not worth sending" -- the whole reply, or a line of its own after
+  Orion's reasoning, see `is_pass_response`) then `offer_message` (decision log, grounding
   guard, sockets + chat history + notification). The recorded summary of the piece is
   delivered under Orion's message as stored, not regenerated.
 - **Gates.** No daily cap and no cooldown for this kind (`skip_rate_gates`, Juniper
   2026-10-13). Disabled, turn-in-flight, recent-chat, quiet hours and arousal `strained`
   still apply; a blocked message waits for a later tick, it is not dropped. Sends do not
   consume the background tick's daily cap (`count_sent_on` excludes the source).
+- **Spacing.** After a reading message reaches Juniper, the next one waits
+  `_MIN_SPACING_SEC` (6750). Findings pile up overnight; without this they all went out
+  when quiet hours ended (14 messages in 57 minutes on 2026-10-28). A PASS does not start
+  the wait. A held bundle is recorded once as `reason='reading_spacing'` and stays pending.
+  The last send time is read back from the decision log, so a restart keeps the gap.
 - **Evidence.** The decision row (`endogenous_outreach_decisions`, `result_json.source =
   'reading_finding_outreach'`) carries `seed_id`, `finding_ids`, `finding_kinds`,
   `evidence_refs`; the delivered message carries an `outreach_provenance.v1` capsule with
@@ -3517,7 +3523,7 @@ change of the same read (a belief moved days after the link) is a new message.
 - **Env.** `HUB_READING_FINDING_OUTREACH_ENABLED` (on), `_TICK_SEC` (300),
   `_LOOKBACK_HOURS` (48: a change recorded within this window is told; reads up to 7 days
   old are watched, so a belief moved days after its read still counts), `_MAX_ATTEMPTS`
-  (3 composition failures before a change is dropped).
+  (3 composition failures before a change is dropped), `_MIN_SPACING_SEC` (6750; 0 = off).
 - **What it cannot see yet.** A belief counts only when the curiosity run that moved it
   names the read (URL path, seed id or request id) in the prior's `why`/`formed_from`.
   Live 2026-10-13: 0 of 26 run-written prior texts in the last 7 days cite any read, so
@@ -4177,6 +4183,7 @@ One card per person (`#peopleCard`, under "Orion is asking"; `static/js/people.j
 - `GET /api/people`: everyone but Orion, most-seen first: the newest picture Juniper herself tied to them (`orion/person_model/pictures.py`, never a camera cluster's own newest picture, which can be someone else), days seen on camera, what Juniper said about them, and Orion's open question about them.
 - `POST /api/people/{id}/facts` `{category, value}`: add what she knows (`hub_edit`). Categories come from `orion/person_model/categories.yaml`.
 - `POST /api/people/{id}/facts/{fact_id}/remove`: the fact stops counting (`removed_at`, never deleted).
+- `POST /api/people/{id}/same-as` `{into: <person_id>|null}` (2026-10-29): "Same person as..." on a card. Two names of one person (a first name and a full name, a nickname) become one: the name is kept as "Also called" on the person kept (`also_called` in `GET /api/people`), its facts move over, its open question closes (and one about the person kept whose category is now answered), and orion-sql-writer moves its camera links on its next tick. Anyone already joined to it follows. Each "Also called" line has Undo (`{into: null}`): the name is its own person again; facts that moved stay with the person kept. Her own (interlocutor) card is always the one kept. A fact typed on, or an answer arriving for, a joined name lands on the person kept. 422 `same_as_itself` / `into_is_merged` / `into_is_not_a_person` / `interlocutor_is_kept`, 404 for an unknown person or Orion. Needs `manual_migration_person_merge_v1.sql` (`person.merged_into`).
 - `POST /api/people/{id}/status` `{status: not_a_person|active}`: for a name that is not one person (a delivery company, two people named together). Orion stops asking about it; its open question is dismissed.
 
 An "Is this <name>?" card with several pictures (2026-10-23) puts Not sure / <name> / Not <name> under each picture and one Send; the answer carries `pictures: [{image_ref, verdict}]` for every picture (`same` = it is <name>). `answer` must be `yes` exactly when one picture is <name> (422 `answer_does_not_match_pictures`, `every_picture_needs_an_answer`, `no_names_on_is_this_cards`); all "not sure" is a dismissal.

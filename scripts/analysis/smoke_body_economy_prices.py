@@ -6,7 +6,7 @@ stored), re-derives what the live node would also have had at each tick, and run
 ``orion.physiology.budget.price_state`` over them in order, carrying the state tick to tick exactly
 as the node does. Prints the price path per constraint and checks the Patch B sanity rules:
 
-- the heat price is ~0 whenever the cabinet (sensor offset removed) is under the soft line, except
+- the heat price is ~0 whenever the raw cabinet reading is under the soft line, except
   the decay tail within one horizon after the price was last above 0.05 (as R1 excuses it);
 - no price sits at its ceiling unflagged for longer than its horizon (consecutive, by timestamp);
 - energy's bind state is REPORTED (expected ``exogenous_bind`` while the envelope is $100), not gated:
@@ -50,7 +50,7 @@ from orion.physiology.body import (  # noqa: E402
     BodyConfig,
 )
 from orion.physiology.budget import BudgetConfig, price_state  # noqa: E402
-from orion.physiology.heat_config import CABINET_SERIES, load_heat_sensitivity, offset_at  # noqa: E402
+from orion.physiology.heat_config import load_heat_sensitivity  # noqa: E402
 from orion.schemas.physiology import LANE_PREFIX, PhysiologyStateV1  # noqa: E402
 
 ROWS_SQL = "SELECT tick_id, generated_at, constraints, warnings FROM physiology_state WHERE generated_at >= %(since)s ORDER BY generated_at"
@@ -179,9 +179,9 @@ def main(argv: list[str] | None = None) -> int:
     last_hot = None
     bad = under = 0
     for t, c, p in by.get("heat", []):
-        if p.value > 0.05 and (c.level is None or c.level - offset_at(heat_cfg, CABINET_SERIES, t)[0] >= cfg.heat_soft_line_c):
+        if p.value > 0.05 and (c.level is None or c.level >= cfg.heat_soft_line_c):
             last_hot = t
-        if c.level is not None and c.level - offset_at(heat_cfg, CABINET_SERIES, t)[0] < cfg.heat_soft_line_c:
+        if c.level is not None and c.level < cfg.heat_soft_line_c:
             under += 1
             if p.value > 0.05 and not (last_hot is not None and t - last_hot <= tail):
                 bad += 1

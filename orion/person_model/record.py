@@ -18,6 +18,10 @@ Rules (the dangerous failure is two real people merged under one name):
   about it and one of that person's clusters. Two people with one name stay
   unlinked and are reported as a conflict, never merged.
 - A rename revokes the old link and writes the new one. A cleared name revokes.
+- "Same person" (2026-10-29): the interlocutor can say two names are one person
+  (``person.merged_into``, set from the Hub). The merged name then resolves to
+  the person it was merged into, so its clusters move there. It is never
+  guessed: two names join only when she says so.
 - Only person-like detector kinds become people. A named bicycle or car whose
   name is a known person is linked as that person's belonging; any other named
   thing ("no", "I do not know") is ignored.
@@ -55,6 +59,7 @@ class Person:
     display_name: str
     role: str = "other"
     status: str = "active"
+    merged_into: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -121,9 +126,21 @@ def plan(
     # (minted before the yaml row existed) stops being a candidate, so the name
     # does not split into two people and its links move to the referent.
     yaml_ids = {ref.node_id for ref in people}
+
+    def resolve(pid: str) -> str:
+        """Follow "same person" to the person kept; a broken or circular chain stops."""
+        seen = {pid}
+        while by_id.get(pid) is not None and by_id[pid].merged_into in by_id and by_id[pid].merged_into not in seen:
+            pid = by_id[pid].merged_into
+            seen.add(pid)
+        return pid
+
     by_key: Dict[str, List[str]] = {}
     for p in sorted(by_id.values(), key=lambda p: p.person_id):
-        by_key.setdefault(name_key(p.display_name), []).append(p.person_id)
+        ids = by_key.setdefault(name_key(p.display_name), [])
+        target = resolve(p.person_id)
+        if target not in ids:
+            ids.append(target)
     for key, ids in by_key.items():
         preferred = [i for i in ids if i in yaml_ids]
         if preferred:

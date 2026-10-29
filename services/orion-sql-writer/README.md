@@ -664,6 +664,12 @@ the individuals tick, after answers apply, while `PERSON_RECORD_ENABLED` (true):
    different people. No confirmed picture, no picture. Every pass also
    corrects the pictures of questions already open.
 
+"Same person" (2026-10-29): names match exactly, so a first name and a full
+name are two people until Juniper joins them in the Hub People panel
+(`person.merged_into`, `manual_migration_person_merge_v1.sql`). The planner then
+resolves the joined name to the person kept and moves its clusters; a joined
+person is never asked about. Nothing is joined automatically.
+
 Needs `manual_migration_person_record_v1.sql`; without it the step reports
 `person_record: migration_missing`. Dry run on live data:
 `orion/person_model/evals/run_person_record_backfill_eval.py --live <dsn>`.
@@ -705,7 +711,7 @@ companions are never arrival candidates.
   `inside` (the detector looks every ~5 s), so a departure is projected: moving toward
   the portal edge, last foot within 0.6 of it, a measured exit speed (frame widths/s).
   Window = `(exit_dist + g) / exit_speed` with `g` the prior x0.4..x3 until
-  `VISION_HANDOFF_MIN_MET` met for that portal and kind, then the split-conformal 10-90%
+  `VISION_HANDOFF_MIN_ARRIVALS` arrivals (met, early or late) for that portal and kind, then the split-conformal 10-90%
   band of learned `g = transit_sec x exit_speed - exit_dist`. While a window is ahead it
   sets `orion:vision:expect:walkway` (extend-only; the rhythm loop keeps the key until
   `handoff_until`) or `orion:vision:look:doorbell` (= handoff id, TTL = window; the
@@ -732,7 +738,7 @@ companions are never arrival candidates.
   arrival time under the predicted distribution, for the Rung 6 `street_handoff` domain),
   `handoff_missed` once unexplained, `overlap_pair` (low salience). One outbox row per
   event; facts older than 1 h (approach: 5 min) are recorded but not published. The prior
-  band's p is floored at `2/(VISION_HANDOFF_MIN_MET+1)`, so a hand-set prior never opens
+  band's p is floored at `2/(VISION_HANDOFF_MIN_ARRIVALS+1)`, so a hand-set prior never opens
   the attention gate. Salience = who x what x surprise (`SALIENCE_*` in
   `vision_handoff.py`). p-value calm state and the conformal floor `2/(n+1)` are
   documented in the module.

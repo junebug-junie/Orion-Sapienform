@@ -112,7 +112,7 @@ def loop_config(settings: Settings) -> HandoffLoopConfig:
     rules = HandoffConfig(
         kinds=_csv(settings.vision_handoff_kinds),
         look_kinds=_csv(settings.vision_handoff_look_kinds),
-        min_met=int(settings.vision_handoff_min_met),
+        min_arrivals=int(settings.vision_handoff_min_arrivals),
         min_coverage=float(settings.vision_handoff_min_coverage),
         appearance_bars=(("face", float(settings.vision_handoff_min_face_cosine)),
                          ("body", float(settings.vision_handoff_min_body_cosine)),
@@ -207,12 +207,11 @@ def person_guess(conn, individual_ids: Sequence[Optional[str]], have_table: bool
 
 
 def learned_gaps(conn, portal_id: str, *, exclude: Optional[str] = None
-                 ) -> Tuple[Dict[str, List[float]], Dict[str, int], Dict[str, int]]:
-    """(g values of met+early+late rows per kind, met counts per kind, missed counts per kind)."""
+                 ) -> Tuple[Dict[str, List[float]], Dict[str, int]]:
+    """(g values of met+early+late rows per kind, missed counts per kind)."""
     from sqlalchemy import text
 
     learned: Dict[str, List[float]] = {}
-    met: Dict[str, int] = {}
     missed: Dict[str, int] = {}
     for kind, status, g in conn.execute(text(
             "SELECT subject_kind, status, g FROM vision_handoff WHERE portal_id=:p AND status IN ('met','early','late','missed') "
@@ -222,9 +221,7 @@ def learned_gaps(conn, portal_id: str, *, exclude: Optional[str] = None
             continue
         if g is not None:
             learned.setdefault(kind, []).append(float(g))
-        if status == "met":
-            met[kind] = met.get(kind, 0) + 1
-    return learned, met, missed
+    return learned, missed
 
 
 def vectors(conn, crop_ids: Sequence[str], tz: ZoneInfo) -> List[Dict[str, Any]]:
@@ -378,7 +375,7 @@ class Ctx:
     have_attr: bool
     steer: Steering
     summary: Dict[str, Any]
-    _learned: Dict[str, Tuple[Dict[str, List[float]], Dict[str, int], Dict[str, int]]] = field(default_factory=dict)
+    _learned: Dict[str, Tuple[Dict[str, List[float]], Dict[str, int]]] = field(default_factory=dict)
 
     def learned(self, portal_id: str):
         if portal_id not in self._learned:
@@ -464,8 +461,8 @@ def _open_one(ctx: Ctx, f) -> None:
             dist, speed = 0.0, 1.0
         else:
             continue
-        learned, met, _ = ctx.learned(portal.id)
-        band = choose_band(f.kind, learned, met, portal, rules)
+        learned, _ = ctx.learned(portal.id)
+        band = choose_band(f.kind, learned, portal, rules)
         ws, we, lu = window_for(f.ended_at, dist, speed, band, rules)
         hid = handoff_id(portal.id, f.story_id)
         guess = person_guess(ctx.conn, [f.individual_id], ctx.have_attr)
@@ -600,10 +597,10 @@ def _grade_one(ctx: Ctx, r) -> None:
         upd["transit_sec"] = transit
     if status in ARRIVED:
         g = observed_g(upd["transit_sec"], r["exit_dist"] or 0.0, r["exit_speed"] or 1.0, portal.kind)
-        learned, _met, _ = ctx.learned(portal.id)
+        learned, _ = ctx.learned(portal.id)
         calib_kind = "person" if r["band_source"] == "learned_person_widened" else r["subject_kind"]
         band = Band(r["band_lo"], r["band_hi"], r["band_source"], tuple(learned.get(calib_kind) or ()))
-        p = p_value_arrival(g, band, prior_floor=prior_p_floor(rules.min_met))
+        p = p_value_arrival(g, band, prior_floor=prior_p_floor(rules.min_arrivals))
         log_score = arrival_log_score(g, band, r["exit_speed"] or 1.0, portal.kind)
         guess = r["person_guess"] or person_guess(ctx.conn, [r["individual_id"], upd.get("target_individual_id")],
                                                   ctx.have_attr)
@@ -638,8 +635,8 @@ def _grade_one(ctx: Ctx, r) -> None:
         status = grade_unmatched(cov, rules)
         upd.update(status=status, coverage=cov)
         if status == "missed":
-            _learned, met_c, missed_c = ctx.learned(portal.id)
-            arrived = len(_learned.get(r["subject_kind"]) or [])  # met + late of this kind
+            _learned, missed_c = ctx.learned(portal.id)
+            arrived = len(_learned.get(r["subject_kind"]) or [])  # met + early + late of this kind
             p = p_value_missed(missed_c.get(r["subject_kind"], 0), arrived)
             upd.update(p_value=p, salience=salience("handoff_missed", r["subject_kind"], known_person=bool(
                 r["person_guess"]), p=p))

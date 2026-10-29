@@ -1622,10 +1622,48 @@ def build_outreach_prompt(ctx: OutreachContext, tz: Any = timezone.utc) -> str:
 # top-level import, not a re-export shim.
 
 
+_PASS_LINE_STRIP = ".!\"'`*_# "
+
+
+# A finished sentence, then PASS as the reply's last word ("... for. PASS").
+_TRAILING_PASS = re.compile(r"[.!?][\"'`*_)]*[ \t]+[*_`]*PASS[.!\"'`*_]*\s*$")
+
+
+def _is_pass_line(line: str) -> bool:
+    return str(line or "").strip().strip(_PASS_LINE_STRIP).upper() == "PASS"
+
+
+def pass_shape(text: str) -> Optional[str]:
+    """How Orion declined, or None when the reply is a message.
+
+    ``"bare"``: the whole reply is the word PASS (what every outreach prompt asks for).
+    ``"after_reasoning"``: Orion reasoned first and put PASS on a line of its own. A line that
+    holds only PASS is a decision, never a sentence meant for Juniper, so the reply is a decline
+    wherever that line sits -- also when it comes first and more text follows (never seen live
+    through 2026-10-29; such a reply is dropped, and the row keeps the shape).
+    ``"trailing"``: the reply ends with a full sentence and then PASS as its own last word on the
+    same line ("Not worth interrupting for. PASS"; 2 live sends through 2026-10-28). Before 2026-10-29 only the bare form counted: 38 replies in 30 days
+    (35 reading findings, 3 endogenous ticks) reasoned, ended on a PASS line, and were delivered
+    to Juniper as chat messages with the reasoning in them.
+
+    Structural, not a word list: PASS inside a sentence ("I'll pass along the note", "PASS is the
+    honest answer here") is still a message.
+    """
+    body = str(text or "").strip()
+    if not body:
+        return None
+    if _is_pass_line(body):
+        return "bare"
+    if any(_is_pass_line(line) for line in body.splitlines()):
+        return "after_reasoning"
+    if _TRAILING_PASS.search(body):
+        return "trailing"
+    return None
+
+
 def is_pass_response(text: str) -> bool:
-    """True when Orion declined to reach out this tick."""
-    stripped = str(text or "").strip().strip(".!\"'` ")
-    return stripped.upper() == "PASS"
+    """True when Orion declined to reach out this tick (see ``pass_shape``)."""
+    return pass_shape(text) is not None
 
 
 # --------------------------------------------------------------------------
@@ -1635,6 +1673,10 @@ def is_pass_response(text: str) -> bool:
 
 class EndogenousOutreach:
     """Randomized-trigger outreach loop. Best-effort at every step."""
+
+    # orion.notify.client.NotifyClient, set by main.py after construction. When
+    # set, outreach goes through orion-notify so it is durable until dismissed.
+    notify_client: Any = None
 
     def __init__(
         self,
@@ -2330,7 +2372,8 @@ class EndogenousOutreach:
             )
         if is_pass_response(text):
             return self._record(
-                {"outreach": False, "reason": "orion_passed", "generation": gen_debug},
+                {"outreach": False, "reason": "orion_passed", "pass_shape": pass_shape(text),
+                 "generation": gen_debug},
                 forced=force,
                 tension_reason=tension_reason,
                 grounding=grounding,
@@ -2565,7 +2608,7 @@ class EndogenousOutreach:
             )
         if is_pass_response(text):
             return self._strain_record(
-                {**base, "reason": "orion_passed"},
+                {**base, "reason": "orion_passed", "pass_shape": pass_shape(text)},
                 forced=force, episode=episode, composed=True, grounding=grounding,
             )
         offending = self._named_ungrounded_terms(text, None, correlation_id, context_texts=[record_text])
@@ -2804,7 +2847,8 @@ class EndogenousOutreach:
             # Orion wrote the message and concluded it was not worth sending.
             # A real answer, and the composition prompt says so explicitly.
             return self._record(
-                {**extra, "outreach": False, "reason": "orion_passed", "source": tag},
+                {**extra, "outreach": False, "reason": "orion_passed", "source": tag,
+                 "pass_shape": pass_shape(body)},
                 forced=False,
             )
         if self._send_lock.locked():
@@ -3429,23 +3473,39 @@ class EndogenousOutreach:
         notification_title: Optional[str] = None,
         notification_type: Optional[str] = None,
     ) -> None:
+        resolved_type = notification_type or OUTREACH_TAG
+        notify_tags = list(tags) if tags is not None else [OUTREACH_TAG]
+        title = notification_title or "Orion reached out"
+        if resolved_type == OUTREACH_TAG:
+            # Durable path: orion-notify writes a notify_requests row keyed by
+            # this message_id (the same id as the chat_message row) and
+            # publishes the live in-app event itself. The row stays open until
+            # Juniper dismisses it in the tray, across Hub restarts.
+            if await self._persist_outreach_via_notify(
+                text=text,
+                session_id=session_id,
+                correlation_id=correlation_id,
+                message_id=message_id,
+                tags=notify_tags,
+                title=title,
+            ):
+                return
         if not self._bus:
             return
         try:
-            notify_tags = list(tags) if tags is not None else [OUTREACH_TAG]
             notification = HubNotificationEvent(
                 notification_id=uuid4(),
                 created_at=datetime.now(timezone.utc),
                 severity="info",
                 event_kind=OUTREACH_EVENT_KIND,
                 source_service="orion-hub",
-                title=notification_title or "Orion reached out",
+                title=title,
                 body_text=text,
                 tags=notify_tags,
                 correlation_id=correlation_id,
                 session_id=session_id,
                 message_id=UUID(message_id),
-                notification_type=notification_type or OUTREACH_TAG,
+                notification_type=resolved_type,
             )
             env = BaseEnvelope(
                 kind="notify.in_app.v1",
@@ -3456,3 +3516,62 @@ class EndogenousOutreach:
             await self._bus.publish(self.notify_channel, env)
         except Exception as exc:  # noqa: BLE001
             logger.warning("endogenous_outreach_notify_failed corr=%s err=%s", correlation_id, exc)
+
+    async def _persist_outreach_via_notify(
+        self,
+        *,
+        text: str,
+        session_id: str,
+        correlation_id: str,
+        message_id: str,
+        tags: List[str],
+        title: str,
+    ) -> bool:
+        """Send one outreach message through orion-notify's /chat/message.
+
+        Returns True only when orion-notify accepted it. Then orion-notify owns
+        both the durable row and the live in-app event, so the caller must not
+        publish a second in-app event. Returns False when no client is wired or
+        the call failed; the caller then falls back to the old direct publish,
+        so the live tray still gets the message (just not durably).
+        """
+        client = self.notify_client
+        if client is None:
+            return False
+        durable_tags = list(tags)
+        if OUTREACH_TAG not in durable_tags:
+            # The tray asks orion-notify for open rows by this tag.
+            durable_tags.append(OUTREACH_TAG)
+        preview = text if len(text) <= 280 else text[:279] + "\u2026"
+        try:
+            accepted = await asyncio.to_thread(
+                client.chat_message,
+                session_id=session_id,
+                preview_text=preview,
+                full_text=text,
+                title=title,
+                severity="info",
+                require_read_receipt=True,
+                tags=durable_tags,
+                source_service="orion-hub",
+                correlation_id=correlation_id,
+                message_id=UUID(message_id),
+                notification_type=OUTREACH_TAG,
+            )
+        except Exception as exc:  # noqa: BLE001 -- NotifyClient never raises; a fake or a bug might
+            logger.warning("endogenous_outreach_durable_notify_failed corr=%s err=%s", correlation_id, exc)
+            return False
+        if not getattr(accepted, "ok", False):
+            logger.warning(
+                "endogenous_outreach_durable_notify_failed corr=%s detail=%s -- falling back to direct in-app publish",
+                correlation_id,
+                getattr(accepted, "detail", None),
+            )
+            return False
+        logger.info(
+            "endogenous_outreach_durable_notify_ok corr=%s message_id=%s notification_id=%s",
+            correlation_id,
+            message_id,
+            getattr(accepted, "notification_id", None),
+        )
+        return True

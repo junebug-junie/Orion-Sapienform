@@ -110,7 +110,7 @@ def test_inventory_needs_an_open_export(world, capsys):
 def test_history_lists_commits_and_prs(world, capsys, monkeypatch):
     monkeypatch.setattr(dig, "_gh_merged", lambda s, e: [{"number": 7, "title": "add b", "mergedAt": "2025-07-03T18:00:00Z", "body": "x" * 9000}])
     code, out, _ = run(capsys, "history", "2025-07-01", "2025-07-03")
-    assert code == 0 and "1 merged PRs, 3 commits" in out and "#7 2025-07-03 add b" in out
+    assert code == 0 and "1 merged PRs (GitHub, live), 3 commits on main (clone never fetched)" in out and "#7 2025-07-03 add b" in out
     assert "x" * 100 not in out  # bodies only in the file
 
 

@@ -229,3 +229,79 @@ def test_past_checkout_without_the_files_is_absent_not_unread(tmp_path):
     body = S.gather_body(tmp_path, [], live=None)
     assert body.hosts == [] and body.stores == [] and body.processes == []
     assert {r.status for r in body.reads} == {"absent"}
+
+
+# --- review fixes (2026-10-29) -------------------------------------------------------------
+
+def test_a_persisted_channel_whose_table_is_not_in_the_db_keeps_its_bus_flow(tmp_path):
+    class NoTable(FakeSql):
+        def run(self, sql, flags):
+            if "pg_stat_user_tables" in sql:
+                return "relname,n_live_tup\nunrelated_table,5\n", 0
+            return super().run(sql, flags)
+
+    body = S.gather_body(_root(tmp_path), CHANNELS, live=S.LiveReaders(sql=NoTable()))
+    assert not [s for s in body.stores if s.name == "chat_history_log"]
+    assert body.persisted == {}  # nothing replaces the flow, so nothing drops it
+
+
+def test_read_with_no_rows_is_zero_not_unknown(tmp_path):
+    class Empty(FakeSql):
+        def run(self, sql, flags):
+            if "substrate_durable_run_state" in sql:
+                return "workflow,runs,last_run\n", 0
+            if "vision_events" in sql:
+                return "stream_id,events,last_seen\n", 0
+            return super().run(sql, flags)
+
+    body = S.gather_body(_root(tmp_path), CHANNELS, live=S.LiveReaders(sql=Empty()))
+    assert [p.runs for p in body.processes if p.name == "reading.turn"] == [0]
+    assert {s.events for s in body.sensors} == {0}
+
+
+def test_a_compose_file_that_does_not_parse_makes_the_read_partial(tmp_path):
+    root = _root(tmp_path)
+    _write(root, "services/orion-broken/docker-compose.yml", "services: [unclosed\n")
+    _write(root, "services/orion-vision-edge/.env_example", "STREAM_ID=walkway\n")
+    body = S.gather_body(root, CHANNELS, live=None)
+    read = next(r for r in body.reads if "STREAM_ID" in r.name)
+    assert read.status == "partial" and "orion-broken" in read.detail
+    walkway = next(s for s in body.sensors if s.name == "walkway")
+    assert [svc for svc, _ in walkway.readers] == ["orion-vision-edge"]  # the rest still read
+
+
+def test_compose_defaults_name_a_stream():
+    assert S._stream_setting("RETINA_STREAM_ID=${RETINA_STREAM_ID:-walkway}") == ("RETINA_STREAM_ID", "walkway")
+    assert S._stream_setting("STREAM_ID=${STREAM_ID}") is None
+
+
+def test_psql_notices_are_not_rows():
+    class Noisy:
+        def run(self, sql, flags):
+            return "node,last_seen\nathena,2026-10-29 20:00:00+00\nWARNING:  something\npsql:<stdin>:3: NOTICE: x\n", 0
+
+    assert S.psql_rows(Noisy(), "x") == [{"node": "athena", "last_seen": "2026-10-29 20:00:00+00"}]
+
+
+def test_scratch_rule_keeps_real_words():
+    for g in ("orion_testimony", "orion_smoker", "foo_t_bar", "orion_tested_ideas"):
+        assert not S.is_scratch_graph(g), g
+    assert S.is_scratch_graph("orion_tests") and S.is_scratch_graph("orion_smoke2")
+
+
+def test_dropped_scratch_graphs_are_named_in_the_read(tmp_path):
+    body = S.gather_body(_root(tmp_path), CHANNELS, live=S.LiveReaders(graph=_fake_graph))
+    read = next(r for r in body.reads if r.name == "live:falkordb GRAPH.LIST")
+    assert "t_assertion_abc" in read.detail
+
+
+def test_compose_only_tags_parse(tmp_path):
+    # live 2026-10-29: orion-cortex-exec's compose uses `ports: !override []`, which safe_load refuses
+    _write(tmp_path, "services/orion-vision-edge/docker-compose.yml", """
+        services:
+          orion-vision-edge:
+            ports: !override []
+            environment:
+              - STREAM_ID=walkway
+    """)
+    assert S.stream_readers(tmp_path, ["walkway"])["walkway"][0][0] == "orion-vision-edge"

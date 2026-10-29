@@ -155,6 +155,9 @@ class _Reads:
         """Call ``fn``; any exception is recorded as unread and returns None. Never silent."""
         try:
             value = fn()
+        except PartialRead as exc:
+            self.add(name, origin, "partial", str(exc))
+            return exc.value
         except _Absent as exc:
             self.add(name, origin, "absent", str(exc))
             return None
@@ -216,6 +219,16 @@ def parse_frame_router_streams(data: dict) -> list[str]:
 
 
 _STREAM_KEY = re.compile(r"^([A-Z0-9_]*STREAM_ID)\s*=\s*['\"]?([^'\"#\s]+)['\"]?")
+_COMPOSE_DEFAULT = re.compile(r"\$\{[A-Za-z0-9_]+:?-([^}]*)\}")
+
+
+def _stream_setting(line: str) -> tuple[str, str] | None:
+    """(key, stream) for a ``*STREAM_ID=...`` line; a compose ``${VAR:-walkway}`` reads as its
+    default, a bare ``${VAR}`` as nothing (the service's .env_example says what it is)."""
+    m = _STREAM_KEY.match(_COMPOSE_DEFAULT.sub(lambda d: d.group(1), line.strip()))
+    if not m or m.group(2).startswith("$"):
+        return None
+    return m.group(1), m.group(2)
 
 
 def _compose_env(service_spec: dict) -> list[str]:
@@ -225,18 +238,44 @@ def _compose_env(service_spec: dict) -> list[str]:
     return [str(e) for e in env]
 
 
+class _ComposeLoader(yaml.SafeLoader):
+    """SafeLoader that reads compose-only tags (``!override``, ``!reset``) as plain values."""
+
+
+def _untagged(loader: yaml.SafeLoader, _suffix: str, node: yaml.Node) -> Any:
+    if isinstance(node, yaml.MappingNode):
+        return loader.construct_mapping(node, deep=True)
+    if isinstance(node, yaml.SequenceNode):
+        return loader.construct_sequence(node, deep=True)
+    return loader.construct_scalar(node)
+
+
+_ComposeLoader.add_multi_constructor("!", _untagged)
+
+
+class PartialRead(Exception):
+    """A source read that worked but skipped some inputs; ``value`` is what was read."""
+
+    def __init__(self, value: Any, problem: str) -> None:
+        super().__init__(problem)
+        self.value = value
+
+
 def stream_readers(root: Path, streams: Iterable[str]) -> dict[str, list[tuple[str, str]]]:
     """stream -> [(service, where)]. Rules only, no names: a compose that mounts the frame
-    router policy reads every stream; a ``*STREAM_ID=<stream>`` setting reads that stream."""
+    router policy reads every stream; a ``*STREAM_ID=<stream>`` setting reads that stream.
+    Raises PartialRead (carrying the result) when a compose file does not parse."""
     wanted = set(streams)
     out: dict[str, set[tuple[str, str]]] = {s: set() for s in wanted}
     services = root / "services"
     if not services.is_dir():
         return {s: [] for s in wanted}
+    broken: list[str] = []
     for compose in sorted(services.glob("*/docker-compose*.yml")):
         try:
-            data = yaml.safe_load(compose.read_text(encoding="utf-8")) or {}
+            data = yaml.load(compose.read_text(encoding="utf-8"), Loader=_ComposeLoader) or {}  # noqa: S506
         except yaml.YAMLError:
+            broken.append(str(compose.relative_to(root)))
             continue
         rel = str(compose.relative_to(root))
         for svc, spec in (data.get("services") or {}).items():
@@ -247,15 +286,18 @@ def stream_readers(root: Path, streams: Iterable[str]) -> dict[str, list[tuple[s
                 for s in wanted:
                     out[s].add((str(svc), f"{rel} mounts {FRAME_ROUTER.name}"))
             for line in _compose_env(spec):
-                m = _STREAM_KEY.match(line.strip())
-                if m and m.group(2) in wanted:
-                    out[m.group(2)].add((str(svc), f"{rel} {m.group(1)}"))
+                kv = _stream_setting(line)
+                if kv and kv[1] in wanted:
+                    out[kv[1]].add((str(svc), f"{rel} {kv[0]}"))
     for env in sorted(services.glob("*/.env_example")):
         for line in env.read_text(encoding="utf-8").splitlines():
-            m = _STREAM_KEY.match(line.strip())
-            if m and m.group(2) in wanted:
-                out[m.group(2)].add((env.parent.name, f"{env.relative_to(root)} {m.group(1)}"))
-    return {s: sorted(v) for s, v in out.items()}
+            kv = _stream_setting(line)
+            if kv and kv[1] in wanted:
+                out[kv[1]].add((env.parent.name, f"{env.relative_to(root)} {kv[0]}"))
+    result = {s: sorted(v) for s, v in out.items()}
+    if broken:
+        raise PartialRead(result, f"{len(broken)} compose file(s) did not parse: {', '.join(broken[:3])}")
+    return result
 
 
 def parse_route_map(settings_text: str) -> dict[str, str]:
@@ -330,13 +372,15 @@ def parse_durable_workflows(schema_text: str) -> list[str]:
     raise ValueError("DurableWorkflowV1 Literal not found")
 
 
-_SCRATCH_TOKEN = re.compile(r"^(t|tmp|test\w*|\w*livetest\w*|smoke\w*|scratch\w*)$")
+_SCRATCH_TOKEN = re.compile(r"^(tmp|tests?\d*|livetest\d*|smoke\d*|scratch\d*)$")
 
 
 def is_scratch_graph(name: str) -> bool:
-    """Test/scratch FalkorDB graphs (``t_assertion_<hash>``, ``*_livetest2``): any ``_`` token
-    that is a test word. A rule, so a new scratch graph needs no list edit."""
-    return any(_SCRATCH_TOKEN.match(tok) for tok in name.lower().split("_"))
+    """Test/scratch FalkorDB graphs (``t_assertion_<hash>``, ``*_livetest2``): a leading ``t_``
+    (the assertion harness's prefix) or a ``_`` token that is a test word. A rule, so a new
+    scratch graph needs no list edit; the dropped names are listed in the read detail."""
+    toks = name.lower().split("_")
+    return toks[0] == "t" or any(_SCRATCH_TOKEN.match(tok) for tok in toks)
 
 
 def env_store_refs(root: Path, names: Iterable[str]) -> dict[str, list[str]]:
@@ -368,11 +412,15 @@ class SqlRunner(Protocol):
     def run(self, sql: str, flags: list[str]) -> tuple[str, int]: ...
 
 
+_PSQL_STDERR = re.compile(r"^(psql:|WARNING:|NOTICE:|HINT:|DETAIL:|INFO:)")
+
+
 def psql_rows(runner: SqlRunner, sql: str) -> list[dict[str, str]]:
     out, code = runner.run(sql, ["--csv", "-q"])
     if code != 0:
         raise RuntimeError(" ".join(out.split())[:240] or f"psql exit {code}")
-    lines = [ln for ln in out.splitlines() if ln.strip()]
+    # ReadOnlyPsql returns stdout and stderr joined: a NOTICE/WARNING on success is not a row
+    lines = [ln for ln in out.splitlines() if ln.strip() and not _PSQL_STDERR.match(ln)]
     return list(csv.DictReader(io.StringIO("\n".join(lines))))
 
 
@@ -531,6 +579,9 @@ def gather_body(root: Path, catalog: list[dict], *, live: LiveReaders | None) ->
         durable = reads.run("live:postgres substrate_durable_run_state", "live",
                             lambda: psql_rows(_require(sql, "postgres"), SQL_DURABLE),
                             lambda v: f"{len(v)} workflows ran in {PROCESS_WINDOW_DAYS} d")
+        if durable is not None:  # read: a workflow with no row ran 0 times in the window
+            for p in procs.values():
+                p.runs = 0
         for r in durable or []:
             w = r["workflow"]
             p = procs.setdefault(w, ProcessIn(name=w, family="durable_workflow", runner=runner, declared=False))
@@ -549,6 +600,9 @@ def gather_body(root: Path, catalog: list[dict], *, live: LiveReaders | None) ->
                          lambda: psql_rows(_require(sql, "postgres"), SQL_CAMERAS),
                          lambda v: f"{len(v)} streams with events in {PROCESS_WINDOW_DAYS} d")
         by_stream = {s.name: s for s in body.sensors}
+        if cams is not None:  # read: a stream with no row sent 0 events in the window
+            for s in body.sensors:
+                s.events = 0
         for r in cams or []:
             s = by_stream.get(r["stream_id"])
             if s is None:  # a stream the router policy no longer lists: still a camera that sent
@@ -573,18 +627,22 @@ def gather_body(root: Path, catalog: list[dict], *, live: LiveReaders | None) ->
             body.stores.extend(chroma)
 
         # FalkorDB
+        dropped: list[str] = []
+
         def _falkor() -> list[StoreIn]:
             cmd = _require(live.graph, "falkordb")
             out = []
             for g in sorted(str(x) for x in cmd("GRAPH.LIST")):
                 if is_scratch_graph(g):
+                    dropped.append(g)
                     continue
                 reply = cmd("GRAPH.RO_QUERY", g, "MATCH (n) RETURN count(n)")
                 n = int(float(reply[1][0][0])) if len(reply) > 1 and reply[1] else 0
                 out.append(StoreIn(name=g, store="falkordb", rows=n))
             return out
 
-        falkor = reads.run("live:falkordb GRAPH.LIST", "live", _falkor, lambda v: f"{len(v)} graphs (scratch dropped)")
+        falkor = reads.run("live:falkordb GRAPH.LIST", "live", _falkor,
+                           lambda v: f"{len(v)} graphs; {len(dropped)} test/scratch dropped: {', '.join(dropped)}")
         body.stores.extend(falkor or [])
 
     # env links for Chroma/Falkor stores (only stores that exist live)
@@ -597,12 +655,17 @@ def gather_body(root: Path, catalog: list[dict], *, live: LiveReaders | None) ->
             s.links.extend((svc, "uses", "declared_env", "") for svc in refs.get(s.name, []))
 
     # Postgres stores: a table is a part only when something links to it (a known writer).
+    kept_channels: set[str] = set()
     for table, ws in sorted(writers.items()):
         if table_rows is not None and table not in table_rows:
             continue  # declared by a model but not in this database
         body.stores.append(StoreIn(name=table, store="postgres",
                                    rows=table_rows.get(table) if table_rows is not None else None,
                                    links=[(p, "writes", "declared_route", ch) for p, ch in ws]))
+        kept_channels.update(ch for _, ch in ws)
+    # only a channel whose table became a part moves its flow to that table; any other keeps
+    # its producer -> writer bus flow (never a flow dropped with nothing replacing it)
+    body.persisted = {ch: w for ch, w in body.persisted.items() if ch in kept_channels}
 
     body.processes = sorted(procs.values(), key=lambda p: (p.family, p.name))
     body.reads = reads.items

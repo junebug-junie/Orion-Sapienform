@@ -119,6 +119,8 @@ class _FlowAcc:
 
 _STORE_PREFIX = {"postgres": "pg", "chroma": "chroma", "falkordb": "falkor"}
 _PROCESS_PREFIX = {"durable_workflow": "run", "substrate_reducer": "reducer"}
+# part ids of the non-bus kinds (hosts, cameras, stores, processes) all start with one of these
+BODY_PART_PREFIXES = tuple(f"part:{x}:" for x in ("host", "camera", *_STORE_PREFIX.values(), *_PROCESS_PREFIX.values()))
 
 
 def match_part(raw: str, known: set[str], host_names: Iterable[str]) -> str | None:
@@ -187,7 +189,12 @@ def build_atlas(
     # normalized by edge size). Without this, broadcast channels glue the body into one blob:
     # live 2026-10-23, orion:system:health (every service's heartbeat) carried 29.5% of all flow
     # weight with pairwise weights and Q fell to 0.22.
-    persisted = body.persisted if body is not None else {}
+    persisted: dict[str, str] = {}
+    if body is not None:
+        # move a persisted channel only when its table is a part with a writes link for it; the
+        # producers are catalog producers, so always parts (never left with no flow at all)
+        linked = {via for st in body.stores for _, rel, _, via in st.links if rel == "writes" and via}
+        persisted = {ch: w for ch, w in body.persisted.items() if ch in linked}
 
     def consumers_of(entry: dict) -> list[str]:
         # with the body, a persisted channel's writer is reached through ``writes`` flows instead
@@ -430,7 +437,7 @@ def _add_body(body: BodyInputs, parts: dict[str, PartV1], flows: dict, link, *, 
             facts["on_host"] = ",".join(on)
         if s.events is not None:
             facts["events_30d"] = str(s.events)
-        add(name, kind="sensor", status=_status(s.last_seen_epoch, now_epoch, window, seen=bool(s.events)),
+        add(name, kind="sensor", status=_status(s.last_seen_epoch, now_epoch, window, seen=s.events is not None),
             declared=True, last_seen_at=_iso(s.last_seen_epoch), facts=facts)
         spread(name, edges)
         for h in on:  # placement, like a service's: never an organ edge (hosts are not in organs)
@@ -450,7 +457,9 @@ def _add_body(body: BodyInputs, parts: dict[str, PartV1], flows: dict, link, *, 
             seen_pairs.add((svc, relation))
             edges.append((svc, name, relation, evidence, via))
         status = "declared_only" if st.rows is None else ("live" if st.rows > 0 else "dormant")
-        facts = {"store": st.store, "rows": "not read" if st.rows is None else str(st.rows)}
+        # Postgres rows are pg_stat_user_tables.n_live_tup: the statistics' estimate, not a count
+        key = "rows_est" if st.store == "postgres" else "rows"
+        facts = {"store": st.store, key: "not read" if st.rows is None else str(st.rows)}
         add(name, kind="store", status=status, declared=True, facts=facts)
         spread(name, edges)
 
@@ -463,7 +472,7 @@ def _add_body(body: BodyInputs, parts: dict[str, PartV1], flows: dict, link, *, 
         if pr.last_run_epoch:
             facts["last_run"] = _iso(pr.last_run_epoch) or ""
         add(name, kind="process", declared=pr.declared, last_seen_at=_iso(pr.last_run_epoch), facts=facts,
-            status=_status(pr.last_run_epoch, now_epoch, window, seen=bool(pr.runs)))
+            status=_status(pr.last_run_epoch, now_epoch, window, seen=pr.runs is not None))
         runner = match_part(pr.runner, known, host_names) if pr.runner else None
         if runner is None:
             if pr.runner:

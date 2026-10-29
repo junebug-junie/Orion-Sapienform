@@ -175,3 +175,28 @@ def test_no_body_means_the_v1_atlas_unchanged():
     assert v1.sources.reads == [] and v1.known_gaps == [] and v1.stats.hosts == 0
     assert all(f.relation == "signals" for f in v1.flows)
     assert "bodies" not in summarize(v1, out=None)
+
+
+def test_old_names_carry_onto_the_real_whole_body():
+    # review HIGH: cameras/stores/processes diluted a bus-only name's overlap (real fixture: 4 of
+    # 6 organs fell to 0.14-0.32); overlap is now over the kinds the name could have held
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "_eval", Path(__file__).parents[1] / "evals" / "run_organ_structure_eval.py")
+    ev = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ev)
+    catalog, observed, now, body = ev._fixture_inputs(ev.WHOLE_BODY_FIXTURE)
+    v1 = build_atlas(catalog, observed, now=now)
+    vision = next(o for o in v1.organs if "part:orion-vision-host" in o.members)
+    rec = names.check(v1, [], vision.organ_id, "Eyes", "fed by orion-vision-host frames", dig="t")
+    whole = names.apply_names(build_atlas(catalog, observed, now=now, body=body), [rec])
+    eyes = [o for o in whole.organs if o.name == "Eyes"]
+    assert len(eyes) == 1 and "part:orion-vision-host" in eyes[0].members
+    assert any(m.startswith("part:camera:") for m in eyes[0].members)
+    assert names._overlap(eyes[0].members, rec.members) == 1.0 > names._jaccard(eyes[0].members, rec.members)
+    whole_raw = build_atlas(catalog, observed, now=now, body=body)
+    for organ in (o for o in v1.organs if len(o.members) > 1):  # never worse than raw Jaccard
+        best = max(names._overlap(w.members, organ.members) for w in whole_raw.organs)
+        assert best >= max(names._jaccard(w.members, organ.members) for w in whole_raw.organs)

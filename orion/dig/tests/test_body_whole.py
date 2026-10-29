@@ -44,3 +44,9 @@ def test_a_past_body_reads_that_days_declared_files(world, capsys):  # noqa: F81
     code, out, _ = run(capsys, "body", "2025-07-01")
     assert code == 0 and "athena: orchestration, HP; declared_only" in out
     assert "UNREAD" not in out  # files a past checkout lacks are absent, not failures
+
+
+def test_body_with_a_non_date_word_is_an_organ_lookup(world, capsys, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(dig, "_live_atlas", _whole_atlas)
+    code, _, err = run(capsys, "body", "eyes")
+    assert code == 1 and "no multi-part organ" in err

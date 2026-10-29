@@ -94,14 +94,15 @@ class OrganFlowV1(BaseModel):
 
 
 class SourceReadV1(BaseModel):
-    """One source the atlas tried to read. ``unread`` is a failure (error in ``detail``) and is
-    printed with every atlas; ``absent`` is a declared file this checkout does not have."""
+    """One source the atlas tried to read. ``unread`` is a failure (error in ``detail``) and
+    ``partial`` a read that skipped some inputs; both are printed with every atlas. ``absent``
+    is a declared file this checkout does not have."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: str
     origin: Literal["declared", "live"]
-    status: Literal["read", "unread", "absent"]
+    status: Literal["read", "partial", "unread", "absent"]
     detail: str = ""
 
 

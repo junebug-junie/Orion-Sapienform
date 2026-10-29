@@ -55,7 +55,7 @@ The live body went from 104 bus parts in 6 organs to 212 parts in 19 organs (11 
 
 ```text
 PYTHONPATH=. python -m pytest -q -p no:cacheprovider orion/body_atlas/tests orion/dig/tests orion/evals/model_replay/tests
-186 passed
+196 passed
 PYTHONPATH=. python -m pytest -q -p no:cacheprovider tests/test_static_body_descriptions.py tests/test_organ_names_partition.py
 5 passed
 services/orion-biometrics tests: 183 passed, 1 failed
@@ -82,7 +82,7 @@ Live smoke inside `orion-athena-harness-governor`, using this branch's code with
 env PYTHONPATH=/tmp/atlas-wt ORION_DIG_NOW_ROOT=/tmp/atlas-wt ORION_DIG_HOME=/tmp/atlas-dig-home python -P -m orion.dig body
 ```
 
-The organ ids were identical on both runs. The command took 3.0 s and printed 29 lines / 3,414 chars. Nothing was written to any DB, graph or bus. The dig output went to `/tmp/atlas-dig-home` in the container, not to Orion's real dig home.
+The organ ids were identical on both runs, and the same again after the review fixes. The command took 3.0 s and printed 29 lines / 3,414 chars. Nothing was written to any DB, graph or bus. The dig output went to `/tmp/atlas-dig-home` in the container, not to Orion's real dig home.
 
 ```text
 parts 254: 100 svc, 4 endpoint, 4 camera, 91 store, 13 process, 7 hosts, 35 transient · organs 19 (8 singletons)
@@ -100,7 +100,32 @@ UNREAD 3 source(s): substrate_durable_run_state, substrate_reduction_cursor, vis
 
 ## Review findings fixed
 
-(filled in after the review subagent)
+A review subagent read the branch diff (`origin/main...HEAD`). It found nothing that writes and no secrets in the fixture. Its findings and fixes:
+
+- Finding (HIGH): old organ names would mostly stop carrying over. A name carries when the member sets overlap by at least half. The new cameras, stores and processes diluted that overlap: on the real fixture, 4 of 6 bus-only organs fell to 0.14-0.32.
+  - Fix: `names._overlap` compares only the kinds the named organ could have held. A name given to a bus-only organ is compared against the bus members only.
+  - Evidence: `test_old_names_carry_onto_the_real_whole_body`. On the real fixture the vision organ's overlap is 1.0 (it was 0.68 before the fix), and no organ scores worse than before. Three of the six organs still fall below one half, because the organs really regrouped (cortex now shares an organ with sql-writer). That is the carry rule doing its job. The live names ledger is empty today, so no name was lost.
+- Finding (MEDIUM): a stored channel's bus flow could be dropped with nothing put in its place. This happens when its table is missing from the live database.
+  - Fix: the flow moves only when the table became a part and has a `writes` flow for that channel. This is checked in `sources.py` and again in `build.py`.
+  - Evidence: `test_a_persisted_channel_whose_table_is_not_in_the_db_keeps_its_bus_flow`.
+- Finding (MEDIUM): a compose file that did not parse was skipped silently.
+  - Fix: a new read status, `partial`, printed under UNREAD. The live run then exposed a real case: `orion-cortex-exec`'s compose uses `ports: !override []`, which `safe_load` refuses. Compose-only tags now parse as plain values.
+  - Evidence: `test_a_compose_file_that_does_not_parse_makes_the_read_partial`, `test_compose_only_tags_parse`. The live printout no longer shows the partial read.
+- Finding (MEDIUM): two status labels claimed more than was known.
+  - Fix: Postgres row counts are labeled `rows_est`, because `n_live_tup` is an estimate. When a camera or process table is read and holds no rows, the part becomes `dormant` with 0. It no longer reads `declared_only`, which looked the same as "not read".
+  - Evidence: `test_read_with_no_rows_is_zero_not_unknown`.
+- Finding (LOW): a psql NOTICE or WARNING line could parse as a data row.
+  - Fix: those lines are filtered before CSV parsing.
+  - Evidence: `test_psql_notices_are_not_rows`.
+- Finding (LOW): the scratch-graph rule was too broad (`testimony`, `smoker`, `foo_t_bar`), and it dropped graphs without naming them.
+  - Fix: tighter tokens, and the dropped names are listed in the read detail.
+  - Evidence: `test_scratch_rule_keeps_real_words`, `test_dropped_scratch_graphs_are_named_in_the_read`.
+- Finding (LOW): a compose `${VAR:-walkway}` default was not read as a stream.
+  - Fix: the default value is read.
+  - Evidence: `test_compose_defaults_name_a_stream`.
+- Finding (LOW): `dig body <word>` gave a date error for anything that was not a 10-hex organ id.
+  - Fix: anything that is not `YYYY-MM-DD` is looked up as an organ.
+  - Evidence: `test_body_with_a_non_date_word_is_an_organ_lookup`.
 
 ## Restart required
 
@@ -121,4 +146,4 @@ The `node_catalog.yaml` change also triggers the post-pull rebuild of orion-biom
 
 ## PR link
 
-(filled in after the PR is opened)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2979

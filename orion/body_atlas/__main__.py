@@ -95,10 +95,10 @@ def summarize(atlas: BodyAtlasV1, *, out: str | None) -> str:
     if hosts:
         lines.append("bodies (machines; not in organs):")
         lines += [_host_line(p) for p in sorted(hosts, key=lambda p: (p.status != "live", p.name))]
-    unread = [r for r in src.reads if r.status == "unread"]
+    unread = [r for r in src.reads if r.status in ("unread", "partial")]
     if unread:
         lines.append(f"UNREAD {len(unread)} source(s), this body is missing what they hold:")
-        lines += [f"  {r.name}: {r.detail[:110]}" for r in unread]
+        lines += [f"  {r.name}{' (partial)' if r.status == 'partial' else ''}: {r.detail[:110]}" for r in unread]
     names = {p.part_id: p.name for p in atlas.parts}
     status = {p.part_id: p.status for p in atlas.parts}
     multi = [o for o in atlas.organs if len(o.members) > 1]

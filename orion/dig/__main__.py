@@ -445,7 +445,7 @@ def names_path() -> Path:
     return home() / "self" / "organ_names.jsonl"
 
 
-ORGAN_REF_RE = re.compile(r"(?:organ:)?[0-9a-f]{10}")
+DATE_LIKE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def cmd_body(arg: str | None, out: Out) -> str:
@@ -457,7 +457,8 @@ def cmd_body(arg: str | None, out: Out) -> str:
     from orion.body_atlas.sources import gather_body
 
     note = ""
-    organ = arg if arg is not None and ORGAN_REF_RE.fullmatch(arg) else None
+    # a date is YYYY-MM-DD; anything else is an organ reference (find_organ says if it is not one)
+    organ = arg if arg is not None and not DATE_LIKE_RE.fullmatch(arg) else None
     if arg is None or organ:
         records, skipped = names.load(names_path())
         atlas = names.apply_names(_live_atlas(), records)

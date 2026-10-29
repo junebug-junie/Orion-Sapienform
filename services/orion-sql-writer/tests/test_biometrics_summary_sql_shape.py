@@ -79,3 +79,46 @@ def test_peak_pressure_columns_are_nullable_because_absent_is_not_zero() -> None
     cols = BiometricsSummarySQL.__table__.columns
     assert cols["peak_pressure"].nullable is True
     assert cols["peak_pressure_channel"].nullable is True
+
+
+def test_write_row_keeps_peak_pressure_fields_end_to_end(monkeypatch) -> None:
+    """The actual bug: _write_row filters payload keys against the mapper and dropped
+    peak_pressure/peak_pressure_channel silently. Drive the real _write_row with a
+    real payload and check both reach the row object."""
+    from datetime import datetime, timezone
+
+    from app import worker
+
+    captured: dict = {}
+
+    class _FakeSession:
+        def merge(self, obj):
+            captured["obj"] = obj
+            return obj
+
+        def add(self, obj):
+            captured["obj"] = obj
+
+        def commit(self):
+            captured["committed"] = True
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(worker, "get_session", lambda: _FakeSession())
+    payload = BiometricsSummaryV1(
+        timestamp=datetime(2026, 10, 29, 6, 0, tzinfo=timezone.utc),
+        node="athena",
+        peak_pressure=0.7,
+        peak_pressure_channel="thermal",
+    ).model_dump()
+
+    # worker's own class object, as in test_biometrics_cluster_sql_shape.
+    assert worker._write_row(worker.BiometricsSummarySQL, payload) is True
+    row = captured["obj"]
+    assert row.peak_pressure == 0.7
+    assert row.peak_pressure_channel == "thermal"
+    assert captured.get("committed") is True

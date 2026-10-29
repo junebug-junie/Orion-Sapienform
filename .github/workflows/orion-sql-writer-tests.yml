@@ -8,6 +8,10 @@ name: orion-sql-writer-tests
 on:
   pull_request:
     paths:
+      # orion/** and config/**: the job runs the whole sql-writer tests folder,
+      # which imports far more of orion than the narrow list below named.
+      - "orion/**"
+      - "config/**"
       - "orion/bus/channels.yaml"
       - "orion/core/bus/**"
       - "orion/grammar/**"
@@ -31,6 +35,10 @@ on:
   push:
     branches: [main]
     paths:
+      # orion/** and config/**: the job runs the whole sql-writer tests folder,
+      # which imports far more of orion than the narrow list below named.
+      - "orion/**"
+      - "config/**"
       - "orion/bus/channels.yaml"
       - "orion/core/bus/**"
       - "orion/grammar/**"

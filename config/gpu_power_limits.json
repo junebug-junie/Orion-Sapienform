@@ -1,0 +1,7 @@
+{
+  "comment": "Per-card GPU power limits on circe, held by orion-gpu-power-limits (scripts/ops/gpu_power_limits.py; design docs/superpowers/specs/2026-10-29-gpu-power-cap-design.md). Keys are nvidia-smi indices (config/gpu_pool.yaml cards.<c>.index). A card not listed is never touched. Changing a number: PR, then git pull on circe; the 5-minute timer applies it.",
+  "host": "circe",
+  "cards": {
+    "2": {"watts": 150, "why": "Juniper 2026-10-29: 0.80x energy per written token for 0.86x write speed at real-shaped load (PR #2963)"}
+  }
+}

@@ -119,6 +119,66 @@ def board_temp_c_max(thermal_map: Any) -> Optional[float]:
     return max(board) if board else None
 
 
+# A container under this many busy cores is not published by name: its watts land in
+# `container_cpu_watts_small` instead, so the split still sums to the whole. 0.05 cores is about
+# 0.2 W at the fitted ~4.5 W per core, and it keeps ~100 idle containers out of every row.
+CONTAINER_CPU_NAME_FLOOR_CORES = 0.05
+CONTAINER_CPU_WATTS_PREFIX = "container_cpu_watts."
+
+
+def container_cpu_measurements(sample: Dict[str, object], cpu_watts: Optional[float]) -> Dict[str, float]:
+    """Each container's share of the CPU package watts ABOVE IDLE, in watts.
+
+    THE MODEL (linear utilisation power model, Fan, Weber & Barroso 2007, "Power provisioning
+    for a warehouse-sized computer"): package watts = idle + slope x busy cores. Fitted on this
+    fleet's own history (scripts/analysis/fit_cpu_idle_watts.py, 2026-10-15..29, ~36.8k samples
+    per host): athena 99 W + 4.5 W/core (R^2 0.91), circe 100 W + 4.8 W/core (R^2 0.86). So the
+    watts a container causes are its share of busy cores times the watts above idle:
+
+        container_w = (cpu_watts_total - idle) x container_cores / max(busy_cores, sum(container_cores))
+
+    `cpu_watts_host_other` is the share no container holds (host processes, the kernel).
+    `container_cpu_watts_small` sums containers under CONTAINER_CPU_NAME_FLOOR_CORES. The named
+    containers + small + host_other = cpu_watts_total - idle (clamped at 0).
+
+    Below the floor (circe at low load reads down to ~46 W against a 100 W intercept) the linear
+    model does not hold: no split is published for that sample.
+
+    The idle floor is a per-node setting (CPU_IDLE_WATTS_BY_NODE): the fit's intercept, not a
+    reading. It is published as `cpu_idle_watts` beside the split so a reader sees the assumption.
+    Absent when the package watts, the idle floor, the busy cores, or the container read is
+    missing: never a split of a number that was not measured.
+    """
+    containers = sample.get("containers") if isinstance(sample.get("containers"), dict) else {}
+    out: Dict[str, float] = {}
+    busy = _as_float(containers.get("host_busy_cores"))
+    if busy is None or busy < 0.0:
+        return out
+    out["cpu_busy_cores"] = busy
+    idle = _as_float(containers.get("cpu_idle_watts"))
+    cores = containers.get("cpu_cores")
+    if cpu_watts is None or idle is None or idle < 0.0 or not isinstance(cores, dict):
+        return out
+    parsed = {str(k): v for k, v in ((k, _as_float(v)) for k, v in cores.items()) if v is not None and v >= 0.0}
+    denom = max(busy, sum(parsed.values()))
+    out["cpu_idle_watts"] = idle
+    if cpu_watts < idle or denom <= 0.0:
+        # Below the fitted floor (circe at low load, deep C-states: ~10% of its samples) the line
+        # does not hold, so there is no honest split: absent, never a split of 0 W.
+        return out
+    above = cpu_watts - idle
+    small = 0.0
+    for name, c in parsed.items():
+        w = above * c / denom
+        if c >= CONTAINER_CPU_NAME_FLOOR_CORES:
+            out[f"{CONTAINER_CPU_WATTS_PREFIX}{name}"] = w
+        else:
+            small += w
+    out["container_cpu_watts_small"] = small
+    out["cpu_watts_host_other"] = above * max(0.0, busy - sum(parsed.values())) / denom
+    return out
+
+
 def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
     """Raw physical quantities from a biometrics sample, in their own units.
 
@@ -221,17 +281,33 @@ def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
     # history from orion_biometrics_summary, plus the hottest card. A card whose reading is
     # missing or not a number is omitted (absent-is-not-zero); a GPU with no usable index is
     # counted in the max but gets no per-card key.
+    #
+    # Per-card power and memory from the SAME nvidia-smi row (2026-10-29, act energy cost):
+    #   gpu{index}_watts         power.draw. Per-act energy splits a card's watts above its idle
+    #                            floor by GPU-pool lease share (orion/energy/act_energy.py); the
+    #                            host total `gpu_watts_total` cannot say which card drew it.
+    #   gpu{index}_mem_used_mb   memory.used, MiB as nvidia-smi reports it.
+    #   gpu{index}_mem_total_mb  memory.total, MiB. With used: VRAM headroom per card.
+    # Each key is independent and absent when its own column is missing or not a number.
+    # NOT in FLEET_SUM_KEYS: a per-card key is already inside `gpu_watts_total`.
     gpus = gpu.get("gpus")
     if isinstance(gpus, list):
         hottest: Optional[float] = None
         for entry in gpus:
             if not isinstance(entry, dict):
                 continue
+            index = str(entry.get("gpu_index", "")).strip()
+            if index.isdigit():
+                card = int(index)
+                for key, column in (("watts", "power_draw_watts"), ("mem_used_mb", "memory_used_mb"),
+                                    ("mem_total_mb", "memory_total_mb")):
+                    value = _as_float(entry.get(column))
+                    if value is not None and value >= 0.0:
+                        out[f"gpu{card}_{key}"] = value
             temp = _as_float(entry.get("temperature_gpu_c"))
             if temp is None or temp < 0.0:
                 continue
             hottest = temp if hottest is None else max(hottest, temp)
-            index = str(entry.get("gpu_index", "")).strip()
             if index.isdigit():
                 out[f"gpu{int(index)}_temp_c"] = temp
         if hottest is not None:
@@ -247,6 +323,9 @@ def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
     cpu_watts = _as_float(power.get("cpu_package_watts"))
     if cpu_watts is not None and cpu_watts >= 0.0:
         out["cpu_watts_total"] = cpu_watts
+    else:
+        cpu_watts = None
+    out.update(container_cpu_measurements(sample, cpu_watts))
 
     fan_map = ilo.get("ilo_fan_pct")
     if isinstance(fan_map, dict):

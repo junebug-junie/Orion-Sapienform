@@ -1028,11 +1028,12 @@ async def lifespan(app: FastAPI):
         )
 
     # Act ledger (rung 2): materialise act events + grade closed acts; resolver closes by horizon.
-    from orion.grammar.act_ledger import configure_act_workspace_binding
+    from orion.grammar.act_ledger import configure_act_energy_cost, configure_act_workspace_binding
     from orion.grammar.ledger import configure_act_ledger
 
     configure_act_ledger(bool(getattr(settings, "sql_writer_act_ledger_enabled", True)))
     configure_act_workspace_binding(bool(getattr(settings, "sql_writer_act_workspace_binding_enabled", True)))
+    configure_act_energy_cost(bool(getattr(settings, "sql_writer_act_energy_cost_enabled", True)))
     act_resolver_task: asyncio.Task | None = None
     if bool(getattr(settings, "sql_writer_act_ledger_enabled", True)) and float(
             getattr(settings, "sql_writer_act_resolver_interval_sec", 0.0) or 0.0) > 0:

@@ -1,9 +1,14 @@
 import json
 import os
-from typing import Dict
+from typing import Dict, Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Fitted 2026-10-29 (scripts/analysis/fit_cpu_idle_watts.py, 2026-10-15..29): the intercept of
+# package watts ~ busy cores. An empty env value (compose's `${CPU_IDLE_WATTS_BY_NODE:-}`) uses this.
+DEFAULT_CPU_IDLE_WATTS_BY_NODE = '{"athena": 99.0, "circe": 100.0, "hecate": 80.0}'
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -74,6 +79,16 @@ class Settings(BaseSettings):
     HOST_PROC_PATH: str = Field(default="/host_proc")
     HOST_SYS_PATH: str = Field(default="/host_sys")
     POWER_BAND_ALPHA: float = Field(default=0.1)
+    # CPU package watts at zero busy cores, per node (JSON node -> watts). The intercept of the
+    # linear fit package_watts ~ busy_cores (scripts/analysis/fit_cpu_idle_watts.py). Per-container
+    # CPU watts are each container's share of the watts ABOVE this floor. A node missing here
+    # publishes busy cores but no watt split (absent, never a split against a guessed floor).
+    # A str, parsed by cpu_idle_watts(): a Dict-typed field crashes pydantic-settings on an empty
+    # env value (the DISK_CAPACITY_MOUNTS crash loop, 2026-07-24).
+    CPU_IDLE_WATTS_BY_NODE: str = Field(default=DEFAULT_CPU_IDLE_WATTS_BY_NODE)
+    # Host docker data root, mounted read-only (docker-compose.yml /mnt/docker:/host_mnt/docker).
+    # Container names for the per-container CPU split come from containers/<id>/config.v2.json.
+    DOCKER_ROOT_PATH: str = Field(default="/host_mnt/docker")
 
     TABLE_NAME: str = Field(default="biometrics_raw")
 
@@ -201,6 +216,15 @@ class Settings(BaseSettings):
         if value < 0.0:
             raise ValueError("AMBIENT_AUDIO_SPIKE_COOLDOWN_SEC must be >= 0")
         return value
+
+    def cpu_idle_watts(self) -> Optional[float]:
+        """This node's CPU idle floor in watts, or None (unparseable, missing, or negative)."""
+        try:
+            data = json.loads((self.CPU_IDLE_WATTS_BY_NODE or "").strip() or DEFAULT_CPU_IDLE_WATTS_BY_NODE)
+            value = float(data[self.NODE_NAME]) if isinstance(data, dict) and self.NODE_NAME in data else None
+        except (ValueError, TypeError):
+            return None
+        return value if value is not None and value >= 0.0 and value == value else None
 
     @field_validator("role_weights", mode="before")
     @classmethod

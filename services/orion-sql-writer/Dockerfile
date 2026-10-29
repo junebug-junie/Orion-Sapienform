@@ -20,5 +20,8 @@ COPY config/vision_topology.yaml /app/config/vision_topology.yaml
 # People Orion knows by name and stated pronouns (app/person_record.py,
 # orion/person_model/person.py resolves it as /app/config/person_model/people.yaml).
 COPY config/person_model/people.yaml /app/config/person_model/people.yaml
+# Act energy cost (orion/grammar/act_energy_fill.py): card -> host/nvidia-smi index, and the heat fit.
+COPY config/gpu_pool.yaml /app/config/gpu_pool.yaml
+COPY config/physiology/heat_sensitivity.yaml /app/config/physiology/heat_sensitivity.yaml
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8220"]

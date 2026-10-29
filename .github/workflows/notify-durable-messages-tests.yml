@@ -1,0 +1,66 @@
+name: notify durable messages tests
+
+# Orion's outreach is durable through orion-notify until Juniper dismisses it
+# (docs/superpowers/pr-reports/2026-10-29-outreach-durable-bell-pr.md). This
+# covers every hop of that seam: Hub outreach -> orion-notify /chat/message ->
+# sql-writer /chat/messages?status=open&tag=..., plus the orion-notify suite,
+# which had no CI job before.
+
+on:
+  pull_request:
+    paths:
+      - "orion/schemas/notify.py"
+      - "orion/notify/**"
+      - "services/orion-notify/**"
+      - "services/orion-sql-writer/app/api_notify.py"
+      - "services/orion-sql-writer/tests/test_notify_*.py"
+      - "services/orion-hub/scripts/endogenous_outreach.py"
+      - "services/orion-hub/scripts/api_routes.py"
+      - "services/orion-hub/static/js/app.js"
+      - "services/orion-hub/static/js/orion-message-tray*.js"
+      - "services/orion-hub/templates/index.html"
+      - "services/orion-hub/tests/test_outreach_durable_notify.py"
+      - "services/orion-hub/tests/test_orion_message_tray_wiring.py"
+      - ".github/workflows/notify-durable-messages-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/schemas/notify.py"
+      - "orion/notify/**"
+      - "services/orion-notify/**"
+      - "services/orion-sql-writer/app/api_notify.py"
+
+jobs:
+  notify-durable-messages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-hub/tests/requirements-reading.txt
+          python -m pip install -r services/orion-notify/requirements.txt
+      - name: orion-notify suite
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q -p no:cacheprovider services/orion-notify/tests
+      - name: sql-writer chat-message filters
+        env:
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/services/orion-sql-writer
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            services/orion-sql-writer/tests/test_notify_chat_messages_open_filter.py \
+            services/orion-sql-writer/tests/test_notify_request_normalization.py \
+            services/orion-sql-writer/tests/test_notify_attention_ack.py
+      - name: Hub outreach durable path and tray wiring
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            services/orion-hub/tests/test_outreach_durable_notify.py \
+            services/orion-hub/tests/test_orion_message_tray_wiring.py \
+            services/orion-hub/tests/test_hub_ui_layout_pass.py

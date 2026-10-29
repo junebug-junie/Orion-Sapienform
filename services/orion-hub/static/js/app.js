@@ -183,6 +183,9 @@ const openedMessageIds = new Set();
 // rows come from orion-notify and stay until Juniper dismisses each one.
 let orionOpenMessages = [];
 const dismissedOrionMessageIds = new Set();
+// Ids orion-notify reports closed (dismissed elsewhere) that Hub's cache still
+// holds. Recomputed on every durable load. See closedByDurable().
+let orionClosedByDurable = new Set();
 const NOTIFICATION_MAX = 200;
 let notificationToastSeconds = 8;
 
@@ -6750,7 +6753,8 @@ let chatTurnTimer = null;
   function currentOrionMessages() {
     const t = orionTray();
     if (!t) return [];
-    return t.mergeOpenMessages(orionOpenMessages, notifications, dismissedOrionMessageIds);
+    const hidden = new Set([...dismissedOrionMessageIds, ...orionClosedByDurable]);
+    return t.mergeOpenMessages(orionOpenMessages, notifications, hidden);
   }
 
   // The normal cards under the Orion rows: severity filter, then the
@@ -6773,10 +6777,13 @@ let chatTurnTimer = null;
       const resp = await fetch(
         `${API_BASE_URL}/api/chat/messages?status=open&tag=endogenous_outreach&limit=100`
       );
+      // A failed fetch must not read as "nothing is open": keep the live list.
       if (!resp.ok) return;
       const data = await resp.json();
       if (Array.isArray(data)) {
         orionOpenMessages = data;
+        const t = orionTray();
+        orionClosedByDurable = t ? t.closedByDurable(data, notifications) : new Set();
         renderNotifications();
       }
     } catch (err) {
@@ -6801,8 +6808,22 @@ let chatTurnTimer = null;
   // there, and focus the input so Juniper can just type.
   function replyToOrionMessage(m) {
     if (!m) return;
-    if (m.session_id && m.session_id !== orionSessionId) {
+    let bubble = null;
+    const esc = (v) => (window.CSS && typeof window.CSS.escape === 'function' ? window.CSS.escape(v) : v);
+    if (conversationDiv) {
+      for (const id of [m.correlation_id, m.message_id].filter(Boolean)) {
+        bubble = conversationDiv.querySelector(`[data-turn-id="${esc(id)}"]`);
+        if (bubble) break;
+      }
+    }
+    // Already on screen: Juniper is in that thread. Otherwise switch to the
+    // message's thread, and say so in the chat, because Hub cannot reload an
+    // older thread's history and the turns above belong to another thread.
+    if (!bubble && m.session_id && m.session_id !== orionSessionId) {
       setSessionId(m.session_id);
+      if (conversationDiv && conversationDiv.children.length) {
+        appendMessage('System', 'Replying in the thread where Orion said this. The messages above are from another thread.', 'text-gray-400');
+      }
       // Same hello the socket sends on connect, so the server (outreach and
       // the reply stamp) knows this tab is now in that thread.
       if (socket && socket.readyState === WebSocket.OPEN) {
@@ -6813,13 +6834,7 @@ let chatTurnTimer = null;
         }
       }
     }
-    let bubble = null;
     if (conversationDiv) {
-      const esc = (v) => (window.CSS && typeof window.CSS.escape === 'function' ? window.CSS.escape(v) : v);
-      for (const id of [m.correlation_id, m.message_id].filter(Boolean)) {
-        bubble = conversationDiv.querySelector(`[data-turn-id="${esc(id)}"]`);
-        if (bubble) break;
-      }
       if (!bubble && m.text) {
         appendMessage('Orion', m.text, 'text-white', {
           correlationId: m.correlation_id || null,
@@ -7085,9 +7100,19 @@ let chatTurnTimer = null;
     if (String(messageId).startsWith('synthetic:')) return false;
     // Deduplicate double-clicks / bubbling
     const key = `${messageId}:${receiptType}`;
-    window.__orionReceiptInFlight = window.__orionReceiptInFlight || new Set();
-    if (window.__orionReceiptInFlight.has(key)) return true;
-    window.__orionReceiptInFlight.add(key);
+    // Same receipt already in flight: share its result instead of guessing.
+    window.__orionReceiptInFlight = window.__orionReceiptInFlight || new Map();
+    if (window.__orionReceiptInFlight.has(key)) return window.__orionReceiptInFlight.get(key);
+    const pending = sendChatMessageReceipt(messageId, sessionId, receiptType);
+    window.__orionReceiptInFlight.set(key, pending);
+    try {
+      return await pending;
+    } finally {
+      try { window.__orionReceiptInFlight.delete(key); } catch (_) {}
+    }
+  }
+
+  async function sendChatMessageReceipt(messageId, sessionId, receiptType) {
     try {
       const resp = await fetch(`${API_BASE_URL}/api/chat/message/${messageId}/receipt`, {
         method: 'POST',
@@ -7099,8 +7124,6 @@ let chatTurnTimer = null;
     } catch (err) {
       console.warn('Failed to send chat message receipt', err);
       return false;
-    } finally {
-      try { window.__orionReceiptInFlight.delete(key); } catch (_) {}
     }
   }
 

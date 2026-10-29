@@ -386,6 +386,11 @@ async def chat_message(
     notify_payload = _chat_message_to_notification(payload)
 
     bus: OrionBusAsync | None = request.app.state.bus
+    if bus is None:
+        # Without a bus this endpoint can neither persist nor deliver. Saying
+        # 200 here made a caller (Hub outreach) skip its own fallback, so the
+        # message reached neither the tray nor the store.
+        raise HTTPException(status_code=503, detail="Notify bus unavailable; message not persisted")
 
     if settings.NOTIFY_IN_APP_ENABLED and bus:
         # Presence check is skipped for statelessness speed/simplicity

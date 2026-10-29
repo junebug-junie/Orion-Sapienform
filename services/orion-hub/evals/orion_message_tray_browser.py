@@ -10,6 +10,8 @@ just page load:
   3. Reply switches the chat session, shows the message in the chat, focuses
      the input, and saves `opened` + `dismissed` receipts.
   4. Dismiss saves a `dismissed` receipt; the badge hides at zero.
+  5. After a reload, dismissed messages stay gone even though Hub's in-memory
+     cache still holds their live in-app events.
 
 Run (needs the `playwright` Python package and a Chromium for it):
 
@@ -60,6 +62,14 @@ NOTIFICATIONS = [
      "created_at": "2026-10-28T10:05:00Z", "source_service": "orion-execution-dispatch-runtime"},
     {"event_kind": "orion_day.letter", "severity": "info", "title": "Orion's day",
      "created_at": "2026-10-28T09:00:00Z", "source_service": "orion-hub", "body_text": "Letter body"},
+] + [
+    # The live in-app events orion-notify published for the same messages.
+    # Hub's cache keeps them after a dismiss; a reload must not revive them.
+    {"event_kind": "orion.chat.message", "notification_type": "endogenous_outreach", "severity": "info",
+     "title": m["title"], "body_text": m["full_text"], "message_id": m["message_id"],
+     "session_id": m["session_id"], "correlation_id": m["correlation_id"], "tags": m["tags"],
+     "created_at": m["created_at"], "received_at": m["created_at"]}
+    for m in MESSAGES
 ]
 
 
@@ -167,6 +177,14 @@ def run(screenshot: str | None) -> int:
         check(any(r["id"] == MESSAGES[1]["message_id"] and r["type"] == "dismissed" for r in receipts),
               "Dismiss saved a dismissed receipt")
         check(not badge.is_visible(), "badge hidden at zero")
+
+        page.reload()
+        page.wait_for_selector("#notificationList", timeout=20000)
+        page.wait_for_function("() => document.body.innerText.includes(\"Orion's day\")", timeout=20000)
+        page.wait_for_timeout(500)
+        check(page.locator("#notificationList .om-orion-msg").count() == 0,
+              "after reload, dismissed messages stay gone")
+        check(not page.locator("#orionMessagesBadge").is_visible(), "after reload, badge still hidden")
 
         tray_errors = [e for e in errors if "OrionMessageTray" in e or "renderNotifications" in e or "Orion" in e]
         check(not tray_errors, f"no tray page errors ({tray_errors[:2]})")

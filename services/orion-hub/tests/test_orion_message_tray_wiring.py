@@ -55,3 +55,17 @@ def test_hub_proxy_forwards_status_and_tag(monkeypatch) -> None:
     assert params["status"] == "open"
     assert params["tag"] == "endogenous_outreach"
     assert get.call_args.args[0] == "http://notify/chat/messages"
+
+
+def test_hub_proxy_failure_is_a_502_not_an_empty_list(monkeypatch) -> None:
+    """[] would read as "nothing is open" and hide live Orion messages."""
+    import pytest
+    from fastapi import HTTPException
+
+    from scripts import api_routes
+
+    monkeypatch.setattr(api_routes.requests, "get", MagicMock(side_effect=RuntimeError("down")))
+    monkeypatch.setattr(api_routes.settings, "NOTIFY_BASE_URL", "http://notify")
+    with pytest.raises(HTTPException) as exc:
+        api_routes.api_chat_messages(limit=100, status="open", tag="endogenous_outreach")
+    assert exc.value.status_code == 502

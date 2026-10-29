@@ -2397,8 +2397,10 @@ def api_chat_messages(
         resp.raise_for_status()
         return resp.json()
     except Exception as exc:
+        # 502, not []: the tray treats an empty list as "nothing is open" and
+        # would hide live Orion messages while orion-notify is down.
         logger.warning("Failed to fetch chat messages: %s", exc)
-        return []
+        raise HTTPException(status_code=502, detail="Failed to fetch chat messages") from exc
 
 
 @router.get("/api/chat/turn/{turn_id}/substrate-effect")

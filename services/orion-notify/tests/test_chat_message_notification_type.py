@@ -114,3 +114,19 @@ def test_chat_messages_proxy_passes_the_tag_filter(monkeypatch) -> None:
     assert seen["path"] == "/chat/messages"
     assert seen["params"]["status"] == "open"
     assert seen["params"]["tag"] == "endogenous_outreach"
+
+
+def test_chat_message_without_a_bus_is_refused_not_faked(monkeypatch) -> None:
+    """A 200 with no bus meant nothing was saved or delivered, yet Hub skipped
+    its fallback. 503 lets the caller fall back."""
+    import pytest
+    from fastapi import HTTPException
+    from types import SimpleNamespace
+
+    import app.main as main
+
+    monkeypatch.setattr(main.settings, "API_TOKEN", None, raising=False)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(bus=None)))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(main.chat_message(_message(notification_type="endogenous_outreach"), request, None))
+    assert exc.value.status_code == 503

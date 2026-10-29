@@ -8,11 +8,20 @@
 
   var OUTREACH_TAG = "endogenous_outreach";
   var CLEARED_SUFFIX = "_cleared";
+  // orion-notify and sql-writer write naive UTC (datetime.utcnow()). Without a
+  // designator the browser would read it as local time -- same rule as
+  // app.js's formatHubLocalTime.
+  var TZ_DESIGNATOR_RE = /Z$|[+-]\d{2}:?\d{2}$/;
+
+  function parseTime(raw) {
+    if (!raw) return 0;
+    var value = typeof raw === "string" && !TZ_DESIGNATOR_RE.test(raw) ? raw + "Z" : raw;
+    var t = Date.parse(value);
+    return isNaN(t) ? 0 : t;
+  }
 
   function timeOf(item) {
-    var raw = (item && (item.received_at || item.created_at)) || 0;
-    var t = Date.parse(raw);
-    return isNaN(t) ? 0 : t;
+    return parseTime(item && (item.received_at || item.created_at));
   }
 
   // True when a tray item is one of Orion's own outreach messages: the live
@@ -38,11 +47,32 @@
     };
   }
 
+  // Ids orion-notify itself published (event_kind orion.chat.message) that
+  // were already in the live list when the durable list was fetched, yet are
+  // not in it. orion-notify says those are closed (dismissed on some page or
+  // device), so the live copy in Hub's cache must not bring them back after a
+  // reload. Messages from the fallback direct publish (Hub's own event kind)
+  // were never durable, so they are not judged by the durable list.
+  function closedByDurable(durable, live) {
+    var open = new Set();
+    (durable || []).forEach(function (row) {
+      if (row && row.message_id) open.add(String(row.message_id));
+    });
+    var closed = new Set();
+    (live || []).forEach(function (n) {
+      if (!isOrionMessage(n) || !n.message_id) return;
+      if (n.event_kind !== "orion.chat.message") return;
+      var id = String(n.message_id);
+      if (!open.has(id)) closed.add(id);
+    });
+    return closed;
+  }
+
   // Open Orion messages, newest first, one per message_id. `durable` comes
   // from orion-notify (survives restarts); `live` are tray items that arrived
-  // on this page (covers orion-notify being down). `dismissed` holds ids
-  // Juniper dismissed on this page, so a slow receipt write cannot bring a
-  // message back on the next refresh.
+  // on this page (covers orion-notify being down). `dismissed` holds ids that
+  // must stay hidden: dismissed on this page (a slow receipt write cannot
+  // bring them back) plus closedByDurable().
   function mergeOpenMessages(durable, live, dismissed) {
     var gone = dismissed || new Set();
     var byId = new Map();
@@ -53,7 +83,9 @@
       // Durable rows carry the full text; prefer whichever has more.
       if (!prev || (m.text || "").length > (prev.text || "").length) byId.set(m.message_id, m);
     }
-    (durable || []).forEach(add);
+    // Durable rows are filtered too: an older orion-notify drops the tag
+    // filter and would hand back every open chat message.
+    (durable || []).filter(isOrionMessage).forEach(add);
     (live || []).filter(isOrionMessage).forEach(add);
     return Array.from(byId.values()).sort(function (a, b) {
       return timeOf(b) - timeOf(a);
@@ -70,7 +102,10 @@
   //      base + "_", e.g. `..._tripwire_still_blocked`) is hidden when a
   //      clear of that family arrived at or after it;
   //   3. of a family that is still active, only the newest item is shown.
-  // Kinds with no `_cleared` sibling in the list are untouched. If the clear
+  // Contract: `<kind>_cleared` declares one global condition per kind (true of
+  // every producer today). Critical items are never folded -- a wrong guess
+  // there costs too much. Kinds with no `_cleared` sibling in the list are
+  // untouched. If the clear
   // was evicted from the window, the alert stays visible -- we cannot prove it
   // cleared. Returns { visible, hidden, groups } so the tray can say what it
   // hid and dismiss a whole family from its one visible card.
@@ -85,7 +120,8 @@
     });
     if (bases.size === 0) return { visible: list.slice(), hidden: 0, groups: new Map() };
 
-    function familyOf(kind) {
+    function familyOf(kind, n) {
+      if (n && String(n.severity || "").toLowerCase() === "critical") return null;
       var best = null;
       bases.forEach(function (base) {
         if (kind === base || kind.indexOf(base + "_") === 0) {
@@ -99,7 +135,7 @@
     var newestActive = new Map();
     list.forEach(function (n) {
       var kind = String((n && n.event_kind) || "");
-      var fam = familyOf(kind);
+      var fam = familyOf(kind, n);
       if (fam === null) return;
       if (kind === fam + CLEARED_SUFFIX) {
         lastClear.set(fam, Math.max(lastClear.get(fam) || 0, timeOf(n)));
@@ -107,7 +143,7 @@
     });
     list.forEach(function (n) {
       var kind = String((n && n.event_kind) || "");
-      var fam = familyOf(kind);
+      var fam = familyOf(kind, n);
       if (fam === null || kind === fam + CLEARED_SUFFIX) return;
       var cleared = lastClear.has(fam) && lastClear.get(fam) >= timeOf(n);
       if (cleared) return;
@@ -120,14 +156,14 @@
     // dismissing the one shown card also drops the hidden ones it stands for.
     var groups = new Map();
     list.forEach(function (n) {
-      var fam = familyOf(String((n && n.event_kind) || ""));
+      var fam = familyOf(String((n && n.event_kind) || ""), n);
       if (fam === null || newestActive.get(fam) === n) visible.push(n);
     });
     newestActive.forEach(function (n, fam) {
       groups.set(
         n,
         list.filter(function (m) {
-          return familyOf(String((m && m.event_kind) || "")) === fam;
+          return familyOf(String((m && m.event_kind) || ""), m) === fam;
         })
       );
     });
@@ -139,6 +175,8 @@
     isOrionMessage: isOrionMessage,
     normalizeMessage: normalizeMessage,
     mergeOpenMessages: mergeOpenMessages,
+    closedByDurable: closedByDurable,
+    parseTime: parseTime,
     collapseSelfClearing: collapseSelfClearing,
   };
   if (typeof window !== "undefined") window.OrionMessageTray = api;

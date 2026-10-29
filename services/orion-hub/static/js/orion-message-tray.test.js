@@ -18,8 +18,8 @@ test("isOrionMessage: live type or outreach tag, nothing else", () => {
 
 test("mergeOpenMessages: one per message, newest first, durable full text wins", () => {
   const durable = [
-    { message_id: "a", session_id: "s1", preview_text: "short", full_text: "short but full text", created_at: "2026-10-28T08:00:00Z" },
-    { message_id: "b", session_id: "s1", preview_text: "older", created_at: "2026-10-27T08:00:00Z" },
+    { message_id: "a", session_id: "s1", tags: ["endogenous_outreach"], preview_text: "short", full_text: "short but full text", created_at: "2026-10-28T08:00:00Z" },
+    { message_id: "b", session_id: "s1", tags: ["endogenous_outreach"], preview_text: "older", created_at: "2026-10-27T08:00:00Z" },
   ];
   const live = [
     { message_id: "a", notification_type: "endogenous_outreach", body_text: "short", created_at: "2026-10-28T08:00:00Z" },
@@ -32,7 +32,7 @@ test("mergeOpenMessages: one per message, newest first, durable full text wins",
 });
 
 test("mergeOpenMessages: dismissed ids stay gone even if the server still lists them", () => {
-  const durable = [{ message_id: "a", preview_text: "x", created_at: "2026-10-28T08:00:00Z" }];
+  const durable = [{ message_id: "a", tags: ["endogenous_outreach"], preview_text: "x", created_at: "2026-10-28T08:00:00Z" }];
   assert.deepEqual(mergeOpenMessages(durable, [], new Set(["a"])), []);
 });
 
@@ -87,4 +87,47 @@ test("collapseSelfClearing: groups map the shown card to its whole family", () =
   assert.deepEqual(visible, [c, other]);
   assert.deepEqual(groups.get(c), [a, b, c]);
   assert.equal(groups.has(other), false);
+});
+
+test("closedByDurable: a notify-published message missing from the open list stays closed after reload", () => {
+  // Reload: Hub's cache still holds the in-app event, the durable open list does not.
+  const live = [
+    { message_id: "gone", event_kind: "orion.chat.message", notification_type: "endogenous_outreach" },
+    { message_id: "open", event_kind: "orion.chat.message", notification_type: "endogenous_outreach" },
+    // Fallback direct publish: never durable, so the durable list cannot close it.
+    { message_id: "fallback", event_kind: "hub.endogenous_outreach.v1", notification_type: "endogenous_outreach" },
+  ];
+  const durable = [{ message_id: "open", tags: ["endogenous_outreach"], preview_text: "x" }];
+  const closed = tray.closedByDurable(durable, live);
+  assert.deepEqual([...closed], ["gone"]);
+  const out = mergeOpenMessages(durable, live, closed);
+  assert.deepEqual(out.map((m) => m.message_id).sort(), ["fallback", "open"]);
+});
+
+test("mergeOpenMessages: durable rows without the outreach tag are ignored", () => {
+  // An older orion-notify drops the tag filter and returns every chat message.
+  const durable = [
+    { message_id: "a", tags: ["chat", "message"], preview_text: "workflow schedule recovered" },
+    { message_id: "b", tags: ["endogenous_outreach"], preview_text: "hi" },
+  ];
+  assert.deepEqual(mergeOpenMessages(durable, [], new Set()).map((m) => m.message_id), ["b"]);
+});
+
+test("parseTime: naive server timestamps are UTC, not browser-local", () => {
+  assert.equal(tray.parseTime("2026-10-28T10:00:00"), Date.parse("2026-10-28T10:00:00Z"));
+  assert.equal(tray.parseTime("2026-10-28T10:00:00+00:00"), Date.parse("2026-10-28T10:00:00Z"));
+  assert.equal(tray.parseTime(null), 0);
+});
+
+test("collapseSelfClearing: naive and aware stamps compare on one clock", () => {
+  // Raise has a naive created_at; the clear has an aware received_at 1 min later.
+  const raise = { event_kind: "k", created_at: "2026-10-28T10:00:00" };
+  const clear = { event_kind: "k_cleared", received_at: "2026-10-28T10:01:00+00:00" };
+  assert.deepEqual(collapseSelfClearing([raise, clear]).visible, []);
+});
+
+test("collapseSelfClearing: critical items are never folded", () => {
+  const crit = { event_kind: "k", severity: "critical", created_at: "2026-10-28T10:00:00Z" };
+  const clear = { event_kind: "k_cleared", created_at: "2026-10-28T10:01:00Z" };
+  assert.deepEqual(collapseSelfClearing([crit, clear]).visible, [crit]);
 });

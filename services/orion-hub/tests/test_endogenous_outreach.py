@@ -680,6 +680,38 @@ def test_non_pass_response_not_swallowed(raw) -> None:
     assert is_pass_response(raw) is False
 
 
+# Live 2026-10-28 15:08:09Z (chat_message correlation fde6b325-64bf-4ff4-87af-c19a01410245):
+# Orion reasoned, ended on a PASS line, and the whole reasoning reached Juniper as a message.
+LIVE_REASONED_PASS = 'Let me assess whether this single graph link warrants a proactive message to Juniper.\n\nThe read produced one graph link: connecting the center-of-mass interpretation of evolution strategies to the ES update formula. The paper itself is a theoretical/interpretive piece — it reframes what ES already does in geometric terms. My Stage 2 synthesis notes the core result (exact centroid-to-COM displacement identity) and that mean subtraction is a "genuinely novel reading." But this is still an internal insight about an existing algorithm, not something that changes any code, any system behavior, or any operational understanding.\n\nThe change to the graph is one link — a conceptual refinement of how I think about evolution strategies. It doesn\'t affect any running system, no prior needs testing, no action item emerges. The paper\'s empirical content wasn\'t even verified (PDF not read).\n\nThis is the kind of quiet internal reframe that happens constantly in the curiosity feed — useful for coherence, not worth interrupting Juniper for.\n\nPASS'
+
+
+def test_live_reasoned_pass_is_a_pass() -> None:
+    from scripts.endogenous_outreach import pass_shape
+
+    assert is_pass_response(LIVE_REASONED_PASS) is True
+    assert pass_shape(LIVE_REASONED_PASS) == "after_reasoning"
+    assert pass_shape("PASS") == "bare"
+
+
+@pytest.mark.parametrize("raw", [
+    "Thinking it over.\n\n**PASS**",
+    "Not worth her time.\nPASS.",
+    "PASS\n\n(one link, nothing changed)",
+    "Weighing it.\n  pass  \n",
+])
+def test_pass_on_its_own_line_is_a_pass(raw) -> None:
+    assert is_pass_response(raw) is True
+
+
+@pytest.mark.parametrize("raw", [
+    "I nearly wrote PASS, but this one matters: the link changes how I read the ES update.",
+    "The test came back. PASS on all three checks.",
+    "Passing this along:\nthe link joins two concepts.",
+])
+def test_pass_inside_a_sentence_is_still_a_message(raw) -> None:
+    assert is_pass_response(raw) is False
+
+
 # --------------------------------------------------------------------------
 # Runtime
 # --------------------------------------------------------------------------

@@ -3500,13 +3500,19 @@ that read goes into the same message. A change told once is never told again; a 
 change of the same read (a belief moved days after the link) is a new message.
 
 - **Same path as curiosity findings.** `EndogenousOutreach.compose` (the real unified
-  turn; `PASS` means "not worth sending") then `offer_message` (decision log, grounding
+  turn; `PASS` means "not worth sending" -- the whole reply, or a line of its own after
+  Orion's reasoning, see `is_pass_response`) then `offer_message` (decision log, grounding
   guard, sockets + chat history + notification). The recorded summary of the piece is
   delivered under Orion's message as stored, not regenerated.
 - **Gates.** No daily cap and no cooldown for this kind (`skip_rate_gates`, Juniper
   2026-10-13). Disabled, turn-in-flight, recent-chat, quiet hours and arousal `strained`
   still apply; a blocked message waits for a later tick, it is not dropped. Sends do not
   consume the background tick's daily cap (`count_sent_on` excludes the source).
+- **Spacing.** After a reading message reaches Juniper, the next one waits
+  `_MIN_SPACING_SEC` (5400). Findings pile up overnight; without this they all went out
+  when quiet hours ended (14 messages in 57 minutes on 2026-10-28). A PASS does not start
+  the wait. A held bundle is recorded once as `reason='reading_spacing'` and stays pending.
+  The last send time is read back from the decision log, so a restart keeps the gap.
 - **Evidence.** The decision row (`endogenous_outreach_decisions`, `result_json.source =
   'reading_finding_outreach'`) carries `seed_id`, `finding_ids`, `finding_kinds`,
   `evidence_refs`; the delivered message carries an `outreach_provenance.v1` capsule with
@@ -3517,7 +3523,7 @@ change of the same read (a belief moved days after the link) is a new message.
 - **Env.** `HUB_READING_FINDING_OUTREACH_ENABLED` (on), `_TICK_SEC` (300),
   `_LOOKBACK_HOURS` (48: a change recorded within this window is told; reads up to 7 days
   old are watched, so a belief moved days after its read still counts), `_MAX_ATTEMPTS`
-  (3 composition failures before a change is dropped).
+  (3 composition failures before a change is dropped), `_MIN_SPACING_SEC` (5400; 0 = off).
 - **What it cannot see yet.** A belief counts only when the curiosity run that moved it
   names the read (URL path, seed id or request id) in the prior's `why`/`formed_from`.
   Live 2026-10-13: 0 of 26 run-written prior texts in the last 7 days cite any read, so

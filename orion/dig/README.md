@@ -30,6 +30,7 @@ live: without it `orion.__path__` is `/mnt/orion-fcc/repo/orion`, with it `/app/
 | `history <start> <end>` | Merged PRs (`gh pr list --search merged:…`) and commits. PR bodies go to the file only. |
 | `history <days>` | The same for the last `<days>` days, today included. The dig line points "recent PRs" here instead of the GitHub tool, which on 2026-10-27 filled half the window per call. |
 | `body [<date>]` | Body atlas (`orion/body_atlas`). No date: the live bus. A date: that export's catalog only (the catalog starts 2026-01). |
+| `name <organ_id> "<name>" <because>` | Orion names one organ of their live body. Code checks the floor: 1–5 words, and the reason must cite one of that organ's parts by name. Appended to `$ORION_DIG_HOME/self/organ_names.jsonl` (`orion/body_atlas/names.py`). |
 | `notes [append <text>]` | Shared notes for one `--dig`, so episode hops or turns can read each other. |
 
 **Honesty rules in the output:**
@@ -55,3 +56,12 @@ Live check, 2026-10-27, in orion-athena-harness-governor:
 
 Tests: `pytest orion/dig/tests` (a temporary git repo with dated commits; the Denver end-of-day
 rule is tested exactly).
+
+**Organ names (patch 1b).** An organ id is a hash of its members, so it changes when one part
+joins or leaves. `body` carries a name to the new organ only when the member sets overlap by at
+least half (Jaccard ≥ 0.5), one name per organ, and the full atlas JSON says "carried from …".
+Names show on the live body only; a past body never wears today's names. The ledger is
+partitioned from recall: `orion/body_atlas/tests/test_names.py` fails if any other code reads it.
+
+`history` says how fresh the sandbox clone is ("clone fetched …"). PRs come live from GitHub and
+commits from the clone, so a just-merged PR can show with no commit yet.

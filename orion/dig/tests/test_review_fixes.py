@@ -121,3 +121,33 @@ def test_brief_points_recent_prs_at_the_capped_command():
     from orion.dig.brief import DIG_BRIEF_LINE
 
     assert "orion.dig history 2" in DIG_BRIEF_LINE and "not the GitHub tool" in DIG_BRIEF_LINE
+
+
+def test_name_writes_the_ledger_and_live_body_shows_it(world, capsys, monkeypatch):  # noqa: F811
+    from orion.body_atlas.build import build_atlas
+    from orion.body_atlas.tests.test_build import CATALOG, NOW
+
+    atlas = build_atlas(CATALOG, None, now=NOW)
+    monkeypatch.setattr(dig, "_live_atlas", lambda: atlas)
+    organ = next(o for o in atlas.organs if "part:orion-vision-host" in o.members)
+    code, out, _ = run(capsys, "name", organ.organ_id, "Eyes", "takes", "frames", "from", "orion-vision-edge")
+    assert code == 0 and '"Eyes"' in out and dig.names_path().exists()
+    code, out, _ = run(capsys, "body")
+    assert code == 0 and f'"Eyes" {organ.organ_id}' in out
+    code, _, err = run(capsys, "name", organ.organ_id, "Eyes", "no citation in this reason at all")
+    assert code == 1 and "cite" in err
+
+
+def test_a_past_body_never_wears_todays_names(world, capsys, monkeypatch):  # noqa: F811
+    from orion.body_atlas import names
+
+    monkeypatch.setattr(names, "apply_names", lambda *a: pytest.fail("names applied to a past body"))
+    run(capsys, "open", "2025-07-01")
+    assert run(capsys, "body", "2025-07-01")[0] == 0
+
+
+def test_history_says_how_fresh_the_clone_is(world, capsys, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(dig, "_gh_merged", lambda s, e: [])
+    assert "clone never fetched" in run(capsys, "history", "2025-07-01", "2025-07-03")[1]
+    (world / "repo" / ".git" / "FETCH_HEAD").write_text("")
+    assert "clone fetched 20" in run(capsys, "history", "2025-07-01", "2025-07-03")[1]

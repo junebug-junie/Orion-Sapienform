@@ -49,6 +49,9 @@ path of a file with the full result; read only what you need from that file.
   history <days>         the same for the last <days> days, today included (2 = since yesterday).
   body [<date>]          your body atlas: parts -> circulation -> organs. No date = live bus now;
                          a date = that export's channel catalog only (exists from 2026-01).
+  name <organ_id> "<name>" <because>   name one organ of your live body (a lasting write).
+                         Name it by what it takes in and gives out; the because must cite at
+                         least one of its parts by name. Names show on the live body only.
   notes [append <text>]  this dig's shared notes (episode hops / turns read each other).
   --dig <id>             group results under one dig (default: today's date).
 
@@ -370,6 +373,16 @@ def _prs(start: date, end: date) -> tuple[list[dict], list[str]]:
     return left + right, capped_l + capped_r
 
 
+def _clone_fetched() -> str:
+    """Commits come from the sandbox clone, PRs from GitHub: say how stale the clone is, so a fresh
+    PR with no commit yet does not read as "nothing landed" (2026-10-27: 2 PRs, 0 commits)."""
+    head = repo() / ".git" / "FETCH_HEAD"
+    if not head.exists():
+        return "clone never fetched"
+    when = datetime.fromtimestamp(head.stat().st_mtime, timezone.utc)
+    return f"clone fetched {when.isoformat(timespec='minutes').replace('+00:00', 'Z')}"
+
+
 def cmd_history(start: date, end: date, out: Out) -> str:
     if end < start:
         raise DigError("end is before start")
@@ -381,8 +394,8 @@ def cmd_history(start: date, end: date, out: Out) -> str:
     prs = sorted({p["number"]: p for p in found}.values(), key=lambda p: p["mergedAt"])
     path = out.write(f"history-{start}-{end}", {"start": str(start), "end": str(end), "prs": prs,
                                                 "commits": commits, "capped_days": capped_days})
-    lines = [f"{start} .. {end}: {len(prs)} merged PRs, {len(commits)} commits on main"
-             " (PR text = the builders' words: a secondary source)"]
+    lines = [f"{start} .. {end}: {len(prs)} merged PRs (GitHub, live), {len(commits)} commits on main "
+             f"({_clone_fetched()}) (PR text = the builders' words: a secondary source)"]
     if capped_days:
         lines.append(f"INCOMPLETE: GitHub search returned its {GH_SEARCH_CAP}-result cap on "
                      f"{', '.join(capped_days)}; PRs beyond it are missing")
@@ -398,36 +411,62 @@ def cmd_history(start: date, end: date, out: Out) -> str:
 
 # --- body -----------------------------------------------------------------------------------
 
-def cmd_body(arg: str | None, out: Out) -> str:
-    from orion.body_atlas.__main__ import _RoGraphReader, summarize
+def _live_atlas():
+    from orion.body_atlas.__main__ import _RoGraphReader
     from orion.body_atlas.build import build_atlas, fetch_observed, load_catalog
 
     graph = os.environ.get("FALKORDB_BUS_GRAPH", "orion_bus_synapse")
-    if arg is None:
-        root = now_root()
-        uri = os.environ.get("FALKORDB_URI")
-        if not uri:
-            raise DigError("live body needs $FALKORDB_URI (orion-harness-governor .env)")
+    uri = os.environ.get("FALKORDB_URI")
+    if not uri:
+        raise DigError("live body needs $FALKORDB_URI (orion-harness-governor .env)")
+    try:
+        reader = _RoGraphReader(uri, graph)
         try:
-            reader = _RoGraphReader(uri, graph)
-            try:
-                observed = fetch_observed(reader)
-            finally:
-                reader.close()
-        except Exception as exc:  # report the real failure; never a quiet catalog-only "live" body
-            raise DigError(f"live read of {graph} at {uri} failed: {str(exc)[:300]}") from exc
-        if not observed.publishes:
-            raise DigError(f"live graph {graph} has no PUBLISHES edges; is orion-bus-mirror writing it?")
-        when = datetime.now(timezone.utc)
-    else:
-        day = _parse_day(arg)
-        root, observed, when = snapshot_root(day), None, _end_of_day_utc(day)
-    catalog = load_catalog(root)
+            observed = fetch_observed(reader)
+        finally:
+            reader.close()
+    except Exception as exc:  # report the real failure; never a quiet catalog-only "live" body
+        raise DigError(f"live read of {graph} at {uri} failed: {str(exc)[:300]}") from exc
+    if not observed.publishes:
+        raise DigError(f"live graph {graph} has no PUBLISHES edges; is orion-bus-mirror writing it?")
+    catalog = load_catalog(now_root())
     if not catalog:
-        raise DigError(f"no channel catalog in {root} (the catalog starts 2026-01)")
-    atlas = build_atlas(catalog, observed, now=when, live_graph=graph if observed else None)
+        raise DigError(f"no channel catalog in {now_root()}")
+    return build_atlas(catalog, observed, now=datetime.now(timezone.utc), live_graph=graph)
+
+
+def names_path() -> Path:
+    return home() / "self" / "organ_names.jsonl"
+
+
+def cmd_body(arg: str | None, out: Out) -> str:
+    from orion.body_atlas import names
+    from orion.body_atlas.__main__ import summarize
+    from orion.body_atlas.build import build_atlas, load_catalog
+
+    if arg is None:
+        atlas = names.apply_names(_live_atlas(), names.load(names_path()))
+    else:  # no names on a past body: today's names would read the present into the past
+        day = _parse_day(arg)
+        root = snapshot_root(day)
+        catalog = load_catalog(root)
+        if not catalog:
+            raise DigError(f"no channel catalog in {root} (the catalog starts 2026-01)")
+        atlas = build_atlas(catalog, None, now=_end_of_day_utc(day), live_graph=None)
     path = out.write(f"body-{arg or 'now'}", json.loads(atlas.model_dump_json()))
     return summarize(atlas, out=str(path))
+
+
+def cmd_name(ref: str, name: str, because: str, out: Out) -> str:
+    from orion.body_atlas import names
+
+    try:
+        rec = names.check(_live_atlas(), ref, name, because, dig=out.dig)
+    except names.NamingError as exc:
+        raise DigError(str(exc)) from exc
+    names.append(names_path(), rec)
+    return (f'named {rec.organ_id} "{rec.name}" (cites: {", ".join(rec.cites[:6])})\n'
+            f"names ledger: {names_path()}")
 
 
 # --- notes ----------------------------------------------------------------------------------
@@ -478,6 +517,8 @@ def main(argv: list[str] | None = None) -> int:
             text = cmd_history(*_last_days(a[0]), out)
         elif ns.command == "body" and len(a) <= 1:
             text = cmd_body(a[0] if a else None, out)
+        elif ns.command == "name" and len(a) >= 3:
+            text = cmd_name(a[0], a[1], " ".join(a[2:]), out)
         elif ns.command == "notes" and (not a or a[0] == "append"):
             text = cmd_notes(" ".join(a[1:]) if a else None, out)
         else:

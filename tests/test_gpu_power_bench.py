@@ -94,7 +94,7 @@ def test_thread_join_works() -> None:
     s.run = lambda: None
     s.start()
     s.join(timeout=2)
-    w = bench.SlotWatch("http://x", 0)
+    w = bench.SlotWatch("http://x", (0,))
     w.run = lambda: None
     w.start()
     w.join(timeout=2)
@@ -251,4 +251,174 @@ def test_ctrl_c_while_waiting_for_the_server_is_clean(monkeypatch, tmp_path) -> 
 
     monkeypatch.setattr(bench, "wait_for_server", interrupted)
     assert bench.main(_argv(tmp_path)) == 130
+    assert calls == []
+
+
+def test_prompt_size_is_a_flag() -> None:
+    assert len(bench.fixed_prompt(480)) > 7 * len(bench.fixed_prompt(60))
+    assert bench.fixed_prompt(480) == bench.fixed_prompt(480)
+
+
+def test_busy_slots_ignores_every_slot_of_ours(monkeypatch) -> None:
+    monkeypatch.setattr(bench, "http_json", lambda *a, **k: [{"id": 0, "is_processing": True},
+                                                              {"id": 1, "is_processing": True}])
+    assert bench.busy_slots("http://x", ignore=(0, 1)) == []
+    assert bench.busy_slots("http://x", ignore=(0,)) == [1]
+
+
+def test_one_round_sends_every_slot_at_once(monkeypatch) -> None:
+    import threading
+
+    barrier = threading.Barrier(2, timeout=2)  # both requests must be in flight together
+
+    def req(base, prompt, n, slot):
+        barrier.wait()
+        return (0.0, 1.0, {"slot": slot})
+
+    monkeypatch.setattr(bench, "one_request", req)
+    assert [r[2]["slot"] for r in bench.one_round("http://x", "p", 8, (0, 1))] == [0, 1]
+
+
+def test_one_round_reraises_a_request_failure(monkeypatch) -> None:
+    def req(base, prompt, n, slot):
+        if slot == 1:
+            raise TimeoutError("stalled")
+        return (0.0, 1.0, {})
+
+    monkeypatch.setattr(bench, "one_request", req)
+    with pytest.raises(TimeoutError):
+        bench.one_round("http://x", "p", 8, (0, 1))
+
+
+def test_round_energy_spans_first_read_to_last_reply() -> None:
+    # Constant 200 W, 0..20 s. Request A: reads 1 s, writes 9 s, reply at 12. B: reads 2 s, writes 8 s, reply at 13.
+    power = [(t / 10, 200.0) for t in range(0, 201)]
+    a = (0.0, 12.0, {"prompt_ms": 1000.0, "predicted_ms": 9000.0, "prompt_n": 1000, "predicted_n": 270})
+    b = (0.0, 13.0, {"prompt_ms": 2000.0, "predicted_ms": 8000.0, "prompt_n": 1000, "predicted_n": 240})
+    s = bench.to_round_sample(150, 0, _sampler(power), [a, b])
+    # Round runs 2.0..13.0 s = 11 s at 200 W = 2200 J over 510 written tokens.
+    assert s.slots == 2
+    assert s.all_in_j_per_gen_tok == pytest.approx(2200 / 510, abs=1e-3)
+    assert s.total_gen_tok_s == pytest.approx(510 / 11, abs=0.01)
+    assert s.gen_tok_s == pytest.approx(30.0)  # median of 30 and 30: what one turn sees
+    assert s.gen_j_per_tok is None and s.prompt_j_per_tok is None  # phases overlap: no per-phase split
+
+
+def test_single_slot_round_keeps_per_phase_numbers() -> None:
+    power = [(t / 100, 100.0 if t < 200 else 200.0) for t in range(0, 501)]
+    timings = {"prompt_ms": 1000.0, "predicted_ms": 2000.0, "prompt_n": 2000, "predicted_n": 64}
+    s = bench.to_round_sample(150, 0, _sampler(power), [(0.0, 4.0, timings)])
+    assert s.gen_j_per_tok == pytest.approx(400.0 / 64, abs=0.02)
+    assert s.all_in_j_per_gen_tok == pytest.approx(500.0 / 64, abs=0.03)
+    assert s.total_gen_tok_s == pytest.approx(64 / 3, abs=0.01)
+
+
+def test_two_slot_run_ends_clean_and_restores(monkeypatch, tmp_path) -> None:
+    calls = _patch_main(monkeypatch)
+    monkeypatch.setattr(bench, "http_json", lambda *a, **k: [{"id": 0}, {"id": 1}])
+    monkeypatch.setattr(bench, "wait_until_quiet", lambda *a, **k: True)
+    monkeypatch.setattr(bench, "token_counter", lambda base: None)
+    monkeypatch.setattr(bench.SlotWatch, "run", lambda self: None)
+    monkeypatch.setattr(bench, "to_round_sample", lambda cap, rep, sampler, results: bench.Sample(
+        cap, rep, 10, 1.0, 10, 1.0, 10.0, 10.0, None, None, 100.0, 60, 1300, slots=len(results)))
+    sent: list[int] = []
+
+    def req(base, prompt, n, slot):
+        sent.append(slot)
+        return (0.0, 2.0, {"prompt_ms": 1000.0, "predicted_ms": 1000.0, "prompt_n": 10, "predicted_n": 10})
+
+    monkeypatch.setattr(bench, "one_request", req)
+    assert bench.main(_argv(tmp_path, caps="200") + ["--repeats", "1", "--slots", "0,1"]) == 0
+    assert calls == [200, 250.0]
+    assert sorted(sent[1:]) == [0, 1]  # after the one-slot warm-up, one request per slot
+    import json
+    summary = json.loads((tmp_path / "out" / "summary.json").read_text())
+    assert summary["meta"]["slots"] == [0, 1]
+
+
+@pytest.mark.parametrize("slots", ["0,0", "0,5"])
+def test_bad_slots_are_refused_before_touching_the_card(monkeypatch, tmp_path, slots) -> None:
+    calls = _patch_main(monkeypatch)
+    monkeypatch.setattr(bench, "http_json", lambda *a, **k: [{"id": 0}, {"id": 1}])
+    assert bench.main(_argv(tmp_path) + ["--slots", slots]) == 2
+    assert calls == []
+
+
+def test_queueing_between_our_own_slots_is_not_a_dirty_round(monkeypatch, tmp_path) -> None:
+    # Live gpu2: the server reads the two prompts one after another, so slot 1 waits ~25 s.
+    calls = _patch_main(monkeypatch)
+    monkeypatch.setattr(bench, "http_json", lambda *a, **k: [{"id": 0}, {"id": 1}])
+    monkeypatch.setattr(bench, "wait_until_quiet", lambda *a, **k: True)
+    monkeypatch.setattr(bench, "token_counter", lambda base: None)
+    monkeypatch.setattr(bench.SlotWatch, "run", lambda self: None)
+    monkeypatch.setattr(bench, "to_round_sample", lambda cap, rep, sampler, results: bench.Sample(
+        cap, rep, 10, 1.0, 10, 1.0, 10.0, 10.0, None, None, 100.0, 60, 1300, slots=len(results)))
+    tm = {"prompt_ms": 1000.0, "predicted_ms": 1000.0, "prompt_n": 10, "predicted_n": 10}
+    monkeypatch.setattr(bench, "one_request",
+                        lambda base, prompt, n, slot: (0.0, 2.0 if slot == 0 else 27.0, tm))
+    assert bench.main(_argv(tmp_path, caps="200") + ["--repeats", "1", "--max-retries", "0",
+                                                      "--slots", "0,1"]) == 0
+    import json
+    summary = json.loads((tmp_path / "out" / "summary.json").read_text())
+    assert summary["by_cap"][0]["n"] == 1 and summary["meta"]["dropped"] == []
+    assert calls == [200, 250.0]
+
+
+def test_foreign_work_on_a_slot_we_already_freed_is_dirty(monkeypatch) -> None:
+    # Both slots are ours. Slot 0's reply came back 5 s ago and it is busy again: someone else's request.
+    monkeypatch.setattr(bench, "http_json", lambda *a, **k: [{"id": 0, "is_processing": True},
+                                                              {"id": 1, "is_processing": True}])
+    w = bench.SlotWatch("http://x", (0, 1))
+    w._poll(0)
+    assert not w.dirty  # both still running our own requests
+    w.finished[0] = bench.time.monotonic() - 5
+    w._poll(0)
+    assert w.dirty
+
+
+def test_a_slot_busy_just_after_its_reply_is_not_dirty(monkeypatch) -> None:
+    monkeypatch.setattr(bench, "http_json", lambda *a, **k: [{"id": 0, "is_processing": True}])
+    w = bench.SlotWatch("http://x", (0, 1))
+    w.finished[0] = bench.time.monotonic()  # the server has not marked it idle yet
+    w._poll(0)
+    assert not w.dirty
+
+
+def test_one_round_records_when_each_reply_arrived(monkeypatch) -> None:
+    monkeypatch.setattr(bench, "one_request", lambda base, prompt, n, slot: (0.0, 10.0 + slot, {}))
+    finished: dict = {}
+    bench.one_round("http://x", "p", 8, (0, 1), finished)
+    assert finished == {0: 10.0, 1: 11.0}
+
+
+def test_one_round_fails_fast_without_waiting_for_the_other_slot(monkeypatch) -> None:
+    import threading
+
+    release = threading.Event()
+
+    def req(base, prompt, n, slot):
+        if slot == 0:
+            raise TimeoutError("stalled")
+        release.wait(10)  # the other request would run for minutes
+        return (0.0, 1.0, {})
+
+    monkeypatch.setattr(bench, "one_request", req)
+    t0 = bench.time.monotonic()
+    with pytest.raises(TimeoutError):
+        bench.one_round("http://x", "p", 8, (0, 1))
+    assert bench.time.monotonic() - t0 < 3
+    release.set()
+
+
+def test_zero_server_time_does_not_crash_the_round() -> None:
+    power = [(t / 10, 200.0) for t in range(0, 201)]
+    a = (0.0, 12.0, {"prompt_ms": 0.0, "predicted_ms": 9000.0, "prompt_n": 0, "predicted_n": 270})
+    b = (0.0, 13.0, {"prompt_ms": 2000.0, "predicted_ms": 8000.0, "prompt_n": 1000, "predicted_n": 240})
+    assert bench.to_round_sample(150, 0, _sampler(power), [a, b]).slots == 2
+
+
+@pytest.mark.parametrize("extra", [["--slots", ""], ["--slots", "0,"], ["--prompt-sentences", "0"]])
+def test_bad_flags_are_refused_cleanly(monkeypatch, tmp_path, extra) -> None:
+    calls = _patch_main(monkeypatch)
+    assert bench.main(_argv(tmp_path) + extra) == 2
     assert calls == []

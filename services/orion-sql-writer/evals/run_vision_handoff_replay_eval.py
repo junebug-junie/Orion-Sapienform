@@ -293,10 +293,12 @@ def summarize(graded, overlaps, unannounced, learned, tz: ZoneInfo, cfg: vh.Hand
                           and r["status"] == "unscorable"),
         "missed": len(doorbell_missed),
         "missed_min_coverage": min((r["coverage"] for r in doorbell_missed), default=None)}
-    arrived_total = sum(c.get(k, 0) for c in per.values() for k in vh.ARRIVED)
+    # The band switches per portal and kind, so "thin" is judged on the best-fed one.
+    arrived_most = max((len(gs) for by_kind in learned.values() for gs in by_kind.values()), default=0)
     reasons = []
-    if arrived_total < cfg.min_arrivals:
-        reasons.append(f"only {arrived_total} arrivals (< {cfg.min_arrivals}): no learned band, no uniformity test")
+    if arrived_most < cfg.min_arrivals:
+        reasons.append(f"at most {arrived_most} arrivals for any portal and kind (< {cfg.min_arrivals}): "
+                       "no learned band, no uniformity test")
     if len(met_p) < 20:
         reasons.append(f"only {len(met_p)} met p-values (need >= 20 for a uniformity read)")
     if out["doorbell_target"]["missed"] and (out["doorbell_target"]["missed_min_coverage"] or 0) < cfg.min_coverage:
@@ -308,7 +310,7 @@ def summarize(graded, overlaps, unannounced, learned, tz: ZoneInfo, cfg: vh.Hand
         reasons.append("learned gap spread above 50% of the median (acceptance check)")
     if any(r.startswith("FAIL") for r in reasons):
         out["verdict"] = "FAIL: " + "; ".join(reasons)
-    elif arrived_total < cfg.min_arrivals or len(met_p) < 20:
+    elif arrived_most < cfg.min_arrivals or len(met_p) < 20:
         out["verdict"] = "TOO THIN FOR A VERDICT: " + "; ".join(reasons)
     else:
         out["verdict"] = "PASS" + ("" if not reasons else " with notes: " + "; ".join(reasons))

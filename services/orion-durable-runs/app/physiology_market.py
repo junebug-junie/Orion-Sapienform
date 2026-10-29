@@ -218,6 +218,18 @@ class Market:
     def mark_opened(self, want_id: str, at: Optional[datetime] = None) -> int:
         return self.book.mark_opened(want_id, at or datetime.now(timezone.utc))
 
+    async def family_weights(self, now: Optional[datetime] = None) -> dict:
+        """Today's learned family weights with their evidence (the same ones bids use), for the
+        read-only report. Raises when the families config or the act history is unavailable."""
+        now = now or datetime.now(timezone.utc)
+        if self.families is None:
+            raise RuntimeError(f"families config unavailable ({self.families_error})")
+        hist = await self._history(now)
+        key = (hist.at, now.astimezone(timezone.utc).date())
+        if self._weights is None or self._weights[0] != key:
+            self._weights = (key, weights_now(self.families, hist.acts, hist.uses, now))
+        return dict(self._weights[1])
+
     def health(self, now: Optional[datetime] = None) -> dict:
         now = now or datetime.now(timezone.utc)
         return {"families": len(self.families.families) if self.families else 0,

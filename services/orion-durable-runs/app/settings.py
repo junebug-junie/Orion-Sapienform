@@ -261,6 +261,16 @@ class Settings(BaseSettings):
     # self-sense eval, journal compose) bid in-process at submit, mark their act opened at the first
     # grant and release at terminal. Decisions go to want_ledger; admission is unchanged.
     physiology_shadow_bids_enabled: bool = Field(True, alias="ORION_PHYSIOLOGY_SHADOW_BIDS_ENABLED")
+    # Body-economy report (2026-10-29): GET /physiology/report, read-only (PhysiologyReportV1). Readers:
+    # the Hub #body-economy page and skills.physiology.state.v1 (Orion's own body read). false -> 503.
+    physiology_report_enabled: bool = Field(True, alias="ORION_PHYSIOLOGY_REPORT_ENABLED")
+    # The same query (window, sections, family, outcome, limit) is served from memory this long.
+    physiology_report_cache_sec: float = Field(60.0, ge=0.0, alias="ORION_PHYSIOLOGY_REPORT_CACHE_SEC")
+    # Section reads run at most this many at once on the shared pool (max 8, also the checkpointer's).
+    physiology_report_concurrency: int = Field(3, ge=1, le=6, alias="ORION_PHYSIOLOGY_REPORT_CONCURRENCY")
+    # Card -> roles map for the vram section; baked into the image (same file the pool hold reads).
+    physiology_report_gpu_pool_path: str = Field(
+        "/app/config/gpu_pool.yaml", alias="ORION_PHYSIOLOGY_REPORT_GPU_POOL_PATH")
 
     @field_validator("physiology_energy_monthly_envelope_usd", mode="before")
     @classmethod

@@ -1035,3 +1035,52 @@ def test_mesh_refresh_service_envs_runs_allowlisted_script(monkeypatch, tmp_path
     tail = data.get("stdout_stderr_tail") or ""
     assert "orion-hub" in tail
     assert "env_refresh_ok" in tail
+
+
+# --- skills.physiology.state.v1 (body-economy report as text) --------------------------------
+
+_PHYSIO_FIXTURE = REPO_ROOT / "orion" / "physiology" / "evals" / "fixtures" / "physiology_report_live_2026-10-29_24h.json"
+
+
+def test_physiology_state_skill_is_discovered_read_only():
+    registry = actions_skill_registry.ActionsSkillRegistry(verbs_dir=verb_adapters.VERBS_DIR)
+    entry = next((e for e in registry.list() if e.skill_id == "skills.physiology.state.v1"), None)
+    assert entry is not None and entry.observational and entry.risk_class == "read_only"
+
+
+def test_physiology_state_skill_returns_plain_text(monkeypatch):
+    from orion.physiology import report_text as rt
+
+    report = json.loads(_PHYSIO_FIXTURE.read_text())
+    seen = {}
+
+    def fake_fetch(**kw):
+        seen.update(kw)
+        return report
+
+    monkeypatch.setattr(rt, "fetch_report", fake_fetch)
+    req = _plan_request("skills.physiology.state.v1",
+                        skill_args={"sections": ["money", "waste"], "window": "7d", "family": "hub.outreach"})
+    out, effects = asyncio.run(verb_adapters.PhysiologyStateVerb().execute(VerbContext(meta={}), req))
+    assert out.ok and effects == []
+    assert out.final_text.startswith("My body economy") and "Money:" in out.final_text and "Waste:" in out.final_text
+    assert "Limits now" not in out.final_text   # only the asked sections
+    assert seen["window"] == "7d" and seen["sections"] == ("money", "waste") and seen["family"] == "hub.outreach"
+    result = out.metadata["skill_result"]
+    assert result["available"] is True and result["text"] == out.final_text
+
+
+def test_physiology_state_skill_unreachable_says_so(monkeypatch):
+    from orion.physiology import report_text as rt
+
+    def boom(**kw):
+        raise rt.ReportUnavailable("the body report at http://x is unreachable (refused)")
+
+    monkeypatch.setattr(rt, "fetch_report", boom)
+    out, _ = asyncio.run(verb_adapters.PhysiologyStateVerb().execute(
+        VerbContext(meta={}), _plan_request("skills.physiology.state.v1")))
+    assert not out.ok and out.status == "unavailable"
+    assert out.final_text == "I could not read my body report: the body report at http://x is unreachable (refused)"
+    bad, _ = asyncio.run(verb_adapters.PhysiologyStateVerb().execute(
+        VerbContext(meta={}), _plan_request("skills.physiology.state.v1", skill_args={"sections": "mood"})))
+    assert not bad.ok and "unknown section" in bad.final_text

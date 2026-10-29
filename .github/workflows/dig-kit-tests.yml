@@ -8,6 +8,12 @@ on:
       - "orion/body_atlas/**"
       - "orion/harness/prefix.py"
       - "orion/harness/tests/test_stance_scope_hierarchy.py"
+      - "orion/physiology/report_text.py"
+      - "orion/physiology/evals/**"
+      - "orion/schemas/physiology_report.py"
+      - "orion/cognition/verbs/skills.physiology.state.v1.yaml"
+      - "services/orion-cortex-exec/app/verb_adapters.py"
+      - "services/orion-cortex-exec/tests/test_skill_verbs.py"
       - ".github/workflows/dig-kit-tests.yml"
   push:
     branches: [main]
@@ -17,6 +23,12 @@ on:
       - "orion/body_atlas/**"
       - "orion/harness/prefix.py"
       - "orion/harness/tests/test_stance_scope_hierarchy.py"
+      - "orion/physiology/report_text.py"
+      - "orion/physiology/evals/**"
+      - "orion/schemas/physiology_report.py"
+      - "orion/cognition/verbs/skills.physiology.state.v1.yaml"
+      - "services/orion-cortex-exec/app/verb_adapters.py"
+      - "services/orion-cortex-exec/tests/test_skill_verbs.py"
       - ".github/workflows/dig-kit-tests.yml"
 
 jobs:
@@ -41,3 +53,9 @@ jobs:
         run: |
           PYTHONPATH=. python -m pytest -q -p no:cacheprovider \
             orion/harness/tests/test_stance_scope_hierarchy.py orion/harness/tests/test_harness_prefix.py
+      - name: Body-economy skill (skills.physiology.state.v1) -- text, cortex-exec adapter, eval on fixture data
+        run: |
+          python -m pip install -r services/orion-cortex-exec/requirements.txt
+          PYTHONPATH=. python -m pytest -q -p no:cacheprovider orion/physiology/tests/test_report_text.py
+          (cd services/orion-cortex-exec && PYTHONPATH=../.. python -m pytest -q -p no:cacheprovider tests/test_skill_verbs.py -k physiology)
+          PYTHONPATH=. python orion/physiology/evals/physiology_state_skill_eval.py

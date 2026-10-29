@@ -1,0 +1,66 @@
+name: skills.physiology.state.v1
+label: Skills — Physiology State (body economy report)
+description: >
+  Read-only look at Orion's own body economy: which limits bind now (cabinet heat and Orion's
+  share of it, the monthly energy money, GPU lanes, messages to Juniper, Claude limits), wants
+  funded vs deferred, heavy-work rhythm, money, unit costs, failed GPU lease time, queue waits,
+  single bid decisions, Claude spend, GPU memory headroom, value per cost, and services that are
+  down. Calls orion-durable-runs GET /physiology/report and returns plain first-person text.
+  Every empty section says why. Changes nothing. In chat and curiosity harness turns Orion runs
+  the same read as `python -P -m orion.dig body-economy` in Bash.
+category: ExecutiveControl
+priority: low
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 20000
+max_recursion_depth: 0
+services: []
+input_schema:
+  type: object
+  properties:
+    sections:
+      description: >
+        Which sections to read. Omit (or "overview") for limits, money, wants, waste and
+        services; "all" for every section; or any of limits, wants, rhythm, money, unit_costs,
+        waste, queue_wait, decisions, claude, vram, value_per_cost, services.
+      oneOf:
+        - type: string
+        - type: array
+          items: {type: string}
+    window:
+      type: string
+      enum: ["24h", "7d", "30d"]
+      description: Time window. Default 24h.
+    family:
+      type: string
+      description: Optional want family (for example hub.outreach) for wants, queue_wait and decisions.
+  additionalProperties: false
+output_schema:
+  type: object
+  properties:
+    available: {type: boolean}
+    window: {type: string}
+    sections:
+      type: array
+      items: {type: string}
+    generated_at: {type: [string, "null"]}
+    missing:
+      type: array
+      items: {type: object}
+    text: {type: string}
+    reason: {type: string}
+plan:
+  - name: skills.physiology.state.v1
+    description: Execute the direct Cortex-side body-economy report skill.
+    order: 0
+    services: []
+
+# Body economy: a read of Orion's own state, no GPU, never bids. Same block as the other body
+# reads (skills.biometrics.snapshot.v1). Checked by scripts/check_verb_physiology.py.
+physiology:
+  tier: 0
+  family: autonomic
+  lanes: []
+  deferrable_window_s: 0

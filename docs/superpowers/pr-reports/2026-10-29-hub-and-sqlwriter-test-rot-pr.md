@@ -79,6 +79,8 @@ Classes: (a) real product bug, (b) stale test, (c) host or environment leak, (d)
 | `test_chat_route_tagging::test_classic_planrunner_path_tags_chat_route` | d | Pins `scripts.main.bus` to `None`, which the test assumed. |
 | `evals/zelda_experience_replay.py` (via `retro/test_experience.py`) | d | Sets the Hub's `app.*` modules aside while it imports orion-prediction's `app` package, then puts them back. |
 | `test_hub_ui_polish._render_hub_index`, `test_memory_graph_routes` | d | Module removals now restore or only target a foreign `scripts` package. |
+| `test_observability_api::test_api_signals_trace_invalid_id_returns_400` (first CI run) | c | `with TestClient(app)` ran startup, which sets the patched cache to `None` when the bus is unreachable. Passed only on a host with a live bus. Now no startup. |
+| `test_turn_timer_js`, `test_draft_first_display` node cases (first CI run) | c | Newer Node prints the "spec" report by default, so the `# pass N` lines were missing. Now `--test-reporter=tap`. |
 
 ## Files changed
 
@@ -179,7 +181,7 @@ docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "select colu
 
 - Severity: medium (security). Concern: commit 7495edab7 (2026-05-01, message "various") removed the operator-token check from three Hub routes: `POST /api/substrate/recall-canary/query`, `.../runs/{id}/judgment`, and `.../runs/{id}/create-review-artifact`. Every sibling mutation route still checks the token. The judgment route can emit pressure. Anyone who can reach the Hub can call these three today. I could not confirm this was intended, so I did not put the check back. Mitigation: `test_recall_canary_routes_refuse_a_request_without_operator_token` is `xfail(strict=True)`. If the check comes back, it passes, strict mode fails CI, and someone must remove the mark. Juniper: restore the guard, or confirm it is intended and delete that test.
 - Severity: low. Concern: the memory-graph suggest "retry on quick after a timeout" path in `api_routes._should_retry_memory_graph_quick` can run through a real request only for an unknown route name, because every request already defaults to quick. It is close to dead code. Mitigation: a direct test keeps it honest; follow-up to remove it or give it a real target.
-- Severity: low. Concern: the new Hub CI job runs on every PR that touches `orion/**` and takes about 4-7 minutes. Mitigation: that cost is the price of not letting the folder rot again.
+- Severity: low. Concern: the new Hub CI job runs on every PR that touches `orion/**` and takes about 13-14 minutes on a GitHub runner (6-7 locally). Mitigation: that cost is the price of not letting the folder rot again.
 - Severity: low. Concern: `tests/test_single_consumer_channels_gate.py` (repo root) fails on main for 8 request channels. It is outside this task and outside CI. Not changed.
 
 ## PR link

@@ -33,6 +33,7 @@ from app.backtest import (
     QUANTILES,
     Selection,
     exceedance_probability,
+    min_backtest_steps,
     paired_win_p,
     q_key,
     quantile_paths,
@@ -69,6 +70,15 @@ class InputStale(RuntimeError):
 
 class DegenerateForecast(ValueError):
     pass
+
+
+class NotReady(RuntimeError):
+    """Too little history for a backtest (a young series): no selection, no forecast, no alert --
+    /health shows ``not_ready`` with the time it should become ready."""
+
+    def __init__(self, detail: dict):
+        super().__init__(detail["reason"])
+        self.detail = detail
 
 
 def utcnow() -> datetime:
@@ -117,6 +127,7 @@ class SeriesState:
     last_input_ts: datetime | None = None
     events: dict = field(default_factory=dict)   # with_events summary, for /health
     shadow_failed: dict = field(default_factory=dict)   # contender -> last error (last issue)
+    not_ready: dict | None = None   # NotReady.detail while the series is too young to select
 
 
 class Engine:
@@ -272,9 +283,10 @@ class Engine:
         # Residuals are measured against real readings only, as live scoring is.
         actuals = mask_windows(to_grain(pts, spec.grain_min, spec.agg, 0, start=start, end=end), spec.exclude)
         train = training_slice(series, spec)
+        step = max(1, self.backtest_step_min // spec.grain_min)
+        self.check_ready(spec, series, step)
         usable, refused = split_seasonalities(spec, len(train))
         names = list(build_models(spec, usable))
-        step = max(1, self.backtest_step_min // spec.grain_min)
         covariates = self.load_covariates(spec, series.index)
         results = {name: run_backtest(series, spec, name, lambda u, n=name: build_models(spec, u)[n],
                                       self.backtest_windows, step, actuals=actuals, covariates=covariates)
@@ -321,9 +333,28 @@ class Engine:
         st.next_select_at = now + self.select_interval
         st.last_select_seconds = time.monotonic() - t0
         st.last_select_error = None
+        st.not_ready = None
         logger.info("prediction_selected series=%s assignment=%s served_baseline=%s refused=%s seconds=%.1f",
                     spec.series_id, sel.assignment, sel.served_baseline, refused, st.last_select_seconds)
         return sel
+
+    def check_ready(self, spec: SeriesSpec, series: pd.Series, step: int) -> None:
+        """Refuse a selection before it runs the zoo on too little history (raises NotReady). Counted
+        from the first real reading after train_from, so a fresh sensor reads its true age."""
+        need = min_backtest_steps(spec, step)
+        s = mask_windows(series, spec.exclude)
+        if spec.train_from is not None:
+            s = s[s.index >= pd.Timestamp(spec.train_from)]
+        first = s.first_valid_index()
+        have = int((s.index >= first).sum()) if first is not None else 0
+        if have >= need:
+            return
+        ready_at = (first + pd.Timedelta(minutes=need * spec.grain_min)).to_pydatetime() if first is not None else None
+        raise NotReady({"reason": f"{have} of {need} grain buckets of history (backtest needs "
+                                  f"{need * spec.grain_min / 1440:.1f} days)",
+                        "have_buckets": have, "need_buckets": need,
+                        "first_reading": first.isoformat() if first is not None else None,
+                        "ready_at": ready_at.isoformat() if ready_at else None})
 
     def selection_due(self, spec: SeriesSpec, now: datetime) -> bool:
         """``spec`` is the effective spec: a change event that moved the training start (a break
@@ -701,6 +732,16 @@ class Engine:
         if self.selection_due(spec, now):
             try:
                 await sync(self.select, spec, now)
+            except NotReady as exc:
+                # A lifecycle state, not a fault: no selection_failed alert, no traceback. Re-check at
+                # the expected ready time (or the normal interval, whichever is sooner).
+                if st.not_ready is None or st.not_ready.get("ready_at") != exc.detail.get("ready_at"):
+                    logger.info("prediction_not_ready series=%s %s", spec.series_id, exc.detail)
+                st.not_ready, st.last_select_error = exc.detail, None
+                ready_at = _parse_ts(exc.detail.get("ready_at"))
+                st.next_select_at = now + self.select_interval
+                if ready_at is not None and now < ready_at < st.next_select_at:
+                    st.next_select_at = ready_at
             except Exception as exc:  # noqa: BLE001 -- keep serving the previous selection, if any
                 st.last_select_error = f"{type(exc).__name__}: {exc}"[:300]
                 st.next_select_at = now + self.select_interval   # back off a full interval

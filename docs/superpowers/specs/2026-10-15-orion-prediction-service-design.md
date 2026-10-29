@@ -46,6 +46,42 @@ p < 0.05, stay p < 0.10); live winners rank first. Per-horizon look-back = max(7
 worse_than_baseline alert now judges the serving model's own live record instead of 7 days of champion
 rows (which kept alerting on a pick already dropped).
 
+## Office (room) temperature target (2026-10-29, follow-up PR)
+
+Missing question 1 below ("room vs cabinet") now has hardware: a pan-1 SHT40 in the office since
+2026-10-28 22:16 UTC. `office.temp_c` is a second target (source kind `office_env`, key allowlisted to
+`office_temp_c` / `office_humidity_pct`; rows with `sensor_online = false` or `stale = true` dropped).
+No thresholds, no covariates, not yet a cabinet covariate (~3 h of history: `direct_arx` would lose
+every older cabinet row) -- it joins once ~14 days exist (~2026-11-12). The placement hour is
+excluded (sensor moved, then cooled 28.2 -> 25.3 C while RH rose 21.7 -> 24.5 %: vapour pressure
+flat, so the sensor was warm, not the room).
+
+Young series: selection now refuses before running the zoo when the history is shorter than
+2 days + the longest horizon + 10 origins (`min_backtest_steps`; ~4.1 days here) and reports
+`not_ready` + `ready_at` in `/health` -- not `selection_failed`. The cabinet target is unaffected
+(tested side by side). Change events with scope `*` that predate its `train_from` are no-ops.
+
+Metric quality gate:
+
+1. Provenance: `services/orion-office-env/app/sample.py:build_sample` via `app/main.py:make_sample` (pan-1, serial frames from the
+   Nano ESP32 SHT40; stale frame -> no measurements, `sensor.online = not stale`), published on
+   `orion:office:env:sample` (`app/main.py:publish_sample`), flattened by orion-sql-writer
+   `app/worker.py:_normalize_office_env_sample_payload` into `office_env_sample`.
+2. Independence from `athena.cabinet_temp_c`: different sensor, different board, different host,
+   different table. Not causally independent, by design: the room is the cabinet's intake air.
+   First 80 min after placement: cabinet - room = 1.7..2.2 C, corr 0.94 over 8 ten-minute buckets
+   (too few to mean more than "they move together").
+3. Theory anchor: cabinet heat balance, dT_cab/dt ∝ P_in - UA (T_cab - T_room) - P_AC. T_room is the
+   boundary term the cabinet model has been missing (only outdoor weather stood in for it).
+4. Live sanity (2026-10-29 01:25 UTC): 299 usable raw rows (1 offline/stale dropped), 24.8..28.5 C raw;
+   after the placement exclude, 15 five-minute buckets, 24.9..26.0 C, SD 0.39 C, 15 distinct values,
+   no gaps, median |5-min step| 0.10 C. Not flat, not saturated; a calm room is a real rest state here
+   (the value is a temperature, not a deviation score).
+5. Existing mechanism: Hub's climate overlay (`services/orion-hub/scripts/cabinet_climate_routes.py`)
+   only charts it. Nothing forecasts it.
+6. Reversibility: one registry entry + one read-only source kind + one additive index. Removing the
+   entry stops it; its stored forecasts are keyed by series_id.
+
 ## Weather + fleet inputs (2026-10-21, follow-up PR)
 
 New covariates for the cabinet target, and the shared weather seam. Metric quality gate:

@@ -18,9 +18,13 @@ from orion.autonomy.thermal_gate import DEFAULT_CRITICAL_C, DEFAULT_HOT_C
 _DUR = re.compile(r"^\s*(\d+)\s*(min|h|d)\s*$")
 _ID = re.compile(r"^[a-z0-9_]+(\.[a-z0-9_]+)+$")
 _KEY = re.compile(r"^[a-z0-9_]{1,40}$")
+_NODE = re.compile(r"^[a-z0-9_-]{1,40}$")   # host names like pan-1 (always a bind parameter in SQL)
 _UNIT_MIN = {"min": 1, "h": 60, "d": 1440}
 TRANSFORMS = ("none", "log")
 AGGS = ("mean", "max", "min", "last")
+# office_env_sample reading columns a series may read. The key becomes a column name in SQL
+# (app/store.py), so it is an allowlist, never a pattern.
+OFFICE_ENV_KEYS = ("office_temp_c", "office_humidity_pct")
 
 
 class SeriesConfigError(ValueError):
@@ -81,6 +85,7 @@ class Threshold:
 @dataclass(frozen=True)
 class Source:
     kind: str  # biometrics | cooling | cluster (orion_biometrics_cluster per-node) | weather (prediction_weather_hourly)
+    #            | office_env (office_env_sample: the pan-1 SHT40 room sensor)
     node: str | None = None
     key: str | None = None
     role: str | None = None
@@ -163,6 +168,11 @@ def _source(raw: dict, sid: str) -> Source:
         if raw.get("key") != "temp_f":
             raise SeriesConfigError(f"{sid}: weather source supports key temp_f")
         return Source(kind="weather", key="temp_f")
+    if kind == "office_env":
+        node, key = raw.get("node"), raw.get("key")
+        if not node or not _NODE.match(str(node)) or key not in OFFICE_ENV_KEYS:
+            raise SeriesConfigError(f"{sid}: office_env source needs a node and key in {OFFICE_ENV_KEYS}")
+        return Source(kind="office_env", node=str(node), key=str(key))
     raise SeriesConfigError(f"{sid}: unknown source kind {kind!r}")
 
 

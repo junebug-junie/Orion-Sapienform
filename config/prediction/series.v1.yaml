@@ -39,6 +39,32 @@ series:
     # is on the 5-min MEAN, so it understates a single raw reading crossing 34 C.
     consumers: [hardware-watch, prediction-scoreboard, causal-effects]
 
+  # The office (room) air, from the pan-1 SHT40 installed 2026-10-28 (orion-office-env -> office_env_sample).
+  # The cabinet draws its intake air from this room, so this is the cabinet's heat-balance boundary.
+  # Young: no selection until the backtest has enough history (~4.1 days at 40 windows x 3 h; /health
+  # shows not_ready + ready_at until then). Weekly is refused until 14 days exist.
+  # Joins athena.cabinet_temp_c's covariates once ~14 days of data exist (~2026-11-12): before that
+  # direct_arx would lose every cabinet row older than the sensor.
+  - series_id: office.temp_c
+    role: target
+    source: {kind: office_env, node: pan-1, key: office_temp_c}
+    unit: C
+    grain: 5min
+    agg: mean
+    max_fill: 15min
+    transform: none
+    train_from: "2026-10-28T22:16:00Z"
+    train_window: 21d
+    seasonalities:
+      - {name: daily, period: 1d, fourier_order: 6}
+      - {name: weekly, period: 7d, fourier_order: 3}
+    # Placement: 22:16-22:35 at a first spot (RH ~30%), no data 22:35-23:10, then 28.2 C settling to
+    # ~25.3 C by 00:10 while RH rose 21.7 -> 24.5% (vapour pressure ~flat): the sensor cooling, not the room.
+    exclude:
+      - {start: "2026-10-28T22:16:00Z", end: "2026-10-29T00:10:00Z"}
+    horizons: [5min, 15min, 1h, 6h, 24h]
+    consumers: [prediction-scoreboard]
+
   - series_id: athena.chassis_watts
     role: covariate
     source: {kind: biometrics, node: athena, key: chassis_watts}

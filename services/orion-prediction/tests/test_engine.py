@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import itertools
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -581,3 +581,88 @@ def test_alert_formats_a_worse_verdict_without_a_ratio():
                                        {5: "naive", 60: "naive", 360: "naive"}, False, {}))
     v = {"verdict": "worse", "rel_mae": None, "n_independent": 30, "p_worse": 0.001}
     assert "worse than the baseline" in eng.alerts_for(spec, end, {"shadow": {"window_average_1h@5": v}}, end)["worse_than_baseline"]
+
+
+# --- a young target next to a mature one (office.temp_c, sensor installed 2026-10-28) ---------------
+def _young_setup(young_hours: float):
+    """Mature test.temp (12 days to `end`) beside test.young, whose sensor started `young_hours` before
+    `end`. Both run on past `end` so a later clock still has fresh input."""
+    doc = spec_doc(train_window="10d")
+    s = daily_series(17, amp=1.0, noise=0.05, seed=3)
+    end = s.index[0].to_pydatetime() + timedelta(days=12)
+    y0 = end - timedelta(hours=young_hours)
+    young_doc = dict(doc["series"][0], series_id="test.young", thresholds=[], train_from=y0.isoformat(),
+                     seasonalities=[{"name": "daily", "period": "1d"}, {"name": "weekly", "period": "7d"}])
+    reg = parse_registry({"version": 1, "series": [doc["series"][0], young_doc]})
+    store = FakeStore(points_of(s))
+    young = daily_series(6, amp=0.5, noise=0.05, seed=11, start=y0) - 2.0
+    store.cov_raw = {"test.young": points_of(young)}
+    return reg, store, end, y0
+
+
+def test_a_young_target_is_not_ready_and_the_mature_one_is_unaffected():
+    reg, store, end, y0 = _young_setup(young_hours=3)
+    now = end + timedelta(seconds=90)
+    eng = _engine(reg, store, Clock(now), [])
+    asyncio.run(eng.tick(_sync))
+    young, mature = eng.state["test.young"], eng.state["test.temp"]
+    # The young series: no selection, no forecast, no run rows, no failure alert -- just not_ready.
+    assert young.served is None and young.last_select_error is None and young.last_tick_error is None
+    assert not {"selection_failed", "tick_failed"} & set(young.alerts)
+    assert {r["series_id"] for r in store.runs} == {"test.temp"}
+    assert "test.young" not in {f["series_id"] for f in store.forecasts}
+    nr = young.not_ready
+    need = 2 * 288 + 72 + 9 * 36      # 2 days training + 6 h horizon + 10 origins 3 h apart
+    assert nr["need_buckets"] == need and 0 < nr["have_buckets"] < need
+    ready_at = datetime.fromisoformat(nr["ready_at"])
+    assert ready_at == pd.Timestamp(y0).floor("5min") + timedelta(minutes=5 * need)
+    # Ready in ~78 h: re-checked at the normal interval, not every tick.
+    assert young.next_select_at == now + timedelta(hours=6)
+    runs = len(store.runs)
+    eng.clock.t = now + timedelta(minutes=30)
+    asyncio.run(eng.tick(_sync))
+    assert len([r for r in store.runs if r["series_id"] == "test.young"]) == 0 and len(store.runs) == runs
+    # The mature target served exactly what it serves alone.
+    solo = _engine(parse_registry(spec_doc(train_window="10d")), FakeStore(store.raw), Clock(now), [])
+    asyncio.run(solo.tick(_sync))
+    assert mature.served is not None and mature.served.selection.assignment == solo.state["test.temp"].served.selection.assignment
+    np.testing.assert_allclose(mature.served.residuals["champion"], solo.state["test.temp"].served.residuals["champion"])
+    assert {f["horizon_min"] for f in store.forecasts if f["series_id"] == "test.temp"} == {5, 60, 360}
+
+
+def test_a_young_target_rechecks_at_its_ready_time_then_selects_and_forecasts():
+    need_h = (2 * 288 + 72 + 9 * 36) * 5 / 60          # 81 h
+    reg, store, end, y0 = _young_setup(young_hours=need_h - 1)
+    now = end + timedelta(seconds=90)
+    eng = _engine(reg, store, Clock(now), [])
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.young"]
+    ready_at = datetime.fromisoformat(st.not_ready["ready_at"])
+    assert now < ready_at < now + timedelta(hours=6) and st.next_select_at == ready_at
+    eng.clock.t = ready_at + timedelta(seconds=90)
+    asyncio.run(eng.tick(_sync))
+    assert st.served is not None and st.not_ready is None and st.last_select_error is None
+    # ~3.4 days of history: daily usable, weekly refused (needs 2 cycles = 14 days).
+    assert st.served.refused == ("weekly",) and [s.name for s in st.served.usable] == ["daily"]
+    assert {f["horizon_min"] for f in store.forecasts if f["series_id"] == "test.young"} == {5, 60, 360}
+
+
+def test_star_change_events_before_a_young_series_starts_change_nothing_for_it():
+    from app.frame import training_slice
+    reg, store, end, y0 = _young_setup(young_hours=3)
+    now = end + timedelta(seconds=90)
+    store.events = [
+        {"scope": "*", "effect": "break", "started_at": y0 - timedelta(days=4), "ended_at": None},
+        {"scope": "*", "effect": "exclude", "started_at": y0 - timedelta(days=3),
+         "ended_at": y0 - timedelta(days=3) + timedelta(hours=2)},
+    ]
+    store.change_events = lambda: store.events
+    eng = _engine(reg, store, Clock(now), [])
+    spec = reg.get("test.young")
+    eff = eng.effective(spec, now)
+    assert eff.train_from == spec.train_from and eff.breaks == ()
+    plain = eng.load_series(spec, now)
+    pd.testing.assert_series_equal(training_slice(eng.load_series(eff, now), eff), training_slice(plain, spec))
+    # The mature series does take the same break (pending: too young to adopt at 4 days).
+    mature = eng.effective(reg.get("test.temp"), now)
+    assert mature.breaks == (y0 - timedelta(days=4),)

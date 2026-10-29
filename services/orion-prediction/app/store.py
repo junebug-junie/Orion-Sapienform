@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
-from app.series import SeriesSpec
+from app.series import OFFICE_ENV_KEYS, SeriesSpec
 
 # Event tables the event_pair estimator may read (read-only), keyed by selector ``source``.
 # Each entry: (table, timestamp column, event-type column, stream column). Add a table here and to
@@ -20,6 +20,8 @@ EVENT_SOURCES = {
     "vision_events": ("vision_events", "created_at", "event_type", "stream_id"),
 }
 EVENT_READ_TIMEOUT_MS = 10_000
+# office_env_sample is written by orion-sql-writer: read it read-only, bounded like the event tables.
+OFFICE_ENV_READ_TIMEOUT_MS = 10_000
 
 _KEY = re.compile(r"^[a-z0-9_]{1,40}$")
 TABLES = {
@@ -104,9 +106,29 @@ class PostgresStore:
             if until is not None:
                 sql += " AND hour_ts < %s"
                 args.append(until)
+        elif src.kind == "office_env":
+            # The column name comes from an allowlist (app/series.py), never from the YAML as typed.
+            if src.key not in OFFICE_ENV_KEYS:
+                raise ValueError(f"bad office_env key {src.key!r}")
+            # A stale or offline sample is not a reading (the producer already NULLs its values;
+            # the flags are checked too so a future producer change cannot leak one in).
+            sql = (f"SELECT ts, {src.key} AS v FROM office_env_sample WHERE node = %s AND ts >= %s "
+                   f"AND sensor_online AND NOT stale AND {src.key} IS NOT NULL")
+            args = [src.node, since]
+            if until is not None:
+                sql += " AND ts < %s"
+                args.append(until)
+            return [(r["ts"], r["v"]) for r in self._read_only(sql + " ORDER BY 1", args, OFFICE_ENV_READ_TIMEOUT_MS)]
         else:
             raise ValueError(f"unknown source kind {src.kind}")
         return [(r["ts"], r["v"]) for r in self._all(sql + " ORDER BY 1", args)]
+
+    def _read_only(self, sql: str, args: Sequence, timeout_ms: int) -> list[dict]:
+        """One read-only transaction with a statement timeout, for a table another service writes."""
+        with self.pool.connection() as conn, conn.transaction():
+            conn.execute("SET TRANSACTION READ ONLY")
+            conn.execute(f"SET LOCAL statement_timeout = {int(timeout_ms)}")
+            return list(conn.execute(sql, args).fetchall())
 
     def first_reading(self, spec: SeriesSpec) -> datetime | None:
         """Earliest non-null reading of a cluster covariate (zero_before_first). Cached once found -- it

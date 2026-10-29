@@ -52,6 +52,10 @@ def test_duration(value, expected):
     ({"transform": "logit"}, "transform"),
     ({"source": {"kind": "weather", "key": "humidity"}}, "temp_f"),
     ({"source": {"kind": "cluster", "node": "Circe!", "key": "w"}}, "cluster source"),
+    ({"source": {"kind": "office_env", "node": "pan-1", "key": "sample_age_sec"}}, "office_env source"),
+    ({"source": {"kind": "office_env", "node": "pan-1", "key": "office_temp_c; DROP TABLE x"}}, "office_env source"),
+    ({"source": {"kind": "office_env", "node": "pan 1;", "key": "office_temp_c"}}, "office_env source"),
+    ({"source": {"kind": "office_env", "key": "office_temp_c"}}, "office_env source"),
     ({"thresholds": [{"name": "hot", "value": 31.0, "window": "12h"}]}, "longer than the longest horizon"),
 ])
 def test_bad_registry_refused(over, msg):
@@ -87,3 +91,22 @@ def test_a_literal_cabinet_line_is_refused():
 def test_value_from_is_exactly_one_known_owner(bad):
     with pytest.raises(SeriesConfigError):
         parse_registry(spec_doc(thresholds=[bad]))
+
+
+def test_repo_registry_declares_the_young_office_target_without_wiring_it_into_the_cabinet():
+    reg = load_registry(REGISTRY_PATH)
+    o = reg.get("office.temp_c")
+    assert o.role == "target" and o.source.kind == "office_env"
+    assert (o.source.node, o.source.key) == ("pan-1", "office_temp_c")
+    assert o.grain_min == 5 and o.agg == "mean" and o.max_fill_min == 15 and o.train_window_min == 21 * 1440
+    assert o.train_from.isoformat() == "2026-10-28T22:16:00+00:00"
+    assert [(a.isoformat(), b.isoformat()) for a, b in o.exclude] == [
+        ("2026-10-28T22:16:00+00:00", "2026-10-29T00:10:00+00:00")]   # placement + sensor settling
+    assert o.horizons_min == reg.get("athena.cabinet_temp_c").horizons_min
+    assert o.thresholds == () and o.covariates == () and o.consumers == ("prediction-scoreboard",)
+    assert "office.temp_c" not in reg.get("athena.cabinet_temp_c").covariates
+    assert {t.series_id for t in reg.targets()} == {"athena.cabinet_temp_c", "office.temp_c"}
+    # Daily needs 2 days, weekly 14: both refused at first, weekly alone at ~4 days.
+    assert split_seasonalities(o, 3 * 12)[1] == ["daily", "weekly"]
+    assert split_seasonalities(o, 4 * 288)[1] == ["weekly"]
+    assert split_seasonalities(o, 14 * 288)[1] == []

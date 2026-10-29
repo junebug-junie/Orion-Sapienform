@@ -78,10 +78,10 @@ Design: `docs/superpowers/specs/2026-10-14-aitown-living-world-design.md` (PR #2
 $ AITOWN_UPSTREAM_GIT=/mnt/scripts/Orion-Sapienform/services/orion-ai-town/upstream AITOWN_REQUIRE_TOOLS=1 \
   AITOWN_TEST_NODE=<node 24 wrapper> python -m pytest -q services/orion-ai-town/tests/test_live_turn_roles_patch.py \
   services/orion-ai-town/tests/test_pre_rebuild.py services/orion-ai-town/tests/test_sim_core.py
-23 passed in 11.01s
+32 passed in 14.19s     (after review fixes; was 23 before)
 
 $ python -m pytest -q services/orion-ai-town/tests            # no node / upstream: tool tests skip
-147 passed, 16 skipped in 19.51s
+148 passed, 24 skipped in 19.40s
 
 $ python scripts/check_personal_terms.py
 no personal terms in tracked files
@@ -111,6 +111,11 @@ Planted error in crons.ts ({ minutes: 'five' }) -> TS2322, exit 2; reverted -> e
 Planted error in events.ts (status: 5)          -> TS2322, exit 2
 simTables dropped from convex/schema.ts         -> TS2339 on simState reads, exit 2
 
+After the review fixes, the same patched tree (pre_rebuild.sh from scratch, sim modules added to
+api.d.ts the way the earlier real codegen listed them): tsc --noEmit -p convex -> exit 0;
+planted checkInjectSource(input.source, 1) in events.ts -> TS2554, exit 2.
+The scratch-backend smoke below ran before the review fixes and was not re-run (no live Convex calls).
+
 Runtime smoke on that scratch backend (ephemeral container, stopped afterwards; not the live town):
 init, then testing:stop
 sim/events:inject juniper stock_delta   -> {"accepted": true, "eventId": "e1", "status": "applied"}
@@ -127,7 +132,46 @@ sim/state:bootstrap {"replace": true}  -> clock and event numbering carried on (
 
 ## Review findings fixed
 
-- Not run in this branch. The orchestrating agent is running the code review.
+Code review by the orchestrating agent. Every finding is fixed in `2add77bce`.
+
+- Finding (HIGH): a quest with 16 reward or penalty effects resolves as 17 effects (the tick adds `quest.<id>`). `applyEvent` throws inside the tick, so the cron would fail forever.
+  - Fix: reward and penalty are capped at `MAX_EFFECTS - 1` when the quest is created.
+  - Evidence: `test_biggest_quest_resolves_both_ways`. A 15-effect quest succeeds (16 effects logged) and another fails. 16 is refused ("at most 15").
+- Finding (HIGH): unknown keys on effects and conditions survived validation. They would break the strict `simEffect` insert, which wedges `tick.run` during a quest resolution.
+  - Fix: `normEffect` and `normCondition` rebuild each one as exactly `{op, target, value}` and `{kind, target, cmp, value}` at the entry. Only the rebuilt values are applied, stored and logged.
+  - Evidence: `test_stored_shapes_match_the_simevents_validator`. It reads the field list from `schema.ts` and checks the event, goal, reward and resolved-event shapes against it.
+- Finding (HIGH): defence in depth. One bad quest must never wedge the tick.
+  - Fix: each quest resolution is wrapped. On any error, the quest becomes `abandoned` with `error` set to the reason, a `rejected` row (`status`, `reason`) is logged, and the tick continues. A non-object quest entry is dropped.
+  - Evidence: `test_a_corrupted_quest_does_not_stop_the_tick`. A quest with a corrupted reward, plus a `null` quest, sits next to a good quest in the same tick. The bad one is abandoned with "unknown effect op teleport", the null one is removed, the good one succeeds with its reward, and a later 24-hour tick runs.
+- Finding (MEDIUM): state growth.
+  - Fix: past each limit, new keys are refused with a SimError, never evicted. Limits: 100 plain facts ("fact limit"), 16 flags per place, 10 open quests. The newest 20 resolved quests are kept, and their `quest.<id>` facts are pruned with them. `rumor.*` and `quest.*` are reserved for the sim.
+  - Evidence: `test_growth_stays_bounded`. Over 30 game-days, 360 quests are tried (300 opened, the rest refused by the open quest limit) and 300 facts are tried (100 kept, the rest refused). Ending state: 20 quests, 100 plain facts, 20 rumors, 20 quest facts, all matching kept quests. State size 9.7 KB.
+- Finding (MEDIUM): `inject` accepted source `sim`.
+  - Fix: `core.checkInjectSource` allows only `juniper`. `events.ts` calls it before anything else, so a refused source writes no row.
+  - Evidence: `test_only_juniper_can_be_injected`.
+- Finding (MEDIUM): the pause and drift wording was wrong, and `minutes` was uncapped.
+  - Fix: the `tick.ts` comment and the README now say that game time pauses with the world, does not catch up, and drifts from wall-clock hours after any pause. `core.tick` refuses more than 1440 minutes.
+  - Evidence: `test_tick_takes_whole_steps_up_to_a_day`.
+- Finding (LOW): malformed quest input raised TypeError, not SimError.
+  - Fix: type checks on the quest object, the goal items, condition targets, and the reward and penalty lists.
+  - Evidence: `test_malformed_quest_input_is_a_sim_error` (8 cases, all SimError).
+- Finding (LOW): targets like `constructor`, `__proto__` and `toString` could reach the prototype, and a stock target without an item part was accepted.
+  - Fix: own-property checks in `readTarget` and on need names. Stock conditions need `<owner>.<item>`.
+  - Evidence: `proto_*` cases in the rejection and malformed tests, plus `stock_no_item`.
+- Finding (LOW): `stock_delta` could create any key, for example `diner.cash`.
+  - Fix: a new key is allowed only for an item that owner kind already holds. Places hold coffee and parts. Residents hold cash.
+  - Evidence: `diner.cash` and `cam_lin.parts` are refused, `workshop.coffee` is allowed.
+- Finding (LOW): the comment claiming `tick(s,60) == 12 x tick(s,5)` was wrong, because `version` differs.
+  - Fix: the comment now names the version difference. The test already excluded `version`.
+- Finding (LOW): `work_end: 24` could make a resident unpaid.
+  - Fix: schedule hours must be 0..23. The seed's `sleep: 24` values became 23.
+  - Evidence: `test_schedules_are_hours_0_to_23_and_every_wage_pays`. Hour 24 is refused, and Mara, Nico and Cam are all paid in a day.
+- Finding (LOW): a seed render failure left the copied example `seed.ts` behind.
+  - Fix: `apply_upstream_patches.sh` removes it before exiting.
+  - Evidence: `test_seed_render_failure_leaves_no_example_seed` (a broken local card makes the script exit 1, with no `seed.ts` left).
+- Finding (keyword cathedral): `purpose_weights.persuade`, `home` and the `shipment.coffee_late` fact were never read. The `maps`, `flyers` and resident `parts` stock and `square.flyers` were never moved.
+  - Fix: all of these are removed from the types, the cards, the seed and the templates. `test_seed_carries_only_fields_the_core_reads` checks that every card sim field and every weight has a reader in `core.ts`, and that place stock is only `coffee` and `parts`.
+  - Kept: `checkEntities`. It is tested (`test_entity_rule`), and the PR 3 scene writer needs it to refuse invented names. It has no runtime caller in this PR.
 
 ## Restart required
 

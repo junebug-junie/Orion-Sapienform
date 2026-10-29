@@ -94,16 +94,21 @@ def drop_undersized(
     Why (2026-10-29): a framed photo of two people stands on the desk in the
     cam0 room. GroundingDINO labels both pictured people `person` (scores
     0.35-0.41, boxes 11-20 px wide x 15-31 px tall on the 640x480 frame).
-    Live cam0 detections 2026-08-12..10-28 hold ~250k person boxes under
-    32 px tall (the photo, at each spot it stood on the desk), 73 between 32
-    and 68 px (mostly people cut off at the bottom edge), then the real
-    people. Replayed, this rule takes the 2+ person windows of 10-17..10-28
-    from 14,364 to ~61.
+    Live cam0 person boxes 2026-08-12..10-28 that do not touch the frame
+    edge, by long side: ~250k at 8-31 px (the photo, at each spot it stood
+    on the desk); 10 at 32-47 px (9 at the photo spot or beside the photo
+    boxes, 1 unexplained); 5 at 48-63 px; then the real people from 64 px.
+    Replayed, this rule takes the 2+ person windows of 10-17..10-28 from
+    14,364 to ~61.
+
+    Labels are matched after strip().lower() (GroundingDINO labels are free
+    text). A merged phrase label such as ``person phone`` is not matched.
 
     Returns ``(kept, dropped_count)``; order is preserved.
     """
-    if not min_long_side_frac:
+    if not isinstance(min_long_side_frac, Mapping) or not min_long_side_frac:
         return list(objects), 0
+    rule = {str(k).strip().lower(): v for k, v in min_long_side_frac.items()}
     short_side = float(min(frame_width, frame_height))
     if short_side <= 0:
         return list(objects), 0
@@ -111,7 +116,7 @@ def drop_undersized(
     kept: List[Dict[str, Any]] = []
     dropped = 0
     for o in objects:
-        frac = min_long_side_frac.get(str(o.get("label")))
+        frac = rule.get(str(o.get("label") or "").strip().lower())
         box = o.get("box_xyxy") or []
         if frac is None or len(box) != 4:
             kept.append(o)

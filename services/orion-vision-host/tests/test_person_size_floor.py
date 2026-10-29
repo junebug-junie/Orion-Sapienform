@@ -76,6 +76,18 @@ def test_empty_rule_is_a_passthrough() -> None:
     assert kept == objs and dropped == 0
 
 
+def test_label_match_ignores_case_and_spaces() -> None:
+    kept, dropped = drop_undersized([_p(PHOTO_LEFT, label=" Person ")], {"PERSON": 0.1}, W, H)
+    assert kept == [] and dropped == 1
+
+
+def test_malformed_rule_is_a_passthrough_not_a_crash() -> None:
+    objs = [_p(PHOTO_LEFT)]
+    for bad in (None, [0.1], 0.1):
+        kept, dropped = drop_undersized(objs, bad, W, H)  # type: ignore[arg-type]
+        assert kept == objs and dropped == 0
+
+
 def test_floor_scales_with_frame_size() -> None:
     # Same photo box on a 2560x1920 still (4x): 52-100 px, still under 0.1*1920.
     big = [v * 4 for v in PHOTO_LEFT]

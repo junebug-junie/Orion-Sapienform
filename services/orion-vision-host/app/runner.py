@@ -895,16 +895,15 @@ class VisionRunner:
         )
         # Per-camera size floor (cam0: a desk photo of two people read as two
         # tiny `person` boxes). See detections.drop_undersized.
-        size_floor = (p.params.get("min_box_long_side_frac_by_stream") or {}).get(
-            str(request.get("stream_id") or "")
-        ) or {}
-        objects, undersized_dropped = drop_undersized(objects, size_floor, img.width, img.height)
+        floors = p.params.get("min_box_long_side_frac_by_stream") or {}
+        size_floor = floors.get(str(request.get("stream_id") or "")) if isinstance(floors, dict) else None
+        objects, undersized_dropped = drop_undersized(objects, size_floor or {}, img.width, img.height)
         objects = nms(objects, nms_iou)
         objects = cap_by_score(objects, max_det)
         if raw_count != len(objects):
             logger.debug(
-                f"[DETECT] profile={p.name} raw={raw_count} after_nms_and_cap={len(objects)} "
-                f"nms_iou={nms_iou} max_det={max_det}"
+                f"[DETECT] profile={p.name} raw={raw_count} undersized_dropped={undersized_dropped} "
+                f"after_nms_and_cap={len(objects)} nms_iou={nms_iou} max_det={max_det}"
             )
 
         crop_stats = None

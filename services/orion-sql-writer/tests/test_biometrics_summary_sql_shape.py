@@ -63,3 +63,19 @@ def test_measurements_stores_python_none_as_sql_null_not_jsonb_null() -> None:
     """
     col = BiometricsSummarySQL.__table__.columns["measurements"]
     assert getattr(col.type, "none_as_null", False) is True
+
+
+def test_writer_boot_applies_the_peak_pressure_columns_before_serving() -> None:
+    """Same deploy-ordering trap as `measurements`: the mapper declares both columns, so they
+    enter every INSERT and must exist before the writer serves traffic."""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text()
+    assert "ADD COLUMN IF NOT EXISTS peak_pressure DOUBLE PRECISION" in src
+    assert "ADD COLUMN IF NOT EXISTS peak_pressure_channel TEXT" in src
+
+
+def test_peak_pressure_columns_are_nullable_because_absent_is_not_zero() -> None:
+    cols = BiometricsSummarySQL.__table__.columns
+    assert cols["peak_pressure"].nullable is True
+    assert cols["peak_pressure_channel"].nullable is True

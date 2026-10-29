@@ -171,3 +171,31 @@ def test_body_economy_tab_empty_sections_say_why():
         assert frame.locator("#beDecRows tr").count() == 10
 
     _run(report, check)
+
+
+def test_body_economy_tab_malformed_rows_and_non_report_bodies_never_blank_or_crash():
+    odd = copy.deepcopy(FIXTURE)
+    odd["decisions"][0]["family"] = None                 # producer bug: no family
+    odd["decisions"][0]["displaced"] = "not-a-list"
+    odd["rhythm"][0]["heavy"] = 2.6                      # fractional count
+    odd["money"]["daily_kwh"][0]["d"] = 20261023         # number, not a date string
+    calls = {"n": 0}
+
+    def report(route, url):
+        calls["n"] += 1
+        if calls["n"] == 1:   # an HTML page with 200 (proxy login page, say)
+            return route.fulfill(status=200, body="<html>login</html>", content_type="text/html")
+        return route.fulfill(body=json.dumps(odd), content_type="application/json")
+
+    def check(page, frame):
+        frame.locator('#beWantsChart [data-empty]').wait_for()
+        assert "not with a body report" in frame.locator("#beStatus").inner_text()
+        assert "not with a body report" in frame.locator("#beLimitRows").inner_text()
+        frame.locator('[data-window="24h"]').click()
+        frame.locator('[data-tile="heat"]').wait_for()
+        assert "could not draw" not in frame.locator("#beStatus").inner_text()
+        assert frame.locator("#beDecRows tr").count() == 10
+        frame.locator('tr[data-dec="0"]').click()
+        assert "Displaced: none" in frame.locator("#beDetail [data-displaced]").inner_text()
+
+    _run(report, check)

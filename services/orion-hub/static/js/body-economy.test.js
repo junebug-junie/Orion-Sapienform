@@ -130,3 +130,19 @@ test("formatting never turns unknown into zero", () => {
   assert.equal(tab.fmtCount(9800000), "9.8M");
   assert.equal(tab.esc('<a "x">'), "&lt;a &quot;x&quot;&gt;");
 });
+
+test("a 200 that is not a report is refused, not drawn as empty data", () => {
+  assert.equal(tab.isReport(FIXTURE), true);
+  assert.equal(tab.isReport({}), false);
+  assert.equal(tab.isReport([]), false);
+  assert.equal(tab.isReport({ schema_version: "physiology.state.v1", window: {}, generated_at: "x" }), false);
+  assert.equal(tab.isReport({ window: { start: "a", end: "b" }, generated_at: "x" }), true);
+  assert.match(tab.unreachableText({ not_report: true, detail: "expected physiology.report.v1" }), /^the Hub answered, but not with a body report/);
+  assert.match(tab.unreachableText({ network: true, detail: "Failed to fetch" }), /^the Hub did not answer: Failed to fetch/);
+});
+
+test("odd family values never throw", () => {
+  assert.equal(tab.colorForFamily(null), "#6b7280");
+  assert.equal(tab.colorForFamily(42), "#6b7280");
+  assert.equal(tab.filterDecisions([{ family: null, outcome: "funded", decided_at: "2026-10-29T00:00:00Z" }], { query: "x" }).length, 0);
+});

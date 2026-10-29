@@ -8,6 +8,7 @@
   "use strict";
 
   var WINDOWS = ["24h", "7d", "30d"];
+  var DECISION_LIMIT = 500;
   var HOUR_MS = 3600000;
   // Bars per window in the wants chart: one bar per bucket, buckets aligned to the window start.
   var WANT_BUCKET_HOURS = { "24h": 1, "7d": 6, "30d": 24 };
@@ -53,6 +54,7 @@
     vram: "No GPU memory readings.",
     value_per_cost: "No value-per-cost figures yet.",
     services: "No service check yet.",
+    sees: "No limit gave a reason in this window.",
   };
 
   // ---------- small helpers ----------
@@ -72,13 +74,14 @@
   }
 
   function hashSlot(name) {
+    name = String(name === null || name === undefined ? "" : name);
     var h = 0;
     for (var i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
     return h % PALETTE.length;
   }
 
   function colorForFamily(family) {
-    if (family === OTHER) return OTHER_COLOR;
+    if (family === OTHER || typeof family !== "string" || !family) return OTHER_COLOR;
     var slot = Object.prototype.hasOwnProperty.call(FAMILY_SLOTS, family) ? FAMILY_SLOTS[family] : hashSlot(family);
     return PALETTE[slot];
   }
@@ -164,7 +167,9 @@
   function unreachableText(err, tz) {
     if (!err) return null;
     var since = err.unreachable_since ? " since " + fmtWhen(err.unreachable_since, tz) : "";
-    var what = err.status === 502 || err.unreachable_since || err.network
+    if (err.network) return "the Hub did not answer" + (err.detail ? ": " + err.detail : "");
+    if (err.not_report) return "the Hub answered, but not with a body report" + (err.detail ? ": " + err.detail : "");
+    var what = err.status === 502 || err.unreachable_since
       ? "durable-runs unreachable" + since
       : "the report was refused (HTTP " + (err.status || "?") + ")";
     return what + (err.detail ? ": " + err.detail : "");
@@ -481,7 +486,8 @@
       var tip = fmtTime(new Date(k.start).toISOString(), { weekday: "short", hour: "2-digit", minute: "2-digit" }, state.tz) +
         " (" + bh + " h) · funded " + funded + (parts.length ? " (" + parts.join(", ") + ")" : "") + " · deferred " + k.deferred +
         (deferredParts.length ? " (" + deferredParts.join(", ") + ")" : "");
-      return '<div class="bar" data-tip="' + esc(tip) + '">' + segs + "</div>";
+      var basis = ((Math.min(k.end, w.end) - k.start) / (w.end - w.start) * 100).toFixed(3);
+      return '<div class="bar" style="flex:0 0 calc(' + basis + '% - 3px)" data-tip="' + esc(tip) + '">' + segs + "</div>";
     }).join("");
     setBody(doc, "beWantsChart", '<div class="bars" data-brush="1">' + bars + '<div class="brush hidden"></div></div>');
     setBody(doc, "beWantsAxis", axisHtml(w));
@@ -499,9 +505,9 @@
         var r = days[day][h];
         var v = r ? (num(r.heavy) || 0) : 0;
         var tip = day + " " + String(h).padStart(2, "0") + ":00 · " + (r ? v + " heavy of " + (num(r.total) || 0) + " acts" : "nothing recorded");
-        cells += '<div class="cell" style="background:' + RAMP[Math.min(v, 6)] + '" data-tip="' + esc(tip) + '"></div>';
+        cells += '<div class="cell" style="background:' + RAMP[Math.max(0, Math.min(6, Math.round(v)))] + '" data-tip="' + esc(tip) + '"></div>';
       }
-      return '<div class="hm-row"><span class="hm-day">' + esc(day.slice(5)) + "</span>" + cells + "</div>";
+      return '<div class="hm-row"><span class="hm-day">' + esc(String(day).slice(5)) + "</span>" + cells + "</div>";
     }).join("");
     html += '<div class="hm-axis"><span>00</span><span>06</span><span>12</span><span>18</span></div>' +
       '<div class="ramp"><span>0</span>' + RAMP.slice(1).map(function (c) { return '<span class="sw" style="background:' + c + '"></span>'; }).join("") +
@@ -526,8 +532,8 @@
       var partial = d.d === today;
       return '<div class="kbar' + (partial ? " partial" : "") + '" style="height:' + ((num(d.kwh) || 0) / max * 100).toFixed(1) +
         '%" data-tip="' + esc(d.d + " · " + (num(d.kwh) === null ? "unknown" : d.kwh.toFixed(1) + " kWh") + (partial ? " (day not over)" : "")) + '"></div>';
-    }).join("") + '</div><div class="axis3"><span>' + esc(days[0].d.slice(5)) +
-      '</span><span><span class="sw" style="background:#3987e5"></span>kWh per day (house)</span><span>' + esc(days[days.length - 1].d.slice(5)) + "</span></div>"
+    }).join("") + '</div><div class="axis3"><span>' + esc(String(days[0].d).slice(5)) +
+      '</span><span><span class="sw" style="background:#3987e5"></span>kWh per day (house)</span><span>' + esc(String(days[days.length - 1].d).slice(5)) + "</span></div>"
       : emptyHtml(missingReason(state.report, "money") || "No daily kWh yet.");
     setBody(doc, "beMoney", '<div class="figs">' + figs + "</div>" + note + bars);
   }
@@ -637,7 +643,7 @@
 
   function renderSees(doc) {
     var limits = (sectionData("limits") || []).filter(function (l) { return l && l.now && l.now.why; });
-    if (!limits.length) { setBody(doc, "beSees", empty("limits")); return; }
+    if (!limits.length) { setBody(doc, "beSees", empty((sectionData("limits") || []).length ? "sees" : "limits")); return; }
     setBody(doc, "beSees", limits.map(function (l) {
       return '<div class="why-row" data-why="' + esc(l.constraint) + '"><div class="strong">' + esc(l.label || l.constraint) +
         '</div><div class="mono">' + esc(l.now.why) + "</div></div>";
@@ -665,7 +671,8 @@
     }
     var shown = filterDecisions(all, { outcome: state.outcome, query: state.query,
       from: state.brush && state.brush.from, to: state.brush && state.brush.to });
-    setBody(doc, "beCount", esc(shown.length + " of " + all.length + " decisions"));
+    setBody(doc, "beCount", esc(shown.length + " of " + all.length + " decisions" +
+      (all.length >= DECISION_LIMIT ? " (the newest " + DECISION_LIMIT + " only)" : "")));
     setBody(doc, "beDecEmpty", shown.length ? "" : emptyHtml('No decisions match. Clear the search, the time selection, or pick "All".'));
     setBody(doc, "beDecRows", shown.map(function (d) {
       var i = all.indexOf(d);
@@ -689,7 +696,7 @@
       return hbar(esc(p.k), Math.min(p.v, 1), 1, p.v.toFixed(2), p.k + " price " + p.v.toFixed(3) + (p.v >= 0.999 ? " (at the ceiling)" : ""),
         p.v >= 0.999 ? "#d95926" : "#3987e5");
     }).join("") : '<p class="small">Every limit was free (price 0) at that moment.</p>';
-    var displaced = (d.displaced || []).length ? esc(d.displaced.join(", ")) : "none. Nothing is displaced while bids run in shadow.";
+    var displaced = Array.isArray(d.displaced) && d.displaced.length ? esc(d.displaced.join(", ")) : "none. Nothing is displaced while bids run in shadow.";
     setBody(doc, "beDetail", '<div class="muted small">Selected decision</div><h3 id="beDetailTitle">' + esc(d.family + " · " + d.verb) + "</h3>" +
       '<div class="small">' + chip(d.outcome, d.outcome === "funded" ? "good" : "warn") + " tier " + esc(d.tier) + " · " +
       esc(fmtWhen(d.decided_at, state.tz)) + " · reason: " + esc(d.reason) + "</div>" +
@@ -805,33 +812,58 @@
   }
 
   // ---------- loading ----------
+  // A 200 must really be a report: an HTML page or an unrelated object would otherwise render as
+  // plausible empty data ("No limit readings").
+  function isReport(body) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+    if (body.schema_version !== undefined) return body.schema_version === "physiology.report.v1";
+    return !!(body.window && body.generated_at);
+  }
+
+  function safeRender(doc) {
+    try {
+      render(doc);
+    } catch (e) {
+      var el = doc.getElementById("beStatus");
+      if (el) { el.textContent = "This page could not draw the report: " + (e && e.message || e); el.className = "status warn"; }
+    }
+  }
+
   function load(doc, windowKey) {
-    if (WINDOWS.indexOf(windowKey) >= 0) state.window = windowKey;
+    // The window only changes when its own report arrives, so a render in between (resize) never
+    // mixes the old report with the new window's bucket size.
+    var want = WINDOWS.indexOf(windowKey) >= 0 ? windowKey : state.window;
     state.brush = null;
     state.sel = null;
     var seq = ++state.seq;
+    paintBrush(doc);
     renderStatus(doc);
     var fetchFn = (doc.defaultView && doc.defaultView.fetch) || fetch;
-    return fetchFn("/api/body-economy/report?window=" + encodeURIComponent(state.window) + "&limit=500", { cache: "no-store" })
+    return fetchFn("/api/body-economy/report?window=" + encodeURIComponent(want) + "&limit=" + DECISION_LIMIT, { cache: "no-store" })
       .then(function (resp) {
         return resp.json().catch(function () { return {}; }).then(function (body) { return { resp: resp, body: body }; });
       })
       .then(function (r) {
         if (seq !== state.seq) return;
+        state.window = want;
         if (!r.resp.ok) {
           state.err = { status: r.resp.status, detail: r.body && r.body.detail, unreachable_since: r.body && r.body.unreachable_since };
+          state.report = null;
+        } else if (!isReport(r.body)) {
+          state.err = { not_report: true, status: r.resp.status, detail: "expected physiology.report.v1" };
           state.report = null;
         } else {
           state.err = null;
           state.report = r.body;
         }
-        render(doc);
+        safeRender(doc);
       })
       .catch(function (e) {
         if (seq !== state.seq) return;
-        state.err = { network: true, detail: "the Hub did not answer (" + (e && e.message || e) + ")" };
+        state.window = want;
+        state.err = { network: true, detail: String(e && e.message || e) };
         state.report = null;
-        render(doc);
+        safeRender(doc);
       });
   }
 
@@ -858,7 +890,7 @@
     var resizeTimer = null;
     doc.defaultView.addEventListener("resize", function () {
       clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(function () { if (state.report) render(doc); }, 150);
+      resizeTimer = setTimeout(function () { if (state.report) safeRender(doc); }, 150);
     });
     return load(doc, state.window);
   }
@@ -869,7 +901,7 @@
     limitSvg: limitSvg, pointAt: pointAt, limitTip: limitTip, topFamilies: topFamilies, bucketWants: bucketWants,
     brushWindow: brushWindow, filterDecisions: filterDecisions, reasonWords: reasonWords, blockedBy: blockedBy,
     decisionLife: decisionLife, pricesList: pricesList, missingReason: missingReason, unreachableText: unreachableText,
-    emptyText: emptyText, esc: esc, state: state, render: render, init: init, load: load,
+    emptyText: emptyText, esc: esc, isReport: isReport, state: state, render: render, init: init, load: load,
   };
   if (typeof window !== "undefined") window.BodyEconomyTab = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

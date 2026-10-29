@@ -222,10 +222,12 @@ def test_fit_has_no_fixed_measurement_offset_path():
 
     assert "fixed_offsets" not in inspect.signature(fit.design).parameters
     assert not hasattr(fit, "SENSOR_OFFSET_C")
-    ex = _synthetic_extract(days=6)
+    ex = _synthetic_extract(days=12)   # spans the vision break (day 8) and the exclude window
     frame = fit.build_frame(ex, ("athena", "circe", "hecate"))
+    after = np.array([t >= VISION_BREAK for t in frame["times"]])
     _, y, _, _, rows = fit.design(frame, fit.regressors(frame, {"athena": "compute", "circe": "compute"}))
-    assert np.array_equal(y, frame["cab"][rows])   # the reading enters raw
+    assert after[rows].any() and (~after[rows]).any()
+    assert np.array_equal(y, frame["cab"][rows])   # the reading enters raw, also after the break
 
 
 def test_config_document_has_no_measurement_offsets():
@@ -311,6 +313,22 @@ def test_wants_replay_r6_bounds_a_zero_price_burst_and_r7_caps_drift():
     r7 = rep.eval_r7(stress, series, acts, uses, fams)
     assert r7["max_daily_move"] <= 0.1 + 1e-9 and r7["floor_violations"] == 0
     assert r7["final_weights"]["durable.self_inquiry"]["use"] == 0.0
+
+
+def test_wants_replay_runs_with_a_heat_config_on_the_raw_reading():
+    """run_wants with a real heat config (the path that called the removed corrected_hours)."""
+    from orion.physiology.heat_config import parse_heat_sensitivity
+
+    cfg = parse_heat_sensitivity({
+        "schema": "heat_sensitivity.v1", "fitted_at": "2026-10-01T00:00:00+00:00", "window": ["a", "b"],
+        "hosts": {h: {"point": 0.3, "ci95": [0.1, 0.5], "horizon": "2h", "n": 100,
+                      "fitted_at": "2026-10-01T00:00:00+00:00", "regressor": "compute_watts",
+                      "baseline_watts_p10": 100.0, "fit_command": "t"} for h in ("athena", "circe")}})
+    ex = _synthetic_extract(days=12)
+    w = rep.run_wants(ex, _acts_extract(T0, days=10), cfg, soft_line_c=31.0, acts_start=T0 + timedelta(days=1),
+                      acts_end=T0 + timedelta(days=11), heat_start=T0 + timedelta(days=9), heat_end=T0 + timedelta(days=11))
+    assert w["heat_price_source"].startswith("Patch B persistence replay")
+    assert w["wants_replayed"] > 0
 
 
 def test_reflex_arms_at_34_and_rearms_below_33():

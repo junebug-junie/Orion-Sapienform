@@ -104,7 +104,10 @@ def test_heat_orion_share_over_the_headroom_binds_and_climbs():
 def test_heat_reads_the_raw_cabinet_temperature_no_sensor_offset():
     """Regression (2026-10-29): the cabinet sensor never moved, so the ~2 C rise after the 10-17
     vision bring-up is real heat. The heat price used to lower every reading after 10-17 00:35 by
-    2 C ("cabinet 28.9 C (sensor offset -2.0 C ...) -> 26.9 C"). It must compare the raw reading."""
+    2 C ("cabinet 28.9 C (sensor offset -2.0 C ...) -> 26.9 C"). It must compare the raw reading.
+    The fixture has no offsets, so the budget arithmetic here is a contract check, not the guard
+    that would have caught the old code (only the ``why`` format differs on it). The real guards
+    are the parser refusal and the checked-in-yaml tests below."""
     by, _, _ = run([heat(28.9)])
     p = by["heat"].price
     assert "sensor offset" not in p.why and "-> 26.9" not in p.why
@@ -116,7 +119,8 @@ def test_heat_reads_the_raw_cabinet_temperature_no_sensor_offset():
 def test_heat_live_10_27_reading_is_orion_s_own_load_crossing_the_line():
     """The live 10-27 03:21 reading, raw: cabinet 31.04 C is over the 31 C line, the room without
     Orion (~30.3 C) is under it. So Orion's own load is what crosses the line: binding, not
-    exogenous. With the old 2 C offset this read as slack at 29.04 C."""
+    exogenous. With the old 2 C offset this read as slack at 29.04 C. (Documents the behaviour
+    change; with this offset-free fixture the old code would also pass.)"""
     by, _, _ = run([heat(31.04)])
     p = by["heat"].price
     assert p.use > p.budget and p.bind_state == "binding"

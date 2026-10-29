@@ -923,7 +923,7 @@ def run_wants(extract: dict, acts_ex: dict, heat_cfg, *, soft_line_c: float, act
         from orion.physiology.budget import DEFAULT_SPECS
         from orion.schemas.physiology import HEAT
 
-        pb = run_heat_replay(corrected_hours(hours, heat_cfg),
+        pb = run_heat_replay(hours,
                              sensitivity={h: e.usable for h, e in heat_cfg.hosts.items()},
                              baselines={h: e.baseline_watts for h, e in heat_cfg.hosts.items()},
                              params=DEFAULT_SPECS[HEAT].params(), soft_line_c=soft_line_c, start=acts_start,

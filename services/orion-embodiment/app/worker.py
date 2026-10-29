@@ -1228,7 +1228,7 @@ class EmbodimentWorker:
         participant_continuity: Optional[str] = None,
     ) -> str:
         """Cortex-exec RPC for town speech with grounded_small surface context."""
-        from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
+        from orion.cognition.cortex_payload_extract import extract_cortex_answer_text
         from orion.cognition.plan_loader import build_plan_for_verb
         from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 
@@ -1279,14 +1279,14 @@ class EmbodimentWorker:
             return ""
         payload = decoded.envelope.payload
         result = payload.get("result") if isinstance(payload, dict) else None
-        text = extract_cortex_payload_text(result if isinstance(result, dict) else (payload or {}))
+        text = extract_cortex_answer_text(result if isinstance(result, dict) else (payload or {}))
         return str(text or "")
 
     async def _request_utterance_quick(
         self, prompt: str, *, correlation_id: str, participant_continuity: Optional[str] = None,
     ) -> str:
         """Reuse the cortex exec rail to generate an utterance. Fail-open -> ''."""
-        from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
+        from orion.cognition.cortex_payload_extract import extract_cortex_answer_text
         from orion.cognition.plan_loader import build_plan_for_verb
         from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 
@@ -1339,7 +1339,7 @@ class EmbodimentWorker:
                 return ""
             payload = decoded.envelope.payload
             result = payload.get("result") if isinstance(payload, dict) else None
-            text = extract_cortex_payload_text(result if isinstance(result, dict) else (payload or {}))
+            text = extract_cortex_answer_text(result if isinstance(result, dict) else (payload or {}))
             return str(text or "")
         except Exception:
             logger.exception("embodiment_speech_rpc_failed corr=%s", correlation_id)

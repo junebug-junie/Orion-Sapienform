@@ -456,3 +456,24 @@ def test_town_speech_defaults_to_the_interactive_fast_route():
     from app.settings import Settings
 
     assert Settings.model_fields["speech_quick_llm_route"].default == "quick_embodied"
+
+
+def test_request_utterance_quick_never_speaks_the_reasoning():
+    """Live 2026-10-29 (c:608777): the model reasoned its way to an empty answer and
+    the 1,890-char reasoning, quoting the speech prompt, was posted as Orion's line."""
+    w = _worker()
+    bus = SimpleNamespace()
+    bus.rpc_request = AsyncMock(return_value={"data": b""})
+    result = {
+        "text": "",
+        "steps": [{"order": 1, "result": {"LLMGatewayService": {
+            "content": "",
+            "reasoning_content": 'We need answer to user. User message: "You are Orion, embodied in the town',
+        }}}],
+    }
+    bus.codec = SimpleNamespace(
+        decode=lambda _data: SimpleNamespace(ok=True, envelope=SimpleNamespace(payload={"result": result}))
+    )
+    w._bus = bus
+    text = asyncio.run(w._request_utterance_quick("prompt text", correlation_id="11111111-1111-1111-1111-111111111111"))
+    assert text == ""

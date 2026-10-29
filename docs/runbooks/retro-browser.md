@@ -70,6 +70,13 @@ works in X-input mode (mode switch on the back set to X); the page names the con
 found, or says to switch modes when a controller is not in the browser's standard mapping.
 Over Bluetooth some Linux browsers still report X mode as non-standard: use a USB cable then.
 Two pads on one machine: Player 1 takes the first standard pad, Player 2 the second.
+Let Orion play (next to New game): Orion plays in 30-minute turns (Retro's limit), renewed by
+the page when one ends, until you click the game, press a game key or any controller button, or
+use Take this controller. A hidden or closed tab ends it (nobody is watching). Only a turn that ran
+out its time is renewed: if someone else takes the controller (another window), Orion stops and the
+page says so. A lost connection also ends it. No heat or strain gate applies to these turns (the
+planner is interactive priority); solo play keeps its own gates. Try Orion goals stays the 60-second
+experiment.
 Pad save and load: hold Select and press L2 to save (like F7), or R2 to load the newest save
 (like F10). The pad's Select is held back until it is released, so a chord never pauses Zelda;
 Select pressed and released alone reaches the game as a 150 ms tap. The chords work only while

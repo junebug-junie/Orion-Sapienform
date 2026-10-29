@@ -12,7 +12,7 @@ try{
   const assets=[];page.on('response',r=>{if(r.url().includes('/static/js/'))assets.push([r.url(),r.status()]);});
   await page.goto(url+'/retro');
   // Rendered template + linked asset.
-  assert(assets.some(([u,s])=>u.includes('/static/js/retro-panel.js?v=12') && s===200),JSON.stringify(assets));
+  assert(assets.some(([u,s])=>u.includes('/static/js/retro-panel.js?v=13') && s===200),JSON.stringify(assets));
   // Leisure is visible live on open, by watching only.
   await page.waitForSelector('#play:not([hidden])',{timeout:8000});
   await page.waitForFunction(()=>document.querySelector('#leisure').textContent.includes('playing alone'),{timeout:8000});
@@ -72,6 +72,43 @@ try{
   await page.evaluate(()=>window.dispatchEvent(new Event('blur')));
   for(let i=0;i<50;i++){log=await fixture();if(closed(log)>before)break;await new Promise(r=>setTimeout(r,100));}
   assert(closed(log)>before,'after the handoff ended, a blur must release the socket (page stuck in handoff mode)');
+  // Let Orion play: a 30-minute hand-over, renewed when the grant ends, until the player clicks the game.
+  const starts=l=>l.retro.filter(r=>r.op==='scripted' && r.body?.action==='start');
+  let n0=starts(await fixture()).length;
+  await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+  await page.click('#orionplay');
+  for(let i=0;i<50;i++){log=await fixture();if(starts(log).length>n0)break;await new Promise(r=>setTimeout(r,100));}
+  const first=starts(log).at(-1);
+  assert(first && first.body.duration_seconds===1800 && first.body.cognition===true,JSON.stringify(starts(log)));
+  await page.waitForFunction(()=>document.querySelector('#status').textContent.startsWith('Orion is playing'),{timeout:5000});
+  await new Promise(r=>setTimeout(r,1500));                        // the page sees its grant in a status
+  await fetch(url+'/__fixture/end_grant?expired=1',{method:'POST'});   // the turn ran out: the page renews it
+  n0=starts(log).length;
+  for(let i=0;i<80;i++){log=await fixture();if(starts(log).length>n0)break;await new Promise(r=>setTimeout(r,100));}
+  assert(starts(log).length>n0 && starts(log).at(-1).body.duration_seconds===1800,'the ended turn was not renewed');
+  const controls=l=>l.retro.filter(r=>r.op==='control').length;
+  const c0=controls(log);
+  await page.waitForFunction(()=>document.querySelector('#orionplay').getAttribute('aria-pressed')==='true',{timeout:3000});
+  await new Promise(r=>setTimeout(r,1500));
+  await page.click('#screen');                                      // the player takes the game back
+  for(let i=0;i<50;i++){log=await fixture();if(controls(log)>c0)break;await new Promise(r=>setTimeout(r,100));}
+  assert(controls(log)>c0,'a click while Orion played did not take the controller back');
+  n0=starts(log).length;
+  await fetch(url+'/__fixture/end_grant',{method:'POST'});
+  await new Promise(r=>setTimeout(r,2500));
+  log=await fixture();
+  assert.equal(starts(log).length,n0,'after a take-back, Orion must not get the controller again');
+  // Someone else takes the controller mid-turn: Orion stops instead of taking it back (review H1).
+  await page.click('#orionplay');
+  for(let i=0;i<50;i++){log=await fixture();if(starts(log).length>n0)break;await new Promise(r=>setTimeout(r,100));}
+  await new Promise(r=>setTimeout(r,1500));
+  n0=starts(log).length;
+  await fetch(url+'/__fixture/end_grant',{method:'POST'});          // not expired: another controller took it
+  await page.waitForFunction(()=>document.querySelector('#status').textContent.startsWith('Someone else took the controller'),{timeout:5000});
+  await new Promise(r=>setTimeout(r,1500));
+  log=await fixture();
+  assert.equal(starts(log).length,n0,'Orion took the controller back from someone else');
+  assert.equal(await page.$eval('#orionplay',b=>b.getAttribute('aria-pressed')),'false');
   assert.deepEqual(errors,[]);
   fs.writeFileSync(out+'/play-panel.json',JSON.stringify({atlas,goal,retro:log.retro.map(r=>r.op+(r.channel?':'+r.channel:'')),human:log.human},null,2));
 }finally{await browser.close();}

@@ -8,7 +8,7 @@ HUB = Path(__file__).resolve().parents[2]
 def test_template_has_play_panel_and_current_asset():
     html = (HUB / 'templates/retro.html').read_text()
     for marker in ('id="play"', 'id="atlas"', 'id="leisure"', 'id="zgoal"', 'id="zprediction"',
-                   'id="verdicts"', 'id="takeover"', '/static/js/retro-panel.js?v=12'):
+                   'id="verdicts"', 'id="takeover"', '/static/js/retro-panel.js?v=13'):
         assert marker in html, marker
 
 
@@ -98,3 +98,17 @@ console.log(JSON.stringify({{fired,seen,tap,after}}));'''
     assert got['seen'][5:7] == [0, 4] and got['tap'] == [4, 0]   # a lone Select taps on release, 150 ms
     assert got['seen'][7:10] == [0, 0, 0]
     assert got['seen'][10:] == [0, 0, 0] and got['after'] == [0]  # no stray tap after a lost hold
+
+
+def test_let_orion_play_renews_until_taken_back():
+    # Juniper 2026-10-28: a button that lets Orion play for real, not a 60 s experiment.
+    # Behaviour is covered by evals/retro_play_panel.mjs (renewal and click take-back, mutation-checked).
+    html = (HUB / 'templates/retro.html').read_text()
+    js = (HUB / 'static/js/retro-panel.js').read_text()
+    assert '<button id="orionplay"' in html
+    assert 'const ORION_PLAY_SEC = 1800;' in js and "action('orionplay'" in js
+    assert 'if(orionPlay && ranOut)renewOrion();' in js       # only a turn that ran out its time is renewed
+    assert "Someone else took the controller" in js           # never taken back from someone else
+    assert "if(takeBack())return;" in js                      # a click on the game takes it back
+    assert 'function neutral() { setOrion(false);' in js      # a hidden tab or lost socket ends it
+    assert 'aria-pressed="false"' in html

@@ -26,7 +26,7 @@ from .crop_embeddings import (
     crop_faces,
     load_zones_fail_closed,
 )
-from .detections import cap_by_score, nms
+from .detections import cap_by_score, drop_undersized, nms
 from .gdino import detect_images
 from .tiling import (
     merge_tiled_detections,
@@ -901,12 +901,17 @@ class VisionRunner:
             if tiling_stats and "tile_raw" in tiling_stats
             else len(objects)
         )
+        # Per-camera size floor (cam0: a desk photo of two people read as two
+        # tiny `person` boxes). See detections.drop_undersized.
+        floors = p.params.get("min_box_long_side_frac_by_stream") or {}
+        size_floor = floors.get(str(request.get("stream_id") or "")) if isinstance(floors, dict) else None
+        objects, undersized_dropped = drop_undersized(objects, size_floor or {}, img.width, img.height)
         objects = nms(objects, nms_iou)
         objects = cap_by_score(objects, max_det)
         if raw_count != len(objects):
             logger.debug(
-                f"[DETECT] profile={p.name} raw={raw_count} after_nms_and_cap={len(objects)} "
-                f"nms_iou={nms_iou} max_det={max_det}"
+                f"[DETECT] profile={p.name} raw={raw_count} undersized_dropped={undersized_dropped} "
+                f"after_nms_and_cap={len(objects)} nms_iou={nms_iou} max_det={max_det}"
             )
 
         crop_stats = None
@@ -942,6 +947,7 @@ class VisionRunner:
             "text_threshold": text_th,
             "nms_iou": nms_iou,
             "max_detections": max_det,
+            "undersized_dropped": undersized_dropped,
             # Crop vectors ride the bus inline (VisionObject.embedding); the
             # on-disk debug copy keeps the ref only, not a second vector store.
             "objects": [{k: v for k, v in o.items() if k not in ("embedding", "face_embedding", "osnet_embedding")}

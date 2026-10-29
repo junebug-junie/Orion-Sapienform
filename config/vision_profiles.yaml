@@ -207,6 +207,19 @@ profiles:
           person: 0.35
           vehicle: 0.35
       nms_iou: 0.6
+      # Per-camera size floor (2026-10-29): stream_id -> label -> smallest
+      # long side of a box, as a fraction of the frame's short side. Boxes
+      # touching the frame edge are exempt (cut off, size unknown). cam0: a
+      # framed photo of two people on the desk read as two `person` boxes
+      # 15-31 px tall on the 640x480 frame, so the room reported 2-3 people
+      # with one person in it. 0.1 = 48 px. Live cam0 person boxes not on the
+      # frame edge, 08-12..10-28, by long side: 250k at 8-31 px (the photo),
+      # 10 at 32-47 px (9 at/beside the photo, 1 unexplained), 5 at 48-63 px,
+      # then the people from 64 px up. Code:
+      # app/detections.py drop_undersized.
+      min_box_long_side_frac_by_stream:
+        cam0:
+          person: 0.1
       label_mode: open_vocab           # open_vocab | closed_set
       labels_hint: []                  # optional label shortlist per request
       # Walkway crop embeddings (2026-09-24, docs/superpowers/specs/

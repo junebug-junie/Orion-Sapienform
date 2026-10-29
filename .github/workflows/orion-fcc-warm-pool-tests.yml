@@ -11,6 +11,10 @@ on:
       - "orion/harness/fcc_warm_pool.py"
       - "orion/harness/fcc_warm_relay.py"
       - "orion/harness/tests/test_fcc_warm_pool.py"
+      - "orion/harness/tests/test_call_usage_harness.py"
+      - "orion/llm/call_usage.py"
+      - "orion/llm/tests/test_call_usage.py"
+      - "orion/schemas/llm_call_usage.py"
       - "orion/harness/tests/fake_claude_stream.py"
       - "orion/harness/tests/test_fcc_*.py"
       - "orion/fcc/**"
@@ -24,6 +28,7 @@ on:
       - "orion/harness/fcc_motor.py"
       - "orion/harness/fcc_warm_pool.py"
       - "orion/harness/fcc_warm_relay.py"
+      - "orion/llm/call_usage.py"
       - "services/orion-harness-governor/**"
 
 jobs:
@@ -53,6 +58,8 @@ jobs:
             orion/harness/tests/test_fcc_motor_served_model.py \
             orion/harness/tests/test_fcc_motor_write_stamp.py \
             orion/harness/tests/test_fcc_motor_repeat_failure_breaker.py \
+            orion/harness/tests/test_call_usage_harness.py \
+            orion/llm/tests/test_call_usage.py \
             -q -p no:cacheprovider
       - name: Governor wiring
         run: cd services/orion-harness-governor && python -m pytest tests/test_fcc_warm_pool_wiring.py -q -p no:cacheprovider

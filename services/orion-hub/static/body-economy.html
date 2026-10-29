@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Body economy</title>
+  <style>
+    /* Hub dark theme: gray-950 ground, gray-900 cards. Approved mockup 2026-10-29. */
+    body { margin: 0; background: #030712; color: #e5e7eb; font: 14px/1.45 Inter, system-ui, sans-serif; }
+    .wrap { max-width: 1280px; margin: 0 auto; padding: 20px 16px 48px; display: flex; flex-direction: column; gap: 20px; }
+    h1 { margin: 0; font-size: 24px; font-weight: 600; }
+    h2 { margin: 0; font-size: 17px; font-weight: 600; }
+    h3 { margin: 0; font-size: 18px; font-weight: 600; }
+    .eyebrow { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: #9ca3af; }
+    .muted { color: #9ca3af; } .small { font-size: 12px; color: #d1d5db; } .muted.small { color: #9ca3af; }
+    .strong { font-weight: 600; } .mono { font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: #d1d5db; }
+    .big { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .hidden { display: none !important; }
+    header { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; justify-content: space-between; }
+    .btn { min-height: 40px; padding: 0 14px; border-radius: 8px; border: 1px solid #374151; background: #111827; color: #9ca3af; font: inherit; cursor: pointer; }
+    .btn[aria-pressed="true"] { border-color: #3987e5; background: #172554; color: #e5e7eb; }
+    .group { display: flex; gap: 8px; flex-wrap: wrap; }
+    .status { font-size: 12px; color: #9ca3af; } .status.warn { color: #fbbf24; }
+    .card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .card-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; align-items: baseline; }
+    .row2 { display: flex; flex-wrap: wrap; gap: 20px; } .row2 > .card { flex: 1 1 420px; }
+    .empty { margin: 0; padding: 18px 12px; color: #9ca3af; border: 1px dashed #374151; border-radius: 8px; }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+    .tile { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 6px; }
+    .tile-label { font-size: 12px; color: #9ca3af; } .tile-value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .tile-value.quiet { font-size: 18px; color: #9ca3af; font-weight: 500; }
+    .tile-note { display: flex; gap: 8px; align-items: center; font-size: 12px; color: #d1d5db; flex-wrap: wrap; }
+    .down-list { margin: 0; padding-left: 18px; font-size: 12px; color: #d1d5db; }
+    .chip { padding: 2px 8px; border-radius: 999px; font-weight: 600; font-size: 12px; white-space: nowrap; }
+    .chip-good { background: #14532d; color: #bbf7d0; } .chip-info { background: #1e3a8a; color: #dbeafe; }
+    .chip-warn { background: #78350f; color: #fde68a; } .chip-muted { background: #374151; color: #e5e7eb; }
+    .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: #9ca3af; align-items: center; }
+    .key { display: inline-flex; gap: 6px; align-items: center; }
+    .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 4px; }
+    .sw.ghost { border: 1.5px dashed #9ca3af; box-sizing: border-box; background: transparent; }
+    .sw.line { width: 18px; height: 2px; background: #3987e5; border-radius: 0; }
+    .sw.dash { width: 18px; height: 0; border-top: 2px dashed #9ca3af; border-radius: 0; }
+    .sw.bind { background: rgba(245,158,11,0.35); } .sw.ceiling { background: rgba(245,158,11,0.6); }
+    .sw.exo { background: repeating-linear-gradient(135deg, rgba(156,163,175,0.5) 0 2px, transparent 2px 6px); }
+    .sw.none { background: rgba(55,65,81,0.8); }
+    /* limits */
+    .strip { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+    .strip-name { flex: 0 0 190px; } .strip-now { flex: 0 0 130px; text-align: right; font-variant-numeric: tabular-nums; }
+    .track { flex: 999 1 520px; min-width: 0; position: relative; height: 56px; border-radius: 6px; background: #0b1220; overflow: hidden; cursor: crosshair; user-select: none; }
+    .track svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .track .c-bind { fill: rgba(245,158,11,0.30); } .track .c-ceiling { fill: rgba(245,158,11,0.5); }
+    .track .c-exo { fill: url(#beHatch); } .track .c-none { fill: rgba(55,65,81,0.55); }
+    .track .budget { stroke: #9ca3af; stroke-width: 1.5; stroke-dasharray: 6 5; vector-effect: non-scaling-stroke; }
+    .track .level { fill: none; stroke: #3987e5; stroke-width: 2; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+    .brush { position: absolute; top: 0; bottom: 0; background: rgba(147,197,253,0.18); border-left: 1px solid #93c5fd; border-right: 1px solid #93c5fd; pointer-events: none; }
+    .axis { display: flex; justify-content: space-between; padding-left: 202px; padding-right: 142px; font-size: 12px; color: #9ca3af; }
+    .axis.full { padding: 0; }
+    details > summary { cursor: pointer; font-size: 12px; color: #9ca3af; }
+    details[open] > summary { margin-bottom: 10px; }
+    /* wants */
+    .bars { position: relative; display: flex; gap: 3px; align-items: flex-end; height: 220px; border-bottom: 1px solid #374151; cursor: crosshair; user-select: none; }
+    .bar { flex: 1 1 0; min-width: 0; height: 100%; display: flex; flex-direction: column-reverse; gap: 1px; }
+    .seg { flex: 0 0 auto; } .seg.ghost { border: 1.5px dashed #9ca3af; border-radius: 4px 4px 0 0; box-sizing: border-box; }
+    /* heatmap */
+    .hm-row { display: flex; gap: 3px; align-items: center; margin-bottom: 3px; }
+    .hm-day { flex: 0 0 44px; font-size: 12px; color: #9ca3af; font-variant-numeric: tabular-nums; }
+    .cell { flex: 1 1 0; min-width: 8px; height: 16px; border-radius: 3px; }
+    .hm-axis { display: flex; padding-left: 47px; font-size: 12px; color: #9ca3af; } .hm-axis span { flex: 1 1 0; }
+    .ramp { display: flex; gap: 6px; align-items: center; font-size: 12px; color: #9ca3af; } .ramp .sw { width: 16px; margin: 0; }
+    /* money */
+    .figs { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-end; }
+    .kwh { display: flex; gap: 2px; align-items: flex-end; height: 120px; border-bottom: 1px solid #374151; }
+    .kbar { flex: 1 1 0; min-width: 0; background: #3987e5; border-radius: 4px 4px 0 0; } .kbar.partial { background: #184f95; }
+    .axis3 { display: flex; justify-content: space-between; font-size: 12px; color: #9ca3af; }
+    /* horizontal bars */
+    .hbar { display: flex; gap: 10px; align-items: center; margin-bottom: 6px; }
+    .hbar-label { flex: 0 0 230px; font-size: 13px; color: #d1d5db; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .hbar-track { position: relative; flex: 1 1 auto; height: 10px; border-radius: 5px; background: #1f2937; overflow: hidden; }
+    .hbar-track > span { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 5px; }
+    .hbar-text { flex: 0 0 120px; text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; }
+    ul.plain { margin: 0; padding-left: 18px; font-size: 13px; color: #d1d5db; }
+    /* tables */
+    .scroll { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; min-width: 640px; }
+    thead tr { text-align: left; font-size: 12px; color: #9ca3af; } th, td { padding: 9px 10px; vertical-align: top; }
+    thead th { font-weight: 500; } tbody tr { border-top: 1px solid #1f2937; } tbody th { text-align: left; font-weight: 600; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; } .nowrap { white-space: nowrap; }
+    tr[data-dec] { cursor: pointer; } tr[data-dec]:hover { background: #0f1a33; } tr.sel { background: #172554 !important; }
+    .linkish { padding: 0; border: 0; background: none; color: #e5e7eb; font: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-decoration-color: #4b5563; text-underline-offset: 3px; }
+    .why-row { border-top: 1px solid #1f2937; padding-top: 10px; display: flex; flex-wrap: wrap; gap: 12px; }
+    .why-row > .strong { flex: 0 0 170px; } .why-row > .mono { flex: 999 1 460px; min-width: 0; }
+    /* drill-down */
+    .dd { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+    .dd > .card { flex: 1 1 360px; } .dd > .card.list { flex: 999 1 560px; padding: 0; overflow-x: auto; }
+    .search { display: flex; flex-direction: column; gap: 4px; flex: 1 1 260px; max-width: 420px; }
+    .search input { min-height: 40px; padding: 0 12px; border-radius: 8px; border: 1px solid #374151; background: #111827; color: #e5e7eb; font: inherit; }
+    ol.life { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #9ca3af; }
+    ol.life li { display: flex; gap: 10px; align-items: baseline; } ol.life li.done { color: #e5e7eb; }
+    ol.life .dot { flex: 0 0 10px; height: 10px; border-radius: 50%; border: 1.5px solid #6b7280; box-sizing: border-box; }
+    ol.life li.done .dot { background: #3987e5; border-color: #3987e5; }
+    .box { background: #0b1220; border-radius: 8px; padding: 12px; font-size: 12.5px; }
+    #beTip { position: fixed; pointer-events: none; z-index: 20; max-width: 300px; font-size: 12px; line-height: 1.5; background: #0d0d0d; border: 1px solid #383835; border-radius: 6px; padding: 8px 10px; color: #e5e7eb; }
+  </style>
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs><pattern id="beHatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect width="2" height="7" fill="rgba(156,163,175,0.5)"></rect></pattern></defs>
+  </svg>
+  <div class="wrap">
+    <header>
+      <div>
+        <div class="eyebrow">Hub · Body economy</div>
+        <h1>How Orion's body is doing</h1>
+        <p class="muted" style="margin:4px 0 0;max-width:720px">Each limit Orion lives inside, what it costs right now, and what Orion wanted but did not get. Prices are in shadow: they are computed and logged, but nothing obeys them yet.</p>
+        <div id="beStatus" class="status">loading…</div>
+      </div>
+      <div class="group" role="group" aria-label="Time window">
+        <button type="button" class="btn" data-window="24h" aria-pressed="true">24 h</button>
+        <button type="button" class="btn" data-window="7d" aria-pressed="false">7 d</button>
+        <button type="button" class="btn" data-window="30d" aria-pressed="false">30 d</button>
+      </div>
+    </header>
+
+    <section aria-label="Right now">
+      <div id="beTiles" class="tiles"></div>
+    </section>
+
+    <section class="card" aria-labelledby="beLimitsH">
+      <div class="card-head">
+        <h2 id="beLimitsH">1 · Limits, hour by hour</h2>
+        <div class="legend">
+          <span class="key"><span class="sw line"></span>level</span>
+          <span class="key"><span class="sw dash"></span>its line</span>
+          <span class="key"><span class="sw bind"></span>binding: this limit sets the price</span>
+          <span class="key"><span class="sw ceiling"></span>at its ceiling</span>
+          <span class="key"><span class="sw exo"></span>over its line for reasons Orion does not control</span>
+          <span class="key"><span class="sw none"></span>no reading</span>
+        </div>
+      </div>
+      <div id="beLimitRows"></div>
+      <div id="beLimitAxis" class="axis"></div>
+      <div id="beLimitIdle"></div>
+      <p class="muted small" style="margin:0">Hover for the hour, the reading and its state. Drag across a row to pick a time window: the single decisions below follow it.</p>
+    </section>
+
+    <section class="card" aria-labelledby="beWantsH">
+      <div class="card-head">
+        <h2 id="beWantsH">2 · What Orion wanted, and what got funded</h2>
+        <div id="beWantsLegend" class="legend"></div>
+      </div>
+      <div id="beWantsChart"></div>
+      <div id="beWantsAxis" class="axis full"></div>
+      <p class="muted small" style="margin:0">Funded wants stacked by family (top 4, then other). The dashed ghost on top is what was wanted but deferred. Local time.</p>
+    </section>
+
+    <div class="row2">
+      <section class="card" aria-labelledby="beRhythmH">
+        <h2 id="beRhythmH">3 · When heavy work runs</h2>
+        <p class="muted small" style="margin:0">Heavy acts per hour, local time. If the economy works, heavy work drifts toward cool hours.</p>
+        <div id="beRhythm"></div>
+      </section>
+      <section class="card" aria-labelledby="beMoneyH">
+        <h2 id="beMoneyH">4 · Money this month</h2>
+        <div id="beMoney"></div>
+      </section>
+    </div>
+
+    <div class="row2">
+      <section class="card" aria-labelledby="beWasteH">
+        <h2 id="beWasteH">5 · Wasted GPU time</h2>
+        <p class="muted small" style="margin:0">Time a lane was held by work that then failed. That time bought nothing.</p>
+        <div id="beWaste"></div>
+      </section>
+      <section class="card" aria-labelledby="beQueueH">
+        <h2 id="beQueueH">6 · How long work waits for a lane</h2>
+        <div id="beQueue"></div>
+      </section>
+    </div>
+
+    <div class="row2">
+      <section class="card" aria-labelledby="beVramH">
+        <h2 id="beVramH">7 · GPU memory headroom</h2>
+        <p class="muted small" style="margin:0">One bar per card, with the roles loaded on it. Red means less than a tenth is free.</p>
+        <div id="beVram"></div>
+      </section>
+      <section class="card" aria-labelledby="beClaudeH">
+        <h2 id="beClaudeH">8 · Claude spend</h2>
+        <div id="beClaude"></div>
+      </section>
+    </div>
+
+    <section class="card" aria-labelledby="beUnitsH">
+      <div class="card-head">
+        <h2 id="beUnitsH">9 · Unit costs: what one thing costs</h2>
+        <div class="legend">
+          <span><span class="chip chip-good">measured</span> read from a meter</span>
+          <span><span class="chip chip-info">derived</span> computed from measured parts</span>
+          <span><span class="chip chip-muted">not measured</span> no meter for it yet</span>
+        </div>
+      </div>
+      <div id="beUnits" class="scroll"></div>
+    </section>
+
+    <section class="card" aria-labelledby="beValueH">
+      <h2 id="beValueH">10 · Value per dollar, by family</h2>
+      <p class="muted small" style="margin:0">What one act of a family is worth (its own value measure) against what it costs. Same status chips as unit costs.</p>
+      <div id="beValue" class="scroll"></div>
+    </section>
+
+    <section class="card" aria-labelledby="beSeesH">
+      <h2 id="beSeesH">11 · What Orion sees about their body</h2>
+      <p class="muted small" style="margin:0">Verbatim reasons from the latest tick, per limit. The stance-cue strain sentence is not wired into Orion's turns yet (Patch F), so there is no "told in a turn" line to show.</p>
+      <div id="beSees"></div>
+    </section>
+
+    <section class="card" aria-labelledby="beDecH" id="beDecisions">
+      <div class="card-head">
+        <h2 id="beDecH">Single decisions</h2>
+        <span class="muted small">Each row is one want and its bid. All decisions are shadow: logged, not obeyed.</span>
+      </div>
+      <div class="group" style="align-items:flex-end">
+        <div class="group" role="group" aria-label="Outcome">
+          <button type="button" class="btn" data-outcome="all" aria-pressed="true">All</button>
+          <button type="button" class="btn" data-outcome="deferred" aria-pressed="false">Deferred</button>
+          <button type="button" class="btn" data-outcome="funded" aria-pressed="false">Funded</button>
+        </div>
+        <div class="search">
+          <label for="beWhyWait" class="muted small">Why did Orion wait? Type a family</label>
+          <input id="beWhyWait" type="search" placeholder="outreach, curiosity, painting…" autocomplete="off" />
+        </div>
+        <div id="beCount" class="muted small" style="padding-bottom:10px"></div>
+      </div>
+      <div class="group" style="align-items:center">
+        <span id="beBrushNote" class="muted small"></span>
+        <button type="button" id="beBrushClear" class="btn hidden">Clear time selection</button>
+      </div>
+      <div class="dd">
+        <div class="card list">
+          <table>
+            <thead><tr><th scope="col">Time (local)</th><th scope="col">Family</th><th scope="col">Tier</th><th scope="col">Outcome</th><th scope="col">Blocked by</th><th scope="col" style="text-align:right">Net</th></tr></thead>
+            <tbody id="beDecRows"></tbody>
+          </table>
+          <div id="beDecEmpty"></div>
+        </div>
+        <aside class="card" id="beDetail" aria-labelledby="beDetailTitle"></aside>
+      </div>
+    </section>
+  </div>
+  <div id="beTip" class="hidden" role="tooltip"></div>
+  <script>
+    // The Hub loads this page as body-economy.html?v=<asset version>; reuse it so a redeploy never
+    // runs a cached body-economy.js against a newer API.
+    (function () {
+      var s = document.createElement("script");
+      s.src = "/static/js/body-economy.js" + location.search;
+      s.onload = function () { window.BodyEconomyTab.init(document); };
+      document.body.appendChild(s);
+    })();
+  </script>
+</body>
+</html>

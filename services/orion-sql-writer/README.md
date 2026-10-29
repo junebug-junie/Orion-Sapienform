@@ -37,6 +37,8 @@ Configured via `SQL_WRITER_SUBSCRIBE_CHANNELS` (JSON list).
 
 **Bid ledger (2026-10-27, body economy Patch C1, SHADOW):** `physiology.want.decision.v1` on `orion:physiology:want:decision` (one per `POST /physiology/bid` on orion-durable-runs) -> `want_ledger` (`WantLedgerSQL`, PK `decision_id` = `<want_id>@<decided_at>`, insert-only). Flat columns for the shadow-vs-real queries (family, tier, outcome, reason, lane, net, binding_constraint, shadow) plus `decision` (jsonb) with the full decision and its want. Table: `services/orion-sql-db/manual_migration_want_ledger_v1.sql`. The channel is force-subscribed in code; the route is a code default (`route_map` merges defaults), but the operator `.env` JSON lists must still carry both entries or the deploy gate's structured-drift check refuses.
 
+**Per-call token ledger (2026-10-29):** `llm.call.usage.v1` on `orion:llm:call:usage` -> `llm_call_usage` (`LlmCallUsageSQL`, PK `call_id`, insert-only). One row per LLM call that reached a model. Producers: orion-llm-gateway (`recorder='gateway'`, every call it places) and the harness governor's warm FCC relay (`recorder='harness_relay'`, FCC-path turns only, whose gateway row has no correlation id). Totals over time: `WHERE recorder='gateway'`. One turn or act: `WHERE correlation_id=...`. `prompt_tokens` includes `cached_prompt_tokens`. Indexes: `(recorded_at)`, `(correlation_id, recorded_at)`, `(route, recorded_at)`. Table: `services/orion-sql-db/manual_migration_llm_call_usage_v1.sql`. Channel force-subscribed in code; route is a code default; the operator `.env` JSON lists carry both entries.
+
 **Field-channel anomaly scores (2026-10-13):** `field_channel_anomaly.score.v1` on `orion:field_channel:anomaly_score` (produced every 60s by `orion-field-digester`'s mood-arc anomaly scorer, flagged or not) is appended to `field_channel_anomaly_score` (`FieldChannelAnomalyScoreSQL`, PK `correlation_id`, insert-only). Created by `Base.metadata.create_all` at boot. Calibration data for the telemetry_anomaly trigger threshold: before this table only flagged windows survived. ~1,440 rows/day; no retention policy yet. The channel is force-subscribed in code (`effective_subscribe_channels`), so a stale `SQL_WRITER_SUBSCRIBE_CHANNELS` in a local `.env` still receives it.
 
 **Transport baseline hourly readings (2026-09-29):** `transport_baseline.hourly.v1` on `orion:equilibrium:transport_baseline:hourly` (produced by `orion-equilibrium-service`'s per-hop transport baseline gate, one row per (service, instance, hop, UTC hour)) is appended to `transport_baseline_hourly` (`TransportBaselineHourlySQL`, PK `summary_id`, insert-only). Created by `Base.metadata.create_all` at boot (new table, no manual migration). This service must be deployed **before** equilibrium publishes, or rows land in the fallback log. Read by `scripts/analysis/grade_transport_baseline.py` (spec 2026-09-24 acceptance check 1). ~1,500 rows/day; no retention policy yet.
@@ -1165,6 +1167,25 @@ the open), and `gpu_slot_s_by_lane` = lease time per pool role from `gpu_pool_ev
 once; the read runs in its own savepoint). Producer values win. `substrate_action_outcomes.latency_ms`
 still comes only from a producer-reported `seconds`. Rollout is consumer-first: producers keep
 sending V1 until every reader of `orion:grammar:event` / `grammar_events` runs V2-aware code.
+
+**Energy, money and heat filled on close (2026-10-29).** Same leases, same window, own savepoint
+(`orion/grammar/act_energy_fill.py`, arithmetic in `orion/energy/act_energy.py`). Fields the
+physiology report reads from `grammar_acts.cost_json`:
+
+- `wh_by_host`: GPU watt-hours ABOVE IDLE per host. Each leased card's `gpu{index}_watts`
+  (`orion_biometrics_summary`, ~30 s) is interpolated per second, minus the card's idle floor
+  (p05 of its own trailing 24 h), and split equally among the leases holding the card at that
+  second. Card -> host and nvidia-smi index come from `config/gpu_pool.yaml` (baked into the image).
+- `usd`: Wh / 1000 x the latest `energy_cost_accrued.marginal_usd_per_kwh` (<= 7 days old).
+- `heat_c_by_host`: `config/physiology/heat_sensitivity.yaml` sensitivity x Wh / 100 (an act's Wh
+  is its share of that hour's mean watts, the fit's regressor). A host with no usable fit is absent.
+- `basis`: per field, in words: cards, samples in window, share, idle floor, rate, fit, or why
+  not. `basis.cpu` says CPU is not charged per act (it is measured per container in biometrics).
+
+Absent, never 0: no lease -> nothing written; a card with no reading or no 30 min of history ->
+`basis.wh = "unmeasured: <reason>"` and no Wh. A 30 s sample can land on a peak, so one act scatters;
+a family's total tracks the 1 Hz power-intent meter (`python3 evals/act_energy_vs_power_intent.py`).
+Kill switch: `SQL_WRITER_ACT_ENERGY_COST_ENABLED=false`.
 
 **Rung 3: acts bound to the workspace winner (2026-10-21).** At open, an act whose actor answers a
 world-first workspace source is stamped with the winning loop it was opened under

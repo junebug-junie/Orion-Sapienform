@@ -1,0 +1,1 @@
+{"id":"chatcmpl-nWWda5SHAJ36Gjthe59ejyVzVDRcldkz","type":"message","role":"assistant","content":[{"type":"text","text":"Hi! How can I help you today"}],"model":"/models/gguf/Qwen3.6-35B-A3B-UD-Q5_K_M.gguf","stop_reason":"max_tokens","stop_sequence":null,"usage":{"cache_read_input_tokens":10,"input_tokens":4,"output_tokens":8}}

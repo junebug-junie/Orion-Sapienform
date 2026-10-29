@@ -125,3 +125,30 @@ def test_letterless_replies_are_not_speech():
         assert is_injectable(line), line
     # Plumbing errors posted as speech (2026-08-19 class).
     assert not is_injectable("[Error: llamacpp timed out after waiting]")
+
+
+def test_empty_conversation_gets_an_opener_prompt_not_a_reply_prompt():
+    # Live 2026-10-29: "(no partner line yet)" + "reply with an empty string" made the
+    # model reason over whether to speak; the reasoning and "[]" were posted.
+    p = _perception_in_convo()
+    p.active_conversation["messages"] = []
+    prompt = build_speech_prompt(p, "orion")
+    assert "Say your opening line to Juniper" in prompt
+    assert "(no partner line yet)" not in prompt
+    assert "answer this latest line" not in prompt
+    assert "empty string" not in prompt
+
+
+def test_reply_prompt_never_offers_an_empty_reply():
+    assert "empty string" not in build_speech_prompt(_perception_in_convo(), "orion")
+
+
+def test_partner_named_orion_is_still_answered():
+    # Review 2026-10-29: the name check skipped a partner called "Orion", so Orion
+    # sent an opener instead of answering a live question.
+    p = _perception_in_convo()
+    p.active_conversation["messages"] = [
+        {"author": "Orion", "author_id": "p9", "text": "where are you headed?"},
+    ]
+    assert latest_partner_line(p, "orion") == "where are you headed?"
+    assert "Your task is to answer this latest line" in build_speech_prompt(p, "orion")

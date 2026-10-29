@@ -140,7 +140,7 @@ def test_a_running_bench_is_left_alone(rig, capsys):
     finally:
         held.close()
     assert rig.limit(2) == 250.0
-    assert "power bench is running, skipped" in capsys.readouterr().out
+    assert "holds the card, skipped" in capsys.readouterr().out
 
 
 def test_remove_puts_listed_cards_back_at_their_default(rig):
@@ -179,3 +179,69 @@ def test_units_wire_apply_remove_and_the_check(monkeypatch):
 
 def test_unknown_verb_is_usage():
     assert _main("frobnicate") == 2
+
+
+def test_remove_waits_for_a_held_card_and_fails_loudly_instead_of_skipping(rig, capsys, monkeypatch):
+    # Review finding: a check (or bench) holding the lock made `remove` skip and report success,
+    # leaving the card capped after a rollback.
+    rig.set(2, 150.0)
+    monkeypatch.setattr(gpl, "REMOVE_WAIT_S", 0.2)
+    held = open(gpl.LOCK_DIR / "gpu-power-bench-2.lock", "w")
+    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        assert _main("remove") == 1
+    finally:
+        held.close()
+    assert rig.limit(2) == 150.0
+    assert "NOT reset to default" in capsys.readouterr().out
+    assert _main("remove") == 0  # once the holder lets go, the reset goes through
+    assert rig.limit(2) == 250.0
+
+
+def test_uninstall_resets_explicitly_before_deleting(monkeypatch, capsys):
+    # Review finding: ExecStop never runs for a oneshot whose boot apply failed, so uninstall
+    # deleted everything and left the card capped.
+    monkeypatch.setenv("DRY_RUN", "1")
+    assert _main("uninstall") == 0
+    lines = capsys.readouterr().out.splitlines()
+    timer = lines.index("systemctl disable --now orion-gpu-power-limits.timer")
+    reset = lines.index(f"{gpl.SBIN} remove")
+    gone = next(i for i, line in enumerate(lines) if line.startswith("rm -f"))
+    assert timer < reset < gone
+
+
+def test_uninstall_keeps_units_when_the_reset_fails(monkeypatch, capsys):
+    calls = []
+
+    def run(cmd):
+        calls.append(cmd)
+        if cmd[0] == gpl.SBIN:
+            raise gpl.subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr(gpl, "_run", run)
+    assert _main("uninstall") == 1
+    assert not any(c[0] == "rm" for c in calls)
+    assert "NOT all reset" in capsys.readouterr().err
+
+
+def test_timer_stops_with_the_service():
+    # Review finding: stopping only the service was undone by the next 5-minute check.
+    timer = (_REPO / "scripts" / "ops" / "orion-gpu-power-limits.timer").read_text()
+    assert "PartOf=orion-gpu-power-limits.service" in timer
+
+
+def test_default_sentinel_uncaps_a_card_through_the_config(rig):
+    rig.set(2, 150.0)
+    rig.write({"2": {"watts": "default"}})
+    assert _main("apply") == 0
+    assert rig.limit(2) == 250.0
+
+
+@pytest.mark.parametrize("bad", ['["not", "an", "object"]',
+                                 '{"host": "circe", "cards": {"2": {"watts": 150}, "02": {"watts": 100}}}',
+                                 '{"host": "circe", "cards": {"2": {"watts": true}}}',
+                                 '{"host": "circe", "cards": {"2": {"watts": 150.5}}}'])
+def test_ambiguous_configs_are_refused(rig, bad):
+    gpl.CONFIG.write_text(bad)
+    assert _main("apply") == 1
+    assert rig.sets() == []

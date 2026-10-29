@@ -17,7 +17,10 @@ there, and writing is 14% slower (PR #2963). A small job on circe keeps the limi
 
 Design: `docs/superpowers/specs/2026-10-29-gpu-power-cap-design.md`.
 
-## Install (once, after the PR is merged and circe has pulled main)
+## Install (once, right after the PR is merged and circe has pulled main)
+
+Install soon after the pull: from the moment circe has the config, the power bench expects gpu2 at
+150 W and refuses to run while it is still at 250 W.
 
 ```bash
 ssh -t circe@circe sudo /mnt/scripts/Orion-Sapienform/scripts/ops/gpu_power_limits.py install
@@ -55,9 +58,9 @@ and in `gpus[]` of the biometrics sample.
 3. The next 5-minute check applies it. To apply at once instead:
    `ssh -t circe@circe sudo systemctl restart orion-gpu-power-limits.service`
 
-Removing a card from the file stops the job from managing that card, but it does not reset it. Run
-`sudo nvidia-smi -i <N> -pl <default>` once, or stop the service before the edit (rollback below
-resets every listed card).
+To un-cap a card, set its entry to `"watts": "default"`; the next check puts it back at its default
+and keeps it there. Deleting the entry instead stops managing the card and leaves whatever limit it
+had.
 
 ## Rollback
 
@@ -65,12 +68,18 @@ resets every listed card).
 ssh -t circe@circe sudo /mnt/scripts/Orion-Sapienform/scripts/ops/gpu_power_limits.py uninstall
 ```
 
-Stopping the service runs `remove`, so every listed card goes back to its default limit (gpu2 to
-250 W). Then the installed copies are deleted. To pause without uninstalling:
+Uninstall turns the checks off, resets every listed card to its default (gpu2 to 250 W), and only
+then deletes the installed copies. If a card cannot be reset (for example a power bench is still
+running on it after 2 minutes), it says so and leaves everything installed; run it again later.
+
+To pause without uninstalling (stopping the service resets the cards and also stops the timer):
 
 ```bash
-ssh -t circe@circe sudo systemctl disable --now orion-gpu-power-limits.timer orion-gpu-power-limits.service
+ssh -t circe@circe sudo systemctl stop orion-gpu-power-limits.service
 ```
+
+That lasts until the next boot or `systemctl start`. To keep it off across reboots, use `disable --now`
+on both the service and the timer.
 
 ## Running the power bench on a capped card
 

@@ -216,7 +216,7 @@ def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
         out["gpu_watts_total"] = totals[0]
         out["gpu_count"] = float(totals[1])  # so a consumer can check the total against the box
 
-    # GPU die temperature (nvidia-smi temperature.gpu, gpu_host_stats.sh's last CSV column).
+    # GPU die temperature (nvidia-smi temperature.gpu, gpu_host_stats.sh's temperature_gpu_c column).
     # Per card as gpu{index}_temp_c so orion-hardware-watch's per-GPU heat rule reads indexed
     # history from orion_biometrics_summary, plus the hottest card. A card whose reading is
     # missing or not a number is omitted (absent-is-not-zero); a GPU with no usable index is

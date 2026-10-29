@@ -7,10 +7,15 @@ rollback): docs/runbooks/2026-10-29-circe-gpu-power-limits.md.
 A card that is not listed in the config is never touched. For each listed card:
   apply   set the target limit if the card is not already at it, and log the change. The timer runs
           this every 5 minutes, so a reboot, driver reload or hand-typed `nvidia-smi -pl` is undone.
-  remove  put the card back at its default limit (the unit's ExecStop: stopping the unit is rollback).
+  remove  put the card back at its default limit. It waits (up to REMOVE_WAIT_S) for a check or a
+          bench that holds the card's lock, and fails loudly rather than skip: a reset must not be lost.
+          It is the service's ExecStop; the timer is PartOf the service, so stopping the service stops
+          the checks too, and `uninstall` runs it explicitly.
   status  one JSON line per card: target, current, default. Writes nothing.
 A target outside the card's [min, max] range, or a config written for another host, is refused
-and the card is left alone. While scripts/gpu_power_bench.py holds its per-card lock, the card is
+and the card is left alone. `"watts": "default"` holds a card at its default limit: the way to
+un-cap a card through a PR alone (a card simply deleted from the file is no longer managed, and
+keeps whatever limit it had). While scripts/gpu_power_bench.py holds its per-card lock, the card is
 skipped; this job holds that same lock while it sets a limit, so the two never interleave.
 
 Usage (as root on circe), one line from athena:
@@ -32,12 +37,14 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 CONFIG = Path(os.environ.get("ORION_GPU_POWER_LIMITS_CONFIG",
                              "/mnt/scripts/Orion-Sapienform/config/gpu_power_limits.json"))
 LOCK_DIR = Path(os.environ.get("ORION_GPU_POWER_LIMITS_LOCK_DIR", "/run"))  # the bench's --lock-dir
 SMI_TIMEOUT_S = 30
+REMOVE_WAIT_S = 120  # how long `remove` waits for a running check (or bench) to let go of a card
 SBIN = "/usr/local/sbin/orion-gpu-power-limits"
 UNIT_DIR = "/etc/systemd/system"
 UNITS = ("orion-gpu-power-limits.service", "orion-gpu-power-limits-check.service",
@@ -48,25 +55,34 @@ class ConfigError(ValueError):
     pass
 
 
-def load_config(path: Path | None = None) -> dict[int, int]:
-    """{nvidia-smi index: watts}. Raises ConfigError for a file this job must not act on."""
+def load_config(path: Path | None = None) -> dict[int, int | None]:
+    """{nvidia-smi index: watts, or None for the card's default}. Raises ConfigError for a file this
+    job must not act on."""
     path = CONFIG if path is None else path  # looked up per call, not frozen at import
     try:
         raw = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise ConfigError(f"cannot read {path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{path}: top level must be an object")
     host = socket.gethostname()
     if raw.get("host") != host:
         raise ConfigError(f"{path} is for host {raw.get('host')!r}, this is {host!r}")
     cards = raw.get("cards")
     if not isinstance(cards, dict):
         raise ConfigError(f"{path}: 'cards' must be an object")
-    out: dict[int, int] = {}
+    out: dict[int, int | None] = {}
     for key, entry in cards.items():
         try:
-            out[int(key)] = int(entry["watts"])
+            gpu = int(key)
+            watts = entry["watts"]
+            if isinstance(watts, bool) or not (watts == "default" or isinstance(watts, int)):
+                raise ValueError(f"watts {watts!r}")
         except (TypeError, ValueError, KeyError) as exc:
-            raise ConfigError(f"{path}: card {key!r} needs an integer 'watts' ({exc})") from exc
+            raise ConfigError(f"{path}: card {key!r} needs integer 'watts' or \"default\" ({exc})") from exc
+        if gpu in out:
+            raise ConfigError(f"{path}: card {gpu} is listed twice")
+        out[gpu] = None if watts == "default" else watts
     return out
 
 
@@ -87,23 +103,34 @@ def set_limit(gpu: int, watts: float) -> None:
     smi("-i", str(gpu), "-pl", f"{watts:.0f}")
 
 
-def card_lock(gpu: int):
-    """The bench's per-card flock (scripts/gpu_power_bench.py). None while a bench holds it."""
+def card_lock(gpu: int, wait_s: float = 0.0):
+    """The bench's per-card flock (scripts/gpu_power_bench.py), also taken by every run of this job.
+    None if someone else still holds it after `wait_s` seconds."""
     fh = open(LOCK_DIR / f"gpu-power-bench-{gpu}.lock", "w")  # noqa: SIM115
-    try:
-        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        fh.close()
-        return None
-    return fh
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                fh.close()
+                return None
+            time.sleep(1.0)
 
 
 def drive(gpu: int, target_of: str, target: int | None = None) -> bool:
-    """Move one card to `target` (apply) or its default (remove). True when it ends there or was
-    skipped for a running bench; False on a refusal or an nvidia-smi failure."""
-    lock = card_lock(gpu)
+    """Move one card to `target`, or its default when None. apply: True when it ends there or a
+    bench (or another run of this job) holds the card -- the next check catches up. remove: waits
+    for the lock and returns False if it never comes, so a lost reset is a failure, not a skip."""
+    removing = target_of == "remove"
+    lock = card_lock(gpu, REMOVE_WAIT_S if removing else 0.0)
     if lock is None:
-        print(f"gpu{gpu}: power bench is running, skipped", flush=True)
+        if removing:
+            print(f"gpu{gpu}: NOT reset to default: its lock was still held after {REMOVE_WAIT_S} s "
+                  f"(a power bench is running?); run `remove` again when it ends", flush=True)
+            return False
+        print(f"gpu{gpu}: power bench (or another check) holds the card, skipped", flush=True)
         return True
     try:
         cur, default, lo, hi = read_limits(gpu)
@@ -125,23 +152,24 @@ def drive(gpu: int, target_of: str, target: int | None = None) -> bool:
         lock.close()
 
 
-def apply(cards: dict[int, int]) -> int:
+def apply(cards: dict[int, int | None]) -> int:
     ok = [drive(gpu, "drift" if os.environ.get("ORION_GPU_POWER_LIMITS_CHECK") else "apply", watts)
           for gpu, watts in sorted(cards.items())]
     return 0 if all(ok) else 1
 
 
-def remove(cards: dict[int, int]) -> int:
+def remove(cards: dict[int, int | None]) -> int:
     ok = [drive(gpu, "remove") for gpu in sorted(cards)]
     return 0 if all(ok) else 1
 
 
-def status(cards: dict[int, int]) -> int:
+def status(cards: dict[int, int | None]) -> int:
     for gpu, watts in sorted(cards.items()):
         try:
             cur, default, lo, hi = read_limits(gpu)
-            row = {"gpu": gpu, "target_w": watts, "current_w": cur, "default_w": default,
-                   "at_target": round(cur) == round(watts)}
+            want = default if watts is None else watts
+            row = {"gpu": gpu, "target_w": want, "current_w": cur, "default_w": default,
+                   "at_target": round(cur) == round(want)}
         except (subprocess.SubprocessError, OSError, ValueError) as exc:
             row = {"gpu": gpu, "target_w": watts, "error": repr(exc)}
         print(json.dumps(row), flush=True)
@@ -170,12 +198,22 @@ def install() -> int:
 
 
 def uninstall() -> int:
+    """Checks off first, then an explicit reset (ExecStop only runs if the service is active, and a
+    oneshot whose boot apply failed is not), then the units and the binary go."""
+    failed = False
     for cmd in (["systemctl", "disable", "--now", "orion-gpu-power-limits.timer"],
+                ["systemctl", "stop", "orion-gpu-power-limits-check.service"],
+                [SBIN, "remove"],
                 ["systemctl", "disable", "--now", "orion-gpu-power-limits.service"]):
         try:
             _run(cmd)
-        except subprocess.CalledProcessError:
-            pass
+        except (subprocess.CalledProcessError, OSError) as exc:
+            failed |= cmd[0] == SBIN
+            print(f"{' '.join(cmd)}: {exc}", file=sys.stderr)
+    if failed:
+        print("cards were NOT all reset; units left installed. Fix the cause and run uninstall again.",
+              file=sys.stderr)
+        return 1
     _run(["rm", "-f", SBIN, *(f"{UNIT_DIR}/{u}" for u in UNITS)])
     _run(["systemctl", "daemon-reload"])
     return 0

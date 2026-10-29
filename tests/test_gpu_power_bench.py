@@ -133,7 +133,7 @@ def _argv(tmp_path: Path, caps: str = "200,150") -> list[str]:
             "--lock-dir", str(tmp_path)]
 
 
-@pytest.mark.parametrize("exc", [RuntimeError("server went away"), SystemExit(143), KeyboardInterrupt()])
+@pytest.mark.parametrize("exc", [RuntimeError("unexpected bug"), SystemExit(143), KeyboardInterrupt()])
 def test_limit_is_restored_on_error_sigterm_and_ctrl_c(monkeypatch, tmp_path, exc) -> None:
     calls = _patch_main(monkeypatch)
 
@@ -213,11 +213,14 @@ def test_wait_for_server_retries_until_it_answers(monkeypatch) -> None:
     assert bench.wait_for_server("http://x", 60) is True
 
 
-def test_server_leaving_mid_run_keeps_samples_and_restores(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("err", [bench.urllib.error.URLError(ConnectionRefusedError(111, "refused")),
+                                 TimeoutError("timed out"), bench.http.client.IncompleteRead(b""),
+                                 KeyError("timings")])
+def test_server_leaving_mid_run_keeps_samples_and_restores(monkeypatch, tmp_path, err) -> None:
     calls = _patch_main(monkeypatch)
 
     def gone(*_a, **_k):
-        raise bench.urllib.error.URLError(ConnectionRefusedError(111, "refused"))
+        raise err
 
     monkeypatch.setattr(bench, "one_request", gone)
     assert bench.main(_argv(tmp_path)) == 1
@@ -225,3 +228,27 @@ def test_server_leaving_mid_run_keeps_samples_and_restores(monkeypatch, tmp_path
     import json
     meta = json.loads((tmp_path / "out" / "summary.json").read_text())["meta"]
     assert meta["aborted"].startswith("model server went away")
+
+
+def test_slots_failing_before_start_is_a_clean_refusal(monkeypatch, tmp_path) -> None:
+    calls = _patch_main(monkeypatch)
+
+    def no_slots(base, ignore=None):
+        raise bench.BenchAbort("no is_processing")
+
+    monkeypatch.setattr(bench, "busy_slots", no_slots)
+    assert bench.main(_argv(tmp_path)) == 2
+    monkeypatch.setattr(bench, "busy_slots", lambda base, ignore=None: (_ for _ in ()).throw(TimeoutError()))
+    assert bench.main(_argv(tmp_path)) == 3
+    assert calls == []
+
+
+def test_ctrl_c_while_waiting_for_the_server_is_clean(monkeypatch, tmp_path) -> None:
+    calls = _patch_main(monkeypatch)
+
+    def interrupted(base, wait_s):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(bench, "wait_for_server", interrupted)
+    assert bench.main(_argv(tmp_path)) == 130
+    assert calls == []

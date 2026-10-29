@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import csv
 import fcntl
+import http.client
 import json
 import re
 import signal
@@ -55,6 +56,12 @@ HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
 
 class BenchAbort(RuntimeError):
     """The bench cannot produce trustworthy numbers any more; stop and restore the card."""
+
+
+# What a server that unloads, stalls or dies mid-request raises through urllib on Python 3.12:
+# connect errors arrive as URLError, but a read timeout is a bare TimeoutError (OSError), a
+# half-sent reply is an HTTPException or bad JSON, and a reply without timings is a KeyError.
+SERVER_GONE = (urllib.error.URLError, OSError, http.client.HTTPException, json.JSONDecodeError, KeyError)
 
 
 def fixed_prompt() -> str:
@@ -432,10 +439,22 @@ def main(argv: list[str] | None = None) -> int:
     except BlockingIOError:
         print(f"another bench already holds card {args.gpu}", file=sys.stderr)
         return 2
-    if not wait_for_server(base, args.server_wait_s):
+    try:
+        up = wait_for_server(base, args.server_wait_s)
+    except KeyboardInterrupt:
+        print(f"\ninterrupted while waiting; nothing was changed on card {args.gpu}", file=sys.stderr)
+        return 130
+    if not up:
         print(f"model server at {base} never came up; nothing was changed on card {args.gpu}", file=sys.stderr)
         return 3
-    busy_slots(base)  # refuses a server whose /slots cannot show sharing, before any cap is set
+    try:
+        busy_slots(base)  # refuses a server whose /slots cannot show sharing, before any cap is set
+    except BenchAbort as exc:
+        print(f"{exc}; nothing was changed on card {args.gpu}", file=sys.stderr)
+        return 2
+    except SERVER_GONE as exc:
+        print(f"model server went away before the start ({exc!r}); nothing was changed", file=sys.stderr)
+        return 3
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -461,9 +480,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             run_caps(args, base, caps, sampler, samples, meta["dropped"],
                      save=lambda: write_outputs(out, samples, caps, meta))
-        except (urllib.error.URLError, ConnectionError) as exc:
-            # Image generation took the card mid-run (the server unloads), or the server died.
-            meta["aborted"] = f"model server went away: {exc}"
+        except SERVER_GONE as exc:
+            # Image generation took the card mid-run (the server unloads or stalls), or it died.
+            meta["aborted"] = f"model server went away: {exc!r}"
             print(f"\nstopped early, {meta['aborted']}; keeping the {len(samples)} samples so far",
                   file=sys.stderr)
         except BenchAbort as exc:

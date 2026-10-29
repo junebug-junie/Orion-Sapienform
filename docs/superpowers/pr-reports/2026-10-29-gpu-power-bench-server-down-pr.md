@@ -19,7 +19,7 @@ PR #2945's bench assumed the server was up at start and treated a lost server as
 
 ## Files changed
 
-- `scripts/gpu_power_bench.py`: `wait_for_server`, `--server-wait-s`, clean stop on URLError/ConnectionError/BenchAbort with `meta.aborted`, exit 3 (never started) / 1 (stopped early).
+- `scripts/gpu_power_bench.py`: `wait_for_server`, `--server-wait-s`, clean stop on URLError/ConnectionError/BenchAbort with `meta.aborted`, exit 3 (server never up) / 2 (refused) / 1 (stopped early) / 130 (Ctrl+C while waiting).
 - `tests/test_gpu_power_bench.py`: 3 tests.
 - `docs/superpowers/pr-reports/2026-10-29-gpu-power-bench-server-down-pr.md`: this report.
 
@@ -34,7 +34,7 @@ PR #2945's bench assumed the server was up at start and treated a lost server as
 ## Tests run
 
 ```text
-pytest tests/test_gpu_power_bench.py -q -> 25 passed
+pytest tests/test_gpu_power_bench.py -q -> 30 passed
 ```
 
 ## Evals run
@@ -51,7 +51,13 @@ Live: :8016 refused at 01:50 and 02:51 UTC, up at 01:55 (pool role agent-gpu2 "u
 
 ## Review findings fixed
 
-- See PR comments / follow-up commit.
+- Finding: a read timeout (bare TimeoutError on 3.12), half-sent reply or missing timings escaped as a traceback.
+  - Fix: `SERVER_GONE` tuple (URLError, OSError, HTTPException, JSONDecodeError, KeyError) for the clean stop.
+  - Evidence: `test_server_leaving_mid_run_keeps_samples_and_restores` x4.
+- Finding: /slots failing before the start exited 1 ("stopped early") though nothing changed.
+  - Fix: BenchAbort -> 2, server gone -> 3. Evidence: `test_slots_failing_before_start_is_a_clean_refusal`.
+- Finding: Ctrl+C while waiting for the server gave a traceback.
+  - Fix: exit 130 with a plain message. Evidence: `test_ctrl_c_while_waiting_for_the_server_is_clean`.
 
 ## Restart required
 
@@ -65,6 +71,6 @@ No restart required.
 
 ## PR link
 
-<link>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2959
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

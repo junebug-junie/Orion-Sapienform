@@ -44,6 +44,11 @@ jobs:
           set -o pipefail
           pytest -q -rs services/orion-hub/tests/test_walkway_history_browser_smoke.py | tee walkway_history_smoke.out
           if grep -q "SKIPPED" walkway_history_smoke.out; then echo "walkway history smoke skipped -- playwright missing" >&2; exit 1; fi
+      - name: Run Body Economy tab browser smoke (deferred row, brushing, empty states)
+        run: |
+          set -o pipefail
+          pytest -q -rs services/orion-hub/tests/test_body_economy_browser_smoke.py | tee body_economy_smoke.out
+          if grep -q "SKIPPED" body_economy_smoke.out; then echo "body economy smoke skipped -- playwright missing" >&2; exit 1; fi
       - name: Run Orion messages tray browser smoke
         run: |
           set -o pipefail

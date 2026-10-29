@@ -219,15 +219,35 @@ def test_split_long_record_has_no_stump_pieces():
         assert all(p.endswith((" ", ".")) or p is pieces[-1] for p in pieces)   # cut between words
 
 
-def test_failed_generations_are_bounded_only_while_no_batch_is_saved():
-    from orion.curiosity.compaction import MAX_STALLED_GENERATIONS, note_failed_generation
-    state = {"phase": "topics", "batches": [[1]] * 5, "partials": [[]]}
-    assert [note_failed_generation(state) for _ in range(2)] == [1, 2]
-    state["partials"].append([])                 # a generation saved a batch: progress resets it
-    assert note_failed_generation(state) == 1
-    state["phase"], state["batches"], state["partials"] = "topics", [[1]] * 2, []   # a reduction
-    assert note_failed_generation(state) == 1
-    assert [note_failed_generation(state) for _ in range(MAX_STALLED_GENERATIONS - 1)][-1] == MAX_STALLED_GENERATIONS
+def test_only_rejected_model_answers_count_toward_giving_a_window_up():
+    from orion.curiosity.compaction import MAX_STALLED_GENERATIONS, mark_rejected, note_failed_generation
+    r = {"state": {"phase": "topics", "batches": [[1]] * 5, "partials": [[]]}}
+
+    def rejected_generation():
+        r["state"] = mark_rejected(r)["state"]
+        return note_failed_generation(r["state"])
+
+    assert [rejected_generation() for _ in range(2)] == [1, 2]
+    assert note_failed_generation(r["state"]) == 2        # deadline/outage: no mark, no count
+    assert "rejected_at" not in r["state"]                 # a mark is used once
+    r["state"]["partials"].append([])                      # a generation saved a batch
+    assert rejected_generation() == 1
+    r["state"]["batches"], r["state"]["partials"] = [[1]] * 2, []   # a reduction moves it too
+    assert [rejected_generation() for _ in range(MAX_STALLED_GENERATIONS)][-1] == MAX_STALLED_GENERATIONS
+
+
+def test_accepted_answer_clears_a_rejection_mark():
+    from orion.curiosity.compaction import mark_rejected, record_answer
+    r = mark_rejected(row())
+    assert "rejected_at" in r["state"]
+    assert "rejected_at" not in record_answer(r, answer_for(r))["state"]
+
+
+def test_record_topics_index_must_be_an_integer():
+    from orion.cognition.model_output import ModelOutputRejected
+    from orion.curiosity.compaction import record_answer
+    with pytest.raises(ModelOutputRejected):
+        record_answer(row(), json.dumps({"record_topics": {"s0": 0.0}, "topics": [{"topic": "T one", "body": BODY}]}))
 
 
 def test_journal_contract_is_idempotent_indexable_and_silent():
@@ -401,7 +421,7 @@ def test_reduction_that_does_not_shrink_is_not_a_retryable_model_rejection():
     orig = compaction.batches
     compaction.batches = lambda material: [[m] for m in material] * 3
     try:
-        with pytest.raises(ValueError, match="did not shrink") as exc:
+        with pytest.raises(compaction.ReductionDidNotShrink, match="did not shrink") as exc:
             compaction.record_answer(r, answer_for(r))
         assert not isinstance(exc.value, ModelOutputRejected)
     finally:

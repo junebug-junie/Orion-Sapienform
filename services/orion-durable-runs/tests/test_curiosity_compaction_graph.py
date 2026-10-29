@@ -158,6 +158,7 @@ def test_preemption_costs_no_attempt_and_empty_generation_is_bounded():
         world.grant()
         done = await graph(world, saver, store, model).ainvoke(Command(resume={}), CFG)
         assert done["status"] == "failed" and store.row["status"] == "pending" and model.entries == []
+        assert store.row["state"]["rejected_at"] == ["topics", 1, 0]   # an empty answer is the model's
     asyncio.run(run())
 
 
@@ -213,6 +214,8 @@ def test_rejected_answers_stay_bounded_by_max_attempts():
         done = await graph(world, saver, store, model).ainvoke(Command(resume={}), CFG)
         assert done["status"] == "failed" and done["attempt"] == 2 and model.calls == ["topics", "topics"]
         assert not done["last_error"].startswith("deterministic:")
+        # The next sleep counts this failed generation toward giving the window up.
+        assert store.row["state"]["rejected_at"] == ["topics", 1, 0]
     asyncio.run(run())
 
 
@@ -225,6 +228,7 @@ def test_a_real_code_error_still_fails_fast(bug):
         done = await graph(world, saver, store, model).ainvoke(initial(), CFG)
         assert done["status"] == "failed" and done["attempt"] == 1 and model.calls == ["topics"]
         assert done["last_error"].startswith("deterministic:")
+        assert "rejected_at" not in store.row["state"]   # a code bug is not the model's failure
     asyncio.run(run())
 
 

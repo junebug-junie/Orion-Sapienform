@@ -86,8 +86,12 @@ class Session:
             raise
 
     def prepare(self, now, cycle_id):
-        previous = self.read("SELECT * FROM curiosity_compaction WHERE cadence=:cadence "
-                             "ORDER BY window_start DESC LIMIT 1", {"cadence": self.cadence})
+        # The oldest pending window first (one an operator re-opened after later windows were
+        # created), else the newest row, which decides the next window.
+        previous = self.read("SELECT * FROM curiosity_compaction WHERE cadence=:cadence AND status='pending' "
+                             "ORDER BY window_start LIMIT 1", {"cadence": self.cadence}) or \
+            self.read("SELECT * FROM curiosity_compaction WHERE cadence=:cadence "
+                      "ORDER BY window_start DESC LIMIT 1", {"cadence": self.cadence})
         latest = previous[0] if previous else None
         window = due_window(now, self.cadence, latest)
         if window is None:
@@ -112,13 +116,18 @@ class Session:
                     return None
                 generation = latest["generation"] + 1
                 run_id = f"{latest['compaction_id']}:r{generation}"
-                self.conn.execute(text("UPDATE curiosity_compaction SET run_id=:new, generation=:generation "
-                                       "WHERE compaction_id=:id AND run_id=:old"),
-                                  {"new": run_id, "generation": generation, "id": latest["compaction_id"],
-                                   "old": latest["run_id"]})
-                self.conn.commit()
+                # One fenced UPDATE: the new generation and its stall count land together.
+                try:
+                    self.conn.execute(text(
+                        "UPDATE curiosity_compaction SET run_id=:new, generation=:generation, "
+                        "state=CAST(:state AS jsonb), updated_at=now() WHERE compaction_id=:id AND run_id=:old"),
+                        {"new": run_id, "generation": generation, "id": latest["compaction_id"],
+                         "old": latest["run_id"], "state": json.dumps(latest["state"])})
+                    self.conn.commit()
+                except BaseException:
+                    self.conn.rollback()
+                    raise
                 latest.update(run_id=run_id, generation=generation)
-                self.save(latest)   # persists the stall cursor under the new run_id fence
             return latest
         start, end = window
         params = {"start": start, "end": end}

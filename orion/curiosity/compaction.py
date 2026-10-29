@@ -13,7 +13,7 @@ from typing import Literal
 from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 from orion.cognition.compactor.chunking import chunk_items_by_char_budget, json_char_len
 from orion.journaler.schemas import JournalEntryWriteV1
@@ -27,7 +27,7 @@ INPUT_BUDGET = 14000
 OUTPUT_CHARS = 2400
 TOPIC_BODY_CHARS = 1200   # hard cap per topic body (Topic.body, the output schema's maxLength)
 PASS_BUDGET = 6000        # whole topic pass, ASCII-escaped JSON chars (record_answer)
-# Topics per pass, sized so a pass of capped bodies (+~200 chars of name/refs/JSON each) fits
+# Topics per pass, sized so a pass of capped bodies (+~200 chars of name/JSON each) fits
 # PASS_BUDGET: 4. Six capped topics (7200+) could only ever be rejected, burning an attempt.
 MAX_TOPICS = PASS_BUDGET // (TOPIC_BODY_CHARS + 200)
 
@@ -77,19 +77,42 @@ def due_window(now: datetime, cadence: Cadence, latest: dict | None):
     return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
 
 
+class ReductionDidNotShrink(ValueError):
+    """Plain ``ValueError`` for the retry policy (fails the run at once), but still caused by the
+    model's summaries being too long, so it counts toward giving the window up."""
+
+
 # A failed durable run is re-admitted under a new generation (``:rN``) on the next sleep. That
 # is useful while each generation saves at least one batch; a window whose generations keep
-# failing at the SAME cursor is given up (status ``cancelled``) after this many, so it stops
-# using the agent lane and the later windows queued behind it can run.
+# failing on REJECTED MODEL ANSWERS at the same cursor is given up (status ``cancelled``) after
+# this many, so it stops using the agent lane and the later windows queued behind it can run.
 MAX_STALLED_GENERATIONS = 3
+
+
+def cursor_of(state: dict) -> list:
+    """(phase, batch count, saved partials): any accepted answer moves it, and it never repeats."""
+    return [state.get("phase"), len(state.get("batches") or []), len(state.get("partials") or [])]
+
+
+def mark_rejected(row: dict) -> dict:
+    """Copy of ``row`` noting that the MODEL's answer was rejected at the current cursor. Only a
+    generation that carries this mark counts toward giving up: a GPU-pool deadline, a transport
+    outage or a code bug says nothing about whether the model can do this batch."""
+    from copy import deepcopy
+    marked = deepcopy(row)
+    marked["state"]["rejected_at"] = cursor_of(marked["state"])
+    return marked
 
 
 def note_failed_generation(state: dict) -> int:
     """Record one failed generation in ``state["stall"]``; return how many failed in a row at
-    this cursor. The cursor is (phase, batch count, saved partials): any accepted answer moves it."""
-    cursor = [state.get("phase"), len(state.get("batches") or []), len(state.get("partials") or [])]
+    this cursor because the model's answer was rejected there. A failure without that mark
+    (``mark_rejected``) leaves the count as it is; a moved cursor starts it again."""
+    cursor = cursor_of(state)
     stall = state.get("stall") or {}
-    count = stall.get("count", 0) + 1 if stall.get("cursor") == cursor else 1
+    count = stall.get("count", 0) if stall.get("cursor") == cursor else 0
+    if state.pop("rejected_at", None) == cursor:
+        count += 1
     state["stall"] = {"cursor": cursor, "count": count}
     return count
 
@@ -181,7 +204,7 @@ class TopicPass(BaseModel):
     """``record_topics`` maps EVERY record alias (s0, s1, ...) to the 0-based index of the topic
     that covers it. It comes first, so the model groups the records before it writes."""
     model_config = ConfigDict(extra="forbid")
-    record_topics: dict[str, int] = Field(min_length=1)
+    record_topics: dict[str, StrictInt] = Field(min_length=1)
     topics: list[Topic] = Field(min_length=1, max_length=MAX_TOPICS)
 
 
@@ -245,7 +268,7 @@ def prompt_for(row, batch=None):
         'what was explored, evidence that changed understanding, contradictions, and questions still open. '
         'Keep explicit dates attached to changes; do not infer a change just from the date range. '
         'Merge overlapping areas when reading prior topic summaries. '
-        f'Keep the complete response under {PASS_BUDGET} ASCII JSON characters. '
+        f'Keep the topics together under {PASS_BUDGET} ASCII JSON characters. '
     )
     records = ([{k: t[k] for k in ("topic", "body", "first_at", "last_at")} for t in row["state"]["topics"]]
                if overall else [{"ref": f"s{i}", "body": item["body"],
@@ -293,6 +316,7 @@ def record_answer(row, raw):
     from copy import deepcopy
     result = deepcopy(row)
     state = result["state"]
+    state.pop("rejected_at", None)   # an accepted answer clears an earlier rejection mark
     if state.get("phase") == "overall":
         parsed_summary = _parse(raw, Summary)
         if _cut_off(parsed_summary.body, OUTPUT_CHARS):
@@ -338,7 +362,7 @@ def record_answer(row, raw):
             if len(reduced) >= len(state["batches"]):
                 # Plain ValueError on purpose: this depends on EVERY saved partial, and a retry
                 # only re-samples the last batch, so it would mostly burn attempts.
-                raise ValueError("topic reduction did not shrink; retry with shorter summaries")
+                raise ReductionDidNotShrink("topic reduction did not shrink; retry with shorter summaries")
             state["batches"] = reduced
             state["partials"] = []
     return result

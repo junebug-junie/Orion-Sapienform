@@ -118,38 +118,57 @@ def test_failed_run_retries_saved_topics_and_fences_old_generation(store):
     assert store.recent()[0]["status"] == "completed"
 
 
+def _fail_and_resume(store, db, run_id, *, rejected):
+    from orion.curiosity.compaction import mark_rejected
+    if rejected:   # what the durable graph persists when the model's answer is rejected
+        store.persist(mark_rejected(store.load(run_id.rsplit(":r", 1)[0], run_id)))
+    with db.begin() as conn:
+        conn.execute(text("INSERT INTO durable_admission_runs VALUES (:id, 'failed')"), {"id": run_id})
+    session = store.acquire("weekly")
+    try:
+        return session.prepare(NOW, "dc-retry")
+    finally:
+        session.close()
+
+
 def test_window_failing_at_one_cursor_is_given_up_after_bounded_generations(store):
     """Live 2026-10-14..28: weekly 2026-10-05 reached r21 and monthly 2026-09-01 r20 -- every
-    sleep re-admitted a failed run with no limit. Generations that save no batch are now bounded;
-    one that saves a batch resets the count."""
+    sleep re-admitted a failed run with no limit. Generations whose model answers are rejected
+    at one cursor are now bounded; a saved batch resets the count; a deadline does not count."""
     from orion.curiosity.compaction import MAX_STALLED_GENERATIONS, record_answer
     store, db, _ = store
-
-    def fail_and_resume(run_id):
-        with db.begin() as conn:
-            conn.execute(text("INSERT INTO durable_admission_runs VALUES (:id, 'failed')"), {"id": run_id})
-        session = store.acquire("weekly")
-        try:
-            return session.prepare(NOW, "dc-retry")
-        finally:
-            session.close()
-
     session = store.acquire("weekly")
     row = session.prepare(NOW, "dc-original")
     session.close()
-    row = fail_and_resume(row["run_id"])
+    row = _fail_and_resume(store, db, row["run_id"], rejected=True)
     assert row["run_id"].endswith(":r1") and row["state"]["stall"]["count"] == 1
+    assert store.load(row["compaction_id"], row["run_id"])["state"]["stall"]["count"] == 1   # persisted
     store.persist(record_answer(row, _answer(row)))         # this generation saved a batch
-    row = fail_and_resume(row["run_id"])
+    row = _fail_and_resume(store, db, row["run_id"], rejected=True)
     assert row["state"]["stall"]["count"] == 1 and row["state"]["phase"] == "overall"
+    for _ in range(5):                                        # GPU deadlines / outages never count
+        row = _fail_and_resume(store, db, row["run_id"], rejected=False)
+    assert row["state"]["stall"]["count"] == 1
     for _ in range(MAX_STALLED_GENERATIONS - 2):
-        row = fail_and_resume(row["run_id"])
+        row = _fail_and_resume(store, db, row["run_id"], rejected=True)
     assert row["state"]["stall"]["count"] == MAX_STALLED_GENERATIONS - 1
-    assert fail_and_resume(row["run_id"]) is None             # same cursor again: given up
+    assert _fail_and_resume(store, db, row["run_id"], rejected=True) is None   # given up
     assert store.recent()[0]["status"] == "cancelled"
+
+
+def test_given_up_window_can_be_reopened_after_the_next_window_exists(store):
+    store, db, _ = store
+    later = datetime(2026, 10, 21, 12, tzinfo=timezone.utc)
     session = store.acquire("weekly")
     try:
-        assert session.prepare(NOW, "dc-after") is None       # not resurrected
+        first = session.prepare(NOW, "dc-1")
+        session.save({**first, "status": "cancelled"})
+        second = session.prepare(later, "dc-2")
+        assert second["compaction_id"] != first["compaction_id"]
+        with db.begin() as conn:   # operator re-open, as the dream README describes
+            conn.execute(text("UPDATE curiosity_compaction SET status='pending', state=state - 'stall' "
+                              "WHERE compaction_id=:id"), {"id": first["compaction_id"]})
+        assert session.prepare(later, "dc-3")["compaction_id"] == first["compaction_id"]
     finally:
         session.close()
 

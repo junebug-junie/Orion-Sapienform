@@ -7,7 +7,7 @@ Curiosity compaction rolls a week or a month of Curiosity write-ups into topic s
 - The model must now account for every source record. The answer starts with a map from each record (`s0`, `s1`, ...) to a topic. The output grammar makes every record a required key, so the model cannot leave one out. The checker is as strict as before.
 - A long record is now split into equal pieces at a space between words. Before, a record was cut every 7000 characters, which left stump pieces such as a 32-character "elfDefinition 1, TurnOutcome 1.)". The model had nothing to say about such a stump.
 - The prompt asks for shorter topics: about 80 to 110 words, not 120 to 150. At the real length of these words, 150 words is the full 1200-character limit, so the grammar cut topics off mid-sentence.
-- Retries stop when they make no progress. A window whose failed runs end three times in a row at the same saved place is given up (`cancelled`). The next window can then run. A run that saves a batch resets the count.
+- Retries stop when they make no progress. A window is given up (`cancelled`) when three runs in a row fail at the same saved place because the model's answer was rejected there. The next window can then run. A run that saves a batch resets the count. A GPU deadline, an outage or a code bug does not count.
 
 ## Outcome moved
 
@@ -37,7 +37,8 @@ The thinking-token trap (Qwen thinking eats `max_tokens`) does not apply here. `
 ## Files changed
 
 - `orion/curiosity/compaction.py`: V2 answer schema and `TopicPass`; `record_answer` maps records to topics and rejects a topic with no record; `_piece_len` for equal splits; shorter word targets; `MAX_STALLED_GENERATIONS` and `note_failed_generation`; the pass budget measures topics only (the map is not carried into the next pass).
-- `orion/curiosity/compaction_store.py`: `prepare()` counts failed generations at one cursor and gives the window up at 3.
+- `orion/curiosity/compaction_store.py`: `prepare()` counts rejected generations at one cursor and gives the window up at 3. It saves the new generation and its count in one fenced UPDATE. It resumes the oldest pending window first, so an operator can re-open a given-up window.
+- `services/orion-durable-runs/app/curiosity_compaction_graph.py`: on a rejected answer, saves a `rejected_at` mark in the row, so the next sleep can tell a model failure from an outage.
 - `services/orion-dream/tests/test_curiosity_compaction.py`: tests updated to V2; new regression tests from the live shapes.
 - `services/orion-dream/tests/test_curiosity_compaction_postgres.py`: new real-Postgres test for the retry bound.
 - `services/orion-dream/evals/test_curiosity_compaction_eval.py`, `services/orion-durable-runs/tests/test_curiosity_compaction_graph.py`: answers in the V2 shape.
@@ -45,10 +46,10 @@ The thinking-token trap (Qwen thinking eats `max_tokens`) does not apply here. `
 
 ## Schema / bus / API changes
 
-- Added: `record_topics` (alias -> topic index) in the topic-pass answer; `state.stall` (`{"cursor": [phase, batches, partials], "count": n}`) in the `curiosity_compaction` row.
+- Added: `record_topics` (alias -> topic index) in the topic-pass answer; `state.stall` (`{"cursor": [phase, batches, partials], "count": n}`) and `state.rejected_at` in the `curiosity_compaction` row; `ReductionDidNotShrink(ValueError)` (still fails a run at once, but counts as a model failure).
 - Removed: per-topic `refs` in the model's answer. Saved topics still carry `sources`, as before.
 - Renamed: schema name `CuriosityCompactionTopicPassV1` -> `CuriosityCompactionTopicPassV2`.
-- Behavior changed: a window is set `cancelled` after 3 failed generations in a row at one cursor. Long records split into equal pieces at a word boundary (new windows only; a pending window keeps its saved batches).
+- Behavior changed: a window is set `cancelled` after 3 rejected generations in a row at one cursor. `prepare()` picks the oldest pending window before the newest row. Long records split into equal pieces at a word boundary (new windows only; a pending window keeps its saved batches).
 - Compatibility notes: the schema is internal to this verb (model answer only). An answer in the V1 shape is rejected as a model-output error, which is a bounded retry.
 
 ## Env/config changes
@@ -65,10 +66,10 @@ The thinking-token trap (Qwen thinking eats `max_tokens`) does not apply here. `
 ```text
 PYTHONPATH=. pytest -q services/orion-dream/tests/test_curiosity_compaction.py \
   services/orion-dream/evals/test_curiosity_compaction_eval.py services/orion-dream/tests/test_dream_cycle_v2.py
-  -> 90 passed
 CURIOSITY_COMPACTION_TEST_POSTGRES_URI=<disposable postgres:16 container> \
-  pytest -q services/orion-dream/tests/test_curiosity_compaction_postgres.py
-  -> 6 passed
+  pytest -q ...test_curiosity_compaction.py ...test_curiosity_compaction_postgres.py \
+  ...test_dream_cycle_v2.py ...evals/test_curiosity_compaction_eval.py
+  -> 99 passed
 cd services/orion-durable-runs && PYTHONPATH=<root> pytest tests -q
   -> 547 passed, 110 skipped
 python scripts/check_definition_drift.py --gate -> PASS
@@ -94,7 +95,23 @@ order; integer enum values become literals). The converter was not run locally.
 
 ## Review findings fixed
 
-(filled in after review)
+- Finding: every failed run counted toward giving up, including a GPU-pool deadline (for example a cabinet-heat lockdown), a transport outage or a code bug. Three such sleeps would cancel a window the model never answered.
+  - Fix: durable-runs saves `state.rejected_at` when the model's answer is rejected (`ModelOutputRejected` or `ReductionDidNotShrink`). `note_failed_generation` counts a generation only when that mark matches the cursor. An accepted answer clears the mark.
+  - Evidence: `test_only_rejected_model_answers_count_toward_giving_a_window_up`; the Postgres test runs 5 unmarked failures and the count stays at 1; the graph tests check the mark is written on rejection and not on a code bug.
+- Finding: the README's re-open step did not work, because `prepare()` only read the newest row.
+  - Fix: `prepare()` reads the oldest pending row first.
+  - Evidence: `test_given_up_window_can_be_reopened_after_the_next_window_exists` (real Postgres).
+- Finding: the stall count was saved in a second commit after the generation UPDATE, so a crash between them lost one count.
+  - Fix: one fenced UPDATE sets `run_id`, `generation` and `state`.
+  - Evidence: the Postgres test reads the count back from the row.
+- Finding (nit): `record_topics` accepted `0.0` or `true` as an index in lax mode.
+  - Fix: `dict[str, StrictInt]`.
+  - Evidence: `test_record_topics_index_must_be_an_integer`.
+- Finding (nit): a stale comment about `refs`, and the prompt's budget sentence measured a different thing than the check. Both are fixed.
+- Not fixed, by choice:
+  - Saved batches keep their old split (see Risks).
+  - Unicode-heavy text that needs the escape-length halving loop can still split unevenly or mid-word. The output stays lossless and has no tiny pieces. The live corpus did not hit this.
+  - A record now credits exactly one topic. V1 let one record credit several topics, so topic provenance is narrower but never invented. A follow-up can make each value a list of topic indices.
 
 ## Restart required
 

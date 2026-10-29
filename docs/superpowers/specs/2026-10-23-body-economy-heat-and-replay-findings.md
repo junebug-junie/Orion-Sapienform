@@ -9,7 +9,7 @@ All of this is read-only evidence. Nothing live reads these numbers yet.
 
 orion-prediction had already worked out both:
 - Weather acts on the cabinet through the house's central AC. That is the `athena.central_ac_proxy` covariate (#2829), checked against the house meter.
-- The 10-17 00:35 event is a recorded change in the sensor's position, not heat. It is change event #2780: "cabinet sensor geometry changed … cabinet reads ~2 C higher after". The vision bring-up with the cabinet open (10-16 21:30 → 10-17 00:35) is an exclusion window.
+- The 10-17 00:35 event was recorded as a change in the sensor's position, not heat. **Wrong (see the correction below): it is real heat from the vision bring-up.** It is change event #2780: "cabinet sensor geometry changed … cabinet reads ~2 C higher after". The vision bring-up with the cabinet open (10-16 21:30 → 10-17 00:35) is an exclusion window.
 
 **What this version reuses, and what it decides itself.**
 - **Reused exactly:** the proxy definition and the change-event rows and exclusion windows.
@@ -17,8 +17,10 @@ orion-prediction had already worked out both:
 
 ## The headline in plain words
 
+> **Correction (2026-10-29, Juniper):** the cabinet temperature sensor never moved. On 10-16/17 the vision services were brought up, so the ~2 °C rise in the cabinet reading after 2026-10-17 00:35 UTC is **real heat**, not a measurement offset. The lidar (116 → 94 mm) and magnetic (36 → 33.5 µT) changes came from something near the sensor changing (likely the new vision hardware), not from the sensor moving. The fixed 2 °C offset is removed from the fit and from the live heat price; the fit now estimates the 10-17 step as heat (+3.1 °C, CI +1.2..+4.1). PR: fix/cabinet-sensor-offset-was-real-heat (`docs/superpowers/pr-reports/2026-10-29-cabinet-sensor-offset-was-real-heat-pr.md`).
+
 **The cabinet reading rose 4.2 °C, from 29.1 °C (09-26..10-10) to 33.3 °C (10-18..10-22).**
-- **About half (2.0 °C) is the sensor reading higher** after it was moved on 10-17. That is a measurement offset, not heat.
+- ~~**About half (2.0 °C) is the sensor reading higher** after it was moved on 10-17. That is a measurement offset, not heat.~~ Corrected 10-29: this is real heat from the 10-17 vision bring-up. The refit (free step) puts it at +3.1 °C and the T10 step at +1.0 °C; the two are 1.5 days apart and the data cannot split them cleanly (together ~4 °C in both fits).
 - **The central AC going quiet explains about 0.4 °C of the average rise.** It explains more on warm afternoons.
 - **Orion's measured load explains 0.1–0.4 °C.**
 - **The remaining 1.5–2 °C is real warming that began on 10-14/15.** This data cannot say what caused it.
@@ -65,7 +67,7 @@ Script: `scripts/analysis/fit_heat_sensitivity.py`. The data is 15-minute bins f
 - orion-prediction's `athena.central_ac_proxy`, read through its own registry parser (outdoor °F above 75, 3 h earlier, held for 60 min);
 - the portable AC (`home_cooling_sample`, as `athena.cabinet_cooling_watts`);
 - three hour-of-day harmonics;
-- the #2780 sensor break as a **fixed 2.0 °C measurement offset** (the reading after the break is lowered by 2 °C);
+- the #2780 sensor break as a **fixed 2.0 °C measurement offset** (the reading after the break is lowered by 2 °C) — **removed 10-29**: the break is real heat and is now a free step like the T10 swap;
 - the T10-swap break as a free step.
 
 The sensitivity is the sum of the lag coefficients, in °C per 100 W held steady. The interval is a bootstrap that resamples whole days.
@@ -137,13 +139,13 @@ Script: `scripts/analysis/replay_body_economy.py`. Price math: `orion/physiology
 1. **Ramp into `exogenous_bind` at `max_step`** (`bind_ramp`). Do not jump straight to the ceiling.
 2. **Add hysteresis to the bind flag** (0.5 °C as replayed).
 3. **Excuse one horizon of price decay in R1.**
-4. **Correct the heat level for #2780's measurement offset** before comparing it with the soft line. Otherwise the line silently moves 2 °C after a sensor change. Patch B should read the same change-events table.
+4. ~~**Correct the heat level for #2780's measurement offset**~~ (withdrawn 10-29: the sensor never moved; the live price compares the raw reading) before comparing it with the soft line. Otherwise the line silently moves 2 °C after a sensor change. Patch B should read the same change-events table.
 5. **Reconsider "use the upper bound when the interval spans 0."** With the corrected fit the upper bounds are 3–4× the point estimates. That makes Orion's own share look large and holds the price at its ceiling.
 
 ## Caveats
 
 - **Timing confound.** The AC going quiet, the T10 swap and the sensor move fall within the same ~2 days in mid-October. On this data, their split comes from timing and from the T10 card's measured watts, not from separate variation.
-- **The sensor offset is fixed, not estimated.** The fit takes #2780's "~2 C" as given. If the true offset is 1.5 or 2.5 °C, the warming share moves by the same amount, in the opposite direction.
+- ~~**The sensor offset is fixed, not estimated.**~~ (Resolved 10-29: there is no sensor offset; the 10-17 step is estimated as heat.) The fit took #2780's "~2 C" as given. If the true offset is 1.5 or 2.5 °C, the warming share moves by the same amount, in the opposite direction.
 - **The proxy has had no signal since 10-11.** It cannot carry any October change after that. Re-run `services/orion-prediction/evals/run_house_heat_balance_eval.py` when warm weather returns. On 10-23 it gives +0.30 kWh/h per °F above 75 °F (p = 3e-16, 604 h).
 - **This is a passive fit.** The randomized holdback pulses described in the design should overrule it.
 - **The sensor sits on athena.**

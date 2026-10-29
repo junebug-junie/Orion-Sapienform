@@ -26,15 +26,17 @@ def _z(t: datetime) -> str:
     return t.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-SENSOR_BREAK = T0 + timedelta(days=8, hours=0, minutes=35)
-EXCLUDE = (T0 + timedelta(days=7, hours=21, minutes=30), SENSOR_BREAK)
+VISION_BREAK = T0 + timedelta(days=8, hours=0, minutes=35)
+EXCLUDE = (T0 + timedelta(days=7, hours=21, minutes=30), VISION_BREAK)
+VISION_TITLE = "vision services brought up"
 PROXY_EFFECT = -0.15  # degC per F above 75, 3 h earlier: the central AC cools the house
 
 
 def _synthetic_extract(days: int = 12, s_circe: float = 0.4, s_athena: float = 0.0, seed: int = 1,
-                       sensor_offset: float = 2.0) -> dict:
+                       vision_heat: float = 2.0) -> dict:
     """Cabinet = 26 + day offset + central-AC proxy effect + s_circe per 100 W of circe compute
-    (60-min lag) + a measurement offset after SENSOR_BREAK + noise; an exclude window holds junk."""
+    (60-min lag) + real heat after VISION_BREAK (not in any watts column) + noise; an exclude
+    window holds junk."""
     rng = np.random.default_rng(seed)
     bins, energy, weather, cooling = [], [], [], []
     n = days * 96
@@ -55,8 +57,8 @@ def _synthetic_extract(days: int = 12, s_circe: float = 0.4, s_athena: float = 0
         proxy = max(temp_f[src] - 75.0, 0.0)
         cab = (26 + day_off[i // 96] + PROXY_EFFECT * proxy + s_circe * lag / 100 + s_athena * athena[i] / 100
                + rng.normal(0, 0.05))
-        if t >= SENSOR_BREAK:
-            cab += sensor_offset
+        if t >= VISION_BREAK:
+            cab += vision_heat
         if EXCLUDE[0] <= t < EXCLUDE[1]:
             cab = 15.0  # door open: junk that must be masked
         bins.append({"t": _z(t), "cabinet_c": cab, "w_athena": athena[i] + 150, "w_circe": circe[i] + 120,
@@ -69,8 +71,8 @@ def _synthetic_extract(days: int = 12, s_circe: float = 0.4, s_athena: float = 0
     events = [
         {"scope": "*", "effect": "exclude", "title": "cabinet open", "notes": "",
          "started_at": _z(EXCLUDE[0]), "ended_at": _z(EXCLUDE[1])},
-        {"scope": "*", "effect": "break", "title": "cabinet sensor geometry changed", "notes": "",
-         "started_at": _z(SENSOR_BREAK), "ended_at": None},
+        {"scope": "*", "effect": "break", "title": VISION_TITLE, "notes": "",
+         "started_at": _z(VISION_BREAK), "ended_at": None},
     ]
     return {"window": {"start": _z(T0), "end": _z(T0 + timedelta(days=days))},
             "bins15": bins, "energy_hourly": energy, "weather_hourly": weather, "cooling15": cooling,
@@ -202,28 +204,49 @@ def test_proxy_matches_orion_prediction_definition():
     assert list(p[:4]) == [5.0] * 4 and list(p[4:]) == [0.0] * 4  # value from 3 h earlier, floored at 0
 
 
-def test_fit_recovers_proxy_effect_and_sensor_offset_and_masks_exclusion():
-    ex = _synthetic_extract(sensor_offset=2.0)
+def test_fit_estimates_the_vision_bring_up_as_a_free_heat_step_and_masks_exclusion():
+    """The 10-17 vision bring-up is real heat (the sensor never moved): the fit estimates its step
+    from the data instead of subtracting a fixed offset from the reading."""
+    ex = _synthetic_extract(vision_heat=2.0)
     frame = fit.build_frame(ex, ("athena", "circe", "hecate"))
     assert frame["excluded"].sum() > 0
-    free = fit.fit_model(frame, {"athena": "compute", "circe": "compute"}, label="t", reps=30, seed=2)
-    assert free["controls"]["central_ac_proxy_f"] == pytest.approx(PROXY_EFFECT, abs=0.03)
-    assert free["controls"]["break:cabinet sensor geometry changed"] == pytest.approx(2.0, abs=0.5)
-    fixed = fit.fit_model(frame, {"athena": "compute", "circe": "compute"}, label="t", reps=30, seed=2,
-                          fixed_offsets={"cabinet sensor geometry changed": 2.0})
-    assert "break:cabinet sensor geometry changed" not in fixed["controls"]
-    assert fixed["hosts"]["circe"]["c_per_100w"] == pytest.approx(0.4, abs=0.08)
+    m = fit.fit_model(frame, {"athena": "compute", "circe": "compute"}, label="t", reps=30, seed=2)
+    assert m["controls"]["central_ac_proxy_f"] == pytest.approx(PROXY_EFFECT, abs=0.03)
+    assert m["controls"][f"break:{VISION_TITLE}"] == pytest.approx(2.0, abs=0.5)
+    assert m["hosts"]["circe"]["c_per_100w"] == pytest.approx(0.4, abs=0.08)
 
 
-def test_decomposition_adds_up_and_reports_the_fixed_offset():
-    ex = _synthetic_extract(sensor_offset=2.0)
+def test_fit_has_no_fixed_measurement_offset_path():
+    """Kill means kill: no fixed-offset knob in the design, no SENSOR_OFFSET_C, no offsets in the config."""
+    import inspect
+
+    assert "fixed_offsets" not in inspect.signature(fit.design).parameters
+    assert not hasattr(fit, "SENSOR_OFFSET_C")
+    ex = _synthetic_extract(days=6)
     frame = fit.build_frame(ex, ("athena", "circe", "hecate"))
-    m = fit.fit_model(frame, {"athena": "compute", "circe": "compute"}, label="t", reps=20, seed=2,
-                      fixed_offsets={"cabinet sensor geometry changed": 2.0})
+    _, y, _, _, rows = fit.design(frame, fit.regressors(frame, {"athena": "compute", "circe": "compute"}))
+    assert np.array_equal(y, frame["cab"][rows])   # the reading enters raw
+
+
+def test_config_document_has_no_measurement_offsets():
+    fd = {"status": "ok", "n": 100, "regressor": {"athena": "compute"},
+          "hosts": {"athena": {"c_per_100w_step_2h": 0.6, "ci95_block_bootstrap": [0.2, 1.0]}}}
+    result = {"models": {"first_diff": fd}, "generated_at": "2026-10-29T00:00:00+00:00",
+              "baseline_watts_p10": {"athena": 223.0}, "window": {"start": "a", "end": "b"},
+              "method": {"change_event_breaks": [{"at": "2026-10-17T00:35:00+00:00", "title": "cabinet sensor geometry changed"}]}}
+    doc = fit.config_document(result, command="fit")
+    assert "measurement_offsets" not in doc and set(doc["hosts"]) == {"athena"}
+
+
+def test_decomposition_adds_up_and_credits_the_vision_step_as_heat():
+    ex = _synthetic_extract(vision_heat=2.0)
+    frame = fit.build_frame(ex, ("athena", "circe", "hecate"))
+    m = fit.fit_model(frame, {"athena": "compute", "circe": "compute"}, label="t", reps=20, seed=2)
     d = fit.decompose(m, frame, base=(T0, T0 + timedelta(days=6)), target=(T0 + timedelta(days=9), T0 + timedelta(days=12)),
                       reps=20, seed=1)
     assert d["status"] == "ok"
-    assert d["contributions"]["fixed_offset:cabinet sensor geometry changed"]["degC"] == pytest.approx(2.0)
+    assert d["contributions"][f"break:{VISION_TITLE}"]["degC"] == pytest.approx(2.0, abs=0.5)
+    assert not any(k.startswith("fixed_offset:") for k in d["contributions"])
     total = sum(v["degC"] for v in d["contributions"].values()) + d["residual_c"]
     assert total == pytest.approx(d["rise_c"])
 

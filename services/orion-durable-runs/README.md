@@ -768,7 +768,7 @@ the dial on the state (`PhysiologyStateV1.strain`). Same Redis key, same bus cha
 
 | constraint | what the price charges (use vs budget) | `exogenous_bind` (clamped, listed apart from strain) |
 |---|---|---|
-| `heat` | Orion's own share in C: short-run sensitivity x watts above baseline, per host, against the room's headroom (soft line - (cabinet - sensor offset - Orion's share)); forecast = the newest reading | room over the line even with Orion's share at 0 (0.5 C hysteresis) |
+| `heat` | Orion's own share in C: short-run sensitivity x watts above baseline, per host, against the room's headroom (soft line - (raw cabinet reading - Orion's share)); forecast = the newest reading | room over the line even with Orion's share at 0 (0.5 C hysteresis) |
 | `energy` | month-end Orion cost forecast vs the $ envelope | the always-on floor alone reaches the envelope (5% hysteresis) |
 | `lane:<role>` | lease-seconds asked of the seat (`detail.lease_s`) vs slots x window; waiting work is NOT an input | never (Patch C1). A seat with 0 live slots now whose window use already ran (`served_while_loaded`: a swap seat, diffusion / agent-gpu2) is slack; one with a lease still open (`held_without_live_slot`) is `no_reading` |
 | `attention:juniper` | today's cap-counted sends paced to the end of the local day vs the cap | never. Self-spent (Patch C1): Orion's own outreach fills it, so it is listed in `strain.self_spent` and does not move the dial; its price still charges outreach wants |
@@ -790,8 +790,9 @@ Known limits (review, 10-27):
 - Orion's heat share uses the 2 h step-response sensitivity, so it is a **short-run lower bound**
   for load held for hours. `exogenous_bind` ("not my load") is therefore biased toward excusing
   Orion. No reader may decide on it before the sensitivity is calibrated (design Organ 6).
-- The sensor offset comes from the yaml (written by the fit from `prediction_change_event`), not
-  from a live read of that table: a new sensor move counts only after a refit.
+- The cabinet reading is compared raw. There is no sensor offset (removed 10-29: the sensor never
+  moved; the 10-17 rise is real heat from the vision bring-up). A yaml that still carries
+  `measurement_offsets` is refused, and heat reads `no_reading`.
 - hecate counts as asleep below a 150 W 1 h mean, so a short burst can be missed.
 - The carry (price, bind flag, ceiling run) crosses the daily graph thread (`CARRIED_KEYS`) and is
   kept for a day for a constraint missing from a tick. Warnings `heat_sensitivity_stale_in_days:<host>:<d>`

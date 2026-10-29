@@ -38,9 +38,6 @@ HEAT_DOC = {
                   "fitted_at": "2026-10-27T03:33:28+00:00", "regressor": "compute_watts",
                   "baseline_watts_p10": 263.1, "fit_command": "fit"},
     },
-    "measurement_offsets": [{"series": "athena.cabinet_temp_c", "since": "2026-10-17T00:35:00+00:00",
-                             "offset_c": 2.0, "change_event": "cabinet sensor geometry changed (vision bring-up)",
-                             "source": "#2780"}],
 }
 HEAT_CFG = parse_heat_sensitivity(HEAT_DOC)
 CFG = BudgetConfig(heat_config=HEAT_CFG, heat_config_error=None)
@@ -71,37 +68,79 @@ def run(readings, *, b=None, carry=None, now=NOW, cfg=CFG):
 # --- heat ----------------------------------------------------------------------------------------
 
 def test_heat_live_shape_under_the_line_is_slack_and_zero():
-    """Live 10-27 03:21: cabinet 31.04 C raw (= 29.04 C after #2780's 2 C sensor offset), athena
-    244.5 W, circe 464.6 W compute: Orion's share ~0.75 C, room ~28.3 C, far under 31."""
-    by, out, _ = run([heat(31.04)])
+    """Live 10-27 03:21 watts (athena 244.5 W, circe 464.6 W compute: Orion's share ~0.75 C), on a
+    cabinet 1 C cooler than that evening's 31.04 C: room ~29.3 C, under 31, so slack."""
+    by, out, _ = run([heat(30.04)])
     p = by["heat"].price
     assert p.value == 0.0 and p.bind_state == "slack"
     assert p.use == pytest.approx(0.6863 * (244.5 - 223.6) / 100 + 0.2985 * (464.6 - 263.1) / 100, abs=1e-3)
-    assert "sensor offset -2.0 C" in p.why and "hecate asleep" in p.why
+    assert "hecate asleep" in p.why
     assert out.strain.value == 0.0
 
 
 def test_heat_room_over_the_line_without_orion_is_exogenous_and_ramps_not_jumps():
-    by, _, carry = run([heat(35.0)])          # 33 C after the offset, room ~32.3 C
+    by, _, carry = run([heat(33.0)])          # room ~32.3 C
     p = by["heat"].price
     assert p.bind_state == "exogenous_bind" and "not my load" in p.why
     assert 0 < p.value <= 0.25 * 120 / 3600 + 1e-9    # one 120 s tick of the bounded ramp
     # Hysteresis: the room dips to 30.8 C (under 31, above 30.5): still bound.
-    by2, _, _ = run([heat(31.0 + 2.0 + 0.55)], carry=carry, now=NOW + timedelta(seconds=120))
+    by2, _, _ = run([heat(31.0 + 0.55)], carry=carry, now=NOW + timedelta(seconds=120))
     assert by2["heat"].price.bind_state == "exogenous_bind"
 
 
 def test_heat_orion_share_over_the_headroom_binds_and_climbs():
-    """use > budget exactly when the cabinet (offset removed) is over the line while the room
+    """use > budget exactly when the cabinet is over the line while the room
     without Orion is under it: then Orion's own load is what crosses the line."""
     w = {"athena": 223.6 + 100.0, "circe": 263.1 + 400.0, "hecate": 0.0}   # share 0.686 + 1.194 = 1.88 C
-    by, _, carry = run([heat(32.8)], b=body(w))                            # 30.8 C: under the line
+    by, _, carry = run([heat(30.8)], b=body(w))                            # under the line
     p = by["heat"].price
     assert p.budget == pytest.approx(31.0 - (30.8 - p.use), abs=1e-3)
     assert p.use < p.budget and p.bind_state == "slack" and p.value == 0.0
-    by2, _, _ = run([heat(33.5)], b=body(w), carry=carry, now=NOW + timedelta(seconds=120))  # 31.5 C
+    by2, _, _ = run([heat(31.5)], b=body(w), carry=carry, now=NOW + timedelta(seconds=120))  # over the line
     p2 = by2["heat"].price
     assert p2.use > p2.budget and p2.bind_state == "binding" and p2.value > 0
+
+
+def test_heat_reads_the_raw_cabinet_temperature_no_sensor_offset():
+    """Regression (2026-10-29): the cabinet sensor never moved, so the ~2 C rise after the 10-17
+    vision bring-up is real heat. The heat price used to lower every reading after 10-17 00:35 by
+    2 C ("cabinet 28.9 C (sensor offset -2.0 C ...) -> 26.9 C"). It must compare the raw reading."""
+    by, _, _ = run([heat(28.9)])
+    p = by["heat"].price
+    assert "sensor offset" not in p.why and "-> 26.9" not in p.why
+    assert p.why.startswith("cabinet 28.9 C; ")
+    room = 28.9 - p.use
+    assert p.budget == pytest.approx(31.0 - room, abs=1e-6)
+
+
+def test_heat_live_10_27_reading_is_orion_s_own_load_crossing_the_line():
+    """The live 10-27 03:21 reading, raw: cabinet 31.04 C is over the 31 C line, the room without
+    Orion (~30.3 C) is under it. So Orion's own load is what crosses the line: binding, not
+    exogenous. With the old 2 C offset this read as slack at 29.04 C."""
+    by, _, _ = run([heat(31.04)])
+    p = by["heat"].price
+    assert p.use > p.budget and p.bind_state == "binding"
+
+
+def test_heat_config_with_measurement_offsets_is_refused_not_applied():
+    """The offset mechanism is gone. A document that still carries one is malformed (heat reads
+    no_reading with the reason), never silently applied and never silently ignored."""
+    bad = dict(HEAT_DOC, measurement_offsets=[{"series": "athena.cabinet_temp_c",
+                                               "since": "2026-10-17T00:35:00+00:00", "offset_c": 2.0}])
+    with pytest.raises(ValueError, match="measurement_offsets"):
+        parse_heat_sensitivity(bad)
+    assert parse_heat_sensitivity(dict(HEAT_DOC, measurement_offsets=[])).hosts.keys() == {"athena", "circe"}
+
+
+def test_checked_in_heat_config_has_no_measurement_offsets():
+    from pathlib import Path
+
+    from orion.physiology.heat_config import load_heat_sensitivity
+
+    path = Path(__file__).resolve().parents[3] / "config" / "physiology" / "heat_sensitivity.yaml"
+    cfg, err = load_heat_sensitivity(path)
+    assert err is None and cfg is not None and {"athena", "circe"} <= set(cfg.hosts)
+    assert "measurement_offsets" not in path.read_text()
 
 
 def test_heat_unknowns_are_no_reading_never_zero():
@@ -280,7 +319,7 @@ def test_strain_is_the_largest_live_price_over_its_ceiling_exogenous_listed_apar
 
 
 def test_priced_state_round_trips_the_schema_and_the_stored_row_keeps_the_prices():
-    by, out, _ = run([heat(31.04), lane("agent", held=3599.97, lease=3599.97, slots=1)])
+    by, out, _ = run([heat(30.04), lane("agent", held=3599.97, lease=3599.97, slots=1)])
     again = parse_physiology_state(out.model_dump_json())
     assert again is not None and again.strain is not None
     assert {c.constraint: c.price.bind_state for c in again.constraints} == {"heat": "slack", "lane:agent": "slack"}

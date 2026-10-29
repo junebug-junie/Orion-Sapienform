@@ -76,21 +76,29 @@ def _changed(prev: TemporalSelfStateV1, new: TemporalSelfStateV1) -> list[Tempor
 
 
 def _log_street(prev: TemporalSelfStateV1, arcs: list[TemporalSelfArcV1], events: list[TemporalSelfEventV1],
-                cap: int) -> None:
+                cap: int, tz_name: str) -> None:
     """Episodes from the street (PR #2763 item 1): one log line per new street arc, naming the
-    outside source row it came from, and one line when the daily cap kept window events out (an
-    event with no arc, on a day whose street arcs already reached the cap)."""
+    outside source row it came from, one line when an event joined an earlier arc of the same visit,
+    and one line when the daily cap kept window events out (an event in no arc, on a day whose street
+    arcs already reached the cap)."""
     per_day: dict[str, int] = {}
+    kept: set[str] = set()
     for a in arcs:
         if a.kind != "street":
             continue
         per_day[a.day_id] = per_day.get(a.day_id, 0) + 1
-        if a.arc_id not in prev.arcs:
+        kept.update(a.evidence_refs)
+        before = prev.arcs.get(a.arc_id)
+        if before is None:
             logger.info("temporal_self_street_episode arc_id=%s day=%s source=%s label=%r", a.arc_id, a.day_id,
                         ",".join(a.evidence_refs), a.subject_label)
-    kept = {a.subject_ref for a in arcs if a.kind == "street"}
-    capped = [e for e in events if e.source_kind == "street_event" and e.subject_ref not in kept
-              and per_day.get(e.day_id, 0) >= cap]
+        elif a.evidence_refs != before.evidence_refs:
+            logger.info("temporal_self_street_visit_merged arc_id=%s day=%s added=%s label=%r", a.arc_id, a.day_id,
+                        ",".join(r for r in a.evidence_refs if r not in before.evidence_refs), a.subject_label)
+    # The day an event folds into is the day it became available (a story written after midnight
+    # lands in the next day's arcs), not the day it happened.
+    capped = [e for e in events if e.source_kind == "street_event" and f"{e.source_table}:{e.source_ref}" not in kept
+              and per_day.get(day_id_for(available_at(e), tz_name), 0) >= cap]
     if capped:
         logger.info("temporal_self_street_capped count=%d refs=%s", len(capped),
                     ",".join(e.source_ref for e in capped[:10]))
@@ -246,7 +254,7 @@ class Chronicler:
         for d in days:
             self.days_closed.append(d.day_id)
             logger.info("temporal_self_day_closed day=%s arcs=%d", d.day_id, len(d.arcs))
-        _log_street(prev, [*s.arcs.values(), *(a for d in days for a in d.arcs)], events, cfg.street_arcs_per_day)
+        _log_street(prev, [*s.arcs.values(), *(a for d in days for a in d.arcs)], events, cfg.street_arcs_per_day, cfg.tz_name)
         if late:
             logger.info("temporal_self_late_rows window_lo=%s count=%d kinds=%s", lo.isoformat(), len(late),
                         ",".join(sorted({e.source_kind for e in late})))

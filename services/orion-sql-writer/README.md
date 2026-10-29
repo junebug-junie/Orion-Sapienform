@@ -1000,6 +1000,14 @@ no model. Design: `docs/superpowers/plans/2026-10-18-walkway-rollups-design.md`.
   rebuilds the hours inside `VISION_ROLLUP_CATCHUP_HOURS`; older rows keep v1 and
   every reader re-renders them (`walkway_rollup.display_line`), or run the backfill
   with `--apply` to rebuild them for good.
+- **Dogs are a range too** (`rules_version` 4, 2026-10-29). Every living kind the
+  rollup counts (`RANGE_KINDS`: the `LIVING_KINDS` among its kinds, person and dog)
+  carries `count_range`; lines say "dogs: at least 3, at most 6 (the camera splits
+  one dog into several)" and no longer "most at once 3 dogs". Bicycles, strollers
+  and vehicles keep their count. The bump rebuilds the hours inside
+  `VISION_ROLLUP_CATCHUP_HOURS`; a v2/v3 row whose stored line states a bare dog
+  count is re-rendered by `display_line` (read-only replay of 175 rows, 7 days to
+  10-29: 55 bare dog counts shown before, 0 after).
 - **Named = people, by the person record** (`rules_version` 3, 2026-10-24). A
   sighted individual with an active `vision_individual` link (`person_link`) to an
   active `person` counts under that person's `display_name`; several clusters of one

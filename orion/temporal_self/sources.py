@@ -515,15 +515,51 @@ def _story_gate(row: Row) -> bool:
     return gate_passed(tally_from_counts(counts if isinstance(counts, dict) else {}, 0, int(version)))
 
 
+def story_name(row: Row) -> tuple[str | None, str | None]:
+    """(name, where it came from) for a story: ``("Robin", "juniper")``, ``("Robin", "recognizer")`` or
+    ``(None, None)``.
+
+    ``name_label`` is the strict naming rule at write time (orion/vision/story_naming.py): the camera
+    matched the story's crops to a cluster Juniper named. That match is the recognizer's guess, even when
+    the cluster's own name was typed by her. A name counts as Juniper's only when she vouched for THIS
+    story, the same rule the Hub card uses (motion_story_routes.story_display):
+
+    * her latest name / "someone else" answer on this story wins (``story_answers``, oldest first): a
+      name -> that name; "someone else" -> who she said it really is, or no name;
+    * else her spot-check verdict on this story is "right" (``story_verdict``), which vouches for the
+      name it was written with;
+    * else the written name is the recognizer's guess.
+
+    Both are read as of the chronicle's read (like the spot-check gate): an answer Juniper gives after
+    the story was folded changes a re-fold's label, not the stored arc.
+    """
+    direct = [a for a in (row.get("story_answers") or [])
+              if isinstance(a, Mapping) and a.get("action") in ("name", "someone_else")]
+    if direct:
+        name = str(direct[-1].get("name") or "").strip()
+        return (name, "juniper") if name else (None, None)
+    written = str(row.get("name_label") or "").strip()
+    if not written:
+        return None, None
+    return written, ("juniper" if row.get("story_verdict") == "right" else "recognizer")
+
+
+NAME_SOURCE_WORDS = {"juniper": "named by Juniper", "recognizer": "a guess"}
+
+
 def street_story_label(row: Row) -> str:
     """"Outside (walkway camera): a person walked left to right, away from the house, with a stroller".
     Built from the story's own fields, never its sentence: the sentence says "together with 1 other
     person", a bare track count. The label carries NO people count. The honest range
     (orion/vision/walkway_rollup.py, PR #2781) exists only once the hour's rollup closes, a median ~3 h
     after the hour, long after the chronicle reads the story; adding it would give the same arc a
-    different label live and on a re-fold. "How many" is the rollups' job (the Day letter line)."""
+    different label live and on a re-fold. "How many" is the rollups' job (the Day letter line).
+
+    A name always says where it came from (``story_name``): "Robin (named by Juniper)" or "Robin (a
+    guess)", the same "(a guess)" a handoff's person guess carries."""
     kind = str(row.get("kind") or "")
-    who = str(row.get("name_label") or "").strip() or f"a {kind}"
+    name, source = story_name(row)
+    who = f"{name} ({NAME_SOURCE_WORDS[source]})" if name and source else f"a {kind}"
     motion = _STORY_MOTION.get(str(row.get("speed_class") or ""), "passed")
     where = [w for w, on in (("left to right", row.get("dir_lateral") == 1),
                              ("right to left", row.get("dir_lateral") == -1),
@@ -541,22 +577,72 @@ def street_story_label(row: Row) -> str:
     return clip(text)
 
 
+# --------------------------------------------------------------------------- one visit
+# One visit to the door used to spend up to 3 of the daily street slots (walkway story, doorbell
+# story, ring: live 10-24 20:47-20:48). The reducer (arcs._fold_street) folds a street event into an
+# existing street arc of the same day when they are the same visit, by one of two rules:
+#
+# 1. Linked: the handoff loop (orion-sql-writer vision_handoff, PR #2828) said two stories are one
+#    passage (status paired / met / early / late), or a graded handoff names a story. The link rides
+#    in ``related_refs`` as ``street:story:<id>`` / ``street:ring:<event_id>``, the subject refs the
+#    adapters give those events.
+# 2. A ring and a story within ``ReducerConfig.street_visit_gap_sec`` of each other.
+#
+# Two stories with no link never merge by time alone: two passers-by a minute apart stay two arcs.
+
+VISIT_REF_PREFIX = "street:"
+
+
+def _street_visit_refs(story_ids: Iterable[Any] = (), ring_ids: Iterable[Any] = ()) -> list[str]:
+    return sorted({f"street:story:{x}" for x in story_ids if x} | {f"street:ring:{x}" for x in ring_ids if x})
+
+
+def _split_street_label(label: str) -> tuple[list[str], str]:
+    """"Outside (walkway camera and doorbell camera): body" -> (cameras, body). A label this module did
+    not build comes back as ([], label)."""
+    head, sep, body = label.partition("): ")
+    if not sep or not head.startswith("Outside ("):
+        return [], label
+    return [c for c in head[len("Outside ("):].split(" and ") if c], body
+
+
+def merge_street_labels(earlier: str, later: str) -> str:
+    """One visit's label from two labels: "Outside (walkway camera and doorbell camera): a person walked
+    toward the house; someone rang the doorbell". The reducer passes the part that starts first as
+    ``earlier``; a part that starts inside the visit is appended."""
+    cams_a, body_a = _split_street_label(earlier)
+    cams_b, body_b = _split_street_label(later)
+    cams = list(dict.fromkeys(cams_a + cams_b)) or ["street camera"]
+    return clip(f"Outside ({' and '.join(cams)}): {body_a}; {body_b}")
+
+
+def _available_payload(created_at: Any) -> dict:
+    """``available_at``: when the row was written. The reducer orders a street event by the later of
+    its end and this (``arcs.event_available_at``), so a story written after the chronicle's read lag is
+    read in the window it was written in, instead of being stored late and never folded."""
+    t = as_utc(created_at) if created_at not in (None, "") else None
+    return {"available_at": t.isoformat()} if t is not None else {}
+
+
 def _street_story(row: Row, tz_name: str) -> TemporalSelfEventV1 | None:
     stream = row.get("stream_id")
     if (not row.get("published") or not row.get("clean") or stream is None or stream in ROOM_STREAMS
             or row.get("kind") not in STREET_STORY_KINDS or not _story_gate(row)):
         return None
     ref = row.get("story_id")
-    named = bool(str(row.get("name_label") or "").strip())
+    name, source = story_name(row)
+    together = sorted({str(x) for x in (row.get("together_story_ids") or []) if x})
+    visit = _street_visit_refs(row.get("visit_story_ids") or (), row.get("visit_event_ids") or ())
     return _event(
         kind="street_event", table="vision_motion_story", ref=ref, at=row.get("started_at"),
         ended=row.get("ended_at"), tz_name=tz_name, subject_ref=f"street:story:{ref}",
-        related_refs=sorted({str(x) for x in (row.get("together_story_ids") or []) if x}),
+        related_refs=together + [v for v in visit if v != f"street:story:{ref}"],
         label=street_story_label(row),
         payload={"outside_world": True, "origin": "motion_story", "stream_ids": [str(stream)],
-                 "subject_kind": row.get("kind"), "named": named,
-                 "individual_id": row.get("individual_id") if named else None,
-                 "gate": f"spot_check rules_version={row.get('rules_version')}"},
+                 "subject_kind": row.get("kind"), "named": bool(name), "name_source": source,
+                 "individual_id": row.get("individual_id") if name else None,
+                 "gate": f"spot_check rules_version={row.get('rules_version')}",
+                 **_available_payload(row.get("created_at"))},
     )
 
 
@@ -597,16 +683,20 @@ def _street_handoff(row: Row, tz_name: str) -> TemporalSelfEventV1 | None:
     guess = str(ev.get("person_guess") or "").strip()
     who = f"{guess} (a guess)" if guess else "someone"
     ref = row.get("event_id") or ev.get("event_id")
+    refs = sorted({str(x) for x in (ev.get("evidence_refs") or []) if x})
+    # The handoff's own stories ("story:<id>") are the same visit (rule 1 above).
+    visit = _street_visit_refs(x.split(":", 1)[1] for x in refs if x.startswith("story:"))
     return _event(
         kind="street_event", table="vision_handoff_street_outbox", ref=ref, at=ev.get("occurred_at"),
         tz_name=tz_name, subject_ref=f"street:handoff:{row.get('handoff_id') or ref}",
-        related_refs=sorted({str(x) for x in (ev.get("evidence_refs") or []) if x}),
+        related_refs=refs + visit,
         label=clip(f"Outside ({_camera_words(streams)}): {who} crossing between cameras "
                    f"{_HANDOFF_WORDS[ev['kind']]} (p {float(p):.2g})"),
         verdict=str(ev["kind"]),
         payload={"outside_world": True, "origin": "street_event", "stream_ids": streams,
                  "subject_kind": ev.get("subject_kind"), "named": False,
-                 "p_value": float(p), "gate": f"p_value < {STREET_GATE_P_VALUE}"},
+                 "p_value": float(p), "gate": f"p_value < {STREET_GATE_P_VALUE}",
+                 **_available_payload(row.get("created_at"))},
     )
 
 

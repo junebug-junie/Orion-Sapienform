@@ -362,9 +362,10 @@ def test_retro_play_rows_fold_into_one_play_arc_and_a_missing_table_reads_nothin
 STORY_INSERT = """
 INSERT INTO vision_motion_story (story_id, stream_id, kind, started_at, ended_at, speed_class, dir_lateral,
   dir_depth, name_label, individual_id, companion_kinds, together_story_ids, published, drop_reason, clean,
-  rules_version, sentence)
+  rules_version, sentence, created_at)
 VALUES (%(story_id)s, %(stream_id)s, %(kind)s, %(started_at)s, %(ended_at)s, 'walking', 1, -1, %(name_label)s,
-  'ind-1', %(companion_kinds)s, %(together)s, %(published)s, NULL, true, 1, 'A person walked.')
+  'ind-1', %(companion_kinds)s, %(together)s, %(published)s, NULL, true, 1, 'A person walked.',
+  coalesce(%(created_at)s, %(ended_at)s + interval '50 seconds'))
 """
 
 
@@ -380,7 +381,7 @@ def test_street_rows_become_labelled_street_arcs_and_the_flag_restores_room_only
         def story(sid, **kw):
             base = {"story_id": sid, "stream_id": "walkway", "kind": "person", "started_at": start,
                     "ended_at": start + timedelta(seconds=15), "name_label": None, "companion_kinds": [],
-                    "together": [], "published": True}
+                    "together": [], "published": True, "created_at": None}
             base.update(kw)
             return base
 
@@ -397,9 +398,10 @@ def test_street_rows_become_labelled_street_arcs_and_the_flag_restores_room_only
             await conn.execute("INSERT INTO vision_motion_story_verdict (story_id, verdict, rules_version) "
                                "SELECT story_id, CASE WHEN story_id IN ('v0', 'v1') THEN 'wrong_other' ELSE 'right' "
                                "END, 1 FROM vision_motion_story WHERE story_id LIKE 'v%'")
+            # The ring is 5 min after story a1: a separate visit (more than 84 s apart).
             await fdb.insert(conn, "vision_events", [
                 {"event_id": "ring-1", "stream_id": "doorbell", "event_type": "doorbell_ring",
-                 "entities": [], "created_at": start + timedelta(minutes=1)},
+                 "entities": [], "created_at": start + timedelta(minutes=5)},
                 {"event_id": "motion-1", "stream_id": "doorbell", "event_type": "doorbell_motion",
                  "entities": [], "created_at": start + timedelta(minutes=1)}])
             good = (start + timedelta(minutes=3)).isoformat()
@@ -434,5 +436,74 @@ def test_street_rows_become_labelled_street_arcs_and_the_flag_restores_room_only
             await conn.execute("DROP TABLE vision_motion_story_verdict")
         _, partial = await SourceReader(pool, TZ).read(lo, hi, ticks=False, kinds=["street_event"])
         assert sorted(e.source_ref for e in partial) == ["e1", "ring-1"]  # the story read skipped, not failed
+
+    with_db(scenario_fn)
+
+
+def test_one_visit_is_one_arc_late_written_stories_fold_and_names_say_where_they_came_from():
+    """Follow-up to PR #2876 on real Postgres: (a) a walkway story, the doorbell story the handoff loop
+    paired with it, and a ring inside the visit fold into ONE street arc; (b) a story written 20 min
+    after it ended (past the 300 s read lag) is read in the window it was written in and folded, not
+    stored late; (c) a written name reads "(a guess)" unless Juniper vouched for that story."""
+    async def scenario_fn(pool):
+        start = T0 + timedelta(minutes=2)
+
+        def story(sid, **kw):
+            base = {"story_id": sid, "stream_id": "walkway", "kind": "person", "started_at": start,
+                    "ended_at": start + timedelta(seconds=10), "name_label": None, "companion_kinds": [],
+                    "together": [], "published": True, "created_at": None}
+            base.update(kw)
+            return base
+
+        late_end = start + timedelta(minutes=20)
+        rows = [story("walk"), story("door", stream_id="doorbell", started_at=start + timedelta(seconds=1)),
+                story("named", started_at=start + timedelta(minutes=10), ended_at=start + timedelta(minutes=10, seconds=9),
+                      name_label="Robin"),
+                story("vouched", started_at=start + timedelta(minutes=14), ended_at=start + timedelta(minutes=14, seconds=9),
+                      name_label="Robin"),
+                story("late", started_at=late_end - timedelta(seconds=9), ended_at=late_end,
+                      created_at=late_end + timedelta(minutes=20))]
+        async with pool.connection() as conn:
+            for s in rows + [story(f"v{i}", started_at=start - timedelta(days=3), ended_at=start - timedelta(days=3))
+                             for i in range(50)]:
+                await conn.execute(STORY_INSERT, s)
+            await conn.execute("INSERT INTO vision_motion_story_verdict (story_id, verdict, rules_version) "
+                               "SELECT story_id, 'right', 1 FROM vision_motion_story "
+                               "WHERE story_id LIKE 'v%' OR story_id = 'vouched'")
+            await fdb.insert(conn, "vision_handoff", [
+                {"handoff_id": "h1", "portal_id": "central_walk", "portal_kind": "overlap", "status": "paired",
+                 "source_story_id": "door", "target_story_id": "walk"},
+                {"handoff_id": "h2", "portal_id": "central_walk", "portal_kind": "overlap", "status": "ambiguous",
+                 "source_story_id": "named", "target_story_id": "walk"}])  # ambiguous is not a link
+            await fdb.insert(conn, "vision_events", [
+                {"event_id": "ring-1", "stream_id": "doorbell", "event_type": "doorbell_ring",
+                 "entities": [], "created_at": start + timedelta(seconds=40)}])
+            # orion_ask's columns the read uses (the table lives outside the temporal-self export).
+            await conn.execute("CREATE TABLE orion_ask (ask_id text, source_kind text, source_ref text, status text, "
+                               "answer_detail jsonb, answered_at timestamptz, created_at timestamptz)")
+            await fdb.insert(conn, "orion_ask", [
+                {"ask_id": "a1", "source_kind": "vision_story_person", "source_ref": "ind-1", "status": "answered",
+                 "answer_detail": {"story_id": "late", "action": "name", "name": "Ana"},
+                 "answered_at": start, "created_at": start},
+                # About a companion on the "named" story's card: never names its walker.
+                {"ask_id": "a2", "source_kind": "vision_story_person", "source_ref": "companion-9",
+                 "status": "answered", "answer_detail": {"story_id": "named", "action": "name", "name": "Zed"},
+                 "answered_at": start, "created_at": start}])
+
+        w = scenario()
+        await run_pg(pool, w, T0 + timedelta(hours=1, minutes=10))
+        street = sorted((a for a in map(canon, await ChronicleStore(pool).arcs("2026-10-10")) if a["kind"] == "street"),
+                        key=lambda a: a["began_at"])
+        assert [sorted(a["evidence_refs"]) for a in street] == [
+            ["vision_events:ring-1", "vision_motion_story:door", "vision_motion_story:walk"],
+            ["vision_motion_story:named"], ["vision_motion_story:vouched"], ["vision_motion_story:late"]]
+        assert street[0]["subject_label"].startswith("Outside (walkway camera and doorbell camera): a person walked")
+        assert street[1]["subject_label"].startswith("Outside (walkway camera): Robin (a guess) walked")
+        assert street[2]["subject_label"].startswith("Outside (walkway camera): Robin (named by Juniper) walked")
+        assert street[3]["subject_label"].startswith("Outside (walkway camera): Ana (named by Juniper) walked")
+        async with pool.connection() as conn:
+            cur = await conn.execute("SELECT count(*) AS n FROM temporal_self_event "
+                                     "WHERE late_unfolded AND source_kind = 'street_event'")
+            assert (await cur.fetchone())["n"] == 0  # the late-written story folded, nothing stored late
 
     with_db(scenario_fn)

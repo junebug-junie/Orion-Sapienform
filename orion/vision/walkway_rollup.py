@@ -51,6 +51,13 @@ What is counted (and what is not):
   decision 6 is open). Rows written before version 2 have no ``count_range``:
   ``person_count_range`` derives it from their fields and ``display_line``
   re-renders their line, so a reader never shows the old bare count.
+* **Every living kind is a range (rules_version 4, 2026-10-29).** The matcher splits a dog
+  into several clusters too (live 2026-10-28 14:00 MDT: 6 dog clusters, never more than 3
+  dogs in one window). Every kind in ``RANGE_KINDS`` (the ``LIVING_KINDS`` the rollup counts:
+  person, dog) carries ``count_range`` and prints "dogs: at least 3, at most 6 (the camera
+  splits one dog into several)"; its window peak leaves the "most at once" phrase (it is the
+  range's low). A version 2/3 row whose stored line states a bare dog count is re-rendered by
+  ``display_line``; recent hours are rebuilt once by the writer (``RULES_VERSION`` moved).
 * **Named people come from the person record (rules_version 3, 2026-10-24).** Juniper:
   the day line should know people, not cluster names. ``named`` is keyed by the person's
   ``display_name`` when the sighted individual has an active ``vision_individual`` link
@@ -87,23 +94,38 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 SCHEMA = "vision_rollup.v1"
-RULES_VERSION = 3
+RULES_VERSION = 4
 # The first rules_version whose ``named`` is keyed by the person record (person_link).
 PERSON_RECORD_RULES_VERSION = 3
 # The first rules_version whose stored ``line`` shows people as a range. Older rows are
 # re-rendered at read time (display_line).
 COUNT_RANGE_RULES_VERSION = 2
-# Kinds counted as a range. Vehicles keep their count until they are checked the same way.
-RANGE_KINDS = ("person",)
+# The first rules_version whose stored ``line`` shows EVERY living kind as a range (dogs too,
+# 2026-10-29, follow-up to PR #2875). A v2/v3 line that states a bare count of a living kind
+# ("6 dogs", "most at once 3 dogs") is re-rendered at read time (display_line); one without
+# any is shown as stored (it reads the same either way).
+LIVING_RANGE_RULES_VERSION = 4
+# Kinds that are someone rather than something (the street line orders them before things). The
+# individuals reducer splits one of these into several appearance clusters the way it splits a
+# person, so every one of them that has clusters is counted as a range.
+LIVING_KINDS = frozenset({"person", "dog", "cat", "bird", "horse", "animal"})
 METHOD_LOW = "most_in_one_window"            # vision_scene_inventory.counts, max per hour
 METHOD_LOW_LESS_PROP = "most_in_one_window_less_props"
 METHOD_LOW_SIGHTED = "one_sighting"          # no window count, but a person was sighted
 METHOD_LOW_UNCORRECTED = "most_in_one_window_uncorrected"  # pre-v2 row: props not taken out
 METHOD_HIGH = "appearance_clusters"          # individuals per hour (passings), summed
 METHOD_HIGH_RAISED = "raised_to_low"         # clusters below the window count (stationary)
-SPLIT_NOTE = "the camera splits one person into several"
+def split_note(kind: str = "person") -> str:
+    """Why a living kind is a range: "the camera splits one dog into several"."""
+    return f"the camera splits one {kind} into several"
+
+
+SPLIT_NOTE = split_note("person")
 GRAINS = ("hour", "day", "week", "month")
 KINDS = ("person", "dog", "bicycle", "stroller", "vehicle")
+# Kinds counted as a range: the living kinds the rollup counts (person, dog). Bicycles, strollers
+# and vehicles keep their count until they are checked the same way.
+RANGE_KINDS = tuple(k for k in KINDS if k in LIVING_KINDS)
 KIND_PLURAL = {"person": "people", "dog": "dogs", "bicycle": "bicycles", "stroller": "strollers",
                "vehicle": "vehicles", "other": "other"}
 KIND_SINGULAR = {"person": "person", "dog": "dog", "bicycle": "bicycle", "stroller": "stroller",
@@ -468,15 +490,21 @@ def range_phrase(r: Mapping[str, Any] | None, kind: str = "person") -> str:
     if not r:
         return ""
     low, high = int(r.get("low", 0)), int(r.get("high", 0))
-    s = f"{KIND_PLURAL[kind]}: at least {low}, at most {high}"
-    return s + (f" ({SPLIT_NOTE})" if high > low else "")
+    s = f"{KIND_PLURAL.get(kind, kind + 's')}: at least {low}, at most {high}"
+    return s + (f" ({split_note(KIND_SINGULAR.get(kind, kind))})" if high > low else "")
+
+
+def range_phrases(rollup: Mapping[str, Any] | None) -> list[str]:
+    """One range phrase per living kind that passed, people first."""
+    return [p for p in (range_phrase(person_count_range(rollup, k), k) for k in RANGE_KINDS) if p]
 
 
 def display_line(line: Any, rollup: Any) -> str:
     """The line a reader may show. The stored line only when the row is known to be
-    rules_version COUNT_RANGE_RULES_VERSION or later; an older row is re-rendered from its own
-    fields; anything unreadable (no rollup, bad JSON, render error) is "" -- never the stored
-    line, which may hold a bare people count."""
+    rules_version COUNT_RANGE_RULES_VERSION or later, and (before LIVING_RANGE_RULES_VERSION)
+    states no bare count of a living kind; any other row is re-rendered from its own fields;
+    anything unreadable (no rollup, bad JSON, render error) is "" -- never the stored line,
+    which may hold a bare people or dog count."""
     import json as _json
 
     r = rollup
@@ -491,8 +519,10 @@ def display_line(line: Any, rollup: Any) -> str:
         version = int(r.get("rules_version") or 1)
     except (TypeError, ValueError):
         version = 1
-    if version >= COUNT_RANGE_RULES_VERSION:
-        return str(line or "").strip()
+    stored = str(line or "").strip()
+    if version >= LIVING_RANGE_RULES_VERSION or (
+            version >= COUNT_RANGE_RULES_VERSION and not bare_living_counts(stored)):
+        return stored
     try:
         return render_line(r)
     except Exception:  # noqa: BLE001 -- an unreadable old row shows nothing, not a bare count
@@ -1061,7 +1091,7 @@ def render_line(rollup: Mapping[str, Any]) -> str:
             kinds = rollup.get("kinds") or {}
             peak = _peak_phrase(rollup.get("peak_at_once") or {})
             others = _count_phrase(kinds, skip=RANGE_KINDS)
-            segs = [range_phrase(person_count_range(rollup))]
+            segs = range_phrases(rollup)
             if others:
                 segs.append(f"{others} passing" + (f" ({peak})" if peak else ""))
             elif peak:
@@ -1087,7 +1117,7 @@ def render_line(rollup: Mapping[str, Any]) -> str:
     else:
         kinds = rollup.get("kinds") or {}
         others = _count_phrase(kinds, skip=RANGE_KINDS, with_distinct=True)
-        parts = [x for x in (range_phrase(person_count_range(rollup)), f"{others} passing" if others else "") if x]
+        parts = [x for x in (*range_phrases(rollup), f"{others} passing" if others else "") if x]
     named = [(name, v) for name, v in (rollup.get("named") or {}).items()]
     named += [(belonging_name(name, v), v) for name, v in (rollup.get("belongings") or {}).items()]
     if named:
@@ -1265,12 +1295,29 @@ _RANGE_BEFORE_RE = re.compile(
 _RANGE_AFTER_RE = re.compile(r"^\s*(?:at most|or fewer|or less|at the most)\b", re.IGNORECASE)
 
 
-def bare_people_counts(prose: str) -> list[str]:
-    """People counts in ``prose`` stated as one number, not as a range."""
+def _bare(regex: "re.Pattern[str]", prose: str) -> list[str]:
     text = _strip_calendar(prose or "")
     out: list[str] = []
-    for m in _BARE_PEOPLE_RE.finditer(text):
+    for m in regex.finditer(text):
         if not (_RANGE_BEFORE_RE.search(text[max(0, m.start() - 40):m.start()])
                 or _RANGE_AFTER_RE.match(text[m.end():])):
             out.append(" ".join(m.group(0).split()))
     return out
+
+
+def bare_people_counts(prose: str) -> list[str]:
+    """People counts in ``prose`` stated as one number, not as a range."""
+    return _bare(_BARE_PEOPLE_RE, prose)
+
+
+# Every range kind's nouns, from the kind tables (never a hand list): people's, plus
+# "dog" / "dogs" for each other living kind the rollup counts.
+_LIVING_NOUN = "(?:" + "|".join([_PEOPLE_NOUN[3:-1]] + [
+    rf"{re.escape(KIND_SINGULAR[k])}s?|{re.escape(KIND_PLURAL[k])}" for k in RANGE_KINDS if k != "person"]) + ")"
+_BARE_LIVING_RE = re.compile(rf"\b(?:\d+|{_COUNT_WORD})\s+(?:[a-z-]+\s+)?{_LIVING_NOUN}\b", re.IGNORECASE)
+
+
+def bare_living_counts(prose: str) -> list[str]:
+    """Counts of any living kind (people, dogs) in ``prose`` stated as one number, not as a
+    range: "6 unfamiliar dogs", "40 people". The street line and the rollup lines must have none."""
+    return _bare(_BARE_LIVING_RE, prose)

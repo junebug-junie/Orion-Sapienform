@@ -55,10 +55,10 @@ from zoneinfo import ZoneInfo
 from orion.journaler import JournalTriggerV1
 from orion.vision.walkway_rollup import (
     RANGE_KINDS,
-    SPLIT_NOTE,
-    bare_people_counts,
+    bare_living_counts,
     display_line,
     person_count_range,
+    split_note,
     unsupported_numbers,
 )
 
@@ -410,14 +410,14 @@ def compact_rollup_facts(rollup: dict[str, Any]) -> dict[str, Any]:
         name: {k: v for k, v in (entry or {}).items() if k in ("times", "days", "sightings", "kinds")}
         for name, entry in (rollup.get("belongings") or {}).items()
     }
-    # People are a range (2026-10-20): at least the most in one frame, at most the clusters.
-    # Their bare passings/distinct (cluster counts) never reach the entry.
+    # People and dogs are a range (2026-10-20, dogs 2026-10-29): at least the most in one frame,
+    # at most the clusters. Their bare passings/distinct (cluster counts) never reach the entry.
     kinds: dict[str, Any] = {}
     for k, v in (rollup.get("kinds") or {}).items():
         if k in RANGE_KINDS:
             r = person_count_range(rollup, k)
             if r:
-                kinds[k] = {"at_least": r["low"], "at_most": r["high"], "note": SPLIT_NOTE}
+                kinds[k] = {"at_least": r["low"], "at_most": r["high"], "note": split_note(k)}
         else:
             kinds[k] = {"passings": v.get("passings", 0), "distinct": v.get("distinct", 0)}
     reg = rollup.get("regulars") or {}
@@ -464,8 +464,8 @@ def build_rollup_seed(kind: str, row: dict[str, Any]) -> dict[str, Any] | None:
         "facts": compact_rollup_facts(rollup),
         "lines": [line],
         "rule": ("Every number in the entry must come from facts; hours the camera was down are not "
-                 "'nobody came'. People are a range: say 'at least N, at most M people', never one "
-                 "number of people (the camera splits one person into several)."),
+                 "'nobody came'. People and dogs are a range: say 'at least N, at most M people' "
+                 "(or dogs), never one number of people or dogs (the camera splits one into several)."),
     }
 
 
@@ -480,9 +480,9 @@ def guard_walkway_draft(draft: Any, trigger: JournalTriggerV1) -> tuple[Any, lis
     except ValueError:
         return draft, []
     lines = [str(x) for x in (seed.get("lines") or []) if str(x).strip()]
-    # Rollup entries: people are a range, so "79 people" is refused even though 79 is a fact
-    # (it is the top of the range, not a head count).
-    people = bare_people_counts if trigger.trigger_kind in ROLLUP_KIND_BY_GRAIN.values() else (lambda _t: [])
+    # Rollup entries: people and dogs are a range, so "79 people" / "6 dogs" is refused even though
+    # the number is a fact (it is the top of the range, not a head count).
+    people = bare_living_counts if trigger.trigger_kind in ROLLUP_KIND_BY_GRAIN.values() else (lambda _t: [])
     body_bad = unsupported_numbers(str(draft.body or ""), seed) + people(str(draft.body or ""))
     title_bad = unsupported_numbers(str(draft.title or ""), seed) + people(str(draft.title or ""))
     if not body_bad and not title_bad:

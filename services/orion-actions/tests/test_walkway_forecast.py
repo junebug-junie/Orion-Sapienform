@@ -317,6 +317,10 @@ def test_guard_replaces_prose_with_an_invented_number_and_keeps_honest_prose() -
     # Other journal kinds are never touched.
     other = trigger.model_copy(update={"trigger_kind": "daily_summary"})
     assert wf.guard_walkway_draft(invented, other) == (invented, [])
+    # Dogs are a range too (2026-10-29): one bare number of dogs is refused like people.
+    dogs = JournalEntryDraftV1(mode="digest", title="The street today", body="185 passings and 6 dogs today.")
+    _, bad = wf.guard_walkway_draft(dogs, trigger)
+    assert "6 dogs" in bad
 
 
 # A day row as rules_version 1 wrote it (before people became a range, 2026-10-20).

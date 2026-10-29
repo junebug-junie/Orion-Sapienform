@@ -93,6 +93,6 @@ git pull --ff-only && scripts/safe_docker_build.sh orion-sql-writer up -d --buil
 
 ## PR link
 
-<link>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2948
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

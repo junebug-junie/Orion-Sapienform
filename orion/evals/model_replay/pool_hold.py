@@ -142,10 +142,15 @@ class PoolHolds:
     models: tuple[str, ...] = ACQUIRE_ORDER
     actor: str = "bonsai-replay-eval"
     grant_timeout_sec: float = 1800.0
+    # How long a seat's extra slot hold may wait for its grant before it is given back.
+    extra_grant_timeout_sec: float = 60.0
     # Live lease ids the pool itself holds for HOLDER (reads /v1/pool); used when a hold RPC failed
     # without telling us the lease id. None = no sweep (tests, or no pool HTTP).
     sweep: Optional[Callable[[], Any]] = None
     seats: dict[str, Grant] = field(default_factory=dict)
+    # Which seat specs to take (default SEATS). Another operator task can ask for a seat's other
+    # slots without changing what the replay takes (scripts/gpu_pool_clear_gpu2.py).
+    specs: dict[str, SeatSpec] = field(default_factory=lambda: dict(SEATS))
     _held: list[str] = field(default_factory=list)
     _unknown: bool = False
 
@@ -154,7 +159,7 @@ class PoolHolds:
             for key in ACQUIRE_ORDER:
                 if key not in self.models:
                     continue
-                spec = SEATS[key]
+                spec = self.specs[key]
                 self.seats[key] = await self._acquire_verified(spec)
                 for _ in range(spec.extra_slot_holds):
                     await self._acquire_extra(spec)
@@ -210,7 +215,8 @@ class PoolHolds:
         return g
 
     async def _acquire_extra(self, spec: SeatSpec) -> None:
-        """Fill a seat's other slot. Best effort: a grant elsewhere (or none in 60s) is given back now."""
+        """Fill a seat's other slot. Best effort: a grant elsewhere (or none within
+        extra_grant_timeout_sec) is given back now."""
         reply = await self.transport.hold(spec.work_class, self.actor)
         detail = reply.get("detail") or {}
         lease_id = detail.get("lease_id")
@@ -221,7 +227,7 @@ class PoolHolds:
                            work_class=spec.work_class, status=detail.get("status"), extra_slot=True)
         grant = detail.get("grant") if detail.get("status") == "granted" else None
         if grant is None and reply.get("ok"):
-            grant = await self.transport.wait_granted(lease_id, 60.0)
+            grant = await self.transport.wait_granted(lease_id, self.extra_grant_timeout_sec)
         if not grant or grant.get("role") != spec.expect_role:
             await self._release_one(lease_id, reason="extra_slot_elsewhere")
 

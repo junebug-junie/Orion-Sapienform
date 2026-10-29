@@ -303,6 +303,69 @@ git -C upstream diff -- data/characters.ts > patches/orion-character.patch
 git -C upstream diff -- convex/constants.ts convex/world.ts > patches/orion-human-juniper.patch
 ```
 
+## Living world: simulation core
+
+The town now has a world that changes on its own, in plain code with no model calls. It holds places, stock (coffee at the diner, parts at the workshop, everyone's cash), each resident's needs, trust between characters, facts, and quests. Every 5 minutes a Convex cron moves it forward by 5 game-minutes (game time runs 1:1 with the clock). Design: `docs/superpowers/specs/2026-10-14-aitown-living-world-design.md` (PR #2666), sections 1–3 and 8. This is PR 2 of that design.
+
+What one tick does:
+- Needs drift by each resident's schedule. Needs are wants: 0 means satisfied, 1 means urgent. Rest builds up during work and recovers during sleep. Social builds up when awake. Purpose rises while the resident is in an open quest and slowly falls otherwise. Money is not drifted: it follows cash (no cash means 1, 40 cash or more means 0).
+- Routines run at the top of the hour: coffee at the diner at 8, 12 and 18 (the coffee leaves stock, the cash goes to the diner's owner), and a wage at the end of each shift.
+- Random events fire from a small template table (coffee and parts deliveries, a late delivery, the workshop generator breaking and getting fixed, gossip that moves trust, small loans). Each template has a rate per game-hour and fires as a seeded Poisson arrival.
+- Quests resolve: a quest succeeds when its goal holds and fails once its deadline passes. Either way its reward or penalty effects apply, and a `quest.<id>` fact records the outcome.
+
+Every random draw comes from a generator whose state is part of the saved world. The same world plus the same seed gives exactly the same next world (tested: one 24-hour tick equals 288 five-minute ticks with a save in between).
+
+**Files.** The code ships as whole new files in `overlay/convex/sim/`, copied into `upstream/` after the patches:
+- `core.ts`: the pure simulation (no imports at all, so CI runs it under Node).
+- `schema.ts`, `store.ts`, `tick.ts`, `events.ts`, `state.ts`: the thin Convex layer.
+- `seed.ts`: generated from the cards (see below).
+
+`patches/orion-sim-core-hooks.patch` is the only upstream edit: it registers the two tables in `convex/schema.ts` and the cron in `convex/crons.ts`.
+
+**Two tables, not ten.** The design listed ten tables. This PR uses two. `simState` holds one versioned document per world with the whole simulated world in it. `simEvents` is the append-only log of every event, with its kind, source, title, effects, generator seed, status and game-minute. One document means an event's effects (stock and trust and a fact together) commit in one write, and a replay starts from one value. The world is small (six characters, five places), so it fits one document easily. Scenes and predictions (PRs 3 and 4) are logs, so they get their own tables when they arrive.
+
+**One apply path.** Every change goes through `core.applyEvent`: tick templates, routines, quest results and Juniper's events. An event carries a closed set of effects:
+
+| op | target | value | rule |
+|---|---|---|---|
+| `stock_delta` | `<place or resident>.<item>` | integer | stock never goes below 0 |
+| `need_delta` | `<resident>.rest` / `.social` / `.purpose` | number | clamped to 0..1 (money follows cash) |
+| `trust_delta` | `<from>\|<to>` | number | clamped to -1..1 |
+| `fact_set` | fact key, e.g. `generator.fixed` | number, string or boolean | |
+| `place_flag` | `<place>.<flag>` | number, string or boolean | |
+
+An event with an unknown op, an unknown target or a bad value is refused whole, and nothing in it applies. An event with no effects becomes a rumor fact (`rumor.<event id>`, the 20 newest are kept) and moves no numbers. Allowed sources are `sim` and `juniper`. `mirror` and `orion` arrive with PRs 4 and 5.
+
+**The entity rule.** `core.checkEntities(state, names)` returns every name that is not a place, an item or a character in the world. The scene writer (PR 3) uses it to refuse a scene that names an invented person.
+
+**Inspect** (from `upstream/`, with the admin key in `.env.local`):
+
+```bash
+npx convex run sim/state:snapshot                 # the world + the 20 newest events
+npx convex run sim/state:snapshot '{"events": 100}'
+npx convex run sim/tick:run '{"minutes": 60, "force": true}'   # advance by hand, even while the town is stopped
+```
+
+The cron does nothing while the town is not running (`stoppedByDeveloper` or `inactive`), so the world does not drift while nobody can see it. The first tick or event creates the world from the card seed. To reset it to the seed (the event log stays, and the game clock carries on):
+
+```bash
+npx convex run sim/state:bootstrap '{"replace": true}'
+```
+
+**Add an event as Juniper** (CLI only for now; the Hub form and the bus path arrive with PR 4):
+
+```bash
+npx convex run sim/events:inject '{"event": {"source": "juniper", "kind": "delivery", "title": "A crate of parts turns up at the workshop.", "place": "workshop", "effects": [{"op": "stock_delta", "target": "workshop.parts", "value": 5}]}}'
+npx convex run sim/events:inject '{"event": {"source": "juniper", "kind": "rumor", "title": "Someone saw lights over the square."}}'
+npx convex run sim/events:inject '{"event": {"source": "juniper", "kind": "quest", "title": "Fix the generator", "quest": {"goal": [{"kind": "fact", "target": "generator.fixed", "cmp": "==", "value": true}], "participants": ["cam_lin", "orion"], "deadline_in_minutes": 1440, "reward": [{"op": "trust_delta", "target": "cam_lin|orion", "value": 0.2}], "penalty": [{"op": "trust_delta", "target": "cam_lin|orion", "value": -0.1}]}}}'
+```
+
+Each call writes one `simEvents` row with `source: "juniper"`. A refused event writes a row with `status: "rejected"` and the reason, and changes nothing. An unknown source is refused without a row. Quest goals are an AND of conditions: `kind` is `stock`, `fact`, `need` or `trust`, and `cmp` is one of `>= <= > < == !=`. Participants are character ids.
+
+**Cards to seed.** Each resident card in `cards/town_cards.yaml` has a `sim:` block: starting needs, schedule hours, home and work place, cash, wage per shift, own stock, purpose weights and lying rate. Purpose weights and lying rate pick who gossips and how often they spin a story. The top-level `sim_world:` block holds the places, their starting stock, the starting facts and the seed. Juniper and Orion have no `sim:` block. They are visitors: they are valid names, quest participants and trust targets, but the tick never drifts them. `generate_descriptions.py` renders all of this into `overlay/convex/sim/seed.ts`. The committed copy renders the redacted example cards (a test fails when it drifts). `apply_upstream_patches.sh` renders it again into `upstream/` from `town_cards.local.yaml` when that file exists. A local cards file without `sim:` blocks borrows them from the example, because they hold no personal details.
+
+**Tests.** `tests/test_sim_core.py` runs the shipped `core.ts` and `seed.ts` under Node >= 22.6 with type stripping (`AITOWN_TEST_NODE` points at another node). It covers acceptance A1 (a seeded 24 game-hour run moves stock, needs and trust, and replays exactly), clamping, refused effects, rumors, quests that succeed and fail, the entity rule, and A7's Juniper half at the core. CI runs it in `.github/workflows/aitown-patch-chain.yml`.
+
 ## Orion embodiment
 
 `patches/orion-character.patch` is the tracked diff for AI Town's `Descriptions` array (applied by `scripts/apply_upstream_patches.sh` alongside the embed patch). **Live cards, `generate_descriptions.py`, and the checked-in patch seed four NPCs** — Mara Vale, Nico Sable, Sofia Bell, and Cam Lin. Retired cards (Dr. Elian Cross, Juno Park, Tessa Quinn, Vale Moreno) are archived at `cards/archived/2026-08-29-retired-cast.yaml`. Orion is **not** in `Descriptions`; Orion joins externally — its body created/updated by `services/orion-embodiment/scripts/bootstrap_orion_agent.py` (dry-run by default; `--write` persists `AITOWN_ORION_*` to `~/.fcc/.env`). Orion joins with its **authored town card** (`cards/generated/orion_town_card.txt`, from `town_cards.yaml`); if that file is unreachable the bootstrap falls back to the live self-model projection, then a minimal safe blurb. Juniper Feld is the **human player**, wired via `patches/orion-human-juniper.patch` (sets `DEFAULT_NAME = 'Juniper Feld'`, pins `character: 'f6'`, and her rich join description in `convex/world.ts`). Nico is `f2` (boy sheet). Orion and Cam stay on `f1`. A world wipe is still required after recasting (`testing:wipeAllTables` then `init`) — see Fresh game / reset below.
@@ -315,8 +378,8 @@ git -C upstream diff -- convex/constants.ts convex/world.ts > patches/orion-huma
 
 `pre_rebuild.sh` does three things:
 1. It saves `upstream/`'s changes to `~/.orion/aitown-upstream-backup-<time>/`: the diff against HEAD, and the contents of untracked files. It keeps the last 10.
-2. It resets tracked files to `AITOWN_UPSTREAM_REF` from `.env_example` and deletes the files the patches create.
-3. It applies the chain from scratch.
+2. It resets tracked files to `AITOWN_UPSTREAM_REF` from `.env_example` and deletes the files the patches create. It also deletes the files `overlay/` copies, and any overlay directory the pin does not have (`convex/sim/`) as a whole, so a file dropped from `overlay/` does not stay behind and deploy.
+3. It applies the chain from scratch, then copies `overlay/` over `upstream/` and renders `convex/sim/seed.ts` from the cards in use.
 
 It refuses in two cases:
 - `cards/town_cards.local.yaml` is missing, because the Juniper join text would render from the redacted example. Copy that file from the operator host with owner-only permissions.

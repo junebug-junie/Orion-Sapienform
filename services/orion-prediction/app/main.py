@@ -13,7 +13,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
@@ -26,6 +26,7 @@ from orion.core.bus.bus_schemas import ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 
 from app.action_bets import ActionBets, ConflictError, WorldModelShadow
+from app.turn_self_bets import TurnSelfBets
 from app.causal import CausalError
 from app.effects import Effects
 from app.engine import Engine
@@ -43,6 +44,8 @@ logger = logging.getLogger("orion-prediction.main")
 engine: Engine | None = None
 effects: Effects | None = None
 action_bets: ActionBets | None = None
+turn_self_bets: TurnSelfBets | None = None
+_last_settle: dict[str, Any] = {"at": None, "ok": None, "error": None}
 runner: ExperimentRunner | None = None
 _runner_redis: Any = None
 _store: PostgresStore | None = None
@@ -51,6 +54,20 @@ _tasks: list[asyncio.Task] = []
 _chassis: list[Any] = []
 _stop = asyncio.Event()
 _last_tick: dict[str, Any] = {"at": None, "ok": None, "error": None}
+
+
+async def _settle_self_bets_forever() -> None:
+    while not _stop.is_set():
+        try:
+            await asyncio.to_thread(turn_self_bets.settle_pending)
+            _last_settle.update(at=datetime.now(timezone.utc), ok=True, error=None)
+        except Exception as exc:  # noqa: BLE001 -- one bad pass must not stop the loop
+            _last_settle.update(at=datetime.now(timezone.utc), ok=False, error=f"{type(exc).__name__}: {exc}"[:300])
+            logger.exception("turn_self_bets_settle_failed")
+        try:
+            await asyncio.wait_for(_stop.wait(), timeout=_settings.turn_self_bets_settle_sec)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def _sync(fn, *args):
@@ -73,7 +90,7 @@ async def _tick_forever() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global engine, effects, action_bets, runner, _runner_redis, _store, _bus
+    global engine, effects, action_bets, turn_self_bets, runner, _runner_redis, _store, _bus
     heartbeat = HeartbeatOnly(ChassisConfig(
         service_name=_settings.service_name, service_version=_settings.service_version,
         node_name=_settings.node_name, bus_url=_settings.orion_bus_url, bus_enabled=_settings.orion_bus_enabled,
@@ -99,6 +116,7 @@ async def lifespan(app: FastAPI):
     effects = Effects(engine)
     action_bets = ActionBets(_store, shadow=(WorldModelShadow(_settings.world_model_weights)
                                              if _settings.world_model_shadow_enabled else None))
+    turn_self_bets = TurnSelfBets(_store)
     logger.info("prediction_ready enabled=%s publish=%s targets=%s", _settings.enabled, _settings.publish_enabled,
                 [s.series_id for s in registry.targets()])
     if _settings.experiment_runner_enabled:
@@ -120,6 +138,8 @@ async def lifespan(app: FastAPI):
     _stop.clear()
     if _settings.enabled:
         _tasks.append(asyncio.create_task(_tick_forever()))
+    if _settings.turn_self_bets_enabled:
+        _tasks.append(asyncio.create_task(_settle_self_bets_forever()))
     try:
         yield
     finally:
@@ -197,6 +217,8 @@ async def health() -> dict[str, Any]:
             "weather": _jsonable({k: v for k, v in e.weather_state.items()}) if e and e.weather else
             {"ok": False, "error": "weather off (PREDICTION_WEATHER_ENABLED or ORION_SITUATION_WEATHER_LAT/LON unset)"},
             "series": series, "action_bets": await _action_bets_health(),
+            "turn_self_bets": {"enabled": _settings.turn_self_bets_enabled, **_jsonable(_last_settle),
+                               "last_pass": _jsonable(turn_self_bets.last_pass if turn_self_bets else {})},
             "experiment_runner": runner.status() if runner else {"enabled": False}}
 
 
@@ -472,6 +494,22 @@ async def delete_change_event(event_id: uuid.UUID) -> dict[str, Any]:
 async def get_change_events() -> dict[str, Any]:
     _ready()
     return {"change_events": _jsonable(await asyncio.to_thread(_store.change_events))}
+
+
+# --- turn self-bets ------------------------------------------------------------------------------------
+# Spec: docs/superpowers/specs/2026-10-23-unified-turn-self-prediction-design.md (A3).
+@app.get("/turn-self-bets/live")
+async def get_turn_self_bets_live(force: bool = False, since: datetime | None = None) -> dict[str, Any]:
+    """Per faculty: settled/void counts, the overall grade and a grade per caller, for bets placed since
+    ``since`` (default: the last 7 days; cached 60 s)."""
+    if turn_self_bets is None:
+        raise HTTPException(503, "starting")
+    if since is not None and since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    try:
+        return _jsonable(await asyncio.to_thread(turn_self_bets.live, force, since))
+    except psycopg.Error as exc:
+        raise HTTPException(503, "turn self-bet store unavailable") from exc
 
 
 # --- action bets ---------------------------------------------------------------------------------------

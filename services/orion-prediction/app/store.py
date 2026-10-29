@@ -35,12 +35,15 @@ TABLES = {
     "prediction_weather_hourly": ("hour_ts", "temp_f", "is_forecast", "source", "fetched_at"),
     "prediction_exceedance": ("exceedance_id", "probability", "window_start", "window_end", "hit_raw", "hit_mean"),
     "prediction_action_bet": ("bet_id", "skill", "context", "place", "p", "p_baseline", "counts", "result", "shadow"),
+    "prediction_turn_self_bet": ("bet_id", "correlation_id", "faculty", "status", "stated_p", "stated_lo", "observed"),
 }
 ACTION_BET_COLS = ("bet_id", "domain", "body", "skill", "context", "place", "action", "model", "p", "p_baseline",
                    "level", "counts", "chosen_rank", "session_id", "placed_at", "settled_at", "result", "outcome",
                    "detail", "shadow")
 _ACTION_BET_JSONB = {"context", "action", "counts", "detail", "shadow"}
 _SETTLED = "result IN ('success', 'failure')"
+TURN_SELF_BET_COLS = ("bet_id", "correlation_id", "faculty", "claim_kind", "caller", "placed_at", "settled_at",
+                      "status", "void_reason", "stated_p", "stated_lo", "stated_hi", "coverage", "observed", "hit")
 
 
 def _since(ts: datetime) -> str:
@@ -461,6 +464,39 @@ class PostgresStore:
                              f"FROM prediction_action_bet WHERE {' AND '.join(pl)} GROUP BY skill, domain, context, place")
                 args += pl_args
         return self._all(" UNION ALL ".join(parts), args)
+
+    # --- turn self-bets (manual_migration_prediction_turn_self_bet_v1.sql) -----------------------
+    def pending_turn_self_bets(self, since: datetime, limit: int) -> list[dict]:
+        """Stance bets (thought_decision.self_prediction, A1) with no settled rows yet, oldest first,
+        each with its turn record's run_artifact (None until the turn has finished). The naive
+        timestamps in both tables are UTC."""
+        return self._all(
+            # DISTINCT ON: correlation_id is not unique in thought_decision; keep its first stance row.
+            "SELECT * FROM (SELECT DISTINCT ON (d.correlation_id) d.correlation_id, d.session_id, "
+            "d.created_at AT TIME ZONE 'UTC' AS created_at, d.self_prediction, h.run_artifact "
+            "FROM thought_decision d LEFT JOIN harness_turn_trace h ON h.correlation_id = d.correlation_id "
+            "WHERE d.self_prediction IS NOT NULL AND d.created_at >= %s AND NOT EXISTS ("
+            "SELECT 1 FROM prediction_turn_self_bet b WHERE b.correlation_id = d.correlation_id) "
+            "ORDER BY d.correlation_id, d.created_at) first ORDER BY created_at LIMIT %s",
+            (since.astimezone(timezone.utc).replace(tzinfo=None), limit))
+
+    def insert_turn_self_bets(self, rows: Sequence[dict]) -> int:
+        """All rows of a pass in one statement; a bet already settled is left as it was."""
+        if not rows:
+            return 0
+        cols = TURN_SELF_BET_COLS
+        written = 0
+        for i in range(0, len(rows), 1000):  # 1000 x 15 params, well under Postgres's 65535 per statement
+            chunk = rows[i:i + 1000]
+            values = ", ".join(["(" + ", ".join(["%s"] * len(cols)) + ")"] * len(chunk))
+            args = [r[c] for r in chunk for c in cols]
+            written += len(self._all(f"INSERT INTO prediction_turn_self_bet ({', '.join(cols)}) VALUES {values} "
+                                     "ON CONFLICT (bet_id) DO NOTHING RETURNING bet_id", args))
+        return written
+
+    def turn_self_bets(self, since: datetime, limit: int = 20000) -> list[dict]:
+        return self._all(f"SELECT {', '.join(TURN_SELF_BET_COLS)} FROM prediction_turn_self_bet "
+                         "WHERE placed_at >= %s ORDER BY placed_at DESC LIMIT %s", (since, limit))
 
     def get_action_bet(self, bet_id: str) -> dict | None:
         rows = self._all("SELECT * FROM prediction_action_bet WHERE bet_id = %s", (bet_id,))

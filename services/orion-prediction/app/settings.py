@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     world_model_shadow_enabled: bool = Field(True, alias="PREDICTION_WORLD_MODEL_SHADOW_ENABLED")
     world_model_weights: str = Field("/models/transition.npz", alias="PREDICTION_WORLD_MODEL_WEIGHTS")
 
+    # Turn self-bets (app/turn_self_bets.py, unified-turn spec A3): settle stance's private bets about
+    # its own turn against the turn record, and grade them. false = no settle loop (/turn-self-bets still
+    # reads what was settled).
+    turn_self_bets_enabled: bool = Field(True, alias="PREDICTION_TURN_SELF_BETS_ENABLED")
+    turn_self_bets_settle_sec: float = Field(60.0, ge=5, alias="PREDICTION_TURN_SELF_BETS_SETTLE_SEC")
+
     # --- weather covariates (shared Open-Meteo client, orion/weather/openmeteo.py) ---
     weather_enabled: bool = Field(True, alias="PREDICTION_WEATHER_ENABLED")
     weather_refresh_sec: float = Field(3600.0, ge=300, alias="PREDICTION_WEATHER_REFRESH_SEC")

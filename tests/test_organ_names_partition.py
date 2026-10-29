@@ -14,7 +14,7 @@ ALLOWED = ("orion/body_atlas/", "orion/dig/", "tests/test_organ_names_partition.
 
 def test_only_the_atlas_and_dig_read_the_organ_names_ledger():
     proc = subprocess.run(["git", "-C", str(_REPO), "grep", "-l", "-e", "organ_names", "-e", "body_atlas.names",
-                           "-e", "body_atlas import names", "--", "*.py"], capture_output=True, text=True)
+                           "-e", "body_atlas import names", "-e", "names_path", "--", "*.py"], capture_output=True, text=True)
     assert proc.returncode in (0, 1), proc.stderr  # 1 = no match; anything else is a broken check
     hits = proc.stdout.split()
     assert "orion/body_atlas/names.py" in hits or "orion/dig/__main__.py" in hits  # the grep really ran

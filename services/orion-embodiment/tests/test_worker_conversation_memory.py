@@ -18,6 +18,10 @@ def _worker(*, conversation_memory_enabled: bool = True, memory_enabled: bool = 
     w._world_id = "w1"
     w._bus = SimpleNamespace()
     w._speaking_conversations = set()
+    w._abandon_participating_since_ms = {}
+    w._abandon_own_utterances = {}
+    w._abandon_leave_sent_ms = {}
+    w._accept_sent_ms = {}
     w._opened_conversations = set()
     w._speech_exhausted_partner_lines = set()
     w._salience = SalienceState()

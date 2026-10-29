@@ -395,8 +395,10 @@ def test_report_sql_on_postgres():
                 assert rep.services.down[0].name == "orion-kev/kev"
                 assert any(u.unit == "one hub.outreach act (estimate: family mean)" and u.wh == 2.0 for u in rep.unit_costs)
                 tok = next(u for u in rep.unit_costs if u.unit == "per 1k tokens")
-                # act corr-1: 2.0 Wh over 1,500 tokens (every recorder); totals: gateway only (2 calls, 1,100)
-                assert tok.status == "measured" and tok.wh == pytest.approx(2.0 * 1000 / 1500, abs=1e-3)
+                # act corr-1: 2.0 Wh over 1,000 tokens -- gateway rows only. The leftover harness_relay row
+                # (retired 2026-10-29) is the same call as c1 now that FCC forwards the turn id; counting it
+                # would double the act's tokens. Totals: gateway only (2 calls, 1,100).
+                assert tok.status == "measured" and tok.wh == pytest.approx(2.0 * 1000 / 1000, abs=1e-3)
                 assert "2 gateway calls, 1,100 tokens" in tok.source
         finally:
             async with await AsyncConnection.connect(DSN, autocommit=True) as conn:

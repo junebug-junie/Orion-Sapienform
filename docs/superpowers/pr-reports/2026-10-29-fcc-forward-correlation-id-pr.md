@@ -99,7 +99,7 @@ A code review ran in a subagent. It found no blocking issues. It checked that th
 
 - Finding (low): if FCC is deployed before the governor, the old governor's relay keeps writing `harness_relay` rows for lease-less warm turns. The matching gateway row now has the same turn id. The physiology report's per-act join had no recorder filter, so it would count those calls twice.
   - Fix: the per-act token join in `services/orion-durable-runs/app/physiology_report.py` now counts `recorder = 'gateway'` only. The restart section below deploys the governor before FCC.
-  - Evidence: `pytest services/orion-durable-runs/tests/test_physiology_report.py` passes.
+  - Evidence: `test_report_sql_on_postgres` now expects the act's tokens from gateway rows only (2.0 Wh over 1,000 tokens, not 1,500). It passes on an isolated Postgres 16: 18 passed.
 - Finding (low): a comment in `physiology_report.py` still described the retired relay recorder.
   - Fix: the comment is updated.
   - The applied migration's comments are left unchanged on purpose, so the migration file is not changed after it was applied.

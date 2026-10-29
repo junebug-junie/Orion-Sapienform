@@ -3,9 +3,9 @@
   "metric_count": 769,
   "_last_change": {
     "change_count": 1,
-    "high_severity_count": 0,
+    "high_severity_count": 1,
     "changes": [
-      "medium added metric://bus_channel/orion-office-env/orion:office:env:sample"
+      "high   routing_changed metric://bus_channel/orion-hub/orion:curiosity:help:request (declared_consumers: ['orion-curiosity-peer', 'orion-sql-writer'] -> ['orion-curiosity-peer'])"
     ]
   },
   "definitions": {
@@ -2154,8 +2154,7 @@
         "orion-hub"
       ],
       "declared_consumers": [
-        "orion-curiosity-peer",
-        "orion-sql-writer"
+        "orion-curiosity-peer"
       ],
       "notes": "kind=event stability=None",
       "registry_source": "orion/bus/channels.yaml"

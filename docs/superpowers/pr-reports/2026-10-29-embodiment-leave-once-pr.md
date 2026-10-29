@@ -4,7 +4,8 @@
 - A pending invite is accepted at most once per 20 s, instead of every tick. The same loop shape, found in review.
 - A failed `list_conversations` now skips the tick, like a failed `list_players`. Before, it read as "no conversation" and reset the resend guards.
 - Fixed the test fixtures behind 14 embodiment tests that were already failing on main.
-- What this does not claim: these leaves did not stall the engine. The town was silent from 2026-10-24 16:58, 3.5 days before the flood began, and 0.33 leaves/s is trivial against an 18 inputs/s drain. The engine stalled first, and the leaves then filled about 84k of its queue. The cause of the stall is UNVERIFIED and remains open.
+- Orion's body sends nothing while the town is frozen. Hub's embedded Freeze button calls `testing.stop`, which sets the world to `stoppedByDeveloper` and stops the engine. Inputs sent meanwhile queue unprocessed and replay after Unfreeze. Each tick now reads `engine.running`. A frozen tick produces no perception, so no chat, speech, accept or leave fires. `process_intent` refuses with "town frozen", which covers bus moves and idle wander.
+- Root cause (Juniper, 2026-10-29): the town was frozen with that button from about 2026-10-24 16:58. Embodiment kept sending for about 3.5 days. Unfreeze then had to replay about 84k inputs at about 18/s before any NPC action could finish.
 
 ## Outcome moved
 
@@ -21,7 +22,7 @@ Failure mode: a stalled engine's queue fills with Orion's resends, and the backl
 
 ## Architecture touched
 
-`services/orion-embodiment/app/worker.py` only. No env, bus or schema change.
+`services/orion-embodiment/app/worker.py` and `orion/embodiment/aitown_client.py` (`engine_running`). No env, bus or schema change.
 
 ## Files changed
 
@@ -50,7 +51,8 @@ Failure mode: a stalled engine's queue fills with Orion's resends, and the backl
 ## Tests run
 
 ```text
-pytest services/orion-embodiment/tests -> 100 passed (main: 14 failed, 83 passed)
+pytest services/orion-embodiment/tests -> 101 passed; pytest orion/embodiment -> 100 passed
+mutation: freeze gate removed -> test_frozen_town_gets_no_perception_and_no_intents fails (main: 14 failed, 83 passed)
 mutation: guard disabled -> test_dead_chat_sends_one_leave_per_abandon_window fails
 mutation: mark moved after the send -> test_failed_leave_is_not_resent_every_tick fails
 git diff --check -> ok
@@ -86,8 +88,8 @@ After merge, from the clean primary main checkout on athena: `git pull --ff-only
 
 ## Risks / concerns
 
+- Severity: low. Concern: one extra `worldState` query per 3 s tick for `engine.running`. Mitigation: it is the same query perception already makes twice.
 - Severity: low. Concern: a leave the engine drops leaves Orion in the chat for one more window (180 s). Mitigation: it retries after the window.
-- Severity: high (open). Concern: the engine stalled from about 2026-10-24 16:58 for an unknown reason. Inputs were not processed, so the first leave never landed. Mitigation: none yet; this needs its own investigation.
 - Severity: low (follow-up). Concern: other per-tick inputs (`moveTo` at 125 of 1,500, through the 6 s move cooldown) are bounded only by cooldowns. The engine has no backpressure, so any loop can build a queue. Mitigation: follow-up; leaves were the flood.
 
 ## PR link

@@ -153,6 +153,8 @@ class EmbodimentWorker:
         # When a leave was last sent per conversation: one leave, then wait.
         self._abandon_leave_sent_ms: dict[str, float] = {}
         self._accept_sent_ms: dict[str, float] = {}
+        # Engine state from the last perception tick; None until first read.
+        self._world_running: Optional[bool] = None
         self._salience = SalienceState()
         # Conversation-completion tracking for the journal gate (perception delta).
         self._active_conversation_id: Optional[str] = None
@@ -220,6 +222,13 @@ class EmbodimentWorker:
 
     # --- unit-testable core -------------------------------------------------
     def process_intent(self, intent: EmbodimentIntentV1, *, now: datetime) -> EmbodimentOutcomeV1:
+        if getattr(self, "_world_running", None) is False:
+            # Frozen town: an input now only queues for replay after Unfreeze.
+            return EmbodimentOutcomeV1(
+                intent_correlation_id=intent.correlation_id, source=intent.source,
+                status="denied", reason="town frozen (engine stopped)",
+                player_id=self._orion_player_id or None,
+            )
         decision = decide(intent, self._arbiter, now=now, hold_sec=self._hold_sec)
         if not decision.accept:
             return EmbodimentOutcomeV1(
@@ -709,6 +718,19 @@ class EmbodimentWorker:
             )
         except Exception:
             logger.exception("embodiment_perception_list_players_failed")
+            return None
+        # Hub's Freeze button stops the engine. Anything sent while it is stopped
+        # queues for replay, and every NPC action waits behind the replay after
+        # Unfreeze, so a frozen town gets no perception-driven inputs at all.
+        try:
+            running = await asyncio.to_thread(aitown_client.engine_running, self._world_id or None)
+        except Exception:
+            logger.debug("embodiment_engine_state_failed", exc_info=True)
+            return None
+        if running != getattr(self, "_world_running", None):
+            logger.info("embodiment_town_engine running=%s", running)
+        self._world_running = running
+        if not running:
             return None
         conversations: list = []
         try:

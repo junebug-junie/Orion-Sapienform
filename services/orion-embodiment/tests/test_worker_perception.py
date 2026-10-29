@@ -26,6 +26,7 @@ def test_emit_perception_once_publishes_built_perception():
         {"id": "j", "name": "Juniper", "position": {"x": 3.0, "y": 4.0}},
     ]
     with patch("app.worker.aitown_client.list_players", return_value=players), \
+         patch("app.worker.aitown_client.engine_running", return_value=True), \
          patch("app.worker.aitown_client.list_conversations", return_value=[]), \
          patch("app.worker.publish_with_reconnect", new=AsyncMock()) as pub:
         perc = asyncio.run(w._emit_perception_once())
@@ -113,8 +114,37 @@ def test_failed_conversation_lookup_skips_the_tick():
     w = _worker()
     players = [{"id": "orion", "position": {"x": 0.0, "y": 0.0}}]
     with patch("app.worker.aitown_client.list_players", return_value=players), \
+         patch("app.worker.aitown_client.engine_running", return_value=True), \
          patch("app.worker.aitown_client.list_conversations", side_effect=TimeoutError("30 s")), \
          patch("app.worker.publish_with_reconnect", new=AsyncMock()) as pub:
         perc = asyncio.run(w._emit_perception_once())
     assert perc is None
     pub.assert_not_awaited()
+
+
+def test_frozen_town_gets_no_perception_and_no_intents():
+    """Hub's Freeze stops the engine; inputs sent meanwhile queued ~84k for replay
+    (2026-10-28) and every NPC action waited behind them after Unfreeze."""
+    from datetime import datetime, timezone
+
+    from orion.schemas.embodiment import EmbodimentIntentV1
+
+    w = _worker()
+    players = [{"id": "orion", "position": {"x": 0.0, "y": 0.0}}]
+    with patch("app.worker.aitown_client.list_players", return_value=players), \
+         patch("app.worker.aitown_client.engine_running", return_value=False), \
+         patch("app.worker.aitown_client.list_conversations") as convos, \
+         patch("app.worker.publish_with_reconnect", new=AsyncMock()) as pub:
+        perc = asyncio.run(w._emit_perception_once())
+    assert perc is None
+    convos.assert_not_called()
+    pub.assert_not_awaited()
+    assert w._world_running is False
+
+    intent = EmbodimentIntentV1.model_validate(
+        {"kind": "wander", "source": "involuntary", "reason": "t", "correlation_id": "c1", "player_id": "orion"}
+    )
+    with patch("app.worker.aitown_client.move_to") as move:
+        out = w.process_intent(intent, now=datetime.now(timezone.utc))
+    assert out.status == "denied" and "frozen" in out.reason
+    move.assert_not_called()

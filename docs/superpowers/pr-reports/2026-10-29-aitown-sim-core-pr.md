@@ -185,7 +185,7 @@ Code review by the orchestrating agent. Every finding is fixed in `2add77bce`.
 ## Risks / concerns
 
 - Severity: low. Concern: `apply_upstream_patches.sh` now needs python3 + PyYAML for the seed render. The human-join patch already needed both. Mitigation: the script fails loudly, the same way the human patch render does.
-- Severity: low. Concern: the template rates and drift constants are hand-set (for example, a coffee delivery every 12 game-hours on average). They were tuned only so that a 72-hour run keeps stock bounded and every number moves. Mitigation: they are one table in `core.ts`. PR 3's live A4 run is the first real check.
+- Severity: low. Concern: the template rates and drift constants are hand-set (for example, a coffee delivery every 16 game-hours on average). They were tuned only so that a 72-hour run keeps stock bounded and every number moves. Mitigation: they are one table in `core.ts`. PR 3's live A4 run is the first real check.
 - Severity: low. Concern: the seed is rendered into `upstream/` at apply time. A card edit takes effect on the next rebuild, and only `sim/state:bootstrap {"replace": true}` applies it to an existing world. Mitigation: documented in the README.
 - Severity: low. Concern: CI does not run the Convex typecheck. It needs `node_modules` (`npm ci` of upstream). The deploy path's `convex dev --once` typechecks before it pushes. Mitigation: the evidence above. Follow-up: a cached `npm ci` typecheck job if overlay churn grows.
 

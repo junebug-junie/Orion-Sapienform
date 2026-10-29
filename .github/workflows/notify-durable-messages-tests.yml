@@ -48,14 +48,6 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: python -m pytest -q -p no:cacheprovider services/orion-notify/tests
-      - name: Hub outreach durable path and tray wiring
-        env:
-          PYTHONPATH: ${{ github.workspace }}
-        run: |
-          python -m pytest -q -p no:cacheprovider \
-            services/orion-hub/tests/test_outreach_durable_notify.py \
-            services/orion-hub/tests/test_orion_message_tray_wiring.py \
-            services/orion-hub/tests/test_hub_ui_layout_pass.py
 
   sql-writer-chat-messages:
     runs-on: ubuntu-latest
@@ -72,7 +64,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r services/orion-sql-writer/requirements.txt
           python -m pip install -r requirements-dev.txt
-          python -m pip install pytest-asyncio
+          python -m pip install pytest-asyncio "httpx>=0.27,<1"
       - name: sql-writer chat-message filters
         env:
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/services/orion-sql-writer
@@ -81,3 +73,27 @@ jobs:
             services/orion-sql-writer/tests/test_notify_chat_messages_open_filter.py \
             services/orion-sql-writer/tests/test_notify_request_normalization.py \
             services/orion-sql-writer/tests/test_notify_attention_ack.py
+
+  hub-outreach-tray:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The proxy tests import scripts.api_routes, which needs the full Hub
+      # requirements (aiohttp, spacy, ...), so this job installs them.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-hub/requirements.txt
+          python -m pip install "pytest>=8.2,<10" "pytest-asyncio>=0.23,<1" "fakeredis[lua]>=2.23,<3"
+      - name: Hub outreach durable path and tray wiring
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            services/orion-hub/tests/test_outreach_durable_notify.py \
+            services/orion-hub/tests/test_orion_message_tray_wiring.py \
+            services/orion-hub/tests/test_hub_ui_layout_pass.py

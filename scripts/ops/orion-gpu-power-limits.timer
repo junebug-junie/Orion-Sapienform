@@ -1,0 +1,11 @@
+# circe only. See orion-gpu-power-limits.service.
+[Unit]
+Description=Orion: re-check circe's GPU power limits every 5 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Unit=orion-gpu-power-limits-check.service
+
+[Install]
+WantedBy=timers.target

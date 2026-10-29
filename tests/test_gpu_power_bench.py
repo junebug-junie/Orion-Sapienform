@@ -422,3 +422,51 @@ def test_bad_flags_are_refused_cleanly(monkeypatch, tmp_path, extra) -> None:
     calls = _patch_main(monkeypatch)
     assert bench.main(_argv(tmp_path) + extra) == 2
     assert calls == []
+
+
+def test_expected_limit_is_the_configured_target_on_its_host(monkeypatch, tmp_path) -> None:
+    cfg = tmp_path / "limits.json"
+    cfg.write_text('{"host": "circe", "cards": {"2": {"watts": 150}}}')
+    monkeypatch.setattr(bench.socket, "gethostname", lambda: "circe")
+    assert bench.expected_limit(2, 250.0, cfg) == 150.0
+    assert bench.expected_limit(1, 250.0, cfg) == 250.0           # not listed: default
+    monkeypatch.setattr(bench.socket, "gethostname", lambda: "athena")
+    assert bench.expected_limit(2, 250.0, cfg) == 250.0           # another host's config
+    assert bench.expected_limit(2, 250.0, tmp_path / "none") == 250.0
+
+
+def test_capped_card_at_its_configured_limit_runs_and_restores_it(monkeypatch, tmp_path) -> None:
+    calls = _patch_main(monkeypatch, limits=(150.0, 250.0, 100.0, 250.0))
+    cfg = tmp_path / "limits.json"
+    cfg.write_text('{"host": "circe", "cards": {"2": {"watts": 150}}}')
+    monkeypatch.setattr(bench.socket, "gethostname", lambda: "circe")
+
+    def fail(*_a, **_k):
+        raise RuntimeError("stop after the first cap")
+
+    monkeypatch.setattr(bench, "one_request", fail)
+    with pytest.raises(RuntimeError):
+        bench.main(_argv(tmp_path, caps="250,150") + ["--limits-config", str(cfg)])
+    assert calls == [250, 150.0]  # ran, then put the card back at 150 W, not the default
+
+
+def test_lock_is_taken_before_the_limit_is_read(monkeypatch, tmp_path) -> None:
+    import fcntl
+
+    seen = []
+    _patch_main(monkeypatch)
+
+    def limits(gpu):
+        probe = open(tmp_path / "gpu-power-bench-2.lock", "w")
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            seen.append("free")
+        except BlockingIOError:
+            seen.append("held")
+        finally:
+            probe.close()
+        return (150.0, 250.0, 100.0, 250.0)
+
+    monkeypatch.setattr(bench, "read_limits", limits)
+    assert bench.main(_argv(tmp_path) + ["--limits-config", str(tmp_path / "none")]) == 2
+    assert seen == ["held"]  # orion-gpu-power-limits cannot change it between our read and our run

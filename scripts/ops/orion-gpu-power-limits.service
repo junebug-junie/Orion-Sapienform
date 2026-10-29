@@ -1,0 +1,18 @@
+# circe only. Installed by scripts/ops/gpu_power_limits.py install
+# (runbook docs/runbooks/2026-10-29-circe-gpu-power-limits.md).
+# Sets each card listed in config/gpu_power_limits.json to its target at boot; stopping the unit
+# puts those cards back at their default limit (rollback). orion-gpu-power-limits.timer re-checks.
+[Unit]
+Description=Orion: hold circe's GPU power limits at config/gpu_power_limits.json
+After=nvidia-persistenced.service local-fs.target remote-fs.target
+Wants=nvidia-persistenced.service
+RequiresMountsFor=/mnt/scripts
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/orion-gpu-power-limits apply
+ExecStop=/usr/local/sbin/orion-gpu-power-limits remove
+
+[Install]
+WantedBy=multi-user.target

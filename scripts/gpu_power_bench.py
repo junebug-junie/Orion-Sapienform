@@ -32,7 +32,8 @@ server (world-model, diffusion) are NOT detectable from the server; they show as
 The card's starting limit is restored on every exit: normal end, error, Ctrl+C, SIGTERM, SIGHUP,
 SIGQUIT. Signals are ignored while the restore runs. Only SIGKILL skips it; the restore command
 is printed at start for that case. It refuses to start while another run holds the card's lock,
-or while the card is not at its default limit (someone else may be capping it).
+or while the card is not at its expected limit: its default, or its target in
+config/gpu_power_limits.json (orion-gpu-power-limits holds that and skips the card during a run).
 """
 from __future__ import annotations
 
@@ -43,6 +44,7 @@ import http.client
 import json
 import re
 import signal
+import socket
 import statistics
 import subprocess
 import sys
@@ -62,6 +64,7 @@ MAX_OVERHEAD_S = 2.0
 SAMPLE_STALE_S = 5.0  # no fresh power reading for this long = the sampler is dead; abort
 # A slot can still read as busy for a moment after its reply arrived; past this, it is new work.
 FINISH_GRACE_S = 1.0
+LIMITS_CONFIG = Path(__file__).resolve().parents[1] / "config" / "gpu_power_limits.json"
 HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
 
 
@@ -205,6 +208,18 @@ def restore_limit(gpu: int, watts: float, attempts: int = 3) -> bool:
     finally:
         for s, h in previous.items():
             signal.signal(s, h)
+
+
+def expected_limit(gpu: int, default: float, path: Path) -> float:
+    """The limit the card should be at before a run: its target in config/gpu_power_limits.json
+    (held by orion-gpu-power-limits) when listed for this host, else its default."""
+    try:
+        raw = json.loads(path.read_text())
+        if raw.get("host") == socket.gethostname():
+            return float(raw["cards"][str(gpu)]["watts"])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass
+    return default
 
 
 def http_json(url: str, body: dict | None = None, timeout: float = 600) -> object:
@@ -524,6 +539,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--server-wait-s", type=float, default=3600.0,
                     help="how long to wait for the model server to come up before starting")
     ap.add_argument("--lock-dir", default="/run")
+    ap.add_argument("--limits-config", default=str(LIMITS_CONFIG),
+                    help="the card's configured limit (orion-gpu-power-limits) is its expected start")
     ap.add_argument("--out", default=f"/tmp/gpu-power-bench-{time.strftime('%Y%m%dT%H%M%S')}")
     args = ap.parse_args(argv)
 
@@ -540,20 +557,24 @@ def main(argv: list[str] | None = None) -> int:
     if len(set(args.slot_ids)) != len(args.slot_ids):
         print(f"--slots {args.slots} repeats a slot", file=sys.stderr)
         return 2
+    # Lock first: orion-gpu-power-limits holds the same lock while it sets a limit, and skips the
+    # card while we hold it, so the limit read below cannot change under us.
+    lock = open(Path(args.lock_dir) / f"gpu-power-bench-{args.gpu}.lock", "w")  # noqa: SIM115
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print(f"another bench, or orion-gpu-power-limits mid-change, holds card {args.gpu}", file=sys.stderr)
+        return 2
     original, default, lo, hi = read_limits(args.gpu)
     bad = [c for c in caps if not lo <= c <= hi]
     if bad:
         print(f"caps {bad} outside this card's range {lo:.0f}-{hi:.0f} W", file=sys.stderr)
         return 2
-    if original != default:
-        print(f"card {args.gpu} is at {original:.0f} W, not its default {default:.0f} W: something else "
-              f"may be capping it. Not starting.", file=sys.stderr)
-        return 2
-    lock = open(Path(args.lock_dir) / f"gpu-power-bench-{args.gpu}.lock", "w")  # noqa: SIM115
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        print(f"another bench already holds card {args.gpu}", file=sys.stderr)
+    expected = expected_limit(args.gpu, default, Path(args.limits_config))
+    if round(original) != round(expected):
+        print(f"card {args.gpu} is at {original:.0f} W, not its expected {expected:.0f} W "
+              f"(default, or {args.limits_config}): something else may be capping it. Not starting.",
+              file=sys.stderr)
         return 2
     try:
         up = wait_for_server(base, args.server_wait_s)

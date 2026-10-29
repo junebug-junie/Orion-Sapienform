@@ -10,9 +10,10 @@ run just stops, with a START and no END (2026-10-29: pid 3250904 died inside
 ~9.5 h and hub, thought and cortex-orch were never rebuilt, with nothing in the
 log to say so).
 
-This reads the log and reports every run that has a RUN line, no DONE/ABORT,
-and no live process -- naming the step in flight, the services never started,
-and the command that finishes them.
+This reads the log and reports every run that has a RUN line, no DONE, and no
+live process -- naming the step in flight, the services never started, and the
+command that finishes them. An ABORT that left services unfinished is reported
+too: its own stderr may have gone to a terminal that no longer exists (SIGHUP).
 
   --mark           append a DIED line for each one, so it is reported once
                    (the rebuild script runs this at the start of every run)
@@ -33,6 +34,7 @@ from pathlib import Path
 LINE = re.compile(r"^(?P<ts>\S+) pid=(?P<pid>\d+) head=(?P<head>\S+) (?P<rest>.*)$")
 RUN = re.compile(r"^RUN base=\S* services=(?P<services>.*?)recreate=(?P<recreate>.*)$")
 CLOSED = re.compile(r"^DIED run=(?P<run>\S+)")
+ABORT = re.compile(r"^ABORT reason=(?P<reason>\S+(?: rc=\d+)?) in_flight=(?P<in_flight>.*?) unfinished=(?P<unfinished>.*?) failed=")
 
 
 @dataclass
@@ -46,9 +48,14 @@ class Run:
     started: list[str] = field(default_factory=list)  # services with a START line, in order
     in_flight: str | None = None  # the step whose START has no END yet
     closed: bool = False
+    aborted: str | None = None  # the ABORT reason, when the run's trap wrote one
+    abort_unfinished: list[str] = field(default_factory=list)
+    migrations: str | None = None  # ABORT-MIGRATIONS command, when deferred migrations were left
 
     def unfinished(self) -> list[str]:
         """The service in flight first, then every service never started."""
+        if self.aborted is not None:
+            return list(self.abort_unfinished)
         current = self.in_flight.split()[0] if self.in_flight else None
         out = [current] if current else []
         return out + [s for s in self.services if s not in self.started and s not in out]
@@ -100,9 +107,21 @@ def parse(lines) -> list[Run]:
                 run.started.append(svc)
         elif rest.startswith("END "):
             run.in_flight = None
-        elif rest.startswith("DONE") or rest.startswith("ABORT"):
+        elif rest.startswith("DONE"):
             run.closed = True
             del open_by_pid[pid]
+        elif rest.startswith("ABORT-MIGRATIONS "):
+            run.migrations = rest.split(": ", 1)[-1]
+        elif rest.startswith("ABORT "):
+            ab = ABORT.match(rest)
+            run.aborted = ab["reason"] if ab else "unknown"
+            if ab and ab["in_flight"] != "none":
+                run.in_flight = ab["in_flight"]
+            todo = ab["unfinished"].split() if ab else []
+            run.abort_unfinished = [] if todo == ["none"] else todo
+            if not run.abort_unfinished:
+                run.closed = True
+                del open_by_pid[pid]
     for key in closed_keys:
         if key in runs:
             runs[key].closed = True
@@ -135,11 +154,14 @@ def died_runs(lines, *, now: float, max_age_hours: float, alive=_alive) -> list[
 
 def report(run: Run) -> str:
     step = f"`{run.in_flight}`" if run.in_flight else "between steps"
+    how = f"was aborted ({run.aborted})" if run.aborted is not None else "died with no END line"
+    first = f"First apply its deferred migrations: {run.migrations}. " if run.migrations else ""
     return (
-        f"Post-pull rebuild pid={run.pid} (started {run.started_at}, head {run.head}) died with no END line, "
+        f"Post-pull rebuild pid={run.pid} (started {run.started_at}, head {run.head}) {how}, "
         f"during {step}. Not rebuilt: {' '.join(run.unfinished()) or 'nothing'}. "
         f"A container of the step in flight may be stopped or left 'Created' (check `docker ps -a`). "
-        f"Finish it from the primary main checkout: {run.finish_command()}"
+        f"{first}Finish it from the primary main checkout: {run.finish_command()} "
+        f"(already fixed by hand? `python3 scripts/check_rebuild_log.py --mark` stops this report)"
     )
 
 

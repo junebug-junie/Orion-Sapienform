@@ -344,7 +344,7 @@ class AlertGate:
 # Docker restarts a container with these policies by itself, so one that is not running was
 # stopped (by `docker stop`, or by compose in the middle of a recreate) and nothing started it.
 SHOULD_RUN_POLICIES = frozenset({"always", "unless-stopped"})
-STOPPED_STATES = frozenset({"exited", "created"})
+STOPPED_STATES = frozenset({"exited", "created", "dead"})
 LIVE_STATES = frozenset({"running", "restarting"})
 # compose v2 creates the replacement as "<old id[:12]>_<name>", stops and removes the old one,
 # then renames and starts the new one. A run killed in between leaves the temp name "Created".
@@ -382,7 +382,7 @@ def stopped_containers(
     for c in containers:
         if c.status not in STOPPED_STATES or c.since is None or now - c.since < grace_sec:
             continue
-        if c.status == "created" and TEMP_RECREATE_NAME.match(c.name):
+        if c.status in ("created", "dead") and TEMP_RECREATE_NAME.match(c.name):
             why = "half-finished compose recreate"
         elif c.restart_policy in SHOULD_RUN_POLICIES:
             why = f"restart={c.restart_policy}"
@@ -399,21 +399,33 @@ class StoppedContainerTracker:
     service: a group cards when none of its stopped containers has carded yet. The same container
     stopping again later is a new episode, and staying stopped never re-cards -- so a container
     someone stopped on purpose costs one card, not one every 6 h. Episodes live in memory: a
-    guardian restart re-cards each still-stopped container once."""
+    guardian restart re-cards each still-stopped container once.
+
+    An episode counts as carded only after ``confirm`` gets its delivered card. Until then the
+    alert is emitted every cycle and the AlertGate holds it to one try per 6 h -- so a card lost
+    because notify was down (e.g. the same interrupted rebuild stopped it) is retried."""
 
     def __init__(self) -> None:
         self._carded: set[tuple[str, float]] = set()
+        self._pending: dict[str, set[tuple[str, float]]] = {}  # alert key -> its episode
+
+    def confirm(self, delivered: Iterable[StabilityAlert]) -> None:
+        for alert in delivered:
+            episode = self._pending.pop(alert.key, None)
+            if episode:
+                self._carded |= episode
 
     def observe(self, containers: Iterable[ContainerState], now: float, *, grace_sec: float) -> list[StabilityAlert]:
         groups = stopped_containers(containers, now, grace_sec=grace_sec)
         seen = {(c.id, c.since) for members in groups.values() for c, _ in members}
         self._carded &= seen  # a container that started or was removed ends its episode
+        self._pending = {}
         alerts: list[StabilityAlert] = []
         for group, members in sorted(groups.items()):
             episode = {(c.id, c.since) for c, _ in members}
-            already = bool(episode & self._carded)
-            self._carded |= episode
-            if already:  # one outage, one card: a container joining a carded group adds none
+            if episode & self._carded:
+                # One outage, one card: a container joining a carded group adds none.
+                self._carded |= episode
                 continue
             oldest = min(c.since for c, _ in members if c.since is not None)
             hours = (now - oldest) / 3600.0
@@ -449,4 +461,5 @@ class StoppedContainerTracker:
                     },
                 )
             )
+            self._pending[alerts[-1].key] = episode
         return alerts

@@ -293,16 +293,21 @@ class MeshGuardianService:
         if self._stability_cycles % 60 == 0 or alerts:
             logger.info("stability cycle %s alerts=%d", summary, len(alerts))
         self._stability_cycles += 1
-        await self._publish_alerts(alerts, now, heartbeat_name="stability")
+        delivered = await self._publish_alerts(alerts, now, heartbeat_name="stability")
+        self._stopped.confirm(delivered)
         return alerts
 
-    async def _publish_alerts(self, alerts: list[StabilityAlert], now: float, *, heartbeat_name: str) -> None:
+    async def _publish_alerts(
+        self, alerts: list[StabilityAlert], now: float, *, heartbeat_name: str
+    ) -> list[StabilityAlert]:
         """The one path to a Hub card for host-wide checks: AlertGate dedup, then notify. Shared
         by the stability and GPU loops, so a key seen by both still yields one card per window
-        (admit() never awaits, so concurrent loops cannot interleave inside it)."""
+        (admit() never awaits, so concurrent loops cannot interleave inside it). Returns the
+        alerts whose card notify accepted."""
+        delivered: list[StabilityAlert] = []
         for alert in self._alert_gate.admit(alerts, now):
             logger.warning("%s alert kind=%s subject=%s: %s", heartbeat_name, alert.kind, alert.subject, alert.message)
-            await asyncio.to_thread(
+            ok = await asyncio.to_thread(
                 self.attention.publish_transition,
                 service_id=alert.subject,
                 heartbeat_name=heartbeat_name,
@@ -312,6 +317,9 @@ class MeshGuardianService:
                     "context": {"event": alert.kind, **alert.context},
                 },
             )
+            if ok:
+                delivered.append(alert)
+        return delivered
 
     # --- GPU actuation watch (see app/gpu_watch.py) --------------------------
 
@@ -587,6 +595,10 @@ async def _docker_container_states(socket_path: str = "/var/run/docker.sock", tr
             project = labels.get("com.docker.compose.project")
             service = labels.get("com.docker.compose.service")
             workdir = labels.get("com.docker.compose.project.working_dir") or ""
+            # Only a services/<name> stack is a valid safe_docker_build.sh argument.
+            parent = workdir.rstrip("/").rsplit("/", 2)
+            if len(parent) < 2 or parent[-2] != "services":
+                workdir = ""
             names = row.get("Names") or ["/?"]
             status = str(row.get("State") or "")
             policy, since = "", None

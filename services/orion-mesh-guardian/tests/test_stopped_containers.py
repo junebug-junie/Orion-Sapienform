@@ -49,6 +49,7 @@ class TestIncidentReplay:
         assert [(a.kind, a.subject) for a in alerts] == [("stopped_container", GOVERNOR_SVC)]
         assert alerts[0].context["containers"] == ["ab1a1dd30eb5_orion-athena-harness-governor"]
         assert "scripts/safe_docker_build.sh orion-harness-governor up -d harness-governor" in alerts[0].message
+        tracker.confirm(alerts)  # notify accepted the card
         # The old container passing its own grace, then 9.5 hours of the same state: no second card.
         for minute in range(2, 570):
             assert tracker.observe(INCIDENT, T0 + minute * 60, grace_sec=GRACE) == []
@@ -92,7 +93,9 @@ class TestRules:
     def test_a_new_stop_of_the_same_container_is_a_new_card(self) -> None:
         tracker = StoppedContainerTracker()
         first = _c("a", "exited", since=T0)
-        assert len(tracker.observe([first], T0 + GRACE, grace_sec=GRACE)) == 1
+        first_alerts = tracker.observe([first], T0 + GRACE, grace_sec=GRACE)
+        assert len(first_alerts) == 1
+        tracker.confirm(first_alerts)
         tracker.observe([_c("a", "running", since=None)], T0 + 2 * GRACE, grace_sec=GRACE)
         again = _c("a", "exited", since=T0 + 3 * GRACE)
         alerts = tracker.observe([again], T0 + 4 * GRACE, grace_sec=GRACE)
@@ -144,14 +147,52 @@ class TestDockerCollector:
         assert (gov.restart_policy, gov.since, gov.compose_service, gov.compose_dir) == (
             "unless-stopped", 1793259360.5, "orion-athena/harness-governor", "orion-harness-governor")
         assert by_name["ab1a1dd30eb5_orion-athena-harness-governor"].since == 1793000000.0
+        # No working_dir label, or a stack outside services/: no start command to print.
+        assert by_name["ab1a1dd30eb5_orion-athena-harness-governor"].compose_dir is None
 
 
 class _Attention:
-    def __init__(self) -> None:
-        self.events: list[dict] = []
+    def __init__(self, delivered: bool = True) -> None:
+        self.events = []
+        self.delivered = delivered
 
-    def publish_transition(self, *, service_id, heartbeat_name, event) -> None:
+    def publish_transition(self, *, service_id, heartbeat_name, event) -> bool:
         self.events.append({"service_id": service_id, "heartbeat_name": heartbeat_name, **event})
+        return self.delivered
+
+
+def _cycle_guardian(monkeypatch, attention):
+    guardian = MeshGuardianService(Settings())
+    guardian.attention = attention
+
+    async def states():
+        return INCIDENT
+
+    async def boom(_now):
+        raise RuntimeError("not under test")
+
+    monkeypatch.setattr(service_module, "_docker_container_states", states)
+    guardian._check_crash_loops = boom
+    guardian._check_bus_redis = boom
+    guardian._check_falkordb = boom
+    return guardian
+
+
+def test_a_card_notify_refused_is_retried_after_the_gate_window(monkeypatch) -> None:
+    """The interrupted rebuild may have stopped orion-notify too: a lost card must not end the episode."""
+    from app.stability import REALERT_AFTER_SEC
+
+    attention = _Attention(delivered=False)
+    guardian = _cycle_guardian(monkeypatch, attention)
+    asyncio.run(guardian.run_stability_checks(T0 + GRACE))
+    asyncio.run(guardian.run_stability_checks(T0 + GRACE + 60))
+    assert len(attention.events) == 1  # gate: one try per window
+    attention.delivered = True
+    asyncio.run(guardian.run_stability_checks(T0 + GRACE + REALERT_AFTER_SEC))
+    assert len(attention.events) == 2
+    # Delivered now: the episode is carded, never again, even after another gate window.
+    asyncio.run(guardian.run_stability_checks(T0 + GRACE + 3 * REALERT_AFTER_SEC))
+    assert len(attention.events) == 2
 
 
 def test_the_cycle_turns_the_incident_into_one_hub_card(monkeypatch) -> None:

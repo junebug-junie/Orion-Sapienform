@@ -43,8 +43,31 @@ def test_a_finished_or_aborted_run_is_not_reported() -> None:
     done = INCIDENT + ["2026-10-29T07:30:00Z pid=3250904 head=b79bbb519 END rc=0 seconds=9 orion-harness-governor up -d --build\n",
                        "2026-10-29T07:40:00Z pid=3250904 head=b79bbb519 DONE rebuilt=6 failed=\n"]
     assert crl.died_runs(done, now=NOW, max_age_hours=72, alive=_dead) == []
-    aborted = INCIDENT + ["2026-10-29T07:30:00Z pid=3250904 head=b79bbb519 ABORT reason=SIGTERM in_flight=x\n"]
+    aborted = INCIDENT + [
+        "2026-10-29T07:30:00Z pid=3250904 head=b79bbb519 ABORT reason=exit rc=0 in_flight=none unfinished=none failed=\n"
+    ]
     assert crl.died_runs(aborted, now=NOW, max_age_hours=72, alive=_dead) == []
+
+
+def test_an_abort_that_left_services_is_reported_until_marked(tmp_path, capsys, monkeypatch) -> None:
+    """SIGHUP: the ABORT stderr went to a closed terminal; the log line is the only record."""
+    log = tmp_path / "log"
+    log.write_text("".join(INCIDENT) + (
+        "2026-10-29T07:30:00Z pid=3250904 head=b79bbb519 ABORT reason=SIGHUP in_flight=orion-harness-governor up -d --build "
+        "unfinished=orion-harness-governor orion-hub failed=\n"
+        "2026-10-29T07:30:00Z pid=3250904 head=b79bbb519 ABORT-MIGRATIONS run first (deferred behind a backup, not applied): "
+        "python3 scripts/apply_post_pull_migrations.py services/x/sql/m.sql\n"
+        "2026-10-29T07:30:00Z pid=3250904 head=b79bbb519 ABORT-FINISH scripts/rebuild_services_from_git_diff.sh --services 'orion-harness-governor orion-hub'\n"
+    ))
+    monkeypatch.setattr(crl, "_alive", _dead)
+    monkeypatch.setattr(crl.time, "time", lambda: NOW)
+    assert crl.main(["--log", str(log), "--mark"]) == 0
+    err = capsys.readouterr().err
+    assert "was aborted (SIGHUP)" in err
+    assert "--services 'orion-harness-governor orion-hub'" in err
+    assert "First apply its deferred migrations: python3 scripts/apply_post_pull_migrations.py services/x/sql/m.sql" in err
+    crl.main(["--log", str(log), "--mark"])
+    assert capsys.readouterr().err == ""
 
 
 def test_a_running_run_is_not_reported() -> None:

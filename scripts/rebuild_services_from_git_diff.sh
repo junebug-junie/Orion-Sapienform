@@ -141,6 +141,12 @@ if [ -n "$ONLY_RECREATE" ] && [ -z "$ONLY_SERVICES" ]; then
     echo "rebuild_services_from_git_diff.sh: --recreate needs --services" >&2
     exit 2
 fi
+for _svc in $ONLY_RECREATE; do
+    if ! printf '%s\n' $ONLY_SERVICES | grep -qx "$_svc"; then
+        echo "rebuild_services_from_git_diff.sh: --recreate $_svc is not in --services" >&2
+        exit 2
+    fi
+done
 
 # A run killed by SIGKILL cannot write its own ABORT line (no trap runs). Say
 # so at the start of the next run, once: the step in flight, the services
@@ -378,8 +384,15 @@ on_abort() {
     [ "$RUN_ACTIVE" = "1" ] || return 0
     RUN_ACTIVE=0
     trap '' PIPE  # stdout may be the closed pipe that killed us; writes must fail, not re-signal
-    local todo recreate cmd
-    todo=$(printf '%s\n' $CURRENT_SVC $QUEUED | awk 'NF && !seen[$0]++' | tr '\n' ' ')
+    local todo recreate cmd waiting="" migrate=""
+    # Migrations deferred behind a backup and not yet applied: their consumers sit in FAILED,
+    # refused by the deploy gate, waiting for the retry this run will no longer do.
+    if [ "$APPLY_RC" = "3" ] && [ "$DEFERRED_RAN" != "1" ] && [ -n "$APPLIER" ]; then
+        waiting="$FAILED"
+        migrate="python3 scripts/apply_post_pull_migrations.py $(printf '%s ' $MIGRATIONS)"
+        migrate="${migrate% }"
+    fi
+    todo=$(printf '%s\n' $CURRENT_SVC $QUEUED $waiting | awk 'NF && !seen[$0]++' | tr '\n' ' ')
     todo="${todo% }"
     recreate=""
     for _svc in $todo; do
@@ -389,6 +402,12 @@ on_abort() {
     done
     recreate="${recreate# }"
     rebuild_log "ABORT reason=$1 in_flight=${IN_FLIGHT:-none} unfinished=${todo:-none} failed=${FAILED# }"
+    if [ -n "$migrate" ]; then
+        rebuild_log "ABORT-MIGRATIONS run first (deferred behind a backup, not applied): $migrate"
+        {
+            echo "rebuild_services_from_git_diff.sh: migrations were deferred behind a backup and are NOT applied; run first: $migrate"
+        } >&2 2>/dev/null || true
+    fi
     if [ -n "$todo" ]; then
         cmd="scripts/rebuild_services_from_git_diff.sh --services '$todo'${recreate:+ --recreate '$recreate'}"
         rebuild_log "ABORT-FINISH $cmd"

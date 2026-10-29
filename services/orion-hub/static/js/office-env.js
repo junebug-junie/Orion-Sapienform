@@ -13,6 +13,8 @@
   var LATEST_URL = "/api/office/env/latest";
   var HISTORY_URL = "/api/office/env/history?window=";
   var SVG_NS = "http://www.w3.org/2000/svg";
+  // chart-hover.js loads first (index.html); absent under node:test, where only pure helpers run.
+  var chartHover = typeof window !== "undefined" ? window.OrionChartHover : null;
   // Publisher cadence is 30 s; poll at the same grain while visible.
   var POLL_MS = 30000;
   var TICK_MS = 2000;
@@ -56,7 +58,7 @@
     return node;
   }
 
-  function renderChart(host, points, field, digits) {
+  function renderChart(host, points, field, digits, label) {
     if (!host) return;
     host.textContent = "";
     var runs = splitRuns(points || [], field);
@@ -75,16 +77,31 @@
     var W = 400, H = 120, PAD = 4;
     var x = function (ms) { return PAD + (tMax === tMin ? 0 : ((ms - tMin) / (tMax - tMin)) * (W - 2 * PAD)); };
     var y = function (v) { return H - PAD - ((v - vMin) / (vMax - vMin)) * (H - 2 * PAD); };
-    var svg = svgEl("svg", { viewBox: "0 0 " + W + " " + H, class: "w-full h-32", role: "img" });
+    // preserveAspectRatio=none so the hover's cursor-to-viewBox mapping is linear.
+    var svg = svgEl("svg", {
+      viewBox: "0 0 " + W + " " + H,
+      preserveAspectRatio: "none",
+      class: "w-full h-32 cursor-crosshair",
+      role: "img",
+    });
     runs.forEach(function (run) {
       if (run.length === 1) {
         svg.appendChild(svgEl("circle", { cx: x(run[0].ms), cy: y(run[0].v), r: 1.5, fill: "currentColor", class: "text-sky-300" }));
         return;
       }
       var d = run.map(function (p, i) { return (i ? "L" : "M") + x(p.ms).toFixed(1) + " " + y(p.v).toFixed(1); }).join(" ");
-      svg.appendChild(svgEl("path", { d: d, fill: "none", stroke: "currentColor", "stroke-width": 1.5, class: "text-sky-300" }));
+      svg.appendChild(svgEl("path", { d: d, fill: "none", stroke: "currentColor", "stroke-width": 1.5, "vector-effect": "non-scaling-stroke", class: "text-sky-300" }));
     });
     host.appendChild(svg);
+    if (chartHover) {
+      var hoverPoints = all.map(function (p) { return { t: new Date(p.ms).toISOString(), value: p.v, ms: p.ms }; });
+      chartHover.attachSeriesHover(host, svg, hoverPoints, function (p) { return x(p.ms); }, y, {
+        label: label,
+        digits: digits,
+        color: "#7dd3fc",
+        dotRadius: 3,
+      });
+    }
     var legend = document.createElement("div");
     legend.className = "mt-1 flex justify-between font-mono text-[10px] text-gray-500";
     legend.textContent = "min " + num(vMin, digits) + " · max " + num(vMax, digits);
@@ -134,8 +151,8 @@
       var payload = await resp.json();
       if (!payload.ok) throw new Error(payload.error || "history unavailable");
       if (id !== state.historyRequest) return;
-      renderChart(els.tempChart, payload.points, "office_temp_c", 2);
-      renderChart(els.humidityChart, payload.points, "office_humidity_pct", 1);
+      renderChart(els.tempChart, payload.points, "office_temp_c", 2, "temp °C");
+      renderChart(els.humidityChart, payload.points, "office_humidity_pct", 1, "humidity %");
     } catch (err) {
       if (id !== state.historyRequest) return;
       setText(els.status, "history error (" + (err.message || err) + ")");

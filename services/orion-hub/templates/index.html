@@ -3459,6 +3459,33 @@
                 </div>
               </div>
             </div>
+            <div id="climateOverlayStrip" role="region" aria-label="Office, cabinet, outdoor temperature and Orion power" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-col gap-3">
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 class="text-sm font-semibold text-gray-100">Climate and power — overlay</h3>
+                  <p class="text-[11px] text-gray-500">
+                    Office, cabinet and outdoor temperature on one °C plot, with Orion's total wall watts
+                    (all nodes plus cabinet cooling) underneath on the same time axis. Outdoor is hourly
+                    Open-Meteo. Gaps mean no reading, never 0.
+                  </p>
+                </div>
+                <div class="flex flex-wrap items-center gap-1" aria-label="Overlay history window">
+                  <button type="button" data-climate-overlay-window="24h" class="px-2 py-1 rounded border border-sky-500 bg-sky-950/60 text-[11px] font-mono text-sky-200">24h</button>
+                  <button type="button" data-climate-overlay-window="3d" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">3d</button>
+                  <button type="button" data-climate-overlay-window="7d" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">7d</button>
+                </div>
+              </div>
+              <div class="flex flex-wrap items-center gap-1.5" role="group" aria-label="Series shown in the overlay">
+                <button type="button" data-climate-overlay-series="office_temp_c" aria-pressed="true" class="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-200 hover:border-gray-500"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#3987e5"></span>office °C</button>
+                <button type="button" data-climate-overlay-series="cabinet_temp_c" aria-pressed="true" class="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-200 hover:border-gray-500"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#d95926"></span>cabinet °C</button>
+                <button type="button" data-climate-overlay-series="outdoor_temp_c" aria-pressed="true" class="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-200 hover:border-gray-500"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#199e70"></span>outdoor °C</button>
+                <button type="button" data-climate-overlay-series="orion_watts" aria-pressed="true" class="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-200 hover:border-gray-500"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#9085e9"></span>Orion watts</button>
+              </div>
+              <div id="climateOverlayStatus" class="text-[11px] text-gray-500 min-h-[1rem]">Open this subview to load the overlay.</div>
+              <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
+                <div id="climateOverlayChart" class="min-h-[10rem]"></div>
+              </div>
+            </div>
             <div id="energyStrip" role="region" aria-label="House electricity" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-col gap-4">
               <div class="flex flex-wrap items-start justify-between gap-3">
                 <div>
@@ -4615,8 +4642,10 @@
   <script src="/static/js/field-attention.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cabinet-sonification-history.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cabinet-sonification.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/chart-hover.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cabinet-sensors.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/office-env.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/cabinet-climate-overlay.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/energy-strip.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/biometrics-view.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/self_observability.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>

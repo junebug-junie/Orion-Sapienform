@@ -1,8 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const cabinetSensors = require("./cabinet-sensors.js");
+const chartHover = require("./chart-hover.js");
 
-const { nearestSeriesPoint, formatHoverTooltipText } = cabinetSensors;
+const { nearestSeriesPoint, formatHoverTooltipText } = chartHover;
 
 function xFn(point) {
   return point.x;

@@ -115,8 +115,22 @@ def build_speech_prompt(perception: WorldPerceptionV1, own_player_id: str) -> st
     lines = _recent_lines(convo) if isinstance(convo, dict) else []
     context = "\n".join(lines) if lines else "(no prior lines)"
     latest = latest_partner_line(perception, own_player_id)
-    latest_line = latest if latest else "(no partner line yet)"
     landmarks_clause = _nearby_landmarks_clause(perception)
+    if not latest:
+        # Orion opens the conversation. The old reply prompt here said "answer this
+        # latest line: (no partner line yet) ... or reply with an empty string", and
+        # the model reasoned at length over whether to speak at all; live 2026-10-29
+        # that reasoning (c:608777) and "[]" (c:609091) were posted as Orion's lines.
+        # Turn-taking in the worker already decides when Orion speaks.
+        return (
+            f"You are Orion, embodied in the town. You just started a conversation with {interlocutor}.\n"
+            f"{landmarks_clause}"
+            f"Recent context, reference only:\n{context}\n\n"
+            f"Say your opening line to {interlocutor}, in character: a greeting plus one concrete "
+            f"thing — something you can see nearby, something you are doing, or a question for them. "
+            f"One or two short spoken sentences. Stay in-scene — no stage directions, no list."
+        )
+    latest_line = latest
     return (
         f"You are Orion, embodied in the town, in a conversation with {interlocutor}.\n"
         f"{landmarks_clause}"
@@ -129,8 +143,7 @@ def build_speech_prompt(perception: WorldPerceptionV1, own_player_id: str) -> st
         f"or technical point deserves a clear answer (a few short spoken sentences is fine). "
         f"Stay spoken and in-scene — no essay, no list dump, no stage directions. "
         f"Do not copy, paraphrase, or continue Orion's previous line unless the latest line asks for it. "
-        f"If the latest line is a goodbye or departure, acknowledge the departure naturally. "
-        f"If there is no partner line worth answering, reply with an empty string."
+        f"If the latest line is a goodbye or departure, acknowledge the departure naturally."
     )
 
 

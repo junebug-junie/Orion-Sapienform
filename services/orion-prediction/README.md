@@ -149,9 +149,29 @@ walkway presence -> walkway caption (0-60 s) 32x, p = 0.006.
 `GET /effects/{action}?series_id=` returns the best available level. `GET /experiments/guard`
 says whether it is safe to start an ON block (P(≥ 32 °C within 30 min) < 5 %).
 
-**No dispatcher exists.** Nothing here switches a workload on or off. Whoever performs the action
-logs each block (`POST /interventions` with `experiment_id` + `arm`) and re-checks the guard
-before each ON block. The 34 °C reflex in hardware-watch stays the hard stop.
+**One dispatcher exists: `POST /experiments/run`** (`app/experiment_runner.py`, 2026-10-29). It
+performs `vision.focus:<stream_id>` only: during ON blocks it holds Redis key
+`orion:vision:experiment:<stream_id> = on` (TTL `PREDICTION_EXPERIMENT_OVERRIDE_TTL_SEC`, refreshed
+every tick), and the vision frame router forces that stream's triggered tier. OFF blocks are normal
+operation. Body defaults: `series_id=athena.cabinet_temp_c`, `block_min=20`, `n_blocks=12`,
+`burn_in_min=10`, `start_delay_min=2` (blocks start on a 5-min boundary).
+
+- Refuses (409) unless the guard passes, and while another run holds `orion:prediction:experiment:runner`.
+- Re-checks the guard before every ON block and every `PREDICTION_EXPERIMENT_GUARD_EVERY_SEC`; any
+  raw cabinet reading at or above the guard line (32 °C), a missing reading, or a failed guard
+  aborts: key cleared, an abort row logged (`arm` NULL, so analysis ignores it), status `cancelled`.
+- Logs each finished block through the normal intervention path (`arm`, `experiment_id`, router
+  dispatch-count deltas in `notes`), then runs `analyze_experiment` plus a **manipulation check**:
+  ON-minus-OFF `athena.gpu_watts_total`, `athena.chassis_watts`, `circe.chassis_watts`, and the
+  router's triggered fraction per arm (verdict `tier_raised`, `no_lever_off_arm_already_triggered`
+  or `override_never_took_effect`).
+- Never auto-starts. On boot, a run the last process left half-done is marked `cancelled` and its
+  key deleted; a hard kill leaves focus on for at most the TTL.
+- `GET /experiments/runner` shows the live run; `POST /experiments/runner/abort` stops it.
+  `PREDICTION_EXPERIMENT_RUNNER_ENABLED=false` turns the endpoint off.
+
+Other actions still need a human or another service to log blocks by hand. The 34 °C reflex in
+hardware-watch stays the hard stop.
 
 ## Action bets
 

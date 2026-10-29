@@ -79,6 +79,29 @@ triggered). Disable with `ROUTER_EXPECTATION_STEERING_ENABLED=false`. `/healthz`
 Manual check: `redis-cli -u $ORION_BUS_URL SET orion:vision:expect:walkway 1 EX 60`,
 then the next walkway host task's meta carries `triggered_by: expectation`.
 
+### Experiment override (Redis key contract)
+
+Vision focus experiment, 2026-10-29 (`docs/superpowers/pr-reports/2026-10-29-vision-focus-experiment-pr.md`).
+
+| Key | Writer | Reader | Meaning |
+|-----|--------|--------|---------|
+| `orion:vision:experiment:<stream_id>` (bus Redis) | orion-prediction's switchback runner (`POST /experiments/run`), ON blocks only | this router (`app/expectation.py`, same cache and refresh as expectation) | Value `on` **with a TTL** forces the triggered tier, `triggered_by=experiment`. |
+
+Absent, `off`, any other value, a key with no TTL (refused and counted in
+`experiment_override_no_ttl_refusals`), or a Redis error all mean "no override":
+today's behaviour. So the experiment only adds focus; the OFF arm is normal operation.
+The override is checked before labels and expectation, so every ON-block dispatch is
+attributed to the experiment. Streams with no trigger labels are never forced.
+Disable with `ROUTER_EXPERIMENT_OVERRIDE_ENABLED=false` (or delete the key).
+
+`/healthz` shows `experiment_override_streams` (also in the heartbeat details) and
+`dispatch_tier_counts`: per-stream main-lane dispatches by `<tier>:<triggered_by>`
+since boot. The runner reads deltas of these at each block edge as its manipulation
+check.
+
+Manual check: `redis-cli -u $ORION_BUS_URL SET orion:vision:experiment:walkway on EX 60`,
+then `/healthz` lists `walkway` under `experiment_override_streams` within 5 s.
+
 ### Walkway stream
 
 `streams.walkway` (captured by the `orion-vision-retina-walkway` instance, `stream_id=walkway`, full-resolution main stream): prompts

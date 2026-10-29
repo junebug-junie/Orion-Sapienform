@@ -50,9 +50,11 @@ class FrameDispatchDecision(BaseModel):
     # computed data instead of re-walking policy internals.
     identity_dispatch_cfg: dict[str, Any] = Field(default_factory=dict)
     # Why the triggered tier was chosen: "labels" (a trigger label was seen
-    # recently) or "expectation" (orion:vision:expect:<stream_id> is set, spec
-    # idea 8). None on the baseline tier. Forwarded in task meta so the
-    # artifact itself records whether prediction or detection raised the tier.
+    # recently), "expectation" (orion:vision:expect:<stream_id> is set, spec
+    # idea 8) or "experiment" (orion:vision:experiment:<stream_id> = "on").
+    # None on the baseline tier. Forwarded in task meta so the artifact
+    # itself records whether prediction, detection or an experiment raised
+    # the tier.
     triggered_by: str | None = None
 
 
@@ -153,6 +155,15 @@ class FrameDispatchPolicy:
         ttl_s = float(triggered_cfg.get("trigger_ttl_seconds") or 0)
         if self.expectation is not None and stream_id:
             self.expectation.note_stream(stream_id)
+
+        # Experiment override (orion:vision:experiment:<stream_id> = "on", set
+        # by orion-prediction's switchback runner with a TTL): forces the
+        # triggered tier. Checked first so every on-block dispatch is
+        # attributed to the experiment. Same opt-out rule as expectation: a
+        # stream with no trigger labels has no triggered tier to force.
+        if trigger_labels and self.expectation is not None and self.expectation.experiment_on(stream_id):
+            tier_cfg = _shallow_merge(baseline_cfg, triggered_cfg)
+            return "triggered", tier_cfg, "experiment"
 
         if (
             stream_id

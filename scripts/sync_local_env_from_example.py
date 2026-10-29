@@ -421,6 +421,8 @@ SYNC_PREFIXES = (
     "WALKWAY_SEEN_",
     # Caption motion cross-check (orion-sql-writer, 2026-10-23, spec PR #2763 item 3 C).
     "VISION_CAPTION_MOTION_",
+    # Hourly frame samples (orion-sql-writer, 2026-10-29).
+    "VISION_HOURLY_FRAMES_",
 )
 
 SYNC_EXACT = frozenset(

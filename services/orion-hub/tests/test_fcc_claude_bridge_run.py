@@ -8,6 +8,19 @@ import pytest
 from scripts import fcc_claude_bridge as bridge
 
 
+@pytest.fixture(autouse=True)
+def _no_operator_mcp_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never read the operator's ~/.fcc/.env or render a real MCP config here.
+
+    run_turn renders an MCP config from HUB_FCC_ENV_PATH (default ~/.fcc/.env)
+    when HUB_AGENT_CLAUDE_MCP_ENABLED is on. These tests passed only on a host
+    whose real file held GITHUB_PAT (and wrote a config with it); on a clean
+    runner every one failed with fcc_mcp_github_missing. MCP config rendering
+    has its own tests.
+    """
+    monkeypatch.setattr(bridge, "_maybe_render_mcp_config", lambda **_kwargs: None)
+
+
 class _FakeStream:
     def __init__(self, lines: List[bytes]) -> None:
         self._lines = list(lines)

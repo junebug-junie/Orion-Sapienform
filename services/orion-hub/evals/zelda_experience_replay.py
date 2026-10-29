@@ -27,7 +27,14 @@ PREDICTION = HUB.parent / 'orion-prediction'
 
 def _load_model():
     """orion-prediction's backoff(skill, situation, place, has_place). Its package is also named
-    ``app``, so it is imported first with its own directory on the path, then the path is restored."""
+    ``app``, so it is imported first with its own directory on the path, then the path is restored.
+
+    Any ``app``/``app.*`` already in sys.modules (Hub's own, when this runs inside the Hub test
+    session) is set aside for the import and put back afterwards. Without that, the import
+    resolves ``app`` to Hub's cached package and fails with "No module named app.action_bets"."""
+    saved = {n: m for n, m in sys.modules.items() if n == 'app' or n.startswith('app.')}
+    for name in saved:
+        del sys.modules[name]
     sys.path.insert(0, str(PREDICTION))
     try:
         from app.action_bets import MODEL, backoff  # noqa: PLC0415
@@ -37,6 +44,9 @@ def _load_model():
                          f'{exc}); this eval grades the real model, not a copy') from exc
     finally:
         sys.path.remove(str(PREDICTION))
+        for name in [n for n in sys.modules if n == 'app' or n.startswith('app.')]:
+            del sys.modules[name]
+        sys.modules.update(saved)
 
 
 MODEL, backoff = _load_model()

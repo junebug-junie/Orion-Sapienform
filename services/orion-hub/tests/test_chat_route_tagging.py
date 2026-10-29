@@ -43,7 +43,14 @@ class _ClassicClient:
         return CortexChatResult(cortex_result=result, final_text="ok")
 
 
-def test_classic_planrunner_path_tags_chat_route() -> None:
+def test_classic_planrunner_path_tags_chat_route(monkeypatch) -> None:
+    import scripts.main as hub_main
+
+    # No bus, so pre-turn appraisal skips (`pre_turn_appraisal_skipped_no_bus`).
+    # Pinned rather than assumed: an earlier test's TestClient lifespan can leave
+    # `scripts.main.bus` set to a disconnected OrionBusAsync, and the appraisal
+    # RPC then raises "OrionBusAsync not connected".
+    monkeypatch.setattr(hub_main, "bus", None, raising=False)
     payload = {"mode": "brain", "messages": [{"role": "user", "content": "hello"}]}
     out = asyncio.run(handle_chat_request(_ClassicClient(), payload, "sid-classic", no_write=True))
     assert out["chat_route"] == CHAT_ROUTE_CLASSIC_PLANRUNNER

@@ -13,10 +13,20 @@ HUB_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _ensure_hub_scripts_import_path() -> None:
-    """Repo-root ``scripts/`` shadows Hub when pytest mixes repo tests with Hub tests (import order)."""
-    for key in list(sys.modules):
-        if key == "scripts" or key.startswith("scripts."):
-            del sys.modules[key]
+    """Repo-root ``scripts/`` shadows Hub when pytest mixes repo tests with Hub tests (import order).
+
+    Purges only a FOREIGN cached ``scripts``. Purging Hub's own copy at import
+    time (as this did unconditionally) strands the module objects that test
+    files collected earlier had already bound.
+    """
+    cached = sys.modules.get("scripts")
+    hub_scripts = (HUB_ROOT / "scripts").resolve()
+    if cached is not None and not any(
+        Path(p).resolve() == hub_scripts for p in (getattr(cached, "__path__", None) or [])
+    ):
+        for key in list(sys.modules):
+            if key == "scripts" or key.startswith("scripts."):
+                del sys.modules[key]
     for p in (str(REPO_ROOT), str(HUB_ROOT)):
         try:
             sys.path.remove(p)

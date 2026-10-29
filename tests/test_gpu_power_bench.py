@@ -133,7 +133,7 @@ def _argv(tmp_path: Path, caps: str = "200,150") -> list[str]:
             "--lock-dir", str(tmp_path)]
 
 
-@pytest.mark.parametrize("exc", [RuntimeError("server went away"), SystemExit(143), KeyboardInterrupt()])
+@pytest.mark.parametrize("exc", [RuntimeError("unexpected bug"), SystemExit(143), KeyboardInterrupt()])
 def test_limit_is_restored_on_error_sigterm_and_ctrl_c(monkeypatch, tmp_path, exc) -> None:
     calls = _patch_main(monkeypatch)
 
@@ -190,3 +190,65 @@ def test_second_bench_on_the_same_card_is_refused(monkeypatch, tmp_path) -> None
 def test_prompt_is_identical_every_run() -> None:
     assert bench.fixed_prompt() == bench.fixed_prompt()
     assert len(bench.fixed_prompt()) > 4000
+
+
+def test_server_down_at_start_changes_nothing(monkeypatch, tmp_path) -> None:
+    calls = _patch_main(monkeypatch)
+    monkeypatch.setattr(bench, "wait_for_server", lambda base, wait_s: False)
+    assert bench.main(_argv(tmp_path)) == 3
+    assert calls == []
+
+
+def test_wait_for_server_retries_until_it_answers(monkeypatch) -> None:
+    answers = iter([bench.urllib.error.URLError("refused"), bench.urllib.error.URLError("refused"), {}])
+
+    def health(*_a, **_k):
+        a = next(answers)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    monkeypatch.setattr(bench, "http_json", health)
+    monkeypatch.setattr(bench.time, "sleep", lambda s: None)
+    assert bench.wait_for_server("http://x", 60) is True
+
+
+@pytest.mark.parametrize("err", [bench.urllib.error.URLError(ConnectionRefusedError(111, "refused")),
+                                 TimeoutError("timed out"), bench.http.client.IncompleteRead(b""),
+                                 KeyError("timings")])
+def test_server_leaving_mid_run_keeps_samples_and_restores(monkeypatch, tmp_path, err) -> None:
+    calls = _patch_main(monkeypatch)
+
+    def gone(*_a, **_k):
+        raise err
+
+    monkeypatch.setattr(bench, "one_request", gone)
+    assert bench.main(_argv(tmp_path)) == 1
+    assert calls == [200, 250.0]
+    import json
+    meta = json.loads((tmp_path / "out" / "summary.json").read_text())["meta"]
+    assert meta["aborted"].startswith("model server went away")
+
+
+def test_slots_failing_before_start_is_a_clean_refusal(monkeypatch, tmp_path) -> None:
+    calls = _patch_main(monkeypatch)
+
+    def no_slots(base, ignore=None):
+        raise bench.BenchAbort("no is_processing")
+
+    monkeypatch.setattr(bench, "busy_slots", no_slots)
+    assert bench.main(_argv(tmp_path)) == 2
+    monkeypatch.setattr(bench, "busy_slots", lambda base, ignore=None: (_ for _ in ()).throw(TimeoutError()))
+    assert bench.main(_argv(tmp_path)) == 3
+    assert calls == []
+
+
+def test_ctrl_c_while_waiting_for_the_server_is_clean(monkeypatch, tmp_path) -> None:
+    calls = _patch_main(monkeypatch)
+
+    def interrupted(base, wait_s):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(bench, "wait_for_server", interrupted)
+    assert bench.main(_argv(tmp_path)) == 130
+    assert calls == []

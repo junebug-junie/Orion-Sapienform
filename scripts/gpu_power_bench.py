@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import csv
 import fcntl
+import http.client
 import json
 import re
 import signal
@@ -38,6 +39,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -54,6 +56,12 @@ HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
 
 class BenchAbort(RuntimeError):
     """The bench cannot produce trustworthy numbers any more; stop and restore the card."""
+
+
+# What a server that unloads, stalls or dies mid-request raises through urllib on Python 3.12:
+# connect errors arrive as URLError, but a read timeout is a bare TimeoutError (OSError), a
+# half-sent reply is an HTTPException or bad JSON, and a reply without timings is a KeyError.
+SERVER_GONE = (urllib.error.URLError, OSError, http.client.HTTPException, json.JSONDecodeError, KeyError)
 
 
 def fixed_prompt() -> str:
@@ -187,6 +195,25 @@ def http_json(url: str, body: dict | None = None, timeout: float = 600) -> objec
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read())
+
+
+def wait_for_server(base: str, wait_s: float) -> bool:
+    """True once the server answers /health. gpu2's agent model is unloaded whenever image
+    generation (diffusion) takes the card, and reloads after it has been quiet for a while."""
+    deadline = time.monotonic() + wait_s
+    told = False
+    while True:
+        try:
+            http_json(f"{base}/health", timeout=5)
+            return True
+        except Exception:  # noqa: BLE001
+            if time.monotonic() >= deadline:
+                return False
+            if not told:
+                print(f"model server at {base} is not answering (on gpu2 this usually means image "
+                      f"generation has the card); waiting up to {wait_s / 60:.0f} min for it", flush=True)
+                told = True
+            time.sleep(10)
 
 
 def busy_slots(base: str, ignore: int | None = None) -> list[int]:
@@ -389,6 +416,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--settle-s", type=float, default=15.0)
     ap.add_argument("--quiet-timeout-s", type=float, default=180.0)
     ap.add_argument("--max-retries", type=int, default=6, help="per cap, for samples thrown away as dirty")
+    ap.add_argument("--server-wait-s", type=float, default=3600.0,
+                    help="how long to wait for the model server to come up before starting")
     ap.add_argument("--lock-dir", default="/run")
     ap.add_argument("--out", default=f"/tmp/gpu-power-bench-{time.strftime('%Y%m%dT%H%M%S')}")
     args = ap.parse_args(argv)
@@ -410,7 +439,22 @@ def main(argv: list[str] | None = None) -> int:
     except BlockingIOError:
         print(f"another bench already holds card {args.gpu}", file=sys.stderr)
         return 2
-    busy_slots(base)  # refuses a server whose /slots cannot show sharing, before any cap is set
+    try:
+        up = wait_for_server(base, args.server_wait_s)
+    except KeyboardInterrupt:
+        print(f"\ninterrupted while waiting; nothing was changed on card {args.gpu}", file=sys.stderr)
+        return 130
+    if not up:
+        print(f"model server at {base} never came up; nothing was changed on card {args.gpu}", file=sys.stderr)
+        return 3
+    try:
+        busy_slots(base)  # refuses a server whose /slots cannot show sharing, before any cap is set
+    except BenchAbort as exc:
+        print(f"{exc}; nothing was changed on card {args.gpu}", file=sys.stderr)
+        return 2
+    except SERVER_GONE as exc:
+        print(f"model server went away before the start ({exc!r}); nothing was changed", file=sys.stderr)
+        return 3
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -433,8 +477,17 @@ def main(argv: list[str] | None = None) -> int:
     sampler = Sampler(args.gpu)
     sampler.start()
     try:
-        run_caps(args, base, caps, sampler, samples, meta["dropped"],
-                 save=lambda: write_outputs(out, samples, caps, meta))
+        try:
+            run_caps(args, base, caps, sampler, samples, meta["dropped"],
+                     save=lambda: write_outputs(out, samples, caps, meta))
+        except SERVER_GONE as exc:
+            # Image generation took the card mid-run (the server unloads or stalls), or it died.
+            meta["aborted"] = f"model server went away: {exc!r}"
+            print(f"\nstopped early, {meta['aborted']}; keeping the {len(samples)} samples so far",
+                  file=sys.stderr)
+        except BenchAbort as exc:
+            meta["aborted"] = str(exc)
+            print(f"\nstopped early: {exc}", file=sys.stderr)
     finally:
         if restore_limit(args.gpu, original):
             print(f"\nrestored card {args.gpu} to {original:.0f} W")
@@ -450,7 +503,7 @@ def main(argv: list[str] | None = None) -> int:
               f"{r['gen_j_per_tok']!s:>15}  {r['gen_tok_s_vs_top']!s:>8} / {r['gen_j_per_tok_vs_top']!s:<8}"
               f"          {r['max_temp_c']}")
     print(f"\nwritten: {out / 'samples.csv'}, {out / 'summary.json'}; dropped samples: {len(meta['dropped'])}")
-    return 0
+    return 1 if meta.get("aborted") else 0
 
 
 if __name__ == "__main__":

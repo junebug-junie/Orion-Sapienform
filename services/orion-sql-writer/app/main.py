@@ -1108,6 +1108,16 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("vision motion stories DISABLED (VISION_MOTION_STORIES_ENABLED=false or interval 0)")
 
+    # One frame per camera per hour, kept N days (app/vision_hourly_frames.py).
+    vision_hourly_frames_task: asyncio.Task | None = None
+    if bool(getattr(settings, "vision_hourly_frames_enabled", False)) and float(
+            getattr(settings, "vision_hourly_frames_interval_sec", 0.0) or 0.0) > 0:
+        from app.vision_hourly_frames import vision_hourly_frames_loop
+
+        vision_hourly_frames_task = asyncio.create_task(vision_hourly_frames_loop(settings))
+    else:
+        logger.info("vision hourly frames DISABLED (VISION_HOURLY_FRAMES_ENABLED=false or interval 0)")
+
     # Walkway rollups by hour/day/week/month (app/vision_rollup_loop.py).
     vision_rollup_task: asyncio.Task | None = None
     if bool(getattr(settings, "vision_rollup_enabled", False)) and float(
@@ -1135,6 +1145,7 @@ async def lifespan(app: FastAPI):
             t for t in (task, write_health_task, watch_task, retention_task, drain_task, vision_permanence_task,
                         vision_individuals_task, vision_rhythm_task, vision_expect_task, act_resolver_task,
                         vision_motion_task, vision_rollup_task, vision_handoff_task, orion_energy_rollup_task,
+                        vision_hourly_frames_task,
                         act_downstream_use_task)
             if t is not None
         ]

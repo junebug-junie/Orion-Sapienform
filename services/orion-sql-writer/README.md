@@ -943,6 +943,30 @@ read-only.
   (saved vs frame_gone) and scene contrast by verdict, to re-check 0.10
   once Juniper has used "Can't tell".
 
+### Hourly frame samples (2026-10-29)
+
+`app/vision_hourly_frames.py` keeps one full frame per camera per UTC hour, so
+a sunny hour can be compared with a grey hour after the shared frames
+directory (~5 min) has pruned them. It was built after the walkway detector
+went half-blind on 2026-10-22..23 and nothing was left to look at.
+
+- Every `VISION_HOURLY_FRAMES_INTERVAL_SEC` (60 s): for each stream in
+  `VISION_HOURLY_FRAMES_STREAMS` with no sample this hour, copy the newest
+  frame of this hour (unchanged bytes) from `VISION_STORY_FRAMES_DIR` to
+  `VISION_HOURLY_FRAMES_DIR/<YYYY-MM-DD>/<stream>_<HH>Z.jpg`.
+- One line per sample in `<YYYY-MM-DD>/index.jsonl`: frame time, size, luma
+  mean and contrast, and `detections` for the 10 min before the frame
+  (scene windows, windows that saw something, per-label window counts,
+  per-label crop score n/p50/max, and crop rows for that exact frame).
+  An empty `frame_crops` means no crop row exists for that frame; most frames
+  are never sent to the detector.
+- The doorbell has frames only during a Ring event, so it has samples only in
+  hours with an event.
+- Pruning: whole `YYYY-MM-DD` directories older than
+  `VISION_HOURLY_FRAMES_RETENTION_DAYS` (14; 0 = forever). Nothing else under
+  the root is touched. About 0.3 GB at 14 days.
+- `VISION_HOURLY_FRAMES_ENABLED=false` turns it off.
+
 ### Walkway rollups by hour, day, week and month (2026-10-18)
 
 `orion/vision/walkway_rollup.py` (pure) + `app/vision_rollup.py` (reads, build

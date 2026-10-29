@@ -135,12 +135,16 @@ def build_speech_prompt(perception: WorldPerceptionV1, own_player_id: str) -> st
 
 
 def is_injectable(reply_text: Optional[str]) -> bool:
-    """Anti empty-shell guard: a reply is speech only if it holds at least one letter.
+    """Anti empty-shell guard: a reply is speech only if it holds a letter or digit
+    and is not a plumbing error report.
 
     Live 2026-10-29 (c:609091) Orion posted ``[]``: an empty structured answer is a
     non-empty string, so a bare whitespace check let it through.
     """
-    return any(ch.isalpha() for ch in str(reply_text or ""))
+    from orion.cognition.cortex_payload_extract import looks_like_error_text
+
+    text = str(reply_text or "")
+    return any(ch.isalnum() for ch in text) and not looks_like_error_text(text)
 
 
 def _normalize_spoken_line(text: str) -> str:

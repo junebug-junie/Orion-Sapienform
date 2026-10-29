@@ -1,31 +1,34 @@
 ## Summary
 
-- **An alarm for a blind detector.** The ladder watch (host cron, every 10 min, Hub card) has a new check per 24/7 camera: `detection_rate:walkway` and `detection_rate:cam0`. It goes red when the detector keeps running but the share of windows that see anything falls under a quarter of what the same hours saw on the previous 7 days. Night reads calm because the baseline is also quiet at night. No data reads "cannot check", never calm.
+- **An alarm for a blind detector.** The ladder watch (host cron, every 10 min, Hub card) has a new check per 24/7 camera: `detection_rate:walkway` and `detection_rate:cam0`. It goes red when the detector keeps running but the share of windows that see anything falls under a quarter of what the same hours saw on the previous 7 days (median). It also goes red when the detector stops producing windows while the camera is still delivering. Night reads calm ("quiet") because the baseline is also quiet at night. No data with the camera down reads "cannot check", never calm. A card re-arms only when the share is back to at least half the usual, in hours that normally see things.
 - **One frame per camera per hour, kept 14 days.** orion-sql-writer copies the newest frame of each UTC hour (walkway, cam0, and the doorbell in hours with a Ring event) into `/mnt/telemetry/vision/hourly_frames/<day>/`, with one index line per frame: brightness, contrast, and what the detector saw in the 10 minutes before. It prunes its own day folders.
 - **Cut-offs per camera and per label.** The detector's box cut-off can now be set per stream and per label (`box_threshold_by_stream` in `config/vision_profiles.yaml`). **No value changed**: walkway person and vehicle are written out at today's 0.35, cam0 is not listed. The evidence for moving them is not there yet (below).
 
 ## Outcome moved
 
 - Before: on 2026-10-22..23 the walkway detector was half-blind for about 30 hours and nothing alarmed. The camera-input check only asks whether frames arrive, and they did.
-- After, replayed over stored data (one evaluation per 10-minute tick, `scripts/replay_detection_rate_watch.py --start 2026-10-16 --end 2026-10-29`):
+- After, replayed over stored data (one evaluation per 10-minute tick, same debounce as the ladder: card on red, re-arm only on "ok"; `scripts/replay_detection_rate_watch.py --start 2026-10-16 --end 2026-10-29`):
 
-| walkway day (UTC) | red ticks | calm ticks | cannot-check ticks | red UTC hours |
-|---|---|---|---|---|
-| 10-16, 10-17 | 0 | 0 | 144 | - (camera too new: under 3 baseline days) |
-| 10-18 | 0 | 109 | 35 | - |
-| 10-19 .. 10-21 | 0 | 144 each | 0 | - |
-| **10-22** | **60** | 84 | 0 | 14-23 |
-| **10-23** | **56** | 88 | 0 | 0-3 (evening of 10-22 local), 14-19 |
-| 10-24 | 12 | 132 | 0 | 2-3, 14-15 |
-| 10-25 | 0 | 144 | 0 | - |
-| 10-26 (DHCP outage) | 0 | 65 | 79 | - (outage reads cannot-check, not calm) |
-| 10-27 | 0 | 108 | 36 | - (rest of the outage) |
-| 10-28 | 0 | 144 | 0 | - |
+| walkway day (UTC) | cards | red ticks | ok | quiet | low | cannot-check | red UTC hours |
+|---|---|---|---|---|---|---|---|
+| 10-16, 10-17 | 0 | 0 | 0 | 0 | 0 | 144 | - (camera too new: under 3 baseline days) |
+| 10-18 | 0 | 0 | 57 | 52 | 0 | 35 | - |
+| 10-19 | 0 | 0 | 77 | 62 | 5 | 0 | - |
+| 10-20 | 0 | 0 | 66 | 62 | 16 | 0 | - |
+| 10-21 | 0 | 0 | 77 | 63 | 4 | 0 | - |
+| **10-22** | **1** | **60** | 21 | 63 | 0 | 0 | 14-23 |
+| **10-23** | 0 (same card) | **56** | 17 | 64 | 7 | 0 | 0-3 (evening of 10-22 local), 14-19 |
+| 10-24 | 1 | 12 | 56 | 65 | 11 | 0 | 2-3, 14-15 |
+| 10-25 | 0 | 0 | 68 | 76 | 0 | 0 | - |
+| 10-26 (DHCP outage) | 0 | 0 | 16 | 49 | 0 | 79 | - (outage reads cannot-check, not calm) |
+| 10-27 | 0 | 0 | 50 | 58 | 0 | 36 | - (rest of the outage) |
+| 10-28 | 0 | 0 | 68 | 76 | 0 | 0 | - |
 
+  The incident is one card (10-22 14:00 UTC) that stays delivered through the night and the whole of 10-23: quiet nights and "low" hours do not re-arm it. The replay has no camera-input data, so the outage reads cannot-check; live, the same hours would read cannot-check too because camera_input:walkway was red.
   cam0: 0 red, 0 cannot-check, 144 calm every day 10-16..10-28. cam0's room is never empty for the detector (share 1.00), so on cam0 this only fires on total blindness.
-- 10-24's 12 red ticks: two short spells (02-03 UTC = evening of 10-23 local; 14-15 UTC = the first daylight hours). Both are within a day of the incident and may be its tail (the 10-24 dawn hours saw 0.05-0.17 of windows with something vs a usual ~0.6). I cannot tell from stored data, because no frames from then were kept. That is part 1's reason to exist.
+- 10-24's 12 red ticks (one card): two short spells (02-03 UTC = evening of 10-23 local; 14-15 UTC = the first daylight hours). Both are within a day of the incident and may be its tail (the 10-24 dawn hours saw 0.05-0.17 of windows with something vs a usual ~0.6). I cannot tell from stored data, because no frames from then were kept. That is part 1's reason to exist.
 - First red on 10-22: 14:00 UTC (the 3-hour span needs about an hour of blind daylight to cross the line).
-- Sensitivity (walkway, 10-22..10-28): ratio 0.20 / 0.25 / 0.33 gives 10 / 12 / 15 red ticks on 10-24 and 0 on 10-25..10-28 in every case. A 1-hour span adds 4 red ticks on 10-25; 3 hours is quieter.
+- Sensitivity (walkway, 10-22..10-28, before the review changes, same red rule): ratio 0.20 / 0.25 / 0.33 gives 10 / 12 / 15 red ticks on 10-24 and 0 on 10-25..10-28 in every case. A 1-hour span adds 4 red ticks on 10-25; 3 hours is quieter. Using the upper quartile of the baseline days instead of the median (tried to survive longer blind spells) added 48 red ticks on normal days 10-18..10-25, so the median stays.
 
 ## Current architecture
 
@@ -45,7 +48,7 @@
 1. **Provenance.** `vision_scene_inventory` rows are written by orion-sql-writer from `vision.scene.inventory.v1`, published by orion-vision-window `_publish_scene_inventory` (`services/orion-vision-window/app/main.py`) on every window flush. `counts` = `summary.object_counts`, built from the detector replies in that window; `frame_count` = number of replies. So a row exists only when the detector ran, and `counts <> '{}'` means it kept at least one box.
 2. **Independence.** Not independent of the detector, by design: it is the detector's own output rate. It is independent of `camera_input:<stream>` (that one reads embedding arrival in `substrate_perception_embedding_baseline`; frames arriving vs the detector finding something). During the incident camera_input was green and this was red; during the 10-26 outage camera_input was red and this was cannot-check.
 3. **Theory anchor.** The scene a fixed camera sees follows the day (light, traffic, parked cars). For the same clock span, the share of windows with any detection is stable day to day (walkway 16-22 UTC: 0.5-1.0 on normal days). A detector whose scores slide under its cut-off loses boxes everywhere at once, so the share collapses while the denominator (detector runs) does not.
-4. **Live data.** Not degenerate: walkway share ranges 0.00 (night) to 1.00 (afternoon) and was 0.01-0.22 on the blind afternoon of 10-22. Rest state: a normal night reads calm because its own baseline is under the 0.2 floor (10-28 08:00Z: share 0.00 vs baseline 0.00 -> ok). Absence: 0 windows reads cannot-check (10-26 15:00Z). Weak spots: (a) the baseline is the median of 7 days, so a blindness that lasts 4+ days becomes the new normal and the alarm stops; the onset still cards. (b) The span is UTC clock time, so local traffic shifts by an hour at a DST change; sunlight does not. (c) cam0 can only catch total blindness.
+4. **Live data.** Not degenerate: walkway share ranges 0.00 (night) to 1.00 (afternoon) and was 0.01-0.22 on the blind afternoon of 10-22. Rest state: a normal night reads calm ("quiet") because its own baseline is under the 0.2 floor (10-28 08:00Z: share 0.00 vs baseline 0.00). Absence: 0 windows reads cannot-check when the camera is down (10-26 15:00Z), and red ("silent") when the camera_input rung is fresh but the detector writes no windows. Weak spots: (a) the baseline is the median of 7 days, so a blindness that lasts 4+ days becomes the new normal and the check reads ok again (which re-arms); the onset still cards. (b) Baseline days are exact 24 h back in UTC (DST-safe in SQL), so local traffic shifts by an hour after a DST change; sunlight does not. (c) cam0 can only catch total blindness.
 5. **Existing mechanism.** Reuses the ladder watch, its dedupe, Hub card path and exit codes; reuses `vision_scene_inventory` and its index. Nothing new is stored.
 6. **Reversibility.** Pure module + list entry. Removing it is deleting the module and four lines in the report; no schema, no table, no env key.
 
@@ -76,6 +79,7 @@ Nothing moved. The mechanism ships with today's values written out.
 - `scripts/check_substrate_ladder_liveness.py`: `read_detection_rates`, human output.
 - `scripts/replay_detection_rate_watch.py`: new; read-only replay over stored history (eval).
 - `tests/scripts/test_vision_detection_rate_watch.py`: new; real fixtures for the incident, a normal night, the outage, a normal day.
+- `tests/scripts/test_vision_detection_rate_watch_pg.py`: new; the live SQL on real Postgres.
 - `services/orion-vision-host/app/box_thresholds.py`: new; resolve and apply per-stream, per-label cut-offs.
 - `services/orion-vision-host/app/runner.py`: threshold selection only.
 - `services/orion-vision-host/tests/test_box_thresholds.py`: new.
@@ -107,10 +111,11 @@ Nothing moved. The mechanism ships with today's values written out.
 ## Tests run
 
 ```text
-tests/scripts/test_vision_detection_rate_watch.py + test_substrate_ladder_liveness.py: 80 passed
+tests/scripts/test_vision_detection_rate_watch.py + test_substrate_ladder_liveness.py: 83 passed
+tests/scripts/test_vision_detection_rate_watch_pg.py on a throwaway postgres:16 with the CI migrations: 1 passed (mutation to calendar days: fails)
 orion-vision-host full suite in the service image (PYTHONPATH=repo): 382 passed, 1 skipped
 orion-sql-writer test_vision_hourly_frames.py + test_vision_story_strip.py + test_vision_motion.py: 64 passed, 18 skipped (PG)
-orion-sql-writer test_vision_hourly_frames_pg.py on a throwaway postgres:16 with the CI migrations: 2 passed
+orion-sql-writer test_vision_hourly_frames.py + test_vision_hourly_frames_pg.py on a throwaway postgres:16: 11 passed
 Static gates: env template parity PASS; env key single source OK; compose relative mounts PASS; metric lineage PASS;
 definition drift PASS; sync/env/settings/journald/allowlist/personal-terms pytest: 73 passed; ci_service_image_sources + settings defaults: 27 passed
 ```
@@ -120,8 +125,8 @@ definition drift PASS; sync/env/settings/journald/allowlist/personal-terms pytes
 ```text
 scripts/replay_detection_rate_watch.py --start 2026-10-16 --end 2026-10-29 (live, read-only): table above.
 Sensitivity sweep --ratio 0.2/0.33, --span-hours 1/2: in "Outcome moved".
-Live ladder run (--skip-docker --skip-migrations): detection_rate:cam0 ok (1611/1611, baseline 1.00),
-detection_rate:walkway ok (1439/1515, baseline 0.79), GREEN.
+Live ladder run after review fixes (--skip-docker --skip-migrations): detection_rate:cam0 ok (1573/1573,
+reference 1.00), detection_rate:walkway ok (1227/1519, reference 0.66), GREEN.
 Hourly sampler live dry run into a scratch dir with real frames + live DB: saved walkway (2560x1920, 719 KB,
 luma 0.32, 89 windows / 1 with a detection) and cam0 (640x480); doorbell no_frame (no Ring event then).
 ```
@@ -135,7 +140,29 @@ No image was built and nothing was deployed (task rule: do not deploy).
 
 ## Review findings fixed
 
-(filled in after review)
+Review ran in a subagent over `origin/main...HEAD`. No must-fix findings.
+
+- Finding: a quiet night counted as green and re-armed a delivered card every night of a multi-day blind spell; no hysteresis at the ratio line.
+  - Fix: new statuses `quiet` (reference under floor) and `low` (between 0.25x and 0.5x): neither red nor green. Only `ok` (>= 0.5x) re-arms.
+  - Evidence: `test_unknown_and_quiet_are_neither_red_nor_green`, `test_ratio_and_rearm_boundaries`; replay shows one card for the whole 10-22..23 incident.
+- Finding: detector down while cameras are up read only cannot-check, and the docstring wrongly said camera_input covers it (camera_input reads SigLIP embeddings, not GroundingDINO).
+  - Fix: `silent` (red) when the current span has too few windows, the baseline had them, and camera_input:<stream> is fresh this tick. Docstring corrected.
+  - Evidence: `test_detector_silent_while_camera_delivers_is_red`, `test_outage_reads_unknown_not_calm`.
+- Finding: the live SQL had no execution test.
+  - Fix: `tests/scripts/test_vision_detection_rate_watch_pg.py` runs the real query on Postgres (half-open bounds, other stream excluded, empty day), in the sql-writer Postgres CI job that refuses skips.
+  - Evidence: passes on a throwaway postgres:16; fails when the SQL is mutated back to calendar-day intervals.
+- Finding: `make_interval(days => d)` follows the session time zone across DST; the replay used exact 86400 s.
+  - Fix: SQL uses `make_interval(secs => d * 86400 ...)`. PG test runs under America/Denver with `END` three days after the 2026-11-01 DST change.
+  - Evidence: mutation to `days => d` fails the PG test.
+- Finding: a blindness lasting 4+ days becomes its own baseline.
+  - Fix: documented as a known limit (module docstring, this report). The upper quartile was tried and rejected (48 false red ticks on normal days).
+- Finding: hourly sample timing ("newest of the hour" is in practice HH:00-HH:01), retention keeps today + 14 days, partial `.tmp` on a failed copy.
+  - Fix: docs corrected in the module and README; tmp file removed when the copy fails.
+- Finding: an invalid base `score_threshold` fell back to 0.25 silently.
+  - Fix: logged as a warning, like invalid per-stream entries.
+- Finding: doorbell prefix `doorbell_doorbell` unverified.
+  - Fix: checked in code: retina-doorbell saves frames through the same `save_frame` (`<camera>_<stream>`, camera=stream=doorbell). Live doorbell sample still UNVERIFIED (no Ring event during the dry run).
+- Not changed (nits): crash between saving a frame and writing its index line leaves a frame without an index line; `by_label` is a plain dict inside a frozen dataclass; the frames dir is listed every tick (~1.4k files, cheap).
 
 ## Restart required
 
@@ -147,13 +174,13 @@ scripts/safe_docker_build.sh orion-vision-host up -d --build
 
 ## Risks / concerns
 
-- Severity: low. Concern: a blindness that lasts 4+ days becomes its own baseline and the alarm stops. Mitigation: the onset still cards; the card stays delivered until the key reads ok.
+- Severity: low. Concern: a blindness that lasts 4+ days becomes its own baseline and the check reads ok again. Mitigation: the onset still cards; quiet nights do not re-arm it.
 - Severity: low. Concern: the hourly sample is the newest frame of the hour, so it reflects the first minute(s) of the hour, not the whole hour. Mitigation: the index records the exact frame time and the 10 min detector summary.
 - Severity: low. Concern: vision-host config is baked into the image; a later cut-off change needs a rebuild. Mitigation: documented in the README.
 - UNVERIFIED: the weather cause of 10-22..23; whether the parked cars were present on 10-22; the doorbell sample (no Ring event during the dry run); the live loop in the container (not deployed).
 
 ## PR link
 
-(filled in after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2952 (merged); review fixes: https://github.com/junebug-junie/Orion-Sapienform/pull/2954
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -958,7 +958,8 @@ went half-blind on 2026-10-22..23 and nothing was left to look at.
 
 - Every `VISION_HOURLY_FRAMES_INTERVAL_SEC` (60 s): for each stream in
   `VISION_HOURLY_FRAMES_STREAMS` with no sample this hour, copy the newest
-  frame of this hour (unchanged bytes) from `VISION_STORY_FRAMES_DIR` to
+  frame of this hour that is at least 2 s old (unchanged bytes; in practice a
+  frame from HH:00-HH:01) from `VISION_STORY_FRAMES_DIR` to
   `VISION_HOURLY_FRAMES_DIR/<YYYY-MM-DD>/<stream>_<HH>Z.jpg`.
 - One line per sample in `<YYYY-MM-DD>/index.jsonl`: frame time, size, luma
   mean and contrast, and `detections` for the 10 min before the frame
@@ -969,7 +970,8 @@ went half-blind on 2026-10-22..23 and nothing was left to look at.
 - The doorbell has frames only during a Ring event, so it has samples only in
   hours with an event.
 - Pruning: whole `YYYY-MM-DD` directories older than
-  `VISION_HOURLY_FRAMES_RETENTION_DAYS` (14; 0 = forever). Nothing else under
+  `VISION_HOURLY_FRAMES_RETENTION_DAYS` (14 = today plus the 14 days before;
+  0 = forever). Nothing else under
   the root is touched. About 0.3 GB at 14 days.
 - `VISION_HOURLY_FRAMES_ENABLED=false` turns it off.
 

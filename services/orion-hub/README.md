@@ -2722,7 +2722,7 @@ The answer is only logged, next to what Hub really did. Nothing changes what Hub
 |---|---|---|---|---|
 | endogenous outreach | `hub.outreach` | at compose (before `_generate`), and on a tick held by strain alone | the compose correlation id (fresh id on a strain-held tick, no act) | `ran` (sent) or `blocked:<reason>` (orion_passed, `*_after_generation`, arousal_strained, ...) |
 | retro leisure | `hub.retro_leisure` | `RetroLeisureListener.start` | the dispatch id | `ran` (started) or `blocked:<refusal>` |
-| retro co-play | `hub.retro_coplay` | the session-start sink | the handoff row key | `ran` (co-play has no gate) |
+| retro co-play | `hub.retro_coplay` | the session-start sink | `coplay_turn_id(row key)`, a stable UUID; every planner call of the handoff carries it, so the act is charged its metacog leases (before 2026-10-29: the row key, never charged) | `ran` (co-play has no gate) |
 
 One log line per bid: `physiology_shadow_bid family=... want_id=... shadow=funded|deferred|none
 reason=... lane=... real=ran|blocked:<reason> act_correlation_id=...` (`act_correlation_id` is set only

@@ -566,15 +566,22 @@ def check_decision(decision: Any) -> dict:
     return decision
 
 
-async def _gateway_chat(config, prompt: str, *, max_tokens: int, route: str = ZELDA_ROUTE) -> tuple[dict, str]:
-    """One llm.chat.request on the local GPU route. Returns (result payload, correlation id)."""
+async def _gateway_chat(config, prompt: str, *, max_tokens: int, route: str = ZELDA_ROUTE,
+                        turn_id: Optional[str] = None) -> tuple[dict, str]:
+    """One llm.chat.request on the local GPU route. Returns (result payload, this call's id).
+
+    ``turn_id``: the play act's correlation id. The gateway stamps the envelope's correlation id on
+    its GPU lease, and the act ledger charges an act the leases that carry its correlation id
+    (orion/grammar/act_ledger.py fill_close_cost), so the act pays for its planner calls. The reply
+    channel stays per call, so a late reply never reaches the next call."""
     from orion.core.bus.async_service import OrionBusAsync
     from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
     bus = OrionBusAsync(str(config.ORION_BUS_URL))
-    correlation = str(uuid4())
+    call = str(uuid4())
+    correlation = turn_id or call
     async def request():
         await bus.connect()
-        reply = f'orion:exec:result:{config.LLM_GATEWAY_SERVICE_NAME}:{correlation}'
+        reply = f'orion:exec:result:{config.LLM_GATEWAY_SERVICE_NAME}:{call}'
         payload = ChatRequestPayload(messages=[LLMMessage(role='user', content=prompt)],
             route=route, options={'max_tokens': max_tokens, 'purpose': 'retro_goal_v2',
                 'skip_spark_candidate_publish': True,
@@ -588,18 +595,21 @@ async def _gateway_chat(config, prompt: str, *, max_tokens: int, route: str = ZE
             raise PlannerUnavailable('planner_invalid_envelope')
         return decoded.envelope.payload
     try:
-        return await asyncio.wait_for(request(), 32), correlation
+        return await asyncio.wait_for(request(), 32), call
     finally:
         await bus.close()
 
 
 async def plan_zelda(config, decision: Any, atlas: Optional[dict], history: Any, *, chat=None,
-                     menu: Any = None, route: str = ZELDA_ROUTE) -> dict:
+                     menu: Any = None, route: str = ZELDA_ROUTE, turn_id: Optional[str] = None) -> dict:
     """Answer one Retro decision with a GoalV2 body (without sponsor/generation/port/epoch).
 
     ``menu``: scored options from scripts.retro_experience (``Menu.for_planner()``), listed after the
     sides line. With a menu the result also carries ``chosen_rank`` (the matching option's rank by
     goal equality, None off-menu); strip it with ``goal_v2_body`` before posting to Retro.
+
+    ``turn_id``: the play act's correlation id (a UUID string), so the act is charged this call's GPU
+    lease. None: each call stands alone and no act pays for it.
 
     Raises PlannerBusy (another request in flight), PlannerRejected (nothing to answer, or the
     answer broke the contract), PlannerShed (GPU heat shed; ``details`` carries the pool's
@@ -625,7 +635,8 @@ async def plan_zelda(config, decision: Any, atlas: Optional[dict], history: Any,
                 # The retry asks for a different goal and may need the full shape: give it room.
                 limit = MENU_MAX_TOKENS if menu_lines(menu) and attempt == 1 else FULL_MAX_TOKENS
                 data, correlation = await (chat(config, prompt, max_tokens=limit) if chat else
-                                           _gateway_chat(config, prompt, max_tokens=limit, route=route))
+                                           _gateway_chat(config, prompt, max_tokens=limit, route=route,
+                                                         turn_id=turn_id))
             except PlannerError:
                 outcome = 'pool_unreachable'
                 raise

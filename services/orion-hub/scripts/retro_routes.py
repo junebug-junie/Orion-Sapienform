@@ -86,7 +86,12 @@ def create_router(config, presence=None, experience=None):
         if key in watching: return
         watching.add(key)
         coplay_counts[key] = {}
-        task = asyncio.create_task(watch_coplay(app, sid, policy['port'], policy['epoch'], time.time()))
+        started_at = time.time()
+        # The handoff's play act id: plan_v2 sends it with every planner call so the act pays for them.
+        from scripts.act_emit import coplay_turn_id
+        from scripts.retro_memory_export import coplay_key
+        coplay_turns[key] = coplay_turn_id(coplay_key(sid, started_at))
+        task = asyncio.create_task(watch_coplay(app, sid, policy['port'], policy['epoch'], started_at))
         background.add(task); task.add_done_callback(background.discard)
 
     @router.get('/api/retro/leisure')
@@ -109,6 +114,7 @@ def create_router(config, presence=None, experience=None):
     histories = {}  # session id -> last goal_finished rows (Retro shows only the newest)
     coplay_counts = {}  # session id -> {'sheds': n, 'rejections': n} from plan_v2
     watching = set()    # (sid, port, epoch) co-play handoffs being watched to their end
+    coplay_turns = {}   # (sid, port, epoch) -> the handoff's play act correlation id
 
     async def emit_session_end(app, ended):
         sink = getattr(getattr(app, 'state', None), 'retro_session_end_sink', None)
@@ -205,6 +211,7 @@ def create_router(config, presence=None, experience=None):
         finally:
             watching.discard(key)
             coplay_counts.pop(key, None)
+            coplay_turns.pop(key, None)
 
     async def plan_v2(path, data, state, policy, c):
         """Zelda co-play decision (spec D). No goal on any failure; Retro's motor holds still."""
@@ -235,6 +242,7 @@ def create_router(config, presence=None, experience=None):
         try:
             goal = await retro_planner.plan_zelda(config, decision, atlas, list(history),
                                                   route=retro_planner.COPLAY_ROUTE,
+                                                  turn_id=coplay_turns.get(handoff_key),
                                                   **({'menu': menu.for_planner()} if menu else {}))
         except retro_planner.PlannerShed as exc:
             bump('sheds')

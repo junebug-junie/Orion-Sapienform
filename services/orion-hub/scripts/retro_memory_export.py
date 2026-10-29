@@ -621,14 +621,14 @@ def make_session_start_sink(*, bus_provider):
     """``app.state.retro_session_start_sink``: scripts/retro_routes.py watch_coplay calls it once per
     co-play handoff, when it first sees a Zelda cognition policy, to open the handoff's play act."""
     async def sink(retro_session_id: str, started_at: float) -> bool:
-        from scripts.act_emit import publish_coplay_opened
+        from scripts.act_emit import coplay_turn_id, publish_coplay_opened
 
         key, bus = coplay_key(retro_session_id, started_at), bus_provider()
-        # Body economy Patch C3b: SHADOW bid, never obeyed. want_id = the handoff key, the play act's
-        # correlation id. Co-play has no gate of its own (Juniper handed over): it ran when its act opened.
+        # Body economy Patch C3b: SHADOW bid, never obeyed. want_id = the play act's correlation id
+        # (coplay_turn_id of the handoff key). Co-play has no gate of its own (Juniper handed over): it ran when its act opened.
         from scripts.physiology_shadow import ShadowBid
 
-        shadow = ShadowBid(family="hub.retro_coplay", verb="play", tier=2, want_id=key,
+        shadow = ShadowBid(family="hub.retro_coplay", verb="play", tier=2, want_id=coplay_turn_id(key),
                            object_ref=f"retro_session:{retro_session_id}", component="retro_coplay")
         shadow.place()
         if bus is None:

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from uuid import UUID
 
 logger = logging.getLogger("orion-hub.act_emit")
 
@@ -217,12 +218,14 @@ def _coplay_act(key: str, retro_session_id: str | None):
     )
 
 
-def _coplay_envelope_id(key: str):
-    """The row key is not a UUID; one stable UUID per handoff keeps open and close on one bus
-    correlation id (otherwise each envelope gets a random one)."""
+def coplay_turn_id(key: str) -> str:
+    """The handoff's one correlation id, a stable UUID (the row key is not one). The play act, its
+    shadow bid (want_id) and every planner call of the handoff carry it, so the act ledger charges
+    the act the planner's GPU leases (fill_close_cost joins leases on the act's correlation id).
+    Acts opened before 2026-10-29 carry the row key instead and stay uncharged."""
     from uuid import NAMESPACE_URL, uuid5
 
-    return uuid5(NAMESPACE_URL, f"orion:retro_coplay:{key}")
+    return str(uuid5(NAMESPACE_URL, f"orion:retro_coplay:{key}"))
 
 
 async def publish_coplay_opened(bus: Any, *, key: str, retro_session_id: str | None,
@@ -239,9 +242,9 @@ async def publish_coplay_opened(bus: Any, *, key: str, retro_session_id: str | N
         at = datetime.fromtimestamp(float(started_at), tz=timezone.utc) if started_at is not None else None
         event = act_opened_event(
             _coplay_act(key, retro_session_id), source_service="orion-hub", source_component="retro_coplay.act",
-            correlation_id=str(key), at=at,
+            correlation_id=coplay_turn_id(key), at=at,
         )
-        await publish_grammar_event(bus, event, source_name="orion-hub", correlation_id=_coplay_envelope_id(key))
+        await publish_grammar_event(bus, event, source_name="orion-hub", correlation_id=UUID(coplay_turn_id(key)))
         return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("coplay_act_open_failed key=%s error=%s", key, exc)
@@ -258,9 +261,9 @@ async def publish_coplay_closed(bus: Any, *, key: str, retro_session_id: str | N
 
         event = act_closed_event(
             _coplay_act(key, retro_session_id), produced=produced, note=note,
-            source_service="orion-hub", source_component="retro_coplay.act", correlation_id=str(key),
+            source_service="orion-hub", source_component="retro_coplay.act", correlation_id=coplay_turn_id(key),
         )
-        await publish_grammar_event(bus, event, source_name="orion-hub", correlation_id=_coplay_envelope_id(key))
+        await publish_grammar_event(bus, event, source_name="orion-hub", correlation_id=UUID(coplay_turn_id(key)))
         return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("coplay_act_close_failed key=%s error=%s", key, exc)

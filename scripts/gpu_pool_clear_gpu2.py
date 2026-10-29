@@ -42,6 +42,8 @@ DEFAULT_POOL_HTTP = "http://localhost:8127"
 HOLDER = f"operator:{ACTOR}"
 GPU2_ROLE = SEATS["bonsai"].expect_role
 LIVE = ("granted", "recalling")
+POLL_SEC = 0.5   # pool state reads while waiting for gpu2's second slot
+RETRY_SEC = 1.0  # after a second hold that landed elsewhere
 
 
 def gpu2_has_free_slot(pool_state: dict[str, Any], holder: str = HOLDER) -> bool:
@@ -56,8 +58,10 @@ def http_pool_state(pool_http: str) -> dict[str, Any]:
 
 
 async def take_second_gpu2_slot(holds: PoolHolds, pool_state, tries: int, wait_sec: float) -> bool:
-    """One more class-agent hold, sent only while gpu2's other slot is free; True once it is ours.
-    A hold that lands elsewhere is given back at once by _acquire_extra (it checks the role)."""
+    """One more class-agent hold, sent only while gpu2's other slot is free; True once a grant on
+    gpu2's role is ours. Goes through PoolHolds._hold, so the hold is in the ledger before the RPC
+    and a hold RPC that dies or is cancelled mid-flight is swept on release; a grant anywhere else
+    (or none) is given back at once."""
     deadline = time.monotonic() + wait_sec
     for _ in range(tries):
         while True:
@@ -68,13 +72,15 @@ async def take_second_gpu2_slot(holds: PoolHolds, pool_state, tries: int, wait_s
                 pass
             if time.monotonic() >= deadline:
                 return False
-            await asyncio.sleep(0.5)
-        before = len(holds._held)
-        await holds._acquire_extra(SEATS["bonsai"])
-        if len(holds._held) > before:
+            await asyncio.sleep(POLL_SEC)
+        lease_id, grant, why = await holds._hold(SEATS["bonsai"])
+        if grant is not None and grant.get("role") == GPU2_ROLE:
             return True
-        print("  second gpu2 hold landed elsewhere and was given back; retrying", flush=True)
-        await asyncio.sleep(1.0)
+        where = grant.get("role") if grant else why
+        if lease_id:
+            await holds._release_one(lease_id, reason=f"second_gpu2_slot_not_gpu2:{where}")
+        print(f"  second gpu2 hold did not land on gpu2 ({where}); given back, retrying", flush=True)
+        await asyncio.sleep(RETRY_SEC)
     return False
 
 
@@ -95,12 +101,12 @@ async def hold(args: argparse.Namespace, bus_url: str) -> int:
         if not acquire.done():
             acquire.cancel()  # __aenter__ releases what it took on any exception, cancellation included
             await asyncio.gather(acquire, return_exceptions=True)
-            print("stopped before the holds were complete; everything released", flush=True)
+            print("stopped before the holds were complete", flush=True)
             return 130
         try:
             seats = acquire.result()
         except HoldRefused as exc:
-            print(f"pool refused: {exc}; everything released", file=sys.stderr)
+            print(f"pool refused: {exc}", file=sys.stderr)
             return 2
         try:
             second = asyncio.ensure_future(take_second_gpu2_slot(
@@ -111,11 +117,13 @@ async def hold(args: argparse.Namespace, bus_url: str) -> int:
                 await asyncio.gather(second, return_exceptions=True)
                 print("stopped while waiting for gpu2's second slot", flush=True)
                 return 130
-            # 3 = gpu1 + gpu2 + gpu2's other slot; with only one gpu2 slot ours the card is not clean.
-            if not second.result() or len(holds._held) != 3:
-                print(f"got {len(holds._held)} of 3 holds (gpu2's second slot never came free in "
-                      f"{args.extra_tries} tries); releasing everything", file=sys.stderr)
+            # With only one gpu2 slot ours the card is not clean.
+            if not second.result():
+                print(f"gpu2's second slot never became ours ({args.extra_tries} tries); releasing",
+                      file=sys.stderr)
                 return 2
+            if stop.is_set():  # a signal that landed as the last hold was granted
+                return 130
             print(f"READY: gpu1 + both gpu2 slots held ({', '.join(f'{k}={g.role}' for k, g in seats.items())}). "
                   f"Run the bench now. Releasing in {args.minutes:.0f} min or on Ctrl+C.", flush=True)
             started = time.monotonic()
@@ -127,7 +135,6 @@ async def hold(args: argparse.Namespace, bus_url: str) -> int:
             return 0
         finally:
             await holds.release_all(reason="gpu_power_bench_done")
-            print("released", flush=True)
 
 
 async def leftovers(args: argparse.Namespace, bus_url: str) -> int:
@@ -156,7 +163,19 @@ def main(argv: list[str] | None = None) -> int:
     if not bus_url:
         print("ORION_BUS_URL is not set (use redis://100.92.216.81:6379/0)", file=sys.stderr)
         return 2
-    return asyncio.run(leftovers(args, bus_url) if args.release_leftovers else hold(args, bus_url))
+    if args.release_leftovers:
+        return asyncio.run(leftovers(args, bus_url))
+    try:
+        code = asyncio.run(hold(args, bus_url))
+    finally:
+        # The ledger, not the release calls, says what is still held: a failed release keeps its id.
+        left = HoldLedger(args.out / "holds.jsonl").outstanding()
+        if left:
+            print(f"NOT RELEASED: {left}. Run: ORION_BUS_URL={bus_url} PYTHONPATH=. .venv/bin/python "
+                  f"scripts/gpu_pool_clear_gpu2.py --release-leftovers {args.out}", file=sys.stderr)
+        else:
+            print("all holds released", flush=True)
+    return 4 if left else code
 
 
 if __name__ == "__main__":

@@ -37,20 +37,17 @@ class _Transport:
 
 
 def _run(monkeypatch, tmp_path, pool, states=None, extra=()):
+    async def sweep():  # what the pool itself shows live for us
+        return sorted(pool.live)
+
     monkeypatch.setattr(clear, "BusControlTransport", _Transport(pool))
-    monkeypatch.setattr(clear, "http_sweeper", lambda *a: None)
+    monkeypatch.setattr(clear, "http_sweeper", lambda *a: sweep)
     seq = states if states is not None else [FREE]  # shared: a test can watch it drain
     monkeypatch.setattr(clear, "http_pool_state", lambda url: seq.pop(0) if len(seq) > 1 else seq[0])
-    monkeypatch.setattr(clear.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr(clear, "POLL_SEC", 0)
+    monkeypatch.setattr(clear, "RETRY_SEC", 0)
     monkeypatch.setenv("ORION_BUS_URL", "redis://x")
     return clear.main(["--minutes", "0.001", "--out", str(tmp_path), *extra])
-
-
-_real_sleep = asyncio.sleep
-
-
-async def _no_sleep(_s):
-    await _real_sleep(0)
 
 
 def test_free_slot_reads_the_pool_lease_table():
@@ -97,18 +94,52 @@ def test_gpu2_second_slot_never_ours_releases_everything(monkeypatch, tmp_path):
     assert HoldLedger(tmp_path / "holds.jsonl").outstanding() == []
 
 
-def test_signal_while_holding_releases(monkeypatch, tmp_path):
+def test_signal_while_holding_releases(monkeypatch, tmp_path, capsys):
     pool = FakePool()
-    real_wait_for = asyncio.wait_for
+    orig = pool.hold
 
-    async def wait_for(aw, timeout):
-        assert len(pool.live) == 3  # READY: all held
-        os.kill(os.getpid(), signal.SIGTERM)
-        return await real_wait_for(aw, timeout)
+    async def hold(work_class, actor):
+        res = await orig(work_class, actor)
+        if pool.n == 3:  # the last hold: SIGTERM shortly after READY
+            asyncio.get_running_loop().call_later(0.05, os.kill, os.getpid(), signal.SIGTERM)
+        return res
 
-    monkeypatch.setattr(clear.asyncio, "wait_for", wait_for)
+    pool.hold = hold
     assert _run(monkeypatch, tmp_path, pool, extra=["--minutes", "60"]) == 0
+    assert "READY" in capsys.readouterr().out
     assert pool.live == set()
+
+
+def test_second_hold_rpc_dying_mid_flight_is_swept(monkeypatch, tmp_path):
+    # The pool created the lease, but the reply never came (bus timeout / Ctrl+C mid-RPC).
+    pool = FakePool()
+    orig = pool.hold
+
+    async def hold(work_class, actor):
+        res = await orig(work_class, actor)
+        if pool.n == 3:
+            raise TimeoutError("rpc reply lost")
+        return res
+
+    pool.hold = hold
+    try:
+        _run(monkeypatch, tmp_path, pool)
+    except TimeoutError:
+        pass
+    assert pool.live == set()
+
+
+def test_failed_release_is_reported_not_called_released(monkeypatch, tmp_path, capsys):
+    pool = FakePool()
+
+    async def stuck(lease_id, actor):
+        return {"ok": False, "reason": "timeout"}
+
+    pool.release = stuck
+    pool.cancel = stuck
+    assert _run(monkeypatch, tmp_path, pool) == 4
+    err = capsys.readouterr().err
+    assert "NOT RELEASED" in err and "--release-leftovers" in err
 
 
 def test_no_bus_url_refuses(monkeypatch):

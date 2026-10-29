@@ -260,8 +260,8 @@ stories (all ended 10-17..10-19, before #2765) got 130 links; a re-run plans 0
 share 54/136 in a day; every person story since 10-20 is linked except 1 of 594; all 76
 "who is this?" asks since 10-20 carried pictures. C.1 acceptance passed (oldest person
 crop still 10-15, vehicles pruned to 10-22). C.3 done (ask is `withdrawn`). C.6 done:
-linked from the tracking list in PR #2752. D question 3: answered for now -- the only
-consumer of "probably X" is an orion-prediction experiment.
+linked from the tracking list in PR #2752. D question 3 is still open: nothing reads
+"probably X" guesses yet (no PR as of 2026-10-29).
 
 Context for a fresh agent. PR #2765 (photos kept forever, per-label snapshot
 slot, story-link relink) is merged and its images are deployed. This spec is

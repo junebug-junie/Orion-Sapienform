@@ -9,7 +9,8 @@ already uses:
 - ``orion_watts``: per-bucket mean wall watts of every node in ``orion_biometrics_cluster``
   plus the cabinet cooling plug (``home_cooling_sample``) -- the same sources the Orion
   energy tab counts. Each point carries ``sources`` so a node that went quiet reads as a
-  smaller total with fewer sources, not as a silent drop.
+  smaller total with fewer sources, not as a silent drop. A node reporting exactly 0 W
+  (hecate while powered off, live 2026-10-29) is not counted as a source.
 
 Absent is not zero: an empty bucket is omitted, never filled. Each series is read on its
 own; one failing table empties only that series and names it in ``errors``.
@@ -64,6 +65,7 @@ SELECT t, sum(w) AS v, count(*) AS sources FROM (
          avg((n.value->>'chassis_watts')::double precision) AS w
   FROM orion_biometrics_cluster c, jsonb_each(c.measurements_by_node) n
   WHERE c.observed_at >= $1 AND jsonb_typeof(n.value->'chassis_watts') = 'number'
+    AND (n.value->>'chassis_watts')::double precision > 0
   GROUP BY 1, 2
   UNION ALL
   SELECT date_bin(make_interval(secs => $2), ts, 'epoch'), 'cooling', avg(cooling_watts)

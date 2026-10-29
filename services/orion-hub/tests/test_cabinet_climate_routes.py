@@ -125,3 +125,7 @@ def test_database_down_is_not_ok(monkeypatch):
 def test_unsupported_window_is_rejected(monkeypatch):
     client, _ = _client(monkeypatch, {})
     assert client.get("/api/cabinet/climate/overlay?window=1y").status_code == 400
+
+
+def test_watts_sql_does_not_count_a_zero_watt_node_as_a_source():
+    assert "chassis_watts')::double precision > 0" in cabinet_climate_routes._WATTS_SQL

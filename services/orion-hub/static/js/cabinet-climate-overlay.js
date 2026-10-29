@@ -144,10 +144,15 @@
       return;
     }
 
+    // Domain from the window the payload was fetched for, not the selected one: a failed
+    // window switch must not squeeze old data onto a new axis.
+    var windowKey = payload.window || state.window;
     var now = Date.now();
-    var hours = { "24h": 24, "3d": 72, "7d": 168 }[state.window] || 24;
+    var hours = { "24h": 24, "3d": 72, "7d": 168 }[windowKey] || 24;
     var tMin = now - hours * 3600 * 1000;
     var tMax = now;
+    // date_bin floors the first bucket to before the window start; widen to keep it on-axis.
+    visible.forEach(function (s) { tMin = Math.min(tMin, data[s.key].flat[0].ms); });
 
     var W = Math.max(320, Math.round(host.clientWidth || 640));
     var LEFT = 40, RIGHT = 10, TOP = 6, AXIS = 18, GAP = 12;
@@ -176,7 +181,7 @@
       class: "block cursor-crosshair",
       role: "img",
       "aria-label": "Climate overlay: " + visible.map(function (s) { return s.label; }).join(", ") +
-        " over the last " + state.window + ".",
+        " over the last " + windowKey + ".",
     });
 
     panels.forEach(function (p) {
@@ -217,7 +222,7 @@
       svg.appendChild(svgEl("text", {
         x: tx, y: axisY + 14, "text-anchor": i === 0 ? "start" : i === nTicks ? "end" : "middle",
         "font-size": 9, fill: "#9ca3af", "font-family": "ui-monospace, monospace",
-      }, formatTick(ms, state.window)));
+      }, formatTick(ms, windowKey)));
     }
 
     // Hover layer: one crosshair over every panel, a ringed dot per visible series.

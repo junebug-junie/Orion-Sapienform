@@ -24,11 +24,8 @@
   var COOLING_LATEST_URL = "/api/cabinet/cooling/latest";
   var COOLING_HISTORY_URL = "/api/cabinet/cooling/history?window=";
   var SVG_NS = "http://www.w3.org/2000/svg";
-  // chart-hover.js loads first in the browser; node:test require()s it.
-  var chartHover =
-    typeof window !== "undefined" && window.OrionChartHover
-      ? window.OrionChartHover
-      : require("./chart-hover.js");
+  // chart-hover.js loads first (index.html). If it is missing, charts render without hover.
+  var chartHover = typeof window !== "undefined" ? window.OrionChartHover : null;
 
   // Nano reader ticks ~1 Hz; poll at the same cadence while the tab is visible.
   var POLL_MS = 1000;
@@ -628,7 +625,7 @@
       });
     }
     host.appendChild(chart);
-    chartHover.attachSeriesHover(host, chart, validSamples, x, y, options);
+    if (chartHover) chartHover.attachSeriesHover(host, chart, validSamples, x, y, options);
 
     var firstTime = validSamples[0].t ? new Date(validSamples[0].t).toLocaleString() : "—";
     var lastTime = validSamples[validSamples.length - 1].t

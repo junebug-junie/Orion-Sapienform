@@ -1,6 +1,7 @@
 // Driver for tests/test_sim_core.py. Runs every scenario against the shipped
 // core.ts + seed.ts (copied next to this file) and prints one JSON report.
-import { SimError, applyEvent, checkEntities, createState, tick } from './core.ts';
+import { MAX_EFFECTS, MAX_FACTS, MAX_OPEN_QUESTS, MAX_RESOLVED_QUESTS, MAX_RUMORS, SimError, applyEvent, checkEntities,
+  checkInjectSource, createState, tick } from './core.ts';
 import type { State } from './core.ts';
 import { SIM_CAST, SIM_SEED } from './seed.ts';
 
@@ -81,6 +82,13 @@ const juniper = (rest: object) => ({ source: 'juniper', kind: 'note', title: 'Ju
     unknown_place: err(() => applyEvent(s0, juniper({ place: 'bakery' }))),
     fractional_stock: err(() => applyEvent(s0, juniper({ effects: [{ op: 'stock_delta', target: 'diner.coffee', value: 0.5 }] }))),
     object_value: err(() => applyEvent(s0, juniper({ effects: [{ op: 'fact_set', target: 'x.y', value: { a: 1 } }] }))),
+    new_key_wrong_kind: err(() => applyEvent(s0, juniper({ effects: [{ op: 'stock_delta', target: 'diner.cash', value: 1 }] }))),
+    resident_place_item: err(() => applyEvent(s0, juniper({ effects: [{ op: 'stock_delta', target: 'cam_lin.parts', value: 1 }] }))),
+    place_item_ok: applyEvent(s0, juniper({ effects: [{ op: 'stock_delta', target: 'workshop.coffee', value: 2 }] })).state.stock['workshop.coffee'],
+    reserved_fact: err(() => applyEvent(s0, juniper({ effects: [{ op: 'fact_set', target: 'quest.e1', value: 'succeeded' }] }))),
+    proto_trust: err(() => applyEvent(s0, juniper({ effects: [{ op: 'trust_delta', target: 'constructor', value: 1 }] }))),
+    proto_need: err(() => applyEvent(s0, juniper({ effects: [{ op: 'need_delta', target: '__proto__.rest', value: 1 }] }))),
+    effects_not_list: err(() => applyEvent(s0, juniper({ effects: 'lots' }))),
     untouched: before === j(s0),
   };
 }
@@ -152,9 +160,139 @@ const juniper = (rest: object) => ({ source: 'juniper', kind: 'note', title: 'Ju
   };
 }
 
+// Malformed and hostile quest input is a SimError (a clean rejected row), never a TypeError.
+{
+  const q = (quest: object) => err(() => applyEvent(s0, { source: 'juniper', kind: 'quest', title: 'q', quest } as any));
+  const goal = [{ kind: 'fact', target: 'a.b', cmp: '==', value: true }];
+  out.malformed = {
+    target_not_string: q({ goal: [{ kind: 'stock', target: 5, cmp: '>=', value: 1 }], participants: ['cam_lin'], deadline_in_minutes: 60 }),
+    reward_not_list: q({ goal, participants: ['cam_lin'], deadline_in_minutes: 60, reward: 7 }),
+    penalty_object: q({ goal, participants: ['cam_lin'], deadline_in_minutes: 60, penalty: { op: 'x' } }),
+    goal_item_null: q({ goal: [null], participants: ['cam_lin'], deadline_in_minutes: 60 }),
+    quest_not_object: q('soon' as any),
+    stock_no_item: q({ goal: [{ kind: 'stock', target: 'diner', cmp: '>=', value: 1 }], participants: ['cam_lin'], deadline_in_minutes: 60 }),
+    proto_trust_goal: q({ goal: [{ kind: 'trust', target: 'constructor', cmp: '>=', value: 0 }], participants: ['cam_lin'], deadline_in_minutes: 60 }),
+    proto_need_goal: q({ goal: [{ kind: 'need', target: 'cam_lin.toString', cmp: '>=', value: 0 }], participants: ['cam_lin'], deadline_in_minutes: 60 }),
+  };
+}
+
+// Extra keys on effects and conditions are dropped: stored and logged shapes
+// match the simEvents validator exactly.
+{
+  const r = applyEvent(s0, juniper({ effects: [{ op: 'stock_delta', target: 'diner.coffee', value: 1, note: 'x', $bad: 1 }] }));
+  const q = applyEvent(s0, { source: 'juniper', kind: 'quest', title: 'q', quest: {
+    goal: [{ kind: 'fact', target: 'a.b', cmp: '==', value: true, extra: [1, 2] } as any],
+    participants: ['cam_lin'], deadline_in_minutes: 60,
+    reward: [{ op: 'trust_delta', target: 'cam_lin|orion', value: 0.1, junk: { deep: 1 } } as any] } });
+  const quest = q.state.quests[q.event.id];
+  const done = tick(applyEvent(q.state, juniper({ effects: [{ op: 'fact_set', target: 'a.b', value: true }] })).state, 5);
+  out.shapes = {
+    event_effect: Object.keys(r.event.effects[0]).sort(),
+    goal: Object.keys(quest.goal[0]).sort(),
+    reward: Object.keys(quest.reward[0]).sort(),
+    resolved_effects: done.events.filter((e) => e.kind === 'quest_resolved').flatMap((e) => e.effects.map((x) => Object.keys(x).sort().join(','))),
+  };
+}
+
+// The biggest legal quest resolves both ways; one effect more is refused.
+{
+  const many = (n: number) => Array.from({ length: n }, () => ({ op: 'need_delta', target: 'cam_lin.rest', value: 0.01 }));
+  const open = (title: string, goal: object[], deadline: number) => applyEvent(s0, { source: 'juniper', kind: 'quest', title,
+    quest: { goal, participants: ['cam_lin'], deadline_in_minutes: deadline, reward: many(MAX_EFFECTS - 1), penalty: many(MAX_EFFECTS - 1) } } as any);
+  const win = open('win', [{ kind: 'stock', target: 'diner.coffee', cmp: '>=', value: 0 }], 600);
+  const lose = open('lose', [{ kind: 'stock', target: 'diner.coffee', cmp: '>=', value: 999 }], 10);
+  const won = tick(win.state, 5);
+  const lost = tick(lose.state, 10);
+  out.max_quest = {
+    won: won.state.quests[win.event.id].status,
+    won_effects: won.events.filter((e) => e.kind === 'quest_resolved')[0]?.effects.length,
+    lost: lost.state.quests[lose.event.id].status,
+    too_many: err(() => applyEvent(s0, { source: 'juniper', kind: 'quest', title: 'x', quest: {
+      goal: [{ kind: 'fact', target: 'a.b', cmp: '==', value: true }], participants: ['cam_lin'], deadline_in_minutes: 60,
+      reward: many(MAX_EFFECTS) } } as any)),
+  };
+}
+
+// A corrupted quest in the state is abandoned with a reason; the tick carries on.
+{
+  const opened = applyEvent(s0, { source: 'juniper', kind: 'quest', title: 'Broken', quest: {
+    goal: [{ kind: 'stock', target: 'diner.coffee', cmp: '>=', value: 0 }], participants: ['cam_lin'], deadline_in_minutes: 60 } });
+  const good = applyEvent(opened.state, { source: 'juniper', kind: 'quest', title: 'Fine', quest: {
+    goal: [{ kind: 'stock', target: 'diner.coffee', cmp: '>=', value: 0 }], participants: ['mara_vale'], deadline_in_minutes: 60,
+    reward: [{ op: 'trust_delta', target: 'mara_vale|orion', value: 0.1 }] } });
+  const bad = JSON.parse(JSON.stringify(good.state));
+  bad.quests[opened.event.id].reward = [{ op: 'teleport', target: 'diner.coffee', value: 1 }];
+  bad.quests.e999 = null;
+  const r = tick(bad, 60);
+  const rejected = r.events.filter((e) => e.status === 'rejected');
+  out.corrupted = {
+    minute: r.state.minute,
+    status: r.state.quests[opened.event.id].status,
+    error: r.state.quests[opened.event.id].error,
+    null_quest_gone: !('e999' in r.state.quests),
+    rejected: rejected.map((e) => [e.kind, e.source, e.reason]),
+    good_quest: r.state.quests[good.event.id].status,
+    good_reward: r.state.trust['mara_vale|orion'],
+    later_steps_ran: tick(r.state, 1440).state.minute,
+  };
+}
+
+// Growth stays bounded: quests, facts and rumors over a long run.
+{
+  let s = s0;
+  let factErr: string | null = null;
+  let openErr: string | null = null;
+  let questsOpened = 0;
+  for (let day = 0; day < 30; day++) {
+    for (let i = 0; i < 12; i++) {
+      try {
+        s = applyEvent(s, { source: 'juniper', kind: 'quest', title: `q${day}.${i}`, quest: {
+          goal: [{ kind: 'fact', target: `goal.d${day}x${i}`, cmp: '==', value: true }], participants: ['mara_vale'],
+          deadline_in_minutes: 120 + i } }).state;
+        questsOpened += 1;
+      } catch (e) { openErr = (e as Error).message; }
+    }
+    for (let i = 0; i < 10; i++) {
+      try {
+        s = applyEvent(s, juniper({ effects: [{ op: 'fact_set', target: `note.d${day}x${i}`, value: i }] })).state;
+      } catch (e) { factErr = (e as Error).message; }
+      s = applyEvent(s, { source: 'juniper', kind: 'rumor', title: `r${day}.${i}` }).state;
+    }
+    s = tick(s, 1440).state;
+  }
+  const f = Object.keys(s.facts);
+  out.growth = {
+    quests_opened: questsOpened,
+    quests_kept: Object.keys(s.quests).length,
+    plain_facts: f.filter((k) => !/^(rumor|quest)\./.test(k)).length,
+    rumor_facts: f.filter((k) => k.startsWith('rumor.')).length,
+    quest_facts: f.filter((k) => k.startsWith('quest.')).length,
+    quest_facts_match: f.filter((k) => k.startsWith('quest.')).every((k) => k.slice(6) in s.quests),
+    fact_err: factErr,
+    open_err: openErr,
+    state_bytes: JSON.stringify(s).length,
+    limits: { MAX_FACTS, MAX_RUMORS, MAX_RESOLVED_QUESTS, MAX_OPEN_QUESTS },
+  };
+}
+
+// Only Juniper's events can be injected; the tick alone makes sim events.
+out.inject = { juniper: err(() => checkInjectSource('juniper')), sim: err(() => checkInjectSource('sim')),
+  orion: err(() => checkInjectSource('orion')) };
+
+// Schedules are hours 0..23, so work_end is always reached and the wage pays.
+{
+  const cast = JSON.parse(JSON.stringify(SIM_CAST));
+  cast.characters[0].sim.schedule.work_end = 24;
+  cast.characters[0].sim.schedule.sleep = 24;
+  out.schedule_24 = err(() => createState(1, cast));
+  const day = tick(s0, 1440);
+  out.wages = day.events.filter((e) => e.kind === 'wage').map((e) => e.title.split(' ')[0]).sort();
+}
+
 // The entity rule.
 out.entities = checkEntities(s0, ['Mara', 'mara vale', 'diner', 'Diner', 'coffee', 'workshop.parts', 'Orion',
   'juniper_feld', 'Maggie', 'blacksmith', 'Tom']);
 
 out.tick_bad_minutes = err(() => tick(s0, 7));
+out.tick_too_long = err(() => tick(s0, 1445));
 console.log(JSON.stringify(out));

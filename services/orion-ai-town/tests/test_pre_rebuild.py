@@ -115,3 +115,14 @@ def test_post_rebuild_pushes_from_upstream(town, tmp_path):
     assert run.returncode == 0, run.stderr
     assert "NOT pushing functions" in run.stderr
     assert (tmp_path / "pushes").read_text().strip() == str(town / "upstream")
+
+
+def test_seed_render_failure_leaves_no_example_seed(town, tmp_path):
+    local = town / "cards" / "town_cards.local.yaml"
+    local.write_text(local.read_text().replace("      wage: 10\n", "", 1))
+    run = _run(town, tmp_path)
+    assert run.returncode == 1
+    assert "missing wage" in run.stderr and "removed convex/sim/seed.ts" in run.stderr
+    sim = town / "upstream" / "convex" / "sim"
+    assert (sim / "core.ts").is_file()
+    assert not (sim / "seed.ts").exists() and not (sim / "seed.ts.tmp").exists()

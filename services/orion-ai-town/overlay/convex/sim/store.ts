@@ -38,6 +38,6 @@ export async function saveState(ctx: MutationCtx, docId: Id<'simState'>, state: 
 export async function logEvent(ctx: MutationCtx, worldId: Id<'worlds'>, e: AppliedEvent) {
   await ctx.db.insert('simEvents', {
     worldId, eventId: e.id, kind: e.kind, source: e.source, title: e.title, place: e.place,
-    effects: e.effects, seed: e.seed, status: e.status, reason: null, minute: e.minute,
+    effects: e.effects, seed: e.seed, status: e.status, reason: e.reason, minute: e.minute,
   });
 }

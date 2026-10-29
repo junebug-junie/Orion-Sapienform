@@ -1,8 +1,10 @@
 // Cron entry (patches/orion-sim-core-hooks.patch): advance the default
-// world's simulation by SIM_TICK_MINUTES game-minutes. Game time runs 1:1 with
-// the cron, so a game day is a wall-clock day. Paused while the town is not
-// running (stoppedByDeveloper / inactive), so the world does not drift while
-// nobody can see it.
+// world's simulation by SIM_TICK_MINUTES game-minutes every 5 wall-clock
+// minutes. The tick runs only while the world is running (embodiment's
+// heartbeat keeps it running while Orion's town body is up). Game time pauses
+// with the world and does not catch up afterwards, so after any pause game
+// hours drift from wall-clock hours: game 08:00 (breakfast) is not 08:00 on
+// the wall. `minutes` is capped at a game day (core.MAX_TICK_MINUTES).
 import { internalMutation } from '../_generated/server';
 import { v } from 'convex/values';
 import { type State, tick } from './core';

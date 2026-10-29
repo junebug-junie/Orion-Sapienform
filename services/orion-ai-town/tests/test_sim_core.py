@@ -91,8 +91,82 @@ def test_invalid_effects_are_rejected_whole(report):
     assert "unknown item" in r["unknown_item"]
     assert "unknown place bakery" in r["unknown_place"]
     assert "integer" in r["fractional_stock"]
-    assert "scalar" in r["object_value"] or "number, string or boolean" in r["object_value"]
+    assert "number, string or boolean" in r["object_value"]
+    # New stock keys only for items that owner kind already holds.
+    assert "unknown item in diner.cash" in r["new_key_wrong_kind"]
+    assert "unknown item in cam_lin.parts" in r["resident_place_item"]
+    assert r["place_item_ok"] == 2
+    assert "is reserved" in r["reserved_fact"]
+    assert "unknown pair constructor" in r["proto_trust"]
+    assert "unknown resident __proto__" in r["proto_need"]
+    assert "effects must be a list" in r["effects_not_list"]
     assert r["untouched"]
+
+
+def test_malformed_quest_input_is_a_sim_error(report):
+    m = report["malformed"]
+    for name, msg in m.items():
+        assert msg and msg.startswith("SimError: "), (name, msg)
+    assert "condition target must be a string" in m["target_not_string"]
+    assert "quest reward must be a list" in m["reward_not_list"]
+    assert "quest penalty must be a list" in m["penalty_object"]
+    assert "<owner>.<item>" in m["stock_no_item"]
+    assert "unknown target constructor" in m["proto_trust_goal"]
+    assert "unknown target cam_lin.toString" in m["proto_need_goal"]
+
+
+def test_stored_shapes_match_the_simevents_validator(report):
+    # schema.ts: simEffect = v.object({op, target, value}); a strict validator.
+    schema = (_SIM / "schema.ts").read_text(encoding="utf-8")
+    fields = re.search(r"simEffect = v\.object\(\{(.*?)\}\)", schema).group(1)
+    effect_keys = sorted(re.findall(r"(\w+):", fields))
+    sh = report["shapes"]
+    assert effect_keys == ["op", "target", "value"]
+    assert sh["event_effect"] == effect_keys and sh["reward"] == effect_keys
+    assert sh["goal"] == ["cmp", "kind", "target", "value"]
+    assert sh["resolved_effects"] == ["op,target,value"] * 2
+
+
+def test_biggest_quest_resolves_both_ways(report):
+    m = report["max_quest"]
+    assert (m["won"], m["lost"]) == ("succeeded", "failed")
+    assert m["won_effects"] == 16  # 15 reward effects + the quest.<id> fact: exactly MAX_EFFECTS
+    assert "at most 15" in m["too_many"]
+
+
+def test_a_corrupted_quest_does_not_stop_the_tick(report):
+    c = report["corrupted"]
+    assert c["minute"] == 60
+    assert (c["status"], c["error"]) == ("abandoned", "unknown effect op teleport")
+    assert c["null_quest_gone"]
+    assert c["rejected"] == [["quest_resolved", "sim", "unknown effect op teleport"], ["quest_resolved", "sim", "malformed quest"]]
+    assert c["good_quest"] == "succeeded" and c["good_reward"] == pytest.approx(0.1)
+    assert c["later_steps_ran"] == 60 + 1440
+
+
+def test_growth_stays_bounded(report):
+    g = report["growth"]
+    lim = g["limits"]
+    assert g["quests_opened"] == 300  # 30 days x 10 (12 tried, open quest limit refuses 2)
+    assert g["quests_kept"] <= lim["MAX_RESOLVED_QUESTS"] + lim["MAX_OPEN_QUESTS"]
+    assert g["plain_facts"] == lim["MAX_FACTS"]
+    assert g["rumor_facts"] == lim["MAX_RUMORS"]
+    assert g["quest_facts"] <= lim["MAX_RESOLVED_QUESTS"] and g["quest_facts_match"]
+    assert g["fact_err"].startswith("fact limit")
+    assert g["open_err"].startswith("open quest limit")
+    assert g["state_bytes"] < 50_000
+
+
+def test_only_juniper_can_be_injected(report):
+    i = report["inject"]
+    assert i["juniper"] is None
+    assert "source sim cannot be injected" in i["sim"]
+    assert "source orion cannot be injected" in i["orion"]
+
+
+def test_schedules_are_hours_0_to_23_and_every_wage_pays(report):
+    assert "bad schedule" in report["schedule_24"]
+    assert report["wages"] == ["Cam", "Mara", "Nico"]  # Sofia earns from coffee sales (wage 0)
 
 
 def test_free_text_event_is_a_rumor_and_moves_no_numbers(report):
@@ -129,8 +203,9 @@ def test_entity_rule(report):
     assert report["entities"] == ["Maggie", "blacksmith", "Tom"]
 
 
-def test_tick_takes_whole_steps(report):
+def test_tick_takes_whole_steps_up_to_a_day(report):
     assert "multiple of 5" in report["tick_bad_minutes"]
+    assert "at most 1440" in report["tick_too_long"]
 
 
 # ---- plain Python: the core stays importable by node, the seed tracks the cards ----
@@ -144,6 +219,23 @@ def test_core_imports_nothing():
 def test_committed_seed_matches_example_cards():
     cards = yaml.safe_load(gen.CARDS_EXAMPLE.read_text(encoding="utf-8"))
     assert (_SIM / "seed.ts").read_text(encoding="utf-8") == gen.render_sim_seed(cards)
+
+
+def test_seed_carries_only_fields_the_core_reads():
+    # Keyword-cathedral gate: every sim field on the cards has a reader in core.ts.
+    cards = yaml.safe_load(gen.CARDS_EXAMPLE.read_text(encoding="utf-8"))
+    core = (_SIM / "core.ts").read_text(encoding="utf-8")
+    for card in cards["characters"]:
+        sim = card.get("sim")
+        if not sim:
+            continue
+        assert set(sim) == set(gen.SIM_KEYS), card["id"]
+        for key in ("work", "schedule", "cash", "wage", "purpose_weights", "lying_rate"):
+            assert re.search(rf"\.{key}\b|`\$\{{c\.id\}}\.{key}`", core) or key == "cash", key
+        for weight in sim["purpose_weights"]:
+            assert re.search(rf"\.{weight}\b", core), weight
+    items = {i for stock in cards["sim_world"]["place_stock"].values() for i in stock}
+    assert items == {"coffee", "parts"}  # the items a template or routine moves
 
 
 def test_seed_has_residents_and_visitors():

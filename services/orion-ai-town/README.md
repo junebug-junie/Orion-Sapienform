@@ -305,12 +305,12 @@ git -C upstream diff -- convex/constants.ts convex/world.ts > patches/orion-huma
 
 ## Living world: simulation core
 
-The town now has a world that changes on its own, in plain code with no model calls. It holds places, stock (coffee at the diner, parts at the workshop, everyone's cash), each resident's needs, trust between characters, facts, and quests. Every 5 minutes a Convex cron moves it forward by 5 game-minutes (game time runs 1:1 with the clock). Design: `docs/superpowers/specs/2026-10-14-aitown-living-world-design.md` (PR #2666), sections 1–3 and 8. This is PR 2 of that design.
+The town now has a world that changes on its own, in plain code with no model calls. It holds places, stock (coffee at the diner, parts at the workshop, everyone's cash), each resident's needs, trust between characters, facts, and quests. Every 5 minutes a Convex cron moves it forward by 5 game-minutes, but only while the town world is running. Design: `docs/superpowers/specs/2026-10-14-aitown-living-world-design.md` (PR #2666), sections 1–3 and 8. This is PR 2 of that design.
 
 What one tick does:
 - Needs drift by each resident's schedule. Needs are wants: 0 means satisfied, 1 means urgent. Rest builds up during work and recovers during sleep. Social builds up when awake. Purpose rises while the resident is in an open quest and slowly falls otherwise. Money is not drifted: it follows cash (no cash means 1, 40 cash or more means 0).
 - Routines run at the top of the hour: coffee at the diner at 8, 12 and 18 (the coffee leaves stock, the cash goes to the diner's owner), and a wage at the end of each shift.
-- Random events fire from a small template table (coffee and parts deliveries, a late delivery, the workshop generator breaking and getting fixed, gossip that moves trust, small loans). Each template has a rate per game-hour and fires as a seeded Poisson arrival.
+- Random events fire from a small template table (coffee and parts deliveries, the workshop generator breaking and getting fixed, gossip that moves trust, small loans). Each template has a rate per game-hour and fires as a seeded Poisson arrival.
 - Quests resolve: a quest succeeds when its goal holds and fails once its deadline passes. Either way its reward or penalty effects apply, and a `quest.<id>` fact records the outcome.
 
 Every random draw comes from a generator whose state is part of the saved world. The same world plus the same seed gives exactly the same next world (tested: one 24-hour tick equals 288 five-minute ticks with a save in between).
@@ -328,13 +328,17 @@ Every random draw comes from a generator whose state is part of the saved world.
 
 | op | target | value | rule |
 |---|---|---|---|
-| `stock_delta` | `<place or resident>.<item>` | integer | stock never goes below 0 |
+| `stock_delta` | `<place or resident>.<item>` | integer | stock never goes below 0. A new key needs an item that owner kind already holds (places: coffee, parts; residents: cash), so `workshop.coffee` works and `diner.cash` is refused |
 | `need_delta` | `<resident>.rest` / `.social` / `.purpose` | number | clamped to 0..1 (money follows cash) |
 | `trust_delta` | `<from>\|<to>` | number | clamped to -1..1 |
-| `fact_set` | fact key, e.g. `generator.fixed` | number, string or boolean | |
-| `place_flag` | `<place>.<flag>` | number, string or boolean | |
+| `fact_set` | fact key, e.g. `generator.fixed` | number, string or boolean | `rumor.*` and `quest.*` are written by the sim only; at most 100 facts |
+| `place_flag` | `<place>.<flag>` | number, string or boolean | at most 16 flags per place |
 
-An event with an unknown op, an unknown target or a bad value is refused whole, and nothing in it applies. An event with no effects becomes a rumor fact (`rumor.<event id>`, the 20 newest are kept) and moves no numbers. Allowed sources are `sim` and `juniper`. `mirror` and `orion` arrive with PRs 4 and 5.
+An event with an unknown op, an unknown target or a bad value is refused whole, and nothing in it applies. Each effect is stored as exactly `{op, target, value}`; extra keys are dropped. An event with no effects becomes a rumor fact (`rumor.<event id>`, the 20 newest are kept) and moves no numbers. The world has sources `sim` (the tick only) and `juniper` (the only source `inject` takes). `mirror` and `orion` arrive with PRs 4 and 5.
+
+**Size limits.** The whole world is one Convex document, so it stays bounded. New keys past a limit are refused with a reason, never evicted: 100 facts, 16 flags per place, 10 open quests, 16 effects per event, 15 per quest reward or penalty (the tick adds the `quest.<id>` result fact). Only the 20 newest rumors and the 20 newest resolved quests (with their `quest.<id>` facts) are kept.
+
+**A bad quest cannot stop the tick.** If resolving a quest throws, the tick marks it `abandoned` with the reason, logs a `rejected` row, and carries on.
 
 **The entity rule.** `core.checkEntities(state, names)` returns every name that is not a place, an item or a character in the world. The scene writer (PR 3) uses it to refuse a scene that names an invented person.
 
@@ -343,10 +347,10 @@ An event with an unknown op, an unknown target or a bad value is refused whole, 
 ```bash
 npx convex run sim/state:snapshot                 # the world + the 20 newest events
 npx convex run sim/state:snapshot '{"events": 100}'
-npx convex run sim/tick:run '{"minutes": 60, "force": true}'   # advance by hand, even while the town is stopped
+npx convex run sim/tick:run '{"minutes": 60, "force": true}'   # advance by hand, even while the town is stopped (at most 1440)
 ```
 
-The cron does nothing while the town is not running (`stoppedByDeveloper` or `inactive`), so the world does not drift while nobody can see it. The first tick or event creates the world from the card seed. To reset it to the seed (the event log stays, and the game clock carries on):
+The cron does nothing while the town is not running (`stoppedByDeveloper` or `inactive`). Embodiment's heartbeat keeps the world running while Orion's town body is up. Game time pauses with the world and does not catch up afterwards, so after any pause game hours drift away from wall-clock hours: game 08:00 (breakfast) is not 08:00 on the wall. The first tick or event creates the world from the card seed. To reset it to the seed (the event log stays, and the game clock carries on):
 
 ```bash
 npx convex run sim/state:bootstrap '{"replace": true}'
@@ -360,9 +364,9 @@ npx convex run sim/events:inject '{"event": {"source": "juniper", "kind": "rumor
 npx convex run sim/events:inject '{"event": {"source": "juniper", "kind": "quest", "title": "Fix the generator", "quest": {"goal": [{"kind": "fact", "target": "generator.fixed", "cmp": "==", "value": true}], "participants": ["cam_lin", "orion"], "deadline_in_minutes": 1440, "reward": [{"op": "trust_delta", "target": "cam_lin|orion", "value": 0.2}], "penalty": [{"op": "trust_delta", "target": "cam_lin|orion", "value": -0.1}]}}}'
 ```
 
-Each call writes one `simEvents` row with `source: "juniper"`. A refused event writes a row with `status: "rejected"` and the reason, and changes nothing. An unknown source is refused without a row. Quest goals are an AND of conditions: `kind` is `stock`, `fact`, `need` or `trust`, and `cmp` is one of `>= <= > < == !=`. Participants are character ids.
+Each call writes one `simEvents` row with `source: "juniper"`. A refused event writes a row with `status: "rejected"` and the reason, and changes nothing. Any other source (including `sim`) is refused without a row. Quest goals are an AND of conditions: `kind` is `stock`, `fact`, `need` or `trust`, and `cmp` is one of `>= <= > < == !=`. Participants are character ids.
 
-**Cards to seed.** Each resident card in `cards/town_cards.yaml` has a `sim:` block: starting needs, schedule hours, home and work place, cash, wage per shift, own stock, purpose weights and lying rate. Purpose weights and lying rate pick who gossips and how often they spin a story. The top-level `sim_world:` block holds the places, their starting stock, the starting facts and the seed. Juniper and Orion have no `sim:` block. They are visitors: they are valid names, quest participants and trust targets, but the tick never drifts them. `generate_descriptions.py` renders all of this into `overlay/convex/sim/seed.ts`. The committed copy renders the redacted example cards (a test fails when it drifts). `apply_upstream_patches.sh` renders it again into `upstream/` from `town_cards.local.yaml` when that file exists. A local cards file without `sim:` blocks borrows them from the example, because they hold no personal details.
+**Cards to seed.** Each resident card in `cards/town_cards.yaml` has a `sim:` block: starting needs, schedule hours (0..23), work place, cash, wage per shift, purpose weights and lying rate. The work place decides who owns the diner (coffee money goes to them) and who fixes the workshop. Purpose weights pick who gossips (`trade_news` + `deceive`) and who asks for loans (`ask_favor`). Lying rate is how often gossip is a spun story, which can cost trust when caught. Every field is read by `core.ts`. The top-level `sim_world:` block holds the places, their starting stock, the starting facts and the seed. Juniper and Orion have no `sim:` block. They are visitors: they are valid names, quest participants and trust targets, but the tick never drifts them. `generate_descriptions.py` renders all of this into `overlay/convex/sim/seed.ts`. The committed copy renders the redacted example cards (a test fails when it drifts). `apply_upstream_patches.sh` renders it again into `upstream/` from `town_cards.local.yaml` when that file exists. A local cards file without `sim:` blocks borrows them from the example, because they hold no personal details.
 
 **Tests.** `tests/test_sim_core.py` runs the shipped `core.ts` and `seed.ts` under Node >= 22.6 with type stripping (`AITOWN_TEST_NODE` points at another node). It covers acceptance A1 (a seeded 24 game-hour run moves stock, needs and trust, and replays exactly), clamping, refused effects, rumors, quests that succeed and fail, the entity rule, and A7's Juniper half at the core. CI runs it in `.github/workflows/aitown-patch-chain.yml`.
 

@@ -11,7 +11,6 @@ export const SIM_CAST: Cast = {
       "name": "Mara Vale",
       "sim": {
         "cash": 30,
-        "home": "homes",
         "lying_rate": 0.02,
         "needs": {
           "purpose": 0.5,
@@ -21,7 +20,6 @@ export const SIM_CAST: Cast = {
         "purpose_weights": {
           "ask_favor": 0.5,
           "deceive": 0.1,
-          "persuade": 0.5,
           "trade_news": 2.0
         },
         "schedule": {
@@ -29,9 +27,6 @@ export const SIM_CAST: Cast = {
           "wake": 7,
           "work_end": 17,
           "work_start": 9
-        },
-        "stock": {
-          "maps": 3
         },
         "wage": 10,
         "work": "studio"
@@ -42,7 +37,6 @@ export const SIM_CAST: Cast = {
       "name": "Nico Sable",
       "sim": {
         "cash": 18,
-        "home": "homes",
         "lying_rate": 0.35,
         "needs": {
           "purpose": 0.4,
@@ -52,17 +46,13 @@ export const SIM_CAST: Cast = {
         "purpose_weights": {
           "ask_favor": 1.5,
           "deceive": 2.0,
-          "persuade": 2.5,
           "trade_news": 1.5
         },
         "schedule": {
-          "sleep": 24,
+          "sleep": 23,
           "wake": 9,
           "work_end": 19,
           "work_start": 11
-        },
-        "stock": {
-          "flyers": 20
         },
         "wage": 8,
         "work": "square"
@@ -73,7 +63,6 @@ export const SIM_CAST: Cast = {
       "name": "Sofia Bell",
       "sim": {
         "cash": 40,
-        "home": "homes",
         "lying_rate": 0.05,
         "needs": {
           "purpose": 0.3,
@@ -83,7 +72,6 @@ export const SIM_CAST: Cast = {
         "purpose_weights": {
           "ask_favor": 0.3,
           "deceive": 0.1,
-          "persuade": 0.8,
           "trade_news": 1.5
         },
         "schedule": {
@@ -92,7 +80,6 @@ export const SIM_CAST: Cast = {
           "work_end": 15,
           "work_start": 6
         },
-        "stock": {},
         "wage": 0,
         "work": "diner"
       }
@@ -102,7 +89,6 @@ export const SIM_CAST: Cast = {
       "name": "Cam Lin",
       "sim": {
         "cash": 6,
-        "home": "homes",
         "lying_rate": 0.2,
         "needs": {
           "purpose": 0.6,
@@ -112,17 +98,13 @@ export const SIM_CAST: Cast = {
         "purpose_weights": {
           "ask_favor": 2.0,
           "deceive": 0.8,
-          "persuade": 1.0,
           "trade_news": 0.8
         },
         "schedule": {
-          "sleep": 24,
+          "sleep": 23,
           "wake": 10,
           "work_end": 18,
           "work_start": 12
-        },
-        "stock": {
-          "parts": 1
         },
         "wage": 4,
         "work": "workshop"
@@ -139,15 +121,10 @@ export const SIM_CAST: Cast = {
       "sim": null
     }
   ],
-  "facts": {
-    "shipment.coffee_late": false
-  },
+  "facts": {},
   "place_stock": {
     "diner": {
       "coffee": 24
-    },
-    "square": {
-      "flyers": 10
     },
     "workshop": {
       "parts": 4

@@ -77,8 +77,10 @@ if [[ -d "${ROOT}/overlay" ]]; then
   # cards actually in use (town_cards.local.yaml first).
   SEED="${UPSTREAM}/convex/sim/seed.ts"
   if ! python3 "${ROOT}/scripts/generate_descriptions.py" --render-sim-seed > "${SEED}.tmp"; then
-    rm -f "${SEED}.tmp"
-    echo "sim seed: rendering from the cards failed (needs python3 + PyYAML)" >&2
+    # Do not leave the copied example seed behind: a later push would seed
+    # the live world from the redacted example instead of the real cards.
+    rm -f "${SEED}.tmp" "${SEED}"
+    echo "sim seed: rendering from the cards failed (needs python3 + PyYAML); removed convex/sim/seed.ts" >&2
     exit 1
   fi
   mv "${SEED}.tmp" "${SEED}"

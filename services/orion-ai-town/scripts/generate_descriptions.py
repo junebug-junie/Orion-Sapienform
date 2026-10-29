@@ -39,7 +39,7 @@ HUMAN_PATCH = _SERVICE / "patches" / "orion-human-juniper.patch"
 # overlay copy is rendered from the redacted example; apply_upstream_patches.sh
 # re-renders it into upstream/ from whichever cards are the source.
 OVERLAY_SIM_SEED = _SERVICE / "overlay" / "convex" / "sim" / "seed.ts"
-SIM_KEYS = ("home", "work", "schedule", "needs", "cash", "wage", "purpose_weights", "lying_rate")
+SIM_KEYS = ("work", "schedule", "needs", "cash", "wage", "purpose_weights", "lying_rate")
 # The committed human patch carries this token in place of Juniper's join
 # description; scripts/apply_upstream_patches.sh renders it from the cards.
 HUMAN_DESCRIPTION_TOKEN = "__ORION_TOWN_HUMAN_DESCRIPTION__"
@@ -93,7 +93,8 @@ def render_sim_seed(cards: dict) -> str:
             missing = [k for k in SIM_KEYS if k not in sim]
             if missing:
                 raise SystemExit(f"{card['id']}: sim block missing {', '.join(missing)}")
-            sim = {**sim, "stock": dict(sim.get("stock") or {})}
+            # Only the fields core.ts reads; anything else on the card stays out.
+            sim = {k: sim[k] for k in SIM_KEYS}
         characters.append({"id": card["id"], "name": card["name"], "sim": sim})
     cast = {
         "places": {pid: {"name": name} for pid, name in world["places"].items()},

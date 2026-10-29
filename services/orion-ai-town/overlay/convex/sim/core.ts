@@ -18,17 +18,16 @@ export type Effect = { op: EffectOp; target: string; value: Value };
 export type Cmp = '>=' | '<=' | '>' | '<' | '==' | '!=';
 export type Condition = { kind: 'stock' | 'fact' | 'need' | 'trust'; target: string; cmp: Cmp; value: Value };
 export type Schedule = { wake: number; work_start: number; work_end: number; sleep: number };
-export type PurposeWeights = { trade_news: number; persuade: number; deceive: number; ask_favor: number };
+// trade_news + deceive pick who gossips; ask_favor (plus money need) picks who asks for a loan.
+export type PurposeWeights = { trade_news: number; deceive: number; ask_favor: number };
 
 export type CharacterSim = {
   // Starting wants. Money is not listed: it follows cash (syncMoney).
   needs: { rest: number; social: number; purpose: number };
   schedule: Schedule;
-  home: string;
   work: string;
   cash: number;
   wage: number;
-  stock: Record<string, number>;
   purpose_weights: PurposeWeights;
   lying_rate: number;
 };
@@ -47,7 +46,6 @@ export type Character = {
   visitor: boolean;
   needs: Needs | null;
   schedule: Schedule | null;
-  home: string | null;
   work: string | null;
   wage: number;
   purpose_weights: PurposeWeights | null;
@@ -61,9 +59,11 @@ export type Quest = {
   deadline: number;
   reward: Effect[];
   penalty: Effect[];
-  status: 'open' | 'succeeded' | 'failed';
+  status: 'open' | 'succeeded' | 'failed' | 'abandoned';
   opened_at: number;
   resolved_at: number | null;
+  // Why the tick abandoned the quest (resolution threw), else null.
+  error: string | null;
 };
 export type State = {
   version: number;
@@ -94,7 +94,7 @@ export type EventInput = {
   effects?: Effect[];
   quest?: QuestSpec | null;
 };
-export type EventStatus = 'applied' | 'rumor' | 'quest_opened';
+export type EventStatus = 'applied' | 'rumor' | 'quest_opened' | 'rejected';
 export type AppliedEvent = {
   id: string;
   minute: number;
@@ -105,13 +105,24 @@ export type AppliedEvent = {
   effects: Effect[];
   seed: number;
   status: EventStatus;
+  reason: string | null;
 };
 
 export const SOURCES: readonly string[] = ['sim', 'juniper'];
+// Sources allowed through sim/events:inject. Only the tick makes `sim` events.
+export const INJECT_SOURCES: readonly string[] = ['juniper'];
 export const EFFECT_OPS: readonly string[] = ['stock_delta', 'need_delta', 'fact_set', 'trust_delta', 'place_flag'];
 export const STEP_MINUTES = 5;
 export const MAX_EFFECTS = 16;
 export const MAX_RUMORS = 20;
+// Bounds that keep the one state document small (Convex: 1 MB per document,
+// 1024 fields per object). Past a limit, new keys are refused, never evicted;
+// only resolved quests (newest kept) and rumors (newest kept) are pruned.
+export const MAX_FACTS = 100; // plain facts (not rumor.* / quest.*)
+export const MAX_FLAGS_PER_PLACE = 16;
+export const MAX_OPEN_QUESTS = 10;
+export const MAX_RESOLVED_QUESTS = 20;
+export const MAX_TICK_MINUTES = 24 * 60;
 // Money need follows cash: 0 at MONEY_COMFORT cash or more, 1 at no cash.
 export const MONEY_COMFORT = 40;
 export const COFFEE_PRICE = 2;
@@ -176,25 +187,27 @@ export function createState(seed: number, cast: Cast): State {
     if (sim) {
       checkNeeds(sim.needs, c.id);
       const sc = sim.schedule;
-      check([sc.wake, sc.work_start, sc.work_end, sc.sleep].every((h) => Number.isInteger(h) && h >= 0 && h <= 24)
+      // Hours 0..23 and in order, so work_end is always a reached hour (the wage pays then).
+      check(sc && [sc.wake, sc.work_start, sc.work_end, sc.sleep].every((h) => Number.isInteger(h) && h >= 0 && h <= 23)
         && sc.wake <= sc.work_start && sc.work_start < sc.work_end && sc.work_end <= sc.sleep, `${c.id}: bad schedule`);
-      check(has(s.places, sim.home) && has(s.places, sim.work), `${c.id}: unknown home/work place`);
+      check(typeof sim.work === 'string' && has(s.places, sim.work), `${c.id}: unknown work place`);
       check(isNum(sim.lying_rate) && sim.lying_rate >= 0 && sim.lying_rate <= 1, `${c.id}: lying_rate must be 0..1`);
       check(isNum(sim.wage) && sim.wage >= 0, `${c.id}: wage must be >= 0`);
       const w = sim.purpose_weights;
-      check(['trade_news', 'persuade', 'deceive', 'ask_favor'].every((k) => isNum((w as any)[k]) && (w as any)[k] >= 0),
+      check(w && ['trade_news', 'deceive', 'ask_favor'].every((k) => isNum((w as any)[k]) && (w as any)[k] >= 0),
         `${c.id}: purpose weights must be >= 0`);
     }
     s.characters[c.id] = {
       name: String(c.name), visitor: !sim,
-      needs: sim ? { money: 0, purpose: sim.needs.purpose, rest: sim.needs.rest, social: sim.needs.social } : null, schedule: sim ? { ...sim.schedule } : null,
-      home: sim ? sim.home : null, work: sim ? sim.work : null, wage: sim ? sim.wage : 0,
-      purpose_weights: sim ? { ...sim.purpose_weights } : null, lying_rate: sim ? sim.lying_rate : 0,
+      needs: sim ? { money: 0, purpose: sim.needs.purpose, rest: sim.needs.rest, social: sim.needs.social } : null,
+      schedule: sim ? { wake: sim.schedule.wake, work_start: sim.schedule.work_start, work_end: sim.schedule.work_end,
+        sleep: sim.schedule.sleep } : null,
+      work: sim ? sim.work : null, wage: sim ? sim.wage : 0,
+      purpose_weights: sim ? { trade_news: sim.purpose_weights.trade_news, deceive: sim.purpose_weights.deceive,
+        ask_favor: sim.purpose_weights.ask_favor } : null,
+      lying_rate: sim ? sim.lying_rate : 0,
     };
-    if (sim) {
-      setStock(s, `${c.id}.cash`, sim.cash);
-      for (const item of keys(sim.stock)) setStock(s, `${c.id}.${item}`, sim.stock[item]);
-    }
+    if (sim) setStock(s, `${c.id}.cash`, sim.cash);
   }
   // Directed trust from every resident toward every other character.
   for (const from of residents(s)) for (const to of keys(s.characters)) if (from !== to) s.trust[`${from}|${to}`] = 0;
@@ -212,6 +225,16 @@ export function residents(s: State): string[] {
 function itemNames(s: State): Set<string> {
   return new Set(keys(s.stock).map((k) => k.slice(k.indexOf('.') + 1)));
 }
+// Items an owner of this kind (place or resident) already holds somewhere:
+// a new stock key is allowed only for those (workshop.coffee yes, diner.cash no).
+function itemsFor(s: State, ownerIsPlace: boolean): Set<string> {
+  const out = new Set<string>();
+  for (const k of keys(s.stock)) {
+    const dot = k.indexOf('.');
+    if (has(s.places, k.slice(0, dot)) === ownerIsPlace) out.add(k.slice(dot + 1));
+  }
+  return out;
+}
 function syncMoney(s: State) {
   for (const id of residents(s)) {
     s.characters[id].needs!.money = clamp(1 - (s.stock[`${id}.cash`] ?? 0) / MONEY_COMFORT, 0, 1);
@@ -221,21 +244,27 @@ function placeOwner(s: State, place: string): string | null {
   return residents(s).find((id) => s.characters[id].work === place) ?? null;
 }
 
-// ---- effects: the closed set. validateEffect runs before anything mutates. ----
+// ---- effects: the closed set. Every effect is validated before anything mutates. ----
 
-function validateEffect(s: State, e: Effect): void {
-  check(e && typeof e === 'object', 'effect must be an object');
-  check(EFFECT_OPS.includes(e.op), `unknown effect op ${String((e as any).op)}`);
-  check(typeof e.target === 'string', 'effect target must be a string');
-  const v = e.value;
+// Validate one effect and rebuild it as exactly {op, target, value}: extra
+// keys never reach the state or the simEvents row (its validator is strict).
+function normEffect(s: State, raw: unknown, reserved: boolean): Effect {
+  check(raw !== null && typeof raw === 'object' && !Array.isArray(raw), 'effect must be an object');
+  const r = raw as Record<string, unknown>;
+  check(typeof r.op === 'string' && EFFECT_OPS.includes(r.op), `unknown effect op ${String(r.op)}`);
+  check(typeof r.target === 'string', 'effect target must be a string');
+  const v = r.value;
   check(isNum(v) || typeof v === 'string' || typeof v === 'boolean', 'effect value must be number, string or boolean');
+  const e: Effect = { op: r.op as EffectOp, target: r.target, value: v };
   if (e.op === 'stock_delta') {
     const dot = e.target.indexOf('.');
     const owner = e.target.slice(0, dot);
     const item = e.target.slice(dot + 1);
-    check(dot > 0 && (has(s.places, owner) || (has(s.characters, owner) && !s.characters[owner].visitor)),
+    const isPlace = has(s.places, owner);
+    check(dot > 0 && (isPlace || (has(s.characters, owner) && !s.characters[owner].visitor)),
       `stock_delta: unknown owner in ${e.target}`);
-    check(has(s.stock, e.target) || itemNames(s).has(item), `stock_delta: unknown item in ${e.target}`);
+    check(has(s.stock, e.target) || itemsFor(s, isPlace).has(item),
+      `stock_delta: unknown item in ${e.target} (${isPlace ? 'places' : 'residents'} hold ${[...itemsFor(s, isPlace)].join(', ')})`);
     check(isNum(v) && Number.isInteger(v) && Math.abs(v) <= 1000, 'stock_delta value must be an integer within ±1000');
   } else if (e.op === 'need_delta') {
     const [id, need] = e.target.split('.');
@@ -248,11 +277,29 @@ function validateEffect(s: State, e: Effect): void {
     check(isNum(v) && Math.abs(v) <= 2, 'trust_delta value must be a number within ±2');
   } else if (e.op === 'fact_set') {
     check(FACT_RE.test(e.target), `fact_set: bad fact key ${e.target}`);
+    check(reserved || !/^(rumor|quest)\./.test(e.target), `fact_set: ${e.target} is reserved (rumor.* and quest.* are written by the sim)`);
     check(typeof v !== 'string' || v.length <= 200, 'fact_set: string value over 200 chars');
   } else {
-    const [place, flag] = e.target.split('.');
-    check(has(s.places, place), `place_flag: unknown place ${place}`);
-    check(KEY_RE.test(flag ?? ''), `place_flag: bad flag name in ${e.target}`);
+    const parts = e.target.split('.');
+    check(parts.length === 2 && has(s.places, parts[0]), `place_flag: unknown place in ${e.target}`);
+    check(KEY_RE.test(parts[1]), `place_flag: bad flag name in ${e.target}`);
+  }
+  return e;
+}
+
+const plainFact = (k: string) => !/^(rumor|quest)\./.test(k);
+
+// Refuse new keys past the fact and flag limits (never evict real facts).
+function checkLimits(s: State, effects: Effect[]) {
+  const newFacts = new Set(effects.filter((e) => e.op === 'fact_set' && plainFact(e.target) && !has(s.facts, e.target))
+    .map((e) => e.target));
+  const facts = Object.keys(s.facts).filter(plainFact).length;
+  check(facts + newFacts.size <= MAX_FACTS, `fact limit: ${MAX_FACTS} facts already set, refusing new keys`);
+  for (const place of keys(s.places)) {
+    const flags = s.places[place].flags;
+    const added = new Set(effects.filter((e) => e.op === 'place_flag' && e.target.startsWith(`${place}.`)
+      && !has(flags, e.target.slice(place.length + 1))).map((e) => e.target));
+    check(Object.keys(flags).length + added.size <= MAX_FLAGS_PER_PLACE, `flag limit: ${place} has ${MAX_FLAGS_PER_PLACE} flags`);
   }
 }
 
@@ -273,26 +320,51 @@ function applyEffect(s: State, e: Effect): void {
 
 // ---- conditions (quest goals): AND of comparisons over the state ----
 
+const NEED_NAMES: readonly string[] = ['money', 'purpose', 'rest', 'social'];
+
+// Own-property reads only, so targets like `constructor` or `__proto__` read
+// as missing instead of reaching Object.prototype.
 export function readTarget(s: State, c: Condition): Value | undefined {
-  if (c.kind === 'stock') return s.stock[c.target] ?? 0;
+  if (c.kind === 'stock') return has(s.stock, c.target) ? s.stock[c.target] : 0;
   if (c.kind === 'fact') return has(s.facts, c.target) ? s.facts[c.target] : undefined;
-  if (c.kind === 'trust') return s.trust[c.target];
+  if (c.kind === 'trust') return has(s.trust, c.target) ? s.trust[c.target] : undefined;
   const [id, need] = c.target.split('.');
-  return s.characters[id]?.needs?.[need as NeedName];
+  if (!has(s.characters, id) || !NEED_NAMES.includes(need)) return undefined;
+  return s.characters[id].needs?.[need as NeedName];
 }
 
-function validateCondition(s: State, c: Condition): void {
-  check(c && ['stock', 'fact', 'need', 'trust'].includes(c.kind), `unknown condition kind ${String((c as any)?.kind)}`);
-  check(['>=', '<=', '>', '<', '==', '!='].includes(c.cmp), `unknown comparison ${String(c.cmp)}`);
-  check(isNum(c.value) || typeof c.value === 'string' || typeof c.value === 'boolean', 'condition value must be a scalar');
+// Validate one condition and rebuild it as exactly {kind, target, cmp, value}.
+function normCondition(s: State, raw: unknown): Condition {
+  check(raw !== null && typeof raw === 'object' && !Array.isArray(raw), 'condition must be an object');
+  const r = raw as Record<string, unknown>;
+  check(typeof r.kind === 'string' && ['stock', 'fact', 'need', 'trust'].includes(r.kind), `unknown condition kind ${String(r.kind)}`);
+  check(typeof r.cmp === 'string' && ['>=', '<=', '>', '<', '==', '!='].includes(r.cmp), `unknown comparison ${String(r.cmp)}`);
+  check(typeof r.target === 'string', 'condition target must be a string');
+  const v = r.value;
+  check(isNum(v) || typeof v === 'string' || typeof v === 'boolean', 'condition value must be a scalar');
+  const c: Condition = { kind: r.kind as Condition['kind'], target: r.target, cmp: r.cmp as Cmp, value: v };
   if (c.kind === 'fact') check(FACT_RE.test(c.target), `bad fact key ${c.target}`);
   else {
     check(isNum(c.value) || c.cmp === '==' || c.cmp === '!=', `${c.kind} conditions compare numbers`);
     if (c.kind === 'stock') {
-      const owner = c.target.split('.')[0];
-      check(has(s.places, owner) || has(s.characters, owner), `stock condition: unknown owner in ${c.target}`);
+      const dot = c.target.indexOf('.');
+      const owner = c.target.slice(0, dot);
+      check(dot > 0 && (has(s.places, owner) || has(s.characters, owner)) && KEY_RE.test(c.target.slice(dot + 1)),
+        `stock condition: target must be <owner>.<item> with a known owner, got ${c.target}`);
     } else check(readTarget(s, c) !== undefined, `${c.kind} condition: unknown target ${c.target}`);
   }
+  return c;
+}
+
+function normEffects(s: State, raw: unknown, max: number, what: string, reserved: boolean): Effect[] {
+  if (raw === undefined || raw === null) return [];
+  check(Array.isArray(raw) && raw.length <= max, `${what} must be a list of at most ${max}`);
+  return raw.map((e) => normEffect(s, e, reserved));
+}
+
+export function checkInjectSource(source: unknown): void {
+  check(typeof source === 'string' && INJECT_SOURCES.includes(source),
+    `source ${String(source)} cannot be injected (allowed: ${INJECT_SOURCES.join(', ')}; only the tick makes sim events)`);
 }
 
 export function checkCondition(s: State, c: Condition): boolean {
@@ -330,39 +402,50 @@ export function checkEntities(s: State, names: string[]): string[] {
 // ---- the ONE apply path: every event (tick template, quest result, Juniper) ----
 
 export function applyEvent(state: State, input: EventInput): { state: State; event: AppliedEvent } {
-  check(input && typeof input === 'object', 'event must be an object');
+  return applyCore(state, input, false);
+}
+
+// `reserved` lets the tick itself write quest.* facts (quest results). It is
+// the same apply path; Juniper's events always go through applyEvent.
+function applyCore(state: State, input: EventInput, reserved: boolean): { state: State; event: AppliedEvent } {
+  check(input !== null && typeof input === 'object', 'event must be an object');
   check(SOURCES.includes(input.source), `unknown source ${String(input.source)} (allowed: ${SOURCES.join(', ')})`);
   check(typeof input.kind === 'string' && KEY_RE.test(input.kind), 'kind must be a short snake_case word');
   check(typeof input.title === 'string' && input.title.trim().length > 0 && input.title.length <= 200, 'title must be 1..200 chars');
-  const effects = input.effects ?? [];
-  check(Array.isArray(effects) && effects.length <= MAX_EFFECTS, `effects must be a list of at most ${MAX_EFFECTS}`);
   const place = input.place ?? null;
   if (place !== null) check(typeof place === 'string' && has(state.places, place), `unknown place ${String(place)}`);
   const s = clone(state);
-  for (const e of effects) validateEffect(s, e);
-  const quest = input.quest ?? null;
-  if (quest) {
-    check(Array.isArray(quest.goal) && quest.goal.length >= 1 && quest.goal.length <= 8, 'quest goal needs 1..8 conditions');
-    for (const c of quest.goal) validateCondition(s, c);
-    check(Array.isArray(quest.participants) && quest.participants.length >= 1 && quest.participants.length <= 8,
-      'quest needs 1..8 participants');
-    const missing = quest.participants.filter((p) => typeof p !== 'string' || !has(s.characters, p));
-    check(missing.length === 0, `unknown quest participants (use character ids): ${missing.join(', ')}`);
-    check(isNum(quest.deadline_in_minutes) && quest.deadline_in_minutes >= STEP_MINUTES
-      && quest.deadline_in_minutes <= 14 * 1440, 'deadline_in_minutes must be 5..20160');
-    for (const e of [...(quest.reward ?? []), ...(quest.penalty ?? [])]) validateEffect(s, e);
-    check((quest.reward ?? []).length <= MAX_EFFECTS && (quest.penalty ?? []).length <= MAX_EFFECTS, 'too many quest effects');
-  }
+  const effects = normEffects(s, input.effects, MAX_EFFECTS, 'effects', reserved);
+  checkLimits(s, effects);
+  const rawQuest = input.quest ?? null;
+  let quest: Quest | null = null;
   const id = `e${s.next_event}`;
+  if (rawQuest !== null) {
+    check(typeof rawQuest === 'object' && !Array.isArray(rawQuest), 'quest must be an object');
+    check(Array.isArray(rawQuest.goal) && rawQuest.goal.length >= 1 && rawQuest.goal.length <= 8, 'quest goal needs 1..8 conditions');
+    const goal = rawQuest.goal.map((c) => normCondition(s, c));
+    check(Array.isArray(rawQuest.participants) && rawQuest.participants.length >= 1 && rawQuest.participants.length <= 8,
+      'quest needs 1..8 participants');
+    const missing = rawQuest.participants.filter((p) => typeof p !== 'string' || !has(s.characters, p));
+    check(missing.length === 0, `unknown quest participants (use character ids): ${missing.map(String).join(', ')}`);
+    check(isNum(rawQuest.deadline_in_minutes) && rawQuest.deadline_in_minutes >= STEP_MINUTES
+      && rawQuest.deadline_in_minutes <= 14 * 1440, 'deadline_in_minutes must be 5..20160');
+    // One slot stays free for the quest.<id> result fact the tick adds.
+    const reward = normEffects(s, rawQuest.reward, MAX_EFFECTS - 1, 'quest reward', false);
+    const penalty = normEffects(s, rawQuest.penalty, MAX_EFFECTS - 1, 'quest penalty', false);
+    const open = keys(s.quests).filter((q) => s.quests[q].status === 'open').length;
+    check(open < MAX_OPEN_QUESTS, `open quest limit: ${MAX_OPEN_QUESTS} quests already open`);
+    quest = {
+      id, title: input.title, goal, participants: rawQuest.participants.map(String),
+      deadline: s.minute + Math.floor(rawQuest.deadline_in_minutes), reward, penalty,
+      status: 'open', opened_at: s.minute, resolved_at: null, error: null,
+    };
+  }
   s.next_event += 1;
   for (const e of effects) applyEffect(s, e);
   let status: EventStatus = 'applied';
   if (quest) {
-    s.quests[id] = {
-      id, title: input.title, goal: clone(quest.goal), participants: [...quest.participants],
-      deadline: s.minute + Math.floor(quest.deadline_in_minutes), reward: clone(quest.reward ?? []),
-      penalty: clone(quest.penalty ?? []), status: 'open', opened_at: s.minute, resolved_at: null,
-    };
+    s.quests[id] = quest;
     status = 'quest_opened';
   } else if (effects.length === 0) {
     // Free text with no effects is a rumor: something to talk about, no numbers move.
@@ -374,7 +457,7 @@ export function applyEvent(state: State, input: EventInput): { state: State; eve
   s.version += 1;
   const event: AppliedEvent = {
     id, minute: s.minute, source: input.source as Source, kind: input.kind, title: input.title,
-    place, effects: clone(effects), seed: state.rng, status,
+    place, effects: clone(effects), seed: state.rng, status, reason: null,
   };
   return { state: s, event };
 }
@@ -403,17 +486,11 @@ function pick<T>(s: State, items: T[], weight: (t: T) => number): T | null {
 
 export const TEMPLATES: readonly Template[] = [
   {
-    kind: 'coffee_delivery', per_hour: 1 / 12,
-    build: (s) => {
-      if (!has(s.stock, 'diner.coffee')) return null;
-      if (draw(s) < 0.25) {
-        return { title: 'The coffee delivery is running late.', place: 'diner',
-          effects: [{ op: 'fact_set', target: 'shipment.coffee_late', value: true }] };
-      }
-      return { title: 'A coffee delivery arrives at the diner.', place: 'diner', effects: [
-        { op: 'stock_delta', target: 'diner.coffee', value: 8 },
-        { op: 'fact_set', target: 'shipment.coffee_late', value: false }] };
-    },
+    kind: 'coffee_delivery', per_hour: 1 / 16,
+    build: (s) => has(s.stock, 'diner.coffee')
+      ? { title: 'A coffee delivery arrives at the diner.', place: 'diner',
+        effects: [{ op: 'stock_delta', target: 'diner.coffee', value: 8 }] }
+      : null,
   },
   {
     kind: 'parts_delivery', per_hour: 1 / 10,
@@ -489,7 +566,8 @@ export const TEMPLATES: readonly Template[] = [
 // ---- the tick ----
 
 function inQuest(s: State, id: string): boolean {
-  return keys(s.quests).some((q) => s.quests[q].status === 'open' && s.quests[q].participants.includes(id));
+  return keys(s.quests).some((q) => s.quests[q]?.status === 'open' && Array.isArray(s.quests[q].participants)
+    && s.quests[q].participants.includes(id));
 }
 
 // Needs drift by schedule, one STEP_MINUTES step. Needs are wants: 0 means
@@ -539,33 +617,69 @@ function routines(s: State): EventInput[] {
   return out;
 }
 
+function questNumber(id: string): number {
+  return Number(id.slice(1)) || 0;
+}
+
+// Resolve open quests whose goal holds (succeeded) or whose deadline passed
+// (failed). A quest whose resolution throws is abandoned with the reason and
+// logged as a rejected event; the tick carries on (one bad quest must never
+// wedge the cron).
 function resolveQuests(s0: State, out: AppliedEvent[]): State {
   let s = s0;
   for (const qid of keys(s.quests)) {
     const q = s.quests[qid];
-    if (q.status !== 'open') continue;
-    const met = goalMet(s, q.goal);
-    if (!met && s.minute < q.deadline) continue;
-    const outcome = met ? 'succeeded' : 'failed';
-    const next = clone(s);
-    next.quests[qid].status = outcome;
-    next.quests[qid].resolved_at = s.minute;
-    // Validated at injection; effects clamp, so applying cannot fail later.
-    const r = applyEvent(next, {
-      source: 'sim', kind: 'quest_resolved', title: `Quest ${outcome}: ${q.title}`.slice(0, 200), place: null,
-      effects: [{ op: 'fact_set', target: `quest.${qid}`, value: outcome }, ...(met ? q.reward : q.penalty)],
-    });
-    s = r.state;
-    out.push(r.event);
+    if (q && typeof q === 'object' && q.status !== 'open') continue;
+    try {
+      check(q && typeof q === 'object' && Array.isArray(q.goal) && isNum(q.deadline), 'malformed quest');
+      const met = goalMet(s, q.goal);
+      if (!met && s.minute < q.deadline) continue;
+      const outcome = met ? 'succeeded' : 'failed';
+      const next = clone(s);
+      next.quests[qid].status = outcome;
+      next.quests[qid].resolved_at = s.minute;
+      const r = applyCore(next, {
+        source: 'sim', kind: 'quest_resolved', title: `Quest ${outcome}: ${q.title}`.slice(0, 200), place: null,
+        effects: [{ op: 'fact_set', target: `quest.${qid}`, value: outcome }, ...(met ? q.reward : q.penalty)],
+      }, true);
+      s = r.state;
+      out.push(r.event);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      s = clone(s);
+      const title = typeof q?.title === 'string' ? q.title : qid;
+      if (q && typeof q === 'object') {
+        s.quests[qid].status = 'abandoned';
+        s.quests[qid].resolved_at = s.minute;
+        s.quests[qid].error = reason.slice(0, 200);
+      } else delete s.quests[qid];
+      out.push({
+        id: '', minute: s.minute, source: 'sim', kind: 'quest_resolved', title: `Quest abandoned: ${title}`.slice(0, 200),
+        place: null, effects: [], seed: s.rng, status: 'rejected', reason: reason.slice(0, 200),
+      });
+    }
   }
+  pruneQuests(s);
   return s;
 }
 
-// Advance the world by `minutes` (a positive multiple of STEP_MINUTES).
-// tick(s, 60) equals twelve tick(s, 5) calls.
+// Keep the newest MAX_RESOLVED_QUESTS resolved quests; drop older ones and their quest.<id> facts.
+function pruneQuests(s: State) {
+  const done = keys(s.quests).filter((q) => s.quests[q].status !== 'open')
+    .sort((a, b) => ((s.quests[a].resolved_at ?? 0) - (s.quests[b].resolved_at ?? 0)) || (questNumber(a) - questNumber(b)));
+  for (const q of done.slice(0, Math.max(0, done.length - MAX_RESOLVED_QUESTS))) {
+    delete s.quests[q];
+    delete s.facts[`quest.${q}`];
+  }
+}
+
+// Advance the world by `minutes` (a positive multiple of STEP_MINUTES, at most
+// MAX_TICK_MINUTES). tick(s, 60) gives the same world and events as twelve
+// tick(s, 5) calls, except `version`, which counts calls (+1 per tick call,
+// +1 per applied event).
 export function tick(state: State, minutes: number): { state: State; events: AppliedEvent[] } {
-  check(Number.isInteger(minutes) && minutes > 0 && minutes % STEP_MINUTES === 0,
-    `minutes must be a positive multiple of ${STEP_MINUTES}`);
+  check(Number.isInteger(minutes) && minutes > 0 && minutes % STEP_MINUTES === 0 && minutes <= MAX_TICK_MINUTES,
+    `minutes must be a positive multiple of ${STEP_MINUTES}, at most ${MAX_TICK_MINUTES}`);
   let s = clone(state);
   const events: AppliedEvent[] = [];
   for (let step = 0; step < minutes / STEP_MINUTES; step++) {

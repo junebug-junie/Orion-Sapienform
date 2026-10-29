@@ -47,7 +47,11 @@ RETRY_SEC = 1.0  # after a second hold that landed elsewhere
 
 
 def gpu2_has_free_slot(pool_state: dict[str, Any], holder: str = HOLDER) -> bool:
-    """True when nothing but our own holds is live on gpu2's role, so a class-agent hold lands there."""
+    """True when gpu2's seat is loaded with two slots and nothing but our own holds is live on it,
+    so a class-agent hold lands there. A 1-slot profile or an unloaded seat never reads free."""
+    role = next((r for r in pool_state.get("roles") or [] if r.get("role") == GPU2_ROLE), {})
+    if role.get("status") != "confirmed" or (role.get("slots") or 0) < 2:
+        return False
     return not any(lease.get("role") == GPU2_ROLE and lease.get("status") in LIVE
                    and lease.get("holder") != holder for lease in pool_state.get("leases") or [])
 
@@ -63,13 +67,16 @@ async def take_second_gpu2_slot(holds: PoolHolds, pool_state, tries: int, wait_s
     and a hold RPC that dies or is cancelled mid-flight is swept on release; a grant anywhere else
     (or none) is given back at once."""
     deadline = time.monotonic() + wait_sec
+    told = False
     for _ in range(tries):
         while True:
             try:
                 if gpu2_has_free_slot(await asyncio.to_thread(pool_state)):
                     break
-            except Exception:  # noqa: BLE001 -- pool HTTP hiccup: keep waiting until the deadline
-                pass
+            except Exception as exc:  # noqa: BLE001 -- pool HTTP hiccup: keep waiting until the deadline
+                if not told:
+                    print(f"  cannot read the pool state ({exc!r}); still trying", flush=True)
+                    told = True
             if time.monotonic() >= deadline:
                 return False
             await asyncio.sleep(POLL_SEC)

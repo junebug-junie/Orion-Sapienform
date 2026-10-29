@@ -18,8 +18,9 @@ sys.modules["gpu_pool_clear_gpu2"] = clear
 _spec.loader.exec_module(clear)
 
 CHAT = {"role": "chat", "profile_name": "x", "url": "http://c:8011", "cards": ["gpu0"]}
-FREE = {"leases": [{"role": "agent-gpu2", "status": "granted", "holder": clear.HOLDER}]}
-BUSY = {"leases": [{"role": "agent-gpu2", "status": "granted", "holder": "cortex-exec"}]}
+SEAT = [{"role": "agent-gpu2", "status": "confirmed", "slots": 2}]
+FREE = {"roles": SEAT, "leases": [{"role": "agent-gpu2", "status": "granted", "holder": clear.HOLDER}]}
+BUSY = {"roles": SEAT, "leases": [{"role": "agent-gpu2", "status": "granted", "holder": "cortex-exec"}]}
 
 
 class _Transport:
@@ -53,7 +54,12 @@ def _run(monkeypatch, tmp_path, pool, states=None, extra=()):
 def test_free_slot_reads_the_pool_lease_table():
     assert clear.gpu2_has_free_slot(FREE)
     assert not clear.gpu2_has_free_slot(BUSY)
-    assert clear.gpu2_has_free_slot({"leases": [{"role": "agent-gpu2", "status": "released", "holder": "x"}]})
+    assert clear.gpu2_has_free_slot({"roles": SEAT, "leases": [{"role": "agent-gpu2", "status": "released",
+                                                                 "holder": "x"}]})
+    one_slot = [{"role": "agent-gpu2", "status": "confirmed", "slots": 1}]
+    unloaded = [{"role": "agent-gpu2", "status": "evicted", "slots": 2}]
+    assert not clear.gpu2_has_free_slot({**FREE, "roles": one_slot})
+    assert not clear.gpu2_has_free_slot({**FREE, "roles": unloaded})
 
 
 def test_holds_gpu1_and_both_gpu2_slots_then_releases(monkeypatch, tmp_path):

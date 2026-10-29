@@ -66,7 +66,10 @@ class BoxThresholds:
 def resolve_box_thresholds(params: Mapping[str, Any], stream_id: Optional[str]) -> BoxThresholds:
     """Cut-offs for one request. Invalid values are logged and ignored (the
     profile default stands), so a typo can never lower a cut-off to 0."""
-    base = _valid(params.get("box_threshold", params.get("score_threshold", _FALLBACK_DEFAULT)))
+    raw_base = params.get("box_threshold", params.get("score_threshold", _FALLBACK_DEFAULT))
+    base = _valid(raw_base)
+    if base is None:
+        logger.warning(f"[DETECT] invalid profile box threshold {raw_base!r}; using {_FALLBACK_DEFAULT}")
     default = base if base is not None else _FALLBACK_DEFAULT
     table = params.get("box_threshold_by_stream") or {}
     entry = table.get(str(stream_id)) if (stream_id and isinstance(table, Mapping)) else None

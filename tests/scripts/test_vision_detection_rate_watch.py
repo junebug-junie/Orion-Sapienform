@@ -43,13 +43,28 @@ def test_incident_is_red():
 
 def test_normal_night_reads_calm_not_unknown():
     r = _eval(NORMAL_NIGHT_10_28)
-    assert r.status == "ok" and not r.red
-    assert "quiet hours" in r.reason
+    assert r.status == "quiet" and not r.red
+    # Calm, but a night proves nothing about a blind detector: no re-arm.
+    assert not r.green
 
 
 def test_outage_reads_unknown_not_calm():
     r = _eval(OUTAGE_10_26)
-    assert r.status == "unknown" and not r.red
+    assert r.status == "unknown" and not r.red and not r.green
+    # Camera down too (camera_input red): still unknown, that rung cards it.
+    cur, base = dr.split_rows(OUTAGE_10_26)
+    assert dr.evaluate_detection_rate("walkway", cur, base, camera_fresh=False).status == "unknown"
+
+
+def test_detector_silent_while_camera_delivers_is_red():
+    cur, base = dr.split_rows(OUTAGE_10_26)
+    r = dr.evaluate_detection_rate("walkway", cur, base, camera_fresh=True)
+    assert r.status == "silent" and r.red
+
+
+def test_silent_needs_a_baseline():
+    r = dr.evaluate_detection_rate("walkway", dr.SpanCount(0, 0), [dr.SpanCount(1000, 500)], camera_fresh=True)
+    assert r.status == "unknown"
 
 
 def test_normal_day_with_blind_days_in_baseline_is_ok():
@@ -63,11 +78,23 @@ def test_thin_baseline_is_unknown():
     assert _eval(rows).status == "unknown"
 
 
-def test_ratio_boundary():
+def test_ratio_and_rearm_boundaries():
     cfg = dr.DetectionRateConfig()
-    base = [dr.SpanCount(1000, 800)] * 3  # median 0.8 -> red under 0.2
-    assert dr.evaluate_detection_rate("w", dr.SpanCount(1000, 200), base, cfg).status == "ok"
-    assert dr.evaluate_detection_rate("w", dr.SpanCount(1000, 199), base, cfg).status == "collapsed"
+    base = [dr.SpanCount(1000, 800)] * 3  # median 0.8 -> red under 0.2, green from 0.4
+
+    def ev(det):
+        return dr.evaluate_detection_rate("w", dr.SpanCount(1000, det), base, cfg)
+
+    assert ev(199).status == "collapsed"
+    assert ev(200).status == "low" and not ev(200).green and not ev(200).red
+    assert ev(399).status == "low"
+    assert ev(400).status == "ok" and ev(400).green
+
+
+def test_baseline_days_are_exact_seconds_not_calendar_days():
+    # A calendar-day interval follows the session time zone across DST.
+    assert "days =>" not in dr.DETECTION_RATE_SQL
+    assert "d * 86400" in dr.DETECTION_RATE_SQL
 
 
 def test_sql_is_bounded_and_parameterised():
@@ -96,10 +123,11 @@ def test_ladder_report_red_key_and_warning_severity():
     assert {x["rung"] for x in d} == {"detection_rate:walkway", "detection_rate:cam0"}
 
 
-def test_unknown_is_neither_red_nor_green():
-    rep = _report(("walkway", OUTAGE_10_26))
-    assert not rep.red
-    assert "rung:detection_rate:walkway" not in rep.green_keys()
+def test_unknown_and_quiet_are_neither_red_nor_green():
+    for rows in (OUTAGE_10_26, NORMAL_NIGHT_10_28):
+        rep = _report(("walkway", rows))
+        assert not rep.red
+        assert "rung:detection_rate:walkway" not in rep.green_keys()
 
 
 def test_severity_stays_critical_when_a_ladder_rung_is_also_red():

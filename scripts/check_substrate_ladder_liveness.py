@@ -127,10 +127,15 @@ def read_freshness(conn, lookback_sec: float) -> tuple[dict[str, Optional[dateti
     return newest, motif_counts, errors
 
 
-def read_detection_rates(conn, now: datetime) -> tuple[list[dr.DetectionRateResult], list[str]]:
+def read_detection_rates(
+    conn, now: datetime, camera_fresh: Optional[dict[str, bool]] = None
+) -> tuple[list[dr.DetectionRateResult], list[str]]:
     """Blind-detector watch: one bounded query per 24/7 camera (8 index range
     scans of vision_scene_inventory). "unknown" goes to cannot_check: absence
-    is never calm, and never re-arms a delivered card."""
+    is never calm, and never re-arms a delivered card. ``camera_fresh``: the
+    camera_input rung per stream, so "embeddings arrive, detections do not"
+    can be told apart from "the camera is down"."""
+    camera_fresh = camera_fresh or {}
     results: list[dr.DetectionRateResult] = []
     notes: list[str] = []
     with conn.cursor() as cur:
@@ -142,7 +147,7 @@ def read_detection_rates(conn, now: datetime) -> tuple[list[dr.DetectionRateResu
             except Exception as exc:  # noqa: BLE001 - one bad stream must not hide the rest
                 notes.append(f"detection_rate:{stream}: {exc.__class__.__name__}: {str(exc).strip()}")
                 continue
-            r = dr.evaluate_detection_rate(stream, current, baseline)
+            r = dr.evaluate_detection_rate(stream, current, baseline, camera_fresh=camera_fresh.get(stream))
             if r.status == "unknown":
                 notes.append(r.summary())
             results.append(r)
@@ -543,7 +548,11 @@ def build_report(args) -> ll.LadderReport:
                 newest, motifs, errors = read_freshness(conn, args.lookback_hours * 3600)
                 report.rungs = ll.evaluate_ladder(newest, now, consolidation_motif_counts=motifs)
                 report.cannot_check += errors
-                rates, rate_notes = read_detection_rates(conn, now)
+                camera_fresh = {
+                    r.rung.split(":", 1)[1]: not r.red
+                    for r in report.rungs if r.rung.startswith("camera_input:")
+                }
+                rates, rate_notes = read_detection_rates(conn, now, camera_fresh)
                 report.detection_rates = rates
                 report.cannot_check += rate_notes
                 if not args.skip_migrations:
@@ -670,7 +679,7 @@ def print_human(report: ll.LadderReport, verbose: bool = False) -> None:
             print(f"{mark}{r.summary()}")
     for d in report.detection_rates:
         if d.status != "unknown":  # unknown is printed under CANNOT CHECK
-            print(f"{'RED ' if d.red else 'ok  '}{d.summary()}")
+            print(f"{'RED ' if d.red else ('ok  ' if d.green else 'note')}{d.summary()}")
     counts: dict[str, int] = {}
     for s in report.skew:
         counts[s.status] = counts.get(s.status, 0) + 1

@@ -8,7 +8,10 @@ to a grey hour, or re-run the detector on them. This keeps that evidence.
 
 Each tick (``VISION_HOURLY_FRAMES_INTERVAL_SEC``), for every configured
 stream: if this UTC hour has no sample yet, copy the newest frame of this
-hour from the shared frames directory (untouched bytes, full resolution) to
+hour that is at least ``min_age_sec`` old from the shared frames directory
+(untouched bytes, full resolution). With a 60 s tick that is in practice a
+frame from HH:00-HH:01 (the doorbell's: its first event of the hour). The
+copy goes to
 
     <VISION_HOURLY_FRAMES_DIR>/<YYYY-MM-DD>/<stream>_<HH>Z.jpg
 
@@ -27,7 +30,8 @@ and append one JSON line to ``<YYYY-MM-DD>/index.jsonl``:
 
 The doorbell has frames only during a Ring event, so it gets a sample only in
 hours with an event. Pruning: this module owns only ``YYYY-MM-DD`` directories
-under its own root; a day older than ``retention_days`` is removed whole.
+under its own root; a day older than ``retention_days`` is removed whole (so
+14 keeps today plus the 14 days before it).
 """
 
 from __future__ import annotations
@@ -144,7 +148,11 @@ def _save(src: str, dest: Path, stream: str, ms: int) -> Dict[str, Any]:
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".jpg.tmp")
-    shutil.copyfile(src, tmp)
+    try:
+        shutil.copyfile(src, tmp)
+    except OSError:
+        tmp.unlink(missing_ok=True)  # e.g. ENOSPC partway: no partial file left behind
+        raise
     try:
         with Image.open(tmp) as im:
             w, h = im.size

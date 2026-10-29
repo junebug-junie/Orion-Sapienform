@@ -106,6 +106,8 @@ def main(argv=None) -> int:
                 series = Series(cur.fetchall())
             per_day = defaultdict(lambda: defaultdict(int))
             red_hours = defaultdict(set)
+            cards = defaultdict(int)
+            carded = False  # same debounce as the ladder: card on red, re-arm only on green
             t = start
             while t < end:
                 r = evaluate_at(series, stream, t, cfg)
@@ -113,9 +115,15 @@ def main(argv=None) -> int:
                 per_day[day][r.status] += 1
                 if r.red:
                     red_hours[day].add(t.hour)
+                    if not carded:
+                        cards[day] += 1
+                        carded = True
+                elif r.green:
+                    carded = False
                 t += timedelta(minutes=args.tick_min)
             out[stream] = {
-                d: {**dict(c), "red_utc_hours": sorted(red_hours[d])} for d, c in sorted(per_day.items())
+                d: {**dict(c), "cards": cards[d], "red_utc_hours": sorted(red_hours[d])}
+                for d, c in sorted(per_day.items())
             }
     finally:
         conn.close()
@@ -124,12 +132,14 @@ def main(argv=None) -> int:
         print(json.dumps(out, indent=2))
         return 0
     print(f"span={cfg.span} baseline_days={cfg.baseline_days} floor={cfg.floor} ratio={cfg.ratio} "
+          f"rearm_ratio={cfg.rearm_ratio} "
           f"min_current_windows={cfg.min_current_windows} tick={args.tick_min}m")
     for stream, days in out.items():
         print(f"== {stream}")
         for d, c in days.items():
-            print(f"{d}  collapsed={c.get('collapsed', 0):3d}  ok={c.get('ok', 0):3d}  "
-                  f"unknown={c.get('unknown', 0):3d}  red UTC hours={c['red_utc_hours']}")
+            print(f"{d}  cards={c['cards']}  red={c.get('collapsed', 0):3d}  ok={c.get('ok', 0):3d}  "
+                  f"quiet={c.get('quiet', 0):3d}  low={c.get('low', 0):3d}  unknown={c.get('unknown', 0):3d}  "
+                  f"red UTC hours={c['red_utc_hours']}")
     return 0
 
 

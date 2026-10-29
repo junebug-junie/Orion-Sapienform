@@ -8,7 +8,9 @@ motor chat and curiosity use, via Hub), and checkpoints the turn's final text as
     python3 services/orion-durable-runs/scripts/harness_echo_smoke.py            # submit + wait
     python3 services/orion-durable-runs/scripts/harness_echo_smoke.py --print    # request JSON only
 
-Exit 0 only when the run completed AND the step text carries the expected marker. The turn's
+Exit 0 only when the run completed AND the step text carries the expected marker. Exit 1: the smoke
+ran and FAILED. Exit 2: the submit was refused or durable-runs was unreachable. Exit 3: still running
+when polling gave up. The turn's
 correlation id is printed with the query that finds it in ``cockpit_turn_sighting``.
 
 Stdlib only (no ``orion`` import), so it runs with the host's plain ``python3``.
@@ -93,13 +95,22 @@ def main(argv: list[str] | None = None) -> int:
     except urllib.error.HTTPError as exc:
         print(f"submit refused: HTTP {exc.code} {exc.read().decode()[:300]}", file=sys.stderr)
         return 2
+    except (urllib.error.URLError, OSError) as exc:
+        print(f"submit failed: cannot reach {base}: {exc}", file=sys.stderr)
+        return 2
     run_id = request["run_id"]
     print(f"submitted {run_id}: {receipt}")
     deadline = time.monotonic() + args.wait_sec
     last = None
     status: dict = {}
     while time.monotonic() < deadline:
-        status = _http("GET", f"{base}/runs/{run_id}")
+        try:
+            status = _http("GET", f"{base}/runs/{run_id}")
+        except (urllib.error.URLError, OSError) as exc:
+            # durable-runs restarting mid-smoke is not a smoke failure: the run resumes; keep polling.
+            print(f"  poll error (will retry): {exc}")
+            time.sleep(10)
+            continue
         now_status = (status.get("status"), tuple(status.get("next") or ()), status.get("attempt"))
         if now_status != last:
             print(f"  status={now_status[0]} next={list(now_status[1])} attempt={now_status[2]}"

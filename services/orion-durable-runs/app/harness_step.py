@@ -18,6 +18,19 @@ written once:
 No new channel and no Hub change: the request is the same ``CuriosityTurnRequestV1`` self_sense_eval
 sends (explicit ``session_id``, its own ``source_tag``), carrying the run's GPU pool hold, so Hub
 fences the hold and the governor dispatches the turn exactly as it does a self_sense_eval question.
+
+HARD CONSTRAINTS of the Hub path today (read before building a workflow on this seam):
+
+* **Lookup gate.** Hub's ``_generate`` defaults ``require_lookup=True`` and ``_turn_result_for``
+  never overrides it: a turn with fewer than ``MIN_HARNESS_STEPS`` (3) harness stream steps comes
+  back ``no_lookup`` -- a step failure here, retried until the budget is spent. A pure writing step
+  (no tool use) will therefore FAIL on this seam. Before such a step uses it, add an optional
+  ``require_lookup`` to ``CuriosityTurnRequestV1`` and pass it through Hub (consumer-first: Hub
+  deploys before any runner sends it).
+* **One claude session per (run, source_tag).** Hub sets ``resume_key=f"{run_id}:{source_tag}"``,
+  so a retry resumes the failed attempt's session (intended), and two different steps of one run
+  with the same ``source_tag`` share one resumed session too. A multi-step workflow that wants
+  separate sessions per step must put the step key in its ``source_tag``.
 """
 
 from __future__ import annotations

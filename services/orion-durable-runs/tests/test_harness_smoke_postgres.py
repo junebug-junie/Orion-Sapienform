@@ -121,3 +121,48 @@ def test_a_turn_that_never_answers_fails_the_run_with_its_error_and_names_the_tu
         assert not status["harness_steps"]
         await rt.close()
     asyncio.run(with_database(scenario))
+
+
+def test_a_worker_that_dies_mid_step_has_its_turn_cancelled_by_the_checkpoint_derived_id():
+    """The real recovery path: a driver dies while the step's turn is running in Hub. The next driver
+    (``_recover``) must cancel exactly that turn's id -- re-derived from the checkpoint, since the
+    dead worker's memory is gone -- then replay the step under a new id."""
+    async def scenario(pool, saver, store):
+        gpu = await InProcessPool().boot()
+        block = asyncio.Event()
+        dead = runtime(pool, saver, store, gpu=gpu)
+        dead_calls = []
+
+        async def hanging(req):
+            dead_calls.append(req)
+            await block.wait()
+            return CuriosityTurnResultV1(run_id=req.run_id, correlation_id=req.correlation_id, text=REPLY)
+
+        dead.runner._run_turn = hanging
+        req = smoke_request("harness-echo-smoke-pg-004")
+        await dead.submit(req)
+        driver = asyncio.create_task(dead._drive(await store.get_run(req.run_id)))
+        for _ in range(300):
+            if dead_calls:
+                break
+            await asyncio.sleep(0.01)
+        old_turn = dead_calls[0].correlation_id
+
+        async def crashed(*args, **kwargs):   # a crash: no graceful cancel reaches Hub
+            return None
+
+        dead._cancel_harness = crashed
+        driver.cancel()
+        await asyncio.gather(driver, return_exceptions=True)
+        block.set()
+
+        alive = runtime(pool, saver, store, gpu=gpu)
+        calls = with_turn(alive, [REPLY])
+        row = await drive_until_terminal(alive, store, req.run_id)
+        assert row["terminal"] == "completed"
+        assert old_turn in alive.runner.cancels()
+        [replay] = calls
+        assert replay.correlation_id != old_turn
+        assert (await alive.status(req.run_id))["harness_steps"]["echo"]["turn_correlation_id"] == replay.correlation_id
+        await alive.close()
+    asyncio.run(with_database(scenario))

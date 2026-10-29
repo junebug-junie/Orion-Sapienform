@@ -328,8 +328,8 @@ planned `reminiscence.episode` hops sit on.
 - **Transport: nothing new.** The step sends the existing `CuriosityTurnRequestV1` on
   `orion:curiosity:turn:request` through `Runner._run_turn`, the RPC curiosity.investigate and
   self_sense_eval already use. Hub runs it with `execute_unified_turn` (`no_write`) under the run's
-  GPU pool hold; Hub refuses a stale hold before the turn starts, and the governor dispatches it on
-  the same lane, through the same turn lock, as a self_sense_eval question. Explicit `session_id` and `source_tag`, so a step never
+  GPU pool hold; Hub refuses a stale hold before the turn starts, and the governor dispatches it
+  exactly as it dispatches a self_sense_eval question (a held turn skips Hub's own `_run_lock`). Explicit `session_id` and `source_tag`, so a step never
   borrows curiosity's investigation session.
 - **Result:** `run_harness_step` returns `{step_key, text, final_len, turn_correlation_id, debug
   (bounded), harness_elapsed_sec, harness_started_at, harness_finished_at}`; the graph stores it at
@@ -343,9 +343,13 @@ planned `reminiscence.episode` hops sit on.
   (`detail.turn_correlation_id`). A step never completes with `final_len=0`.
 - **Resume:** a checkpointed step is never re-run. A worker that dies mid-step: recovery cancels the
   pending step's turn by its checkpoint-derived id, then replays under the same hold.
-- **Hub's lookup gate applies:** Hub's `_turn_result_for` asks for at least `MIN_HARNESS_STEPS` (3)
-  harness stream steps, so a prompt that uses no tool can come back `no_lookup` (a step failure). The
-  smoke's prompt runs one Bash command for that reason.
+- **Hub's lookup gate applies (hard constraint):** Hub's `_generate` requires at least
+  `MIN_HARNESS_STEPS` (3) harness stream steps by default, and `_turn_result_for` does not override
+  it. A step that uses no tool comes back `no_lookup` (a step failure) on every attempt. The smoke's
+  prompt runs one Bash command for that reason. A pure writing step needs an optional
+  `require_lookup` on `CuriosityTurnRequestV1` first (not built).
+- **Session:** Hub resumes one claude session per `(run_id, source_tag)`. A retry continues the
+  failed attempt's session; steps that need separate sessions need distinct `source_tag`s.
 
 **Smoke `harness.echo_smoke`** (`app/harness_smoke_graph.py`, contract
 `orion/schemas/harness_step_run.py`): `resource_request -> resource_wait -> harness_step -> finish`,
@@ -360,7 +364,8 @@ It POSTs the run to `http://localhost:8124/runs`, polls `GET /runs/<id>` (which 
 `harness_steps`, `error`, `attempt`, `retry_at`, `harness_turn_meta` for this workflow), prints PASS
 only when the run completed and the step text carries `harness echo smoke ok`, and prints the
 `cockpit_turn_sighting` query for the turn. `--print` shows the request without submitting it.
-Finish detail: `line=harness_smoke`, `turn_correlation_id`, `steps.<key>` (text capped at 2000
+Exit codes: 0 PASS, 1 FAIL, 2 submit refused or unreachable, 3 still running when polling gave up.
+Brief `timeout_sec` must be 60..3600 s. Finish detail: `line=harness_smoke`, `turn_correlation_id`, `steps.<key>` (text capped at 2000
 chars, `text_truncated`).
 
 **Deploy order:** `harness.echo_smoke` is an additive `DurableWorkflowV1` value on

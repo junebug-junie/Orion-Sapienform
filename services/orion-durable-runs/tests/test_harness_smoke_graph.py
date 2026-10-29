@@ -280,3 +280,46 @@ def test_the_trigger_script_verdict_never_passes_an_empty_or_failed_run():
     assert script.verdict({"status": "failed", "error": "harness_step_failed:echo:timeout"})[0] is False
     assert script.verdict({"status": "completed", "harness_steps": {"echo": {"text": ""}}})[0] is False
     assert script.verdict({"status": "completed", "harness_steps": {"echo": {"text": "hello"}}})[0] is False
+
+
+def test_a_pool_take_back_replays_the_step_without_spending_an_attempt():
+    from app.admitted_graph import HoldLost
+
+    async def scenario():
+        world, saver = World(), InMemorySaver()
+        world.grant()
+        real_execute = world.execute
+        taken = []
+
+        async def take_back_once(state, node):
+            if not taken:
+                taken.append(state.get("step_correlation_id"))
+                world.granted = False
+                raise HoldLost("gpu_hold_lost:recalled")
+            return await real_execute(state, node)
+
+        world.execute = take_back_once  # type: ignore[method-assign]
+        first = await asyncio.wait_for(world.graph(saver).ainvoke(initial(), CFG), 2)
+        assert first["status"] == "waiting_resource" and first["attempt"] == 0 and first["hold_takebacks"] == 1
+        world.grant()
+        done = await asyncio.wait_for(world.graph(saver).ainvoke(Command(resume={}), CFG), 2)
+        assert done["status"] == "completed" and done["steps"]["echo"]["attempts"] == 1
+        assert done["steps"]["echo"]["turn_correlation_id"] != taken[0]
+    asyncio.run(scenario())
+
+
+def test_a_passed_deadline_fails_the_run_and_releases_the_hold():
+    from app.admitted_graph import WorkflowDeadline
+
+    async def scenario():
+        world, saver = World(), InMemorySaver()
+        world.grant()
+
+        async def past_deadline(state, node):
+            raise WorkflowDeadline("workflow_deadline")
+
+        world.execute = past_deadline  # type: ignore[method-assign]
+        done = await asyncio.wait_for(world.graph(saver).ainvoke(initial(), CFG), 2)
+        assert done["status"] == "failed" and done["last_error"] == "workflow_deadline"
+        assert world.releases and world.releases[0] == "workflow_deadline" and world.turns == []
+    asyncio.run(scenario())

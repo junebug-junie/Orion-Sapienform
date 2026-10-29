@@ -43,5 +43,7 @@ class HarnessEchoSmokeBriefV1(BaseModel):
 
     smoke: Literal["harness.echo_smoke"]
     prompt: str = Field(min_length=1, max_length=2000)
-    # The step's whole budget (the attempt timer and Hub's turn limit derive from it).
-    timeout_sec: float = Field(gt=0.0, le=3600.0)
+    # The step's whole budget (the attempt timer and Hub's turn limit derive from it). At least 60 s:
+    # Hub is told this minus a 30 s reply grace, so a smaller budget would send a ~1 s turn that can
+    # only fail.
+    timeout_sec: float = Field(ge=60.0, le=3600.0)

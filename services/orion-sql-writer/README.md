@@ -664,6 +664,12 @@ the individuals tick, after answers apply, while `PERSON_RECORD_ENABLED` (true):
    different people. No confirmed picture, no picture. Every pass also
    corrects the pictures of questions already open.
 
+"Same person" (2026-10-29): names match exactly, so a first name and a full
+name are two people until Juniper joins them in the Hub People panel
+(`person.merged_into`, `manual_migration_person_merge_v1.sql`). The planner then
+resolves the joined name to the person kept and moves its clusters; a joined
+person is never asked about. Nothing is joined automatically.
+
 Needs `manual_migration_person_record_v1.sql`; without it the step reports
 `person_record: migration_missing`. Dry run on live data:
 `orion/person_model/evals/run_person_record_backfill_eval.py --live <dsn>`.

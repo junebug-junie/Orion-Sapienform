@@ -4,6 +4,8 @@
   // One card per person from GET /api/people (scripts/people_routes.py): picture,
   // days seen, what Juniper said about them, the open question about them.
   // Juniper can add what she knows, remove a fact, or say a name is not a person.
+  // "Same person as..." (2026-10-29) joins two names of one person (a first name
+  // and a full name, a nickname); the joined name shows as "Also called".
   //
   // Everything is rendered with textContent / attributes, never innerHTML:
   // names and facts come from the database.
@@ -39,7 +41,7 @@
     return String(f.label || f.category || "") + ": " + String(f.value || "");
   }
 
-  function renderPerson(doc, p, categories, onActionRaw) {
+  function renderPerson(doc, p, categories, onActionRaw, people) {
     const active = p.status === "active";
     const buttons = [];
     // Every button in the card is locked while a request is in flight: a double
@@ -64,6 +66,19 @@
     const title = el(doc, "div", "min-w-0");
     title.appendChild(el(doc, "div", "text-sm font-semibold text-gray-100", p.name));
     title.appendChild(el(doc, "div", "text-[11px] text-gray-400", active ? seenLine(p) : "Not a person (Orion will not ask about this name)"));
+    // "Also called": each joined name, with Undo (it becomes its own person again).
+    (p.also_called || []).forEach(function (a) {
+      const line = el(doc, "div", "text-[11px] text-gray-400 flex items-center gap-2");
+      line.appendChild(el(doc, "span", "", "Also called " + String(a.name || "")));
+      const undo = el(doc, "button", "text-[11px] text-gray-400 underline hover:text-gray-200", "Undo");
+      undo.setAttribute("type", "button");
+      undo.setAttribute("data-person-action", "split");
+      undo.setAttribute("aria-label", "Undo: " + String(a.name || "") + " is not the same person as " + String(p.name || ""));
+      buttons.push(undo);
+      undo.addEventListener("click", function () { onAction(a.person_id, "same-as", { into: null }); });
+      line.appendChild(undo);
+      title.appendChild(line);
+    });
     head.appendChild(title);
     card.appendChild(head);
 
@@ -115,6 +130,33 @@
       row.appendChild(input);
       row.appendChild(save);
     }
+    let sameRow = null;
+    const others = (people || []).filter(function (o) { return o.person_id !== p.person_id && o.status === "active"; });
+    if (active && p.role !== "interlocutor" && others.length) {
+      sameRow = el(doc, "div", "flex flex-wrap items-center gap-2");
+      const sameSelect = el(doc, "select", "bg-gray-900 text-gray-100 text-xs rounded px-1 py-1 border border-gray-700");
+      sameSelect.setAttribute("aria-label", "Same person as");
+      sameSelect.setAttribute("data-person-field", "same-as");
+      const none = el(doc, "option", "", "Same person as... (joins " + String(p.name || "this name") + " into them)");
+      none.setAttribute("value", "");
+      sameSelect.appendChild(none);
+      others.forEach(function (o) {
+        const opt = el(doc, "option", "", o.name);
+        opt.setAttribute("value", o.person_id);
+        sameSelect.appendChild(opt);
+      });
+      const join = el(doc, "button", "text-[11px] text-gray-300 hover:text-white border border-gray-700 rounded px-2 py-1", "Join");
+      join.setAttribute("type", "button");
+      join.setAttribute("data-person-action", "same-as");
+      buttons.push(join);
+      join.addEventListener("click", function () {
+        if (!sameSelect.value) return;
+        // The other card is kept: this name becomes "also called" there.
+        onAction(p.person_id, "same-as", { into: sameSelect.value });
+      });
+      sameRow.appendChild(sameSelect);
+      sameRow.appendChild(join);
+    }
     const toggle = el(doc, "button", "text-[11px] text-gray-400 hover:text-gray-200 border border-gray-700 rounded px-2 py-1",
       active ? "Not a person" : "This is a person");
     toggle.setAttribute("type", "button");
@@ -125,6 +167,7 @@
     });
     row.appendChild(toggle);
     card.appendChild(row);
+    if (sameRow) card.appendChild(sameRow);
     return card;
   }
 
@@ -133,6 +176,7 @@
     if (action === "add-fact") return { url: base + "/facts", body: { category: data.category, value: String(data.value || "").trim() } };
     if (action === "remove-fact") return { url: base + "/facts/" + encodeURIComponent(data.fact_id) + "/remove", body: {} };
     if (action === "status") return { url: base + "/status", body: { status: data.status } };
+    if (action === "same-as") return { url: base + "/same-as", body: { into: data.into || null } };
     return null;
   }
 
@@ -158,7 +202,7 @@
         status.textContent = statusLine(body.people);
         while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
         (body.people || []).forEach(function (p) {
-          listEl.appendChild(renderPerson(doc, p, body.categories, onAction));
+          listEl.appendChild(renderPerson(doc, p, body.categories, onAction, body.people));
         });
       } catch (_e) {
         status.textContent = "Could not load the people Orion knows.";

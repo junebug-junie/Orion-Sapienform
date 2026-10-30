@@ -61,7 +61,7 @@ from app.pool_hold import (
     hold_placement, ref_dict, refusal_is_terminal,
 )
 from app.run_acts import RunActEmitter
-from app.run_bids import RunBidder
+from app.run_bids import HOLD_EVENT, RELEASE_EVENT, RunBidder
 from app.orion_day_graph import (
     OrionDayDeps, build_orion_day_graph, finish_detail as orion_day_finish_detail, slim_brief as orion_day_slim_brief,
 )
@@ -172,9 +172,11 @@ class AdmissionRuntime:
             now=self.now)
         # Body economy C3a (SHADOW): want-family runs bid at submit, open at first grant, release at
         # terminal. Logged to want_ledger, never obeyed: admission below is unchanged.
+        # Patch D: curiosity investigate's bid BINDS (``_economy_gate`` in ``register``).
         self.bids = RunBidder(
             enabled=bool(getattr(settings, "physiology_shadow_bids_enabled", True)),
-            market_getter=market_getter or (lambda: None))
+            market_getter=market_getter or (lambda: None),
+            binding_enabled=str(getattr(settings, "physiology_bid_curiosity_investigate", "shadow")).strip().lower() == "on")
         if settings.lease_heartbeat_sec * 2 > self.holds.hold_ttl_sec:
             # Two missed beats must still land inside the pool's TTL, or a slow bus expires a
             # healthy run's hold mid-turn.
@@ -415,6 +417,11 @@ class AdmissionRuntime:
         admission = row["request"]["admission"]
         hold = dict(state.get("hold") or {})
         seq = int(state.get("hold_seq") or 0)
+        if seq == 0 and not hold.get("request_id"):
+            # Never asked the pool yet: a binding family's run asks the body economy first.
+            held = await self._economy_gate(state, row["request"])
+            if held is not None:
+                return held
         if not hold.get("request_id"):
             seq += 1
         for _ in range(HOLD_SEQ_SKIP_MAX):
@@ -453,6 +460,36 @@ class AdmissionRuntime:
                 event_id=f"waiting:{reply.lease_id}")
         return {"status": "waiting_resource", "hold": {"request_id": request_id, "lease_id": reply.lease_id},
                 "hold_seq": seq}
+
+    async def _economy_gate(self, state, request: dict) -> dict | None:
+        """Body economy Patch D: the run's binding bid. None -> ask the pool now (funded, a capacity
+        deferral worth its price -- the pool's queue is the queue --, no market answer, the window's
+        end, or not a binding family). Otherwise the run is HELD: ``waiting_resource`` with no pool
+        request, ``hold.retry_at`` = the next bid (``_hold_ready`` wakes it then, and
+        ``resource_request`` bids again). ``hold_seq`` stays 0, so only a run that never asked the pool
+        is ever gated. Each verdict is a run event carrying the market's own reason."""
+        bids = getattr(self, "bids", None)
+        if bids is None:
+            return None
+        verdict = await bids.bind(request, self.now())
+        if verdict is None:
+            return None
+        run_id = state["run_id"]
+        detail = {"verdict": verdict.why, **verdict.detail}
+        try:
+            if verdict.admit:
+                await self.store.record_event(run_id, RELEASE_EVENT, detail,
+                                              event_id=f"economy_admitted:{run_id}:{verdict.detail.get('decision_id') or verdict.why}")
+            else:
+                detail["retry_at"] = verdict.retry_at.isoformat()
+                await self.store.record_event(run_id, HOLD_EVENT, detail,
+                                              event_id=f"economy_held:{run_id}:{verdict.detail.get('decision_id') or detail['retry_at']}")
+        except Exception:  # noqa: BLE001 -- the event is evidence, never a reason to change the verdict
+            logger.warning("durable_economy_event_failed run=%s verdict=%s", run_id, verdict.why, exc_info=True)
+        if verdict.admit:
+            return None
+        return {"status": "waiting_resource", "hold_seq": 0,
+                "hold": {"retry_at": verdict.retry_at.isoformat(), "economy": verdict.why}}
 
     async def _pool_refused(self, state, admission: dict, hold: dict, request_id: str, seq: int,
                             pool_status: str, reason: str) -> dict:

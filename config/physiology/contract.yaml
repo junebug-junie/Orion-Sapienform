@@ -41,6 +41,9 @@ protected_paths:
   - {glob: "orion/grammar/act_ledger.py", organ: learning}
   - {glob: "config/physiology/**", organ: "contract"}
   # "the bid sites in each producer" (design doc) are added here as Patch D lands each bid().
+  # Patch D 2026-10-30: curiosity investigate's bid binds here (bind_verdict). Not a `readers` row: it
+  # reads no regulation/price state itself, it obeys the market's decision (the checker sees no read).
+  - {glob: "services/orion-durable-runs/app/run_bids.py", organ: "choice (Patch D bid site: curiosity investigate binds)"}
 
 readers:
   # --- spinal: hardware safety. The 34 C reflex and hardware-watch. ---
@@ -258,6 +261,9 @@ readers:
   - module: scripts/analysis/body_economy_shadow_vs_real.py
     role: display
     reason: "read-only shadow-vs-real disagreement report (want_ledger + replayed admissions vs grammar_acts); gates nothing"
+  - module: scripts/analysis/body_economy_binding_replay.py
+    role: display
+    reason: "read-only Patch D replay: re-bids each real run of a binding family with the live Choice code and app.run_bids.bind_verdict; reports holds and extra delay. Gates nothing"
 
 sources:
   - module: scripts/analysis/sample_body_economy_bids.py

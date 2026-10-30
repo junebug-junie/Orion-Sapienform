@@ -19,8 +19,10 @@ controller pauses the town when the open session reaches ``EMBODIMENT_TOWN_SESSI
 local day's Orion time reaches ``EMBODIMENT_TOWN_DAILY_CAP_SEC``.
 
 Outside an Orion session the controller never keeps the town awake. If the town is running anyway,
-Juniper opened it (Hub's Unfreeze button, or her open page waking an idle town): that is a
-``manual`` session, logged, never paused here, and not counted toward Orion's cap.
+Juniper opened it (Hub's Unfreeze button; or, only while the town is idle rather than paused, her
+open page waking it): that is a ``manual`` session, logged, never paused here, and not counted
+toward Orion's cap. After the controller pauses the town (``testing:stop``), a page no longer wakes
+it: only Unfreeze does.
 """
 
 from __future__ import annotations
@@ -53,7 +55,9 @@ logger = logging.getLogger("orion.embodiment.town_sessions")
 CORRELATION_ENV = "ORION_TOWN_CORRELATION_ID"
 #: Hold for a refusal with no clock of its own (the dispatch runtime's default is the same).
 DEFAULT_HOLD_SEC = 300.0
-#: Persist last_seen_at at most this often (a crash then charges at most this much extra).
+#: Persist last_seen_at at most this often. A crash is closed at the last PERSISTED tick, so it can
+#: under-charge by up to this much, plus the time the town ran while embodiment was down (bounded by
+#: AI Town's own ~5-10 min idle stop when no page is open).
 LAST_SEEN_WRITE_SEC = 15.0
 REPLAY_CACHE = 256
 ACT_VERB = "play"
@@ -229,10 +233,13 @@ class TownSessionController:
             crashed.stop_reason = "embodiment_restart"
             await self._save(crashed)
             await self._act_event(crashed, closed=True)
-            self._pending_stop = True
+            await self._release(crashed.session_id)
+            # With sessions off (the rollback path) nothing is paused: a stoppedByDeveloper world
+            # cannot be woken by the legacy heartbeat.
+            self._pending_stop = self.cfg.enabled
             logger.info("aitown_session_closed session=%s reason=embodiment_restart", crashed.session_id)
         self.manual = ts.open_row(rows, "manual")
-        if crashed is None and self.manual is None:
+        if crashed is None and self.manual is None and self.cfg.enabled:
             # Paused by default: a town running at boot with no session on the ledger was left on by
             # the old always-on heartbeat (the first deploy) or opened while this process was down.
             # Pause it once; Juniper's own open session is on the ledger and is left alone.
@@ -273,6 +280,15 @@ class TownSessionController:
                 except Exception:  # noqa: BLE001
                     logger.warning("aitown_session_stop_failed (retry next tick)", exc_info=True)
                     return
+            if self.orion is not None:
+                # The caps are checked BEFORE the engine read: a failing read must never let a
+                # session run past them (a page open on the town keeps it awake meanwhile).
+                reason = ts.stop_reason(self.orion, self._rows, now, enabled=self.cfg.enabled,
+                                        session_max_sec=self.cfg.session_max_sec,
+                                        daily_cap_sec=self.cfg.daily_cap_sec, tz=self.cfg.tz)
+                if reason is not None:
+                    await self._end_orion(reason, now, stop_town=True)
+                    return
             try:
                 running = await asyncio.to_thread(self.town.engine_running, self._world_id())
             except Exception:  # noqa: BLE001
@@ -283,17 +299,18 @@ class TownSessionController:
             else:
                 await self._tick_manual(now, running)
 
+    async def _release(self, want_id: str) -> None:
+        if not self.cfg.shadow_bid_enabled:
+            return
+        from app.physiology_shadow import release
+
+        await release(want_id)
+
     async def _tick_orion(self, now: float, running: bool) -> None:
         row = self.orion
         assert row is not None
         if not running:
             await self._end_orion("town_paused", now, stop_town=False)
-            return
-        reason = ts.stop_reason(row, self._rows, now, enabled=self.cfg.enabled,
-                                session_max_sec=self.cfg.session_max_sec, daily_cap_sec=self.cfg.daily_cap_sec,
-                                tz=self.cfg.tz)
-        if reason is not None:
-            await self._end_orion(reason, now, stop_town=True)
             return
         row.last_seen_at = now
         await self._save(row, force=False)
@@ -308,20 +325,24 @@ class TownSessionController:
         if stop_town:
             try:
                 await asyncio.to_thread(self.town.stop)
+                self._stop_failures = 0
             except Exception:  # noqa: BLE001
-                logger.warning("aitown_session_stop_failed (retry next tick)", exc_info=True)
-                self._pending_stop = True
+                # Keep the session OPEN and counting until the pause lands: any overrun is on the
+                # ledger, and the next tick retries (the stop reason still holds).
+                self._stop_failures = getattr(self, "_stop_failures", 0) + 1
+                logger.warning("aitown_session_stop_failed session=%s reason=%s consecutive=%d (retry next tick)",
+                               row.session_id, reason, self._stop_failures, exc_info=True)
+                row.last_seen_at = now
+                await self._save(row)
+                return
         row.last_seen_at = now
         row.ended_at = now
         row.stop_reason = reason  # type: ignore[assignment]
         await self._save(row)
         self.orion = None
-        if not self._pending_stop:
-            await self._set_correlation(None)
+        await self._set_correlation(None)
         await self._act_event(row, closed=True)
-        from app.physiology_shadow import release
-
-        await release(row.session_id)
+        await self._release(row.session_id)
         logger.info("aitown_session_closed session=%s kind=orion reason=%s seconds=%.0f utterances=%d",
                     row.session_id, reason, now - row.started_at, row.utterances)
 
@@ -396,10 +417,26 @@ class TownSessionController:
         used = ts.seconds_today(live, now, kind="orion", tz=self.cfg.tz) if rows is not None else None
         gates = {"orion_seconds_today": None if used is None else round(used, 1),
                  "daily_cap_sec": self.cfg.daily_cap_sec}
+        if reason is None and any(r.session_id == session_id for r in live):
+            # A dispatch replayed after a restart: never a second row under the same id (it would
+            # overwrite the first one's counted seconds and reopen its act).
+            reason = "already_ran"
         if reason is not None:
             retry = ts.retry_after_sec(reason, live, now, min_gap_sec=self.cfg.min_gap_sec, tz=self.cfg.tz)
+            if reason == "session_open" and self.orion is not None:
+                retry = max(1.0, self.cfg.session_max_sec - (now - self.orion.started_at))
             logger.info("aitown_session_refused dispatch_id=%s refusal=%s", req.dispatch_id, reason)
             return self._refused(req, reason, retry, gates)
+        # The town running with no Orion session is Juniper's, even if the tick has not seen it yet:
+        # never absorb her time into Orion's session (or pause her at Orion's cap).
+        try:
+            running = await asyncio.to_thread(self.town.engine_running, self._world_id())
+        except Exception as exc:  # noqa: BLE001
+            return self._refused(req, "town_unreachable", DEFAULT_HOLD_SEC, {**gates, "error": type(exc).__name__})
+        if running:
+            logger.info("aitown_session_refused dispatch_id=%s refusal=manual_session_open (not yet ticked)",
+                        req.dispatch_id)
+            return self._refused(req, "manual_session_open", None, gates)
         try:
             await asyncio.to_thread(self.town.resume)
         except Exception as exc:  # noqa: BLE001

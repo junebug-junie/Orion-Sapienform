@@ -12,8 +12,8 @@ Two kinds of session:
   gate (kill switch, the daily cap, a session already open), resumes the town, and opens the
   ``play`` act (actor ``aitown.session``). It pauses the town at the session cap, the daily cap, or
   when the switch goes off. Counts toward the daily cap.
-* ``manual`` -- the town is running and Orion did not open it: Juniper pressed Unfreeze in Hub, or
-  her open page woke an idle town. Logged, never paused by the controller, and NOT counted toward
+* ``manual`` -- the town is running and Orion did not open it: Juniper pressed Unfreeze in Hub (or
+  her open page woke a town that was idle, not paused; a town the controller paused needs Unfreeze). Logged, never paused by the controller, and NOT counted toward
   Orion's cap.
 
 The session ledger is one Redis hash (``AITOWN_SESSION_LEDGER_REDIS_KEY``, field = session id,
@@ -71,7 +71,7 @@ class AITownSessionStartRequestV1(BaseModel):
 class AITownSessionStartResultV1(BaseModel):
     """``refusal`` is set only for ``state=refused``: the controller's named reason
     (``disabled`` | ``daily_cap`` | ``cooldown`` | ``session_open`` | ``manual_session_open`` |
-    ``ledger_unknown`` | ``town_unreachable`` | ``resume_failed``). ``retry_after_sec`` is how long the
+    ``ledger_unknown`` | ``town_unreachable`` | ``resume_failed`` | ``already_ran``). ``retry_after_sec`` is how long the
     same refusal will hold, from the controller's own clock (the next local midnight for
     ``daily_cap``)."""
 

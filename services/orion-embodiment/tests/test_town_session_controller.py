@@ -342,3 +342,100 @@ def test_rpc_handle_answers_only_on_the_reply_prefix() -> None:
     good = bad.model_copy(update={"reply_to": f"{AITOWN_SESSION_START_REPLY_PREFIX}abc"})
     asyncio.run(c.handle(good, publish=publish, source_ref=src))
     assert sent[0][0].endswith("abc") and sent[0][1].payload["state"] == "started"
+
+
+class FlakyTown(FakeTown):
+    """Engine reads fail (Convex timeouts); stop can be made to fail too."""
+
+    def __init__(self, running=False):
+        super().__init__(running)
+        self.read_fails = False
+        self.stop_fails = False
+
+    def engine_running(self, world_id):
+        if self.read_fails:
+            raise TimeoutError("convex 30 s")
+        return self.running
+
+    def stop(self):
+        if self.stop_fails:
+            self.calls.append("stop_failed")
+            raise TimeoutError("convex 30 s")
+        super().stop()
+
+
+def make_flaky(t0, cfg=None):
+    redis, town, clock, acts = FakeRedis(), FlakyTown(), Clock(t0), []
+
+    async def publish(bus, event):
+        acts.append(event)
+
+    c = TownSessionController(cfg or TownConfig(), redis_getter=lambda: redis, world_id_getter=lambda: "w1",
+                              town=town, act_publisher=publish, clock=clock)
+    return c, redis, town, clock, acts
+
+
+def test_the_cap_is_enforced_even_when_engine_reads_fail() -> None:
+    c, redis, town, clock, _ = make_flaky(at(2026, 10, 30, 9))
+    asyncio.run(c.tick())
+    asyncio.run(c.start(req()))
+    town.read_fails = True
+    clock.t += 1800
+    asyncio.run(c.tick())
+    assert not town.running and rows(redis)[0].stop_reason == "session_cap"
+
+
+def test_a_failed_stop_keeps_the_session_open_and_counting_until_it_lands() -> None:
+    c, redis, town, clock, _ = make_flaky(at(2026, 10, 30, 9))
+    asyncio.run(c.tick())
+    asyncio.run(c.start(req()))
+    town.stop_fails = True
+    clock.t += 1800
+    asyncio.run(c.tick())
+    (r,) = rows(redis)
+    assert r.ended_at is None and r.last_seen_at == clock.t and c.heartbeat_wanted
+    town.stop_fails = False
+    clock.t += 10
+    asyncio.run(c.tick())
+    (r,) = rows(redis)
+    assert (r.stop_reason, r.ended_at - r.started_at) == ("session_cap", 1810.0) and not town.running
+
+
+def test_a_start_never_absorbs_a_town_juniper_just_opened() -> None:
+    c, redis, town, clock, acts = make(at(2026, 10, 30, 9))
+    asyncio.run(c.tick())
+    town.running = True                     # Unfreeze lands before the next tick
+    out = asyncio.run(c.start(req()))
+    assert (out.state, out.refusal) == ("refused", "manual_session_open")
+    assert rows(redis) == [] and acts == [] and "resume" not in town.calls
+
+
+def test_a_replayed_dispatch_after_a_restart_never_rewrites_its_row() -> None:
+    c, redis, town, clock, _ = make(at(2026, 10, 30, 9))
+    asyncio.run(c.tick())
+    asyncio.run(c.start(req()))
+    clock.t += 1800
+    asyncio.run(c.tick())
+    c2 = TownSessionController(TownConfig(), redis_getter=lambda: redis, world_id_getter=lambda: "w1",
+                               town=town, act_publisher=c._publish_act, clock=Clock(clock.t + 7200))
+    asyncio.run(c2.tick())
+    out = asyncio.run(c2.start(req()))
+    assert (out.state, out.refusal) == ("refused", "already_ran")
+    (r,) = rows(redis)
+    assert r.stop_reason == "session_cap"
+
+
+def test_session_open_refusal_holds_for_the_rest_of_the_session() -> None:
+    c, _, _, clock, _ = make(at(2026, 10, 30, 9))
+    asyncio.run(c.tick())
+    asyncio.run(c.start(req()))
+    clock.t += 600
+    out = asyncio.run(c.start(req("d:2")))
+    assert out.refusal == "session_open" and out.retry_after_sec == 1200.0
+
+
+def test_rollback_boot_does_not_pause_the_town() -> None:
+    """Sessions off + legacy heartbeat: a stoppedByDeveloper world could never be woken again."""
+    c, redis, town, clock, _ = make(at(2026, 10, 30, 9), running=True, cfg=TownConfig(enabled=False))
+    asyncio.run(c.tick())
+    assert "stop" not in town.calls and town.running

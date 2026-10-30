@@ -103,12 +103,14 @@ async def aitown_stop_world() -> str:
 
 @mcp.tool()
 async def aitown_resume_world() -> str:
-  """Resume the simulation engine."""
-  try:
-    result = convex_mutation("testing:resume", {})
-  except AitownClientError as exc:
-    return _json({"error": str(exc)})
-  return _json(result)
+  """Refused since 2026-10-30: the town opens only in sessions.
+
+  Orion's own sessions start through the motor allocator (route aitown_session) and
+  orion-embodiment's session controller, which counts them toward the 2 h/day cap. A
+  direct testing:resume from here would run the town outside that cap and be logged as
+  Juniper's manual time. Juniper opens the town with Hub's Unfreeze button."""
+  return _json({"error": "refused: AI Town runs only in sessions (Orion: the aitown_session want, "
+                         "capped 2 h/day by orion-embodiment; Juniper: Hub's Unfreeze button)"})
 
 
 @mcp.tool()

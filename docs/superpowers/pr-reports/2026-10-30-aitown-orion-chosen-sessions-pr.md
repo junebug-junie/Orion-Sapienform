@@ -52,6 +52,7 @@ orion-embodiment heartbeated the town every perception tick (`EMBODIMENT_WORLD_H
 - `orion/grammar/acts.py`, `orion/bus/channels.yaml`, `orion/schemas/registry.py`: act producer identity, channels, schemas.
 - `orion/schemas/physiology_report.py`, `services/orion-durable-runs/app/physiology_report.py`, `app/main.py`, `orion/physiology/report_text.py`: `wants.town` and its plain-text lines.
 - `services/orion-ai-town/patches/orion-town-correlation-id.patch`, `scripts/apply_upstream_patches.sh`, `README.md`: NPC correlation header.
+- `services/orion-ai-town/mcp/orion_aitown_mcp/server.py`: `aitown_resume_world` refuses (no uncounted opens by Orion's FCC agent).
 - `config/metrics/metric_definitions.lock.json`: re-locked (two new channels, one producer added).
 - Tests: `orion/embodiment/tests/test_town_sessions.py`, `services/orion-embodiment/tests/test_town_session_controller.py`, `tests/test_rung3_aitown_session.py`, `services/orion-durable-runs/tests/test_physiology_report.py`, `orion/physiology/tests/test_report_text.py`, `services/orion-ai-town/tests/test_town_correlation_id_patch.py`, `tests/test_proposal_scoring.py`.
 
@@ -65,19 +66,19 @@ orion-embodiment heartbeated the town every perception tick (`EMBODIMENT_WORLD_H
 
 ## Env/config changes
 
-- Added keys: embodiment `EMBODIMENT_TOWN_SESSIONS_ENABLED`, `EMBODIMENT_TOWN_SESSION_MAX_SEC`, `EMBODIMENT_TOWN_DAILY_CAP_SEC`, `EMBODIMENT_TOWN_MIN_GAP_SEC`, `EMBODIMENT_TOWN_MIN_SESSION_SEC`, `EMBODIMENT_TOWN_TZ`, `EMBODIMENT_TOWN_TICK_SEC`, `EMBODIMENT_TOWN_CORRELATION_ENV_ENABLED`, `EMBODIMENT_PHYSIOLOGY_SHADOW_BID_ENABLED`; dispatch runtime `ORION_DISPATCH_AITOWN_SESSION_ENABLED`, `ORION_DISPATCH_AITOWN_SESSION_RPC_TIMEOUT_SEC`. All shipped ON.
+- Added keys: embodiment `EMBODIMENT_TOWN_SESSIONS_ENABLED`, `EMBODIMENT_TOWN_SESSION_MAX_SEC`, `EMBODIMENT_TOWN_DAILY_CAP_SEC`, `EMBODIMENT_TOWN_MIN_GAP_SEC`, `EMBODIMENT_TOWN_MIN_SESSION_SEC`, `EMBODIMENT_TOWN_TZ`, `EMBODIMENT_TOWN_TICK_SEC`, `EMBODIMENT_TOWN_CORRELATION_ENV_ENABLED`, `EMBODIMENT_PHYSIOLOGY_SHADOW_BID_ENABLED`; dispatch runtime `ORION_DISPATCH_AITOWN_SESSION_ENABLED`, `ORION_DISPATCH_AITOWN_SESSION_RPC_TIMEOUT_SEC` (60). All shipped ON.
 - Removed keys: none.
 - Renamed keys: none.
 - Meaning changed: `EMBODIMENT_WORLD_HEARTBEAT_ENABLED` (example `true` -> `false`; now the rollback path only).
 - `.env_example` updated: yes (both services).
-- local `.env` synced with `python scripts/sync_local_env_from_example.py --all-keys orion-embodiment orion-execution-dispatch-runtime`: yes, 11 keys added. `EMBODIMENT_WORLD_HEARTBEAT_ENABLED` was reported diverged (`true`); set to `false` by hand because its meaning changed.
+- local `.env` synced with `python scripts/sync_local_env_from_example.py --all-keys orion-embodiment orion-execution-dispatch-runtime`: yes, 11 keys added (RPC timeout then raised to 60 by hand to match the review fix). `EMBODIMENT_WORLD_HEARTBEAT_ENABLED` is reported diverged (local `true`, example `false`) and is left `true` on purpose: the old code still running needs it until this deploys, and the new code ignores it while sessions are on.
 - skipped keys requiring operator action: none. The Convex env var `ORION_TOWN_CORRELATION_ID` is managed by the controller, not by an operator.
 
 ## Tests run
 
 ```text
 pytest orion/embodiment/tests/test_town_sessions.py            -> 11 passed
-pytest services/orion-embodiment/tests                         -> 117 passed
+pytest services/orion-embodiment/tests                         -> 123 passed
 pytest orion/embodiment                                         -> 115 passed
 pytest tests/test_rung3_aitown_session.py tests/test_rung3_retro_leisure.py tests/test_proposal_scoring.py -> passed
 pytest services/orion-durable-runs/tests/test_physiology_report.py -> 21 passed, 1 skipped (Postgres DSN)
@@ -103,14 +104,42 @@ week of sessions, compare the act's posterior with Juniper's read of the town tr
 
 ```text
 Not built or deployed here (instructed: do not deploy). Live path UNVERIFIED:
-- the Convex admin env call (/api/update_environment_variables) is the CLI's own call, not exercised live;
+- the Convex admin env call (/api/update_environment_variables) is the CLI's own call; the route exists on the live backend (GET -> 405, an unknown route -> 404) but no write was sent;
 - no session has run, so the per-session NPC call rate is unmeasured.
 Live read 2026-10-30 04:16Z (read-only): world status running, embodiment heartbeating, 4 NPCs + Orion, no human player.
 ```
 
 ## Review findings fixed
 
-(filled in after the code-review subagent)
+Code review ran in a subagent (no blocker; 6 should-fix, 5 nits).
+
+- Finding: Orion's FCC agent could open the town uncounted through the AI Town MCP tool `aitown_resume_world` (`testing:resume`), logged as Juniper's time.
+  - Fix: the tool now refuses and names the two real paths (`services/orion-ai-town/mcp/orion_aitown_mcp/server.py`). `aitown_kick_engine` cannot wake a stopped engine (`kickEngine` throws when not running), so it stays.
+  - Evidence: code read of `upstream/convex/aiTown/main.ts:65`.
+- Finding: the cap check was skipped while Convex engine reads failed.
+  - Fix: the caps are checked before the engine read; the read only detects `town_paused`.
+  - Evidence: `test_the_cap_is_enforced_even_when_engine_reads_fail`; mutation (check moved back) fails 8 tests.
+- Finding: a start could absorb a session Juniper opened less than one tick earlier.
+  - Fix: `_start` reads the engine before resuming; running means `manual_session_open`, unreadable means `town_unreachable`.
+  - Evidence: `test_a_start_never_absorbs_a_town_juniper_just_opened`.
+- Finding: the boot/crash pause broke the documented rollback (a `stoppedByDeveloper` world ignores the legacy heartbeat).
+  - Fix: no pause while `EMBODIMENT_TOWN_SESSIONS_ENABLED=false`.
+  - Evidence: `test_rollback_boot_does_not_pause_the_town`.
+- Finding: a dispatch replayed after a restart could overwrite its earlier row (erasing counted time).
+  - Fix: a session id already on the ledger is refused `already_ran`.
+  - Evidence: `test_a_replayed_dispatch_after_a_restart_never_rewrites_its_row`.
+- Finding: the 15 s RPC timeout was shorter than a real start (Convex mutations measured 15-25 s); `session_open` refusals had no retry clock.
+  - Fix: timeout 60 s; `session_open` holds for the rest of the session.
+  - Evidence: `test_session_open_refusal_holds_for_the_rest_of_the_session`.
+- Finding (nit): a failed stop at the cap closed the row while the town kept running unlogged.
+  - Fix: the session stays open and counting until the stop lands; each failure logs a consecutive count.
+  - Evidence: `test_a_failed_stop_keeps_the_session_open_and_counting_until_it_lands`.
+- Finding (nit): the crash-charge comment had the wrong direction; the crashed want was not released; `release()` ran with shadow bids off.
+  - Fix: comment corrected; crashed want released; release gated on the flag.
+- Finding (nit): docs said an open page wakes the town; after a controller pause only Unfreeze does.
+  - Fix: README, module and schema docstrings say so.
+- Finding (nit): the primary checkout's local `.env` had `EMBODIMENT_WORLD_HEARTBEAT_ENABLED=false` ahead of this merge, which would idle the town under the old code.
+  - Fix: kept `true` locally; it is ignored while sessions are on, so it needs no change at deploy.
 
 ## Restart required
 
@@ -143,6 +172,6 @@ After embodiment restarts it pauses the running town once (`aitown_session_boot_
 
 ## PR link
 
-(filled in after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2996
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

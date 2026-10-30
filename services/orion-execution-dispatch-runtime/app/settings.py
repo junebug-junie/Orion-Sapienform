@@ -273,8 +273,10 @@ class Settings(BaseSettings):
     # opens). The controller has its own switch (EMBODIMENT_TOWN_SESSIONS_ENABLED), the daily cap and
     # every other gate. Shipped ON.
     orion_dispatch_aitown_session_enabled: bool = Field(True, alias="ORION_DISPATCH_AITOWN_SESSION_ENABLED")
+    # 60 s: the controller's start does an engine read and a resume mutation on Convex (each up to its
+    # 30 s client timeout; 15-25 s measured under contention), so 15 s would time out real starts.
     orion_dispatch_aitown_session_rpc_timeout_sec: float = Field(
-        15.0, gt=0.0, le=120.0, alias="ORION_DISPATCH_AITOWN_SESSION_RPC_TIMEOUT_SEC"
+        60.0, gt=0.0, le=120.0, alias="ORION_DISPATCH_AITOWN_SESSION_RPC_TIMEOUT_SEC"
     )
     # 2026-10-01 -- attend-to-act loop (docs/superpowers/specs/2026-09-29-attend-to-act-loop-design.md
     # D5). The MASTER switch for world actions (SELF_REVERSIBLE_SCOPE routes, today only

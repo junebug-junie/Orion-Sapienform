@@ -20,6 +20,11 @@
 #                        historical cost and nothing is placed.
 #   fixed_cost           Per-act costs that are definitional, not measured (an outreach act IS one
 #                        message to Juniper). ActCostV2 field names only.
+#   receptors            Prime's regulate signals this family handles: slow (a temporary charge on its
+#                        bids) and/or quicken (a temporary credit). Orion Prime step 3, 2026-10-30;
+#                        orion/physiology/prime_charge.py. A family without receptors: Prime's signal
+#                        to it is refused and shown to Prime, and the market ignores it. A family gets
+#                        a receptor only when its bids bind (a charge on a shadow bid changes nothing).
 #
 # Changing a tier needs Juniper's sign-off (the tiers are her decision, 10-23).
 
@@ -70,6 +75,8 @@ families:
     deferrable_window_s: 21600
     lanes: [agent, agent-gpu2, agent-deep]
     placement: one_of
+    # The only family whose bids bind (Patch D, ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE=on).
+    receptors: [slow, quicken]
   durable.self_inquiry:
     tier: 2
     deferrable_window_s: 21600

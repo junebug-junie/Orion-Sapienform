@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 SCHEMA_VERSION = 1
+# The regulate signals a family can declare it handles (Orion Prime step 3, orion/physiology/prime_charge.py).
+RECEPTORS: tuple[str, ...] = ("slow", "quicken")
 FIXED_COST_FIELDS = frozenset({"seconds", "gpu_seconds", "tokens", "watts", "juniper_msgs", "claude_limit_events"})
 
 
@@ -26,6 +28,9 @@ class FamilyConfig:
     placement: str = "one_of"          # one_of | fixed
     fixed_cost: Mapping[str, float] = field(default_factory=dict)
     note: str = ""
+    # Prime's regulate signals this family handles (orion/physiology/prime_charge.py DIRECTIONS). Empty:
+    # a signal to it is refused by Prime and ignored by the market (design section 4.2).
+    receptors: tuple[str, ...] = ()
 
     @property
     def bids(self) -> bool:
@@ -76,11 +81,17 @@ def parse_families(doc: Any) -> FamiliesConfig:
         fixed = body.get("fixed_cost") or {}
         if not isinstance(fixed, dict) or not set(fixed) <= FIXED_COST_FIELDS:
             raise ValueError(f"{name}: fixed_cost keys must be in {sorted(FIXED_COST_FIELDS)}")
+        receptors = body.get("receptors") or []
+        if not isinstance(receptors, list) or not set(receptors) <= set(RECEPTORS):
+            raise ValueError(f"{name}: receptors must be a list drawn from {list(RECEPTORS)}")
+        if receptors and tier == 0:
+            raise ValueError(f"{name}: a Tier 0 family never bids, so a charge on its bids cannot reach it")
         if tier != 0 and window <= 0:
             raise ValueError(f"{name}: a bidding family needs deferrable_window_s > 0 (its hunger clock)")
         out[name] = FamilyConfig(family=name, tier=int(tier), prior_weight=prior, deferrable_window_s=window,
                                  lanes=tuple(lanes), placement=placement,
-                                 fixed_cost={k: float(v) for k, v in fixed.items()}, note=str(body.get("note") or ""))
+                                 fixed_cost={k: float(v) for k, v in fixed.items()}, note=str(body.get("note") or ""),
+                                 receptors=tuple(dict.fromkeys(str(r) for r in receptors)))
     return FamiliesConfig(families=out)
 
 
@@ -101,4 +112,4 @@ def load_families(path: str | Path) -> tuple[Optional[FamiliesConfig], Optional[
         return None, f"malformed:{p.name}:{str(exc)[:160]}"
 
 
-__all__ = ["FamiliesConfig", "FamilyConfig", "load_families", "parse_families"]
+__all__ = ["FamiliesConfig", "FamilyConfig", "RECEPTORS", "load_families", "parse_families"]

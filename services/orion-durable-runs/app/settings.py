@@ -258,6 +258,11 @@ class Settings(BaseSettings):
     # shadow (or anything else) -> the C3a shadow bid at submit, admission unchanged. Needs the market
     # (ORION_PHYSIOLOGY_BID_ENABLED); does not need ORION_PHYSIOLOGY_SHADOW_BIDS_ENABLED.
     physiology_bid_curiosity_investigate: str = Field("on", alias="ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE")
+    # Orion Prime step 3 (2026-10-30): apply Prime's regulate signals (Redis orion:prime:regulate:<family>) as
+    # bounded, temporary charges (slow) / credits (quicken) on the bids of families that declare receptors in
+    # config/physiology/families.yaml (today only durable.curiosity_investigate). false -> the market never
+    # reads them; bids are exactly as before (instant rollback).
+    physiology_prime_regulation: bool = Field(True, alias="ORION_PHYSIOLOGY_PRIME_REGULATION")
     # Body-economy report (2026-10-29): GET /physiology/report, read-only (PhysiologyReportV1). Readers:
     # the Hub #body-economy page and skills.physiology.state.v1 (Orion's own body read). false -> 503.
     physiology_report_enabled: bool = Field(True, alias="ORION_PHYSIOLOGY_REPORT_ENABLED")

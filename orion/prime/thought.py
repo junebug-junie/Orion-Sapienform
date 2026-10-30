@@ -8,6 +8,14 @@ The runtime, not the model, checks every move. A move is refused (and the refusa
 next frame) when a question of Prime's is still open, when a focus is already pending in Hub, or
 when the text is empty. A model answer that does not parse is a failed thought, never a guess.
 
+Regulate (Orion Prime step 3): the second move, ``{"kind": "regulate", "family", "direction": slow|quicken,
+"why", "hours"}``: a bounded, temporary charge (slow) or credit (quicken) on one want family's bids in the body
+economy (orion/physiology/prime_charge.py). Offered only when the runtime passes ``receptors`` (the flag is on
+and config/physiology/families.yaml was read). Refused, and shown to Prime, when the family declares no
+receptor for that direction (design section 4.2: an unhandled signal is a visible error), when a signal of
+Prime's to the same family has not been graded yet (refractory per receiver, section 11), or when regulation
+is off.
+
 References (orion/refs.py): a move cites ids only through ``refs`` (``[{kind, id}]``, kinds arc and
 act). Refused here when a ref is malformed, or when the question or why contains an id-looking word
 (``orion.refs.ID_TOKEN_RE``) that is not one of the refs; refused by the runtime when a ref does not
@@ -19,11 +27,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Mapping, Optional, Sequence, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from orion.prime.acts import CONCERN_HORIZON_SEC
+from orion.physiology import prime_charge as pc
+from orion.prime.acts import CONCERN_HORIZON_SEC, clamp_hours, describe_effects
 from orion.prime.state import (
     CONCERN_TEXT_CAP,
     MAX_CONCERNS,
@@ -71,11 +80,27 @@ class CuriosityFocusMoveV1(BaseModel):
     refs: list[Any] = Field(default_factory=list)
 
 
+class RegulateMoveV1(BaseModel):
+    """A slow/quicken signal to one family. Family and direction are plain strings on purpose: a family
+    with no receptor, or a direction nobody handles, is a visible refusal (apply_answer), not a parse error
+    that would lose the whole thought."""
+
+    model_config = ConfigDict(extra="ignore")
+    kind: Literal["regulate"]
+    family: str = Field(min_length=1, max_length=120)
+    direction: str = Field(min_length=1, max_length=40)
+    why: str = Field(min_length=1, max_length=600)
+    hours: Optional[float] = None
+
+
+Move = Annotated[Union[CuriosityFocusMoveV1, RegulateMoveV1], Field(discriminator="kind")]
+
+
 class PrimeAnswerV1(BaseModel):
     model_config = ConfigDict(extra="ignore")
     reading: str = Field(default="", max_length=4000)
     concerns: ConcernEditsV1 = Field(default_factory=ConcernEditsV1)
-    move: Optional[CuriosityFocusMoveV1] = None
+    move: Optional[Move] = None
 
 
 SYSTEM_PROMPT = """You are Orion's slow, between-conversations thinking ("Prime"). You are not talking to anyone.
@@ -111,6 +136,26 @@ Rules:
                  "refs": [{"kind": "arc" | "act", "id": "..."}]}}""".replace("<HORIZON_DAYS>", f"{CONCERN_HORIZON_SEC / 86400:g}")
 
 
+REGULATE_PROMPT = """
+
+Your second kind of move: a regulate signal to one organ that lists receptors under ORGANS YOU CAN SIGNAL.
+"slow" puts a temporary charge on that organ's bids in Orion's body economy; "quicken" a temporary credit.
+It is not a command. The charge is at most half of what the organ's want is worth: a hungry, valuable want
+still outbids it, and you will see each time one did and why. One signal per organ until it is graded; a
+share is held back at random (logged, not applied). A signal is graded on whether it changed at least one of
+the organ's decisions while it was in force. Use it only when a concern of yours is about how often an organ
+runs. Only one move per thought, so a regulate move replaces a question:
+"move": {"kind": "regulate", "family": "<family from ORGANS YOU CAN SIGNAL>", "direction": "slow" | "quicken",
+         "why": "...", "hours": 1-6}"""
+
+
+def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]]) -> str:
+    """The base prompt, plus the regulate move only when regulation is on and some family receives it."""
+    if receptors and any(receptors.values()):
+        return SYSTEM_PROMPT + REGULATE_PROMPT
+    return SYSTEM_PROMPT
+
+
 @dataclass
 class FrameInputs:
     """What the runtime read for this thought. ``*_error`` set means that read failed."""
@@ -125,6 +170,11 @@ class FrameInputs:
     arc_ids: list[str] = field(default_factory=list)
     # Prime's own lane (PRIME_BID_LANE): its price is the one that decides Prime's thinking.
     bid_lane: str = "chat"
+    # Regulation (step 3). None: off, the sections are not shown. family -> directions it receives.
+    receptors: Optional[dict[str, tuple[str, ...]]] = None
+    receptors_error: Optional[str] = None
+    # signal_id -> the market's record so far (None: unread).
+    regulation_effects: dict[str, Optional[list[pc.PrimeChargeEffectV1]]] = field(default_factory=dict)
 
 
 def _num(value: Any) -> float:
@@ -211,6 +261,23 @@ def _concern_line(c: PrimeConcernV1, now: datetime) -> str:
             f"{_age(now, c.opened_at.isoformat())}, last kept {_age(now, c.last_evidence_at.isoformat())}{graded})")
 
 
+def _regulation_lines(state: PrimeStateV1, inputs: FrameInputs) -> list[str]:
+    if inputs.receptors_error:
+        return [f"(unavailable: {inputs.receptors_error}; you cannot signal any organ now)"]
+    lines = [f"- {fam}: {', '.join(dirs)}" for fam, dirs in sorted((inputs.receptors or {}).items()) if dirs]
+    if not lines:
+        lines = ["(no organ declares a receptor)"]
+    lines.append("Your signals not yet graded:")
+    if not state.open_regulations:
+        lines.append("(none)")
+    for r in state.open_regulations:
+        arm = "held back as a control, not applied" if r.arm == "control" else "applied"
+        effects = inputs.regulation_effects.get(r.signal_id)
+        seen = ("(the market's record was not read)" if effects is None else describe_effects(r, effects))
+        lines.append(f"- {r.direction} to {r.family} ({arm}), in force until {r.expires_at.strftime('%H:%MZ')}: {seen}")
+    return lines
+
+
 def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
     """The user prompt: a few thousand characters, every section marked with its freshness."""
     sections = [
@@ -227,6 +294,9 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
         "BODY:\n" + "\n".join(_body_lines(inputs)),
         "CURIOSITY:\n" + "\n".join(_curiosity_lines(inputs)),
     ]
+    if inputs.receptors is not None or inputs.receptors_error:
+        sections.append("ORGANS YOU CAN SIGNAL (family: directions it handles):\n"
+                        + "\n".join(_regulation_lines(state, inputs)))
     return f"Now: {inputs.now.isoformat()}\n\n" + "\n\n".join(sections)
 
 
@@ -246,16 +316,37 @@ class Applied:
     dropped: list[str]
     kept: list[str]
     warnings: list[str]
-    move: Optional[CuriosityFocusMoveV1]
+    move: Optional[Union[CuriosityFocusMoveV1, RegulateMoveV1]]
     move_refusal: Optional[str]
     # The move's references, checked for shape; the runtime still resolves each before sending.
     refs: list[RefV1] = field(default_factory=list)
 
 
+def regulate_refusal(move: RegulateMoveV1, state: PrimeStateV1,
+                     receptors: Optional[Mapping[str, Sequence[str]]]) -> Optional[str]:
+    """Why a regulate move cannot go, or None. Never silently dropped: the reason is shown to Prime."""
+    if receptors is None:
+        return "regulation is off or the organs' receptors could not be read; no signal was sent"
+    if move.direction not in pc.DIRECTIONS:
+        return f"direction {move.direction!r} is not a signal any organ handles (slow or quicken)"
+    if move.family not in receptors or not receptors.get(move.family):
+        return (f"{move.family} declares no receptors, so nothing would handle the signal; "
+                f"organs that do: {', '.join(sorted(f for f, d in receptors.items() if d)) or 'none'}")
+    if move.direction not in receptors[move.family]:
+        return f"{move.family} handles {', '.join(receptors[move.family])}, not {move.direction}"
+    open_one = next((r for r in state.open_regulations if r.family == move.family), None)
+    if open_one is not None:
+        return (f"my {open_one.direction} signal to {move.family} is not graded yet (in force until "
+                f"{open_one.expires_at.strftime('%H:%MZ')}, graded after); one signal per organ at a time")
+    return None
+
+
 def apply_answer(
     state: PrimeStateV1, answer: PrimeAnswerV1, *, now: datetime, arc_ids: list[str], focus_pending: Optional[bool],
+    receptors: Optional[Mapping[str, Sequence[str]]] = None,
 ) -> Applied:
-    """Concern edits, then the move check. Never trusts an id the frame did not show."""
+    """Concern edits, then the move check. Never trusts an id the frame did not show.
+    ``receptors``: family -> directions it receives; None = regulation off (a regulate move is refused)."""
     warnings: list[str] = []
     concerns = list(state.concerns)
     by_id = {c.concern_id for c in concerns}
@@ -288,7 +379,11 @@ def apply_answer(
         added.append(concern.concern_id)
 
     move, refusal, refs = answer.move, None, []
-    if move is not None:
+    if isinstance(move, RegulateMoveV1):
+        refusal = regulate_refusal(move, state, receptors)
+        if refusal is None:
+            move = move.model_copy(update={"hours": clamp_hours(move.hours)})
+    elif move is not None:
         refs, problems = parse_refs(move.refs)
         stray = id_tokens_not_in(f"{move.question}\n{move.why}", refs)
         if problems:
@@ -327,7 +422,10 @@ def summary_note(applied: Applied) -> str:
     parts = [f"concerns +{len(applied.added)} -{len(applied.dropped)} kept {len(applied.kept)}"]
     if applied.dropped:
         parts.append("dropped " + "; ".join(applied.dropped))
-    if applied.move is not None:
+    if isinstance(applied.move, RegulateMoveV1):
+        m = applied.move
+        parts.append(f"move regulate {m.direction} {m.family} for {m.hours:g} h: {m.why[:120]!r}")
+    elif applied.move is not None:
         cites = f" refs {', '.join(f'{r.kind}:{r.id}' for r in applied.refs)}" if applied.refs else ""
         parts.append(f"move curiosity_focus {applied.move.question[:120]!r}{cites}")
     elif applied.move_refusal:

@@ -16,6 +16,15 @@ floor until a first read succeeds), it never fails the bid.
 Bid sites in this process (Patch C3a): durable-runs' own admission (``app.run_bids``) calls
 ``Market.bid`` in-process, ``mark_opened`` at the run's first grant and ``release`` at its terminal.
 
+Prime's regulate signals (Orion Prime step 3, ``orion.physiology.prime_charge``). When
+``prime_regulation`` is on and the want's family declares the signal's direction as a receptor
+(config/physiology/families.yaml), each bid reads ``orion:prime:regulate:<family>`` from the same Redis
+as the prices. A TREATED signal in force is applied as a bounded charge (slow) or credit (quicken) in
+``decide``; a CONTROL signal (Prime's holdback) is not applied, but what it would have done is computed.
+Either way the market writes what the charge did to this want back into the same hash
+(``w:<want_id>``), which is how Prime grades its signal and sees "did curiosity outbid me, and why".
+Off, unreadable, expired or not received: no charge, exactly as before. A Redis error never fails a bid.
+
 Read-only on Postgres. A failed history read is ``physiology_unavailable`` for that bid, never a
 fund. SHADOW: the decision is returned and logged; nobody obeys it yet.
 """
@@ -41,6 +50,7 @@ from orion.physiology.choice import (
     decide,
     unavailable,
 )
+from orion.physiology import prime_charge as pc
 from orion.physiology.families import FamiliesConfig
 from orion.physiology.weights import UseRecord, weights_now
 from orion.schemas.physiology import PhysiologyStateV1, parse_physiology_state
@@ -129,7 +139,7 @@ class Market:
 
     def __init__(self, *, families: Optional[FamiliesConfig], families_error: Optional[str], pool_getter,
                  redis_getter, publish, history_ttl_sec: float = 300.0, lane_window_sec: float = 3600.0,
-                 stale_after_sec: float = 360.0) -> None:
+                 stale_after_sec: float = 360.0, prime_regulation: bool = False) -> None:
         self.families = families
         self.families_error = families_error
         self._pool_getter = pool_getter
@@ -143,7 +153,11 @@ class Market:
         self._weights: Optional[tuple[tuple[datetime, Any], dict]] = None
         self._lock = asyncio.Lock()
         self.book = ReservationBook()
-        self.counts = {"funded": 0, "deferred": 0, "publish_failed": 0}
+        # Orion Prime step 3: apply Prime's regulate charges (ORION_PHYSIOLOGY_PRIME_REGULATION). Off: the
+        # signal is never read; bids are exactly as before.
+        self.prime_regulation = bool(prime_regulation)
+        self.counts = {"funded": 0, "deferred": 0, "publish_failed": 0, "prime_applied": 0, "prime_control": 0,
+                       "prime_read_failed": 0}
 
     async def _history(self, now: datetime) -> _Cached:
         async with self._lock:
@@ -200,7 +214,11 @@ class Market:
             # Never fund on a missing market: physiology_unavailable.
             decision = unavailable(want, now, why=why, state=state)
         else:
-            decision = decide(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open)
+            sig = await self._prime_signal(want.family, now)
+            applied = sig if sig is not None and sig.arm == "treated" else None
+            decision = decide(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open, prime=applied)
+            if sig is not None:
+                await self._record_prime_effect(sig, want, decision, now, applied=applied is not None)
         self.counts[decision.outcome] = self.counts.get(decision.outcome, 0) + 1
         try:
             await self._publish(decision)
@@ -211,6 +229,71 @@ class Market:
                     decision.family, decision.outcome, decision.reason, decision.lane, decision.net,
                     decision.binding_constraint)
         return decision
+
+    async def _prime_signal(self, family: str, now: datetime) -> Optional[pc.PrimeRegulationV1]:
+        """The Prime signal in force for ``family``, or None (flag off, no receptor, absent, expired,
+        unreadable). Never raises: an unread signal is no charge."""
+        if not self.prime_regulation or self.families is None:
+            return None
+        cfg = self.families.get(family)
+        if cfg is None or not cfg.receptors:
+            return None
+        redis = self._redis_getter()
+        if redis is None:
+            return None
+        try:
+            raw = await redis.hget(pc.key(family), pc.SIGNAL_FIELD)
+        except Exception:  # noqa: BLE001
+            self.counts["prime_read_failed"] += 1
+            logger.warning("prime_charge_read_failed family=%s", family, exc_info=True)
+            return None
+        sig = pc.parse_signal(raw)
+        if sig is None or sig.family != family or not pc.active(sig, now):
+            return None
+        if not pc.receives(cfg.receptors, sig.direction):
+            logger.warning("prime_charge_not_received family=%s direction=%s receptors=%s signal=%s",
+                           family, sig.direction, list(cfg.receptors), sig.signal_id)
+            return None
+        return sig
+
+    async def _record_prime_effect(self, sig: pc.PrimeRegulationV1, want: WantV1, decision: WantDecisionV1,
+                                   now: datetime, *, applied: bool) -> None:
+        """Write what the charge did (treated) or would have done (control) to this want. Best-effort."""
+        if decision.net is None or decision.family_weight is None:
+            return          # the market could not price the want: nothing to say about the charge
+        part = pc.amount(sig, decision.family_weight)
+        net_with, net_without = ((decision.net, decision.net + part) if applied
+                                 else (decision.net - part, decision.net))
+        eff = pc.effect_of(sig.direction, net_with=net_with, net_without=net_without,
+                           floor_funded=decision.reason == "exploration_floor")
+        self.counts["prime_applied" if applied else "prime_control"] += 1
+        why = decision.why if applied else (
+            f"held back (control, not applied): with the charge the net would have been {net_with:+.3f}; "
+            f"{decision.why}")
+        redis = self._redis_getter()
+        if redis is None:
+            return
+        k, field_name = pc.key(sig.family), f"{pc.WANT_FIELD_PREFIX}{want.want_id}"
+        try:
+            prev = await redis.hget(k, field_name)
+            if prev is None and await redis.hlen(k) > pc.MAX_WANT_FIELDS:
+                return
+            prev_m = None
+            if prev is not None:
+                try:
+                    prev_m = pc.PrimeChargeEffectV1.model_validate_json(prev.decode() if isinstance(prev, bytes) else prev)
+                except Exception:  # noqa: BLE001
+                    prev_m = None
+            rec = pc.merge(prev_m, want.want_id, eff, now, why)
+            await redis.hset(k, field_name, pc.dumps(rec))
+            # Never leave a key without an expiry (hset on a key that just expired would recreate it).
+            await redis.expire(k, max(1, int((sig.expires_at - now).total_seconds() + pc.GRACE_SEC)))
+        except Exception:  # noqa: BLE001
+            logger.warning("prime_charge_record_failed family=%s want=%s", sig.family, want.want_id, exc_info=True)
+            return
+        logger.info("prime_charge family=%s want=%s arm=%s direction=%s effect=%s net_with=%.3f net_without=%.3f "
+                    "signal=%s act=%s", sig.family, want.want_id, sig.arm, sig.direction, eff, net_with, net_without,
+                    sig.signal_id, sig.act_id)
 
     def release(self, want_id: str) -> int:
         return self.book.release(want_id)
@@ -234,7 +317,8 @@ class Market:
         now = now or datetime.now(timezone.utc)
         return {"families": len(self.families.families) if self.families else 0,
                 "families_error": self.families_error, "history_cached_at": self._cache.at.isoformat() if self._cache else None,
-                "reservations": len(self.book.snapshot(now)), "funded_seeded": self.book.funded_seeded, **self.counts}
+                "reservations": len(self.book.snapshot(now)), "funded_seeded": self.book.funded_seeded,
+                "prime_regulation": self.prime_regulation, **self.counts}
 
 
 __all__ = ["Market", "act_from_row", "read_funded", "read_history", "use_from_row"]

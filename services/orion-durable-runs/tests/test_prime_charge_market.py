@@ -1,0 +1,154 @@
+"""Orion Prime step 3: the market reads Prime's regulate signal, applies it (treated) or only records it
+(control), writes what it did to each bid back for Prime, and never lets a Redis problem fail a bid.
+
+Fakes for Redis / Postgres / the bus (shared with test_physiology_bid.py)."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import sys
+from datetime import timedelta
+from pathlib import Path
+
+import pytest
+
+SERVICE_ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(SERVICE_ROOT.parents[1]), str(SERVICE_ROOT)]
+
+from app.physiology_market import Market  # noqa: E402
+from app.run_bids import bind_verdict  # noqa: E402
+from orion.physiology import prime_charge as pc  # noqa: E402
+from orion.schemas.physiology_want import WantV1  # noqa: E402
+from tests.test_physiology_bid import FAMS, NOW, _Pool, _state  # noqa: E402
+
+C = "durable.curiosity_investigate"
+
+
+def _curiosity_acts():
+    """Closes at uneven gaps, the last 10 h ago: a want's value rank follows its intensity."""
+    out, t = [], NOW - timedelta(hours=10)
+    for i, g in enumerate([0.2, 0.5, 1.0, 2.0, 3.0, 0.3, 0.7, 1.5, 4.0, 0.4, 2.5, 0.8]):
+        out.append({"act_id": f"c{i}", "actor": C, "opened_at": t - timedelta(minutes=1), "closed_at": t,
+                    "outcome_value": 1.0, "outcome_source": "producer", "signal_id": None,
+                    "cost_json": json.dumps({"seconds": 1000.0, "gpu_slot_s_by_lane": {"agent": 1800.0}})})
+        t -= timedelta(hours=g)
+    return out
+
+
+class Redis:
+    def __init__(self, state_raw, *, fail=False):
+        self.state_raw = state_raw
+        self.h: dict[str, dict[str, str]] = {}
+        self.ttl: dict[str, int] = {}
+        self.fail = fail
+        self.reads = 0
+
+    async def get(self, key):
+        return self.state_raw
+
+    def _check(self):
+        if self.fail:
+            raise ConnectionError("redis down")
+
+    async def hget(self, key, field):
+        self.reads += 1
+        self._check()
+        return self.h.get(key, {}).get(field)
+
+    async def hset(self, key, field, value):
+        self._check()
+        self.h.setdefault(key, {})[field] = value
+
+    async def hlen(self, key):
+        return len(self.h.get(key, {}))
+
+    async def expire(self, key, sec):
+        self.ttl[key] = sec
+
+
+# Curiosity holds half of Tier 2's funded wants this week: well above the 5% exploration floor.
+FUNDED = [{"decision_id": f"{f}{i}@t", "family": f, "tier": 2, "decided_at": NOW - timedelta(days=1)}
+          for f in (C, "durable.self_inquiry") for i in range(20)]
+
+
+def market(redis, *, on=True):
+    async def publish(d):
+        return None
+
+    return Market(families=FAMS, families_error=None, pool_getter=lambda: _Pool(acts=_curiosity_acts(), funded=FUNDED),
+                  redis_getter=lambda: redis, publish=publish, prime_regulation=on)
+
+
+def signal(direction="slow", arm="treated", family=C, *, start=-1.0, end=2.0):
+    return pc.PrimeRegulationV1(signal_id="sig1", act_id="act_r", family=family, direction=direction, arm=arm,
+                                magnitude=0.5, why="curiosity ran five times this morning",
+                                opened_at=NOW + timedelta(hours=start), expires_at=NOW + timedelta(hours=end))
+
+
+def put(redis, sig):
+    redis.h.setdefault(pc.key(sig.family), {})[pc.SIGNAL_FIELD] = pc.dumps(sig)
+
+
+def cwant(i=0, intensity=0.25, family=C):
+    return WantV1(want_id=f"run{i}", family=family, producer="orion-durable-runs.admission.binding", verb="infer",
+                  tier=2, intensity=intensity)
+
+
+def effects(redis, family=C):
+    return {e.want_id: e for e in pc.parse_effects(redis.h.get(pc.key(family), {}))}
+
+
+def test_a_treated_slow_signal_holds_a_low_value_run_and_records_why_for_prime():
+    r = Redis(_state().model_dump_json())
+    put(r, signal())
+    m = market(r)
+    d = asyncio.run(m.bid(cwant(), NOW))
+    assert d.outcome == "deferred" and d.binding_constraint == "prime:slow" and d.net <= 0
+    # Patch D obeys it: a price deferral holds the run and re-bids at the default (hunger keeps growing).
+    v = bind_verdict(d, NOW, NOW + timedelta(hours=6))
+    assert not v.admit and v.why == "deferred:price" and v.retry_at == NOW + timedelta(seconds=600)
+    assert "did not beat Prime's slow charge" in v.detail["why"]
+    e = effects(r)["run0"]
+    assert (e.effect, e.bids) == ("held", 1) and "Prime's slow charge" in e.why
+    assert r.ttl[pc.key(C)] == pytest.approx(2 * 3600 + pc.GRACE_SEC, abs=2)
+    # The same run bids again, hungrier: it outbids the charge, and stays recorded as held once.
+    d2 = asyncio.run(m.bid(cwant(intensity=1.0), NOW + timedelta(minutes=2)))
+    assert d2.outcome == "funded" and "beat Prime's slow charge" in d2.why
+    e = effects(r)["run0"]
+    assert (e.effect, e.last, e.bids) == ("held", "outbid", 2)
+    assert m.health(NOW)["prime_applied"] == 2
+
+
+def test_a_control_signal_is_never_applied_but_records_what_it_would_have_done():
+    r = Redis(_state().model_dump_json())
+    put(r, signal(arm="control"))
+    d = asyncio.run(market(r).bid(cwant(), NOW))
+    assert d.outcome == "funded" and "Prime" not in d.why          # not applied
+    e = effects(r)["run0"]
+    assert e.effect == "held" and e.why.startswith("held back (control, not applied)")
+
+
+def test_off_expired_not_received_or_foreign_signals_are_never_read_as_charges():
+    for sig, on in ((signal(), False), (signal(start=-5.0, end=-1.0), True), (signal(start=1.0, end=3.0), True)):
+        r = Redis(_state().model_dump_json())
+        put(r, sig)
+        d = asyncio.run(market(r, on=on).bid(cwant(), NOW))
+        assert d.outcome == "funded" and "Prime" not in d.why and not effects(r)
+    # A family without receptors: its key is never even read.
+    r = Redis(_state().model_dump_json())
+    put(r, signal(family="durable.self_inquiry"))
+    asyncio.run(market(r).bid(cwant(family="durable.self_inquiry"), NOW))
+    assert r.reads == 0 and not effects(r, "durable.self_inquiry")
+    # A signal whose stored family does not match the key is ignored.
+    r = Redis(_state().model_dump_json())
+    r.h[pc.key(C)] = {pc.SIGNAL_FIELD: pc.dumps(signal(family="durable.self_inquiry"))}
+    d = asyncio.run(market(r).bid(cwant(), NOW))
+    assert "Prime" not in d.why
+
+
+def test_a_redis_failure_never_fails_a_bid_and_never_charges():
+    r = Redis(_state().model_dump_json(), fail=True)
+    m = market(r)
+    d = asyncio.run(m.bid(cwant(), NOW))
+    assert d.outcome == "funded" and m.health(NOW)["prime_read_failed"] == 1

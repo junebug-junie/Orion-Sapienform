@@ -477,10 +477,17 @@ def test_refs_are_stored_read_back_and_shown_with_the_command_that_opens_them(ba
         taken = await cf.take_focus(pool, run_id=RUN_A)
         assert taken is not None and list(taken.refs) == refs
         plain = await q(pool, question="no refs here", chat="chat-2")
-        assert plain.focus.refs == () and cf.format_focus_section(plain.focus)[3:5] != []
+        assert plain.focus.refs == ()
         assert not any("orion.dig" in line for line in cf.format_focus_section(plain.focus))
         section = "\n".join(cf.format_focus_section(taken))
         assert "python -P -m orion.dig arc 8d87adeca2ce06a5" in section
         assert "python -P -m orion.dig act act_42c0e5f55fbd5d881786ebd4" in section
 
     run(backend, scenario)
+
+
+def test_a_stored_ref_that_is_not_a_valid_reference_is_dropped_never_printed_as_a_command():
+    """The DB is a trust boundary: the focus section prints a shell command built from these values."""
+    raw = '[{"kind": "arc", "id": "8d87adeca2ce06a5"}, {"kind": "arc", "id": "x; rm -rf /"}, {"kind": "run", "id": "a"}]'
+    assert cf._refs_value(raw) == ({"kind": "arc", "id": "8d87adeca2ce06a5"},)
+    assert cf._refs_value("not json") == () and cf._refs_value(None) == ()

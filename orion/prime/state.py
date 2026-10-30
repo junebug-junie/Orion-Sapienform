@@ -44,6 +44,7 @@ MAX_CONCERN_RECORD = 20
 # "Dropped within an hour" in the track record: the live problem (2026-10-30) was concerns replaced
 # each time attention moved, most of them inside an hour.
 QUICK_DROP = timedelta(hours=1)
+MAX_UNPUBLISHED = 200
 CONCERN_TEXT_CAP = 300
 # A concern Prime has not kept for a day fades. One day, because Temporal Self's arcs are per day
 # (``/temporal-self/frame`` day_id): an arc not seen for a whole day is no longer part of today.
@@ -166,9 +167,13 @@ def close_concern(state: PrimeStateV1, concern: PrimeConcernV1, *, end: ConcernE
 
 
 def trim_record(records: list[PrimeConcernRecordV1]) -> list[PrimeConcernRecordV1]:
-    """Every unpublished record (the outbox) and the newest MAX_CONCERN_RECORD published ones, in order."""
-    keep = {id(r) for r in [r for r in records if r.published][-MAX_CONCERN_RECORD:]}
-    return [r for r in records if not r.published or id(r) in keep]
+    """The newest MAX_UNPUBLISHED unpublished records (the outbox) and the newest MAX_CONCERN_RECORD
+    published ones, in order. The outbox only outgrows its cap if the bus is down for hundreds of concern
+    ends; an act whose close is dropped then is closed 0 by the ledger at its horizon (``expired``)."""
+    pub = [r for r in records if r.published][-MAX_CONCERN_RECORD:]
+    unpub = [r for r in records if not r.published][-MAX_UNPUBLISHED:]
+    keep = {id(r) for r in (*pub, *unpub)}
+    return [r for r in records if id(r) in keep]
 
 
 def track_record(state: PrimeStateV1) -> str:

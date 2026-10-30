@@ -21,7 +21,10 @@ prices its next bid):
   something) within ``CONCERN_HORIZON_SEC`` of the act opening. A control-arm question was never sent,
   so it cannot settle a concern. 0 when Prime drops the concern unresolved, lets it fade (not kept for
   a day), or holds it past the horizon unsettled ("lapsed"). Settling or lapsing closes the act but
-  does not remove the concern: Prime decides whether to keep holding it.
+  does not remove the concern: Prime decides whether to keep holding it. If orion-mind is down past
+  the horizon, the ledger closes the act first as ``expired`` (outcome_source expired, not graded in
+  orion/physiology/appetite.py) and Prime's later "lapsed" close is ignored; run_prime_report.py counts
+  those apart as ``expired``.
 
 How a nomination closes (both arms on the same rule, so the arms are comparable):
 

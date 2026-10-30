@@ -57,7 +57,7 @@ path of a file with the full result; read only what you need from that file.
                          write). Name it by what it takes in and gives out; the reason must cite
                          at least one of its parts by full name. Names show on the live body only.
   name-organs            every unnamed organ with its parts and a ready `name` line to fill in.
-  arc|act <id>           open an arc or act by id.
+  arc|act <id>           open a cited arc/act.
   notes [append <text>]  this dig's shared notes (episode hops / turns read each other).
   --dig <id>             before the command: group results under one dig (default: today).
 

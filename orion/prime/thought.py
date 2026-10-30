@@ -261,10 +261,12 @@ def apply_answer(
     by_id = {c.concern_id for c in concerns}
     dropped: list[str] = []
     for drop in answer.concerns.drop:
-        if drop.concern_id not in by_id:
-            warnings.append(f"drop of unknown concern {drop.concern_id!r} ignored")
+        gone = next((c for c in concerns if c.concern_id == drop.concern_id), None)
+        if gone is None:
+            # Unknown, or listed twice in one answer (the first drop already removed it).
+            if drop.concern_id not in by_id:
+                warnings.append(f"drop of unknown concern {drop.concern_id!r} ignored")
             continue
-        gone = next(c for c in concerns if c.concern_id == drop.concern_id)
         state = close_concern(state, gone, end="dropped", now=now,
                               note=f"dropped unresolved: {drop.why[:200] or 'no reason given'}")
         concerns = [c for c in concerns if c.concern_id != drop.concern_id]

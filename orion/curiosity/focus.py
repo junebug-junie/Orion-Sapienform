@@ -213,25 +213,31 @@ class FocusRow:
 
 
 def _refs_value(raw: Any) -> tuple[dict[str, str], ...]:
-    """The stored refs column (asyncpg hands jsonb back as text). Unreadable is empty, never a crash."""
+    """The stored refs column (asyncpg hands jsonb back as text), each one re-checked against its
+    kind's id shape (orion/refs.py): the focus section prints a command built from these, so a value
+    that is not a valid reference is dropped and logged, never printed. (The column itself must
+    exist: every focus SELECT names it, see REFS_MIGRATION.)"""
     if raw is None:
         return ()
     if isinstance(raw, (str, bytes)):
         try:
             raw = json.loads(raw)
         except ValueError:
+            logger.warning("curiosity_focus_refs_unreadable raw=%r", str(raw)[:120])
             return ()
     if not isinstance(raw, list):
         return ()
-    return tuple({"kind": str(r["kind"]), "id": str(r["id"])} for r in raw
-                 if isinstance(r, dict) and r.get("kind") and r.get("id"))
+    from orion.refs import RefV1
 
-
-def _get(r: Any, key: str) -> Any:
-    try:
-        return r[key]
-    except (KeyError, IndexError):
-        return None
+    out = []
+    for item in raw:
+        try:
+            ref = RefV1.model_validate(item)
+        except ValueError:
+            logger.warning("curiosity_focus_ref_invalid ref=%r", str(item)[:120])
+            continue
+        out.append({"kind": ref.kind, "id": ref.id})
+    return tuple(out)
 
 
 def _row(r: Any) -> FocusRow:
@@ -252,7 +258,7 @@ def _row(r: Any) -> FocusRow:
         turn_ok=r["turn_ok"],
         disposition=r["disposition"],
         disposition_raw=r["disposition_raw"],
-        refs=_refs_value(_get(r, "refs")),
+        refs=_refs_value(r["refs"]),
     )
 
 
@@ -501,7 +507,7 @@ def _refs_lines(focus: FocusRow) -> list[str]:
     for r in focus.refs:
         spec = KINDS.get(r["kind"])
         what = f" -- {spec.what}" if spec else ""
-        lines.append(f"    {r['kind']} {r['id']}{what}: {dig_command(RefV1.model_construct(kind=r['kind'], id=r['id']))}")
+        lines.append(f"    {r['kind']} {r['id']}{what}: {dig_command(RefV1.model_validate(r))}")
     return [*lines, ""]
 
 

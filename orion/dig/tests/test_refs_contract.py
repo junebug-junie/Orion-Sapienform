@@ -119,3 +119,7 @@ def test_id_tokens_in_text():
     assert refs.id_tokens_not_in(text, [arc]) == [
         "34d7345e36e7", "act_42c0e5f55fbd5d881786ebd4", "d9eb0763-60b8-51f9-903a-6ef5a1f5ccb0"]
     assert refs.id_tokens_not_in("What heats the cabinet after 14:00?", []) == []
+    # An underscore does not hide an id (review finding), and an act id glued to a word still matches whole.
+    act = refs.RefV1(kind="act", id="act_42c0e5f55fbd5d881786ebd4")
+    glued = "see run_34d7345e36e7, arc_8d87adeca2ce06a5 and prime_act_42c0e5f55fbd5d881786ebd4"
+    assert refs.id_tokens_not_in(glued, [act]) == ["34d7345e36e7", "8d87adeca2ce06a5"]

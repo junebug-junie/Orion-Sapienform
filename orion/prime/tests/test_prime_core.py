@@ -370,3 +370,12 @@ def test_a_malformed_ref_refuses_the_move_not_the_thought():
     applied = apply_answer(PrimeStateV1(), _move("What heats the cabinet?", refs=[{"kind": "run", "id": "34d7345e36e7"}]),
                            now=T0, arc_ids=[], focus_pending=False)
     assert applied.move is None and "kinds: arc, act" in applied.move_refusal and applied.state.thoughts_total == 1
+
+
+def test_the_same_drop_listed_twice_closes_once_and_never_crashes_the_thought():
+    """Review finding: a repeated drop raised StopIteration and lost the whole thought."""
+    state = PrimeStateV1(concerns=[_held()])
+    answer = PrimeAnswerV1.model_validate({"concerns": {"drop": [{"concern_id": "c1", "why": "a"},
+                                                                 {"concern_id": "c1", "why": "b"}]}})
+    applied = apply_answer(state, answer, now=T0, arc_ids=[], focus_pending=False)
+    assert applied.state.concerns == [] and len(applied.state.concern_record) == 1 and applied.warnings == []

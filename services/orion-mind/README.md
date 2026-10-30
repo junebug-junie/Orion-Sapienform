@@ -95,7 +95,15 @@ a restart never closes a concern twice. A concern held from before this change g
 These acts are `actor = 'prime'`, the body-economy family `prime` (orion/physiology/appetite.py reads
 `grammar_acts.actor` as the family). Once the family has 30 graded closes in 30 days, its want's value is
 `intensity x mean outcome` ranked against its own history, so every abandoned concern (a 0) lowers the value of
-Prime's next bid. No new price, no veto. Note: any close, a 0 included, also resets the family's hunger clock.
+Prime's next bid. No new price, no veto.
+
+Known side effect, left on purpose for now: appetite also reads every close of the family as "the drive was fed".
+So a concern close (a 0 included) resets Prime's hunger clock, and adds a gap to the close rhythm that sets how
+fast hunger grows. A fade is closed on a quiet tick, so it can make Prime slightly less hungry after a day with
+no thought. A drop is closed inside a thought, seconds from that thought's own close, so it barely moves the
+clock, but it adds a near-zero gap that shortens the rhythm. Not measured live yet (no concern act existed before
+this PR); `run_prime_report.py` now counts concern ends, so it can be checked after a week. If it matters, the fix is in `orion/physiology/appetite.py`:
+count only `infer` closes for the clock and the rhythm, and keep `predict` closes for the value.
 
 **References (step 1).** A question cites ids only through the move's `refs` (`[{kind, id}]`, kinds `arc` and
 `act`, `orion/refs.py`). Before sending, Prime opens every ref with the same resolver a curiosity run uses

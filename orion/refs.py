@@ -49,12 +49,14 @@ HTTP_TIMEOUT_SEC = 5.0
 # An id-looking word: a hex run of 12+ characters that mixes digits and letters a-f (arc, thought,
 # concern and run ids), an act id ``act_<hex>``, or a UUID (focus ids). Twelve, because the shortest
 # id Orion shows is a 12-hex run id; mixed, so a long plain number or a word is never an id.
+# An underscore does not hide an id ("run_34d7345e36e7", "prime_act_..."): only a letter or digit
+# next to the run does.
 ID_TOKEN_RE = re.compile(
-    r"(?<![0-9A-Za-z_])("
+    r"(?<![0-9A-Za-z])("
     r"act_[0-9a-f]{8,}"
     r"|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
     r"|(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{12,}"
-    r")(?![0-9A-Za-z_])",
+    r")(?![0-9A-Za-z])",
     re.IGNORECASE,
 )
 

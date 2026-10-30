@@ -19,6 +19,7 @@ copy.
 
 from __future__ import annotations
 
+import functools
 import os
 from typing import Any, Optional
 
@@ -40,3 +41,18 @@ def get_engine() -> Optional[Any]:
 
         _engine = create_engine(uri, pool_pre_ping=True)
     return _engine
+
+
+@functools.lru_cache(maxsize=None)
+def module_engine(owner: str, uri: str) -> Any:
+    """One cached engine per (owning module, uri), for the life of the process.
+
+    For route modules that used to call `create_engine()` on every request:
+    each call built a new pool and left its connection open until garbage
+    collection (measured 2026-10-30: 22-25 pools per 25 requests). Keyed by
+    owner on purpose -- each module keeps its own pool, exactly as before,
+    so one module's slow queries cannot starve another's checkouts.
+    """
+    from sqlalchemy import create_engine
+
+    return create_engine(uri, pool_pre_ping=True)

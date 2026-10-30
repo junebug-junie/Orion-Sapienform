@@ -9,7 +9,7 @@ import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from orion.consolidation.repository import (
     load_expectations_for_motif,
@@ -19,6 +19,8 @@ from orion.consolidation.repository import (
 )
 from orion.schemas.consolidation_frame import ConsolidationFrameV1
 
+from .pg_engine import module_engine
+
 router = APIRouter(prefix="/api/substrate/consolidation", tags=["substrate-consolidation"])
 
 
@@ -26,7 +28,7 @@ def _engine():
     uri = os.getenv("POSTGRES_URI", "").strip()
     if not uri:
         raise HTTPException(status_code=503, detail="postgres_uri_not_configured")
-    return create_engine(uri, pool_pre_ping=True)
+    return module_engine(__name__, uri)
 
 
 def _postgres_uri() -> str:

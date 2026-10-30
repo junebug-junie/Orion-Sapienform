@@ -18,7 +18,7 @@ Orion keeps no picture of the current situation between chat turns. Each turn re
   - The chat log copy was outside the 8-turn window.
   - The crystallization was in the belief search's candidate pool, but the open-loop bucket filter dropped it (`services/orion-recall/app/collectors/active_packet.py:19,185-186`). Over 7 days, belief recall picked that open-loop profile on 634 of 634 turns.
   - Episode memory has no chat reader, and `validate.py:406-407` drops `expires_at` unless `purpose=follow_up`.
-- **The distiller also stored a confabulated row:** "Juniper corrected me that she lives in Ogden, Utah, not Chicago" (`c0dc86c8…`). Its only evidence quote grounds "lives in Ogden". The "correction" came from Orion's own reply.
+- **The distiller also stored a confabulated row:** "Juniper corrected me that she lives in [her city], not Chicago" (`c0dc86c8…`). Its only evidence quote grounds "lives in [her city]". The "correction" came from Orion's own reply.
 
 **Per-turn search cost today** (`recall_telemetry`, 7-day averages):
 
@@ -172,7 +172,7 @@ The state amplifies distiller errors, so these land first:
 
 ## 9. Order of work
 
-1. **Writer fixes** (section 7). Proof: tests for date resolution, the entailment refusal on the Ogden case, and end dates kept on `happened` rows. The repair snapshot is in `/tmp/`.
+1. **Writer fixes** (section 7). Proof: tests for date resolution, the entailment refusal on the home-city case, and end dates kept on `happened` rows. The repair snapshot is in `/tmp/`.
 2. **Situation graph in shadow.** Workflow, state, checkpoint, projection; chat doesn't read it. Proof: a week of revisions in the run views, plus the turns it would have changed.
 3. **Chat reads the state.** It replaces the Place line, the three searches and the self-check search, flag on. Proof: the replay eval of 10-05 → 10-06 passes, and per-turn recall time in `recall_telemetry` drops.
 4. **Curiosity, reading and concept wiring.**

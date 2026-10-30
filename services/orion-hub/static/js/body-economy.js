@@ -552,9 +552,12 @@
     setBody(doc, "beUnits", '<table><thead><tr><th scope="col">Unit</th><th scope="col">Money</th><th scope="col">Energy</th>' +
       '<th scope="col">Heat</th><th scope="col">Status</th><th scope="col">Where it comes from</th></tr></thead><tbody>' +
       rows.map(function (u) {
-        var wh = num(u.wh);
+        var wh = num(u.wh), part = num(u.wh_component), k = num(u.overhead_factor);
+        var energy = wh === null ? "not measured" : wh >= 1000 ? (wh / 1000).toFixed(2) + " kWh" : +wh.toFixed(2) + " Wh";
+        // a component meter scaled to the wall: both numbers, and that the wall one is an estimate
+        if (wh !== null && part !== null && k !== null) energy += " at the wall, est. (GPU " + +part.toFixed(2) + " Wh × " + k.toFixed(2) + ")";
         return '<tr><th scope="row">' + esc(u.unit) + "</th><td>" + esc(fmtUsd(u.usd)) + "</td><td>" +
-          esc(wh === null ? "not measured" : wh >= 1000 ? (wh / 1000).toFixed(2) + " kWh" : +wh.toFixed(2) + " Wh") + "</td><td>" +
+          esc(energy) + "</td><td>" +
           esc(num(u.heat_c) === null ? "—" : "+" + u.heat_c.toFixed(2) + " °C in the cabinet") + "</td><td>" + statusChip(u.status) +
           '</td><td class="small">' + esc(u.source || "") + "</td></tr>";
       }).join("") + "</tbody></table>");
@@ -596,6 +599,35 @@
     return n === null ? "?" : Math.round(n) + " W";
   }
 
+  // Every cost on this page means the whole machine at the wall ABOVE REST, fans and PSU loss
+  // included (what an act is charged, PR #2992). A card's or container's watts are a component:
+  // watts_at_wall_est (its watts above idle x the host's overhead_factor) is shown beside them, and
+  // it is an ESTIMATE. Absent (an older report, or no idle known): nothing is added, never "0 W".
+  function wallText(v) {
+    var n = num(v);
+    return n === null ? "" : " (≈" + Math.round(n) + " W at the wall above rest, est.)";
+  }
+
+  // k is an hours-average: fans and PSU loss follow load over minutes. When the parts' estimates now
+  // add to far more (or less) than the measured surplus now, say so instead of letting them read as a split.
+  function overheadLag(h) {
+    var parts = num(h.wall_est_parts_w), above = num(h.above_rest_w);
+    if (parts === null || above === null || above <= 0 || Math.abs(parts - above) <= 0.25 * above) return "";
+    return '<div class="muted small" data-overhead-lag="' + esc(h.host) + '">Right now the parts\' at-the-wall estimates add to ' +
+      esc(fmtW(parts)) + " against " + esc(fmtW(above)) + " measured above rest: fans and power-supply loss follow load over " +
+      "minutes to hours, so each part's figure is its average cost over hours, not a split of this second.</div>";
+  }
+
+  function overheadNote(host, factor, basis, fitted) {
+    var k = num(factor);
+    if (k === null) return "";
+    var isFit = fitted === true || (fitted == null && String(basis || "").indexOf("fitted") === 0);
+    return '<div class="muted small" data-overhead="' + esc(host) + '" data-tip="' + esc(basis || "") + '">' +
+      "At-the-wall figures are estimates of the whole machine's extra draw above rest that each part drives: watts above idle × " + k.toFixed(2) +
+      " (fans and power-supply loss), " + (isFit ? "fitted on " + esc(host) + "'s own recent history (hover for the fit)" :
+        "fallback: not fitted on " + esc(host)) + ".</div>";
+  }
+
   // One stacked bar per machine: GPUs, CPU, other (= whole machine minus GPUs minus CPU), scaled to
   // the largest machine on the page, with a white tick at the machine's rest.
   function hostStackHtml(h, maxW) {
@@ -620,7 +652,7 @@
     return cards.map(function (c) {
       var held = (c.top_holders || []).map(function (x) { return (x.label || x.holder) + " " + fmtSeconds(x.lease_s); });
       var label = esc(c.card) + ' <span class="muted">' + esc((c.roles || []).join(", ") || "no pool role") + "</span>";
-      var text = fmtW(c.watts) + (num(c.idle_w) !== null ? " (rest " + fmtW(c.idle_w) + ")" : "");
+      var text = fmtW(c.watts) + (num(c.idle_w) !== null ? " (rest " + fmtW(c.idle_w) + ")" : "") + wallText(c.watts_at_wall_est);
       var tip = h.host + " " + c.card + " · " + text + (num(c.temp_c) !== null ? " · " + c.temp_c + " °C" : "") +
         " · held by: " + (held.join(", ") || "no closed lease in this window");
       return '<div data-host-card="' + esc(h.host + ":" + c.card) + '">' + hbar(label, c.watts, max, text, tip, HOST_COLORS.gpu) +
@@ -645,17 +677,26 @@
         (num(h.usd_per_month_at_this_rate) !== null && above > 0 ? " ≈ " + esc(fmtUsd(h.usd_per_month_at_this_rate)) + "/month at this rate" : "") +
         (num(h.rest_usd_per_month) !== null ? ' <span class="muted">(Orion\'s body at rest here costs ' + esc(fmtUsd(h.rest_usd_per_month)) + "/month)</span>" : "") +
         (num(h.fan_pct) !== null ? ' <span class="muted">· fans ' + Math.round(h.fan_pct) + "%</span>" : "");
-      var ctr = (h.top_containers || []).map(function (c) { return c.name + " " + (num(c.cpu_w) === null ? "?" : c.cpu_w.toFixed(1)) + " W"; });
+      var ctr = (h.top_containers || []).map(function (c) {
+        return c.name + " " + (num(c.cpu_w) === null ? "?" : c.cpu_w.toFixed(1)) + " W" + wallText(c.watts_at_wall_est);
+      });
       var spons = (h.sponsored || []).filter(function (sp) { return num(sp.cpu_w) !== null; }).map(function (sp) {
         return '<div class="small" data-sponsored="' + esc(sp.name) + '">Sponsored by Juniper, not Orion\'s activity: ' + esc(sp.name) + " · " +
-          esc(String(sp.containers)) + " containers · " + esc(sp.cpu_w.toFixed(0)) + " W CPU above idle (estimated)" +
+          esc(String(sp.containers)) + " containers · " + esc(sp.cpu_w.toFixed(0)) + " W CPU above idle (estimated)" + esc(wallText(sp.watts_at_wall_est)) +
           (sp.note ? ' <span class="muted">' + esc(sp.note) + "</span>" : "") + "</div>";
       }).join("");
       var floor = num(h.recent_floor_w), rest = num(h.chassis_w_rest);
       var drift = floor !== null && rest !== null && floor - rest >= 20
         ? '<div class="small">This week\'s lowest draw is ' + esc(fmtW(floor)) + ", " + Math.round(floor - rest) + " W above the pinned rest: new always-on draw.</div>" : "";
-      var unattr = num(h.unattributed_above_rest_w) !== null ? '<div class="small">Above rest but charged to no act: ' + esc(fmtW(h.unattributed_above_rest_w)) + "</div>" : "";
+      var hourStart = ms(h.attribution_hour_start);
+      var hourWords = hourStart === null ? "" : " over " + new Date(hourStart).toISOString().slice(11, 16) + "–" +
+        new Date(hourStart + 3600000).toISOString().slice(11, 16) + " UTC (newest complete hour)";
+      var unattr = num(h.unattributed_above_rest_w) !== null ? '<div class="small" data-unattributed="' + esc(h.host) + '" data-tip="' +
+        esc(h.attribution_basis || "") + '">Above rest but charged to no act: ' + esc(fmtW(h.unattributed_above_rest_w)) + " average" +
+        esc(hourWords) + (num(h.leased_unmetered_above_rest_w) !== null ? ", of it " + esc(fmtW(h.leased_unmetered_above_rest_w)) +
+        " on GPU leases whose turn has no act" : "") + "</div>" : "";
       return '<div class="host" data-host="' + esc(h.host) + '"><div class="host-head">' + head + "</div>" + hostStackHtml(h, maxW) +
+        overheadNote(h.host, h.overhead_factor, h.overhead_basis, h.overhead_fitted) + overheadLag(h) +
         hostCardsHtml(h) + (ctr.length ? '<div class="muted small">Top CPU users (watts above CPU idle, estimated): ' + esc(ctr.join(", ")) + "</div>" : "") +
         spons + drift + unattr + "</div>";
     }).join("");
@@ -738,13 +779,21 @@
       var cores = num(p.cores);
       var coresText = cores === null ? "cores ?" : cores.toFixed(1) + " cores";
       var label = esc(p.name) + ' <span class="muted">' + esc(p.host || "?") + "</span>";
+      var wall = num(p.watts_at_wall_est);
       var tip = p.name + " on " + (p.host || "?") + " · " + p.watts.toFixed(1) + " W above idle · " +
+        (wall === null ? "" : "≈" + Math.round(wall) + " W at the wall above rest (estimate" +
+          (num(p.overhead_factor) === null ? "" : ": × " + num(p.overhead_factor).toFixed(2)) + ") · ") +
         (cores === null ? "busy cores not published per container" : cores.toFixed(1) + " busy cores");
       return '<div data-process="' + esc((p.host || "?") + ":" + p.name) + '">' +
-        hbar(label, Math.max(0, p.watts), max, p.watts.toFixed(1) + " W · " + coresText, tip, "#c98500") + "</div>";
+        hbar(label, Math.max(0, p.watts), max, p.watts.toFixed(1) + " W" + wallText(wall) + " · " + coresText, tip, "#c98500") + "</div>";
     }).join("");
+    var factors = {};
+    rows.forEach(function (p) {
+      if (num(p.overhead_factor) !== null && !factors[p.host]) factors[p.host] = overheadNote(p.host, p.overhead_factor, p.overhead_basis);
+    });
+    var overhead = Object.keys(factors).sort().map(function (h) { return factors[h]; }).join("");
     return '<div class="legend"><span class="key"><span class="sw" style="background:#c98500"></span>CPU watts above idle</span></div>' +
-      bars + (notes.length ? '<ul class="plain small muted" data-process-notes>' +
+      bars + overhead + (notes.length ? '<ul class="plain small muted" data-process-notes>' +
         notes.map(function (n) { return "<li>" + esc(n) + "</li>"; }).join("") + "</ul>" : "");
   }
 

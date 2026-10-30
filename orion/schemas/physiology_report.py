@@ -135,13 +135,26 @@ class MoneyV1(BaseModel):
     daily_kwh: List[DailyKwhV1] = Field(default_factory=list)
 
 
+#: Overhead fields: how a component's watts were put on the whole-machine footing every cost uses
+#: (orion/energy/overhead.py; chassis above rest ~= overhead_factor x (GPU + CPU above idle)).
+_FACTOR_DOC = "wall watts above rest per watt of GPU/CPU load above idle on this host"
+_BASIS_DOC = "how the factor was found: fitted on this host (window, hours, R^2) or PR #2992's circe fit as fallback"
+
+
 class UnitCostV1(BaseModel):
+    """``wh``/``usd`` are whole machine at the wall above rest. A row built from a component meter
+    (energy_run_cost: GPU only) keeps the measured component in ``wh_component`` and says the factor."""
+
     unit: str
     usd: Optional[float] = None
     wh: Optional[float] = None
+    wh_component: Optional[float] = Field(default=None, description="the component meter's own W·h (GPU above "
+                                          "baseline) before the overhead factor; None for whole-machine rows")
     heat_c: Optional[float] = None
     status: Literal["measured", "derived", "not_measured"]
     source: str
+    overhead_factor: Optional[float] = Field(default=None, description=_FACTOR_DOC)
+    overhead_basis: Optional[str] = Field(default=None, description=_BASIS_DOC)
 
 
 class WasteTopV1(BaseModel):
@@ -219,6 +232,12 @@ class ProcessV1(BaseModel):
     name: str
     watts: float
     cores: Optional[float] = None
+    watts_at_wall_est: Optional[float] = Field(
+        default=None, description="ESTIMATE: the whole machine's watts at the wall ABOVE REST this part's load drives, fans "
+                                  "and PSU loss included = its watts above idle x the host's overhead_factor. A derived "
+                                  "view of the chassis reading, not a measurement; None when the factor or idle is unknown")
+    overhead_factor: Optional[float] = Field(default=None, description=_FACTOR_DOC)
+    overhead_basis: Optional[str] = Field(default=None, description=_BASIS_DOC)
 
 
 class HostHolderV1(BaseModel):
@@ -233,6 +252,11 @@ class HostCardV1(BaseModel):
     card: str
     watts: Optional[float] = Field(default=None, description="draw now (gpuN_watts, nvidia-smi: measured)")
     idle_w: Optional[float] = Field(default=None, description="the card's rest: its 5th percentile over the pinned rest window")
+    above_idle_w: Optional[float] = Field(default=None, description="watts - idle_w, clamped at 0")
+    watts_at_wall_est: Optional[float] = Field(
+        default=None, description="ESTIMATE: the whole machine's watts at the wall ABOVE REST this part's load drives, fans "
+                                  "and PSU loss included = its watts above idle x the host's overhead_factor. A derived "
+                                  "view of the chassis reading, not a measurement; None when the factor or idle is unknown")
     temp_c: Optional[float] = None
     mem_used_mb: Optional[float] = None
     roles: List[str] = Field(default_factory=list)
@@ -242,6 +266,10 @@ class HostCardV1(BaseModel):
 class HostContainerV1(BaseModel):
     name: str
     cpu_w: float = Field(description="CPU package watts above idle, split by busy cores (estimated: linear model)")
+    watts_at_wall_est: Optional[float] = Field(
+        default=None, description="ESTIMATE: the whole machine's watts at the wall ABOVE REST this part's load drives, fans "
+                                  "and PSU loss included = its watts above idle x the host's overhead_factor. A derived "
+                                  "view of the chassis reading, not a measurement; None when the factor or idle is unknown")
 
 
 class HostSponsoredV1(BaseModel):
@@ -252,6 +280,10 @@ class HostSponsoredV1(BaseModel):
     note: str = ""
     containers: int = 0
     cpu_w: Optional[float] = Field(default=None, description="its containers' CPU watts above idle (estimated); None: none running")
+    watts_at_wall_est: Optional[float] = Field(
+        default=None, description="ESTIMATE: the whole machine's watts at the wall ABOVE REST this part's load drives, fans "
+                                  "and PSU loss included = its watts above idle x the host's overhead_factor. A derived "
+                                  "view of the chassis reading, not a measurement; None when the factor or idle is unknown")
 
 
 class HostDayV1(BaseModel):
@@ -288,12 +320,29 @@ class HostPowerV1(BaseModel):
     parts_rest_window: str = Field(default="", description="the dated window the part and card rests come from")
     fan_pct: Optional[float] = None
     unattributed_above_rest_w: Optional[float] = Field(
-        default=None, description="above-rest draw no act is charged for (from the per-act meter; None until it publishes)")
+        default=None, description="average whole-machine watts above rest no act was charged for over "
+                                  "attribution_hour_start..+1 h (orion_energy_attribution_hourly, the newest complete "
+                                  "hour: it lags now by 1-2 h by design); None: no recent row")
+    leased_unmetered_above_rest_w: Optional[float] = Field(
+        default=None, description="part of unattributed_above_rest_w: GPU leases whose turn has no act, same hour")
+    attribution_hour_start: Optional[AwareDatetime] = Field(default=None, description="UTC start of that hour")
+    attribution_basis: str = Field(default="", description="the hour shown and how it was measured, in words")
     cards: List[HostCardV1] = Field(default_factory=list)
     top_containers: List[HostContainerV1] = Field(default_factory=list,
                                                   description="largest CPU users, sponsored work left out")
     sponsored: List[HostSponsoredV1] = Field(default_factory=list)
     daily: List[HostDayV1] = Field(default_factory=list)
+    overhead_factor: Optional[float] = Field(default=None, description=_FACTOR_DOC)
+    overhead_basis: Optional[str] = Field(default=None, description=_BASIS_DOC)
+    overhead_fitted: Optional[bool] = Field(default=None, description="True: fitted on this host; False: the fallback")
+    overhead_r2: Optional[float] = Field(default=None, description="the fit's R^2 (None for the fallback)")
+    overhead_hours: int = Field(default=0, description="hourly means the fit used (0 for the fallback)")
+    load_above_idle_w: Optional[float] = Field(default=None, description="now: every card above its idle + CPU above "
+                                               "cpu_idle_watts; None when any part's idle is unknown")
+    wall_est_parts_w: Optional[float] = Field(default=None, description="ESTIMATE: load_above_idle_w x overhead_factor, "
+                                              "the parts' wall estimates summed, to set against above_rest_w (measured)")
+    overhead_now_ratio: Optional[float] = Field(default=None, description="above_rest_w / load_above_idle_w this sample: "
+                                                "what the per-act meter's split uses this second (it caps it at 8)")
 
 
 class ValuePerCostV1(BaseModel):

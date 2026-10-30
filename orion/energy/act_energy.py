@@ -16,7 +16,9 @@ measured at the wall (``chassis_watts``). Two steps:
    that makes the heat (PSU loss is a near-constant fraction of DC load; fans follow heat). Live
    circe 2026-10-16..30, 339 hourly means, rest 541 W, CPU idle 100 W: chassis above rest =
    2.69 x (GPU above idle + CPU above idle), R^2 0.79; the residual is uncorrelated with fan_pct
-   (r = -0.05) while load and fan_pct correlate r = 0.82.
+   (r = -0.05) while load and fan_pct correlate r = 0.82. The component VIEWS (a card's, a
+   container's or a GPU-only run's watts in the physiology report) use the same relation as a
+   per-host fitted slope: orion/energy/overhead.py (fallback: this 2.69).
    CLOSURE, by construction: at each second the shares of every lease, the CPU part and the cards
    nobody leased sum to chassis_above_rest (``attribute_host_window`` reports all the parts).
    REST: pinned per host in config/physiology/rest_body.yaml (orion/physiology/rest_body.py), never

@@ -373,10 +373,63 @@ def render_processes(report: Mapping, *, full: bool) -> list[str]:
     rows = report.get("processes") or []
     if not rows:
         return []
-    out = ["CPU watts above idle by container, now (largest first):"]
+    wall = any(r.get("watts_at_wall_est") is not None for r in rows)
+    out = ["CPU watts above idle by container, now (largest first)"
+           + (", with the whole machine at the wall it drives:" if wall else ":")]
     for r in rows[: (len(rows) if full else 6)]:
-        out.append(f"- {r['host']} {r['name']}: {_n(r.get('watts'), 1)} W")
+        out.append(f"- {r['host']} {r['name']}: {_n(r.get('watts'), 1)} W CPU{_at_wall(r.get('watts_at_wall_est'))}")
+    line = overhead_summary(rows)
+    if line:
+        out.append(f"- {line}")
     return out
+
+
+def _at_wall(v: Any) -> str:
+    """' (≈70 W at the wall above rest, est.)': the ESTIMATED whole-machine watts a part's load drives."""
+    return "" if v is None else f" (≈{float(v):.0f} W at the wall above rest, est.)"
+
+
+def overhead_summary(rows: Sequence[Mapping]) -> Optional[str]:
+    """One line for every host the rows carry a factor for: 'at-the-wall figures are ESTIMATES: ... circe
+    x 2.35 (fitted), athena x 1.27 (fitted)'. ``rows``: hosts or processes rows."""
+    seen: dict[str, str] = {}
+    for r in rows:
+        k, host = r.get("overhead_factor"), r.get("host")
+        if k is not None and host and host not in seen:
+            fitted = r.get("overhead_fitted")   # hosts rows carry it; processes rows only the basis
+            if fitted is None:
+                fitted = str(r.get("overhead_basis") or "").startswith("fitted")
+            how = "fitted" if fitted else "fallback, not fitted here"
+            seen[host] = f"{host} x {float(k):.2f} ({how})"
+    if not seen:
+        return None
+    return ("at-the-wall figures are ESTIMATES: a part's watts above idle x its machine's overhead factor, the "
+            "whole-machine watts at the wall (fans, power-supply loss included) per watt of GPU/CPU load: "
+            + ", ".join(seen.values()))
+
+
+#: Said when the parts' wall estimates now differ from the measured surplus now by more than this share.
+OVERHEAD_LAG_SHARE = 0.25
+
+
+def overhead_lag_words(h: Mapping) -> Optional[str]:
+    """The parts' wall estimates now, summed, vs the measured surplus now: k is an hours-average."""
+    parts, above, ratio = h.get("wall_est_parts_w"), h.get("above_rest_w"), h.get("overhead_now_ratio")
+    if parts is None or above is None or ratio is None or float(above) <= 0:
+        return None
+    if abs(float(parts) - float(above)) <= OVERHEAD_LAG_SHARE * float(above):
+        return None
+    return (f"right now the parts' at-the-wall estimates add to {float(parts):.0f} W against {float(above):.0f} W "
+            f"measured above rest (this sample's ratio {float(ratio):.2f}, the fitted {float(h['overhead_factor']):.2f}): "
+            "fans and power-supply loss follow load over minutes to hours, so a part's figure is its average cost "
+            "over hours, not a split of this second")
+
+
+def overhead_words(h: Mapping) -> str:
+    """Full view, one host: the factor and exactly how it was found."""
+    return (f"overhead: each watt of GPU/CPU load above idle draws about {float(h['overhead_factor']):.2f} W at the "
+            f"wall above rest (fans, power-supply loss); at-the-wall figures are ESTIMATES. "
+            f"{h.get('overhead_basis') or ''}").rstrip()
 
 
 def _w(v: Any) -> str:
@@ -435,7 +488,7 @@ def sponsored_words(h: Mapping) -> list[str]:
             continue
         note = f" {sp['note']}" if sp.get("note") else ""
         out.append(f"{sp['name']} is Juniper's sponsored work, not my activity: {sp.get('containers')} containers, "
-                   f"{float(sp['cpu_w']):.0f} W CPU above idle (estimated).{note}")
+                   f"{float(sp['cpu_w']):.0f} W CPU above idle (estimated){_at_wall(sp.get('watts_at_wall_est'))}.{note}")
     return out
 
 
@@ -459,7 +512,7 @@ def host_parts(h: Mapping) -> str:
 def _card_line(c: Mapping, *, n_holders: int) -> str:
     roles = "/".join(c.get("roles") or []) or "no pool role"
     held = _held(c.get("top_holders") or [], n_holders)
-    return f"{c['card']} {_w(c.get('watts'))} ({roles}{': ' + held if held else ''})"
+    return f"{c['card']} {_w(c.get('watts'))}{_at_wall(c.get('watts_at_wall_est'))} ({roles}{': ' + held if held else ''})"
 
 
 def render_hosts(report: Mapping, *, full: bool) -> list[str]:
@@ -476,9 +529,12 @@ def render_hosts(report: Mapping, *, full: bool) -> list[str]:
             cards = "; ".join(_card_line(c, n_holders=2) for c in busy)
             fans = f" Fans {h['fan_pct']:.0f}%." if h.get("fan_pct") is not None else ""
             split = f" {host_parts(h)}." if h.get("chassis_w_now") is not None else ""
-            spons = "".join(f" {sp['name']} (Juniper's) {float(sp['cpu_w']):.0f} W CPU."
+            spons = "".join(f" {sp['name']} (Juniper's) {float(sp['cpu_w']):.0f} W CPU{_at_wall(sp.get('watts_at_wall_est'))}."
                             for sp in h.get("sponsored") or [] if sp.get("cpu_w") is not None)
             out.append(f"- {host_headline(h, short=True)}{split}" + (f" {cards}." if cards else "") + spons + fans)
+        line = overhead_summary(hosts)
+        if line:
+            out.append(f"- {line}")
         return out
     out = [f"What is spinning my machines (now; held time is over the last {window}):"]
     for h in hosts:
@@ -488,6 +544,11 @@ def render_hosts(report: Mapping, *, full: bool) -> list[str]:
                    "GPUs minus CPU: fans, PSU loss, memory, disks")
         if h.get("rest_basis"):
             out.append(f"- rest: {h['rest_basis']}")
+        if h.get("overhead_factor") is not None:
+            out.append(f"- {overhead_words(h)}")
+            lag = overhead_lag_words(h)
+            if lag:
+                out.append(f"- {lag}")
         drift = floor_drift(h)
         if drift:
             out.append(f"- {drift}")
@@ -498,14 +559,18 @@ def render_hosts(report: Mapping, *, full: bool) -> list[str]:
             temp = f", {c['temp_c']:.0f} °C" if c.get("temp_c") is not None else ""
             roles = "/".join(c.get("roles") or []) or "no pool role"
             held = _held(c.get("top_holders") or [], 4)
-            out.append(f"- {c['card']} {_w(c.get('watts'))}{rest}{temp} ({roles})"
+            out.append(f"- {c['card']} {_w(c.get('watts'))}{rest}{_at_wall(c.get('watts_at_wall_est'))}{temp} ({roles})"
                        + (f"; held by {held}" if held else "; no lease closed on it in the window"))
         ctr = h.get("top_containers") or []
         if ctr:
             out.append("- top CPU users (watts above CPU idle): "
-                       + ", ".join(f"{c['name']} {float(c['cpu_w']):.1f} W" for c in ctr))
+                       + ", ".join(f"{c['name']} {float(c['cpu_w']):.1f} W{_at_wall(c.get('watts_at_wall_est'))}"
+                                   for c in ctr))
         if h.get("unattributed_above_rest_w") is not None:
-            out.append(f"- above rest but charged to no act: {_w(h['unattributed_above_rest_w'])}")
+            leased = (f", of it {_w(h['leased_unmetered_above_rest_w'])} on GPU leases whose turn has no act"
+                      if h.get("leased_unmetered_above_rest_w") is not None else "")
+            out.append(f"- above rest but charged to no act: {_w(h['unattributed_above_rest_w'])}{leased} "
+                       f"({h.get('attribution_basis') or 'hourly attribution'})")
         days = h.get("daily") or []
         if days:
             out.append("- daily average (first and last day partial): "
@@ -513,7 +578,9 @@ def render_hosts(report: Mapping, *, full: bool) -> list[str]:
     out.append("- measured: whole-machine watts (wall PDU or BMC), card watts (nvidia-smi), CPU watts (RAPL), "
                "held time (GPU pool leases: time held, not time computing; holds overlap, and a lease that closed in "
                "the window counts its whole hold). Estimated: rest (pinned: the 5th "
-               "percentile of a dated window), CPU watts per container (a linear model), $/month (this rate x 730 h).")
+               "percentile of a dated window), CPU watts per container (a linear model), $/month (this rate x 730 h), "
+               "every 'at the wall' figure (a part's watts above idle x its host's overhead factor: the share of the "
+               "whole machine above rest it drives, fans and power-supply loss included).")
     return out
 
 

@@ -950,8 +950,8 @@ off answers 503.
 | `decisions[]` | `want_ledger`, newest first |
 | `claude` | `dev_economics_ledger_log` (Claude Code sessions on athena, not Orion's harness) + the `claude` constraint |
 | `vram[]` | `orion_biometrics_summary.measurements` `gpuN_mem_used_mb`/`gpuN_mem_total_mb`/`gpuN_watts`; card -> roles from `config/gpu_pool.yaml` |
-| `processes[]` | the same newest biometrics row: `container_cpu_watts.<name>`, `container_cpu_watts_small`, `cpu_watts_host_other` (CPU watts above idle, PR #2977); top 12; `cores` is None (not published per container) |
-| `hosts[]` | what is spinning each machine (2026-10-30): the newest fresh biometrics row per host (`chassis_watts` from BMC or wall PDU, `gpu_watts_total`, `cpu_watts_total`, `fan_pct_max`, `gpuN_*`, `container_cpu_watts.*`) against Orion's body at rest. Rest is **pinned and dated**, never rolling (a rolling low would hide new always-on work such as the Zelda dojo): `config/physiology/rest_body.yaml` (`approved_rest_w`, else `rest_w`; path = sibling of `ORION_PHYSIOLOGY_HEAT_SENSITIVITY_PATH`, no new key), else defaults circe 541 W / athena 340 W / hecate 96 W (p05 of 2026-10-01..10-13). `other_w` = chassis − GPU − CPU (fans, PSU loss, memory, disks); each part and card is compared with its own p05 over the same dated window (cards: the trailing 7 days, because per-card watts began 2026-10-29; said in `missing`). `recent_floor_w` = trailing-7-day p05: above the pinned rest means new always-on draw. `usd_per_month_at_this_rate` = above-rest W x 730 h x the newest rate. Per card: `top_holders` = lease-seconds held per holder in the window (`gpu_pool_events.cards`; a durable run is named by its `durable_run_workflow.workflow`; time held, not time computing). `top_containers`: CPU watts above idle, sponsored work (rest_body `sponsored`, today `zelda-dojo-live-*` on athena) shown apart in `sponsored[]`. Container ids (circe's biometrics cannot read its docker root) become names from circe's container census on the `gpu-lane-controller@circe` heartbeat in Redis `equilibrium:state` (read-only). `unattributed_above_rest_w` stays None with a reason until the whole-machine per-act meter (fix/act-energy-whole-machine) merges. Asleep hosts are a `missing` reason. The pinned-window part rests are cached in-process for 6 h |
+| `processes[]` | the same newest biometrics row: `container_cpu_watts.<name>`, `container_cpu_watts_small`, `cpu_watts_host_other` (CPU watts above idle, PR #2977); top 12; `cores` is None (not published per container); `watts_at_wall_est` + `overhead_factor`/`overhead_basis` (see "Overhead" below) |
+| `hosts[]` | what is spinning each machine (2026-10-30): the newest fresh biometrics row per host (`chassis_watts` from BMC or wall PDU, `gpu_watts_total`, `cpu_watts_total`, `fan_pct_max`, `gpuN_*`, `container_cpu_watts.*`) against Orion's body at rest. Rest is **pinned and dated**, never rolling (a rolling low would hide new always-on work such as the Zelda dojo): `config/physiology/rest_body.yaml` (`approved_rest_w`, else `rest_w`; path = sibling of `ORION_PHYSIOLOGY_HEAT_SENSITIVITY_PATH`, no new key), else defaults circe 541 W / athena 340 W / hecate 96 W (p05 of 2026-10-01..10-13). `other_w` = chassis − GPU − CPU (fans, PSU loss, memory, disks); each part and card is compared with its own p05 over the same dated window (cards: the trailing 7 days, because per-card watts began 2026-10-29; said in `missing`). `recent_floor_w` = trailing-7-day p05: above the pinned rest means new always-on draw. `usd_per_month_at_this_rate` = above-rest W x 730 h x the newest rate. Per card: `top_holders` = lease-seconds held per holder in the window (`gpu_pool_events.cards`; a durable run is named by its `durable_run_workflow.workflow`; time held, not time computing). `top_containers`: CPU watts above idle, sponsored work (rest_body `sponsored`, today `zelda-dojo-live-*` on athena) shown apart in `sponsored[]`. Container ids (circe's biometrics cannot read its docker root) become names from circe's container census on the `gpu-lane-controller@circe` heartbeat in Redis `equilibrium:state` (read-only). `unattributed_above_rest_w` (and `leased_unmetered_above_rest_w`, the part on GPU leases whose turn has no act) is the average watts of the newest complete hour per host in `orion_energy_attribution_hourly`, labelled by `attribution_hour_start` and `attribution_basis`. That hour lags now by design: the sql-writer writes an hour once it has ended plus 3 min, on a 10-min tick, so the newest `hour_start` is 1 h 3 min to about 2 h 13 min old (live 05:09Z: 03:00, written 05:00:54). Older than 3 h is said as stale, not shown. Asleep hosts are a `missing` reason. The pinned-window part rests are cached in-process for 6 h |
 | `value_per_cost[]` | the market's own family-weight evidence (`Market.family_weights`) |
 | `services` | mesh-guardian `stopped_container` cards in `notify_requests` (no recovery event: a listed service may be up again) |
 
@@ -960,7 +960,31 @@ own section (`read failed: ...`). `timing_ms` has each read's time. Postgres doe
 Python sees aggregated rows; reads run at most `ORION_PHYSIOLOGY_REPORT_CONCURRENCY` at once on the
 shared pool; the same query is cached `ORION_PHYSIOLOGY_REPORT_CACHE_SEC`. Measured on the live DB
 2026-10-29 (read-only, concurrency 3): 24h ~0.35 s, 7d ~0.8 s, 30d ~1.0 s (H5: under 2 s; the
-slowest read is rhythm at 30 d, ~0.9 s). `hosts` adds four reads run side by side (2026-10-30, 30 d, first call: pinned parts ~1.2 s then cached, daily ~0.8 s, holders ~0.9 s, floor ~0.4 s; total report ~1.4 s). The newest tick older than 10 min is reported `stale`, not "now".
+slowest read is rhythm at 30 d, ~0.9 s).
+
+**Overhead: one unit for every cost.** Every cost number means the whole machine at the wall ABOVE
+REST, fans and PSU loss included: the unit the per-act meter charges (PR #2992). A card's watts, a
+container's CPU watts and `energy_run_cost` (GPU above baseline) are components. Each is shown beside
+`watts_at_wall_est` = its watts above idle x the host's `overhead_factor`
+(`orion/energy/overhead.py`): a least-squares slope through zero of chassis above the pinned rest vs
+GPU above its pinned p05 + CPU above `cpu_idle_watts`, over the trailing 14 days of hourly means of the
+same biometrics readings (`HOSTS_OVERHEAD_SQL`, ~0.55 s, cached 6 h). Live 2026-10-30: circe 2.34
+(R^2 0.90, 337 h), athena 1.27 (R^2 0.98). Fewer than 48 loaded hours, R^2 under 0.5 or k under 1:
+#2992's circe fit (2.69, R^2 0.79), said in `overhead_basis` with `overhead_fitted=false`. Fields:
+hosts `overhead_factor`/`overhead_basis`/`overhead_fitted`/`overhead_r2`/`overhead_hours`; cards
+`above_idle_w`/`watts_at_wall_est`; containers and sponsored `watts_at_wall_est`; the run-cost unit
+row (`one reverie_diffusion run (painting) on <node>`) has `wh`/`usd` at the wall (status `derived`)
+and the GPU-only figure in `wh_component`. Painting acts carry no whole-machine cost yet (their act
+and diffusion lease share no correlation id, PR #2977), so this row is the painting cost for now.
+These wall figures are ESTIMATES: derived views of the one chassis reading, not new measurements.
+k is an hours-average: fans and PSU loss follow load over minutes, so at one instant the parts'
+estimates do not split the surplus (live 2026-10-30, two samples two minutes apart: this second's
+ratio 1.23, then 6.11). Each host therefore also carries `load_above_idle_w`, `wall_est_parts_w`
+(= load x k) and `overhead_now_ratio` (measured above rest / load now, the meter's per-second ratio),
+and the dig text says so when the parts' sum and the measured surplus differ by more than 25%.
+Through zero on purpose: like the meter, k charges all above-rest draw to load, including drift above
+the pinned rest; the basis also gives the slope and intercept of a fit with an intercept (circe 2.05
+x load + 76 W) so the drift is visible. Run costs are priced at the newest marginal rate, like acts. `hosts` adds four reads run side by side (2026-10-30, 30 d, first call: pinned parts ~1.2 s then cached, daily ~0.8 s, holders ~0.9 s, floor ~0.4 s; total report ~1.4 s). The newest tick older than 10 min is reported `stale`, not "now".
 With `family=`, a `*` entry names the sections it does not narrow. A report with a failed read is not cached.
 The concurrency limit is one semaphore shared by all requests; concurrent identical queries share one build.
 `gpu_pool_events` has no persisted rollup; if 30 d grows past 2 s, that is the table to roll up.

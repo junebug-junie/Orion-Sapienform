@@ -3102,6 +3102,16 @@ dollar per family, and the verbatim `why` line per limit. Below that, single dec
 filter, a "why did Orion wait?" family search, and a click on a row for its life, the prices it saw
 and its reason. Dragging across the limits or wants chart filters the decisions to that window.
 
+One unit for every cost: the whole machine at the wall above rest, fans and power-supply loss
+included (what an act is charged). A card, a container, the Processes bars, sponsored work and the
+painting run cost each show their own watts beside "(≈N W at the wall above rest, est.)", the report's
+`watts_at_wall_est` (watts above idle x the machine's `overhead_factor`, fitted per machine on its
+own last 14 days). Each machine says "At-the-wall figures are estimates ... × 2.35 ... fitted on
+circe's own recent history" (hover: the exact fit, window and R^2). When the parts' estimates now add to
+far more or less than the measured surplus now, the panel says so: the factor is an hours-average,
+not a split of this second. An older report without these fields renders as
+before, never as "0 W".
+
 API: `GET /api/body-economy/report?window=24h|7d|30d` (`scripts/body_economy_routes.py`), a thin
 proxy to orion-durable-runs `GET /physiology/report` (schema `physiology.report.v1`) at
 `HUB_CURIOSITY_DURABLE_RUNS_URL` (no new key). The Hub reads no physiology table itself. Upstream

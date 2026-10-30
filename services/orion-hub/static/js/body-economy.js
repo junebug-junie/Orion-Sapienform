@@ -605,15 +605,26 @@
   // it is an ESTIMATE. Absent (an older report, or no idle known): nothing is added, never "0 W".
   function wallText(v) {
     var n = num(v);
-    return n === null ? "" : " (≈" + Math.round(n) + " W at the wall)";
+    return n === null ? "" : " (≈" + Math.round(n) + " W at the wall above rest, est.)";
   }
 
-  function overheadNote(host, factor, basis) {
+  // k is an hours-average: fans and PSU loss follow load over minutes. When the parts' estimates now
+  // add to far more (or less) than the measured surplus now, say so instead of letting them read as a split.
+  function overheadLag(h) {
+    var parts = num(h.wall_est_parts_w), above = num(h.above_rest_w);
+    if (parts === null || above === null || above <= 0 || Math.abs(parts - above) <= 0.25 * above) return "";
+    return '<div class="muted small" data-overhead-lag="' + esc(h.host) + '">Right now the parts\' at-the-wall estimates add to ' +
+      esc(fmtW(parts)) + " against " + esc(fmtW(above)) + " measured above rest: fans and power-supply loss follow load over " +
+      "minutes to hours, so each part's figure is its average cost over hours, not a split of this second.</div>";
+  }
+
+  function overheadNote(host, factor, basis, fitted) {
     var k = num(factor);
     if (k === null) return "";
+    var isFit = fitted === true || (fitted == null && String(basis || "").indexOf("fitted") === 0);
     return '<div class="muted small" data-overhead="' + esc(host) + '" data-tip="' + esc(basis || "") + '">' +
       "At-the-wall figures are estimates of the whole machine's extra draw above rest that each part drives: watts above idle × " + k.toFixed(2) +
-      " (fans and power-supply loss), " + (String(basis || "").indexOf("fitted") === 0 ? "fitted on " + esc(host) + "'s own last 14 days" :
+      " (fans and power-supply loss), " + (isFit ? "fitted on " + esc(host) + "'s own recent history (hover for the fit)" :
         "fallback: not fitted on " + esc(host)) + ".</div>";
   }
 
@@ -679,7 +690,7 @@
         ? '<div class="small">This week\'s lowest draw is ' + esc(fmtW(floor)) + ", " + Math.round(floor - rest) + " W above the pinned rest: new always-on draw.</div>" : "";
       var unattr = num(h.unattributed_above_rest_w) !== null ? '<div class="small">Above rest but charged to no act: ' + esc(fmtW(h.unattributed_above_rest_w)) + "</div>" : "";
       return '<div class="host" data-host="' + esc(h.host) + '"><div class="host-head">' + head + "</div>" + hostStackHtml(h, maxW) +
-        overheadNote(h.host, h.overhead_factor, h.overhead_basis) +
+        overheadNote(h.host, h.overhead_factor, h.overhead_basis, h.overhead_fitted) + overheadLag(h) +
         hostCardsHtml(h) + (ctr.length ? '<div class="muted small">Top CPU users (watts above CPU idle, estimated): ' + esc(ctr.join(", ")) + "</div>" : "") +
         spons + drift + unattr + "</div>";
     }).join("");

@@ -209,7 +209,9 @@ def test_full_report_fills_every_section_from_rows():
     paint = units["one reverie_diffusion run (painting) on circe"]
     # GPU-only meter put on the whole-machine footing: 0.363 W·h x circe's fitted 2.35, an estimate
     assert paint.status == "derived" and paint.wh_component == 0.363 and paint.overhead_factor == pytest.approx(2.35, abs=0.01)
-    assert paint.wh == pytest.approx(0.363 * 2.35, abs=0.01) and paint.usd == pytest.approx(4.57e-05 * 2.35, abs=1e-6)
+    # priced at the newest marginal rate, like the act rows (energy_run_cost's own usd is tiered)
+    assert paint.wh == pytest.approx(0.363 * 2.35, abs=0.01) and paint.usd == pytest.approx(paint.wh / 1000 * 0.1255, abs=1e-6)
+    assert "baseline is the card's draw just before the run" in paint.source
     assert "estimate, whole machine at the wall above rest" in paint.source and "fitted on circe" in paint.overhead_basis
     assert units["one hub.outreach act (estimate: family mean)"].wh == 2.0 and units["one hub.outreach act (estimate: family mean)"].usd == 0.0003
     assert units["per 1k tokens"].status == "not_measured" and "token" in units["per 1k tokens"].source
@@ -672,8 +674,32 @@ def test_hosts_put_every_part_on_the_whole_machine_footing():
     assert fast.watts_at_wall_est == pytest.approx(8.4 * c.overhead_factor, abs=0.1)
     dojo = a.sponsored[0]
     assert dojo.watts_at_wall_est == pytest.approx(176.0 * a.overhead_factor, abs=0.2)
+    # every idle unknown somewhere (gpu0 has no rest, no cpu_idle_watts): no sum, never a partial one
+    assert c.load_above_idle_w is None and c.wall_est_parts_w is None and c.overhead_now_ratio is None
+    rows = _hosts_rows()
+    rows[pr.VRAM_SQL][0]["measurements"]["cpu_idle_watts"] = 100.0
+    rows[pr.HOSTS_FLOOR_SQL][0]["gpu0_floor"] = 0.0
+    c2 = _build(rows, q=pr.parse_query("24h", "hosts", None, None, None)).hosts[0]
+    assert c2.load_above_idle_w == pytest.approx(188.2 + 147.7 + 20.0, abs=0.1)   # cards above idle + CPU above idle
+    assert c2.wall_est_parts_w == pytest.approx(c2.load_above_idle_w * c2.overhead_factor, abs=0.1)
+    assert c2.overhead_now_ratio == pytest.approx(609.0 / c2.load_above_idle_w, abs=0.01)
     p = next(x for x in rep.processes if x.name == "orion-athena-sql-db")
     assert p.watts_at_wall_est == pytest.approx(13.8 * a.overhead_factor, abs=0.1) and p.overhead_factor == a.overhead_factor
+
+
+def test_a_run_cost_with_no_factor_is_not_passed_off_as_whole_machine():
+    rows = full_rows()
+    rows[pr.RUN_COST_SQL] = [{"workload_kind": "reverie_diffusion", "node": "janus", "n": 3, "kwh": 0.0003, "usd": 4e-05}]
+    u = next(u for u in _build(rows).unit_costs if u.unit.startswith("one reverie_diffusion run"))
+    assert u.unit == "one reverie_diffusion run (painting) on janus"
+    assert u.status == "not_measured" and u.wh is None and u.usd is None and u.wh_component == 0.3
+    assert "whole machine at the wall is unknown" in u.source
+
+
+def test_a_failed_pinned_rest_read_is_said_as_a_read_failure_in_every_section_it_feeds():
+    rep = _build(_hosts_rows(), q=pr.parse_query("24h", "processes", None, None, None), fail={"_rest\n"})
+    assert rep.processes and all("pinned rest read failed" in p.overhead_basis for p in rep.processes)
+    assert any(r.startswith("read failed (hosts_rest)") for r in _reasons(rep, "processes"))
 
 
 def test_overhead_falls_back_to_the_2992_fit_and_says_so():

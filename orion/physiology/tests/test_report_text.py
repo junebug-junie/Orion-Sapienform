@@ -268,24 +268,42 @@ def test_cards_containers_and_processes_show_both_numbers_and_say_estimate():
     text = rt.render_report_text(rep, ("hosts", "processes"))
     circe = next(h for h in rep["hosts"] if h["host"] == "circe")
     gpu1 = next(c for c in circe["cards"] if c["card"] == "gpu1")
-    assert f"- gpu1 {gpu1['watts']:.0f} W, rest {gpu1['idle_w']:.0f} W (≈{gpu1['watts_at_wall_est']:.0f} W at the wall above rest)" in text
-    assert "- overhead: each watt of GPU/CPU load above idle draws about 2.35 W at the wall above rest" in text
+    assert f"- gpu1 {gpu1['watts']:.0f} W, rest {gpu1['idle_w']:.0f} W (≈{gpu1['watts_at_wall_est']:.0f} W at the wall above rest, est.)" in text
+    assert f"- overhead: each watt of GPU/CPU load above idle draws about {circe['overhead_factor']:.2f} W at the wall above rest" in text
+    assert "with an intercept:" in text                     # drift above the pinned rest is visible
     assert "at-the-wall figures are ESTIMATES" in text and "fitted on circe" in text and "fitted on athena" in text
     p = rep["processes"][0]
-    assert f"- {p['host']} {p['name']}: {p['watts']:.1f} W CPU (≈{p['watts_at_wall_est']:.0f} W at the wall above rest)" in text
-    assert "athena x 1.27 (fitted), circe x 2.35 (fitted)" in text
+    assert f"- {p['host']} {p['name']}: {p['watts']:.1f} W CPU (≈{p['watts_at_wall_est']:.0f} W at the wall above rest, est.)" in text
+    k = {h["host"]: h["overhead_factor"] for h in rep["hosts"]}
+    assert f"athena x {k['athena']:.2f} (fitted), circe x {k['circe']:.2f} (fitted)" in text
     assert "every 'at the wall' figure" in text and "None" not in text and "nan" not in text
     overview = rt.render_report_text(rep)
-    assert "(≈368 W at the wall above rest)" in overview and overview.count("at-the-wall figures are ESTIMATES") == 1
+    busiest = max(circe["cards"], key=lambda c: c.get("above_idle_w") or 0.0)   # the overview shows busy cards only
+    assert f"(≈{busiest['watts_at_wall_est']:.0f} W at the wall above rest, est.)" in overview
+    assert overview.count("at-the-wall figures are ESTIMATES") == 1
     assert rt.cap_text(overview) == overview
+
+
+def test_parts_estimates_far_from_the_measured_surplus_now_are_said():
+    h = {"host": "circe", "above_rest_w": 637.0, "wall_est_parts_w": 1210.0, "overhead_now_ratio": 1.23,
+         "overhead_factor": 2.34}
+    words = rt.overhead_lag_words(h)
+    assert "add to 1210 W against 637 W measured above rest (this sample's ratio 1.23, the fitted 2.34)" in words
+    assert "average cost over hours, not a split of this second" in words
+    assert rt.overhead_lag_words({**h, "wall_est_parts_w": 700.0}) is None      # within 25%: nothing to say
+    assert rt.overhead_lag_words({**h, "wall_est_parts_w": None}) is None
 
 
 def test_fallback_factor_is_named_in_the_overview():
     rep = overhead_live()
     for h in rep["hosts"]:
         h["overhead_basis"] = "PR #2992 fit on circe ...; not fitted on " + h["host"] + ": 3 loaded hours, need 48"
+        h["overhead_factor"], h["overhead_fitted"] = 2.69, False
     line = rt.overhead_summary(rep["hosts"])
-    assert "circe x 2.35 (fallback, not fitted here)" in line
+    assert "circe x 2.69 (fallback, not fitted here)" in line
+    # processes rows carry no overhead_fitted: the basis decides
+    assert "(fallback, not fitted here)" in rt.overhead_summary(
+        [{"host": "x", "overhead_factor": 2.69, "overhead_basis": "PR #2992 fit ...; not fitted on x"}])
 
 
 def test_old_reports_without_overhead_fields_render_as_before():

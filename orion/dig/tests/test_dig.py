@@ -267,7 +267,7 @@ def test_body_economy_hosts_host_answers_what_is_spinning_circe(world, capsys, m
     if circe.get("overhead_factor") is not None:
         # every card in the same unit acts are charged in: whole machine at the wall above rest (estimate)
         gpu1 = next(c for c in circe["cards"] if c["card"] == "gpu1")
-        assert f"(≈{gpu1['watts_at_wall_est']:.0f} W at the wall above rest)" in out
+        assert f"(≈{gpu1['watts_at_wall_est']:.0f} W at the wall above rest, est.)" in out
         assert "- overhead: each watt of GPU/CPU load above idle draws about" in out and "ESTIMATES" in out
 
 

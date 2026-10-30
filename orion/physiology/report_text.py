@@ -361,8 +361,8 @@ def render_processes(report: Mapping, *, full: bool) -> list[str]:
 
 
 def _at_wall(v: Any) -> str:
-    """' (≈70 W at the wall above rest)': the ESTIMATED whole-machine watts a part's load drives."""
-    return "" if v is None else f" (≈{float(v):.0f} W at the wall above rest)"
+    """' (≈70 W at the wall above rest, est.)': the ESTIMATED whole-machine watts a part's load drives."""
+    return "" if v is None else f" (≈{float(v):.0f} W at the wall above rest, est.)"
 
 
 def overhead_summary(rows: Sequence[Mapping]) -> Optional[str]:
@@ -372,13 +372,33 @@ def overhead_summary(rows: Sequence[Mapping]) -> Optional[str]:
     for r in rows:
         k, host = r.get("overhead_factor"), r.get("host")
         if k is not None and host and host not in seen:
-            how = "fitted" if str(r.get("overhead_basis") or "").startswith("fitted") else "fallback, not fitted here"
+            fitted = r.get("overhead_fitted")   # hosts rows carry it; processes rows only the basis
+            if fitted is None:
+                fitted = str(r.get("overhead_basis") or "").startswith("fitted")
+            how = "fitted" if fitted else "fallback, not fitted here"
             seen[host] = f"{host} x {float(k):.2f} ({how})"
     if not seen:
         return None
     return ("at-the-wall figures are ESTIMATES: a part's watts above idle x its machine's overhead factor, the "
             "whole-machine watts at the wall (fans, power-supply loss included) per watt of GPU/CPU load: "
             + ", ".join(seen.values()))
+
+
+#: Said when the parts' wall estimates now differ from the measured surplus now by more than this share.
+OVERHEAD_LAG_SHARE = 0.25
+
+
+def overhead_lag_words(h: Mapping) -> Optional[str]:
+    """The parts' wall estimates now, summed, vs the measured surplus now: k is an hours-average."""
+    parts, above, ratio = h.get("wall_est_parts_w"), h.get("above_rest_w"), h.get("overhead_now_ratio")
+    if parts is None or above is None or ratio is None or float(above) <= 0:
+        return None
+    if abs(float(parts) - float(above)) <= OVERHEAD_LAG_SHARE * float(above):
+        return None
+    return (f"right now the parts' at-the-wall estimates add to {float(parts):.0f} W against {float(above):.0f} W "
+            f"measured above rest (this sample's ratio {float(ratio):.2f}, the fitted {float(h['overhead_factor']):.2f}): "
+            "fans and power-supply loss follow load over minutes to hours, so a part's figure is its average cost "
+            "over hours, not a split of this second")
 
 
 def overhead_words(h: Mapping) -> str:
@@ -502,6 +522,9 @@ def render_hosts(report: Mapping, *, full: bool) -> list[str]:
             out.append(f"- rest: {h['rest_basis']}")
         if h.get("overhead_factor") is not None:
             out.append(f"- {overhead_words(h)}")
+            lag = overhead_lag_words(h)
+            if lag:
+                out.append(f"- {lag}")
         drift = floor_drift(h)
         if drift:
             out.append(f"- {drift}")

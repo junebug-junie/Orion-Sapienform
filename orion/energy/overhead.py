@@ -17,6 +17,14 @@ fits it per host over hourly means of the SAME readings (``chassis_watts``, ``gp
 NOT NEW SIGNAL: k is a derived view of the chassis measurement the meter already splits. A
 component's ``x k`` figure is an estimate of its share of that chassis draw, never a reading.
 
+Through zero, on purpose: the per-act meter charges ALL chassis watts above rest to load, so the
+view's k does too. Always-on draw that crept in above the pinned rest (the report's
+``recent_floor_w`` drift) therefore lands in k. The basis says how much: it also gives the slope
+and intercept of an ordinary fit with an intercept, so drift is visible, not hidden.
+
+R^2 is 1 - SS_res / SS_tot with SS_tot CENTRED on the mean of y: the conservative form for a
+no-intercept model (the uncentred form would inflate it).
+
 When a host's fit is not credible (too few hours, R^2 under MIN_R2, k under 1), the factor is
 #2992's circe fit, said as such (``fitted=False`` and the basis names it). Pure arithmetic: the
 caller reads the rows.
@@ -51,6 +59,10 @@ class Overhead:
     fitted: bool
     r2: Optional[float] = None
     hours: int = 0
+    loaded_hours: int = 0
+    #: Ordinary least squares with an intercept on the same points: the intercept is always-on draw
+    #: above the pinned rest that the through-zero k charges to load.
+    intercept_w: Optional[float] = None
 
     def wall(self, component_above_idle_w: Optional[float]) -> Optional[float]:
         """Estimated wall watts above rest that a component's above-idle watts drive."""
@@ -103,6 +115,10 @@ def fit_overhead(host: str, hourly: Iterable[Mapping], *, rest_w: Optional[float
     sxy = sum(x * y for x, y in zip(xs, ys))
     k = sxy / sxx
     mean_y = sum(ys) / len(ys)
+    mean_x = sum(xs) / len(xs)
+    var_x = sum((x - mean_x) ** 2 for x in xs)
+    slope_i = (sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / var_x) if var_x > 0 else None
+    intercept = (mean_y - slope_i * mean_x) if slope_i is not None else None
     ss_tot = sum((y - mean_y) ** 2 for y in ys)
     ss_res = sum((y - k * x) ** 2 for x, y in zip(xs, ys))
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else None
@@ -111,10 +127,15 @@ def fit_overhead(host: str, hourly: Iterable[Mapping], *, rest_w: Optional[float
     if k < MIN_FACTOR:
         return fallback(host, f"fit k {k:.2f} under {MIN_FACTOR:g}")
     span = f" {window_words}" if window_words else ""
-    return Overhead(host=host, factor=round(k, 3), fitted=True, r2=round(r2, 3), hours=len(xs),
+    drift = (f"; with an intercept: {slope_i:.2f} x load {'+' if intercept >= 0 else '-'} {abs(intercept):.0f} W "
+             "(always-on draw above the pinned rest, which this k charges to load as the per-act meter does)"
+             if slope_i is not None and intercept is not None else "")
+    return Overhead(host=host, factor=round(k, 3), fitted=True, r2=round(r2, 3), hours=len(xs), loaded_hours=loaded,
+                    intercept_w=round(intercept, 1) if intercept is not None else None,
                     basis=(f"fitted on {host}{span}: chassis above pinned rest {rest_w:g} W = {k:.2f} x (GPU above "
-                           f"{gpu_idle_w:.0f} W + CPU above {cpu_idle_host:.0f} W idle), {len(xs)} hourly means, "
-                           f"R^2 {r2:.2f}; same readings and rest as the per-act meter (PR #2992)"))
+                           f"{gpu_idle_w:.0f} W + CPU above {cpu_idle_host:.0f} W idle), {len(xs)} hourly means "
+                           f"({loaded} with load), R^2 {r2:.2f}{drift}; same readings and rest as the per-act "
+                           "meter (PR #2992)"))
 
 
 __all__ = ["FALLBACK_FACTOR", "FALLBACK_SOURCE", "FIT_WINDOW", "MIN_FACTOR", "MIN_HOURS", "MIN_R2", "Overhead",

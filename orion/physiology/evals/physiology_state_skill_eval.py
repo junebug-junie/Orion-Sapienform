@@ -15,7 +15,7 @@ text Orion would read:
                 no other machine appears, and it says what is measured and what is estimated;
                 the overview carries one "what is spinning" line per machine;
 * overhead   -- (live 2026-10-30T04:37Z fixture with the overhead fields) every card with an at-the-wall
-                estimate shows it as "(≈N W at the wall above rest)", the host's factor and how it was found
+                estimate shows it as "(≈N W at the wall above rest, est.)", the host's factor and how it was found
                 are said, and the text calls the wall figures ESTIMATES (they are derived, not measured);
 * brief      -- the dig line in every chat/curiosity prompt points at ``body-economy hosts`` for
                 "what is using my power" and stays under its cap.
@@ -169,7 +169,7 @@ def check_overhead_circe(report: dict, text: str) -> list[str]:
         return []
     fails = []
     for c in circe.get("cards") or []:
-        if c.get("watts_at_wall_est") is not None and f"(≈{c['watts_at_wall_est']:.0f} W at the wall above rest)" not in body:
+        if c.get("watts_at_wall_est") is not None and f"(≈{c['watts_at_wall_est']:.0f} W at the wall above rest, est.)" not in body:
             fails.append(f"overhead: card {c['card']} has no at-the-wall estimate in the text")
     if f"draws about {circe['overhead_factor']:.2f} W at the wall above rest" not in body:
         fails.append("overhead: circe's factor is not said")

@@ -494,30 +494,42 @@ WHERE node = ANY(%(hosts)s) AND "timestamp" >= %(fit_since)s AND "timestamp" < %
   AND measurements ? 'chassis_watts' AND measurements ? 'gpu_watts_total' AND measurements ? 'cpu_watts_total'
 GROUP BY 1, 2
 """
-_OVERHEAD_CACHE: dict[tuple, tuple[datetime, list[dict]]] = {}
+_OVERHEAD_CACHE: dict[tuple, tuple[datetime, tuple[list[dict], str]]] = {}
 
 
-async def overhead_rows(pool: Any, params: Mapping[str, Any], now: datetime) -> list[dict]:
-    """HOSTS_OVERHEAD_SQL, cached PINNED_PARTS_TTL per pool (a 14-day fit barely moves in 6 h)."""
+def overhead_window_words(now: datetime) -> str:
+    return f"{(now - OVERHEAD_FIT_WINDOW).date().isoformat()}..{now.date().isoformat()}"
+
+
+async def overhead_rows(pool: Any, params: Mapping[str, Any], now: datetime) -> tuple[list[dict], str]:
+    """(HOSTS_OVERHEAD_SQL rows, the window they cover), cached PINNED_PARTS_TTL per pool (a 14-day fit
+    barely moves in 6 h). The window words travel with the rows, so a cached fit names its own dates.
+    An empty answer is not cached (the next report asks again)."""
     key = (id(pool), tuple(params["hosts"]))
     hit = _OVERHEAD_CACHE.get(key)
     if hit and now - hit[0] < PINNED_PARTS_TTL:
         return hit[1]
     rows = await _rows(pool, HOSTS_OVERHEAD_SQL, params)
-    _OVERHEAD_CACHE.clear()
-    _OVERHEAD_CACHE[key] = (now, rows)
-    return rows
+    out = (rows, overhead_window_words(now))
+    if rows:
+        _OVERHEAD_CACHE.clear()
+        _OVERHEAD_CACHE[key] = (now, out)
+    return out
 
 
-def overheads_by_host(hourly: Optional[Sequence[Mapping]], rest_rows: Sequence[Mapping], rest_body: Mapping,
-                      now: datetime, hosts: Sequence[str] = VRAM_HOSTS) -> dict[str, Overhead]:
-    """host -> Overhead. ``hourly`` None: the read failed, every host takes the fallback (said)."""
+def overheads_by_host(hourly: Optional[Sequence[Mapping]], rest_rows: Optional[Sequence[Mapping]], rest_body: Mapping,
+                      now: datetime, hosts: Sequence[str] = VRAM_HOSTS,
+                      window_words: Optional[str] = None) -> dict[str, Overhead]:
+    """host -> Overhead. ``hourly`` or ``rest_rows`` None: that read failed, every host takes the
+    fallback and its basis says which read (never "no data" for a read that failed)."""
+    if rest_rows is None:
+        return {h: overhead_fallback(h, "the pinned rest read failed") for h in hosts}
     pinned = (rest_body or {}).get("hosts") or {}
     gpu_rest = {str(r.get("node")): _f(r.get("gpu_rest")) for r in rest_rows}
     by: dict[str, list[Mapping]] = {}
     for r in hourly or []:
         by.setdefault(str(r.get("node")), []).append(r)
-    words = f"{(now - OVERHEAD_FIT_WINDOW).date().isoformat()}..{now.date().isoformat()}"
+    words = window_words or f"{(now - OVERHEAD_FIT_WINDOW).date().isoformat()}..{now.date().isoformat()}"
     out = {}
     for h in hosts:
         if hourly is None:
@@ -835,17 +847,23 @@ def shape_unit_costs(rate: Optional[float], heat_hosts: Sequence[HeatHost], heat
         o = (overheads or {}).get(node) if node else None
         n_runs = int(r.get("n") or 0)
         if o is None or wh_gpu is None:
-            rows.append({"unit": unit, "usd": _r(usd_gpu, 6), "wh": _r(wh_gpu, 3), "wh_component": _r(wh_gpu, 3),
-                         "heat_c": None, "status": "measured",
-                         "source": f"energy_run_cost mean over {n_runs} runs in the window: GPU above baseline "
-                                   "only (no overhead factor for its node, so NOT whole machine)"})
+            # wh/usd mean the whole machine; a GPU-only figure never stands in for it (kept in wh_component)
+            rows.append({"unit": unit, "usd": None, "wh": None, "wh_component": _r(wh_gpu, 3),
+                         "heat_c": None, "status": "not_measured",
+                         "source": f"energy_run_cost mean over {n_runs} runs in the window is GPU above baseline only "
+                                   f"({_r(wh_gpu, 3)} W·h); no overhead factor for {node or 'its node'}, so the whole "
+                                   "machine at the wall is unknown"})
             continue
         wall = o.wall(wh_gpu)
-        usd = (usd_gpu * o.factor) if usd_gpu is not None else (wall / 1000.0 * rate if rate is not None else None)
+        # Priced at the newest marginal rate (the act rows' rule); energy_run_cost's own usd is tiered on
+        # the billing cycle, so scaling it by k would only hold within one tier.
+        usd = wall / 1000.0 * rate if rate is not None else None
         rows.append({"unit": unit, "usd": _r(usd, 6), "wh": _r(wall, 3), "wh_component": _r(wh_gpu, 3),
                      "heat_c": None, "status": "derived", **_overhead_fields(o),
                      "source": (f"estimate, whole machine at the wall above rest: energy_run_cost mean GPU above "
-                                f"baseline {wh_gpu:.3g} W·h over {n_runs} runs x overhead {o.factor:g} ({o.basis})")})
+                                f"baseline {wh_gpu:.3g} W·h over {n_runs} runs x overhead {o.factor:g}, priced at the "
+                                "newest marginal rate. Its baseline is the card's draw just before the run, not the "
+                                f"fitted idle k uses, so a warm card reads low ({o.basis})")})
     if not run_costs:
         rows.append({"unit": "one measured run", "usd": None, "wh": None, "heat_c": None, "status": "not_measured",
                      "source": "energy_run_cost has no run in the window (only reverie diffusion is measured today)"})
@@ -1357,6 +1375,14 @@ def shape_hosts(bio_rows: Sequence[Mapping], rest_rows: Sequence[Mapping], daily
         containers.sort(key=lambda c: -c["cpu_w"])
         floor = _f(rr.get("chassis_floor"))
         recent_idle_hosts += [host] if recent_idle else []
+        # The parts' wall estimates now, summed, against the measured surplus now. k is an hours-average
+        # (fans and PSU loss follow load over minutes); this second's own ratio can differ a lot.
+        cpu_idle_now = _f(m.get("cpu_idle_watts"))
+        load_now = None
+        if card_rows and all(c["above_idle_w"] is not None for c in card_rows) and cpu is not None and cpu_idle_now is not None:
+            load_now = sum(c["above_idle_w"] for c in card_rows) + max(0.0, cpu - cpu_idle_now)
+        parts_wall = _wall(o, load_now)
+        now_ratio = _r(max(0.0, above) / load_now, 2) if (above is not None and load_now) else None
         out.append({
             "host": host, "at": ts, "chassis_w_now": _r(chassis, 1), "chassis_w_rest": _r(rest_w, 1),
             "rest_basis": (f"{rest_source}: {spec.get('method') or 'p05 chassis_watts'} over {spec.get('measured') or '?'}"
@@ -1370,6 +1396,7 @@ def shape_hosts(bio_rows: Sequence[Mapping], rest_rows: Sequence[Mapping], daily
             "fan_pct": _r(_f(m.get("fan_pct_max")), 1), "unattributed_above_rest_w": None,
             "cards": card_rows, "top_containers": containers[:HOST_TOP_CONTAINERS], "sponsored": sponsored,
             "daily": daily.get(host, []), **_overhead_fields(o),
+            "load_above_idle_w": _r(load_now, 1), "wall_est_parts_w": parts_wall, "overhead_now_ratio": now_ratio,
         })
         if chassis is None:
             missing.append({"section": "hosts", "reason": f"{host}: no chassis_watts on its newest row (no BMC or "
@@ -1630,7 +1657,8 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
         rest_body, rest_source, rest_err = load_rest_body(str(Path(deps.heat_sensitivity_path).with_name(REST_BODY_FILE)))
         rs, ru = rest_window(rest_body)
         tasks["hosts_rest"] = timed("hosts_rest", lambda: pinned_parts_rows(pool, {
-            "hosts": list(VRAM_HOSTS), "p": HOST_REST_PERCENTILE, "rest_since": rs, "rest_until": ru}, now), ("hosts",))
+            "hosts": list(VRAM_HOSTS), "p": HOST_REST_PERCENTILE, "rest_since": rs, "rest_until": ru}, now),
+            overhead_sections)
         tasks["overhead"] = timed("overhead", lambda: overhead_rows(pool, {
             **hp, "fit_since": _bio_ts(now - OVERHEAD_FIT_WINDOW)}, now), overhead_sections)
     if "hosts" in wanted:
@@ -1678,7 +1706,9 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
     overheads: dict[str, Overhead] = {}
     if "overhead" in results:
         # A failed history read (its reason is in missing) falls back to #2992's fit, said per host.
-        overheads = overheads_by_host(results.get("overhead"), results.get("hosts_rest") or [], rest_body, now)
+        ov_res = results.get("overhead")
+        overheads = overheads_by_host(ov_res[0] if ov_res else None, results.get("hosts_rest"), rest_body, now,
+                                      window_words=ov_res[1] if ov_res else None)
     if "limits" in wanted and results.get("limits") is not None:
         add("limits", lambda: shape_limits(results["limits"][0], latest_row, results["limits"][1], since))
     if "wants" in wanted and results.get("wants") is not None:

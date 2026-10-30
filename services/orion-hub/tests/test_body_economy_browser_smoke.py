@@ -86,7 +86,7 @@ def test_body_economy_tab_deferred_row_brush_window_and_tooltip():
         assert hosts.locator('[data-host-stack="circe"] [data-part]').count() == 3
         assert "held by" in hosts.locator('[data-host-card="circe:gpu1"]').inner_text()
         # component watts beside the whole machine at the wall they drive, and the method, said as an estimate
-        assert "(≈439 W at the wall)" in hosts.locator('[data-host-card="circe:gpu1"]').inner_text()
+        assert "(≈439 W at the wall above rest, est.)" in hosts.locator('[data-host-card="circe:gpu1"]').inner_text()
         assert "estimates" in hosts.locator('[data-overhead="circe"]').inner_text()
         assert "≈64 W at the wall" in frame.locator('#beProcesses [data-process="athena:orion-athena-vector-host"]').inner_text()
         assert "GPU 0.27 Wh × 2.35" in frame.locator("#beUnits").inner_text()

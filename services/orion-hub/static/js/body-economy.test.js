@@ -199,9 +199,9 @@ test("processes: one bar per process, longest first, labelled with name, host, w
   // bar length is watts above idle, against the biggest process
   assert.match(html, /orion-athena-vector-host <span class="muted">athena<\/span>.*?width:100\.0%/);
   assert.match(html, /orion-llamacpp-chat <span class="muted">circe<\/span>.*?width:42\.3%/);
-  assert.ok(html.includes("50.6 W (≈64 W at the wall) · cores ?"));   // unknown cores say so, never 0
+  assert.ok(html.includes("50.6 W (≈64 W at the wall above rest, est.) · cores ?"));   // unknown cores say so, never 0
   // the producer sends cores: null today; the fixture's 3.5 exercises the future path
-  assert.ok(html.includes("21.4 W (≈50 W at the wall) · 3.5 cores"));
+  assert.ok(html.includes("21.4 W (≈50 W at the wall above rest, est.) · 3.5 cores"));
   assert.ok(html.includes("busy cores not published per container"));
   assert.ok(!html.includes("data-empty"));
   // a non-empty section still shows its own missing notes
@@ -232,12 +232,12 @@ test("every component watt is shown beside the whole machine at the wall it driv
   const circe = FIXTURE.hosts.find((h) => h.host === "circe");
   const gpu1 = circe.cards.find((c) => c.card === "gpu1");
   // card: its watts, its rest, and the wall watts above rest its load drives (187 W above idle x 2.345)
-  assert.ok(hosts.includes("229 W (rest 42 W) (≈" + Math.round(gpu1.watts_at_wall_est) + " W at the wall)"));
+  assert.ok(hosts.includes("229 W (rest 42 W) (≈" + Math.round(gpu1.watts_at_wall_est) + " W at the wall above rest, est.)"));
   assert.equal(Math.round(gpu1.watts_at_wall_est), Math.round((gpu1.watts - gpu1.idle_w) * circe.overhead_factor));
-  assert.ok(hosts.includes("orion-circe-atlas-llamacpp-agent-burst 8.0 W (≈19 W at the wall)"));
-  assert.match(hosts, /data-overhead="circe"[^>]*>At-the-wall figures are estimates of the whole machine's extra draw above rest that each part drives: watts above idle × 2\.35 \(fans and power-supply loss\), fitted on circe's own last 14 days/);
+  assert.ok(hosts.includes("orion-circe-atlas-llamacpp-agent-burst 8.0 W (≈19 W at the wall above rest, est.)"));
+  assert.match(hosts, /data-overhead="circe"[^>]*>At-the-wall figures are estimates of the whole machine's extra draw above rest that each part drives: watts above idle × 2\.35 \(fans and power-supply loss\), fitted on circe's own recent history/);
   assert.match(hosts, /data-overhead="athena"[^>]*>At-the-wall figures are estimates[^<]*watts above idle × 1\.27/);
-  assert.match(hosts, /zelda_dojo · 32 containers · 150 W CPU above idle \(estimated\) \(≈192 W at the wall\)/);
+  assert.match(hosts, /zelda_dojo · 32 containers · 150 W CPU above idle \(estimated\) \(≈192 W at the wall above rest, est\.\)/);
   const procs = tab.processesHtml(FIXTURE, null, "UTC");
   assert.ok(procs.includes('data-overhead="athena"') && procs.includes('data-overhead="circe"'));
   assert.ok(procs.includes("≈64 W at the wall above rest (estimate: × 1.27)"));
@@ -246,6 +246,11 @@ test("every component watt is shown beside the whole machine at the wall it driv
   old.hosts.forEach((h) => { delete h.overhead_factor; h.cards.forEach((c) => delete c.watts_at_wall_est); h.top_containers.forEach((c) => delete c.watts_at_wall_est); h.sponsored.forEach((c) => delete c.watts_at_wall_est); });
   old.processes.forEach((p) => { delete p.watts_at_wall_est; delete p.overhead_factor; });
   assert.ok(!tab.hostsHtml(old, null, "UTC").includes("at the wall") && !tab.processesHtml(old, null, "UTC").includes("at the wall"));
+  // the parts' estimates now vs the measured surplus now: said when far apart, silent when close
+  const lag = { hosts: [{ host: "c", chassis_w_now: 1178, above_rest_w: 637, cards: [], overhead_factor: 2.34, wall_est_parts_w: 1210 }] };
+  assert.match(tab.hostsHtml(lag, null, "UTC"), /data-overhead-lag="c">Right now the parts' at-the-wall estimates add to 1210 W against 637 W measured above rest/);
+  lag.hosts[0].wall_est_parts_w = 700;
+  assert.ok(!tab.hostsHtml(lag, null, "UTC").includes("data-overhead-lag"));
   // the fallback factor says it was not fitted here
   const fb = { hosts: [{ host: "h", chassis_w_now: 100, cards: [], overhead_factor: 2.69, overhead_basis: "PR #2992 fit on circe; not fitted on h" }] };
   assert.ok(tab.hostsHtml(fb, null, "UTC").includes("fallback: not fitted on h"));

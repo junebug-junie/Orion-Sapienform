@@ -968,7 +968,7 @@ container's CPU watts and `energy_run_cost` (GPU above baseline) are components.
 `watts_at_wall_est` = its watts above idle x the host's `overhead_factor`
 (`orion/energy/overhead.py`): a least-squares slope through zero of chassis above the pinned rest vs
 GPU above its pinned p05 + CPU above `cpu_idle_watts`, over the trailing 14 days of hourly means of the
-same biometrics readings (`HOSTS_OVERHEAD_SQL`, ~0.55 s, cached 6 h). Live 2026-10-30: circe 2.35
+same biometrics readings (`HOSTS_OVERHEAD_SQL`, ~0.55 s, cached 6 h). Live 2026-10-30: circe 2.34
 (R^2 0.90, 337 h), athena 1.27 (R^2 0.98). Fewer than 48 loaded hours, R^2 under 0.5 or k under 1:
 #2992's circe fit (2.69, R^2 0.79), said in `overhead_basis` with `overhead_fitted=false`. Fields:
 hosts `overhead_factor`/`overhead_basis`/`overhead_fitted`/`overhead_r2`/`overhead_hours`; cards
@@ -976,7 +976,15 @@ hosts `overhead_factor`/`overhead_basis`/`overhead_fitted`/`overhead_r2`/`overhe
 row (`one reverie_diffusion run (painting) on <node>`) has `wh`/`usd` at the wall (status `derived`)
 and the GPU-only figure in `wh_component`. Painting acts carry no whole-machine cost yet (their act
 and diffusion lease share no correlation id, PR #2977), so this row is the painting cost for now.
-These wall figures are ESTIMATES: derived views of the one chassis reading, not new measurements. `hosts` adds four reads run side by side (2026-10-30, 30 d, first call: pinned parts ~1.2 s then cached, daily ~0.8 s, holders ~0.9 s, floor ~0.4 s; total report ~1.4 s). The newest tick older than 10 min is reported `stale`, not "now".
+These wall figures are ESTIMATES: derived views of the one chassis reading, not new measurements.
+k is an hours-average: fans and PSU loss follow load over minutes, so at one instant the parts'
+estimates do not split the surplus (live 2026-10-30, two samples two minutes apart: this second's
+ratio 1.23, then 6.11). Each host therefore also carries `load_above_idle_w`, `wall_est_parts_w`
+(= load x k) and `overhead_now_ratio` (measured above rest / load now, the meter's per-second ratio),
+and the dig text says so when the parts' sum and the measured surplus differ by more than 25%.
+Through zero on purpose: like the meter, k charges all above-rest draw to load, including drift above
+the pinned rest; the basis also gives the slope and intercept of a fit with an intercept (circe 2.05
+x load + 76 W) so the drift is visible. Run costs are priced at the newest marginal rate, like acts. `hosts` adds four reads run side by side (2026-10-30, 30 d, first call: pinned parts ~1.2 s then cached, daily ~0.8 s, holders ~0.9 s, floor ~0.4 s; total report ~1.4 s). The newest tick older than 10 min is reported `stale`, not "now".
 With `family=`, a `*` entry names the sections it does not narrow. A report with a failed read is not cached.
 The concurrency limit is one semaphore shared by all requests; concurrent identical queries share one build.
 `gpu_pool_events` has no persisted rollup; if 30 d grows past 2 s, that is the table to roll up.

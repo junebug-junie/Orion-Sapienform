@@ -34,6 +34,30 @@ def test_cpu_idle_missing_on_old_hours_uses_the_hosts_own_median():
     assert o.fitted and o.factor == pytest.approx(1.27, abs=0.01) and "CPU above 100 W idle" in o.basis
 
 
+def test_the_fill_is_the_median_not_the_mean():
+    # published idles 100, 100, 130 (median 100, mean 110): the old hours' true idle is 100, so only
+    # the median fill recovers k exactly
+    rows = _hours(2.0)
+    for r in rows[:-3]:
+        r["cpu_idle"] = None
+    for r, ci in zip(rows[-3:], (100.0, 100.0, 130.0)):
+        r["cpu_idle"] = ci
+        r["ch"] = 541.0 + 2.0 * ((r["gpu"] - 190.0) + max(0.0, r["cpu"] - ci))
+    o = ov.fit_overhead("circe", rows, rest_w=541.0, gpu_idle_w=190.0)
+    assert o.factor == pytest.approx(2.0, abs=1e-3) and o.r2 == pytest.approx(1.0, abs=1e-6)
+
+
+def test_drift_above_the_pinned_rest_lands_in_k_and_the_basis_says_how_much():
+    rows = _hours(2.0)
+    for r in rows:
+        r["ch"] += 60.0               # 60 W of new always-on draw above the pinned rest
+    o = ov.fit_overhead("circe", rows, rest_w=541.0, gpu_idle_w=190.0)
+    assert o.fitted and o.factor > 2.0                     # charged to load, as the per-act meter does
+    assert o.intercept_w == pytest.approx(60.0, abs=0.5)
+    assert "with an intercept: 2.00 x load + 60 W (always-on draw above the pinned rest" in o.basis
+    assert f"{o.hours} hourly means ({o.loaded_hours} with load)" in o.basis
+
+
 @pytest.mark.parametrize("rows,kw,why", [
     (_hours(2.0, n=10), {}, "10 loaded hours"),
     (_hours(2.0, cpu_idle=None), {}, "no cpu_idle_watts"),

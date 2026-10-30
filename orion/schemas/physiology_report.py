@@ -303,6 +303,12 @@ class HostPowerV1(BaseModel):
     overhead_fitted: Optional[bool] = Field(default=None, description="True: fitted on this host; False: the fallback")
     overhead_r2: Optional[float] = Field(default=None, description="the fit's R^2 (None for the fallback)")
     overhead_hours: int = Field(default=0, description="hourly means the fit used (0 for the fallback)")
+    load_above_idle_w: Optional[float] = Field(default=None, description="now: every card above its idle + CPU above "
+                                               "cpu_idle_watts; None when any part's idle is unknown")
+    wall_est_parts_w: Optional[float] = Field(default=None, description="ESTIMATE: load_above_idle_w x overhead_factor, "
+                                              "the parts' wall estimates summed, to set against above_rest_w (measured)")
+    overhead_now_ratio: Optional[float] = Field(default=None, description="above_rest_w / load_above_idle_w this sample: "
+                                                "what the per-act meter's split uses this second (it caps it at 8)")
 
 
 class ValuePerCostV1(BaseModel):

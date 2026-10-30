@@ -1,9 +1,9 @@
 {
  "schema_version": "physiology.report.v1",
- "generated_at": "2026-10-30T04:37:40.083168Z",
+ "generated_at": "2026-10-30T04:54:31.416733Z",
  "window": {
-  "start": "2026-10-29T04:37:40.083168Z",
-  "end": "2026-10-30T04:37:40.083168Z"
+  "start": "2026-10-29T04:54:31.416733Z",
+  "end": "2026-10-30T04:54:31.416733Z"
  },
  "limits": [
   {
@@ -14,7 +14,7 @@
    "now": {
     "level": 4.0,
     "bind_state": "binding",
-    "why": "4 of 4 cap-counted messages by 22:37 local; day-end pace 4.2"
+    "why": "4 of 4 cap-counted messages by 22:54 local; day-end pace 4.2"
    },
    "hourly": [
     {
@@ -164,7 +164,7 @@
     {
      "h": "2026-10-30T04:00:00Z",
      "level": 4.0,
-     "price": 0.1046,
+     "price": 0.1072,
      "bind_state": "binding"
     }
    ]
@@ -338,14 +338,14 @@
    "unit": "usd",
    "line": 100.0,
    "now": {
-    "level": 184.0566,
+    "level": 184.1334,
     "bind_state": "exogenous_bind",
-    "why": "the envelope is spent by what stays switched on (not by what I do); month to date $184.06; forecast $196.72 by month end at $0.256/h; the always-on floor alone ($0.202/h) reaches $194.05 vs envelope $100"
+    "why": "my always-on body (rest plus anything left running) costs about $148/month, more than the $100 envelope by itself; my activity above it adds about $44 this month (pace $39/month); month to date $184.13; forecast $196.72 by month end at $0.256/h; the always-on floor alone ($0.202/h) reaches $194.07 vs envelope $100"
    },
    "hourly": [
     {
      "h": "2026-10-29T04:00:00Z",
-     "level": 178.6208,
+     "level": 178.6658,
      "price": 1.0,
      "bind_state": "exogenous_bind"
     },
@@ -489,7 +489,7 @@
     },
     {
      "h": "2026-10-30T04:00:00Z",
-     "level": 183.9993,
+     "level": 184.0325,
      "price": 1.0,
      "bind_state": "exogenous_bind"
     }
@@ -501,14 +501,14 @@
    "unit": "c",
    "line": 31.0,
    "now": {
-    "level": 27.4,
+    "level": 27.15,
     "bind_state": "slack",
-    "why": "cabinet 27.4 C; Orion's share 1.89 C (2 h step response: a short-run lower bound) [athena +134 W x 0.64 = 0.86 C; circe +329 W x 0.31 = 1.02 C; hecate asleep]; room without Orion 25.5 C vs line 31.0 C"
+    "why": "cabinet 27.1 C; Orion's share 1.47 C (2 h step response: a short-run lower bound) [athena +65 W x 0.64 = 0.42 C; circe +336 W x 0.31 = 1.04 C; hecate asleep]; room without Orion 25.7 C vs line 31.0 C"
    },
    "hourly": [
     {
      "h": "2026-10-29T04:00:00Z",
-     "level": 28.036,
+     "level": 27.93,
      "price": 0.0,
      "bind_state": "slack"
     },
@@ -652,8 +652,8 @@
     },
     {
      "h": "2026-10-30T04:00:00Z",
-     "level": 27.7593,
-     "price": 0.5303,
+     "level": 27.5878,
+     "price": 0.5039,
      "bind_state": "slack"
     }
    ]
@@ -664,14 +664,14 @@
    "unit": "slot_s",
    "line": 3600.0,
    "now": {
-    "level": 3599.935,
+    "level": 3599.946,
     "bind_state": "binding",
-    "why": "3704 lease-s asked of 1 slot(s) in 60 min, 104 s of it lent into idle holds; 2 deferrable waiting (hunger, not priced)"
+    "why": "3799 lease-s asked of 1 slot(s) in 60 min, 199 s of it lent into idle holds"
    },
    "hourly": [
     {
      "h": "2026-10-29T04:00:00Z",
-     "level": 2201.8539,
+     "level": 2546.3165,
      "price": 0.0,
      "bind_state": "slack"
     },
@@ -815,8 +815,8 @@
     },
     {
      "h": "2026-10-30T04:00:00Z",
-     "level": 3599.8082,
-     "price": 0.389,
+     "level": 3599.8554,
+     "price": 0.3973,
      "bind_state": "binding"
     }
    ]
@@ -829,7 +829,7 @@
    "now": {
     "level": 0.0,
     "bind_state": "slack",
-    "why": "seat has no live slot now; 2 deferrable waiting (hunger, not priced)"
+    "why": "seat has no live slot now"
    },
    "hourly": [
     {
@@ -990,14 +990,14 @@
    "unit": "slot_s",
    "line": 7200.0,
    "now": {
-    "level": 4848.57,
+    "level": 4618.776,
     "bind_state": "slack",
-    "why": "4865 lease-s asked of 2 slot(s) in 60 min, 16 s of it lent into idle holds; 2 deferrable waiting (hunger, not priced)"
+    "why": "4666 lease-s asked of 2 slot(s) in 60 min, 47 s of it lent into idle holds"
    },
    "hourly": [
     {
      "h": "2026-10-29T04:00:00Z",
-     "level": 1067.0322,
+     "level": 1263.842,
      "price": 0.0,
      "bind_state": "slack"
     },
@@ -1141,7 +1141,7 @@
     },
     {
      "h": "2026-10-30T04:00:00Z",
-     "level": 5236.3621,
+     "level": 5093.6254,
      "price": 0.0,
      "bind_state": "slack"
     }
@@ -1155,12 +1155,12 @@
    "now": {
     "level": 0.0,
     "bind_state": "slack",
-    "why": "0 lease-s asked of 1 slot(s) in 60 min; 2 deferrable waiting (hunger, not priced)"
+    "why": "0 lease-s asked of 1 slot(s) in 60 min"
    },
    "hourly": [
     {
      "h": "2026-10-29T04:00:00Z",
-     "level": 45.0607,
+     "level": 124.876,
      "price": 0.0,
      "bind_state": "slack"
     },
@@ -1304,7 +1304,7 @@
     },
     {
      "h": "2026-10-30T04:00:00Z",
-     "level": 618.8176,
+     "level": 403.5767,
      "price": 0.0,
      "bind_state": "slack"
     }
@@ -1323,7 +1323,7 @@
    "hourly": [
     {
      "h": "2026-10-29T04:00:00Z",
-     "level": 27.703,
+     "level": 55.406,
      "price": 0.0,
      "bind_state": "slack"
     },
@@ -1467,7 +1467,7 @@
     },
     {
      "h": "2026-10-30T04:00:00Z",
-     "level": 52.2695,
+     "level": 53.5681,
      "price": 0.0,
      "bind_state": "slack"
     }
@@ -1642,14 +1642,14 @@
    "unit": "slot_s",
    "line": 14400.0,
    "now": {
-    "level": 692.016,
+    "level": 543.932,
     "bind_state": "slack",
-    "why": "692 lease-s asked of 4 slot(s) in 60 min"
+    "why": "544 lease-s asked of 4 slot(s) in 60 min"
    },
    "hourly": [
     {
      "h": "2026-10-29T04:00:00Z",
-     "level": 4072.3484,
+     "level": 4830.117,
      "price": 0.0,
      "bind_state": "slack"
     },
@@ -1793,7 +1793,7 @@
     },
     {
      "h": "2026-10-30T04:00:00Z",
-     "level": 1703.8313,
+     "level": 1323.9801,
      "price": 0.0,
      "bind_state": "slack"
     }
@@ -1968,14 +1968,14 @@
    "unit": "slot_s",
    "line": 14400.0,
    "now": {
-    "level": 2228.257,
+    "level": 2141.799,
     "bind_state": "slack",
-    "why": "2228 lease-s asked of 4 slot(s) in 60 min"
+    "why": "2142 lease-s asked of 4 slot(s) in 60 min"
    },
    "hourly": [
     {
      "h": "2026-10-29T04:00:00Z",
-     "level": 2331.6889,
+     "level": 2386.7235,
      "price": 0.0,
      "bind_state": "slack"
     },
@@ -2119,7 +2119,7 @@
     },
     {
      "h": "2026-10-30T04:00:00Z",
-     "level": 2430.1913,
+     "level": 2334.6805,
      "price": 0.0,
      "bind_state": "slack"
     }
@@ -2300,25 +2300,25 @@
    {
     "family": "actions.journal",
     "tier": 1,
-    "funded": 244,
+    "funded": 240,
     "deferred": 0
    },
    {
     "family": "hub.retro_leisure",
     "tier": 2,
-    "funded": 171,
-    "deferred": 19
+    "funded": 168,
+    "deferred": 20
    },
    {
     "family": "thought.painting",
     "tier": 2,
-    "funded": 11,
+    "funded": 10,
     "deferred": 54
    },
    {
     "family": "dream.cycle",
     "tier": 1,
-    "funded": 42,
+    "funded": 45,
     "deferred": 0
    },
    {
@@ -2362,18 +2362,12 @@
    {
     "h": "2026-10-29T04:00:00Z",
     "family": "actions.journal",
-    "funded": 13,
+    "funded": 2,
     "deferred": 0
    },
    {
     "h": "2026-10-29T04:00:00Z",
     "family": "hub.retro_leisure",
-    "funded": 4,
-    "deferred": 0
-   },
-   {
-    "h": "2026-10-29T04:00:00Z",
-    "family": "thought.painting",
     "funded": 1,
     "deferred": 0
    },
@@ -2980,13 +2974,13 @@
    {
     "h": "2026-10-30T04:00:00Z",
     "family": "actions.journal",
-    "funded": 4,
+    "funded": 11,
     "deferred": 0
    },
    {
     "h": "2026-10-30T04:00:00Z",
     "family": "dream.cycle",
-    "funded": 2,
+    "funded": 5,
     "deferred": 0
    },
    {
@@ -2999,7 +2993,7 @@
     "h": "2026-10-30T04:00:00Z",
     "family": "hub.retro_leisure",
     "funded": 0,
-    "deferred": 7
+    "deferred": 8
    },
    {
     "h": "2026-10-30T04:00:00Z",
@@ -3013,8 +3007,8 @@
   {
    "day": "2026-10-28",
    "hour": 22,
-   "heavy": 709.1,
-   "total": 5261.8
+   "heavy": 140.8,
+   "total": 970.2
   },
   {
    "day": "2026-10-28",
@@ -3157,15 +3151,15 @@
   {
    "day": "2026-10-29",
    "hour": 22,
-   "heavy": 2306.2,
-   "total": 7076.6
+   "heavy": 5374.8,
+   "total": 13769.2
   }
  ],
  "money": {
-  "mtd_usd": 184.06,
+  "mtd_usd": 184.13,
   "forecast_usd": 196.72,
   "envelope_usd": 100.0,
-  "floor_usd": 194.05,
+  "floor_usd": 194.07,
   "rate_usd_per_kwh": 0.1255,
   "daily_kwh": [
    {
@@ -3175,7 +3169,7 @@
    },
    {
     "d": "2026-10-29",
-    "kwh": 41.0,
+    "kwh": 41.612,
     "partial": false
    }
   ]
@@ -3199,7 +3193,7 @@
    "wh_component": null,
    "heat_c": null,
    "status": "derived",
-   "source": "1 MJ = 277.8 W\u00b7h at the newest tariff rate",
+   "source": "1 MJ = 277.8 W·h at the newest tariff rate",
    "overhead_factor": null,
    "overhead_basis": null
   },
@@ -3228,22 +3222,33 @@
   {
    "unit": "one reverie_diffusion run (painting) on circe",
    "usd": 7.9e-05,
-   "wh": 0.632,
-   "wh_component": 0.27,
+   "wh": 0.631,
+   "wh_component": 0.269,
    "heat_c": null,
    "status": "derived",
-   "source": "estimate, whole machine at the wall above rest: energy_run_cost mean GPU above baseline 0.27 W\u00b7h over 14 runs x overhead 2.345 (fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992))",
-   "overhead_factor": 2.345,
-   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992)"
+   "source": "estimate, whole machine at the wall above rest: energy_run_cost mean GPU above baseline 0.269 W·h over 13 runs x overhead 2.344, priced at the newest marginal rate. Its baseline is the card's draw just before the run, not the fitted idle k uses, so a warm card reads low (fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means (337 with load), R^2 0.90; with an intercept: 2.05 x load + 76 W (always-on draw above the pinned rest, which this k charges to load as the per-act meter does); same readings and rest as the per-act meter (PR #2992))",
+   "overhead_factor": 2.344,
+   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means (337 with load), R^2 0.90; with an intercept: 2.05 x load + 76 W (always-on draw above the pinned rest, which this k charges to load as the per-act meter does); same readings and rest as the per-act meter (PR #2992)"
   },
   {
    "unit": "one actions.journal act (estimate: family mean)",
-   "usd": 1e-05,
-   "wh": 0.08,
+   "usd": 9e-06,
+   "wh": 0.073,
    "wh_component": null,
    "heat_c": 0.0002,
    "status": "measured",
-   "source": "grammar_acts.cost_json, whole machine above rest (chassis) from 2026-10-30, GPU above idle only before; family total 5.09 W\u00b7h over 64 acts in the window. The family total is the honest number; one act is an estimate",
+   "source": "grammar_acts.cost_json, whole machine above rest (chassis) from 2026-10-30, GPU above idle only before; family total 5.14 W·h over 70 acts in the window. The family total is the honest number; one act is an estimate",
+   "overhead_factor": null,
+   "overhead_basis": null
+  },
+  {
+   "unit": "one durable.self_sense_eval act (estimate: family mean)",
+   "usd": 0.00132,
+   "wh": 10.525,
+   "wh_component": null,
+   "heat_c": 0.0327,
+   "status": "measured",
+   "source": "grammar_acts.cost_json, whole machine above rest (chassis) from 2026-10-30, GPU above idle only before; family total 10.5 W·h over 1 acts in the window. The family total is the honest number; one act is an estimate",
    "overhead_factor": null,
    "overhead_basis": null
   },
@@ -3254,7 +3259,7 @@
    "wh_component": null,
    "heat_c": 0.0011,
    "status": "measured",
-   "source": "grammar_acts.cost_json, whole machine above rest (chassis) from 2026-10-30, GPU above idle only before; family total 0.358 W\u00b7h over 1 acts in the window. The family total is the honest number; one act is an estimate",
+   "source": "grammar_acts.cost_json, whole machine above rest (chassis) from 2026-10-30, GPU above idle only before; family total 0.358 W·h over 1 acts in the window. The family total is the honest number; one act is an estimate",
    "overhead_factor": null,
    "overhead_basis": null
   },
@@ -3265,7 +3270,7 @@
    "wh_component": null,
    "heat_c": 0.0022,
    "status": "measured",
-   "source": "grammar_acts.cost_json, whole machine above rest (chassis) from 2026-10-30, GPU above idle only before; family total 0.695 W\u00b7h over 1 acts in the window. The family total is the honest number; one act is an estimate",
+   "source": "grammar_acts.cost_json, whole machine above rest (chassis) from 2026-10-30, GPU above idle only before; family total 0.695 W·h over 1 acts in the window. The family total is the honest number; one act is an estimate",
    "overhead_factor": null,
    "overhead_basis": null
   },
@@ -3276,18 +3281,18 @@
    "wh_component": null,
    "heat_c": 0.0001,
    "status": "measured",
-   "source": "grammar_acts.cost_json, whole machine above rest (chassis) from 2026-10-30, GPU above idle only before; family total 0.207 W\u00b7h over 5 acts in the window. The family total is the honest number; one act is an estimate",
+   "source": "grammar_acts.cost_json, whole machine above rest (chassis) from 2026-10-30, GPU above idle only before; family total 0.207 W·h over 5 acts in the window. The family total is the honest number; one act is an estimate",
    "overhead_factor": null,
    "overhead_basis": null
   },
   {
    "unit": "per 1k tokens",
    "usd": 3e-06,
-   "wh": 0.0225,
+   "wh": 0.0222,
    "wh_component": null,
    "heat_c": null,
    "status": "measured",
-   "source": "71 of 71 acts with measured energy joined to 282,018 tokens on correlation_id (J/token 0.0811); 6782 gateway calls, 25,113,711 tokens in the window",
+   "source": "76 of 78 acts with measured energy joined to 288,870 tokens on correlation_id (J/token 0.0798); 6961 gateway calls, 25,663,761 tokens in the window",
    "overhead_factor": null,
    "overhead_basis": null
   },
@@ -3305,12 +3310,12 @@
  ],
  "waste": {
   "failed_lease_s_by_lane": {
-   "agent-gpu2": 70863.3,
-   "agent": 48861.9,
+   "agent-gpu2": 71152.4,
+   "agent": 48670.3,
    "chat": 44087.3,
    "fast": 305.5,
-   "diffusion": 65.1,
-   "metacog": 51.3
+   "metacog": 85.7,
+   "diffusion": 65.1
   },
   "top": [
    {
@@ -3392,7 +3397,7 @@
    "family_source": "holder",
    "p50_s": 0.1,
    "p90_s": 0.4,
-   "n": 653
+   "n": 639
   },
   {
    "lane": "agent",
@@ -3416,7 +3421,7 @@
    "family_source": "holder",
    "p50_s": 0.1,
    "p90_s": 0.3,
-   "n": 102
+   "n": 103
   },
   {
    "lane": "agent",
@@ -3435,12 +3440,20 @@
    "n": 2
   },
   {
+   "lane": "agent",
+   "family": "orion-mind",
+   "family_source": "holder",
+   "p50_s": 0.2,
+   "p90_s": 0.2,
+   "n": 1
+  },
+  {
    "lane": "agent-gpu2",
    "family": "cortex-exec",
    "family_source": "holder",
    "p50_s": 0.1,
-   "p90_s": 5.5,
-   "n": 192
+   "p90_s": 7.9,
+   "n": 197
   },
   {
    "lane": "agent-gpu2",
@@ -3454,9 +3467,9 @@
    "lane": "agent-gpu2",
    "family": "durable-runs",
    "family_source": "holder",
-   "p50_s": 1099.7,
-   "p90_s": 5484.0,
-   "n": 20
+   "p50_s": 1266.1,
+   "p90_s": 5432.8,
+   "n": 22
   },
   {
    "lane": "agent-gpu2",
@@ -3470,9 +3483,9 @@
    "lane": "agent-gpu2",
    "family": "http",
    "family_source": "holder",
-   "p50_s": 0.1,
-   "p90_s": 10.0,
-   "n": 36
+   "p50_s": 0.2,
+   "p90_s": 0.4,
+   "n": 42
   },
   {
    "lane": "agent-gpu2",
@@ -3488,7 +3501,7 @@
    "family_source": "holder",
    "p50_s": 0.1,
    "p90_s": 10.2,
-   "n": 972
+   "n": 961
   },
   {
    "lane": "chat",
@@ -3544,7 +3557,7 @@
    "family_source": "holder",
    "p50_s": 0.1,
    "p90_s": 0.3,
-   "n": 68
+   "n": 67
   },
   {
    "lane": "diffusion",
@@ -3552,7 +3565,7 @@
    "family_source": "holder",
    "p50_s": 0.1,
    "p90_s": 0.2,
-   "n": 14
+   "n": 13
   },
   {
    "lane": "fast",
@@ -3560,7 +3573,7 @@
    "family_source": "holder",
    "p50_s": 0.1,
    "p90_s": 0.2,
-   "n": 170
+   "n": 173
   },
   {
    "lane": "fast",
@@ -3568,7 +3581,7 @@
    "family_source": "holder",
    "p50_s": 0.1,
    "p90_s": 0.3,
-   "n": 881
+   "n": 868
   },
   {
    "lane": "fast",
@@ -3584,7 +3597,7 @@
    "family_source": "holder",
    "p50_s": 0.1,
    "p90_s": 0.3,
-   "n": 5145
+   "n": 5101
   },
   {
    "lane": "fast",
@@ -3608,7 +3621,7 @@
    "family_source": "holder",
    "p50_s": 0.1,
    "p90_s": 0.2,
-   "n": 2504
+   "n": 2377
   },
   {
    "lane": "metacog",
@@ -3616,7 +3629,7 @@
    "family_source": "holder",
    "p50_s": 0.1,
    "p90_s": 0.3,
-   "n": 953
+   "n": 961
   },
   {
    "lane": "metacog",
@@ -3640,7 +3653,7 @@
    "family_source": "holder",
    "p50_s": 0.2,
    "p90_s": 0.7,
-   "n": 12
+   "n": 11
   },
   {
    "lane": "metacog",
@@ -3656,15 +3669,15 @@
    "family_source": "holder",
    "p50_s": 0.1,
    "p90_s": 0.3,
-   "n": 903
+   "n": 890
   },
   {
    "lane": "metacog",
    "family": "orion-mind",
    "family_source": "holder",
    "p50_s": 0.1,
-   "p90_s": 0.3,
-   "n": 474
+   "p90_s": 0.4,
+   "n": 476
   },
   {
    "lane": "metacog",
@@ -3680,10 +3693,307 @@
    "family_source": "holder",
    "p50_s": 0.1,
    "p90_s": 0.3,
-   "n": 4141
+   "n": 4171
   }
  ],
  "decisions": [
+  {
+   "decided_at": "2026-10-30T04:52:18.458922Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.4301,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.43 (graded; intensity 0.37, hunger 76 s (since_last_close, tau 162 s rhythm:461)) - charge 0.000 = net +0.430",
+   "prices_seen": {
+    "heat": 0.440914,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.415061,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.113008
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:51:11.628335Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.93, hunger 9652 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.440914,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.415061,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.113008
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:50:09.163423Z",
+   "family": "dream.cycle",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6,
+   "binding_constraint": null,
+   "why": "dream.cycle: weight 1.00 (prior) x rank 0.60 (ungraded; intensity 0.81, hunger 56860 s (since_last_close, tau 33905 s rhythm:10)) - charge 0.000 = net +0.600",
+   "prices_seen": {
+    "heat": 0.446137,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.413874,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.112639
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:48:09.894212Z",
+   "family": "dream.cycle",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6,
+   "binding_constraint": null,
+   "why": "dream.cycle: weight 1.00 (prior) x rank 0.60 (ungraded; intensity 0.81, hunger 56741 s (since_last_close, tau 33905 s rhythm:10)) - charge 0.000 = net +0.600",
+   "prices_seen": {
+    "heat": 0.451681,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.412965,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.112232
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:48:03.191478Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6181,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.62 (graded; intensity 1.00, hunger 2839 s (lane_seed:agent, tau 162 s rhythm:456)) - charge 0.000 = net +0.618",
+   "prices_seen": {
+    "heat": 0.451681,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.412965,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.112232
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:47:29.482938Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6181,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.62 (graded; intensity 1.00, hunger 2839 s (lane_seed:agent, tau 162 s rhythm:456)) - charge 0.000 = net +0.618",
+   "prices_seen": {
+    "heat": 0.451681,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.412965,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.112232
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:45:31.654725Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6156,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.62 (graded; intensity 1.00, hunger 2711 s (lane_seed:agent, tau 162 s rhythm:453)) - charge 0.000 = net +0.616",
+   "prices_seen": {
+    "heat": 0.457869,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.411939,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.11176
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:43:33.653425Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6156,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.62 (graded; intensity 1.00, hunger 2591 s (lane_seed:agent, tau 162 s rhythm:453)) - charge 0.000 = net +0.616",
+   "prices_seen": {
+    "heat": 0.463588,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.410973,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.111303
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:40:50.623037Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6156,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.62 (graded; intensity 1.00, hunger 2371 s (lane_seed:agent, tau 162 s rhythm:453)) - charge 0.000 = net +0.616",
+   "prices_seen": {
+    "heat": 0.473951,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.4092,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.110428
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:38:52.727772Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6138,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.61 (graded; intensity 1.00, hunger 2231 s (lane_seed:agent, tau 162 s rhythm:451)) - charge 0.000 = net +0.614",
+   "prices_seen": {
+    "heat": 0.480415,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.408076,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.109853
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:38:09.536301Z",
+   "family": "dream.cycle",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6,
+   "binding_constraint": null,
+   "why": "dream.cycle: weight 1.00 (prior) x rank 0.60 (ungraded; intensity 0.81, hunger 56140 s (since_last_close, tau 33905 s rhythm:10)) - charge 0.000 = net +0.600",
+   "prices_seen": {
+    "heat": 0.480415,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.408076,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.109853
+   }
+  },
   {
    "decided_at": "2026-10-30T04:36:54.597751Z",
    "family": "actions.journal",
@@ -4736,313 +5046,16 @@
     "lane:experiment": 0.0,
     "attention:juniper": 0.066516
    }
-  },
-  {
-   "decided_at": "2026-10-30T02:54:09.618501Z",
-   "family": "actions.journal",
-   "verb": "make",
-   "tier": 1,
-   "outcome": "funded",
-   "reason": "net_positive",
-   "net": 0.6147,
-   "binding_constraint": null,
-   "why": "actions.journal: weight 1.00 (prior) x rank 0.61 (graded; intensity 0.97, hunger 559 s (since_last_close, tau 162 s rhythm:439)) - charge 0.000 = net +0.615",
-   "prices_seen": {
-    "heat": 0.770174,
-    "claude": 0.0,
-    "energy": 1.0,
-    "lane:kev": 0.0,
-    "lane:chat": 0.400393,
-    "lane:fast": 0.0,
-    "lane:agent": 0.048333,
-    "lane:world": 0.0,
-    "lane:metacog": 0.0,
-    "lane:diffusion": 0.0,
-    "lane:agent-deep": 0.0,
-    "lane:agent-gpu2": 0.0,
-    "lane:experiment": 0.0,
-    "attention:juniper": 0.065067
-   }
-  },
-  {
-   "decided_at": "2026-10-30T02:50:23.635450Z",
-   "family": "hub.retro_leisure",
-   "verb": "play",
-   "tier": 2,
-   "outcome": "deferred",
-   "reason": "sated",
-   "net": 0.0,
-   "binding_constraint": null,
-   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.49, hunger 2404 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
-   "prices_seen": {
-    "heat": 0.785074,
-    "claude": 0.0,
-    "energy": 1.0,
-    "lane:kev": 0.0,
-    "lane:chat": 0.389531,
-    "lane:fast": 0.0,
-    "lane:agent": 0.035944,
-    "lane:world": 0.0,
-    "lane:metacog": 0.0,
-    "lane:diffusion": 0.0,
-    "lane:agent-deep": 0.0,
-    "lane:agent-gpu2": 0.0,
-    "lane:experiment": 0.0,
-    "attention:juniper": 0.061702
-   }
-  },
-  {
-   "decided_at": "2026-10-30T02:48:04.803068Z",
-   "family": "dream.cycle",
-   "verb": "make",
-   "tier": 1,
-   "outcome": "funded",
-   "reason": "net_positive",
-   "net": 0.6,
-   "binding_constraint": null,
-   "why": "dream.cycle: weight 1.00 (prior) x rank 0.60 (ungraded; intensity 0.77, hunger 49536 s (since_last_close, tau 33905 s rhythm:10)) - charge 0.000 = net +0.600",
-   "prices_seen": {
-    "heat": 0.785074,
-    "claude": 0.0,
-    "energy": 1.0,
-    "lane:kev": 0.0,
-    "lane:chat": 0.389531,
-    "lane:fast": 0.0,
-    "lane:agent": 0.035944,
-    "lane:world": 0.0,
-    "lane:metacog": 0.0,
-    "lane:diffusion": 0.0,
-    "lane:agent-deep": 0.0,
-    "lane:agent-gpu2": 0.0,
-    "lane:experiment": 0.0,
-    "attention:juniper": 0.061702
-   }
-  },
-  {
-   "decided_at": "2026-10-30T02:44:27.176981Z",
-   "family": "actions.journal",
-   "verb": "make",
-   "tier": 1,
-   "outcome": "funded",
-   "reason": "net_positive",
-   "net": 0.4667,
-   "binding_constraint": null,
-   "why": "actions.journal: weight 1.00 (prior) x rank 0.47 (graded; intensity 0.74, hunger 221 s (since_last_close, tau 162 s rhythm:438)) - charge 0.000 = net +0.467",
-   "prices_seen": {
-    "heat": 0.799284,
-    "claude": 0.0,
-    "energy": 1.0,
-    "lane:kev": 0.0,
-    "lane:chat": 0.377737,
-    "lane:fast": 0.0,
-    "lane:agent": 0.024853,
-    "lane:world": 0.0,
-    "lane:metacog": 0.0,
-    "lane:diffusion": 0.0,
-    "lane:agent-deep": 0.0,
-    "lane:agent-gpu2": 0.0,
-    "lane:experiment": 0.0,
-    "attention:juniper": 0.058386
-   }
-  },
-  {
-   "decided_at": "2026-10-30T02:40:30.739778Z",
-   "family": "actions.journal",
-   "verb": "make",
-   "tier": 1,
-   "outcome": "funded",
-   "reason": "net_positive",
-   "net": 0.4516,
-   "binding_constraint": null,
-   "why": "actions.journal: weight 1.00 (prior) x rank 0.45 (graded; intensity 0.70, hunger 196 s (since_last_close, tau 162 s rhythm:437)) - charge 0.000 = net +0.452",
-   "prices_seen": {
-    "heat": 0.806663,
-    "claude": 0.0,
-    "energy": 1.0,
-    "lane:kev": 0.0,
-    "lane:chat": 0.370732,
-    "lane:fast": 0.0,
-    "lane:agent": 0.019849,
-    "lane:world": 0.0,
-    "lane:metacog": 0.0,
-    "lane:diffusion": 0.0,
-    "lane:agent-deep": 0.0,
-    "lane:agent-gpu2": 0.0,
-    "lane:experiment": 0.0,
-    "attention:juniper": 0.056624
-   }
-  },
-  {
-   "decided_at": "2026-10-30T02:38:04.488616Z",
-   "family": "dream.cycle",
-   "verb": "make",
-   "tier": 1,
-   "outcome": "funded",
-   "reason": "net_positive",
-   "net": 0.6,
-   "binding_constraint": null,
-   "why": "dream.cycle: weight 1.00 (prior) x rank 0.60 (ungraded; intensity 0.76, hunger 48935 s (since_last_close, tau 33905 s rhythm:10)) - charge 0.000 = net +0.600",
-   "prices_seen": {
-    "heat": 0.814037,
-    "claude": 0.0,
-    "energy": 1.0,
-    "lane:kev": 0.0,
-    "lane:chat": 0.363323,
-    "lane:fast": 0.0,
-    "lane:agent": 0.015979,
-    "lane:world": 0.0,
-    "lane:metacog": 0.0,
-    "lane:diffusion": 0.0,
-    "lane:agent-deep": 0.0,
-    "lane:agent-gpu2": 0.0,
-    "lane:experiment": 0.0,
-    "attention:juniper": 0.054836
-   }
-  },
-  {
-   "decided_at": "2026-10-30T02:36:52.979781Z",
-   "family": "actions.journal",
-   "verb": "make",
-   "tier": 1,
-   "outcome": "funded",
-   "reason": "net_positive",
-   "net": 0.6134,
-   "binding_constraint": null,
-   "why": "actions.journal: weight 1.00 (prior) x rank 0.61 (graded; intensity 0.95, hunger 482 s (since_last_close, tau 162 s rhythm:435)) - charge 0.000 = net +0.613",
-   "prices_seen": {
-    "heat": 0.819458,
-    "claude": 0.0,
-    "energy": 1.0,
-    "lane:kev": 0.0,
-    "lane:chat": 0.357611,
-    "lane:fast": 0.0,
-    "lane:agent": 0.014018,
-    "lane:world": 0.0,
-    "lane:metacog": 0.0,
-    "lane:diffusion": 0.0,
-    "lane:agent-deep": 0.0,
-    "lane:agent-gpu2": 0.0,
-    "lane:experiment": 0.0,
-    "attention:juniper": 0.053501
-   }
-  },
-  {
-   "decided_at": "2026-10-30T02:33:09.770020Z",
-   "family": "topic_foundry.run",
-   "verb": "maintain",
-   "tier": 2,
-   "outcome": "funded",
-   "reason": "net_positive",
-   "net": 0.6926,
-   "binding_constraint": null,
-   "why": "topic_foundry.run: weight 1.05 (prior) x rank 0.66 (graded; intensity 0.94, hunger 6238 s (since_last_close, tau 2204 s rhythm:43)) - charge 0.000 = net +0.693",
-   "prices_seen": {
-    "heat": 0.828976,
-    "claude": 0.0,
-    "energy": 1.0,
-    "lane:kev": 0.0,
-    "lane:chat": 0.347131,
-    "lane:fast": 0.0,
-    "lane:agent": 0.011694,
-    "lane:world": 0.0,
-    "lane:metacog": 0.0,
-    "lane:diffusion": 0.0,
-    "lane:agent-deep": 0.0,
-    "lane:agent-gpu2": 0.0,
-    "lane:experiment": 0.0,
-    "attention:juniper": 0.051131
-   }
-  },
-  {
-   "decided_at": "2026-10-30T02:33:08.907993Z",
-   "family": "actions.journal",
-   "verb": "make",
-   "tier": 1,
-   "outcome": "funded",
-   "reason": "net_positive",
-   "net": 0.5093,
-   "binding_constraint": null,
-   "why": "actions.journal: weight 1.00 (prior) x rank 0.51 (graded; intensity 0.80, hunger 258 s (since_last_close, tau 162 s rhythm:435)) - charge 0.000 = net +0.509",
-   "prices_seen": {
-    "heat": 0.828976,
-    "claude": 0.0,
-    "energy": 1.0,
-    "lane:kev": 0.0,
-    "lane:chat": 0.347131,
-    "lane:fast": 0.0,
-    "lane:agent": 0.011694,
-    "lane:world": 0.0,
-    "lane:metacog": 0.0,
-    "lane:diffusion": 0.0,
-    "lane:agent-deep": 0.0,
-    "lane:agent-gpu2": 0.0,
-    "lane:experiment": 0.0,
-    "attention:juniper": 0.051131
-   }
-  },
-  {
-   "decided_at": "2026-10-30T02:32:28.575003Z",
-   "family": "topic_foundry.run",
-   "verb": "maintain",
-   "tier": 2,
-   "outcome": "funded",
-   "reason": "net_positive",
-   "net": 0.6926,
-   "binding_constraint": null,
-   "why": "topic_foundry.run: weight 1.05 (prior) x rank 0.66 (graded; intensity 0.94, hunger 6197 s (since_last_close, tau 2204 s rhythm:43)) - charge 0.000 = net +0.693",
-   "prices_seen": {
-    "heat": 0.828976,
-    "claude": 0.0,
-    "energy": 1.0,
-    "lane:kev": 0.0,
-    "lane:chat": 0.347131,
-    "lane:fast": 0.0,
-    "lane:agent": 0.011694,
-    "lane:world": 0.0,
-    "lane:metacog": 0.0,
-    "lane:diffusion": 0.0,
-    "lane:agent-deep": 0.0,
-    "lane:agent-gpu2": 0.0,
-    "lane:experiment": 0.0,
-    "attention:juniper": 0.051131
-   }
-  },
-  {
-   "decided_at": "2026-10-30T02:28:04.207347Z",
-   "family": "dream.cycle",
-   "verb": "make",
-   "tier": 1,
-   "outcome": "funded",
-   "reason": "net_positive",
-   "net": 0.6,
-   "binding_constraint": null,
-   "why": "dream.cycle: weight 1.00 (prior) x rank 0.60 (ungraded; intensity 0.76, hunger 48335 s (since_last_close, tau 33905 s rhythm:10)) - charge 0.000 = net +0.600",
-   "prices_seen": {
-    "heat": 0.839409,
-    "claude": 0.0,
-    "energy": 1.0,
-    "lane:kev": 0.0,
-    "lane:chat": 0.334727,
-    "lane:fast": 0.0,
-    "lane:agent": 0.00997,
-    "lane:world": 0.0,
-    "lane:metacog": 0.0,
-    "lane:diffusion": 0.0,
-    "lane:agent-deep": 0.0,
-    "lane:agent-gpu2": 0.0,
-    "lane:experiment": 0.0,
-    "attention:juniper": 0.048483
-   }
   }
  ],
  "claude": {
   "window_tokens": {
-   "input": 9408,
-   "output": 3155390,
-   "cache_read": 824401870,
-   "cache_write": 18081262
+   "input": 9772,
+   "output": 3302231,
+   "cache_read": 868204511,
+   "cache_write": 18357153
   },
-  "usd_est": 604.14,
+  "usd_est": 631.44,
   "limit_events": [],
   "status": "tokens are Claude Code sessions on athena (dev_economics, ~/.claude/projects: Juniper's and her agents' sessions); Orion's own harness sessions are not in this count; usd_est is an API-price estimate, not a bill; limits: unknown (no_observation): no ClaudeLimitObservationV1 has arrived on orion:substrate:claude_limit; its producer in orion-cocreation-signals is off by default (COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED=false)"
  },
@@ -5057,7 +5070,7 @@
     "chat",
     "experiment"
    ],
-   "watts": 37.1
+   "watts": 36.9
   },
   {
    "host": "circe",
@@ -5069,7 +5082,7 @@
     "agent",
     "experiment"
    ],
-   "watts": 198.7
+   "watts": 47.8
   },
   {
    "host": "circe",
@@ -5083,7 +5096,7 @@
     "experiment",
     "world"
    ],
-   "watts": 145.7
+   "watts": 150.6
   },
   {
    "host": "circe",
@@ -5097,7 +5110,7 @@
     "kev",
     "metacog"
    ],
-   "watts": 79.5
+   "watts": 73.6
   },
   {
    "host": "hecate",
@@ -5117,7 +5130,7 @@
    "total_mb": 7680.0,
    "headroom_mb": 3161.0,
    "roles": [],
-   "watts": 25.8
+   "watts": 28.5
   },
   {
    "host": "athena",
@@ -5126,12 +5139,12 @@
    "total_mb": 16384.0,
    "headroom_mb": 3079.0,
    "roles": [],
-   "watts": 67.2
+   "watts": 141.1
   }
  ],
  "value_per_cost": [],
  "services": {
-  "checked_at": "2026-10-30T04:37:40.083168Z",
+  "checked_at": "2026-10-30T04:54:31.416733Z",
   "down": [
    {
     "name": "orion-kev/kev",
@@ -5146,101 +5159,92 @@
   {
    "host": "athena",
    "name": "(host, not in a container)",
-   "watts": 13.7,
+   "watts": 14.6,
    "cores": null,
-   "watts_at_wall_est": 17.4,
+   "watts_at_wall_est": 18.5,
    "overhead_factor": 1.273,
-   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)"
-  },
-  {
-   "host": "circe",
-   "name": "43baf7e0588d",
-   "watts": 7.9,
-   "cores": null,
-   "watts_at_wall_est": 18.4,
-   "overhead_factor": 2.345,
-   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992)"
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means (337 with load), R^2 0.98; with an intercept: 1.31 x load - 7 W (always-on draw above the pinned rest, which this k charges to load as the per-act meter does); same readings and rest as the per-act meter (PR #2992)"
   },
   {
    "host": "circe",
    "name": "dd62b3275f3b",
-   "watts": 7.8,
+   "watts": 7.4,
    "cores": null,
-   "watts_at_wall_est": 18.2,
-   "overhead_factor": 2.345,
-   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992)"
+   "watts_at_wall_est": 17.3,
+   "overhead_factor": 2.344,
+   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means (337 with load), R^2 0.90; with an intercept: 2.05 x load + 76 W (always-on draw above the pinned rest, which this k charges to load as the per-act meter does); same readings and rest as the per-act meter (PR #2992)"
   },
   {
    "host": "circe",
-   "name": "(host, not in a container)",
-   "watts": 6.2,
+   "name": "43baf7e0588d",
+   "watts": 5.4,
    "cores": null,
-   "watts_at_wall_est": 14.6,
-   "overhead_factor": 2.345,
-   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992)"
-  },
-  {
-   "host": "circe",
-   "name": "e5287fa21cba",
-   "watts": 5.2,
-   "cores": null,
-   "watts_at_wall_est": 12.2,
-   "overhead_factor": 2.345,
-   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992)"
+   "watts_at_wall_est": 12.7,
+   "overhead_factor": 2.344,
+   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means (337 with load), R^2 0.90; with an intercept: 2.05 x load + 76 W (always-on draw above the pinned rest, which this k charges to load as the per-act meter does); same readings and rest as the per-act meter (PR #2992)"
   },
   {
    "host": "athena",
-   "name": "orion-athena-substrate-runtime",
-   "watts": 3.1,
+   "name": "orion-athena-vector-host",
+   "watts": 4.4,
    "cores": null,
-   "watts_at_wall_est": 4.0,
+   "watts_at_wall_est": 5.6,
    "overhead_factor": 1.273,
-   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)"
-  },
-  {
-   "host": "athena",
-   "name": "orion-athena-vision-host",
-   "watts": 2.9,
-   "cores": null,
-   "watts_at_wall_est": 3.7,
-   "overhead_factor": 1.273,
-   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)"
-  },
-  {
-   "host": "athena",
-   "name": "(small containers)",
-   "watts": 2.7,
-   "cores": null,
-   "watts_at_wall_est": 3.5,
-   "overhead_factor": 1.273,
-   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)"
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means (337 with load), R^2 0.98; with an intercept: 1.31 x load - 7 W (always-on draw above the pinned rest, which this k charges to load as the per-act meter does); same readings and rest as the per-act meter (PR #2992)"
   },
   {
    "host": "athena",
    "name": "orion-athena-sql-db",
-   "watts": 2.6,
+   "watts": 4.0,
    "cores": null,
-   "watts_at_wall_est": 3.3,
+   "watts_at_wall_est": 5.1,
    "overhead_factor": 1.273,
-   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)"
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means (337 with load), R^2 0.98; with an intercept: 1.31 x load - 7 W (always-on draw above the pinned rest, which this k charges to load as the per-act meter does); same readings and rest as the per-act meter (PR #2992)"
+  },
+  {
+   "host": "circe",
+   "name": "(host, not in a container)",
+   "watts": 3.9,
+   "cores": null,
+   "watts_at_wall_est": 9.2,
+   "overhead_factor": 2.344,
+   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means (337 with load), R^2 0.90; with an intercept: 2.05 x load + 76 W (always-on draw above the pinned rest, which this k charges to load as the per-act meter does); same readings and rest as the per-act meter (PR #2992)"
   },
   {
    "host": "athena",
-   "name": "orion-athena-falkordb",
-   "watts": 2.5,
+   "name": "orion-athena-substrate-runtime",
+   "watts": 3.7,
    "cores": null,
-   "watts_at_wall_est": 3.1,
+   "watts_at_wall_est": 4.8,
    "overhead_factor": 1.273,
-   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)"
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means (337 with load), R^2 0.98; with an intercept: 1.31 x load - 7 W (always-on draw above the pinned rest, which this k charges to load as the per-act meter does); same readings and rest as the per-act meter (PR #2992)"
+  },
+  {
+   "host": "athena",
+   "name": "(small containers)",
+   "watts": 3.0,
+   "cores": null,
+   "watts_at_wall_est": 3.8,
+   "overhead_factor": 1.273,
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means (337 with load), R^2 0.98; with an intercept: 1.31 x load - 7 W (always-on draw above the pinned rest, which this k charges to load as the per-act meter does); same readings and rest as the per-act meter (PR #2992)"
+  },
+  {
+   "host": "athena",
+   "name": "orion-athena-vision-host",
+   "watts": 2.8,
+   "cores": null,
+   "watts_at_wall_est": 3.6,
+   "overhead_factor": 1.273,
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means (337 with load), R^2 0.98; with an intercept: 1.31 x load - 7 W (always-on draw above the pinned rest, which this k charges to load as the per-act meter does); same readings and rest as the per-act meter (PR #2992)"
   },
   {
    "host": "athena",
    "name": "orion-athena-vision-edge",
-   "watts": 2.5,
+   "watts": 2.6,
    "cores": null,
-   "watts_at_wall_est": 3.2,
+   "watts_at_wall_est": 3.3,
    "overhead_factor": 1.273,
-   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)"
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means (337 with load), R^2 0.98; with an intercept: 1.31 x load - 7 W (always-on draw above the pinned rest, which this k charges to load as the per-act meter does); same readings and rest as the per-act meter (PR #2992)"
   },
   {
    "host": "athena",
@@ -5249,37 +5253,46 @@
    "cores": null,
    "watts_at_wall_est": 3.0,
    "overhead_factor": 1.273,
-   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)"
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means (337 with load), R^2 0.98; with an intercept: 1.31 x load - 7 W (always-on draw above the pinned rest, which this k charges to load as the per-act meter does); same readings and rest as the per-act meter (PR #2992)"
+  },
+  {
+   "host": "athena",
+   "name": "orion-athena-falkordb",
+   "watts": 2.3,
+   "cores": null,
+   "watts_at_wall_est": 3.0,
+   "overhead_factor": 1.273,
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means (337 with load), R^2 0.98; with an intercept: 1.31 x load - 7 W (always-on draw above the pinned rest, which this k charges to load as the per-act meter does); same readings and rest as the per-act meter (PR #2992)"
   }
  ],
  "hosts": [
   {
    "host": "circe",
-   "at": "2026-10-30T04:37:17.388425Z",
-   "chassis_w_now": 1275.0,
+   "at": "2026-10-30T04:53:58.997746Z",
+   "chassis_w_now": 1370.0,
    "chassis_w_rest": 541.0,
    "rest_basis": "pinned in config/physiology/rest_body.yaml: p05 chassis_watts over 2026-10-01..2026-10-13",
    "recent_floor_w": 578.0,
-   "above_rest_w": 734.0,
-   "usd_per_month_at_this_rate": 67.25,
+   "above_rest_w": 829.0,
+   "usd_per_month_at_this_rate": 75.95,
    "rest_usd_per_month": 49.56,
-   "gpu_w": 460.9,
-   "cpu_w": 129.3,
-   "other_w": 684.8,
+   "gpu_w": 308.9,
+   "cpu_w": 120.3,
+   "other_w": 940.7,
    "gpu_w_rest": 193.4,
    "cpu_w_rest": 45.3,
    "other_w_rest": 279.5,
    "parts_rest_window": "2026-10-01..2026-10-13",
-   "fan_pct": 55.3,
+   "fan_pct": 56.1,
    "unattributed_above_rest_w": null,
    "cards": [
     {
      "card": "gpu0",
-     "watts": 37.1,
-     "idle_w": 37.1,
+     "watts": 36.9,
+     "idle_w": 37.0,
      "above_idle_w": 0.0,
      "watts_at_wall_est": 0.0,
-     "temp_c": 40.0,
+     "temp_c": 39.0,
      "mem_used_mb": 27962.0,
      "roles": [
       "chat",
@@ -5304,17 +5317,17 @@
       {
        "holder": "cortex-exec",
        "label": "cortex-exec",
-       "lease_s": 9791.9
+       "lease_s": 9702.0
       }
      ]
     },
     {
      "card": "gpu1",
-     "watts": 198.7,
+     "watts": 47.8,
      "idle_w": 41.8,
-     "above_idle_w": 157.0,
-     "watts_at_wall_est": 368.1,
-     "temp_c": 72.0,
+     "above_idle_w": 5.9,
+     "watts_at_wall_est": 13.9,
+     "temp_c": 62.0,
      "mem_used_mb": 24888.0,
      "roles": [
       "agent",
@@ -5334,22 +5347,22 @@
       {
        "holder": "cortex-exec",
        "label": "cortex-exec",
-       "lease_s": 26441.9
+       "lease_s": 26008.9
       },
       {
        "holder": "http:anthropic",
        "label": "harness turns",
-       "lease_s": 16115.7
+       "lease_s": 16845.1
       }
      ]
     },
     {
      "card": "gpu2",
-     "watts": 145.7,
+     "watts": 150.6,
      "idle_w": 41.6,
-     "above_idle_w": 104.0,
-     "watts_at_wall_est": 244.0,
-     "temp_c": 63.0,
+     "above_idle_w": 109.0,
+     "watts_at_wall_est": 255.5,
+     "temp_c": 59.0,
      "mem_used_mb": 24904.0,
      "roles": [
       "agent-gpu2",
@@ -5361,32 +5374,32 @@
       {
        "holder": "durable-runs:reading.turn",
        "label": "reading.turn runs",
-       "lease_s": 25995.5
-      },
-      {
-       "holder": "cortex-exec",
-       "label": "cortex-exec",
-       "lease_s": 13815.9
+       "lease_s": 27565.9
       },
       {
        "holder": "durable-runs:self_sense_eval",
        "label": "self_sense_eval runs",
-       "lease_s": 13546.7
+       "lease_s": 14954.2
+      },
+      {
+       "holder": "cortex-exec",
+       "label": "cortex-exec",
+       "lease_s": 14236.5
       },
       {
        "holder": "http:anthropic",
        "label": "harness turns",
-       "lease_s": 6283.8
+       "lease_s": 7024.4
       }
      ]
     },
     {
      "card": "gpu3",
-     "watts": 79.5,
-     "idle_w": 72.8,
-     "above_idle_w": 6.7,
-     "watts_at_wall_est": 15.6,
-     "temp_c": 59.0,
+     "watts": 73.6,
+     "idle_w": 73.1,
+     "above_idle_w": 0.5,
+     "watts_at_wall_est": 1.2,
+     "temp_c": 52.0,
      "mem_used_mb": 19483.0,
      "roles": [
       "experiment",
@@ -5398,96 +5411,99 @@
       {
        "holder": "vision-council",
        "label": "vision-council",
-       "lease_s": 33147.4
+       "lease_s": 32985.2
       },
       {
        "holder": "orion-topic-foundry",
        "label": "orion-topic-foundry",
-       "lease_s": 18360.3
+       "lease_s": 16983.8
       },
       {
        "holder": "http:openai",
        "label": "AI Town",
-       "lease_s": 12104.6
+       "lease_s": 11873.4
       },
       {
        "holder": "cortex-exec",
        "label": "cortex-exec",
-       "lease_s": 5398.9
+       "lease_s": 5402.1
       }
      ]
     }
    ],
    "top_containers": [
     {
-     "name": "43baf7e0588d",
-     "cpu_w": 7.9,
-     "watts_at_wall_est": 18.4
+     "name": "dd62b3275f3b",
+     "cpu_w": 7.4,
+     "watts_at_wall_est": 17.3
     },
     {
-     "name": "dd62b3275f3b",
-     "cpu_w": 7.8,
-     "watts_at_wall_est": 18.2
+     "name": "43baf7e0588d",
+     "cpu_w": 5.4,
+     "watts_at_wall_est": 12.7
     },
     {
      "name": "(host, not in a container)",
-     "cpu_w": 6.2,
-     "watts_at_wall_est": 14.6
+     "cpu_w": 3.9,
+     "watts_at_wall_est": 9.2
     },
     {
      "name": "e5287fa21cba",
-     "cpu_w": 5.2,
-     "watts_at_wall_est": 12.2
+     "cpu_w": 2.1,
+     "watts_at_wall_est": 4.9
     },
     {
      "name": "051e28075f1c",
-     "cpu_w": 1.9,
-     "watts_at_wall_est": 4.4
+     "cpu_w": 1.3,
+     "watts_at_wall_est": 3.1
     }
    ],
    "sponsored": [],
    "daily": [
     {
      "d": "2026-10-28",
-     "chassis_w_avg": 1031.5
+     "chassis_w_avg": 963.0
     },
     {
      "d": "2026-10-29",
-     "chassis_w_avg": 975.8
+     "chassis_w_avg": 979.2
     }
    ],
-   "overhead_factor": 2.345,
-   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992)",
+   "overhead_factor": 2.344,
+   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means (337 with load), R^2 0.90; with an intercept: 2.05 x load + 76 W (always-on draw above the pinned rest, which this k charges to load as the per-act meter does); same readings and rest as the per-act meter (PR #2992)",
    "overhead_fitted": true,
    "overhead_r2": 0.898,
-   "overhead_hours": 337
+   "overhead_hours": 337,
+   "load_above_idle_w": 135.7,
+   "wall_est_parts_w": 318.2,
+   "overhead_now_ratio": 6.11
   },
   {
    "host": "athena",
-   "at": "2026-10-30T04:37:18.090800Z",
-   "chassis_w_now": 417.0,
+   "at": "2026-10-30T04:54:09.033482Z",
+   "chassis_w_now": 405.0,
    "chassis_w_rest": 340.0,
    "rest_basis": "pinned in config/physiology/rest_body.yaml: p05 chassis_watts over 2026-10-01..2026-10-13",
    "recent_floor_w": 387.0,
-   "above_rest_w": 77.0,
-   "usd_per_month_at_this_rate": 7.05,
+   "above_rest_w": 65.0,
+   "usd_per_month_at_this_rate": 5.95,
    "rest_usd_per_month": 31.15,
-   "gpu_w": 93.0,
-   "cpu_w": 139.1,
-   "other_w": 184.9,
+   "gpu_w": 169.5,
+   "cpu_w": 147.8,
+   "other_w": 87.7,
    "gpu_w_rest": 79.0,
    "cpu_w_rest": 118.0,
    "other_w_rest": 92.4,
    "parts_rest_window": "2026-10-01..2026-10-13",
-   "fan_pct": 55.0,
+   "fan_pct": 54.0,
    "unattributed_above_rest_w": null,
    "cards": [
     {
      "card": "athena-gpu0",
-     "watts": 25.8,
+     "watts": 28.5,
      "idle_w": 24.4,
-     "above_idle_w": 1.4,
-     "watts_at_wall_est": 1.8,
+     "above_idle_w": 4.0,
+     "watts_at_wall_est": 5.1,
      "temp_c": 53.0,
      "mem_used_mb": 4519.0,
      "roles": [],
@@ -5495,11 +5511,11 @@
     },
     {
      "card": "athena-gpu1",
-     "watts": 67.2,
+     "watts": 141.1,
      "idle_w": 51.1,
-     "above_idle_w": 16.1,
-     "watts_at_wall_est": 20.4,
-     "temp_c": 77.0,
+     "above_idle_w": 90.0,
+     "watts_at_wall_est": 114.5,
+     "temp_c": 78.0,
      "mem_used_mb": 13305.0,
      "roles": [],
      "top_holders": []
@@ -5508,28 +5524,28 @@
    "top_containers": [
     {
      "name": "(host, not in a container)",
-     "cpu_w": 13.7,
-     "watts_at_wall_est": 17.4
+     "cpu_w": 14.6,
+     "watts_at_wall_est": 18.5
     },
     {
-     "name": "orion-athena-substrate-runtime",
-     "cpu_w": 3.1,
-     "watts_at_wall_est": 4.0
-    },
-    {
-     "name": "orion-athena-vision-host",
-     "cpu_w": 2.9,
-     "watts_at_wall_est": 3.7
+     "name": "orion-athena-vector-host",
+     "cpu_w": 4.4,
+     "watts_at_wall_est": 5.6
     },
     {
      "name": "orion-athena-sql-db",
-     "cpu_w": 2.6,
-     "watts_at_wall_est": 3.3
+     "cpu_w": 4.0,
+     "watts_at_wall_est": 5.1
     },
     {
-     "name": "orion-athena-falkordb",
-     "cpu_w": 2.5,
-     "watts_at_wall_est": 3.1
+     "name": "orion-athena-substrate-runtime",
+     "cpu_w": 3.7,
+     "watts_at_wall_est": 4.8
+    },
+    {
+     "name": "orion-athena-vision-host",
+     "cpu_w": 2.8,
+     "watts_at_wall_est": 3.6
     }
    ],
    "sponsored": [
@@ -5544,18 +5560,21 @@
    "daily": [
     {
      "d": "2026-10-28",
-     "chassis_w_avg": 722.7
+     "chassis_w_avg": 721.7
     },
     {
      "d": "2026-10-29",
-     "chassis_w_avg": 725.3
+     "chassis_w_avg": 721.8
     }
    ],
    "overhead_factor": 1.273,
-   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)",
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means (337 with load), R^2 0.98; with an intercept: 1.31 x load - 7 W (always-on draw above the pinned rest, which this k charges to load as the per-act meter does); same readings and rest as the per-act meter (PR #2992)",
    "overhead_fitted": true,
    "overhead_r2": 0.982,
-   "overhead_hours": 337
+   "overhead_hours": 337,
+   "load_above_idle_w": 142.8,
+   "wall_est_parts_w": 181.7,
+   "overhead_now_ratio": 0.46
   }
  ],
  "missing": [
@@ -5573,7 +5592,7 @@
   },
   {
    "section": "processes",
-   "reason": "top 12 of 24 shown"
+   "reason": "top 12 of 25 shown"
   },
   {
    "section": "hosts",
@@ -5619,26 +5638,26 @@
   "limit": 50
  },
  "timing_ms": {
-  "latest": 38.5,
-  "wants": 58.5,
-  "money": 1.6,
-  "unit_costs": 1.4,
-  "act_costs": 8.6,
-  "limits": 131.1,
-  "attribution": 0.8,
-  "waste": 145.9,
-  "rhythm": 242.5,
-  "decisions": 3.7,
+  "latest": 27.9,
+  "wants": 47.7,
+  "money": 3.6,
+  "unit_costs": 2.4,
+  "act_costs": 14.4,
+  "tokens": 12.7,
+  "attribution": 1.2,
+  "limits": 94.2,
+  "rhythm": 126.2,
+  "decisions": 3.5,
+  "waste": 76.4,
+  "queue_wait": 65.5,
   "claude": 3.8,
-  "biometrics": 1.7,
-  "tokens": 221.3,
-  "queue_wait": 43.9,
-  "hosts_floor": 433.0,
-  "hosts_daily": 44.7,
-  "overhead": 553.9,
-  "services": 158.5,
-  "hosts_holders": 267.2,
-  "hosts_rest": 1317.1,
-  "total": 1668.8
+  "biometrics": 3.7,
+  "hosts_floor": 451.1,
+  "overhead": 485.3,
+  "hosts_daily": 44.5,
+  "services": 7.1,
+  "hosts_holders": 95.0,
+  "hosts_rest": 1141.5,
+  "total": 1399.6
  }
 }

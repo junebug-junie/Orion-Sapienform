@@ -8,6 +8,8 @@ on:
       - "config/vision_frame_router.yaml"
       - "orion/evals/model_replay/sandbox.py"
       - "services/orion-substrate-runtime/app/worker.py"
+      - "orion/substrate/*_loop/constants.py"
+      - "orion/schemas/*_projection.py"
       - ".github/workflows/body-atlas-tests.yml"
   push:
     branches: [main]
@@ -17,6 +19,8 @@ on:
       - "config/vision_frame_router.yaml"
       - "orion/evals/model_replay/sandbox.py"
       - "services/orion-substrate-runtime/app/worker.py"
+      - "orion/substrate/*_loop/constants.py"
+      - "orion/schemas/*_projection.py"
       - ".github/workflows/body-atlas-tests.yml"
 
 jobs:

@@ -92,8 +92,8 @@ Live results:
   transient), 19 organs (8 singletons), Q = 0.350, largest organ 32%. Bus only, same day:
   Q = 0.334, largest 31%.
 - 2026-10-30, process doers: the largest organ went from 75 parts (34%) to 68 (31%), Q 0.350 →
-  0.349, 18 organs both ways. 7 of 8 reducers left it for the organ of the service they read;
-  dream.carry and reverie.visual moved together. The rest of that organ is real: orion-hub,
+  0.349, 18 organs both ways. 7 of 8 reducers left it for the organ of the service they read.
+  The 12 durable workflows stay: their readable doers are the harness and the scheduler. The rest of that organ is real: orion-hub,
   orion-gpu-pool, orion-harness-governor, orion-durable-runs and orion-substrate-runtime signal
   each other on the bus, and most durable runs are harness turns scheduled by orion-durable-runs.
 
@@ -102,6 +102,8 @@ Known gaps (also in every whole-body atlas as `known_gaps`):
 - **Grants.** On 2026-10-30 `orion_readonly` cannot read `grammar_events`, `cognition_traces` or
   `cockpit_turn_sighting`, so the `observed_trace`/`observed_turn` doers are missing (each is
   UNREAD with the exact GRANT it needs). The run-state, cursor and camera tables are readable now.
+  Those two evidence kinds have never run live: after the grant, check the `grammar_events` join
+  (1.4 M rows, no `correlation_id` index; bounded to 31 days) with `EXPLAIN` and a live run.
 - **Run products.** A run's detail carries ids it made (`entry_id`, `dream_id`, `episode_id`), but
   no declared source says which table holds each id, so processes have no `writes` flow yet.
 - **Other hosts' docker.** Only this host's containers are observed; circe placement is

@@ -40,7 +40,7 @@ def test_doers_come_from_correlation_joins_and_follow_the_turn(tmp_path):
     assert ("", "observed_trace", 2) not in procs["reading.turn"].doers
     # the turn record names no service: its table's declared writer did the turn
     assert ("orion-harness-governor", "declared_turn_writer", 4) in procs["reading.turn"].doers
-    # seen only in traces, never in the Literal: still a part, with the declared runner
+    # seen only in traces, never in the Literal: still a part (this fake root declares no runner)
     assert not procs["reverie.visual"].declared and procs["reverie.visual"].runner is None
 
 
@@ -48,6 +48,8 @@ def test_the_join_query_follows_both_the_run_and_its_turn():
     q = S.sql_trace_doers("grammar_events", "source_service")
     assert "detail->>'turn_correlation_id'" in q and "correlation_id AS cid, 'run'" in q
     assert "count(DISTINCT k.run_id)" in q and "t.source_service AS service" in q
+    assert "t.created_at > now() - interval '31 days'" in q  # bounded: no correlation_id index
+    assert "c.created_at > now()" in S.SQL_CHILD_RUNS
     assert "service" not in S.sql_trace_doers("harness_turn_trace", None).split("FROM k")[0].split("via, ")[1]
 
 
@@ -123,6 +125,22 @@ def test_reducer_sources_resolve_through_imports_and_re_exports(tmp_path):
     assert got == {"a_cursor": "orion-a", "b_cursor": "orion-local", "c_cursor": "orion-c"}
 
 
+def test_the_real_reducer_specs_resolve_in_this_checkout():
+    # CI runs this when worker.py or a constant it imports changes: a refactor that the AST
+    # reader cannot follow fails here, not as a quiet partial read at live run time
+    got = S.parse_reducer_sources(Path(__file__).resolve().parents[3])
+    assert len(got) >= 8
+    assert got["vision_organ_grammar_reducer"] == "orion-vision-frame-router"
+    assert got["chat_grammar_consumer"] == "orion-hub"
+
+
+def test_constants_are_module_level_strings_only(tmp_path):
+    import ast
+    tree = ast.parse("def f():\n    X = 'inner'\nY: str = 'ann'\nZ = None\nX = 'outer'\n")
+    assert S._constant(tree, "X") == "outer" and S._constant(tree, "Y") == "ann"
+    assert S._constant(tree, "Z") is None
+
+
 def test_an_unresolvable_reducer_spec_is_a_partial_read(tmp_path):
     worker = WORKER.replace('source_service="orion-c"', "source_service=NOWHERE")
     with pytest.raises(S.PartialRead) as exc:
@@ -173,6 +191,11 @@ def test_a_service_in_every_process_gets_a_small_share_and_each_process_adds_one
     assert flows[("part:orion-a", "part:run:p1")].relation == "does"
     assert flows[("part:orion-durable-runs", "part:run:p1")].relation == "runs"
     assert "orion-a" in atlas.parts[[p.name for p in atlas.parts].index("run:p1")].facts["work_split"]
+
+
+def test_a_runner_only_process_has_no_work_split_fact():
+    atlas = build_atlas(CATALOG, None, now=NOW, body=S.BodyInputs(processes=[_wf("p1")]))
+    assert "work_split" not in next(p for p in atlas.parts if p.name == "run:p1").facts
 
 
 def test_a_runner_also_seen_in_traces_stays_one_runs_flow_with_both_evidences():

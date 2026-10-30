@@ -68,16 +68,16 @@ REDUCER_RUNNER = "orion-substrate-runtime"
 PROCESS_WINDOW_DAYS = 30
 REDUCER_SPECS_FILE = Path("services/orion-substrate-runtime/app/worker.py")
 # Where to look for who did a run's work, not who does what: (table, column naming the service
-# that wrote the row). A row whose correlation_id is the run's own correlation id, or the turn it
+# that wrote the row, the row's time column: bounds the scan, since none indexes correlation_id). A row whose correlation_id is the run's own correlation id, or the turn it
 # started (detail.turn_correlation_id), means that service worked on that run.
-TRACE_SOURCES: tuple[tuple[str, str], ...] = (
-    ("grammar_events", "source_service"),
-    ("cognition_traces", "source_service"),
-    ("cockpit_turn_sighting", "producer"),
+TRACE_SOURCES: tuple[tuple[str, str, str], ...] = (
+    ("grammar_events", "source_service", "created_at"),
+    ("cognition_traces", "source_service", "timestamp"),
+    ("cockpit_turn_sighting", "producer", "created_at"),
 )
 # A turn record with no service column: a row for the run's turn means the table's declared
 # writers (sql-writer's route map joined with the catalog producers) did that turn.
-TURN_RECORD_TABLES: tuple[str, ...] = ("harness_turn_trace",)
+TURN_RECORD_TABLES: tuple[tuple[str, str], ...] = (("harness_turn_trace", "created_at"),)
 
 # What no machine-readable source covers yet. Printed with every whole-body atlas.
 KNOWN_GAPS = [
@@ -374,10 +374,12 @@ def table_writers(route_map: dict[str, str], tables: dict[str, str], catalog: It
 
 
 def _constant(tree: ast.AST, name: str) -> str | None:
-    for node in ast.walk(tree):
-        if (isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) == name
-                and isinstance(node.value, ast.Constant)):
-            return str(node.value.value)
+    """A module-level ``NAME = "str"`` / ``NAME: T = "str"``; nested and non-str values are not."""
+    for node in getattr(tree, "body", []):
+        target = node.target if isinstance(node, ast.AnnAssign) else (node.targets[0] if isinstance(node, ast.Assign) else None)
+        if (getattr(target, "id", None) == name and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            return node.value.value
     return None
 
 
@@ -551,12 +553,14 @@ _RUN_KEYS = (
 )
 
 
-def sql_trace_doers(table: str, column: str | None) -> str:
-    """workflow, via, [service,] runs: in how many runs a row of ``table`` shares a run key."""
+def sql_trace_doers(table: str, column: str | None, time_col: str = "created_at") -> str:
+    """workflow, via, [service,] runs: in how many runs a row of ``table`` shares a run key. The
+    trace rows are bounded a day wider than the run window (a run's work lands after it starts)."""
     svc = f"t.{column} AS service, " if column else ""
     group = "1, 2, 3" if column else "1, 2"
     return (f"WITH k AS ({_RUN_KEYS}) SELECT k.workflow, k.via, {svc}count(DISTINCT k.run_id) AS runs "
-            f"FROM k JOIN {table} t ON t.correlation_id = k.cid GROUP BY {group}")
+            f"FROM k JOIN {table} t ON t.correlation_id = k.cid "
+            f"WHERE t.{time_col} > now() - interval '{PROCESS_WINDOW_DAYS + 1} days' GROUP BY {group}")
 
 
 SQL_CHILD_RUNS = (
@@ -564,7 +568,7 @@ SQL_CHILD_RUNS = (
     "FROM substrate_durable_run_state p CROSS JOIN LATERAL json_array_elements_text("
     "CASE WHEN json_typeof(p.detail->'child_run_ids') = 'array' THEN p.detail->'child_run_ids' "
     "ELSE '[]'::json END) AS k(cid) JOIN substrate_durable_run_state c ON c.run_id = k.cid "
-    f"WHERE p.{_WINDOW} GROUP BY 1, 2"
+    f"WHERE p.{_WINDOW} AND c.{_WINDOW} GROUP BY 1, 2"
 )
 SQL_CAMERAS = (f"SELECT stream_id, count(*) AS events, max(created_at) AS last_seen FROM vision_events "
                f"WHERE stream_id IS NOT NULL AND created_at > now() - interval '{PROCESS_WINDOW_DAYS} days' "
@@ -626,21 +630,22 @@ def _gather_doers(reads: _Reads, sql: Any, procs: dict[str, ProcessIn], runner: 
         return [tuple(r[c] for c in cols) + (int(float(r["runs"] or 0)),)
                 for r in psql_rows(_require(sql, "postgres"), query)]
 
-    for table, column in TRACE_SOURCES:
+    for table, column, time_col in TRACE_SOURCES:
         got = reads.run(f"live:postgres {table} (run + turn correlation ids)", "live",
-                        lambda t=table, c=column: rows(sql_trace_doers(t, c), "workflow", "via", "service"),
+                        lambda t=table, c=column, tc=time_col: rows(sql_trace_doers(t, c, tc),
+                                                                    "workflow", "via", "service"),
                         lambda v: f"{len(v)} workflow/service pairs")
         for workflow, via, service, runs in got or []:
             if service:
                 proc(workflow).doers.append((service, "observed_turn" if via == "turn" else "observed_trace", runs))
-    for table in TURN_RECORD_TABLES:
+    for table, time_col in TURN_RECORD_TABLES:
         producers = sorted({p for p, _ in writers.get(table, [])})
         if not producers:
             reads.add(f"live:postgres {table} (turn records)", "live", "unread",
                       f"no declared writer for {table} in the route map; its rows name no service")
             continue
         got = reads.run(f"live:postgres {table} (turn records)", "live",
-                        lambda t=table: rows(sql_trace_doers(t, None), "workflow", "via"),
+                        lambda t=table, tc=time_col: rows(sql_trace_doers(t, None, tc), "workflow", "via"),
                         lambda v, ps=producers: f"{len(v)} workflow/via pairs; writers {', '.join(ps)}")
         for workflow, _via, runs in got or []:
             for producer in producers:

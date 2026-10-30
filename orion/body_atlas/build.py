@@ -475,11 +475,13 @@ def _add_body(body: BodyInputs, parts: dict[str, PartV1], flows: dict, link, *, 
             status=_status(pr.last_run_epoch, now_epoch, window, seen=pr.runs is not None))
     edges = {f"{_PROCESS_PREFIX[pr.family]}:{pr.name}": _process_edges(pr, parts, known, host_names, unmatched)
              for pr in body.processes}
-    for name, (src, dst, relation, evidence, weight) in _weigh_process_edges(edges):
+    for _name, (src, dst, relation, evidence, weight) in _weigh_process_edges(edges):
+        if src == dst:
+            continue
         link(src, dst, weight, evidence[0], None, relation)
         flows[(src, dst)].evidence.update(evidence)
     for name, cands in edges.items():
-        if cands:
+        if len(cands) > 1:  # a runner-only process would just repeat its runner fact
             parts[name].facts["work_split"] = ", ".join(
                 f"{t} {share:.0%}" for t, share in _shares(edges, name)[:3])
     return {k: sorted(v) for k, v in sorted(unmatched.items())}

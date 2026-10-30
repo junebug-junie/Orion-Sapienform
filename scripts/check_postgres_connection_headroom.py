@@ -234,9 +234,15 @@ def read_idle_split(conn, stale_hours: int = 2) -> tuple[int, int]:
 
 
 def top_clients(conn, limit: int = 10) -> list[tuple[str, int]]:
+    """Connection holders, named by application_name when the client sets one.
+
+    By IP alone the hub (host network) is just the Docker gateway, 172.18.0.1
+    -- 59 connections on 2026-10-30 that took socket forensics to attribute.
+    The hub now sets PGAPPNAME=orion-hub, so it is named here.
+    """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT coalesce(host(client_addr), '<local>'), count(*) "
+            "SELECT coalesce(nullif(application_name, ''), host(client_addr), '<local>'), count(*) "
             f"FROM pg_stat_activity WHERE {CLIENT_BACKENDS} "
             "GROUP BY 1 ORDER BY 2 DESC LIMIT %s",
             (limit,),
@@ -545,6 +551,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
             for addr, count in top_clients(conn):
                 print(f"  {addr:<20} {count}")
+        holders: list[tuple[str, int]] = []
+        if headroom.free_pct < args.min_free_pct:
+            # Best effort: the alarm must fire even if this breakdown fails.
+            try:
+                holders = top_clients(conn, limit=3)
+            except Exception:  # noqa: BLE001
+                holders = []
     finally:
         conn.close()
 
@@ -566,6 +579,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             message=(
                 f"Postgres connection headroom low: {headroom.summary()}. "
                 f"Below the {args.min_free_pct:.0f}% free threshold."
+                + (
+                    " Top holders: " + ", ".join(f"{name} {n}" for name, n in holders) + "."
+                    if holders
+                    else ""
+                )
                 + (
                     " Every client backend is a superuser, so the reserved slots "
                     "will not hold a door open for an operator."

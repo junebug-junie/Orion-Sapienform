@@ -127,6 +127,10 @@ services:
       # Host ambient-audio snapshot + live PCM ring (systemd reader -> /run/orion-audio/{latest.json,live/}).
       - /run/orion-audio:/run/orion-audio:ro
     environment:
+      # Names the hub's psycopg2/SQLAlchemy connections in pg_stat_activity
+      # (asyncpg ignores it). Host networking makes the hub look like the Docker
+      # gateway (172.18.0.1) by IP; the headroom alarm groups by this name.
+      - PGAPPNAME=orion-hub
       - HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=${HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED:-true}
       - HUB_CURIOSITY_MAX_QUEUED_INVESTIGATIONS=${HUB_CURIOSITY_MAX_QUEUED_INVESTIGATIONS:-1}
       - HUB_CURIOSITY_DURABLE_RUNS_URL=${HUB_CURIOSITY_DURABLE_RUNS_URL:-http://127.0.0.1:8124}

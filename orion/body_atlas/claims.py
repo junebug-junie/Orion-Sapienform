@@ -103,17 +103,22 @@ def _part(atlas: BodyAtlasV1, ref: str) -> str:
     return parts[name]
 
 
+def _plain(text: str) -> str:
+    """Lower case, ``part:`` prefixes dropped: ``part:orion-hub`` names orion-hub too."""
+    return re.sub(r"(?<![\w:-])part:", "", text.lower())
+
+
 def evidence_ids(atlas: BodyAtlasV1, part_id: str, census: set[str]) -> set[str]:
-    """What a claim on this part may cite: the other end of each of its flows, and each
+    """What a claim on this part may cite: the live other end of each of its flows, and each
     non-census channel on them. A host (``runs_on``) is placement, not evidence of a job."""
-    names = {p.part_id: p.name for p in atlas.parts}
+    names = {pid: n for n, pid in claimable(atlas).items()}
     out: set[str] = set()
     for f in atlas.flows:
         if part_id not in (f.source, f.target) or f.relation == "runs_on":
             continue
         other = f.target if f.source == part_id else f.source
-        if other != part_id:
-            out.add(names.get(other, other.removeprefix("part:")))
+        if other != part_id and other in names:
+            out.add(names[other])
         out.update(ch for ch in f.channels if ch not in census)
     return out
 
@@ -124,7 +129,11 @@ def repo_files(text: str, root: Path) -> list[str]:
         rel = m.group(1)
         if ".." in PurePosixPath(rel).parts:
             continue
-        if (root / rel).exists():
+        # a real file inside the checkout: no dot dirs (.venv, .git), no symlink out of the repo
+        if any(seg.startswith(".") for seg in PurePosixPath(rel).parts):
+            continue
+        path = root / rel
+        if path.is_file() and path.resolve().is_relative_to(root.resolve()):
             out.append(rel)
     return list(dict.fromkeys(out))
 
@@ -149,7 +158,7 @@ def check_claim(reading: CapacityReadingV1, atlas: BodyAtlasV1, ref: str, role: 
         raise ClaimError(f"no rule gives {part_id.removeprefix('part:')} {job}; there is nothing to dispute "
                          "(`capacity claim` to propose a role)")
     census = {c.channel for c in reading.census if c.census}
-    low = because.lower()
+    low = _plain(because)
     cites = sorted(e for e in evidence_ids(atlas, part_id, census) if _cited(e, low))
     cites += repo_files(because, root)
     if not cites:
@@ -175,12 +184,12 @@ def check_capacity(reading: CapacityReadingV1, atlas: BodyAtlasV1, written: list
         raise ClaimError(f"no part holds {jobs} by rule or by Juniper's confirmation, so there is nothing to "
                          "cite; the gap line stands (`capacity claim` a part, then Juniper confirms)")
     held = [h.removeprefix("part:") for h in hs]
-    s_low = sentence.lower()
+    s_low = _plain(sentence)
     others = sorted(n for n in claimable(atlas) if n not in held and _cited(n, s_low))
     if others:
         raise ClaimError(f"the sentence names {', '.join(others)}, which hold no {jobs} by rule or confirmation; "
                          f"a capacity may name only {', '.join(held[:6])}")
-    text = f"{s_low} {because.lower()}"
+    text = f"{s_low} {_plain(because)}"
     cites = [h for h in held if _cited(h, text)]
     if not cites:
         raise ClaimError(f"cite at least one holder of {jobs} by full id: {', '.join(held[:6])}")
@@ -196,6 +205,6 @@ def claim_rule() -> str:
     """The floor ``check_claim`` and ``check_capacity`` enforce, from the same constants."""
     return (f"Claim: a live part, a job ({', '.join(JOBS)}), and a because ({BECAUSE_MIN_CHARS}-"
             f"{BECAUSE_MAX_CHARS} chars) citing by full id a part or channel on one of its flows, or a repo "
-            "file. Not a role until Juniper confirms it in config/body_atlas/vsm_confirmed.yaml. Capacity "
+            "file that exists. Not a role until Juniper confirms it in config/body_atlas/vsm_confirmed.yaml. Capacity "
             f"(cap:s1..s5, cap:metabolism): one sentence ({SENTENCE_MIN_CHARS}-{SENTENCE_MAX_CHARS} chars) "
             "naming only parts that hold the job by rule or confirmation.")

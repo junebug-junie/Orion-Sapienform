@@ -33,3 +33,52 @@ def test_only_the_atlas_and_dig_read_the_capacity_ledgers():
                     "import capacities, claims", "claims_path", "capacities_path")
     assert "orion/body_atlas/claims.py" in hits and "orion/dig/__main__.py" in hits  # the grep really ran
     assert [h for h in hits if not h.startswith(ALLOWED)] == []
+
+
+LEDGER_MODULES = ("names", "claims")  # orion.body_atlas.<module> reads a self ledger
+
+
+def _ledger_imports(tree) -> list[str]:
+    import ast
+
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "orion.body_atlas":
+            out += [a.name for a in node.names if a.name in LEDGER_MODULES]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            out += [node.module for m in LEDGER_MODULES if node.module == f"orion.body_atlas.{m}"]
+        elif isinstance(node, ast.Import):
+            out += [a.name for a in node.names if a.name in {f"orion.body_atlas.{m}" for m in LEDGER_MODULES}]
+    return out
+
+
+def test_no_module_outside_the_atlas_and_dig_imports_a_ledger_module_in_any_form():
+    """The string grep misses `import names, claims` lists and parenthesised imports; the AST does not."""
+    import ast
+
+    files = subprocess.run(["git", "-C", str(_REPO), "ls-files", "*.py"], capture_output=True, text=True,
+                           check=True).stdout.split()
+    assert len(files) > 100  # the listing really ran
+    bad = []
+    for rel in files:
+        if rel.startswith(ALLOWED):
+            continue
+        try:
+            text = (_REPO / rel).read_text(encoding="utf-8")
+            if "body_atlas" not in text:  # every import form names the package
+                continue
+            tree = ast.parse(text)
+        except (SyntaxError, UnicodeDecodeError, FileNotFoundError):
+            continue
+        if _ledger_imports(tree):
+            bad.append(rel)
+    assert bad == []
+
+
+def test_the_ast_check_sees_every_import_form():
+    import ast
+
+    for src in ("from orion.body_atlas import capacities, claims", "from orion.body_atlas import (\n    names,\n)",
+                "import orion.body_atlas.claims", "from orion.body_atlas.names import load"):
+        assert _ledger_imports(ast.parse(src)), src
+    assert not _ledger_imports(ast.parse("from orion.body_atlas import capacities"))

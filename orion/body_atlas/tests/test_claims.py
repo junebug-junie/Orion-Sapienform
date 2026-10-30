@@ -179,6 +179,41 @@ def test_the_printout_still_fits_with_six_long_capacities_and_claims():
     written = [K.CapacityV1(cap_id=c, sentence=long, because="b" * 20, cites=["pool"], at="t", dig="t")
                for c in K.CAP_JOBS]
     claim = _claim(K.read_capacities(atlas), atlas, "gateway", "S3", "gateway answers r0 on llm:reply")
-    view = K.attach_ledgers(K.read_capacities(atlas), atlas, None, [claim] * 5, written)
+    claims = [claim.model_copy(update={"part_id": f"part:{p}", "role": r, "kind": k, "because": "y" * 400})
+              for p, r, k in (("gateway", "S3", "claim"), ("r0", "S4", "claim"), ("r1", "S5", "claim"),
+                              ("ghost", "S4", "claim"), ("pool", "S2", "dispute"), ("watcher", "S3*", "dispute"),
+                              ("w0", "S1", "dispute"))]
+    view = K.attach_ledgers(K.read_capacities(atlas, vsm=_vsm(rejected=[("r1", "S5")])), atlas,
+                            _vsm(rejected=[("r1", "S5")]), claims, written)
+    view.notes += ["n" * 150] * 3
     text = "\n".join(K.render(view))
-    assert len(text.splitlines()) <= 38 and len(text) <= 3700
+    assert len([c for c in view.claims]) == 7 and "I dispute pool" in text and "part not live now" in text
+    assert len(text.splitlines()) <= 38 and len(text) <= 3700, (len(text.splitlines()), len(text))
+
+
+def test_a_sentence_cannot_slip_a_part_in_as_part_colon_name():
+    atlas = _body()
+    r = K.attach_ledgers(K.read_capacities(atlas), atlas, None, [], [])
+    with pytest.raises(C.ClaimError, match="names gateway"):
+        C.check_capacity(r, atlas, [], "cap:s2", "part:gateway and pool hand out my workers", "pool is the matchmaker",
+                         dig="t")
+    rec = _claim(r, atlas, "gateway", "S3", "part:r0 hears back from it on llm:reply")
+    assert "r0" in rec.cites
+
+
+def test_a_folder_a_dot_dir_or_a_dead_part_is_not_evidence():
+    atlas = _body(worker_status="transient")
+    r = K.read_capacities(atlas)
+    with pytest.raises(C.ClaimError, match="cite"):
+        _claim(r, atlas, "gateway", "S3", "see the folder orion/body_atlas/tests for how it works")
+    with pytest.raises(C.ClaimError, match="cite"):  # w0 is on a flow into pool, but not live
+        _claim(r, atlas, "pool", "S3", "pool hears w0 on its announce line a lot")
+
+
+def test_juniper_confirming_the_candidate_makes_the_job_confirmed():
+    atlas = _body()
+    r = K.read_capacities(atlas, vsm=_vsm(("watcher", "S3*")))
+    assert next(j for j in r.jobs if j.job == "S3*").status == "CONFIRMED"
+    r = K.read_capacities(atlas, vsm=_vsm(("gateway", "S3*")))
+    assert next(j for j in r.jobs if j.job == "S3*").status == "CANDIDATE"  # a different part: still a candidate
+    assert next(j for j in r.jobs if j.job == "S2").status == "BY RULE"

@@ -17,8 +17,9 @@ Patch 2, **claims floor** on the 2026-10-30 body (``orion/body_atlas/claims.py``
 one of the part's flows passes; one citing an unrelated part, only the census, or taking a job a
 rule already gives is refused; a capacity with no holder, or naming a part that holds no such
 job, is refused; an unconfirmed claim is never citable and never clears a gap; Juniper's
-confirmation does both; the checked-in ``vsm_confirmed.yaml`` reads; six full-length capacities
-and claims still fit the printout. Mutation: let unconfirmed claims hold roles and it must FAIL.
+confirmation does both; the checked-in ``vsm_confirmed.yaml`` reads; six full-length capacities,
+several claims, disputes and notes still fit the printout. Mutation (a code change, patched in):
+``holders`` also returns parts with an unconfirmed claim; the floor must FAIL.
 
 The expected sets are the only hand-written truth here; the rules never read them.
 
@@ -124,8 +125,27 @@ def _refused(fn, *args, **kw) -> bool:
     return False
 
 
+def _claims_hold_holders(real):
+    """The mutant: a ``holders`` that also counts unconfirmed claims, the bug the floor guards."""
+    def mutant(reading, cap_id):
+        extra = [c.part_id for c in reading.claims if c.kind == "claim" and c.role in K.CAP_JOBS[cap_id]]
+        return list(dict.fromkeys(real(reading, cap_id) + extra))
+    return mutant
+
+
 def claims_failures(path: Path, *, claims_hold: bool = False) -> list[str]:
-    """``claims_hold=True`` is the mutation: unconfirmed claims are read as confirmed."""
+    """``claims_hold=True`` runs the floor with the mutant ``holders`` patched into both modules."""
+    if not claims_hold:
+        return _claims_failures(path)
+    real_k, real_c = K.holders, C.holders
+    K.holders = C.holders = _claims_hold_holders(real_k)
+    try:
+        return _claims_failures(path)
+    finally:
+        K.holders, C.holders = real_k, real_c
+
+
+def _claims_failures(path: Path) -> list[str]:
     catalog, observed, now, body = _structure._fixture_inputs(path)
     atlas = build_atlas(catalog, observed, now=now, body=body)
     try:
@@ -152,13 +172,12 @@ def claims_failures(path: Path, *, claims_hold: bool = False) -> list[str]:
     for why, (fn, *args) in refusals.items():
         if not _refused(fn, *args, kind="claim", root=_REPO, dig="e"):
             f.append(f"claim not refused: {why}")
-    vsm_used = vsm
-    if claims_hold:
-        vsm_used = vsm.model_copy(update={"confirmed": [K.ConfirmationV1(part="orion-durable-runs", role="S2",
-                                                                         date="2026-10-30")]})
-    reading = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm_used), atlas, vsm_used, [claim], [])
-    if "part:orion-durable-runs" in K.holders(reading, "cap:s2"):
+    reading = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm), atlas, vsm, [claim], [])
+    if not _refused(C.check_capacity, reading, atlas, [], "cap:s2", "orion-durable-runs keeps my runs from fighting",
+                    "orion-durable-runs schedules them", dig="e"):
         f.append("an unconfirmed claim became citable in cap:s2")
+    if "part:orion-durable-runs" in next(c.holders for c in reading.capacities if c.cap_id == "cap:s2"):
+        f.append("an unconfirmed claim is listed as a cap:s2 holder")
     if len(reading.gaps) != len(base.gaps):
         f.append("an unconfirmed claim changed the gap lines")
     if [c.status for c in reading.claims] != ["unconfirmed"]:
@@ -188,7 +207,12 @@ def claims_failures(path: Path, *, claims_hold: bool = False) -> list[str]:
     long = "x" * C.SENTENCE_MAX_CHARS
     written = [K.CapacityV1(cap_id=c, sentence=long, because="b" * 20, cites=["orion-gpu-pool"], at="t", dig="e")
                for c in K.CAP_JOBS]
-    big = K.attach_ledgers(K.read_capacities(atlas, vsm=yes), atlas, yes, [claim] * 3, written)
+    many = [claim.model_copy(update={"part_id": f"part:{p}", "role": r, "kind": k}) for p, r, k in (
+        ("orion-world-pulse", "S4", "claim"), ("orion-prediction", "S4", "claim"), ("orion-hub", "S3", "claim"),
+        ("orion-hardware-watch", "algedonic", "claim"), ("pg:self_concept_history", "S5", "claim"),
+        ("orion-gpu-pool", "S2", "dispute"), ("camera:cam0", "S1", "dispute"), ("http:openai", "S1", "dispute"))]
+    big = K.attach_ledgers(K.read_capacities(atlas, vsm=yes), atlas, yes, [claim, *many], written)
+    big.notes += [f"note {i}: " + "n" * 120 for i in range(3)]
     text = "\n".join(K.render(big))
     if len(text.splitlines()) > 38 or len(text) > 3700:  # room for the dig pointer and tail lines
         f.append(f"printout with ledgers too big: {len(text.splitlines())} lines, {len(text)} chars")
@@ -208,7 +232,8 @@ def main(argv: list[str] | None = None) -> int:
     for f in claim_fails:
         print(f"FAIL claims: {f}")
     print("claims floor (whole_body_2026-10-30_stores.json): " + ("PASS" if not claim_fails else f"FAIL ({len(claim_fails)})"))
-    claims_mutant = bool(claims_failures(TODAY, claims_hold=True))
+    mutant_fails = claims_failures(TODAY, claims_hold=True)
+    claims_mutant = any("unconfirmed claim" in f for f in mutant_fails)  # caught by the floor, not by chance
     print("mutation (unconfirmed claims hold roles): " + ("CAUGHT" if claims_mutant else "NOT CAUGHT"))
     failed += bool(claim_fails) + (not claims_mutant)
     if args.live:

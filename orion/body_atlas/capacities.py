@@ -506,7 +506,10 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True,
         if not got:
             continue
         shown = "confirmed by Juniper: " + _names([c.part_id for c in got], 4)
-        status = j.status if j.status in ("BY RULE", "CANDIDATE") else "CONFIRMED"
+        cands = {r.part_id for r in roles if r.role == j.job and r.strength == "candidate"}
+        # Juniper confirming the rule's candidate makes the job CONFIRMED; BY RULE stays BY RULE
+        status = "BY RULE" if j.status == "BY RULE" else (
+            "CANDIDATE" if j.status == "CANDIDATE" and not cands & {c.part_id for c in got} else "CONFIRMED")
         jobs[i] = JobLineV1(job=j.job, status=status, text=f"{j.text} · {shown}" if status != "CONFIRMED"
                             else f"{shown} · {j.text}")
     gaps = [g for g in gaps if not (g.gap_id in COVERED_BY_CONFIRMATION and any(
@@ -515,7 +518,8 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True,
     if vsm is not None and vsm.s5_shared_with is not None:
         sh = vsm.s5_shared_with
         jobs = [j if j.job != "S5" else JobLineV1(job="S5", status=j.status, text=(
-            f"shared with {sh.who} (signs off {', '.join(sh.signoff_files)}) · {j.text}")) for j in jobs]
+            f"shared with {sh.who} (signs off {', '.join(f.rsplit('/', 1)[-1] for f in sh.signoff_files)}) · "
+            f"{j.text}")) for j in jobs]
 
     mixes: dict[str, OrganMixV1] = {}
     for r in roles + confirmed:
@@ -628,8 +632,10 @@ def render(reading: CapacityReadingV1) -> list[str]:
             lines.append(f"  {status}: " + _names(by_status[status], 6) + (
                 " (my claim, not a role until Juniper confirms)" if status == "unconfirmed" else ""))
     for d in disputes[:3]:
-        lines.append(f"  I dispute {_bare(d.part_id)} {d.role} ({d.status}): {d.because[:100]}")
-    lines += [f"note: {n}" for n in reading.notes[:3]]
+        lines.append(f"  I dispute {_bare(d.part_id)} {d.role} ({d.status}): {d.because[:60]}")
+    if len(disputes) > 3:
+        lines.append(f"  +{len(disputes) - 3} more disputes in the file")
+    lines += [f"note: {n[:90]}" for n in reading.notes[:3]]
     if reading.capacities:
         lines.append("capacities (my words; may cite only rule-held or confirmed roles):")
         lines += [f"  {c.cap_id:<14} {c.text}" for c in reading.capacities]

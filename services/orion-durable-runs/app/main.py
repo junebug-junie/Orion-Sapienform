@@ -660,6 +660,18 @@ async def physiology_state() -> dict:
 
 
 _report_cache: Any = None
+#: orion-equilibrium-service's per-service heartbeat hash (EQUILIBRIUM_STATE_KEY there). Read-only here:
+#: circe's container census rides one of those heartbeats and gives container ids their names.
+EQUILIBRIUM_STATE_REDIS_KEY = "equilibrium:state"
+
+
+async def _container_names() -> dict:
+    from app.physiology_report import container_names_from_census
+
+    if rpc_bus is None:
+        return {}
+    raw = await asyncio.wait_for(rpc_bus.redis.hgetall(EQUILIBRIUM_STATE_REDIS_KEY), timeout=2.0)
+    return container_names_from_census(raw or {})
 
 
 @app.get("/physiology/report")
@@ -688,6 +700,7 @@ async def physiology_report(window: Optional[str] = "24h", sections: Optional[st
         gpu_pool_path=_settings.physiology_report_gpu_pool_path,
         tiers=tiers_from_families(market.families) if market is not None else {},
         family_weights=market.family_weights if market is not None else None,
+        container_names=_container_names,
         concurrency=_settings.physiology_report_concurrency)
     report = await _report_cache.get_or_build(q.cache_key, lambda: build_report(deps, q))
     return report.model_dump(mode="json")

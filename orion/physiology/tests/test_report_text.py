@@ -167,3 +167,74 @@ def test_processes_render_largest_first():
                         {"host": "circe", "name": "(host, not in a container)", "watts": 2.0, "cores": None}]
     text = rt.render_report_text(rep, ("processes",))
     assert "- circe orion-circe-atlas-agent: 18.5 W" in text and "CPU watts above idle" in text
+
+
+# --- hosts: what is spinning each machine (2026-10-30) ------------------------------------------
+
+HOSTS_FIXTURE = Path(__file__).resolve().parents[1] / "evals" / "fixtures" / "physiology_report_live_2026-10-30_24h.json"
+
+
+def hosts_live() -> dict:
+    return json.loads(HOSTS_FIXTURE.read_text())
+
+
+def test_hosts_fixture_is_a_valid_contract_report():
+    rep = PhysiologyReportV1.model_validate(hosts_live())
+    assert {h.host for h in rep.hosts} == {"circe", "athena"}
+
+
+def test_overview_has_one_what_is_spinning_line_per_machine():
+    rep = hosts_live()
+    text = rt.render_report_text(rep)
+    assert "hosts" in rt.OVERVIEW
+    for h in rep["hosts"]:
+        line = next(l for l in text.splitlines() if l.startswith(f"- {h['host']} draws "))
+        assert f"{h['chassis_w_now']:.0f} W now vs {h['chassis_w_rest']:.0f} W at rest" in line
+        assert "GPUs " in line and "CPU " in line and "other " in line
+    assert "zelda_dojo (Juniper's)" in text            # sponsored work, apart from Orion's activity
+    assert rt.cap_text(text) == text                  # still fits the dig cap
+
+
+def test_hosts_full_view_says_measured_vs_estimated_and_names_holders():
+    rep = hosts_live()
+    text = rt.render_report_text(rep, ("hosts",))
+    assert "measured: whole-machine watts" in text and "Estimated: rest (pinned" in text
+    assert "- rest: pinned" in text and "2026-10-01..2026-10-13" in text
+    assert "held by curiosity.investigate runs" in text or "held by reading.turn runs" in text
+    assert "Juniper's sponsored work, not my activity: 32 containers" in text
+    assert "None" not in text and "nan" not in text
+
+
+def test_host_flag_narrows_only_the_machine_sections():
+    rep = hosts_live()
+    text = rt.render_report_text(rep, ("hosts", "processes"), host="circe")
+    assert "machine circe (narrows hosts, processes, vram)" in text.splitlines()[0]
+    assert "circe draws" in text and "athena draws" not in text
+    assert "- athena " not in text
+    assert all(r["host"] == "circe" for r in rt.narrow_to_host(rep, "circe")["processes"])
+    gone = rt.render_report_text(rep, ("hosts",), host="hecate")
+    assert "no fresh reading for hecate (machines with one: athena, circe)" in gone
+
+
+def test_host_headline_words_and_drift():
+    h = {"host": "circe", "chassis_w_now": 1150.0, "chassis_w_rest": 541.0, "above_rest_w": 609.0,
+         "usd_per_month_at_this_rate": 55.8, "rest_usd_per_month": 49.6, "recent_floor_w": 600.0}
+    assert rt.host_headline(h) == ("circe draws 1150 W now vs 541 W at rest (+609 W, about $56/month at this rate; "
+                                   "my body at rest there costs about $50/month).")
+    assert "59 W above the pinned rest: new always-on draw" in rt.floor_drift(h)
+    assert rt.floor_drift({**h, "recent_floor_w": 550.0}) is None
+    assert rt.host_headline({"host": "x", "chassis_w_now": None}) == "x: whole-machine draw unknown (no chassis reading)."
+    assert rt.host_parts({"gpu_w": 72.0, "gpu_w_rest": 72.4, "cpu_w": 10.0, "cpu_w_rest": None, "other_w": None}) == \
+        "GPUs 72 W (+0), CPU 10 W"
+
+
+def test_energy_exogenous_bind_is_my_body_at_rest_not_not_my_load():
+    """Juniper 2026-10-30: the always-on body is Orion's own; 'not from my load' was false for energy."""
+    lim = {"constraint": "energy", "label": "Energy money this month", "unit": "usd", "line": 100.0,
+           "now": {"level": 183.7, "bind_state": "exogenous_bind", "why": "my body at rest costs about $146/month"}}
+    line = rt._limit_line(lim)
+    assert "BINDING: my body at rest alone reaches the envelope" in line and "not from my load" not in line
+    heat = {**lim, "constraint": "heat"}
+    assert "not from my load" in rt._limit_line(heat)    # heat: the room really is outside Orion
+    money = rt.render_money({"money": {"mtd_usd": 183.7, "envelope_usd": 100.0, "forecast_usd": 196.7, "floor_usd": 194.0}})
+    assert "My body at rest alone reaches $194.00 this month" in money[0] and "switched on" not in money[0]

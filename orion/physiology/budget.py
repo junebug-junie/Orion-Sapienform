@@ -198,6 +198,10 @@ def _local_month_bounds(now: datetime, tz: ZoneInfo) -> tuple[datetime, datetime
     return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
 
 
+#: A 730-hour month (8,760 h / 12), for $/month wording only.
+HOURS_PER_MONTH = 730.0
+
+
 def energy_ask(reading: PhysiologyConstraintReadingV1, body: BodyInputs, now: datetime, cfg: BudgetConfig,
                prev_bind: bool) -> _Ask:
     env = reading.budget
@@ -224,7 +228,14 @@ def energy_ask(reading: PhysiologyConstraintReadingV1, body: BodyInputs, now: da
     why = (f"month to date ${to_date:.2f}; forecast ${_f(use)} by month end at ${rate:.3f}/h; "
            f"the always-on floor alone (${floor_rate:.3f}/h) reaches ${floor:.2f} vs envelope ${env:.0f}")
     if bind:
-        why = "the envelope is spent by what stays switched on (not by what I do); " + why
+        # Wording only (Juniper 2026-10-30): the always-on body is Orion's own body, so this must not
+        # read as "not my doing". The price mechanism above is unchanged.
+        # Rest is Orion's body at rest (Juniper's lever, Orion's cost); activity is above it.
+        elapsed_h = max(0.0, (now - month_start).total_seconds() / 3600.0)
+        activity_mtd = max(0.0, to_date - floor_rate * elapsed_h)
+        why = (f"my body at rest costs about ${floor_rate * HOURS_PER_MONTH:.0f}/month, more than the "
+               f"${env:.0f} envelope by itself; my activity above rest adds about ${activity_mtd:.0f} this month "
+               f"(pace ${max(0.0, rate - floor_rate) * HOURS_PER_MONTH:.0f}/month); ") + why
     return _Ask(use, env, bind, why, budget_floor=0.05 * env)
 
 

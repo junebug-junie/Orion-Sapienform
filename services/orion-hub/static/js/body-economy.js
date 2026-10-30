@@ -23,6 +23,13 @@
     no_reading: "no reading",
   };
   var STATE_RANK = { stuck_at_ceiling: 0, binding: 1, exogenous_bind: 2, no_reading: 3, slack: 4 };
+  // The energy envelope binds "exogenously" when the always-on floor alone reaches it. That floor is
+  // Orion's own body at rest, so "not Orion's doing" is false for energy (Juniper, 2026-10-30).
+  var ENERGY_EXO_WORDS = "Orion's body at rest alone reaches the envelope";
+  function stateWordsFor(constraint, bindState) {
+    if (constraint === "energy" && bindState === "exogenous_bind") return ENERGY_EXO_WORDS;
+    return STATE_WORDS[bindState] || bindState || "";
+  }
 
   // One fixed colour per want family across every view and window (dataviz reference palette, dark
   // steps). Families not listed get a stable slot from their name, never from their rank.
@@ -147,10 +154,10 @@
     return chip(statusWords(status), kind);
   }
 
-  function stateChip(bindState) {
+  function stateChip(bindState, constraint) {
     var kind = bindState === "slack" ? "good" : bindState === "binding" || bindState === "stuck_at_ceiling"
       ? "warn" : "muted";
-    return chip(STATE_WORDS[bindState] || statusWords(bindState), kind);
+    return chip(STATE_WORDS[bindState] ? stateWordsFor(constraint, bindState) : statusWords(bindState), kind);
   }
 
   // ---------- empty states ----------
@@ -258,7 +265,7 @@
   function limitTip(limit, p, tz) {
     if (!p) return null;
     return fmtTime(p.h, { weekday: "short", hour: "2-digit", minute: "2-digit" }, tz) + " · " + fmtLevel(p.level, limit.unit) +
-      " · " + (STATE_WORDS[p.bind_state] || p.bind_state) + (num(p.price) !== null ? " · price " + p.price.toFixed(2) : "");
+      " · " + stateWordsFor(limit.constraint, p.bind_state) + (num(p.price) !== null ? " · price " + p.price.toFixed(2) : "");
   }
 
   // ---------- wants ----------
@@ -387,7 +394,7 @@
         var l = x.l;
         return '<div class="tile" data-tile="' + esc(l.constraint) + '"><div class="tile-label">' + esc(l.label || l.constraint) +
           '</div><div class="tile-value">' + esc(fmtLevel(l.now.level, l.unit)) + '</div><div class="tile-note">' +
-          stateChip(l.now.bind_state) + "<span>line " + esc(fmtLevel(l.line, l.unit)) + "</span></div></div>";
+          stateChip(l.now.bind_state, l.constraint) + "<span>line " + esc(fmtLevel(l.line, l.unit)) + "</span></div></div>";
       });
     if (!tiles.length) tiles.push('<div class="tile">' + empty("limits") + "</div>");
     tiles.push(servicesTile());
@@ -424,7 +431,7 @@
       esc(l.label || l.constraint) + '</div><div class="muted small">line ' + esc(fmtLevel(l.line, l.unit)) +
       '</div></div><div class="track" data-brush="1" data-limit-track="' + esc(l.constraint) + '">' + limitSvg(l, w.start, w.end) +
       '<div class="brush hidden"></div></div><div class="strip-now"><div class="strong">' + esc(fmtLevel(now.level, l.unit)) +
-      '</div><div class="muted small">' + esc(STATE_WORDS[now.bind_state] || now.bind_state || "") + "</div></div></div>";
+      '</div><div class="muted small">' + esc(stateWordsFor(l.constraint, now.bind_state)) + "</div></div></div>";
   }
 
   function renderLimits(doc) {
@@ -521,8 +528,8 @@
     var figs = [["Spent so far", m.mtd_usd], ["Forecast by month end", m.forecast_usd], ["Envelope", m.envelope_usd]]
       .map(function (p) { return '<div><div class="muted small">' + p[0] + '</div><div class="big">' + esc(fmtUsd(p[1])) + "</div></div>"; }).join("");
     var note = num(m.floor_usd) !== null
-      ? '<p class="small">The always-on floor alone reaches ' + esc(fmtUsd(m.floor_usd)) + " this month" +
-        (num(m.envelope_usd) !== null && m.floor_usd > m.envelope_usd ? ", over the envelope: this limit is not Orion's doing, and is hatched in the limits chart." : ".") +
+      ? '<p class="small">Orion\'s body at rest alone reaches ' + esc(fmtUsd(m.floor_usd)) + " this month" +
+        (num(m.envelope_usd) !== null && m.floor_usd > m.envelope_usd ? ", over the envelope by itself (hatched in the limits chart). Activity above rest adds the rest of the forecast." : ".") +
         (num(m.rate_usd_per_kwh) !== null ? " Rate: " + esc(fmtUsd(m.rate_usd_per_kwh)) + " per kWh." : "") + "</p>"
       : "";
     var days = m.daily_kwh || [];
@@ -571,6 +578,89 @@
     return '<div class="hbar" data-tip="' + esc(tip) + '"><span class="hbar-label">' + label + '</span><span class="hbar-track"><span style="width:' +
       Math.min(100, (value / (max || 1)) * 100).toFixed(1) + "%;background:" + (color || "#3987e5") + '"></span></span><span class="hbar-text">' +
       esc(text) + "</span></div>";
+  }
+
+  // ---------- hosts: what is spinning each machine ----------
+  // Kept in its own functions (hostNotes, hostStackHtml, hostCardsHtml, hostsHtml, renderHosts) so
+  // the processes panel (fix/hub-body-economy-processes-panel) merges without touching these lines.
+  var HOST_COLORS = { gpu: "#3987e5", cpu: "#c98500", other: "#6b7280" };
+  var HOURS_PER_MONTH = 730;
+
+  function hostNotes(report) {
+    return ((report && report.missing) || []).filter(function (m) { return m && m.section === "hosts"; })
+      .map(function (m) { return String(m.reason || "missing"); });
+  }
+
+  function fmtW(v) {
+    var n = num(v);
+    return n === null ? "?" : Math.round(n) + " W";
+  }
+
+  // One stacked bar per machine: GPUs, CPU, other (= whole machine minus GPUs minus CPU), scaled to
+  // the largest machine on the page, with a white tick at the machine's rest.
+  function hostStackHtml(h, maxW) {
+    var parts = [["gpu", "GPUs", h.gpu_w, h.gpu_w_rest], ["cpu", "CPU", h.cpu_w, h.cpu_w_rest], ["other", "Other (fans, PSU loss, memory, disks)", h.other_w, h.other_w_rest]];
+    var segs = parts.filter(function (p) { return num(p[2]) !== null && p[2] > 0; }).map(function (p) {
+      var tip = p[1] + " · " + fmtW(p[2]) + " now" + (num(p[3]) !== null ? " · its rest " + fmtW(p[3]) : "");
+      return '<span data-part="' + p[0] + '" data-tip="' + esc(tip) + '" style="width:' + (p[2] / maxW * 100).toFixed(2) +
+        "%;background:" + HOST_COLORS[p[0]] + '"></span>';
+    }).join("");
+    var rest = num(h.chassis_w_rest);
+    var tick = rest === null ? "" : '<span class="rest-tick" data-tip="' + esc("rest " + fmtW(rest) + " (" + (h.rest_basis || "") + ")") +
+      '" style="left:' + Math.min(100, rest / maxW * 100).toFixed(2) + '%"></span>';
+    return '<div class="stack" data-host-stack="' + esc(h.host) + '">' + segs + tick + "</div>";
+  }
+
+  function hostCardsHtml(h) {
+    var cards = (h.cards || []).filter(function (c) { return num(c.watts) !== null; });
+    if (!cards.length) return "";
+    var max = Math.max.apply(null, cards.map(function (c) { return c.watts; }).concat([1]));
+    return cards.map(function (c) {
+      var held = (c.top_holders || []).map(function (x) { return (x.label || x.holder) + " " + fmtSeconds(x.lease_s); });
+      var label = esc(c.card) + ' <span class="muted">' + esc((c.roles || []).join(", ") || "no pool role") + "</span>";
+      var text = fmtW(c.watts) + (num(c.idle_w) !== null ? " (rest " + fmtW(c.idle_w) + ")" : "");
+      var tip = h.host + " " + c.card + " · " + text + (num(c.temp_c) !== null ? " · " + c.temp_c + " °C" : "") +
+        " · held by: " + (held.join(", ") || "no closed lease in this window");
+      return '<div data-host-card="' + esc(h.host + ":" + c.card) + '">' + hbar(label, c.watts, max, text, tip, HOST_COLORS.gpu) +
+        '<div class="muted small holders">' + esc(held.length ? "held by " + held.join(", ") : "no closed lease in this window") + "</div></div>";
+    }).join("");
+  }
+
+  function hostsHtml(report, err, tz) {
+    var hosts = ((report && report.hosts) || []).filter(function (h) { return h && h.host; });
+    var notes = hostNotes(report);
+    if (!hosts.length) return emptyHtml(unreachableText(err, tz) || notes.join("; ") || "No machine reading yet.");
+    var maxW = Math.max.apply(null, hosts.map(function (h) { return num(h.chassis_w_now) || 0; }).concat([1]));
+    var legend = '<div class="legend">' + [["gpu", "GPUs"], ["cpu", "CPU"], ["other", "other (fans, PSU loss, memory, disks)"]].map(function (k) {
+      return '<span class="key"><span class="sw" style="background:' + HOST_COLORS[k[0]] + '"></span>' + k[1] + "</span>";
+    }).join("") + '<span class="key"><span class="sw rest-key"></span>rest</span></div>';
+    var blocks = hosts.map(function (h) {
+      var above = num(h.above_rest_w);
+      var head = "<strong>" + esc(h.host) + "</strong> " + esc(fmtW(h.chassis_w_now)) + " now · rest " + esc(fmtW(h.chassis_w_rest)) +
+        (above === null ? "" : " · " + (above >= 0 ? "+" : "−") + esc(fmtW(Math.abs(above))) + " above rest") +
+        (num(h.usd_per_month_at_this_rate) !== null && above > 0 ? " ≈ " + esc(fmtUsd(h.usd_per_month_at_this_rate)) + "/month at this rate" : "") +
+        (num(h.rest_usd_per_month) !== null ? ' <span class="muted">(Orion\'s body at rest here costs ' + esc(fmtUsd(h.rest_usd_per_month)) + "/month)</span>" : "") +
+        (num(h.fan_pct) !== null ? ' <span class="muted">· fans ' + Math.round(h.fan_pct) + "%</span>" : "");
+      var ctr = (h.top_containers || []).map(function (c) { return c.name + " " + (num(c.cpu_w) === null ? "?" : c.cpu_w.toFixed(1)) + " W"; });
+      var spons = (h.sponsored || []).filter(function (sp) { return num(sp.cpu_w) !== null; }).map(function (sp) {
+        return '<div class="small" data-sponsored="' + esc(sp.name) + '">Sponsored by Juniper, not Orion\'s activity: ' + esc(sp.name) + " · " +
+          esc(String(sp.containers)) + " containers · " + esc(sp.cpu_w.toFixed(0)) + " W CPU above idle (estimated)" +
+          (sp.note ? ' <span class="muted">' + esc(sp.note) + "</span>" : "") + "</div>";
+      }).join("");
+      var floor = num(h.recent_floor_w), rest = num(h.chassis_w_rest);
+      var drift = floor !== null && rest !== null && floor - rest >= 20
+        ? '<div class="small">This week\'s lowest draw is ' + esc(fmtW(floor)) + ", " + Math.round(floor - rest) + " W above the pinned rest: new always-on draw.</div>" : "";
+      var unattr = num(h.unattributed_above_rest_w) !== null ? '<div class="small">Above rest but charged to no act: ' + esc(fmtW(h.unattributed_above_rest_w)) + "</div>" : "";
+      return '<div class="host" data-host="' + esc(h.host) + '"><div class="host-head">' + head + "</div>" + hostStackHtml(h, maxW) +
+        hostCardsHtml(h) + (ctr.length ? '<div class="muted small">Top CPU users (watts above CPU idle, estimated): ' + esc(ctr.join(", ")) + "</div>" : "") +
+        spons + drift + unattr + "</div>";
+    }).join("");
+    return legend + blocks + (notes.length ? '<ul class="plain small muted" data-host-notes>' +
+      notes.map(function (n) { return "<li>" + esc(n) + "</li>"; }).join("") + "</ul>" : "");
+  }
+
+  function renderHosts(doc) {
+    setBody(doc, "beHosts", hostsHtml(state.report, state.err, state.tz));
   }
 
   function renderWaste(doc) {
@@ -724,6 +814,7 @@
     });
     renderStatus(doc);
     renderTiles(doc);
+    renderHosts(doc);
     renderLimits(doc);
     renderWants(doc);
     renderRhythm(doc);
@@ -905,4 +996,8 @@
   };
   if (typeof window !== "undefined") window.BodyEconomyTab = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
+  // Added separately from the object above so parallel panels merge cleanly.
+  api.hostsHtml = hostsHtml;
+  api.hostNotes = hostNotes;
+  api.stateWordsFor = stateWordsFor;
 })();

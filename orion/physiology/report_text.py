@@ -25,11 +25,13 @@ REPORT_URL_ENV = "ORION_PHYSIOLOGY_REPORT_URL"
 DEFAULT_REPORT_URL = "http://orion-athena-durable-runs:8121"
 SECTIONS = (
     "limits", "wants", "rhythm", "money", "unit_costs", "waste", "queue_wait", "decisions",
-    "claude", "vram", "value_per_cost", "services", "processes",
+    "claude", "vram", "value_per_cost", "services", "processes", "hosts",
 )
-#: What "how is my body" reads when no section is named: the headline constraints, money, wants,
-#: waste, and anything down. Small enough for a chat turn.
-OVERVIEW = ("limits", "money", "wants", "waste", "services")
+#: What "how is my body" reads when no section is named: the headline constraints, what is spinning
+#: each machine (one line per host), money, wants, waste, and anything down. Small enough for a turn.
+OVERVIEW = ("limits", "hosts", "money", "wants", "waste", "services")
+#: Sections whose rows carry a ``host``: ``--host`` narrows these and leaves the rest whole-body.
+HOST_SECTIONS = ("hosts", "processes", "vram")
 WINDOWS = ("24h", "7d", "30d")
 
 BIND_WORDS = {
@@ -39,6 +41,15 @@ BIND_WORDS = {
     "stuck_at_ceiling": "BINDING, price stuck at its ceiling",
     "no_reading": "unknown (no reading)",
 }
+#: The energy envelope binds "exogenously" when the always-on floor alone reaches it. That floor is
+#: my own body at rest, so "not from my load" would be false for energy (Juniper, 2026-10-30).
+ENERGY_EXOGENOUS_WORDS = "BINDING: my body at rest alone reaches the envelope"
+
+
+def bind_words(constraint: Any, bind_state: Any) -> str:
+    if constraint == "energy" and bind_state == "exogenous_bind":
+        return ENERGY_EXOGENOUS_WORDS
+    return BIND_WORDS.get(str(bind_state), str(bind_state or "no price"))
 
 
 class ReportUnavailable(RuntimeError):
@@ -155,7 +166,7 @@ def _amount(v: Any, unit: Optional[str]) -> str:
 
 def _limit_line(lim: Mapping) -> str:
     now = lim.get("now") or {}
-    state = BIND_WORDS.get(str(now.get("bind_state")), str(now.get("bind_state") or "no price"))
+    state = bind_words(lim.get("constraint"), now.get("bind_state"))
     why = str(now.get("why") or "").strip()
     label = lim.get("label") or lim.get("constraint")
     if now.get("level") is None:
@@ -192,7 +203,7 @@ def render_money(report: Mapping) -> list[str]:
     line = (f"Money: {_usd(m.get('mtd_usd'))} spent on electricity this month against a {_usd(m.get('envelope_usd'), 0)} "
             f"envelope; forecast {_usd(m.get('forecast_usd'))} by month end. ")
     if m.get("floor_usd") is not None:
-        line += f"What stays switched on alone reaches {_usd(m.get('floor_usd'))}. "
+        line += f"My body at rest alone reaches {_usd(m.get('floor_usd'))} this month. "
     if m.get("rate_usd_per_kwh") is not None:
         line += f"Electricity now costs {_usd(m.get('rate_usd_per_kwh'), 3)}/kWh."
     out = [line.strip()]
@@ -344,6 +355,139 @@ def render_processes(report: Mapping, *, full: bool) -> list[str]:
     return out
 
 
+def _w(v: Any) -> str:
+    return "?" if v is None else f"{float(v):.0f} W"
+
+
+def _held(holders: Sequence[Mapping], n: int) -> str:
+    return ", ".join(f"{h.get('label') or h.get('holder')} {_dur(h.get('lease_s'))}" for h in list(holders)[:n])
+
+
+#: A card counts as "spinning" when it draws at least this far above its own rest.
+CARD_BUSY_ABOVE_W = 15.0
+#: Said when the trailing-week low sits at least this far above the pinned rest.
+FLOOR_DRIFT_W = 20.0
+
+
+def _card_above(c: Mapping) -> float:
+    w, idle = c.get("watts"), c.get("idle_w")
+    return float(w) - float(idle) if (w is not None and idle is not None) else float(w or 0.0)
+
+
+def host_headline(h: Mapping, *, short: bool = False) -> str:
+    """'circe draws 1150 W now vs 541 W at rest (+609 W, about $55/month at this rate; my body at rest
+    there costs about $50/month).' Rest is my own body at rest: a pinned, dated number."""
+    now, rest, above = h.get("chassis_w_now"), h.get("chassis_w_rest"), h.get("above_rest_w")
+    if now is None:
+        return f"{h['host']}: whole-machine draw unknown (no chassis reading)."
+    if rest is None or above is None:
+        return f"{h['host']} draws {_w(now)} now (its rest is unknown)."
+    above = round(float(above))
+    sign = "+" if above >= 0 else "-"
+    money = []
+    if h.get("usd_per_month_at_this_rate") is not None and above > 0:
+        money.append(f"about {_usd(h['usd_per_month_at_this_rate'], 0)}/month at this rate")
+    if h.get("rest_usd_per_month") is not None and not short:
+        money.append(f"my body at rest there costs about {_usd(h['rest_usd_per_month'], 0)}/month")
+    extra = f", {'; '.join(money)}" if money else ""
+    return f"{h['host']} draws {_w(now)} now vs {_w(rest)} at rest ({sign}{abs(above)} W{extra})."
+
+
+def floor_drift(h: Mapping) -> Optional[str]:
+    """The trailing-week low above the pinned rest is new always-on draw (a rolling rest would hide it)."""
+    floor, rest = h.get("recent_floor_w"), h.get("chassis_w_rest")
+    if floor is None or rest is None or float(floor) - float(rest) < FLOOR_DRIFT_W:
+        return None
+    return f"this week's lowest draw is {_w(floor)}, {float(floor) - float(rest):.0f} W above the pinned rest: new always-on draw"
+
+
+def sponsored_words(h: Mapping) -> list[str]:
+    out = []
+    for sp in h.get("sponsored") or []:
+        if sp.get("cpu_w") is None:
+            continue
+        note = f" {sp['note']}" if sp.get("note") else ""
+        out.append(f"{sp['name']} is Juniper's sponsored work, not my activity: {sp.get('containers')} containers, "
+                   f"{float(sp['cpu_w']):.0f} W CPU above idle (estimated).{note}")
+    return out
+
+
+def _part(name: str, now: Any, rest: Any) -> str:
+    if now is None:
+        return f"{name} ?"
+    if rest is None:
+        return f"{name} {_w(now)}"
+    d = round(float(now) - float(rest))
+    return f"{name} {_w(now)} ({'+' if d >= 0 else '-'}{abs(d)})"
+
+
+def host_parts(h: Mapping) -> str:
+    """'GPUs 329 W (+95), CPU 121 W (+20), other 693 W (+359)': each part against its own rest."""
+    parts = [_part("GPUs", h.get("gpu_w"), h.get("gpu_w_rest")), _part("CPU", h.get("cpu_w"), h.get("cpu_w_rest"))]
+    if h.get("other_w") is not None:
+        parts.append(_part("other", h.get("other_w"), h.get("other_w_rest")))
+    return ", ".join(parts)
+
+
+def _card_line(c: Mapping, *, n_holders: int) -> str:
+    roles = "/".join(c.get("roles") or []) or "no pool role"
+    held = _held(c.get("top_holders") or [], n_holders)
+    return f"{c['card']} {_w(c.get('watts'))} ({roles}{': ' + held if held else ''})"
+
+
+def render_hosts(report: Mapping, *, full: bool) -> list[str]:
+    hosts = report.get("hosts") or []
+    if not hosts:
+        return []
+    window = (report.get("query") or {}).get("window") or "window"
+    if not full:
+        # One line per machine: the headline, the cards well above their rest, fans.
+        out = ["What is spinning my machines (whole-machine watts now vs rest):"]
+        for h in hosts:
+            busy = sorted((c for c in h.get("cards") or [] if _card_above(c) >= CARD_BUSY_ABOVE_W),
+                          key=lambda c: -_card_above(c))[:2]
+            cards = "; ".join(_card_line(c, n_holders=2) for c in busy)
+            fans = f" Fans {h['fan_pct']:.0f}%." if h.get("fan_pct") is not None else ""
+            split = f" {host_parts(h)}." if h.get("chassis_w_now") is not None else ""
+            spons = "".join(f" {sp['name']} (Juniper's) {float(sp['cpu_w']):.0f} W CPU."
+                            for sp in h.get("sponsored") or [] if sp.get("cpu_w") is not None)
+            out.append(f"- {host_headline(h, short=True)}{split}" + (f" {cards}." if cards else "") + spons + fans)
+        return out
+    out = [f"What is spinning my machines (now; held time is over the last {window}):"]
+    for h in hosts:
+        out.append(host_headline(h))
+        fans = f"; fans {h['fan_pct']:.0f}%" if h.get("fan_pct") is not None else ""
+        out.append(f"- made of (each part vs its own rest): {host_parts(h)}{fans}. Other = whole machine minus "
+                   "GPUs minus CPU: fans, PSU loss, memory, disks")
+        if h.get("rest_basis"):
+            out.append(f"- rest: {h['rest_basis']}")
+        drift = floor_drift(h)
+        if drift:
+            out.append(f"- {drift}")
+        for sp in sponsored_words(h):
+            out.append(f"- {sp}")
+        for c in h.get("cards") or []:
+            rest = f", rest {_w(c.get('idle_w'))}" if c.get("idle_w") is not None else ""
+            temp = f", {c['temp_c']:.0f} °C" if c.get("temp_c") is not None else ""
+            roles = "/".join(c.get("roles") or []) or "no pool role"
+            held = _held(c.get("top_holders") or [], 4)
+            out.append(f"- {c['card']} {_w(c.get('watts'))}{rest}{temp} ({roles})"
+                       + (f"; held by {held}" if held else "; no lease closed on it in the window"))
+        ctr = h.get("top_containers") or []
+        if ctr:
+            out.append("- top CPU users (watts above CPU idle): "
+                       + ", ".join(f"{c['name']} {float(c['cpu_w']):.1f} W" for c in ctr))
+        if h.get("unattributed_above_rest_w") is not None:
+            out.append(f"- above rest but charged to no act: {_w(h['unattributed_above_rest_w'])}")
+        days = h.get("daily") or []
+        if days:
+            out.append("- daily average: " + ", ".join(f"{d['d'][5:]} {_w(d.get('chassis_w_avg'))}" for d in days[-7:]))
+    out.append("- measured: whole-machine watts (wall PDU or BMC), card watts (nvidia-smi), CPU watts (RAPL), "
+               "held time (GPU pool leases: time held, not time computing). Estimated: rest (pinned: the 5th "
+               "percentile of a dated window), CPU watts per container (a linear model), $/month (this rate x 730 h).")
+    return out
+
+
 def render_value_per_cost(report: Mapping) -> list[str]:
     rows = report.get("value_per_cost") or []
     if not rows:
@@ -383,6 +527,7 @@ _RENDER = {
     "value_per_cost": lambda r, full: render_value_per_cost(r),
     "services": lambda r, full: render_services(r),
     "processes": lambda r, full: render_processes(r, full=full),
+    "hosts": lambda r, full: render_hosts(r, full=full),
 }
 assert set(_RENDER) == set(SECTIONS)
 
@@ -404,15 +549,33 @@ def headline(report: Mapping) -> Optional[str]:
     return " ".join(parts)
 
 
-def render_report_text(report: Mapping, sections: Iterable[str] = OVERVIEW) -> str:
+def narrow_to_host(report: Mapping, host: str) -> dict:
+    """Keep only ``host``'s rows in the per-machine sections (and their notes that name another
+    machine out). Every other section stays whole-body."""
+    out = dict(report)
+    for s in HOST_SECTIONS:
+        out[s] = [r for r in report.get(s) or [] if isinstance(r, Mapping) and r.get("host") == host]
+    out["missing"] = list(report.get("missing") or [])
+    if not out["hosts"] and "hosts" in ((report.get("query") or {}).get("sections") or SECTIONS):
+        known = ", ".join(sorted({str(r.get("host")) for r in report.get("hosts") or []})) or "none"
+        out["missing"].append({"section": "hosts", "reason": f"no fresh reading for {host} (machines with one: {known})"})
+    return out
+
+
+def render_report_text(report: Mapping, sections: Iterable[str] = OVERVIEW, *, host: Optional[str] = None) -> str:
     """Plain text, first person, one paragraph per asked section. A section with nothing to show
-    prints its ``missing`` reason. One or two named sections show every row; more show the top rows."""
+    prints its ``missing`` reason. One or two named sections show every row; more show the top rows.
+    ``host`` narrows the per-machine sections (hosts, processes, vram) to one machine."""
+    if host:
+        report = narrow_to_host(report, host)
     secs = tuple(sections)
     # Every row only when one or two sections are asked; the overview and "all" stay turn-sized.
     full = len(secs) <= 2
     win = report.get("window") or {}
     fam = (report.get("query") or {}).get("family")
     scope = f", family {fam} (narrows wants, decisions, queue wait, value per cost, per-act costs)" if fam else ""
+    if host:
+        scope += f", machine {host} (narrows hosts, processes, vram)"
     lines = [f"My body economy, {str(win.get('start', '?'))[:16]} to {str(win.get('end', '?'))[:16]} UTC{scope} "
              f"(read {str(report.get('generated_at', '?'))[:19]}):"]
     if "limits" in secs:
@@ -431,6 +594,10 @@ def render_report_text(report: Mapping, sections: Iterable[str] = OVERVIEW) -> s
                          + (f" [{len(reasons)} note(s)]" if reasons else ""))
         elif body:
             lines.extend(body)
+            if s == "hosts" and not full and reasons:
+                # The overview stays turn-sized: the machine notes are one pointer, not N lines.
+                lines.append(f"- ({len(reasons)} note(s) on machines; `body-economy hosts` shows them)")
+                continue
             for r in reasons:
                 lines.append(f"- note ({s}): {r}")
         elif reasons:
@@ -460,7 +627,11 @@ def cap_text(text: str, *, max_lines: int = 40, max_chars: int = 4000) -> str:
 
 
 __all__ = [
+    "HOST_SECTIONS",
+    "bind_words",
     "cap_text",
+    "host_headline",
+    "narrow_to_host",
     "DEFAULT_REPORT_URL",
     "OVERVIEW",
     "REPORT_URL_ENV",

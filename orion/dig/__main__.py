@@ -49,11 +49,9 @@ path of a file with the full result; read only what you need from that file.
   history <days>         the same for the last <days> days, today included (2 = since yesterday).
   body [<date>|<organ>]  your body: machines, services, cameras, stores, processes -> organs.
                          None = live now; a date = that export's files; an organ id = its members.
-  body-economy [<section>...] [--window 24h|7d|30d] [--family <f>]   your body economy now:
-                         what binds (heat, money, GPU lanes), wants funded vs deferred, waste,
-                         services down. Sections: overview (default), all, limits, wants, rhythm,
-                         money, unit_costs, waste, queue_wait, decisions, claude, vram,
-                         value_per_cost, services, processes.
+  body-economy [<section>...] [--host <h>] [--window 24h|7d|30d] [--family <f>]   your body
+                         economy now: what spins each machine and what it costs, what binds,
+                         wants, waste. `body-economy --help` lists sections and flags.
   name <organ_id> <name> because <reason>   name one organ of your live body (a lasting
                          write). Name it by what it takes in and gives out; the reason must cite
                          at least one of its parts by full name. Names show on the live body only.
@@ -499,20 +497,57 @@ def cmd_name(ref: str, name: str, because: str, out: Out) -> str:
 
 # --- body economy ---------------------------------------------------------------------------
 
+BODY_ECONOMY_HELP = """body-economy [<section>...] [--host circe|athena|hecate] [--window 24h|7d|30d] [--family <f>]
+
+What is using my power, what it costs, and what binds. Read-only (GET /physiology/report).
+With no section: overview = limits, hosts, money, wants, waste, services (one line each).
+Name one or two sections to see every row and note.
+
+Sections:
+  hosts       what is spinning each machine: whole-machine watts now vs my body at rest, $/month
+              above rest, GPU / CPU / other watts, each card's watts and who held it, top CPU
+              users, sponsored work apart.
+              "what is spinning circe?" -> body-economy hosts --host circe
+  processes   CPU watts above idle per container (estimated: a linear model), largest first.
+  vram        GPU memory free per card, and its watts now.
+  unit_costs  what one act, run, token or GPU-hour costs (measured / derived / not measured).
+  money       electricity this month vs the envelope; what my body at rest alone reaches.
+  limits      each limit now (heat, money, GPU lanes, messages, Claude) and why.
+  wants, decisions, queue_wait, waste, rhythm, claude, value_per_cost, services.
+  all         every section, one line each.
+
+Flags:
+  --host <h>     narrow hosts, processes and vram to one machine (others stay whole-body).
+  --window <w>   24h (default), 7d or 30d: held time, daily averages, waste and wants use it.
+  --family <f>   narrow wants, decisions, queue_wait, value_per_cost to one want family.
+
+Measured vs estimated: every figure is labelled in the text. Whole-machine, card and CPU watts are
+meters; rest is my body at rest, a pinned dated number (5th percentile of 2026-10-01..10-13
+until config/physiology/rest_body.yaml says otherwise); per-container watts and $/month are
+estimates. Sponsored work (Juniper's, e.g. the Zelda dojo) is shown apart from my activity.
+A section with no data prints why, never a zero."""
+
+
 def cmd_body_economy(args: list[str], out: Out) -> str:
     """skills.physiology.state.v1 from Bash: GET /physiology/report on orion-durable-runs
     ($ORION_PHYSIOLOGY_REPORT_URL), rendered as plain text; the full report JSON goes to a file."""
     from orion.physiology import report_text as rt
 
-    window, family, words = "24h", None, []
+    window, family, host, words = "24h", None, None, []
     it = iter(args)
     for a in it:
+        if a in ("--help", "-h", "help"):
+            return BODY_ECONOMY_HELP
         if a == "--window":
             window = next(it, "")
         elif a == "--family":
             family = next(it, "") or None
+        elif a == "--host":
+            host = (next(it, "") or "").strip().lower() or None
+            if host is None:
+                raise DigError("body-economy: --host needs a machine name (circe, athena, hecate)")
         elif a.startswith("--"):
-            raise DigError(f"body-economy: unknown option {a} (use --window or --family)")
+            raise DigError(f"body-economy: unknown option {a} (use --host, --window or --family; --help lists them)")
         else:
             words.append(a)
     if window not in rt.WINDOWS:
@@ -522,8 +557,8 @@ def cmd_body_economy(args: list[str], out: Out) -> str:
         report = rt.fetch_report(window=window, sections=sections, family=family)
     except (ValueError, rt.ReportUnavailable) as exc:
         raise DigError(f"body-economy: {exc}") from exc
-    path = out.write(f"body-economy-{window}", report)
-    return capped(rt.render_report_text(report, sections).splitlines(), tail=f"full report: {path}")
+    path = out.write(f"body-economy-{window}" + (f"-{host}" if host else ""), report)
+    return capped(rt.render_report_text(report, sections, host=host).splitlines(), tail=f"full report: {path}")
 
 
 # --- notes ----------------------------------------------------------------------------------

@@ -187,7 +187,13 @@ def test_energy_floor_over_the_envelope_is_exogenous_bind():
     reading = R(constraint="energy", unit="usd", level=round(to_date, 4), budget=100.0, budget_kind="envelope")
     by, out, _ = run([reading], b=body(energy=e))
     p = by["energy"].price
-    assert p.bind_state == "exogenous_bind" and "not by what I do" in p.why
+    assert p.bind_state == "exogenous_bind"
+    # Wording (2026-10-30): the always-on floor is Orion's own body at rest, never "not by what I do".
+    assert "not by what I do" not in p.why and "stays switched on" not in p.why
+    assert "my body at rest costs about $177/month, more than the $100 envelope by itself" in p.why
+    assert "my activity above rest adds about $" in p.why and "(pace $0/month)" in p.why
+    # The report's money.floor_usd still parses the unchanged mechanism text.
+    assert "the always-on floor alone ($0.243/h) reaches $" in p.why
     assert p.use > 100.0 and p.value <= 0.25 * 120 / 3600 + 1e-9
     assert out.strain.exogenous_bind == ["energy"] and out.strain.value is None
 

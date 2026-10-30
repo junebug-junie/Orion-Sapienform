@@ -117,6 +117,43 @@ test("empty states say why: missing reason, unreachable since, or a plain defaul
   assert.match(tab.unreachableText({ status: 400, detail: "bad window" }), /refused \(HTTP 400\): bad window/);
 });
 
+test("hosts: what is spinning each machine -- now vs rest, a GPU/CPU/other bar, cards with holders", () => {
+  const html = tab.hostsHtml(FIXTURE, null, "UTC");
+  const hosts = [...html.matchAll(/data-host="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(hosts, FIXTURE.hosts.map((h) => h.host));
+  const circe = FIXTURE.hosts.find((h) => h.host === "circe");
+  assert.ok(html.includes("<strong>circe</strong> " + Math.round(circe.chassis_w_now) + " W now · rest 541 W"));
+  assert.ok(html.includes("+" + Math.round(circe.above_rest_w) + " W above rest"));
+  // the stacked bar: three parts, scaled to the biggest machine, with a tick at rest
+  assert.match(html, /data-host-stack="circe"><span data-part="gpu"[^>]*style="width:[0-9.]+%;background:#3987e5"/);
+  assert.ok(html.includes('data-part="cpu"') && html.includes('data-part="other"') && html.includes('class="rest-tick"'));
+  // each card: watts, its rest, and who held it (plain-word labels)
+  assert.ok(html.includes('data-host-card="circe:gpu1"'));
+  assert.match(html, /held by curiosity\.investigate runs [0-9.]+ h/);
+  // sponsored work is not in Orion's top CPU users; it has its own line
+  assert.ok(!/Top CPU users[^<]*zelda-dojo/.test(html));
+  assert.match(html, /data-sponsored="zelda_dojo">Sponsored by Juniper, not Orion's activity: zelda_dojo · 32 containers/);
+  assert.ok(html.includes("Orion's body at rest here costs $49.56/month"));
+  // this week's floor 578 W is 37 W over the pinned 541 W: said as new always-on draw
+  assert.ok(html.includes("37 W above the pinned rest: new always-on draw"));
+});
+
+test("hosts: no machine reading says why; an asleep machine's note is shown", () => {
+  const none = tab.hostsHtml({ missing: [{ section: "hosts", reason: "no biometrics row in the last 15 min for hecate" }] }, null, "UTC");
+  assert.ok(none.includes("no biometrics row in the last 15 min for hecate"));
+  assert.ok(tab.hostsHtml({}, null, "UTC").includes("No machine reading yet."));
+  const err = { status: 502, detail: "durable_runs_unavailable", unreachable_since: "2026-10-29T17:00:00Z" };
+  assert.match(tab.hostsHtml(null, err, "UTC"), /durable-runs unreachable since/);
+  const odd = tab.hostsHtml({ hosts: [{ host: "x", chassis_w_now: null, cards: [{ card: "g", watts: null }] }] }, null, "UTC");
+  assert.ok(odd.includes("<strong>x</strong> ? now") && !odd.includes("NaN"));
+});
+
+test("energy over its envelope reads as Orion's body at rest, never 'not Orion's doing'", () => {
+  assert.equal(tab.stateWordsFor("energy", "exogenous_bind"), "Orion's body at rest alone reaches the envelope");
+  assert.equal(tab.stateWordsFor("heat", "exogenous_bind"), "over its line, not Orion's doing");
+  assert.equal(tab.stateWordsFor("energy", "slack"), "room to spare");
+});
+
 test("formatting never turns unknown into zero", () => {
   assert.equal(tab.fmtUsd(null), "not measured");
   assert.equal(tab.fmtUsd(0.00005), "$0.000050");

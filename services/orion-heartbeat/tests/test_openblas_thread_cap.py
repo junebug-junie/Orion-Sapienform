@@ -14,4 +14,5 @@ def test_dockerfile_pins_openblas_to_one_thread() -> None:
     lines = [line.strip() for line in dockerfile.splitlines()]
     assert "ENV OPENBLAS_NUM_THREADS=1" in lines
     # Must be set before the app is copied/run, i.e. in the image environment.
-    assert lines.index("ENV OPENBLAS_NUM_THREADS=1") < lines.index('CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7251"]')
+    cmd_index = next(i for i, line in enumerate(lines) if line.startswith("CMD"))
+    assert lines.index("ENV OPENBLAS_NUM_THREADS=1") < cmd_index

@@ -264,7 +264,8 @@ class IntrospectTools:
             focus_args = QueueCuriosityFocusArguments.model_validate(arguments)
             result = await self._introspect_rpc(
                 QUEUE_CURIOSITY_FOCUS_REQUEST_CHANNEL, "queue_curiosity_focus",
-                focus_args.model_dump(mode="json"),
+                # Never refs from a chat turn: nothing on this path opens them first (orion/refs.py rule).
+                focus_args.model_dump(mode="json", exclude={"refs"}),
                 refused="not queued",
             )
             return result.model_dump(mode="json")

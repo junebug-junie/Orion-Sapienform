@@ -116,3 +116,13 @@ def test_brief_names_the_tool_and_says_no_id_means_not_queued():
     assert "Say it was queued only if the tool returned a focus_id" in text
     assert "do not search for another" in text
     assert f"call {CURIOSITY} with kind=focus" in text
+
+
+def test_a_chat_turn_never_offers_or_forwards_refs():
+    """Refs are Prime's (opened before sending); the chat tool neither advertises nor forwards them, so a
+    chat request is byte-for-byte what an older Hub accepts (extra=forbid)."""
+    assert "refs" not in QueueCuriosityFocusArguments.model_json_schema()["properties"]
+    bus = DreamBus(_ok())
+    _invoke(bus, {**VALID, "refs": [{"kind": "arc", "id": "8d87adeca2ce06a5"}]})
+    [(_, envelope, _, _)] = bus.sent
+    assert "refs" not in envelope.payload["args"]

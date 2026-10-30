@@ -57,7 +57,8 @@ A refused move is shown to Prime in its next frame as an outcome line, not as ne
 - `orion/prime/acts.py`: `concern_act` (verb `predict`), `CONCERN_HORIZON_SEC`, `lapse_concerns`, `settle_concern`.
 - `orion/prime/thought.py`: `refs` on the move, ref and id-word checks, drops record a close, track record and concern grade in the frame, prompt text.
 - `services/orion-mind/app/prime_loop.py`: resolves refs before sending, sends refs to Hub, publishes concern opens/closes from the outbox, settles concerns from their questions.
-- `orion/schemas/introspect.py`: `QueueCuriosityFocusArguments.refs`.
+- `orion/schemas/introspect.py`: `QueueCuriosityFocusArguments.refs` (hidden from the chat tool's schema).
+- `orion/introspect/tools.py`: the chat tool never forwards `refs`.
 - `orion/curiosity/focus.py`: `refs` column read/write, focus section prints each ref's dig command.
 - `services/orion-hub/scripts/curiosity_focus_listener.py`: stores and echoes refs.
 - `services/orion-sql-db/manual_migration_curiosity_focus_request_refs_v1.sql` (new).
@@ -72,7 +73,7 @@ A refused move is shown to Prime in its next frame as an outcome line, not as ne
 - Added: `QueueCuriosityFocusArguments.refs: list[RefV1]` (optional, default empty, at most 4). `PrimeStateV1.concern_record`, `PrimeConcernV1.act_opened_at` and `.graded` (all defaulted; the live persisted state loads unchanged, tested with its exact shape). Routes `GET /temporal-self/arcs/{arc_id}`, `GET /acts/{act_id}` on orion-durable-runs. Column `curiosity_focus_request.refs jsonb NULL`. New act kind on the existing grammar channel: `actor prime, verb predict`.
 - Removed / renamed: none.
 - Behavior changed: a Prime question with an unopenable or unlisted id is not sent.
-- Compatibility: consumer-first. Hub accepts `refs` in this PR. orion-mind omits the `refs` key when a question cites nothing, so an older Hub still accepts those. A question WITH refs sent to an older Hub is refused by Hub (`extra=forbid`) and its act closes 0. Deploy Hub (after the migration) before orion-mind. The post-pull rebuild applies the migration first and rebuilds both.
+- Compatibility: consumer-first. Chat turns never send `refs` (the field is Prime-only). Hub accepts `refs` in this PR. orion-mind omits the `refs` key when a question cites nothing, so an older Hub still accepts those. A question WITH refs sent to an older Hub is refused by Hub (`extra=forbid`) and its act closes 0. Deploy Hub (after the migration) before orion-mind. The post-pull rebuild applies the migration first and rebuilds both.
 - No channel or schema-registry entry changes (same channels, same envelope kinds).
 
 ## Env/config changes
@@ -149,6 +150,9 @@ behaviour are UNVERIFIED live until deployed.
   - Fix: documented in `orion/prime/acts.py`; the report counts `expired` apart.
 - Finding: the outbox had no cap. Fix: capped at 200 unpublished records.
 - Finding: one test assertion could never fail. Fix: removed.
+- Finding (CI, `reading` job): the chat-side `queue_curiosity_focus` tool started sending `"refs": []` on every chat request. That broke `orion/introspect/tests/test_queue_curiosity_focus_tool.py`, and it would have made an older Hub (`extra=forbid`) refuse every chat focus. The new field also showed up in the chat tool's schema, so chat Orion could have passed refs that nothing opens first.
+  - Fix: `refs` is hidden from the tool schema (`SkipJsonSchema`), and the chat tool never forwards it. Refs are Prime's only.
+  - Evidence: `test_a_chat_turn_never_offers_or_forwards_refs`; the reading job's targets run locally: 1954 passed.
 
 ## Restart required
 

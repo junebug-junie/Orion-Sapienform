@@ -15,6 +15,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from pydantic.json_schema import SkipJsonSchema
+
 from orion.refs import MAX_REFS as REF_MAX, RefV1
 
 # MAX_ITEMS full-size items stay under ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS
@@ -422,7 +424,9 @@ class QueueCuriosityFocusArguments(BaseModel):
     # Ids the question cites, each one a kind with a resolver and a dig command (orion/refs.py). Added
     # 2026-10-30 (Orion Prime step 1), optional and consumer-first: Hub accepts it before orion-mind
     # sends it, and a caller that sends none is unchanged. Stored on the focus row and shown to the run.
-    refs: list[RefV1] = Field(default_factory=list, max_length=REF_MAX)
+    # Prime only: its runtime opens every ref before sending (services/orion-mind/app/prime_loop.py). Hidden
+    # from the chat tool's schema (SkipJsonSchema), and the chat tool never forwards it (orion/introspect/tools.py).
+    refs: SkipJsonSchema[list[RefV1]] = Field(default_factory=list, max_length=REF_MAX)
 
     @field_validator("question", "why", mode="before")
     @classmethod

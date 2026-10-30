@@ -4,7 +4,7 @@ import glob, os, json, sys, threading, time, urllib.request
 URL = "http://127.0.0.1:8017/v1/chat/completions"
 OUT = open(os.path.join(os.environ.get("BENCH_DIR", "/tmp/bonsai-test"), "results.jsonl"), "a")
 # Servers without llama.cpp's `timings` block (Strata): stream, and derive prefill speed from time to
-# first token and decode speed from the rest. cache_n stays 0, so prompt_n is the whole prompt.
+# first token and decode speed from the rest. Reused prompt tokens come from usage.prompt_tokens_details.
 STREAM = os.environ.get("BENCH_STREAM") == "1"
 API_KEY = os.environ.get("BENCH_API_KEY", "")
 MODEL = os.environ.get("BENCH_MODEL", "")
@@ -22,7 +22,7 @@ def _chat_stream(body, tag):
     if MODEL:
         body["model"] = MODEL
     t = time.time()
-    first, content, reasoning, finish, usage = None, [], [], None, {}
+    first, content, reasoning, tools, finish, usage = None, [], [], [], None, {}
     req = urllib.request.Request(URL, data=json.dumps(body).encode(), headers=_headers())
     with urllib.request.urlopen(req, timeout=3600) as r:
         for raw in r:
@@ -33,20 +33,27 @@ def _chat_stream(body, tag):
             usage = d.get("usage") or usage
             for ch in d.get("choices", []):
                 delta = ch.get("delta", {})
-                piece = (delta.get("content") or "") + (delta.get("reasoning_content") or "")
+                think = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                piece = (delta.get("content") or "") + think
                 if piece and first is None:
                     first = time.time()
                 content.append(delta.get("content") or "")
-                reasoning.append(delta.get("reasoning_content") or "")
+                reasoning.append(think)
+                if delta.get("tool_calls"):
+                    tools.extend(delta["tool_calls"])
                 finish = ch.get("finish_reason") or finish
     end = time.time()
     first = first or end
+    if not usage:
+        raise RuntimeError("stream ended without usage; speeds would read 0")
     pn, gn = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
-    tm = {"prompt_n": pn, "cache_n": 0, "predicted_n": gn, "ttft_s": round(first - t, 3),
-          "prompt_per_second": pn / max(first - t, 1e-6), "predicted_per_second": max(gn - 1, 0) / max(end - first, 1e-6)}
+    cn = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+    # prompt_n is the new (uncached) part, as in llama.cpp's timings
+    tm = {"prompt_n": pn - cn, "cache_n": cn, "predicted_n": gn, "ttft_s": round(first - t, 3),
+          "prompt_per_second": (pn - cn) / max(first - t, 1e-6), "predicted_per_second": max(gn - 1, 0) / max(end - first, 1e-6)}
     msg = {"content": "".join(content), "reasoning_content": "".join(reasoning)}
     rec = {"tag": tag, "wall_s": round(end - t, 2), "finish": finish, "timings": tm, "usage": usage,
-           "reasoning_chars": len(msg["reasoning_content"]), "content": msg["content"][:1500], "tool_calls": None}
+           "reasoning_chars": len(msg["reasoning_content"]), "content": msg["content"][:1500], "tool_calls": tools or None}
     OUT.write(json.dumps(rec) + "\n"); OUT.flush()
     return rec, msg
 
@@ -54,9 +61,13 @@ def _chat_stream(body, tag):
 def chat(messages, max_tokens=4096, effort="medium", tag="", **extra):
     body = {"messages": messages, "max_tokens": max_tokens, "temperature": 0.6, "top_p": 0.95,
             "chat_template_kwargs": (effort if isinstance(effort, dict) else {"enable_thinking": False} if effort == "none" else {"reasoning_effort": effort}), "cache_prompt": True, **extra}
-    kw = body["chat_template_kwargs"]
-    body["reasoning_effort"] = "none" if kw.get("enable_thinking") is False else kw.get("reasoning_effort", "medium")
     if STREAM:
+        # Strata reads the OpenAI top-level field; llama.cpp runs keep the old request shape
+        kw = body["chat_template_kwargs"]
+        if kw.get("enable_thinking") is False:
+            body.setdefault("reasoning_effort", "none")
+        elif "reasoning_effort" in kw:
+            body.setdefault("reasoning_effort", kw["reasoning_effort"])
         return _chat_stream(body, tag)
     t = time.time()
     req = urllib.request.Request(URL, data=json.dumps(body).encode(), headers=_headers())

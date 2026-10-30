@@ -819,3 +819,40 @@ def test_exit_walks_off_a_passage_the_grid_calls_solid_before_the_next_decision(
         g.observe_frame(0, 2, f + 2, world.obs(), (f + 2) / 60)
         if g.attempt and g.attempt['decision_id'] != done['decision_id']: break
     assert set(g.attempt['open_sides']) - {'W'}                         # more than the way back
+
+
+# Live 2026-10-30, dungeon room 85: bombed holes W and E (rows 10-11), a block square around
+# hidden stairs in the middle. Link walked in through the W hole; open_sides was [] and the
+# planner chose "wait" every decision.
+ROOM_85 = [
+    '################################',
+    '################################',
+    '################################',
+    '################################',
+    '####........................####',
+    '####........................####',
+    '####............##..........####',
+    '####............##..........####',
+    '####..........##..##........####',
+    '####..........##..##........####',
+    '###.........##......##.......###',
+    '###.........##......##.......###',
+    '####..........##..##........####',
+    '####..........##..##........####',
+    '####............##..........####',
+    '####............##..........####',
+    '####........................####',
+    '####........................####',
+    '################################',
+    '################################',
+    '################################',
+    '################################',
+]
+
+
+def test_dungeon_sides_count_bombed_holes_three_tiles_short_of_the_edge():
+    walls = [[ch == '#' for ch in row] for row in ROOM_85]
+    assert sorted(open_sides(walls, set(), (4, 11), dungeon=True)) == ['E', 'W']
+    solid = [[ch == '#' or (r in (10, 11) and c in (3, 28)) for c, ch in enumerate(row)]
+             for r, row in enumerate(ROOM_85)]
+    assert open_sides(solid, set(), (4, 11), dungeon=True) == []   # plain walls stay closed

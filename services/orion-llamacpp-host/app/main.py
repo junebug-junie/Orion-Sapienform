@@ -797,6 +797,17 @@ async def _main_async():
         profile.name,
     )
 
+    if settings.llm_require_backend and profile.backend != settings.llm_require_backend:
+        raise SystemExit(
+            f"profile {profile.name} is backend={profile.backend}, LLM_REQUIRE_BACKEND={settings.llm_require_backend}"
+        )
+    if profile.backend == "strata":
+        # The Strata engine runs in its own container (docker-compose.atlas-workers.yml, atlas-chat).
+        # This process only heartbeats and announces it; the pool confirms it on the engine's /props.
+        logger.info("Profile backend=strata: announce-only, no llama-server launched")
+        await heartbeat_loop(settings)
+        return
+
     cmd, env = build_llama_server_cmd_and_env(profile)
     logger.info("Launching llama-server: %s", " ".join(cmd))
 

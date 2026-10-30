@@ -1,5 +1,87 @@
 services:
+  # Chat lane engine: Strata serving Qwen3.8-Flash-Next IQ3_S on one V100 (docs/bench/2026-10-30-strata-hecate).
+  # Strata answers llama.cpp's /props, so the GPU pool confirms it like a llama.cpp worker (gpu_pool.yaml
+  # chat: backend strata). No API key: like every other lane, it is reached only on the tailnet.
+  # First start: setup reads the model files in ATLAS_CHAT_STRATA_DATA_DIR (a missing one is downloaded).
+  # Then merge strata/chat-defaults.json (README "Chat lane on Strata") so thinking stays off by default.
   atlas-chat:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+    image: ${ATLAS_CHAT_STRATA_IMAGE:-ghcr.io/niko1221/strata:0.2.7-cuda12}
+    container_name: ${PROJECT:-orion}-atlas-strata-chat
+    restart: unless-stopped
+    # `strata launch --no-tui` returns once the server is up (it runs on in its own session), so this
+    # wrapper stays up while it is ready, leaves after 3 failed checks (restart policy acts), and stops
+    # it on `docker stop` -- the image entrypoint's own loop, without the API key it always sets.
+    entrypoint: ["/usr/bin/tini", "--", "/bin/sh", "-c"]
+    command:
+      - |
+        S=/opt/strata/terminal/bin/strata
+        trap '$$S launch --stop --preset chat; exit 0' TERM INT
+        $$S launch --no-tui --access lan --no-api-key --port 8080 --data-dir /data/Strata-data \
+          --family qwen --model IQ3_S --context 262144 --parallel 1 --kv int8 --vision on \
+          --save-preset chat &
+        wait $$! || exit 1
+        bad=0
+        while :; do
+          sleep 10 & wait $$!
+          if $$S launch --status --output json 2>/dev/null | grep -q '"state": *"ready"'; then bad=0; else bad=$$((bad+1)); fi
+          [ "$$bad" -ge 3 ] && { echo "strata server is gone"; exit 1; }
+        done
+    # The CPUs of the socket the card hangs off (`nvidia-smi topo -m`): Strata computes off-card experts there.
+    cpuset: "${ATLAS_CHAT_STRATA_CPUS:-0-17,36-53}"
+    ulimits:
+      memlock: -1
+    shm_size: 2g
+    stop_grace_period: 120s
+    volumes:
+      - "${ATLAS_CHAT_STRATA_DATA_DIR:-/mnt/telemetry/strata}:/data"
+    ports:
+      - "${ATLAS_CHAT_HOST_PORT:-8011}:8080"
+    networks:
+      - app-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${ATLAS_CHAT_CUDA_VISIBLE_DEVICES:-0}"]
+              capabilities: [gpu]
+
+  # Announces the Strata chat engine to the GPU pool (orion:llm:worker:announce) and heartbeats as
+  # atlas-worker-1. A strata profile makes orion-llamacpp-host announce only; it launches no server.
+  atlas-chat-announce:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+    build:
+      context: ../..
+      dockerfile: services/orion-llamacpp-host/Dockerfile
+      args:
+        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b8740}
+    image: orion-llamacpp-host:0.1.0
+    container_name: ${PROJECT:-orion}-atlas-strata-chat-announce
+    restart: unless-stopped
+    environment:
+      - SERVICE_NAME=${ATLAS_CHAT_SERVICE_NAME:-atlas-worker-1}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
+      - LLM_PROFILE_NAME=${ATLAS_CHAT_STRATA_PROFILE_NAME:-qwen38-flash-next-iq3s-strata-1xv100-circe-chat}
+      - LLM_REQUIRE_BACKEND=strata
+      - LLM_ROLE=chat
+      - LLM_ANNOUNCE_PORT=${ATLAS_CHAT_HOST_PORT:-8011}
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_CHAT_CUDA_VISIBLE_DEVICES}
+    networks:
+      - app-net
+
+  # Rollback for the chat lane: the llama.cpp server it ran before Strata (2026-10-30). Stop atlas-chat and
+  # atlas-chat-announce, then: --profile chat-llamacpp up -d atlas-chat-llamacpp. Same port and role.
+  atlas-chat-llamacpp:
+    profiles: ["chat-llamacpp"]
     logging:
       driver: journald
       options:
@@ -22,7 +104,7 @@ services:
       - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
       - ORION_BUS_URL=${ORION_BUS_URL}
       - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
-      # Required: set ATLAS_CHAT_PROFILE_NAME in your env file/shell.
+      # Required: set ATLAS_CHAT_PROFILE_NAME (the llama.cpp chat profile) in your env file/shell.
       - LLM_PROFILE_NAME=${ATLAS_CHAT_PROFILE_NAME}
       # GPU pool discovery: role + the host port it is reached on (same var as ports: below)
       - LLM_ROLE=chat

@@ -33,8 +33,9 @@ def load_profiles(path: str | Path | None = None) -> dict[str, dict[str, Any]]:
 
 
 def profile_model_file(profile: dict[str, Any]) -> str | None:
-    llamacpp = profile.get("llamacpp") or {}
-    name = llamacpp.get("hf_filename") or llamacpp.get("model_file") or llamacpp.get("model_path")
+    # a strata profile names the file its /props reports as model_path (the first GGUF shard)
+    block = profile.get("llamacpp") or profile.get("strata") or {}
+    name = block.get("hf_filename") or block.get("model_file") or block.get("model_path")
     return PurePosixPath(str(name)).name if name else None
 
 

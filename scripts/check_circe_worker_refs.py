@@ -137,6 +137,7 @@ _DEFAULT_CONTAINERS = (
     "atlas-chat", "atlas-metacog", "atlas-fast", "atlas-agent", "atlas-agent-burst", "atlas-llamacpp-chat",
     "atlas-llamacpp-metacog", "atlas-llamacpp-fast", "atlas-llamacpp-agent", "atlas-llamacpp-agent-burst",
     "dsv41-flash", "bonsai-worker", "diffusion-host", "gpu-lane-controller",
+    "atlas-chat-announce", "atlas-chat-llamacpp", "atlas-strata-chat", "atlas-strata-chat-announce",
 )
 
 

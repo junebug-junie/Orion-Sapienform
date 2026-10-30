@@ -1,0 +1,4 @@
+{
+ "reasoning_effort": "none",
+ "sampling": {"temperature": 0.48, "top_k": 20, "top_p": 0.95, "min_p": 0.0, "presence_penalty": 1.10}
+}

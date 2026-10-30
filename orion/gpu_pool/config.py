@@ -189,7 +189,9 @@ class SwapSpec(BaseModel):
 
 class RoleSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    backend: Literal["llamacpp", "vllm"] = "llamacpp"
+    # strata: an engine that serves llama.cpp's /props shape, so discovery confirms it the same way;
+    # the gateway sends it OpenAI/Anthropic calls but never llama.cpp-only endpoints (/completion).
+    backend: Literal["llamacpp", "vllm", "strata"] = "llamacpp"
     kind: Literal["llm", "service"]
     cards: list[str] = Field(min_length=1)
     owner: list[str] = Field(default_factory=list)

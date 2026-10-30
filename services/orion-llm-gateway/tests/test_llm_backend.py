@@ -539,12 +539,55 @@ class TestLLMBackendExecution(unittest.TestCase):
         self.assertEqual(plan.work_class, "fast")
 
 
-def _granted(body, *, url="http://pool:8011", served_by="circe-worker-x"):
+def _granted(body, *, url="http://pool:8011", served_by="circe-worker-x", backend="llamacpp"):
     import dataclasses
 
     plan = plan_llm_chat(body)
     assert plan.error is None, plan.error
-    return dataclasses.replace(plan, route_target=RouteTarget(url=url, backend="llamacpp", served_by=served_by))
+    return dataclasses.replace(plan, route_target=RouteTarget(url=url, backend=backend, served_by=served_by))
+
+
+class StrataChatLaneTests(unittest.TestCase):
+    """The chat role runs Strata (gpu_pool.yaml backend: strata): OpenAI chat with the llama.cpp extras,
+    never llama.cpp's /apply-template + /completion, which Strata does not serve."""
+
+    @patch("app.llm_backend._common_http_client")
+    def test_payload_carries_template_kwargs_logprobs_and_response_format(self, mock_client_factory):
+        mock_client = MagicMock()
+        mock_client_factory.return_value.__enter__.return_value = mock_client
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.json.return_value = {"choices": [{"message": {"content": "{}"}}]}
+        body = ChatBody(messages=[ChatMessage(role="user", content="hi")],
+                        options={"chat_template_kwargs": {"enable_thinking": True}, "return_logprobs": True,
+                                 "logprobs_top_k": 3, "return_json": True})
+        with patch.object(settings, "llm_logprob_summary_enabled", True):
+            _execute_openai_chat(body=body, model="chat", base_url="http://circe:8011", backend_name="strata")
+        url, = mock_client.post.call_args.args
+        payload = mock_client.post.call_args.kwargs["json"]
+        self.assertEqual(url, "http://circe:8011/v1/chat/completions")
+        self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": True})
+        self.assertEqual((payload["logprobs"], payload["top_logprobs"]), (True, 3))
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
+
+    @patch("app.llm_backend._common_http_client")
+    def test_schema_formats_become_the_openai_wrapper_strata_accepts(self, mock_client_factory):
+        """Strata drops a json_object schema and 400s the bare json_schema shapes (serve/structured.py)."""
+        mock_client = MagicMock()
+        mock_client_factory.return_value.__enter__.return_value = mock_client
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.json.return_value = {"choices": [{"message": {"content": "{}"}}]}
+        schema = {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]}
+        for method in ("json_object_schema", "json_schema_schema", "json_schema_nested_schema"):
+            body = ChatBody(messages=[ChatMessage(role="user", content="hi")],
+                            options={"structured_output_schema": schema, "structured_output_method": method,
+                                     "structured_output_schema_name": "Reading"})
+            _execute_openai_chat(body=body, model="chat", base_url="http://circe:8011", backend_name="strata")
+            rf = mock_client.post.call_args.kwargs["json"]["response_format"]
+            self.assertEqual(rf, {"type": "json_schema",
+                                  "json_schema": {"name": "Reading", "strict": True, "schema": schema}}, method)
+        _execute_openai_chat(body=body, model="chat", base_url="http://x", backend_name="llamacpp")
+        self.assertEqual(mock_client.post.call_args.kwargs["json"]["response_format"],
+                         {"type": "json_schema", "json_schema": {"schema": schema}})
 
 
 if __name__ == "__main__":

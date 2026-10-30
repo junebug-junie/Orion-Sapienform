@@ -249,7 +249,7 @@ def test_routes_compat_view_statuses_from_pool_state():
     assert set(routes) == set(pool_placement.pool_routes())
     chat = routes["chat"]
     assert chat["status"] == "up" and chat["upstream"] == "http://100.112.254.99:8011"
-    assert (chat["n_ctx"], chat["model"], chat["served_by"], chat["backend"]) == (8192, "chat.gguf", "circe-worker-chat", "llamacpp")
+    assert (chat["n_ctx"], chat["model"], chat["served_by"], chat["backend"]) == (8192, "chat.gguf", "circe-worker-chat", "strata")
     assert chat["latency_ms"] is None and chat["reserved_free_slots"] is None
     # metacog's own role is down: the first up role of its class that it may use (fast)
     assert routes["metacog"]["status"] == "up" and routes["metacog"]["upstream"].endswith(":8013")

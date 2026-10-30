@@ -23,7 +23,7 @@ from .models import ChatBody, ChatMessage
 from .settings import settings
 from .profiles import LLMProfileRegistry, LLMProfile
 from .lane_routes import resolve_llm_lane_route
-from .structured_output import apply_structured_output_to_payload
+from .structured_output import apply_structured_output_to_payload, response_format_for_backend
 from .llm_uncertainty import (
     extract_llm_uncertainty_from_native_completion,
     extract_llm_uncertainty_from_openai_response,
@@ -600,6 +600,11 @@ def _select_profile(profile_name: str | None) -> LLMProfile | None:
     return None
 
 
+# Servers that take the OpenAI request extras (response_format, chat_template_kwargs, logprobs).
+# Only "llamacpp" also has the native /apply-template + /completion path.
+OPENAI_COMPAT_BACKENDS = ("vllm", "llamacpp", "llama-cola", "strata")
+
+
 def _normalize_backend_name(backend: str) -> str:
     normalized = backend.replace("_", "-").lower()
     if normalized == "llama-cpp":
@@ -615,7 +620,7 @@ def _pick_backend(options: Dict[str, Any] | None, profile: LLMProfile | None) ->
 
     backend = _normalize_backend_name(backend or settings.default_backend or "vllm")
 
-    if backend not in ("vllm", "llamacpp", "ollama", "llama-cola"):
+    if backend not in (*OPENAI_COMPAT_BACKENDS, "ollama"):
         logger.warning(f"[LLM-GW] Unknown backend '{backend}'; defaulting to vllm")
         return "vllm"
     return backend
@@ -1179,7 +1184,7 @@ def _execute_openai_chat(
     opts = body.options or {}
 
     structured_diag: Dict[str, Any] = {}
-    if backend_name in ("vllm", "llamacpp", "llama-cola"):
+    if backend_name in OPENAI_COMPAT_BACKENDS:
         opts, structured_diag = apply_structured_output_to_payload(
             opts,
             backend_name=backend_name,
@@ -1247,12 +1252,14 @@ def _execute_openai_chat(
         "frequency_penalty": opts.get("frequency_penalty"),
     }
     response_format = opts.get("response_format")
-    if response_format and backend_name in ("vllm", "llamacpp", "llama-cola"):
-        payload["response_format"] = response_format
-    elif opts.get("return_json") and backend_name in ("vllm", "llamacpp", "llama-cola"):
+    if response_format and backend_name in OPENAI_COMPAT_BACKENDS:
+        payload["response_format"] = response_format_for_backend(
+            response_format, backend_name,
+            schema_name=str(opts.get("structured_output_schema_name") or "StructuredOutput"))
+    elif opts.get("return_json") and backend_name in OPENAI_COMPAT_BACKENDS:
         payload["response_format"] = {"type": "json_object"}
     # llama.cpp OpenAI server: per-request template kwargs (Qwen3 enable_thinking, etc.) — no worker restart.
-    if backend_name in ("vllm", "llamacpp", "llama-cola"):
+    if backend_name in OPENAI_COMPAT_BACKENDS:
         ctk = opts.get("chat_template_kwargs")
         if isinstance(ctk, dict) and ctk:
             payload["chat_template_kwargs"] = ctk
@@ -1269,7 +1276,7 @@ def _execute_openai_chat(
         )
     return_logprobs = bool(opts.get("return_logprobs"))
     logprob_summary_enabled = bool(getattr(settings, "llm_logprob_summary_enabled", False))
-    if return_logprobs and logprob_summary_enabled and backend_name in ("vllm", "llamacpp", "llama-cola"):
+    if return_logprobs and logprob_summary_enabled and backend_name in OPENAI_COMPAT_BACKENDS:
         top_k = int(opts.get("logprobs_top_k") or getattr(settings, "llm_logprob_top_k_default", 5))
         payload["logprobs"] = True
         payload["top_logprobs"] = max(1, min(top_k, 20))

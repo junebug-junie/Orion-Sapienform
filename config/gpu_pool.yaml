@@ -56,7 +56,9 @@ cards:
   hecate-gpu0: {vram_gb: 32, lendable: true, index: 0, host: hecate}
 
 roles:
-  chat:       {kind: llm, cards: [gpu0], owner: chat, port: 8011}
+  # chat runs Strata (Qwen3.8-Flash-Next, 2026-10-30): llama.cpp's /props shape, no /completion endpoint.
+  # Rollback with the llama.cpp server: drop `backend: strata` (services/orion-llamacpp-host README).
+  chat:       {kind: llm, backend: strata, cards: [gpu0], owner: chat, port: 8011}
   # memory_distill co-owns gpu1 (2026-10-20): it is its only role, and its route is system "ahead of
   # curiosity's background holds". As a borrower, rule 5 gave every queued agent lease (background
   # included) gpu1 first and recalled a running distill hold owner_waiting (10-18 11:39), so two

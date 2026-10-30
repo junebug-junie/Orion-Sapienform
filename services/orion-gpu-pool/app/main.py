@@ -94,7 +94,7 @@ async def _probe(client: httpx.AsyncClient, role: str, url: str, kind: str, heal
         if kind == "llm":
             r = await client.get(f"{url}/props")
             r.raise_for_status()
-            return Probe(True, r.json(), checked_at=now)
+            return Probe(True, r.json(), checked_at=now, backend=backend)
         r = await client.get(f"{url}{health}")
         if strict:
             body = r.json() if r.is_success else None

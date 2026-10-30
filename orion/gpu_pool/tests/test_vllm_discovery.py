@@ -91,14 +91,15 @@ def test_stale_down_wrong_alias_and_wrong_probe_refuse():
     assert not resolve(data)[1].healthy
 
 
-def test_only_hecate_changes_backend_and_legacy_serialization_is_unchanged():
+def test_only_hecate_and_chat_change_backend_and_legacy_serialization_is_unchanged():
     cfg = load_pool_config()
     serialized = cfg.model_dump()['roles']
     assert cfg.roles['agent-deep'].backend == 'vllm'
     assert cfg.roles['agent-deep'].cards == ['hecate-gpu0']
     assert serialized['agent-deep']['backend'] == 'vllm'
+    assert serialized['chat']['backend'] == 'strata'
     for name, role in cfg.roles.items():
-        if name != 'agent-deep':
+        if name not in ('agent-deep', 'chat'):
             assert role.backend == 'llamacpp'
             assert 'backend' not in serialized[name]
 

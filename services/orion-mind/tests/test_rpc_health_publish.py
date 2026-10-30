@@ -145,6 +145,8 @@ async def test_lifespan_starts_and_stops_publisher_bus(monkeypatch) -> None:
     monkeypatch.setattr(main_mod, "build_heartbeat_chassis", lambda: AsyncMock())
     monkeypatch.setattr(main_mod.settings, "RPC_HEALTH_PUBLISH_ENABLED", True)
     monkeypatch.setattr(main_mod.settings, "ORION_BUS_ENABLED", True)
+    # Prime has its own bus (tests/test_prime_loop.py covers its lifespan); this test is the publisher's.
+    monkeypatch.setattr(main_mod.settings, "PRIME_ENABLED", False)
 
     async with main_mod.lifespan(FastAPI()):
         # connect_bus=True: the publisher task connects (with retry), not the lifespan.

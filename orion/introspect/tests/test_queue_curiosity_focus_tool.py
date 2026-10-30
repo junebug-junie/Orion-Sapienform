@@ -63,7 +63,8 @@ def test_registry_channel_operation_and_skew_writer_know_the_tool():
     channels = {c["name"]: c for c in yaml.safe_load((REPO / "orion/bus/channels.yaml").read_text())["channels"]}
     req = channels[QUEUE_CURIOSITY_FOCUS_REQUEST_CHANNEL]
     assert req["schema_id"] == "IntrospectRequestV1" and req["consumer_services"] == ["orion-hub"]
-    assert req["producer_services"] == ["orion-harness-governor"]
+    # orion-mind (2026-10-30): Orion Prime's resident loop queues its own between-conversations question.
+    assert req["producer_services"] == ["orion-harness-governor", "orion-mind"]
 
 
 def test_the_tool_uses_its_channel_with_binding_and_clean_args():

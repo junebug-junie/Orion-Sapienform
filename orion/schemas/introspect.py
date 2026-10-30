@@ -141,7 +141,9 @@ class IntrospectToolBindingV1(BaseModel):
     """Server-authored turn context; never part of model tool arguments."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-    invocation_context: Literal["unified_chat", "curiosity"]
+    # "prime" (2026-10-30, Orion Prime 2A): Prime's resident loop in orion-mind, not a harness turn.
+    # Only Hub's queue_curiosity_focus responder accepts it (scripts/curiosity_focus_listener.py).
+    invocation_context: Literal["unified_chat", "curiosity", "prime"]
     parent_run_id: str
     parent_trace_id: str
     memory_allowed: bool

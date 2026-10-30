@@ -3109,6 +3109,10 @@ channels:
       # per-window inference outcome traces (llm_gateway.inference:), gated by
       # LLM_GATEWAY_GRAMMAR_ENABLED -- services/orion-llm-gateway/app/grammar_emit.py
       - orion-llm-gateway
+      # act ledger (Orion Prime 2A, 2026-10-30): Prime's `infer` thought act and its `ask`
+      # nomination act (actor prime), from the resident loop in services/orion-mind/app/prime_loop.py
+      # via orion/prime/acts.py, gated by PRIME_ENABLED.
+      - orion-mind
       - orion-substrate-runtime
       # act ledger (rung 2): durable painting runs publish `make` act_opened/act_closed
       # (services/orion-thought/app/visual_steps.py via orion/grammar/acts.py), gated by
@@ -3982,12 +3986,14 @@ channels:
     kind: "request"
     schema_id: "IntrospectRequestV1"
     message_kind: "introspect.tool.request.v1"
-    producer_services: ["orion-harness-governor"]
+    # orion-mind (2026-10-30, Orion Prime 2A): Prime's resident loop queues its own question with
+    # binding.invocation_context "prime" (services/orion-mind/app/prime_loop.py).
+    producer_services: ["orion-harness-governor", "orion-mind"]
     consumer_services: ["orion-hub"]
     single_consumer: true
     stability: "experimental"
     since: "2026-10-16"
-    description: "orion-introspect queue_curiosity_focus tool RPC. From a chat turn only, Orion queues one question (and why) for its next regular investigate curiosity run. Hub writes one curiosity_focus_request row: one pending slot, a new focus replaces the pending one (named in the reply), except Orion's own choice (origin self) never replaces a focus Juniper asked for (origin juniper). Starts nothing; the run still waits for every gate, cooldown and cap, is shown the focus, and records a disposition (explored / set_aside:<reason>). Off when HUB_CURIOSITY_FOCUS_ENABLED=false. Reply on orion:introspect:result:<correlation_id>."
+    description: "orion-introspect queue_curiosity_focus tool RPC. From a chat turn (unified_chat) or from Prime's resident loop (prime: origin self only, and never replaces a pending focus), Orion queues one question (and why) for its next regular investigate curiosity run. Hub writes one curiosity_focus_request row: one pending slot, a new focus replaces the pending one (named in the reply), except Orion's own choice (origin self) never replaces a focus Juniper asked for (origin juniper). Starts nothing; the run still waits for every gate, cooldown and cap, is shown the focus, and records a disposition (explored / set_aside:<reason>). Off when HUB_CURIOSITY_FOCUS_ENABLED=false. Reply on orion:introspect:result:<correlation_id>."
 
   - name: "orion:introspect:node_history:request"
     kind: "request"
@@ -4016,7 +4022,7 @@ channels:
     schema_id: "IntrospectResultV1"
     message_kind: "introspect.tool.result.v1"
     producer_services: ["orion-dream", "orion-hub"]
-    consumer_services: ["orion-harness-governor"]
+    consumer_services: ["orion-harness-governor", "orion-mind"]
     stability: "experimental"
     since: "2026-09-28"
     description: "Owning-service answer to an introspect request. ok=true with items=[] means nothing matched; ok=false or a timeout means the answer is unknown."

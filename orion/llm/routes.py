@@ -115,6 +115,9 @@ ACCEPTED_LLM_ROUTES: FrozenSet[str] = frozenset(
         "metacog_perception",
         # hecate's 27B (2026-10-08): its own GPU node, agent-class work a caller asks for by name.
         "agent-deep",
+        # Orion Prime (2026-10-30): the chat worker at background priority, for Prime's thoughts.
+        # Background, so it yields to Juniper's turn (see BACKGROUND_LLM_ROUTES).
+        "prime",
     }
 )
 
@@ -151,6 +154,7 @@ LLM_ROUTE_DISPLAY_ORDER: tuple[str, ...] = (
     "quick_turn",
     "quick_embodied",
     "metacog_perception",
+    "prime",
 )
 
 if set(LLM_ROUTE_DISPLAY_ORDER) != set(ACCEPTED_LLM_ROUTES) or len(
@@ -181,7 +185,8 @@ if set(LLM_ROUTE_DISPLAY_ORDER) != set(ACCEPTED_LLM_ROUTES) or len(
 # Default OFF: reverie.py's route override stays "metacog" until
 # ORION_REVERIE_METACOG_BACKGROUND_ENABLED is flipped on, so the unmitigated failure/timeout rate
 # under real load can be observed first.
-BACKGROUND_LLM_ROUTES: FrozenSet[str] = frozenset({"quick_background", "metacog_background"})
+# `prime` (2026-10-30): Orion Prime's thoughts on the chat worker; waits for slack like the others.
+BACKGROUND_LLM_ROUTES: FrozenSet[str] = frozenset({"quick_background", "metacog_background", "prime"})
 
 if not BACKGROUND_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
     raise RuntimeError(

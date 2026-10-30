@@ -12,8 +12,9 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 from orion.mind.v1 import MindRunRequestV1, MindRunResultV1
 
-from .engine import run_mind
-from .llm_client import RPC_HEALTH_SINK
+from .engine import carries_live_turn, run_mind
+from .llm_client import RPC_HEALTH_SINK, MindLLMClient
+from .prime_loop import JUNIPER_TURNS, PrimeRuntime
 from .settings import settings
 
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
@@ -22,6 +23,8 @@ logger = logging.getLogger("orion-mind")
 heartbeat_chassis: HeartbeatOnly | None = None
 rpc_health_bus: OrionBusAsync | None = None
 rpc_health_publisher: RpcHealthPublisher | None = None
+prime_bus: OrionBusAsync | None = None
+prime_runtime: PrimeRuntime | None = None
 
 
 def build_heartbeat_chassis() -> HeartbeatOnly:
@@ -88,6 +91,36 @@ async def _stop_rpc_health() -> None:
         rpc_health_bus = None
 
 
+async def _start_prime() -> None:
+    """Orion Prime 2A: the resident loop (app/prime_loop.py) on its own bus connection. A failed
+    start is logged and leaves run_mind exactly as before."""
+    global prime_bus, prime_runtime
+    if not (settings.PRIME_ENABLED and settings.ORION_BUS_ENABLED):
+        logger.info("prime_disabled PRIME_ENABLED=%s ORION_BUS_ENABLED=%s", settings.PRIME_ENABLED, settings.ORION_BUS_ENABLED)
+        return
+    try:
+        bus = OrionBusAsync(url=settings.ORION_BUS_URL, enabled=True)
+        prime_bus = bus
+        prime_runtime = PrimeRuntime(settings=settings, bus=bus, llm=MindLLMClient())
+        await prime_runtime.start(connect=True)
+    except Exception as exc:
+        logger.warning("prime_start_failed error=%s", exc)
+        prime_runtime = None
+
+
+async def _stop_prime() -> None:
+    global prime_bus, prime_runtime
+    if prime_runtime is not None:
+        await prime_runtime.stop()
+        prime_runtime = None
+    if prime_bus is not None:
+        try:
+            await prime_bus.close()
+        except Exception as exc:
+            logger.warning("prime_bus_close_error error=%s", exc)
+        prime_bus = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global heartbeat_chassis
@@ -103,9 +136,11 @@ async def lifespan(app: FastAPI):
         logger.warning("system_health_heartbeat_start_failed error=%s", exc)
         heartbeat_chassis = None
     await _start_rpc_health()
+    await _start_prime()
     try:
         yield
     finally:
+        await _stop_prime()
         await _stop_rpc_health()
     if heartbeat_chassis is not None:
         try:
@@ -172,9 +207,18 @@ async def health() -> dict:
 @app.post("/v1/mind/run", response_model=MindRunResultV1)
 async def mind_run(body: MindRunRequestV1) -> MindRunResultV1:
     router_dir: Path = settings.router_profiles_dir
-    return run_mind(
-        body,
-        router_profiles_dir=router_dir,
-        snapshot_max_bytes=settings.MIND_SNAPSHOT_MAX_BYTES,
-        mind_settings=settings,
-    )
+    if not carries_live_turn(body):
+        return run_mind(
+            body,
+            router_profiles_dir=router_dir,
+            snapshot_max_bytes=settings.MIND_SNAPSHOT_MAX_BYTES,
+            mind_settings=settings,
+        )
+    # Juniper's turn: Prime does not bid while it runs and discards a thought it overlapped.
+    with JUNIPER_TURNS.turn():
+        return run_mind(
+            body,
+            router_profiles_dir=router_dir,
+            snapshot_max_bytes=settings.MIND_SNAPSHOT_MAX_BYTES,
+            mind_settings=settings,
+        )

@@ -53,6 +53,16 @@ families:
     deferrable_window_s: 86400
     lanes: [fast, metacog]
     placement: one_of
+  prime:
+    # 2026-10-30, Orion Prime 2A (docs/superpowers/specs/2026-10-29-orion-prime-design.md section 7):
+    # one shallow thought (act infer:prime). Tier 1 with the reserved share is the design's
+    # recommendation (open question 2); the tier is Juniper's call in PR review. Lane: circe chat
+    # lane 0 (Juniper 10-30), route `prime` at background priority. 1800 s: a thought deferred half an
+    # hour is still about the same changes; longer and the changes it would read have moved on.
+    tier: 1
+    deferrable_window_s: 1800
+    lanes: [chat]
+    placement: one_of
 
   # --- Tier 2: discretionary, the open market. ---
   durable.curiosity_investigate:

@@ -194,17 +194,19 @@ def _census(producers: dict[str, set[str]], n_live: int) -> tuple[list[CensusSha
 
 def rule_boundary_in(atlas: BodyAtlasV1, idx: _Index) -> list[RoleEvidenceV1]:
     out = []
-    names = {p.name for p in atlas.parts}
+    # an endpoint whose prefix is a service's name is that service's own sub-id on the bus
+    services = {p.name for p in atlas.parts if p.kind == "service"}
     sees: dict[str, list[str]] = defaultdict(list)
     for f in atlas.flows:
-        if f.relation == "sees_through":
+        if f.relation == "sees_through" and f.target in idx.live:
             sees[f.source].append(_bare(f.target))
     for p in atlas.parts:
         if p.kind == "sensor" and p.status == "live" and sees.get(p.part_id):
             out.append(RoleEvidenceV1(part_id=p.part_id, role="S1", rule="R-boundary-in", strength="rule",
                                       evidence=[f"sees_through -> {t}" for t in sorted(sees[p.part_id])],
                                       counts={"readers": len(sees[p.part_id])}))
-        elif p.part_id in idx.live and p.kind == "endpoint" and p.name.split(":", 1)[0] not in names:
+        elif (p.part_id in idx.live and p.kind == "endpoint" and ":" in p.name
+              and p.name.split(":", 1)[0] not in services):
             to = sorted({_bare(t) for (s, t) in idx.pair_channels if s == p.part_id})
             out.append(RoleEvidenceV1(part_id=p.part_id, role="S1", rule="R-boundary-in", strength="rule",
                                       evidence=[f"endpoint -> {t}" for t in to], counts={"targets": len(to)}))
@@ -269,14 +271,19 @@ def rule_collectors(idx: _Index) -> list[NearMissV1]:
 
 
 def rule_census_reader(idx: _Index) -> list[RoleEvidenceV1]:
-    out = []
+    """One row per reader, over every census channel it reads."""
+    reads: dict[str, list[str]] = defaultdict(list)
     for ch in sorted(idx.census):
-        for reader in sorted(idx.readers[ch]):
-            ps = idx.producers[ch] - {reader}
-            reps = idx.replies(reader, ps)
-            if ps and len(reps) / len(ps) < CENSUS_REPLY_MAX:
-                out.append(RoleEvidenceV1(part_id=reader, role="S3*", rule="R-census-reader", strength="candidate",
-                                          evidence=[f"reads {ch}"], counts={"producers": len(ps), "replies": len(reps)}))
+        for reader in idx.readers[ch]:
+            reads[reader].append(ch)
+    out = []
+    for reader, chans in sorted(reads.items()):
+        ps = set().union(*(idx.producers[ch] for ch in chans)) - {reader}
+        reps = idx.replies(reader, ps)
+        if ps and len(reps) / len(ps) < CENSUS_REPLY_MAX:
+            out.append(RoleEvidenceV1(part_id=reader, role="S3*", rule="R-census-reader", strength="candidate",
+                                      evidence=[f"reads {ch}" for ch in chans],
+                                      counts={"producers": len(ps), "replies": len(reps)}))
     return out
 
 
@@ -288,21 +295,18 @@ def rule_sources(idx: _Index) -> list[str]:
 
 def silent_services(atlas: BodyAtlasV1, idx: _Index) -> list[str]:
     """Live services with no non-census channel in or out (a causal-only flow names none)."""
-    busy = set()
-    for f in atlas.flows:
-        if f.relation == "signals" and set(f.channels) - idx.census:
-            busy.update((f.source, f.target))
+    busy = {x for (s, t), chs in idx.pair_channels.items() if chs - idx.census for x in (s, t)}
     return sorted(p.part_id for p in atlas.parts
                   if p.part_id in idx.live and p.kind == "service" and p.part_id not in busy)
 
 
 def declared_runner(atlas: BodyAtlasV1) -> list[str]:
-    procs = [p.part_id for p in atlas.parts if p.kind == "process"]
+    procs = [p.part_id for p in atlas.parts if p.kind == "process"]  # any status: a declared count
     runs: dict[str, int] = defaultdict(int)
     for f in atlas.flows:
         if f.relation == "runs" and "declared_runner" in f.evidence:
             runs[f.source] += 1
-    return [f"{_bare(r)} runs {n} of {len(procs)} processes (declared source, not a rule)"
+    return [f"{_bare(r)} runs {n} of {len(procs)} declared processes (a declared source, not a rule)"
             for r, n in sorted(runs.items(), key=lambda kv: -kv[1])]
 
 
@@ -321,7 +325,6 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True) -> CapacityR
     collectors = rule_collectors(idx)
     silent = silent_services(atlas, idx)
     roles = boundary + s2 + audit
-    census = sorted(idx.census)
     organ_of = {m: o for o in atlas.organs for m in o.members}
 
     jobs, gaps = [], []
@@ -344,7 +347,7 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True) -> CapacityR
             f"({_names(silent, 4)}); the atlas does not read HTTP calls or Redis keys")))
     if audit:
         jobs.append(JobLineV1(job="S3*", status="CANDIDATE", text="; ".join(
-            f"{_bare(r.part_id)} (reads {', '.join(census)} from {r.counts['producers']}, replies {r.counts['replies']})"
+            f"{_bare(r.part_id)} ({', '.join(r.evidence)} from {r.counts['producers']}, replies {r.counts['replies']})"
             for r in audit)))
         gaps.append(GapV1(gap_id="gap:s3star-unconfirmed", job="S3*", text=(
             f"no confirmed audit: {len(audit)} part(s) listen to the whole body, none is shown to sample work "
@@ -401,7 +404,7 @@ def render(reading: CapacityReadingV1) -> list[str]:
                  + " · collectors " + (", ".join(collectors) or "none"))
     lines.append(f"input candidates (world or clock; the rule cannot tell): {len(reading.sources)}")
     census = [c for c in reading.census if c.census]
-    lines.append("census: " + ", ".join(f"{c.channel} {c.share:.0%}" for c in census))
+    lines.append("census: " + (", ".join(f"{c.channel} {c.share:.0%}" for c in census) or "none"))
     lines += [f"declared: {d}" for d in reading.declared]
     lines.append(f"gaps: {len(reading.gaps)} (python -P -m orion.dig capacities gaps) · claims: not built yet")
     return lines

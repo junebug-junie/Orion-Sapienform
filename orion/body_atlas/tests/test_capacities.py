@@ -148,3 +148,46 @@ def test_the_eval_fails_when_the_expected_set_is_wrong():
     reading = K.read_capacities(build_atlas(catalog, observed, now=now, body=body))
     failures = _EVAL.evaluate(reading, {"R-matchmaker": {"part:orion-llm-gateway"}})
     assert any("precision 0.00 recall 0.00" in f for f in failures)
+
+
+def test_a_service_talking_only_to_a_transient_part_is_still_silent():
+    body = _body()
+    body.parts.append(PartV1(part_id="part:smoke", name="smoke", kind="service", status="transient", declared=False))
+    body.flows.append(FlowV1(source="part:quiet", target="part:smoke", weight=1.0, evidence=["observed_publish"],
+                             channels=["x:poke"]))
+    assert "part:quiet" in K.read_capacities(body).silent_services
+
+
+def test_a_camera_feeding_only_dead_parts_is_not_s1_and_only_a_service_name_marks_a_sub_id():
+    parts = {"cam": ("sensor", "live"), "dead": ("service", "dormant"), "router": ("service", "live"),
+             "http": ("store", "dormant"), "http:anthropic": ("endpoint", "live")}
+    sees = [FlowV1(source="part:cam", target="part:dead", weight=1.0, evidence=["declared_config"],
+                   relation="sees_through")]
+    sig = [("http:anthropic", "router", "x:req")]
+    r = K.read_capacities(_atlas(parts, sig, organs={"a": list(parts)}, other=sees))
+    # a part named `http` that is not a service does not hide http:* (an endpoint id always has a ':')
+    assert K.hits(r, "R-boundary-in") == {"part:http:anthropic"}
+
+
+def test_a_transient_requester_does_not_count():
+    body = _body()
+    body.parts = [p if p.name != "r5" else p.model_copy(update={"status": "transient"}) for p in body.parts]
+    pool = next(x for x in K.read_capacities(body).roles if x.part_id == "part:pool")
+    assert pool.counts["requesters"] == 5
+
+
+def test_two_census_channels_give_one_audit_row_per_reader():
+    body = _body()
+    for f in body.flows:
+        if f.target == "part:watcher" and HEALTH in f.channels:
+            f.channels.append("orion:rpc_health:snapshot")
+    r = K.read_capacities(body)
+    assert {c.channel for c in r.census if c.census} == {HEALTH, "orion:rpc_health:snapshot"}
+    rows = [x for x in r.roles if x.rule == "R-census-reader"]
+    assert [x.part_id for x in rows] == ["part:watcher"] and len(rows[0].evidence) == 2
+
+
+def test_with_no_census_the_printout_says_none():
+    parts = {"a": ("service", "live"), "b": ("service", "live")}
+    text = "\n".join(K.render(K.read_capacities(_atlas(parts, [("a", "b", "x:y")], organs={"o": ["a", "b"]}))))
+    assert "census: none" in text

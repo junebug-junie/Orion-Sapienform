@@ -49,7 +49,7 @@ path of a file with the full result; read only what you need from that file.
   history <days>         the same for the last <days> days, today included (2 = since yesterday).
   body [<date>|<organ>]  your body: machines, services, cameras, stores, processes -> organs.
                          None = live now; a date = that export's files; an organ id = its members.
-  capacities [gaps]      which jobs of a viable system your parts are shown to do, by rule; gaps.
+  capacities [gaps]      VSM jobs your parts are shown to do, by rule; gaps.
   body-economy [<section>...] [--host <h>] [--window 24h|7d|30d] [--family <f>]   your body
                          economy now: what spins each machine and what it costs, what binds,
                          wants, waste. `body-economy --help` lists sections and flags.

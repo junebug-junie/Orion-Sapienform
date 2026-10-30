@@ -131,7 +131,7 @@ services/orion-durable-runs: pytest tests                 -> 619 passed, 117 ski
        classed the same in both arms, off/expired/foreign/no-receptor never read as a charge, Redis down
        never fails a bid, fakeredis client semantics)
 python scripts/check_body_economy_contract.py             -> OK (94 state-reading modules, all registered)
-.github/workflows/orion-static-gates.yml, every run step locally -> GATES_PLACEHOLDER
+.github/workflows/orion-static-gates.yml, every run step locally -> 41 of 41 OK (incl. definition drift, body-economy contract, env parity, settings defaults)
 .github/workflows/orion-prime-tests.yml, every step locally      -> pass (prime pure, refs contract, frame eval, orion-mind)
 ```
 
@@ -206,6 +206,6 @@ Rollback without a code change: `PRIME_REGULATE_ENABLED=false` in `services/orio
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3011
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -88,6 +88,6 @@ tail -8 ~/.orion/post_pull_rebuild.log   # on circe: POST-END rc=0 orion-ai-town
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2982
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
